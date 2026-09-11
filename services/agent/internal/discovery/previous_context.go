@@ -78,9 +78,14 @@ func (o *Orchestrator) loadLedgerReadContext(ctx context.Context) *ledgerReadCon
 		}
 	}
 
+	// TotalCatalogItems counts because it is recorded even when the reflection
+	// LLM produced nothing, precisely so the next run can be told the cube is
+	// not exhausted. Leaving it out of this check would discard the ledger in
+	// exactly that case and make renderCoverage's cube-total branch
+	// unreachable — the write would exist for a read that never happens.
 	lrc.hasLedger = len(lrc.findings) > 0 || len(lrc.tasks) > 0 ||
 		strings.TrimSpace(lrc.coverage.Summary) != "" || len(lrc.coverage.ExploredTables) > 0 ||
-		len(lrc.coverage.ExploredCatalogItems) > 0
+		len(lrc.coverage.ExploredCatalogItems) > 0 || lrc.coverage.TotalCatalogItems > 0
 	if !lrc.hasLedger {
 		return nil
 	}

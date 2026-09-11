@@ -349,27 +349,69 @@ func TestRenderCoverage_CubeWithNothingSlicedYet(t *testing.T) {
 }
 
 // TestLoadLedgerReadContext_CubeCoverageAloneIsALedger: a project whose only
-// accumulated state is cube slices still has something to carry forward.
+// accumulated state is about its cube still has something to carry forward.
+//
+// The totals-only case is the one that matters. TotalCatalogItems is recorded
+// even when the reflection LLM produced nothing, precisely so the next run can
+// be told the cube is not exhausted — so a hasLedger check that ignored it
+// would discard the ledger in exactly the case the unconditional write exists
+// for, leaving renderCoverage's cube-total branch unreachable.
 func TestLoadLedgerReadContext_CubeCoverageAloneIsALedger(t *testing.T) {
 	agentplugin.RegisterDiscoveryPolicyProvider(stubPolicy{mode: agentplugin.EvolutionModeOff})
 	t.Cleanup(func() { agentplugin.RegisterDiscoveryPolicyProvider(stubPolicy{mode: agentplugin.EvolutionModeOff}) })
 
-	o := &Orchestrator{
-		projectID:   "proj-1",
-		findingRepo: &fakeFindingRepo{},
-		ledgerRepo: &fakeLedgerRepo{ledger: &commonmodels.DiscoveryLedger{
-			ProjectID: "proj-1",
-			Coverage:  commonmodels.LedgerCoverage{ExploredCatalogItems: []string{"sessions"}, TotalCatalogItems: 470},
-		}},
+	tests := []struct {
+		name string
+		cov  commonmodels.LedgerCoverage
+	}{
+		{
+			name: "slices recorded",
+			cov:  commonmodels.LedgerCoverage{ExploredCatalogItems: []string{"sessions"}, TotalCatalogItems: 470},
+		},
+		{
+			name: "only the catalog size, after a reflection that produced nothing",
+			cov:  commonmodels.LedgerCoverage{TotalCatalogItems: 470},
+		},
 	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			o := &Orchestrator{
+				projectID:   "proj-1",
+				findingRepo: &fakeFindingRepo{},
+				ledgerRepo: &fakeLedgerRepo{ledger: &commonmodels.DiscoveryLedger{
+					ProjectID: "proj-1", Coverage: tc.cov,
+				}},
+			}
 
-	lrc := o.loadLedgerReadContext(context.Background())
+			lrc := o.loadLedgerReadContext(context.Background())
 
-	if lrc == nil {
-		t.Fatal("cube coverage on its own must still produce a ledger read context")
+			if lrc == nil {
+				t.Fatal("cube coverage on its own must still produce a ledger read context")
+			}
+			if lrc.coverage.TotalCatalogItems != 470 {
+				t.Errorf("cube coverage lost on load: %+v", lrc.coverage)
+			}
+			if renderCoverage(lrc.coverage) == "" {
+				t.Error("a carried cube ledger must render something for the next run")
+			}
+		})
 	}
-	if len(lrc.coverage.ExploredCatalogItems) != 1 {
-		t.Errorf("cube coverage lost on load: %+v", lrc.coverage)
+}
+
+// TestRenderCoverage_SlicesSurviveACatalogTheRunCouldNotRead. A run whose cube
+// catalog lookup failed records a total of zero while the slices earlier runs
+// recorded are still carried; the note must survive, without printing a
+// denominator it does not have.
+func TestRenderCoverage_SlicesSurviveACatalogTheRunCouldNotRead(t *testing.T) {
+	got := renderCoverage(commonmodels.LedgerCoverage{
+		ExploredTables: []string{"analytics.orders"}, TotalTables: 3,
+		ExploredCatalogItems: []string{"sessions", "activeUsers"},
+	})
+	if !strings.Contains(got, "2 of their metrics and dimensions have been queried so far") {
+		t.Errorf("recorded slices must survive a missing catalog size, got %q", got)
+	}
+	if strings.Contains(got, "of their 0 ") {
+		t.Errorf("a catalog size the run does not have must not be printed, got %q", got)
 	}
 }
 
