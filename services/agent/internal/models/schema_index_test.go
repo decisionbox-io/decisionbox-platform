@@ -1,6 +1,7 @@
 package models
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 	"time"
@@ -147,5 +148,39 @@ func TestProject_SchemaIndex_Agent_OmitEmpty(t *testing.T) {
 		if _, ok := raw[f]; ok {
 			t.Errorf("%q should be omitted", f)
 		}
+	}
+}
+
+// The agent's SchemaIndexRun must marshal to the same bson shape the API reads.
+func TestSchemaIndexRun_RoundTrip_Agent(t *testing.T) {
+	orig := SchemaIndexRun{
+		ProjectID: "p1", DatasourceID: "default", RunID: "r1", Kind: SchemaIndexRunKindTables,
+		ObjectsIndexed: 7, BlurbsGenerated: 7, Status: SchemaIndexStatusFailed, Error: "boom",
+		PhaseDurations: map[string]int64{"describing_tables": 1200},
+		StartedAt:      time.Now().UTC().Truncate(time.Millisecond),
+		FinishedAt:     time.Now().UTC().Truncate(time.Millisecond),
+	}
+	b, err := bson.Marshal(orig)
+	if err != nil {
+		t.Fatalf("bson marshal: %v", err)
+	}
+	var got SchemaIndexRun
+	if err := bson.Unmarshal(b, &got); err != nil {
+		t.Fatalf("bson unmarshal: %v", err)
+	}
+	if got.Status != SchemaIndexStatusFailed || got.Error != "boom" {
+		t.Errorf("failure fields lost: %+v", got)
+	}
+	if got.ObjectsIndexed != 7 || got.PhaseDurations["describing_tables"] != 1200 {
+		t.Errorf("fields lost: %+v", got)
+	}
+
+	// JSON is the wire form the dashboard consumes.
+	j, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("json marshal: %v", err)
+	}
+	if !bytes.Contains(j, []byte(`"objects_indexed":7`)) {
+		t.Errorf("json missing objects_indexed: %s", j)
 	}
 }

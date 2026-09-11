@@ -165,6 +165,12 @@ type SchemaIndexProgressRepo interface {
 	Delete(ctx context.Context, projectID string) error
 }
 
+// SchemaIndexRunRepo abstracts the durable per-datasource run-history read
+// path. Backed by SchemaIndexRunRepository; the agent is the writer.
+type SchemaIndexRunRepo interface {
+	List(ctx context.Context, projectID, datasourceID string, limit int) ([]models.SchemaIndexRun, error)
+}
+
 // ValidationJobRepo abstracts the manual-validation queue + state
 // machine for handler unit testing. Backed by ValidationJobRepository.
 // Worker tests and integration tests bind against the concrete struct
@@ -206,5 +212,6 @@ var (
 	_ BookmarkRepo            = (*BookmarkRepository)(nil)
 	_ ReadMarkRepo            = (*ReadMarkRepository)(nil)
 	_ SchemaIndexProgressRepo = (*SchemaIndexProgressRepository)(nil)
+	_ SchemaIndexRunRepo      = (*SchemaIndexRunRepository)(nil)
 	_ ValidationJobRepo       = (*ValidationJobRepository)(nil)
 )

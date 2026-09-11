@@ -105,11 +105,21 @@ type IndexOptions struct {
 
 // Stats is what BuildIndex returns on success.
 type Stats struct {
-	Tables         int
+	Tables int
+	// Blurbs is the number of usable blurbs generated (those that were
+	// embedded + upserted). Equal to Tables in today's pipeline — every
+	// upserted point carries a blurb — but reported separately so the
+	// per-datasource run record stays honest if the two ever diverge.
+	Blurbs         int
 	Dropped        int
 	BlurbTokensIn  int
 	BlurbTokensOut int
 	Duration       time.Duration
+	// PhaseDurations maps a phase name (models.SchemaIndexPhase*) to the
+	// wall-clock time spent in it. Listing is folded into schema_discovery
+	// (DiscoverSchemas lists tables internally, so there is no separately
+	// measurable listing leg here).
+	PhaseDurations map[string]time.Duration
 }
 
 // BuildIndex runs the full schema-indexing pipeline. See type doc for
@@ -226,9 +236,10 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 		}
 		schemas = filtered
 	}
+	schemaDiscoveryDur := time.Since(discoveryStart)
 	applog.WithFields(applog.Fields{
 		"tables":     len(schemas),
-		"elapsed":    time.Since(discoveryStart).String(),
+		"elapsed":    schemaDiscoveryDur.String(),
 		"from_cache": fromCache,
 	}).Info("schema_indexer: phase=discover_schemas complete")
 	if len(schemas) == 0 {
@@ -308,9 +319,11 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 		si.recordErr(ctx, opts.ProjectID, "blurb generation: "+err.Error())
 		return nil, fmt.Errorf("schema_indexer: blurb generation: %w", err)
 	}
-	applog.WithField("elapsed", time.Since(blurbStart).String()).Info("schema_indexer: blurb generation complete")
+	describingDur := time.Since(blurbStart)
+	applog.WithField("elapsed", describingDur.String()).Info("schema_indexer: blurb generation complete")
 
 	// 5. Embed + upsert.
+	embedStart := time.Now()
 	if si.Progress != nil {
 		if err := si.Progress.SetPhase(ctx, opts.ProjectID, models.SchemaIndexPhaseEmbedding); err != nil {
 			applog.WithError(err).Warn("schema_indexer: SetPhase embedding failed")
@@ -389,6 +402,7 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 		si.recordErr(ctx, opts.ProjectID, "qdrant upsert: "+err.Error())
 		return nil, fmt.Errorf("schema_indexer: qdrant upsert: %w", err)
 	}
+	embeddingDur := time.Since(embedStart)
 	applog.WithFields(applog.Fields{
 		"tables":           len(items),
 		"total_elapsed":    time.Since(start).String(),
@@ -398,10 +412,16 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 
 	return &Stats{
 		Tables:         len(items),
+		Blurbs:         len(kept),
 		Dropped:        len(schemas) - len(items),
 		BlurbTokensIn:  blurbIn,
 		BlurbTokensOut: blurbOut,
 		Duration:       time.Since(start),
+		PhaseDurations: map[string]time.Duration{
+			models.SchemaIndexPhaseSchemaDiscovery:  schemaDiscoveryDur,
+			models.SchemaIndexPhaseDescribingTables: describingDur,
+			models.SchemaIndexPhaseEmbedding:        embeddingDur,
+		},
 	}, nil
 }
 

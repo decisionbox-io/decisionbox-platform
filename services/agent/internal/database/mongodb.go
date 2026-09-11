@@ -19,6 +19,7 @@ const (
 	CollectionDebugLogs           = "discovery_debug_logs"
 	CollectionFeedback            = "feedback"
 	CollectionSchemaIndexProgress = "project_schema_index_progress"
+	CollectionSchemaIndexRuns     = "project_schema_index_runs"
 	CollectionSchemaCache         = "project_schema_cache"
 	CollectionLLMModelWindows     = "llm_model_windows"
 

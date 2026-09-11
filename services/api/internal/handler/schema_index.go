@@ -80,6 +80,14 @@ type SchemaIndexLogLister interface {
 	List(ctx context.Context, projectID string, since time.Time, limit int) ([]database.SchemaIndexLog, error)
 }
 
+// SchemaIndexRunLister is the minimum repo surface the /runs endpoint needs:
+// the durable per-datasource run history the agent stamps on completion.
+// Concrete impl is *database.SchemaIndexRunRepository; nullable — when unset
+// (a build without the repo wired) /runs returns an empty list.
+type SchemaIndexRunLister interface {
+	List(ctx context.Context, projectID, datasourceID string, limit int) ([]models.SchemaIndexRun, error)
+}
+
 // WarehouseTableLister lists a warehouse's qualified table names live (by
 // running the agent's --list-tables mode). It backs the discovery-scope table
 // picker before the first index exists — at that point project_schema_cache is
@@ -100,6 +108,7 @@ type SchemaIndexHandler struct {
 	logs       SchemaIndexLogLister   // nullable — log-tail endpoint returns empty when absent
 	canceller  IndexCanceller         // nullable — cancel endpoint returns 503 when worker isn't wired
 	cacheRepo  SchemaCacheInvalidator // nullable — invalidate-cache endpoint returns 503 when not wired
+	runs       SchemaIndexRunLister   // nullable — /runs endpoint returns empty list when absent
 	lister     WarehouseTableLister   // nullable — pre-index live table listing for the scope picker
 
 	liveMu    sync.Mutex                // guards liveCache
@@ -181,9 +190,9 @@ func (h *SchemaIndexHandler) SetTableLister(l WarehouseTableLister) { h.lister =
 // canceller is also optional — when nil the /cancel endpoint returns
 // 503 (service unavailable) so the UI can hide the button gracefully.
 // cacheRepo is optional — when nil the /invalidate-cache endpoint
-// returns 503.
-func NewSchemaIndexHandler(projects database.ProjectRepo, progress database.SchemaIndexProgressRepo, dropper CollectionDropper, logs SchemaIndexLogLister, canceller IndexCanceller, cacheRepo SchemaCacheInvalidator) *SchemaIndexHandler {
-	return &SchemaIndexHandler{projects: projects, progress: progress, dropper: dropper, logs: logs, canceller: canceller, cacheRepo: cacheRepo}
+// returns 503. runs is optional — when nil /runs returns an empty list.
+func NewSchemaIndexHandler(projects database.ProjectRepo, progress database.SchemaIndexProgressRepo, dropper CollectionDropper, logs SchemaIndexLogLister, canceller IndexCanceller, cacheRepo SchemaCacheInvalidator, runs SchemaIndexRunLister) *SchemaIndexHandler {
+	return &SchemaIndexHandler{projects: projects, progress: progress, dropper: dropper, logs: logs, canceller: canceller, cacheRepo: cacheRepo, runs: runs}
 }
 
 // SchemaIndexStatusResponse is the wire shape returned by GET /status.
@@ -260,6 +269,96 @@ func (h *SchemaIndexHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// SchemaIndexRunView is the wire shape of one durable per-datasource run
+// record returned by GET /schema-index/runs. Kept separate from the Mongo doc
+// so timestamps are explicit RFC 3339 strings and the project_id (implied by
+// the path) is dropped.
+type SchemaIndexRunView struct {
+	DatasourceID    string           `json:"datasource_id"`
+	DatasourceName  string           `json:"datasource_name,omitempty"`
+	RunID           string           `json:"run_id"`
+	Kind            string           `json:"kind"`
+	ObjectsIndexed  int              `json:"objects_indexed"`
+	BlurbsGenerated int              `json:"blurbs_generated"`
+	Status          string           `json:"status"`
+	Error           string           `json:"error,omitempty"`
+	PhaseDurations  map[string]int64 `json:"phase_durations,omitempty"`
+	TokensIn        int              `json:"tokens_in,omitempty"`
+	TokensOut       int              `json:"tokens_out,omitempty"`
+	StartedAt       string           `json:"started_at,omitempty"`
+	FinishedAt      string           `json:"finished_at,omitempty"`
+}
+
+// ListRuns returns a project's per-datasource schema-index run history, newest
+// finished_at first, optionally filtered to one datasource. This is the
+// durable audit record — it survives the next run's progress Reset.
+//
+// GET /api/v1/projects/{id}/schema-index/runs?datasource_id=<id>&limit=<n>
+//
+// When the run repo isn't wired (smoke builds), returns an empty list.
+func (h *SchemaIndexHandler) ListRuns(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "project id is required")
+		return
+	}
+	type response struct {
+		Runs []SchemaIndexRunView `json:"runs"`
+	}
+
+	p, err := h.projects.GetByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "get project: "+err.Error())
+		return
+	}
+	if p == nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	if h.runs == nil {
+		writeJSON(w, http.StatusOK, response{Runs: []SchemaIndexRunView{}})
+		return
+	}
+
+	datasourceID := r.URL.Query().Get("datasource_id")
+	limit := 0 // 0 → repo default; an out-of-range value is clamped there
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	runs, err := h.runs.List(r.Context(), id, datasourceID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "list runs: "+err.Error())
+		return
+	}
+	out := make([]SchemaIndexRunView, len(runs))
+	for i, run := range runs {
+		v := SchemaIndexRunView{
+			DatasourceID:    run.DatasourceID,
+			DatasourceName:  run.DatasourceName,
+			RunID:           run.RunID,
+			Kind:            run.Kind,
+			ObjectsIndexed:  run.ObjectsIndexed,
+			BlurbsGenerated: run.BlurbsGenerated,
+			Status:          run.Status,
+			Error:           run.Error,
+			PhaseDurations:  run.PhaseDurations,
+			TokensIn:        run.TokensIn,
+			TokensOut:       run.TokensOut,
+		}
+		if !run.StartedAt.IsZero() {
+			v.StartedAt = run.StartedAt.UTC().Format(time.RFC3339)
+		}
+		if !run.FinishedAt.IsZero() {
+			v.FinishedAt = run.FinishedAt.UTC().Format(time.RFC3339)
+		}
+		out[i] = v
+	}
+	writeJSON(w, http.StatusOK, response{Runs: out})
 }
 
 // Retry transitions a failed project back to pending_indexing so the

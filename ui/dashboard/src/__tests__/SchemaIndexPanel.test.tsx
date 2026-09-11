@@ -14,6 +14,7 @@ jest.mock('@/lib/api', () => ({
     reindexSchema: jest.fn(),
     cancelSchemaIndex: jest.fn(),
     listSchemaIndexLogs: jest.fn(),
+    listSchemaIndexRuns: jest.fn(),
   },
 }));
 
@@ -42,6 +43,9 @@ beforeEach(() => {
   // tests don't engage the log tail unless they opt in.
   window.localStorage.removeItem('db:showDebugLogs:p1');
   (mockedApi.listSchemaIndexLogs as jest.Mock).mockResolvedValue([]);
+  // The per-datasource roll-up fetches runs once the status settles; default
+  // to an empty history so unrelated tests don't engage it.
+  (mockedApi.listSchemaIndexRuns as jest.Mock).mockResolvedValue({ runs: [] });
 });
 
 describe('SchemaIndexPanel', () => {
@@ -274,5 +278,61 @@ describe('SchemaIndexPanel', () => {
     mount(); // no hideWhenReady — default false
     await waitFor(() => expect(screen.getByText(/Schema index:/)).toBeInTheDocument());
     expect(screen.getByText(/Ready/)).toBeInTheDocument();
+  });
+
+  // --- persistent per-datasource roll-up (#413) ---
+
+  it('renders a per-datasource roll-up with object count + history link when ready', async () => {
+    mockedApi.getSchemaIndexStatus.mockResolvedValue({ status: 'ready', updated_at: '2026-09-01T14:20:00Z' });
+    (mockedApi.listSchemaIndexRuns as jest.Mock).mockResolvedValue({
+      runs: [
+        { datasource_id: 'wh_a', datasource_name: 'Redshift', run_id: 'r2', kind: 'tables', objects_indexed: 42, blurbs_generated: 40, status: 'ready', finished_at: '2026-09-01T14:20:00Z' },
+        { datasource_id: 'wh_a', datasource_name: 'Redshift', run_id: 'r1', kind: 'tables', objects_indexed: 30, blurbs_generated: 30, status: 'ready', finished_at: '2026-08-01T10:00:00Z' },
+      ],
+    });
+    mount();
+    await waitFor(() => expect(mockedApi.listSchemaIndexRuns).toHaveBeenCalledWith('p1'));
+    // Latest run per datasource only (newest-first dedup) — one line, the 42.
+    await waitFor(() => expect(screen.getByText('Redshift')).toBeInTheDocument());
+    expect(screen.getByText(/42 tables/)).toBeInTheDocument();
+    expect(screen.queryByText(/30 tables/)).not.toBeInTheDocument();
+    const historyLink = screen.getByRole('link', { name: /history/i });
+    expect(historyLink).toHaveAttribute('href', '/projects/p1/settings#warehouse');
+    // Re-index affordance is preserved alongside the roll-up.
+    expect(screen.getByRole('button', { name: /Re-index/i })).toBeInTheDocument();
+  });
+
+  it('shows one roll-up line per datasource, marking a failed datasource', async () => {
+    mockedApi.getSchemaIndexStatus.mockResolvedValue({ status: 'ready' });
+    (mockedApi.listSchemaIndexRuns as jest.Mock).mockResolvedValue({
+      runs: [
+        { datasource_id: 'wh_a', datasource_name: 'Redshift', run_id: 'a1', kind: 'tables', objects_indexed: 42, blurbs_generated: 40, status: 'ready', finished_at: '2026-09-01T14:20:00Z' },
+        { datasource_id: 'wh_b', datasource_name: 'Snowflake', run_id: 'b1', kind: 'tables', objects_indexed: 0, blurbs_generated: 0, status: 'failed', error: 'connect: timeout', finished_at: '2026-09-01T14:25:00Z' },
+      ],
+    });
+    mount();
+    await waitFor(() => expect(screen.getByText('Redshift')).toBeInTheDocument());
+    expect(screen.getByText('Snowflake')).toBeInTheDocument();
+    expect(screen.getByText(/42 tables/)).toBeInTheDocument();
+    expect(screen.getByText(/failed/)).toBeInTheDocument();
+  });
+
+  it('does not render the roll-up while indexing is in flight', async () => {
+    mockedApi.getSchemaIndexStatus.mockResolvedValue({
+      status: 'indexing',
+      progress: { phase: 'embedding', tables_total: 100, tables_done: 42 },
+    });
+    mount();
+    await waitFor(() => expect(screen.getByText(/Schema index:/)).toBeInTheDocument());
+    // The run-history fetch is keyed on a settled status — it must not fire mid-run.
+    expect(mockedApi.listSchemaIndexRuns).not.toHaveBeenCalled();
+  });
+
+  it('survives a runs-endpoint failure without crashing the banner', async () => {
+    mockedApi.getSchemaIndexStatus.mockResolvedValue({ status: 'ready', updated_at: '2026-09-01T14:20:00Z' });
+    (mockedApi.listSchemaIndexRuns as jest.Mock).mockRejectedValue(new Error('boom'));
+    mount();
+    await waitFor(() => expect(screen.getByText(/Ready/)).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /Re-index/i })).toBeInTheDocument();
   });
 });

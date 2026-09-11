@@ -145,8 +145,9 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	search := handler.NewSearchHandler(projectRepo, insightRepo, recommendationRepo, searchHistoryRepo, askSessionRepo, secretProvider, vs)
 	schemaIndexProgressRepo := database.NewSchemaIndexProgressRepository(db)
 	schemaIndexLogRepo := database.NewSchemaIndexLogRepository(db)
+	schemaIndexRunRepo := database.NewSchemaIndexRunRepository(db)
 	schemaCacheRepo := database.NewSchemaCacheRepository(db)
-	schemaIndex := handler.NewSchemaIndexHandler(projectRepo, schemaIndexProgressRepo, schemaCollectionDropper, schemaIndexLogRepo, indexCanceller, schemaCacheRepo)
+	schemaIndex := handler.NewSchemaIndexHandler(projectRepo, schemaIndexProgressRepo, schemaCollectionDropper, schemaIndexLogRepo, indexCanceller, schemaCacheRepo, schemaIndexRunRepo)
 	// Live table listing so the discovery-scope picker is populated before the
 	// first index exists (the schema cache is empty until then). Guarded so a
 	// nil runner leaves the lister unset (avoids a typed-nil interface); the
@@ -229,6 +230,7 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 
 	// Schema-index lifecycle — viewer for status, member for retry/reindex
 	mux.HandleFunc("GET /api/v1/projects/{id}/schema-index/status", withRole(viewer, schemaIndex.GetStatus))
+	mux.HandleFunc("GET /api/v1/projects/{id}/schema-index/runs", withRole(viewer, schemaIndex.ListRuns))
 	mux.HandleFunc("GET /api/v1/projects/{id}/schema-index/logs", withRole(viewer, schemaIndex.ListLogs))
 	mux.HandleFunc("POST /api/v1/projects/{id}/schema-index/retry", withRole(member, schemaIndex.Retry))
 	mux.HandleFunc("POST /api/v1/projects/{id}/schema-index/cancel", withRole(member, schemaIndex.Cancel))

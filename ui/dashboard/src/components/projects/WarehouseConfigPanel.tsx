@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert, Button, Group, Loader, Stack, Text, Title,
+  Alert, Button, Divider, Group, Loader, Stack, Text, Title,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconAlertCircle, IconCheck, IconPlugConnected, IconShieldCheck, IconX } from '@tabler/icons-react';
@@ -13,6 +13,7 @@ import {
   emptyWarehouseFormState,
   buildDefaults,
 } from './WarehouseFormFields';
+import SchemaIndexHistory from './SchemaIndexHistory';
 
 type Variant = 'page' | 'wizard';
 
@@ -165,6 +166,16 @@ export default function WarehouseConfigPanel({ projectId, variant, onSaved }: Wa
           {variant === 'wizard' ? 'Save and continue' : 'Save warehouse'}
         </Button>
       </Group>
+
+      {/* Co-locate the index-run result with the re-index trigger: current
+          status + durable history for this data source. Settings page only —
+          the creation wizard has no index to report on yet. */}
+      {variant === 'page' && (
+        <>
+          <Divider my="xs" />
+          <SchemaIndexHistory projectId={projectId} datasourceName={project.warehouse.provider || 'this data source'} />
+        </>
+      )}
     </PanelSection>
   );
 }

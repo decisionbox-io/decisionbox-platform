@@ -148,6 +148,7 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 
 	progressRepo := database.NewSchemaIndexProgressRepository(db)
 	schemaCache := database.NewSchemaCacheRepository(db)
+	runRepo := database.NewSchemaIndexRunRepository(db)
 
 	workers := envIntDefault("BLURB_WORKERS", blurb.DefaultWorkers)
 	// BLURB_MAX_TOKENS lets operators bump the per-blurb response
@@ -195,8 +196,21 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 	// discovery filter (queryexec verifies it before every sample query). Only
 	// the primary reports progress (see above), so secondaries pass a nil
 	// reporter + nil callbacks.
-	indexWarehouse := func(ctx context.Context, wh models.WarehouseConfig, reportProgress bool) error {
+	indexWarehouse := func(ctx context.Context, wh models.WarehouseConfig, reportProgress bool) (retErr error) {
 		whID := warehouseIDOrDefault(wh)
+		// Stamp a durable per-datasource result on every exit path (success or
+		// failure), so re-index history survives the next run's progress Reset.
+		// Deferred-first so it runs last (after provider.Close); uses a detached,
+		// short-timeout context so a cancelled run context can't also fail the
+		// audit write. started_at is captured before provider init so a
+		// connection failure still records a realistic attempt window.
+		start := time.Now()
+		var stats *discovery.Stats
+		defer func() {
+			recordCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			stampSchemaIndexRun(recordCtx, runRepo, projectID, runID, wh, whID, start, stats, retErr)
+		}()
 		// Scope per-warehouse governance to this datasource so its sample queries
 		// (and thus the blurbs) are masked under its own policies.
 		ctx = gowarehouse.WithWarehouseID(ctx, whID)
@@ -241,8 +255,7 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 			WarehouseID:   whID,
 		}
 
-		start := time.Now()
-		stats, err := indexer.BuildIndex(ctx, discovery.IndexOptions{
+		stats, err = indexer.BuildIndex(ctx, discovery.IndexOptions{
 			ProjectID:       projectID,
 			RunID:           runID,
 			BlurbModelLabel: blurbProvider + "/" + blurbModel,
@@ -282,6 +295,57 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 	}
 
 	return nil
+}
+
+// schemaIndexRunRecorder is the slim write surface stampSchemaIndexRun needs —
+// *database.SchemaIndexRunRepository satisfies it. Declared here so the stamp
+// logic is unit-testable with a fake, without a live Mongo.
+type schemaIndexRunRecorder interface {
+	Record(ctx context.Context, run *models.SchemaIndexRun) error
+}
+
+// stampSchemaIndexRun records the durable per-datasource result of a single
+// indexWarehouse attempt — "ready" on success, "failed" (with the error
+// message) otherwise. stats is nil when the attempt failed before BuildIndex
+// returned a result (e.g. provider-init or discovery failure); the counts then
+// stay zero while the live progress doc keeps any partial blurb-token totals
+// for the in-flight view. Best-effort: a failed audit write is logged, never
+// fatal to the indexing run.
+func stampSchemaIndexRun(ctx context.Context, repo schemaIndexRunRecorder, projectID, runID string, wh models.WarehouseConfig, whID string, start time.Time, stats *discovery.Stats, runErr error) {
+	run := &models.SchemaIndexRun{
+		ProjectID:      projectID,
+		DatasourceID:   whID,
+		DatasourceName: firstNonEmpty(wh.Label, wh.Provider, whID),
+		RunID:          runID,
+		Kind:           models.SchemaIndexRunKindTables,
+		Status:         models.SchemaIndexStatusReady,
+		StartedAt:      start.UTC(),
+		FinishedAt:     time.Now().UTC(),
+	}
+	if runErr != nil {
+		run.Status = models.SchemaIndexStatusFailed
+		run.Error = runErr.Error()
+	}
+	if stats != nil {
+		run.ObjectsIndexed = stats.Tables
+		run.BlurbsGenerated = stats.Blurbs
+		run.TokensIn = stats.BlurbTokensIn
+		run.TokensOut = stats.BlurbTokensOut
+		if len(stats.PhaseDurations) > 0 {
+			pd := make(map[string]int64, len(stats.PhaseDurations))
+			for phase, d := range stats.PhaseDurations {
+				pd[phase] = d.Milliseconds()
+			}
+			run.PhaseDurations = pd
+		}
+	}
+	if err := repo.Record(ctx, run); err != nil {
+		applog.WithError(err).WithFields(applog.Fields{
+			"project_id":    projectID,
+			"datasource_id": whID,
+			"run_id":        runID,
+		}).Warn("schema-index: failed to record per-datasource run result")
+	}
 }
 
 // warehousesToIndex returns the datasources to index for a project, primary

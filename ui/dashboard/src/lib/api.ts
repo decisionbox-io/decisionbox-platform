@@ -367,6 +367,26 @@ export interface SchemaIndexLogLine {
   created_at: string;
 }
 
+// SchemaIndexRun is one durable per-(datasource × run) result record from
+// GET /schema-index/runs — stamped by the agent on completion (ready or
+// failed), never reset. Backs the Data Warehouse panel's index-run history and
+// the project-page per-datasource status roll-up.
+export interface SchemaIndexRun {
+  datasource_id: string;
+  datasource_name?: string;
+  run_id: string;
+  kind: string; // "tables" today
+  objects_indexed: number;
+  blurbs_generated: number;
+  status: string; // "ready" | "failed"
+  error?: string;
+  phase_durations?: Record<string, number>; // phase name → milliseconds
+  tokens_in?: number;
+  tokens_out?: number;
+  started_at?: string;
+  finished_at?: string;
+}
+
 export interface EmbeddingConfig {
   provider: string;
   model: string;
@@ -1330,6 +1350,20 @@ export const api = {
   // state (drops the collection + flips to pending_indexing).
   getSchemaIndexStatus: (projectId: string) =>
     request<SchemaIndexStatus>(`/api/v1/projects/${projectId}/schema-index/status`),
+  // listSchemaIndexRuns returns the durable per-datasource index-run history,
+  // newest first. Unlike status (live, project-level, reset each run) these
+  // records survive the next run — they back the Data Warehouse panel's history
+  // table and the project-page per-datasource roll-up. `datasourceId` filters to
+  // one data source; omit it to list every data source's runs.
+  listSchemaIndexRuns: (projectId: string, datasourceId?: string, limit?: number) => {
+    const params = new URLSearchParams();
+    if (datasourceId) params.set('datasource_id', datasourceId);
+    if (limit) params.set('limit', String(limit));
+    const qs = params.toString();
+    return request<{ runs: SchemaIndexRun[] }>(
+      `/api/v1/projects/${projectId}/schema-index/runs${qs ? '?' + qs : ''}`
+    );
+  },
   retrySchemaIndex: (projectId: string) =>
     request<{ status: string }>(`/api/v1/projects/${projectId}/schema-index/retry`, { method: 'POST' }),
   // cancelSchemaIndex signals the in-flight indexing run to stop. The

@@ -19,10 +19,10 @@
  * recent agent stderr lines, polled from /schema-index/logs every 2 s.
  */
 
-import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Group, Modal, Progress, ScrollArea, Stack, Text } from '@mantine/core';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Anchor, Button, Group, Modal, Progress, ScrollArea, Stack, Text } from '@mantine/core';
 import { IconAlertCircle, IconCheck, IconPlayerStop, IconRefresh, IconRotateClockwise } from '@tabler/icons-react';
-import { api, SchemaIndexLogLine, SchemaIndexStatus } from '@/lib/api';
+import { api, SchemaIndexLogLine, SchemaIndexRun, SchemaIndexStatus } from '@/lib/api';
 
 interface Props {
   projectId: string;
@@ -62,6 +62,7 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
     return window.localStorage.getItem(`db:showDebugLogs:${projectId}`) === '1';
   });
   const [logs, setLogs] = useState<SchemaIndexLogLine[]>([]);
+  const [runs, setRuns] = useState<SchemaIndexRun[] | null>(null);
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const logTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -92,6 +93,31 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
       if (pollTimer.current) clearTimeout(pollTimer.current);
     };
   }, [projectId, onStatusChange]);
+
+  // Per-datasource roll-up — the durable record. Fetch the run history once
+  // the run settles (ready / failed / cancelled / needs_reindex); it only
+  // changes when a run finishes, so keying on the settled status is enough and
+  // avoids fetching mid-indexing. Best-effort: the banner already conveys the
+  // live state if this fails.
+  const settledStatus = status?.status;
+  useEffect(() => {
+    if (!settledStatus || settledStatus === 'pending_indexing' || settledStatus === 'indexing') return;
+    let alive = true;
+    api
+      .listSchemaIndexRuns(projectId)
+      .then((res) => { if (alive) setRuns(res.runs || []); })
+      .catch(() => { /* roll-up is best-effort */ });
+    return () => { alive = false; };
+  }, [projectId, settledStatus]);
+
+  // Latest run per datasource (runs come newest-first from the API).
+  const latestByDatasource = useMemo(() => {
+    const seen = new Map<string, SchemaIndexRun>();
+    for (const run of runs ?? []) {
+      if (!seen.has(run.datasource_id)) seen.set(run.datasource_id, run);
+    }
+    return Array.from(seen.values());
+  }, [runs]);
 
   // Sync showLogs when the settings page flips the localStorage key.
   // Uses a storage event + a focus refetch so both same-tab and
@@ -354,6 +380,27 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
               {total > 0 ? `${done} of ${total} tables (${pct}%)` : 'Starting up…'}
               {' '}— you can close this tab, indexing continues in the background.
             </Text>
+          )}
+          {/* Persistent per-datasource roll-up — the durable record, visible
+              even when ready (no more hide-on-ready). One line per datasource:
+              its latest run's status, object count, time, and a link into the
+              full history on the Data Warehouse settings tab. */}
+          {status.status !== 'indexing' && status.status !== 'pending_indexing' && latestByDatasource.length > 0 && (
+            <Stack gap={2}>
+              {latestByDatasource.map((run) => (
+                <Group key={run.datasource_id} gap={6} wrap="nowrap">
+                  <Text size="xs" fw={500}>{run.datasource_name || run.datasource_id}</Text>
+                  {run.status === 'ready'
+                    ? <IconCheck size={12} color="var(--mantine-color-green-6)" />
+                    : <IconAlertCircle size={12} color="var(--mantine-color-red-6)" />}
+                  <Text size="xs" c="dimmed">
+                    {run.status === 'ready' ? `${run.objects_indexed} tables` : 'failed'}
+                    {run.finished_at ? ` · ${new Date(run.finished_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}
+                  </Text>
+                  <Anchor size="xs" href={`/projects/${projectId}/settings#warehouse`}>history</Anchor>
+                </Group>
+              ))}
+            </Stack>
           )}
           {(status.status === 'ready' || status.status === 'failed' || status.status === 'cancelled') &&
             ((progress?.input_tokens ?? 0) > 0 || (progress?.output_tokens ?? 0) > 0) && (
