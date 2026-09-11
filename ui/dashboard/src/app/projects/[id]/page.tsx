@@ -19,7 +19,7 @@ import { RunErrorIndicator } from '@/components/common/RunErrorIndicator';
 import { UpcomingInvestigation } from '@/components/projects/UpcomingInvestigation';
 import {
   api, ApiError, CostEstimate, DebugLogEntry, DiscoveryResult, DiscoveryRunStatus, Project, RunStep, SchemaIndexStatus,
-  PROJECT_STATE_READY,
+  PROJECT_STATE_READY, resolvePrimaryDatasourceId,
 } from '@/lib/api';
 
 // On DecisionBox Cloud, usage is billed in credits (not dollars), so the USD
@@ -340,7 +340,7 @@ export default function ProjectPage() {
           Data Warehouse settings tab). Always visible, so a successful re-index
           leaves a durable record on the hub rather than only a toast. */}
       <div style={{ marginBottom: 16 }}>
-        <SchemaIndexPanel projectId={id} onStatusChange={setSchemaIndexStatus} />
+        <SchemaIndexPanel projectId={id} onStatusChange={setSchemaIndexStatus} primaryDatasourceId={resolvePrimaryDatasourceId(project)} />
       </div>
 
       {/* Aggregate Stats Row */}

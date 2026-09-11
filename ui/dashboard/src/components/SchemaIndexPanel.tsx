@@ -41,6 +41,14 @@ interface Props {
    * already convey the "ready" signal.
    */
   hideWhenReady?: boolean;
+  /**
+   * The project's primary datasource id. The per-datasource roll-up links only
+   * this datasource's line to the Data Warehouse settings history (that page
+   * shows the primary's history); other datasources' lines render without a
+   * link, since there's no settings surface to navigate them to. Defaults to
+   * the reserved default for a legacy single-warehouse project.
+   */
+  primaryDatasourceId?: string;
 }
 
 const POLL_MS = 2000;
@@ -53,7 +61,7 @@ const PHASE_LABELS: Record<string, string> = {
   embedding: 'Building vector index',
 };
 
-export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenReady = false }: Props) {
+export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenReady = false, primaryDatasourceId }: Props) {
   const [status, setStatus] = useState<SchemaIndexStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -188,14 +196,25 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
     };
   }, [showLogs, projectId]);
 
+  // reenterPending optimistically reflects the pending_indexing transition the
+  // Retry/Re-index POST just made server-side, then restarts the poll loop.
+  // Forcing the settled→pending step client-side guarantees the roll-up sees a
+  // status transition when the run later settles (→ ready/failed) and refetches
+  // the new run record — even for a fast re-index the 2s poll never catches
+  // mid-run, or a retry that re-fails with the identical error.
+  const reenterPending = () => {
+    const pending: SchemaIndexStatus = { status: 'pending_indexing' };
+    setStatus(pending);
+    onStatusChange?.(pending);
+    setPollNonce((n) => n + 1);
+  };
+
   const handleRetry = async () => {
     setBusy(true);
     setError(null);
     try {
       await api.retrySchemaIndex(projectId);
-      // Restart the poll loop so the pending_indexing → indexing → ready
-      // transitions are tracked (the immediate fetch happens inside poll()).
-      setPollNonce((n) => n + 1);
+      reenterPending();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -227,10 +246,7 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
     setError(null);
     try {
       await api.reindexSchema(projectId);
-      // Restart the poll loop so the queued → building → ready transitions are
-      // tracked even when Re-index is clicked from the (now-visible) ready
-      // banner; the immediate fetch happens inside poll().
-      setPollNonce((n) => n + 1);
+      reenterPending();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -397,9 +413,13 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
           )}
           {/* Persistent per-datasource roll-up — the durable record, visible
               even when ready (no more hide-on-ready). One line per datasource:
-              its latest run's status, object count, time, and a link into the
-              full history on the Data Warehouse settings tab. */}
-          {status.status !== 'indexing' && status.status !== 'pending_indexing' && latestByDatasource.length > 0 && (
+              its latest run's status, object count, time, and (for the primary,
+              the one the settings history can show) a link into it. Only shown
+              for ready/failed: on needs_reindex / cancelled the current index was
+              deliberately cleared or aborted, so showing a prior success with a
+              green check would read as current — the banner's CTA conveys the
+              real state there instead. */}
+          {(status.status === 'ready' || status.status === 'failed') && latestByDatasource.length > 0 && (
             <Stack gap={2}>
               {latestByDatasource.map((run) => (
                 <Group key={run.datasource_id} gap={6} wrap="nowrap">
@@ -411,7 +431,9 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
                     {run.status === 'ready' ? `${run.objects_indexed} tables` : 'failed'}
                     {run.finished_at ? ` · ${new Date(run.finished_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}
                   </Text>
-                  <Anchor size="xs" href={`/projects/${projectId}/settings#warehouse`}>history</Anchor>
+                  {run.datasource_id === (primaryDatasourceId ?? run.datasource_id) && (
+                    <Anchor size="xs" href={`/projects/${projectId}/settings#warehouse`}>history</Anchor>
+                  )}
                 </Group>
               ))}
             </Stack>
