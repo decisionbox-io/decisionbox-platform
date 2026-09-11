@@ -230,9 +230,12 @@ export interface Project {
   domain: string;
   category: string;
   warehouse: WarehouseConfig;
-  // Id of the primary datasource (empty on a legacy single-warehouse project,
-  // which the backend resolves to DEFAULT_WAREHOUSE_ID). Its index runs are
-  // stamped under this id.
+  // Full set of datasources on a multi-warehouse project; empty/absent on a
+  // legacy single-warehouse project (use `warehouse` then).
+  warehouses?: WarehouseConfig[];
+  // Id of the primary datasource. May be empty/unset — resolvePrimaryDatasourceId
+  // mirrors the backend's fallback (first warehouse, or the reserved default for
+  // a legacy project). Index runs are stamped under the resolved id.
   primary_warehouse_id?: string;
   llm: LLMConfig;
   embedding: EmbeddingConfig;
@@ -405,6 +408,10 @@ export interface EmbeddingConfig {
 export const DEFAULT_WAREHOUSE_ID = 'default';
 
 export interface WarehouseConfig {
+  // Stable datasource id; empty on a legacy single-warehouse project (the
+  // backend normalizes it to DEFAULT_WAREHOUSE_ID). Used by
+  // resolvePrimaryDatasourceId to locate a project's primary datasource.
+  id?: string;
   provider: string;
   project_id: string;
   datasets: string[];
@@ -418,6 +425,26 @@ export interface LLMConfig {
   provider: string;
   model: string;
   config?: Record<string, string>; // provider-specific: project_id, location, host, etc.
+}
+
+// resolvePrimaryDatasourceId returns the datasource id the agent stamps the
+// project's primary index runs under. It mirrors the Go models.PrimaryWarehouse
+// resolution exactly so the dashboard queries the right run history:
+//   - legacy single-warehouse project (no `warehouses`): always the reserved
+//     default, since the backend forces the legacy singular warehouse to it;
+//   - multi-warehouse with a primary id matching a warehouse: that warehouse's
+//     id (empty → default);
+//   - otherwise: the first warehouse's id (empty → default) — the backend's
+//     fallback when the primary id is unset or unknown.
+export function resolvePrimaryDatasourceId(project: Project): string {
+  const whs = project.warehouses;
+  if (!whs || whs.length === 0) return DEFAULT_WAREHOUSE_ID;
+  const norm = (id?: string) => id || DEFAULT_WAREHOUSE_ID;
+  if (project.primary_warehouse_id) {
+    const match = whs.find((w) => norm(w.id) === project.primary_warehouse_id);
+    if (match) return norm(match.id);
+  }
+  return norm(whs[0].id);
 }
 
 export interface DiscoveryResult {

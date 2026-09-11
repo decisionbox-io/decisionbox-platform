@@ -6,7 +6,7 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconAlertCircle, IconCheck, IconPlugConnected, IconShieldCheck, IconX } from '@tabler/icons-react';
-import { api, DEFAULT_WAREHOUSE_ID, Project, ProviderMeta, SecretEntryResponse, TestConnectionResult } from '@/lib/api';
+import { api, Project, ProviderMeta, resolvePrimaryDatasourceId, SecretEntryResponse, TestConnectionResult } from '@/lib/api';
 import {
   WarehouseFormFields,
   WarehouseFormState,
@@ -169,17 +169,18 @@ export default function WarehouseConfigPanel({ projectId, variant, onSaved }: Wa
 
       {/* Co-locate the index-run result with the re-index trigger: current
           status + durable history for the primary datasource this panel edits.
-          Scope to the project's primary id (empty → reserved default for a
-          legacy single-warehouse project) so it matches how the agent stamps
-          the primary's runs — whether that id is "default" or a real one — and
-          never surfaces another datasource's run. Settings page only — the
-          creation wizard has no index to report yet. */}
+          resolvePrimaryDatasourceId mirrors the backend's primary resolution
+          (matched primary id → that warehouse; else first warehouse; else the
+          reserved default for a legacy project), so the filter matches the id
+          the agent stamped the primary's runs under and never surfaces another
+          datasource's run. Settings page only — the creation wizard has no
+          index to report yet. */}
       {variant === 'page' && (
         <>
           <Divider my="xs" />
           <SchemaIndexHistory
             projectId={projectId}
-            datasourceId={project.primary_warehouse_id || DEFAULT_WAREHOUSE_ID}
+            datasourceId={resolvePrimaryDatasourceId(project)}
             datasourceName={project.warehouse.provider || 'this data source'}
           />
         </>

@@ -1,4 +1,4 @@
-import { api } from '@/lib/api';
+import { api, DEFAULT_WAREHOUSE_ID, Project, resolvePrimaryDatasourceId } from '@/lib/api';
 
 // Mock fetch globally
 const mockFetch = jest.fn();
@@ -994,5 +994,42 @@ describe('api.listReadIDs', () => {
     mockSuccess(['i1', 'i2']);
     const result = await api.listReadIDs('proj-1', 'insight');
     expect(result).toEqual(['i1', 'i2']);
+  });
+});
+
+// resolvePrimaryDatasourceId must mirror the Go models.PrimaryWarehouse
+// resolution so the settings history queries the id the agent stamps runs
+// under — across legacy, explicit-primary, implicit-primary, and id-less cases.
+describe('resolvePrimaryDatasourceId', () => {
+  const p = (over: Partial<Project>): Project => ({ warehouse: {} as Project['warehouse'], ...over } as Project);
+
+  it('legacy single-warehouse project → reserved default', () => {
+    expect(resolvePrimaryDatasourceId(p({}))).toBe(DEFAULT_WAREHOUSE_ID);
+  });
+
+  it('multi-warehouse with a matching primary id → that id', () => {
+    expect(resolvePrimaryDatasourceId(p({
+      primary_warehouse_id: 'wh_b',
+      warehouses: [{ id: 'wh_a' }, { id: 'wh_b' }] as Project['warehouses'],
+    }))).toBe('wh_b');
+  });
+
+  it('multi-warehouse with an UNSET primary id → first warehouse id (backend fallback)', () => {
+    expect(resolvePrimaryDatasourceId(p({
+      warehouses: [{ id: 'wh_a' }, { id: 'wh_b' }] as Project['warehouses'],
+    }))).toBe('wh_a');
+  });
+
+  it('multi-warehouse with an UNKNOWN primary id → first warehouse id (backend fallback)', () => {
+    expect(resolvePrimaryDatasourceId(p({
+      primary_warehouse_id: 'wh_gone',
+      warehouses: [{ id: 'wh_a' }, { id: 'wh_b' }] as Project['warehouses'],
+    }))).toBe('wh_a');
+  });
+
+  it('multi-warehouse with an id-less first warehouse → reserved default', () => {
+    expect(resolvePrimaryDatasourceId(p({
+      warehouses: [{ provider: 'postgres' }] as Project['warehouses'],
+    }))).toBe(DEFAULT_WAREHOUSE_ID);
   });
 });
