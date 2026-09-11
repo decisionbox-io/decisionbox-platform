@@ -79,14 +79,16 @@ func TestWarehousesToIndex(t *testing.T) {
 	})
 }
 
-// fakeRunRecorder captures the last recorded run for assertions.
+// fakeRunRecorder captures recorded runs for assertions (got = last, all = every).
 type fakeRunRecorder struct {
 	got *models.SchemaIndexRun
+	all []*models.SchemaIndexRun
 	err error
 }
 
 func (f *fakeRunRecorder) Record(_ context.Context, run *models.SchemaIndexRun) error {
 	f.got = run
+	f.all = append(f.all, run)
 	return f.err
 }
 
@@ -181,6 +183,56 @@ func TestStampSchemaIndexRun(t *testing.T) {
 		rec := &fakeRunRecorder{err: errors.New("mongo down")}
 		// Must not panic / must swallow the write error (best-effort audit).
 		stampSchemaIndexRun(ctx, rec, "proj-1", "run-4", models.WarehouseConfig{Provider: "postgres"}, "default", start, &discovery.Stats{Tables: 1, Blurbs: 1}, nil)
+	})
+}
+
+// stampSetupFailure must record a failed run for EVERY configured datasource
+// when a run dies during project-wide setup (before per-datasource indexing),
+// so the durable history reflects the failure instead of a stale prior success.
+func TestStampSetupFailure(t *testing.T) {
+	ctx := context.Background()
+	start := time.Now().Add(-5 * time.Second)
+	setupErr := errors.New("embedding pre-flight failed")
+
+	t.Run("multi-warehouse stamps a failed record per datasource", func(t *testing.T) {
+		rec := &fakeRunRecorder{}
+		project := &models.Project{
+			PrimaryWarehouseID: "wh_b",
+			Warehouses: []models.WarehouseConfig{
+				{ID: "wh_a", Provider: "snowflake"},
+				{ID: "wh_b", Provider: "redshift"},
+			},
+		}
+		stampSetupFailure(ctx, rec, "proj-1", "run-1", project, start, setupErr)
+
+		if len(rec.all) != 2 {
+			t.Fatalf("recorded %d runs, want one per datasource (2)", len(rec.all))
+		}
+		seen := map[string]bool{}
+		for _, r := range rec.all {
+			seen[r.DatasourceID] = true
+			if r.Status != models.SchemaIndexStatusFailed || r.Error != setupErr.Error() {
+				t.Errorf("record for %s: status=%q err=%q, want failed + setup error", r.DatasourceID, r.Status, r.Error)
+			}
+			if r.ObjectsIndexed != 0 {
+				t.Errorf("setup failure should have zero objects, got %d", r.ObjectsIndexed)
+			}
+		}
+		if !seen["wh_a"] || !seen["wh_b"] {
+			t.Errorf("expected both datasources stamped, saw %v", seen)
+		}
+	})
+
+	t.Run("legacy single warehouse stamps one default record", func(t *testing.T) {
+		rec := &fakeRunRecorder{}
+		project := &models.Project{Warehouse: models.WarehouseConfig{Provider: "postgres", Datasets: []string{"public"}}}
+		stampSetupFailure(ctx, rec, "proj-1", "run-1", project, start, setupErr)
+		if len(rec.all) != 1 || rec.all[0].DatasourceID != models.DefaultWarehouseID {
+			t.Fatalf("want one record for the default datasource, got %+v", rec.all)
+		}
+		if rec.all[0].Status != models.SchemaIndexStatusFailed {
+			t.Errorf("status = %q, want failed", rec.all[0].Status)
+		}
 	})
 }
 

@@ -230,6 +230,10 @@ export interface Project {
   domain: string;
   category: string;
   warehouse: WarehouseConfig;
+  // Id of the primary datasource (empty on a legacy single-warehouse project,
+  // which the backend resolves to DEFAULT_WAREHOUSE_ID). Its index runs are
+  // stamped under this id.
+  primary_warehouse_id?: string;
   llm: LLMConfig;
   embedding: EmbeddingConfig;
   blurb_llm?: BlurbLLMConfig;
