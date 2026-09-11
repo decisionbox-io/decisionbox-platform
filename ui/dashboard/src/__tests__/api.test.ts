@@ -1,4 +1,4 @@
-import { api } from '@/lib/api';
+import { api, ApiError, _resetReauthGuardForTests, _reauth } from '@/lib/api';
 
 // Mock fetch globally
 const mockFetch = jest.fn();
@@ -994,5 +994,96 @@ describe('api.listReadIDs', () => {
     mockSuccess(['i1', 'i2']);
     const result = await api.listReadIDs('proj-1', 'insight');
     expect(result).toEqual(['i1', 'i2']);
+  });
+});
+
+// A 401 is an authentication failure, not a data error. request() must hand off
+// to the auth layer (reload → the dashboard middleware re-gates and redirects)
+// instead of throwing a generic ApiError that pages render as "…not found".
+describe('request() — 401 re-authentication handoff', () => {
+  let reloadSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    _resetReauthGuardForTests();
+    window.sessionStorage.clear();
+    // Spy on the navigation seam — jsdom's window.location can't be stubbed.
+    reloadSpy = jest.spyOn(_reauth, 'navigate').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    reloadSpy.mockRestore();
+    _resetReauthGuardForTests();
+    window.sessionStorage.clear();
+  });
+
+  function mock401() {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      json: async () => ({ error: 'invalid or expired token' }),
+    });
+  }
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  it('reloads the page and does not reject the caller on a 401', async () => {
+    mock401();
+    let settled = false;
+    // The returned promise never settles (the page is unloading); guard the
+    // await so the test doesn't hang.
+    void api.getSystemInfo().then(
+      () => { settled = true; },
+      () => { settled = true; },
+    );
+    await flush();
+    expect(reloadSpy).toHaveBeenCalledTimes(1);
+    expect(settled).toBe(false);
+    expect(window.sessionStorage.getItem('dbx:reauth-at')).not.toBeNull();
+  });
+
+  it('reloads at most once when several requests 401 concurrently', async () => {
+    mock401();
+    mock401();
+    mock401();
+    void api.getSystemInfo().catch(() => {});
+    void api.listReadIDs('p', 'insight').catch(() => {});
+    void api.listLLMProviders().catch(() => {});
+    await flush();
+    expect(reloadSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT reload again if a 401 recurs within the guard window (no loop)', async () => {
+    // Simulate a just-completed reload by pre-seeding the guard timestamp.
+    window.sessionStorage.setItem('dbx:reauth-at', String(Date.now()));
+    mock401();
+    // Falls through to the normal error path → the caller sees a 401 ApiError.
+    await expect(api.getSystemInfo()).rejects.toMatchObject({
+      name: 'ApiError',
+      status: 401,
+    });
+    expect(reloadSpy).not.toHaveBeenCalled();
+  });
+
+  it('reloads again once the guard window has elapsed', async () => {
+    window.sessionStorage.setItem(
+      'dbx:reauth-at',
+      String(Date.now() - 11_000), // older than REAUTH_MIN_INTERVAL_MS (10s)
+    );
+    mock401();
+    void api.getSystemInfo().catch(() => {});
+    await flush();
+    expect(reloadSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears the guard on a successful response so a later expiry re-triggers', async () => {
+    window.sessionStorage.setItem('dbx:reauth-at', String(Date.now() - 11_000));
+    mockSuccess({ components: [] });
+    await api.getSystemInfo();
+    expect(window.sessionStorage.getItem('dbx:reauth-at')).toBeNull();
+  });
+
+  it('still throws a normal ApiError for non-401 failures', async () => {
+    mockError(404, 'not found');
+    await expect(api.getSystemInfo()).rejects.toBeInstanceOf(ApiError);
+    expect(reloadSpy).not.toHaveBeenCalled();
   });
 });
