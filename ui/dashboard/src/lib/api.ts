@@ -114,19 +114,25 @@ function handleUnauthorized(): boolean {
   if (typeof window === 'undefined') return false; // SSR / non-browser: let the caller throw
   if (reauthInFlight) return true; // a reload is already scheduled this page-load
   let lastReauthAt = 0;
+  let storageOk = true;
   try {
     lastReauthAt = Number(window.sessionStorage.getItem(REAUTH_GUARD_KEY)) || 0;
   } catch {
-    // sessionStorage can be unavailable (private mode / sandboxed iframe);
-    // treat as never-reauthed and fall through to a single reload attempt.
+    storageOk = false;
   }
   if (Date.now() - lastReauthAt < REAUTH_MIN_INTERVAL_MS) return false; // just reloaded → don't loop
-  reauthInFlight = true;
+  // Persist the guard BEFORE navigating. `reauthInFlight` is lost across the
+  // reload, so the cross-reload loop guard depends entirely on this timestamp.
+  // If storage is unavailable (private mode / sandboxed iframe) we cannot
+  // prevent a reload loop, so we do NOT navigate — fall through to the caller's
+  // normal error path instead of risking an infinite reload.
   try {
     window.sessionStorage.setItem(REAUTH_GUARD_KEY, String(Date.now()));
   } catch {
-    // ignore — the in-memory reauthInFlight flag still dedupes this page-load
+    storageOk = false;
   }
+  if (!storageOk) return false;
+  reauthInFlight = true;
   _reauth.navigate();
   return true;
 }

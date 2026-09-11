@@ -1086,4 +1086,25 @@ describe('request() — 401 re-authentication handoff', () => {
     await expect(api.getSystemInfo()).rejects.toBeInstanceOf(ApiError);
     expect(reloadSpy).not.toHaveBeenCalled();
   });
+
+  it('does not navigate (and throws normally) when sessionStorage is unavailable', async () => {
+    // Private-mode / sandboxed-iframe contexts: without a durable guard we can't
+    // prevent a reload loop, so fall through to the normal 401 error path rather
+    // than reloading blindly.
+    const setItemSpy = jest
+      .spyOn(Storage.prototype, 'setItem')
+      .mockImplementation(() => {
+        throw new DOMException('QuotaExceededError');
+      });
+    try {
+      mock401();
+      await expect(api.getSystemInfo()).rejects.toMatchObject({
+        name: 'ApiError',
+        status: 401,
+      });
+      expect(reloadSpy).not.toHaveBeenCalled();
+    } finally {
+      setItemSpy.mockRestore();
+    }
+  });
 });
