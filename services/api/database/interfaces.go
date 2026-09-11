@@ -169,6 +169,7 @@ type SchemaIndexProgressRepo interface {
 // path. Backed by SchemaIndexRunRepository; the agent is the writer.
 type SchemaIndexRunRepo interface {
 	List(ctx context.Context, projectID, datasourceID string, limit int) ([]models.SchemaIndexRun, error)
+	LatestByDatasource(ctx context.Context, projectID string) ([]models.SchemaIndexRun, error)
 }
 
 // ValidationJobRepo abstracts the manual-validation queue + state

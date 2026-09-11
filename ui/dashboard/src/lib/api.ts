@@ -1391,11 +1391,14 @@ export const api = {
   // newest first. Unlike status (live, project-level, reset each run) these
   // records survive the next run — they back the Data Warehouse panel's history
   // table and the project-page per-datasource roll-up. `datasourceId` filters to
-  // one data source; omit it to list every data source's runs.
-  listSchemaIndexRuns: (projectId: string, datasourceId?: string, limit?: number) => {
+  // one data source; omit it to list every data source's runs. `latest` returns
+  // just the most recent run per datasource (the roll-up's source — one line per
+  // datasource with no paging-induced omissions); it ignores datasourceId/limit.
+  listSchemaIndexRuns: (projectId: string, datasourceId?: string, limit?: number, latest?: boolean) => {
     const params = new URLSearchParams();
     if (datasourceId) params.set('datasource_id', datasourceId);
     if (limit) params.set('limit', String(limit));
+    if (latest) params.set('latest', '1');
     const qs = params.toString();
     return request<{ runs: SchemaIndexRun[] }>(
       `/api/v1/projects/${projectId}/schema-index/runs${qs ? '?' + qs : ''}`

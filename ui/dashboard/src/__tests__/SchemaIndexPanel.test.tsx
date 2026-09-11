@@ -291,7 +291,7 @@ describe('SchemaIndexPanel', () => {
       ],
     });
     mount();
-    await waitFor(() => expect(mockedApi.listSchemaIndexRuns).toHaveBeenCalledWith('p1'));
+    await waitFor(() => expect(mockedApi.listSchemaIndexRuns).toHaveBeenCalledWith('p1', undefined, undefined, true));
     // Latest run per datasource only (newest-first dedup) — one line, the 42.
     await waitFor(() => expect(screen.getByText('Redshift')).toBeInTheDocument());
     expect(screen.getByText(/42 tables/)).toBeInTheDocument();

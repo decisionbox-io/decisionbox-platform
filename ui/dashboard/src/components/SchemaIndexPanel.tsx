@@ -108,14 +108,18 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
   useEffect(() => {
     if (!settledStatus || settledStatus === 'pending_indexing' || settledStatus === 'indexing') return;
     let alive = true;
+    // latest=true → the API returns one (newest) run per datasource via
+    // aggregation, so the roll-up can't drop a datasource whose latest run fell
+    // outside a bounded history page.
     api
-      .listSchemaIndexRuns(projectId)
+      .listSchemaIndexRuns(projectId, undefined, undefined, true)
       .then((res) => { if (alive) setRuns(res.runs || []); })
       .catch(() => { /* roll-up is best-effort */ });
     return () => { alive = false; };
   }, [projectId, settledStatus]);
 
-  // Latest run per datasource (runs come newest-first from the API).
+  // The API already returns one newest run per datasource; dedup defensively in
+  // case an older client/server returns a full list.
   const latestByDatasource = useMemo(() => {
     const seen = new Map<string, SchemaIndexRun>();
     for (const run of runs ?? []) {

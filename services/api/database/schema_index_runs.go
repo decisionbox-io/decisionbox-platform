@@ -65,3 +65,37 @@ func (r *SchemaIndexRunRepository) List(ctx context.Context, projectID, datasour
 	}
 	return runs, nil
 }
+
+// LatestByDatasource returns the single most recent run per datasource for a
+// project, newest finished_at first. Backs the project-page roll-up, which
+// needs exactly one line per datasource — a single aggregation instead of
+// client-side dedup of a bounded history page, so a datasource is never
+// silently omitted just because its latest run fell outside the page. The
+// (project_id, datasource_id, finished_at) index supports the match+sort.
+func (r *SchemaIndexRunRepository) LatestByDatasource(ctx context.Context, projectID string) ([]models.SchemaIndexRun, error) {
+	if projectID == "" {
+		return nil, errors.New("projectID is required")
+	}
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.D{{Key: "project_id", Value: projectID}}}},
+		// Newest first within each datasource so $first is the latest run.
+		{{Key: "$sort", Value: bson.D{{Key: "datasource_id", Value: 1}, {Key: "finished_at", Value: -1}}}},
+		{{Key: "$group", Value: bson.D{
+			{Key: "_id", Value: "$datasource_id"},
+			{Key: "doc", Value: bson.D{{Key: "$first", Value: "$$ROOT"}}},
+		}}},
+		{{Key: "$replaceRoot", Value: bson.D{{Key: "newRoot", Value: "$doc"}}}},
+		// Stable display order across datasources: newest run first.
+		{{Key: "$sort", Value: bson.D{{Key: "finished_at", Value: -1}}}},
+	}
+	cur, err := r.col.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate latest schema-index runs: %w", err)
+	}
+	defer func() { _ = cur.Close(ctx) }()
+	runs := make([]models.SchemaIndexRun, 0)
+	if err := cur.All(ctx, &runs); err != nil {
+		return nil, fmt.Errorf("decode latest schema-index runs: %w", err)
+	}
+	return runs, nil
+}

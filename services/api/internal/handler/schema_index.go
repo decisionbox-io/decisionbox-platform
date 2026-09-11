@@ -86,6 +86,9 @@ type SchemaIndexLogLister interface {
 // (a build without the repo wired) /runs returns an empty list.
 type SchemaIndexRunLister interface {
 	List(ctx context.Context, projectID, datasourceID string, limit int) ([]models.SchemaIndexRun, error)
+	// LatestByDatasource returns one (most recent) run per datasource — the
+	// project-page roll-up's source, so no datasource is dropped by paging.
+	LatestByDatasource(ctx context.Context, projectID string) ([]models.SchemaIndexRun, error)
 }
 
 // WarehouseTableLister lists a warehouse's qualified table names live (by
@@ -295,9 +298,11 @@ type SchemaIndexRunView struct {
 // finished_at first, optionally filtered to one datasource. This is the
 // durable audit record — it survives the next run's progress Reset.
 //
-// GET /api/v1/projects/{id}/schema-index/runs?datasource_id=<id>&limit=<n>
+// GET /api/v1/projects/{id}/schema-index/runs?datasource_id=<id>&limit=<n>&latest=<0|1>
 //
-// When the run repo isn't wired (smoke builds), returns an empty list.
+// latest=1 returns just the most recent run per datasource (the project-page
+// roll-up's source; datasource_id + limit are ignored in that mode). When the
+// run repo isn't wired (smoke builds), returns an empty list.
 func (h *SchemaIndexHandler) ListRuns(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -322,15 +327,19 @@ func (h *SchemaIndexHandler) ListRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	datasourceID := r.URL.Query().Get("datasource_id")
-	limit := 0 // 0 → repo default; an out-of-range value is clamped there
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if n, err := strconv.Atoi(l); err == nil && n > 0 {
-			limit = n
+	var runs []models.SchemaIndexRun
+	if r.URL.Query().Get("latest") == "1" || r.URL.Query().Get("latest") == "true" {
+		runs, err = h.runs.LatestByDatasource(r.Context(), id)
+	} else {
+		datasourceID := r.URL.Query().Get("datasource_id")
+		limit := 0 // 0 → repo default; an out-of-range value is clamped there
+		if l := r.URL.Query().Get("limit"); l != "" {
+			if n, perr := strconv.Atoi(l); perr == nil && n > 0 {
+				limit = n
+			}
 		}
+		runs, err = h.runs.List(r.Context(), id, datasourceID, limit)
 	}
-
-	runs, err := h.runs.List(r.Context(), id, datasourceID, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list runs: "+err.Error())
 		return

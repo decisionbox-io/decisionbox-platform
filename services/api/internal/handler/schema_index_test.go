@@ -1481,10 +1481,12 @@ func TestSchemaIndex_InvalidateCache_SetStatusError_500(t *testing.T) {
 
 type mockRunLister struct {
 	runs         []models.SchemaIndexRun
+	latest       []models.SchemaIndexRun
 	err          error
 	gotProjectID string
 	gotDSID      string
 	gotLimit     int
+	latestCalled bool
 }
 
 func (m *mockRunLister) List(_ context.Context, projectID, datasourceID string, limit int) ([]models.SchemaIndexRun, error) {
@@ -1493,6 +1495,15 @@ func (m *mockRunLister) List(_ context.Context, projectID, datasourceID string, 
 		return nil, m.err
 	}
 	return m.runs, nil
+}
+
+func (m *mockRunLister) LatestByDatasource(_ context.Context, projectID string) ([]models.SchemaIndexRun, error) {
+	m.gotProjectID = projectID
+	m.latestCalled = true
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.latest, nil
 }
 
 func makeRunsHandler(t *testing.T, p *models.Project, lister SchemaIndexRunLister) *SchemaIndexHandler {
@@ -1625,5 +1636,30 @@ func TestSchemaIndex_ListRuns_ListerError(t *testing.T) {
 	h.ListRuns(w, newReq("GET", "/schema-index/runs", p.ID, ""))
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestSchemaIndex_ListRuns_LatestMode(t *testing.T) {
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"}
+	lister := &mockRunLister{latest: []models.SchemaIndexRun{
+		{DatasourceID: "wh_a", RunID: "a2", Status: models.SchemaIndexStatusReady, ObjectsIndexed: 42},
+		{DatasourceID: "wh_b", RunID: "b1", Status: models.SchemaIndexStatusFailed, Error: "boom"},
+	}}
+	h := makeRunsHandler(t, p, lister)
+
+	w := httptest.NewRecorder()
+	h.ListRuns(w, newReq("GET", "/schema-index/runs?latest=1", p.ID, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if !lister.latestCalled {
+		t.Error("latest=1 should route to LatestByDatasource")
+	}
+	runs := decodeRuns(t, w)
+	if len(runs) != 2 {
+		t.Fatalf("got %d runs, want one per datasource (2)", len(runs))
+	}
+	if runs[0].DatasourceID != "wh_a" || runs[1].DatasourceID != "wh_b" {
+		t.Errorf("datasources = %q, %q", runs[0].DatasourceID, runs[1].DatasourceID)
 	}
 }
