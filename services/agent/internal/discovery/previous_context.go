@@ -79,7 +79,8 @@ func (o *Orchestrator) loadLedgerReadContext(ctx context.Context) *ledgerReadCon
 	}
 
 	lrc.hasLedger = len(lrc.findings) > 0 || len(lrc.tasks) > 0 ||
-		strings.TrimSpace(lrc.coverage.Summary) != "" || len(lrc.coverage.ExploredTables) > 0
+		strings.TrimSpace(lrc.coverage.Summary) != "" || len(lrc.coverage.ExploredTables) > 0 ||
+		len(lrc.coverage.ExploredCatalogItems) > 0
 	if !lrc.hasLedger {
 		return nil
 	}
@@ -88,10 +89,19 @@ func (o *Orchestrator) loadLedgerReadContext(ctx context.Context) *ledgerReadCon
 
 // renderCoverage renders the coverage-map block: explored vs. frontier + the
 // reflection phase's natural-language summary.
+//
+// The table clause is the one this block has always carried and is unchanged.
+// The cube clause exists because the table clause, alone, is a false statement
+// on a project that has a cube: "0 still on the frontier" is derived from a
+// count of tables, and a cube contributes none — so the run that just explored
+// one reads back as having nothing left to look at, every time, cumulatively.
+// The clause is deliberately not a second fraction. A cube's slices are
+// combinatorial, so a ratio over its catalog would trade one wrong completion
+// signal for another.
 func renderCoverage(cov commonmodels.LedgerCoverage) string {
 	summary := strings.TrimSpace(cov.Summary)
 	explored := len(cov.ExploredTables)
-	if summary == "" && explored == 0 {
+	if summary == "" && explored == 0 && cov.TotalCatalogItems == 0 && len(cov.ExploredCatalogItems) == 0 {
 		return ""
 	}
 	var sb strings.Builder
@@ -105,11 +115,30 @@ func renderCoverage(cov commonmodels.LedgerCoverage) string {
 	} else if explored > 0 {
 		fmt.Fprintf(&sb, "Explored %d tables so far. ", explored)
 	}
+	if items := len(cov.ExploredCatalogItems); cov.TotalCatalogItems > 0 || items > 0 {
+		fmt.Fprintf(&sb, "That count is tables only. This project also has cube-shaped datasources, which have none: %s. A cube has no frontier to tile — its slices are combinatorial — so it is never finished and never absent from the frontier, whatever the table count above says. ",
+			renderCubeExplored(items, cov.TotalCatalogItems))
+	}
 	if summary != "" {
 		sb.WriteString(summary)
 	}
 	sb.WriteString("\n\n")
 	return sb.String()
+}
+
+// renderCubeExplored states what has been sliced on the cube side, as a record
+// rather than as progress toward a total.
+func renderCubeExplored(explored, total int) string {
+	switch {
+	case explored == 0 && total > 0:
+		return fmt.Sprintf("none of their %d metrics and dimensions are recorded as queried yet", total)
+	case explored == 0:
+		return "nothing is recorded as queried on them yet"
+	case total > 0:
+		return fmt.Sprintf("%d of their %d metrics and dimensions have been queried so far", explored, total)
+	default:
+		return fmt.Sprintf("%d of their metrics and dimensions have been queried so far", explored)
+	}
 }
 
 // renderLedgerFindings renders the ranked findings-with-substance block. Input is
