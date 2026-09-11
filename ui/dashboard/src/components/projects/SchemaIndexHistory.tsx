@@ -30,7 +30,12 @@ interface Props {
   datasourceName?: string;
 }
 
-const POLL_MS = 2000;
+const POLL_MS = 2000; // while a run is active (pending/indexing)
+// Slow cadence while settled: keeps the live status line fresh against
+// out-of-band changes this component can't observe directly — notably a "Clear
+// schema cache" from the Advanced settings tab, which is a sibling Mantine tab
+// that stays mounted (no remount, no window focus) when the user switches back.
+const SETTLED_POLL_MS = 15000;
 
 // Formats a millisecond duration compactly: "820ms", "14s", "3m 5s", "1h 2m".
 function formatDuration(ms: number): string {
@@ -75,34 +80,44 @@ export default function SchemaIndexHistory({ projectId, datasourceId, datasource
     // are append-only and retained across a cache clear / cancel — reading
     // runs[0] there would show a stale green "Ready" after the index was
     // dropped. The history table below is legitimately the run records.
-    //
-    // This panel is kept mounted on the Settings page (Mantine keeps tab panels
-    // mounted), so a one-shot fetch would go stale if the user opens Settings
-    // mid-index or clears the cache elsewhere. So: poll while a run is active
-    // (pending/indexing) and stop once settled, and refetch on window focus so
-    // returning to the page reflects an out-of-band change (cache clear, etc.).
-    const tick = async () => {
-      try {
-        const [s, res] = await Promise.all([
-          api.getSchemaIndexStatus(projectId).catch(() => null),
-          api.listSchemaIndexRuns(projectId, datasourceId),
-        ]);
-        if (!alive) return;
+    const fetchOnce = async (): Promise<SchemaIndexStatus | null> => {
+      const [s, res] = await Promise.all([
+        api.getSchemaIndexStatus(projectId).catch(() => null),
+        api.listSchemaIndexRuns(projectId, datasourceId),
+      ]);
+      if (alive) {
         setStatus(s);
         setRuns(res.runs || []);
         setError(null);
-        if (s && (s.status === 'pending_indexing' || s.status === 'indexing')) {
-          timer = setTimeout(tick, POLL_MS);
-        }
+      }
+      return s;
+    };
+
+    // loop owns the single polling chain: fast while a run is active, slow once
+    // settled. This panel stays mounted on the Settings page (Mantine keeps tab
+    // panels mounted), and the "Clear schema cache" action lives in a sibling
+    // tab — so neither a remount nor a window focus fires when the user returns
+    // here. The slow settled-state poll is what catches that out-of-band change.
+    const loop = async () => {
+      try {
+        const s = await fetchOnce();
+        if (!alive) return;
+        const active = s != null && (s.status === 'pending_indexing' || s.status === 'indexing');
+        timer = setTimeout(loop, active ? POLL_MS : SETTLED_POLL_MS);
       } catch (e: unknown) {
-        if (alive) setError(e instanceof Error ? e.message : String(e));
+        if (!alive) return;
+        setError(e instanceof Error ? e.message : String(e));
+        timer = setTimeout(loop, SETTLED_POLL_MS);
       } finally {
         if (alive) setLoading(false);
       }
     };
 
-    const onFocus = () => { void tick(); };
-    void tick();
+    // onFocus is an immediate one-off refresh (no scheduling of its own, so it
+    // can't start a second polling chain) for the common return-to-window case.
+    const onFocus = () => { fetchOnce().catch(() => { /* loop keeps its cadence */ }); };
+
+    void loop();
     window.addEventListener('focus', onFocus);
     return () => {
       alive = false;

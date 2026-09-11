@@ -120,6 +120,27 @@ describe('SchemaIndexHistory', () => {
     expect(screen.queryByText(/42 objects indexed/)).not.toBeInTheDocument();
   });
 
+  it('keeps polling once settled so a same-page cache clear is reflected', async () => {
+    // The Clear-cache action lives in a sibling Mantine tab (kept mounted, no
+    // remount, no window focus), so the settled-state slow poll is the only
+    // refresh path for it. Ready first, then needs_reindex on the next poll.
+    jest.useFakeTimers();
+    try {
+      (mockedApi.getSchemaIndexStatus as jest.Mock)
+        .mockResolvedValueOnce({ status: 'ready' })
+        .mockResolvedValue({ status: 'needs_reindex' });
+      (mockedApi.listSchemaIndexRuns as jest.Mock).mockResolvedValue({ runs: [readyRun] });
+      mount();
+      await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+      expect(screen.getByText(/42 objects indexed/)).toBeInTheDocument();
+      // Advance past the settled cadence → next poll observes the cleared cache.
+      await act(async () => { await jest.advanceTimersByTimeAsync(15000); });
+      expect(screen.getByText(/Re-index required/i)).toBeInTheDocument();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('shows an error message if the history fails to load', async () => {
     (mockedApi.listSchemaIndexRuns as jest.Mock).mockRejectedValue(new Error('mongo down'));
     mount();
