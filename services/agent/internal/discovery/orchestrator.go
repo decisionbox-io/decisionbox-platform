@@ -263,9 +263,20 @@ type Orchestrator struct {
 	// provider needs them: without them its staleness filter rejects every
 	// catalog hit, so search returns nothing for exactly the sources that
 	// have nothing but catalog items.
-	catalogRefs   []string
-	warehouseHash string
-	warehouseID   string
+	catalogRefs []string
+	// runCatalogRefs is every catalog-shaped datasource's items for THIS run,
+	// keyed by datasource id — the same authority the schema provider filters
+	// hits against, kept so the end-of-run reflection can read it.
+	//
+	// Reflection needs it because it runs from the persisted DiscoveryResult,
+	// and a result's Schemas map is tables: a cube contributes nothing to it,
+	// so a phase reading only the result cannot tell a project with a cube
+	// from one without. Captured where the run wires it rather than re-read,
+	// so what reflection reasons about is what exploration could actually
+	// query.
+	runCatalogRefs map[string][]string
+	warehouseHash  string
+	warehouseID    string
 
 	// warehouseProviders holds one live warehouse provider per datasource
 	// id for a multi-warehouse run (keyed by normalised id, primary
@@ -849,12 +860,13 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		schemaSearchWarehouseID = ""
 		tableWarehouse = dc.tableWarehouse
 	}
+	o.runCatalogRefs = o.catalogRefsByDatasource(dc)
 	schemaProvider, spErr := NewCacheSchemaProvider(CacheSchemaProviderOptions{
 		ProjectID:      o.projectID,
 		WarehouseID:    schemaSearchWarehouseID,
 		Datasets:       o.datasets,
 		Schemas:        schemas,
-		CatalogRefs:    o.catalogRefsByDatasource(dc),
+		CatalogRefs:    o.runCatalogRefs,
 		TableWarehouse: tableWarehouse,
 		Retriever:      o.schemaRetriever,
 		Embedder:       o.embedder,

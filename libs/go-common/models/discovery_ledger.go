@@ -60,9 +60,28 @@ type LedgerCoverage struct {
 	// AreaDepth maps analysis-area id -> a coarse "runs that produced findings
 	// in this area" counter, so depth-first policy can chase the richest seam.
 	AreaDepth map[string]int `bson:"area_depth" json:"area_depth"`
-	// TotalTables is the size of the indexed catalog at last update, so a
-	// frontier count (TotalTables - len(ExploredTables)) can be shown.
+	// TotalTables is the number of tables in the indexed catalog at last
+	// update, so a frontier count (TotalTables - len(ExploredTables)) can be
+	// shown. It counts the project's TABLE-shaped datasources only: a
+	// cube-shaped one has no tables to count, and folding its catalog in here
+	// would present a combinatorial surface as a frontier to exhaust.
 	TotalTables int `bson:"total_tables" json:"total_tables"`
+	// ExploredCatalogItems are the catalog refs — metrics and dimensions — the
+	// agent has queried on cube-shaped datasources across runs.
+	//
+	// Held apart from ExploredTables rather than merged into it because the two
+	// are not the same kind of thing to a frontier. A table is tileable: cover
+	// it and it is done, which is what makes "N of M" meaningful. A cube's
+	// slices are combinatorial, so there is no M at which it is finished, and a
+	// ratio built over one would read as a completion percentage for something
+	// that never completes. This set is a record of what has already been
+	// sliced, not a numerator.
+	ExploredCatalogItems []string `bson:"explored_catalog_items,omitempty" json:"explored_catalog_items,omitempty"`
+	// TotalCatalogItems is how many catalog items the run's cube-shaped
+	// datasources offer. Non-zero is also the signal that this project HAS a
+	// cube at all, which is what stops the coverage line from reporting an
+	// empty frontier once every table is covered.
+	TotalCatalogItems int `bson:"total_catalog_items,omitempty" json:"total_catalog_items,omitempty"`
 	// Summary is a short natural-language coverage note the reflection phase
 	// maintains ("orders + customers well covered; the events tables untouched").
 	Summary string `bson:"summary" json:"summary"`

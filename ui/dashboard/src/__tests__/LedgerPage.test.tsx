@@ -83,6 +83,59 @@ describe('LedgerPage', () => {
     expect(await screen.findByText(/No findings yet/i)).toBeInTheDocument();
   });
 
+  it('says the table counts are the warehouse side only when the project has a cube', async () => {
+    // A cube-shaped datasource has no tables, so it contributes nothing to
+    // "Tables explored" or "Frontier". Every table covered then renders as
+    // "Frontier 0", which reads as "nothing left to look at" on a project
+    // where most of what can be queried has never been touched.
+    getLedger.mockResolvedValue({
+      ...ledger,
+      coverage: {
+        explored_tables: ['ds.orders', 'ds.customers'],
+        total_tables: 2,
+        explored_catalog_items: ['sessions', 'activeUsers'],
+        total_catalog_items: 470,
+        summary: 'the warehouse is tiled',
+      },
+    } as unknown as LedgerView);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'suggest_only', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    wrap();
+    expect(await screen.findByText(/the counts above are the\s+warehouse side only/i)).toBeInTheDocument();
+    expect(screen.getByText(/2 of its 470 metrics and dimensions/i)).toBeInTheDocument();
+    expect(screen.getByText(/never fully explored/i)).toBeInTheDocument();
+  });
+
+  it('keeps recorded cube slices visible when the catalog size is unavailable', async () => {
+    // A run whose cube catalog could not be read records a total of zero while
+    // the slices earlier runs recorded are still carried. Testing only the
+    // total would hide them — and print "of its 0 metrics" if it did not.
+    getLedger.mockResolvedValue({
+      ...ledger,
+      coverage: {
+        explored_tables: ['ds.orders'],
+        total_tables: 2,
+        explored_catalog_items: ['sessions', 'activeUsers'],
+        total_catalog_items: 0,
+        summary: '',
+      },
+    } as unknown as LedgerView);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'suggest_only', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    wrap();
+    expect(await screen.findByText(/2 of its metrics and dimensions have been queried/i)).toBeInTheDocument();
+    expect(screen.queryByText(/of its 0 metrics/i)).not.toBeInTheDocument();
+  });
+
+  it('does not mention a cube on an ordinary warehouse-only project', async () => {
+    getLedger.mockResolvedValue(ledger);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'suggest_only', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    wrap();
+    expect(await screen.findByText(/events untouched/)).toBeInTheDocument();
+    expect(screen.queryByText(/cube-shaped datasource/i)).not.toBeInTheDocument();
+  });
+
   it('keeps the findings detail collapsed until toggled', async () => {
     // Findings are advanced detail — the table is collapsed behind a "Show
     // detail" toggle so the top of the page stays focused on convergence + the
