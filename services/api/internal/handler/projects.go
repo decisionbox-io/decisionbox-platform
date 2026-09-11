@@ -16,6 +16,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/managedai"
@@ -260,20 +261,6 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		p.Language = cleanLang
 	}
 
-	// Seed default prompts from domain pack.
-	if p.Prompts == nil && h.domainPackRepo != nil {
-		pack, err := h.domainPackRepo.GetBySlug(r.Context(), p.Domain)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to load domain pack: "+err.Error())
-			return
-		}
-		if pack == nil {
-			writeError(w, http.StatusBadRequest, "domain pack not found: "+p.Domain)
-			return
-		}
-		SeedProjectPrompts(&p, pack)
-	}
-
 	// Reject a split-brain body that sets BOTH the legacy `warehouse` field and
 	// the new `warehouses` slice. EffectiveWarehouses() would silently pick the
 	// slice and persist a divergent legacy field, so any code still reading
@@ -282,6 +269,16 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if p.Warehouse.Provider != "" && len(p.Warehouses) > 0 {
 		writeError(w, http.StatusBadRequest,
 			"set either the legacy `warehouse` field or `warehouses`, not both")
+		return
+	}
+
+	if !rejectAnchoringPromotion(w, p.EffectiveWarehouses()) {
+		return
+	}
+	// No project id: the refusal happens before the insert that assigns one,
+	// so there is nothing yet to attribute this to but the providers. Passing
+	// p.ID here would look like attribution and be empty in practice.
+	if !rejectUnanchoredProject(w, p.EffectiveWarehouses(), telemetry.AnchoringAtProjectCreate, "") {
 		return
 	}
 
@@ -311,6 +308,44 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		p.Warehouse.ID = ""
 		p.Warehouses = nil
 		p.PrimaryWarehouseID = ""
+	}
+
+	// Seed default prompts from domain pack.
+	//
+	// After the warehouse checks above, not before them, because the pack has
+	// to agree with the datasource it will be run against and neither the
+	// split-brain body nor an unanchored project has a settled answer to
+	// "which datasource is that". Nothing between here and the decode reads
+	// prompts, so the move costs nothing.
+	if h.domainPackRepo != nil {
+		pack, err := h.domainPackRepo.GetBySlug(r.Context(), p.Domain)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load domain pack: "+err.Error())
+			return
+		}
+		// Unknown domain is refused only when the request needed the pack to
+		// seed from, which is the behaviour this route has always had.
+		// Rejecting it for a client that supplied its own prompts would be a
+		// second change riding along with this one.
+		if pack == nil {
+			if p.Prompts == nil {
+				writeError(w, http.StatusBadRequest, "domain pack not found: "+p.Domain)
+				return
+			}
+		} else {
+			// The pairing is checked whether or not the prompts came from the
+			// pack. Supplying custom prompts does not make the project's domain
+			// compatible with its data source — it only stops the pack being
+			// copied — and gating this on the seeding branch left the whole
+			// refusal skippable by sending a `prompts` field.
+			if msg := packShapeMismatch(pack, p.PrimaryWarehouse()); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
+			if p.Prompts == nil {
+				SeedProjectPrompts(&p, pack)
+			}
+		}
 	}
 
 	// Plan-gate: provider allow-list. Self-hosted Noop permits everything.
@@ -548,6 +583,25 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// the value above was an unchanged echo, and EffectiveWarehouses() ignores
 	// the legacy field anyway.
 	if incoming.Warehouse.Provider != "" && len(existing.Warehouses) == 0 {
+		if !rejectAnchoringPromotion(w, []models.WarehouseConfig{incoming.Warehouse}) {
+			return
+		}
+		// A single-warehouse project's only datasource IS the project's
+		// anchor, so swapping it for a non-anchoring source leaves nothing to
+		// carry the project — the same end state the create path refuses, one
+		// edit later.
+		if !rejectUnanchoredProject(w, []models.WarehouseConfig{incoming.Warehouse}, telemetry.AnchoringAtSettingsEdit, existing.ID) {
+			return
+		}
+		// The pairing is checked wherever it changes, and this is the other
+		// place it does. A project created before it had a datasource was
+		// seeded from its pack with nothing to disagree with; the shape only
+		// becomes checkable here, one edit later — which is also the flow a
+		// customer takes when they set the project up before connecting
+		// anything.
+		if !h.rejectPackShapeMismatch(r.Context(), w, existing.Domain, incoming.Warehouse) {
+			return
+		}
 		existing.Warehouse = incoming.Warehouse
 	}
 	if incoming.LLM.Provider != "" {
@@ -727,4 +781,169 @@ func (h *ProjectsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		"deleted":         id,
 		"secrets_skipped": secretsSkipped,
 	})
+}
+
+// packShapeMismatch reports why a domain pack cannot seed this project's
+// prompts, or "" when it can.
+//
+// A pack's prompts are written for one shape of source and are not portable
+// across shapes. An entities pack tells the model to select from tables and
+// names them through {{DATASET}}; a cube pack tells it to choose metrics and
+// dimensions and has no dataset to name. Seeding either into a project whose
+// primary datasource is the other shape yields a discovery run that reads
+// correctly and asks for queries the source cannot answer — a failure with no
+// error attached, which is the expensive kind.
+//
+// This could not happen while every pack was table-shaped. It became
+// reachable the moment a cube pack could be saved, so it is checked at the
+// one place a pack and a datasource are first paired. It is not a validator
+// rule: a pack is not invalid for being cube-shaped, it is only wrong HERE.
+//
+// A project with no datasource yet is still checked, against entities. That is
+// not a guess: the pack has to agree with the datasource the project will end
+// up with, that datasource must be one that can carry an analysis on its own,
+// and no cube-shaped source can be. Returning "no mismatch" here instead —
+// which this did at first, on the reasoning that nothing had been chosen to
+// disagree with — creates a project holding a cube pack that the settings-edit
+// guard then refuses to give any anchoring datasource to. Unusable, and
+// unrepairable through the API, built out of two guards disagreeing about the
+// empty case. It is also exactly the rule the domain picker applies.
+//
+// An unregistered provider is read as table-shaped, the same default the rest
+// of the system applies, so an unknown spelling keeps the check rather than
+// waving a pack through.
+func packShapeMismatch(pack *models.DomainPack, primary models.WarehouseConfig) string {
+	if pack == nil {
+		return ""
+	}
+	want := gowarehouse.ShapeEntities
+	if primary.Provider != "" {
+		if meta, ok := gowarehouse.GetProviderMeta(primary.Provider); ok {
+			want = meta.EffectiveShape()
+		}
+	}
+	got := pack.EffectiveShape()
+	if got == want {
+		return ""
+	}
+	if primary.Provider == "" {
+		return fmt.Sprintf(
+			"domain pack %q is written for a %s data source, and a project's domain pack has to match the data source that carries it, which is always %s; choose a pack written for %s",
+			pack.Slug, got, want, want)
+	}
+	return fmt.Sprintf(
+		"domain pack %q is written for a %s data source, but this project's data source is %s; choose a pack written for %s",
+		pack.Slug, got, want, want)
+}
+
+// rejectUnanchoredProject refuses a datasource set in which nothing can carry
+// the project, writing a 400 and returning false.
+//
+// An EMPTY set passes. A project with no datasources yet is how every project
+// starts, and refusing it here would make the product unusable to say
+// something true; the run paths refuse an empty set on their own terms.
+//
+// What is refused is a set that HAS datasources, none of which is a system of
+// record. Such a project reaches the agent looking perfectly healthy and
+// produces analysis that restates what the source's own reporting already
+// shows — confidently, and with no error anyone would connect to the cause.
+// Refusing at configuration time is the only point where the message can name
+// the fix.
+// rejectPackShapeMismatch is packShapeMismatch over a project's saved pack
+// slug, writing a 400 and returning false on a mismatch.
+//
+// A pack that cannot be loaded is not a refusal. The pack may have been
+// deleted or renamed since the project was created, and blocking an unrelated
+// settings edit on that would be a worse outcome than the mismatch it is
+// guarding against — which the create path already catches for every project
+// that had a datasource to check.
+func (h *ProjectsHandler) rejectPackShapeMismatch(ctx context.Context, w http.ResponseWriter, domain string, wh models.WarehouseConfig) bool {
+	if h.domainPackRepo == nil || domain == "" {
+		return true
+	}
+	pack, err := h.domainPackRepo.GetBySlug(ctx, domain)
+	if err != nil || pack == nil {
+		return true
+	}
+	if msg := packShapeMismatch(pack, wh); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return false
+	}
+	return true
+}
+
+func rejectUnanchoredProject(w http.ResponseWriter, whs []models.WarehouseConfig, at, projectID string) bool {
+	if len(whs) == 0 || models.AnyAnchors(whs) {
+		return true
+	}
+	recordAnchoringRefusal(at, projectID, whs)
+	writeError(w, http.StatusBadRequest,
+		"this project has no data source that can carry an analysis on its own; "+
+			"add one that is a system of record, or turn `anchoring` back on for a source you demoted")
+	return false
+}
+
+// recordAnchoringRefusal makes a refusal visible after the fact.
+//
+// Two sinks because they answer different questions and neither answers both.
+// The counter says how often the rule fires and at which site, which is the
+// only measure of whether a feature whose job is to say no is calibrated —
+// and it carries no identifiers, like every other event. The log line names
+// the project and the providers involved, which is what an operator needs when
+// a customer asks why their setup was refused.
+//
+// A package-level var so a test can substitute it and assert which SITE
+// refused. That is the part worth pinning and the part a type checker cannot
+// help with: every call passes a string, and a copy-pasted one is wrong in a
+// way nothing surfaces — the refusal still works, and the counts quietly
+// attribute it to the wrong place.
+var recordAnchoringRefusal = func(at, projectID string, whs []models.WarehouseConfig) {
+	telemetry.TrackAnchoringRefused(at, strings.Join(anchoringProviders(whs), ","))
+	apilog.WithFields(apilog.Fields{
+		"at":         at,
+		"project_id": projectID,
+		"providers":  anchoringProviders(whs),
+	}).Warn("anchoring refused: no data source can carry this project")
+}
+
+// anchoringProviders lists the provider slugs of the datasources that were
+// refused, skipping blank placeholder rows — a row with no provider is not a
+// datasource anyone chose, and naming it in the count would attribute the
+// refusal to a source that does not exist.
+func anchoringProviders(whs []models.WarehouseConfig) []string {
+	out := make([]string, 0, len(whs))
+	for _, wh := range whs {
+		if wh.Provider != "" {
+			out = append(out, wh.Provider)
+		}
+	}
+	return out
+}
+
+// rejectAnchoringPromotion refuses a request that tries to promote a datasource
+// whose provider declares it cannot anchor, writing a 400 and returning false.
+//
+// The override may only DEMOTE. Storing a promotion instead of refusing it
+// would be the worse failure: EffectiveAnchoring applies the provider as a
+// ceiling and would ignore the stored value, so the setting would read back as
+// applied while changing nothing — and the user would believe their
+// enrichment-only source had been made able to carry the project.
+func rejectAnchoringPromotion(w http.ResponseWriter, whs []models.WarehouseConfig) bool {
+	for _, wh := range whs {
+		if wh.Anchoring == nil || wh.Provider == "" {
+			continue
+		}
+		if !gowarehouse.AnchoringOverrideAllowed(wh.Provider, *wh.Anchoring) {
+			// A promotion is refused for a different reason from an
+			// unanchored set — the operator asked for something the provider
+			// cannot do, rather than arriving at a state nothing can carry —
+			// and it is worth telling apart in the counts.
+			telemetry.TrackAnchoringRefused(telemetry.AnchoringAtPromotion, wh.Provider)
+			writeError(w, http.StatusBadRequest, fmt.Sprintf(
+				"data source %q uses provider %q, which cannot anchor a project; `anchoring` may be turned off for a source but never on",
+				wh.ID, wh.Provider))
+			return false
+		}
+	}
+	return true
 }

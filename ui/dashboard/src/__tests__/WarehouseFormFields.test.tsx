@@ -5,6 +5,7 @@ import '@testing-library/jest-dom';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { useState } from 'react';
+import type { ReactNode } from 'react';
 import {
   WarehouseFormFields,
   WarehouseFormState,
@@ -72,20 +73,58 @@ const mssqlMeta: ProviderMeta = {
   ],
 };
 
+// A provider whose primary method is three-legged: no fields, because the
+// credential is the grant a consent screen produces. It also offers a static
+// method, so the two can be compared in the same form.
+const consentMeta: ProviderMeta = {
+  id: 'consent-source',
+  name: 'Consent Source',
+  description: 'A source authorized by signing in with the provider',
+  config_fields: [
+    { key: 'property_id', label: 'Property ID', required: true, type: 'string', placeholder: '', description: '', default: '', options: [] },
+  ],
+  auth_methods: [
+    {
+      id: 'oauth_user',
+      name: 'Sign in',
+      description: 'Authorize as a user',
+      fields: [],
+      flow: 'authorization_code',
+      authorization: { provider: 'example', auth_url: 'https://accounts.example/auth', token_url: 'https://oauth.example/token', scopes: ['read'] },
+    },
+    {
+      id: 'sa_key',
+      name: 'Key',
+      description: 'A downloaded key',
+      fields: [
+        { key: 'credentials_json', label: 'Credentials JSON', required: true, type: 'credential', placeholder: '', description: '', default: '', options: [] },
+      ],
+    },
+  ],
+};
+
 function ControlledHarness({
   providers,
   initial,
   hasSavedCredential,
+  authorizationSlot,
 }: {
   providers: ProviderMeta[];
   initial: WarehouseFormState;
   hasSavedCredential?: boolean;
+  authorizationSlot?: ReactNode;
 }) {
   const [v, setV] = useState<WarehouseFormState>(initial);
   return (
     <MantineProvider>
       <div data-testid="state-dump">{JSON.stringify(v)}</div>
-      <WarehouseFormFields providers={providers} value={v} onChange={setV} hasSavedCredential={hasSavedCredential} />
+      <WarehouseFormFields
+        providers={providers}
+        value={v}
+        onChange={setV}
+        hasSavedCredential={hasSavedCredential}
+        authorizationSlot={authorizationSlot}
+      />
     </MantineProvider>
   );
 }
@@ -355,5 +394,77 @@ describe('WarehouseFormFields — DynamicField textarea variant', () => {
     const ta = container.querySelector('textarea') as HTMLTextAreaElement;
     fireEvent.change(ta, { target: { value: 'host=db port=5432' } });
     expect(onChange).toHaveBeenCalledWith('host=db port=5432');
+  });
+});
+
+describe('three-legged auth methods', () => {
+  // The credential for a consent-based method does not exist until the user
+  // has signed in with the provider. A form rendered for it would be an empty
+  // box above a Save button, and saving would attach a data source that cannot
+  // authenticate — with nothing left blank to complain about.
+  test('renders an explanation instead of a credential field', () => {
+    render(
+      <ControlledHarness
+        providers={[consentMeta]}
+        initial={{ ...emptyWarehouseFormState(), provider: 'consent-source', authMethod: 'oauth_user' }}
+      />,
+    );
+    expect(screen.queryByLabelText(/Credentials JSON/)).not.toBeInTheDocument();
+    expect(screen.getByText(/no credential to enter/i)).toBeInTheDocument();
+  });
+
+  // The notice is what a caller with nothing better to offer says. One that can
+  // collect the authorization on this form — an enterprise build with
+  // connections — passes its own affordance instead, and must not have both.
+  test('a caller\'s authorization slot replaces the explanation', () => {
+    render(
+      <ControlledHarness
+        providers={[consentMeta]}
+        initial={{ ...emptyWarehouseFormState(), provider: 'consent-source', authMethod: 'oauth_user' }}
+        authorizationSlot={<div>pick a connection</div>}
+      />,
+    );
+    expect(screen.getByText('pick a connection')).toBeInTheDocument();
+    expect(screen.queryByText(/no credential to enter/i)).not.toBeInTheDocument();
+  });
+
+  // The slot belongs to the three-legged branch, not to the form. A provider's
+  // static method still renders its own credential field, and the slot has no
+  // business appearing above it.
+  test('the slot is ignored by a method that has a credential to type', () => {
+    render(
+      <ControlledHarness
+        providers={[consentMeta]}
+        initial={{ ...emptyWarehouseFormState(), provider: 'consent-source', authMethod: 'sa_key' }}
+        authorizationSlot={<div>pick a connection</div>}
+      />,
+    );
+    expect(screen.queryByText('pick a connection')).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/Credentials JSON/)).toBeInTheDocument();
+  });
+
+  // The guard reads the selected method, not the provider. A provider offering
+  // both must still render the form for the one that has fields.
+  test('the provider\'s static method still renders its credential field', () => {
+    render(
+      <ControlledHarness
+        providers={[consentMeta]}
+        initial={{ ...emptyWarehouseFormState(), provider: 'consent-source', authMethod: 'sa_key' }}
+      />,
+    );
+    expect(screen.getByLabelText(/Credentials JSON/)).toBeInTheDocument();
+    expect(screen.queryByText(/no credential to enter/i)).not.toBeInTheDocument();
+  });
+
+  // Config fields belong to the provider, not to the auth method, so the
+  // source stays configurable while its authorization is a separate step.
+  test('provider config fields are unaffected', () => {
+    render(
+      <ControlledHarness
+        providers={[consentMeta]}
+        initial={{ ...emptyWarehouseFormState(), provider: 'consent-source', authMethod: 'oauth_user' }}
+      />,
+    );
+    expect(screen.getByLabelText(/Property ID/)).toBeInTheDocument();
   });
 });

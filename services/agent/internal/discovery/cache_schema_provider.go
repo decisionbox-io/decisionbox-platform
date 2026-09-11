@@ -28,6 +28,8 @@ import (
 	"sort"
 	"strings"
 
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
+
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai/schema_retrieve"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -57,6 +59,23 @@ type CacheSchemaProvider struct {
 	// reads. On a multi-warehouse run this is the merged catalog across
 	// every datasource.
 	schemas map[string]models.TableSchema
+
+	// catalogRefs is the staleness authority for catalog hits, exactly as the
+	// schemas map is for tables — and it is keyed by OWNING DATASOURCE, not
+	// by ref alone.
+	//
+	// The ownership matters on a cross-datasource search. The vector
+	// collection is shared and is not self-cleaning, so points for a removed
+	// datasource survive until something overwrites them; a flat ref set would
+	// then let a stale point through on any ref a live datasource happens to
+	// share — "sessions" is not a distinctive name — and the hit would carry
+	// the removed datasource's id back to the model. Keying by datasource
+	// means a ref is trusted only from the datasource the cache says offers
+	// it.
+	//
+	// Empty means no catalog is known, and catalog hits are dropped rather
+	// than trusted blindly.
+	catalogRefs map[string]map[string]bool
 
 	// tableWarehouse maps a canonical "dataset.table" key to the
 	// datasource (warehouse) id that owns it. Set only on a multi-
@@ -104,6 +123,11 @@ type CacheSchemaProviderOptions struct {
 	WarehouseID string
 	Datasets    []string
 	Schemas     map[string]models.TableSchema
+	// CatalogRefs are the items each catalog source currently offers, keyed by
+	// datasource id. The provider treats them as the staleness authority for
+	// catalog hits, the way Schemas is for tables — and keys by datasource so
+	// a shared ref name cannot let a removed datasource's point through.
+	CatalogRefs map[string][]string
 	// TableWarehouse maps canonical "dataset.table" → owning datasource id.
 	// Set on a multi-warehouse run so Lookup can attribute each table to
 	// its datasource; nil on single-warehouse.
@@ -124,8 +148,15 @@ const (
 // is nil — that's an upstream wiring bug we want to surface immediately
 // rather than have it manifest as "no tables found" at run time.
 func NewCacheSchemaProvider(opts CacheSchemaProviderOptions) (*CacheSchemaProvider, error) {
+	// A catalog source legitimately has no tables, so an empty schemas map
+	// is only a wiring bug when there is no catalog either. Requiring a
+	// non-nil map unconditionally would make such a source unrepresentable
+	// here, which is what kept it from being searchable at all.
+	if opts.Schemas == nil && len(opts.CatalogRefs) == 0 {
+		return nil, fmt.Errorf("cache_schema_provider: Schemas map is required (or CatalogRefs for a catalog source)")
+	}
 	if opts.Schemas == nil {
-		return nil, fmt.Errorf("cache_schema_provider: Schemas map is required")
+		opts.Schemas = map[string]models.TableSchema{}
 	}
 	if opts.Retriever != nil && opts.Embedder == nil {
 		return nil, fmt.Errorf("cache_schema_provider: Embedder is required when Retriever is set")
@@ -136,6 +167,7 @@ func NewCacheSchemaProvider(opts CacheSchemaProviderOptions) (*CacheSchemaProvid
 		warehouseID:    opts.WarehouseID,
 		datasets:       append([]string(nil), opts.Datasets...),
 		schemas:        opts.Schemas,
+		catalogRefs:    refSet(opts.CatalogRefs),
 		tableWarehouse: opts.TableWarehouse,
 		embedder:       opts.Embedder,
 		sampleLimit:    opts.SampleLimit,
@@ -247,11 +279,34 @@ func (p *CacheSchemaProvider) Search(ctx context.Context, query string, k int) (
 		// reports as "not found" leaks scope and confuses the model.
 		// Treating the schemas map as the authority keeps the two
 		// surfaces consistent.
-		if _, ok := p.schemas[h.Blurb.Table]; !ok {
+		// A catalog item is not in the schemas map and never will be — that
+		// map holds tables, and a catalog source has none. Applying the
+		// table filter to it would drop every hit from such a source, which
+		// is indistinguishable from the source having nothing to say and is
+		// exactly how a datasource silently stops being routable.
+		//
+		// The filter still applies in full to tables, so the scope and
+		// governance guarantees it exists for are unchanged.
+		// Each kind is checked against its own authority. Tables against the
+		// cached schemas map — which plugin filters (discovery scope,
+		// governance) further constrain, so surfacing a table absent from it
+		// would leak scope. Catalog items against the cached catalog refs,
+		// which serve the same purpose for a source that has no tables.
+		//
+		// Neither is skipped. Passing catalog hits through unchecked would
+		// return items from a datasource that has since been removed, because
+		// the shared vector collection keeps points until something overwrites
+		// them.
+		if h.Blurb.Kind == gowarehouse.ItemKindTable {
+			if _, ok := p.schemas[h.Blurb.Table]; !ok {
+				continue
+			}
+		} else if !p.catalogOffers(h.Blurb.WarehouseID, h.Blurb.Table) {
 			continue
 		}
 		out = append(out, ai.SearchHit{
 			Table: h.Blurb.Table,
+			Kind:  h.Blurb.Kind,
 			// Datasource is the owning warehouse id from the index payload,
 			// so a cross-warehouse search (WarehouseID=="") tells the model
 			// which datasource_id to target on a follow-up query.
@@ -390,4 +445,35 @@ func buildRefIndex(schemas map[string]models.TableSchema) map[string]string {
 		}
 	}
 	return idx
+}
+
+// refSet turns the per-datasource catalog refs into membership sets, keyed by
+// normalised datasource id. Nil for an empty input, so a source with no
+// catalog has no catalog hits trusted.
+func refSet(byDatasource map[string][]string) map[string]map[string]bool {
+	if len(byDatasource) == 0 {
+		return nil
+	}
+	out := make(map[string]map[string]bool, len(byDatasource))
+	for id, refs := range byDatasource {
+		if len(refs) == 0 {
+			continue
+		}
+		set := make(map[string]bool, len(refs))
+		for _, r := range refs {
+			set[r] = true
+		}
+		out[normDatasourceID(id)] = set
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// catalogOffers reports whether the cache says this datasource currently
+// offers this ref. An unknown datasource offers nothing, which is what makes
+// a point left behind by a removed one untrusted.
+func (p *CacheSchemaProvider) catalogOffers(datasourceID, ref string) bool {
+	return p.catalogRefs[normDatasourceID(datasourceID)][ref]
 }

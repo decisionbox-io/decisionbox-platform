@@ -400,6 +400,30 @@ func TestResolveTurnRouting_ExplicitOverridePins(t *testing.T) {
 	}
 }
 
+// TestResolveTurnRouting_CarriesTheWholeProject pins the wiring the reachable
+// set depends on. Every routing must carry the project's datasources
+// alongside its visible ones, including the explicit-pin case whose visible
+// list is a single datasource — without it a turn describes what it shows
+// rather than what it can reach, and the two differ whenever the router
+// narrows.
+func TestResolveTurnRouting_CarriesTheWholeProject(t *testing.T) {
+	rt := routingRuntime("wh_a", "wh_b")
+
+	for _, explicit := range []string{"", "wh_b"} {
+		r, err := rt.resolveTurnRouting(explicit)
+		if err != nil {
+			t.Fatalf("explicit=%q: %v", explicit, err)
+		}
+		var got []string
+		for _, d := range r.all {
+			got = append(got, d.ID)
+		}
+		if len(got) != 2 || got[0] != "wh_a" || got[1] != "wh_b" {
+			t.Errorf("explicit=%q: routing carries %v, want the whole project [wh_a wh_b]", explicit, got)
+		}
+	}
+}
+
 func TestResolveTurnRouting_ExplicitUnknownErrors(t *testing.T) {
 	rt := routingRuntime("wh_a", "wh_b")
 	if _, err := rt.resolveTurnRouting("nope"); err == nil {

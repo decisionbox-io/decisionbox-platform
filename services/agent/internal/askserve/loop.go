@@ -63,6 +63,12 @@ type turnState struct {
 	routeReason     string
 	routeConfidence float64
 	routeClarify    bool
+	// routeCandidates / routeChosen are the ballot and the verdict: what the
+	// router was offered, and what it picked. Recorded separately from
+	// st.touched (what the turn actually queried) because only the ballot can
+	// tell a datasource that lost from one that was never in the running.
+	routeCandidates []string
+	routeChosen     []string
 	// groundedEvents counts evidence tool events that SUCCEEDED (no error). The
 	// native-tools loop grounds on this, not on len(events): a failed query /
 	// rejected tenant filter / unavailable schema search records an event but
@@ -99,6 +105,12 @@ type turnState struct {
 	// querySummariesByID maps a step id to the query summary the chart validator
 	// grounds against, for O(1) lookup of a chart's referenced source.
 	querySummariesByID map[string]QuerySummary
+	// queryStepsByID maps a step id to where and when that query ran, so a
+	// joins_on declaration can be checked against what the model could
+	// actually have observed. Kept beside the summaries rather than on them
+	// because it is turn bookkeeping, not part of the persisted result — the
+	// tool event already records each query's datasource and round.
+	queryStepsByID map[string]queryStep
 	// chartsEnabled is the per-turn entitlement (caller EnableCharts AND the ops
 	// kill-switch). It gates EXECUTION, not just tool offering: the text-fallback
 	// parser accepts render_chart regardless, and a provider can return an
@@ -200,10 +212,25 @@ const maxGroundingNudges = 2
 // groundingNudge is the correction when the model tries to answer without
 // having run any query — it forbids ungrounded answers and tells it how to
 // start gathering evidence even with no schema catalog in hand.
-const groundingNudge = "Do NOT answer yet — you have run no query, so you have no data to ground an answer in. " +
-	"Run a query_data action first to gather evidence; never state a table, count, total, or value you have not seen in a query result this turn. " +
-	"If you don't know the tables or columns, discover them with a query against INFORMATION_SCHEMA (e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES`) or use search_tables / lookup_schema. " +
-	"Only use clarify or decline if the question genuinely cannot be turned into any query."
+//
+// Its discovery half is branched on shape for a sharper reason than the system
+// prompt's: this message arrives AFTER the model has gone wrong, as the most
+// recent thing in the conversation, and on the tool path it arrives as an
+// error attached to the call it is correcting. Sending a cube turn back to
+// INFORMATION_SCHEMA from there outranks everything the system prompt said.
+func groundingNudge(shapes sourceShapes) string {
+	discover := "If you don't know the tables or columns, discover them with a query against INFORMATION_SCHEMA (e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES`) or use search_tables / lookup_schema. "
+	switch {
+	case shapes.allCube:
+		discover = "If you don't know what a datasource offers, discover it with search_tables — it lists the metrics and dimensions each one has. "
+	case shapes.anyCube:
+		discover = "If you don't know what a datasource offers, use search_tables; a query against INFORMATION_SCHEMA (e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES`) and lookup_schema apply only to a SQL datasource. "
+	}
+	return "Do NOT answer yet — you have run no query, so you have no data to ground an answer in. " +
+		"Run a query_data action first to gather evidence; never state a table, count, total, or value you have not seen in a query result this turn. " +
+		discover +
+		"Only use clarify or decline if the question genuinely cannot be turned into any query."
+}
 
 // turnRouting is the per-turn datasource plan: which datasources the model may
 // target and whether the turn is pinned to exactly one. Computed once at turn
@@ -223,6 +250,12 @@ type turnRouting struct {
 	// one visible, not pinned). When false the turn behaves exactly like the
 	// single-warehouse path — same prompt, same tools, same telemetry.
 	multi bool
+	// all is every datasource in the project. It is kept alongside the visible
+	// set because the two can differ: the router narrows `datasources` to what
+	// it chose, while resolveQueryDatasource validates a model-chosen
+	// datasource_id against the whole project on purpose. What the turn can
+	// REACH is this list; what it SHOWS is `datasources`.
+	all []DatasourceInfo
 	// routed reports that the evidence-grounded router made a real (non-clarify)
 	// decision for this turn. It stays true even when the router confidently
 	// pinned a single datasource (multi=false), so that datasource is still
@@ -249,13 +282,13 @@ func (rt *ProjectRuntime) resolveTurnRouting(explicit string) (turnRouting, erro
 		if !ok {
 			return turnRouting{}, fmt.Errorf("unknown datasource %q", explicit)
 		}
-		return turnRouting{datasources: []DatasourceInfo{d}, pinned: explicit, primary: explicit}, nil
+		return turnRouting{datasources: []DatasourceInfo{d}, all: rt.Datasources, pinned: explicit, primary: explicit}, nil
 	}
 	if len(rt.Datasources) == 1 {
 		only := rt.Datasources[0].ID
-		return turnRouting{datasources: rt.Datasources, pinned: only, primary: only}, nil
+		return turnRouting{datasources: rt.Datasources, all: rt.Datasources, pinned: only, primary: only}, nil
 	}
-	return turnRouting{datasources: rt.Datasources, primary: primary, multi: true}, nil
+	return turnRouting{datasources: rt.Datasources, all: rt.Datasources, primary: primary, multi: true}, nil
 }
 
 // trackDatasource records a queried datasource for routing telemetry (deduped,
@@ -472,7 +505,7 @@ func (r *runner) runText(ctx context.Context, rt *ProjectRuntime, st *turnState)
 			if act.Kind == actAnswer && st.groundedEvents == 0 {
 				if st.groundingNudges < maxGroundingNudges {
 					st.groundingNudges++
-					conv.AddUserMessage(groundingNudge)
+					conv.AddUserMessage(groundingNudge(st.routing.shapes()))
 					continue
 				}
 				r.finishUngrounded(ctx, st)
@@ -595,7 +628,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 		}
 
 		grounded := st.canAnswer()
-		resp, err := st.callModelTools(ctx, messages, system, toolsForPhase(grounded, hasSchema, hasInsights, hasKnowledge, st.routing.multi, st.chartsEnabled, st.queriesChartable > 0, mutations), toolChoiceForPhase(grounded))
+		resp, err := st.callModelTools(ctx, messages, system, toolsForPhase(grounded, hasSchema, hasInsights, hasKnowledge, st.routing.multi, st.routing.shapes(), st.chartsEnabled, st.queriesChartable > 0, mutations), toolChoiceForPhase(grounded))
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				r.finishTimeout(ctx, st)
@@ -640,7 +673,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 				r.runText(ctx, rt, st)
 				return
 			}
-			messages = append(messages, gollm.Message{Role: "user", Content: groundingNudge})
+			messages = append(messages, gollm.Message{Role: "user", Content: groundingNudge(st.routing.shapes())})
 			continue
 		}
 
@@ -658,7 +691,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 				continue
 			}
 			if act.Kind == actAnswer && !st.canAnswer() {
-				messages = append(messages, gollm.Message{Role: "user", ToolResults: []gollm.ToolResult{{CallID: tc.ID, Content: groundingNudge, IsError: true}}})
+				messages = append(messages, gollm.Message{Role: "user", ToolResults: []gollm.ToolResult{{CallID: tc.ID, Content: groundingNudge(st.routing.shapes()), IsError: true}}})
 				continue
 			}
 			// A requested-but-uncompleted write must not be silently dropped by ANY
@@ -851,12 +884,30 @@ func (r *runner) execQuery(ctx context.Context, rt *ProjectRuntime, st *turnStat
 		Name:  string(actQuery),
 		Args:  map[string]any{"sql": act.Query, "purpose": act.Purpose, "datasource_id": dsID},
 	}
+	if act.JoinsOn != nil {
+		// Persisted whether or not it holds up: what the model claimed is the
+		// measurement, and a rejected claim is as much a data point as a
+		// confirmed one.
+		ev.Args["joins_on"] = map[string]any{"source_step": act.JoinsOn.SourceStep, "field": act.JoinsOn.Field}
+	}
 	if derr != nil {
 		// Record what the model asked for so the transcript shows the bad id.
 		ev.Args["datasource_id"] = strings.TrimSpace(act.Datasource)
 		ev.Error = derr.Error()
 		r.emit(ctx, st, ev)
 		return fmt.Sprintf("Query rejected: %s. Target a valid datasource_id from the DATASOURCES list.", derr.Error())
+	}
+
+	// Where this query stands relative to the datasources already queried this
+	// turn. Resolved BEFORE the query runs so a declaration that contradicts
+	// the turn costs no warehouse work, and so the result can never be
+	// summarised without the scope verdict that belongs to it.
+	js := st.resolveJoinScope(ctx, dsID, act.JoinsOn)
+	js.track(act.JoinsOn != nil)
+	if js.reject != "" {
+		ev.Error = js.reject
+		r.emit(ctx, st, ev)
+		return "Query rejected: " + js.reject
 	}
 
 	// NB: we deliberately do NOT call the executor's SetStep here. The runtime
@@ -917,13 +968,19 @@ func (r *runner) execQuery(ctx context.Context, rt *ProjectRuntime, st *turnStat
 	// preview, so a truncated result — whose preview omits rows — cannot ground).
 	st.queryStepSeq++
 	sum.Step = fmt.Sprintf("q%d", st.queryStepSeq)
+	sum.Scoped = js.scoped
+	sum.ScopeNote = js.note
 	ev.Args["step"] = sum.Step
 	ev.Output = sum
 	if st.querySummariesByID == nil {
 		st.querySummariesByID = make(map[string]QuerySummary)
 	}
 	st.querySummariesByID[sum.Step] = sum
-	if !sum.Truncated {
+	if st.queryStepsByID == nil {
+		st.queryStepsByID = make(map[string]queryStep)
+	}
+	st.queryStepsByID[sum.Step] = queryStep{datasource: dsID, columns: sum.Columns, round: st.round}
+	if sum.chartable() {
 		st.queriesChartable++
 	}
 	r.emit(ctx, st, ev)
@@ -969,6 +1026,19 @@ func (r *runner) execRenderChart(ctx context.Context, st *turnState, act *turnAc
 		return fmt.Sprintf("Chart rejected: no query step %q in this turn. Set source_step_id to the q<N> id of a query you ran (shown in its result), then try again.", spec.SourceStepID)
 	}
 
+	// Refused here rather than in the chart validator: that validator's subject
+	// is whether the spec is an exact projection of what was observed, which
+	// this spec may well be. The problem is what was observed — and the chart
+	// package has no business knowing what a warehouse quality caveat is.
+	if len(src.Quality) > 0 {
+		ev.Args = map[string]any{"source_step_id": spec.SourceStepID, "type": string(spec.Type)}
+		ev.Error = "source reported the result is degraded: " + qualityReasons(src.Quality)
+		r.emit(ctx, st, ev)
+		return fmt.Sprintf("Chart rejected: the source reported that step %q is not a faithful answer (%s). "+
+			"A chart would present the rows that came back as the whole picture. State the caveat in prose instead, "+
+			"or query something the source can answer completely.", src.Step, qualityReasons(src.Quality))
+	}
+
 	gsrc := charts.GroundingSource{StepID: src.Step, Columns: src.Columns, Preview: src.Preview, Truncated: src.Truncated}
 	if err := charts.ValidateGrounded(spec, gsrc, r.cfg.ChartCaps); err != nil {
 		ev.Args = map[string]any{"source_step_id": spec.SourceStepID, "type": string(spec.Type)}
@@ -990,6 +1060,16 @@ func (r *runner) execRenderChart(ctx context.Context, st *turnState, act *turnAc
 	st.chartsRendered++
 	r.emit(ctx, st, ev)
 	return fmt.Sprintf("Chart accepted (%s from %s). Render another chart if useful, then answer.", spec.Type, spec.SourceStepID)
+}
+
+// qualityReasons lists a result's caveats on one line, for an error the model
+// reads and a record a human reads afterwards.
+func qualityReasons(caveats []gowarehouse.QualityCaveat) string {
+	out := make([]string, 0, len(caveats))
+	for _, c := range caveats {
+		out = append(out, c.String())
+	}
+	return strings.Join(out, "; ")
 }
 
 // resolveQueryDatasource picks the datasource a query_data statement runs
@@ -1299,6 +1379,8 @@ func (r *runner) finalize(ctx context.Context, st *turnState, fin TurnFinal) {
 	fin.RoutingReason = st.routeReason
 	fin.RoutingConfidence = st.routeConfidence
 	fin.RoutingClarify = st.routeClarify
+	fin.RoutingCandidateIDs = st.routeCandidates
+	fin.RoutingChosenIDs = st.routeChosen
 
 	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
@@ -1436,19 +1518,28 @@ func formatSearch(query string, hits []TaggedHit, multi bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Search results for %q:\n", query)
 	if len(hits) == 0 {
-		b.WriteString("(no matching tables)")
+		b.WriteString("(no matches)")
 	}
 	for i, h := range hits {
+		// A hit that is not a table must not read as one. Rendered bare, a
+		// metric looks exactly like a table name, and the model reaches for
+		// lookup_schema or writes a FROM clause against it — so surfacing
+		// these without saying what they are would be worse than leaving them
+		// out, which is what happened before they were indexed at all.
+		ref := h.Table
+		if h.Kind != "" {
+			ref = fmt.Sprintf("%s [%s]", h.Table, h.Kind)
+		}
 		if multi {
 			// Lead with the datasource id so the model knows which datasource_id
-			// to pass to query_data / lookup_schema for this table.
+			// to pass to query_data / lookup_schema for this hit.
 			tag := h.DatasourceID
 			if h.DatasourceLabel != "" {
 				tag = fmt.Sprintf("%s (%s)", h.DatasourceID, h.DatasourceLabel)
 			}
-			fmt.Fprintf(&b, "%d. [datasource: %s] %s — %s\n", i+1, tag, h.Table, h.Blurb)
+			fmt.Fprintf(&b, "%d. [datasource: %s] %s — %s\n", i+1, tag, ref, h.Blurb)
 		} else {
-			fmt.Fprintf(&b, "%d. %s — %s\n", i+1, h.Table, h.Blurb)
+			fmt.Fprintf(&b, "%d. %s — %s\n", i+1, ref, h.Blurb)
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -1478,13 +1569,19 @@ func lookupSummary(res ai.LookupResult) map[string]any {
 func searchSummary(hits []TaggedHit) []map[string]any {
 	out := make([]map[string]any, 0, len(hits))
 	for _, h := range hits {
-		out = append(out, map[string]any{
+		rec := map[string]any{
 			"table":         h.Table,
 			"blurb":         h.Blurb,
 			"row_count":     h.RowCount,
 			"score":         h.Score,
 			"datasource_id": h.DatasourceID,
-		})
+		}
+		// Recorded only when the hit is not a table, so a stored transcript
+		// from a table-only turn is byte-identical to before.
+		if h.Kind != "" {
+			rec["kind"] = h.Kind
+		}
+		out = append(out, rec)
 	}
 	return out
 }

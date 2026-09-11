@@ -475,3 +475,66 @@ func TestTrackHelpers(t *testing.T) {
 		t.Errorf("expected 5 events from helpers, got %d", count)
 	}
 }
+
+// The one feature in the product whose job is to say no. How often it says no,
+// and at which site, IS the measure of whether it is calibrated — so the event
+// has to carry the site, and it has to carry no identifiers, like every other
+// event here.
+func TestTrackAnchoringRefused(t *testing.T) {
+	resetGlobal()
+	defer resetGlobal()
+
+	t.Setenv("TELEMETRY_ENABLED", "true")
+	os.Unsetenv("DO_NOT_TRACK")
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+	t.Setenv("TELEMETRY_ENDPOINT", ts.URL)
+	Init("test-id", "0.1.0", "test")
+
+	TrackAnchoringRefused(AnchoringAtDiscoveryRun, "ga4")
+
+	globalClient.mu.Lock()
+	defer globalClient.mu.Unlock()
+	if len(globalClient.events) != 1 {
+		t.Fatalf("events = %d, want 1", len(globalClient.events))
+	}
+	ev := globalClient.events[0]
+	if ev.Name != EventAnchoringRefused {
+		t.Errorf("name = %q, want %q", ev.Name, EventAnchoringRefused)
+	}
+	if ev.Properties["at"] != AnchoringAtDiscoveryRun {
+		t.Errorf("at = %v, want %q", ev.Properties["at"], AnchoringAtDiscoveryRun)
+	}
+	if ev.Properties["provider"] != "ga4" {
+		t.Errorf("provider = %v, want ga4", ev.Properties["provider"])
+	}
+	// No identifiers. A refusal count that carried a project id would make an
+	// aggregate sink hold something it has no business holding.
+	for _, forbidden := range []string{"project_id", "id", "user", "email"} {
+		if _, present := ev.Properties[forbidden]; present {
+			t.Errorf("event carries %q", forbidden)
+		}
+	}
+}
+
+// The sites have to be distinct, because the whole point of the property is to
+// tell them apart: refusing a project at creation is the rule working, while
+// refusing a discovery run means a project reached a state no configuration
+// route should have allowed.
+func TestAnchoringSites_AreDistinct(t *testing.T) {
+	seen := map[string]bool{}
+	for _, at := range []string{
+		AnchoringAtProjectCreate, AnchoringAtSettingsEdit, AnchoringAtDiscoveryRun,
+		AnchoringAtDatasourceEdit, AnchoringAtPromotion, AnchoringAtPrimary,
+	} {
+		if at == "" {
+			t.Error("an empty site label would make a refusal unattributable")
+		}
+		if seen[at] {
+			t.Errorf("duplicate site label %q", at)
+		}
+		seen[at] = true
+	}
+}

@@ -1,6 +1,7 @@
 'use client';
 
-import { Group, Select, Stack, Text, TextInput, Textarea } from '@mantine/core';
+import type { ReactNode } from 'react';
+import { Alert, Group, Select, Stack, Text, TextInput, Textarea } from '@mantine/core';
 import { ConfigField, ProviderMeta } from '@/lib/api';
 
 export interface WarehouseFormState {
@@ -61,6 +62,11 @@ interface Props {
    *  Used by the settings/wizard variants where a credential may already
    *  be persisted. */
   hasSavedCredential?: boolean;
+  /** Rendered in place of the three-legged notice below, for a caller that
+   *  can offer the authorization here rather than after the save. The notice
+   *  is the honest answer only where nothing else is on offer, so a caller
+   *  that has something better passes it and this one steps aside. */
+  authorizationSlot?: ReactNode;
 }
 
 // WarehouseFormFields renders the warehouse provider selector and all
@@ -69,13 +75,20 @@ interface Props {
 // to `onChange` events. Used by:
 //   - projects/new/page.tsx       (Step 2 of the new-project wizard)
 //   - WarehouseConfigPanel.tsx    (settings tab + plugin-overlaid wizards)
-export function WarehouseFormFields({ providers, value, onChange, hasSavedCredential }: Props) {
+export function WarehouseFormFields({ providers, value, onChange, hasSavedCredential, authorizationSlot }: Props) {
   const selected = providers.find((p) => p.id === value.provider);
   const authMethods = selected?.auth_methods || [];
   const selectedAuth = authMethods.find((m) => m.id === value.authMethod);
   const authFields = selectedAuth?.fields || [];
   const authCredField = authFields.find((f) => f.type === 'credential');
   const authConfigFields = authFields.filter((f) => f.type !== 'credential');
+  // A three-legged method has no fields, because its credential is the grant a
+  // consent screen produces rather than anything a person can type. Rendering
+  // the form for it would show an empty box and a Save button, and saving
+  // would attach a data source that cannot authenticate — with no error, since
+  // nothing was left blank. Say so instead, or let the caller put its own
+  // authorization affordance there via authorizationSlot.
+  const isAuthorizationCode = selectedAuth?.flow === 'authorization_code';
 
   const setProvider = (id: string) => {
     const prov = providers.find((p) => p.id === id);
@@ -127,7 +140,16 @@ export function WarehouseFormFields({ providers, value, onChange, hasSavedCreden
 
       {selectedAuth?.description && <Text size="xs" c="dimmed">{selectedAuth.description}</Text>}
 
-      {authConfigFields.map((field) => (
+      {isAuthorizationCode && (authorizationSlot ?? (
+        <Alert color="blue" variant="light">
+          <Text size="sm">
+            This method has no credential to enter: you authorize {selected?.name || 'the provider'} by
+            signing in with it, which is done from the data source itself once it has been saved.
+          </Text>
+        </Alert>
+      ))}
+
+      {!isAuthorizationCode && authConfigFields.map((field) => (
         <DynamicField
           key={field.key}
           field={field}
@@ -136,7 +158,7 @@ export function WarehouseFormFields({ providers, value, onChange, hasSavedCreden
         />
       ))}
 
-      {authCredField && (
+      {!isAuthorizationCode && authCredField && (
         <Textarea
           label={hasSavedCredential ? `Update ${authCredField.label}` : authCredField.label}
           required={authCredField.required && !hasSavedCredential}

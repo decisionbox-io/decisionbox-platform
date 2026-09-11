@@ -1,6 +1,9 @@
 package warehouse
 
-import "encoding/hex"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+)
 
 // LegacyCredentialsKey is the secret key under which every project's
 // warehouse credentials were stored before multi-warehouse. It remains
@@ -36,4 +39,59 @@ func CredentialsKey(warehouseID string) string {
 		return LegacyCredentialsKey
 	}
 	return LegacyCredentialsKey + "-" + hex.EncodeToString([]byte(warehouseID))
+}
+
+// CredentialRefKey is the datasource-config key naming the shared credential a
+// datasource reads.
+//
+// It exists because a credential can be shared. A grant obtained once and used
+// by several datasources cannot live under a key derived from any one of them,
+// and derivation is exactly what CredentialsKey does. When this is set the agent
+// reads the shared slot it names; when it is not — which is every datasource
+// that does not share one — nothing about the read changes.
+//
+// Its value is an opaque id, NOT a secret key. See SharedCredentialKey for why
+// that distinction is the whole of the access control here.
+const CredentialRefKey = "credential_ref" //nolint:gosec // G101: the name of a config field, not a credential
+
+// sharedCredentialPrefix namespaces credentials that several datasources read.
+// Nothing else in a project's secrets lives under it.
+const sharedCredentialPrefix = "warehouse-shared-credential"
+
+// SharedCredentialKey returns the secret key holding a credential obtained FOR
+// one consumer, named by an opaque id. Reports false when either half is empty.
+//
+// # Why the consumer is part of the key
+//
+// A datasource's config is writable by anyone who can edit the project, and a
+// reference in it is just a string. Without the consumer, a member could point
+// ANY datasource at a credential obtained for another — and some providers make
+// that an exfiltration rather than a failure. The Postgres provider reads
+// credentials_json as the password and host from config, so a datasource naming
+// an analytics connection's slot and an attacker's host would send that
+// connection's Google refresh token straight to it.
+//
+// Composing the consumer in means a datasource can only ever address a
+// credential obtained for its own provider. Several datasources of that provider
+// still share one, which is the point; nothing else can reach it. Found in
+// review — the earlier version namespaced the key away from other FEATURES'
+// secrets and stopped there, which left this open.
+//
+// # Why it is hashed
+//
+// The parts are joined with a separator that cannot appear in a secret name, so
+// a readable key would have to encode them, and the composed Azure Key Vault
+// name — "<namespace>-<projectID>-<key>", capped at 127 characters — has no room
+// for that. A hash is fixed-width and unambiguous: the domain separator means no
+// pair of (consumer, id) values can be rearranged into another pair's key, which
+// a hyphen-joined key could be when one provider slug is a prefix of another.
+//
+// The cost is that a secret's name no longer says which connection it belongs
+// to. That is worth one exfiltration path.
+func SharedCredentialKey(consumer, id string) (string, bool) {
+	if consumer == "" || id == "" {
+		return "", false
+	}
+	sum := sha256.Sum256([]byte(consumer + "\x00" + id))
+	return sharedCredentialPrefix + "-" + hex.EncodeToString(sum[:16]), true
 }

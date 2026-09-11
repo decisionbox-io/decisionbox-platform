@@ -105,7 +105,7 @@ func (f *fakeStepEmbedder) Embed(ctx context.Context, texts []string) ([][]float
 	}
 	return out, nil
 }
-func (f *fakeStepEmbedder) Dimensions() int  { return f.dims }
+func (f *fakeStepEmbedder) Dimensions() int   { return f.dims }
 func (f *fakeStepEmbedder) ModelName() string { return f.model }
 
 func newFakes(t *testing.T) (*fakeRunStepClient, *fakeStepEmbedder, RunStepIndex) {
@@ -389,8 +389,8 @@ func TestRunStepIndex_Drop_PropagatesError(t *testing.T) {
 func TestSweepOrphanRunStepIndexes_DropsOrphans(t *testing.T) {
 	c := &fakeRunStepClient{
 		listResp: []string{
-			"decisionbox_schema_p1",                 // not a run collection — leave alone
-			RunStepIndexCollectionName("RUN_LIVE"),  // keep
+			"decisionbox_schema_p1",                  // not a run collection — leave alone
+			RunStepIndexCollectionName("RUN_LIVE"),   // keep
 			RunStepIndexCollectionName("RUN_ORPHAN"), // drop
 			RunStepIndexCollectionName("RUN_OLD"),    // drop
 		},

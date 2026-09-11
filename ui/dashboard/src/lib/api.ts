@@ -663,6 +663,18 @@ export interface ProviderMeta {
   description: string;
   /** Short SQL dialect label (warehouse providers only), e.g. "BigQuery Standard SQL", "T-SQL". */
   dialect?: string;
+  /**
+   * How a warehouse provider organises what can be queried: "entities" for
+   * tables of rows, "cube" for metrics broken down by dimensions. Absent
+   * means "entities" — what every provider was before the capability
+   * descriptor existed, so a provider that does not declare one keeps
+   * working unchanged.
+   *
+   * Read it rather than inferring the same fact from the config fields: a
+   * source with no tables has no dataset to name, but "declares no dataset
+   * field" is a proxy that is true today and need not stay true.
+   */
+  shape?: string;
   config_fields: ConfigField[];
   auth_methods?: AuthMethod[];
   models?: ModelInfo[];
@@ -712,6 +724,41 @@ export interface AuthMethod {
   name: string;
   description: string;
   fields: ConfigField[];
+  /**
+   * How the credential is obtained. Absent means the fields above are a form
+   * and what the operator types into it is the credential — the only shape
+   * that existed before this field, and still the default.
+   *
+   * "authorization_code" is three-legged OAuth: there is no form, because the
+   * credential is the durable grant a consent screen produces. A form
+   * rendered from `fields` would show nothing and offer no way to connect, so
+   * a caller must branch on this rather than on `fields` being empty.
+   */
+  flow?: string;
+  /** Consent and token endpoints, present when flow is "authorization_code". */
+  authorization?: AuthorizationCode;
+}
+
+export interface AuthorizationCode {
+  /**
+   * Whose OAuth app registration this method authenticates with — "google",
+   * say. Declared rather than derived from the provider slug because one
+   * registration serves several consumers: a customer who has registered a
+   * Google client for one feature is not asked to register another.
+   */
+  provider: string;
+  auth_url: string;
+  token_url: string;
+  /** Where a grant is ended (RFC 7009). Absent when the provider publishes none. */
+  revoke_url?: string;
+  /** Scopes the consent must grant; a partial grant is refused at exchange. */
+  scopes: string[];
+  /**
+   * Scopes asked for so the connection can be labelled with the account behind
+   * it. Requested alongside `scopes` but never required: withholding one costs
+   * a display name, not a capability.
+   */
+  identity_scopes?: string[];
 }
 
 export interface ConfigField {
@@ -880,6 +927,12 @@ export interface LedgerCoverage {
   explored_tables: string[];
   area_depth?: Record<string, number>;
   total_tables: number;
+  // Cube-shaped datasources have no tables, so they contribute nothing to the
+  // counts above. Their coverage is a record of which metrics and dimensions
+  // have been queried — deliberately not a fraction, since a cube's slices are
+  // combinatorial and never "done".
+  explored_catalog_items?: string[];
+  total_catalog_items?: number;
   summary: string;
 }
 

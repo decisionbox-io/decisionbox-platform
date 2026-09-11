@@ -99,10 +99,14 @@ func (s *StatusReporter) AddStep(ctx context.Context, step models.RunStep) {
 //     counter.
 //   - "search_tables"     — on-demand semantic table search; increments
 //     schema_search_calls.
-//   - "complete_rejected" — early-done signal rejected by MinSteps;
-//     written with Type="complete_rejected", no
-//     counter bumps, kept in the log so the UI
-//     shows that the model tried to stop.
+//   - "complete_rejected" — early-done signal refused, by the MinSteps
+//     floor or by the no-new-signal rule a
+//     cube-reaching run uses instead; written with
+//     Type="complete_rejected", no counter bumps,
+//     kept in the log so the UI shows that the
+//     model tried to stop. The engine's reason is
+//     rendered as the message, so the log names
+//     the rule that actually refused.
 //
 // Any unrecognised action falls through to the "query" rendering for
 // safety, but no counter is bumped.
@@ -119,7 +123,7 @@ func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, ac
 		return
 	}
 
-	stepType, msg := classifyExplorationStep(action, stepNum, thinking)
+	stepType, msg := classifyExplorationStep(action, stepNum, thinking, errStr)
 
 	resultSummary := ""
 	if rowCount > 0 {
@@ -175,7 +179,12 @@ func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, ac
 // exploration step based on the engine action. Pulled out so the
 // AddExplorationStep body stays linear and so unit tests can pin the
 // classification without spinning up MongoDB.
-func classifyExplorationStep(action string, stepNum int, thinking string) (string, string) {
+// reason, when non-empty, is the engine's own account of why the step reads
+// the way it does. A rejected completion carries one, and it is the only thing
+// that says WHICH rule refused: a run that can query a cube ignores the
+// min-steps floor entirely, so naming the floor there sends an operator to a
+// setting that had no part in it.
+func classifyExplorationStep(action string, stepNum int, thinking, reason string) (string, string) {
 	t := thinking
 	if len(t) > 200 {
 		t = t[:200] + "..."
@@ -187,6 +196,9 @@ func classifyExplorationStep(action string, stepNum int, thinking string) (strin
 
 	switch action {
 	case "complete_rejected":
+		if reason != "" {
+			return "complete_rejected", fmt.Sprintf("Step %d: %s", stepNum, reason)
+		}
 		return "complete_rejected", fmt.Sprintf("Step %d: rejected premature completion (min-steps floor)", stepNum)
 	case "lookup_schema":
 		return "lookup_schema", fmt.Sprintf("Step %d (lookup_schema)%s", stepNum, suffix)

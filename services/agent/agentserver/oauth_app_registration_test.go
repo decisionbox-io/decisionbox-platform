@@ -1,0 +1,331 @@
+package agentserver
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"sync/atomic"
+	"testing"
+
+	"github.com/decisionbox-io/decisionbox/libs/go-common/oauthreg"
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
+)
+
+// authFlowSlugSeq makes every registered stub distinct for the life of the
+// process.
+var authFlowSlugSeq atomic.Int64
+
+// registerAuthFlowProvider publishes a provider whose only purpose is to
+// declare an auth method of the given flow, and returns its slug. The factory
+// is never called — applyOAuthAppRegistration reads metadata and nothing else.
+//
+// The slug is unique per registration because the registry is process-global
+// and panics on a duplicate: anything reused — including the test's own name,
+// which repeats under `go test -count=2` — turns a rerun into a panic with
+// nothing wrong in the code under test.
+func registerAuthFlowProvider(t *testing.T, methods ...gowarehouse.AuthMethod) string {
+	t.Helper()
+	slug := fmt.Sprintf("test-authflow-%d-%s", authFlowSlugSeq.Add(1), strings.ToLower(t.Name()))
+	gowarehouse.RegisterWithMeta(slug,
+		func(gowarehouse.ProviderConfig) (gowarehouse.Provider, error) {
+			t.Fatal("the provider factory should not run here")
+			return nil, nil
+		},
+		gowarehouse.ProviderMeta{Name: slug, AuthMethods: methods},
+	)
+	return slug
+}
+
+// oauthProvider is the OAuth provider the stub methods authenticate against.
+// The registration is keyed by this, not by the datasource slug — which is the
+// whole point of the scheme, and what lets two datasource providers share one
+// registered client.
+const oauthProvider = "example-idp"
+
+func threeLegged(id string) gowarehouse.AuthMethod {
+	return threeLeggedFor(id, oauthProvider)
+}
+
+func threeLeggedFor(id, provider string) gowarehouse.AuthMethod {
+	return gowarehouse.AuthMethod{
+		ID: id, Flow: gowarehouse.FlowAuthorizationCode,
+		Authorization: &gowarehouse.AuthorizationCode{
+			Provider: provider,
+			AuthURL:  "https://accounts.example/auth", TokenURL: "https://oauth.example/token",
+			Scopes: []string{"example.readonly"},
+		},
+	}
+}
+
+func appSecrets(t *testing.T, provider string, fields map[string]string) *fakeSecretProvider {
+	t.Helper()
+	sp := &fakeSecretProvider{store: map[string]string{}}
+	for f, v := range fields {
+		sp.store["/"+oauthreg.Key(provider, f)] = v
+	}
+	return sp
+}
+
+// The refresh token stored as the datasource's credential cannot mint an
+// access token without the client that issued it, and that client is
+// registered per deployment rather than per datasource — so it has to be
+// added here or the provider has half a credential.
+func TestApplyOAuthAppRegistration_AddsTheDeploymentsClient(t *testing.T) {
+	slug := registerAuthFlowProvider(t, threeLegged("oauth_user"))
+	sp := appSecrets(t, oauthProvider, map[string]string{
+		oauthreg.FieldClientID:     "cid",
+		oauthreg.FieldClientSecret: "sec",
+		oauthreg.FieldRedirectURI:  "https://dash.example",
+	})
+
+	cfg := gowarehouse.ProviderConfig{"auth_method": "oauth_user"}
+	if err := applyOAuthAppRegistration(context.Background(), sp, slug, cfg); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	want := map[string]string{
+		oauthreg.ConfigKey(oauthreg.FieldClientID):     "cid",
+		oauthreg.ConfigKey(oauthreg.FieldClientSecret): "sec",
+		oauthreg.ConfigKey(oauthreg.FieldRedirectURI):  "https://dash.example",
+	}
+	for k, v := range want {
+		if cfg[k] != v {
+			t.Errorf("cfg[%q] = %q, want %q", k, cfg[k], v)
+		}
+	}
+}
+
+// Every other datasource in a deployment authenticates with a key or a
+// password. Reading an OAuth registration for those would be a secret lookup
+// per provider construction that can only ever come back empty.
+func TestApplyOAuthAppRegistration_LeavesAStaticMethodAlone(t *testing.T) {
+	slug := registerAuthFlowProvider(t, gowarehouse.AuthMethod{ID: "sa_key"})
+	sp := appSecrets(t, oauthProvider, map[string]string{oauthreg.FieldClientID: "cid"})
+
+	cfg := gowarehouse.ProviderConfig{"auth_method": "sa_key"}
+	if err := applyOAuthAppRegistration(context.Background(), sp, slug, cfg); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if len(cfg) != 1 {
+		t.Errorf("a static method's config was added to: %v", cfg)
+	}
+}
+
+// A provider offering both methods must be read from what the datasource
+// selected, not from what the provider is capable of. Answering from the
+// provider would inject an OAuth client into a key-authenticated datasource
+// and, worse, skip it for an OAuth one on a provider whose first method is a
+// key.
+func TestApplyOAuthAppRegistration_ReadsTheSelectedMethodNotTheProvider(t *testing.T) {
+	slug := registerAuthFlowProvider(t, gowarehouse.AuthMethod{ID: "sa_key"}, threeLegged("oauth_user"))
+	fields := map[string]string{oauthreg.FieldClientID: "cid"}
+	clientIDKey := oauthreg.ConfigKey(oauthreg.FieldClientID)
+
+	onKey := gowarehouse.ProviderConfig{"auth_method": "sa_key"}
+	if err := applyOAuthAppRegistration(context.Background(), appSecrets(t, oauthProvider, fields), slug, onKey); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if _, added := onKey[clientIDKey]; added {
+		t.Error("a key-authenticated datasource on a provider that also offers OAuth got an OAuth client")
+	}
+
+	onOAuth := gowarehouse.ProviderConfig{"auth_method": "oauth_user"}
+	if err := applyOAuthAppRegistration(context.Background(), appSecrets(t, oauthProvider, fields), slug, onOAuth); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if onOAuth[clientIDKey] != "cid" {
+		t.Error("an OAuth datasource on a provider whose first method is a key got no OAuth client")
+	}
+}
+
+// An unset field means the operator has not registered the app. The provider
+// says so in its own words, naming what it needs; a secret-store detail
+// surfaced here would not.
+func TestApplyOAuthAppRegistration_AnUnregisteredAppIsNotAnError(t *testing.T) {
+	slug := registerAuthFlowProvider(t, threeLegged("oauth_user"))
+
+	cfg := gowarehouse.ProviderConfig{"auth_method": "oauth_user"}
+	if err := applyOAuthAppRegistration(context.Background(), appSecrets(t, oauthProvider, nil), slug, cfg); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if len(cfg) != 1 {
+		t.Errorf("nothing was registered, yet config gained entries: %v", cfg)
+	}
+}
+
+// A secret store that cannot be read has not said the field is empty. Treating
+// the two alike would report a configured deployment as unconfigured and send
+// an operator to re-enter credentials that are already stored.
+func TestApplyOAuthAppRegistration_AnUnreadableStoreIsAnError(t *testing.T) {
+	slug := registerAuthFlowProvider(t, threeLegged("oauth_user"))
+	sp := &fakeSecretProvider{getErr: errors.New("secret store unavailable")}
+
+	err := applyOAuthAppRegistration(context.Background(), sp, slug, gowarehouse.ProviderConfig{"auth_method": "oauth_user"})
+	if err == nil {
+		t.Fatal("an unreadable secret store was reported as an unregistered app")
+	}
+}
+
+// An unregistered slug is reported by NewProvider, which has the name and the
+// list of what is registered. Failing earlier here would replace that with a
+// worse message.
+func TestApplyOAuthAppRegistration_AnUnknownProviderIsLeftToNewProvider(t *testing.T) {
+	cfg := gowarehouse.ProviderConfig{"auth_method": "oauth_user"}
+	if err := applyOAuthAppRegistration(context.Background(), &fakeSecretProvider{}, "nope-not-registered", cfg); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+}
+
+// The oauth_app_* namespace belongs to the deployment. A project document that
+// carries a value in it — written before the datasource routes reserved the
+// namespace, or by anything else that writes project documents — must not
+// reach a provider, or a missing app registration would hide behind a stale
+// per-project one and the separation would be worth nothing.
+func TestApplyOAuthAppRegistration_ProjectSuppliedClientFieldsNeverSurvive(t *testing.T) {
+	slug := registerAuthFlowProvider(t, threeLegged("oauth_user"))
+	clientID := oauthreg.ConfigKey(oauthreg.FieldClientID)
+	clientSecret := oauthreg.ConfigKey(oauthreg.FieldClientSecret)
+
+	// Nothing registered: the project's own values must not stand in for it.
+	cfg := gowarehouse.ProviderConfig{
+		"auth_method": "oauth_user",
+		clientID:      "from-the-project-document",
+		clientSecret:  "and-a-secret-with-it",
+	}
+	if err := applyOAuthAppRegistration(context.Background(), appSecrets(t, oauthProvider, nil), slug, cfg); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	for _, k := range []string{clientID, clientSecret} {
+		if v, present := cfg[k]; present {
+			t.Errorf("cfg[%q] = %q survived from the project document", k, v)
+		}
+	}
+
+	// Registered: the deployment's value is what the provider sees.
+	cfg = gowarehouse.ProviderConfig{"auth_method": "oauth_user", clientID: "from-the-project-document"}
+	registered := appSecrets(t, oauthProvider, map[string]string{oauthreg.FieldClientID: "the-deployments"})
+	if err := applyOAuthAppRegistration(context.Background(), registered, slug, cfg); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if cfg[clientID] != "the-deployments" {
+		t.Errorf("cfg[%q] = %q, want the deployment's registration", clientID, cfg[clientID])
+	}
+}
+
+// The namespace is cleared whatever the datasource authenticates with. A
+// key-authenticated source has no use for these fields, and leaving a
+// project-supplied value sitting in a namespace the platform owns is a state
+// worth not having.
+func TestApplyOAuthAppRegistration_TheNamespaceIsClearedForEveryMethod(t *testing.T) {
+	slug := registerAuthFlowProvider(t, gowarehouse.AuthMethod{ID: "sa_key"})
+	clientSecret := oauthreg.ConfigKey(oauthreg.FieldClientSecret)
+
+	cfg := gowarehouse.ProviderConfig{"auth_method": "sa_key", clientSecret: "from-the-project-document"}
+	if err := applyOAuthAppRegistration(context.Background(), appSecrets(t, oauthProvider, nil), slug, cfg); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if _, present := cfg[clientSecret]; present {
+		t.Error("a project-supplied client secret survived on a key-authenticated datasource")
+	}
+}
+
+// The reason the registration is keyed by the OAuth provider rather than by the
+// datasource slug: a customer who registers one Google client uses it for every
+// datasource that authenticates against Google, and never registers a second.
+func TestApplyOAuthAppRegistration_TwoDatasourcesShareOneRegistration(t *testing.T) {
+	first := registerAuthFlowProvider(t, threeLeggedFor("oauth_user", "shared-idp"))
+	second := registerAuthFlowProvider(t, threeLeggedFor("oauth_user", "shared-idp"))
+	sp := appSecrets(t, "shared-idp", map[string]string{oauthreg.FieldClientID: "one-client"})
+	clientID := oauthreg.ConfigKey(oauthreg.FieldClientID)
+
+	for _, slug := range []string{first, second} {
+		cfg := gowarehouse.ProviderConfig{"auth_method": "oauth_user"}
+		if err := applyOAuthAppRegistration(context.Background(), sp, slug, cfg); err != nil {
+			t.Fatalf("apply for %s: %v", slug, err)
+		}
+		if cfg[clientID] != "one-client" {
+			t.Errorf("%s read cfg[%q] = %q, want the one registered client", slug, clientID, cfg[clientID])
+		}
+	}
+}
+
+// A registration keyed by one provider must not answer for another, or
+// registering the second would overwrite the client the first one's grants were
+// issued against and break every connection made with it.
+func TestApplyOAuthAppRegistration_AnotherProvidersRegistrationDoesNotAnswer(t *testing.T) {
+	slug := registerAuthFlowProvider(t, threeLeggedFor("oauth_user", "idp-a"))
+	sp := appSecrets(t, "idp-b", map[string]string{oauthreg.FieldClientID: "b-client"})
+
+	cfg := gowarehouse.ProviderConfig{"auth_method": "oauth_user"}
+	if err := applyOAuthAppRegistration(context.Background(), sp, slug, cfg); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if v, present := cfg[oauthreg.ConfigKey(oauthreg.FieldClientID)]; present {
+		t.Errorf("another provider's client %q was injected", v)
+	}
+}
+
+// A three-legged method that names no OAuth provider has no registration to
+// look up, so it can never mint a token. That is a declaration error in the
+// registry, and it is worth saying so rather than letting the provider report a
+// generic "not configured" that no operator can act on.
+func TestApplyOAuthAppRegistration_AThreeLeggedMethodWithNoProviderIsAnError(t *testing.T) {
+	slug := registerAuthFlowProvider(t, gowarehouse.AuthMethod{
+		ID: "oauth_user", Flow: gowarehouse.FlowAuthorizationCode,
+		Authorization: &gowarehouse.AuthorizationCode{
+			AuthURL: "https://accounts.example/auth", TokenURL: "https://oauth.example/token",
+		},
+	})
+
+	err := applyOAuthAppRegistration(context.Background(), &fakeSecretProvider{store: map[string]string{}}, slug, gowarehouse.ProviderConfig{"auth_method": "oauth_user"})
+	if err == nil {
+		t.Fatal("a three-legged method with no OAuth provider was accepted")
+	}
+}
+
+// Same, for a method that declares the flow but carries no Authorization block
+// at all.
+func TestApplyOAuthAppRegistration_AThreeLeggedMethodWithNoAuthorizationIsAnError(t *testing.T) {
+	slug := registerAuthFlowProvider(t, gowarehouse.AuthMethod{ID: "oauth_user", Flow: gowarehouse.FlowAuthorizationCode})
+
+	err := applyOAuthAppRegistration(context.Background(), &fakeSecretProvider{store: map[string]string{}}, slug, gowarehouse.ProviderConfig{"auth_method": "oauth_user"})
+	if err == nil {
+		t.Fatal("a three-legged method with no authorization block was accepted")
+	}
+}
+
+// A datasource saved while its provider offered exactly one method stored no
+// choice, and the method resolves to the one it can only have been. The provider
+// factory switches on the config's own auth_method, though, so leaving it empty
+// would have this function and the provider disagree about how the datasource
+// authenticates.
+func TestApplyOAuthAppRegistration_RecordsAnInferredMethod(t *testing.T) {
+	slug := registerAuthFlowProvider(t, threeLegged("oauth_user"))
+	sp := appSecrets(t, oauthProvider, map[string]string{oauthreg.FieldClientID: "cid"})
+
+	cfg := gowarehouse.ProviderConfig{} // saved before the provider offered a choice
+	if err := applyOAuthAppRegistration(context.Background(), sp, slug, cfg); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if cfg["auth_method"] != "oauth_user" {
+		t.Errorf("auth_method = %q, want the method this resolved to", cfg["auth_method"])
+	}
+	if cfg[oauthreg.ConfigKey(oauthreg.FieldClientID)] != "cid" {
+		t.Error("the registration was not applied to the inferred method")
+	}
+}
+
+// A datasource whose method is a static one keeps it: nothing is inferred, and
+// nothing is rewritten.
+func TestApplyOAuthAppRegistration_LeavesARecordedMethodAlone(t *testing.T) {
+	slug := registerAuthFlowProvider(t, gowarehouse.AuthMethod{ID: "sa_key"}, threeLegged("oauth_user"))
+	sp := appSecrets(t, oauthProvider, map[string]string{oauthreg.FieldClientID: "cid"})
+
+	cfg := gowarehouse.ProviderConfig{"auth_method": "sa_key"}
+	if err := applyOAuthAppRegistration(context.Background(), sp, slug, cfg); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if cfg["auth_method"] != "sa_key" {
+		t.Errorf("auth_method = %q, want it untouched", cfg["auth_method"])
+	}
+}

@@ -41,9 +41,17 @@ func reflectionResponseSchema() map[string]interface{} {
 		"type": "object",
 		"properties": map[string]interface{}{
 			"coverage_summary": str("One short paragraph: which tables/areas are now well covered and what remains unexplored (the frontier)."),
-			"covered_tables":   strArray("Fully-qualified tables (dataset.table) this run actually queried/covered. Copy names from the catalog verbatim."),
-			"covered_areas":    strArray("Analysis-area ids that produced findings this run."),
-			"convergence_note": str("One line: is the investigation still finding much that is new, or converging?"),
+			"covered_tables":   strArray("Fully-qualified tables (dataset.table) this run actually queried/covered. Copy names from the warehouse catalog verbatim."),
+			// Declared unconditionally, unlike the prompt's cube section, which
+			// renders only for a run that has one. The schema is a shape for a
+			// response, not instruction: an optional array a table-only run is
+			// never asked to fill costs it nothing, and its description says so.
+			// Keeping the PROMPT byte-identical for those runs is what matters,
+			// since that is what teaches — and a stray item arriving anyway is
+			// checked against the run's catalog before it is stored.
+			"covered_catalog_items": strArray("Cube metrics/dimensions this run actually queried. Copy names from the cube catalog verbatim. Empty when this project has no cube-shaped datasource."),
+			"covered_areas":         strArray("Analysis-area ids that produced findings this run."),
+			"convergence_note":      str("One line: is the investigation still finding much that is new, or converging?"),
 			"prior_status_updates": map[string]interface{}{
 				"type":        "array",
 				"description": "Status re-judgements for PRIOR findings (by id). Only when this run gives grounded evidence — do NOT mark a finding resolved merely because it did not reappear.",

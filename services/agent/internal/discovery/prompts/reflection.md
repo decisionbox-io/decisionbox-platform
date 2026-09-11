@@ -13,13 +13,12 @@ Evolution mode: **{{EVOLUTION_MODE}}**. {{EVOLUTION_GUIDANCE}}
 ## Open investigation tasks (already queued — do NOT duplicate these)
 {{OPEN_TASKS}}
 
-## Warehouse catalog (all tables — pick which were covered vs. still frontier)
-{{CATALOG_TABLES}}
+{{CATALOG_SECTION}}
 
 ## Produce a single JSON object
 
 - **coverage_summary**: one short paragraph — which tables/areas are now well covered, and what remains unexplored (the frontier). Let the frontier policy shape the emphasis.
-- **covered_tables**: the fully-qualified tables (dataset.table) this run actually queried. Copy names verbatim from the catalog. Omit tables you did not touch.
+{{COVERED_FIELDS}}
 - **covered_areas**: the analysis-area ids that produced findings this run.
 - **prior_status_updates**: for PRIOR findings only, by their `id`. Update a status ONLY with grounded evidence from this run — e.g. a new finding contradicts a prior one (`refuted`), or the same finding now shows a different magnitude (`changed`). **Do NOT mark a finding `resolved` just because it did not reappear** — discovery is not exhaustive, so absence is not proof. Leave findings you have no evidence about alone.
 - **task_status_updates**: close OPEN tasks (listed above, by their `id`) that this run resolved. Mark `done` when a finding from THIS run answers the task; mark `dropped` when it turned out to be a dead-end or is no longer relevant. Only with grounded evidence from this run — leave a task you only partially explored, or did not touch, alone (it stays open). Closing a task you moved forward is expected and keeps the queue focused. This applies regardless of evolution mode.

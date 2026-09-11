@@ -1,10 +1,13 @@
 name: CI
 
 on:
+  # `feat/non-sql-datasources` is the enterprise#163 bridge branch (non-SQL
+  # datasources epic, coordinates platform + enterprise). It carries the same
+  # checks as main until it is merged back and retired.
   pull_request:
-    branches: [main]
+    branches: [main, feat/non-sql-datasources]
   push:
-    branches: [main]
+    branches: [main, feat/non-sql-datasources]
 
 concurrency:
   group: ci-${{ github.ref }}

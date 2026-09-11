@@ -2,11 +2,9 @@ package discovery
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"sort"
-	"strings"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -19,62 +17,78 @@ type SchemaCache interface {
 	Save(ctx context.Context, projectID, warehouseID, warehouseHash string, schemas map[string]models.TableSchema) error
 }
 
-// WarehouseConfigHash produces a stable SHA-256 over everything the
-// warehouse needs to list tables and describe them — provider,
-// project_id / catalog / location, dataset list, filter column+value,
-// and the provider-specific config map (region, workgroup, auth_method,
-// etc.). Credentials are NOT in `Config` (they live in the secret
-// provider), so they don't and shouldn't affect the hash.
+// CatalogCache is optionally implemented by a SchemaCache that can also
+// persist the refs a catalog source offers.
 //
-// Any edit that could change what DiscoverSchemas returns changes the
-// hash, so the cache's query-by-hash lookup self-invalidates.
+// Separate from SchemaCache rather than added to it so every existing
+// implementation — including the fakes in tests — keeps compiling and keeps
+// working unchanged. A cache that does not implement this simply means a
+// catalog source is not remembered between the index run and the processes
+// that consume it.
+type CatalogCache interface {
+	FindCatalog(ctx context.Context, projectID, warehouseID, warehouseHash string) ([]string, error)
+	SaveCatalog(ctx context.Context, projectID, warehouseID, warehouseHash string, refs, dimensionRefs []string) error
+}
+
+// The real cache must satisfy it. Asserted at compile time because every use of
+// this interface is a type assertion: a repository that stops matching does not
+// fail to build, it silently stops being a CatalogCache, and the index run then
+// remembers nothing while reporting success. Changing SaveCatalog's signature
+// did exactly that to two test fakes, which is how this line came to be here.
+var _ CatalogCache = (*database.SchemaCacheRepository)(nil)
+
+// CatalogRefsFor reads a datasource's catalog refs from the cache, returning
+// nil when there are none to read.
+//
+// Shared by every caller that has to decide whether a datasource is usable,
+// because they must all decide it the same way: a cache that does not support
+// catalogs, a lookup that fails, and a source that genuinely has no catalog
+// are one answer — "nothing is known" — and each caller then treats the
+// datasource as having no catalog items rather than guessing it has some.
+// Guessing the other way would let a failed lookup vouch for stale points.
+//
+// A lookup error is reported to the caller as well as returned empty, so it
+// can say which datasource lost its catalog and why, rather than silently
+// treating a transient failure as an empty source.
+func CatalogRefsFor(ctx context.Context, cache SchemaCache, projectID, warehouseID, warehouseHash string) ([]string, error) {
+	cc, ok := cache.(CatalogCache)
+	if !ok {
+		return nil, nil
+	}
+	refs, err := cc.FindCatalog(ctx, projectID, warehouseID, warehouseHash)
+	if err != nil {
+		return nil, err
+	}
+	return refs, nil
+}
+
+// SearchAuthority builds the set of refs a datasource may legitimately return
+// from a search: its cached tables plus its cached catalog items.
+//
+// Both halves are needed. Omitting the tables would drop every warehouse hit;
+// omitting the catalog items drops every hit from a source that has no tables,
+// which is the whole of what such a source can offer.
+func SearchAuthority(schemas map[string]models.TableSchema, catalogRefs []string) map[string]bool {
+	set := make(map[string]bool, len(schemas)+len(catalogRefs))
+	for table := range schemas {
+		set[table] = true
+	}
+	for _, ref := range catalogRefs {
+		set[ref] = true
+	}
+	return set
+}
+
+// WarehouseConfigHash is warehouse.ConfigHash for this package's config type.
+//
+// The hash itself moved to the warehouse package because the collection it
+// keys is read outside this module, and the hash is the only thing telling a
+// row that describes the datasource as it IS from one describing it as it USED
+// TO BE. A second implementation of it elsewhere would be a second chance to
+// disagree about which rows are current.
 func WarehouseConfigHash(cfg models.WarehouseConfig) string {
-	// Canonicalise before hashing so map iteration order doesn't
-	// introduce spurious cache misses.
-	datasets := append([]string(nil), cfg.Datasets...)
-	sort.Strings(datasets)
-
-	configKeys := make([]string, 0, len(cfg.Config))
-	for k := range cfg.Config {
-		configKeys = append(configKeys, k)
-	}
-	sort.Strings(configKeys)
-
-	var b strings.Builder
-	b.WriteString("v1|")
-	b.WriteString(cfg.Provider)
-	b.WriteString("|pid=")
-	b.WriteString(cfg.ProjectID)
-	b.WriteString("|loc=")
-	b.WriteString(cfg.Location)
-	b.WriteString("|ds=")
-	b.WriteString(strings.Join(datasets, ","))
-	b.WriteString("|filter=")
-	b.WriteString(cfg.FilterField)
-	b.WriteByte('=')
-	b.WriteString(cfg.FilterValue)
-	b.WriteString("|cfg=")
-	for _, k := range configKeys {
-		b.WriteString(k)
-		b.WriteByte('=')
-		b.WriteString(cfg.Config[k])
-		b.WriteByte(';')
-	}
-
-	// Cross-project reads (a warehouse whose data lives in a different
-	// project than the one running queries — BigQuery's data_project_id
-	// differing from project_id) render table refs as three-part
-	// `dataproject.dataset.table` in the catalog and as the schema-cache
-	// key, instead of the two-part `dataset.table` form. That shape is a
-	// code-level property the inputs above don't otherwise capture, so
-	// stamp it explicitly: this invalidates exactly the cross-project
-	// caches that need rediscovery after the shape changed, while
-	// single-project caches stay valid (no needless re-index). Bump the
-	// marker version if the cross-project ref shape ever changes again.
-	if dp := cfg.Config["data_project_id"]; dp != "" && dp != cfg.ProjectID {
-		b.WriteString("|xproj-refshape=v2")
-	}
-
-	sum := sha256.Sum256([]byte(b.String()))
-	return hex.EncodeToString(sum[:])
+	return warehouse.ConfigHash(
+		cfg.Provider, cfg.ProjectID, cfg.Location,
+		cfg.Datasets, cfg.FilterField, cfg.FilterValue, cfg.Config,
+	)
 }

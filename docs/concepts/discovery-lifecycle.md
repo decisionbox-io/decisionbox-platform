@@ -124,11 +124,37 @@ Each step is written to the `discovery_runs` collection in real-time, so the das
 
 **Early-termination guard (`--min-steps`):** Models biased toward early completion (Qwen3, DeepSeek-R1, GPT-OSS) sometimes return `{"done": true}` after just 1–2 steps even with a 100-step budget. Setting `--min-steps=N` rejects `done` signals until step `N`, records a `complete_rejected` exploration step, and injects a nudge telling the model how many steps remain. Default is `0` (no floor) for backwards compatibility.
 
+**Cube-shaped sources stop on signal, not on a step count.** The floor works because on a warehouse a step is roughly a table or a join, so counting steps approximates counting coverage. A cube-shaped source has no tables to work through — a query is a choice of metrics and dimensions — and the number of available slices is combinatorial, so any step count can be reached without covering anything. Sixty trivial breakdowns and fifteen revealing ones satisfy a floor equally well.
+
+So on a run that can query a cube-shaped datasource, the marginal-value rule is added **past** the floor. `--min-steps` still gates completion exactly as it does today; once a run is past it, each executed step is scored against the steps already taken, using the per-run vector index the analysis phase already builds. While recent steps are still turning up something the run has not seen, a `done` signal is rejected; once three consecutive steps repeat earlier work, the exploration has finished. `--max-steps` is unaffected and remains the runaway cap.
+
+**The rule can only make a run longer, never shorter.** That ordering matters because every discovery run has tables — a source that cannot anchor may not run discovery on its own, so a cube is only ever present *alongside* a warehouse, and the floor remains a good coverage proxy for that warehouse. An earlier version let novelty replace the floor outright, which meant connecting an enrichment source to an existing project silently dropped its effective floor from sixty steps to four, with no setting changed and nothing in the run log naming the floor, because the floor never fired to be named.
+
+Two properties are worth knowing when reading a run:
+
+- A run whose novelty cannot be measured falls back to `--min-steps` rather than refusing every completion until the cap. A degraded index should not turn every run into a maximum-length one against a source metered per request. Four cases reach that fallback: no vector index is wired at all (the rule is never armed), the index has been offered steps and kept none (its write path never worked), the index kept earlier steps but is now refusing several in a row (it is **stale** — it holds the run's early work and none of its latest, so a search reports steps as new that were never stored to be recognised), and several steps in a row could not be judged (its reads are failing).
+
+  Both index checks ask about the index's state **now**, not about a tally of past observations — a judgement made while the machinery still looked healthy would otherwise stay on the books after it stopped being true, and the rule would never stand down.
+- Steps novelty could not be *measured* on — no vector index, or one that is failing — count as neither new nor repeated. Three measurement failures are not three repetitions. A step with no earlier step to compare against is different: it cannot be repeating anything, so it counts as new ground. That distinction matters because neighbours are scoped per datasource, so a run's first query against each source has none routinely.
+- **Novelty is judged within one datasource.** The same question asked of a second source returns different data, so it is new ground rather than a repeat — and a multi-datasource run asks parallel questions across its sources deliberately. Steps are only scored against earlier steps that queried the same datasource.
+- **A query that failed is not evidence either.** It returned no data, so it says nothing about what the source has left to give, and re-asking a broken request is a model that is stuck rather than a run that is finished. Failed steps are also skipped when scoring later steps, so a retry is never counted as a repeat of the attempt it retries. A run whose queries all fail therefore falls back to `--min-steps` rather than exploring to the cap.
+
+Whether a run takes this path is decided from the registered shape of its datasources' providers, and is logged at exploration start.
+
+> **Testing note.** The Qdrant-backed tests for the run-scoped step index and
+> the novelty lookup live behind the `integration` build tag in
+> `services/agent/internal/discovery`. That package is **not** in CI's
+> integration job, so those tests run only where someone runs them —
+> `cd services/agent && go test -tags=integration ./internal/discovery/`.
+> Adding the package to CI was tried and reverted: a pre-existing test there
+> fails on a Qdrant gRPC connection reset when its container is started on a
+> CI runner, which needs its own investigation. A run that can only reach tables behaves exactly as it always has.
+
 **Step types reported to the dashboard:**
 - `query` — SQL query executed (with thinking, SQL, row count, timing)
 - `lookup_schema` — Agent fetched L1 detail (columns + sample rows) for one or more tables from the cache (no warehouse traffic)
 - `search_tables` — Agent ran a semantic search against the per-project Qdrant index for tables not surfaced by the catalog
-- `complete_rejected` — LLM signalled `done` before `--min-steps`; rejected and exploration continued
+- `complete_rejected` — LLM signalled `done` too early — before `--min-steps`, or, on a cube-reaching run, while steps were still turning up new ground; rejected and exploration continued. The log line carries the engine's own reason, so it names the rule that actually refused rather than always pointing at the floor
 - `insight` — The AI identified a pattern (name, severity)
 - `analysis` — Analysis phase started for an area
 - `validation` — Insight validation result

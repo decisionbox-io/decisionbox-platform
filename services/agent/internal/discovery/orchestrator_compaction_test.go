@@ -26,6 +26,13 @@ func (s *stubStepIndexer) Search(_ context.Context, _ string, _ RunStepIndexSear
 
 func (s *stubStepIndexer) Drop(_ context.Context) error { return nil }
 
+// Nearest answers "nothing to compare against", which is what a stub with no
+// stored vectors honestly knows. The engine reads that as unjudgeable and
+// keeps the step floor, so these tests are unaffected by the stopping rule.
+func (s *stubStepIndexer) Nearest(_ context.Context, _ models.ExplorationStep) (float64, bool, error) {
+	return 0, false, nil
+}
+
 func TestCountingStepIndexer_BumpsCounterOnSuccess(t *testing.T) {
 	stub := &stubStepIndexer{}
 	// nil reporter must be safe — exercises the c.reporter == nil branch.

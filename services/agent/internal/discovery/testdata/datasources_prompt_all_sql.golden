@@ -1,0 +1,24 @@
+
+
+## Datasources (multi-warehouse)
+
+This project has multiple SQL datasources. Each SQL statement runs against exactly ONE datasource: set `datasource_id` on every `query_data` and `lookup_schema` action to the datasource that owns the tables you use (omitting it targets the primary). `search_tables` spans ALL datasources and tags each result with its `datasource`.
+
+A single `query_data` statement may reference ONLY tables that live in its `datasource_id`. There is NO cross-engine federation and NO cross-datasource join. To correlate data across datasources, HOP across steps with bounded value-passing:
+  1. Query datasource A for a BOUNDED set of key values (top-N ids / keys / an aggregate).
+  2. In the next step, query datasource B with those values inlined as literal filters (e.g. `WHERE id IN (1,2,3)`).
+  WRONG (fails — invoice_line is not in the Oracle datasource):
+    {"datasource_id":"wh_oracle","query":"SELECT g.name, SUM(il.unit_price) FROM CHINOOK.TRACK t JOIN public.invoice_line il ON ... JOIN CHINOOK.GENRE g ..."}
+  RIGHT (two steps): step 1 `{"datasource_id":"default","query":"SELECT track_id, SUM(unit_price*quantity) AS rev FROM public.invoice_line GROUP BY track_id ORDER BY rev DESC LIMIT 20"}`; step 2 `{"datasource_id":"wh_oracle","query":"SELECT t.track_id, g.name FROM CHINOOK.TRACK t JOIN CHINOOK.GENRE g ON t.genre_id=g.genre_id WHERE t.track_id IN (<the 20 ids from step 1>)"}`.
+
+Available datasources:
+
+- **`default`** (Sales PG) — postgres, 4 tables
+  - orders and invoices
+  - Subject areas: sales, billing
+  - Key entities: invoice, customer
+  - Key metrics: revenue, arpu
+
+- **`wh_oracle`** (Catalog) — oracle, 7 tables
+  - music catalog
+  - Focus areas (this datasource's domain pack): Genre Performance
