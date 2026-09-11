@@ -93,7 +93,7 @@ func (r *KubernetesRunner) buildJob(spec jobSpec) *batchv1.Job {
 	for _, kv := range agentBaseEnv() {
 		envVars = append(envVars, corev1.EnvVar{Name: kv.Key, Value: kv.Value})
 	}
-	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys) {
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys, operatorForwardedEnvKeys()) {
 		envVars = append(envVars, corev1.EnvVar{Name: kv.Key, Value: kv.Value})
 	}
 
