@@ -16,6 +16,7 @@ jest.mock('@/lib/api', () => ({
     listSchemaIndexLogs: jest.fn(),
     listSchemaIndexRuns: jest.fn(),
   },
+  objectNoun: (k: string | undefined) => (k && k.trim() ? k : 'objects'),
 }));
 
 const mockedApi = api as jest.Mocked<typeof api>;

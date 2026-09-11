@@ -9,6 +9,7 @@ import { api, SchemaIndexRun } from '@/lib/api';
 
 jest.mock('@/lib/api', () => ({
   api: { listSchemaIndexRuns: jest.fn(), getSchemaIndexStatus: jest.fn() },
+  objectNoun: (k: string | undefined) => (k && k.trim() ? k : 'objects'),
 }));
 
 const mockedApi = api as jest.Mocked<typeof api>;
@@ -42,7 +43,7 @@ describe('SchemaIndexHistory', () => {
   it('shows the latest run as the current-status line when ready', async () => {
     (mockedApi.listSchemaIndexRuns as jest.Mock).mockResolvedValue({ runs: [readyRun, olderRun] });
     mount();
-    await waitFor(() => expect(screen.getByText(/42 objects indexed/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/42 tables indexed/)).toBeInTheDocument());
     // View-history toggle reflects the total count.
     expect(screen.getByRole('button', { name: /View history \(2\)/i })).toBeInTheDocument();
   });
@@ -64,7 +65,7 @@ describe('SchemaIndexHistory', () => {
     mount();
     await waitFor(() => expect(screen.getByText(/Re-index required/i)).toBeInTheDocument());
     // The stale success count must NOT be presented as current status.
-    expect(screen.queryByText(/42 objects indexed/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/42 tables indexed/)).not.toBeInTheDocument();
     // …but the durable record is still available in the history table.
     expect(screen.getByRole('button', { name: /View history/i })).toBeInTheDocument();
   });
@@ -92,7 +93,7 @@ describe('SchemaIndexHistory', () => {
     mount();
     await waitFor(() => expect(screen.getByText(/Indexing in progress/i)).toBeInTheDocument());
     // Stale prior count isn't presented as current while indexing.
-    expect(screen.queryByText(/42 objects indexed/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/42 tables indexed/)).not.toBeInTheDocument();
   });
 
   it('notes a cancelled run in the current-status line', async () => {
@@ -109,7 +110,7 @@ describe('SchemaIndexHistory', () => {
     fireEvent.click(toggle);
     await waitFor(() => expect(screen.getByRole('table')).toBeInTheDocument());
     // Column headers present.
-    expect(screen.getByText('Objects')).toBeInTheDocument();
+    expect(screen.getByText('Tables')).toBeInTheDocument();
     expect(screen.getByText('Blurbs')).toBeInTheDocument();
     expect(screen.getByText('Duration')).toBeInTheDocument();
     // The failed run's error is shown in its row.
@@ -130,10 +131,10 @@ describe('SchemaIndexHistory', () => {
       .mockResolvedValue({ status: 'needs_reindex' });
     (mockedApi.listSchemaIndexRuns as jest.Mock).mockResolvedValue({ runs: [readyRun] });
     mount();
-    await waitFor(() => expect(screen.getByText(/42 objects indexed/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/42 tables indexed/)).toBeInTheDocument());
     act(() => { window.dispatchEvent(new Event('focus')); });
     await waitFor(() => expect(screen.getByText(/Re-index required/i)).toBeInTheDocument());
-    expect(screen.queryByText(/42 objects indexed/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/42 tables indexed/)).not.toBeInTheDocument();
   });
 
   it('keeps polling once settled so a same-page cache clear is reflected', async () => {
@@ -148,7 +149,7 @@ describe('SchemaIndexHistory', () => {
       (mockedApi.listSchemaIndexRuns as jest.Mock).mockResolvedValue({ runs: [readyRun] });
       mount();
       await act(async () => { await jest.advanceTimersByTimeAsync(0); });
-      expect(screen.getByText(/42 objects indexed/)).toBeInTheDocument();
+      expect(screen.getByText(/42 tables indexed/)).toBeInTheDocument();
       // Advance past the settled cadence → next poll observes the cleared cache.
       await act(async () => { await jest.advanceTimersByTimeAsync(15000); });
       expect(screen.getByText(/Re-index required/i)).toBeInTheDocument();

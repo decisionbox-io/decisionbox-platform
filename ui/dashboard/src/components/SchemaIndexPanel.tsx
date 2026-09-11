@@ -22,7 +22,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Anchor, Button, Group, Modal, Progress, ScrollArea, Stack, Text } from '@mantine/core';
 import { IconAlertCircle, IconCheck, IconPlayerStop, IconRefresh, IconRotateClockwise } from '@tabler/icons-react';
-import { api, SchemaIndexLogLine, SchemaIndexRun, SchemaIndexStatus } from '@/lib/api';
+import { api, objectNoun, SchemaIndexLogLine, SchemaIndexRun, SchemaIndexStatus } from '@/lib/api';
 
 interface Props {
   projectId: string;
@@ -428,7 +428,7 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
                     ? <IconCheck size={12} color="var(--mantine-color-green-6)" />
                     : <IconAlertCircle size={12} color="var(--mantine-color-red-6)" />}
                   <Text size="xs" c="dimmed">
-                    {run.status === 'ready' ? `${run.objects_indexed} tables` : 'failed'}
+                    {run.status === 'ready' ? `${run.objects_indexed} ${objectNoun(run.kind)}` : 'failed'}
                     {run.finished_at ? ` · ${new Date(run.finished_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}
                   </Text>
                   {run.datasource_id === (primaryDatasourceId ?? run.datasource_id) && (

@@ -378,6 +378,15 @@ export interface SchemaIndexLogLine {
 // GET /schema-index/runs — stamped by the agent on completion (ready or
 // failed), never reset. Backs the Data Warehouse panel's index-run history and
 // the project-page per-datasource status roll-up.
+// objectNoun returns the human noun for a run's indexed object kind, so every
+// surface (project-page roll-up, settings history) labels the count the same
+// way. The `kind` field IS the noun — "tables" today, generic so a new object
+// kind slots in without a code change; empty falls back to a neutral "objects".
+export function objectNoun(kind: string | undefined): string {
+  const k = (kind || '').trim();
+  return k || 'objects';
+}
+
 export interface SchemaIndexRun {
   datasource_id: string;
   datasource_name?: string;

@@ -20,7 +20,7 @@
 import { useEffect, useState } from 'react';
 import { Badge, Button, Collapse, Group, Stack, Table, Text } from '@mantine/core';
 import { IconChevronDown, IconChevronRight } from '@tabler/icons-react';
-import { api, SchemaIndexRun, SchemaIndexStatus } from '@/lib/api';
+import { api, objectNoun, SchemaIndexRun, SchemaIndexStatus } from '@/lib/api';
 
 interface Props {
   projectId: string;
@@ -170,7 +170,7 @@ export default function SchemaIndexHistory({ projectId, datasourceId, datasource
       return (
         <Group gap="xs" wrap="nowrap">
           <StatusBadge status="ready" />
-          <Text size="xs" c="dimmed">{latest.objects_indexed} objects indexed{when ? ` · ${when}` : ''}</Text>
+          <Text size="xs" c="dimmed">{latest.objects_indexed} {objectNoun(latest.kind)} indexed{when ? ` · ${when}` : ''}</Text>
         </Group>
       );
     }
@@ -179,6 +179,15 @@ export default function SchemaIndexHistory({ projectId, datasourceId, datasource
   })();
 
   const hasRuns = !!runs && runs.length > 0;
+
+  // Header noun follows the runs' object kind (homogeneous per datasource in
+  // practice), so the count column matches the roll-up's wording — "Tables"
+  // today rather than a generic "Objects". Falls back to "Objects" when the set
+  // is empty or mixed.
+  const kindList = [...new Set((runs ?? []).map((r) => r.kind).filter(Boolean))];
+  const objectsHeader = kindList.length === 1
+    ? kindList[0].charAt(0).toUpperCase() + kindList[0].slice(1)
+    : 'Objects';
 
   return (
     <Stack gap={6}>
@@ -204,7 +213,7 @@ export default function SchemaIndexHistory({ projectId, datasourceId, datasource
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>Finished</Table.Th>
-                <Table.Th>Objects</Table.Th>
+                <Table.Th>{objectsHeader}</Table.Th>
                 <Table.Th>Blurbs</Table.Th>
                 <Table.Th>Duration</Table.Th>
                 <Table.Th>Status</Table.Th>
