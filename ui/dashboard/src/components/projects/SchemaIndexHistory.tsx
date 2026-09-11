@@ -30,6 +30,8 @@ interface Props {
   datasourceName?: string;
 }
 
+const POLL_MS = 2000;
+
 // Formats a millisecond duration compactly: "820ms", "14s", "3m 5s", "1h 2m".
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
@@ -66,19 +68,47 @@ export default function SchemaIndexHistory({ projectId, datasourceId, datasource
 
   useEffect(() => {
     let alive = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
     // Fetch the live status AND the durable history. The current-status line is
     // driven by the LIVE status (not the newest run record), because run rows
     // are append-only and retained across a cache clear / cancel — reading
     // runs[0] there would show a stale green "Ready" after the index was
     // dropped. The history table below is legitimately the run records.
-    Promise.all([
-      api.getSchemaIndexStatus(projectId).catch(() => null),
-      api.listSchemaIndexRuns(projectId, datasourceId),
-    ])
-      .then(([s, res]) => { if (alive) { setStatus(s); setRuns(res.runs || []); } })
-      .catch((e: unknown) => { if (alive) setError(e instanceof Error ? e.message : String(e)); })
-      .finally(() => { if (alive) setLoading(false); });
-    return () => { alive = false; };
+    //
+    // This panel is kept mounted on the Settings page (Mantine keeps tab panels
+    // mounted), so a one-shot fetch would go stale if the user opens Settings
+    // mid-index or clears the cache elsewhere. So: poll while a run is active
+    // (pending/indexing) and stop once settled, and refetch on window focus so
+    // returning to the page reflects an out-of-band change (cache clear, etc.).
+    const tick = async () => {
+      try {
+        const [s, res] = await Promise.all([
+          api.getSchemaIndexStatus(projectId).catch(() => null),
+          api.listSchemaIndexRuns(projectId, datasourceId),
+        ]);
+        if (!alive) return;
+        setStatus(s);
+        setRuns(res.runs || []);
+        setError(null);
+        if (s && (s.status === 'pending_indexing' || s.status === 'indexing')) {
+          timer = setTimeout(tick, POLL_MS);
+        }
+      } catch (e: unknown) {
+        if (alive) setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (alive) setLoading(false);
+      }
+    };
+
+    const onFocus = () => { void tick(); };
+    void tick();
+    window.addEventListener('focus', onFocus);
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+      window.removeEventListener('focus', onFocus);
+    };
   }, [projectId, datasourceId]);
 
   // Latest run supplies the object count for the status line + feeds the table.

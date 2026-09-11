@@ -2,7 +2,7 @@
  * @jest-environment jsdom
  */
 import '@testing-library/jest-dom';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import SchemaIndexHistory from '@/components/projects/SchemaIndexHistory';
 import { api, SchemaIndexRun } from '@/lib/api';
@@ -104,6 +104,20 @@ describe('SchemaIndexHistory', () => {
     (mockedApi.listSchemaIndexRuns as jest.Mock).mockResolvedValue({ runs: [] });
     mount('wh_b', 'Snowflake');
     await waitFor(() => expect(mockedApi.listSchemaIndexRuns).toHaveBeenCalledWith('p1', 'wh_b'));
+  });
+
+  it('refetches live status on window focus (reflects an out-of-band cache clear)', async () => {
+    // Kept mounted on the Settings page; a one-shot fetch would go stale after
+    // the cache is cleared elsewhere. Focus should re-pull the live status.
+    (mockedApi.getSchemaIndexStatus as jest.Mock)
+      .mockResolvedValueOnce({ status: 'ready' })
+      .mockResolvedValue({ status: 'needs_reindex' });
+    (mockedApi.listSchemaIndexRuns as jest.Mock).mockResolvedValue({ runs: [readyRun] });
+    mount();
+    await waitFor(() => expect(screen.getByText(/42 objects indexed/)).toBeInTheDocument());
+    act(() => { window.dispatchEvent(new Event('focus')); });
+    await waitFor(() => expect(screen.getByText(/Re-index required/i)).toBeInTheDocument());
+    expect(screen.queryByText(/42 objects indexed/)).not.toBeInTheDocument();
   });
 
   it('shows an error message if the history fails to load', async () => {
