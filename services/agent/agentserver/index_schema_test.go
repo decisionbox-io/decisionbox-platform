@@ -3,6 +3,7 @@ package agentserver
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -232,6 +233,44 @@ func TestStampSetupFailure(t *testing.T) {
 		}
 		if rec.all[0].Status != models.SchemaIndexStatusFailed {
 			t.Errorf("status = %q, want failed", rec.all[0].Status)
+		}
+	})
+}
+
+// stampSkippedDatasources records the datasources an aborted primary never got
+// to — marked failed (with a skip reason), so the roll-up doesn't keep showing
+// their prior success as current after a Re-index dropped the shared collection.
+func TestStampSkippedDatasources(t *testing.T) {
+	ctx := context.Background()
+	start := time.Now().Add(-10 * time.Second)
+	cause := errors.New("primary: embed failed")
+
+	t.Run("stamps each skipped datasource failed with a skip reason", func(t *testing.T) {
+		rec := &fakeRunRecorder{}
+		skipped := []models.WarehouseConfig{{ID: "wh_b", Provider: "snowflake"}, {ID: "wh_c", Provider: "bigquery"}}
+		stampSkippedDatasources(ctx, rec, "proj-1", "run-1", skipped, start, cause)
+
+		if len(rec.all) != 2 {
+			t.Fatalf("recorded %d runs, want one per skipped datasource (2)", len(rec.all))
+		}
+		for _, r := range rec.all {
+			if r.Status != models.SchemaIndexStatusFailed {
+				t.Errorf("%s: status = %q, want failed", r.DatasourceID, r.Status)
+			}
+			if !strings.Contains(r.Error, "skipped") || !strings.Contains(r.Error, "embed failed") {
+				t.Errorf("%s: error = %q, want skip reason + cause", r.DatasourceID, r.Error)
+			}
+			if r.ObjectsIndexed != 0 {
+				t.Errorf("%s: skipped run should have zero objects, got %d", r.DatasourceID, r.ObjectsIndexed)
+			}
+		}
+	})
+
+	t.Run("no-op for an empty skip list", func(t *testing.T) {
+		rec := &fakeRunRecorder{}
+		stampSkippedDatasources(ctx, rec, "proj-1", "run-1", nil, start, cause)
+		if len(rec.all) != 0 {
+			t.Fatalf("expected no records for empty skip list, got %d", len(rec.all))
 		}
 	})
 }

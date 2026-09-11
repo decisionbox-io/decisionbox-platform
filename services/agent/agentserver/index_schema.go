@@ -304,9 +304,17 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) (retErr error) 
 	// warehouse here, so its behaviour is unchanged. The primary indexes first
 	// and its failure fails the run (the API worker's lifecycle depends on that);
 	// secondaries are best-effort so one broken datasource can't block the rest.
-	for i, wh := range warehousesToIndex(project) {
+	whs := warehousesToIndex(project)
+	for i, wh := range whs {
 		if i == 0 {
 			if err := indexWarehouse(ctx, wh, true); err != nil {
+				// The primary failed, so the run aborts and the remaining
+				// datasources are never attempted. A user Re-index drops the whole
+				// Qdrant collection up front, so those skipped datasources have no
+				// current index — yet their prior successful run records would keep
+				// showing as "ready" in the roll-up. Stamp them as skipped so the
+				// roll-up reflects that this run did not (re)index them.
+				stampSkippedDatasources(ctx, runRepo, projectID, runID, whs[i+1:], runStart, err)
 				return err
 			}
 			continue
@@ -336,6 +344,24 @@ type schemaIndexRunRecorder interface {
 func stampSetupFailure(ctx context.Context, repo schemaIndexRunRecorder, projectID, runID string, project *models.Project, start time.Time, runErr error) {
 	for _, wh := range warehousesToIndex(project) {
 		stampSchemaIndexRun(ctx, repo, projectID, runID, wh, warehouseIDOrDefault(wh), start, nil, runErr)
+	}
+}
+
+// stampSkippedDatasources records a failed run for datasources that were never
+// attempted because the primary failed and aborted the run. Uses a detached,
+// short-timeout context so the run context's cancellation can't also fail these
+// audit writes. Marked failed (not a stale prior success) with a reason, so the
+// roll-up shows "this run did not index these" rather than a green check over a
+// collection that a Re-index already dropped.
+func stampSkippedDatasources(_ context.Context, repo schemaIndexRunRecorder, projectID, runID string, skipped []models.WarehouseConfig, start time.Time, cause error) {
+	if len(skipped) == 0 {
+		return
+	}
+	recordCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	skipErr := fmt.Errorf("skipped — run aborted after the primary datasource failed: %w", cause)
+	for _, wh := range skipped {
+		stampSchemaIndexRun(recordCtx, repo, projectID, runID, wh, warehouseIDOrDefault(wh), start, nil, skipErr)
 	}
 }
 
