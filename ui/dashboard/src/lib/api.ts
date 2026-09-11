@@ -82,6 +82,80 @@ export function askErrorMessage(err: unknown): string {
   }
 }
 
+// A 401 response means this request is no longer authenticated — the session
+// (or its bearer) has expired or been revoked. The dashboard middleware is the
+// single authority on where an unauthenticated user should go (a login page, an
+// SSO handshake, …), so rather than surfacing a 401 as a generic error that
+// pages render as an empty "…not found" state, we hand the decision back to it:
+// reload the current navigation so the middleware re-gates it and redirects.
+//
+// A `fetch`/XHR cannot itself redirect the browser, so this is the only way an
+// in-page request that expires mid-session gets the user back to sign-in.
+// Guarded so that: concurrent 401s (a page issues several loads at once) trigger
+// at most one reload; and a request that keeps 401ing after a reload (e.g. an
+// unauthenticated backend the middleware still serves) does not loop forever —
+// after REAUTH_MIN_INTERVAL_MS the caller's normal error path runs instead. The
+// guard is cleared on any successful response so a later expiry re-triggers.
+let reauthInFlight = false;
+const REAUTH_GUARD_KEY = 'dbx:reauth-at';
+const REAUTH_MIN_INTERVAL_MS = 10_000;
+
+// Navigation seam. Re-running the current navigation is what re-gates the
+// request through the middleware. It lives on this object (not inlined) only so
+// unit tests can observe it: jsdom's `window.location` is non-configurable and
+// its methods throw "Not implemented", so it cannot be spied directly.
+export const _reauth = {
+  navigate(): void {
+    window.location.reload();
+  },
+};
+
+function handleUnauthorized(): boolean {
+  if (typeof window === 'undefined') return false; // SSR / non-browser: let the caller throw
+  if (reauthInFlight) return true; // a reload is already scheduled this page-load
+  let lastReauthAt = 0;
+  let storageOk = true;
+  try {
+    lastReauthAt = Number(window.sessionStorage.getItem(REAUTH_GUARD_KEY)) || 0;
+  } catch {
+    storageOk = false;
+  }
+  if (Date.now() - lastReauthAt < REAUTH_MIN_INTERVAL_MS) return false; // just reloaded → don't loop
+  // Persist the guard BEFORE navigating. `reauthInFlight` is lost across the
+  // reload, so the cross-reload loop guard depends entirely on this timestamp.
+  // If storage is unavailable (private mode / sandboxed iframe) we cannot
+  // prevent a reload loop, so we do NOT navigate — fall through to the caller's
+  // normal error path instead of risking an infinite reload.
+  try {
+    window.sessionStorage.setItem(REAUTH_GUARD_KEY, String(Date.now()));
+  } catch {
+    storageOk = false;
+  }
+  if (!storageOk) return false;
+  reauthInFlight = true;
+  _reauth.navigate();
+  return true;
+}
+
+function clearReauthGuard(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.removeItem(REAUTH_GUARD_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+// Test seam: resets the in-memory reauth flag + storage guard between cases.
+// In production `reauthInFlight` is intentionally never reset (a scheduled
+// reload unloads the page, discarding the module), so this exists only so unit
+// tests don't leak the flag across cases. Underscore-prefixed to mark it
+// non-runtime, mirroring oidc-refresh's `_clearInFlightRefreshesForTests`.
+export function _resetReauthGuardForTests(): void {
+  reauthInFlight = false;
+  clearReauthGuard();
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${API_BASE}${path}`;
 
@@ -119,6 +193,13 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     parseFailed = true;
   }
 
+  if (res.status === 401 && handleUnauthorized()) {
+    // Re-authentication navigation scheduled; the page is unloading. Return a
+    // never-settling promise so callers don't briefly render a data error
+    // (e.g. "Project not found") in the moment before the reload takes effect.
+    return new Promise<never>(() => {});
+  }
+
   if (!res.ok) {
     throw new ApiError(
       json.error || `API error: ${res.status}`,
@@ -127,6 +208,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       json.details,
     );
   }
+
+  // A successful response means we're authenticated again — reset the re-auth
+  // loop guard so a later expiry can trigger a fresh handoff.
+  clearReauthGuard();
 
   // 2xx with an unparseable body is treated as a server error rather
   // than returning `undefined` to the caller. Surfacing this loudly
