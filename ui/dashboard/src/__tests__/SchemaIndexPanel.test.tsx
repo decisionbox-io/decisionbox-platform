@@ -335,4 +335,23 @@ describe('SchemaIndexPanel', () => {
     await waitFor(() => expect(screen.getByText(/Ready/)).toBeInTheDocument());
     expect(screen.getByRole('button', { name: /Re-index/i })).toBeInTheDocument();
   });
+
+  it('re-arms status polling after Re-index from the ready state', async () => {
+    // Re-index is reachable from the (now-persistent) ready banner. It moves
+    // the project back to pending/indexing; polling must resume so the banner
+    // doesn't get stuck on the ready→queued transition until a reload.
+    jest.spyOn(window, 'confirm').mockReturnValue(true);
+    (mockedApi.getSchemaIndexStatus as jest.Mock)
+      .mockResolvedValueOnce({ status: 'ready', updated_at: '2026-09-01T14:20:00Z' })
+      .mockResolvedValue({ status: 'indexing', progress: { phase: 'schema_discovery', tables_total: 10, tables_done: 1 } });
+    (mockedApi.reindexSchema as jest.Mock).mockResolvedValue({ status: 'pending_indexing' });
+
+    mount();
+    const btn = await screen.findByRole('button', { name: /Re-index/i });
+    btn.click();
+    await waitFor(() => expect(mockedApi.reindexSchema).toHaveBeenCalledWith('p1'));
+    // Polling restarts → the next status fetch returns indexing → the in-flight
+    // banner appears without a manual reload.
+    await waitFor(() => expect(screen.getByText(/Discovering table schemas/)).toBeInTheDocument());
+  });
 });

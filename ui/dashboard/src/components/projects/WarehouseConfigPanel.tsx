@@ -168,17 +168,18 @@ export default function WarehouseConfigPanel({ projectId, variant, onSaved }: Wa
       </Group>
 
       {/* Co-locate the index-run result with the re-index trigger: current
-          status + durable history for this data source. Scoped to the
-          datasource this panel edits (the primary — empty id resolves to the
-          reserved default, matching how the agent stamps its runs) so the
-          history + "current status" line can't show another datasource's run.
-          Settings page only — the creation wizard has no index to report yet. */}
+          status + durable history for this data source. This panel edits the
+          legacy singular warehouse, which the backend always keys as the
+          reserved default datasource — so scope the history to that id (not a
+          stray stored warehouse.id) to match how the agent stamps its runs and
+          avoid surfacing another datasource's run. Settings page only — the
+          creation wizard has no index to report yet. */}
       {variant === 'page' && (
         <>
           <Divider my="xs" />
           <SchemaIndexHistory
             projectId={projectId}
-            datasourceId={project.warehouse.id || DEFAULT_WAREHOUSE_ID}
+            datasourceId={DEFAULT_WAREHOUSE_ID}
             datasourceName={project.warehouse.provider || 'this data source'}
           />
         </>

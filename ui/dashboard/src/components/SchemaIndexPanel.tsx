@@ -64,6 +64,11 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
   const [logs, setLogs] = useState<SchemaIndexLogLine[]>([]);
   const [runs, setRuns] = useState<SchemaIndexRun[] | null>(null);
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
+  // Bumped by Retry / Re-index to restart the status poll loop: those actions
+  // move a settled project back to pending_indexing, and polling stops once
+  // settled — so without a restart the banner would sit on "Queued" until a
+  // manual reload (now that Re-index is reachable from the ready state).
+  const [pollNonce, setPollNonce] = useState(0);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const logTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const alive = useRef(true);
@@ -92,7 +97,7 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
       alive.current = false;
       if (pollTimer.current) clearTimeout(pollTimer.current);
     };
-  }, [projectId, onStatusChange]);
+  }, [projectId, onStatusChange, pollNonce]);
 
   // Per-datasource roll-up — the durable record. Fetch the run history once
   // the run settles (ready / failed / cancelled / needs_reindex); it only
@@ -180,9 +185,9 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
     setError(null);
     try {
       await api.retrySchemaIndex(projectId);
-      const s = await api.getSchemaIndexStatus(projectId);
-      setStatus(s);
-      onStatusChange?.(s);
+      // Restart the poll loop so the pending_indexing → indexing → ready
+      // transitions are tracked (the immediate fetch happens inside poll()).
+      setPollNonce((n) => n + 1);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -214,9 +219,10 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
     setError(null);
     try {
       await api.reindexSchema(projectId);
-      const s = await api.getSchemaIndexStatus(projectId);
-      setStatus(s);
-      onStatusChange?.(s);
+      // Restart the poll loop so the queued → building → ready transitions are
+      // tracked even when Re-index is clicked from the (now-visible) ready
+      // banner; the immediate fetch happens inside poll().
+      setPollNonce((n) => n + 1);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
