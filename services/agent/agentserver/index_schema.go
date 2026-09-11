@@ -10,6 +10,7 @@ import (
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
+	gosources "github.com/decisionbox-io/decisionbox/libs/go-common/sources"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai/schema_retrieve"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
@@ -58,6 +59,29 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 	secretProvider, err := initSecretProvider(mongoClient)
 	if err != nil {
 		return err
+	}
+
+	// Activate registered agent plugins for this run. Discovery does this in
+	// runDiscovery (agentserver.go); the index pass needs it too so any
+	// registered ListTables filter (e.g. a table-scope plugin) sees a live
+	// repo and can shrink the enumerated table set *before* per-table schema
+	// discovery, blurbs, and embeddings — instead of indexing the whole
+	// catalog. No-op in the community build (no factory registered). The
+	// Vectorstore is required by the sources factory when SOURCES_ENABLED, so
+	// we open the generic Qdrant provider (separate from the schema retriever
+	// below) and pass it through; a Qdrant failure only disables the plugins
+	// for this run, it does not fail indexing.
+	if qp, closeQdrant, qerr := initQdrant(ctx, cfg); qerr != nil {
+		applog.WithError(qerr).Warn("Qdrant init for plugin configure failed — table-scope/source plugins disabled for this index run")
+	} else {
+		defer closeQdrant()
+		if err := gosources.Configure(ctx, gosources.Dependencies{
+			Mongo:          mongoClient.Database(),
+			Vectorstore:    qp,
+			SecretProvider: secretProvider,
+		}); err != nil {
+			applog.WithError(err).Warn("plugin configure failed — table-scope/source plugins disabled for this index run")
+		}
 	}
 
 	// Embedding provider is mandatory for schema indexing (plan §3.7).

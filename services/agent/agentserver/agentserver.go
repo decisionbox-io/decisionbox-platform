@@ -81,7 +81,8 @@ func Run() {
 		enableDebugLogs = flag.Bool("enable-debug-logs", true, "Enable detailed debug logging to MongoDB")
 		estimateOnly    = flag.Bool("estimate", false, "Estimate cost only (no actual discovery)")
 		testConnection  = flag.String("test-connection", "", "Test provider connection: 'warehouse', 'llm', 'embedding', or 'blurb-llm'")
-		testWarehouseID = flag.String("warehouse-id", "", "For --test-connection warehouse: the specific datasource id to test. Empty = the project's primary (back-compat).")
+		listTables      = flag.Bool("list-tables", false, "List the warehouse's qualified table names as JSON and exit (cheap, no schema/blurb/embed) — powers the pre-index discovery-scope picker.")
+		testWarehouseID = flag.String("warehouse-id", "", "For --test-connection / --list-tables: the specific datasource id to target. Empty = the project's primary (back-compat).")
 		mode            = flag.String("mode", "", "Alternate run mode: 'index-schema' to build the project's schema retrieval index and exit; 'validate-doc' to run the LLM-native verifier+refuter against one insight or recommendation for the job named by --job-id and exit; 'validate-sql' to compile-check a batch of SQL statements against the project's warehouse for the job named by --job-id and exit; 'ask-serve' to run the always-up ad-hoc data Q&A service (a long-lived multi-project HTTP server; does not take --project-id). Default: run discovery.")
 		jobID           = flag.String("job-id", "", "Job _id when --mode=validate-doc (ValidationJob) or --mode=validate-sql (SQLValidationJob). Ignored in other modes.")
 	)
@@ -175,6 +176,25 @@ func Run() {
 		applog.Init(cfg.Service.Name, cfg.Service.LogLevel)
 		if err := runTestConnection(cfg, *projectID, *testConnection, *testWarehouseID); err != nil {
 			applog.WithError(err).Error("Test connection failed")
+			applog.Sync()
+			result, _ := json.Marshal(map[string]interface{}{
+				"success": false,
+				"error":   err.Error(),
+			})
+			fmt.Println(string(result))
+			os.Exit(1)
+		}
+		applog.Sync()
+		return
+	}
+
+	// List-tables mode: cheap pre-index enumeration for the discovery-scope
+	// picker. Like test-connection, it prints a single JSON object and exits;
+	// logging stays minimal so it doesn't pollute stdout.
+	if *listTables {
+		applog.Init(cfg.Service.Name, cfg.Service.LogLevel)
+		if err := runListTables(cfg, *projectID, *testWarehouseID); err != nil {
+			applog.WithError(err).Error("List tables failed")
 			applog.Sync()
 			result, _ := json.Marshal(map[string]interface{}{
 				"success": false,

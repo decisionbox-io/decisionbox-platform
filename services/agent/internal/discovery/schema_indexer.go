@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
-
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai/schema_retrieve"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/discovery/blurb"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
@@ -195,6 +196,59 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 	if err != nil {
 		si.recordErr(ctx, opts.ProjectID, "discover schemas: "+err.Error())
 		return nil, fmt.Errorf("schema_indexer: discover schemas: %w", err)
+	}
+	// On a cache HIT, resolveSchemas returned the stored map WITHOUT running
+	// SchemaDiscovery — so its index-time ListTables filter never ran, and a
+	// re-index would blurb + embed every previously-cached table even after the
+	// scope narrowed. Apply the registered cached-schema filters here to narrow
+	// the stale cache to the current scope. We do this ONLY on a cache hit: on a
+	// fresh discovery the ListTables filters already governed the set (that is
+	// the documented index-time hook), so re-applying the run-time cached-schema
+	// hook would be redundant and would wrongly let a CachedSchema-only plugin
+	// constrain the physical index build. The filter can only remove keys, never
+	// add (widening needs the cache invalidated — the caller's re-scope path does
+	// that); a filter error fails the run closed rather than indexing an unscoped
+	// catalog. No-op in the community build.
+	if fromCache && len(schemas) > 0 {
+		keys := make([]string, 0, len(schemas))
+		for k := range schemas {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys) // deterministic input, mirroring Orchestrator.discoverSchemas
+		kept, ferr := agentplugin.ApplyCachedSchemaFilters(ctx, opts.ProjectID, keys)
+		if ferr != nil {
+			si.recordErr(ctx, opts.ProjectID, "cached-schema filter: "+ferr.Error())
+			return nil, fmt.Errorf("schema_indexer: cached-schema filter: %w", ferr)
+		}
+		// A filter may only SHRINK the catalog. Reject any returned key that
+		// wasn't in the input (a stale/typo'd scope entry, or a misbehaving
+		// plugin) — failing closed rather than silently building a partial index
+		// over the remaining tables. Same contract Orchestrator.discoverSchemas
+		// enforces on the run-time path.
+		inputSet := make(map[string]struct{}, len(keys))
+		for _, k := range keys {
+			inputSet[k] = struct{}{}
+		}
+		for _, k := range kept {
+			if _, ok := inputSet[k]; !ok {
+				si.recordErr(ctx, opts.ProjectID, "cached-schema filter invented key: "+k)
+				return nil, fmt.Errorf("schema_indexer: cached-schema filter returned %q which was not in the cached input; filters may only shrink the catalog", k)
+			}
+		}
+		// Rebuild the map from the kept keys. Rebuilding from the validated kept
+		// set (not trusting length) means a same-length-but-different result
+		// can't slip a dropped table back into the index.
+		keptSet := make(map[string]struct{}, len(kept))
+		for _, k := range kept {
+			keptSet[k] = struct{}{}
+		}
+		filtered := make(map[string]models.TableSchema, len(kept))
+		for k, v := range schemas {
+			if _, ok := keptSet[k]; ok {
+				filtered[k] = v
+			}
+		}
+		schemas = filtered
 	}
 	applog.WithFields(applog.Fields{
 		"tables":     len(schemas),

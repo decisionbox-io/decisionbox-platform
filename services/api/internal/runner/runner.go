@@ -73,6 +73,11 @@ type IndexSchemaOptions struct {
 type RunSyncOptions struct {
 	ProjectID string
 	Args      []string // additional CLI args (e.g., "--test-connection", "warehouse")
+	// TimeoutSeconds bounds the run. The Kubernetes runner uses it for the Job's
+	// ActiveDeadlineSeconds (and TTL); the docker/subprocess runners rely on the
+	// caller's context deadline. Zero means the runner default (60s), matching
+	// the historical test-connection behaviour.
+	TimeoutSeconds int
 }
 
 // RunSyncResult holds the output of a synchronous agent invocation.

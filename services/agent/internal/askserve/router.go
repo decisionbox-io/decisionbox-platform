@@ -29,6 +29,12 @@ type routeDecision struct {
 	Confidence  float64  `json:"confidence"`
 	Clarify     bool     `json:"clarify"`
 	Question    string   `json:"question"`
+	// ProjectLevel is set by the router when the question isn't about the
+	// datasources' data at all — it targets the project's knowledge base
+	// (documents/notes/policies) or asks to save/persist something. It only gates
+	// the project-level-tool bypass; a genuine but ambiguous DATA question leaves it
+	// false and still clarifies.
+	ProjectLevel bool `json:"project_level"`
 }
 
 // route runs the datasource router for a multi-datasource turn. It grounds the
@@ -47,7 +53,7 @@ type routeDecision struct {
 func (r *runner) route(ctx context.Context, rt *ProjectRuntime, st *turnState) (terminated bool) {
 	evidence := ""
 	if rt.Schema != nil {
-		if hits, err := rt.Schema.SearchAll(ctx, st.req.Question, routeRetrievalTopK); err == nil {
+		if hits, err := rt.Schema.SearchAll(ctx, st.routingQuestion(), routeRetrievalTopK); err == nil {
 			evidence = formatRouteEvidence(hits)
 		}
 	}
@@ -58,7 +64,13 @@ func (r *runner) route(ctx context.Context, rt *ProjectRuntime, st *turnState) (
 	// analytics property was correctly irrelevant" produce identical records.
 	st.routeCandidates = datasourceIDs(st.routing.datasources)
 
-	dec, err := r.decideRoute(ctx, st, evidence)
+	// Project-level tools (knowledge base; write tools on the native-tool path for a
+	// member+ caller) can answer WITHOUT a datasource. Tell the router they exist so
+	// it can flag a non-data (knowledge / save) question rather than clarify.
+	mutationsCallable := toolsSupported(rt) && st.mayMutate() && len(mutationDefs(rt.MutationTools)) > 0
+	hasProjectLevel := rt.KnowledgeProvider != nil || mutationsCallable
+
+	dec, err := r.decideRoute(ctx, st, evidence, hasProjectLevel)
 	if err != nil {
 		applog.WithError(err).WithField("turn_id", st.req.TurnID).Warn("ask-serve: router failed; letting the model choose datasources")
 		return false
@@ -70,6 +82,20 @@ func (r *runner) route(ctx context.Context, rt *ProjectRuntime, st *turnState) (
 
 	// Ambiguous / low-confidence / nothing chosen → clarify instead of guessing.
 	if dec.Clarify || len(valid) == 0 || dec.Confidence < routeClarifyThreshold {
+		// A question the router can map to NO datasource may be a project-level one —
+		// a knowledge-base lookup ("what's our refund policy?") or a save ("save this
+		// as a note") — that needs no warehouse. The router only sees datasources, so
+		// when project-level tools are available, fall through and let the answering
+		// loop offer them instead of dead-ending with a datasource clarification. (A
+		// genuinely ambiguous DATA question — the router picked some datasources but
+		// low-confidence — still clarifies here; the model can also clarify itself.)
+		// Bypass the dead-end ONLY when the router itself flagged the question as
+		// project-level (knowledge / save) AND such a tool is actually callable. A
+		// genuinely ambiguous DATA question (project_level=false) still clarifies, so
+		// the model isn't left to guess the wrong datasource.
+		if len(valid) == 0 && dec.ProjectLevel && hasProjectLevel {
+			return false
+		}
 		q := strings.TrimSpace(dec.Question)
 		if q == "" {
 			q = routeDefaultClarify(st.routing.datasources)
@@ -110,17 +136,24 @@ func (r *runner) route(ctx context.Context, rt *ProjectRuntime, st *turnState) (
 
 // decideRoute asks the model which datasource(s) the question needs, grounded in
 // the datasource cards + the cross-datasource retrieval evidence.
-func (r *runner) decideRoute(ctx context.Context, st *turnState, evidence string) (routeDecision, error) {
+func (r *runner) decideRoute(ctx context.Context, st *turnState, evidence string, hasProjectLevel bool) (routeDecision, error) {
 	system := "You are a data-source router for a multi-warehouse analytics agent. " +
 		"Given a QUESTION and the available DATASOURCES, decide which datasource(s) are needed to answer it. " +
 		"Prefer the FEWEST datasources that can answer it; a question may need more than one (e.g. a value from one datasource filters a query on another). " +
-		"If you genuinely cannot tell which datasource the question refers to, set clarify=true and give ONE short clarifying question. " +
-		"Respond with EXACTLY ONE JSON object and nothing else: " +
-		`{"datasources":["<id>",...],"reason":"<one sentence>","confidence":<0.0-1.0>,"clarify":<true|false>,"question":"<clarifying question, or empty>"}. ` +
+		"If you genuinely cannot tell which datasource the question refers to, set clarify=true and give ONE short clarifying question. "
+	if hasProjectLevel {
+		// The project also has non-warehouse tools (a knowledge base of
+		// documents/notes, and/or a way to save notes). Let the router hand those
+		// questions off instead of clarifying about datasources.
+		system += "This project ALSO has non-data tools: a knowledge base (documents/notes/policies) and/or a way to save notes. " +
+			"If the question is NOT about the datasources' data — it asks about documents/notes/policies, or asks to save/persist something — set project_level=true, leave datasources empty, and do NOT clarify. "
+	}
+	system += "Respond with EXACTLY ONE JSON object and nothing else: " +
+		`{"datasources":["<id>",...],"reason":"<one sentence>","confidence":<0.0-1.0>,"clarify":<true|false>,"question":"<clarifying question, or empty>","project_level":<true|false>}. ` +
 		"Use the exact datasource ids. confidence is your certainty in the datasource choice."
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "QUESTION:\n%s\n\nDATASOURCES:\n", st.req.Question)
+	fmt.Fprintf(&b, "QUESTION:\n%s\n\nDATASOURCES:\n", st.routingQuestion())
 	for _, d := range st.routing.datasources {
 		fmt.Fprintf(&b, "- id: %s", d.ID)
 		if d.Label != "" {
@@ -161,7 +194,7 @@ func parseRouteDecision(text string) (routeDecision, error) {
 	candidates := balancedJSONObjects(text)
 	for i := len(candidates) - 1; i >= 0; i-- {
 		var d routeDecision
-		if err := json.Unmarshal([]byte(candidates[i]), &d); err == nil && (len(d.Datasources) > 0 || d.Clarify) {
+		if err := json.Unmarshal([]byte(candidates[i]), &d); err == nil && (len(d.Datasources) > 0 || d.Clarify || d.ProjectLevel) {
 			return d, nil
 		}
 	}

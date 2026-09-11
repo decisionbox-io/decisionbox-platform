@@ -103,9 +103,9 @@ func TestDiscoveriesHandler_TriggerDiscovery_Gate_EmptyStatus_Returns409(t *test
 	}
 }
 
-// --- Create handler: pending_indexing flip ---
+// --- Create handler: no auto-index ---
 
-func TestProjectsHandler_Create_FlipsToPendingIndexing(t *testing.T) {
+func TestProjectsHandler_Create_DoesNotAutoIndex(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	packRepo := newMockDomainPackRepo()
 	packRepo.add(testDomainPack("gaming", "match3"))
@@ -127,9 +127,9 @@ func TestProjectsHandler_Create_FlipsToPendingIndexing(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 
-	// Mongo-side: status should be pending_indexing.
-	// The mock defaults to "ready" on Create, but our handler then calls
-	// SetSchemaIndexStatus which overrides it.
+	// Create must NOT auto-start indexing: the operator reviews the tables and
+	// (optionally) restricts the scope first, then starts indexing explicitly.
+	// So the handler must not transition the project to pending_indexing.
 	projRepo.mu.Lock()
 	defer projRepo.mu.Unlock()
 	var got *models.Project
@@ -140,8 +140,8 @@ func TestProjectsHandler_Create_FlipsToPendingIndexing(t *testing.T) {
 	if got == nil {
 		t.Fatal("no project created")
 	}
-	if got.SchemaIndexStatus != models.SchemaIndexStatusPendingIndexing {
-		t.Errorf("status = %q, want pending_indexing", got.SchemaIndexStatus)
+	if got.SchemaIndexStatus == models.SchemaIndexStatusPendingIndexing {
+		t.Errorf("status = %q, want NOT pending_indexing (create must not auto-start indexing)", got.SchemaIndexStatus)
 	}
 }
 

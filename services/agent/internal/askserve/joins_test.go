@@ -502,7 +502,7 @@ func TestPrompt_TextPathShowsTheExactJoinsOnJSON(t *testing.T) {
 
 	// The native path carries the contract in the tool schema instead, so its
 	// prompt is not widened with a form the model cannot get wrong there.
-	tools := buildSystemPromptForTools(rt, multi, Config{}, false, nil)
+	tools := buildSystemPromptForTools(rt, multi, Config{}, false, false, nil)
 	if strings.Contains(tools, `"joins_on":{"source_step"`) {
 		t.Fatalf("the tools prompt should not repeat the JSON form:\n%s", tools)
 	}

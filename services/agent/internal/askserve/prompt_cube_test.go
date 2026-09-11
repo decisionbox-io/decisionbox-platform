@@ -56,7 +56,7 @@ func promptsFor(routing turnRouting) map[string]string {
 	rt := &ProjectRuntime{}
 	return map[string]string{
 		"text prompt":   buildSystemPrompt(rt, routing, cfg, false, nil),
-		"tools prompt":  buildSystemPromptForTools(rt, routing, cfg, false, nil),
+		"tools prompt":  buildSystemPromptForTools(rt, routing, cfg, false, false, nil),
 		"query_data":    toolQueryData(routing.multi, routing.shapes().anyCube).Description,
 		"search_tables": toolSearchTables(routing.shapes().anyCube).Description,
 	}
@@ -170,7 +170,7 @@ func TestTurnRouting_Shapes_DistinguishAnyFromAll(t *testing.T) {
 // datasource.
 func TestToolsForPhase_WithholdsLookupSchemaWhenNothingHasTables(t *testing.T) {
 	offered := func(shapes sourceShapes) bool {
-		for _, td := range toolsForPhase(true, true, false, true, shapes, false, false) {
+		for _, td := range toolsForPhase(true, true, false, false, true, shapes, false, false, nil) {
 			if td.Name == string(actLookup) {
 				return true
 			}
@@ -191,7 +191,7 @@ func TestToolsForPhase_WithholdsLookupSchemaWhenNothingHasTables(t *testing.T) {
 	// Withholding it must not take search_tables with it — that is the only
 	// discovery tool such a turn has.
 	var names []string
-	for _, td := range toolsForPhase(true, true, false, true, sourceShapes{anyCube: true, allCube: true}, false, false) {
+	for _, td := range toolsForPhase(true, true, false, false, true, sourceShapes{anyCube: true, allCube: true}, false, false, nil) {
 		names = append(names, td.Name)
 	}
 	if !slices.Contains(names, string(actSearch)) {
@@ -243,12 +243,12 @@ func TestToolsPrompt_OffersOnlyToolsTheTurnWasGiven(t *testing.T) {
 
 	render := func(rt *ProjectRuntime, routing turnRouting) (string, bool) {
 		offered := false
-		for _, td := range toolsForPhase(true, true, rt.InsightsProvider != nil, routing.multi, routing.shapes(), false, false) {
+		for _, td := range toolsForPhase(true, true, rt.InsightsProvider != nil, false, routing.multi, routing.shapes(), false, false, nil) {
 			if td.Name == string(actLookup) {
 				offered = true
 			}
 		}
-		return buildSystemPromptForTools(rt, routing, cfg, false, nil), offered
+		return buildSystemPromptForTools(rt, routing, cfg, false, false, nil), offered
 	}
 	multi := func(ds ...DatasourceInfo) turnRouting {
 		return turnRouting{datasources: ds, all: ds, primary: ds[0].ID, multi: true}
@@ -626,7 +626,7 @@ func TestToolsForPhase_HandsShapeToEveryToolThatNeedsIt(t *testing.T) {
 	byName := func(hasCube bool) map[string]gollm.ToolDefinition {
 		out := map[string]gollm.ToolDefinition{}
 		shapes := sourceShapes{anyCube: hasCube, allCube: false}
-		for _, td := range toolsForPhase(true, true, false, true, shapes, false, false) {
+		for _, td := range toolsForPhase(true, true, false, false, true, shapes, false, false, nil) {
 			out[td.Name] = td
 		}
 		return out

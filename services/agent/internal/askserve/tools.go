@@ -260,13 +260,14 @@ func toolDecline() gollm.ToolDefinition {
 // clarify / decline stay available so a genuinely ambiguous or unanswerable
 // question can still terminate without inventing data. Schema tools are offered
 // only when a schema provider is wired; search_insights only when an insights
-// provider is wired. render_chart is offered only when charting is enabled for
-// the turn AND a non-truncated query result exists to ground a chart against.
-// multi widens the query/schema tools for a project with several warehouses;
-// shapes tells query_data and search_tables that not every reachable datasource
-// takes SQL, and withholds lookup_schema entirely when none of them has tables
-// for it to look up.
-func toolsForPhase(grounded, hasSchema, hasInsights, multi bool, shapes sourceShapes, chartsEnabled, hasChartableQuery bool) []gollm.ToolDefinition {
+// provider is wired; search_knowledge only when a knowledge provider is wired.
+// render_chart is offered only when charting is enabled for the turn AND a
+// non-truncated query result exists to ground a chart against. multi widens the
+// query/schema tools for a project with several warehouses; shapes tells
+// query_data and search_tables that not every reachable datasource takes SQL,
+// and withholds lookup_schema entirely when none of them has tables for it to
+// look up.
+func toolsForPhase(grounded, hasSchema, hasInsights, hasKnowledge, multi bool, shapes sourceShapes, chartsEnabled, hasChartableQuery bool, mutations []gollm.ToolDefinition) []gollm.ToolDefinition {
 	tools := []gollm.ToolDefinition{toolQueryData(multi, shapes.anyCube)}
 	if hasSchema {
 		// lookup_schema returns columns, so it can only fail when nothing
@@ -283,9 +284,16 @@ func toolsForPhase(grounded, hasSchema, hasInsights, multi bool, shapes sourceSh
 	if hasInsights {
 		tools = append(tools, toolSearchInsights())
 	}
+	if hasKnowledge {
+		tools = append(tools, toolSearchKnowledge())
+	}
 	if chartsEnabled && hasChartableQuery {
 		tools = append(tools, toolRenderChart())
 	}
+	// Mutation tools (write actions supplied by an enterprise plugin) are always
+	// offered when registered — they gather no evidence, so they are not gated on
+	// grounding — mirroring how clarify/decline are always available.
+	tools = append(tools, mutations...)
 	if grounded {
 		tools = append(tools, toolAnswer())
 	}
@@ -349,6 +357,12 @@ func toolCallToAction(tc gollm.ToolCall) (*turnAction, error) {
 			return nil, fmt.Errorf("search_insights requires a non-empty %q argument", "query")
 		}
 		return &turnAction{Kind: actSearchInsights, SearchInsights: q, InsightsLimit: toInt(tc.Input["limit"])}, nil
+	case actSearchKnowledge:
+		q := getStr("query")
+		if q == "" {
+			return nil, fmt.Errorf("search_knowledge requires a non-empty %q argument", "query")
+		}
+		return &turnAction{Kind: actSearchKnowledge, SearchKnowledge: q, KnowledgeLimit: toInt(tc.Input["limit"])}, nil
 	case actRenderChart:
 		// The whole tool input IS the ChartSpec. Re-encode it to raw JSON so the
 		// executor can strict-decode + ground it via the shared charts validator
