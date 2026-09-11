@@ -19,10 +19,10 @@
  * recent agent stderr lines, polled from /schema-index/logs every 2 s.
  */
 
-import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Group, Modal, Progress, ScrollArea, Stack, Text } from '@mantine/core';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Anchor, Button, Group, Modal, Progress, ScrollArea, Stack, Text } from '@mantine/core';
 import { IconAlertCircle, IconCheck, IconPlayerStop, IconRefresh, IconRotateClockwise } from '@tabler/icons-react';
-import { api, SchemaIndexLogLine, SchemaIndexStatus } from '@/lib/api';
+import { api, objectNoun, SchemaIndexLogLine, SchemaIndexRun, SchemaIndexStatus } from '@/lib/api';
 
 interface Props {
   projectId: string;
@@ -41,6 +41,14 @@ interface Props {
    * already convey the "ready" signal.
    */
   hideWhenReady?: boolean;
+  /**
+   * The project's primary datasource id. The per-datasource roll-up links only
+   * this datasource's line to the Data Warehouse settings history (that page
+   * shows the primary's history); other datasources' lines render without a
+   * link, since there's no settings surface to navigate them to. Defaults to
+   * the reserved default for a legacy single-warehouse project.
+   */
+  primaryDatasourceId?: string;
 }
 
 const POLL_MS = 2000;
@@ -53,7 +61,7 @@ const PHASE_LABELS: Record<string, string> = {
   embedding: 'Building vector index',
 };
 
-export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenReady = false }: Props) {
+export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenReady = false, primaryDatasourceId }: Props) {
   const [status, setStatus] = useState<SchemaIndexStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -62,7 +70,13 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
     return window.localStorage.getItem(`db:showDebugLogs:${projectId}`) === '1';
   });
   const [logs, setLogs] = useState<SchemaIndexLogLine[]>([]);
+  const [runs, setRuns] = useState<SchemaIndexRun[] | null>(null);
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
+  // Bumped by Retry / Re-index to restart the status poll loop: those actions
+  // move a settled project back to pending_indexing, and polling stops once
+  // settled — so without a restart the banner would sit on "Queued" until a
+  // manual reload (now that Re-index is reachable from the ready state).
+  const [pollNonce, setPollNonce] = useState(0);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const logTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const alive = useRef(true);
@@ -91,7 +105,40 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
       alive.current = false;
       if (pollTimer.current) clearTimeout(pollTimer.current);
     };
-  }, [projectId, onStatusChange]);
+  }, [projectId, onStatusChange, pollNonce]);
+
+  // Per-datasource roll-up — the durable record. Fetch the run history once the
+  // run settles (ready / failed / cancelled / needs_reindex). Keyed on the
+  // settled status AND the per-run signals updated_at (stamped on every ready
+  // completion) + error (stamped on failures): a fast Retry/Re-index that the
+  // 2s poll never catches mid-run can settle back to the SAME status string, so
+  // status alone wouldn't refetch and the roll-up would show stale counts.
+  // Skips while indexing so it never fetches mid-run. Best-effort.
+  const settledStatus = status?.status;
+  const settledUpdatedAt = status?.updated_at;
+  const settledError = status?.error;
+  useEffect(() => {
+    if (!settledStatus || settledStatus === 'pending_indexing' || settledStatus === 'indexing') return;
+    let alive = true;
+    // latest=true → the API returns one (newest) run per datasource via
+    // aggregation, so the roll-up can't drop a datasource whose latest run fell
+    // outside a bounded history page.
+    api
+      .listSchemaIndexRuns(projectId, undefined, undefined, true)
+      .then((res) => { if (alive) setRuns(res.runs || []); })
+      .catch(() => { /* roll-up is best-effort */ });
+    return () => { alive = false; };
+  }, [projectId, settledStatus, settledUpdatedAt, settledError]);
+
+  // The API already returns one newest run per datasource; dedup defensively in
+  // case an older client/server returns a full list.
+  const latestByDatasource = useMemo(() => {
+    const seen = new Map<string, SchemaIndexRun>();
+    for (const run of runs ?? []) {
+      if (!seen.has(run.datasource_id)) seen.set(run.datasource_id, run);
+    }
+    return Array.from(seen.values());
+  }, [runs]);
 
   // Sync showLogs when the settings page flips the localStorage key.
   // Uses a storage event + a focus refetch so both same-tab and
@@ -149,14 +196,25 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
     };
   }, [showLogs, projectId]);
 
+  // reenterPending optimistically reflects the pending_indexing transition the
+  // Retry/Re-index POST just made server-side, then restarts the poll loop.
+  // Forcing the settled→pending step client-side guarantees the roll-up sees a
+  // status transition when the run later settles (→ ready/failed) and refetches
+  // the new run record — even for a fast re-index the 2s poll never catches
+  // mid-run, or a retry that re-fails with the identical error.
+  const reenterPending = () => {
+    const pending: SchemaIndexStatus = { status: 'pending_indexing' };
+    setStatus(pending);
+    onStatusChange?.(pending);
+    setPollNonce((n) => n + 1);
+  };
+
   const handleRetry = async () => {
     setBusy(true);
     setError(null);
     try {
       await api.retrySchemaIndex(projectId);
-      const s = await api.getSchemaIndexStatus(projectId);
-      setStatus(s);
-      onStatusChange?.(s);
+      reenterPending();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -188,9 +246,7 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
     setError(null);
     try {
       await api.reindexSchema(projectId);
-      const s = await api.getSchemaIndexStatus(projectId);
-      setStatus(s);
-      onStatusChange?.(s);
+      reenterPending();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -354,6 +410,33 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
               {total > 0 ? `${done} of ${total} tables (${pct}%)` : 'Starting up…'}
               {' '}— you can close this tab, indexing continues in the background.
             </Text>
+          )}
+          {/* Persistent per-datasource roll-up — the durable record, visible
+              even when ready (no more hide-on-ready). One line per datasource:
+              its latest run's status, object count, time, and (for the primary,
+              the one the settings history can show) a link into it. Only shown
+              for ready/failed: on needs_reindex / cancelled the current index was
+              deliberately cleared or aborted, so showing a prior success with a
+              green check would read as current — the banner's CTA conveys the
+              real state there instead. */}
+          {(status.status === 'ready' || status.status === 'failed') && latestByDatasource.length > 0 && (
+            <Stack gap={2}>
+              {latestByDatasource.map((run) => (
+                <Group key={run.datasource_id} gap={6} wrap="nowrap">
+                  <Text size="xs" fw={500}>{run.datasource_name || run.datasource_id}</Text>
+                  {run.status === 'ready'
+                    ? <IconCheck size={12} color="var(--mantine-color-green-6)" />
+                    : <IconAlertCircle size={12} color="var(--mantine-color-red-6)" />}
+                  <Text size="xs" c="dimmed">
+                    {run.status === 'ready' ? `${run.objects_indexed} ${objectNoun(run.kind)}` : 'failed'}
+                    {run.finished_at ? ` · ${new Date(run.finished_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}
+                  </Text>
+                  {run.datasource_id === (primaryDatasourceId ?? run.datasource_id) && (
+                    <Anchor size="xs" href={`/projects/${projectId}/settings#warehouse`}>history</Anchor>
+                  )}
+                </Group>
+              ))}
+            </Stack>
           )}
           {(status.status === 'ready' || status.status === 'failed' || status.status === 'cancelled') &&
             ((progress?.input_tokens ?? 0) > 0 || (progress?.output_tokens ?? 0) > 0) && (

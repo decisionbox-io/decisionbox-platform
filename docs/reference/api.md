@@ -347,6 +347,49 @@ curl -X DELETE http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011
 
 ---
 
+## Schema index
+
+### GET /api/v1/projects/{id}/schema-index/runs
+
+Return the durable per-datasource schema-index run history, newest `finished_at` first.
+Each record is stamped when a datasource finishes indexing (success or failure) and survives the next run — unlike the live, project-level `schema-index/status`.
+
+Query parameters (both optional):
+
+- `datasource_id` — filter to one data source; omit to list every data source's runs.
+- `limit` — cap the number of records (default 50, max 200).
+
+```bash
+curl "http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/schema-index/runs?datasource_id=wh_redshift&limit=20"
+```
+
+```json
+{
+  "data": {
+    "runs": [
+      {
+        "datasource_id": "wh_redshift",
+        "datasource_name": "Redshift — Sales",
+        "run_id": "20260911T142000.000Z",
+        "kind": "tables",
+        "objects_indexed": 42,
+        "blurbs_generated": 42,
+        "status": "ready",
+        "phase_durations": { "schema_discovery": 3200, "describing_tables": 12800, "embedding": 540 },
+        "tokens_in": 10240,
+        "tokens_out": 5120,
+        "started_at": "2026-09-11T14:19:40Z",
+        "finished_at": "2026-09-11T14:20:00Z"
+      }
+    ]
+  }
+}
+```
+
+A `failed` run carries the same shape with `"status": "failed"` and an `"error"` string.
+
+---
+
 ## Prompts
 
 ### GET /api/v1/projects/{id}/prompts

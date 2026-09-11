@@ -172,7 +172,8 @@ var projectChildCollections = []string{
 	"project_schema_index_progress",
 	"project_schema_cache",
 	"project_schema_index_logs",
-	"llm_model_windows",   // agent-written self-calibrated context windows, keyed by project_id
+	"project_schema_index_runs", // durable per-datasource index-run history, keyed by project_id
+	"llm_model_windows",         // agent-written self-calibrated context windows, keyed by project_id
 	"discovery_questions", // agent-written clarifying questions + analyst answers, keyed by project_id
 }
 

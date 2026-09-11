@@ -119,7 +119,7 @@ func makeHandlerWithProject(t *testing.T, p *models.Project) (*SchemaIndexHandle
 	}
 	prog := newMockProgress()
 	drop := &mockDropper{}
-	h := NewSchemaIndexHandler(projRepo, prog, drop, nil, nil, nil)
+	h := NewSchemaIndexHandler(projRepo, prog, drop, nil, nil, nil, nil)
 	return h, projRepo, prog, drop
 }
 
@@ -199,7 +199,7 @@ func TestSchemaIndex_GetStatus_NoProgressDoc(t *testing.T) {
 }
 
 func TestSchemaIndex_GetStatus_MissingProject(t *testing.T) {
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, nil)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, nil, nil)
 	w := httptest.NewRecorder()
 	h.GetStatus(w, newReq("GET", "/schema-index/status", "nope", ""))
 	if w.Code != http.StatusNotFound {
@@ -208,7 +208,7 @@ func TestSchemaIndex_GetStatus_MissingProject(t *testing.T) {
 }
 
 func TestSchemaIndex_GetStatus_EmptyProjectID(t *testing.T) {
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, nil)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, nil, nil)
 	w := httptest.NewRecorder()
 	h.GetStatus(w, newReq("GET", "/schema-index/status", "", ""))
 	if w.Code != http.StatusBadRequest {
@@ -265,7 +265,7 @@ func TestSchemaIndex_Retry_FromIndexing_409(t *testing.T) {
 }
 
 func TestSchemaIndex_Retry_MissingProject(t *testing.T) {
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, nil)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, nil, nil)
 	w := httptest.NewRecorder()
 	h.Retry(w, newReq("POST", "/schema-index/retry", "nope", ""))
 	if w.Code != http.StatusNotFound {
@@ -329,7 +329,7 @@ func TestSchemaIndex_Reindex_NilDropperSkipsDropStep(t *testing.T) {
 	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"}
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, nil)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, nil, nil)
 
 	w := httptest.NewRecorder()
 	h.Reindex(w, newReq("POST", "/reindex", p.ID, ""))
@@ -343,7 +343,7 @@ func TestSchemaIndex_Reindex_NilDropperSkipsDropStep(t *testing.T) {
 }
 
 func TestSchemaIndex_Reindex_MissingProject(t *testing.T) {
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), &mockDropper{}, nil, nil, nil)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), &mockDropper{}, nil, nil, nil, nil)
 	w := httptest.NewRecorder()
 	h.Reindex(w, newReq("POST", "/reindex", "nope", ""))
 	if w.Code != http.StatusNotFound {
@@ -373,7 +373,7 @@ func TestSchemaIndex_Cancel_HappyPath(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
 	mc := &mockCanceller{cancelReturn: true}
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, mc, nil)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, mc, nil, nil)
 
 	w := httptest.NewRecorder()
 	h.Cancel(w, newReq("POST", "/schema-index/cancel", p.ID, ""))
@@ -389,7 +389,7 @@ func TestSchemaIndex_Cancel_NoCanceller_503(t *testing.T) {
 	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3", SchemaIndexStatus: models.SchemaIndexStatusIndexing}
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, nil)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, nil, nil)
 
 	w := httptest.NewRecorder()
 	h.Cancel(w, newReq("POST", "/schema-index/cancel", p.ID, ""))
@@ -410,7 +410,7 @@ func TestSchemaIndex_Cancel_NotIndexing_409(t *testing.T) {
 			projRepo := newMockProjectRepo()
 			_ = projRepo.Create(context.Background(), p)
 			mc := &mockCanceller{cancelReturn: true}
-			h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, mc, nil)
+			h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, mc, nil, nil)
 
 			w := httptest.NewRecorder()
 			h.Cancel(w, newReq("POST", "/schema-index/cancel", p.ID, ""))
@@ -431,7 +431,7 @@ func TestSchemaIndex_Cancel_RaceWithCompletion_409(t *testing.T) {
 	// Worker has already finished by the time we try to cancel: returns
 	// false from Cancel, handler maps that to 409.
 	mc := &mockCanceller{cancelReturn: false}
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, mc, nil)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, mc, nil, nil)
 
 	w := httptest.NewRecorder()
 	h.Cancel(w, newReq("POST", "/schema-index/cancel", p.ID, ""))
@@ -441,7 +441,7 @@ func TestSchemaIndex_Cancel_RaceWithCompletion_409(t *testing.T) {
 }
 
 func TestSchemaIndex_Cancel_MissingProject_404(t *testing.T) {
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, &mockCanceller{}, nil)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, &mockCanceller{}, nil, nil)
 	w := httptest.NewRecorder()
 	h.Cancel(w, newReq("POST", "/schema-index/cancel", "nope", ""))
 	if w.Code != http.StatusNotFound {
@@ -450,7 +450,7 @@ func TestSchemaIndex_Cancel_MissingProject_404(t *testing.T) {
 }
 
 func TestSchemaIndex_Cancel_EmptyProjectID_400(t *testing.T) {
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, &mockCanceller{}, nil)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, &mockCanceller{}, nil, nil)
 	w := httptest.NewRecorder()
 	h.Cancel(w, newReq("POST", "/schema-index/cancel", "", ""))
 	if w.Code != http.StatusBadRequest {
@@ -502,7 +502,7 @@ func TestSchemaIndex_InvalidateCache_HappyPath(t *testing.T) {
 			_ = projRepo.Create(context.Background(), p)
 			ci := &mockCacheInvalidator{}
 			drop := &mockDropper{}
-			h := NewSchemaIndexHandler(projRepo, newMockProgress(), drop, nil, nil, ci)
+			h := NewSchemaIndexHandler(projRepo, newMockProgress(), drop, nil, nil, ci, nil)
 
 			w := httptest.NewRecorder()
 			h.InvalidateCache(w, newReq("POST", "/schema-index/invalidate-cache", p.ID, ""))
@@ -534,7 +534,7 @@ func TestSchemaIndex_InvalidateCache_NilDropperOK(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
 	ci := &mockCacheInvalidator{}
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
 
 	w := httptest.NewRecorder()
 	h.InvalidateCache(w, newReq("POST", "/schema-index/invalidate-cache", p.ID, ""))
@@ -558,7 +558,7 @@ func TestSchemaIndex_InvalidateCache_DropperError_502(t *testing.T) {
 	_ = projRepo.Create(context.Background(), p)
 	ci := &mockCacheInvalidator{}
 	drop := &mockDropper{err: errors.New("qdrant down")}
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), drop, nil, nil, ci)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), drop, nil, nil, ci, nil)
 
 	w := httptest.NewRecorder()
 	h.InvalidateCache(w, newReq("POST", "/schema-index/invalidate-cache", p.ID, ""))
@@ -586,7 +586,7 @@ func TestSchemaIndex_InvalidateCache_StatusFlippedBeforeCacheDelete(t *testing.T
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
 	ci := &mockCacheInvalidator{err: errors.New("mongo blip")}
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), &mockDropper{}, nil, nil, ci)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), &mockDropper{}, nil, nil, ci, nil)
 
 	w := httptest.NewRecorder()
 	h.InvalidateCache(w, newReq("POST", "/schema-index/invalidate-cache", p.ID, ""))
@@ -603,7 +603,7 @@ func TestSchemaIndex_InvalidateCache_NoRepo_503(t *testing.T) {
 	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3", SchemaIndexStatus: models.SchemaIndexStatusReady}
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, nil)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, nil, nil)
 
 	w := httptest.NewRecorder()
 	h.InvalidateCache(w, newReq("POST", "/schema-index/invalidate-cache", p.ID, ""))
@@ -618,7 +618,7 @@ func TestSchemaIndex_InvalidateCache_WhileIndexing_409(t *testing.T) {
 	_ = projRepo.Create(context.Background(), p)
 	ci := &mockCacheInvalidator{}
 	drop := &mockDropper{}
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), drop, nil, nil, ci)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), drop, nil, nil, ci, nil)
 
 	w := httptest.NewRecorder()
 	h.InvalidateCache(w, newReq("POST", "/schema-index/invalidate-cache", p.ID, ""))
@@ -635,7 +635,7 @@ func TestSchemaIndex_InvalidateCache_WhileIndexing_409(t *testing.T) {
 
 func TestSchemaIndex_InvalidateCache_MissingProject_404(t *testing.T) {
 	ci := &mockCacheInvalidator{}
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, ci)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, ci, nil)
 	w := httptest.NewRecorder()
 	h.InvalidateCache(w, newReq("POST", "/schema-index/invalidate-cache", "nope", ""))
 	if w.Code != http.StatusNotFound {
@@ -648,7 +648,7 @@ func TestSchemaIndex_InvalidateCache_MissingProject_404(t *testing.T) {
 
 func TestSchemaIndex_InvalidateCache_EmptyProjectID_400(t *testing.T) {
 	ci := &mockCacheInvalidator{}
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, ci)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, ci, nil)
 	w := httptest.NewRecorder()
 	h.InvalidateCache(w, newReq("POST", "/schema-index/invalidate-cache", "", ""))
 	if w.Code != http.StatusBadRequest {
@@ -661,7 +661,7 @@ func TestSchemaIndex_InvalidateCache_RepoError_500(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
 	ci := &mockCacheInvalidator{err: errors.New("mongo down")}
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
 
 	w := httptest.NewRecorder()
 	h.InvalidateCache(w, newReq("POST", "/schema-index/invalidate-cache", p.ID, ""))
@@ -690,7 +690,7 @@ func TestSchemaIndex_GetCacheInfo_HappyPath(t *testing.T) {
 	_ = projRepo.Create(context.Background(), p)
 	when := time.Date(2026, 4, 25, 10, 30, 0, 0, time.UTC)
 	ci := &mockCacheInvalidator{lastCachedAt: when}
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
 
 	w := httptest.NewRecorder()
 	h.GetCacheInfo(w, newReq("GET", "/schema-index/cache-info", p.ID, ""))
@@ -711,7 +711,7 @@ func TestSchemaIndex_GetCacheInfo_EmptyCache(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
 	ci := &mockCacheInvalidator{} // zero time → empty cache
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
 
 	w := httptest.NewRecorder()
 	h.GetCacheInfo(w, newReq("GET", "/schema-index/cache-info", p.ID, ""))
@@ -734,7 +734,7 @@ func TestSchemaIndex_GetCacheInfo_NoRepo_OK_Empty(t *testing.T) {
 	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"}
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, nil)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, nil, nil)
 
 	w := httptest.NewRecorder()
 	h.GetCacheInfo(w, newReq("GET", "/schema-index/cache-info", p.ID, ""))
@@ -749,7 +749,7 @@ func TestSchemaIndex_GetCacheInfo_NoRepo_OK_Empty(t *testing.T) {
 
 func TestSchemaIndex_GetCacheInfo_MissingProject_404(t *testing.T) {
 	ci := &mockCacheInvalidator{}
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, ci)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, ci, nil)
 	w := httptest.NewRecorder()
 	h.GetCacheInfo(w, newReq("GET", "/schema-index/cache-info", "nope", ""))
 	if w.Code != http.StatusNotFound {
@@ -759,7 +759,7 @@ func TestSchemaIndex_GetCacheInfo_MissingProject_404(t *testing.T) {
 
 func TestSchemaIndex_GetCacheInfo_EmptyProjectID_400(t *testing.T) {
 	ci := &mockCacheInvalidator{}
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, ci)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, ci, nil)
 	w := httptest.NewRecorder()
 	h.GetCacheInfo(w, newReq("GET", "/schema-index/cache-info", "", ""))
 	if w.Code != http.StatusBadRequest {
@@ -772,7 +772,7 @@ func TestSchemaIndex_GetCacheInfo_RepoError_500(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
 	ci := &mockCacheInvalidator{lastErr: errors.New("mongo down")}
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
 
 	w := httptest.NewRecorder()
 	h.GetCacheInfo(w, newReq("GET", "/schema-index/cache-info", p.ID, ""))
@@ -804,7 +804,7 @@ func TestSchemaIndex_ListCachedTables_HappyPath(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
 	ci := &mockCacheInvalidator{tables: []string{"a.x", "a.y", "b.z"}}
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
 
 	w := httptest.NewRecorder()
 	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables", p.ID, ""))
@@ -822,7 +822,7 @@ func TestSchemaIndex_ListCachedTables_EmptyCache(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
 	ci := &mockCacheInvalidator{} // tables nil → empty list, not null
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
 
 	w := httptest.NewRecorder()
 	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables", p.ID, ""))
@@ -870,7 +870,7 @@ func TestSchemaIndex_ListCachedTables_LiveFallback_WhenCacheEmpty(t *testing.T) 
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
 	ci := &mockCacheInvalidator{} // empty cache → triggers the live fallback
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
 	lister := &fakeTableLister{tables: []string{"dbo.orders", "dbo.customers"}}
 	h.SetTableLister(lister)
 
@@ -893,7 +893,7 @@ func TestSchemaIndex_ListCachedTables_LiveFallback_SkippedWhenCacheNonEmpty(t *t
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
 	ci := &mockCacheInvalidator{tables: []string{"a.x"}} // cache has rows → indexed set wins
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
 	lister := &fakeTableLister{tables: []string{"dbo.should_not_appear"}}
 	h.SetTableLister(lister)
 
@@ -916,7 +916,7 @@ func TestSchemaIndex_ListCachedTables_LiveFallback_CachedAcrossPolls(t *testing.
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
 	ci := &mockCacheInvalidator{} // empty cache
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
 	lister := &fakeTableLister{tables: []string{"dbo.orders"}}
 	h.SetTableLister(lister)
 
@@ -939,7 +939,7 @@ func TestSchemaIndex_ListCachedTables_LiveFallback_SkippedWithoutWarehouse(t *te
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
 	ci := &mockCacheInvalidator{} // empty cache
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
 	lister := &fakeTableLister{tables: []string{"dbo.should_not_appear"}}
 	h.SetTableLister(lister)
 
@@ -959,7 +959,7 @@ func TestSchemaIndex_ListCachedTables_LiveFallback_ErrorDegradesToEmpty(t *testi
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
 	ci := &mockCacheInvalidator{} // empty cache
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
 	h.SetTableLister(&fakeTableLister{err: errors.New("warehouse unreachable")})
 
 	w := httptest.NewRecorder()
@@ -996,7 +996,7 @@ func TestSchemaIndex_ListCachedTables_WarehouseID_ScopesCacheToDatasource(t *tes
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
 	ci := &mockCacheInvalidator{tables: []string{"public.customer"}} // cache hit → no live fallback
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
 
 	w := httptest.NewRecorder()
 	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?warehouse_id=wh_pg", p.ID, ""))
@@ -1015,7 +1015,7 @@ func TestSchemaIndex_ListCachedTables_WarehouseID_EmptyResolvesToPrimary(t *test
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
 	ci := &mockCacheInvalidator{tables: []string{"dbo.orders"}}
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
 
 	w := httptest.NewRecorder()
 	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables", p.ID, ""))
@@ -1034,7 +1034,7 @@ func TestSchemaIndex_ListCachedTables_WarehouseID_Unknown_404(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
 	ci := &mockCacheInvalidator{} // empty cache — would trigger the live fallback if we got that far
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
 	lister := &fakeTableLister{tables: []string{"dbo.should_not_appear"}}
 	h.SetTableLister(lister)
 
@@ -1056,7 +1056,7 @@ func TestSchemaIndex_ListCachedTables_WarehouseID_LiveFallback_PerDatasource(t *
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
 	ci := &mockCacheInvalidator{} // empty cache → live fallback for both
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
 	lister := &fakeTableLister{byWarehouse: map[string][]string{
 		"wh_mssql": {"dbo.orders"},
 		"wh_pg":    {"public.customer"},
@@ -1089,7 +1089,7 @@ func TestSchemaIndex_ListCachedTables_NoRepo_OK_Empty(t *testing.T) {
 	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"}
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, nil)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, nil, nil)
 
 	w := httptest.NewRecorder()
 	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables", p.ID, ""))
@@ -1104,7 +1104,7 @@ func TestSchemaIndex_ListCachedTables_NoRepo_OK_Empty(t *testing.T) {
 
 func TestSchemaIndex_ListCachedTables_MissingProject_404(t *testing.T) {
 	ci := &mockCacheInvalidator{}
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, ci)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, ci, nil)
 	w := httptest.NewRecorder()
 	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables", "nope", ""))
 	if w.Code != http.StatusNotFound {
@@ -1114,7 +1114,7 @@ func TestSchemaIndex_ListCachedTables_MissingProject_404(t *testing.T) {
 
 func TestSchemaIndex_ListCachedTables_EmptyProjectID_400(t *testing.T) {
 	ci := &mockCacheInvalidator{}
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, ci)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, ci, nil)
 	w := httptest.NewRecorder()
 	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables", "", ""))
 	if w.Code != http.StatusBadRequest {
@@ -1127,7 +1127,7 @@ func TestSchemaIndex_ListCachedTables_RepoError_500(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
 	ci := &mockCacheInvalidator{tablesErr: errors.New("mongo down")}
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
 
 	w := httptest.NewRecorder()
 	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables", p.ID, ""))
@@ -1141,7 +1141,7 @@ func TestSchemaIndex_ListCachedTables_RepoError_500(t *testing.T) {
 func TestSchemaIndex_GetStatus_ProjectGetError_500(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	projRepo.getErr = errors.New("mongo down")
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, nil)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, nil, nil)
 
 	w := httptest.NewRecorder()
 	h.GetStatus(w, newReq("GET", "/schema-index/status", "any", ""))
@@ -1158,7 +1158,7 @@ func TestSchemaIndex_GetStatus_ProgressErrorDegradesGracefully(t *testing.T) {
 	_ = projRepo.Create(context.Background(), p)
 	prog := newMockProgress()
 	prog.err = errors.New("mongo blip")
-	h := NewSchemaIndexHandler(projRepo, prog, nil, nil, nil, nil)
+	h := NewSchemaIndexHandler(projRepo, prog, nil, nil, nil, nil, nil)
 
 	w := httptest.NewRecorder()
 	h.GetStatus(w, newReq("GET", "/schema-index/status", p.ID, ""))
@@ -1177,7 +1177,7 @@ func TestSchemaIndex_GetStatus_ProgressErrorDegradesGracefully(t *testing.T) {
 // --- Retry error branches ---
 
 func TestSchemaIndex_Retry_EmptyProjectID_400(t *testing.T) {
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, nil)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, nil, nil)
 	w := httptest.NewRecorder()
 	h.Retry(w, newReq("POST", "/schema-index/retry", "", ""))
 	if w.Code != http.StatusBadRequest {
@@ -1188,7 +1188,7 @@ func TestSchemaIndex_Retry_EmptyProjectID_400(t *testing.T) {
 func TestSchemaIndex_Retry_ProjectGetError_500(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	projRepo.getErr = errors.New("mongo down")
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, nil)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, nil, nil)
 
 	w := httptest.NewRecorder()
 	h.Retry(w, newReq("POST", "/schema-index/retry", "any", ""))
@@ -1200,7 +1200,7 @@ func TestSchemaIndex_Retry_ProjectGetError_500(t *testing.T) {
 // --- Reindex error branches ---
 
 func TestSchemaIndex_Reindex_EmptyProjectID_400(t *testing.T) {
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, nil)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, nil, nil)
 	w := httptest.NewRecorder()
 	h.Reindex(w, newReq("POST", "/reindex", "", ""))
 	if w.Code != http.StatusBadRequest {
@@ -1211,7 +1211,7 @@ func TestSchemaIndex_Reindex_EmptyProjectID_400(t *testing.T) {
 func TestSchemaIndex_Reindex_ProjectGetError_500(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	projRepo.getErr = errors.New("mongo down")
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), &mockDropper{}, nil, nil, nil)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), &mockDropper{}, nil, nil, nil, nil)
 
 	w := httptest.NewRecorder()
 	h.Reindex(w, newReq("POST", "/reindex", "any", ""))
@@ -1225,7 +1225,7 @@ func TestSchemaIndex_Reindex_ProjectGetError_500(t *testing.T) {
 func TestSchemaIndex_Cancel_ProjectGetError_500(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	projRepo.getErr = errors.New("mongo down")
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, &mockCanceller{}, nil)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, &mockCanceller{}, nil, nil)
 
 	w := httptest.NewRecorder()
 	h.Cancel(w, newReq("POST", "/schema-index/cancel", "any", ""))
@@ -1280,7 +1280,7 @@ func TestSchemaIndex_ListLogs_HappyPath(t *testing.T) {
 		{ProjectID: "p1", RunID: "r1", Line: "first", CreatedAt: when},
 		{ProjectID: "p1", RunID: "r1", Line: "second", CreatedAt: when.Add(time.Second)},
 	}}
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, lister, nil, nil)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, lister, nil, nil, nil)
 
 	w := httptest.NewRecorder()
 	h.ListLogs(w, newReq("GET", "/schema-index/logs", "p1", ""))
@@ -1306,7 +1306,7 @@ func TestSchemaIndex_ListLogs_NilRepo_OK_Empty(t *testing.T) {
 	// Builds without the log repo wired return an empty list (not 503)
 	// so the dashboard tail just shows "no logs yet" without special-
 	// casing.
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, nil)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, nil, nil)
 	w := httptest.NewRecorder()
 	h.ListLogs(w, newReq("GET", "/schema-index/logs", "p1", ""))
 	if w.Code != http.StatusOK {
@@ -1319,7 +1319,7 @@ func TestSchemaIndex_ListLogs_NilRepo_OK_Empty(t *testing.T) {
 }
 
 func TestSchemaIndex_ListLogs_EmptyProjectID_400(t *testing.T) {
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, &mockLogLister{}, nil, nil)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, &mockLogLister{}, nil, nil, nil)
 	w := httptest.NewRecorder()
 	h.ListLogs(w, newReq("GET", "/schema-index/logs", "", ""))
 	if w.Code != http.StatusBadRequest {
@@ -1329,7 +1329,7 @@ func TestSchemaIndex_ListLogs_EmptyProjectID_400(t *testing.T) {
 
 func TestSchemaIndex_ListLogs_ParsesSinceQuery(t *testing.T) {
 	lister := &mockLogLister{}
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, lister, nil, nil)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, lister, nil, nil, nil)
 
 	since := "2026-04-25T10:30:00.500Z" // RFC 3339Nano
 	r := httptest.NewRequest("GET", "/schema-index/logs?since="+url.QueryEscape(since), nil)
@@ -1352,7 +1352,7 @@ func TestSchemaIndex_ListLogs_FallsBackToRFC3339(t *testing.T) {
 	// Plain RFC 3339 (no fractional seconds) must also be accepted —
 	// the parser tries Nano first then falls back.
 	lister := &mockLogLister{}
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, lister, nil, nil)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, lister, nil, nil, nil)
 
 	since := "2026-04-25T10:30:00Z"
 	r := httptest.NewRequest("GET", "/schema-index/logs?since="+url.QueryEscape(since), nil)
@@ -1370,7 +1370,7 @@ func TestSchemaIndex_ListLogs_FallsBackToRFC3339(t *testing.T) {
 
 func TestSchemaIndex_ListLogs_BadSince_400(t *testing.T) {
 	lister := &mockLogLister{}
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, lister, nil, nil)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, lister, nil, nil, nil)
 	r := httptest.NewRequest("GET", "/schema-index/logs?since=notadate", nil)
 	r.SetPathValue("id", "p1")
 	w := httptest.NewRecorder()
@@ -1385,7 +1385,7 @@ func TestSchemaIndex_ListLogs_BadSince_400(t *testing.T) {
 
 func TestSchemaIndex_ListLogs_HonoursLimitQuery(t *testing.T) {
 	lister := &mockLogLister{}
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, lister, nil, nil)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, lister, nil, nil, nil)
 	r := httptest.NewRequest("GET", "/schema-index/logs?limit=42", nil)
 	r.SetPathValue("id", "p1")
 	w := httptest.NewRecorder()
@@ -1402,7 +1402,7 @@ func TestSchemaIndex_ListLogs_BadLimitFallsBackToDefault(t *testing.T) {
 	// A non-numeric or zero/negative limit must NOT fail the request —
 	// the handler silently drops back to the default of 200.
 	lister := &mockLogLister{}
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, lister, nil, nil)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, lister, nil, nil, nil)
 	r := httptest.NewRequest("GET", "/schema-index/logs?limit=abc", nil)
 	r.SetPathValue("id", "p1")
 	w := httptest.NewRecorder()
@@ -1417,7 +1417,7 @@ func TestSchemaIndex_ListLogs_BadLimitFallsBackToDefault(t *testing.T) {
 
 func TestSchemaIndex_ListLogs_RepoError_500(t *testing.T) {
 	lister := &mockLogLister{err: errors.New("mongo down")}
-	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, lister, nil, nil)
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, lister, nil, nil, nil)
 	w := httptest.NewRecorder()
 	h.ListLogs(w, newReq("GET", "/schema-index/logs", "p1", ""))
 	if w.Code != http.StatusInternalServerError {
@@ -1433,7 +1433,7 @@ func TestSchemaIndex_Retry_SetStatusError_500(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
 	projRepo.setStatusErr = errors.New("mongo write failed")
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, nil)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, nil, nil)
 
 	w := httptest.NewRecorder()
 	h.Retry(w, newReq("POST", "/schema-index/retry", p.ID, ""))
@@ -1447,7 +1447,7 @@ func TestSchemaIndex_Reindex_SetStatusError_500(t *testing.T) {
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
 	projRepo.setStatusErr = errors.New("mongo write failed")
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), &mockDropper{}, nil, nil, nil)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), &mockDropper{}, nil, nil, nil, nil)
 
 	w := httptest.NewRecorder()
 	h.Reindex(w, newReq("POST", "/reindex", p.ID, ""))
@@ -1465,7 +1465,7 @@ func TestSchemaIndex_InvalidateCache_SetStatusError_500(t *testing.T) {
 	_ = projRepo.Create(context.Background(), p)
 	projRepo.setStatusErr = errors.New("mongo write failed")
 	ci := &mockCacheInvalidator{}
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), &mockDropper{}, nil, nil, ci)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), &mockDropper{}, nil, nil, ci, nil)
 
 	w := httptest.NewRecorder()
 	h.InvalidateCache(w, newReq("POST", "/schema-index/invalidate-cache", p.ID, ""))
@@ -1474,5 +1474,231 @@ func TestSchemaIndex_InvalidateCache_SetStatusError_500(t *testing.T) {
 	}
 	if len(ci.called) != 0 {
 		t.Errorf("Invalidate must NOT run when status flip fails, got %v", ci.called)
+	}
+}
+
+// --- ListRuns ---
+
+type mockRunLister struct {
+	runs         []models.SchemaIndexRun
+	latest       []models.SchemaIndexRun
+	err          error
+	gotProjectID string
+	gotDSID      string
+	gotLimit     int
+	latestCalled bool
+}
+
+func (m *mockRunLister) List(_ context.Context, projectID, datasourceID string, limit int) ([]models.SchemaIndexRun, error) {
+	m.gotProjectID, m.gotDSID, m.gotLimit = projectID, datasourceID, limit
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.runs, nil
+}
+
+func (m *mockRunLister) LatestByDatasource(_ context.Context, projectID string) ([]models.SchemaIndexRun, error) {
+	m.gotProjectID = projectID
+	m.latestCalled = true
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.latest, nil
+}
+
+func makeRunsHandler(t *testing.T, p *models.Project, lister SchemaIndexRunLister) *SchemaIndexHandler {
+	t.Helper()
+	projRepo := newMockProjectRepo()
+	if p != nil {
+		if err := projRepo.Create(context.Background(), p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, nil, lister)
+}
+
+func decodeRuns(t *testing.T, w *httptest.ResponseRecorder) []SchemaIndexRunView {
+	t.Helper()
+	var env struct {
+		Data struct {
+			Runs []SchemaIndexRunView `json:"runs"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode body %q: %v", w.Body.String(), err)
+	}
+	return env.Data.Runs
+}
+
+func TestSchemaIndex_ListRuns_HappyPath(t *testing.T) {
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"}
+	start := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+	fin := time.Now().UTC().Truncate(time.Second)
+	lister := &mockRunLister{runs: []models.SchemaIndexRun{
+		{DatasourceID: "wh_a", DatasourceName: "Redshift", RunID: "r2", Kind: "tables",
+			ObjectsIndexed: 42, BlurbsGenerated: 40, Status: models.SchemaIndexStatusReady,
+			PhaseDurations: map[string]int64{"schema_discovery": 3000}, TokensIn: 10, TokensOut: 20,
+			StartedAt: start, FinishedAt: fin},
+		{DatasourceID: "wh_a", RunID: "r1", Kind: "tables", Status: models.SchemaIndexStatusFailed, Error: "boom", FinishedAt: start},
+	}}
+	h := makeRunsHandler(t, p, lister)
+
+	w := httptest.NewRecorder()
+	h.ListRuns(w, newReq("GET", "/schema-index/runs", p.ID, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s)", w.Code, w.Body.String())
+	}
+	runs := decodeRuns(t, w)
+	if len(runs) != 2 {
+		t.Fatalf("got %d runs, want 2", len(runs))
+	}
+	if runs[0].RunID != "r2" || runs[0].ObjectsIndexed != 42 || runs[0].BlurbsGenerated != 40 {
+		t.Errorf("run[0] mapped wrong: %+v", runs[0])
+	}
+	if runs[0].Status != "ready" || runs[0].DatasourceName != "Redshift" {
+		t.Errorf("run[0] status/name wrong: %+v", runs[0])
+	}
+	if runs[0].StartedAt == "" || runs[0].FinishedAt == "" {
+		t.Errorf("run[0] timestamps not formatted: %+v", runs[0])
+	}
+	if runs[0].PhaseDurations["schema_discovery"] != 3000 {
+		t.Errorf("run[0] phase_durations = %+v", runs[0].PhaseDurations)
+	}
+	if runs[1].Status != "failed" || runs[1].Error != "boom" {
+		t.Errorf("run[1] failure mapped wrong: %+v", runs[1])
+	}
+}
+
+func TestSchemaIndex_ListRuns_DatasourceAndLimitPassthrough(t *testing.T) {
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"}
+	lister := &mockRunLister{}
+	h := makeRunsHandler(t, p, lister)
+
+	w := httptest.NewRecorder()
+	h.ListRuns(w, newReq("GET", "/schema-index/runs?datasource_id=wh_a&limit=5", p.ID, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if lister.gotDSID != "wh_a" {
+		t.Errorf("datasource_id passthrough = %q", lister.gotDSID)
+	}
+	if lister.gotLimit != 5 {
+		t.Errorf("limit passthrough = %d, want 5", lister.gotLimit)
+	}
+	if lister.gotProjectID != p.ID {
+		t.Errorf("project_id passthrough = %q", lister.gotProjectID)
+	}
+}
+
+func TestSchemaIndex_ListRuns_BadLimitIgnored(t *testing.T) {
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"}
+	lister := &mockRunLister{}
+	h := makeRunsHandler(t, p, lister)
+
+	w := httptest.NewRecorder()
+	h.ListRuns(w, newReq("GET", "/schema-index/runs?limit=notanumber", p.ID, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d (malformed limit should not 400)", w.Code)
+	}
+	if lister.gotLimit != 0 {
+		t.Errorf("malformed limit should pass 0 (repo default), got %d", lister.gotLimit)
+	}
+}
+
+func TestSchemaIndex_ListRuns_MissingProject(t *testing.T) {
+	h := makeRunsHandler(t, nil, &mockRunLister{})
+	w := httptest.NewRecorder()
+	h.ListRuns(w, newReq("GET", "/schema-index/runs", "nope", ""))
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestSchemaIndex_ListRuns_NilListerReturnsEmpty(t *testing.T) {
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"}
+	h := makeRunsHandler(t, p, nil) // no run lister wired
+
+	w := httptest.NewRecorder()
+	h.ListRuns(w, newReq("GET", "/schema-index/runs", p.ID, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if runs := decodeRuns(t, w); len(runs) != 0 {
+		t.Errorf("nil lister should yield empty list, got %+v", runs)
+	}
+}
+
+func TestSchemaIndex_ListRuns_ListerError(t *testing.T) {
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"}
+	h := makeRunsHandler(t, p, &mockRunLister{err: errors.New("mongo down")})
+
+	w := httptest.NewRecorder()
+	h.ListRuns(w, newReq("GET", "/schema-index/runs", p.ID, ""))
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestSchemaIndex_ListRuns_LatestMode(t *testing.T) {
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3", Warehouses: []models.WarehouseConfig{
+		{ID: "wh_a", Provider: "redshift"},
+		{ID: "wh_b", Provider: "snowflake"},
+	}}
+	lister := &mockRunLister{latest: []models.SchemaIndexRun{
+		{DatasourceID: "wh_a", RunID: "a2", Status: models.SchemaIndexStatusReady, ObjectsIndexed: 42},
+		{DatasourceID: "wh_b", RunID: "b1", Status: models.SchemaIndexStatusFailed, Error: "boom"},
+	}}
+	h := makeRunsHandler(t, p, lister)
+
+	w := httptest.NewRecorder()
+	h.ListRuns(w, newReq("GET", "/schema-index/runs?latest=1", p.ID, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if !lister.latestCalled {
+		t.Error("latest=1 should route to LatestByDatasource")
+	}
+	runs := decodeRuns(t, w)
+	if len(runs) != 2 {
+		t.Fatalf("got %d runs, want one per datasource (2)", len(runs))
+	}
+	if runs[0].DatasourceID != "wh_a" || runs[1].DatasourceID != "wh_b" {
+		t.Errorf("datasources = %q, %q", runs[0].DatasourceID, runs[1].DatasourceID)
+	}
+}
+
+func TestSchemaIndex_ListRuns_LatestMode_DropsRemovedDatasources(t *testing.T) {
+	// Append-only history keeps a row for wh_gone after it was removed from the
+	// project; latest-mode (the roll-up) must not present it as a current
+	// datasource, but the full-history endpoint still would.
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3", Warehouses: []models.WarehouseConfig{
+		{ID: "wh_a", Provider: "redshift"},
+	}}
+	lister := &mockRunLister{latest: []models.SchemaIndexRun{
+		{DatasourceID: "wh_a", RunID: "a1", Status: models.SchemaIndexStatusReady, ObjectsIndexed: 42},
+		{DatasourceID: "wh_gone", RunID: "g1", Status: models.SchemaIndexStatusReady, ObjectsIndexed: 7},
+	}}
+	h := makeRunsHandler(t, p, lister)
+
+	w := httptest.NewRecorder()
+	h.ListRuns(w, newReq("GET", "/schema-index/runs?latest=1", p.ID, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	runs := decodeRuns(t, w)
+	if len(runs) != 1 || runs[0].DatasourceID != "wh_a" {
+		t.Fatalf("latest roll-up should drop removed datasources, got %+v", runs)
+	}
+
+	// Full history (no latest) is unfiltered — wh_gone still appears.
+	lister2 := &mockRunLister{runs: []models.SchemaIndexRun{
+		{DatasourceID: "wh_a", RunID: "a1", Status: models.SchemaIndexStatusReady},
+		{DatasourceID: "wh_gone", RunID: "g1", Status: models.SchemaIndexStatusReady},
+	}}
+	h2 := makeRunsHandler(t, p, lister2)
+	w2 := httptest.NewRecorder()
+	h2.ListRuns(w2, newReq("GET", "/schema-index/runs", p.ID, ""))
+	if got := decodeRuns(t, w2); len(got) != 2 {
+		t.Fatalf("full history should be unfiltered, got %d runs", len(got))
 	}
 }

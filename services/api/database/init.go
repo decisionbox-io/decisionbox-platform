@@ -196,6 +196,24 @@ var schema = []struct {
 		},
 	},
 	{
+		Name: "project_schema_index_runs",
+		Indexes: []mongo.IndexModel{
+			// Project roll-up: newest runs across all datasources (the
+			// project-page per-datasource status lines).
+			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "finished_at", Value: -1}}},
+			// Per-datasource history list (the primary query — the Data
+			// Warehouse panel's index-run history table).
+			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "datasource_id", Value: 1}, {Key: "finished_at", Value: -1}}},
+			// One result doc per (project, datasource, run): the agent upserts
+			// by this key so a retried stamp can't duplicate the row. No TTL —
+			// this is the durable audit record (progress + logs keep theirs).
+			{
+				Keys:    bson.D{{Key: "project_id", Value: 1}, {Key: "datasource_id", Value: 1}, {Key: "run_id", Value: 1}},
+				Options: options.Index().SetUnique(true),
+			},
+		},
+	},
+	{
 		Name: "project_schema_cache",
 		Indexes: []mongo.IndexModel{
 			// Cache lookup path: Find({project_id, warehouse_hash}).

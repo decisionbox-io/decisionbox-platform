@@ -2,17 +2,18 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert, Button, Group, Loader, Stack, Text, Title,
+  Alert, Button, Divider, Group, Loader, Stack, Text, Title,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconAlertCircle, IconCheck, IconPlugConnected, IconShieldCheck, IconX } from '@tabler/icons-react';
-import { api, Project, ProviderMeta, SecretEntryResponse, TestConnectionResult } from '@/lib/api';
+import { api, Project, ProviderMeta, resolvePrimaryDatasourceId, SecretEntryResponse, TestConnectionResult } from '@/lib/api';
 import {
   WarehouseFormFields,
   WarehouseFormState,
   emptyWarehouseFormState,
   buildDefaults,
 } from './WarehouseFormFields';
+import SchemaIndexHistory from './SchemaIndexHistory';
 
 type Variant = 'page' | 'wizard';
 
@@ -165,6 +166,25 @@ export default function WarehouseConfigPanel({ projectId, variant, onSaved }: Wa
           {variant === 'wizard' ? 'Save and continue' : 'Save warehouse'}
         </Button>
       </Group>
+
+      {/* Co-locate the index-run result with the re-index trigger: current
+          status + durable history for the primary datasource this panel edits.
+          resolvePrimaryDatasourceId mirrors the backend's primary resolution
+          (matched primary id → that warehouse; else first warehouse; else the
+          reserved default for a legacy project), so the filter matches the id
+          the agent stamped the primary's runs under and never surfaces another
+          datasource's run. Settings page only — the creation wizard has no
+          index to report yet. */}
+      {variant === 'page' && (
+        <>
+          <Divider my="xs" />
+          <SchemaIndexHistory
+            projectId={projectId}
+            datasourceId={resolvePrimaryDatasourceId(project)}
+            datasourceName={project.warehouse.provider || 'this data source'}
+          />
+        </>
+      )}
     </PanelSection>
   );
 }

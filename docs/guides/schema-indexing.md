@@ -98,6 +98,43 @@ curl -X POST http://localhost:8080/api/v1/projects/{id}/schema-index/retry
 curl http://localhost:8080/api/v1/projects/{id}/schema-index/status
 ```
 
+## Per-datasource run history
+
+`schema_index_status` is project-level and live — it is reset at the start of
+every run, so it tells you only about the run in flight or the last one's
+lifecycle state.
+Indexing, however, runs **per datasource**: a project can have more than one
+warehouse, and each is indexed independently.
+
+So every time a datasource finishes indexing — success **or** failure — the
+agent stamps a durable result record into the `project_schema_index_runs`
+collection, one document per `(datasource × run)`.
+Unlike the live status doc, these records are never reset: they are the audit
+trail of what was indexed, from which datasource, when, and whether it
+succeeded.
+
+Each record carries the datasource id + name, the run id, the object kind
+(`tables` today — kept generic so other object kinds slot in without a schema
+change), the number of objects indexed and blurbs generated, the blurb-LLM
+token totals, per-phase durations, the `ready` / `failed` status with the error
+on failure, and the start / finish timestamps.
+
+Read the history — newest finished first, optionally filtered to one
+datasource:
+
+```bash
+# All datasources' runs for a project.
+curl http://localhost:8080/api/v1/projects/{id}/schema-index/runs
+
+# Just one datasource, most recent 20.
+curl "http://localhost:8080/api/v1/projects/{id}/schema-index/runs?datasource_id=wh_redshift&limit=20"
+```
+
+The dashboard renders this in two places: a per-datasource "Indexing" section
+with an expandable history table on the Data Warehouse settings panel, and a
+persistent per-datasource status roll-up on the project page (so a successful
+re-index leaves a visible record, not just a toast).
+
 ## When does an embedding-model change force a rebuild?
 
 Always. Qdrant collections are bound to a fixed vector dimension, so
@@ -139,7 +176,7 @@ usually trips them on a single account.)
 
 ## Failure modes
 
-Indexing runs are all-or-nothing: on failure the collection is left dropped and the next user-triggered retry starts from a clean slate. Partial progress is thrown away. A 30-min rebuild that dies at minute 25 costs roughly $0.60 + 6 min to redo on a representative ERP warehouse — the simplicity of full rebuilds is worth the occasional redo.
+Indexing runs are all-or-nothing: on failure the collection is left dropped and the next user-triggered retry starts from a clean slate. Partial progress is thrown away. A 30-min rebuild that dies at minute 25 costs roughly $0.60 + 6 min to redo on a representative ERP warehouse — the simplicity of full rebuilds is worth the occasional redo. The failure is still recorded in the per-datasource run history (status `failed` with the error), so the audit trail shows the attempt even though the index itself was rolled back.
 
 ## Qdrant is required
 

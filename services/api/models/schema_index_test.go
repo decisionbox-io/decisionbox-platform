@@ -217,3 +217,59 @@ func TestProject_SchemaIndex_Failed_HasError(t *testing.T) {
 		t.Errorf("schema_index_error = %v", raw["schema_index_error"])
 	}
 }
+
+// SchemaIndexRun is written by the agent and read by the API from the same
+// collection, so its bson tags must round-trip cleanly — including the
+// phase_durations map and the omitempty error field.
+func TestSchemaIndexRun_RoundTrip(t *testing.T) {
+	start := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
+	fin := time.Now().UTC().Truncate(time.Millisecond)
+	orig := SchemaIndexRun{
+		ProjectID: "p1", DatasourceID: "wh_a", DatasourceName: "Redshift", RunID: "r1",
+		Kind: SchemaIndexRunKindTables, ObjectsIndexed: 42, BlurbsGenerated: 40,
+		Status: SchemaIndexStatusReady, PhaseDurations: map[string]int64{"schema_discovery": 3000, "embedding": 500},
+		TokensIn: 10, TokensOut: 20, StartedAt: start, FinishedAt: fin,
+	}
+
+	for _, enc := range []string{"bson", "json"} {
+		t.Run(enc, func(t *testing.T) {
+			var b []byte
+			var err error
+			if enc == "bson" {
+				b, err = bson.Marshal(orig)
+			} else {
+				b, err = json.Marshal(orig)
+			}
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var got SchemaIndexRun
+			if enc == "bson" {
+				err = bson.Unmarshal(b, &got)
+			} else {
+				err = json.Unmarshal(b, &got)
+			}
+			if err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got.DatasourceID != "wh_a" || got.RunID != "r1" || got.Kind != SchemaIndexRunKindTables {
+				t.Errorf("identity lost: %+v", got)
+			}
+			if got.ObjectsIndexed != 42 || got.BlurbsGenerated != 40 {
+				t.Errorf("counts lost: %+v", got)
+			}
+			if got.PhaseDurations["schema_discovery"] != 3000 || got.PhaseDurations["embedding"] != 500 {
+				t.Errorf("phase_durations lost: %+v", got.PhaseDurations)
+			}
+			if got.Status != SchemaIndexStatusReady {
+				t.Errorf("status lost: %q", got.Status)
+			}
+		})
+	}
+}
+
+func TestSchemaIndexRunKindTables(t *testing.T) {
+	if SchemaIndexRunKindTables != "tables" {
+		t.Errorf("kind constant = %q, want tables", SchemaIndexRunKindTables)
+	}
+}

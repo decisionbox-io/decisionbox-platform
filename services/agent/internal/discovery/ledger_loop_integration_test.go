@@ -14,6 +14,7 @@ import (
 	tcmongo "github.com/testcontainers/testcontainers-go/modules/mongodb"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
+	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
