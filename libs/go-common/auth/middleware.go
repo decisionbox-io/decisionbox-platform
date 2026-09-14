@@ -93,7 +93,7 @@ func ProjectACLMiddleware(pathPrefix string, load ProjectACLLoader) func(http.Ha
 				OrgID:        orgID,
 				Roles:        u.Roles,
 				AllowedRoles: allowedRoles,
-				Action:       projectActionForMethod(r.Method),
+				Action:       ProjectActionForMethod(r.Method),
 				Allowed:      allowed,
 			})
 			if !allowed {
@@ -122,9 +122,11 @@ func projectIDAfterPrefix(path, pathPrefix string) string {
 	return rest
 }
 
-// projectActionForMethod maps an HTTP method to the permission-shaped action
-// label recorded in the access-audit trail.
-func projectActionForMethod(method string) string {
+// ProjectActionForMethod maps an HTTP method to the permission-shaped action
+// label recorded in the access-audit trail. Exported so enterprise gates that
+// enforce the project ACL for non-/api/v1/projects/ routes (e.g. discovery-
+// scoped exec summaries) record the same action vocabulary.
+func ProjectActionForMethod(method string) string {
 	switch method {
 	case http.MethodGet, http.MethodHead:
 		return "project.view"

@@ -57,6 +57,41 @@ func TestMe_ReturnsPrincipalFromContext(t *testing.T) {
 	}
 }
 
+func TestMe_ExposesResolvedEffectiveRoles(t *testing.T) {
+	// A custom role resolved to a built-in tier (advanced RBAC #321): `roles`
+	// stays the genuine set (the project ACL keys on it) while `effective_roles`
+	// carries the resolved tier the client uses to gate UI the same way the API's
+	// RequireRole hierarchy does.
+	p := &auth.UserPrincipal{
+		Sub:            "auth0|x",
+		OrgID:          "org-1",
+		Roles:          []string{"hr-analyst"},
+		EffectiveRoles: []string{"hr-analyst", "member"},
+	}
+	req := httptest.NewRequest("GET", "/api/v1/me", nil)
+	req = req.WithContext(auth.WithUser(context.Background(), p))
+	w := httptest.NewRecorder()
+
+	Me(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var resp APIResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got := resp.Data.(map[string]interface{})
+	roles, ok := got["roles"].([]interface{})
+	if !ok || len(roles) != 1 || roles[0] != "hr-analyst" {
+		t.Errorf("roles = %v, want [hr-analyst] (genuine, for the ACL)", got["roles"])
+	}
+	eff, ok := got["effective_roles"].([]interface{})
+	if !ok || len(eff) != 2 || eff[0] != "hr-analyst" || eff[1] != "member" {
+		t.Errorf("effective_roles = %v, want [hr-analyst member] (resolved tier)", got["effective_roles"])
+	}
+}
+
 func TestMe_ReturnsAnonymousFromNoAuthContext(t *testing.T) {
 	// NoAuthProvider attaches an anonymous principal in its middleware;
 	// /me should return it as-is so OSS deployments can render a generic

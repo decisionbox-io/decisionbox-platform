@@ -1346,7 +1346,12 @@ export interface Me {
   sub: string;
   email: string;
   org_id: string;
+  // roles is the GENUINE role set (the project ACL keys on it). effective_roles
+  // is the RESOLVED tier set (advanced RBAC #321): a custom role resolves to a
+  // built-in-equivalent tier (member/admin) the genuine set doesn't carry, so
+  // role-tier UI gates must read effective_roles. On community it equals roles.
   roles: string[];
+  effective_roles?: string[];
   permissions?: string[];
 }
 
