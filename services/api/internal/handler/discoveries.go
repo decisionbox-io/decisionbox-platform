@@ -70,6 +70,9 @@ func (h *DiscoveriesHandler) List(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "project not found")
 		return
 	}
+	if !enforceProjectAccess(w, r, p, "project.view") {
+		return
+	}
 
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	results, err := h.repo.List(r.Context(), projectID, limit)
@@ -463,6 +466,9 @@ func (h *DiscoveriesHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	p, err := h.projectRepo.GetByID(r.Context(), projectID)
 	if err != nil || p == nil {
 		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	if !enforceProjectAccess(w, r, p, "project.view") {
 		return
 	}
 
