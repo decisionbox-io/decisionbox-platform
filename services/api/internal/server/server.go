@@ -337,43 +337,28 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	root.Handle("/health", healthMux)
 	root.Handle("/health/", healthMux)
 	root.Handle("/api/v1/health", healthMux)
-	root.Handle("/", authProvider.Middleware()(resolvePermissions(mux)))
-
-	// Middleware chain: CORS → Logging → Auth → Resolve permissions → RBAC → Router
-	return corsMiddleware(handler.LoggingMiddleware(root))
-}
-
-// resolvePermissions enriches the authenticated principal with the permissions
-// its roles grant, using the registered auth.PermissionResolver. It runs after
-// the auth provider has attached the principal and before the RBAC gates, so
-// downstream handlers and /me see resolved permissions and any resolver-added
-// effective roles (the enterprise resolver appends a built-in-equivalent tier
-// so a custom role still satisfies the linear RequireRole hierarchy).
-//
-// With no resolver registered (community default) the no-op resolver returns
-// the principal unchanged — zero behaviour change. A resolver error is
-// non-fatal: the request proceeds with the un-enriched principal (the
-// built-in roles still apply), so a transient config-store outage degrades to
-// baseline access rather than locking everyone out.
-func resolvePermissions(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p, ok := auth.FromContext(r.Context())
-		if !ok || p == nil {
-			next.ServeHTTP(w, r)
-			return
-		}
-		perms, roles, err := auth.GetPermissionResolver().Resolve(r.Context(), p)
+	// Advanced-RBAC (#321) middleware chain, applied after the auth provider
+	// attaches the principal:
+	//   1. ResolvePermissionsMiddleware — resolve roles → permissions + append
+	//      a custom role's built-in-equivalent tier (no-op on community).
+	//   2. ProjectACLMiddleware — enforce the role-based project ACL over the
+	//      whole /api/v1/projects/{id}/… subtree in one place (404 on denial).
+	// Both are exported from go-common/auth so the global-middleware plugins
+	// (knowledge sources, executive summaries) apply the same enforcement.
+	projectACL := auth.ProjectACLMiddleware("/api/v1/projects/", func(ctx context.Context, id string) (string, []string, bool, error) {
+		p, err := projectRepo.GetByID(ctx, id)
 		if err != nil {
-			next.ServeHTTP(w, r)
-			return
+			return "", nil, false, err
 		}
-		enriched := *p
-		enriched.Permissions = perms
-		if len(roles) > 0 {
-			enriched.Roles = roles
+		if p == nil {
+			return "", nil, false, nil
 		}
-		next.ServeHTTP(w, r.WithContext(auth.WithUser(r.Context(), &enriched)))
+		return p.OrgID, p.AllowedRoles, true, nil
 	})
+	root.Handle("/", authProvider.Middleware()(auth.ResolvePermissionsMiddleware()(projectACL(mux))))
+
+	// Middleware chain: CORS → Logging → Auth → Resolve permissions → Project ACL → RBAC → Router
+	return corsMiddleware(handler.LoggingMiddleware(root))
 }
 
 // counterReconcileInterval is how often the reconciliation goroutine
