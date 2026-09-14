@@ -90,8 +90,10 @@ func TestGetPermissionResolver_NoopDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(roles) != 1 || roles[0] != "member" {
-		t.Errorf("no-op resolver should return roles unchanged, got %v", roles)
+	// The no-op resolver returns nil effective roles ("no change"), so the
+	// middleware leaves any provider-set EffectiveRoles intact.
+	if roles != nil {
+		t.Errorf("no-op resolver should return nil effective roles (no change), got %v", roles)
 	}
 	if len(perms) != 1 || perms[0] != "x" {
 		t.Errorf("no-op resolver should return permissions unchanged, got %v", perms)

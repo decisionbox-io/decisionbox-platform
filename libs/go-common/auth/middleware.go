@@ -37,8 +37,12 @@ func ResolvePermissionsMiddleware() func(http.Handler) http.Handler {
 			}
 			enriched := *p
 			enriched.Permissions = perms
+			// The resolver's effective roles (original + appended built-in tier
+			// for custom roles) go on EffectiveRoles for the RequireRole
+			// hierarchy — NOT on Roles, which stays the original set so a
+			// synthesized tier can't satisfy a project ACL (CanAccessProject).
 			if len(roles) > 0 {
-				enriched.Roles = roles
+				enriched.EffectiveRoles = roles
 			}
 			next.ServeHTTP(w, r.WithContext(WithUser(r.Context(), &enriched)))
 		})

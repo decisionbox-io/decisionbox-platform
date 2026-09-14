@@ -56,5 +56,10 @@ func (noopPermissionResolver) Resolve(_ context.Context, p *UserPrincipal) ([]st
 	if p == nil {
 		return nil, nil, nil
 	}
-	return p.Permissions, p.Roles, nil
+	// Return nil effective roles ("no change") rather than p.Roles, so the
+	// resolvePermissions middleware leaves any EffectiveRoles the auth provider
+	// already set (e.g. the cloud handoff validator's tier aliases) intact
+	// instead of clobbering them. HierarchyRoles falls back to Roles when
+	// EffectiveRoles is empty.
+	return p.Permissions, nil, nil
 }

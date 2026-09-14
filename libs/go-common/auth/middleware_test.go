@@ -33,12 +33,12 @@ func TestResolvePermissionsMiddleware(t *testing.T) {
 		return []string{"project.view"}, append(append([]string{}, p.Roles...), "viewer"), nil
 	}))
 
-	var gotPerms []string
-	var gotRoles []string
+	var gotPerms, gotRoles, gotEffective []string
 	next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		u, _ := FromContext(r.Context())
 		gotPerms = u.Permissions
 		gotRoles = u.Roles
+		gotEffective = u.HierarchyRoles()
 	})
 	h := ResolvePermissionsMiddleware()(next)
 
@@ -49,8 +49,13 @@ func TestResolvePermissionsMiddleware(t *testing.T) {
 	if len(gotPerms) != 1 || gotPerms[0] != "project.view" {
 		t.Errorf("permissions = %v, want [project.view]", gotPerms)
 	}
-	if len(gotRoles) != 2 || gotRoles[1] != "viewer" {
-		t.Errorf("effective roles = %v, want [hr-analyst viewer]", gotRoles)
+	// Roles (used for the project ACL) must stay the ORIGINAL set — the
+	// synthesized tier goes only on EffectiveRoles (RequireRole hierarchy).
+	if len(gotRoles) != 1 || gotRoles[0] != "hr-analyst" {
+		t.Errorf("Roles = %v, want [hr-analyst] (unchanged for ACL)", gotRoles)
+	}
+	if len(gotEffective) != 2 || gotEffective[1] != "viewer" {
+		t.Errorf("effective roles = %v, want [hr-analyst viewer]", gotEffective)
 	}
 }
 

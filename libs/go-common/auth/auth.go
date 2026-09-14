@@ -21,6 +21,26 @@ type UserPrincipal struct {
 	// endpoint surfaces it so the dashboard can gate on capabilities rather
 	// than on the coarse role tier.
 	Permissions []string `json:"permissions,omitempty"`
+
+	// EffectiveRoles is Roles plus any built-in-equivalent tier the resolver
+	// appended so the linear RequireRole hierarchy admits a custom role. It is
+	// used ONLY for the RequireRole hierarchy check — NEVER for project-ACL
+	// matching, which keys on the original Roles so a synthesized tier can't let
+	// a custom role satisfy an allowed_roles entry it wasn't granted. Empty
+	// falls back to Roles. Not surfaced by /me (internal to enforcement).
+	EffectiveRoles []string `json:"-"`
+}
+
+// HierarchyRoles returns the roles used for the linear RequireRole hierarchy
+// check — EffectiveRoles when the resolver populated them, else Roles.
+func (u *UserPrincipal) HierarchyRoles() []string {
+	if u != nil && len(u.EffectiveRoles) > 0 {
+		return u.EffectiveRoles
+	}
+	if u == nil {
+		return nil
+	}
+	return u.Roles
 }
 
 type contextKey string
