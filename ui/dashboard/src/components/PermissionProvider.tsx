@@ -8,6 +8,12 @@ import { hasPermission, hasMinRole } from '@/lib/rbac';
 // permissions and the gate helpers the UI uses to show/hide capabilities.
 export interface PermissionContextValue {
   loading: boolean;
+  // resolved is true only when GET /api/v1/me actually returned. It lets a
+  // consumer that has its own trustworthy role source (e.g. the session JWT)
+  // avoid the no-auth `['admin']` fail-open below when /me merely failed —
+  // otherwise an authenticated non-admin would be treated as admin on a 403 /
+  // transient error (advanced RBAC #321).
+  resolved: boolean;
   // roles is the GENUINE role set; effectiveRoles is the RESOLVED tier set that
   // role-tier gates (hasRole / useRole) must read so a custom role resolved to a
   // built-in tier isn't hidden from UI the API would allow (advanced RBAC #321).
@@ -20,6 +26,7 @@ export interface PermissionContextValue {
 
 const PermissionContext = createContext<PermissionContextValue>({
   loading: true,
+  resolved: false,
   roles: [],
   effectiveRoles: [],
   permissions: [],
@@ -64,6 +71,7 @@ export function PermissionProvider({ children }: { children: ReactNode }) {
 
   const value: PermissionContextValue = {
     loading: state.loading,
+    resolved: state.me !== null,
     roles,
     effectiveRoles,
     permissions,
