@@ -13,9 +13,9 @@ import (
 // returns zero-values; this is sufficient because the helper does
 // not call any other method.
 type fakeProvider struct {
-	dialect      string
-	quoteOpen    string
-	quoteClose   string
+	dialect    string
+	quoteOpen  string
+	quoteClose string
 }
 
 func (f *fakeProvider) Query(context.Context, string, map[string]interface{}) (*gowarehouse.QueryResult, error) {
@@ -31,15 +31,15 @@ func (f *fakeProvider) GetTableSchema(context.Context, string) (*gowarehouse.Tab
 func (f *fakeProvider) GetTableSchemaInDataset(context.Context, string, string) (*gowarehouse.TableSchema, error) {
 	return nil, nil
 }
-func (f *fakeProvider) GetDataset() string             { return "" }
-func (f *fakeProvider) SQLDialect() string             { return f.dialect }
-func (f *fakeProvider) SQLFixPrompt() string           { return "" }
+func (f *fakeProvider) GetDataset() string                     { return "" }
+func (f *fakeProvider) SQLDialect() string                     { return f.dialect }
+func (f *fakeProvider) SQLFixPrompt() string                   { return "" }
 func (f *fakeProvider) ValidateReadOnly(context.Context) error { return nil }
 func (f *fakeProvider) ValidateSQL(context.Context, string) error {
 	return nil
 }
 func (f *fakeProvider) HealthCheck(context.Context) error { return nil }
-func (f *fakeProvider) Close() error                           { return nil }
+func (f *fakeProvider) Close() error                      { return nil }
 func (f *fakeProvider) QuoteRef(parts ...string) string {
 	return gowarehouse.QuotePartsWith(f.quoteOpen, f.quoteClose, parts)
 }

@@ -32,7 +32,15 @@ type ProviderMeta struct {
 	// constructed Provider (and therefore config/credentials), this label is
 	// declared at registration and available by slug with no instantiation.
 	// Every registered provider sets it.
-	Dialect        string            `json:"dialect"`
+	Dialect string `json:"dialect"`
+
+	// Capability is the source-capability descriptor — query language, shape,
+	// and whether the source can anchor a project. Embedded, so its fields are
+	// declared and serialised inline. Every field defaults to what was true
+	// before the descriptor existed; a provider that declares none is
+	// unaffected. ProviderMeta.Language() additionally falls back to Dialect.
+	Capability
+
 	ConfigFields   []ConfigField     `json:"config_fields"`
 	AuthMethods    []AuthMethod      `json:"auth_methods,omitempty"`
 	DefaultPricing *WarehousePricing `json:"default_pricing,omitempty"`
@@ -47,23 +55,37 @@ type AuthMethod struct {
 	Name        string        `json:"name"`        // display name: "Application Default Credentials"
 	Description string        `json:"description"` // help text
 	Fields      []ConfigField `json:"fields"`      // fields specific to this auth method
+
+	// Flow names how the credential is obtained. Empty (FlowStaticConfig) is
+	// the only shape that existed before, and stays the default: the fields
+	// above are a form, and what the operator types is the credential.
+	//
+	// A method that declares FlowAuthorizationCode has no form to render —
+	// its credential is the durable refresh token a consent produces — so a
+	// UI must branch on this rather than on Fields being empty.
+	Flow string `json:"flow,omitempty"`
+
+	// Authorization carries the consent and token endpoints and the scopes
+	// the grant must cover. Set when Flow is FlowAuthorizationCode; nil
+	// otherwise.
+	Authorization *AuthorizationCode `json:"authorization,omitempty"`
 }
 
 // ConfigField describes a single configuration field for a provider.
 // The UI renders a form dynamically from these fields.
 type ConfigField struct {
-	Key         string `json:"key"`          // config key: "project_id", "dataset"
-	Label       string `json:"label"`        // display label: "GCP Project ID"
-	Description string `json:"description"`  // help text
+	Key         string `json:"key"`         // config key: "project_id", "dataset"
+	Label       string `json:"label"`       // display label: "GCP Project ID"
+	Description string `json:"description"` // help text
 	Required    bool   `json:"required"`
-	Type        string `json:"type"`         // "string", "number", "boolean", "credential" (stored as secret, not in project config)
-	Default     string `json:"default"`      // default value
-	Placeholder string `json:"placeholder"`  // placeholder text
+	Type        string `json:"type"`        // "string", "number", "boolean", "credential" (stored as secret, not in project config)
+	Default     string `json:"default"`     // default value
+	Placeholder string `json:"placeholder"` // placeholder text
 }
 
 var (
-	providersMu sync.RWMutex
-	providers   = make(map[string]ProviderFactory)
+	providersMu  sync.RWMutex
+	providers    = make(map[string]ProviderFactory)
 	providerMeta = make(map[string]ProviderMeta)
 )
 

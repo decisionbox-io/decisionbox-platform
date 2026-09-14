@@ -18,9 +18,21 @@ type Factory func(cfg Config) (Connector, error)
 // ProviderMeta describes a connector for UI rendering (the instance-admin
 // app-registration form).
 type ProviderMeta struct {
-	ID           string        `json:"id"`
-	Name         string        `json:"name"`
-	Description  string        `json:"description"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+
+	// OAuthProvider identifies whose app registration this connector
+	// authenticates with — "google", say. Declared rather than assumed from the
+	// connector kind, because the registration is shared: a deployment that has
+	// registered a Google client for one feature must not be asked to register
+	// a second one here. Empty for a connector that needs no OAuth app.
+	OAuthProvider string `json:"oauth_provider,omitempty"`
+
+	// ConfigFields are the connector's OWN instance-level fields — what it
+	// needs beyond the shared OAuth registration. The Google Picker's api_key
+	// and app_id are the example: Drive needs them, and a consumer of the same
+	// Google client that never opens a picker does not.
 	ConfigFields []ConfigField `json:"config_fields"`
 }
 

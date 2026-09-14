@@ -14,8 +14,8 @@ type namedMiddleware struct {
 }
 
 var (
-	middlewareMu sync.RWMutex
-	middlewares  []namedMiddleware
+	middlewareMu    sync.RWMutex
+	middlewares     []namedMiddleware
 	middlewareNames = make(map[string]bool)
 )
 

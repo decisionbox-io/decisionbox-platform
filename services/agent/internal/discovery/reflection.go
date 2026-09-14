@@ -421,25 +421,20 @@ func (o *Orchestrator) updateLedgerMeta(ctx context.Context, result *models.Disc
 		return
 	}
 
-	// Coverage: union the LLM-reported covered tables into the explored set, and
-	// record the catalog size so a frontier count can be shown.
+	// The two catalogs this run could actually have queried. They are the
+	// authority the model's self-reported coverage is checked against, and
+	// they are kept apart: both namespaces are bare strings, so a cube metric
+	// answered into covered_tables is indistinguishable from a table by
+	// inspection and only its catalog can tell them apart.
+	catalogItems := o.runCatalogItems()
+	tableIdx := nameIndex(schemaNames(result.Schemas))
+	itemIdx := nameIndex(catalogItems)
+
+	// Coverage: union the LLM-reported covered tables and cube items into the
+	// explored sets, and record each catalog's size.
 	if ref != nil {
-		explored := map[string]struct{}{}
-		for _, t := range ledger.Coverage.ExploredTables {
-			explored[t] = struct{}{}
-		}
-		for _, t := range ref.CoveredTables {
-			t = strings.TrimSpace(t)
-			if t != "" {
-				explored[t] = struct{}{}
-			}
-		}
-		merged := make([]string, 0, len(explored))
-		for t := range explored {
-			merged = append(merged, t)
-		}
-		sort.Strings(merged)
-		ledger.Coverage.ExploredTables = merged
+		ledger.Coverage.ExploredTables = mergeExplored(ledger.Coverage.ExploredTables, ref.CoveredTables, tableIdx)
+		ledger.Coverage.ExploredCatalogItems = mergeExplored(ledger.Coverage.ExploredCatalogItems, ref.CoveredCatalogItems, itemIdx)
 		if strings.TrimSpace(ref.CoverageSummary) != "" {
 			ledger.Coverage.Summary = truncate(ref.CoverageSummary, 1000)
 		}
@@ -454,6 +449,11 @@ func (o *Orchestrator) updateLedgerMeta(ctx context.Context, result *models.Disc
 		}
 	}
 	ledger.Coverage.TotalTables = len(result.Schemas)
+	// Written whether or not the LLM call produced anything. It is what the
+	// next run reads to know this project HAS a cube, and a run that reflected
+	// on nothing still must not leave the ledger claiming an exhausted
+	// frontier.
+	ledger.Coverage.TotalCatalogItems = len(catalogItems)
 
 	// Convergence: marginal-new ratio for this run.
 	ratio := 0.0
@@ -474,6 +474,82 @@ func (o *Orchestrator) updateLedgerMeta(ctx context.Context, result *models.Disc
 	if err := o.ledgerRepo.Save(ctx, ledger); err != nil {
 		applog.WithError(err).Warn("Reflection: save ledger failed")
 	}
+}
+
+// schemaNames returns the table names in a run's schema map.
+func schemaNames(schemas map[string]models.TableSchema) []string {
+	out := make([]string, 0, len(schemas))
+	for name := range schemas {
+		out = append(out, name)
+	}
+	return out
+}
+
+// nameIndex maps each catalog name, lower-cased, to its canonical spelling.
+//
+// Lower-cased because a model is asked to copy names verbatim and mostly does,
+// but an upper-case catalog (Oracle, HANA) is the case where it most often does
+// not — and a name that differs only in case is the SAME thing, so matching it
+// exactly would drop real coverage while storing the model's spelling alongside
+// the canonical one would count that thing twice. Resolving to the canonical
+// spelling settles both.
+//
+// Input is sorted first so a catalog holding two names that differ only in case
+// resolves deterministically rather than by map order.
+func nameIndex(names []string) map[string]string {
+	if len(names) == 0 {
+		return nil
+	}
+	sorted := make([]string, len(names))
+	copy(sorted, names)
+	sort.Strings(sorted)
+	idx := make(map[string]string, len(sorted))
+	for _, name := range sorted {
+		key := strings.ToLower(strings.TrimSpace(name))
+		if key == "" {
+			continue
+		}
+		if _, taken := idx[key]; taken {
+			continue // first by sort order wins
+		}
+		idx[key] = name
+	}
+	return idx
+}
+
+// mergeExplored unions this run's self-reported coverage into the set carried
+// from earlier runs, keeping only names the run's catalog actually contains.
+//
+// Validating is what makes the counter mean anything. Without it a model
+// answering with an invented name, a stale one, or — once there are two
+// catalogs — a cube metric in covered_tables lands in the explored set
+// verbatim, pushing the explored count past the catalog size and leaving a
+// frontier that is wrong in both directions: clamped to zero when it is not
+// empty, and inflated by names that were never there.
+//
+// Only the INCOMING names are checked. What earlier runs stored is left alone:
+// coverage is cumulative, and a project whose discovery scope was narrowed, or
+// whose warehouse dropped a table, would otherwise lose the record of work it
+// really did on the run after. An empty index is the honest answer for a
+// catalog this run had none of, and drops everything claimed against it.
+func mergeExplored(carried, reported []string, catalog map[string]string) []string {
+	explored := make(map[string]struct{}, len(carried)+len(reported))
+	for _, name := range carried {
+		explored[name] = struct{}{}
+	}
+	for _, name := range reported {
+		canonical, known := catalog[strings.ToLower(strings.TrimSpace(name))]
+		if !known {
+			continue
+		}
+		explored[canonical] = struct{}{}
+	}
+	merged := make([]string, 0, len(explored))
+	for name := range explored {
+		merged = append(merged, name)
+	}
+	sort.Strings(merged)
+	return merged
 }
 
 // applyReflection persists the LLM outputs: prior-finding status updates,

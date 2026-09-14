@@ -9,6 +9,7 @@ import (
 
 	gomutation "github.com/decisionbox-io/decisionbox/libs/go-common/askmutation"
 	gosources "github.com/decisionbox-io/decisionbox/libs/go-common/sources"
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai/schema_retrieve"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/askserve"
@@ -139,7 +140,18 @@ func runAskServe(cfg *config.Config) error {
 					Warn("ask-serve: schema cache lookup failed — schema tools disabled for this datasource")
 				continue
 			}
-			if len(schemas) == 0 {
+			// A catalog source has no tables, so an empty schemas map does not
+			// mean "not indexed" for it — its index is a list of item refs
+			// held separately. Skipping on the table cache alone is what made
+			// such a datasource invisible to schema search even after a
+			// successful index run.
+			catalogRefs, ccErr := discovery.CatalogRefsFor(buildCtx, schemaCache, projectID, whID, discovery.WarehouseConfigHash(wh))
+			if ccErr != nil {
+				applog.WithError(ccErr).WithField("project_id", projectID).WithField("datasource_id", whID).
+					Warn("ask-serve: catalog cache lookup failed — this datasource's catalog is treated as unindexed")
+				catalogRefs = nil
+			}
+			if len(schemas) == 0 && len(catalogRefs) == 0 {
 				// Not indexed yet — query_data still works against it.
 				continue
 			}
@@ -148,6 +160,11 @@ func runAskServe(cfg *config.Config) error {
 				WarehouseID: whID,
 				Datasets:    wh.GetDatasets(),
 				Schemas:     schemas,
+				// Keyed by datasource: this provider searches only its own
+				// warehouse, but the authority is shaped the same either way so
+				// a shared ref name can never let one datasource vouch for
+				// another.
+				CatalogRefs: map[string][]string{whID: catalogRefs},
 			}
 			if sharedRetriever != nil && embedder != nil {
 				opts.Retriever = sharedRetriever
@@ -160,11 +177,12 @@ func runAskServe(cfg *config.Config) error {
 				continue
 			}
 			lookups[whID] = sp
-			tset := make(map[string]bool, len(schemas))
-			for tbl := range schemas {
-				tset[tbl] = true
-			}
-			whTables[whID] = tset
+			// The span search validates every hit against this set, so it must
+			// name everything the datasource legitimately offers — its tables
+			// AND, for a catalog source, its item refs. Omitting the refs
+			// silently drops every catalog hit from the cross-datasource view,
+			// which is the one the router reads.
+			whTables[whID] = discovery.SearchAuthority(schemas, catalogRefs)
 		}
 
 		// Cross-datasource span searcher: one unfiltered Qdrant search over the
@@ -214,6 +232,7 @@ func runAskServe(cfg *config.Config) error {
 					}
 					out = append(out, askserve.TaggedHit{
 						DatasourceID:    wid,
+						Kind:            h.Blurb.Kind,
 						DatasourceLabel: labels[wid],
 						Table:           h.Blurb.Table,
 						Blurb:           h.Blurb.Blurb,
@@ -243,6 +262,18 @@ func runAskServe(cfg *config.Config) error {
 					KeyMetrics:   wh.Card.KeyMetrics,
 				}
 			}
+			// Capability descriptor, resolved by provider slug from the
+			// registry — declared at registration, so this needs no
+			// connection and no credentials. An unregistered slug yields the
+			// zero descriptor, which resolves to SQL / entity-shaped /
+			// anchoring: what was true before the descriptor existed.
+			capability := gowarehouse.Capability{}
+			if meta, ok := gowarehouse.GetProviderMeta(wh.Provider); ok {
+				capability = meta.Capability
+				// Resolve the Dialect fallback here so downstream consumers
+				// read one already-resolved language.
+				capability.QueryLanguage = meta.Language()
+			}
 			datasources = append(datasources, askserve.DatasourceInfo{
 				ID:          warehouseID(wh),
 				Label:       wh.Label,
@@ -254,6 +285,7 @@ func runAskServe(cfg *config.Config) error {
 				FilterField: wh.FilterField,
 				FilterValue: wh.FilterValue,
 				Card:        card,
+				Capability:  capability,
 			})
 		}
 
@@ -282,15 +314,10 @@ func runAskServe(cfg *config.Config) error {
 				return nil, fmt.Errorf("datasource %q credentials are not read-only: %w", dsID, err)
 			}
 			datasets := wh.GetDatasets()
-			sqlFixer := ai.NewSQLFixer(ai.SQLFixerOptions{
-				Client:       aiClient,
-				SQLFixPrompt: wp.SQLFixPrompt(),
-				Dataset:      strings.Join(datasets, ", "),
-				Filter:       buildFilterClause(wh.FilterField, wh.FilterValue),
-			})
 			executor := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
-				Warehouse:   wp,
-				SQLFixer:    sqlFixer,
+				Warehouse:    wp,
+				ProviderSlug: wh.Provider,
+				SQLFixer:     askQueryFixer(aiClient, wp, datasets, wh),
 				MaxRetries:  5,
 				FilterField: wh.FilterField,
 				FilterValue: wh.FilterValue,

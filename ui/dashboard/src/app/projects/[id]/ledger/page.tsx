@@ -60,6 +60,8 @@ function normalizeLedger(lv: LedgerView): LedgerView {
       explored_tables: lv?.coverage?.explored_tables ?? [],
       area_depth: lv?.coverage?.area_depth ?? {},
       total_tables: lv?.coverage?.total_tables ?? 0,
+      explored_catalog_items: lv?.coverage?.explored_catalog_items ?? [],
+      total_catalog_items: lv?.coverage?.total_catalog_items ?? 0,
       summary: lv?.coverage?.summary ?? '',
     },
     convergence: lv?.convergence ?? [],
@@ -67,6 +69,22 @@ function normalizeLedger(lv: LedgerView): LedgerView {
     tasks: lv?.tasks ?? [],
     ancestors: lv?.ancestors ?? [],
   };
+}
+
+// cubeSliced states what has been queried on the cube side as a record rather
+// than as progress toward a total — a cube's slices are combinatorial, so a
+// percentage of its catalog would read as a completion figure for something
+// that never completes. The catalog size is omitted rather than printed as
+// zero when a run could not read it.
+function cubeSliced(explored: number, total: number): string {
+  if (explored === 0) {
+    return total > 0
+      ? `None of its ${total} metrics and dimensions are recorded as queried yet.`
+      : 'Nothing is recorded as queried on it yet.';
+  }
+  return total > 0
+    ? `${explored} of its ${total} metrics and dimensions have been queried so far.`
+    : `${explored} of its metrics and dimensions have been queried so far.`;
 }
 
 // Section is the single, consistent container every block on this page uses: a
@@ -211,6 +229,15 @@ export default function LedgerPage() {
   const explored = ledger.coverage.explored_tables?.length ?? 0;
   const total = ledger.coverage.total_tables ?? 0;
   const frontier = Math.max(0, total - explored);
+  // Cube-shaped datasources have no tables, so every count above is about the
+  // table side only. Saying so is what stops "Frontier 0" from reading as
+  // "nothing left to look at" on a project that also has a cube.
+  const cubeItems = ledger.coverage.total_catalog_items ?? 0;
+  const cubeExplored = ledger.coverage.explored_catalog_items?.length ?? 0;
+  // Either half is enough, mirroring the agent-side renderer. A run whose cube
+  // catalog could not be read records a total of zero while the slices earlier
+  // runs recorded are still carried — testing only the total would hide them.
+  const hasCube = cubeItems > 0 || cubeExplored > 0;
   const latest = ledger.convergence.length > 0 ? ledger.convergence[ledger.convergence.length - 1] : null;
   const pending = proposals.filter((p) => p.status === 'proposed');
   const decided = proposals.filter((p) => p.status !== 'proposed');
@@ -246,7 +273,12 @@ export default function LedgerPage() {
         {/* 1. Overview — the at-a-glance numbers */}
         <Group grow align="stretch">
           <StatCard label="Tables explored" value={String(explored)} subtitle={total > 0 ? `of ${total} in catalog` : undefined} />
-          <Tooltip label="The frontier is the part of your data the investigation hasn't looked at yet — tables it has not explored." multiline w={280} openDelay={200}>
+          <Tooltip
+            label={hasCube
+              ? "The frontier is the part of your data the investigation hasn't looked at yet — tables it has not explored. It counts tables only: this project also has a cube-shaped datasource, which has none and is never finished."
+              : "The frontier is the part of your data the investigation hasn't looked at yet — tables it has not explored."}
+            multiline w={280} openDelay={200}
+          >
             <div><StatCard label="Frontier" value={String(frontier)} subtitle="tables not yet explored" /></div>
           </Tooltip>
           <StatCard label="Findings" value={String(ledger.findings.length)} subtitle="carried across runs" />
@@ -369,13 +401,23 @@ export default function LedgerPage() {
         )}
 
         {/* 5. Coverage — how much of the warehouse has been reached */}
-        {ledger.coverage.summary && (
+        {(ledger.coverage.summary || hasCube) && (
           <Section
             icon={<IconMap2 size={16} />}
             title="Coverage"
             description="What the investigation has reached across the warehouse so far."
           >
-            <Text size="sm">{ledger.coverage.summary}</Text>
+            <Stack gap="xs">
+              {ledger.coverage.summary && <Text size="sm">{ledger.coverage.summary}</Text>}
+              {hasCube && (
+                <Text size="sm" c="dimmed">
+                  This project also has a cube-shaped datasource, which has no tables — the counts above are the
+                  warehouse side only. {cubeSliced(cubeExplored, cubeItems)} A cube is never fully explored: its
+                  slices are combinatorial, so it is judged by whether a new one still turns up something, not by
+                  how much of it is left.
+                </Text>
+              )}
+            </Stack>
           </Section>
         )}
 

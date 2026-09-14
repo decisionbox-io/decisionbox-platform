@@ -184,9 +184,13 @@ type Orchestrator struct {
 	projectPrompts *models.ProjectPrompts
 	datasets       []string
 	filterField    string
-	filterValue    string
-	llmProvider    string
-	llmModel       string
+	// warehouseProviderSlug is the primary datasource's registered provider.
+	// The executor reads the query language from the registry by this slug,
+	// which no middleware can erase.
+	warehouseProviderSlug string
+	filterValue           string
+	llmProvider           string
+	llmModel              string
 
 	// llmConfig is the project's LLM provider config (project.LLM.Config).
 	// Read for the max_input_tokens / max_output_tokens operator overrides
@@ -253,9 +257,26 @@ type Orchestrator struct {
 	// The cache is populated by the schema indexer (see
 	// agentserver/index_schema.go) and indexed by WarehouseConfigHash so
 	// any warehouse-config change self-invalidates the cache.
-	schemaCache   SchemaCache
-	warehouseHash string
-	warehouseID   string
+	schemaCache SchemaCache
+	// catalogRefs holds the items a catalog-shaped datasource offers, loaded
+	// alongside the schemas map. Nil for a table-shaped source. The schema
+	// provider needs them: without them its staleness filter rejects every
+	// catalog hit, so search returns nothing for exactly the sources that
+	// have nothing but catalog items.
+	catalogRefs []string
+	// runCatalogRefs is every catalog-shaped datasource's items for THIS run,
+	// keyed by datasource id — the same authority the schema provider filters
+	// hits against, kept so the end-of-run reflection can read it.
+	//
+	// Reflection needs it because it runs from the persisted DiscoveryResult,
+	// and a result's Schemas map is tables: a cube contributes nothing to it,
+	// so a phase reading only the result cannot tell a project with a cube
+	// from one without. Captured where the run wires it rather than re-read,
+	// so what reflection reasons about is what exploration could actually
+	// query.
+	runCatalogRefs map[string][]string
+	warehouseHash  string
+	warehouseID    string
 
 	// warehouseProviders holds one live warehouse provider per datasource
 	// id for a multi-warehouse run (keyed by normalised id, primary
@@ -456,47 +477,48 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 	}
 
 	return &Orchestrator{
-		aiClient:           opts.AIClient,
-		warehouse:          opts.Warehouse,
-		contextRepo:        opts.ContextRepo,
-		discoveryRepo:      opts.DiscoveryRepo,
-		discoveryLogRepo:   discoveryLogRepo,
-		questionRepo:       questionRepo,
-		ledgerRepo:         ledgerRepo,
-		findingRepo:        findingRepo,
-		taskRepo:           taskRepo,
-		proposalRepo:       proposalRepo,
-		feedbackRepo:       opts.FeedbackRepo,
-		debugLogRepo:       opts.DebugLogRepo,
-		debugLogger:        debugLogger,
-		statusReporter:     statusReporter,
-		projectID:          opts.ProjectID,
-		domain:             opts.Domain,
-		category:           opts.Category,
-		language:           opts.Language,
-		profile:            opts.Profile,
-		projectPrompts:     opts.ProjectPrompts,
-		datasets:           opts.Datasets,
-		filterField:        opts.FilterField,
-		filterValue:        opts.FilterValue,
-		llmProvider:        opts.LLMProvider,
-		llmModel:           opts.LLMModel,
-		llmConfig:          opts.LLMConfig,
-		llmInputWindow:     opts.LLMInputWindow,
-		llmOutputCap:       opts.LLMOutputCap,
-		modelWindowRepo:    opts.ModelWindowRepo,
-		vectorStore:        opts.VectorStore,
-		embeddingProvider:  opts.EmbeddingProvider,
-		embedIndexStore:    opts.EmbedIndexStore,
-		embedder:           opts.EmbeddingProvider, // same interface, named differently to avoid ambiguity
-		schemaRetriever:    opts.SchemaRetriever,
-		schemaCache:        opts.SchemaCache,
-		warehouseHash:      opts.WarehouseHash,
-		warehouseID:        opts.WarehouseID,
-		warehouseProviders: opts.WarehouseProviders,
-		warehouses:         opts.Warehouses,
-		runStepIndex:       opts.RunStepIndex,
-		runID:              opts.RunID,
+		aiClient:              opts.AIClient,
+		warehouse:             opts.Warehouse,
+		contextRepo:           opts.ContextRepo,
+		discoveryRepo:         opts.DiscoveryRepo,
+		discoveryLogRepo:      discoveryLogRepo,
+		questionRepo:          questionRepo,
+		ledgerRepo:            ledgerRepo,
+		findingRepo:           findingRepo,
+		taskRepo:              taskRepo,
+		proposalRepo:          proposalRepo,
+		feedbackRepo:          opts.FeedbackRepo,
+		debugLogRepo:          opts.DebugLogRepo,
+		debugLogger:           debugLogger,
+		statusReporter:        statusReporter,
+		projectID:             opts.ProjectID,
+		domain:                opts.Domain,
+		category:              opts.Category,
+		language:              opts.Language,
+		profile:               opts.Profile,
+		projectPrompts:        opts.ProjectPrompts,
+		datasets:              opts.Datasets,
+		filterField:           opts.FilterField,
+		warehouseProviderSlug: opts.WarehouseProvider,
+		filterValue:           opts.FilterValue,
+		llmProvider:           opts.LLMProvider,
+		llmModel:              opts.LLMModel,
+		llmConfig:             opts.LLMConfig,
+		llmInputWindow:        opts.LLMInputWindow,
+		llmOutputCap:          opts.LLMOutputCap,
+		modelWindowRepo:       opts.ModelWindowRepo,
+		vectorStore:           opts.VectorStore,
+		embeddingProvider:     opts.EmbeddingProvider,
+		embedIndexStore:       opts.EmbedIndexStore,
+		embedder:              opts.EmbeddingProvider, // same interface, named differently to avoid ambiguity
+		schemaRetriever:       opts.SchemaRetriever,
+		schemaCache:           opts.SchemaCache,
+		warehouseHash:         opts.WarehouseHash,
+		warehouseID:           opts.WarehouseID,
+		warehouseProviders:    opts.WarehouseProviders,
+		warehouses:            opts.Warehouses,
+		runStepIndex:          opts.RunStepIndex,
+		runID:                 opts.RunID,
 	}
 }
 
@@ -632,24 +654,15 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	datasetsStr := strings.Join(o.datasets, ", ")
 
 	// Initialize query executor (uses the warehouse provider which can query any dataset)
-	sqlFixWindow, sqlFixOutputCap := o.resolveModelBudget()
-	sqlFixer := ai.NewSQLFixer(ai.SQLFixerOptions{
-		Client:       o.aiClient,
-		SQLFixPrompt: o.warehouse.SQLFixPrompt(),
-		Dataset:      datasetsStr,
-		Filter:       filterClause,
-		// Budget the fix call against the resolved window/output cap so it can't
-		// overflow a small model (#347-class fix).
-		Window:    sqlFixWindow,
-		OutputCap: sqlFixOutputCap,
-	})
+	sqlFixer := o.newQueryFixer(o.warehouse, datasetsStr, filterClause)
 	executor := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
-		Warehouse:   o.warehouse,
-		SQLFixer:    sqlFixer,
-		DebugLogger: o.debugLogger,
-		MaxRetries:  5,
-		FilterField: o.filterField,
-		FilterValue: o.filterValue,
+		Warehouse:    o.warehouse,
+		ProviderSlug: o.warehouseProviderSlug,
+		SQLFixer:     sqlFixer,
+		DebugLogger:  o.debugLogger,
+		MaxRetries:   5,
+		FilterField:  o.filterField,
+		FilterValue:  o.filterValue,
 	})
 
 	// Initialize the LLM-native validation agent.
@@ -847,11 +860,13 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		schemaSearchWarehouseID = ""
 		tableWarehouse = dc.tableWarehouse
 	}
+	o.runCatalogRefs = o.catalogRefsByDatasource(dc)
 	schemaProvider, spErr := NewCacheSchemaProvider(CacheSchemaProviderOptions{
 		ProjectID:      o.projectID,
 		WarehouseID:    schemaSearchWarehouseID,
 		Datasets:       o.datasets,
 		Schemas:        schemas,
+		CatalogRefs:    o.runCatalogRefs,
 		TableWarehouse: tableWarehouse,
 		Retriever:      o.schemaRetriever,
 		Embedder:       o.embedder,
@@ -897,6 +912,17 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// exploration ceiling regardless of these values.
 	exploreWindow, exploreOutputCap := o.resolveModelBudget()
 
+	// Which stopping rule this run's exploration uses. Logged because the
+	// two rules end a run for different reasons, and a run that stopped
+	// early is the first thing an operator will want explained.
+	reachesCube := runReachesCube(dsExecutors, o.warehouses, o.warehouseProviderSlug)
+	applog.WithFields(applog.Fields{
+		"reaches_cube":         reachesCube,
+		"routable_datasources": len(dsExecutors),
+		"min_steps":            opts.MinSteps,
+		"max_steps":            opts.MaxSteps,
+	}).Info("exploration: stopping rule resolved")
+
 	o.explorationEngine = ai.NewExplorationEngine(ai.ExplorationEngineOptions{
 		Client:            o.aiClient,
 		Executor:          executor,
@@ -905,6 +931,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		TableDatasource:   tableWarehouse,
 		MaxSteps:          opts.MaxSteps,
 		MinSteps:          opts.MinSteps,
+		// A run that can query a cube stops on whether it is still finding
+		// anything new, not on a step count — see exploration_stopping.go.
+		StopOnNoNewSignal: reachesCube,
 		Dataset:           datasetsStr,
 		SchemaProvider:    schemaProvider,
 		StepIndexer:       stepIndexer,
@@ -1193,6 +1222,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			areaResults, insightsValidatedThisRun = valPhase.validateInsights(ctx, insights, stepByID, area.ID, insightsValidatedThisRun)
 			step.ValidationResults = areaResults
 		}
+
+		// Label every insight with what its evidence was worth. Derived from
+		// the steps it cites rather than taken from the model: an insight
+		// computed over withheld rows reads exactly like one computed over
+		// complete rows, so a model that simply did not mention the caveat
+		// would produce a finding indistinguishable from a sound one. Deriving
+		// it means the label survives whatever the model wrote.
+		attachSourceQuality(insights, stepByID)
 
 		analysisLog = append(analysisLog, step)
 		allInsights = append(allInsights, insights...)
@@ -1576,6 +1613,12 @@ func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.I
 			continue
 		}
 
+		// Whatever the model may have put here, it is not evidence about the
+		// evidence. This field is derived from the cited steps further down;
+		// clearing it means an authored value cannot survive even if the
+		// output happened to use the field's own name.
+		insight.Quality = nil
+
 		insight.AnalysisArea = areaID
 		if insight.DiscoveredAt.IsZero() {
 			insight.DiscoveredAt = time.Now()
@@ -1600,6 +1643,44 @@ func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.I
 	}
 
 	return insights, dropped, nil
+}
+
+// attachSourceQuality stamps each insight with the union of the quality
+// caveats carried by the steps it was drawn from.
+//
+// Deduplicated by kind and detail, because several steps hitting the same
+// threshold is one fact about the evidence, not three. Order follows the
+// insight's own source steps so the output is stable across runs.
+//
+// An insight citing no steps, or citing steps that carried no caveats, is left
+// untouched — the overwhelming majority, since a SQL warehouse never reports
+// one.
+func attachSourceQuality(insights []models.Insight, stepByID map[int]*models.ExplorationStep) {
+	for i := range insights {
+		// Taken as a pointer rather than indexed twice: the write has to reach
+		// the caller's slice, and one binding is clearer than repeating the
+		// subscript for the read and the write.
+		ins := &insights[i]
+
+		var caveats []gowarehouse.QualityCaveat
+		seen := make(map[gowarehouse.QualityCaveat]bool)
+		for _, id := range ins.SourceSteps {
+			step, ok := stepByID[id]
+			if !ok || step == nil {
+				continue
+			}
+			for _, c := range step.Quality {
+				if seen[c] {
+					continue
+				}
+				seen[c] = true
+				caveats = append(caveats, c)
+			}
+		}
+		if len(caveats) > 0 {
+			ins.Quality = caveats
+		}
+	}
 }
 
 // analysisParseOutcome carries the result of one analysis area's chat +
@@ -2475,6 +2556,44 @@ func (o *Orchestrator) loadPreviousDiscoveryContext(ctx context.Context) (
 // (warehouse config changed without a re-index, the indexer wrote
 // nothing, the cache was cleared) — surface it as a hard error so the
 // user reaches for /reindex rather than silently waiting an hour.
+// catalogRefsByDatasource assembles the catalog authority the schema provider
+// filters hits against, keyed by owning datasource.
+//
+// On a single-datasource run that is this datasource's own refs. On a
+// multi-datasource run the provider searches across every datasource, so it
+// needs every datasource's refs — keyed, so a ref name shared between them
+// cannot let one vouch for another.
+func (o *Orchestrator) catalogRefsByDatasource(dc *datasourceContext) map[string][]string {
+	if dc != nil && len(dc.catalogRefs) > 0 {
+		return dc.catalogRefs
+	}
+	if len(o.catalogRefs) == 0 {
+		return nil
+	}
+	return map[string][]string{normDatasourceID(o.warehouseID): o.catalogRefs}
+}
+
+// indexedCatalogRefs returns the items this datasource offers, or nil when it
+// has no indexed catalog — which is what distinguishes "has no tables, by
+// nature" from "was never indexed".
+//
+// Best-effort: a cache that cannot answer, or one that does not support
+// catalogs at all, returns nil, which preserves the pre-existing re-index
+// error for every source that had it before. Guessing "catalog" on a failed
+// lookup would silently swallow a genuinely missing index.
+func (o *Orchestrator) indexedCatalogRefs(ctx context.Context) []string {
+	cc, ok := o.schemaCache.(CatalogCache)
+	if !ok {
+		return nil
+	}
+	refs, err := cc.FindCatalog(ctx, o.projectID, o.warehouseID, o.warehouseHash)
+	if err != nil {
+		applog.WithError(err).Debug("catalog cache lookup failed while checking for an indexed catalog")
+		return nil
+	}
+	return refs
+}
+
 func (o *Orchestrator) discoverSchemas(ctx context.Context) (map[string]models.TableSchema, error) {
 	if o.schemaCache == nil {
 		return nil, fmt.Errorf("schema cache not wired into orchestrator (programmer error)")
@@ -2487,6 +2606,21 @@ func (o *Orchestrator) discoverSchemas(ctx context.Context) (map[string]models.T
 		return nil, fmt.Errorf("read schema cache: %w", err)
 	}
 	if len(schemas) == 0 {
+		// A catalog source has no tables, so an empty table cache is its
+		// normal state rather than evidence of a missing index. Reporting
+		// "re-index required" for one would send the operator to re-run an
+		// index that already succeeded, and would do it every time.
+		if refs := o.indexedCatalogRefs(ctx); len(refs) > 0 {
+			// Keep them: the schema provider built later filters catalog hits
+			// against exactly this list, so discarding them here would let
+			// discovery start and then return nothing from every search.
+			o.catalogRefs = refs
+			applog.WithFields(applog.Fields{
+				"warehouse_id":  o.warehouseID,
+				"catalog_items": len(refs),
+			}).Info("Datasource has no tables but an indexed catalog; continuing with an empty table map")
+			return map[string]models.TableSchema{}, nil
+		}
 		return nil, fmt.Errorf("schema cache is empty for this project — re-index required (POST /api/v1/projects/%s/reindex)", o.projectID)
 	}
 	applog.WithField("cached_tables", len(schemas)).Info("Loaded schemas from cache")
@@ -2571,6 +2705,15 @@ func (c countingStepIndexer) Upsert(ctx context.Context, step models.Exploration
 		c.reporter.IncrementAnalysisCounter(c.ctx, "step_index_upserts", 1)
 	}
 	return nil
+}
+
+// Nearest delegates to the wrapped index. Forwarded explicitly because a
+// decorator that omits a method of the interface it stands in for removes
+// that capability from everything downstream — here, the novelty rule the
+// cube stopping decision reads, which would silently fall back to the step
+// floor with nothing to notice it.
+func (c countingStepIndexer) Nearest(ctx context.Context, step models.ExplorationStep) (float64, bool, error) {
+	return c.inner.Nearest(ctx, step)
 }
 
 // stepsFromPickResult flattens PickResult.Picked back to plain
