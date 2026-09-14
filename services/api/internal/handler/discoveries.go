@@ -26,13 +26,13 @@ func getEnvOrDefault(key, def string) string {
 
 // DiscoveriesHandler handles discovery result endpoints.
 type DiscoveriesHandler struct {
-	repo            database.DiscoveryRepo
-	projectRepo     database.ProjectRepo
-	runRepo         database.RunRepo
-	debugLogRepo    database.DebugLogRepo
+	repo             database.DiscoveryRepo
+	projectRepo      database.ProjectRepo
+	runRepo          database.RunRepo
+	debugLogRepo     database.DebugLogRepo
 	discoveryLogRepo database.DiscoveryLogRepo
-	runStepRepo     database.RunStepRepo
-	agentRunner     runner.Runner
+	runStepRepo      database.RunStepRepo
+	agentRunner      runner.Runner
 }
 
 // NewDiscoveriesHandler wires the handler. `debugLogRepo` may be nil — in
@@ -152,6 +152,19 @@ func (h *DiscoveriesHandler) GetByDate(w http.ResponseWriter, r *http.Request) {
 // discoverytrigger seam) share one implementation.
 func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
+
+	// Project-access gate (advanced RBAC #321): a restricted project may be
+	// triggered only by a role on its ACL. Enforced here at the HTTP boundary,
+	// not in StartRun — in-process callers (the scheduler via
+	// apiserver.TriggerDiscovery) have no request principal and must not be
+	// subject to this gate. On a lookup error we fall through and let StartRun
+	// surface it (it re-fetches); a genuinely missing project also falls
+	// through to StartRun's ErrProjectNotFound → 404.
+	if p, err := h.projectRepo.GetByID(r.Context(), projectID); err == nil && p != nil {
+		if !enforceProjectAccess(w, r, p, "discovery.run") {
+			return
+		}
+	}
 
 	// Parse optional request body.
 	//
@@ -468,9 +481,9 @@ func (h *DiscoveriesHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	latest, _ := h.repo.GetLatest(r.Context(), projectID)
 	if latest != nil {
 		status["last_discovery"] = map[string]interface{}{
-			"date":            latest.DiscoveryDate,
-			"insights_count":  len(latest.Insights),
-			"total_steps":     latest.TotalSteps,
+			"date":           latest.DiscoveryDate,
+			"insights_count": len(latest.Insights),
+			"total_steps":    latest.TotalSteps,
 		}
 	}
 

@@ -16,6 +16,13 @@ type Project struct {
 	Domain      string `bson:"domain" json:"domain"`
 	Category    string `bson:"category" json:"category"`
 
+	// OrgID / AllowedRoles mirror the API model's project-ACL fields (#321) so
+	// the two struct definitions stay in sync (see services/api/models/project.go).
+	// The agent does not enforce project access itself — it runs a run it was
+	// handed — but decoding these fields keeps round-trips lossless.
+	OrgID        string   `bson:"org_id,omitempty" json:"org_id,omitempty"`
+	AllowedRoles []string `bson:"allowed_roles,omitempty" json:"allowed_roles,omitempty"`
+
 	// Warehouse is the LEGACY single-warehouse field, dual-written to the
 	// primary and read by all existing agent code. Multi-warehouse code
 	// reads through EffectiveWarehouses()/PrimaryWarehouse(), which fall

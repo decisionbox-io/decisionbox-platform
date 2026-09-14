@@ -337,10 +337,43 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	root.Handle("/health", healthMux)
 	root.Handle("/health/", healthMux)
 	root.Handle("/api/v1/health", healthMux)
-	root.Handle("/", authProvider.Middleware()(mux))
+	root.Handle("/", authProvider.Middleware()(resolvePermissions(mux)))
 
-	// Middleware chain: CORS → Logging → Auth → RBAC → Router
+	// Middleware chain: CORS → Logging → Auth → Resolve permissions → RBAC → Router
 	return corsMiddleware(handler.LoggingMiddleware(root))
+}
+
+// resolvePermissions enriches the authenticated principal with the permissions
+// its roles grant, using the registered auth.PermissionResolver. It runs after
+// the auth provider has attached the principal and before the RBAC gates, so
+// downstream handlers and /me see resolved permissions and any resolver-added
+// effective roles (the enterprise resolver appends a built-in-equivalent tier
+// so a custom role still satisfies the linear RequireRole hierarchy).
+//
+// With no resolver registered (community default) the no-op resolver returns
+// the principal unchanged — zero behaviour change. A resolver error is
+// non-fatal: the request proceeds with the un-enriched principal (the
+// built-in roles still apply), so a transient config-store outage degrades to
+// baseline access rather than locking everyone out.
+func resolvePermissions(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, ok := auth.FromContext(r.Context())
+		if !ok || p == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		perms, roles, err := auth.GetPermissionResolver().Resolve(r.Context(), p)
+		if err != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		enriched := *p
+		enriched.Permissions = perms
+		if len(roles) > 0 {
+			enriched.Roles = roles
+		}
+		next.ServeHTTP(w, r.WithContext(auth.WithUser(r.Context(), &enriched)))
+	})
 }
 
 // counterReconcileInterval is how often the reconciliation goroutine

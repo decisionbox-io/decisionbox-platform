@@ -12,6 +12,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
@@ -447,9 +448,52 @@ func (h *ProjectsHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !enforceProjectAccess(w, r, p, "project.view") {
+		return
+	}
+
 	h.enrichLastRun(r.Context(), []*models.Project{p})
 
 	writeJSON(w, http.StatusOK, p)
+}
+
+// enforceProjectAccess checks the request principal against the project's
+// role-based ACL (auth.CanAccessProject) and records the decision for the
+// access-audit trail. On denial it writes a 404 — never a 403 — so a
+// restricted project's existence is not disclosed to a role that can't see it,
+// and returns false so the caller stops. Open projects (empty AllowedRoles)
+// always pass; the recorded grant is suppressed for them by
+// auth.RecordAccessDecision's noise policy.
+func enforceProjectAccess(w http.ResponseWriter, r *http.Request, p *models.Project, action string) bool {
+	u, ok := auth.FromContext(r.Context())
+	if !ok || u == nil {
+		// No principal in context means the request did not pass through the
+		// auth middleware (unit tests, or an internal mount). Enforcement is a
+		// no-op here — the real deployment always has a principal (NoAuth
+		// injects an admin), so this never opens a hole in production.
+		return true
+	}
+	allowed := auth.CanAccessProject(u, p.OrgID, p.AllowedRoles)
+	var roles []string
+	var email string
+	if u != nil {
+		roles = u.Roles
+		email = u.Email
+	}
+	auth.RecordAccessDecision(r.Context(), auth.AccessDecision{
+		ProjectID:    p.ID,
+		UserEmail:    email,
+		OrgID:        p.OrgID,
+		Roles:        roles,
+		AllowedRoles: p.AllowedRoles,
+		Action:       action,
+		Allowed:      allowed,
+	})
+	if !allowed {
+		writeError(w, http.StatusNotFound, "project not found")
+		return false
+	}
+	return true
 }
 
 // Update updates a project.
@@ -462,6 +506,10 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	existing, err := h.repo.GetByID(r.Context(), id)
 	if err != nil || existing == nil {
 		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+
+	if !enforceProjectAccess(w, r, existing, "project.edit") {
 		return
 	}
 
@@ -680,6 +728,10 @@ func (h *ProjectsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 	if p == nil {
 		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+
+	if !enforceProjectAccess(w, r, p, "project.delete") {
 		return
 	}
 

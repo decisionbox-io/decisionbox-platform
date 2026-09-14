@@ -13,6 +13,14 @@ type UserPrincipal struct {
 	Email string   `json:"email"`
 	OrgID string   `json:"org_id"`
 	Roles []string `json:"roles"`
+
+	// Permissions is the union of permission strings the principal's roles
+	// grant, resolved per request by the registered PermissionResolver (see
+	// resolver.go). It is empty on the community platform (the no-op resolver
+	// leaves it nil) and populated by the enterprise RBAC plugin. The /me
+	// endpoint surfaces it so the dashboard can gate on capabilities rather
+	// than on the coarse role tier.
+	Permissions []string `json:"permissions,omitempty"`
 }
 
 type contextKey string
