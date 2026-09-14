@@ -21,17 +21,16 @@ export function hasMinRole(userRoles: string[], minRole: string): boolean {
   return userRoles.some((r) => (ROLE_HIERARCHY[r] ?? 0) >= minLevel);
 }
 
-// hasPermission reports whether the resolved permission set includes perm.
-// An admin/owner role is treated as holding every permission, so the base UI
-// behaves correctly even when the server sends no explicit permission list
-// (community /me).
+// hasPermission reports whether the RESOLVED permission set includes perm. It
+// does not short-circuit on the admin/owner role: the server resolves those to
+// the full permission set (so /me carries every permission), and honoring the
+// resolved set keeps the UI consistent with what the API enforces even when an
+// org edits a built-in role's grants. `roles` is kept in the signature for
+// call-site symmetry with hasMinRole.
 export function hasPermission(
   permissions: string[] | undefined,
-  roles: string[] | undefined,
+  _roles: string[] | undefined,
   perm: string,
 ): boolean {
-  if (roles && (roles.includes('admin') || roles.includes('owner'))) {
-    return true;
-  }
   return !!permissions && permissions.includes(perm);
 }

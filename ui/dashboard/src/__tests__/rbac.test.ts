@@ -20,17 +20,17 @@ describe('hasMinRole', () => {
 });
 
 describe('hasPermission', () => {
-  it('admin holds every permission implicitly', () => {
-    expect(hasPermission([], ['admin'], 'roles.manage')).toBe(true);
-    expect(hasPermission(undefined, ['owner'], 'project.delete')).toBe(true);
-  });
   it('grants when the resolved set includes the permission', () => {
     expect(hasPermission(['project.view', 'ask.query'], ['hr-analyst'], 'ask.query')).toBe(true);
+    // admin resolves to the full permission set server-side, so /me carries it.
+    expect(hasPermission(['roles.manage', 'project.delete'], ['admin'], 'roles.manage')).toBe(true);
   });
-  it('denies when the permission is absent and the role is not admin', () => {
+  it('denies when the permission is absent (no admin-role short-circuit)', () => {
     expect(hasPermission(['project.view'], ['hr-analyst'], 'roles.manage')).toBe(false);
+    // honors an edited built-in: an admin whose /me omits roles.manage is denied.
+    expect(hasPermission(['project.view'], ['admin'], 'roles.manage')).toBe(false);
   });
-  it('denies with no permissions and a non-admin role', () => {
+  it('denies with no permissions resolved', () => {
     expect(hasPermission(undefined, ['viewer'], 'project.view')).toBe(false);
   });
 });
