@@ -314,6 +314,10 @@ export interface Project {
   description: string;
   domain: string;
   category: string;
+  // Advanced RBAC (#321): org scope + role-based access control. Empty
+  // allowed_roles = open to all roles; editing is enterprise-only.
+  org_id?: string;
+  allowed_roles?: string[];
   warehouse: WarehouseConfig;
   llm: LLMConfig;
   embedding: EmbeddingConfig;
@@ -1334,6 +1338,18 @@ export interface AppConfig {
 
 // --- API Functions ---
 
+// Me is the authenticated principal returned by GET /api/v1/me. Permissions is
+// the union resolved from the user's roles (advanced RBAC, #321); it is empty
+// on community deployments (no resolver registered) and populated by the
+// enterprise RBAC engine.
+export interface Me {
+  sub: string;
+  email: string;
+  org_id: string;
+  roles: string[];
+  permissions?: string[];
+}
+
 export const api = {
   // Providers (dynamic — registered in Go via init())
   listLLMProviders: () => request<ProviderMeta[]>('/api/v1/providers/llm'),
@@ -1358,6 +1374,9 @@ export const api = {
 
   // Deployment capability flags (drives which config surfaces the UI renders)
   getAppConfig: () => request<AppConfig>('/api/v1/config'),
+
+  // Authenticated principal — roles + resolved permissions (advanced RBAC).
+  getMe: () => request<Me>('/api/v1/me'),
 
   // Domain Packs (CRUD)
   listDomainPacks: () => request<DomainPack[]>('/api/v1/domain-packs'),
