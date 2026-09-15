@@ -324,10 +324,20 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.service }}
           tags: ${{ env.IMAGE_TAGS }}
 
-      # Preflight BEFORE the push: on a release tag build, missing signing
-      # secrets must abort before anything is published — otherwise an unsigned
-      # release image is already public by the time a post-push guard fails.
-      - name: Require signing secrets on release builds
+      # Install cosign before the push so the release preflight can prove the key
+      # actually works, and the sign step later reuses it.
+      - name: Install cosign
+        if: matrix.changed == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+        uses: sigstore/cosign-installer@v3.7.0
+        with:
+          cosign-release: v2.4.3
+
+      # Preflight BEFORE the push: on a release tag build, abort before anything
+      # is published unless the signing key is present AND usable — otherwise an
+      # unsigned (or unsignable) release image is already public by the time the
+      # later cosign sign fails. Deriving the public key exercises the key +
+      # password, so a malformed key or wrong password is caught here, not after.
+      - name: Require usable signing key on release builds
         if: github.ref_type == 'tag'
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
@@ -335,6 +345,10 @@ jobs:
         run: |
           if [ -z "${COSIGN_PRIVATE_KEY:-}" ] || [ -z "${COSIGN_PASSWORD:-}" ]; then
             echo "::error::release tag build requires cosign signing secrets — aborting before publish"
+            exit 1
+          fi
+          if ! cosign public-key --key env://COSIGN_PRIVATE_KEY >/dev/null 2>&1; then
+            echo "::error::cosign signing key is set but not usable (bad key or wrong password) — aborting before publish"
             exit 1
           fi
 
@@ -355,13 +369,8 @@ jobs:
       # Supply-chain provenance: cosign-sign the pushed image by its content
       # digest so anyone can verify it against our published public key. Keyed
       # (not keyless) with no transparency-log upload, so verification works
-      # offline. See docs/deployment/verifying-images.md.
-      - name: Install cosign
-        if: matrix.changed == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
-        uses: sigstore/cosign-installer@v3.7.0
-        with:
-          cosign-release: v2.4.3
-
+      # offline. See docs/deployment/verifying-images.md. cosign was installed
+      # before the build (for the release preflight).
       - name: Sign image with cosign
         if: matrix.changed == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         env:
