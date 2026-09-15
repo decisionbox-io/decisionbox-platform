@@ -324,7 +324,45 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.service }}
           tags: ${{ env.IMAGE_TAGS }}
 
+      # Install cosign before the push so the release preflight can prove the key
+      # actually works, and the sign step later reuses it.
+      - name: Install cosign
+        if: matrix.changed == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+        uses: sigstore/cosign-installer@v3.7.0
+        with:
+          cosign-release: v2.4.3
+
+      # Preflight BEFORE the push: on a release tag build, abort before anything
+      # is published unless the signing key is present AND usable — otherwise an
+      # unsigned (or unsignable) release image is already public by the time the
+      # later cosign sign fails. Deriving the public key exercises the key +
+      # password, so a malformed key or wrong password is caught here, not after.
+      - name: Require usable signing key on release builds
+        if: github.ref_type == 'tag'
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          if [ -z "${COSIGN_PRIVATE_KEY:-}" ] || [ -z "${COSIGN_PASSWORD:-}" ]; then
+            echo "::error::release tag build requires cosign signing secrets — aborting before publish"
+            exit 1
+          fi
+          derived=$(cosign public-key --key env://COSIGN_PRIVATE_KEY 2>/dev/null | tr -d '[:space:]' || true)
+          if [ -z "$derived" ]; then
+            echo "::error::cosign signing key is set but not usable (bad key or wrong password) — aborting before publish"
+            exit 1
+          fi
+          # The key must match the PUBLISHED public key, or a release signed with
+          # it is unverifiable with the committed cosign.pub (e.g. a rotated secret
+          # whose public half was never committed).
+          committed=$(tr -d '[:space:]' < cosign.pub)
+          if [ "$derived" != "$committed" ]; then
+            echo "::error::signing key does not match the committed cosign.pub — a release signed with it would be unverifiable; update COSIGN_PRIVATE_KEY or cosign.pub"
+            exit 1
+          fi
+
       - name: Build multi-arch and push
+        id: build
         if: matrix.changed == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         uses: docker/build-push-action@v5
         with:
@@ -336,6 +374,30 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+      # Supply-chain provenance: cosign-sign the pushed image by its content
+      # digest so anyone can verify it against our published public key. Keyed
+      # (not keyless) with no transparency-log upload, so verification works
+      # offline. See docs/deployment/verifying-images.md. cosign was installed
+      # before the build (for the release preflight).
+      - name: Sign image with cosign
+        if: matrix.changed == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          IMAGE_DIGEST: ${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.service }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # Non-release branch builds soft-skip until BOTH secrets are set. A
+          # release tag build is guaranteed to have them by the preflight step,
+          # so this only skips on branch builds. (We require the password too —
+          # an encrypted key with no password would fail cosign after the push.)
+          if [ -z "${COSIGN_PRIVATE_KEY:-}" ] || [ -z "${COSIGN_PASSWORD:-}" ]; then
+            echo "::warning::cosign signing secrets not fully set — skipping image signing for ${IMAGE_DIGEST%@*} (non-release build)"
+            exit 0
+          fi
+          cosign sign --yes --key env://COSIGN_PRIVATE_KEY --tlog-upload=false "$IMAGE_DIGEST"
+          echo "Signed: $IMAGE_DIGEST"
 
       - name: Configure AWS credentials (dev)
         if: (matrix.changed == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && matrix.service == 'decisionbox-agent'
