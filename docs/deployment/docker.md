@@ -105,8 +105,9 @@ services:
     image: ghcr.io/decisionbox-io/decisionbox-dashboard:latest
 ```
 
-Published images are cosign-signed — see
-[Verifying image signatures](verifying-images.md) to confirm what you pulled.
+Release images are cosign-signed (from the first release published after signing
+was introduced) — see [Verifying image signatures](verifying-images.md) to
+confirm what you pulled.
 
 ### Persistent Data
 

@@ -1,9 +1,11 @@
 # Verifying image signatures
 
-DecisionBox container images published to
+DecisionBox release container images published to
 `ghcr.io/decisionbox-io` are signed with [Sigstore **cosign**](https://docs.sigstore.dev/),
 so you can confirm an image came from DecisionBox and was not altered in transit
-before you run it.
+before you run it. Signing applies **from the first release published after
+signing was introduced** (see the `CHANGELOG`); images from earlier releases are
+unsigned and will not verify.
 
 Signing is **keyed** — verification uses a published public key and contacts no
 external service, so it works the same on a connected host or a fully offline

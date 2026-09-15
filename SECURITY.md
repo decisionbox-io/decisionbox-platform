@@ -47,9 +47,10 @@ The following are out of scope:
 
 ## Verifying releases
 
-Container images are cosign-signed and release tags are GPG-signed. Verify what
-you pulled before running it — see
-[Verifying image signatures](docs/deployment/verifying-images.md).
+Release container images are cosign-signed and release tags are GPG-signed
+**as of the first release published after signing was introduced** — earlier
+releases predate it and are unsigned. Verify what you pulled before running it —
+see [Verifying image signatures](docs/deployment/verifying-images.md).
 
 ## Security Best Practices for Self-Hosting
 
