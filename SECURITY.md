@@ -45,6 +45,12 @@ The following are out of scope:
 - Self-hosted instances with custom modifications
 - Social engineering
 
+## Verifying releases
+
+Container images are cosign-signed and release tags are GPG-signed. Verify what
+you pulled before running it — see
+[Verifying image signatures](docs/deployment/verifying-images.md).
+
 ## Security Best Practices for Self-Hosting
 
 - Always set `SECRET_ENCRYPTION_KEY` for encrypting stored secrets (AES-256)

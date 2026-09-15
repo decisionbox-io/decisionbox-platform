@@ -325,6 +325,7 @@ jobs:
           tags: ${{ env.IMAGE_TAGS }}
 
       - name: Build multi-arch and push
+        id: build
         if: matrix.changed == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         uses: docker/build-push-action@v5
         with:
@@ -336,6 +337,34 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+      # Supply-chain provenance: cosign-sign the pushed image by its content
+      # digest so anyone can verify it against our published public key. Keyed
+      # (not keyless) with no transparency-log upload, so verification works
+      # offline. See docs/deployment/verifying-images.md.
+      - name: Install cosign
+        if: matrix.changed == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+        uses: sigstore/cosign-installer@v3.7.0
+        with:
+          cosign-release: v2.4.3
+
+      - name: Sign image with cosign
+        if: matrix.changed == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          IMAGE_DIGEST: ${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.service }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # Soft rollout: skip (do not fail the publish) until the signing key
+          # secret is provisioned. Once COSIGN_PRIVATE_KEY is set, every image
+          # is signed.
+          if [ -z "${COSIGN_PRIVATE_KEY:-}" ]; then
+            echo "::warning::COSIGN_PRIVATE_KEY not set — skipping image signing for ${IMAGE_DIGEST%@*}"
+            exit 0
+          fi
+          cosign sign --yes --key env://COSIGN_PRIVATE_KEY --tlog-upload=false "$IMAGE_DIGEST"
+          echo "Signed: $IMAGE_DIGEST"
 
       - name: Configure AWS credentials (dev)
         if: (matrix.changed == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && matrix.service == 'decisionbox-agent'
