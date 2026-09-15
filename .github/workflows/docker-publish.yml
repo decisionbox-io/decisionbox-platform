@@ -356,11 +356,11 @@ jobs:
           IMAGE_DIGEST: ${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.service }}@${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
-          # Soft rollout: skip (do not fail the publish) until the signing key
-          # secret is provisioned. Once COSIGN_PRIVATE_KEY is set, every image
-          # is signed.
-          if [ -z "${COSIGN_PRIVATE_KEY:-}" ]; then
-            echo "::warning::COSIGN_PRIVATE_KEY not set — skipping image signing for ${IMAGE_DIGEST%@*}"
+          # Soft rollout: skip (do not fail the publish) until BOTH signing
+          # secrets are provisioned. We require the password too — an encrypted
+          # key with no password would fail cosign after the push, not skip.
+          if [ -z "${COSIGN_PRIVATE_KEY:-}" ] || [ -z "${COSIGN_PASSWORD:-}" ]; then
+            echo "::warning::cosign signing secrets not fully set — skipping image signing for ${IMAGE_DIGEST%@*}"
             exit 0
           fi
           cosign sign --yes --key env://COSIGN_PRIVATE_KEY --tlog-upload=false "$IMAGE_DIGEST"
