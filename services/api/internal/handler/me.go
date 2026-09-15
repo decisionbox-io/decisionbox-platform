@@ -29,5 +29,26 @@ func Me(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	writeJSON(w, http.StatusOK, user)
+	// Advanced RBAC (#321): expose the RESOLVED role tiers as `effective_roles`
+	// so the dashboard can gate UI on the same tier the API's RequireRole checks
+	// enforce. A custom role resolves to a built-in-equivalent tier (member/
+	// admin) that the genuine `roles` set doesn't carry; without this the client
+	// would hide member-only controls from — or wrongly redirect — a custom-role
+	// user the API would actually allow. `roles` stays the genuine set (the
+	// project ACL keys on it); EffectiveRoles itself is json:"-", so it is
+	// surfaced here under an explicit field. On community (no resolver)
+	// HierarchyRoles() falls back to the genuine built-in roles — no change.
+	writeJSON(w, http.StatusOK, meResponse{
+		UserPrincipal:  user,
+		EffectiveRoles: user.HierarchyRoles(),
+	})
+}
+
+// meResponse augments the principal with its resolved effective role tiers for
+// the client. Embedding promotes every UserPrincipal field (with its own JSON
+// tags); the added field carries the tiers the principal's EffectiveRoles
+// (json:"-") holds internally.
+type meResponse struct {
+	*auth.UserPrincipal
+	EffectiveRoles []string `json:"effective_roles,omitempty"`
 }

@@ -13,6 +13,34 @@ type UserPrincipal struct {
 	Email string   `json:"email"`
 	OrgID string   `json:"org_id"`
 	Roles []string `json:"roles"`
+
+	// Permissions is the union of permission strings the principal's roles
+	// grant, resolved per request by the registered PermissionResolver (see
+	// resolver.go). It is empty on the community platform (the no-op resolver
+	// leaves it nil) and populated by the enterprise RBAC plugin. The /me
+	// endpoint surfaces it so the dashboard can gate on capabilities rather
+	// than on the coarse role tier.
+	Permissions []string `json:"permissions,omitempty"`
+
+	// EffectiveRoles is Roles plus any built-in-equivalent tier the resolver
+	// appended so the linear RequireRole hierarchy admits a custom role. It is
+	// used ONLY for the RequireRole hierarchy check — NEVER for project-ACL
+	// matching, which keys on the original Roles so a synthesized tier can't let
+	// a custom role satisfy an allowed_roles entry it wasn't granted. Empty
+	// falls back to Roles. Not surfaced by /me (internal to enforcement).
+	EffectiveRoles []string `json:"-"`
+}
+
+// HierarchyRoles returns the roles used for the linear RequireRole hierarchy
+// check — EffectiveRoles when the resolver populated them, else Roles.
+func (u *UserPrincipal) HierarchyRoles() []string {
+	if u != nil && len(u.EffectiveRoles) > 0 {
+		return u.EffectiveRoles
+	}
+	if u == nil {
+		return nil
+	}
+	return u.Roles
 }
 
 type contextKey string

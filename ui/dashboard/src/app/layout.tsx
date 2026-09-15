@@ -9,6 +9,7 @@ import '@/styles/tokens.css';
 import { ChatDrawerProvider } from '@/components/ask/ChatDrawerProvider';
 import ChatDrawer from '@/components/ask/ChatDrawer';
 import ChatLauncher from '@/components/ask/ChatLauncher';
+import { PermissionProvider } from '@/components/PermissionProvider';
 
 const dmSans = DM_Sans({
   subsets: ['latin'],
@@ -45,11 +46,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <MantineProvider theme={theme}>
           <Notifications position="top-right" />
-          <ChatDrawerProvider>
-            {children}
-            <ChatDrawer />
-            <ChatLauncher />
-          </ChatDrawerProvider>
+          <PermissionProvider>
+            <ChatDrawerProvider>
+              {children}
+              <ChatDrawer />
+              <ChatLauncher />
+            </ChatDrawerProvider>
+          </PermissionProvider>
         </MantineProvider>
       </body>
     </html>
