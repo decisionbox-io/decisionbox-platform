@@ -64,3 +64,7 @@ verify a source checkout locally, import the public key and check the tag:
 gpg --import release-signing-key.asc     # from the repository root
 git tag -v vX.Y.Z
 ```
+
+The release signing key is **`DecisionBox Release Signing <release@decisionbox.io>`**,
+fingerprint `ECD9 CD87 336A 0C74 065B  9B01 2A11 26F0 6016 515F` — confirm this
+matches before trusting a verification result.
