@@ -7,10 +7,13 @@ before you run it. Signing applies **from the first release published after
 signing was introduced** (see the `CHANGELOG`); images from earlier releases are
 unsigned and will not verify.
 
-Signing is **keyed** — verification uses a published public key and contacts no
-external service, so it works the same on a connected host or a fully offline
-one. The signature binds to the image's immutable content **digest**, so it
-covers every tag that resolves to that digest.
+Signing is **keyed** — verification uses a published public key and contacts **no
+Sigstore service** (no Fulcio, no Rekor transparency log). cosign does still read
+the image and its signature from the registry, so verification needs access to
+that registry — on a connected host that is our registry; on an air-gapped host
+it is your internal registry, once the image **and** its signature have been
+mirrored there (see the mirroring note below). The signature binds to the image's
+immutable content **digest**, so it covers every tag that resolves to that digest.
 
 ## Verify an image
 

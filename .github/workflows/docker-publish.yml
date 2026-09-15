@@ -347,8 +347,17 @@ jobs:
             echo "::error::release tag build requires cosign signing secrets — aborting before publish"
             exit 1
           fi
-          if ! cosign public-key --key env://COSIGN_PRIVATE_KEY >/dev/null 2>&1; then
+          derived=$(cosign public-key --key env://COSIGN_PRIVATE_KEY 2>/dev/null | tr -d '[:space:]' || true)
+          if [ -z "$derived" ]; then
             echo "::error::cosign signing key is set but not usable (bad key or wrong password) — aborting before publish"
+            exit 1
+          fi
+          # The key must match the PUBLISHED public key, or a release signed with
+          # it is unverifiable with the committed cosign.pub (e.g. a rotated secret
+          # whose public half was never committed).
+          committed=$(tr -d '[:space:]' < cosign.pub)
+          if [ "$derived" != "$committed" ]; then
+            echo "::error::signing key does not match the committed cosign.pub — a release signed with it would be unverifiable; update COSIGN_PRIVATE_KEY or cosign.pub"
             exit 1
           fi
 
