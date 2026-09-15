@@ -97,6 +97,7 @@ When adding a new provider, create a new `go.mod` and add `replace` directives t
 | `libs/go-common/secrets/provider.go` | Secret provider interface |
 | `ui/dashboard/src/lib/api.ts` | TypeScript API client (all types + endpoints) |
 | `ui/dashboard/src/components/layout/AppShell.tsx` | Dashboard layout |
+| `ui/dashboard/src/components/layout/nav.tsx` | Data-driven sidebar nav — section/item config + shared renderer |
 
 ### After Making Changes
 
