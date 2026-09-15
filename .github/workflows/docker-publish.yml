@@ -356,11 +356,17 @@ jobs:
           IMAGE_DIGEST: ${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.service }}@${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
-          # Soft rollout: skip (do not fail the publish) until BOTH signing
-          # secrets are provisioned. We require the password too — an encrypted
-          # key with no password would fail cosign after the push, not skip.
+          # Soft rollout on branch builds: skip (do not fail) until BOTH signing
+          # secrets are provisioned. But on a release TAG build, refuse to
+          # publish an unsigned release — fail instead, so a release can never
+          # silently ship without a signature. (We require the password too — an
+          # encrypted key with no password would fail cosign after the push.)
           if [ -z "${COSIGN_PRIVATE_KEY:-}" ] || [ -z "${COSIGN_PASSWORD:-}" ]; then
-            echo "::warning::cosign signing secrets not fully set — skipping image signing for ${IMAGE_DIGEST%@*}"
+            if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+              echo "::error::cosign signing secrets not set on a release tag build — refusing to publish an unsigned release image"
+              exit 1
+            fi
+            echo "::warning::cosign signing secrets not fully set — skipping image signing for ${IMAGE_DIGEST%@*} (non-release build)"
             exit 0
           fi
           cosign sign --yes --key env://COSIGN_PRIVATE_KEY --tlog-upload=false "$IMAGE_DIGEST"
