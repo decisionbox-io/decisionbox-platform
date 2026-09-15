@@ -324,6 +324,20 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.service }}
           tags: ${{ env.IMAGE_TAGS }}
 
+      # Preflight BEFORE the push: on a release tag build, missing signing
+      # secrets must abort before anything is published — otherwise an unsigned
+      # release image is already public by the time a post-push guard fails.
+      - name: Require signing secrets on release builds
+        if: github.ref_type == 'tag'
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          if [ -z "${COSIGN_PRIVATE_KEY:-}" ] || [ -z "${COSIGN_PASSWORD:-}" ]; then
+            echo "::error::release tag build requires cosign signing secrets — aborting before publish"
+            exit 1
+          fi
+
       - name: Build multi-arch and push
         id: build
         if: matrix.changed == 'true' || github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
@@ -356,16 +370,11 @@ jobs:
           IMAGE_DIGEST: ${{ env.REGISTRY }}/${{ env.ORG }}/${{ matrix.service }}@${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
-          # Soft rollout on branch builds: skip (do not fail) until BOTH signing
-          # secrets are provisioned. But on a release TAG build, refuse to
-          # publish an unsigned release — fail instead, so a release can never
-          # silently ship without a signature. (We require the password too — an
-          # encrypted key with no password would fail cosign after the push.)
+          # Non-release branch builds soft-skip until BOTH secrets are set. A
+          # release tag build is guaranteed to have them by the preflight step,
+          # so this only skips on branch builds. (We require the password too —
+          # an encrypted key with no password would fail cosign after the push.)
           if [ -z "${COSIGN_PRIVATE_KEY:-}" ] || [ -z "${COSIGN_PASSWORD:-}" ]; then
-            if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
-              echo "::error::cosign signing secrets not set on a release tag build — refusing to publish an unsigned release image"
-              exit 1
-            fi
             echo "::warning::cosign signing secrets not fully set — skipping image signing for ${IMAGE_DIGEST%@*} (non-release build)"
             exit 0
           fi
