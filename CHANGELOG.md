@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **Signed release provenance — cosign-signed images + GPG-signed tags.** Container images published to `ghcr.io/decisionbox-io` are now cosign-signed, and release `v*` tags are GPG-signed (rendered **Verified** on GitHub). Signing is **keyed** (a published `cosign.pub`) with no transparency-log upload, so verification works offline: `cosign verify --key cosign.pub --insecure-ignore-tlog=true ghcr.io/decisionbox-io/decisionbox-api:vX.Y.Z`. Images are signed by content **digest** in `docker-publish.yml` (cosign pinned to v2.4.3); the step soft-skips with a warning until the signing key secret is set. New [Verifying image signatures](docs/deployment/verifying-images.md) guide covers image + tag verification and `cosign copy` for registry mirrors.
+- **Signed release provenance — cosign-signed images + GPG-signed tags.** Container images published to `ghcr.io/decisionbox-io` are now cosign-signed, and release `v*` tags are GPG-signed (rendered **Verified** on GitHub). Signing is **keyed** (a published `cosign.pub`) with no transparency-log upload, so verification works offline: `cosign verify --key cosign.pub --insecure-ignore-tlog=true ghcr.io/decisionbox-io/decisionbox-api:vX.Y.Z`. Images are signed by content **digest** in `docker-publish.yml` (a pinned cosign 2.x); on a release tag build a missing/mismatched key fails the publish, and non-release branch builds soft-skip with a warning until the signing key secret is set. New [Verifying image signatures](docs/deployment/verifying-images.md) guide covers image + tag verification and `cosign copy` for registry mirrors.
 
 ### Added
 
