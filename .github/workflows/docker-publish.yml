@@ -41,7 +41,11 @@ jobs:
         if: github.ref_type == 'tag'
         run: |
           set -euo pipefail
-          gpg --import release-signing-key.asc
+          # Import the trusted release public key from the PROTECTED default
+          # branch, not the tagged commit — a tag could point at a commit that
+          # swapped release-signing-key.asc for an attacker's own key.
+          git fetch --force origin main
+          git show origin/main:release-signing-key.asc | gpg --import
           git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
           if ! git tag -v "${GITHUB_REF_NAME}"; then
             echo "::error::release tag ${GITHUB_REF_NAME} is not a valid GPG-signed tag — cut releases with the 'Cut Signed Release' workflow (git tag -s)"
