@@ -86,11 +86,14 @@ jobs:
           echo "SIGN_KEY_ID=$key_id" >> "$GITHUB_ENV"
           # The signing key MUST be the one whose public half we published, or a
           # release would be signed with a key that can't be verified against the
-          # published public key.
+          # published public key. Compare against the key on the PROTECTED default
+          # branch — the exact same trust root the docker verify-tag gate uses —
+          # so this workflow and the gate never disagree (e.g. a stale target).
+          git fetch --force origin main
           imported_fpr=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')
-          committed_fpr=$(gpg --show-keys --with-colons release-signing-key.asc | awk -F: '/^fpr:/{print $10; exit}')
+          committed_fpr=$(git show origin/main:release-signing-key.asc | gpg --show-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')
           if [ "$imported_fpr" != "$committed_fpr" ]; then
-            echo "::error::GPG_PRIVATE_KEY ($imported_fpr) does not match committed release-signing-key.asc ($committed_fpr)"
+            echo "::error::GPG_PRIVATE_KEY ($imported_fpr) does not match the published release key on origin/main ($committed_fpr)"
             exit 1
           fi
           # Passphrase file (0600) for a non-interactive gpg wrapper — avoids the
