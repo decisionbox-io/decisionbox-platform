@@ -8,8 +8,10 @@ name: Cut Signed Release
 # gate re-checks the signature).
 #
 # Requires org/repo secrets GPG_PRIVATE_KEY (ASCII-armored private key for
-# release@decisionbox.io) and GPG_PASSPHRASE. The key MUST match the committed
-# release-signing-key.asc, or the run aborts.
+# release@decisionbox.io) + GPG_PASSPHRASE (the key MUST match the committed
+# release-signing-key.asc, or the run aborts), and RELEASE_PAT (a PAT / App token
+# with contents:write) — the tag is pushed with it so the publish workflow fires
+# (a tag pushed by the default GITHUB_TOKEN does not trigger it).
 
 on:
   workflow_dispatch:
@@ -36,20 +38,29 @@ jobs:
     name: Cut signed tag ${{ inputs.version }}
     runs-on: ubuntu-latest
     steps:
+      # The tag MUST be pushed with a PAT / App token, not GITHUB_TOKEN: GitHub
+      # suppresses push-triggered workflow runs for a tag pushed by GITHUB_TOKEN,
+      # so the release publish workflow would never fire. Check it up front.
+      - name: Require release push token
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          [ -n "${RELEASE_PAT:-}" ] || { echo "::error::RELEASE_PAT secret is not set — needed so the pushed tag triggers the publish workflow (a GITHUB_TOKEN-pushed tag does not)"; exit 1; }
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.target }}
           fetch-depth: 0
+          token: ${{ secrets.RELEASE_PAT }}
 
       - name: Validate version
         env:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          case "$VERSION" in
-            v[0-9]*.[0-9]*.[0-9]*) : ;;
-            *) echo "::error::version must look like vX.Y.Z (got '$VERSION')"; exit 1 ;;
-          esac
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must look like vX.Y.Z (got '$VERSION')"; exit 1
+          fi
           if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null 2>&1; then
             echo "::error::tag $VERSION already exists on origin — delete it first to re-cut"
             exit 1
