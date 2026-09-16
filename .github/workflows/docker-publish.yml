@@ -51,6 +51,14 @@ jobs:
             echo "::error::release tag ${GITHUB_REF_NAME} is not a valid GPG-signed tag — cut releases with the 'Cut Signed Release' workflow (git tag -s)"
             exit 1
           fi
+          # The signature is over the tag OBJECT, which embeds its own name — so a
+          # ref like v0.28.2 could alias an old signed object (v0.28.1) and still
+          # verify. Require the embedded tag name to equal the pushed ref name.
+          embedded=$(git cat-file tag "${GITHUB_REF_NAME}" | awk '/^$/{exit} /^tag /{print $2}')
+          if [ "$embedded" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::tag object name '${embedded}' does not match the pushed ref '${GITHUB_REF_NAME}' — refusing an aliased/renamed tag"
+            exit 1
+          fi
 
   gate:
     name: Check Publish Trigger
