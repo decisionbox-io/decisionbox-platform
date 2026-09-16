@@ -37,6 +37,12 @@ jobs:
   cut:
     name: Cut signed tag ${{ inputs.version }}
     runs-on: ubuntu-latest
+    # The signing key lives on this protected environment. Configure the
+    # `release` environment (Settings -> Environments) with REQUIRED REVIEWERS
+    # and hold GPG_PRIVATE_KEY / GPG_PASSPHRASE / RELEASE_PAT there, so cutting a
+    # signed release needs an approver — running Actions is not enough to mint an
+    # officially-signed tag.
+    environment: release
     steps:
       # The tag MUST be pushed with a PAT / App token, not GITHUB_TOKEN: GitHub
       # suppresses push-triggered workflow runs for a tag pushed by GITHUB_TOKEN,
