@@ -30,6 +30,7 @@ func seedCacheEntry(t *testing.T, ctx context.Context, proj, wh, key string, col
 			KeyColumns: []string{"id"},
 			Metrics:    []string{"amount"},
 			Dimensions: []string{"status"},
+			SampleData: []map[string]interface{}{{"id": int64(1)}},
 		},
 		CachedAt: time.Now().UTC(),
 	})
@@ -68,6 +69,12 @@ func TestInteg_SchemaCache_EditorRowOps(t *testing.T) {
 		if len(entries[1].Schema.Columns) != 3 {
 			t.Errorf("orders columns = %d, want 3", len(entries[1].Schema.Columns))
 		}
+		// Browsing must NOT pull sample data (projected out for size/privacy).
+		for _, e := range entries {
+			if len(e.Schema.SampleData) != 0 {
+				t.Errorf("ListEntries returned sample_data for %s; it must be projected out", e.SchemaKey)
+			}
+		}
 	})
 
 	t.Run("GetEntry hit + miss", func(t *testing.T) {
@@ -77,6 +84,11 @@ func TestInteg_SchemaCache_EditorRowOps(t *testing.T) {
 		}
 		if e == nil || e.Schema.RowCount != 42 {
 			t.Fatalf("GetEntry hit wrong: %+v", e)
+		}
+		// The single-table edit path keeps sample data (needed to strip a removed
+		// column's values from it).
+		if len(e.Schema.SampleData) == 0 {
+			t.Errorf("GetEntry must return sample_data for the edit path")
 		}
 		miss, err := r.GetEntry(ctx, proj, "default", "dbo.nope")
 		if err != nil {

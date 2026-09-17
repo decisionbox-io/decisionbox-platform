@@ -107,15 +107,21 @@ func (r *SchemaCacheRepository) ListTables(ctx context.Context, projectID, wareh
 	return out, nil
 }
 
-// ListEntries returns the full cached schema rows (columns + sample metadata,
-// not just the table name) for one of a project's warehouses, sorted by
-// schema_key ascending. Backs the schema editor, which shows each table's
-// columns + blurb. Empty (non-nil) slice when nothing is cached.
+// ListEntries returns the cached schema rows (columns, not just the table name)
+// for one of a project's warehouses, sorted by schema_key ascending. Backs the
+// schema editor's browse view, which shows each table's columns + blurb.
+// schema.sample_data is projected OUT — it can be many MB across a wide / ERP
+// warehouse, the browse view never shows it, and pulling it for every table
+// just to render the list would balloon the query. The single-table edit path
+// uses GetEntry, which keeps sample_data (needed to strip a removed column's
+// values). Empty (non-nil) slice when nothing is cached.
 func (r *SchemaCacheRepository) ListEntries(ctx context.Context, projectID, warehouseID string) ([]SchemaCacheEntry, error) {
 	if projectID == "" {
 		return nil, errors.New("projectID is required")
 	}
-	opts := options.Find().SetSort(bson.D{{Key: "schema_key", Value: 1}})
+	opts := options.Find().
+		SetSort(bson.D{{Key: "schema_key", Value: 1}}).
+		SetProjection(bson.M{"schema.sample_data": 0})
 	cur, err := r.col.Find(ctx, bson.M{
 		"project_id":   projectID,
 		"warehouse_id": schemaCacheWarehouseCond(warehouseID),

@@ -461,8 +461,13 @@ curl -X DELETE "http://localhost:8080/api/v1/projects/507f.../schema-editor/tabl
 
 ### GET /api/v1/projects/{id}/schema-editor/edits
 
-The manual-edit audit trail (newest first) plus `since_last_index` — the count of
-edits made since the last successful index.
+The manual-edit audit trail (newest first) plus two "edits at risk" counters, one
+per reset path: `since_last_index` (edits since the latest indexing run,
+restricted to the blurb/keyword edits a **re-index** regenerates) and
+`since_last_cache` (all edits since the last full warehouse re-discovery — what a
+**Clear schema cache** / full rebuild discards, including column/table removals
+that persist across a plain re-index). Both counters (and the `edits` list) are
+scoped to `datasource_id` when it is supplied, else project-wide.
 
 ```bash
 curl "http://localhost:8080/api/v1/projects/507f.../schema-editor/edits?datasource_id=wh_redshift"
@@ -483,7 +488,8 @@ curl "http://localhost:8080/api/v1/projects/507f.../schema-editor/edits?datasour
         "at": "2026-09-17T14:20:00Z"
       }
     ],
-    "since_last_index": 1
+    "since_last_index": 1,
+    "since_last_cache": 1
   }
 }
 ```

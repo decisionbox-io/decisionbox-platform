@@ -180,10 +180,16 @@ There is deliberately **no durable overrides layer**: a full rebuild
 that non-destructive, every manual edit is written to a durable, append-only
 audit trail (`project_schema_edits`) capturing the table, action, before/after
 values, who made it, and when. The editor's "Edit history" panel shows this trail
-so you can review and re-apply your changes after a rebuild. Before a re-index or
-a cache clear, the dashboard warns you when there are manual edits since the last
-index (`since_last_index`, dated from the latest indexing run) — with the history
-a click away — so you never discard curation work unaware.
+so you can review and re-apply your changes after a rebuild. Before a reset, the
+dashboard warns you when there are manual edits at risk — with the history a
+click away — so you never discard curation work unaware. `GET /schema-editor/edits`
+returns two counters for the two reset paths: `since_last_index` (edits since the
+latest indexing run, restricted to the blurb/keyword edits a **re-index**
+regenerates) and `since_last_cache` (all edits since the last full warehouse
+re-discovery — what a **Clear schema cache** / full rebuild discards, including
+column/table removals that persist across a plain re-index). Both are scoped to
+`datasource_id` when one is supplied. The re-index warning uses the former; the
+cache-clear warning and the editor's rebuild banner use the latter.
 
 ```bash
 # Browse a datasource's indexed tables (structure + blurb + keywords).
