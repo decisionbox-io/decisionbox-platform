@@ -36,10 +36,11 @@ func ensureEditorTestEmbed() {
 // --- fakes ---
 
 type fakeEditorCache struct {
-	mu         sync.Mutex
-	entries    map[string]database.SchemaCacheEntry // schema_key -> entry
-	lastCached time.Time
-	updateCall *struct {
+	mu             sync.Mutex
+	entries        map[string]database.SchemaCacheEntry // schema_key -> entry
+	lastCached     time.Time
+	seenDatasource string // last warehouse/datasource id a read was scoped to
+	updateCall     *struct {
 		key                          string
 		columns                      []models.ColumnInfo
 		keyCols, metrics, dimensions []string
@@ -51,9 +52,10 @@ func newFakeEditorCache() *fakeEditorCache {
 	return &fakeEditorCache{entries: map[string]database.SchemaCacheEntry{}}
 }
 
-func (f *fakeEditorCache) ListEntries(_ context.Context, _, _ string) ([]database.SchemaCacheEntry, error) {
+func (f *fakeEditorCache) ListEntries(_ context.Context, _, warehouseID string) ([]database.SchemaCacheEntry, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.seenDatasource = warehouseID
 	out := make([]database.SchemaCacheEntry, 0, len(f.entries))
 	for _, e := range f.entries {
 		out = append(out, e)
@@ -61,9 +63,10 @@ func (f *fakeEditorCache) ListEntries(_ context.Context, _, _ string) ([]databas
 	return out, nil
 }
 
-func (f *fakeEditorCache) GetEntry(_ context.Context, _, _, key string) (*database.SchemaCacheEntry, error) {
+func (f *fakeEditorCache) GetEntry(_ context.Context, _, warehouseID, key string) (*database.SchemaCacheEntry, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.seenDatasource = warehouseID
 	e, ok := f.entries[key]
 	if !ok {
 		return nil, nil
@@ -374,6 +377,78 @@ func TestSchemaEditor_UpdateBlurb_UnchangedNoOp(t *testing.T) {
 	}
 	if len(vec.upserts) != 0 || len(edits.records) != 0 {
 		t.Fatalf("unchanged blurb should be a no-op: upserts=%d records=%d", len(vec.upserts), len(edits.records))
+	}
+}
+
+func TestSchemaEditor_BlurbAndKeywords_NoBlurbTable_PreservesBoth(t *testing.T) {
+	// Codex P2: a table with no blurb point yet, saving blurb + keywords in one
+	// request. The blurb upsert must run first (create the point) so the
+	// keyword patch that follows lands on it — neither is dropped.
+	ensureEditorTestEmbed()
+	cache := newFakeEditorCache()
+	seedEntry(cache, "dbo.orders", models.ColumnInfo{Name: "id", Type: "int"})
+	vec := newFakeVectorEditor() // NO seeded point → has_blurb=false
+	edits := &fakeEditRecorder{}
+	h, _ := newEditorHandler(cache, edits, vec)
+
+	w := httptest.NewRecorder()
+	h.UpdateTable(w, editorRequest(http.MethodPut, "/x?table=dbo.orders", "p1",
+		`{"blurb":"Fresh blurb.","keywords":["orders","sales"]}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	p, ok := vec.points["dbo.orders"]
+	if !ok {
+		t.Fatal("blurb upsert should have created the point")
+	}
+	if p.Payload["blurb"] != "Fresh blurb." {
+		t.Fatalf("blurb = %v", p.Payload["blurb"])
+	}
+	kws, _ := p.Payload["keywords"].([]interface{})
+	if len(kws) != 2 {
+		t.Fatalf("keywords dropped on a no-blurb table: %v", p.Payload["keywords"])
+	}
+}
+
+func TestSchemaEditor_KeywordsOnly_NoBlurbTable_NoOp(t *testing.T) {
+	// Keywords have nowhere to live without a blurb point — skip silently and
+	// don't record a phantom edit.
+	cache := newFakeEditorCache()
+	seedEntry(cache, "dbo.orders", models.ColumnInfo{Name: "id", Type: "int"})
+	vec := newFakeVectorEditor() // no point
+	edits := &fakeEditRecorder{}
+	h, _ := newEditorHandler(cache, edits, vec)
+
+	w := httptest.NewRecorder()
+	h.UpdateTable(w, editorRequest(http.MethodPut, "/x?table=dbo.orders", "p1", `{"keywords":["x"]}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if len(vec.setCalls) != 0 {
+		t.Fatalf("no SetPayload expected on a missing point, got %v", vec.setCalls)
+	}
+	if len(edits.records) != 0 {
+		t.Fatalf("no phantom audit record expected, got %+v", edits.records)
+	}
+}
+
+func TestSchemaEditor_OmittedDatasource_ResolvesToPrimary(t *testing.T) {
+	// Codex P2: an omitted datasource_id must resolve to the project's primary
+	// warehouse, not the legacy "default".
+	cache := newFakeEditorCache()
+	seedEntry(cache, "dbo.orders", models.ColumnInfo{Name: "id", Type: "int"})
+	h, proj := newEditorHandler(cache, &fakeEditRecorder{}, newFakeVectorEditor())
+	// Make it a multi-warehouse project whose primary is NOT "default".
+	proj.projects["p1"].PrimaryWarehouseID = "wh_b"
+	proj.projects["p1"].Warehouses = []models.WarehouseConfig{{ID: "wh_a"}, {ID: "wh_b"}}
+
+	w := httptest.NewRecorder()
+	h.ListTables(w, editorRequest(http.MethodGet, "/x", "p1", "")) // no datasource_id
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if cache.seenDatasource != "wh_b" {
+		t.Fatalf("omitted datasource resolved to %q, want primary wh_b", cache.seenDatasource)
 	}
 }
 

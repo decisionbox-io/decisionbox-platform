@@ -228,6 +228,10 @@ export default function SchemaEditorPage() {
 
         {loading ? (
           <Loader />
+        ) : error ? (
+          <Alert color="red" variant="light" icon={<IconAlertCircle size={16} />} maw={760}>
+            Couldn&apos;t load the indexed schema: {error}
+          </Alert>
         ) : tables.length === 0 ? (
           <Text size="sm" c="dimmed">
             {search ? 'No tables match your search.' : 'No indexed tables for this data source yet.'}

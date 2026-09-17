@@ -144,7 +144,7 @@ func (h *SchemaEditorHandler) ListTables(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	ctx := r.Context()
-	datasourceID := r.URL.Query().Get("datasource_id")
+	datasourceID := h.resolveDatasourceID(ctx, projectID, r.URL.Query().Get("datasource_id"))
 	search := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("search")))
 	limit := parseLimit(r.URL.Query().Get("limit"), DefaultSchemaEditorLimit, MaxSchemaEditorLimit)
 
@@ -209,12 +209,12 @@ func (h *SchemaEditorHandler) UpdateTable(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusServiceUnavailable, "schema editor is not available (schema cache / vector store not configured)")
 		return
 	}
-	datasourceID := r.URL.Query().Get("datasource_id")
 	table := r.URL.Query().Get("table")
 	if table == "" {
 		writeError(w, http.StatusBadRequest, "table is required")
 		return
 	}
+	datasourceID := h.resolveDatasourceID(r.Context(), projectID, r.URL.Query().Get("datasource_id"))
 
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB — a blurb + column list
 	var req updateTableRequest
@@ -254,15 +254,19 @@ func (h *SchemaEditorHandler) UpdateTable(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	if req.Keywords != nil {
-		if err := h.applyKeywordEdit(ctx, projectID, datasourceID, entry, *req.Keywords, actor); err != nil {
+	// Blurb before keywords: a blurb rewrite upserts (creates) the Qdrant point,
+	// so a keyword patch that follows lands on an existing point. The reverse
+	// order would silently drop keywords for a table that had no blurb point yet
+	// (SetSchemaPayload is a no-op on a missing point).
+	if req.Blurb != nil {
+		if err := h.applyBlurbEdit(ctx, projectID, datasourceID, entry, *req.Blurb, actor); err != nil {
 			writeApplyError(w, err)
 			return
 		}
 	}
 
-	if req.Blurb != nil {
-		if err := h.applyBlurbEdit(ctx, projectID, datasourceID, entry, *req.Blurb, actor); err != nil {
+	if req.Keywords != nil {
+		if err := h.applyKeywordEdit(ctx, projectID, datasourceID, entry, *req.Keywords, actor); err != nil {
 			writeApplyError(w, err)
 			return
 		}
@@ -292,13 +296,13 @@ func (h *SchemaEditorHandler) DeleteTable(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusServiceUnavailable, "schema editor is not available (schema cache / vector store not configured)")
 		return
 	}
-	datasourceID := r.URL.Query().Get("datasource_id")
 	table := r.URL.Query().Get("table")
 	if table == "" {
 		writeError(w, http.StatusBadRequest, "table is required")
 		return
 	}
 	ctx := r.Context()
+	datasourceID := h.resolveDatasourceID(ctx, projectID, r.URL.Query().Get("datasource_id"))
 	entry, err := h.cache.GetEntry(ctx, projectID, datasourceID, table)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "get table: "+err.Error())
@@ -435,7 +439,15 @@ func (h *SchemaEditorHandler) applyKeywordEdit(ctx context.Context, projectID, d
 	if err != nil {
 		return &applyError{status: http.StatusBadGateway, msg: "read blurb: " + err.Error()}
 	}
-	current := payloadStringSlice(points[entry.SchemaKey].Payload, "keywords")
+	point, hasPoint := points[entry.SchemaKey]
+	if !hasPoint {
+		// Keywords live on the blurb point; there's nowhere to store them for a
+		// table with no blurb yet. Skip silently (and don't record a phantom
+		// edit) — the user must write a blurb first, which the combined
+		// blurb+keywords path handles by upserting the point before this runs.
+		return nil
+	}
+	current := payloadStringSlice(point.Payload, "keywords")
 	cleaned := cleanStrings(keywords)
 	if equalStrings(current, cleaned) {
 		return nil
@@ -600,6 +612,31 @@ func datasetFromQualified(s string) string {
 		return ""
 	}
 	return s[prev+1 : last]
+}
+
+// resolveDatasourceID returns the requested datasource id, or the project's
+// primary warehouse id when the caller omitted it — mirroring the frontend's
+// resolvePrimaryDatasourceId and models.PrimaryWarehouse so an omitted
+// datasource_id targets the configured primary, not the legacy "default", on a
+// multi-warehouse project. Falls back to the raw value (empty → default) when
+// the project can't be loaded or has no warehouse.
+func (h *SchemaEditorHandler) resolveDatasourceID(ctx context.Context, projectID, raw string) string {
+	if raw != "" {
+		return raw
+	}
+	p, err := h.projects.GetByID(ctx, projectID)
+	if err != nil || p == nil {
+		return raw
+	}
+	wh := p.PrimaryWarehouse()
+	if wh.ID != "" {
+		return wh.ID
+	}
+	if wh.Provider != "" {
+		// A legacy / id-less primary warehouse resolves to the reserved default.
+		return models.DefaultWarehouseID
+	}
+	return raw
 }
 
 func actorEmail(r *http.Request) string {
