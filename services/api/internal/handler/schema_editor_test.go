@@ -114,10 +114,11 @@ func (f *fakeEditorCache) LastCachedAt(_ context.Context, _ string) (time.Time, 
 }
 
 type fakeEditRecorder struct {
-	mu         sync.Mutex
-	records    []models.SchemaEdit
-	sinceCount int
-	sinceArgs  []time.Time // every cutoff CountSince was called with (index + cache)
+	mu           sync.Mutex
+	records      []models.SchemaEdit
+	sinceCount   int
+	sinceArgs    []time.Time // every cutoff CountSince was called with (index + cache)
+	sinceActions [][]string  // the action filter passed alongside each cutoff
 }
 
 func (f *fakeEditRecorder) hasSince(t time.Time) bool {
@@ -144,10 +145,13 @@ func (f *fakeEditRecorder) List(_ context.Context, _, _ string, _ int) ([]models
 	return append([]models.SchemaEdit(nil), f.records...), nil
 }
 
-func (f *fakeEditRecorder) CountSince(_ context.Context, _ string, since time.Time) (int, error) {
+func (f *fakeEditRecorder) CountSince(_ context.Context, _ string, since time.Time, actions ...string) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sinceArgs = append(f.sinceArgs, since)
+	// Record whether this call was action-restricted (the re-index count) or not
+	// (the cache-clear count), so tests can assert the right filtering.
+	f.sinceActions = append(f.sinceActions, append([]string(nil), actions...))
 	return f.sinceCount, nil
 }
 
@@ -677,14 +681,36 @@ func TestSchemaEditor_ListEdits_DatesFromLatestRun(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	// since_last_index must be dated from the latest run, not the stale cache.
-	if !edits.hasSince(runTime) {
-		t.Fatalf("expected a CountSince at the latest run time %v; got cutoffs %v", runTime, edits.sinceArgs)
+	// since_last_index must be dated from the latest run (not the stale cache)
+	// AND restricted to the actions a re-index discards (blurb/keyword).
+	// since_last_cache uses the cache time and counts ALL actions.
+	edits.mu.Lock()
+	defer edits.mu.Unlock()
+	var sawRunRestricted, sawCacheUnrestricted bool
+	for i, s := range edits.sinceArgs {
+		acts := edits.sinceActions[i]
+		if s.Equal(runTime) && sliceContains(acts, models.SchemaEditActionBlurb) && sliceContains(acts, models.SchemaEditActionKeywords) {
+			sawRunRestricted = true
+		}
+		if s.Equal(cacheTime) && len(acts) == 0 {
+			sawCacheUnrestricted = true
+		}
 	}
-	// The clear-cache count (since_last_cache) still uses the cache time.
-	if !edits.hasSince(cacheTime) {
-		t.Fatalf("expected a CountSince at the cache time %v (for since_last_cache); got %v", cacheTime, edits.sinceArgs)
+	if !sawRunRestricted {
+		t.Fatalf("expected an action-restricted CountSince at run time %v; got args=%v actions=%v", runTime, edits.sinceArgs, edits.sinceActions)
 	}
+	if !sawCacheUnrestricted {
+		t.Fatalf("expected an unrestricted CountSince at cache time %v; got args=%v actions=%v", cacheTime, edits.sinceArgs, edits.sinceActions)
+	}
+}
+
+func sliceContains(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestSchemaEditor_ListEdits_FallsBackToCacheTimeWithoutRuns(t *testing.T) {

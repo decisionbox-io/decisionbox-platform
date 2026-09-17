@@ -90,16 +90,21 @@ func (r *SchemaEditRepository) List(ctx context.Context, projectID, datasourceID
 }
 
 // CountSince returns how many edits a project has recorded strictly after
-// `since` — the count of manual changes made since the last successful index
-// (the caller passes the last cache timestamp). A zero `since` counts every
-// edit (project never indexed). Backs the pre-reset warning.
-func (r *SchemaEditRepository) CountSince(ctx context.Context, projectID string, since time.Time) (int, error) {
+// `since`. A zero `since` counts every edit (project never indexed). When
+// `actions` is non-empty the count is restricted to those edit actions — the
+// re-index warning counts only the actions a re-index actually discards
+// (blurb/keyword edits), while the cache-clear warning counts all actions.
+// Backs the pre-reset warnings.
+func (r *SchemaEditRepository) CountSince(ctx context.Context, projectID string, since time.Time, actions ...string) (int, error) {
 	if projectID == "" {
 		return 0, errors.New("projectID is required")
 	}
 	filter := bson.M{"project_id": projectID}
 	if !since.IsZero() {
 		filter["at"] = bson.M{"$gt": since}
+	}
+	if len(actions) > 0 {
+		filter["action"] = bson.M{"$in": actions}
 	}
 	n, err := r.col.CountDocuments(ctx, filter)
 	if err != nil {

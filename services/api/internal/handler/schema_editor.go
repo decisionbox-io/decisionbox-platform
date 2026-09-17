@@ -45,7 +45,10 @@ type SchemaEditorCache interface {
 type SchemaEditRecorder interface {
 	Record(ctx context.Context, edit models.SchemaEdit) error
 	List(ctx context.Context, projectID, datasourceID string, limit int) ([]models.SchemaEdit, error)
-	CountSince(ctx context.Context, projectID string, since time.Time) (int, error)
+	// CountSince counts edits after `since`, optionally restricted to the given
+	// actions (empty = all). The re-index warning passes the blurb/keyword
+	// actions it regenerates; the cache-clear warning passes none (all).
+	CountSince(ctx context.Context, projectID string, since time.Time, actions ...string) (int, error)
 }
 
 // SchemaVectorEditor is the Qdrant surface the editor needs to keep blurbs in
@@ -388,7 +391,10 @@ func (h *SchemaEditorHandler) ListEdits(w http.ResponseWriter, r *http.Request) 
 	// Best-effort — a count failure must not fail the list.
 	sinceIndex := 0
 	if lastIndex, ok := h.lastIndexTime(ctx, projectID); ok {
-		if n, nErr := h.edits.CountSince(ctx, projectID, lastIndex); nErr == nil {
+		// Only blurb/keyword edits are discarded by a re-index (it regenerates
+		// blurbs); column/table removals persist across it, so they don't belong
+		// in the re-index warning count.
+		if n, nErr := h.edits.CountSince(ctx, projectID, lastIndex, models.SchemaEditActionBlurb, models.SchemaEditActionKeywords); nErr == nil {
 			sinceIndex = n
 		}
 	}

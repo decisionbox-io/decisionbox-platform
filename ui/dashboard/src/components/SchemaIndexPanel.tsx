@@ -107,6 +107,18 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
     };
   }, [projectId, onStatusChange, pollNonce]);
 
+  // Refresh on tab focus: the status poll stops once settled, so an out-of-band
+  // clear/rebuild (from Settings or another tab) would otherwise leave this
+  // now-visible banner showing stale Ready/run counts. Re-polling status on
+  // focus (via pollNonce) updates the status, and the roll-up effect below
+  // refetches the runs whenever that status actually changed.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onFocus = () => setPollNonce((n) => n + 1);
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, []);
+
   // Per-datasource roll-up — the durable record. Fetch the run history once the
   // run settles (ready / failed / cancelled / needs_reindex). Keyed on the
   // settled status AND the per-run signals updated_at (stamped on every ready
