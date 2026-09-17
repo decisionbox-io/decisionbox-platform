@@ -43,7 +43,7 @@ func TestCorrelationContract_NothingDecidedRendersNothing(t *testing.T) {
 		{"empty", []agentplugin.CorrelationKey{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := buildDatasourcesPromptSection(sqlOnlyContext(), tc.keys)
+			got := buildDatasourcesPromptSection(sqlOnlyContext(), correlationGuidance{keys: tc.keys})
 			for _, forbidden := range []string{"get_correlations", "Reviewed correlation keys", "REJECTED"} {
 				if strings.Contains(got, forbidden) {
 					t.Errorf("unreviewed project must not see %q:\n%s", forbidden, got)
@@ -54,7 +54,8 @@ func TestCorrelationContract_NothingDecidedRendersNothing(t *testing.T) {
 }
 
 func TestCorrelationContract_TeachesTheActionAndMandatesTheCall(t *testing.T) {
-	got := buildDatasourcesPromptSection(sqlOnlyContext(), []agentplugin.CorrelationKey{confirmedKey()})
+	got := buildDatasourcesPromptSection(sqlOnlyContext(),
+		correlationGuidance{keys: []agentplugin.CorrelationKey{confirmedKey()}})
 
 	// Nothing upstream teaches this action — the domain packs do not carry it
 	// — so the shape has to be here or the model cannot emit it.
@@ -75,7 +76,8 @@ func TestCorrelationContract_TeachesTheActionAndMandatesTheCall(t *testing.T) {
 // are illustrative.
 func TestCorrelationContract_ExampleUsesThisRunsDatasources(t *testing.T) {
 	dc := sqlOnlyContext()
-	got := buildDatasourcesPromptSection(dc, []agentplugin.CorrelationKey{confirmedKey()})
+	got := buildDatasourcesPromptSection(dc,
+		correlationGuidance{keys: []agentplugin.CorrelationKey{confirmedKey()}})
 
 	want := fmt.Sprintf(`{"a": "%s", "b": "%s"}`, dc.descriptors[0].id, dc.descriptors[1].id)
 	if !strings.Contains(got, want) {
@@ -88,7 +90,7 @@ func TestCorrelationContract_ExampleUsesThisRunsDatasources(t *testing.T) {
 // is a prohibition that depends on the model choosing to call the tool.
 func TestCorrelationContract_RejectionsAreNamedInline(t *testing.T) {
 	got := buildDatasourcesPromptSection(sqlOnlyContext(),
-		[]agentplugin.CorrelationKey{confirmedKey(), rejectedKey("userId")})
+		correlationGuidance{keys: []agentplugin.CorrelationKey{confirmedKey(), rejectedKey("userId")}})
 
 	if !strings.Contains(got, "REJECTED PAIRINGS") {
 		t.Fatalf("want the rejections named inline:\n%s", got)
@@ -116,7 +118,8 @@ func TestCorrelationContract_RejectionsAreNamedInline(t *testing.T) {
 }
 
 func TestCorrelationContract_NoRejectionsMeansNoProhibitionSection(t *testing.T) {
-	got := buildDatasourcesPromptSection(sqlOnlyContext(), []agentplugin.CorrelationKey{confirmedKey()})
+	got := buildDatasourcesPromptSection(sqlOnlyContext(),
+		correlationGuidance{keys: []agentplugin.CorrelationKey{confirmedKey()}})
 
 	if strings.Contains(got, "REJECTED PAIRINGS") {
 		t.Errorf("nothing was rejected, so there is nothing to prohibit:\n%s", got)
@@ -135,7 +138,7 @@ func TestCorrelationContract_OverflowPointsAtTheTool(t *testing.T) {
 	keys := []agentplugin.CorrelationKey{
 		rejectedKey("userId"), rejectedKey("clientId"), rejectedKey("sessionId"), rejectedKey("visitorId"),
 	}
-	got := buildDatasourcesPromptSection(sqlOnlyContext(), keys)
+	got := buildDatasourcesPromptSection(sqlOnlyContext(), correlationGuidance{keys: keys})
 
 	if !strings.Contains(got, "`userId`") || !strings.Contains(got, "`clientId`") {
 		t.Errorf("want the first two rendered:\n%s", got)
@@ -153,7 +156,7 @@ func TestCorrelationContract_OverflowPointsAtTheTool(t *testing.T) {
 
 func TestCorrelationContract_UnderTheCapHasNoOverflowLine(t *testing.T) {
 	got := buildDatasourcesPromptSection(sqlOnlyContext(),
-		[]agentplugin.CorrelationKey{rejectedKey("userId")})
+		correlationGuidance{keys: []agentplugin.CorrelationKey{rejectedKey("userId")}})
 
 	if strings.Contains(got, "more rejected pairings") {
 		t.Errorf("nothing was dropped, so nothing should say so:\n%s", got)
@@ -165,7 +168,7 @@ func TestCorrelationContract_UnderTheCapHasNoOverflowLine(t *testing.T) {
 // keys are known.
 func TestCorrelationContract_SitsAfterTheHopRules(t *testing.T) {
 	got := buildDatasourcesPromptSection(sqlOnlyContext(),
-		[]agentplugin.CorrelationKey{rejectedKey("userId")})
+		correlationGuidance{keys: []agentplugin.CorrelationKey{rejectedKey("userId")}})
 
 	hop := strings.Index(got, "RIGHT (two steps)")
 	block := strings.Index(got, "Reviewed correlation keys")
@@ -183,7 +186,7 @@ func TestCorrelationContract_SitsAfterTheHopRules(t *testing.T) {
 // datasource is queried in.
 func TestCorrelationContract_RendersOnAMixedLanguageRunToo(t *testing.T) {
 	got := buildDatasourcesPromptSection(withDatasource(sqlOnlyContext(), cubeDescriptor()),
-		[]agentplugin.CorrelationKey{rejectedKey("userId")})
+		correlationGuidance{keys: []agentplugin.CorrelationKey{rejectedKey("userId")}})
 
 	if !strings.Contains(got, "REJECTED PAIRINGS") {
 		t.Errorf("want the prohibition on a mixed-language run:\n%s", got)
@@ -202,7 +205,7 @@ func TestCorrelationContract_RendersOnAMixedLanguageRunToo(t *testing.T) {
 // unreviewed pair — which says in as many words that silence is neutral.
 func TestCorrelationContract_RestrictionIsScopedToTheRejectedPairs(t *testing.T) {
 	got := buildDatasourcesPromptSection(sqlOnlyContext(),
-		[]agentplugin.CorrelationKey{rejectedKey("userId")})
+		correlationGuidance{keys: []agentplugin.CorrelationKey{rejectedKey("userId")}})
 
 	if !strings.Contains(got, "ONE OF THE PAIRS ABOVE") {
 		t.Errorf("the record-grain restriction must name what it applies to:\n%s", got)
@@ -225,16 +228,16 @@ func TestCorrelationLookup_WiredOnlyWhenTheActionWasTaught(t *testing.T) {
 	o := &Orchestrator{projectID: "p1"}
 	dc := sqlOnlyContext()
 
-	if o.correlationLookup(nil, []agentplugin.CorrelationKey{confirmedKey()}) != nil {
+	if o.correlationLookup(nil, correlationGuidance{keys: []agentplugin.CorrelationKey{confirmedKey()}}) != nil {
 		t.Error("a single-datasource run has nothing to correlate with")
 	}
-	if o.correlationLookup(dc, nil) != nil {
+	if o.correlationLookup(dc, correlationGuidance{}) != nil {
 		t.Error("a run whose contract taught no action must not be given the lookup")
 	}
-	if o.correlationLookup(dc, []agentplugin.CorrelationKey{}) != nil {
+	if o.correlationLookup(dc, correlationGuidance{keys: []agentplugin.CorrelationKey{}}) != nil {
 		t.Error("an empty decision set is the same as none")
 	}
-	if o.correlationLookup(dc, []agentplugin.CorrelationKey{confirmedKey()}) == nil {
+	if o.correlationLookup(dc, correlationGuidance{keys: []agentplugin.CorrelationKey{confirmedKey()}}) == nil {
 		t.Error("a run that was taught the action must be able to serve it")
 	}
 }
@@ -252,7 +255,7 @@ func TestCorrelationLookup_AsksTheSeamAboutThePairItIsGiven(t *testing.T) {
 		})
 
 	o := &Orchestrator{projectID: "p1"}
-	lookup := o.correlationLookup(sqlOnlyContext(), []agentplugin.CorrelationKey{confirmedKey()})
+	lookup := o.correlationLookup(sqlOnlyContext(), correlationGuidance{keys: []agentplugin.CorrelationKey{confirmedKey()}})
 	keys, err := lookup(context.Background(), "wh_analytics", "default")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -265,5 +268,53 @@ func TestCorrelationLookup_AsksTheSeamAboutThePairItIsGiven(t *testing.T) {
 	}
 	if len(keys) != 1 {
 		t.Fatalf("keys = %+v, want the provider's answer", keys)
+	}
+}
+
+// TestCorrelationContract_AFailedReadIsNotAnUncuratedProject.
+//
+// A decision store that was briefly unreachable has not established that
+// nobody has reviewed anything. Treating the two alike would drop every
+// recorded rejection for the length of a run, silently — the outcome this
+// whole feature exists to stop.
+func TestCorrelationContract_AFailedReadIsNotAnUncuratedProject(t *testing.T) {
+	got := buildDatasourcesPromptSection(sqlOnlyContext(), correlationGuidance{unread: true})
+
+	if !strings.Contains(got, "MUST call `get_correlations`") {
+		t.Errorf("the action must still be offered so it can be retried per pair:\n%s", got)
+	}
+	if !strings.Contains(got, "failed read, NOT a project with nothing reviewed") {
+		t.Errorf("the contract must say the list is missing, not empty:\n%s", got)
+	}
+	if strings.Contains(got, "REJECTED PAIRINGS") {
+		t.Errorf("there is nothing to name, so nothing may be named:\n%s", got)
+	}
+}
+
+func TestCorrelationLookup_WiredAfterAFailedRead(t *testing.T) {
+	o := &Orchestrator{projectID: "p1"}
+	// The store may answer the next time it is asked, and a per-pair call
+	// during the run is the only way to find out.
+	if o.correlationLookup(sqlOnlyContext(), correlationGuidance{unread: true}) == nil {
+		t.Error("a failed startup read must not disable the action for the whole run")
+	}
+}
+
+// TestCorrelationGuidance_Offered pins the one predicate both the contract and
+// the wiring read, so they cannot drift into disagreeing about which runs get
+// the action.
+func TestCorrelationGuidance_Offered(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		g    correlationGuidance
+		want bool
+	}{
+		{"nothing known", correlationGuidance{}, false},
+		{"decisions exist", correlationGuidance{keys: []agentplugin.CorrelationKey{confirmedKey()}}, true},
+		{"read failed", correlationGuidance{unread: true}, true},
+	} {
+		if got := tc.g.offered(); got != tc.want {
+			t.Errorf("%s: offered() = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

@@ -918,7 +918,7 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 			break
 		}
 
-		conversation.AddUserMessage(explorationRepairNudge(err))
+		conversation.AddUserMessage(explorationRepairNudge(err, e.correlationLookup != nil))
 	}
 
 	in, out := usage.Totals()
@@ -1341,22 +1341,38 @@ func jsonHasActionKey(s string) bool {
 // model corrects the specific failure instead of getting the same generic
 // re-ask each time (issue #341). The menu lists every recognised action shape
 // (including the schema-discovery actions the old nudge omitted).
-func explorationRepairNudge(parseErr error) string {
-	const menu = "Respond with EXACTLY ONE JSON object, no prose and no <think> blocks around it, matching one of:\n" +
-		`  {"thinking": "...", "query": "SELECT ..."}        — run one read-only query, or` + "\n" +
-		`  {"thinking": "...", "lookup_schema": ["ds.tbl"]}  — inspect table schemas, or` + "\n" +
-		`  {"thinking": "...", "search_tables": "..."}       — find relevant tables, or` + "\n" +
-		`  {"done": true, "summary": "..."}                  — only when exploration is truly finished.`
+//
+// withCorrelations adds the run-scoped correlation action. Run-scoped rather
+// than constant in both directions: a run that was never offered the action
+// must not be taught it here, and a run whose contract REQUIRES it must not be
+// handed a menu of four alternatives the moment its attempt at the fifth fails
+// to parse — that is the one moment the nudge would steer it away from the
+// check it was told to make.
+func explorationRepairNudge(parseErr error, withCorrelations bool) string {
+	var b strings.Builder
+	b.WriteString("Respond with EXACTLY ONE JSON object, no prose and no <think> blocks around it, matching one of:\n")
+	b.WriteString(`  {"thinking": "...", "query": "SELECT ..."}        — run one read-only query, or` + "\n")
+	b.WriteString(`  {"thinking": "...", "lookup_schema": ["ds.tbl"]}  — inspect table schemas, or` + "\n")
+	b.WriteString(`  {"thinking": "...", "search_tables": "..."}       — find relevant tables, or` + "\n")
+	carried := "query, lookup_schema, search_tables, or done"
+	if withCorrelations {
+		b.WriteString(`  {"thinking": "...", "get_correlations": {"a": "<datasource_id>", "b": "<datasource_id>"}} — check the reviewed join keys for a pair, or` + "\n")
+		carried = "query, lookup_schema, search_tables, get_correlations, or done"
+	}
+	b.WriteString(`  {"done": true, "summary": "..."}                  — only when exploration is truly finished.`)
+
 	lead := "Your previous response could not be parsed as an exploration action."
 	if parseErr != nil {
 		switch msg := parseErr.Error(); {
 		case strings.Contains(msg, "no action JSON"):
 			lead = "Your previous response contained no JSON action object (only prose or reasoning)."
 		case strings.Contains(msg, "no query, lookup_schema"):
-			lead = "Your previous JSON had no usable action — it must carry one of query, lookup_schema, search_tables, or done."
+			// Named from the same switch as the menu: a lead listing four
+			// actions above a menu of five is its own kind of confusing.
+			lead = "Your previous JSON had no usable action — it must carry one of " + carried + "."
 		}
 	}
-	return lead + " " + menu + "\nDo not emit planning JSON before the action, and do not wrap it in markdown fences."
+	return lead + " " + b.String() + "\nDo not emit planning JSON before the action, and do not wrap it in markdown fences."
 }
 
 // executeAction executes the action and returns the user-message string

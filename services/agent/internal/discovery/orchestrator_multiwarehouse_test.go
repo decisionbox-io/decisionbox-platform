@@ -84,7 +84,7 @@ func TestBuildDatasourcesPromptSection(t *testing.T) {
 			}},
 		},
 	}}
-	got := buildDatasourcesPromptSection(dc, nil)
+	got := buildDatasourcesPromptSection(dc, correlationGuidance{})
 	for _, want := range []string{
 		"datasource_id", "default", "wh_oracle", "postgres", "oracle",
 		"revenue", "Genre Performance", "music catalog",

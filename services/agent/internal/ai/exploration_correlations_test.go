@@ -397,3 +397,36 @@ func TestGetCorrelations_MultipleAnchorColumnsAreAllNamed(t *testing.T) {
 		t.Errorf("want every column named:\n%s", out)
 	}
 }
+
+// TestExplorationRepairNudge_OffersTheActionOnlyWhereItExists.
+//
+// The nudge is sent the moment a response fails to parse. On a run whose
+// contract requires the correlation check, a menu of four alternatives arriving
+// right after the model's attempt at the fifth is the one moment the retry
+// instruction would steer it off the check it was told to make. On a run that
+// was never offered the action, teaching it here would be advertising something
+// it cannot use.
+func TestExplorationRepairNudge_OffersTheActionOnlyWhereItExists(t *testing.T) {
+	err := errors.New("action JSON has no query, lookup_schema, search_tables, get_correlations, done flag")
+
+	with := explorationRepairNudge(err, true)
+	if !strings.Contains(with, `"get_correlations"`) {
+		t.Errorf("want the action in the menu:\n%s", with)
+	}
+	// The lead lists the actions too, and a lead of four above a menu of five
+	// is its own kind of confusing.
+	if !strings.Contains(with, "search_tables, get_correlations, or done") {
+		t.Errorf("want the lead to match the menu:\n%s", with)
+	}
+
+	without := explorationRepairNudge(err, false)
+	if strings.Contains(without, "get_correlations") {
+		t.Errorf("a run without the action must not be taught it here:\n%s", without)
+	}
+	// Everything else is unchanged for such a run.
+	for _, want := range []string{`"query"`, `"lookup_schema"`, `"search_tables"`, `"done"`} {
+		if !strings.Contains(without, want) {
+			t.Errorf("missing %s from the unchanged menu:\n%s", want, without)
+		}
+	}
+}

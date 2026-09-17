@@ -828,10 +828,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// datasource's routing card and its own domain-pack focus areas, so the
 	// agent sets datasource_id per statement, hops between datasources, and
 	// applies the right playbook per datasource.
-	var curated []agentplugin.CorrelationKey
+	var guidance correlationGuidance
 	if dc != nil {
-		curated = o.curatedCorrelations(ctx, dc)
-		explorationPrompt += buildDatasourcesPromptSection(dc, curated)
+		guidance = o.curatedCorrelations(ctx, dc)
+		explorationPrompt += buildDatasourcesPromptSection(dc, guidance)
 	}
 
 	// Inject project knowledge sources (no-op if no enterprise plugin loaded
@@ -939,7 +939,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		Dataset:           datasetsStr,
 		SchemaProvider:    schemaProvider,
 		StepIndexer:       stepIndexer,
-		CorrelationLookup: o.correlationLookup(dc, curated),
+		CorrelationLookup: o.correlationLookup(dc, guidance),
 
 		// R3: reasoning-aware, window-budgeted per-step output ceiling.
 		Window:             exploreWindow,
@@ -2801,18 +2801,36 @@ const (
 	knowledgeMaxRetrievalPerPhase = 3 * time.Second
 )
 
+// correlationGuidance is what a run knows about reviewed correlation keys
+// before it starts.
+//
+// Two fields rather than one slice, because "nothing came back" has two causes
+// that must not be treated alike. Nobody having reviewed anything is a project
+// to leave alone. A read that FAILED has established nothing of the sort — and
+// treating it as the first would drop every recorded rejection for the length
+// of a run, silently, which is the outcome this whole feature exists to stop.
+type correlationGuidance struct {
+	keys   []agentplugin.CorrelationKey
+	unread bool
+}
+
+// offered reports whether this run gets the get_correlations action at all.
+//
+// A failed read still offers it: the store may answer the next time it is
+// asked, and a per-pair call during the run is the only way to find out.
+func (g correlationGuidance) offered() bool { return len(g.keys) > 0 || g.unread }
+
 // curatedCorrelations reads what somebody has decided about correlating this
 // run's datasources, for the routing contract to name.
 //
-// Once per run, over every datasource on it. The tool re-reads per pair while
+// Once per run, over every datasource on it. The action re-reads per pair while
 // the run is in flight, so this is not a cache — it is the answer to a
 // different question: is there anything to tell the model about at all.
 //
-// A failure is a warning and an empty answer, never a stopped run. The
-// prohibitions it would have named are the cost, and the tool can still be
-// asked; failing a discovery somebody launched because a decision store
-// hiccuped would be the worse trade.
-func (o *Orchestrator) curatedCorrelations(ctx context.Context, dc *datasourceContext) []agentplugin.CorrelationKey {
+// A failure is a warning, never a stopped run: failing a discovery somebody
+// launched because a decision store hiccuped would be the worse trade. It is
+// reported as unread rather than as empty, so the contract says which.
+func (o *Orchestrator) curatedCorrelations(ctx context.Context, dc *datasourceContext) correlationGuidance {
 	ids := make([]string, 0, len(dc.descriptors))
 	for _, d := range dc.descriptors {
 		ids = append(ids, d.id)
@@ -2823,10 +2841,10 @@ func (o *Orchestrator) curatedCorrelations(ctx context.Context, dc *datasourceCo
 	})
 	if err != nil {
 		applog.WithError(err).Warn("multi-warehouse discovery: could not read the reviewed correlation keys; " +
-			"the routing contract will not name the rejected pairings")
-		return nil
+			"the routing contract will say so and the agent can retry per pair")
+		return correlationGuidance{unread: true}
 	}
-	return keys
+	return correlationGuidance{keys: keys}
 }
 
 // correlationLookup is what serves the agent's get_correlations action.
@@ -2843,10 +2861,13 @@ func (o *Orchestrator) curatedCorrelations(ctx context.Context, dc *datasourceCo
 // that has curated nothing — would have its opening message changed to
 // advertise an action that can only ever answer "nothing".
 //
+// A run whose decisions could not be READ is offered it, because that is the
+// case where asking again is worth something.
+//
 // A model that invents the action anyway is answered "not available on this
 // run", which is what it is.
-func (o *Orchestrator) correlationLookup(dc *datasourceContext, curated []agentplugin.CorrelationKey) ai.CorrelationLookupFunc {
-	if dc == nil || len(curated) == 0 {
+func (o *Orchestrator) correlationLookup(dc *datasourceContext, guidance correlationGuidance) ai.CorrelationLookupFunc {
+	if dc == nil || !guidance.offered() {
 		return nil
 	}
 	projectID := o.projectID

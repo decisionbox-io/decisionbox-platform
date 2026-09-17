@@ -229,11 +229,11 @@ func (o *Orchestrator) buildGroupedCatalog(dc *datasourceContext, keywords []str
 // of assuming a single one — see runHasNonSQLDatasource for why the split is
 // on the language rather than on the shape.
 //
-// curated is what somebody has already decided about correlating this run's
-// datasources. Empty — no decisions, nothing wired to answer, or a single
-// datasource — renders nothing at all, and the section is byte-for-byte the
-// one every existing project receives.
-func buildDatasourcesPromptSection(dc *datasourceContext, curated []agentplugin.CorrelationKey) string {
+// guidance is what this run knows about reviewed correlation keys. Nothing
+// known — no decisions, nothing wired to answer, or a single datasource —
+// renders nothing at all, and the section is byte-for-byte the one every
+// existing project receives.
+func buildDatasourcesPromptSection(dc *datasourceContext, guidance correlationGuidance) string {
 	mixed := runHasNonSQLDatasource(dc)
 	var b strings.Builder
 	b.WriteString("\n\n## Datasources (multi-warehouse)\n\n")
@@ -242,7 +242,7 @@ func buildDatasourcesPromptSection(dc *datasourceContext, curated []agentplugin.
 	} else {
 		writeSQLRouting(&b)
 	}
-	writeCorrelationContract(&b, dc, curated)
+	writeCorrelationContract(&b, dc, guidance)
 	b.WriteString("\nAvailable datasources:\n")
 	for _, d := range dc.descriptors {
 		writeDatasourceHeadline(&b, d, mixed)
@@ -413,15 +413,23 @@ func maxRejectedPairingsRendered() int {
 //
 // Nothing is written when nothing has been decided, so a project that has never
 // curated a pairing reads exactly as it did before this existed.
-func writeCorrelationContract(b *strings.Builder, dc *datasourceContext, curated []agentplugin.CorrelationKey) {
-	if len(curated) == 0 {
+func writeCorrelationContract(b *strings.Builder, dc *datasourceContext, guidance correlationGuidance) {
+	if !guidance.offered() {
 		return
 	}
 	b.WriteString("\n### Reviewed correlation keys\n")
 	b.WriteString("Some pairs of datasources in this project have join keys a person has REVIEWED. Before your FIRST hop between any two datasources, you MUST call `get_correlations` for that pair and follow what it says. A reviewed key is stronger evidence than a name match — two fields sharing a name is how the wrong correlation gets made.\n")
 	fmt.Fprintf(b, "  {\"thinking\": \"...\", \"get_correlations\": {\"a\": \"%s\", \"b\": \"%s\"}}\n", exampleA(dc), exampleB(dc))
 
-	rejected := rejectedPairings(curated)
+	if guidance.unread {
+		// Nothing to name, and saying nothing would be read as nothing to
+		// say. The action is still offered because the store may answer on
+		// the next attempt, and a per-pair call is the only way to find out.
+		b.WriteString("The reviewed keys for this project could not be read when this run started, so none are listed here — that is a failed read, NOT a project with nothing reviewed. Call `get_correlations` before every cross-datasource hop; if it fails there too, treat the pair as unverified and say so in your findings rather than correlating on a key nobody has checked.\n")
+		return
+	}
+
+	rejected := rejectedPairings(guidance.keys)
 	if len(rejected) == 0 {
 		return
 	}

@@ -102,7 +102,7 @@ func TestBuildDatasourcesPromptSection_AllSQLIsUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read golden: %v", err)
 	}
-	if got := buildDatasourcesPromptSection(sqlOnlyContext(), nil); got != string(want) {
+	if got := buildDatasourcesPromptSection(sqlOnlyContext(), correlationGuidance{}); got != string(want) {
 		t.Errorf("all-SQL routing contract changed.\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
 }
@@ -111,12 +111,12 @@ func TestBuildDatasourcesPromptSection_AllSQLIsUnchanged(t *testing.T) {
 // the switch: connecting a source that does not speak SQL is what changes the
 // text, and nothing else does.
 func TestBuildDatasourcesPromptSection_OneNonSQLDatasourceRewritesTheContract(t *testing.T) {
-	sql := buildDatasourcesPromptSection(sqlOnlyContext(), nil)
+	sql := buildDatasourcesPromptSection(sqlOnlyContext(), correlationGuidance{})
 	if !strings.Contains(sql, "This project has multiple SQL datasources.") {
 		t.Fatalf("all-SQL run lost its opening:\n%s", sql)
 	}
 
-	mixed := buildDatasourcesPromptSection(withDatasource(sqlOnlyContext(), cubeDescriptor()), nil)
+	mixed := buildDatasourcesPromptSection(withDatasource(sqlOnlyContext(), cubeDescriptor()), correlationGuidance{})
 	if strings.Contains(mixed, "multiple SQL datasources") {
 		t.Errorf("a run carrying a non-SQL datasource still calls them all SQL:\n%s", mixed)
 	}
@@ -147,7 +147,7 @@ func TestBuildDatasourcesPromptSection_ATableSourceWithNoTablesIsNotCalledACube(
 		{id: "default", label: "Empty PG", provider: testSQLSlug, tableCount: 0},
 		cubeDescriptor(),
 	}}
-	got := buildDatasourcesPromptSection(dc, nil)
+	got := buildDatasourcesPromptSection(dc, correlationGuidance{})
 
 	if strings.Count(got, "NO TABLES") != 1 {
 		t.Errorf("expected only the cube to be described as having no tables:\n%s", got)
@@ -170,7 +170,7 @@ func TestBuildDatasourcesPromptSection_ATableSourceWithNoTablesIsNotCalledACube(
 // only part of that this section can honestly settle from where it sits, so
 // it has to actually say so.
 func TestBuildDatasourcesPromptSection_ClaimsPrecedenceOverTheExamplesAboveIt(t *testing.T) {
-	mixed := buildDatasourcesPromptSection(withDatasource(sqlOnlyContext(), cubeDescriptor()), nil)
+	mixed := buildDatasourcesPromptSection(withDatasource(sqlOnlyContext(), cubeDescriptor()), correlationGuidance{})
 	if !strings.Contains(mixed, "THIS section wins") {
 		t.Errorf("the mixed contract does not claim precedence over the examples above it:\n%s", mixed)
 	}
@@ -194,7 +194,7 @@ func TestBuildDatasourcesPromptSection_MixedNamesEveryLanguage(t *testing.T) {
 		{id: "default", provider: testSQLSlug, tableCount: 4},
 		cubeDescriptor(),
 	}}
-	got := buildDatasourcesPromptSection(dc, nil)
+	got := buildDatasourcesPromptSection(dc, correlationGuidance{})
 
 	if !strings.Contains(got, "Query language: PostgreSQL\n") {
 		t.Errorf("the SQL datasource's language is not named:\n%s", got)
@@ -212,7 +212,7 @@ func TestBuildDatasourcesPromptSection_MixedNamesEveryLanguage(t *testing.T) {
 // useless: it reads as an empty or broken warehouse, and it invites the one
 // action that cannot work against this source.
 func TestBuildDatasourcesPromptSection_ACubeDoesNotReportZeroTables(t *testing.T) {
-	got := buildDatasourcesPromptSection(withDatasource(sqlOnlyContext(), cubeDescriptor()), nil)
+	got := buildDatasourcesPromptSection(withDatasource(sqlOnlyContext(), cubeDescriptor()), correlationGuidance{})
 
 	if strings.Contains(got, "0 tables") {
 		t.Errorf("a source with no tables is reported as having zero of them:\n%s", got)
@@ -238,7 +238,7 @@ func TestBuildDatasourcesPromptSection_ACubeDoesNotReportZeroTables(t *testing.T
 func TestBuildDatasourcesPromptSection_ACubeCarryingTablesKeepsTheOrdinaryLine(t *testing.T) {
 	d := cubeDescriptor()
 	d.tableCount = 3
-	got := buildDatasourcesPromptSection(withDatasource(sqlOnlyContext(), d), nil)
+	got := buildDatasourcesPromptSection(withDatasource(sqlOnlyContext(), d), correlationGuidance{})
 
 	if strings.Contains(got, "NO TABLES") {
 		t.Errorf("tables the run found are denied:\n%s", got)
@@ -258,7 +258,7 @@ func TestBuildDatasourcesPromptSection_ACubeCarryingTablesKeepsTheOrdinaryLine(t
 // the values passed between steps, or it teaches `WHERE ... IN` as the only
 // way to receive them.
 func TestBuildDatasourcesPromptSection_TheHopRuleSurvivesTwoLanguages(t *testing.T) {
-	got := buildDatasourcesPromptSection(withDatasource(sqlOnlyContext(), cubeDescriptor()), nil)
+	got := buildDatasourcesPromptSection(withDatasource(sqlOnlyContext(), cubeDescriptor()), correlationGuidance{})
 
 	if !strings.Contains(got, "written in B's OWN query language") {
 		t.Errorf("step 2 does not say which language its filter is written in:\n%s", got)
