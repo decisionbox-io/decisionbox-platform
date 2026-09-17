@@ -414,12 +414,16 @@ func maxRejectedPairingsRendered() int {
 // Nothing is written when nothing has been decided, so a project that has never
 // curated a pairing reads exactly as it did before this existed.
 func writeCorrelationContract(b *strings.Builder, dc *datasourceContext, guidance correlationGuidance) {
-	if !guidance.offered() {
+	if !correlatable(dc) || !guidance.offered() {
 		return
 	}
 	b.WriteString("\n### Reviewed correlation keys\n")
 	b.WriteString("Some pairs of datasources in this project have join keys a person has REVIEWED. Before your FIRST hop between any two datasources, you MUST call `get_correlations` for that pair and follow what it says. A reviewed key is stronger evidence than a name match — two fields sharing a name is how the wrong correlation gets made.\n")
-	fmt.Fprintf(b, "  {\"thinking\": \"...\", \"get_correlations\": {\"a\": \"%s\", \"b\": \"%s\"}}\n", exampleA(dc), exampleB(dc))
+	// This run's own datasource ids, not invented ones: a model shown an id
+	// that does not exist has been taught, in the same breath, that the ids
+	// here are illustrative. correlatable guarantees there are two.
+	fmt.Fprintf(b, "  {\"thinking\": \"...\", \"get_correlations\": {\"a\": \"%s\", \"b\": \"%s\"}}\n",
+		dc.descriptors[0].id, dc.descriptors[1].id)
 
 	if guidance.unread {
 		// Nothing to name, and saying nothing would be read as nothing to
@@ -465,21 +469,20 @@ func rejectedPairings(curated []agentplugin.CorrelationKey) []agentplugin.Correl
 	return out
 }
 
-// exampleA and exampleB name two of THIS run's datasources in the worked
-// call, rather than inventing ids. A model shown an id that does not exist
-// has been taught, in the same breath, that the ids here are illustrative.
-func exampleA(dc *datasourceContext) string {
-	if len(dc.descriptors) > 0 {
-		return dc.descriptors[0].id
-	}
-	return "default"
-}
-
-func exampleB(dc *datasourceContext) string {
-	if len(dc.descriptors) > 1 {
-		return dc.descriptors[1].id
-	}
-	return exampleA(dc)
+// correlatable reports whether this run has two datasources to correlate
+// between.
+//
+// Not the same question as "is this a multi-warehouse run". A configured
+// multi-warehouse run degrades to the datasources that are actually ready —
+// a secondary with no provider, or one that has never been indexed, is
+// skipped with a warning — so a run can arrive here carrying one. Offering
+// the action then would advertise a lookup whose only possible argument is
+// one datasource twice, which the engine rightly refuses.
+//
+// One predicate for the contract and the wiring both: two spellings of
+// "can this run correlate" is how a run gets taught an action it cannot use.
+func correlatable(dc *datasourceContext) bool {
+	return dc != nil && len(dc.descriptors) >= 2
 }
 
 // writeDatasourceHeadline renders one datasource's opening line.

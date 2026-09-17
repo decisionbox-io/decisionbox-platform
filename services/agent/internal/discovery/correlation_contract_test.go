@@ -376,3 +376,54 @@ func TestCorrelationLookupTimeout_HonoursItsOverride(t *testing.T) {
 		t.Errorf("invalid override = %s, want the default", got)
 	}
 }
+
+// oneDatasourceContext is a configured multi-warehouse run that degraded to a
+// single routable datasource — a secondary with no provider, or one that has
+// never been indexed, is skipped with a warning rather than failing the run.
+func oneDatasourceContext() *datasourceContext {
+	dc := sqlOnlyContext()
+	dc.descriptors = dc.descriptors[:1]
+	return dc
+}
+
+// TestCorrelationContract_NotOfferedWithoutAPair.
+//
+// Reachable through the unread path: the provider read failed, so guidance is
+// offered, while the run has nobody to correlate with. Rendering then teaches
+// a lookup whose only possible argument is one datasource twice — which the
+// engine refuses, after the model has spent a step on it.
+func TestCorrelationContract_NotOfferedWithoutAPair(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		g    correlationGuidance
+	}{
+		{"read failed", correlationGuidance{unread: true}},
+		{"decisions exist", correlationGuidance{keys: []agentplugin.CorrelationKey{confirmedKey()}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildDatasourcesPromptSection(oneDatasourceContext(), tc.g)
+			if strings.Contains(got, "get_correlations") {
+				t.Errorf("a run with one datasource must not be offered the action:\n%s", got)
+			}
+			o := &Orchestrator{projectID: "p1"}
+			if o.correlationLookup(oneDatasourceContext(), tc.g) != nil {
+				t.Error("nor wired to serve it")
+			}
+		})
+	}
+}
+
+// TestCorrelationContract_ExampleNamesTwoDistinctDatasources guards the shape
+// of the worked call itself: a pair naming the same id twice is not a pair.
+func TestCorrelationContract_ExampleNamesTwoDistinctDatasources(t *testing.T) {
+	dc := sqlOnlyContext()
+	got := buildDatasourcesPromptSection(dc, correlationGuidance{unread: true})
+
+	want := fmt.Sprintf(`{"a": "%s", "b": "%s"}`, dc.descriptors[0].id, dc.descriptors[1].id)
+	if !strings.Contains(got, want) {
+		t.Errorf("want the worked call to name two distinct datasources (%s):\n%s", want, got)
+	}
+	if dc.descriptors[0].id == dc.descriptors[1].id {
+		t.Fatal("fixture no longer exercises the case")
+	}
+}

@@ -2893,7 +2893,7 @@ func (o *Orchestrator) curatedCorrelations(ctx context.Context, dc *datasourceCo
 // A model that invents the action anyway is answered "not available on this
 // run", which is what it is.
 func (o *Orchestrator) correlationLookup(dc *datasourceContext, guidance correlationGuidance) ai.CorrelationLookupFunc {
-	if dc == nil || !guidance.offered() {
+	if !correlatable(dc) || !guidance.offered() {
 		return nil
 	}
 	projectID := o.projectID
