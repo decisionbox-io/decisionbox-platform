@@ -156,7 +156,7 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	// the editor endpoints return 503 rather than panicking).
 	schemaEditRepo := database.NewSchemaEditRepository(db)
 	schemaVectors, _ := vs.(handler.SchemaVectorEditor)
-	schemaEditor := handler.NewSchemaEditorHandler(projectRepo, schemaCacheRepo, schemaEditRepo, schemaVectors, secretProvider)
+	schemaEditor := handler.NewSchemaEditorHandler(projectRepo, schemaCacheRepo, schemaEditRepo, schemaVectors, schemaIndexRunRepo, secretProvider)
 	// Live table listing so the discovery-scope picker is populated before the
 	// first index exists (the schema cache is empty until then). Guarded so a
 	// nil runner leaves the lister unset (avoids a typed-nil interface); the

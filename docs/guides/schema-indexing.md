@@ -158,20 +158,32 @@ You can:
 
 Reads are available to any `viewer`; edits and deletions require `member`.
 
-### Edits are ephemeral, but recorded
+### Edits take effect immediately, and are recorded
 
-Manual edits are **not** durable across a re-index. The next re-index
-rediscovers everything from the warehouse and overwrites both the schema cache
-and the blurbs — so an excluded table comes back and a rewritten blurb is
-regenerated.
+Manual edits are applied to the live stores, so they take effect immediately —
+discovery and Ask read table columns straight from `project_schema_cache`, and
+retrieval reads blurbs from Qdrant. What "resets" an edit depends on the store it
+touched:
 
-To make that safe, every manual edit is written to a durable, append-only audit
-trail (`project_schema_edits`) capturing the table, action, before/after values,
-who made it, and when. The editor's "Edit history" panel shows this trail so you
-can review and re-apply your changes after a re-index. And before a re-index or a
-"Clear schema cache", the dashboard warns you if there are manual edits since the
-last index (`since_last_index`) — with a link to review them first — so you never
-lose curation work silently.
+- **Blurb / keyword edits** live in Qdrant. A **re-index** drops the Qdrant
+  collection and regenerates blurbs from the cached schema, so these edits are
+  overwritten by any re-index.
+- **Column / table removals** edit the Mongo schema cache — which *is* the schema
+  the agent reads. A plain re-index reuses that cache (it's keyed by a hash of
+  the warehouse config, so an unchanged config is a cache hit and skips
+  re-discovery), so a removal **persists across a re-index**. It is restored by
+  **Clear schema cache** (Settings → Advanced), which drops the cache and forces
+  a fresh re-discovery from the warehouse.
+
+There is deliberately **no durable overrides layer**: a full rebuild
+(clear cache → re-index) always returns to the warehouse's real schema. To make
+that non-destructive, every manual edit is written to a durable, append-only
+audit trail (`project_schema_edits`) capturing the table, action, before/after
+values, who made it, and when. The editor's "Edit history" panel shows this trail
+so you can review and re-apply your changes after a rebuild. Before a re-index or
+a cache clear, the dashboard warns you when there are manual edits since the last
+index (`since_last_index`, dated from the latest indexing run) — with the history
+a click away — so you never discard curation work unaware.
 
 ```bash
 # Browse a datasource's indexed tables (structure + blurb + keywords).

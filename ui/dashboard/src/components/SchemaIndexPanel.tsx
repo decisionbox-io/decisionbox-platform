@@ -239,14 +239,14 @@ export function SchemaIndexPanel({ projectId, onStatusChange, title, hideWhenRea
   };
 
   const handleReindex = async () => {
-    // Warn if there are unsaved manual schema edits: a re-index rediscovers
-    // from the warehouse and overwrites them. Best-effort — a failed count
-    // must not block the re-index.
+    // Warn if there are manual schema edits: a re-index regenerates blurbs (so
+    // blurb/keyword edits are lost). Best-effort — a failed count must not block
+    // the re-index.
     let warn = '';
     try {
       const { since_last_index: n } = await api.listSchemaEdits(projectId);
       if (n > 0) {
-        warn = `\n\nHeads up: ${n} manual schema edit${n === 1 ? '' : 's'} since the last index will be reset by this re-index. ${n === 1 ? "It's" : "They're"} kept in the schema editor's edit history so you can re-apply ${n === 1 ? 'it' : 'them'}.`;
+        warn = `\n\nHeads up: you have ${n} manual schema edit${n === 1 ? '' : 's'} since the last index. Re-indexing regenerates blurbs, so blurb/keyword edits will be lost. Review them in the schema editor first — they're saved in the edit history.`;
       }
     } catch { /* proceed without the warning if the count can't be fetched */ }
     if (!confirm(`Re-index schema? Drops the current index and rebuilds from scratch. Costs time + LLM tokens.${warn}`)) {

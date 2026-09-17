@@ -202,15 +202,17 @@ export default function SchemaEditorPage() {
 
         <Text size="xs" c="dimmed" maw={760}>
           Correct a table&apos;s description (blurb), remove columns you don&apos;t want the
-          agent to use, or drop a table entirely. Changes take effect immediately and update
-          the search index. <strong>Note:</strong> manual edits are reset by the next re-index —
-          the edit history below keeps a copy so you can re-apply them.
+          agent to use, or drop a table entirely. Changes take effect immediately — discovery
+          and Ask read this schema directly. <strong>Note:</strong> a full rebuild
+          (<em>Clear schema cache</em> → re-index) rediscovers from the warehouse and discards
+          these edits, and a re-index regenerates blurbs. Every change is recorded in the edit
+          history below so you can re-apply it.
         </Text>
 
         {sinceLastIndex > 0 && (
           <Alert color="yellow" variant="light" icon={<IconAlertCircle size={16} />} maw={760}>
             {sinceLastIndex} manual {sinceLastIndex === 1 ? 'edit' : 'edits'} since the last index.
-            These will be lost on the next re-index — review them in the edit history first.
+            A rebuild will discard {sinceLastIndex === 1 ? 'it' : 'them'} — the edit history keeps a copy so you can re-apply.
           </Alert>
         )}
 
