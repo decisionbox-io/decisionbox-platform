@@ -320,7 +320,7 @@ func TestGetCorrelations_NotWiredIsNotNothingDecided(t *testing.T) {
 	if step.Error == "" {
 		t.Error("an unwired lookup must be recorded on the step")
 	}
-	if !strings.Contains(out, "unavailable") {
+	if !strings.Contains(out, "not available on this run") {
 		t.Errorf("want the unavailability stated:\n%s", out)
 	}
 	if strings.Contains(out, "says nothing either way") {

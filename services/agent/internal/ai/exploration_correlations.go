@@ -62,9 +62,9 @@ func (e *ExplorationEngine) executeGetCorrelations(
 
 	if e.correlationLookup == nil {
 		step.Error = "correlation lookup not configured"
-		return "Correlation lookup is unavailable on this run, so there is nothing recorded to check " +
-			"against. Treat any cross-datasource key as unverified: prefer one whose values you have " +
-			"seen line up on both sides, and say so when you report a correlation built on it."
+		return "Correlation lookup is not available on this run. Treat any cross-datasource key as " +
+			"unverified: prefer one whose values you have seen line up on both sides, and say so when " +
+			"you report a correlation built on it."
 	}
 
 	if e.maxCorrelationLookupsPerRun > 0 && e.correlationLookupsUsed >= e.maxCorrelationLookupsPerRun {

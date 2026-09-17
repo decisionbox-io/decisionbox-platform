@@ -828,8 +828,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// datasource's routing card and its own domain-pack focus areas, so the
 	// agent sets datasource_id per statement, hops between datasources, and
 	// applies the right playbook per datasource.
+	var curated []agentplugin.CorrelationKey
 	if dc != nil {
-		explorationPrompt += buildDatasourcesPromptSection(dc, o.curatedCorrelations(ctx, dc))
+		curated = o.curatedCorrelations(ctx, dc)
+		explorationPrompt += buildDatasourcesPromptSection(dc, curated)
 	}
 
 	// Inject project knowledge sources (no-op if no enterprise plugin loaded
@@ -937,7 +939,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		Dataset:           datasetsStr,
 		SchemaProvider:    schemaProvider,
 		StepIndexer:       stepIndexer,
-		CorrelationLookup: o.correlationLookup(dc),
+		CorrelationLookup: o.correlationLookup(dc, curated),
 
 		// R3: reasoning-aware, window-budgeted per-step output ceiling.
 		Window:             exploreWindow,
@@ -2832,11 +2834,19 @@ func (o *Orchestrator) curatedCorrelations(ctx context.Context, dc *datasourceCo
 // A closure over the project rather than the seam itself, so the exploration
 // engine neither imports the plugin registry nor carries a project id.
 //
-// Nil on a single-datasource run: there is no second datasource to correlate
-// with, and the engine answering "nothing can be checked" is the truthful
-// reply to a question that cannot arise.
-func (o *Orchestrator) correlationLookup(dc *datasourceContext) ai.CorrelationLookupFunc {
-	if dc == nil {
+// Wired exactly when the routing contract TAUGHT the action — a single
+// datasource has nothing to correlate with, and a run whose project has no
+// decisions was never offered it. One rule rather than two: the engine
+// announces a budget for this action whenever the lookup is wired, so a run
+// that is not offered the action must not be told what it may spend on it.
+// Without that, every deployment with no provider at all — and every project
+// that has curated nothing — would have its opening message changed to
+// advertise an action that can only ever answer "nothing".
+//
+// A model that invents the action anyway is answered "not available on this
+// run", which is what it is.
+func (o *Orchestrator) correlationLookup(dc *datasourceContext, curated []agentplugin.CorrelationKey) ai.CorrelationLookupFunc {
+	if dc == nil || len(curated) == 0 {
 		return nil
 	}
 	projectID := o.projectID

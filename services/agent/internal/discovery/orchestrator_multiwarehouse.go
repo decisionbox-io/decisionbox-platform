@@ -440,7 +440,8 @@ func writeCorrelationContract(b *strings.Builder, dc *datasourceContext, curated
 	if extra := len(rejected) - len(shown); extra > 0 {
 		fmt.Fprintf(b, "- …and %d more rejected pairings — call `get_correlations` for the full list before you hop.\n", extra)
 	}
-	b.WriteString("Do not substitute a different spelling of the same field: the decision is about the field, not how it is spelled. Where no reviewed key links two datasources, do not correlate them record by record — compare them only at a grain both sides genuinely share, or leave the correlation unmade and say in your findings that it could not be made.\n")
+	b.WriteString("Do not substitute a different spelling of the same field: the decision is about the field, not how it is spelled. If `get_correlations` names no reviewed alternative for ONE OF THE PAIRS ABOVE, do not correlate that pair record by record — compare it only at a grain both sides genuinely share, or leave the correlation unmade and say in your findings that it could not be made.\n")
+	b.WriteString("This applies only to the pairings listed above. A pair nobody has recorded a decision about is unreviewed, which is not the same as rejected, and nothing here restricts it.\n")
 }
 
 // rejectedPairings picks out the prohibitions, preserving the order they

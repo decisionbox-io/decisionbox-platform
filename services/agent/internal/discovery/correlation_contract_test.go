@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -189,5 +190,80 @@ func TestCorrelationContract_RendersOnAMixedLanguageRunToo(t *testing.T) {
 	}
 	if !strings.Contains(got, "NOT all queried in the same language") {
 		t.Errorf("want the mixed-language contract kept:\n%s", got)
+	}
+}
+
+// TestCorrelationContract_RestrictionIsScopedToTheRejectedPairs.
+//
+// The record-grain fallback used to be stated unconditionally, so on a run with
+// three or more datasources one rejection on A↔B told the model not to
+// correlate B↔C record by record either. That is a prohibition nobody
+// recorded, and it contradicts the answer `get_correlations` gives for an
+// unreviewed pair — which says in as many words that silence is neutral.
+func TestCorrelationContract_RestrictionIsScopedToTheRejectedPairs(t *testing.T) {
+	got := buildDatasourcesPromptSection(sqlOnlyContext(),
+		[]agentplugin.CorrelationKey{rejectedKey("userId")})
+
+	if !strings.Contains(got, "ONE OF THE PAIRS ABOVE") {
+		t.Errorf("the record-grain restriction must name what it applies to:\n%s", got)
+	}
+	// And say what it does not apply to, since the contract is the only place
+	// a run that never calls the action reads about any of this.
+	if !strings.Contains(got, "unreviewed, which is not the same as rejected") {
+		t.Errorf("the contract must keep silence neutral:\n%s", got)
+	}
+}
+
+// TestCorrelationLookup_WiredOnlyWhenTheActionWasTaught.
+//
+// The engine announces a per-run budget for this action whenever the lookup is
+// wired, so wiring it on a run whose contract never taught the action changes
+// that run's opening message to advertise something it was not offered — which
+// is every deployment with no provider at all, and every project that has
+// curated nothing.
+func TestCorrelationLookup_WiredOnlyWhenTheActionWasTaught(t *testing.T) {
+	o := &Orchestrator{projectID: "p1"}
+	dc := sqlOnlyContext()
+
+	if o.correlationLookup(nil, []agentplugin.CorrelationKey{confirmedKey()}) != nil {
+		t.Error("a single-datasource run has nothing to correlate with")
+	}
+	if o.correlationLookup(dc, nil) != nil {
+		t.Error("a run whose contract taught no action must not be given the lookup")
+	}
+	if o.correlationLookup(dc, []agentplugin.CorrelationKey{}) != nil {
+		t.Error("an empty decision set is the same as none")
+	}
+	if o.correlationLookup(dc, []agentplugin.CorrelationKey{confirmedKey()}) == nil {
+		t.Error("a run that was taught the action must be able to serve it")
+	}
+}
+
+// TestCorrelationLookup_AsksTheSeamAboutThePairItIsGiven.
+func TestCorrelationLookup_AsksTheSeamAboutThePairItIsGiven(t *testing.T) {
+	defer agentplugin.ResetCorrelationProviderForTest()
+	agentplugin.ResetCorrelationProviderForTest()
+
+	var got agentplugin.CorrelationRequest
+	agentplugin.RegisterCorrelationProvider("test-decisions",
+		func(_ context.Context, req agentplugin.CorrelationRequest) ([]agentplugin.CorrelationKey, error) {
+			got = req
+			return []agentplugin.CorrelationKey{confirmedKey()}, nil
+		})
+
+	o := &Orchestrator{projectID: "p1"}
+	lookup := o.correlationLookup(sqlOnlyContext(), []agentplugin.CorrelationKey{confirmedKey()})
+	keys, err := lookup(context.Background(), "wh_analytics", "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.ProjectID != "p1" {
+		t.Errorf("ProjectID = %q, want the run's project", got.ProjectID)
+	}
+	if len(got.DatasourceIDs) != 2 || got.DatasourceIDs[0] != "wh_analytics" || got.DatasourceIDs[1] != "default" {
+		t.Errorf("DatasourceIDs = %v, want the pair the action named", got.DatasourceIDs)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("keys = %+v, want the provider's answer", keys)
 	}
 }
