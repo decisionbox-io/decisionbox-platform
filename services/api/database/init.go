@@ -214,6 +214,19 @@ var schema = []struct {
 		},
 	},
 	{
+		Name: "project_schema_edits",
+		Indexes: []mongo.IndexModel{
+			// Audit-trail list + CountSince: newest edits for a project.
+			// Also covers the "edits since last index" count (project_id + at).
+			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "at", Value: -1}}},
+			// Per-datasource trail (the editor filters to one data source).
+			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "datasource_id", Value: 1}, {Key: "at", Value: -1}}},
+			// No TTL and no unique key — append-only durable audit: manual edits
+			// are wiped by the next re-index, but this trail is what lets a user
+			// review + re-apply what they changed, so it must outlive the edit.
+		},
+	},
+	{
 		Name: "project_schema_cache",
 		Indexes: []mongo.IndexModel{
 			// Cache lookup path: Find({project_id, warehouse_hash}).

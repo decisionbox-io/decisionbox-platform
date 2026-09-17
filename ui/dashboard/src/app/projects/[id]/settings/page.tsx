@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
-  ActionIcon, Alert, Button, Checkbox, CloseButton, Divider, Group, Loader, Modal, MultiSelect,
+  ActionIcon, Alert, Anchor, Button, Checkbox, CloseButton, Divider, Group, Loader, Modal, MultiSelect,
   NumberInput, Select, Stack, Switch, Tabs, Text, TextInput, Textarea,
 } from '@mantine/core';
+import Link from 'next/link';
 import { notifications } from '@mantine/notifications';
 import { IconAlertCircle, IconPlus } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
@@ -665,6 +666,7 @@ function ClearSchemaCacheButton({ projectId }: { projectId: string }) {
   const [opened, setOpened] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [info, setInfo] = useState<{ cached: boolean; last?: string } | null>(null);
+  const [manualEdits, setManualEdits] = useState(0);
 
   const refreshInfo = useCallback(async () => {
     try {
@@ -672,6 +674,13 @@ function ClearSchemaCacheButton({ projectId }: { projectId: string }) {
       setInfo({ cached: res.cached, last: res.last_cached_at });
     } catch {
       setInfo({ cached: false });
+    }
+    // Manual-edit count is best-effort — a failure just hides the warning.
+    try {
+      const edits = await api.listSchemaEdits(projectId);
+      setManualEdits(edits.since_last_index || 0);
+    } catch {
+      setManualEdits(0);
     }
   }, [projectId]);
 
@@ -722,6 +731,15 @@ function ClearSchemaCacheButton({ projectId }: { projectId: string }) {
             <li>The vector index in Qdrant is dropped.</li>
             <li>Project status is set to <strong>needs_reindex</strong>.</li>
           </ul>
+          {manualEdits > 0 && (
+            <Alert color="yellow" variant="light" icon={<IconAlertCircle size={16} />}>
+              {manualEdits} manual schema {manualEdits === 1 ? 'edit' : 'edits'} since the last index will be lost.{' '}
+              <Anchor component={Link} href={`/projects/${projectId}/settings/schema-editor`}>
+                Review them in the schema editor
+              </Anchor>{' '}
+              first — the edit history keeps a copy so you can re-apply {manualEdits === 1 ? 'it' : 'them'}.
+            </Alert>
+          )}
           <Group justify="flex-end" gap="sm">
             <Button variant="default" onClick={() => setOpened(false)} disabled={submitting}>
               Cancel

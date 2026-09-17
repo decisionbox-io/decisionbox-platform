@@ -1,0 +1,109 @@
+package database
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/decisionbox-io/decisionbox/services/api/models"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+)
+
+// Audit-trail query bounds. DefaultSchemaEditLimit applies when the caller
+// doesn't specify one; MaxSchemaEditLimit caps a crafted ?limit= so it can't
+// ask for an unbounded scan.
+const (
+	DefaultSchemaEditLimit = 100
+	MaxSchemaEditLimit     = 500
+)
+
+// SchemaEditRepository is the append-only audit log of manual schema edits
+// (blurb rewrites, keyword/column changes, table removals) made through the
+// schema editor. One document per edit in project_schema_edits. The record
+// outlives the edit itself — manual edits are wiped by the next re-index, but
+// this trail lets a user review + re-apply what they changed, and drives the
+// "N manual edits will be lost" warning before a re-index / cache clear.
+type SchemaEditRepository struct {
+	col *mongo.Collection
+}
+
+// NewSchemaEditRepository wires the repo against project_schema_edits.
+func NewSchemaEditRepository(db *DB) *SchemaEditRepository {
+	return &SchemaEditRepository{col: db.Collection("project_schema_edits")}
+}
+
+// Record appends one edit to the audit trail. At is stamped server-side when
+// zero so callers can't backdate a record.
+func (r *SchemaEditRepository) Record(ctx context.Context, edit models.SchemaEdit) error {
+	if edit.ProjectID == "" {
+		return errors.New("projectID is required")
+	}
+	if edit.Action == "" {
+		return errors.New("action is required")
+	}
+	if edit.At.IsZero() {
+		edit.At = time.Now().UTC()
+	}
+	// Let Mongo assign the _id; a caller-supplied empty string would otherwise
+	// be written as _id:"" and collide on the second insert.
+	edit.ID = ""
+	if _, err := r.col.InsertOne(ctx, edit); err != nil {
+		return fmt.Errorf("record schema edit: %w", err)
+	}
+	return nil
+}
+
+// List returns a project's manual schema edits, newest first. datasourceID ==
+// "" lists every datasource; a non-empty value filters to one. limit <= 0 uses
+// DefaultSchemaEditLimit; anything above MaxSchemaEditLimit is clamped. Returns
+// an empty (non-nil) slice when nothing matches.
+func (r *SchemaEditRepository) List(ctx context.Context, projectID, datasourceID string, limit int) ([]models.SchemaEdit, error) {
+	if projectID == "" {
+		return nil, errors.New("projectID is required")
+	}
+	if limit <= 0 {
+		limit = DefaultSchemaEditLimit
+	}
+	if limit > MaxSchemaEditLimit {
+		limit = MaxSchemaEditLimit
+	}
+	filter := bson.M{"project_id": projectID}
+	if datasourceID != "" {
+		filter["datasource_id"] = datasourceID
+	}
+	opts := options.Find().
+		SetSort(bson.D{{Key: "at", Value: -1}}).
+		SetLimit(int64(limit))
+	cur, err := r.col.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, fmt.Errorf("list schema edits: %w", err)
+	}
+	defer func() { _ = cur.Close(ctx) }()
+	edits := make([]models.SchemaEdit, 0)
+	if err := cur.All(ctx, &edits); err != nil {
+		return nil, fmt.Errorf("decode schema edits: %w", err)
+	}
+	return edits, nil
+}
+
+// CountSince returns how many edits a project has recorded strictly after
+// `since` — the count of manual changes made since the last successful index
+// (the caller passes the last cache timestamp). A zero `since` counts every
+// edit (project never indexed). Backs the pre-reset warning.
+func (r *SchemaEditRepository) CountSince(ctx context.Context, projectID string, since time.Time) (int, error) {
+	if projectID == "" {
+		return 0, errors.New("projectID is required")
+	}
+	filter := bson.M{"project_id": projectID}
+	if !since.IsZero() {
+		filter["at"] = bson.M{"$gt": since}
+	}
+	n, err := r.col.CountDocuments(ctx, filter)
+	if err != nil {
+		return 0, fmt.Errorf("count schema edits: %w", err)
+	}
+	return int(n), nil
+}

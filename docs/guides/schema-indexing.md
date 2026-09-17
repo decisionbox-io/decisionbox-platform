@@ -135,6 +135,56 @@ with an expandable history table on the Data Warehouse settings panel, and a
 persistent per-datasource status roll-up on the project page (so a successful
 re-index leaves a visible record, not just a toast).
 
+## Editing the indexed schema
+
+Indexing is automatic, but the result isn't always perfect: a generated blurb
+can be off, a table can be irrelevant, or a column may be noise (or sensitive)
+you don't want the agent to consider. The **schema editor** lets you hand-correct
+the index. It's an advanced tool, reached from an understated
+"Advanced: edit indexed schema" link on the Data Warehouse settings panel
+(`/projects/{id}/settings/schema-editor`).
+
+You can:
+
+- **Rewrite a table's blurb** — the new text is re-embedded and the table's
+  Qdrant vector is replaced in place, so semantic search reflects the edit
+  immediately.
+- **Edit a table's keywords** — the sparse-rerank terms; a payload-only change,
+  no re-embedding.
+- **Remove columns** — dropped from the Mongo schema cache (and the derived
+  key/metric/dimension lists) so the discovery agent stops seeing them. Removal
+  only; you can't add or retype a column.
+- **Remove a whole table** — drops both its cache row and its Qdrant blurb point.
+
+Reads are available to any `viewer`; edits and deletions require `member`.
+
+### Edits are ephemeral, but recorded
+
+Manual edits are **not** durable across a re-index. The next re-index
+rediscovers everything from the warehouse and overwrites both the schema cache
+and the blurbs — so an excluded table comes back and a rewritten blurb is
+regenerated.
+
+To make that safe, every manual edit is written to a durable, append-only audit
+trail (`project_schema_edits`) capturing the table, action, before/after values,
+who made it, and when. The editor's "Edit history" panel shows this trail so you
+can review and re-apply your changes after a re-index. And before a re-index or a
+"Clear schema cache", the dashboard warns you if there are manual edits since the
+last index (`since_last_index`) — with a link to review them first — so you never
+lose curation work silently.
+
+```bash
+# Browse a datasource's indexed tables (structure + blurb + keywords).
+curl "http://localhost:8080/api/v1/projects/{id}/schema-editor/tables?datasource_id=wh_redshift&search=orders"
+
+# Rewrite a blurb (re-embeds) — member+.
+curl -X PUT "http://localhost:8080/api/v1/projects/{id}/schema-editor/tables?table=public.orders" \
+  -H 'Content-Type: application/json' -d '{"blurb":"One row per customer order."}'
+
+# The manual-edit audit trail + count since the last index.
+curl "http://localhost:8080/api/v1/projects/{id}/schema-editor/edits"
+```
+
 ## When does an embedding-model change force a rebuild?
 
 Always. Qdrant collections are bound to a fixed vector dimension, so

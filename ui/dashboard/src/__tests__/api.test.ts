@@ -1145,3 +1145,73 @@ describe('request() — 401 re-authentication handoff', () => {
     }
   });
 });
+
+// --- Schema editor ---
+
+describe('api.listSchemaEditorTables', () => {
+  it('builds the query (datasource_id + search + limit) and returns the table list', async () => {
+    mockSuccess({ tables: [{ table: 'dbo.orders', row_count: 5, columns: [], blurb: 'x', has_blurb: true }], total: 1, truncated: false, datasource_id: 'default' });
+    const res = await api.listSchemaEditorTables('p1', 'default', 'ord', 50);
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/v1/projects/p1/schema-editor/tables?datasource_id=default&search=ord&limit=50',
+      expect.anything(),
+    );
+    expect(res.tables[0].table).toBe('dbo.orders');
+    expect(res.total).toBe(1);
+  });
+
+  it('omits empty optional params', async () => {
+    mockSuccess({ tables: [], total: 0, truncated: false, datasource_id: '' });
+    await api.listSchemaEditorTables('p1');
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/v1/projects/p1/schema-editor/tables',
+      expect.anything(),
+    );
+  });
+});
+
+describe('api.updateSchemaEditorTable', () => {
+  it('PUTs the edit with table + datasource in the query and the input as the body', async () => {
+    mockSuccess({ table: 'dbo.orders', row_count: 5, columns: [], blurb: 'new', has_blurb: true });
+    const res = await api.updateSchemaEditorTable('p1', 'dbo.orders', { blurb: 'new' }, 'default');
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/v1/projects/p1/schema-editor/tables?datasource_id=default&table=dbo.orders',
+      expect.objectContaining({ method: 'PUT', body: JSON.stringify({ blurb: 'new' }) }),
+    );
+    expect(res.blurb).toBe('new');
+  });
+
+  it('URL-encodes a table name and works without a datasource id', async () => {
+    mockSuccess({ table: 'a b.orders', row_count: 0, columns: [], blurb: '', has_blurb: false });
+    await api.updateSchemaEditorTable('p1', 'a b.orders', { keywords: ['x'] });
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/v1/projects/p1/schema-editor/tables?table=a+b.orders',
+      expect.objectContaining({ method: 'PUT' }),
+    );
+  });
+});
+
+describe('api.deleteSchemaEditorTable', () => {
+  it('DELETEs with table + datasource in the query', async () => {
+    mockSuccess({ deleted: 'dbo.orders' });
+    const res = await api.deleteSchemaEditorTable('p1', 'dbo.orders', 'default');
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/v1/projects/p1/schema-editor/tables?datasource_id=default&table=dbo.orders',
+      expect.objectContaining({ method: 'DELETE' }),
+    );
+    expect(res.deleted).toBe('dbo.orders');
+  });
+});
+
+describe('api.listSchemaEdits', () => {
+  it('returns the audit trail + since_last_index count', async () => {
+    mockSuccess({ edits: [{ project_id: 'p1', datasource_id: 'default', table: 'dbo.orders', action: 'blurb_edit', at: '2026-09-17T00:00:00Z' }], since_last_index: 2 });
+    const res = await api.listSchemaEdits('p1', 'default');
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/v1/projects/p1/schema-editor/edits?datasource_id=default',
+      expect.anything(),
+    );
+    expect(res.since_last_index).toBe(2);
+    expect(res.edits).toHaveLength(1);
+  });
+});

@@ -499,6 +499,68 @@ export interface EmbeddingConfig {
   config?: Record<string, string>;
 }
 
+// SchemaEditorColumn is one column of an indexed table in the schema editor.
+export interface SchemaEditorColumn {
+  name: string;
+  type: string;
+  nullable: boolean;
+  category?: string; // primary_key, time, metric, dimension
+}
+
+// SchemaEditorTable is one indexed table as shown in the schema editor —
+// structure from the Mongo schema cache joined with the blurb + keywords from
+// Qdrant. `has_blurb` is false when the table has no blurb point yet.
+export interface SchemaEditorTable {
+  table: string; // qualified name, e.g. "dbo.orders"
+  row_count: number;
+  columns: SchemaEditorColumn[];
+  key_columns?: string[];
+  metrics?: string[];
+  dimensions?: string[];
+  blurb: string;
+  keywords?: string[];
+  has_blurb: boolean;
+  blurb_model?: string;
+  embedding_model?: string;
+}
+
+export interface SchemaEditorTablesResponse {
+  tables: SchemaEditorTable[];
+  total: number;
+  truncated: boolean;
+  datasource_id: string;
+}
+
+// SchemaEdit is one recorded manual change in the audit trail. Manual edits are
+// ephemeral (wiped by the next re-index) — this record is what survives so a
+// user can review + re-apply what they changed.
+export interface SchemaEdit {
+  id?: string;
+  project_id: string;
+  datasource_id: string;
+  table: string;
+  action: string; // blurb_edit | keywords_edit | columns_edit | table_delete
+  before?: string;
+  after?: string;
+  actor?: string;
+  at: string;
+}
+
+export interface SchemaEditsResponse {
+  edits: SchemaEdit[];
+  since_last_index: number;
+  datasource_id?: string;
+}
+
+// UpdateSchemaTableInput carries only the fields being changed. `columns` is the
+// set to KEEP (removal only — the backend intersects it by name with the
+// existing columns, so a fabricated column can't be injected).
+export interface UpdateSchemaTableInput {
+  blurb?: string;
+  keywords?: string[];
+  columns?: SchemaEditorColumn[];
+}
+
 // DEFAULT_WAREHOUSE_ID mirrors the Go models.DefaultWarehouseID — the reserved
 // id of the primary/legacy single datasource. The backend forces the legacy
 // singular `warehouse` to this id (EffectiveWarehouses), so its index runs are
@@ -1559,6 +1621,49 @@ export const api = {
     const qs = params.toString();
     return request<SchemaIndexLogLine[]>(
       `/api/v1/projects/${projectId}/schema-index/logs${qs ? '?' + qs : ''}`
+    );
+  },
+
+  // Schema editor (Data Warehouse → Advanced). Browse a datasource's indexed
+  // tables, rewrite blurbs / remove columns / delete tables (member+), and read
+  // the manual-edit audit trail. Edits are ephemeral (wiped by the next
+  // re-index) but recorded — listSchemaEdits.since_last_index powers the
+  // "N manual edits will be lost" warning before a re-index / cache clear.
+  listSchemaEditorTables: (projectId: string, datasourceId?: string, search?: string, limit?: number) => {
+    const params = new URLSearchParams();
+    if (datasourceId) params.set('datasource_id', datasourceId);
+    if (search) params.set('search', search);
+    if (limit) params.set('limit', String(limit));
+    const qs = params.toString();
+    return request<SchemaEditorTablesResponse>(
+      `/api/v1/projects/${projectId}/schema-editor/tables${qs ? '?' + qs : ''}`
+    );
+  },
+  updateSchemaEditorTable: (projectId: string, table: string, input: UpdateSchemaTableInput, datasourceId?: string) => {
+    const params = new URLSearchParams();
+    if (datasourceId) params.set('datasource_id', datasourceId);
+    params.set('table', table);
+    return request<SchemaEditorTable>(
+      `/api/v1/projects/${projectId}/schema-editor/tables?${params.toString()}`,
+      { method: 'PUT', body: JSON.stringify(input) }
+    );
+  },
+  deleteSchemaEditorTable: (projectId: string, table: string, datasourceId?: string) => {
+    const params = new URLSearchParams();
+    if (datasourceId) params.set('datasource_id', datasourceId);
+    params.set('table', table);
+    return request<{ deleted: string }>(
+      `/api/v1/projects/${projectId}/schema-editor/tables?${params.toString()}`,
+      { method: 'DELETE' }
+    );
+  },
+  listSchemaEdits: (projectId: string, datasourceId?: string, limit?: number) => {
+    const params = new URLSearchParams();
+    if (datasourceId) params.set('datasource_id', datasourceId);
+    if (limit) params.set('limit', String(limit));
+    const qs = params.toString();
+    return request<SchemaEditsResponse>(
+      `/api/v1/projects/${projectId}/schema-editor/edits${qs ? '?' + qs : ''}`
     );
   },
 

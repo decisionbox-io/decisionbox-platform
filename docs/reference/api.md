@@ -390,6 +390,106 @@ A `failed` run carries the same shape with `"status": "failed"` and an `"error"`
 
 ---
 
+## Schema editor
+
+Advanced, hand-editing of the indexed schema. Reads require `viewer`; edits and
+deletions require `member`. **Manual edits are ephemeral** — the next re-index
+overwrites them — but every edit is recorded in a durable audit trail, and
+`since_last_index` powers the "N manual edits will be lost" warning shown before a
+re-index / cache clear.
+
+### GET /api/v1/projects/{id}/schema-editor/tables
+
+List a datasource's indexed tables — structure (columns) from the Mongo schema
+cache joined with the blurb + keywords from Qdrant. Sample data is omitted.
+
+Query parameters (all optional):
+
+- `datasource_id` — the data source to browse (empty resolves to the primary).
+- `search` — case-insensitive substring filter on the table name.
+- `limit` — cap the number of tables returned (default 200, max 1000). `truncated`
+  is `true` when more matched than were returned.
+
+```bash
+curl "http://localhost:8080/api/v1/projects/507f.../schema-editor/tables?datasource_id=wh_redshift&search=orders"
+```
+
+```json
+{
+  "data": {
+    "tables": [
+      {
+        "table": "public.orders",
+        "row_count": 128394,
+        "columns": [{ "name": "id", "type": "int", "nullable": false, "category": "primary_key" }],
+        "blurb": "One row per customer order.",
+        "keywords": ["orders", "revenue"],
+        "has_blurb": true,
+        "embedding_model": "openai/text-embedding-3-large"
+      }
+    ],
+    "total": 1,
+    "truncated": false,
+    "datasource_id": "wh_redshift"
+  }
+}
+```
+
+### PUT /api/v1/projects/{id}/schema-editor/tables?datasource_id=&table=
+
+Apply an edit to one table. `table` is the qualified name (query param). The body
+carries only the fields being changed; `columns` is the set to **keep** (removal
+only — the server intersects it by name with the existing columns). A blurb change
+re-embeds and replaces the Qdrant point; keyword/column changes are payload-only.
+
+```bash
+curl -X PUT "http://localhost:8080/api/v1/projects/507f.../schema-editor/tables?table=public.orders" \
+  -H 'Content-Type: application/json' \
+  -d '{"blurb":"One row per customer order.","columns":[{"name":"id"},{"name":"total"}]}'
+```
+
+Returns the updated table view (same shape as a list entry). `412` when a blurb
+edit is requested but the project has no embedding provider configured.
+
+### DELETE /api/v1/projects/{id}/schema-editor/tables?datasource_id=&table=
+
+Remove a table from the index — its Qdrant blurb point and its Mongo cache row.
+
+```bash
+curl -X DELETE "http://localhost:8080/api/v1/projects/507f.../schema-editor/tables?table=public.orders"
+```
+
+### GET /api/v1/projects/{id}/schema-editor/edits
+
+The manual-edit audit trail (newest first) plus `since_last_index` — the count of
+edits made since the last successful index.
+
+```bash
+curl "http://localhost:8080/api/v1/projects/507f.../schema-editor/edits?datasource_id=wh_redshift"
+```
+
+```json
+{
+  "data": {
+    "edits": [
+      {
+        "project_id": "507f...",
+        "datasource_id": "wh_redshift",
+        "table": "public.orders",
+        "action": "blurb_edit",
+        "before": "Orders.",
+        "after": "One row per customer order.",
+        "actor": "analyst@example.com",
+        "at": "2026-09-17T14:20:00Z"
+      }
+    ],
+    "since_last_index": 1
+  }
+}
+```
+
+---
+
 ## Prompts
 
 ### GET /api/v1/projects/{id}/prompts

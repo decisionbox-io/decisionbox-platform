@@ -1,11 +1,12 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import {
-  Alert, Button, Divider, Group, Loader, Stack, Text, Title,
+  Alert, Anchor, Button, Divider, Group, Loader, Stack, Text, Title,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconAlertCircle, IconCheck, IconPlugConnected, IconShieldCheck, IconX } from '@tabler/icons-react';
+import { IconAlertCircle, IconCheck, IconPencil, IconPlugConnected, IconShieldCheck, IconX } from '@tabler/icons-react';
 import { api, Project, ProviderMeta, resolvePrimaryDatasourceId, SecretEntryResponse, TestConnectionResult } from '@/lib/api';
 import {
   WarehouseFormFields,
@@ -183,6 +184,14 @@ export default function WarehouseConfigPanel({ projectId, variant, onSaved }: Wa
             datasourceId={resolvePrimaryDatasourceId(project)}
             datasourceName={project.warehouse.provider || 'this data source'}
           />
+          {/* Advanced: hand-edit the indexed schema (blurbs, columns, tables).
+              Deliberately understated — a power-user tool, not a primary flow. */}
+          <Anchor component={Link} href={`/projects/${projectId}/settings/schema-editor`} size="xs" c="dimmed">
+            <Group gap={4} wrap="nowrap">
+              <IconPencil size={12} />
+              Advanced: edit indexed schema
+            </Group>
+          </Anchor>
         </>
       )}
     </PanelSection>
