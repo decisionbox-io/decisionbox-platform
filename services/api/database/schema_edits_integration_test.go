@@ -79,7 +79,7 @@ func TestInteg_SchemaEdits_RecordListCountSince(t *testing.T) {
 
 	t.Run("count since a cutoff", func(t *testing.T) {
 		// After base+2m30s → only the base+3m columns edit qualifies.
-		n, err := r.CountSince(ctx, proj, base.Add(150*time.Second))
+		n, err := r.CountSince(ctx, proj, "", base.Add(150*time.Second))
 		if err != nil {
 			t.Fatalf("CountSince: %v", err)
 		}
@@ -87,12 +87,42 @@ func TestInteg_SchemaEdits_RecordListCountSince(t *testing.T) {
 			t.Fatalf("CountSince mid = %d, want 1", n)
 		}
 		// Zero time counts them all (project never indexed).
-		all, err := r.CountSince(ctx, proj, time.Time{})
+		all, err := r.CountSince(ctx, proj, "", time.Time{})
 		if err != nil {
 			t.Fatalf("CountSince zero: %v", err)
 		}
 		if all != 3 {
 			t.Fatalf("CountSince zero = %d, want 3", all)
+		}
+	})
+
+	t.Run("count scoped to a datasource", func(t *testing.T) {
+		// wh_b has one edit (the table_delete); the default warehouse has two.
+		n, err := r.CountSince(ctx, proj, "wh_b", time.Time{})
+		if err != nil {
+			t.Fatalf("CountSince datasource: %v", err)
+		}
+		if n != 1 {
+			t.Fatalf("CountSince wh_b = %d, want 1", n)
+		}
+		def, err := r.CountSince(ctx, proj, "default", time.Time{})
+		if err != nil {
+			t.Fatalf("CountSince default: %v", err)
+		}
+		if def != 2 {
+			t.Fatalf("CountSince default = %d, want 2", def)
+		}
+	})
+
+	t.Run("count restricted to actions", func(t *testing.T) {
+		// Two blurb/keyword-class actions exist project-wide: a blurb_edit and a
+		// columns_edit — restrict to blurb only → 1.
+		n, err := r.CountSince(ctx, proj, "", time.Time{}, models.SchemaEditActionBlurb)
+		if err != nil {
+			t.Fatalf("CountSince actions: %v", err)
+		}
+		if n != 1 {
+			t.Fatalf("CountSince blurb-only = %d, want 1", n)
 		}
 	})
 }

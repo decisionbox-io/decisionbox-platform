@@ -45,10 +45,11 @@ type SchemaEditorCache interface {
 type SchemaEditRecorder interface {
 	Record(ctx context.Context, edit models.SchemaEdit) error
 	List(ctx context.Context, projectID, datasourceID string, limit int) ([]models.SchemaEdit, error)
-	// CountSince counts edits after `since`, optionally restricted to the given
+	// CountSince counts edits after `since`, scoped to datasourceID when
+	// non-empty (empty = project-wide), optionally restricted to the given
 	// actions (empty = all). The re-index warning passes the blurb/keyword
 	// actions it regenerates; the cache-clear warning passes none (all).
-	CountSince(ctx context.Context, projectID string, since time.Time, actions ...string) (int, error)
+	CountSince(ctx context.Context, projectID, datasourceID string, since time.Time, actions ...string) (int, error)
 }
 
 // SchemaVectorEditor is the Qdrant surface the editor needs to keep blurbs in
@@ -389,19 +390,22 @@ func (h *SchemaEditorHandler) ListEdits(w http.ResponseWriter, r *http.Request) 
 	//     full rebuild would discard, so the clear-cache warning uses it.
 	//
 	// Best-effort — a count failure must not fail the list.
+	// Counts are scoped to datasourceID when the caller passed one (the editor
+	// banner) and project-wide otherwise (the re-index / cache-clear warnings,
+	// which act on the whole project).
 	sinceIndex := 0
-	if lastIndex, ok := h.lastIndexTime(ctx, projectID); ok {
+	if lastIndex, ok := h.lastIndexTime(ctx, projectID, datasourceID); ok {
 		// Only blurb/keyword edits are discarded by a re-index (it regenerates
 		// blurbs); column/table removals persist across it, so they don't belong
 		// in the re-index warning count.
-		if n, nErr := h.edits.CountSince(ctx, projectID, lastIndex, models.SchemaEditActionBlurb, models.SchemaEditActionKeywords); nErr == nil {
+		if n, nErr := h.edits.CountSince(ctx, projectID, datasourceID, lastIndex, models.SchemaEditActionBlurb, models.SchemaEditActionKeywords); nErr == nil {
 			sinceIndex = n
 		}
 	}
 	sinceCache := 0
 	if h.cache != nil {
 		if t, cErr := h.cache.LastCachedAt(ctx, projectID); cErr == nil {
-			if n, nErr := h.edits.CountSince(ctx, projectID, t); nErr == nil {
+			if n, nErr := h.edits.CountSince(ctx, projectID, datasourceID, t); nErr == nil {
 				sinceCache = n
 			}
 		}
@@ -659,9 +663,11 @@ func datasetFromQualified(s string) string {
 // finished_at) and falls back to the schema cache's last-write time for
 // pre-feature projects that have no run records. Returns ok=false when neither
 // source is available (never indexed) — the caller then counts every edit.
-func (h *SchemaEditorHandler) lastIndexTime(ctx context.Context, projectID string) (time.Time, bool) {
+func (h *SchemaEditorHandler) lastIndexTime(ctx context.Context, projectID, datasourceID string) (time.Time, bool) {
 	if h.runs != nil {
-		if runs, err := h.runs.List(ctx, projectID, "", 1); err == nil && len(runs) > 0 {
+		// datasourceID != "" scopes to that data source's latest run; "" is the
+		// latest run across the project.
+		if runs, err := h.runs.List(ctx, projectID, datasourceID, 1); err == nil && len(runs) > 0 {
 			if !runs[0].FinishedAt.IsZero() {
 				return runs[0].FinishedAt, true
 			}

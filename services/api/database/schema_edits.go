@@ -8,6 +8,7 @@ import (
 
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -47,9 +48,11 @@ func (r *SchemaEditRepository) Record(ctx context.Context, edit models.SchemaEdi
 	if edit.At.IsZero() {
 		edit.At = time.Now().UTC()
 	}
-	// Let Mongo assign the _id; a caller-supplied empty string would otherwise
-	// be written as _id:"" and collide on the second insert.
-	edit.ID = ""
+	// Store a hex-string _id we generate ourselves rather than letting Mongo
+	// assign a BSON ObjectID: SchemaEdit.ID is a Go string, and decoding an
+	// ObjectID back into a string field depends on the driver registry. A
+	// self-generated hex id round-trips as a plain string on every read.
+	edit.ID = primitive.NewObjectID().Hex()
 	if _, err := r.col.InsertOne(ctx, edit); err != nil {
 		return fmt.Errorf("record schema edit: %w", err)
 	}
@@ -90,16 +93,20 @@ func (r *SchemaEditRepository) List(ctx context.Context, projectID, datasourceID
 }
 
 // CountSince returns how many edits a project has recorded strictly after
-// `since`. A zero `since` counts every edit (project never indexed). When
-// `actions` is non-empty the count is restricted to those edit actions — the
-// re-index warning counts only the actions a re-index actually discards
-// (blurb/keyword edits), while the cache-clear warning counts all actions.
-// Backs the pre-reset warnings.
-func (r *SchemaEditRepository) CountSince(ctx context.Context, projectID string, since time.Time, actions ...string) (int, error) {
+// `since`. A zero `since` counts every edit (project never indexed).
+// datasourceID scopes the count to one data source when non-empty (empty counts
+// project-wide). When `actions` is non-empty the count is restricted to those
+// edit actions — the re-index warning counts only the actions a re-index
+// actually discards (blurb/keyword edits), while the cache-clear warning counts
+// all actions. Backs the pre-reset warnings.
+func (r *SchemaEditRepository) CountSince(ctx context.Context, projectID, datasourceID string, since time.Time, actions ...string) (int, error) {
 	if projectID == "" {
 		return 0, errors.New("projectID is required")
 	}
 	filter := bson.M{"project_id": projectID}
+	if datasourceID != "" {
+		filter["datasource_id"] = datasourceID
+	}
 	if !since.IsZero() {
 		filter["at"] = bson.M{"$gt": since}
 	}

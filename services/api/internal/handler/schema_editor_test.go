@@ -114,11 +114,12 @@ func (f *fakeEditorCache) LastCachedAt(_ context.Context, _ string) (time.Time, 
 }
 
 type fakeEditRecorder struct {
-	mu           sync.Mutex
-	records      []models.SchemaEdit
-	sinceCount   int
-	sinceArgs    []time.Time // every cutoff CountSince was called with (index + cache)
-	sinceActions [][]string  // the action filter passed alongside each cutoff
+	mu               sync.Mutex
+	records          []models.SchemaEdit
+	sinceCount       int
+	sinceArgs        []time.Time // every cutoff CountSince was called with (index + cache)
+	sinceActions     [][]string  // the action filter passed alongside each cutoff
+	sinceDatasources []string    // the datasource scope passed alongside each cutoff
 }
 
 func (f *fakeEditRecorder) hasSince(t time.Time) bool {
@@ -145,13 +146,14 @@ func (f *fakeEditRecorder) List(_ context.Context, _, _ string, _ int) ([]models
 	return append([]models.SchemaEdit(nil), f.records...), nil
 }
 
-func (f *fakeEditRecorder) CountSince(_ context.Context, _ string, since time.Time, actions ...string) (int, error) {
+func (f *fakeEditRecorder) CountSince(_ context.Context, _, datasourceID string, since time.Time, actions ...string) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sinceArgs = append(f.sinceArgs, since)
-	// Record whether this call was action-restricted (the re-index count) or not
-	// (the cache-clear count), so tests can assert the right filtering.
+	// Record the action filter (index count is restricted, cache count is not)
+	// and the datasource scope so tests can assert both.
 	f.sinceActions = append(f.sinceActions, append([]string(nil), actions...))
+	f.sinceDatasources = append(f.sinceDatasources, datasourceID)
 	return f.sinceCount, nil
 }
 
@@ -731,6 +733,34 @@ func TestSchemaEditor_ListEdits_FallsBackToCacheTimeWithoutRuns(t *testing.T) {
 	// No runs → both counts fall back to the cache time.
 	if !edits.hasSince(cacheTime) {
 		t.Fatalf("expected CountSince at cache time %v; got %v", cacheTime, edits.sinceArgs)
+	}
+}
+
+func TestSchemaEditor_ListEdits_ScopesCountsToDatasource(t *testing.T) {
+	// Codex R6 P2: when a datasource_id is passed, the counts must be scoped to
+	// it (not project-wide), so a multi-warehouse project doesn't warn about a
+	// sibling datasource's edits.
+	cache := newFakeEditorCache()
+	cache.lastCached = time.Now().UTC()
+	edits := &fakeEditRecorder{sinceCount: 1}
+	runs := &fakeRunsLister{latest: []models.SchemaIndexRun{{ProjectID: "p1", FinishedAt: time.Now().UTC()}}}
+	h, _ := newEditorHandler(cache, edits, newFakeVectorEditor())
+	h.runs = runs
+
+	w := httptest.NewRecorder()
+	h.ListEdits(w, editorRequest(http.MethodGet, "/x?datasource_id=wh_b", "p1", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	edits.mu.Lock()
+	defer edits.mu.Unlock()
+	if len(edits.sinceDatasources) == 0 {
+		t.Fatal("CountSince was not called")
+	}
+	for _, ds := range edits.sinceDatasources {
+		if ds != "wh_b" {
+			t.Fatalf("count scoped to %q, want wh_b", ds)
+		}
 	}
 }
 
