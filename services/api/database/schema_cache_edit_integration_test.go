@@ -87,10 +87,12 @@ func TestInteg_SchemaCache_EditorRowOps(t *testing.T) {
 		}
 	})
 
-	t.Run("UpdateColumns removes a column + derived lists", func(t *testing.T) {
-		// Keep id + status (drop "amount", which is the metric).
+	t.Run("UpdateColumns removes a column + derived lists + sample values", func(t *testing.T) {
+		// Keep id + status (drop "amount", which is the metric). The filtered
+		// sample rows must no longer carry "amount".
 		kept := []models.ColumnInfo{{Name: "id", Type: "int"}, {Name: "status", Type: "text"}}
-		if err := r.UpdateColumns(ctx, proj, "default", "dbo.orders", kept, []string{"id"}, []string{}, []string{"status"}); err != nil {
+		samples := []map[string]interface{}{{"id": int64(1), "status": "ok"}}
+		if err := r.UpdateColumns(ctx, proj, "default", "dbo.orders", kept, []string{"id"}, []string{}, []string{"status"}, samples); err != nil {
 			t.Fatalf("UpdateColumns: %v", err)
 		}
 		e, _ := r.GetEntry(ctx, proj, "default", "dbo.orders")
@@ -103,10 +105,16 @@ func TestInteg_SchemaCache_EditorRowOps(t *testing.T) {
 		if len(e.Schema.Dimensions) != 1 || e.Schema.Dimensions[0] != "status" {
 			t.Errorf("dimensions wrong: %v", e.Schema.Dimensions)
 		}
+		if len(e.Schema.SampleData) != 1 {
+			t.Fatalf("sample data not persisted: %v", e.Schema.SampleData)
+		}
+		if _, leaked := e.Schema.SampleData[0]["amount"]; leaked {
+			t.Errorf("removed column 'amount' still present in sample row: %v", e.Schema.SampleData[0])
+		}
 	})
 
 	t.Run("UpdateColumns missing table → ErrNoDocuments", func(t *testing.T) {
-		err := r.UpdateColumns(ctx, proj, "default", "dbo.nope", nil, nil, nil, nil)
+		err := r.UpdateColumns(ctx, proj, "default", "dbo.nope", nil, nil, nil, nil, nil)
 		if !errors.Is(err, mongo.ErrNoDocuments) {
 			t.Fatalf("err = %v, want ErrNoDocuments", err)
 		}

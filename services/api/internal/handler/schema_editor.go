@@ -34,7 +34,7 @@ const (
 type SchemaEditorCache interface {
 	ListEntries(ctx context.Context, projectID, warehouseID string) ([]database.SchemaCacheEntry, error)
 	GetEntry(ctx context.Context, projectID, warehouseID, schemaKey string) (*database.SchemaCacheEntry, error)
-	UpdateColumns(ctx context.Context, projectID, warehouseID, schemaKey string, columns []models.ColumnInfo, keyColumns, metrics, dimensions []string) error
+	UpdateColumns(ctx context.Context, projectID, warehouseID, schemaKey string, columns []models.ColumnInfo, keyColumns, metrics, dimensions []string, sampleData []map[string]interface{}) error
 	DeleteTable(ctx context.Context, projectID, warehouseID, schemaKey string) error
 	LastCachedAt(ctx context.Context, projectID string) (time.Time, error)
 }
@@ -417,8 +417,12 @@ func (h *SchemaEditorHandler) applyColumnEdit(ctx context.Context, projectID, da
 	keyCols := filterToSet(entry.Schema.KeyColumns, keptNameSet)
 	metrics := filterToSet(entry.Schema.Metrics, keptNameSet)
 	dims := filterToSet(entry.Schema.Dimensions, keptNameSet)
+	// Strip the removed columns' *values* from the cached sample rows too — the
+	// schema provider surfaces SampleData to the agent, so leaving them would
+	// keep leaking a removed column's data until the cache is rebuilt.
+	samples := filterSampleRows(entry.Schema.SampleData, keptNameSet)
 
-	if err := h.cache.UpdateColumns(ctx, projectID, datasourceID, entry.SchemaKey, kept, keyCols, metrics, dims); err != nil {
+	if err := h.cache.UpdateColumns(ctx, projectID, datasourceID, entry.SchemaKey, kept, keyCols, metrics, dims, samples); err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return &applyError{status: http.StatusNotFound, msg: "table not found in the schema index"}
 		}
@@ -717,6 +721,26 @@ func columnNames(cols []models.ColumnInfo) []string {
 	out := make([]string, 0, len(cols))
 	for _, c := range cols {
 		out = append(out, c.Name)
+	}
+	return out
+}
+
+// filterSampleRows drops every key not in keep from each cached sample row, so
+// a removed column's values no longer reach the agent through SampleData.
+// Returns nil for empty input (leaves the field unset rather than writing []).
+func filterSampleRows(rows []map[string]interface{}, keep map[string]struct{}) []map[string]interface{} {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(rows))
+	for _, row := range rows {
+		trimmed := make(map[string]interface{}, len(keep))
+		for k, v := range row {
+			if _, ok := keep[k]; ok {
+				trimmed[k] = v
+			}
+		}
+		out = append(out, trimmed)
 	}
 	return out
 }

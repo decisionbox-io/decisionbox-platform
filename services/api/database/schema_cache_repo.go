@@ -156,8 +156,12 @@ func (r *SchemaCacheRepository) GetEntry(ctx context.Context, projectID, warehou
 // UpdateColumns replaces a cached table's column set (and the derived
 // key_columns / metrics / dimensions the caller narrowed to the surviving
 // columns) so a manual column removal is reflected in what the discovery agent
-// reads next run. Returns mongo.ErrNoDocuments when the table isn't cached.
-func (r *SchemaCacheRepository) UpdateColumns(ctx context.Context, projectID, warehouseID, schemaKey string, columns []models.ColumnInfo, keyColumns, metrics, dimensions []string) error {
+// reads next run. sampleData is the cached sample rows already filtered to the
+// kept columns — the removed column's *values* must be stripped here too, or
+// the discovery / Ask schema provider (which surfaces SampleData as sample
+// rows) would keep leaking the removed column's data until a cache rebuild.
+// Returns mongo.ErrNoDocuments when the table isn't cached.
+func (r *SchemaCacheRepository) UpdateColumns(ctx context.Context, projectID, warehouseID, schemaKey string, columns []models.ColumnInfo, keyColumns, metrics, dimensions []string, sampleData []map[string]interface{}) error {
 	if projectID == "" || schemaKey == "" {
 		return errors.New("projectID and schemaKey are required")
 	}
@@ -170,6 +174,7 @@ func (r *SchemaCacheRepository) UpdateColumns(ctx context.Context, projectID, wa
 		"schema.key_columns": keyColumns,
 		"schema.metrics":     metrics,
 		"schema.dimensions":  dimensions,
+		"schema.sample_data": sampleData,
 	}})
 	if err != nil {
 		return fmt.Errorf("schema cache update columns: %w", err)

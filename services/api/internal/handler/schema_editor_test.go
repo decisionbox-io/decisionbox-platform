@@ -44,6 +44,7 @@ type fakeEditorCache struct {
 		key                          string
 		columns                      []models.ColumnInfo
 		keyCols, metrics, dimensions []string
+		sampleData                   []map[string]interface{}
 	}
 	deleted []string
 }
@@ -75,7 +76,7 @@ func (f *fakeEditorCache) GetEntry(_ context.Context, _, warehouseID, key string
 	return &cp, nil
 }
 
-func (f *fakeEditorCache) UpdateColumns(_ context.Context, _, _, key string, cols []models.ColumnInfo, keyCols, metrics, dims []string) error {
+func (f *fakeEditorCache) UpdateColumns(_ context.Context, _, _, key string, cols []models.ColumnInfo, keyCols, metrics, dims []string, sampleData []map[string]interface{}) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	e, ok := f.entries[key]
@@ -86,12 +87,14 @@ func (f *fakeEditorCache) UpdateColumns(_ context.Context, _, _, key string, col
 	e.Schema.KeyColumns = keyCols
 	e.Schema.Metrics = metrics
 	e.Schema.Dimensions = dims
+	e.Schema.SampleData = sampleData
 	f.entries[key] = e
 	f.updateCall = &struct {
 		key                          string
 		columns                      []models.ColumnInfo
 		keyCols, metrics, dimensions []string
-	}{key, cols, keyCols, metrics, dims}
+		sampleData                   []map[string]interface{}
+	}{key, cols, keyCols, metrics, dims, sampleData}
 	return nil
 }
 
@@ -503,6 +506,13 @@ func TestSchemaEditor_RemoveColumns(t *testing.T) {
 		models.ColumnInfo{Name: "total", Type: "numeric"},
 		models.ColumnInfo{Name: "amount", Type: "numeric"},
 	)
+	// Seed sample rows carrying the to-be-removed column's values.
+	e := cache.entries["dbo.orders"]
+	e.Schema.SampleData = []map[string]interface{}{
+		{"id": 1, "total": 9.99, "amount": "secret-a"},
+		{"id": 2, "total": 5.00, "amount": "secret-b"},
+	}
+	cache.entries["dbo.orders"] = e
 	vec := newFakeVectorEditor()
 	seedPoint(vec, "dbo.orders", "blurb", "orders")
 	edits := &fakeEditRecorder{}
@@ -521,6 +531,19 @@ func TestSchemaEditor_RemoveColumns(t *testing.T) {
 	// "amount" was a metric — it must be filtered out of the metrics list.
 	if len(cache.updateCall.metrics) != 0 {
 		t.Fatalf("removed column should drop from metrics, got %v", cache.updateCall.metrics)
+	}
+	// The removed column's values must be stripped from the cached sample rows —
+	// otherwise they'd still reach the agent via SampleData (privacy leak).
+	if len(cache.updateCall.sampleData) != 2 {
+		t.Fatalf("expected 2 filtered sample rows, got %+v", cache.updateCall.sampleData)
+	}
+	for _, row := range cache.updateCall.sampleData {
+		if _, leaked := row["amount"]; leaked {
+			t.Fatalf("removed column 'amount' still present in sample row: %v", row)
+		}
+		if _, ok := row["id"]; !ok {
+			t.Fatalf("kept column 'id' missing from sample row: %v", row)
+		}
 	}
 	// column_count patched in Qdrant.
 	if set := vec.setCalls["dbo.orders"]; set["column_count"] != int64(2) {
