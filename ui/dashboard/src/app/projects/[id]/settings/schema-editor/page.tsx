@@ -63,7 +63,9 @@ export default function SchemaEditorPage() {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 
   const [edits, setEdits] = useState<SchemaEdit[]>([]);
-  const [sinceLastIndex, setSinceLastIndex] = useState(0);
+  // Edits a full rebuild (Clear schema cache) would discard — the broader count,
+  // so the "review before a rebuild" banner reflects persisted removals too.
+  const [sinceRebuild, setSinceRebuild] = useState(0);
   const [showHistory, setShowHistory] = useState(false);
 
   const datasourceId = useMemo(
@@ -107,7 +109,7 @@ export default function SchemaEditorPage() {
     try {
       const res = await api.listSchemaEdits(id, datasourceId);
       setEdits(res.edits || []);
-      setSinceLastIndex(res.since_last_index || 0);
+      setSinceRebuild(res.since_last_cache || 0);
     } catch {
       /* audit trail is best-effort — never blocks editing */
     }
@@ -209,10 +211,10 @@ export default function SchemaEditorPage() {
           history below so you can re-apply it.
         </Text>
 
-        {sinceLastIndex > 0 && (
+        {sinceRebuild > 0 && (
           <Alert color="yellow" variant="light" icon={<IconAlertCircle size={16} />} maw={760}>
-            {sinceLastIndex} manual {sinceLastIndex === 1 ? 'edit' : 'edits'} since the last index.
-            A rebuild will discard {sinceLastIndex === 1 ? 'it' : 'them'} — the edit history keeps a copy so you can re-apply.
+            {sinceRebuild} manual {sinceRebuild === 1 ? 'edit' : 'edits'} not yet in a full rebuild.
+            A rebuild (Clear schema cache) will discard {sinceRebuild === 1 ? 'it' : 'them'} — the edit history keeps a copy so you can re-apply.
           </Alert>
         )}
 
@@ -363,7 +365,9 @@ export default function SchemaEditorPage() {
         <Stack gap="sm">
           <Text size="sm">
             Remove <strong style={{ fontFamily: 'monospace' }}>{deleteTarget}</strong> from the schema index?
-            The agent will stop using it in discovery and search. This is reset by the next re-index.
+            The agent will stop using it in discovery and search. A plain re-index keeps it
+            removed; to bring it back, use <em>Clear schema cache</em> (a full rebuild that
+            rediscovers from the warehouse).
           </Text>
           <Group justify="flex-end">
             <Button variant="default" onClick={() => setDeleteTarget(null)}>Cancel</Button>

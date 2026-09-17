@@ -67,7 +67,7 @@ beforeEach(() => {
   mockCanEdit = true;
   getProject.mockResolvedValue({ id: 'p1', name: 'P1', warehouse: { provider: 'postgres' } });
   listSchemaEditorTables.mockResolvedValue({ tables: [ordersTable], total: 1, truncated: false, datasource_id: 'default' });
-  listSchemaEdits.mockResolvedValue({ edits: [], since_last_index: 0 });
+  listSchemaEdits.mockResolvedValue({ edits: [], since_last_index: 0, since_last_cache: 0 });
 });
 
 describe('SchemaEditorPage', () => {
@@ -118,9 +118,9 @@ describe('SchemaEditorPage', () => {
     expect(screen.getByText(/read-only access/i)).toBeInTheDocument();
   });
 
-  it('warns when there are manual edits since the last index', async () => {
-    listSchemaEdits.mockResolvedValue({ edits: [], since_last_index: 3 });
+  it('warns when there are manual edits a rebuild would discard', async () => {
+    listSchemaEdits.mockResolvedValue({ edits: [], since_last_index: 0, since_last_cache: 3 });
     mount();
-    await waitFor(() => expect(screen.getByText(/3 manual edits since the last index/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/3 manual edits not yet in a full rebuild/i)).toBeInTheDocument());
   });
 });

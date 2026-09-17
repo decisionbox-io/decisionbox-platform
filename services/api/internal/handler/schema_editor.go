@@ -126,9 +126,16 @@ type updateTableRequest struct {
 }
 
 type schemaEditsResponse struct {
-	Edits          []models.SchemaEdit `json:"edits"`
-	SinceLastIndex int                 `json:"since_last_index"`
-	DatasourceID   string              `json:"datasource_id,omitempty"`
+	Edits []models.SchemaEdit `json:"edits"`
+	// SinceLastIndex counts edits since the latest indexing run — what a
+	// re-index regenerates (blurb/keyword edits). SinceLastCache counts edits
+	// since the last full warehouse re-discovery (the cache write); it is the
+	// broader count of everything a full rebuild (Clear schema cache) would
+	// discard, including column/table removals that persist across a plain
+	// re-index. The two warn surfaces use the count that matches what they undo.
+	SinceLastIndex int    `json:"since_last_index"`
+	SinceLastCache int    `json:"since_last_cache"`
+	DatasourceID   string `json:"datasource_id,omitempty"`
 }
 
 // ListTables returns a datasource's indexed tables — columns from the Mongo
@@ -364,21 +371,39 @@ func (h *SchemaEditorHandler) ListEdits(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// "Since last index" = edits after the last indexing run. Prefer the latest
-	// schema-index run's finish time (stamped on every re-index, including a
-	// cache-hit one) over the schema cache timestamp, which a cache-hit re-index
-	// does not refresh. Fall back to the cache timestamp when no run records
-	// exist (pre-feature projects). Best-effort — a count failure shouldn't fail
-	// the list.
-	sinceCount := 0
+	// Two baselines, because a re-index and a cache clear undo different edits:
+	//
+	//   - since_last_index: edits after the latest indexing run. A re-index
+	//     regenerates blurbs, so this is what a re-index discards (blurb/keyword
+	//     edits). Prefer the run's finish time (stamped on every re-index,
+	//     including a cache-hit one) over the cache timestamp, which a cache-hit
+	//     re-index does not refresh; fall back to the cache time when no runs
+	//     exist (pre-feature projects).
+	//   - since_last_cache: edits after the last full warehouse re-discovery
+	//     (the cache write). Column/table removals edit the cache and persist
+	//     across a plain re-index — they are only restored by Clear schema
+	//     cache, which re-discovers. This is the broader count of everything a
+	//     full rebuild would discard, so the clear-cache warning uses it.
+	//
+	// Best-effort — a count failure must not fail the list.
+	sinceIndex := 0
 	if lastIndex, ok := h.lastIndexTime(ctx, projectID); ok {
 		if n, nErr := h.edits.CountSince(ctx, projectID, lastIndex); nErr == nil {
-			sinceCount = n
+			sinceIndex = n
+		}
+	}
+	sinceCache := 0
+	if h.cache != nil {
+		if t, cErr := h.cache.LastCachedAt(ctx, projectID); cErr == nil {
+			if n, nErr := h.edits.CountSince(ctx, projectID, t); nErr == nil {
+				sinceCache = n
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, schemaEditsResponse{
 		Edits:          edits,
-		SinceLastIndex: sinceCount,
+		SinceLastIndex: sinceIndex,
+		SinceLastCache: sinceCache,
 		DatasourceID:   datasourceID,
 	})
 }

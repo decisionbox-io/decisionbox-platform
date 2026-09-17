@@ -117,7 +117,18 @@ type fakeEditRecorder struct {
 	mu         sync.Mutex
 	records    []models.SchemaEdit
 	sinceCount int
-	sinceArg   time.Time // captures the cutoff CountSince was last called with
+	sinceArgs  []time.Time // every cutoff CountSince was called with (index + cache)
+}
+
+func (f *fakeEditRecorder) hasSince(t time.Time) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, s := range f.sinceArgs {
+		if s.Equal(t) {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *fakeEditRecorder) Record(_ context.Context, e models.SchemaEdit) error {
@@ -136,7 +147,7 @@ func (f *fakeEditRecorder) List(_ context.Context, _, _ string, _ int) ([]models
 func (f *fakeEditRecorder) CountSince(_ context.Context, _ string, since time.Time) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.sinceArg = since
+	f.sinceArgs = append(f.sinceArgs, since)
 	return f.sinceCount, nil
 }
 
@@ -666,8 +677,13 @@ func TestSchemaEditor_ListEdits_DatesFromLatestRun(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	if !edits.sinceArg.Equal(runTime) {
-		t.Fatalf("CountSince cutoff = %v, want latest run time %v (not stale cache %v)", edits.sinceArg, runTime, cacheTime)
+	// since_last_index must be dated from the latest run, not the stale cache.
+	if !edits.hasSince(runTime) {
+		t.Fatalf("expected a CountSince at the latest run time %v; got cutoffs %v", runTime, edits.sinceArgs)
+	}
+	// The clear-cache count (since_last_cache) still uses the cache time.
+	if !edits.hasSince(cacheTime) {
+		t.Fatalf("expected a CountSince at the cache time %v (for since_last_cache); got %v", cacheTime, edits.sinceArgs)
 	}
 }
 
@@ -686,8 +702,9 @@ func TestSchemaEditor_ListEdits_FallsBackToCacheTimeWithoutRuns(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	if !edits.sinceArg.Equal(cacheTime) {
-		t.Fatalf("CountSince cutoff = %v, want cache time %v", edits.sinceArg, cacheTime)
+	// No runs → both counts fall back to the cache time.
+	if !edits.hasSince(cacheTime) {
+		t.Fatalf("expected CountSince at cache time %v; got %v", cacheTime, edits.sinceArgs)
 	}
 }
 

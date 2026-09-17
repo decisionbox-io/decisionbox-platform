@@ -676,9 +676,13 @@ function ClearSchemaCacheButton({ projectId }: { projectId: string }) {
       setInfo({ cached: false });
     }
     // Manual-edit count is best-effort — a failure just hides the warning.
+    // Clearing the cache re-discovers from the warehouse, so it discards
+    // everything since the last full discovery (column/table removals — which
+    // persist across a plain re-index — plus blurb/keyword edits). Use the
+    // cache-based count, not the run-based one (which resets after a re-index).
     try {
       const edits = await api.listSchemaEdits(projectId);
-      setManualEdits(edits.since_last_index || 0);
+      setManualEdits(edits.since_last_cache || 0);
     } catch {
       setManualEdits(0);
     }
