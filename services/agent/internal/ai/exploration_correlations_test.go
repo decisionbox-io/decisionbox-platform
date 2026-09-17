@@ -430,3 +430,55 @@ func TestExplorationRepairNudge_OffersTheActionOnlyWhereItExists(t *testing.T) {
 		}
 	}
 }
+
+// TestGetCorrelations_NegativeBudgetActuallyDisablesIt.
+//
+// A negative budget is documented as OFF and clamped to zero to mean it. A
+// guard written as `max > 0 && used >= max` turns that one value into the one
+// value that never stops anything, so the action a caller switched off would
+// go on calling the provider while the opening message said it had none.
+func TestGetCorrelations_NegativeBudgetActuallyDisablesIt(t *testing.T) {
+	calls := 0
+	engine := NewExplorationEngine(ExplorationEngineOptions{
+		Executors: map[string]*queryexec.QueryExecutor{
+			"default":      newRoutingExecutor(testutil.NewMockWarehouseProvider("public")),
+			"wh_analytics": newRoutingExecutor(testutil.NewMockWarehouseProvider("ga")),
+		},
+		PrimaryDatasource:           "default",
+		MaxCorrelationLookupsPerRun: -1,
+		CorrelationLookup: func(context.Context, string, string) ([]agentplugin.CorrelationKey, error) {
+			calls++
+			return []agentplugin.CorrelationKey{confirmedPairing()}, nil
+		},
+	})
+
+	out, step := runCorrelations(engine, &CorrelationPair{A: "wh_analytics", B: "default"})
+	if calls != 0 {
+		t.Errorf("provider called %d times with the action disabled", calls)
+	}
+	if step.Error == "" {
+		t.Error("a disabled action must be recorded on the step")
+	}
+	if !strings.Contains(out, "switched off") {
+		t.Errorf("want the disabled state stated plainly, not as an exhausted budget:\n%s", out)
+	}
+	// Switching the lookup off does not retire the prohibitions in the prompt.
+	if !strings.Contains(out, "rejected pairings named in the system prompt") {
+		t.Errorf("want the standing rejections restated:\n%s", out)
+	}
+	// And a disabled action is not advertised in the opening message.
+	if msg := engine.buildInitialMessage(ExplorationContext{}); strings.Contains(msg, "get_correlations") {
+		t.Errorf("a switched-off action must not be announced:\n%s", msg)
+	}
+}
+
+// TestGetCorrelations_BudgetIsAnnouncedWhenTheActionIsOffered is the other
+// half: a run that can use the action is told what it may spend.
+func TestGetCorrelations_BudgetIsAnnouncedWhenTheActionIsOffered(t *testing.T) {
+	engine := newCorrelationEngine(staticLookup(confirmedPairing()))
+
+	msg := engine.buildInitialMessage(ExplorationContext{})
+	if !strings.Contains(msg, "get_correlations calls") {
+		t.Errorf("want the budget announced:\n%s", msg)
+	}
+}

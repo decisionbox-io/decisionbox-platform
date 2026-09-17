@@ -1748,10 +1748,11 @@ func (e *ExplorationEngine) buildInitialMessage(explorationCtx ExplorationContex
 		)
 	}
 
-	// Only when something can answer: announcing a budget for an action whose
-	// answer is always "nobody can tell you" spends tokens teaching the model
-	// to ask a question with no answer.
-	if e.correlationLookup != nil {
+	// Only when something can answer, and only when it may be asked: announcing
+	// a budget for an action that is unwired — or switched off, which is what a
+	// zero budget means here — teaches the model to spend a step on a question
+	// with no answer.
+	if e.correlationLookup != nil && e.maxCorrelationLookupsPerRun > 0 {
 		fmt.Fprintf(&msg,
 			"You also have %d get_correlations calls for checking what has been decided about correlating two datasources.\n",
 			e.maxCorrelationLookupsPerRun,

@@ -67,7 +67,16 @@ func (e *ExplorationEngine) executeGetCorrelations(
 			"you report a correlation built on it."
 	}
 
-	if e.maxCorrelationLookupsPerRun > 0 && e.correlationLookupsUsed >= e.maxCorrelationLookupsPerRun {
+	// Zero is not "unlimited": the option documents a negative budget as OFF,
+	// and NewExplorationEngine clamps it to zero to mean exactly that. Guarding
+	// on `max > 0` would turn the one value that disables the action into the
+	// one value that never stops it.
+	if e.correlationLookupsUsed >= e.maxCorrelationLookupsPerRun {
+		if e.maxCorrelationLookupsPerRun == 0 {
+			step.Error = "correlation lookup disabled for this run"
+			return "Correlation lookup is switched off for this run. Treat any cross-datasource key as " +
+				"unverified, and honour any rejected pairings named in the system prompt."
+		}
 		step.Error = fmt.Sprintf("correlation lookup budget exhausted (%d/%d)",
 			e.correlationLookupsUsed, e.maxCorrelationLookupsPerRun)
 		return fmt.Sprintf(
