@@ -26,13 +26,13 @@ func getEnvOrDefault(key, def string) string {
 
 // DiscoveriesHandler handles discovery result endpoints.
 type DiscoveriesHandler struct {
-	repo            database.DiscoveryRepo
-	projectRepo     database.ProjectRepo
-	runRepo         database.RunRepo
-	debugLogRepo    database.DebugLogRepo
+	repo             database.DiscoveryRepo
+	projectRepo      database.ProjectRepo
+	runRepo          database.RunRepo
+	debugLogRepo     database.DebugLogRepo
 	discoveryLogRepo database.DiscoveryLogRepo
-	runStepRepo     database.RunStepRepo
-	agentRunner     runner.Runner
+	runStepRepo      database.RunStepRepo
+	agentRunner      runner.Runner
 }
 
 // NewDiscoveriesHandler wires the handler. `debugLogRepo` may be nil — in
@@ -468,9 +468,9 @@ func (h *DiscoveriesHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	latest, _ := h.repo.GetLatest(r.Context(), projectID)
 	if latest != nil {
 		status["last_discovery"] = map[string]interface{}{
-			"date":            latest.DiscoveryDate,
-			"insights_count":  len(latest.Insights),
-			"total_steps":     latest.TotalSteps,
+			"date":           latest.DiscoveryDate,
+			"insights_count": len(latest.Insights),
+			"total_steps":    latest.TotalSteps,
 		}
 	}
 

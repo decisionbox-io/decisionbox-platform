@@ -1,0 +1,128 @@
+name: Cut Signed Release
+
+# Automates a GPG-signed release tag so signing can never be skipped by hand.
+# Run this instead of `git tag` / `gh release create`: it imports the release
+# GPG key from secrets, creates a SIGNED annotated tag (`git tag -s`), verifies
+# it, and pushes it — the tag is born signed and renders Verified on GitHub.
+# The pushed `v*` tag then drives docker-publish.yml as usual (whose verify-tag
+# gate re-checks the signature).
+#
+# Requires org/repo secrets GPG_PRIVATE_KEY (ASCII-armored private key for
+# release@decisionbox.io) + GPG_PASSPHRASE (the key MUST match the committed
+# release-signing-key.asc, or the run aborts), and RELEASE_PAT (a PAT / App token
+# with contents:write) — the tag is pushed with it so the publish workflow fires
+# (a tag pushed by the default GITHUB_TOKEN does not trigger it).
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. v0.28.1"
+        required: true
+        type: string
+      target:
+        description: "Commit SHA or branch to tag (default: main)"
+        required: false
+        default: main
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cut-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  cut:
+    name: Cut signed tag ${{ inputs.version }}
+    runs-on: ubuntu-latest
+    # The signing key lives on this protected environment. Configure the
+    # `release` environment (Settings -> Environments) with REQUIRED REVIEWERS
+    # and hold GPG_PRIVATE_KEY / GPG_PASSPHRASE / RELEASE_PAT there, so cutting a
+    # signed release needs an approver — running Actions is not enough to mint an
+    # officially-signed tag.
+    environment: release
+    steps:
+      # The tag MUST be pushed with a PAT / App token, not GITHUB_TOKEN: GitHub
+      # suppresses push-triggered workflow runs for a tag pushed by GITHUB_TOKEN,
+      # so the release publish workflow would never fire. Check it up front.
+      - name: Require release push token
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          [ -n "${RELEASE_PAT:-}" ] || { echo "::error::RELEASE_PAT secret is not set — needed so the pushed tag triggers the publish workflow (a GITHUB_TOKEN-pushed tag does not)"; exit 1; }
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target }}
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PAT }}
+
+      - name: Validate version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must look like vX.Y.Z (got '$VERSION')"; exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null 2>&1; then
+            echo "::error::tag $VERSION already exists on origin — delete it first to re-cut"
+            exit 1
+          fi
+
+      - name: Import the release GPG key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GPG_PRIVATE_KEY:-}" ] || [ -z "${GPG_PASSPHRASE:-}" ]; then
+            echo "::error::GPG_PRIVATE_KEY / GPG_PASSPHRASE secrets are not set — cannot sign the release tag"
+            exit 1
+          fi
+          GNUPGHOME="$(mktemp -d)"; export GNUPGHOME
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+          chmod 700 "$GNUPGHOME"
+          printf 'allow-loopback-pinentry\n' > "$GNUPGHOME/gpg-agent.conf"
+          printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          key_id=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec:/{print $5; exit}')
+          [ -n "$key_id" ] || { echo "::error::no secret key was imported"; exit 1; }
+          echo "SIGN_KEY_ID=$key_id" >> "$GITHUB_ENV"
+          # The signing key MUST be the one whose public half we published, or a
+          # release would be signed with a key that can't be verified against the
+          # published public key. Compare against the key on the PROTECTED default
+          # branch — the exact same trust root the docker verify-tag gate uses —
+          # so this workflow and the gate never disagree (e.g. a stale target).
+          git fetch --force origin main
+          imported_fpr=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')
+          committed_fpr=$(git show origin/main:release-signing-key.asc | gpg --show-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')
+          if [ "$imported_fpr" != "$committed_fpr" ]; then
+            echo "::error::GPG_PRIVATE_KEY ($imported_fpr) does not match the published release key on origin/main ($committed_fpr)"
+            exit 1
+          fi
+          # Passphrase file (0600) for a non-interactive gpg wrapper — avoids the
+          # passphrase ever appearing on a command line / in the process table.
+          umask 077
+          printf '%s' "$GPG_PASSPHRASE" > "$GNUPGHOME/pass"
+          cat > "$GNUPGHOME/gpg-loopback" <<EOS
+          #!/usr/bin/env bash
+          exec gpg --batch --pinentry-mode loopback --passphrase-file "$GNUPGHOME/pass" "\$@"
+          EOS
+          chmod 700 "$GNUPGHOME/gpg-loopback"
+
+      - name: Create, verify, and push the signed tag
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "DecisionBox Release Signing"
+          git config user.email "release@decisionbox.io"
+          git config user.signingkey "$SIGN_KEY_ID"
+          git config gpg.program "$GNUPGHOME/gpg-loopback"
+          git tag -s "$VERSION" -m "$VERSION"
+          git tag -v "$VERSION"                       # aborts unless it's a GOOD signature
+          git push origin "refs/tags/$VERSION"
+          echo "Signed, verified, and pushed $VERSION."
+          echo "## Cut signed release $VERSION" >> "$GITHUB_STEP_SUMMARY"

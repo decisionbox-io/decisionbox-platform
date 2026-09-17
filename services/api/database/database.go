@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	goauth "github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 	"go.mongodb.org/mongo-driver/bson"
@@ -92,7 +93,7 @@ func (r *ProjectRepository) List(ctx context.Context, limit, offset int) ([]*mod
 		SetLimit(int64(limit)).
 		SetSkip(int64(offset))
 
-	cursor, err := r.col.Find(ctx, bson.M{}, opts)
+	cursor, err := r.col.Find(ctx, projectAccessFilter(ctx), opts)
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
@@ -103,6 +104,58 @@ func (r *ProjectRepository) List(ctx context.Context, limit, offset int) ([]*mod
 		return nil, fmt.Errorf("decode projects: %w", err)
 	}
 	return projects, nil
+}
+
+// projectAccessFilter builds the Mongo predicate that scopes a project list to
+// what the request principal may access, from the principal stored in ctx by
+// the auth middleware. It mirrors auth.CanAccessProject so the list query and
+// the per-document guard (used by Get + the mutating handlers) agree.
+//
+// No principal in ctx (internal / non-HTTP callers) ⇒ empty filter (all
+// projects). Admin / owner ⇒ no role restriction (deployment/org-wide). Every
+// other principal sees only OPEN projects (allowed_roles empty/absent) plus
+// those whose allowed_roles intersect its roles. Org scoping is applied only
+// when the principal carries a non-empty org id; a project with no org id stays
+// visible (legacy / single-org self-hosted).
+func projectAccessFilter(ctx context.Context) bson.M {
+	p, ok := goauth.FromContext(ctx)
+	if !ok || p == nil {
+		return bson.M{}
+	}
+
+	var and []bson.M
+
+	if p.OrgID != "" {
+		and = append(and, bson.M{"$or": []bson.M{
+			{"org_id": bson.M{"$exists": false}},
+			{"org_id": ""},
+			{"org_id": p.OrgID},
+		}})
+	}
+
+	isAdmin := false
+	for _, role := range p.Roles {
+		if role == goauth.RoleAdmin || role == goauth.RoleOwner {
+			isAdmin = true
+			break
+		}
+	}
+	if !isAdmin {
+		roles := p.Roles
+		if roles == nil {
+			roles = []string{}
+		}
+		and = append(and, bson.M{"$or": []bson.M{
+			{"allowed_roles": bson.M{"$exists": false}},
+			{"allowed_roles": bson.M{"$size": 0}},
+			{"allowed_roles": bson.M{"$in": roles}},
+		}})
+	}
+
+	if len(and) == 0 {
+		return bson.M{}
+	}
+	return bson.M{"$and": and}
 }
 
 func (r *ProjectRepository) Update(ctx context.Context, id string, p *models.Project) error {

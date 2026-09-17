@@ -339,9 +339,27 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	root.Handle("/health", healthMux)
 	root.Handle("/health/", healthMux)
 	root.Handle("/api/v1/health", healthMux)
-	root.Handle("/", authProvider.Middleware()(mux))
+	// Advanced-RBAC (#321) middleware chain, applied after the auth provider
+	// attaches the principal:
+	//   1. ResolvePermissionsMiddleware — resolve roles → permissions + append
+	//      a custom role's built-in-equivalent tier (no-op on community).
+	//   2. ProjectACLMiddleware — enforce the role-based project ACL over the
+	//      whole /api/v1/projects/{id}/… subtree in one place (404 on denial).
+	// Both are exported from go-common/auth so the global-middleware plugins
+	// (knowledge sources, executive summaries) apply the same enforcement.
+	projectACL := auth.ProjectACLMiddleware("/api/v1/projects/", func(ctx context.Context, id string) (string, []string, bool, error) {
+		p, err := projectRepo.GetByID(ctx, id)
+		if err != nil {
+			return "", nil, false, err
+		}
+		if p == nil {
+			return "", nil, false, nil
+		}
+		return p.OrgID, p.AllowedRoles, true, nil
+	})
+	root.Handle("/", authProvider.Middleware()(auth.ResolvePermissionsMiddleware()(projectACL(mux))))
 
-	// Middleware chain: CORS → Logging → Auth → RBAC → Router
+	// Middleware chain: CORS → Logging → Auth → Resolve permissions → Project ACL → RBAC → Router
 	return corsMiddleware(handler.LoggingMiddleware(root))
 }
 
