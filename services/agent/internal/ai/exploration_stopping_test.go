@@ -516,3 +516,19 @@ func TestRecordIndexOutcome_ARunOfRefusalsStandsTheRuleDown(t *testing.T) {
 		t.Error("an index that stopped keeping steps is still trusted, on the strength of one early success")
 	}
 }
+
+// TestNoveltySubject_GetCorrelationsIsNotOne guards the no-new-signal rule
+// against a new query-less action.
+//
+// A get_correlations step stamps a constant purpose and carries no query, so
+// every one of them would embed as the same text and score as a perfect repeat
+// of the last. Three of them in a row would end a run in which no data query
+// had repeated — or in which none had been run at all.
+func TestNoveltySubject_GetCorrelationsIsNotOne(t *testing.T) {
+	if noveltySubject(models.ExplorationStep{Step: 1, QueryPurpose: "get_correlations"}) {
+		t.Error("a step that asked the data nothing is not a novelty subject")
+	}
+	if !noveltySubject(models.ExplorationStep{Step: 2, Query: "SELECT 1"}) {
+		t.Error("a step that ran a query still is")
+	}
+}

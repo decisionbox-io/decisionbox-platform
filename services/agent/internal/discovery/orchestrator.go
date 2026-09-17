@@ -829,7 +829,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// agent sets datasource_id per statement, hops between datasources, and
 	// applies the right playbook per datasource.
 	if dc != nil {
-		explorationPrompt += buildDatasourcesPromptSection(dc)
+		explorationPrompt += buildDatasourcesPromptSection(dc, o.curatedCorrelations(ctx, dc))
 	}
 
 	// Inject project knowledge sources (no-op if no enterprise plugin loaded
@@ -937,6 +937,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		Dataset:           datasetsStr,
 		SchemaProvider:    schemaProvider,
 		StepIndexer:       stepIndexer,
+		CorrelationLookup: o.correlationLookup(dc),
 
 		// R3: reasoning-aware, window-budgeted per-step output ceiling.
 		Window:             exploreWindow,
@@ -2797,6 +2798,55 @@ const (
 	knowledgeMinScore             = 0.4
 	knowledgeMaxRetrievalPerPhase = 3 * time.Second
 )
+
+// curatedCorrelations reads what somebody has decided about correlating this
+// run's datasources, for the routing contract to name.
+//
+// Once per run, over every datasource on it. The tool re-reads per pair while
+// the run is in flight, so this is not a cache — it is the answer to a
+// different question: is there anything to tell the model about at all.
+//
+// A failure is a warning and an empty answer, never a stopped run. The
+// prohibitions it would have named are the cost, and the tool can still be
+// asked; failing a discovery somebody launched because a decision store
+// hiccuped would be the worse trade.
+func (o *Orchestrator) curatedCorrelations(ctx context.Context, dc *datasourceContext) []agentplugin.CorrelationKey {
+	ids := make([]string, 0, len(dc.descriptors))
+	for _, d := range dc.descriptors {
+		ids = append(ids, d.id)
+	}
+	keys, err := agentplugin.Correlations(ctx, agentplugin.CorrelationRequest{
+		ProjectID:     o.projectID,
+		DatasourceIDs: ids,
+	})
+	if err != nil {
+		applog.WithError(err).Warn("multi-warehouse discovery: could not read the reviewed correlation keys; " +
+			"the routing contract will not name the rejected pairings")
+		return nil
+	}
+	return keys
+}
+
+// correlationLookup is what serves the agent's get_correlations action.
+//
+// A closure over the project rather than the seam itself, so the exploration
+// engine neither imports the plugin registry nor carries a project id.
+//
+// Nil on a single-datasource run: there is no second datasource to correlate
+// with, and the engine answering "nothing can be checked" is the truthful
+// reply to a question that cannot arise.
+func (o *Orchestrator) correlationLookup(dc *datasourceContext) ai.CorrelationLookupFunc {
+	if dc == nil {
+		return nil
+	}
+	projectID := o.projectID
+	return func(ctx context.Context, a, b string) ([]agentplugin.CorrelationKey, error) {
+		return agentplugin.Correlations(ctx, agentplugin.CorrelationRequest{
+			ProjectID:     projectID,
+			DatasourceIDs: []string{a, b},
+		})
+	}
+}
 
 // injectKnowledgeSources walks every registered agentplugin context provider
 // (knowledge sources today; column hints / area priority later) and prepends

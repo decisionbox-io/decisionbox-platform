@@ -45,11 +45,15 @@ type DiscoveryRun struct {
 	//
 	// SchemaTokens / SchemaTableCount describe the boot context size.
 	// SchemaLookupCalls / SchemaSearchCalls track the on-demand schema
-	// actions the LLM issued during the run.
-	SchemaTokens      int `bson:"schema_tokens,omitempty" json:"schema_tokens,omitempty"`
-	SchemaTableCount  int `bson:"schema_table_count,omitempty" json:"schema_table_count,omitempty"`
-	SchemaLookupCalls int `bson:"schema_lookup_calls,omitempty" json:"schema_lookup_calls,omitempty"`
-	SchemaSearchCalls int `bson:"schema_search_calls,omitempty" json:"schema_search_calls,omitempty"`
+	// actions the LLM issued during the run. CorrelationLookupCalls tracks
+	// get_correlations — how often the run asked what had been decided about
+	// correlating two datasources, which is the only way to tell a contract
+	// the model followed from one it read past.
+	SchemaTokens           int `bson:"schema_tokens,omitempty" json:"schema_tokens,omitempty"`
+	SchemaTableCount       int `bson:"schema_table_count,omitempty" json:"schema_table_count,omitempty"`
+	SchemaLookupCalls      int `bson:"schema_lookup_calls,omitempty" json:"schema_lookup_calls,omitempty"`
+	SchemaSearchCalls      int `bson:"schema_search_calls,omitempty" json:"schema_search_calls,omitempty"`
+	CorrelationLookupCalls int `bson:"correlation_lookup_calls,omitempty" json:"correlation_lookup_calls,omitempty"`
 
 	// Analysis-phase compaction telemetry. Counts how many steps the
 	// run-scoped step index ingested, how many area-level searches

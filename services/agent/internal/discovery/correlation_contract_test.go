@@ -1,0 +1,193 @@
+package discovery
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+
+	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
+)
+
+// The routing contract's reviewed-correlation-keys block: what it says, when
+// it says nothing, and the one thing in it that must not depend on the model
+// choosing to call a tool.
+
+func confirmedKey() agentplugin.CorrelationKey {
+	return agentplugin.CorrelationKey{
+		DatasourceID: "wh_analytics", SourceField: "transactionId",
+		WithDatasourceID: "default", AnchorColumns: []string{"orders.order_id"},
+		Grain: "transaction", State: agentplugin.CorrelationConfirmed,
+	}
+}
+
+func rejectedKey(field string) agentplugin.CorrelationKey {
+	return agentplugin.CorrelationKey{
+		DatasourceID: "wh_analytics", SourceField: field,
+		WithDatasourceID: "default", AnchorColumns: []string{"orders.customer_id"},
+		Grain: "customer", State: agentplugin.CorrelationRejected,
+		Reason: "a reviewer checked " + field + " and the two sides do not hold the same values",
+	}
+}
+
+// TestCorrelationContract_NothingDecidedRendersNothing is the empty-safe
+// invariant, stated directly rather than only through the golden: a project
+// that has never had a pairing reviewed reads exactly as it did before this
+// existed.
+func TestCorrelationContract_NothingDecidedRendersNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		keys []agentplugin.CorrelationKey
+	}{
+		{"nil", nil},
+		{"empty", []agentplugin.CorrelationKey{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildDatasourcesPromptSection(sqlOnlyContext(), tc.keys)
+			for _, forbidden := range []string{"get_correlations", "Reviewed correlation keys", "REJECTED"} {
+				if strings.Contains(got, forbidden) {
+					t.Errorf("unreviewed project must not see %q:\n%s", forbidden, got)
+				}
+			}
+		})
+	}
+}
+
+func TestCorrelationContract_TeachesTheActionAndMandatesTheCall(t *testing.T) {
+	got := buildDatasourcesPromptSection(sqlOnlyContext(), []agentplugin.CorrelationKey{confirmedKey()})
+
+	// Nothing upstream teaches this action — the domain packs do not carry it
+	// — so the shape has to be here or the model cannot emit it.
+	if !strings.Contains(got, `"get_correlations": {"a"`) {
+		t.Errorf("want the action shape taught:\n%s", got)
+	}
+	// Mandated, not suggested. The hop rules beside it are imperative too.
+	if !strings.Contains(got, "MUST call `get_correlations`") {
+		t.Errorf("want the call mandated:\n%s", got)
+	}
+	if !strings.Contains(got, "stronger evidence than a name match") {
+		t.Errorf("want the reason a reviewed key outranks a name match:\n%s", got)
+	}
+}
+
+// TestCorrelationContract_ExampleUsesThisRunsDatasources: a model shown an id
+// that does not exist has been taught, in the same breath, that the ids here
+// are illustrative.
+func TestCorrelationContract_ExampleUsesThisRunsDatasources(t *testing.T) {
+	dc := sqlOnlyContext()
+	got := buildDatasourcesPromptSection(dc, []agentplugin.CorrelationKey{confirmedKey()})
+
+	want := fmt.Sprintf(`{"a": "%s", "b": "%s"}`, dc.descriptors[0].id, dc.descriptors[1].id)
+	if !strings.Contains(got, want) {
+		t.Errorf("want the worked call to name this run's datasources (%s):\n%s", want, got)
+	}
+}
+
+// TestCorrelationContract_RejectionsAreNamedInline is the point of rendering
+// anything here at all. A prohibition that lives only inside the tool's answer
+// is a prohibition that depends on the model choosing to call the tool.
+func TestCorrelationContract_RejectionsAreNamedInline(t *testing.T) {
+	got := buildDatasourcesPromptSection(sqlOnlyContext(),
+		[]agentplugin.CorrelationKey{confirmedKey(), rejectedKey("userId")})
+
+	if !strings.Contains(got, "REJECTED PAIRINGS") {
+		t.Fatalf("want the rejections named inline:\n%s", got)
+	}
+	if !strings.Contains(got, "`wh_analytics`.`userId` ↔ `default`.`orders.customer_id`") {
+		t.Errorf("want the pairing named on both sides:\n%s", got)
+	}
+	if !strings.Contains(got, "do not hold the same values") {
+		t.Errorf("want the rejection's reason carried:\n%s", got)
+	}
+	if !strings.Contains(got, "in either direction") {
+		t.Errorf("a rejection is about two id-spaces, not a hop direction:\n%s", got)
+	}
+	if !strings.Contains(got, "spelled") {
+		t.Errorf("want the neighbouring-spelling escape closed:\n%s", got)
+	}
+	if !strings.Contains(got, "leave the correlation unmade") {
+		t.Errorf("want an instruction for what to do when no reviewed key exists:\n%s", got)
+	}
+	// A confirmed key is a preference and the tool serves it; only the
+	// prohibition earns space in the contract itself.
+	if strings.Contains(got, "transactionId") {
+		t.Errorf("confirmed keys belong in the tool's answer, not the contract:\n%s", got)
+	}
+}
+
+func TestCorrelationContract_NoRejectionsMeansNoProhibitionSection(t *testing.T) {
+	got := buildDatasourcesPromptSection(sqlOnlyContext(), []agentplugin.CorrelationKey{confirmedKey()})
+
+	if strings.Contains(got, "REJECTED PAIRINGS") {
+		t.Errorf("nothing was rejected, so there is nothing to prohibit:\n%s", got)
+	}
+	if !strings.Contains(got, "get_correlations") {
+		t.Errorf("the action is still taught:\n%s", got)
+	}
+}
+
+// TestCorrelationContract_OverflowPointsAtTheTool: dropping a prohibition
+// silently would be the worst thing this block could do, so the line that
+// replaces the dropped ones says where the rest are.
+func TestCorrelationContract_OverflowPointsAtTheTool(t *testing.T) {
+	t.Setenv(maxRejectedPairingsRenderedEnv, "2")
+
+	keys := []agentplugin.CorrelationKey{
+		rejectedKey("userId"), rejectedKey("clientId"), rejectedKey("sessionId"), rejectedKey("visitorId"),
+	}
+	got := buildDatasourcesPromptSection(sqlOnlyContext(), keys)
+
+	if !strings.Contains(got, "`userId`") || !strings.Contains(got, "`clientId`") {
+		t.Errorf("want the first two rendered:\n%s", got)
+	}
+	if strings.Contains(got, "`sessionId`") {
+		t.Errorf("want the third dropped under the cap:\n%s", got)
+	}
+	if !strings.Contains(got, "…and 2 more rejected pairings") {
+		t.Errorf("want the overflow counted:\n%s", got)
+	}
+	if !strings.Contains(got, "call `get_correlations` for the full list") {
+		t.Errorf("want the overflow to point at the tool:\n%s", got)
+	}
+}
+
+func TestCorrelationContract_UnderTheCapHasNoOverflowLine(t *testing.T) {
+	got := buildDatasourcesPromptSection(sqlOnlyContext(),
+		[]agentplugin.CorrelationKey{rejectedKey("userId")})
+
+	if strings.Contains(got, "more rejected pairings") {
+		t.Errorf("nothing was dropped, so nothing should say so:\n%s", got)
+	}
+}
+
+// TestCorrelationContract_SitsAfterTheHopRules places the block where the
+// model has just been told HOW to hop, which is where it should learn which
+// keys are known.
+func TestCorrelationContract_SitsAfterTheHopRules(t *testing.T) {
+	got := buildDatasourcesPromptSection(sqlOnlyContext(),
+		[]agentplugin.CorrelationKey{rejectedKey("userId")})
+
+	hop := strings.Index(got, "RIGHT (two steps)")
+	block := strings.Index(got, "Reviewed correlation keys")
+	list := strings.Index(got, "Available datasources:")
+	if hop < 0 || block < 0 || list < 0 {
+		t.Fatalf("missing a landmark (hop=%d block=%d list=%d):\n%s", hop, block, list, got)
+	}
+	if hop >= block || block >= list {
+		t.Errorf("want the block between the hop example and the datasource list:\n%s", got)
+	}
+}
+
+// TestCorrelationContract_RendersOnAMixedLanguageRunToo: the block is about
+// which keys were reviewed, which has nothing to do with what language a
+// datasource is queried in.
+func TestCorrelationContract_RendersOnAMixedLanguageRunToo(t *testing.T) {
+	got := buildDatasourcesPromptSection(withDatasource(sqlOnlyContext(), cubeDescriptor()),
+		[]agentplugin.CorrelationKey{rejectedKey("userId")})
+
+	if !strings.Contains(got, "REJECTED PAIRINGS") {
+		t.Errorf("want the prohibition on a mixed-language run:\n%s", got)
+	}
+	if !strings.Contains(got, "NOT all queried in the same language") {
+		t.Errorf("want the mixed-language contract kept:\n%s", got)
+	}
+}

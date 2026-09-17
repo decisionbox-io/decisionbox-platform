@@ -35,3 +35,20 @@ func TestClassifyExplorationStep_FloorRejectionsKeepTheirLegacyMessage(t *testin
 		t.Errorf("a reasonless rejection lost its message: %s", msg)
 	}
 }
+
+// TestClassifyExplorationStep_GetCorrelationsIsNotAQuery: the default arm
+// renders anything it does not recognise as a query step, so a new action that
+// never reaches the switch is mislabelled on the live dashboard — a step that
+// ran no SQL, shown as one that did.
+func TestClassifyExplorationStep_GetCorrelationsIsNotAQuery(t *testing.T) {
+	stepType, msg := classifyExplorationStep("get_correlations", 4, "check what was reviewed first", "")
+	if stepType != "get_correlations" {
+		t.Errorf("stepType = %q, want get_correlations", stepType)
+	}
+	if !strings.Contains(msg, "(get_correlations)") {
+		t.Errorf("msg = %q, want it to name the action", msg)
+	}
+	if !strings.Contains(msg, "check what was reviewed first") {
+		t.Errorf("msg = %q, want the model's thinking kept", msg)
+	}
+}

@@ -124,11 +124,19 @@ type ExplorationEngine struct {
 	maxLookupsPerRun  int
 	maxSearchesPerRun int
 
+	// correlationLookup answers what has been decided about correlating two of
+	// this run's datasources. Optional — nil is a deployment where nobody can
+	// answer, and the engine says that rather than reporting "nothing
+	// decided", which a model would read as permission.
+	correlationLookup           CorrelationLookupFunc
+	maxCorrelationLookupsPerRun int
+
 	// Mutated state. Tracked on the engine (not the conversation) so
 	// the budgets persist across retried steps and across action types.
-	lookupsUsed   int
-	searchesUsed  int
-	fetchedTables map[string]struct{} // canonicalised refs already lookup'd; dedupes repeat asks
+	lookupsUsed            int
+	searchesUsed           int
+	correlationLookupsUsed int
+	fetchedTables          map[string]struct{} // canonicalised refs already lookup'd; dedupes repeat asks
 }
 
 // maxParseRetries caps how many times we re-prompt the LLM on a single step
@@ -320,6 +328,17 @@ type ExplorationEngineOptions struct {
 	// whole run. 0 → DefaultMaxSearchesPerRun. Negative → 0 (off).
 	MaxSearchesPerRun int
 
+	// CorrelationLookup serves get_correlations. Supplied by the caller that
+	// knows the project, so this package needs neither a plugin registry nor
+	// a project id. Nil disables the action's answer (the engine reports that
+	// nothing can be checked, not that nothing was decided).
+	CorrelationLookup CorrelationLookupFunc
+
+	// MaxCorrelationLookupsPerRun caps total get_correlations actions across
+	// the whole run. 0 → DefaultMaxCorrelationLookupsPerRun. Negative → 0
+	// (off).
+	MaxCorrelationLookupsPerRun int
+
 	// StepIndexer is the run-scoped vector index that receives one
 	// upsert per completed step. Optional in tests, required in
 	// production wiring (the orchestrator surfaces a clear error
@@ -377,6 +396,13 @@ func NewExplorationEngine(opts ExplorationEngineOptions) *ExplorationEngine {
 	case maxSearches < 0:
 		maxSearches = 0
 	}
+	maxCorrelations := opts.MaxCorrelationLookupsPerRun
+	switch {
+	case maxCorrelations == 0:
+		maxCorrelations = DefaultMaxCorrelationLookupsPerRun
+	case maxCorrelations < 0:
+		maxCorrelations = 0
+	}
 
 	// Normalise the executor wiring into the per-datasource map. Multi-
 	// warehouse callers pass Executors + PrimaryDatasource; single-warehouse
@@ -418,6 +444,9 @@ func NewExplorationEngine(opts ExplorationEngineOptions) *ExplorationEngine {
 		maxLookupsPerRun:  maxLookups,
 		maxSearchesPerRun: maxSearches,
 		fetchedTables:     make(map[string]struct{}),
+
+		correlationLookup:           opts.CorrelationLookup,
+		maxCorrelationLookupsPerRun: maxCorrelations,
 
 		window:             opts.Window,
 		outputCap:          opts.OutputCap,
@@ -734,6 +763,11 @@ func (e *ExplorationEngine) Explore(
 //	"search_tables"— SearchTables is a free-text query the LLM wants
 //	                 ranked semantically against the per-project schema
 //	                 index. Top hits flow back as the next user message.
+//	"get_correlations" — GetCorrelations names two datasources the LLM is
+//	                 about to hop between; the answer is what somebody has
+//	                 decided about correlating them. Only available on a
+//	                 multi-warehouse run whose project has decisions, and
+//	                 taught there — see buildDatasourcesPromptSection.
 //
 // Legacy fields (Action, QueryPurpose, Reason) stay for the JSON
 // parser's "explicit action" path — older prompts still emit
@@ -769,6 +803,12 @@ type ExplorationAction struct {
 	// are clamped at execution time.
 	SearchTables string `json:"search_tables"`
 	SearchTopK   int    `json:"search_top_k"`
+
+	// get_correlations — the two datasources to ask about. A pointer, not a
+	// value, because the parser selects this mode on the key being PRESENT:
+	// a zero pair and an absent one are different questions, and only one of
+	// them is an error worth re-prompting for.
+	GetCorrelations *CorrelationPair `json:"get_correlations"`
 
 	// Legacy / explicit-action shape — kept so a prompt can still
 	// say {"action": "query_data", ...}. The parser normalises
@@ -934,6 +974,11 @@ func ParseAction(response string, allowed []string) (*ExplorationAction, error) 
 	case strings.TrimSpace(action.SearchTables) != "":
 		// Modern key-driven: a non-empty search query selects mode.
 		action.Action = "search_tables"
+	case action.GetCorrelations != nil:
+		// Modern key-driven: presence of the pair object selects mode. An
+		// incomplete pair still dispatches, so the executor can name this
+		// run's datasources back — more use to a model than a parse error.
+		action.Action = "get_correlations"
 	case action.Action == "complete":
 		// Legacy explicit complete — accept.
 	case action.Action == "query_data" && action.Query != "":
@@ -942,10 +987,12 @@ func ParseAction(response string, allowed []string) (*ExplorationAction, error) 
 		// Legacy explicit lookup — accept.
 	case action.Action == "search_tables" && strings.TrimSpace(action.SearchTables) != "":
 		// Legacy explicit search — accept.
+	case action.Action == "get_correlations" && action.GetCorrelations != nil:
+		// Legacy explicit correlation lookup — accept.
 	default:
 		// JSON parsed but carries no recognised payload. Fail loudly so
 		// the caller can re-prompt instead of silently terminating.
-		return nil, fmt.Errorf("action JSON has no query, lookup_schema, search_tables, done flag, or recognized action (got action=%q)", action.Action)
+		return nil, fmt.Errorf("action JSON has no query, lookup_schema, search_tables, get_correlations, done flag, or recognized action (got action=%q)", action.Action)
 	}
 
 	if len(allowed) > 0 && !actionAllowed(action.Action, allowed) {
@@ -1026,6 +1073,14 @@ func normaliseToolEnvelope(jsonStr string, action *ExplorationAction) {
 			if action.SearchTopK == 0 {
 				action.SearchTopK = in.TopK
 			}
+		}
+	case "get_correlations":
+		if action.GetCorrelations != nil {
+			return
+		}
+		var in CorrelationPair
+		if err := json.Unmarshal(env.Input, &in); err == nil && (in.A != "" || in.B != "") {
+			action.GetCorrelations = &in
 		}
 	case "query_data":
 		if action.Query != "" {
@@ -1261,7 +1316,7 @@ func jsonHasActionKey(s string) bool {
 	if err := json.Unmarshal([]byte(s), &probe); err != nil {
 		return false
 	}
-	for _, k := range []string{"query", "done", "action", "lookup_schema", "search_tables"} {
+	for _, k := range []string{"query", "done", "action", "lookup_schema", "search_tables", "get_correlations"} {
 		if _, ok := probe[k]; ok {
 			return true
 		}
@@ -1272,7 +1327,7 @@ func jsonHasActionKey(s string) bool {
 		var name string
 		if json.Unmarshal(nameRaw, &name) == nil {
 			switch name {
-			case "query_data", "lookup_schema", "search_tables", "complete":
+			case "query_data", "lookup_schema", "search_tables", "get_correlations", "complete":
 				return true
 			}
 		}
@@ -1323,6 +1378,9 @@ func (e *ExplorationEngine) executeAction(
 
 	case "search_tables":
 		return e.executeSearchTables(ctx, action, step)
+
+	case "get_correlations":
+		return e.executeGetCorrelations(ctx, action, step)
 
 	case "complete":
 		return fmt.Sprintf("Exploration complete: %s", action.Reason)
@@ -1671,6 +1729,16 @@ func (e *ExplorationEngine) buildInitialMessage(explorationCtx ExplorationContex
 		fmt.Fprintf(&msg,
 			"\nOn-demand schema budget for this run: %d lookup_schema calls (max %d tables per call), %d search_tables calls.\n",
 			e.maxLookupsPerRun, MaxLookupTablesPerCall, e.maxSearchesPerRun,
+		)
+	}
+
+	// Only when something can answer: announcing a budget for an action whose
+	// answer is always "nobody can tell you" spends tokens teaching the model
+	// to ask a question with no answer.
+	if e.correlationLookup != nil {
+		fmt.Fprintf(&msg,
+			"You also have %d get_correlations calls for checking what has been decided about correlating two datasources.\n",
+			e.maxCorrelationLookupsPerRun,
 		)
 	}
 

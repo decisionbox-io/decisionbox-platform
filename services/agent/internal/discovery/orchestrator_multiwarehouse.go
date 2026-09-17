@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
+	goconfig "github.com/decisionbox-io/decisionbox/libs/go-common/config"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
@@ -226,7 +228,12 @@ func (o *Orchestrator) buildGroupedCatalog(dc *datasourceContext, keywords []str
 // not queried in SQL gets one that names each datasource's language instead
 // of assuming a single one — see runHasNonSQLDatasource for why the split is
 // on the language rather than on the shape.
-func buildDatasourcesPromptSection(dc *datasourceContext) string {
+//
+// curated is what somebody has already decided about correlating this run's
+// datasources. Empty — no decisions, nothing wired to answer, or a single
+// datasource — renders nothing at all, and the section is byte-for-byte the
+// one every existing project receives.
+func buildDatasourcesPromptSection(dc *datasourceContext, curated []agentplugin.CorrelationKey) string {
 	mixed := runHasNonSQLDatasource(dc)
 	var b strings.Builder
 	b.WriteString("\n\n## Datasources (multi-warehouse)\n\n")
@@ -235,6 +242,7 @@ func buildDatasourcesPromptSection(dc *datasourceContext) string {
 	} else {
 		writeSQLRouting(&b)
 	}
+	writeCorrelationContract(&b, dc, curated)
 	b.WriteString("\nAvailable datasources:\n")
 	for _, d := range dc.descriptors {
 		writeDatasourceHeadline(&b, d, mixed)
@@ -364,6 +372,105 @@ func writeHopExample(b *strings.Builder) {
 	b.WriteString("  WRONG (fails — invoice_line is not in the Oracle datasource):\n")
 	b.WriteString("    {\"datasource_id\":\"wh_oracle\",\"query\":\"SELECT g.name, SUM(il.unit_price) FROM CHINOOK.TRACK t JOIN public.invoice_line il ON ... JOIN CHINOOK.GENRE g ...\"}\n")
 	b.WriteString("  RIGHT (two steps): step 1 `{\"datasource_id\":\"default\",\"query\":\"SELECT track_id, SUM(unit_price*quantity) AS rev FROM public.invoice_line GROUP BY track_id ORDER BY rev DESC LIMIT 20\"}`; step 2 `{\"datasource_id\":\"wh_oracle\",\"query\":\"SELECT t.track_id, g.name FROM CHINOOK.TRACK t JOIN CHINOOK.GENRE g ON t.genre_id=g.genre_id WHERE t.track_id IN (<the 20 ids from step 1>)\"}`.\n")
+}
+
+// defaultMaxRejectedPairingsRendered bounds how many rejected pairings the
+// contract names inline.
+//
+// A bound rather than a cap on the whole block, because the overflow has
+// somewhere to go: get_correlations returns the full list for any pair, and the
+// line that replaces the dropped ones says so. Twelve is well past what a real
+// project has — a rejection takes somebody deciding to record one — and exists
+// so a pathological project cannot crowd out the routing contract it sits in.
+const defaultMaxRejectedPairingsRendered = 12
+
+// maxRejectedPairingsRenderedEnv overrides it (Rule 2).
+const maxRejectedPairingsRenderedEnv = "DISCOVERY_MAX_REJECTED_PAIRINGS"
+
+func maxRejectedPairingsRendered() int {
+	if v := goconfig.GetEnvAsInt(maxRejectedPairingsRenderedEnv, defaultMaxRejectedPairingsRendered); v > 0 {
+		return v
+	}
+	return defaultMaxRejectedPairingsRendered
+}
+
+// writeCorrelationContract teaches get_correlations and names the pairings
+// somebody has rejected.
+//
+// Two things happen here and they are not the same thing. The ACTION is taught
+// because nothing upstream teaches it: the exploration action contract lives in
+// each domain pack's prompt, those prompts are customisable per project, and an
+// action taught there would both change the prompt every project receives and
+// silently miss every project that has customised one. Taught here it reaches
+// exactly the runs that can use it.
+//
+// The REJECTIONS are named inline because a prohibition that lives only inside
+// a tool's answer is a prohibition that depends on the model choosing to call
+// the tool. Preferences can wait to be asked for — get_correlations serves the
+// confirmed and declared keys, and there can be many. A rejection cannot: it is
+// the one thing here that changes what the agent must not do, and there are few
+// of them, because recording one takes a person deciding to.
+//
+// Nothing is written when nothing has been decided, so a project that has never
+// curated a pairing reads exactly as it did before this existed.
+func writeCorrelationContract(b *strings.Builder, dc *datasourceContext, curated []agentplugin.CorrelationKey) {
+	if len(curated) == 0 {
+		return
+	}
+	b.WriteString("\n### Reviewed correlation keys\n")
+	b.WriteString("Some pairs of datasources in this project have join keys a person has REVIEWED. Before your FIRST hop between any two datasources, you MUST call `get_correlations` for that pair and follow what it says. A reviewed key is stronger evidence than a name match — two fields sharing a name is how the wrong correlation gets made.\n")
+	fmt.Fprintf(b, "  {\"thinking\": \"...\", \"get_correlations\": {\"a\": \"%s\", \"b\": \"%s\"}}\n", exampleA(dc), exampleB(dc))
+
+	rejected := rejectedPairings(curated)
+	if len(rejected) == 0 {
+		return
+	}
+	b.WriteString("\nREJECTED PAIRINGS — do NOT correlate on these, in either direction:\n")
+	limit := maxRejectedPairingsRendered()
+	shown := rejected
+	if len(shown) > limit {
+		shown = shown[:limit]
+	}
+	for _, k := range shown {
+		fmt.Fprintf(b, "- `%s`.`%s` ↔ `%s`.`%s` — %s.\n",
+			k.DatasourceID, k.SourceField,
+			k.WithDatasourceID, strings.Join(k.AnchorColumns, "`, `"),
+			strings.TrimRight(k.Reason, "."))
+	}
+	if extra := len(rejected) - len(shown); extra > 0 {
+		fmt.Fprintf(b, "- …and %d more rejected pairings — call `get_correlations` for the full list before you hop.\n", extra)
+	}
+	b.WriteString("Do not substitute a different spelling of the same field: the decision is about the field, not how it is spelled. Where no reviewed key links two datasources, do not correlate them record by record — compare them only at a grain both sides genuinely share, or leave the correlation unmade and say in your findings that it could not be made.\n")
+}
+
+// rejectedPairings picks out the prohibitions, preserving the order they
+// arrived in — the provider answers deterministically, and a second ordering
+// here would be one more thing to keep in step with it.
+func rejectedPairings(curated []agentplugin.CorrelationKey) []agentplugin.CorrelationKey {
+	var out []agentplugin.CorrelationKey
+	for _, k := range curated {
+		if k.State == agentplugin.CorrelationRejected {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// exampleA and exampleB name two of THIS run's datasources in the worked
+// call, rather than inventing ids. A model shown an id that does not exist
+// has been taught, in the same breath, that the ids here are illustrative.
+func exampleA(dc *datasourceContext) string {
+	if len(dc.descriptors) > 0 {
+		return dc.descriptors[0].id
+	}
+	return "default"
+}
+
+func exampleB(dc *datasourceContext) string {
+	if len(dc.descriptors) > 1 {
+		return dc.descriptors[1].id
+	}
+	return exampleA(dc)
 }
 
 // writeDatasourceHeadline renders one datasource's opening line.
