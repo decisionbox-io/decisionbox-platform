@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 )
@@ -316,5 +317,62 @@ func TestCorrelationGuidance_Offered(t *testing.T) {
 		if got := tc.g.offered(); got != tc.want {
 			t.Errorf("%s: offered() = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestCuratedCorrelations_AHangingProviderDegradesRatherThanStalling.
+//
+// The error path already degrades a failed read to "unread". A provider that
+// HANGS never fails, so without a bound it would hold the run for the whole
+// run context — which defaults to 24 hours and can be turned off entirely.
+// The timeout is what turns a hang back into the failure this code handles.
+func TestCuratedCorrelations_AHangingProviderDegradesRatherThanStalling(t *testing.T) {
+	t.Setenv(correlationLookupTimeoutEnv, "1")
+	defer agentplugin.ResetCorrelationProviderForTest()
+	agentplugin.ResetCorrelationProviderForTest()
+
+	released := make(chan struct{})
+	defer close(released)
+	agentplugin.RegisterCorrelationProvider("hangs",
+		func(ctx context.Context, _ agentplugin.CorrelationRequest) ([]agentplugin.CorrelationKey, error) {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-released:
+				return nil, nil
+			}
+		})
+
+	o := &Orchestrator{projectID: "p1"}
+	start := time.Now()
+	got := o.curatedCorrelations(context.Background(), sqlOnlyContext())
+	elapsed := time.Since(start)
+
+	if elapsed > 10*time.Second {
+		t.Fatalf("took %s; the provider call is not bounded", elapsed)
+	}
+	if !got.unread {
+		t.Error("a timed-out read must report as unread, not as a project with nothing reviewed")
+	}
+	if got.offered() != true {
+		t.Error("the action must still be offered so the run can retry per pair")
+	}
+}
+
+// TestCorrelationLookupTimeout_HonoursItsOverride keeps the knob real: Rule 2
+// wants a value an operator can change, not one that only looks configurable.
+func TestCorrelationLookupTimeout_HonoursItsOverride(t *testing.T) {
+	if got := correlationLookupTimeout(); got != defaultCorrelationLookupTimeout {
+		t.Errorf("unset = %s, want the default %s", got, defaultCorrelationLookupTimeout)
+	}
+	t.Setenv(correlationLookupTimeoutEnv, "42")
+	if got := correlationLookupTimeout(); got != 42*time.Second {
+		t.Errorf("override = %s, want 42s", got)
+	}
+	// Nonsense falls back rather than producing a zero timeout, which would
+	// cancel every call before it started.
+	t.Setenv(correlationLookupTimeoutEnv, "nope")
+	if got := correlationLookupTimeout(); got != defaultCorrelationLookupTimeout {
+		t.Errorf("invalid override = %s, want the default", got)
 	}
 }

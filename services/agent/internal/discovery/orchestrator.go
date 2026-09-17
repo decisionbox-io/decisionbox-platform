@@ -2801,6 +2801,30 @@ const (
 	knowledgeMaxRetrievalPerPhase = 3 * time.Second
 )
 
+// defaultCorrelationLookupTimeout bounds one call to the correlation provider.
+//
+// Needed because the surrounding error handling degrades a failed read to
+// "unread", and a provider that HANGS never fails: it would hold the run for
+// the whole run context, which defaults to 24 hours and can be turned off
+// entirely. A timeout is what turns a hang back into the failure the rest of
+// this code already knows how to handle.
+//
+// Wider than the knowledge-retrieval budget next door because a provider may
+// open its own store on first use, and a cold connect is the slowest call it
+// will make. Env-overridable (Rule 2) for a deployment whose store is further
+// away than that.
+const defaultCorrelationLookupTimeout = 15 * time.Second
+
+// correlationLookupTimeoutEnv overrides it, in seconds.
+const correlationLookupTimeoutEnv = "DISCOVERY_CORRELATION_LOOKUP_TIMEOUT_SECONDS"
+
+func correlationLookupTimeout() time.Duration {
+	if v := goconfig.GetEnvAsInt(correlationLookupTimeoutEnv, 0); v > 0 {
+		return time.Duration(v) * time.Second
+	}
+	return defaultCorrelationLookupTimeout
+}
+
 // correlationGuidance is what a run knows about reviewed correlation keys
 // before it starts.
 //
@@ -2835,7 +2859,9 @@ func (o *Orchestrator) curatedCorrelations(ctx context.Context, dc *datasourceCo
 	for _, d := range dc.descriptors {
 		ids = append(ids, d.id)
 	}
-	keys, err := agentplugin.Correlations(ctx, agentplugin.CorrelationRequest{
+	readCtx, cancel := context.WithTimeout(ctx, correlationLookupTimeout())
+	defer cancel()
+	keys, err := agentplugin.Correlations(readCtx, agentplugin.CorrelationRequest{
 		ProjectID:     o.projectID,
 		DatasourceIDs: ids,
 	})
@@ -2872,7 +2898,12 @@ func (o *Orchestrator) correlationLookup(dc *datasourceContext, guidance correla
 	}
 	projectID := o.projectID
 	return func(ctx context.Context, a, b string) ([]agentplugin.CorrelationKey, error) {
-		return agentplugin.Correlations(ctx, agentplugin.CorrelationRequest{
+		// Bounded for the same reason the startup read is: the engine reports a
+		// failed lookup to the model and carries on, and a hang is the one
+		// outcome it cannot report.
+		lookupCtx, cancel := context.WithTimeout(ctx, correlationLookupTimeout())
+		defer cancel()
+		return agentplugin.Correlations(lookupCtx, agentplugin.CorrelationRequest{
 			ProjectID:     projectID,
 			DatasourceIDs: []string{a, b},
 		})
