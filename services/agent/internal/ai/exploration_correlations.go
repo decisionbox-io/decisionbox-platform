@@ -50,6 +50,18 @@ type CorrelationPair struct {
 	B string `json:"b"`
 }
 
+// correlationsOffered reports whether this run may use get_correlations: a
+// lookup is wired AND the budget lets it be called.
+//
+// One predicate rather than one per site. Everything that mentions the action
+// to the model has to agree about whether it exists — the opening message that
+// announces its budget, and the repair nudge that lists the actions after a
+// parse failure — and two spellings of "is it available" is how a run ends up
+// being taught an action it is not allowed to use.
+func (e *ExplorationEngine) correlationsOffered() bool {
+	return e.correlationLookup != nil && e.maxCorrelationLookupsPerRun > 0
+}
+
 // executeGetCorrelations serves a get_correlations action. The result string
 // becomes the next user message; its shape is part of the prompt contract
 // written by the multi-warehouse routing section.

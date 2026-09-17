@@ -466,9 +466,16 @@ func TestGetCorrelations_NegativeBudgetActuallyDisablesIt(t *testing.T) {
 	if !strings.Contains(out, "rejected pairings named in the system prompt") {
 		t.Errorf("want the standing rejections restated:\n%s", out)
 	}
-	// And a disabled action is not advertised in the opening message.
+	// And a disabled action is mentioned to the model nowhere: not in the
+	// opening message, and not in the menu a parse failure produces.
 	if msg := engine.buildInitialMessage(ExplorationContext{}); strings.Contains(msg, "get_correlations") {
 		t.Errorf("a switched-off action must not be announced:\n%s", msg)
+	}
+	if engine.correlationsOffered() {
+		t.Error("correlationsOffered() = true with the budget switched off")
+	}
+	if nudge := explorationRepairNudge(nil, engine.correlationsOffered()); strings.Contains(nudge, "get_correlations") {
+		t.Errorf("a switched-off action must not be taught by the repair nudge:\n%s", nudge)
 	}
 }
 
@@ -480,5 +487,8 @@ func TestGetCorrelations_BudgetIsAnnouncedWhenTheActionIsOffered(t *testing.T) {
 	msg := engine.buildInitialMessage(ExplorationContext{})
 	if !strings.Contains(msg, "get_correlations calls") {
 		t.Errorf("want the budget announced:\n%s", msg)
+	}
+	if !engine.correlationsOffered() {
+		t.Error("correlationsOffered() = false on a run that can use it")
 	}
 }

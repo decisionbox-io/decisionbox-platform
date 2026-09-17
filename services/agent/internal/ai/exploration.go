@@ -918,7 +918,7 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 			break
 		}
 
-		conversation.AddUserMessage(explorationRepairNudge(err, e.correlationLookup != nil))
+		conversation.AddUserMessage(explorationRepairNudge(err, e.correlationsOffered()))
 	}
 
 	in, out := usage.Totals()
@@ -1752,7 +1752,7 @@ func (e *ExplorationEngine) buildInitialMessage(explorationCtx ExplorationContex
 	// a budget for an action that is unwired — or switched off, which is what a
 	// zero budget means here — teaches the model to spend a step on a question
 	// with no answer.
-	if e.correlationLookup != nil && e.maxCorrelationLookupsPerRun > 0 {
+	if e.correlationsOffered() {
 		fmt.Fprintf(&msg,
 			"You also have %d get_correlations calls for checking what has been decided about correlating two datasources.\n",
 			e.maxCorrelationLookupsPerRun,
