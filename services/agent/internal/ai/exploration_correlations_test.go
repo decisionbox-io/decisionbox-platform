@@ -492,3 +492,50 @@ func TestGetCorrelations_BudgetIsAnnouncedWhenTheActionIsOffered(t *testing.T) {
 		t.Error("correlationsOffered() = false on a run that can use it")
 	}
 }
+
+// TestRunStepWithRetry_NudgeMatchesWhatTheRunOffers drives the real retry path.
+//
+// The unit test above pins explorationRepairNudge itself; this pins the CALL
+// SITE, which is where the predicate lives and where it drifted once already.
+// A mutation that passes a constant there survives everything else.
+func TestRunStepWithRetry_NudgeMatchesWhatTheRunOffers(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		lookup CorrelationLookupFunc
+		want   bool
+	}{
+		{"offered", staticLookup(confirmedPairing()), true},
+		{"not offered", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// First response is unparseable, so the engine nudges and retries;
+			// the second is a clean action so the step completes.
+			engine, _ := buildTestEngine(t, ExplorationEngineOptions{
+				MaxSteps:          3,
+				CorrelationLookup: tc.lookup,
+			}, []string{
+				"I am not going to answer in JSON this time.",
+				`{"query":"SELECT 1 FROM test_dataset.users"}`,
+			})
+
+			conv := NewConversation(ConversationOptions{SystemPrompt: "sys", MaxMessages: 100})
+			conv.AddUserMessage("explore")
+			if _, _, _, err := engine.runStepWithRetry(context.Background(), conv, 1); err != nil {
+				t.Fatalf("runStepWithRetry: %v", err)
+			}
+
+			var nudge string
+			for _, m := range conv.GetMessages() {
+				if strings.Contains(m.Content, "EXACTLY ONE JSON object") {
+					nudge = m.Content
+				}
+			}
+			if nudge == "" {
+				t.Fatalf("no repair nudge reached the conversation: %+v", conv.GetMessages())
+			}
+			if got := strings.Contains(nudge, "get_correlations"); got != tc.want {
+				t.Errorf("nudge mentions get_correlations = %v, want %v:\n%s", got, tc.want, nudge)
+			}
+		})
+	}
+}
