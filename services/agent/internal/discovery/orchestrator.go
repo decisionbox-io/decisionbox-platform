@@ -830,7 +830,13 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// applies the right playbook per datasource.
 	var guidance correlationGuidance
 	if dc != nil {
-		guidance = o.curatedCorrelations(ctx, dc)
+		// Read only when there is a pair to read about. A run that degraded to
+		// one routable datasource cannot correlate, and its result would be
+		// discarded by the contract and the wiring both — after waiting out a
+		// slow provider to produce it.
+		if correlatable(dc) {
+			guidance = o.curatedCorrelations(ctx, dc)
+		}
 		explorationPrompt += buildDatasourcesPromptSection(dc, guidance)
 	}
 

@@ -427,3 +427,35 @@ func TestCorrelationContract_ExampleNamesTwoDistinctDatasources(t *testing.T) {
 		t.Fatal("fixture no longer exercises the case")
 	}
 }
+
+// TestCuratedCorrelations_NotReadWithoutAPair.
+//
+// The result would be discarded by both the contract and the wiring, so the
+// only thing the call can add on a degraded run is the wait for a slow
+// provider — up to the lookup timeout, for an answer nobody reads.
+func TestCuratedCorrelations_NotReadWithoutAPair(t *testing.T) {
+	defer agentplugin.ResetCorrelationProviderForTest()
+	agentplugin.ResetCorrelationProviderForTest()
+
+	calls := 0
+	agentplugin.RegisterCorrelationProvider("counting",
+		func(context.Context, agentplugin.CorrelationRequest) ([]agentplugin.CorrelationKey, error) {
+			calls++
+			return nil, nil
+		})
+
+	// The guard lives at the call site, so assert it through the predicate the
+	// call site reads plus the provider's own call count for the pair case.
+	if correlatable(oneDatasourceContext()) {
+		t.Fatal("a one-datasource run must not read as correlatable")
+	}
+	if !correlatable(sqlOnlyContext()) {
+		t.Fatal("a two-datasource run must")
+	}
+
+	o := &Orchestrator{projectID: "p1"}
+	o.curatedCorrelations(context.Background(), sqlOnlyContext())
+	if calls != 1 {
+		t.Fatalf("provider called %d times for a real pair, want 1", calls)
+	}
+}
