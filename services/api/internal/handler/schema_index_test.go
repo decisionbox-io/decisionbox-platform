@@ -353,6 +353,31 @@ func TestSchemaIndex_Reindex_MissingProject(t *testing.T) {
 	}
 }
 
+// A re-index must be refused while a run is already in flight — otherwise the
+// destructive cache invalidation would run under the live worker. The cache must
+// stay untouched.
+func TestSchemaIndex_Reindex_WhileIndexing_409(t *testing.T) {
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3", SchemaIndexStatus: models.SchemaIndexStatusIndexing}
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{}
+	drop := &mockDropper{}
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), drop, nil, nil, ci, nil)
+
+	w := httptest.NewRecorder()
+	h.Reindex(w, newReq("POST", "/reindex", p.ID, ""))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", w.Code)
+	}
+	if len(ci.called) != 0 || len(drop.calls) != 0 {
+		t.Errorf("no destructive cleanup may run while indexing: invalidate=%v drop=%v", ci.called, drop.calls)
+	}
+	got, _ := projRepo.GetByID(context.Background(), p.ID)
+	if got.SchemaIndexStatus != models.SchemaIndexStatusIndexing {
+		t.Errorf("status must stay indexing, got %q", got.SchemaIndexStatus)
+	}
+}
+
 // Model B: a re-index must drop the schema cache so the worker re-discovers
 // from the warehouse (making manual schema edits ephemeral and picking up
 // schema drift), and it must do so before flipping to pending_indexing.

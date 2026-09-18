@@ -433,10 +433,11 @@ func (h *SchemaIndexHandler) Retry(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": models.SchemaIndexStatusPendingIndexing})
 }
 
-// Reindex forces a full re-index. Works from any status — the
-// Advanced-tab UI uses this to apply config changes that don't
-// auto-reindex (plan §3.3). Drops the Qdrant collection so the worker
-// cannot accidentally resume against stale vectors.
+// Reindex forces a full re-index. Works from any status except while a run is
+// already in flight (rejected with 409 — cancel it first) — the Advanced-tab UI
+// uses this to apply config changes that don't auto-reindex (plan §3.3). Drops
+// the Qdrant collection so the worker cannot accidentally resume against stale
+// vectors.
 //
 // A re-index rebuilds the schema from the warehouse as it is *now*: it
 // drops the schema cache so the worker re-discovers the catalog instead
@@ -460,6 +461,15 @@ func (h *SchemaIndexHandler) Reindex(w http.ResponseWriter, r *http.Request) {
 	}
 	if p == nil {
 		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	// Refuse while a run is in flight: the destructive cleanup below (cache
+	// invalidate + Qdrant drop) would run under the live worker, which can then
+	// finish and mark the project ready against an emptied cache — and the
+	// requested re-index would be lost. The user must cancel the in-flight run
+	// first. Mirrors InvalidateCache.
+	if p.SchemaIndexStatus == models.SchemaIndexStatusIndexing {
+		writeError(w, http.StatusConflict, "cannot re-index while an indexing run is in flight; cancel it first")
 		return
 	}
 

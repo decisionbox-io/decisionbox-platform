@@ -381,6 +381,13 @@ func (h *SchemaEditorHandler) ListEdits(w http.ResponseWriter, r *http.Request) 
 	// (its finish time is stamped on every re-index; fall back to the cache
 	// write time, then to counting everything for a never-indexed project).
 	//
+	// The run finish time is an exact cutoff for "live" edits under Model B: a
+	// re-index always invalidates the cache and re-discovers, so no edit survives
+	// a re-index — every live edit is necessarily newer than the last run. (There
+	// is no legacy population of edits made under an old cache-reuse re-index: the
+	// schema editor ships with Model B, so a separate "since last cache write"
+	// counter would only ever count zero extra edits.)
+	//
 	// Best-effort — a count failure must not fail the list. Scoped to
 	// datasourceID when the caller passed one (the editor banner) and
 	// project-wide otherwise (the re-index / cache-clear warnings, which act on
