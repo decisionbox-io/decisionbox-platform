@@ -73,21 +73,17 @@ type SchemaVectorEditor interface {
 // discards them — the audit trail is the record to re-apply from.
 type SchemaEditorHandler struct {
 	projects       database.ProjectRepo
-	cache          SchemaEditorCache    // nullable — endpoints 503 when nil
-	edits          SchemaEditRecorder   // nullable — audit trail unavailable when nil
-	vectors        SchemaVectorEditor   // nullable — endpoints 503 when nil
-	runs           SchemaIndexRunLister // nullable — used to date "edits since last index"
+	cache          SchemaEditorCache  // nullable — endpoints 503 when nil
+	edits          SchemaEditRecorder // nullable — audit trail unavailable when nil
+	vectors        SchemaVectorEditor // nullable — endpoints 503 when nil
 	secretProvider gosecrets.Provider
 }
 
 // NewSchemaEditorHandler constructs the handler. Pass nil cache/vectors in
 // builds without Mongo/Qdrant wired — the endpoints then return 503 so the UI
-// can hide the editor. runs is optional — when set, "edits since last index"
-// is dated from the latest schema-index run (refreshed on every re-index, even
-// a cache-hit one) instead of the schema cache timestamp (which a cache-hit
-// re-index does not refresh).
-func NewSchemaEditorHandler(projects database.ProjectRepo, cache SchemaEditorCache, edits SchemaEditRecorder, vectors SchemaVectorEditor, runs SchemaIndexRunLister, secretProvider gosecrets.Provider) *SchemaEditorHandler {
-	return &SchemaEditorHandler{projects: projects, cache: cache, edits: edits, vectors: vectors, runs: runs, secretProvider: secretProvider}
+// can hide the editor.
+func NewSchemaEditorHandler(projects database.ProjectRepo, cache SchemaEditorCache, edits SchemaEditRecorder, vectors SchemaVectorEditor, secretProvider gosecrets.Provider) *SchemaEditorHandler {
+	return &SchemaEditorHandler{projects: projects, cache: cache, edits: edits, vectors: vectors, secretProvider: secretProvider}
 }
 
 // --- wire types ---
@@ -376,26 +372,30 @@ func (h *SchemaEditorHandler) ListEdits(w http.ResponseWriter, r *http.Request) 
 
 	// One baseline under Model B: a re-index and a Clear schema cache both
 	// re-discover the schema from the warehouse, so both discard *every* edit
-	// made since the last catalog pass — blurb, keyword, column removal, or
-	// table delete alike. Count all edit actions since the last indexing run
-	// (its finish time is stamped on every re-index; fall back to the cache
-	// write time, then to counting everything for a never-indexed project).
+	// made since the cache was last (re)built — blurb, keyword, column removal,
+	// or table delete alike.
 	//
-	// The run finish time is an exact cutoff for "live" edits under Model B: a
-	// re-index always invalidates the cache and re-discovers, so no edit survives
-	// a re-index — every live edit is necessarily newer than the last run. (There
-	// is no legacy population of edits made under an old cache-reuse re-index: the
-	// schema editor ships with Model B, so a separate "since last cache write"
-	// counter would only ever count zero extra edits.)
+	// The cutoff is the schema cache's last write time (LastCachedAt), i.e. the
+	// last time the agent actually re-discovered and saved the catalog. That is
+	// the exact boundary of "live" edits: an edit is still in the cache iff it
+	// was applied after the cache was last written. cached_at only advances on a
+	// catalog re-discovery (a Cache.Save), which under Model B happens on every
+	// re-index (it invalidates first, forcing a miss). A cache-*hit* run — e.g. a
+	// Retry from a failed state, which reuses the cache without re-discovering —
+	// finishes without moving cached_at, so an edit made before it stays counted
+	// (it is still live). Using the run finish time here would wrongly drop such
+	// edits. Zero cached_at (never indexed / cache cleared) → count everything.
 	//
 	// Best-effort — a count failure must not fail the list. Scoped to
 	// datasourceID when the caller passed one (the editor banner) and
 	// project-wide otherwise (the re-index / cache-clear warnings, which act on
 	// the whole project).
 	sinceIndex := 0
-	since := time.Time{} // never indexed → every edit is live
-	if lastIndex, ok := h.lastIndexTime(ctx, projectID, datasourceID); ok {
-		since = lastIndex
+	since := time.Time{} // no cache → every recorded edit is (nominally) live
+	if h.cache != nil {
+		if t, err := h.cache.LastCachedAt(ctx, projectID); err == nil {
+			since = t
+		}
 	}
 	if n, nErr := h.edits.CountSince(ctx, projectID, datasourceID, since); nErr == nil {
 		sinceIndex = n
@@ -644,30 +644,6 @@ func datasetFromQualified(s string) string {
 		return ""
 	}
 	return s[prev+1 : last]
-}
-
-// lastIndexTime returns the timestamp of the project's most recent schema-index
-// run, used to date "edits since last index". It prefers the latest run record
-// (refreshed on every re-index, including a cache-hit one, via a fresh
-// finished_at) and falls back to the schema cache's last-write time for
-// pre-feature projects that have no run records. Returns ok=false when neither
-// source is available (never indexed) — the caller then counts every edit.
-func (h *SchemaEditorHandler) lastIndexTime(ctx context.Context, projectID, datasourceID string) (time.Time, bool) {
-	if h.runs != nil {
-		// datasourceID != "" scopes to that data source's latest run; "" is the
-		// latest run across the project.
-		if runs, err := h.runs.List(ctx, projectID, datasourceID, 1); err == nil && len(runs) > 0 {
-			if !runs[0].FinishedAt.IsZero() {
-				return runs[0].FinishedAt, true
-			}
-		}
-	}
-	if h.cache != nil {
-		if t, err := h.cache.LastCachedAt(ctx, projectID); err == nil && !t.IsZero() {
-			return t, true
-		}
-	}
-	return time.Time{}, false
 }
 
 // resolveDatasourceID returns the requested datasource id, or the project's

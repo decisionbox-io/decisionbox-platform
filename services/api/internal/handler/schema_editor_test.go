@@ -278,25 +278,12 @@ func decodeData(t *testing.T, body []byte, into interface{}) {
 	}
 }
 
-// fakeRunsLister implements SchemaIndexRunLister for the "since last index"
-// timestamp. Only List (limit 1 → newest run) is exercised by the editor.
-type fakeRunsLister struct {
-	latest []models.SchemaIndexRun
-}
-
-func (f *fakeRunsLister) List(_ context.Context, _, _ string, _ int) ([]models.SchemaIndexRun, error) {
-	return f.latest, nil
-}
-func (f *fakeRunsLister) LatestByDatasource(_ context.Context, _ string) ([]models.SchemaIndexRun, error) {
-	return f.latest, nil
-}
-
 func newEditorHandler(cache SchemaEditorCache, edits SchemaEditRecorder, vec SchemaVectorEditor) (*SchemaEditorHandler, *mockProjectRepo) {
 	proj := newMockProjectRepo()
 	p := &models.Project{ID: "p1", Name: "P1", Embedding: goembedding.ProjectConfig{Provider: "schema-editor-embed", Model: "test-model"}}
 	_ = proj.Create(context.Background(), p) // assigns proj-1; overwrite id
 	proj.projects["p1"] = p
-	return NewSchemaEditorHandler(proj, cache, edits, vec, nil, nil), proj
+	return NewSchemaEditorHandler(proj, cache, edits, vec, nil), proj
 }
 
 // --- tests ---
@@ -350,7 +337,7 @@ func TestSchemaEditor_ListTables_Search(t *testing.T) {
 }
 
 func TestSchemaEditor_ListTables_ServiceUnavailable(t *testing.T) {
-	h := NewSchemaEditorHandler(newMockProjectRepo(), nil, nil, nil, nil, nil)
+	h := NewSchemaEditorHandler(newMockProjectRepo(), nil, nil, nil, nil)
 	w := httptest.NewRecorder()
 	h.ListTables(w, editorRequest(http.MethodGet, "/x", "p1", ""))
 	if w.Code != http.StatusServiceUnavailable {
@@ -664,20 +651,18 @@ func TestSchemaEditor_ListEdits(t *testing.T) {
 	}
 }
 
-func TestSchemaEditor_ListEdits_DatesFromLatestRun(t *testing.T) {
-	// "since last index" must be dated from the latest schema-index run
-	// (refreshed on every re-index), not the schema cache timestamp (which a
-	// cache-hit re-index doesn't refresh). When both exist, the run wins. Under
-	// Model B a re-index discards every edit type, so the single CountSince is
-	// unrestricted (no action filter).
-	runTime := time.Now().UTC()
-	cacheTime := runTime.Add(-48 * time.Hour) // stale cache timestamp
+func TestSchemaEditor_ListEdits_DatesFromCacheWrite(t *testing.T) {
+	// "since last index" is dated from the schema cache's last write (the last
+	// catalog re-discovery), NOT from the latest run's finish time. cached_at is
+	// the exact "cache was last rebuilt" boundary; a cache-hit run (e.g. a Retry)
+	// finishes later but does not move cached_at, so an edit made before it stays
+	// counted (it's still live in the reused cache). Under Model B the single
+	// CountSince is unrestricted (a re-index discards every kind of edit).
+	cacheTime := time.Now().UTC().Add(-2 * time.Hour)
 	cache := newFakeEditorCache()
 	cache.lastCached = cacheTime
-	edits := &fakeEditRecorder{sinceCount: 0}
-	runs := &fakeRunsLister{latest: []models.SchemaIndexRun{{ProjectID: "p1", FinishedAt: runTime}}}
+	edits := &fakeEditRecorder{sinceCount: 2}
 	h, _ := newEditorHandler(cache, edits, newFakeVectorEditor())
-	h.runs = runs
 
 	w := httptest.NewRecorder()
 	h.ListEdits(w, editorRequest(http.MethodGet, "/x", "p1", ""))
@@ -686,50 +671,42 @@ func TestSchemaEditor_ListEdits_DatesFromLatestRun(t *testing.T) {
 	}
 	edits.mu.Lock()
 	defer edits.mu.Unlock()
-	// Exactly one CountSince, dated from the run time (not the stale cache), with
-	// no action filter — a re-index discards every kind of edit.
 	if len(edits.sinceArgs) != 1 {
 		t.Fatalf("expected exactly one CountSince, got args=%v", edits.sinceArgs)
 	}
-	if !edits.sinceArgs[0].Equal(runTime) {
-		t.Fatalf("CountSince cutoff = %v, want run time %v (not stale cache %v)", edits.sinceArgs[0], runTime, cacheTime)
+	if !edits.sinceArgs[0].Equal(cacheTime) {
+		t.Fatalf("CountSince cutoff = %v, want cache write time %v", edits.sinceArgs[0], cacheTime)
 	}
 	if len(edits.sinceActions[0]) != 0 {
 		t.Fatalf("CountSince should be unrestricted (all actions), got %v", edits.sinceActions[0])
 	}
 }
 
-func TestSchemaEditor_ListEdits_FallsBackToCacheTimeWithoutRuns(t *testing.T) {
-	// Pre-feature project: no run records → fall back to the cache timestamp.
-	cacheTime := time.Now().UTC().Add(-time.Hour)
-	cache := newFakeEditorCache()
-	cache.lastCached = cacheTime
-	edits := &fakeEditRecorder{}
-	runs := &fakeRunsLister{latest: nil} // no runs
+func TestSchemaEditor_ListEdits_NoCacheCountsAll(t *testing.T) {
+	// Never indexed / cache cleared: LastCachedAt is zero → count every recorded
+	// edit (cutoff is the zero time).
+	cache := newFakeEditorCache() // lastCached stays zero
+	edits := &fakeEditRecorder{sinceCount: 4}
 	h, _ := newEditorHandler(cache, edits, newFakeVectorEditor())
-	h.runs = runs
 
 	w := httptest.NewRecorder()
 	h.ListEdits(w, editorRequest(http.MethodGet, "/x", "p1", ""))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	// No runs → the count falls back to the cache time.
-	if !edits.hasSince(cacheTime) {
-		t.Fatalf("expected CountSince at cache time %v; got %v", cacheTime, edits.sinceArgs)
+	if !edits.hasSince(time.Time{}) {
+		t.Fatalf("expected CountSince at the zero time; got %v", edits.sinceArgs)
 	}
 }
 
 func TestSchemaEditor_ListEdits_ScopesCountsToDatasource(t *testing.T) {
-	// Codex R6 P2: when a datasource_id is passed, the counts must be scoped to
-	// it (not project-wide), so a multi-warehouse project doesn't warn about a
-	// sibling datasource's edits.
+	// When a datasource_id is passed, the count must be scoped to it (not
+	// project-wide), so a multi-warehouse project doesn't warn about a sibling
+	// datasource's edits.
 	cache := newFakeEditorCache()
 	cache.lastCached = time.Now().UTC()
 	edits := &fakeEditRecorder{sinceCount: 1}
-	runs := &fakeRunsLister{latest: []models.SchemaIndexRun{{ProjectID: "p1", FinishedAt: time.Now().UTC()}}}
 	h, _ := newEditorHandler(cache, edits, newFakeVectorEditor())
-	h.runs = runs
 
 	w := httptest.NewRecorder()
 	h.ListEdits(w, editorRequest(http.MethodGet, "/x?datasource_id=wh_b", "p1", ""))
@@ -749,7 +726,7 @@ func TestSchemaEditor_ListEdits_ScopesCountsToDatasource(t *testing.T) {
 }
 
 func TestSchemaEditor_ListEdits_NoRepo(t *testing.T) {
-	h := NewSchemaEditorHandler(newMockProjectRepo(), newFakeEditorCache(), nil, newFakeVectorEditor(), nil, nil)
+	h := NewSchemaEditorHandler(newMockProjectRepo(), newFakeEditorCache(), nil, newFakeVectorEditor(), nil)
 	w := httptest.NewRecorder()
 	h.ListEdits(w, editorRequest(http.MethodGet, "/x", "p1", ""))
 	if w.Code != http.StatusOK {
