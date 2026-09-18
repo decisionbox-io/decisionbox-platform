@@ -429,33 +429,49 @@ func (r *ProjectRepository) SetSchemaIndexStatus(ctx context.Context, id, status
 
 // BeginReindex atomically and EXCLUSIVELY claims a project for a re-index by
 // transitioning it into "indexing" — the lock state held during the re-index's
-// destructive cleanup (cache invalidation + Qdrant drop) — but ONLY when it is
-// not already indexing. Using "indexing" as the lock makes the claim mutually
-// exclusive with everything that could otherwise race the cleanup:
-//   - a concurrent /reindex: the loser's BeginReindex sees "indexing" and
-//     matches nothing → false (the handler returns 409). Excluding only, say,
-//     needs_reindex would let two overlapping re-indexes both claim (needs_reindex
-//     is also the idle "cache cleared, click Re-index" state, so it can't be
-//     excluded) and both run cleanup — the classic double-owner race.
+// destructive cleanup (cache invalidation + Qdrant drop). Using "indexing" as
+// the lock makes the claim mutually exclusive with everything that could
+// otherwise race the cleanup:
+//   - a concurrent /reindex: the loser's BeginReindex sees a *fresh* "indexing"
+//     row and matches nothing → false (the handler returns 409). Excluding only,
+//     say, needs_reindex would let two overlapping re-indexes both claim
+//     (needs_reindex is also the idle "cache cleared, click Re-index" state, so
+//     it can't be excluded) and both run cleanup — the classic double-owner race.
 //   - the indexing worker: it only claims pending_indexing projects
-//     (ClaimNextPendingIndex), so while this lock is held it cannot start a run,
-//     and if a run is already in flight (status indexing) this claim fails.
+//     (ClaimNextPendingIndex), so while this lock is held it cannot start a run.
+//
+// It DOES claim a *stale* "indexing" row — one whose updated_at is older than
+// staleIndexingBefore — so a project left stuck by a crash (or an abandoned
+// cleanup lock) stays recoverable via /reindex rather than only via the
+// boot-time stale sweep. The caller must first confirm no live worker is running
+// (IsRunning); a live run bumps updated_at, but a long quiet phase might not, so
+// the staleness cutoff alone is not a safe "is it running" test.
+//
 // The handler flips the lock to pending_indexing when cleanup succeeds (handing
 // the rebuild to the worker) or back to needs_reindex on a cleanup failure
-// (retryable). A crash mid-cleanup leaves it "indexing" for the boot-time
-// stale-indexing sweep to reclaim. Returns:
+// (retryable). Returns:
 //   - (true, nil)  locked; the caller owns the cleanup.
-//   - (false, nil) a run/cleanup is already in flight (status was indexing) or
-//     the project no longer exists — the /reindex handler has already confirmed
-//     the project exists, so it treats false as "in flight".
-func (r *ProjectRepository) BeginReindex(ctx context.Context, id string) (bool, error) {
+//   - (false, nil) another re-index's cleanup is in progress (fresh "indexing")
+//     or the project no longer exists — the /reindex handler has already
+//     confirmed the project exists, so it treats false as "in progress".
+func (r *ProjectRepository) BeginReindex(ctx context.Context, id string, staleIndexingBefore time.Time) (bool, error) {
 	oid, err := primitive.ObjectIDFromHex(id)
 	if err != nil {
 		return false, fmt.Errorf("invalid project id %q: %w", id, err)
 	}
 	filter := bson.M{
-		"_id":                 oid,
-		"schema_index_status": bson.M{"$ne": models.SchemaIndexStatusIndexing},
+		"_id": oid,
+		"$or": bson.A{
+			// Any non-indexing status is claimable (ready / failed / needs_reindex
+			// / pending / cancelled).
+			bson.M{"schema_index_status": bson.M{"$ne": models.SchemaIndexStatusIndexing}},
+			// A stale "indexing" row — a crashed run or abandoned cleanup lock with
+			// no live worker — is reclaimable; a fresh one (a live cleanup) is not.
+			bson.M{
+				"schema_index_status": models.SchemaIndexStatusIndexing,
+				"updated_at":          bson.M{"$lt": staleIndexingBefore},
+			},
+		},
 	}
 	update := bson.M{
 		"$set": bson.M{

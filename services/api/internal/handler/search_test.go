@@ -58,7 +58,7 @@ func (m *mockProjectRepoForSearch) CountWithWarehouse(_ context.Context) (int, e
 func (m *mockProjectRepoForSearch) SetSchemaIndexStatus(_ context.Context, _, _, _ string) error {
 	return nil
 }
-func (m *mockProjectRepoForSearch) BeginReindex(_ context.Context, _ string) (bool, error) {
+func (m *mockProjectRepoForSearch) BeginReindex(_ context.Context, _ string, _ time.Time) (bool, error) {
 	return true, nil
 }
 

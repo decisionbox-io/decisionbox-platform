@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/services/api/models"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // schema-index progress is a new collection added in this migration.
@@ -300,12 +302,31 @@ func TestInteg_ProjectRepo_SetSchemaIndexStatus_MissingProject(t *testing.T) {
 func TestInteg_ProjectRepo_BeginReindex(t *testing.T) {
 	ctx := context.Background()
 	repo := NewProjectRepository(testDB)
+	// A fresh cleanup lock is younger than this; a crashed/abandoned one is older.
+	staleBefore := time.Now().UTC().Add(-2 * time.Minute)
+
+	// forceStaleIndexing sets a project to "indexing" with an updated_at far in
+	// the past, simulating a crashed run / abandoned cleanup lock.
+	forceStaleIndexing := func(t *testing.T, id string) {
+		t.Helper()
+		oid, err := primitive.ObjectIDFromHex(id)
+		if err != nil {
+			t.Fatalf("bad id: %v", err)
+		}
+		_, err = testDB.Collection("projects").UpdateOne(ctx, bson.M{"_id": oid}, bson.M{"$set": bson.M{
+			"schema_index_status": models.SchemaIndexStatusIndexing,
+			"updated_at":          time.Now().UTC().Add(-time.Hour),
+		}})
+		if err != nil {
+			t.Fatalf("force stale indexing: %v", err)
+		}
+	}
 
 	t.Run("locks a ready project into indexing and clears its error", func(t *testing.T) {
 		p := makeTestProject(t, ctx, "begin-reindex-ready")
 		_ = repo.SetSchemaIndexStatus(ctx, p.ID, models.SchemaIndexStatusFailed, "old error")
 		_ = repo.SetSchemaIndexStatus(ctx, p.ID, models.SchemaIndexStatusReady, "")
-		ok, err := repo.BeginReindex(ctx, p.ID)
+		ok, err := repo.BeginReindex(ctx, p.ID, staleBefore)
 		if err != nil {
 			t.Fatalf("BeginReindex: %v", err)
 		}
@@ -324,7 +345,7 @@ func TestInteg_ProjectRepo_BeginReindex(t *testing.T) {
 	t.Run("locks a pending project (removing it from the worker's claimable set)", func(t *testing.T) {
 		p := makeTestProject(t, ctx, "begin-reindex-pending")
 		_ = repo.SetSchemaIndexStatus(ctx, p.ID, models.SchemaIndexStatusPendingIndexing, "")
-		ok, err := repo.BeginReindex(ctx, p.ID)
+		ok, err := repo.BeginReindex(ctx, p.ID, staleBefore)
 		if err != nil || !ok {
 			t.Fatalf("BeginReindex on pending: ok=%v err=%v", ok, err)
 		}
@@ -337,22 +358,23 @@ func TestInteg_ProjectRepo_BeginReindex(t *testing.T) {
 		if claimed != nil && claimed.ID == p.ID {
 			t.Error("worker claimed a project that BeginReindex locked into indexing")
 		}
-		// A second, overlapping BeginReindex must be refused (mutual exclusion).
-		ok2, _ := repo.BeginReindex(ctx, p.ID)
+		// A second, overlapping BeginReindex must be refused — the lock it just
+		// took is fresh (mutual exclusion).
+		ok2, _ := repo.BeginReindex(ctx, p.ID, staleBefore)
 		if ok2 {
-			t.Error("a second concurrent BeginReindex must fail while the lock is held")
+			t.Error("a second concurrent BeginReindex must fail while a fresh lock is held")
 		}
 	})
 
-	t.Run("refuses (false) while indexing, leaving the run untouched", func(t *testing.T) {
+	t.Run("refuses (false) a FRESH indexing row, leaving the run untouched", func(t *testing.T) {
 		p := makeTestProject(t, ctx, "begin-reindex-indexing")
-		_ = repo.SetSchemaIndexStatus(ctx, p.ID, models.SchemaIndexStatusIndexing, "")
-		ok, err := repo.BeginReindex(ctx, p.ID)
+		_ = repo.SetSchemaIndexStatus(ctx, p.ID, models.SchemaIndexStatusIndexing, "") // updated_at = now
+		ok, err := repo.BeginReindex(ctx, p.ID, staleBefore)
 		if err != nil {
 			t.Fatalf("BeginReindex: %v", err)
 		}
 		if ok {
-			t.Fatal("expected claim to fail while indexing")
+			t.Fatal("expected claim to fail for a fresh indexing row")
 		}
 		got, _ := repo.GetByID(ctx, p.ID)
 		if got.SchemaIndexStatus != models.SchemaIndexStatusIndexing {
@@ -360,8 +382,24 @@ func TestInteg_ProjectRepo_BeginReindex(t *testing.T) {
 		}
 	})
 
+	t.Run("reclaims a STALE indexing row (crashed run / abandoned lock)", func(t *testing.T) {
+		p := makeTestProject(t, ctx, "begin-reindex-stale")
+		forceStaleIndexing(t, p.ID)
+		ok, err := repo.BeginReindex(ctx, p.ID, staleBefore)
+		if err != nil {
+			t.Fatalf("BeginReindex: %v", err)
+		}
+		if !ok {
+			t.Fatal("expected a stale indexing row to be reclaimable")
+		}
+		got, _ := repo.GetByID(ctx, p.ID)
+		if got.SchemaIndexStatus != models.SchemaIndexStatusIndexing {
+			t.Errorf("status = %q, want indexing (re-locked)", got.SchemaIndexStatus)
+		}
+	})
+
 	t.Run("returns false for a missing project", func(t *testing.T) {
-		ok, err := repo.BeginReindex(ctx, "000000000000000000000000")
+		ok, err := repo.BeginReindex(ctx, "000000000000000000000000", staleBefore)
 		if err != nil {
 			t.Fatalf("BeginReindex missing: %v", err)
 		}

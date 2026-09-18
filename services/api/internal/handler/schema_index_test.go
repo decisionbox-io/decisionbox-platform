@@ -353,9 +353,10 @@ func TestSchemaIndex_Reindex_MissingProject(t *testing.T) {
 	}
 }
 
-// A re-index must be refused while a run is already in flight — otherwise the
-// destructive cache invalidation would run under the live worker. The cache must
-// stay untouched.
+// A re-index must be refused when the project already holds a FRESH indexing
+// row (another cleanup in progress / a live run) — the destructive cleanup must
+// not run under it, and the cache must stay untouched. The fresh mock project's
+// updated_at is recent, so BeginReindex refuses it.
 func TestSchemaIndex_Reindex_WhileIndexing_409(t *testing.T) {
 	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3", SchemaIndexStatus: models.SchemaIndexStatusIndexing}
 	projRepo := newMockProjectRepo()
@@ -375,6 +376,54 @@ func TestSchemaIndex_Reindex_WhileIndexing_409(t *testing.T) {
 	got, _ := projRepo.GetByID(context.Background(), p.ID)
 	if got.SchemaIndexStatus != models.SchemaIndexStatusIndexing {
 		t.Errorf("status must stay indexing, got %q", got.SchemaIndexStatus)
+	}
+}
+
+// A re-index must be refused (before any claim/cleanup) while a worker run is
+// genuinely live on this instance — IsRunning is the authoritative signal.
+func TestSchemaIndex_Reindex_LiveRun_IsRunning_409(t *testing.T) {
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3", SchemaIndexStatus: models.SchemaIndexStatusIndexing}
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{}
+	drop := &mockDropper{}
+	canceller := &mockCanceller{runningReturn: true}
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), drop, nil, canceller, ci, nil)
+
+	w := httptest.NewRecorder()
+	h.Reindex(w, newReq("POST", "/reindex", p.ID, ""))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", w.Code)
+	}
+	if len(ci.called) != 0 || len(drop.calls) != 0 {
+		t.Errorf("no cleanup may run while a live run is in flight: invalidate=%v drop=%v", ci.called, drop.calls)
+	}
+}
+
+// A project stuck in "indexing" with no live worker (a crash left it there) must
+// stay recoverable via /reindex — BeginReindex takes over the stale lock.
+func TestSchemaIndex_Reindex_StaleIndexing_Recovers(t *testing.T) {
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3", SchemaIndexStatus: models.SchemaIndexStatusIndexing}
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	// Make the indexing row stale (crashed run) and confirm no live worker.
+	projRepo.projects[p.ID].UpdatedAt = time.Now().Add(-time.Hour)
+	ci := &mockCacheInvalidator{}
+	drop := &mockDropper{}
+	canceller := &mockCanceller{runningReturn: false}
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), drop, nil, canceller, ci, nil)
+
+	w := httptest.NewRecorder()
+	h.Reindex(w, newReq("POST", "/reindex", p.ID, ""))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (stale indexing should be reclaimable), body=%s", w.Code, w.Body.String())
+	}
+	if len(ci.called) != 1 {
+		t.Errorf("stale recovery should run cleanup: invalidate=%v", ci.called)
+	}
+	got, _ := projRepo.GetByID(context.Background(), p.ID)
+	if got.SchemaIndexStatus != models.SchemaIndexStatusPendingIndexing {
+		t.Errorf("status = %q, want pending_indexing after recovery", got.SchemaIndexStatus)
 	}
 }
 

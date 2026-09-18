@@ -26,6 +26,15 @@ const (
 	liveTableFailTTL  = 15 * time.Second
 )
 
+// reindexLockStaleAfter bounds how long a project may sit in the "indexing"
+// re-index cleanup lock before another /reindex may take it over. The cleanup
+// (cache invalidate + Qdrant drop) is sub-second to a few seconds, so a lock
+// younger than this is treated as a live cleanup and a concurrent re-index is
+// refused (409); an "indexing" row older than this with no live worker is a
+// crashed run / abandoned lock and is reclaimable, so a stuck project stays
+// recoverable via the button instead of only via the boot-time stale sweep.
+const reindexLockStaleAfter = 2 * time.Minute
+
 type liveTableEntry struct {
 	tables []string
 	failed bool
@@ -464,20 +473,33 @@ func (h *SchemaIndexHandler) Reindex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Refuse while a real indexing run is live on this instance. IsRunning is the
+	// authoritative "a worker is actively running right now" signal (it doesn't
+	// depend on updated_at, so a long quiet phase like blurb generation can't be
+	// mistaken for stale). The schema-index worker is single-node, so an
+	// instance-local check is the same signal Cancel uses.
+	if h.canceller != nil && h.canceller.IsRunning(id) {
+		writeError(w, http.StatusConflict, "a schema-index run is in flight; cancel it first")
+		return
+	}
+
 	// Exclusively claim the project by locking it into "indexing" (see
 	// BeginReindex). This does three jobs atomically: it gates discovery / Ask
 	// off (they read the schema cache directly, so must not run while it's being
-	// wiped), it makes overlapping re-indexes mutually exclusive (a second one
-	// gets 409), and it keeps the worker out (it only claims pending_indexing) so
-	// nothing runs the destructive cleanup under an in-flight run. false means a
-	// run/cleanup is already in flight.
-	claimed, err := h.projects.BeginReindex(r.Context(), id)
+	// wiped), it makes overlapping re-indexes mutually exclusive (a second, fresh
+	// cleanup lock can't be stolen), and it keeps the worker out (it only claims
+	// pending_indexing) so nothing runs the destructive cleanup under an in-flight
+	// run. It WILL take over a *stale* "indexing" row (updated_at older than the
+	// cutoff, with no live worker per the IsRunning check above) so a project left
+	// stuck by a crash stays recoverable from the button. false means another
+	// re-index's cleanup is already in progress.
+	claimed, err := h.projects.BeginReindex(r.Context(), id, time.Now().Add(-reindexLockStaleAfter))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "reindex: "+err.Error())
 		return
 	}
 	if !claimed {
-		writeError(w, http.StatusConflict, "cannot re-index while an indexing run is in flight; cancel it first")
+		writeError(w, http.StatusConflict, "another re-index is already in progress; retry in a moment")
 		return
 	}
 
