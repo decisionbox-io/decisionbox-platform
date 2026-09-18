@@ -318,10 +318,12 @@ func TestSchemaIndex_Reindex_DropperErrorPropagated(t *testing.T) {
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", w.Code)
 	}
-	// Status must NOT have transitioned — we bail before the repo call.
+	// On a partial-cleanup failure the project must be parked in needs_reindex
+	// (locked out of discovery/Ask, not auto-claimed by the worker), NOT left
+	// ready and NOT flipped to pending_indexing — a retry is idempotent.
 	got, _ := proj.GetByID(context.Background(), p.ID)
-	if got.SchemaIndexStatus == "pending_indexing" {
-		t.Errorf("status flipped despite dropper failure: %q", got.SchemaIndexStatus)
+	if got.SchemaIndexStatus != models.SchemaIndexStatusNeedsReindex {
+		t.Errorf("status after dropper failure = %q, want needs_reindex", got.SchemaIndexStatus)
 	}
 }
 
@@ -376,11 +378,11 @@ func TestSchemaIndex_Reindex_InvalidatesCache(t *testing.T) {
 	}
 }
 
-// A cache-invalidate failure aborts the re-index before the status flip AND
-// before the destructive Qdrant drop, so the project keeps its vectors + prior
-// status and the user can retry. Asserting the dropper is untouched pins the
-// invalidate-before-drop ordering (so we never leave a ready project with its
-// collection already deleted).
+// A cache-invalidate failure aborts the re-index before the destructive Qdrant
+// drop and before the pending flip. The project is parked in needs_reindex
+// (already flipped in step 1), its vectors are untouched, and a retry is safe.
+// Asserting the dropper is untouched pins the ordering: status → needs_reindex,
+// then invalidate, then (never reached) drop.
 func TestSchemaIndex_Reindex_CacheInvalidateError_500(t *testing.T) {
 	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3", SchemaIndexStatus: models.SchemaIndexStatusReady}
 	projRepo := newMockProjectRepo()
@@ -395,11 +397,11 @@ func TestSchemaIndex_Reindex_CacheInvalidateError_500(t *testing.T) {
 		t.Fatalf("status = %d, want 500", w.Code)
 	}
 	if len(drop.calls) != 0 {
-		t.Errorf("DropCollection must NOT run when cache invalidation fails (invalidate is first), got %v", drop.calls)
+		t.Errorf("DropCollection must NOT run when cache invalidation fails, got %v", drop.calls)
 	}
 	got, _ := projRepo.GetByID(context.Background(), p.ID)
-	if got.SchemaIndexStatus == models.SchemaIndexStatusPendingIndexing {
-		t.Errorf("status flipped despite cache-invalidate failure: %q", got.SchemaIndexStatus)
+	if got.SchemaIndexStatus != models.SchemaIndexStatusNeedsReindex {
+		t.Errorf("status after cache-invalidate failure = %q, want needs_reindex (locked, retryable)", got.SchemaIndexStatus)
 	}
 }
 

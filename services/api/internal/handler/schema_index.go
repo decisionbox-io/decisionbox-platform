@@ -463,17 +463,21 @@ func (h *SchemaIndexHandler) Reindex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Drop the schema cache FIRST — before the (destructive) Qdrant drop and
-	// before flipping to pending_indexing. Two reasons for this order:
-	//   - Invalidating first means that if it fails we return before dropping
-	//     the collection, so the project is never left marked ready with its
-	//     vectors already deleted (retrieval would be broken until a manual
-	//     retry). Nothing destructive has happened yet, so the state is intact
-	//     and retryable.
-	//   - Doing it before the status flip means the worker that later claims
-	//     pending_indexing always sees an empty cache and re-discovers from the
-	//     warehouse; a cache hit would otherwise reuse the stale catalog and
-	//     preserve manual edits.
+	// Move the project OUT of its current state before any destructive cleanup.
+	// needs_reindex is a holding state that both (a) gates discovery / Ask off —
+	// they read the schema cache directly, so they must not run while it's being
+	// wiped — and (b) is NOT auto-claimed by the worker, so the worker can't race
+	// the cache invalidation below and re-discover against a half-cleared cache.
+	// Crucially, if any cleanup step fails we return with the project parked in
+	// needs_reindex: locked and retryable, never left marked ready with its cache
+	// or vectors already gone. Mirrors InvalidateCache's status-flip-first order.
+	if err := h.projects.SetSchemaIndexStatus(r.Context(), id, models.SchemaIndexStatusNeedsReindex, ""); err != nil {
+		writeError(w, http.StatusInternalServerError, "reindex: "+err.Error())
+		return
+	}
+
+	// Invalidate the schema cache so the rebuild re-discovers from the warehouse
+	// (a cache hit would reuse the stale catalog and preserve manual edits).
 	// Nil-safe on Qdrant-less builds; idempotent (a no-op when nothing is cached).
 	if h.cacheRepo != nil {
 		if err := h.cacheRepo.Invalidate(r.Context(), id); err != nil {
@@ -494,6 +498,7 @@ func (h *SchemaIndexHandler) Reindex(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Cleanup done — hand the project to the worker to rebuild from scratch.
 	if err := h.projects.SetSchemaIndexStatus(r.Context(), id, models.SchemaIndexStatusPendingIndexing, ""); err != nil {
 		writeError(w, http.StatusInternalServerError, "reindex: "+err.Error())
 		return
