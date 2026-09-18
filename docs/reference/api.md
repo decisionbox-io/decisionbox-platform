@@ -393,11 +393,11 @@ A `failed` run carries the same shape with `"status": "failed"` and an `"error"`
 ## Schema editor
 
 Advanced, hand-editing of the indexed schema. Reads require `viewer`; edits and
-deletions require `member`. **Manual edits are ephemeral** — the next re-index
-(or Clear schema cache) re-discovers the schema from the warehouse and discards
-them — but every edit is recorded in a durable audit trail, and `since_last_index`
-powers the "N manual edits will be lost" warning shown before a re-index / cache
-clear.
+deletions require `member`. **Manual edits are ephemeral** — a re-index
+re-discovers the schema from the warehouse and discards them (Clear schema cache
+discards them too, re-discovering on the next re-index) — but every edit is
+recorded in a durable audit trail, and `since_last_index` powers the "N manual
+edits will be lost" warning shown before a re-index / cache clear.
 
 ### GET /api/v1/projects/{id}/schema-editor/tables
 

@@ -59,6 +59,7 @@ type mockProjectRepo struct {
 	deleteErr        error
 	deleteCascadeErr error
 	setStatusErr     error
+	beginReindexErr  error
 	cascadeCalls     []string
 }
 
@@ -202,6 +203,26 @@ func (m *mockProjectRepo) SetSchemaIndexStatus(_ context.Context, id, status, er
 		p.SchemaIndexError = ""
 	}
 	return nil
+}
+
+func (m *mockProjectRepo) BeginReindex(_ context.Context, id string) (bool, error) {
+	if m.beginReindexErr != nil {
+		return false, m.beginReindexErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.projects[id]
+	if !ok {
+		return false, nil
+	}
+	// Atomic conditional: refuse when a run is in flight, else move to
+	// needs_reindex (mirrors the real repo's `status != indexing` filter).
+	if p.SchemaIndexStatus == models.SchemaIndexStatusIndexing {
+		return false, nil
+	}
+	p.SchemaIndexStatus = models.SchemaIndexStatusNeedsReindex
+	p.SchemaIndexError = ""
+	return true, nil
 }
 
 func (m *mockProjectRepo) CountWithWarehouse(_ context.Context) (int, error) {

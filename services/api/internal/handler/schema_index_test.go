@@ -378,6 +378,27 @@ func TestSchemaIndex_Reindex_WhileIndexing_409(t *testing.T) {
 	}
 }
 
+// A BeginReindex (atomic claim) error surfaces as 500 and no destructive
+// cleanup runs.
+func TestSchemaIndex_Reindex_BeginReindexError_500(t *testing.T) {
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3", SchemaIndexStatus: models.SchemaIndexStatusReady}
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	projRepo.beginReindexErr = errors.New("mongo down")
+	ci := &mockCacheInvalidator{}
+	drop := &mockDropper{}
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), drop, nil, nil, ci, nil)
+
+	w := httptest.NewRecorder()
+	h.Reindex(w, newReq("POST", "/reindex", p.ID, ""))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	if len(ci.called) != 0 || len(drop.calls) != 0 {
+		t.Errorf("no cleanup may run when the claim fails: invalidate=%v drop=%v", ci.called, drop.calls)
+	}
+}
+
 // Model B: a re-index must drop the schema cache so the worker re-discovers
 // from the warehouse (making manual schema edits ephemeral and picking up
 // schema drift), and it must do so before flipping to pending_indexing.

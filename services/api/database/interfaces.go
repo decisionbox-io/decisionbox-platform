@@ -28,6 +28,10 @@ type ProjectRepo interface {
 	// invariants (ready stamps updated_at, failed carries the error,
 	// others clear it).
 	SetSchemaIndexStatus(ctx context.Context, id, status, errMsg string) error
+	// BeginReindex atomically transitions a project into needs_reindex for the
+	// re-index cleanup, but only when it is not currently indexing — returning
+	// false when a run is in flight. See database.ProjectRepository.BeginReindex.
+	BeginReindex(ctx context.Context, id string) (bool, error)
 }
 
 // DiscoveryRepo abstracts discovery read operations for handler unit testing.

@@ -297,6 +297,75 @@ func TestInteg_ProjectRepo_SetSchemaIndexStatus_MissingProject(t *testing.T) {
 	}
 }
 
+func TestInteg_ProjectRepo_BeginReindex(t *testing.T) {
+	ctx := context.Background()
+	repo := NewProjectRepository(testDB)
+
+	t.Run("transitions a ready project to needs_reindex and clears its error", func(t *testing.T) {
+		p := makeTestProject(t, ctx, "begin-reindex-ready")
+		_ = repo.SetSchemaIndexStatus(ctx, p.ID, models.SchemaIndexStatusFailed, "old error")
+		_ = repo.SetSchemaIndexStatus(ctx, p.ID, models.SchemaIndexStatusReady, "")
+		ok, err := repo.BeginReindex(ctx, p.ID)
+		if err != nil {
+			t.Fatalf("BeginReindex: %v", err)
+		}
+		if !ok {
+			t.Fatal("expected claim to succeed for a ready project")
+		}
+		got, _ := repo.GetByID(ctx, p.ID)
+		if got.SchemaIndexStatus != models.SchemaIndexStatusNeedsReindex {
+			t.Errorf("status = %q, want needs_reindex", got.SchemaIndexStatus)
+		}
+		if got.SchemaIndexError != "" {
+			t.Errorf("error should be cleared, got %q", got.SchemaIndexError)
+		}
+	})
+
+	t.Run("transitions a pending project (removing it from the worker's claimable set)", func(t *testing.T) {
+		p := makeTestProject(t, ctx, "begin-reindex-pending")
+		_ = repo.SetSchemaIndexStatus(ctx, p.ID, models.SchemaIndexStatusPendingIndexing, "")
+		ok, err := repo.BeginReindex(ctx, p.ID)
+		if err != nil || !ok {
+			t.Fatalf("BeginReindex on pending: ok=%v err=%v", ok, err)
+		}
+		got, _ := repo.GetByID(ctx, p.ID)
+		if got.SchemaIndexStatus != models.SchemaIndexStatusNeedsReindex {
+			t.Errorf("status = %q, want needs_reindex", got.SchemaIndexStatus)
+		}
+		// A subsequent worker claim must find nothing to claim for this project.
+		claimed, _ := repo.ClaimNextPendingIndex(ctx)
+		if claimed != nil && claimed.ID == p.ID {
+			t.Error("worker claimed a project that BeginReindex moved to needs_reindex")
+		}
+	})
+
+	t.Run("refuses (false) while indexing, leaving the run untouched", func(t *testing.T) {
+		p := makeTestProject(t, ctx, "begin-reindex-indexing")
+		_ = repo.SetSchemaIndexStatus(ctx, p.ID, models.SchemaIndexStatusIndexing, "")
+		ok, err := repo.BeginReindex(ctx, p.ID)
+		if err != nil {
+			t.Fatalf("BeginReindex: %v", err)
+		}
+		if ok {
+			t.Fatal("expected claim to fail while indexing")
+		}
+		got, _ := repo.GetByID(ctx, p.ID)
+		if got.SchemaIndexStatus != models.SchemaIndexStatusIndexing {
+			t.Errorf("status = %q, want indexing (untouched)", got.SchemaIndexStatus)
+		}
+	})
+
+	t.Run("returns false for a missing project", func(t *testing.T) {
+		ok, err := repo.BeginReindex(ctx, "000000000000000000000000")
+		if err != nil {
+			t.Fatalf("BeginReindex missing: %v", err)
+		}
+		if ok {
+			t.Fatal("expected false for a missing project")
+		}
+	})
+}
+
 func TestInteg_ProjectRepo_ClaimNextPendingIndex_FIFOAndEmptyBehavior(t *testing.T) {
 	ctx := context.Background()
 	repo := NewProjectRepository(testDB)

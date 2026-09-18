@@ -206,9 +206,9 @@ export default function SchemaEditorPage() {
           Correct a table&apos;s description (blurb), remove columns you don&apos;t want the
           agent to use, or drop a table entirely. Changes take effect immediately — discovery
           and Ask read this schema directly. <strong>Note:</strong> these edits are ephemeral —
-          the next re-index (or <em>Clear schema cache</em>) re-discovers the schema from the
-          warehouse and discards them. Every change is recorded in the edit history below so you
-          can re-apply it.
+          the next re-index re-discovers the schema from the warehouse and discards them
+          (<em>Clear schema cache</em> discards them too). Every change is recorded in the edit
+          history below so you can re-apply it.
         </Text>
 
         {sinceRebuild > 0 && (

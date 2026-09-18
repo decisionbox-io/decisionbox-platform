@@ -240,6 +240,7 @@ func (r *stubProjectRepo) CountWithWarehouse(context.Context) (int, error)      
 func (r *stubProjectRepo) SetSchemaIndexStatus(context.Context, string, string, string) error {
 	return nil
 }
+func (r *stubProjectRepo) BeginReindex(context.Context, string) (bool, error) { return true, nil }
 
 func TestProvidersHandler_ListLiveLLMModelsForProject_ProjectNotFound(t *testing.T) {
 	repo := &stubProjectRepo{project: nil}

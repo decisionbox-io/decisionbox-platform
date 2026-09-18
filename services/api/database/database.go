@@ -427,6 +427,42 @@ func (r *ProjectRepository) SetSchemaIndexStatus(ctx context.Context, id, status
 	return nil
 }
 
+// BeginReindex atomically claims a project for a re-index by transitioning it
+// into needs_reindex — the holding state during the re-index's destructive
+// cleanup (cache invalidation + Qdrant drop) — but ONLY when it is not already
+// indexing. This closes the check-then-set race in the /reindex handler:
+// because the worker only ever claims pending_indexing projects
+// (ClaimNextPendingIndex), flipping a pending project to needs_reindex here
+// atomically removes it from the worker's claimable set; and if the worker got
+// there first (status already indexing) the conditional update matches nothing.
+// Returns:
+//   - (true, nil)  transitioned to needs_reindex; the caller owns the cleanup.
+//   - (false, nil) a run is in flight (status was indexing) or the project no
+//     longer exists — the /reindex handler has already confirmed the project
+//     exists, so it treats false as "a run is in flight".
+func (r *ProjectRepository) BeginReindex(ctx context.Context, id string) (bool, error) {
+	oid, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return false, fmt.Errorf("invalid project id %q: %w", id, err)
+	}
+	filter := bson.M{
+		"_id":                 oid,
+		"schema_index_status": bson.M{"$ne": models.SchemaIndexStatusIndexing},
+	}
+	update := bson.M{
+		"$set": bson.M{
+			"schema_index_status": models.SchemaIndexStatusNeedsReindex,
+			"updated_at":          time.Now().UTC(),
+		},
+		"$unset": bson.M{"schema_index_error": ""},
+	}
+	res, err := r.col.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return false, fmt.Errorf("begin reindex: %w", err)
+	}
+	return res.MatchedCount == 1, nil
+}
+
 // ResetStaleIndexingProjects flips projects stuck in "indexing" back to
 // "pending_indexing" when their updated_at is older than staleAfter.
 // Covers the crash-recovery case: the API died mid-run, the agent

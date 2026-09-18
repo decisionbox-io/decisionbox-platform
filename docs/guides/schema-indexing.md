@@ -171,8 +171,9 @@ embeddings — so every manual edit, of any kind (blurb, keywords, removed colum
 deleted tables), is discarded. This is intentional: it keeps a re-index meaning
 "reflect the real warehouse," which also picks up schema drift (added / dropped
 tables and columns) that an unchanged warehouse config would otherwise hide.
-**Clear schema cache** (Settings → Advanced) does the same re-discovery without
-kicking off the rebuild.
+**Clear schema cache** (Settings → Advanced) discards the same edits — it deletes
+the cache + Qdrant data and marks the project `needs_reindex` — but it does *not*
+contact the warehouse itself; the re-discovery happens on the next re-index.
 
 There is deliberately **no durable overrides layer**: a re-index always returns
 to the warehouse's real schema. To make that non-destructive, every manual edit

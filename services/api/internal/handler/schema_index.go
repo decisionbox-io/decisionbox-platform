@@ -463,26 +463,27 @@ func (h *SchemaIndexHandler) Reindex(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "project not found")
 		return
 	}
-	// Refuse while a run is in flight: the destructive cleanup below (cache
-	// invalidate + Qdrant drop) would run under the live worker, which can then
-	// finish and mark the project ready against an emptied cache — and the
-	// requested re-index would be lost. The user must cancel the in-flight run
-	// first. Mirrors InvalidateCache.
-	if p.SchemaIndexStatus == models.SchemaIndexStatusIndexing {
-		writeError(w, http.StatusConflict, "cannot re-index while an indexing run is in flight; cancel it first")
+
+	// Atomically move the project into needs_reindex — the holding state for the
+	// destructive cleanup below (cache invalidate + Qdrant drop) — but only if a
+	// run isn't already in flight. This single conditional write does three jobs:
+	//   - gates discovery / Ask off (they read the schema cache directly, so must
+	//     not run while it's being wiped);
+	//   - keeps the worker from racing the wipe: the worker only ever claims
+	//     pending_indexing projects, so flipping pending→needs_reindex here
+	//     removes it from the claimable set atomically, and if the worker already
+	//     claimed it (status indexing) the transition matches nothing → 409 —
+	//     no check-then-set gap;
+	//   - parks the project in needs_reindex so any partial-cleanup failure below
+	//     leaves it locked and retryable, never ready with its cache/vectors gone.
+	// Mirrors InvalidateCache's status-flip-first ordering.
+	claimed, err := h.projects.BeginReindex(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "reindex: "+err.Error())
 		return
 	}
-
-	// Move the project OUT of its current state before any destructive cleanup.
-	// needs_reindex is a holding state that both (a) gates discovery / Ask off —
-	// they read the schema cache directly, so they must not run while it's being
-	// wiped — and (b) is NOT auto-claimed by the worker, so the worker can't race
-	// the cache invalidation below and re-discover against a half-cleared cache.
-	// Crucially, if any cleanup step fails we return with the project parked in
-	// needs_reindex: locked and retryable, never left marked ready with its cache
-	// or vectors already gone. Mirrors InvalidateCache's status-flip-first order.
-	if err := h.projects.SetSchemaIndexStatus(r.Context(), id, models.SchemaIndexStatusNeedsReindex, ""); err != nil {
-		writeError(w, http.StatusInternalServerError, "reindex: "+err.Error())
+	if !claimed {
+		writeError(w, http.StatusConflict, "cannot re-index while an indexing run is in flight; cancel it first")
 		return
 	}
 
