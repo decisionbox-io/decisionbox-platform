@@ -40,10 +40,12 @@ type DiscoveryRun struct {
 	// stamped once at run start from the rendered catalog. The Lookup /
 	// Search counters increment as the engine serves on-demand schema
 	// actions (lookup_schema and search_tables) issued by the LLM.
-	SchemaTokens      int `bson:"schema_tokens,omitempty" json:"schema_tokens,omitempty"`
-	SchemaTableCount  int `bson:"schema_table_count,omitempty" json:"schema_table_count,omitempty"`
-	SchemaLookupCalls int `bson:"schema_lookup_calls,omitempty" json:"schema_lookup_calls,omitempty"`
-	SchemaSearchCalls int `bson:"schema_search_calls,omitempty" json:"schema_search_calls,omitempty"`
+	// CorrelationLookupCalls counts get_correlations the same way.
+	SchemaTokens           int `bson:"schema_tokens,omitempty" json:"schema_tokens,omitempty"`
+	SchemaTableCount       int `bson:"schema_table_count,omitempty" json:"schema_table_count,omitempty"`
+	SchemaLookupCalls      int `bson:"schema_lookup_calls,omitempty" json:"schema_lookup_calls,omitempty"`
+	SchemaSearchCalls      int `bson:"schema_search_calls,omitempty" json:"schema_search_calls,omitempty"`
+	CorrelationLookupCalls int `bson:"correlation_lookup_calls,omitempty" json:"correlation_lookup_calls,omitempty"`
 
 	// Analysis-phase compaction telemetry. Mirrored on the agent
 	// model. Counts how many exploration steps were indexed for

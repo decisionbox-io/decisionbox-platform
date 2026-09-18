@@ -168,7 +168,7 @@ func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, ac
 		if err := s.repo.IncrementQueryCount(ctx, s.runID, errStr == ""); err != nil {
 			logger.WithError(err).Warn("failed to increment query count")
 		}
-	case "lookup_schema", "search_tables":
+	case "lookup_schema", "search_tables", "get_correlations":
 		if err := s.repo.IncrementSchemaActionCalls(ctx, s.runID, action, 1); err != nil {
 			logger.WithError(err).Warn("failed to increment schema-action count")
 		}
@@ -204,6 +204,8 @@ func classifyExplorationStep(action string, stepNum int, thinking, reason string
 		return "lookup_schema", fmt.Sprintf("Step %d (lookup_schema)%s", stepNum, suffix)
 	case "search_tables":
 		return "search_tables", fmt.Sprintf("Step %d (search_tables)%s", stepNum, suffix)
+	case "get_correlations":
+		return "get_correlations", fmt.Sprintf("Step %d (get_correlations)%s", stepNum, suffix)
 	default:
 		// "query_data" and any unknown action render as a query step;
 		// counter bumps are routed by the explicit switch in

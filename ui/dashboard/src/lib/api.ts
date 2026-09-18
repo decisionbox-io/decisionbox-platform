@@ -801,6 +801,7 @@ export interface DiscoveryRunStatus {
   schema_table_count?: number;
   schema_lookup_calls?: number;
   schema_search_calls?: number;
+  correlation_lookup_calls?: number;
   analysis_step_index_upserts?: number;
   analysis_step_index_search_calls?: number;
   analysis_steps_dropped?: number;
