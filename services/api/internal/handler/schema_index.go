@@ -463,6 +463,25 @@ func (h *SchemaIndexHandler) Reindex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Drop the schema cache FIRST — before the (destructive) Qdrant drop and
+	// before flipping to pending_indexing. Two reasons for this order:
+	//   - Invalidating first means that if it fails we return before dropping
+	//     the collection, so the project is never left marked ready with its
+	//     vectors already deleted (retrieval would be broken until a manual
+	//     retry). Nothing destructive has happened yet, so the state is intact
+	//     and retryable.
+	//   - Doing it before the status flip means the worker that later claims
+	//     pending_indexing always sees an empty cache and re-discovers from the
+	//     warehouse; a cache hit would otherwise reuse the stale catalog and
+	//     preserve manual edits.
+	// Nil-safe on Qdrant-less builds; idempotent (a no-op when nothing is cached).
+	if h.cacheRepo != nil {
+		if err := h.cacheRepo.Invalidate(r.Context(), id); err != nil {
+			writeError(w, http.StatusInternalServerError, "invalidate cache: "+err.Error())
+			return
+		}
+	}
+
 	// Best-effort collection drop so the next indexing run starts from
 	// a clean slate. Indexer.BuildIndex also drops first, so missing
 	// collections here are harmless; we only surface an error when
@@ -471,19 +490,6 @@ func (h *SchemaIndexHandler) Reindex(w http.ResponseWriter, r *http.Request) {
 	if h.dropper != nil {
 		if err := h.dropper.DropCollection(r.Context(), id); err != nil {
 			writeError(w, http.StatusBadGateway, "drop collection: "+err.Error())
-			return
-		}
-	}
-
-	// Drop the schema cache BEFORE flipping to pending_indexing so the
-	// worker that picks the project up re-discovers from the warehouse
-	// (a cache hit would otherwise reuse the stale catalog and preserve
-	// manual edits). Nil-safe on Qdrant-less builds; idempotent (a no-op
-	// when nothing is cached). Ordered before the status flip so a failure
-	// here leaves the project untouched and retryable.
-	if h.cacheRepo != nil {
-		if err := h.cacheRepo.Invalidate(r.Context(), id); err != nil {
-			writeError(w, http.StatusInternalServerError, "invalidate cache: "+err.Error())
 			return
 		}
 	}

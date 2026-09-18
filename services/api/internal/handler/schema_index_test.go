@@ -376,19 +376,26 @@ func TestSchemaIndex_Reindex_InvalidatesCache(t *testing.T) {
 	}
 }
 
-// A cache-invalidate failure aborts the re-index before the status flip, so the
-// project stays in its prior state and the user can retry.
+// A cache-invalidate failure aborts the re-index before the status flip AND
+// before the destructive Qdrant drop, so the project keeps its vectors + prior
+// status and the user can retry. Asserting the dropper is untouched pins the
+// invalidate-before-drop ordering (so we never leave a ready project with its
+// collection already deleted).
 func TestSchemaIndex_Reindex_CacheInvalidateError_500(t *testing.T) {
 	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3", SchemaIndexStatus: models.SchemaIndexStatusReady}
 	projRepo := newMockProjectRepo()
 	_ = projRepo.Create(context.Background(), p)
 	ci := &mockCacheInvalidator{err: errors.New("mongo down")}
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), &mockDropper{}, nil, nil, ci, nil)
+	drop := &mockDropper{}
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), drop, nil, nil, ci, nil)
 
 	w := httptest.NewRecorder()
 	h.Reindex(w, newReq("POST", "/reindex", p.ID, ""))
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	if len(drop.calls) != 0 {
+		t.Errorf("DropCollection must NOT run when cache invalidation fails (invalidate is first), got %v", drop.calls)
 	}
 	got, _ := projRepo.GetByID(context.Background(), p.ID)
 	if got.SchemaIndexStatus == models.SchemaIndexStatusPendingIndexing {
