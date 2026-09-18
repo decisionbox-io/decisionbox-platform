@@ -36,7 +36,9 @@ type SchemaEditorCache interface {
 	GetEntry(ctx context.Context, projectID, warehouseID, schemaKey string) (*database.SchemaCacheEntry, error)
 	UpdateColumns(ctx context.Context, projectID, warehouseID, schemaKey string, columns []models.ColumnInfo, keyColumns, metrics, dimensions []string, sampleData []map[string]interface{}) error
 	DeleteTable(ctx context.Context, projectID, warehouseID, schemaKey string) error
-	LastCachedAt(ctx context.Context, projectID string) (time.Time, error)
+	// DatasourceCachedAt is the last time ONE warehouse's catalog was written —
+	// the exact cutoff for that datasource's still-live edits.
+	DatasourceCachedAt(ctx context.Context, projectID, warehouseID string) (time.Time, error)
 }
 
 // SchemaEditRecorder is the audit-trail surface: append an edit and read the
@@ -370,35 +372,42 @@ func (h *SchemaEditorHandler) ListEdits(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// One baseline under Model B: a re-index and a Clear schema cache both
-	// re-discover the schema from the warehouse, so both discard *every* edit
-	// made since the cache was last (re)built — blurb, keyword, column removal,
-	// or table delete alike.
+	// Under Model B a re-index and a Clear schema cache both re-discover the
+	// schema from the warehouse, so both discard *every* edit — blurb, keyword,
+	// column removal, or table delete — made since the cache was last (re)built.
 	//
-	// The cutoff is the schema cache's last write time (LastCachedAt), i.e. the
-	// last time the agent actually re-discovered and saved the catalog. That is
-	// the exact boundary of "live" edits: an edit is still in the cache iff it
-	// was applied after the cache was last written. cached_at only advances on a
-	// catalog re-discovery (a Cache.Save), which under Model B happens on every
-	// re-index (it invalidates first, forcing a miss). A cache-*hit* run — e.g. a
-	// Retry from a failed state, which reuses the cache without re-discovering —
-	// finishes without moving cached_at, so an edit made before it stays counted
-	// (it is still live). Using the run finish time here would wrongly drop such
-	// edits. Zero cached_at (never indexed / cache cleared) → count everything.
+	// The cutoff for "which edits are still live" is that datasource's last cache
+	// write (DatasourceCachedAt): an edit is in the cache iff it was applied after
+	// the cache was last written. cached_at only advances on a catalog
+	// re-discovery (a Cache.Save), which under Model B happens on every re-index
+	// (it invalidates first, forcing a miss); a cache-*hit* run (e.g. a Retry from
+	// failed) reuses the cache without moving cached_at, so a pre-Retry edit stays
+	// counted (still live). Zero cached_at (never indexed / cache cleared) → count
+	// everything.
 	//
-	// Best-effort — a count failure must not fail the list. Scoped to
-	// datasourceID when the caller passed one (the editor banner) and
-	// project-wide otherwise (the re-index / cache-clear warnings, which act on
-	// the whole project).
+	// The cutoff is PER-DATASOURCE: on a multi-warehouse project the datasources
+	// can be indexed at different times, so a datasource-scoped count must use
+	// that datasource's own cache time, and a project-wide count must sum each
+	// datasource against its own — a single project-wide max would drop still-live
+	// edits on a datasource indexed earlier than a sibling.
+	//
+	// Best-effort — a count failure must not fail the list.
 	sinceIndex := 0
-	since := time.Time{} // no cache → every recorded edit is (nominally) live
-	if h.cache != nil {
-		if t, err := h.cache.LastCachedAt(ctx, projectID); err == nil {
-			since = t
+	if datasourceID != "" {
+		sinceIndex = h.countLiveEdits(ctx, projectID, datasourceID)
+	} else {
+		// Project-wide (the re-index / cache-clear warnings act on the whole
+		// project): one count per configured datasource, each against its own
+		// cache time. Fall back to a single project-wide count when the warehouse
+		// list isn't available.
+		whIDs := h.projectDatasourceIDs(ctx, projectID)
+		if len(whIDs) == 0 {
+			sinceIndex = h.countLiveEdits(ctx, projectID, "")
+		} else {
+			for _, whID := range whIDs {
+				sinceIndex += h.countLiveEdits(ctx, projectID, whID)
+			}
 		}
-	}
-	if n, nErr := h.edits.CountSince(ctx, projectID, datasourceID, since); nErr == nil {
-		sinceIndex = n
 	}
 	writeJSON(w, http.StatusOK, schemaEditsResponse{
 		Edits:          edits,
@@ -669,6 +678,48 @@ func (h *SchemaEditorHandler) resolveDatasourceID(ctx context.Context, projectID
 		return models.DefaultWarehouseID
 	}
 	return raw
+}
+
+// countLiveEdits counts the manual edits on one datasource ("" = project-wide)
+// that are still live — recorded after that datasource's last cache write, which
+// is the exact set a re-index / cache clear will discard. Best-effort: a cache
+// or count error yields 0 (the warning just doesn't show).
+func (h *SchemaEditorHandler) countLiveEdits(ctx context.Context, projectID, datasourceID string) int {
+	since := time.Time{} // no cache → every recorded edit is (nominally) live
+	if h.cache != nil {
+		if t, err := h.cache.DatasourceCachedAt(ctx, projectID, datasourceID); err == nil {
+			since = t
+		}
+	}
+	if n, err := h.edits.CountSince(ctx, projectID, datasourceID, since); err == nil {
+		return n
+	}
+	return 0
+}
+
+// projectDatasourceIDs returns the normalized warehouse ids of a project's
+// configured datasources (an id-less / legacy primary resolves to the reserved
+// default), deduped. Empty when the project can't be loaded or has no warehouse
+// — the caller then falls back to a single project-wide count.
+func (h *SchemaEditorHandler) projectDatasourceIDs(ctx context.Context, projectID string) []string {
+	p, err := h.projects.GetByID(ctx, projectID)
+	if err != nil || p == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	out := make([]string, 0)
+	for _, wh := range p.EffectiveWarehouses() {
+		id := wh.ID
+		if id == "" {
+			id = models.DefaultWarehouseID
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }
 
 func actorEmail(r *http.Request) string {

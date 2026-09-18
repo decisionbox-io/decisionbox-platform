@@ -36,10 +36,11 @@ func ensureEditorTestEmbed() {
 // --- fakes ---
 
 type fakeEditorCache struct {
-	mu             sync.Mutex
-	entries        map[string]database.SchemaCacheEntry // schema_key -> entry
-	lastCached     time.Time
-	seenDatasource string // last warehouse/datasource id a read was scoped to
+	mu               sync.Mutex
+	entries          map[string]database.SchemaCacheEntry // schema_key -> entry
+	lastCached       time.Time
+	perDatasourceCat map[string]time.Time // warehouse id -> cached_at (falls back to lastCached)
+	seenDatasource   string               // last warehouse/datasource id a read was scoped to
 	updateCall     *struct {
 		key                          string
 		columns                      []models.ColumnInfo
@@ -109,7 +110,12 @@ func (f *fakeEditorCache) DeleteTable(_ context.Context, _, _, key string) error
 	return nil
 }
 
-func (f *fakeEditorCache) LastCachedAt(_ context.Context, _ string) (time.Time, error) {
+func (f *fakeEditorCache) DatasourceCachedAt(_ context.Context, _, warehouseID string) (time.Time, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if t, ok := f.perDatasourceCat[warehouseID]; ok {
+		return t, nil
+	}
 	return f.lastCached, nil
 }
 
@@ -722,6 +728,47 @@ func TestSchemaEditor_ListEdits_ScopesCountsToDatasource(t *testing.T) {
 		if ds != "wh_b" {
 			t.Fatalf("count scoped to %q, want wh_b", ds)
 		}
+	}
+}
+
+func TestSchemaEditor_ListEdits_ProjectWide_AggregatesPerDatasource(t *testing.T) {
+	// Multi-warehouse project: a project-wide count must sum each datasource
+	// against ITS OWN cache time, not a single project-wide max — otherwise
+	// still-live edits on a datasource indexed earlier than a sibling are dropped.
+	catA := time.Now().UTC().Add(-48 * time.Hour) // wh_a indexed long ago
+	catB := time.Now().UTC().Add(-time.Hour)      // wh_b indexed recently
+	cache := newFakeEditorCache()
+	cache.perDatasourceCat = map[string]time.Time{"wh_a": catA, "wh_b": catB}
+	edits := &fakeEditRecorder{sinceCount: 2} // 2 live edits per datasource
+	h, proj := newEditorHandler(cache, edits, newFakeVectorEditor())
+	proj.projects["p1"].Warehouses = []models.WarehouseConfig{
+		{ID: "wh_a", Provider: "postgres"},
+		{ID: "wh_b", Provider: "postgres"},
+	}
+
+	w := httptest.NewRecorder()
+	h.ListEdits(w, editorRequest(http.MethodGet, "/x", "p1", "")) // project-wide (no datasource_id)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp schemaEditsResponse
+	decodeData(t, w.Body.Bytes(), &resp)
+	if resp.SinceLastIndex != 4 { // 2 per datasource × 2 datasources
+		t.Fatalf("since_last_index = %d, want 4 (summed per datasource)", resp.SinceLastIndex)
+	}
+	edits.mu.Lock()
+	defer edits.mu.Unlock()
+	sawA, sawB := false, false
+	for i, ds := range edits.sinceDatasources {
+		if ds == "wh_a" && edits.sinceArgs[i].Equal(catA) {
+			sawA = true
+		}
+		if ds == "wh_b" && edits.sinceArgs[i].Equal(catB) {
+			sawB = true
+		}
+	}
+	if !sawA || !sawB {
+		t.Fatalf("expected a per-datasource count at each cache time; args=%v ds=%v", edits.sinceArgs, edits.sinceDatasources)
 	}
 }
 

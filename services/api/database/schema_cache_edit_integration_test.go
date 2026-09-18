@@ -145,3 +145,50 @@ func TestInteg_SchemaCache_EditorRowOps(t *testing.T) {
 		}
 	})
 }
+
+// DatasourceCachedAt must return each warehouse's OWN last cache write (not the
+// project-wide max), so the "edits at risk" counter isn't undercounted on a
+// multi-warehouse project whose datasources were indexed at different times.
+func TestInteg_SchemaCache_DatasourceCachedAt(t *testing.T) {
+	ctx := context.Background()
+	r := NewSchemaCacheRepository(testDB)
+	proj := "proj-ds-cached-at"
+	t.Cleanup(func() {
+		_, _ = testDB.Collection("project_schema_cache").DeleteMany(ctx, bson.M{"project_id": proj})
+	})
+
+	tA := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Millisecond) // wh_a indexed long ago
+	tB := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)       // wh_b indexed recently
+	insert := func(wh, key string, at time.Time) {
+		t.Helper()
+		_, err := testDB.Collection("project_schema_cache").InsertOne(ctx, SchemaCacheEntry{
+			ProjectID: proj, WarehouseID: wh, WarehouseHash: "h", SchemaKey: key,
+			Schema: models.TableSchema{TableName: key}, CachedAt: at,
+		})
+		if err != nil {
+			t.Fatalf("insert %s: %v", wh, err)
+		}
+	}
+	insert("wh_a", "a.t", tA)
+	insert("wh_b", "b.t", tB)
+
+	gotA, err := r.DatasourceCachedAt(ctx, proj, "wh_a")
+	if err != nil {
+		t.Fatalf("DatasourceCachedAt wh_a: %v", err)
+	}
+	if !gotA.Equal(tA) {
+		t.Errorf("wh_a cached_at = %v, want %v (its own, not the project max)", gotA, tA)
+	}
+	gotB, _ := r.DatasourceCachedAt(ctx, proj, "wh_b")
+	if !gotB.Equal(tB) {
+		t.Errorf("wh_b cached_at = %v, want %v", gotB, tB)
+	}
+	// Project-wide LastCachedAt returns the newest (wh_b) — the display value.
+	if last, _ := r.LastCachedAt(ctx, proj); !last.Equal(tB) {
+		t.Errorf("LastCachedAt = %v, want newest %v", last, tB)
+	}
+	// An unknown datasource has no cached rows → zero.
+	if gotNone, _ := r.DatasourceCachedAt(ctx, proj, "wh_missing"); !gotNone.IsZero() {
+		t.Errorf("missing datasource cached_at = %v, want zero", gotNone)
+	}
+}

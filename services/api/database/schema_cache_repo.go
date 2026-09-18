@@ -238,3 +238,36 @@ func (r *SchemaCacheRepository) LastCachedAt(ctx context.Context, projectID stri
 	}
 	return doc.CachedAt, nil
 }
+
+// DatasourceCachedAt returns the most recent cached_at for ONE of a project's
+// warehouses (the last time that datasource's catalog was re-discovered), or
+// zero when it has no cached rows. This is the exact cutoff for "which of a
+// datasource's manual edits are still live": an edit is in the cache iff it was
+// applied after that datasource was last written. It differs from LastCachedAt
+// (a project-wide max, for the "Last cached: …" display) on a multi-warehouse
+// project whose datasources were indexed at different times — using the
+// project-wide max there would drop still-live edits on an older datasource. The
+// default/primary warehouse also matches legacy rows written before warehouse_id
+// existed (mirrors schemaCacheWarehouseCond).
+func (r *SchemaCacheRepository) DatasourceCachedAt(ctx context.Context, projectID, warehouseID string) (time.Time, error) {
+	if projectID == "" {
+		return time.Time{}, errors.New("projectID is required")
+	}
+	opts := options.FindOne().
+		SetSort(bson.D{{Key: "cached_at", Value: -1}}).
+		SetProjection(bson.M{"cached_at": 1, "_id": 0})
+	var doc struct {
+		CachedAt time.Time `bson:"cached_at"`
+	}
+	err := r.col.FindOne(ctx, bson.M{
+		"project_id":   projectID,
+		"warehouse_id": schemaCacheWarehouseCond(warehouseID),
+	}, opts).Decode(&doc)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return time.Time{}, nil
+		}
+		return time.Time{}, fmt.Errorf("schema cache datasource cached at: %w", err)
+	}
+	return doc.CachedAt, nil
+}
