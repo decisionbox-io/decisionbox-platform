@@ -301,7 +301,7 @@ func TestInteg_ProjectRepo_BeginReindex(t *testing.T) {
 	ctx := context.Background()
 	repo := NewProjectRepository(testDB)
 
-	t.Run("transitions a ready project to needs_reindex and clears its error", func(t *testing.T) {
+	t.Run("locks a ready project into indexing and clears its error", func(t *testing.T) {
 		p := makeTestProject(t, ctx, "begin-reindex-ready")
 		_ = repo.SetSchemaIndexStatus(ctx, p.ID, models.SchemaIndexStatusFailed, "old error")
 		_ = repo.SetSchemaIndexStatus(ctx, p.ID, models.SchemaIndexStatusReady, "")
@@ -313,15 +313,15 @@ func TestInteg_ProjectRepo_BeginReindex(t *testing.T) {
 			t.Fatal("expected claim to succeed for a ready project")
 		}
 		got, _ := repo.GetByID(ctx, p.ID)
-		if got.SchemaIndexStatus != models.SchemaIndexStatusNeedsReindex {
-			t.Errorf("status = %q, want needs_reindex", got.SchemaIndexStatus)
+		if got.SchemaIndexStatus != models.SchemaIndexStatusIndexing {
+			t.Errorf("status = %q, want indexing (the exclusive cleanup lock)", got.SchemaIndexStatus)
 		}
 		if got.SchemaIndexError != "" {
 			t.Errorf("error should be cleared, got %q", got.SchemaIndexError)
 		}
 	})
 
-	t.Run("transitions a pending project (removing it from the worker's claimable set)", func(t *testing.T) {
+	t.Run("locks a pending project (removing it from the worker's claimable set)", func(t *testing.T) {
 		p := makeTestProject(t, ctx, "begin-reindex-pending")
 		_ = repo.SetSchemaIndexStatus(ctx, p.ID, models.SchemaIndexStatusPendingIndexing, "")
 		ok, err := repo.BeginReindex(ctx, p.ID)
@@ -329,13 +329,18 @@ func TestInteg_ProjectRepo_BeginReindex(t *testing.T) {
 			t.Fatalf("BeginReindex on pending: ok=%v err=%v", ok, err)
 		}
 		got, _ := repo.GetByID(ctx, p.ID)
-		if got.SchemaIndexStatus != models.SchemaIndexStatusNeedsReindex {
-			t.Errorf("status = %q, want needs_reindex", got.SchemaIndexStatus)
+		if got.SchemaIndexStatus != models.SchemaIndexStatusIndexing {
+			t.Errorf("status = %q, want indexing", got.SchemaIndexStatus)
 		}
-		// A subsequent worker claim must find nothing to claim for this project.
+		// The worker must not be able to claim it (it only claims pending).
 		claimed, _ := repo.ClaimNextPendingIndex(ctx)
 		if claimed != nil && claimed.ID == p.ID {
-			t.Error("worker claimed a project that BeginReindex moved to needs_reindex")
+			t.Error("worker claimed a project that BeginReindex locked into indexing")
+		}
+		// A second, overlapping BeginReindex must be refused (mutual exclusion).
+		ok2, _ := repo.BeginReindex(ctx, p.ID)
+		if ok2 {
+			t.Error("a second concurrent BeginReindex must fail while the lock is held")
 		}
 	})
 

@@ -464,19 +464,13 @@ func (h *SchemaIndexHandler) Reindex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Atomically move the project into needs_reindex — the holding state for the
-	// destructive cleanup below (cache invalidate + Qdrant drop) — but only if a
-	// run isn't already in flight. This single conditional write does three jobs:
-	//   - gates discovery / Ask off (they read the schema cache directly, so must
-	//     not run while it's being wiped);
-	//   - keeps the worker from racing the wipe: the worker only ever claims
-	//     pending_indexing projects, so flipping pending→needs_reindex here
-	//     removes it from the claimable set atomically, and if the worker already
-	//     claimed it (status indexing) the transition matches nothing → 409 —
-	//     no check-then-set gap;
-	//   - parks the project in needs_reindex so any partial-cleanup failure below
-	//     leaves it locked and retryable, never ready with its cache/vectors gone.
-	// Mirrors InvalidateCache's status-flip-first ordering.
+	// Exclusively claim the project by locking it into "indexing" (see
+	// BeginReindex). This does three jobs atomically: it gates discovery / Ask
+	// off (they read the schema cache directly, so must not run while it's being
+	// wiped), it makes overlapping re-indexes mutually exclusive (a second one
+	// gets 409), and it keeps the worker out (it only claims pending_indexing) so
+	// nothing runs the destructive cleanup under an in-flight run. false means a
+	// run/cleanup is already in flight.
 	claimed, err := h.projects.BeginReindex(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "reindex: "+err.Error())
@@ -487,11 +481,18 @@ func (h *SchemaIndexHandler) Reindex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// From here the project is locked in "indexing". On any cleanup failure,
+	// downgrade it to needs_reindex — locked out of discovery/Ask, not claimable
+	// by the worker, and immediately retryable — rather than leaving it stuck in
+	// the indexing lock (which only the boot-time stale sweep would reclaim) or
+	// ready with its cache/vectors gone.
+	//
 	// Invalidate the schema cache so the rebuild re-discovers from the warehouse
 	// (a cache hit would reuse the stale catalog and preserve manual edits).
 	// Nil-safe on Qdrant-less builds; idempotent (a no-op when nothing is cached).
 	if h.cacheRepo != nil {
 		if err := h.cacheRepo.Invalidate(r.Context(), id); err != nil {
+			h.parkNeedsReindex(r.Context(), id)
 			writeError(w, http.StatusInternalServerError, "invalidate cache: "+err.Error())
 			return
 		}
@@ -504,6 +505,7 @@ func (h *SchemaIndexHandler) Reindex(w http.ResponseWriter, r *http.Request) {
 	// worker run anyway — better to fail fast at the API).
 	if h.dropper != nil {
 		if err := h.dropper.DropCollection(r.Context(), id); err != nil {
+			h.parkNeedsReindex(r.Context(), id)
 			writeError(w, http.StatusBadGateway, "drop collection: "+err.Error())
 			return
 		}
@@ -511,10 +513,22 @@ func (h *SchemaIndexHandler) Reindex(w http.ResponseWriter, r *http.Request) {
 
 	// Cleanup done — hand the project to the worker to rebuild from scratch.
 	if err := h.projects.SetSchemaIndexStatus(r.Context(), id, models.SchemaIndexStatusPendingIndexing, ""); err != nil {
+		h.parkNeedsReindex(r.Context(), id)
 		writeError(w, http.StatusInternalServerError, "reindex: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": models.SchemaIndexStatusPendingIndexing})
+}
+
+// parkNeedsReindex downgrades a project from the "indexing" re-index lock to
+// needs_reindex after a cleanup step fails, so it's locked out of discovery/Ask
+// and immediately retryable instead of stranded in the lock. Best-effort: a
+// failure to write is logged (the boot-time stale-indexing sweep is the
+// backstop), never surfaced over the original cleanup error.
+func (h *SchemaIndexHandler) parkNeedsReindex(ctx context.Context, id string) {
+	if err := h.projects.SetSchemaIndexStatus(ctx, id, models.SchemaIndexStatusNeedsReindex, ""); err != nil {
+		apilog.WithError(err).Warn("reindex: could not downgrade the indexing lock to needs_reindex for project " + id + " after a cleanup failure; boot-time stale sweep will reclaim it")
+	}
 }
 
 // Cancel aborts the in-flight indexing run for the project. The worker

@@ -427,19 +427,27 @@ func (r *ProjectRepository) SetSchemaIndexStatus(ctx context.Context, id, status
 	return nil
 }
 
-// BeginReindex atomically claims a project for a re-index by transitioning it
-// into needs_reindex — the holding state during the re-index's destructive
-// cleanup (cache invalidation + Qdrant drop) — but ONLY when it is not already
-// indexing. This closes the check-then-set race in the /reindex handler:
-// because the worker only ever claims pending_indexing projects
-// (ClaimNextPendingIndex), flipping a pending project to needs_reindex here
-// atomically removes it from the worker's claimable set; and if the worker got
-// there first (status already indexing) the conditional update matches nothing.
-// Returns:
-//   - (true, nil)  transitioned to needs_reindex; the caller owns the cleanup.
-//   - (false, nil) a run is in flight (status was indexing) or the project no
-//     longer exists — the /reindex handler has already confirmed the project
-//     exists, so it treats false as "a run is in flight".
+// BeginReindex atomically and EXCLUSIVELY claims a project for a re-index by
+// transitioning it into "indexing" — the lock state held during the re-index's
+// destructive cleanup (cache invalidation + Qdrant drop) — but ONLY when it is
+// not already indexing. Using "indexing" as the lock makes the claim mutually
+// exclusive with everything that could otherwise race the cleanup:
+//   - a concurrent /reindex: the loser's BeginReindex sees "indexing" and
+//     matches nothing → false (the handler returns 409). Excluding only, say,
+//     needs_reindex would let two overlapping re-indexes both claim (needs_reindex
+//     is also the idle "cache cleared, click Re-index" state, so it can't be
+//     excluded) and both run cleanup — the classic double-owner race.
+//   - the indexing worker: it only claims pending_indexing projects
+//     (ClaimNextPendingIndex), so while this lock is held it cannot start a run,
+//     and if a run is already in flight (status indexing) this claim fails.
+// The handler flips the lock to pending_indexing when cleanup succeeds (handing
+// the rebuild to the worker) or back to needs_reindex on a cleanup failure
+// (retryable). A crash mid-cleanup leaves it "indexing" for the boot-time
+// stale-indexing sweep to reclaim. Returns:
+//   - (true, nil)  locked; the caller owns the cleanup.
+//   - (false, nil) a run/cleanup is already in flight (status was indexing) or
+//     the project no longer exists — the /reindex handler has already confirmed
+//     the project exists, so it treats false as "in flight".
 func (r *ProjectRepository) BeginReindex(ctx context.Context, id string) (bool, error) {
 	oid, err := primitive.ObjectIDFromHex(id)
 	if err != nil {
@@ -451,7 +459,7 @@ func (r *ProjectRepository) BeginReindex(ctx context.Context, id string) (bool, 
 	}
 	update := bson.M{
 		"$set": bson.M{
-			"schema_index_status": models.SchemaIndexStatusNeedsReindex,
+			"schema_index_status": models.SchemaIndexStatusIndexing,
 			"updated_at":          time.Now().UTC(),
 		},
 		"$unset": bson.M{"schema_index_error": ""},

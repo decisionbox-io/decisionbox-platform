@@ -215,12 +215,13 @@ func (m *mockProjectRepo) BeginReindex(_ context.Context, id string) (bool, erro
 	if !ok {
 		return false, nil
 	}
-	// Atomic conditional: refuse when a run is in flight, else move to
-	// needs_reindex (mirrors the real repo's `status != indexing` filter).
+	// Atomic conditional: refuse when already indexing (a run/cleanup is in
+	// flight), else lock into "indexing" (mirrors the real repo's `status !=
+	// indexing` filter).
 	if p.SchemaIndexStatus == models.SchemaIndexStatusIndexing {
 		return false, nil
 	}
-	p.SchemaIndexStatus = models.SchemaIndexStatusNeedsReindex
+	p.SchemaIndexStatus = models.SchemaIndexStatusIndexing
 	p.SchemaIndexError = ""
 	return true, nil
 }
