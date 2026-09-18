@@ -27,6 +27,11 @@ type qdrantClient interface {
 	Upsert(ctx context.Context, request *pb.UpsertPoints) (*pb.UpdateResult, error)
 	Query(ctx context.Context, request *pb.QueryPoints) ([]*pb.ScoredPoint, error)
 	Delete(ctx context.Context, request *pb.DeletePoints) (*pb.UpdateResult, error)
+	// Get retrieves points by id (used by the schema editor to read a table's
+	// current blurb payload). SetPayload merges payload fields into an existing
+	// point without touching its vector (keyword / column-count edits).
+	Get(ctx context.Context, request *pb.GetPoints) ([]*pb.RetrievedPoint, error)
+	SetPayload(ctx context.Context, request *pb.SetPayloadPoints) (*pb.UpdateResult, error)
 	HealthCheck(ctx context.Context) (*pb.HealthCheckReply, error)
 	Close() error
 }

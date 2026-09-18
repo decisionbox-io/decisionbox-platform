@@ -28,6 +28,11 @@ type ProjectRepo interface {
 	// invariants (ready stamps updated_at, failed carries the error,
 	// others clear it).
 	SetSchemaIndexStatus(ctx context.Context, id, status, errMsg string) error
+	// BeginReindex atomically locks a project into "indexing" for the re-index
+	// cleanup, claiming any non-indexing status or a stale "indexing" row (older
+	// than staleIndexingBefore) and refusing a fresh one — returning false when
+	// another cleanup is in progress. See database.ProjectRepository.BeginReindex.
+	BeginReindex(ctx context.Context, id string, staleIndexingBefore time.Time) (bool, error)
 }
 
 // DiscoveryRepo abstracts discovery read operations for handler unit testing.
@@ -165,6 +170,13 @@ type SchemaIndexProgressRepo interface {
 	Delete(ctx context.Context, projectID string) error
 }
 
+// SchemaIndexRunRepo abstracts the durable per-datasource run-history read
+// path. Backed by SchemaIndexRunRepository; the agent is the writer.
+type SchemaIndexRunRepo interface {
+	List(ctx context.Context, projectID, datasourceID string, limit int) ([]models.SchemaIndexRun, error)
+	LatestByDatasource(ctx context.Context, projectID string) ([]models.SchemaIndexRun, error)
+}
+
 // ValidationJobRepo abstracts the manual-validation queue + state
 // machine for handler unit testing. Backed by ValidationJobRepository.
 // Worker tests and integration tests bind against the concrete struct
@@ -206,5 +218,6 @@ var (
 	_ BookmarkRepo            = (*BookmarkRepository)(nil)
 	_ ReadMarkRepo            = (*ReadMarkRepository)(nil)
 	_ SchemaIndexProgressRepo = (*SchemaIndexProgressRepository)(nil)
+	_ SchemaIndexRunRepo      = (*SchemaIndexRunRepository)(nil)
 	_ ValidationJobRepo       = (*ValidationJobRepository)(nil)
 )

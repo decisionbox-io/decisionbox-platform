@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
@@ -239,6 +240,9 @@ func (r *stubProjectRepo) Count(context.Context) (int, error)                   
 func (r *stubProjectRepo) CountWithWarehouse(context.Context) (int, error)           { return 0, nil }
 func (r *stubProjectRepo) SetSchemaIndexStatus(context.Context, string, string, string) error {
 	return nil
+}
+func (r *stubProjectRepo) BeginReindex(context.Context, string, time.Time) (bool, error) {
+	return true, nil
 }
 
 func TestProvidersHandler_ListLiveLLMModelsForProject_ProjectNotFound(t *testing.T) {

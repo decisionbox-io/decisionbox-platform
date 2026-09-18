@@ -105,11 +105,21 @@ type IndexOptions struct {
 
 // Stats is what BuildIndex returns on success.
 type Stats struct {
-	Tables         int
+	Tables int
+	// Blurbs is the number of usable blurbs generated (those that were
+	// embedded + upserted). Equal to Tables in today's pipeline — every
+	// upserted point carries a blurb — but reported separately so the
+	// per-datasource run record stays honest if the two ever diverge.
+	Blurbs         int
 	Dropped        int
 	BlurbTokensIn  int
 	BlurbTokensOut int
 	Duration       time.Duration
+	// PhaseDurations maps a phase name (models.SchemaIndexPhase*) to the
+	// wall-clock time spent in it. Listing is folded into schema_discovery
+	// (DiscoverSchemas lists tables internally, so there is no separately
+	// measurable listing leg here).
+	PhaseDurations map[string]time.Duration
 }
 
 // BuildIndex runs the full schema-indexing pipeline. See type doc for
@@ -226,9 +236,10 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 		}
 		schemas = filtered
 	}
+	schemaDiscoveryDur := time.Since(discoveryStart)
 	applog.WithFields(applog.Fields{
 		"tables":     len(schemas),
-		"elapsed":    time.Since(discoveryStart).String(),
+		"elapsed":    schemaDiscoveryDur.String(),
 		"from_cache": fromCache,
 	}).Info("schema_indexer: phase=discover_schemas complete")
 	if len(schemas) == 0 {
@@ -308,9 +319,11 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 		si.recordErr(ctx, opts.ProjectID, "blurb generation: "+err.Error())
 		return nil, fmt.Errorf("schema_indexer: blurb generation: %w", err)
 	}
-	applog.WithField("elapsed", time.Since(blurbStart).String()).Info("schema_indexer: blurb generation complete")
+	describingDur := time.Since(blurbStart)
+	applog.WithField("elapsed", describingDur.String()).Info("schema_indexer: blurb generation complete")
 
 	// 5. Embed + upsert.
+	embedStart := time.Now()
 	if si.Progress != nil {
 		if err := si.Progress.SetPhase(ctx, opts.ProjectID, models.SchemaIndexPhaseEmbedding); err != nil {
 			applog.WithError(err).Warn("schema_indexer: SetPhase embedding failed")
@@ -324,28 +337,62 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 	}
 	var kept []idxBlurb
 	texts := make([]string, 0, len(blurbs))
+	var blurbIn, blurbOut int
 	for i, b := range blurbs {
 		if b.Err != nil || b.Blurb == "" {
 			continue
 		}
 		kept = append(kept, idxBlurb{i: i, blurb: b})
 		texts = append(texts, b.Blurb)
+		blurbIn += b.InputTokens
+		blurbOut += b.OutputTokens
 	}
+
+	// Stamp the running blurb-token totals onto the progress doc now (before
+	// embed/upsert) so the dashboard can show "tokens spent on this
+	// schema-index" without re-deriving it. One IncrementTokens call covers the
+	// whole build because blurbs are generated in one parallel pass. Summed
+	// over successful blurbs only (the loop above skips Err/empty entries).
+	if si.Progress != nil && (blurbIn > 0 || blurbOut > 0) {
+		if err := si.Progress.IncrementTokens(ctx, opts.ProjectID, blurbIn, blurbOut); err != nil {
+			applog.WithError(err).Warn("schema_indexer: IncrementTokens failed (non-fatal)")
+		}
+	}
+
+	// partialStats carries what the build already spent (blurb tokens + the
+	// phases it completed), returned ALONGSIDE an error on the post-blurb
+	// failure paths. The caller stamps it into the durable failure record, so a
+	// run that dies in embed/upsert still preserves its token + phase-duration
+	// audit data — the live progress doc is reset on the next run, so the
+	// durable record is the only lasting home for it. embedding is included
+	// only once that phase has a meaningful duration (success path).
+	partialStats := func() *Stats {
+		return &Stats{
+			Blurbs:         len(kept),
+			BlurbTokensIn:  blurbIn,
+			BlurbTokensOut: blurbOut,
+			Duration:       time.Since(start),
+			PhaseDurations: map[string]time.Duration{
+				models.SchemaIndexPhaseSchemaDiscovery:  schemaDiscoveryDur,
+				models.SchemaIndexPhaseDescribingTables: describingDur,
+			},
+		}
+	}
+
 	if len(texts) == 0 {
-		return nil, fmt.Errorf("schema_indexer: no usable blurbs to embed")
+		return partialStats(), fmt.Errorf("schema_indexer: no usable blurbs to embed")
 	}
 
 	vectors, err := si.Embedder.Embed(ctx, texts)
 	if err != nil {
 		si.recordErr(ctx, opts.ProjectID, "embed: "+err.Error())
-		return nil, fmt.Errorf("schema_indexer: embed: %w", err)
+		return partialStats(), fmt.Errorf("schema_indexer: embed: %w", err)
 	}
 	if len(vectors) != len(texts) {
-		return nil, fmt.Errorf("schema_indexer: embedder returned %d vectors for %d blurbs", len(vectors), len(texts))
+		return partialStats(), fmt.Errorf("schema_indexer: embedder returned %d vectors for %d blurbs", len(vectors), len(texts))
 	}
 
 	items := make([]schema_retrieve.UpsertItem, 0, len(kept))
-	var blurbIn, blurbOut int
 	for j, k := range kept {
 		ref := refs[k.i]
 		items = append(items, schema_retrieve.UpsertItem{
@@ -361,34 +408,13 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 			},
 			Vector: vectors[j],
 		})
-		blurbIn += k.blurb.InputTokens
-		blurbOut += k.blurb.OutputTokens
-	}
-	// Stamp the running totals onto the progress doc so the dashboard
-	// can show "tokens spent on this schema-index" without re-deriving
-	// it from per-blurb forensics. One IncrementTokens call covers the
-	// whole build because blurbs are generated in one parallel pass —
-	// there is no streaming-mid-build requirement today.
-	//
-	// Failure semantics:
-	//   - blurb.Generate returns err (whole batch failed) → we returned
-	//     early above, so the progress doc stays at the Reset() zeros.
-	//   - Individual blurbs failed but Generate returned ok → only the
-	//     successful blurbs feed blurbIn/blurbOut (loop above skips
-	//     entries with Err != nil), and those tokens are stamped here.
-	//   - Embedding or Qdrant upsert below fails → the totals stamped
-	//     here are preserved, so users still see what the blurb LLM
-	//     consumed even when the index itself was never written.
-	if si.Progress != nil && (blurbIn > 0 || blurbOut > 0) {
-		if err := si.Progress.IncrementTokens(ctx, opts.ProjectID, blurbIn, blurbOut); err != nil {
-			applog.WithError(err).Warn("schema_indexer: IncrementTokens failed (non-fatal)")
-		}
 	}
 	applog.WithFields(applog.Fields{"points": len(items)}).Info("schema_indexer: phase=qdrant_upsert")
 	if err := si.Retriever.Upsert(ctx, opts.ProjectID, si.WarehouseID, items); err != nil {
 		si.recordErr(ctx, opts.ProjectID, "qdrant upsert: "+err.Error())
-		return nil, fmt.Errorf("schema_indexer: qdrant upsert: %w", err)
+		return partialStats(), fmt.Errorf("schema_indexer: qdrant upsert: %w", err)
 	}
+	embeddingDur := time.Since(embedStart)
 	applog.WithFields(applog.Fields{
 		"tables":           len(items),
 		"total_elapsed":    time.Since(start).String(),
@@ -398,10 +424,16 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 
 	return &Stats{
 		Tables:         len(items),
+		Blurbs:         len(kept),
 		Dropped:        len(schemas) - len(items),
 		BlurbTokensIn:  blurbIn,
 		BlurbTokensOut: blurbOut,
 		Duration:       time.Since(start),
+		PhaseDurations: map[string]time.Duration{
+			models.SchemaIndexPhaseSchemaDiscovery:  schemaDiscoveryDur,
+			models.SchemaIndexPhaseDescribingTables: describingDur,
+			models.SchemaIndexPhaseEmbedding:        embeddingDur,
+		},
 	}, nil
 }
 

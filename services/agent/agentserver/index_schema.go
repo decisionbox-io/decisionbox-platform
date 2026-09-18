@@ -29,11 +29,12 @@ import (
 //
 // Exit contract: 0 on success, non-zero on any error. The worker reads
 // the exit code; stdout and stderr carry structured logs only.
-func runIndexSchema(cfg *config.Config, projectID, runID string) error {
+func runIndexSchema(cfg *config.Config, projectID, runID string) (retErr error) {
 	// Scope warehouse middleware (per-warehouse governance) to this project; each
 	// indexWarehouse call stamps the warehouse id below, so a governed datasource
 	// masks its own sample data in the generated blurbs.
 	ctx := gowarehouse.WithProjectID(context.Background(), projectID)
+	runStart := time.Now()
 
 	mongoClient, err := initMongoDB(ctx, cfg)
 	if err != nil {
@@ -42,12 +43,31 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 	defer func() { _ = mongoClient.Disconnect(ctx) }()
 
 	db := database.New(mongoClient)
+	runRepo := database.NewSchemaIndexRunRepository(db)
 
 	projectRepo := database.NewProjectRepository(db)
 	project, err := projectRepo.GetByID(ctx, projectID)
 	if err != nil {
 		return fmt.Errorf("load project: %w", err)
 	}
+
+	// If the run fails during project-wide setup — embedding pre-flight, blurb
+	// LLM, Qdrant health, blurb generator — before any per-datasource indexing
+	// begins, the per-warehouse stamper below never runs, so the durable history
+	// would still show the previous successful run. Stamp a failed record for
+	// every configured datasource in that case so the history + roll-up reflect
+	// the failure instead of a stale success. Guarded by indexingStarted so it
+	// never double-stamps once the per-datasource loop (which stamps its own
+	// records) has begun.
+	indexingStarted := false
+	defer func() {
+		if retErr == nil || indexingStarted {
+			return
+		}
+		recordCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		stampSetupFailure(recordCtx, runRepo, projectID, runID, project, runStart, retErr)
+	}()
 
 	applog.WithFields(applog.Fields{
 		"project":  project.Name,
@@ -195,8 +215,21 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 	// discovery filter (queryexec verifies it before every sample query). Only
 	// the primary reports progress (see above), so secondaries pass a nil
 	// reporter + nil callbacks.
-	indexWarehouse := func(ctx context.Context, wh models.WarehouseConfig, reportProgress bool) error {
+	indexWarehouse := func(ctx context.Context, wh models.WarehouseConfig, reportProgress bool) (retErr error) {
 		whID := warehouseIDOrDefault(wh)
+		// Stamp a durable per-datasource result on every exit path (success or
+		// failure), so re-index history survives the next run's progress Reset.
+		// Deferred-first so it runs last (after provider.Close); uses a detached,
+		// short-timeout context so a cancelled run context can't also fail the
+		// audit write. started_at is captured before provider init so a
+		// connection failure still records a realistic attempt window.
+		start := time.Now()
+		var stats *discovery.Stats
+		defer func() {
+			recordCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			stampSchemaIndexRun(recordCtx, runRepo, projectID, runID, wh, whID, start, stats, retErr)
+		}()
 		// Scope per-warehouse governance to this datasource so its sample queries
 		// (and thus the blurbs) are masked under its own policies.
 		ctx = gowarehouse.WithWarehouseID(ctx, whID)
@@ -241,8 +274,7 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 			WarehouseID:   whID,
 		}
 
-		start := time.Now()
-		stats, err := indexer.BuildIndex(ctx, discovery.IndexOptions{
+		stats, err = indexer.BuildIndex(ctx, discovery.IndexOptions{
 			ProjectID:       projectID,
 			RunID:           runID,
 			BlurbModelLabel: blurbProvider + "/" + blurbModel,
@@ -262,15 +294,27 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 		return nil
 	}
 
+	// Past project-wide setup — each datasource below now stamps its own run
+	// record (success or failure), so the setup-failure stamper above stands down.
+	indexingStarted = true
+
 	// Index every configured datasource so ask-serve's search_tables /
 	// lookup_schema and the router's evidence work across all of them, not just
 	// the primary. A legacy / single-warehouse project yields exactly one
 	// warehouse here, so its behaviour is unchanged. The primary indexes first
 	// and its failure fails the run (the API worker's lifecycle depends on that);
 	// secondaries are best-effort so one broken datasource can't block the rest.
-	for i, wh := range warehousesToIndex(project) {
+	whs := warehousesToIndex(project)
+	for i, wh := range whs {
 		if i == 0 {
 			if err := indexWarehouse(ctx, wh, true); err != nil {
+				// The primary failed, so the run aborts and the remaining
+				// datasources are never attempted. A user Re-index drops the whole
+				// Qdrant collection up front, so those skipped datasources have no
+				// current index — yet their prior successful run records would keep
+				// showing as "ready" in the roll-up. Stamp them as skipped so the
+				// roll-up reflects that this run did not (re)index them.
+				stampSkippedDatasources(ctx, runRepo, projectID, runID, whs[i+1:], runStart, err)
 				return err
 			}
 			continue
@@ -282,6 +326,87 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) error {
 	}
 
 	return nil
+}
+
+// schemaIndexRunRecorder is the slim write surface stampSchemaIndexRun needs —
+// *database.SchemaIndexRunRepository satisfies it. Declared here so the stamp
+// logic is unit-testable with a fake, without a live Mongo.
+type schemaIndexRunRecorder interface {
+	Record(ctx context.Context, run *models.SchemaIndexRun) error
+}
+
+// stampSetupFailure records a failed run for every configured datasource when a
+// run dies during project-wide setup (embedding pre-flight, blurb LLM, Qdrant
+// health, blurb generator) before per-datasource indexing begins. Without it
+// the durable history + roll-up would keep showing the previous successful run
+// even though the project is now failed. No per-datasource stats exist yet, so
+// the records carry the error with zero counts.
+func stampSetupFailure(ctx context.Context, repo schemaIndexRunRecorder, projectID, runID string, project *models.Project, start time.Time, runErr error) {
+	for _, wh := range warehousesToIndex(project) {
+		stampSchemaIndexRun(ctx, repo, projectID, runID, wh, warehouseIDOrDefault(wh), start, nil, runErr)
+	}
+}
+
+// stampSkippedDatasources records a failed run for datasources that were never
+// attempted because the primary failed and aborted the run. Uses a detached,
+// short-timeout context so the run context's cancellation can't also fail these
+// audit writes. Marked failed (not a stale prior success) with a reason, so the
+// roll-up shows "this run did not index these" rather than a green check over a
+// collection that a Re-index already dropped.
+func stampSkippedDatasources(_ context.Context, repo schemaIndexRunRecorder, projectID, runID string, skipped []models.WarehouseConfig, start time.Time, cause error) {
+	if len(skipped) == 0 {
+		return
+	}
+	recordCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	skipErr := fmt.Errorf("skipped — run aborted after the primary datasource failed: %w", cause)
+	for _, wh := range skipped {
+		stampSchemaIndexRun(recordCtx, repo, projectID, runID, wh, warehouseIDOrDefault(wh), start, nil, skipErr)
+	}
+}
+
+// stampSchemaIndexRun records the durable per-datasource result of a single
+// indexWarehouse attempt — "ready" on success, "failed" (with the error
+// message) otherwise. stats is nil when the attempt failed before BuildIndex
+// returned a result (e.g. provider-init or discovery failure); the counts then
+// stay zero while the live progress doc keeps any partial blurb-token totals
+// for the in-flight view. Best-effort: a failed audit write is logged, never
+// fatal to the indexing run.
+func stampSchemaIndexRun(ctx context.Context, repo schemaIndexRunRecorder, projectID, runID string, wh models.WarehouseConfig, whID string, start time.Time, stats *discovery.Stats, runErr error) {
+	run := &models.SchemaIndexRun{
+		ProjectID:      projectID,
+		DatasourceID:   whID,
+		DatasourceName: firstNonEmpty(wh.Label, wh.Provider, whID),
+		RunID:          runID,
+		Kind:           models.SchemaIndexRunKindTables,
+		Status:         models.SchemaIndexStatusReady,
+		StartedAt:      start.UTC(),
+		FinishedAt:     time.Now().UTC(),
+	}
+	if runErr != nil {
+		run.Status = models.SchemaIndexStatusFailed
+		run.Error = runErr.Error()
+	}
+	if stats != nil {
+		run.ObjectsIndexed = stats.Tables
+		run.BlurbsGenerated = stats.Blurbs
+		run.TokensIn = stats.BlurbTokensIn
+		run.TokensOut = stats.BlurbTokensOut
+		if len(stats.PhaseDurations) > 0 {
+			pd := make(map[string]int64, len(stats.PhaseDurations))
+			for phase, d := range stats.PhaseDurations {
+				pd[phase] = d.Milliseconds()
+			}
+			run.PhaseDurations = pd
+		}
+	}
+	if err := repo.Record(ctx, run); err != nil {
+		applog.WithError(err).WithFields(applog.Fields{
+			"project_id":    projectID,
+			"datasource_id": whID,
+			"run_id":        runID,
+		}).Warn("schema-index: failed to record per-datasource run result")
+	}
 }
 
 // warehousesToIndex returns the datasources to index for a project, primary

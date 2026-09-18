@@ -98,6 +98,108 @@ curl -X POST http://localhost:8080/api/v1/projects/{id}/schema-index/retry
 curl http://localhost:8080/api/v1/projects/{id}/schema-index/status
 ```
 
+## Per-datasource run history
+
+`schema_index_status` is project-level and live — it is reset at the start of
+every run, so it tells you only about the run in flight or the last one's
+lifecycle state.
+Indexing, however, runs **per datasource**: a project can have more than one
+warehouse, and each is indexed independently.
+
+So every time a datasource finishes indexing — success **or** failure — the
+agent stamps a durable result record into the `project_schema_index_runs`
+collection, one document per `(datasource × run)`.
+Unlike the live status doc, these records are never reset: they are the audit
+trail of what was indexed, from which datasource, when, and whether it
+succeeded.
+
+Each record carries the datasource id + name, the run id, the object kind
+(`tables` today — kept generic so other object kinds slot in without a schema
+change), the number of objects indexed and blurbs generated, the blurb-LLM
+token totals, per-phase durations, the `ready` / `failed` status with the error
+on failure, and the start / finish timestamps.
+
+Read the history — newest finished first, optionally filtered to one
+datasource:
+
+```bash
+# All datasources' runs for a project.
+curl http://localhost:8080/api/v1/projects/{id}/schema-index/runs
+
+# Just one datasource, most recent 20.
+curl "http://localhost:8080/api/v1/projects/{id}/schema-index/runs?datasource_id=wh_redshift&limit=20"
+```
+
+The dashboard renders this in two places: a per-datasource "Indexing" section
+with an expandable history table on the Data Warehouse settings panel, and a
+persistent per-datasource status roll-up on the project page (so a successful
+re-index leaves a visible record, not just a toast).
+
+## Editing the indexed schema
+
+Indexing is automatic, but the result isn't always perfect: a generated blurb
+can be off, a table can be irrelevant, or a column may be noise (or sensitive)
+you don't want the agent to consider. The **schema editor** lets you hand-correct
+the index. It's an advanced tool, reached from an understated
+"Advanced: edit indexed schema" link on the Data Warehouse settings panel
+(`/projects/{id}/settings/schema-editor`).
+
+You can:
+
+- **Rewrite a table's blurb** — the new text is re-embedded and the table's
+  Qdrant vector is replaced in place, so semantic search reflects the edit
+  immediately.
+- **Edit a table's keywords** — the sparse-rerank terms; a payload-only change,
+  no re-embedding.
+- **Remove columns** — dropped from the Mongo schema cache (and the derived
+  key/metric/dimension lists) so the discovery agent stops seeing them. Removal
+  only; you can't add or retype a column.
+- **Remove a whole table** — drops both its cache row and its Qdrant blurb point.
+
+Reads are available to any `viewer`; edits and deletions require `member`.
+
+### Edits take effect immediately, and are recorded
+
+Manual edits are applied to the live stores, so they take effect immediately —
+discovery and Ask read table columns straight from `project_schema_cache`, and
+retrieval reads blurbs from Qdrant.
+
+Edits are **ephemeral**: the next **re-index** rebuilds the schema from the
+warehouse as it is *now*. A re-index drops the schema cache and re-discovers the
+catalog (rather than reusing the cached one), then regenerates blurbs and
+embeddings — so every manual edit, of any kind (blurb, keywords, removed columns,
+deleted tables), is discarded. This is intentional: it keeps a re-index meaning
+"reflect the real warehouse," which also picks up schema drift (added / dropped
+tables and columns) that an unchanged warehouse config would otherwise hide.
+**Clear schema cache** (Settings → Advanced) discards the same edits — it deletes
+the cache + Qdrant data and marks the project `needs_reindex` — but it does *not*
+contact the warehouse itself; the re-discovery happens on the next re-index.
+
+There is deliberately **no durable overrides layer**: a re-index always returns
+to the warehouse's real schema. To make that non-destructive, every manual edit
+is written to a durable, append-only audit trail (`project_schema_edits`)
+capturing the table, action, before/after values, who made it, and when. The
+editor's "Edit history" panel shows this trail so you can review and re-apply
+your changes after a rebuild. Before a re-index or cache clear, the dashboard
+warns you when there are manual edits at risk — with the history a click away —
+so you never discard curation work unaware. `GET /schema-editor/edits` returns a
+single counter, `since_last_index`: the number of manual edits (all types) made
+since the latest indexing run — what a re-index *or* a Clear schema cache will
+discard, because both re-discover the schema. It is scoped to `datasource_id`
+when one is supplied.
+
+```bash
+# Browse a datasource's indexed tables (structure + blurb + keywords).
+curl "http://localhost:8080/api/v1/projects/{id}/schema-editor/tables?datasource_id=wh_redshift&search=orders"
+
+# Rewrite a blurb (re-embeds) — member+.
+curl -X PUT "http://localhost:8080/api/v1/projects/{id}/schema-editor/tables?table=public.orders" \
+  -H 'Content-Type: application/json' -d '{"blurb":"One row per customer order."}'
+
+# The manual-edit audit trail + count since the last index.
+curl "http://localhost:8080/api/v1/projects/{id}/schema-editor/edits"
+```
+
 ## When does an embedding-model change force a rebuild?
 
 Always. Qdrant collections are bound to a fixed vector dimension, so
@@ -139,7 +241,7 @@ usually trips them on a single account.)
 
 ## Failure modes
 
-Indexing runs are all-or-nothing: on failure the collection is left dropped and the next user-triggered retry starts from a clean slate. Partial progress is thrown away. A 30-min rebuild that dies at minute 25 costs roughly $0.60 + 6 min to redo on a representative ERP warehouse — the simplicity of full rebuilds is worth the occasional redo.
+Indexing runs are all-or-nothing: on failure the collection is left dropped and the next user-triggered retry starts from a clean slate. Partial progress is thrown away. A 30-min rebuild that dies at minute 25 costs roughly $0.60 + 6 min to redo on a representative ERP warehouse — the simplicity of full rebuilds is worth the occasional redo. The failure is still recorded in the per-datasource run history (status `failed` with the error), so the audit trail shows the attempt even though the index itself was rolled back.
 
 ## Qdrant is required
 

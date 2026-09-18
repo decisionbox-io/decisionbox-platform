@@ -38,6 +38,11 @@ jest.mock('@/lib/api', () => ({
     status = 0;
   },
   PROJECT_STATE_READY: 'ready',
+  DEFAULT_WAREHOUSE_ID: 'default',
+  // Pure helper the project page calls during render to scope the schema-index
+  // roll-up; this suite doesn't exercise datasource resolution (api.test.ts
+  // does), so a constant keeps the page rendering.
+  resolvePrimaryDatasourceId: () => 'default',
   api: {
     getProject: (...a: unknown[]) => getProject(...a),
     getAnalysisAreas: (...a: unknown[]) => getAnalysisAreas(...a),

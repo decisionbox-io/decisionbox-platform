@@ -59,6 +59,7 @@ type mockProjectRepo struct {
 	deleteErr        error
 	deleteCascadeErr error
 	setStatusErr     error
+	beginReindexErr  error
 	cascadeCalls     []string
 }
 
@@ -202,6 +203,28 @@ func (m *mockProjectRepo) SetSchemaIndexStatus(_ context.Context, id, status, er
 		p.SchemaIndexError = ""
 	}
 	return nil
+}
+
+func (m *mockProjectRepo) BeginReindex(_ context.Context, id string, staleIndexingBefore time.Time) (bool, error) {
+	if m.beginReindexErr != nil {
+		return false, m.beginReindexErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.projects[id]
+	if !ok {
+		return false, nil
+	}
+	// Atomic conditional (mirrors the real repo): refuse a *fresh* indexing row
+	// (another cleanup in progress), claim any non-indexing status or a *stale*
+	// indexing row (updated_at before the cutoff → crashed run / abandoned lock).
+	if p.SchemaIndexStatus == models.SchemaIndexStatusIndexing && !p.UpdatedAt.Before(staleIndexingBefore) {
+		return false, nil
+	}
+	p.SchemaIndexStatus = models.SchemaIndexStatusIndexing
+	p.SchemaIndexError = ""
+	p.UpdatedAt = time.Now()
+	return true, nil
 }
 
 func (m *mockProjectRepo) CountWithWarehouse(_ context.Context) (int, error) {

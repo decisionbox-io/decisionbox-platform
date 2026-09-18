@@ -78,3 +78,16 @@ type SearchResult struct {
 	Score   float64
 	Payload map[string]interface{}
 }
+
+// SchemaPoint is a single schema-blurb point read back from a project's schema
+// collection (decisionbox_schema_{projectID}) by point id rather than by
+// similarity. It carries the payload the schema editor shows and rewrites (the
+// blurb text, keywords, and table/column metadata); the vector is omitted
+// because the editor re-embeds on a blurb change and leaves it untouched
+// otherwise. The schema-point read/write operations that return it live on the
+// concrete Qdrant provider (not this interface) so they don't force every
+// Provider mock to grow methods only the schema editor uses.
+type SchemaPoint struct {
+	ID      string
+	Payload map[string]interface{}
+}

@@ -319,6 +319,13 @@ export interface Project {
   org_id?: string;
   allowed_roles?: string[];
   warehouse: WarehouseConfig;
+  // Full set of datasources on a multi-warehouse project; empty/absent on a
+  // legacy single-warehouse project (use `warehouse` then).
+  warehouses?: WarehouseConfig[];
+  // Id of the primary datasource. May be empty/unset — resolvePrimaryDatasourceId
+  // mirrors the backend's fallback (first warehouse, or the reserved default for
+  // a legacy project). Index runs are stamped under the resolved id.
+  primary_warehouse_id?: string;
   llm: LLMConfig;
   embedding: EmbeddingConfig;
   blurb_llm?: BlurbLLMConfig;
@@ -456,6 +463,35 @@ export interface SchemaIndexLogLine {
   created_at: string;
 }
 
+// SchemaIndexRun is one durable per-(datasource × run) result record from
+// GET /schema-index/runs — stamped by the agent on completion (ready or
+// failed), never reset. Backs the Data Warehouse panel's index-run history and
+// the project-page per-datasource status roll-up.
+// objectNoun returns the human noun for a run's indexed object kind, so every
+// surface (project-page roll-up, settings history) labels the count the same
+// way. The `kind` field IS the noun — "tables" today, generic so a new object
+// kind slots in without a code change; empty falls back to a neutral "objects".
+export function objectNoun(kind: string | undefined): string {
+  const k = (kind || '').trim();
+  return k || 'objects';
+}
+
+export interface SchemaIndexRun {
+  datasource_id: string;
+  datasource_name?: string;
+  run_id: string;
+  kind: string; // "tables" today
+  objects_indexed: number;
+  blurbs_generated: number;
+  status: string; // "ready" | "failed"
+  error?: string;
+  phase_durations?: Record<string, number>; // phase name → milliseconds
+  tokens_in?: number;
+  tokens_out?: number;
+  started_at?: string;
+  finished_at?: string;
+}
+
 export interface EmbeddingConfig {
   provider: string;
   model: string;
@@ -463,7 +499,83 @@ export interface EmbeddingConfig {
   config?: Record<string, string>;
 }
 
+// SchemaEditorColumn is one column of an indexed table in the schema editor.
+export interface SchemaEditorColumn {
+  name: string;
+  type: string;
+  nullable: boolean;
+  category?: string; // primary_key, time, metric, dimension
+}
+
+// SchemaEditorTable is one indexed table as shown in the schema editor —
+// structure from the Mongo schema cache joined with the blurb + keywords from
+// Qdrant. `has_blurb` is false when the table has no blurb point yet.
+export interface SchemaEditorTable {
+  table: string; // qualified name, e.g. "dbo.orders"
+  row_count: number;
+  columns: SchemaEditorColumn[];
+  key_columns?: string[];
+  metrics?: string[];
+  dimensions?: string[];
+  blurb: string;
+  keywords?: string[];
+  has_blurb: boolean;
+  blurb_model?: string;
+  embedding_model?: string;
+}
+
+export interface SchemaEditorTablesResponse {
+  tables: SchemaEditorTable[];
+  total: number;
+  truncated: boolean;
+  datasource_id: string;
+}
+
+// SchemaEdit is one recorded manual change in the audit trail. Manual edits are
+// ephemeral (wiped by the next re-index) — this record is what survives so a
+// user can review + re-apply what they changed.
+export interface SchemaEdit {
+  id?: string;
+  project_id: string;
+  datasource_id: string;
+  table: string;
+  action: string; // blurb_edit | keywords_edit | columns_edit | table_delete
+  before?: string;
+  after?: string;
+  actor?: string;
+  at: string;
+}
+
+export interface SchemaEditsResponse {
+  edits: SchemaEdit[];
+  // Manual edits since the latest indexing run — the number a re-index OR a
+  // Clear schema cache will discard, because both re-discover the schema from
+  // the warehouse (edits are ephemeral). Covers every edit type: blurb,
+  // keywords, column removal, and table delete.
+  since_last_index: number;
+  datasource_id?: string;
+}
+
+// UpdateSchemaTableInput carries only the fields being changed. `columns` is the
+// set to KEEP (removal only — the backend intersects it by name with the
+// existing columns, so a fabricated column can't be injected).
+export interface UpdateSchemaTableInput {
+  blurb?: string;
+  keywords?: string[];
+  columns?: SchemaEditorColumn[];
+}
+
+// DEFAULT_WAREHOUSE_ID mirrors the Go models.DefaultWarehouseID — the reserved
+// id of the primary/legacy single datasource. The backend forces the legacy
+// singular `warehouse` to this id (EffectiveWarehouses), so its index runs are
+// always stamped under it. Keep in sync with the backend constant.
+export const DEFAULT_WAREHOUSE_ID = 'default';
+
 export interface WarehouseConfig {
+  // Stable datasource id; empty on a legacy single-warehouse project (the
+  // backend normalizes it to DEFAULT_WAREHOUSE_ID). Used by
+  // resolvePrimaryDatasourceId to locate a project's primary datasource.
+  id?: string;
   provider: string;
   project_id: string;
   datasets: string[];
@@ -477,6 +589,26 @@ export interface LLMConfig {
   provider: string;
   model: string;
   config?: Record<string, string>; // provider-specific: project_id, location, host, etc.
+}
+
+// resolvePrimaryDatasourceId returns the datasource id the agent stamps the
+// project's primary index runs under. It mirrors the Go models.PrimaryWarehouse
+// resolution exactly so the dashboard queries the right run history:
+//   - legacy single-warehouse project (no `warehouses`): always the reserved
+//     default, since the backend forces the legacy singular warehouse to it;
+//   - multi-warehouse with a primary id matching a warehouse: that warehouse's
+//     id (empty → default);
+//   - otherwise: the first warehouse's id (empty → default) — the backend's
+//     fallback when the primary id is unset or unknown.
+export function resolvePrimaryDatasourceId(project: Project): string {
+  const whs = project.warehouses;
+  if (!whs || whs.length === 0) return DEFAULT_WAREHOUSE_ID;
+  const norm = (id?: string) => id || DEFAULT_WAREHOUSE_ID;
+  if (project.primary_warehouse_id) {
+    const match = whs.find((w) => norm(w.id) === project.primary_warehouse_id);
+    if (match) return norm(match.id);
+  }
+  return norm(whs[0].id);
 }
 
 export interface DiscoveryResult {
@@ -1439,6 +1571,23 @@ export const api = {
   // state (drops the collection + flips to pending_indexing).
   getSchemaIndexStatus: (projectId: string) =>
     request<SchemaIndexStatus>(`/api/v1/projects/${projectId}/schema-index/status`),
+  // listSchemaIndexRuns returns the durable per-datasource index-run history,
+  // newest first. Unlike status (live, project-level, reset each run) these
+  // records survive the next run — they back the Data Warehouse panel's history
+  // table and the project-page per-datasource roll-up. `datasourceId` filters to
+  // one data source; omit it to list every data source's runs. `latest` returns
+  // just the most recent run per datasource (the roll-up's source — one line per
+  // datasource with no paging-induced omissions); it ignores datasourceId/limit.
+  listSchemaIndexRuns: (projectId: string, datasourceId?: string, limit?: number, latest?: boolean) => {
+    const params = new URLSearchParams();
+    if (datasourceId) params.set('datasource_id', datasourceId);
+    if (limit) params.set('limit', String(limit));
+    if (latest) params.set('latest', '1');
+    const qs = params.toString();
+    return request<{ runs: SchemaIndexRun[] }>(
+      `/api/v1/projects/${projectId}/schema-index/runs${qs ? '?' + qs : ''}`
+    );
+  },
   retrySchemaIndex: (projectId: string) =>
     request<{ status: string }>(`/api/v1/projects/${projectId}/schema-index/retry`, { method: 'POST' }),
   // cancelSchemaIndex signals the in-flight indexing run to stop. The
@@ -1476,6 +1625,49 @@ export const api = {
     const qs = params.toString();
     return request<SchemaIndexLogLine[]>(
       `/api/v1/projects/${projectId}/schema-index/logs${qs ? '?' + qs : ''}`
+    );
+  },
+
+  // Schema editor (Data Warehouse → Advanced). Browse a datasource's indexed
+  // tables, rewrite blurbs / remove columns / delete tables (member+), and read
+  // the manual-edit audit trail. Edits are ephemeral (wiped by the next
+  // re-index) but recorded — listSchemaEdits.since_last_index powers the
+  // "N manual edits will be lost" warning before a re-index / cache clear.
+  listSchemaEditorTables: (projectId: string, datasourceId?: string, search?: string, limit?: number) => {
+    const params = new URLSearchParams();
+    if (datasourceId) params.set('datasource_id', datasourceId);
+    if (search) params.set('search', search);
+    if (limit) params.set('limit', String(limit));
+    const qs = params.toString();
+    return request<SchemaEditorTablesResponse>(
+      `/api/v1/projects/${projectId}/schema-editor/tables${qs ? '?' + qs : ''}`
+    );
+  },
+  updateSchemaEditorTable: (projectId: string, table: string, input: UpdateSchemaTableInput, datasourceId?: string) => {
+    const params = new URLSearchParams();
+    if (datasourceId) params.set('datasource_id', datasourceId);
+    params.set('table', table);
+    return request<SchemaEditorTable>(
+      `/api/v1/projects/${projectId}/schema-editor/tables?${params.toString()}`,
+      { method: 'PUT', body: JSON.stringify(input) }
+    );
+  },
+  deleteSchemaEditorTable: (projectId: string, table: string, datasourceId?: string) => {
+    const params = new URLSearchParams();
+    if (datasourceId) params.set('datasource_id', datasourceId);
+    params.set('table', table);
+    return request<{ deleted: string }>(
+      `/api/v1/projects/${projectId}/schema-editor/tables?${params.toString()}`,
+      { method: 'DELETE' }
+    );
+  },
+  listSchemaEdits: (projectId: string, datasourceId?: string, limit?: number) => {
+    const params = new URLSearchParams();
+    if (datasourceId) params.set('datasource_id', datasourceId);
+    if (limit) params.set('limit', String(limit));
+    const qs = params.toString();
+    return request<SchemaEditsResponse>(
+      `/api/v1/projects/${projectId}/schema-editor/edits${qs ? '?' + qs : ''}`
     );
   },
 

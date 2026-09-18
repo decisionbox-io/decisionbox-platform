@@ -176,8 +176,23 @@ func TestInteg_SchemaIndexer_BuildIndex_EndToEnd(t *testing.T) {
 	if stats.Tables != 3 {
 		t.Errorf("indexed tables = %d, want 3", stats.Tables)
 	}
+	if stats.Blurbs != 3 {
+		t.Errorf("blurbs = %d, want 3", stats.Blurbs)
+	}
 	if stats.BlurbTokensIn != 3 || stats.BlurbTokensOut != 3 {
 		t.Errorf("usage stats: %+v (want in=3, out=3)", stats)
+	}
+	// Per-phase durations are populated for the durable run record — the three
+	// measured legs must all be present (values are timing-dependent, so assert
+	// presence + non-negative, not exact magnitudes).
+	for _, phase := range []string{
+		models.SchemaIndexPhaseSchemaDiscovery,
+		models.SchemaIndexPhaseDescribingTables,
+		models.SchemaIndexPhaseEmbedding,
+	} {
+		if d, ok := stats.PhaseDurations[phase]; !ok || d < 0 {
+			t.Errorf("phase_durations[%q] = %v (ok=%v), want present + non-negative", phase, d, ok)
+		}
 	}
 	if progress.resetCalls != 1 {
 		t.Errorf("reset called %d times", progress.resetCalls)

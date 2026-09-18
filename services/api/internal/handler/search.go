@@ -218,11 +218,18 @@ func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 }
 
 // createEmbeddingProvider creates an embedding provider for a project.
-// The projectConfig map carries non-credential provider settings the
-// dashboard saved (auth_method, project_id, location, region, role_arn,
-// …); the agent's initEmbeddingProvider does the same merge for the
-// indexing path so search/ask see the identical factory wiring.
 func (h *SearchHandler) createEmbeddingProvider(ctx context.Context, providerName, model, projectID string, projectConfig map[string]string) (goembedding.Provider, error) {
+	return newProjectEmbeddingProvider(ctx, h.secretProvider, projectID, providerName, model, projectConfig)
+}
+
+// newProjectEmbeddingProvider builds an embedding provider for a project's
+// configured embedding model — shared by the semantic-search path and the
+// schema editor (blurb re-embedding). The projectConfig map carries
+// non-credential provider settings the dashboard saved (auth_method,
+// project_id, location, region, role_arn, …); the agent's
+// initEmbeddingProvider does the same merge for the indexing path so search /
+// ask / edit all see the identical factory wiring.
+func newProjectEmbeddingProvider(ctx context.Context, secrets gosecrets.Provider, projectID, providerName, model string, projectConfig map[string]string) (goembedding.Provider, error) {
 	cfg := goembedding.ProviderConfig{
 		"model": model,
 	}
@@ -231,11 +238,11 @@ func (h *SearchHandler) createEmbeddingProvider(ctx context.Context, providerNam
 	}
 	// Per-project secret wins, else the EMBEDDING_API_KEY env fallback:
 	// managed-inference gateway mode stores no per-project AI secret, so
-	// this API-side search path (which embeds the query) must reach the
-	// gateway via env or it would build a credential-less provider and
-	// fail. The resolution order lives in gosecrets.ResolveCredential,
-	// shared with the agent and the enterprise plugins.
-	cred, _, _ := gosecrets.ResolveCredential(ctx, h.secretProvider, projectID, "embedding-credentials", "EMBEDDING_API_KEY")
+	// this API-side path (which embeds text) must reach the gateway via env or
+	// it would build a credential-less provider and fail. The resolution order
+	// lives in gosecrets.ResolveCredential, shared with the agent and the
+	// enterprise plugins.
+	cred, _, _ := gosecrets.ResolveCredential(ctx, secrets, projectID, "embedding-credentials", "EMBEDDING_API_KEY")
 	if cred != "" {
 		cfg["credentials_json"] = cred
 	}
@@ -585,6 +592,13 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		// ok — proceed
 	case models.SchemaIndexStatusPendingIndexing, models.SchemaIndexStatusIndexing:
 		writeError(w, http.StatusConflict, "schema index is not ready yet — poll /api/v1/projects/"+projectID+"/schema-index/status")
+		return
+	case models.SchemaIndexStatusNeedsReindex:
+		// The schema cache / vector index has been invalidated (config drift, a
+		// cache clear, or a re-index in mid-cleanup). Ask reads the schema cache
+		// + Qdrant directly, so it must not run against an emptied/stale index —
+		// same holding state the discovery gate honours.
+		writeError(w, http.StatusConflict, "schema index needs a re-index — trigger POST /api/v1/projects/"+projectID+"/reindex first")
 		return
 	case models.SchemaIndexStatusFailed:
 		writeError(w, http.StatusConflict, "schema indexing failed: "+project.SchemaIndexError+" — click Retry indexing in project settings")
