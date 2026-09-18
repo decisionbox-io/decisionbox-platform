@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
-  Alert, Badge, Button, Collapse, Group, Loader, Modal, ScrollArea,
+  Alert, Badge, Button, Card, Center, Collapse, Divider, Group, Loader, Modal, ScrollArea,
   Stack, Table, Text, TextInput, Textarea, Title, Tooltip,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
@@ -24,6 +24,8 @@ const ACTION_LABEL: Record<string, string> = {
   table_delete: 'Table removed',
 };
 
+const MONO = { fontFamily: 'monospace' } as const;
+
 function parseKeywords(raw: string): string[] {
   return raw.split(',').map((s) => s.trim()).filter(Boolean);
 }
@@ -41,7 +43,7 @@ function sameKeywords(a: string[], b: string[]): boolean {
 export default function SchemaEditorPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
-  const { hasRole, loading: permsLoading } = usePermissions();
+  const { hasRole } = usePermissions();
   const canEdit = hasRole('member');
 
   const [project, setProject] = useState<Project | null>(null);
@@ -72,6 +74,17 @@ export default function SchemaEditorPage() {
     () => (project ? resolvePrimaryDatasourceId(project) : undefined),
     [project],
   );
+
+  // A friendly label for the data source being edited (its provider), shown as a
+  // header badge so it's obvious which datasource this page acts on.
+  const datasourceLabel = useMemo(() => {
+    if (!project) return undefined;
+    const whs = project.warehouses;
+    const primary = whs && whs.length
+      ? (whs.find((w) => (w.id || 'default') === datasourceId) || whs[0])
+      : project.warehouse;
+    return primary?.provider || undefined;
+  }, [project, datasourceId]);
 
   // Debounce the search box so typing doesn't fire a request per keystroke.
   useEffect(() => {
@@ -189,105 +202,147 @@ export default function SchemaEditorPage() {
 
   return (
     <Shell fullWidth>
-      <Stack gap="md" p="md">
-        <Group justify="space-between" wrap="nowrap">
-          <Group gap="xs">
-            <Button variant="subtle" size="compact-sm" leftSection={<IconArrowLeft size={16} />}
-              onClick={() => router.push(`/projects/${id}/settings`)}>Back to settings</Button>
-            <Title order={4}>Edit indexed schema</Title>
+      <Stack gap="lg" p="md">
+        {/* Header */}
+        <Stack gap="sm">
+          <Group justify="space-between" wrap="nowrap" align="flex-start">
+            <Stack gap={6}>
+              <Button variant="subtle" size="compact-sm" leftSection={<IconArrowLeft size={16} />}
+                onClick={() => router.push(`/projects/${id}/settings`)} style={{ alignSelf: 'flex-start' }}>
+                Back to settings
+              </Button>
+              <Group gap="sm" align="center">
+                <Title order={3}>Edit indexed schema</Title>
+                {datasourceLabel && (
+                  <Badge variant="light" color="gray" size="lg">{datasourceLabel}</Badge>
+                )}
+              </Group>
+            </Stack>
+            <Button variant="light" leftSection={<IconHistory size={16} />}
+              onClick={() => setShowHistory((v) => !v)}>
+              {showHistory ? 'Hide history' : `Edit history${edits.length ? ` (${edits.length})` : ''}`}
+            </Button>
           </Group>
-          <Button variant="light" size="compact-sm" leftSection={<IconHistory size={14} />}
-            onClick={() => setShowHistory((v) => !v)}>
-            {showHistory ? 'Hide history' : `Edit history${edits.length ? ` (${edits.length})` : ''}`}
-          </Button>
-        </Group>
 
-        <Text size="xs" c="dimmed" maw={760}>
-          Correct a table&apos;s description (blurb), remove columns you don&apos;t want the
-          agent to use, or drop a table entirely. Changes take effect immediately — discovery
-          and Ask read this schema directly. <strong>Note:</strong> these edits are ephemeral —
-          the next re-index re-discovers the schema from the warehouse and discards them
-          (<em>Clear schema cache</em> discards them too). Every change is recorded in the edit
-          history below so you can re-apply it.
-        </Text>
+          <Text size="sm" c="dimmed" maw={780}>
+            Correct a table&apos;s description (blurb), remove columns you don&apos;t want the agent
+            to use, or drop a table entirely. Changes take effect immediately — discovery and Ask
+            read this schema directly. These edits are <strong>ephemeral</strong>: the next re-index
+            (or <em>Clear schema cache</em>) rediscovers the schema from the warehouse and discards
+            them, so every change is recorded in the edit history below for re-applying.
+          </Text>
+        </Stack>
 
         {sinceRebuild > 0 && (
-          <Alert color="yellow" variant="light" icon={<IconAlertCircle size={16} />} maw={760}>
+          <Alert color="yellow" variant="light" icon={<IconAlertCircle size={16} />} maw={780}>
             {sinceRebuild} manual {sinceRebuild === 1 ? 'edit' : 'edits'} since the last index.
             The next re-index or <em>Clear schema cache</em> will discard {sinceRebuild === 1 ? 'it' : 'them'} — the edit history keeps a copy so you can re-apply.
           </Alert>
         )}
 
         <Collapse in={showHistory}>
-          <EditHistory edits={edits} />
+          <Card withBorder p="md" radius="md">
+            <Group justify="space-between" align="center" mb="sm" wrap="nowrap">
+              <Text fw={600} size="sm">Edit history</Text>
+              <Text size="xs" c="dimmed">Recorded so you can re-apply changes after a rebuild.</Text>
+            </Group>
+            <EditHistory edits={edits} />
+          </Card>
         </Collapse>
 
-        <TextInput
-          placeholder="Search tables…"
-          leftSection={<IconSearch size={14} />}
-          value={searchInput}
-          onChange={(e) => setSearchInput(e.currentTarget.value)}
-          maw={360}
-        />
-
+        {/* Browse + edit */}
         {loading ? (
-          <Loader />
+          <Center mih={220}><Loader /></Center>
         ) : error ? (
-          <Alert color="red" variant="light" icon={<IconAlertCircle size={16} />} maw={760}>
+          <Alert color="red" variant="light" icon={<IconAlertCircle size={16} />} maw={780}>
             Couldn&apos;t load the indexed schema: {error}
           </Alert>
-        ) : tables.length === 0 ? (
-          <Text size="sm" c="dimmed">
-            {search ? 'No tables match your search.' : 'No indexed tables for this data source yet.'}
-          </Text>
         ) : (
-          <Group align="flex-start" gap="md" wrap="nowrap" style={{ minHeight: 0 }}>
+          <Group align="flex-start" gap="md" wrap="nowrap">
             {/* Left: table list */}
-            <ScrollArea.Autosize mah={560} style={{ width: 320, flexShrink: 0 }}>
-              <Stack gap={2}>
-                {truncated && (
-                  <Text size="xs" c="dimmed" mb={4}>
-                    Showing {tables.length} of {total} — refine your search to see the rest.
+            <Card withBorder p="sm" radius="md" style={{ width: 300, flexShrink: 0 }}>
+              <Stack gap="sm">
+                <TextInput
+                  placeholder="Search tables…"
+                  leftSection={<IconSearch size={14} />}
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.currentTarget.value)}
+                />
+                {tables.length === 0 ? (
+                  <Text size="sm" c="dimmed" py="xs">
+                    {search ? 'No tables match your search.' : 'No indexed tables for this data source yet.'}
                   </Text>
+                ) : (
+                  <>
+                    <Group justify="space-between" px={4} gap={4}>
+                      <Text size="xs" c="dimmed" fw={500}>{total} table{total === 1 ? '' : 's'}</Text>
+                      {truncated && <Text size="xs" c="dimmed">showing {tables.length}</Text>}
+                    </Group>
+                    <ScrollArea.Autosize mah={540}>
+                      <Stack gap={2}>
+                        {tables.map((t) => {
+                          const active = t.table === selected;
+                          return (
+                            <Button
+                              key={t.table}
+                              variant={active ? 'light' : 'subtle'}
+                              color={active ? 'blue' : 'gray'}
+                              size="compact-sm"
+                              fullWidth
+                              justify="flex-start"
+                              onClick={() => setSelected(t.table)}
+                              styles={{
+                                root: { fontWeight: active ? 600 : 400 },
+                                inner: { justifyContent: 'flex-start' },
+                                label: { overflow: 'hidden', textOverflow: 'ellipsis', display: 'block' },
+                              }}
+                            >
+                              {t.table}
+                              {!t.has_blurb && <Badge ml={6} size="xs" color="gray" variant="outline">no blurb</Badge>}
+                            </Button>
+                          );
+                        })}
+                      </Stack>
+                    </ScrollArea.Autosize>
+                  </>
                 )}
-                {tables.map((t) => (
-                  <Button
-                    key={t.table}
-                    variant={t.table === selected ? 'light' : 'subtle'}
-                    size="compact-sm"
-                    justify="flex-start"
-                    onClick={() => setSelected(t.table)}
-                    styles={{ label: { overflow: 'hidden', textOverflow: 'ellipsis' } }}
-                  >
-                    {t.table}
-                    {!t.has_blurb && <Badge ml={6} size="xs" color="gray" variant="outline">no blurb</Badge>}
-                  </Button>
-                ))}
               </Stack>
-            </ScrollArea.Autosize>
+            </Card>
 
             {/* Right: detail */}
-            <div style={{ flex: 1, minWidth: 0 }}>
+            <Card withBorder p="md" radius="md" style={{ flex: 1, minWidth: 0 }}>
               {!selectedTable ? (
-                <Text size="sm" c="dimmed">Select a table to view or edit it.</Text>
+                <Center mih={180}>
+                  <Text size="sm" c="dimmed">Select a table on the left to view or edit it.</Text>
+                </Center>
               ) : (
-                <Stack gap="sm">
-                  <Group justify="space-between" wrap="nowrap">
-                    <Text fw={600} style={{ fontFamily: 'monospace' }}>{selectedTable.table}</Text>
-                    <Group gap="xs">
-                      <Text size="xs" c="dimmed">{selectedTable.row_count.toLocaleString()} rows · {selectedTable.columns.length} columns</Text>
-                      {canEdit && (
-                        <Button color="red" variant="light" size="compact-xs"
-                          leftSection={<IconTrash size={14} />}
-                          onClick={() => setDeleteTarget(selectedTable.table)}>
-                          Remove table
-                        </Button>
-                      )}
-                    </Group>
+                <Stack gap="md">
+                  {/* Detail header */}
+                  <Group justify="space-between" wrap="nowrap" align="flex-start">
+                    <Stack gap={6} style={{ minWidth: 0 }}>
+                      <Text fw={600} style={{ ...MONO, wordBreak: 'break-all' }}>{selectedTable.table}</Text>
+                      <Group gap="xs">
+                        <Badge variant="light" color="gray">{selectedTable.row_count.toLocaleString()} rows</Badge>
+                        <Badge variant="light" color="gray">{selectedTable.columns.length} columns</Badge>
+                      </Group>
+                    </Stack>
+                    {canEdit && (
+                      <Button color="red" variant="light" size="compact-sm"
+                        leftSection={<IconTrash size={14} />}
+                        onClick={() => setDeleteTarget(selectedTable.table)}>
+                        Remove table
+                      </Button>
+                    )}
                   </Group>
 
-                  <div>
-                    <Text size="sm" fw={500} mb={4}>Blurb</Text>
+                  <Divider />
+
+                  {/* Blurb */}
+                  <Stack gap={6}>
+                    <div>
+                      <Text size="sm" fw={600}>Description (blurb)</Text>
+                      <Text size="xs" c="dimmed">What the table holds — this text is embedded for semantic search when the agent looks for relevant tables.</Text>
+                    </div>
                     <Textarea
                       value={blurbDraft}
                       onChange={(e) => setBlurbDraft(e.currentTarget.value)}
@@ -295,27 +350,39 @@ export default function SchemaEditorPage() {
                       readOnly={!canEdit}
                       placeholder={selectedTable.has_blurb ? '' : 'No blurb yet — write one to make this table findable.'}
                     />
-                  </div>
+                  </Stack>
 
-                  <div>
-                    <Text size="sm" fw={500} mb={4}>Keywords <Text span size="xs" c="dimmed">(comma-separated)</Text></Text>
+                  <Divider />
+
+                  {/* Keywords */}
+                  <Stack gap={6}>
+                    <div>
+                      <Text size="sm" fw={600}>Keywords</Text>
+                      <Text size="xs" c="dimmed">Comma-separated terms that boost exact-match search for this table.</Text>
+                    </div>
                     <TextInput
                       value={keywordsDraft}
                       onChange={(e) => setKeywordsDraft(e.currentTarget.value)}
                       readOnly={!canEdit}
                       placeholder="e.g. orders, revenue, fulfilment"
                     />
-                  </div>
+                  </Stack>
 
-                  <div>
-                    <Text size="sm" fw={500} mb={4}>Columns</Text>
-                    <Table fz="xs" verticalSpacing={4} horizontalSpacing="sm" withTableBorder>
+                  <Divider />
+
+                  {/* Columns */}
+                  <Stack gap={6}>
+                    <div>
+                      <Text size="sm" fw={600}>Columns</Text>
+                      <Text size="xs" c="dimmed">Remove columns you don&apos;t want the agent to consider. Removal only — a rebuild brings them back.</Text>
+                    </div>
+                    <Table fz="xs" verticalSpacing={6} horizontalSpacing="sm" withTableBorder highlightOnHover>
                       <Table.Thead>
                         <Table.Tr>
                           <Table.Th>Name</Table.Th>
                           <Table.Th>Type</Table.Th>
                           <Table.Th>Category</Table.Th>
-                          {canEdit && <Table.Th w={40}></Table.Th>}
+                          {canEdit && <Table.Th w={44} ta="center">Remove</Table.Th>}
                         </Table.Tr>
                       </Table.Thead>
                       <Table.Tbody>
@@ -323,11 +390,11 @@ export default function SchemaEditorPage() {
                           const isRemoved = removed.has(c.name);
                           return (
                             <Table.Tr key={c.name} style={isRemoved ? { opacity: 0.4, textDecoration: 'line-through' } : undefined}>
-                              <Table.Td style={{ fontFamily: 'monospace' }}>{c.name}</Table.Td>
+                              <Table.Td style={MONO}>{c.name}</Table.Td>
                               <Table.Td>{c.type}</Table.Td>
                               <Table.Td>{c.category || '—'}</Table.Td>
                               {canEdit && (
-                                <Table.Td>
+                                <Table.Td ta="center">
                                   <Tooltip label={isRemoved ? 'Keep column' : 'Remove column'}>
                                     <Button variant="subtle" color={isRemoved ? 'blue' : 'red'} size="compact-xs"
                                       aria-label={isRemoved ? `Keep column ${c.name}` : `Remove column ${c.name}`}
@@ -343,20 +410,26 @@ export default function SchemaEditorPage() {
                       </Table.Tbody>
                     </Table>
                     {removed.size > 0 && (
-                      <Text size="xs" c="orange" mt={4}>{removed.size} column{removed.size === 1 ? '' : 's'} will be removed on save.</Text>
+                      <Text size="xs" c="orange">{removed.size} column{removed.size === 1 ? '' : 's'} will be removed on save.</Text>
                     )}
-                  </div>
+                  </Stack>
 
-                  {canEdit ? (
-                    <Group justify="flex-end">
+                  <Divider />
+
+                  {/* Footer */}
+                  <Group justify="space-between" align="center">
+                    {canEdit ? (
+                      <Text size="xs" c={dirty ? 'orange' : 'dimmed'}>{dirty ? 'Unsaved changes' : 'No changes'}</Text>
+                    ) : (
+                      <Text size="xs" c="dimmed">You have read-only access to this project.</Text>
+                    )}
+                    {canEdit && (
                       <Button onClick={handleSave} loading={saving} disabled={!dirty}>Save changes</Button>
-                    </Group>
-                  ) : (
-                    <Text size="xs" c="dimmed">You have read-only access to this project.</Text>
-                  )}
+                    )}
+                  </Group>
                 </Stack>
               )}
-            </div>
+            </Card>
           </Group>
         )}
       </Stack>
@@ -364,10 +437,10 @@ export default function SchemaEditorPage() {
       <Modal opened={!!deleteTarget} onClose={() => setDeleteTarget(null)} title="Remove table from index" centered>
         <Stack gap="sm">
           <Text size="sm">
-            Remove <strong style={{ fontFamily: 'monospace' }}>{deleteTarget}</strong> from the schema index?
-            The agent will stop using it in discovery and search. A plain re-index keeps it
-            removed; to bring it back, use <em>Clear schema cache</em> (a full rebuild that
-            rediscovers from the warehouse).
+            Remove <strong style={MONO}>{deleteTarget}</strong> from the schema index? The agent
+            will stop using it in discovery and search right away. This edit is <strong>ephemeral</strong>:
+            the next re-index rebuilds from the warehouse and brings the table back (unless it was
+            also dropped there).
           </Text>
           <Group justify="flex-end">
             <Button variant="default" onClick={() => setDeleteTarget(null)}>Cancel</Button>
@@ -375,8 +448,6 @@ export default function SchemaEditorPage() {
           </Group>
         </Stack>
       </Modal>
-
-      {permsLoading && null}
     </Shell>
   );
 }
@@ -387,7 +458,7 @@ function EditHistory({ edits }: { edits: SchemaEdit[] }) {
   }
   return (
     <ScrollArea.Autosize mah={280}>
-      <Table fz="xs" striped withTableBorder verticalSpacing={4} horizontalSpacing="sm">
+      <Table fz="xs" striped withTableBorder verticalSpacing={6} horizontalSpacing="sm">
         <Table.Thead>
           <Table.Tr>
             <Table.Th>When</Table.Th>
@@ -402,7 +473,7 @@ function EditHistory({ edits }: { edits: SchemaEdit[] }) {
             <Table.Tr key={e.id || `${e.table}:${e.at}`}>
               <Table.Td>{new Date(e.at).toLocaleString()}</Table.Td>
               <Table.Td>{ACTION_LABEL[e.action] || e.action}</Table.Td>
-              <Table.Td style={{ fontFamily: 'monospace' }}>{e.table}</Table.Td>
+              <Table.Td style={MONO}>{e.table}</Table.Td>
               <Table.Td>
                 <Text size="xs" c="dimmed" lineClamp={2} style={{ maxWidth: 420 }} title={`${e.before || ''} → ${e.after || ''}`}>
                   {e.before ? e.before : '—'}{' → '}{e.after ? e.after : '—'}
