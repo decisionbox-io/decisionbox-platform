@@ -67,8 +67,72 @@ func TestCorrelationContract_TeachesTheActionAndMandatesTheCall(t *testing.T) {
 	if !strings.Contains(got, "MUST call `get_correlations`") {
 		t.Errorf("want the call mandated:\n%s", got)
 	}
-	if !strings.Contains(got, "stronger evidence than a name match") {
+	// The trigger is the SECOND query, not the first hop. A hop is something
+	// the model decides to attempt; one that never decides to never reads a
+	// rule written about hops. A 50-step run on a project that exists to join
+	// two datasources went by without one call under the old wording.
+	if !strings.Contains(got, "query the SECOND datasource") {
+		t.Errorf("want the call triggered before the second datasource, not before a hop:\n%s", got)
+	}
+	if strings.Contains(got, "FIRST hop") {
+		t.Errorf("the hop trigger fires too late to be the only one:\n%s", got)
+	}
+	if !strings.Contains(got, "infer them from matching names") {
 		t.Errorf("want the reason a reviewed key outranks a name match:\n%s", got)
+	}
+}
+
+// TestCorrelationContract_NamesThePairsThatCanBeCorrelated is the other half
+// of the same lesson. The contract used to name only what NOT to do, so a run
+// was never told that correlating anything had been reviewed at all — and a
+// model with no reason to think correlation is available will not go looking
+// for its cost.
+func TestCorrelationContract_NamesThePairsThatCanBeCorrelated(t *testing.T) {
+	got := buildDatasourcesPromptSection(sqlOnlyContext(),
+		correlationGuidance{keys: []agentplugin.CorrelationKey{confirmedKey(), rejectedKey("userId")}})
+
+	if !strings.Contains(got, "Pairs with a reviewed key you can use: `default` ↔ `wh_analytics`.") {
+		t.Errorf("want the usable pair named, sides ordered:\n%s", got)
+	}
+	// The fields themselves stay behind the action — there can be many, and
+	// which to use is exactly what it answers.
+	if strings.Contains(got, "transactionId") {
+		t.Errorf("the keys belong in the action's answer, not the contract:\n%s", got)
+	}
+}
+
+// TestCorrelationContract_OnlyRejectionsNamesNoUsablePair: a pair whose every
+// decision is a rejection has no reviewed key to offer, and listing it as one
+// would contradict the prohibition directly below it.
+func TestCorrelationContract_OnlyRejectionsNamesNoUsablePair(t *testing.T) {
+	got := buildDatasourcesPromptSection(sqlOnlyContext(),
+		correlationGuidance{keys: []agentplugin.CorrelationKey{rejectedKey("userId")}})
+
+	if strings.Contains(got, "Pairs with a reviewed key you can use") {
+		t.Errorf("nothing here is usable:\n%s", got)
+	}
+	if !strings.Contains(got, "REJECTED PAIRINGS") {
+		t.Errorf("but the prohibition still stands:\n%s", got)
+	}
+	if !strings.Contains(got, "MUST call `get_correlations`") {
+		t.Errorf("want the call still mandated:\n%s", got)
+	}
+}
+
+// TestUsablePairings_DedupesAndOrdersEachPair: many keys between two
+// datasources are one pair, and the same pair stated from either side is the
+// same pair.
+func TestUsablePairings_DedupesAndOrdersEachPair(t *testing.T) {
+	second := confirmedKey()
+	second.SourceField = "orderRef"
+	reversed := confirmedKey()
+	reversed.DatasourceID, reversed.WithDatasourceID = "default", "wh_analytics"
+
+	got := usablePairings([]agentplugin.CorrelationKey{
+		confirmedKey(), second, reversed, rejectedKey("userId"),
+	})
+	if len(got) != 1 || got[0] != "`default` ↔ `wh_analytics`" {
+		t.Errorf("usablePairings = %v, want one ordered pair", got)
 	}
 }
 
@@ -76,13 +140,23 @@ func TestCorrelationContract_TeachesTheActionAndMandatesTheCall(t *testing.T) {
 // that does not exist has been taught, in the same breath, that the ids here
 // are illustrative.
 func TestCorrelationContract_ExampleUsesThisRunsDatasources(t *testing.T) {
-	dc := sqlOnlyContext()
-	got := buildDatasourcesPromptSection(dc,
-		correlationGuidance{keys: []agentplugin.CorrelationKey{confirmedKey()}})
-
-	want := fmt.Sprintf(`{"a": "%s", "b": "%s"}`, dc.descriptors[0].id, dc.descriptors[1].id)
+	// With decisions in hand the example names a pair that actually carries
+	// them, so it is a call worth making rather than a syntax demonstration.
+	k := confirmedKey()
+	got := buildDatasourcesPromptSection(sqlOnlyContext(),
+		correlationGuidance{keys: []agentplugin.CorrelationKey{k}})
+	want := fmt.Sprintf(`{"a": "%s", "b": "%s"}`, k.DatasourceID, k.WithDatasourceID)
 	if !strings.Contains(got, want) {
-		t.Errorf("want the worked call to name this run's datasources (%s):\n%s", want, got)
+		t.Errorf("want the worked call to name a pair with reviewed keys (%s):\n%s", want, got)
+	}
+
+	// With none — the decisions could not be read — it falls back to this
+	// run's own ids rather than inventing any.
+	dc := sqlOnlyContext()
+	unread := buildDatasourcesPromptSection(dc, correlationGuidance{unread: true})
+	fallback := fmt.Sprintf(`{"a": "%s", "b": "%s"}`, dc.descriptors[0].id, dc.descriptors[1].id)
+	if !strings.Contains(unread, fallback) {
+		t.Errorf("want the fallback to name this run's datasources (%s):\n%s", fallback, unread)
 	}
 }
 

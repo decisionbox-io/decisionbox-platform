@@ -838,6 +838,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			guidance = o.curatedCorrelations(ctx, dc)
 		}
 		explorationPrompt += buildDatasourcesPromptSection(dc, guidance)
+		o.logCorrelationContract(dc, guidance)
 	}
 
 	// Inject project knowledge sources (no-op if no enterprise plugin loaded
@@ -2877,6 +2878,24 @@ func (o *Orchestrator) curatedCorrelations(ctx context.Context, dc *datasourceCo
 		return correlationGuidance{unread: true}
 	}
 	return correlationGuidance{keys: keys}
+}
+
+// logCorrelationContract records what the run was told about reviewed keys.
+//
+// Without it, "the model ignored the contract" and "the contract was never
+// rendered" look identical afterwards: the exploration prompt is not
+// persisted, and the per-action counter only counts calls that happened. One
+// line, at the moment the decision is made, is what makes the two
+// distinguishable — and the whole feature rests on which of them it is.
+func (o *Orchestrator) logCorrelationContract(dc *datasourceContext, guidance correlationGuidance) {
+	applog.WithFields(applog.Fields{
+		"offered":           correlatable(dc) && guidance.offered(),
+		"routable":          len(dc.descriptors),
+		"reviewed_keys":     len(guidance.keys),
+		"usable_pairings":   len(usablePairings(guidance.keys)),
+		"rejected_pairings": len(rejectedPairings(guidance.keys)),
+		"decisions_unread":  guidance.unread,
+	}).Info("multi-warehouse discovery: reviewed-correlation-key contract")
 }
 
 // correlationLookup is what serves the agent's get_correlations action.

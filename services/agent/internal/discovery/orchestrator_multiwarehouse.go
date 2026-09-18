@@ -418,12 +418,22 @@ func writeCorrelationContract(b *strings.Builder, dc *datasourceContext, guidanc
 		return
 	}
 	b.WriteString("\n### Reviewed correlation keys\n")
-	b.WriteString("Some pairs of datasources in this project have join keys a person has REVIEWED. Before your FIRST hop between any two datasources, you MUST call `get_correlations` for that pair and follow what it says. A reviewed key is stronger evidence than a name match — two fields sharing a name is how the wrong correlation gets made.\n")
-	// This run's own datasource ids, not invented ones: a model shown an id
-	// that does not exist has been taught, in the same breath, that the ids
-	// here are illustrative. correlatable guarantees there are two.
-	fmt.Fprintf(b, "  {\"thinking\": \"...\", \"get_correlations\": {\"a\": \"%s\", \"b\": \"%s\"}}\n",
-		dc.descriptors[0].id, dc.descriptors[1].id)
+	b.WriteString("Some pairs of datasources in this project have join keys a person has REVIEWED, so correlating those two is not guesswork here — somebody has checked which field lines them up.\n")
+
+	// Which pairs can be correlated, before anything about how. A run that is
+	// never told correlation is AVAILABLE has no reason to ask what it would
+	// cost, and will happily spend its whole budget one datasource at a time.
+	if usable := usablePairings(guidance.keys); len(usable) > 0 {
+		fmt.Fprintf(b, "Pairs with a reviewed key you can use: %s.\n", strings.Join(usable, ", "))
+	}
+
+	// The trigger is the SECOND query, not the first hop. A hop is something
+	// the model decides to attempt, and a model that never decides to never
+	// reads this; by the time it is choosing between datasources it has
+	// already stopped considering the one it did not pick.
+	b.WriteString("Before you query the SECOND datasource of any pair named in this section, you MUST call `get_correlations` for that pair and follow what it says. It names the exact fields, so you do not have to infer them from matching names — which is how the wrong correlation gets made.\n")
+	a, z := exampleCall(dc, guidance)
+	fmt.Fprintf(b, "  {\"thinking\": \"...\", \"get_correlations\": {\"a\": \"%s\", \"b\": \"%s\"}}\n", a, z)
 
 	if guidance.unread {
 		// Nothing to name, and saying nothing would be read as nothing to
@@ -454,6 +464,52 @@ func writeCorrelationContract(b *strings.Builder, dc *datasourceContext, guidanc
 	}
 	b.WriteString("Do not substitute a different spelling of the same field: the decision is about the field, not how it is spelled. If `get_correlations` names no reviewed alternative for ONE OF THE PAIRS ABOVE, do not correlate that pair record by record — compare it only at a grain both sides genuinely share, or leave the correlation unmade and say in your findings that it could not be made.\n")
 	b.WriteString("This applies only to the pairings listed above. A pair nobody has recorded a decision about is unreviewed, which is not the same as rejected, and nothing here restricts it.\n")
+}
+
+// usablePairings names the datasource pairs a person has left a key FOR,
+// rendered as `a` ↔ `b`.
+//
+// Pairs, not keys: which fields to use is what get_correlations answers, and
+// there can be many. What the contract has to carry is the fact that
+// correlating these two has been reviewed at all — a run never told that has
+// no reason to ask, and will spend its whole budget one datasource at a time
+// on a project that exists to join them.
+//
+// Rejections are left out: a pair whose only decisions are rejections has no
+// reviewed key to use, and listing it here would say the opposite of what the
+// section below says about it.
+func usablePairings(keys []agentplugin.CorrelationKey) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, k := range keys {
+		if k.State == agentplugin.CorrelationRejected {
+			continue
+		}
+		a, b := k.DatasourceID, k.WithDatasourceID
+		if b < a {
+			a, b = b, a
+		}
+		key := a + "\x00" + b
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, fmt.Sprintf("`%s` ↔ `%s`", a, b))
+	}
+	return out
+}
+
+// exampleCall picks the two ids the worked call names.
+//
+// A pair that actually carries decisions when there is one, so the example is
+// a call worth making rather than a syntax demonstration. Falls back to the
+// run's first two datasources — which is all there is when the decisions could
+// not be read, and correlatable guarantees there are two.
+func exampleCall(dc *datasourceContext, guidance correlationGuidance) (string, string) {
+	for _, k := range guidance.keys {
+		return k.DatasourceID, k.WithDatasourceID
+	}
+	return dc.descriptors[0].id, dc.descriptors[1].id
 }
 
 // rejectedPairings picks out the prohibitions, preserving the order they
