@@ -47,8 +47,8 @@ type SchemaEditRecorder interface {
 	List(ctx context.Context, projectID, datasourceID string, limit int) ([]models.SchemaEdit, error)
 	// CountSince counts edits after `since`, scoped to datasourceID when
 	// non-empty (empty = project-wide), optionally restricted to the given
-	// actions (empty = all). The re-index warning passes the blurb/keyword
-	// actions it regenerates; the cache-clear warning passes none (all).
+	// actions (empty = all). The re-index / cache-clear warning passes no
+	// actions (all edit types are discarded by a re-discovery under Model B).
 	CountSince(ctx context.Context, projectID, datasourceID string, since time.Time, actions ...string) (int, error)
 }
 
@@ -68,8 +68,9 @@ type SchemaVectorEditor interface {
 // indexed tables, rewrite a table's blurb (re-embedding the vector), remove
 // columns or a whole table, and read the audit trail. Manual edits take effect
 // immediately (discovery + ask read the schema cache directly) and are recorded
-// so a user can review + re-apply what they changed; a full rebuild
-// (Clear schema cache → re-discover) restores the warehouse's schema.
+// so a user can review + re-apply what they changed. Edits are ephemeral: the
+// next re-index (or Clear schema cache) re-discovers the warehouse schema and
+// discards them — the audit trail is the record to re-apply from.
 type SchemaEditorHandler struct {
 	projects       database.ProjectRepo
 	cache          SchemaEditorCache    // nullable — endpoints 503 when nil
@@ -131,14 +132,12 @@ type updateTableRequest struct {
 
 type schemaEditsResponse struct {
 	Edits []models.SchemaEdit `json:"edits"`
-	// SinceLastIndex counts edits since the latest indexing run — what a
-	// re-index regenerates (blurb/keyword edits). SinceLastCache counts edits
-	// since the last full warehouse re-discovery (the cache write); it is the
-	// broader count of everything a full rebuild (Clear schema cache) would
-	// discard, including column/table removals that persist across a plain
-	// re-index. The two warn surfaces use the count that matches what they undo.
+	// SinceLastIndex counts the manual edits made since the last indexing run —
+	// the number a re-index OR a Clear schema cache will discard, since both
+	// re-discover the schema from the warehouse (Model B: edits are ephemeral).
+	// Covers every edit type (blurb, keywords, column removal, table delete).
+	// Scoped to the datasource when the caller passes one.
 	SinceLastIndex int    `json:"since_last_index"`
-	SinceLastCache int    `json:"since_last_cache"`
 	DatasourceID   string `json:"datasource_id,omitempty"`
 }
 
@@ -375,45 +374,28 @@ func (h *SchemaEditorHandler) ListEdits(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Two baselines, because a re-index and a cache clear undo different edits:
+	// One baseline under Model B: a re-index and a Clear schema cache both
+	// re-discover the schema from the warehouse, so both discard *every* edit
+	// made since the last catalog pass — blurb, keyword, column removal, or
+	// table delete alike. Count all edit actions since the last indexing run
+	// (its finish time is stamped on every re-index; fall back to the cache
+	// write time, then to counting everything for a never-indexed project).
 	//
-	//   - since_last_index: edits after the latest indexing run. A re-index
-	//     regenerates blurbs, so this is what a re-index discards (blurb/keyword
-	//     edits). Prefer the run's finish time (stamped on every re-index,
-	//     including a cache-hit one) over the cache timestamp, which a cache-hit
-	//     re-index does not refresh; fall back to the cache time when no runs
-	//     exist (pre-feature projects).
-	//   - since_last_cache: edits after the last full warehouse re-discovery
-	//     (the cache write). Column/table removals edit the cache and persist
-	//     across a plain re-index — they are only restored by Clear schema
-	//     cache, which re-discovers. This is the broader count of everything a
-	//     full rebuild would discard, so the clear-cache warning uses it.
-	//
-	// Best-effort — a count failure must not fail the list.
-	// Counts are scoped to datasourceID when the caller passed one (the editor
-	// banner) and project-wide otherwise (the re-index / cache-clear warnings,
-	// which act on the whole project).
+	// Best-effort — a count failure must not fail the list. Scoped to
+	// datasourceID when the caller passed one (the editor banner) and
+	// project-wide otherwise (the re-index / cache-clear warnings, which act on
+	// the whole project).
 	sinceIndex := 0
+	since := time.Time{} // never indexed → every edit is live
 	if lastIndex, ok := h.lastIndexTime(ctx, projectID, datasourceID); ok {
-		// Only blurb/keyword edits are discarded by a re-index (it regenerates
-		// blurbs); column/table removals persist across it, so they don't belong
-		// in the re-index warning count.
-		if n, nErr := h.edits.CountSince(ctx, projectID, datasourceID, lastIndex, models.SchemaEditActionBlurb, models.SchemaEditActionKeywords); nErr == nil {
-			sinceIndex = n
-		}
+		since = lastIndex
 	}
-	sinceCache := 0
-	if h.cache != nil {
-		if t, cErr := h.cache.LastCachedAt(ctx, projectID); cErr == nil {
-			if n, nErr := h.edits.CountSince(ctx, projectID, datasourceID, t); nErr == nil {
-				sinceCache = n
-			}
-		}
+	if n, nErr := h.edits.CountSince(ctx, projectID, datasourceID, since); nErr == nil {
+		sinceIndex = n
 	}
 	writeJSON(w, http.StatusOK, schemaEditsResponse{
 		Edits:          edits,
 		SinceLastIndex: sinceIndex,
-		SinceLastCache: sinceCache,
 		DatasourceID:   datasourceID,
 	})
 }

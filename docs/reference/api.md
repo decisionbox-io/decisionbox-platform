@@ -394,9 +394,10 @@ A `failed` run carries the same shape with `"status": "failed"` and an `"error"`
 
 Advanced, hand-editing of the indexed schema. Reads require `viewer`; edits and
 deletions require `member`. **Manual edits are ephemeral** — the next re-index
-overwrites them — but every edit is recorded in a durable audit trail, and
-`since_last_index` powers the "N manual edits will be lost" warning shown before a
-re-index / cache clear.
+(or Clear schema cache) re-discovers the schema from the warehouse and discards
+them — but every edit is recorded in a durable audit trail, and `since_last_index`
+powers the "N manual edits will be lost" warning shown before a re-index / cache
+clear.
 
 ### GET /api/v1/projects/{id}/schema-editor/tables
 
@@ -461,13 +462,12 @@ curl -X DELETE "http://localhost:8080/api/v1/projects/507f.../schema-editor/tabl
 
 ### GET /api/v1/projects/{id}/schema-editor/edits
 
-The manual-edit audit trail (newest first) plus two "edits at risk" counters, one
-per reset path: `since_last_index` (edits since the latest indexing run,
-restricted to the blurb/keyword edits a **re-index** regenerates) and
-`since_last_cache` (all edits since the last full warehouse re-discovery — what a
-**Clear schema cache** / full rebuild discards, including column/table removals
-that persist across a plain re-index). Both counters (and the `edits` list) are
-scoped to `datasource_id` when it is supplied, else project-wide.
+The manual-edit audit trail (newest first) plus an "edits at risk" counter,
+`since_last_index`: the number of manual edits — of every kind (blurb, keywords,
+column removal, table delete) — made since the latest indexing run. That is what
+a re-index *or* a Clear schema cache will discard, because both re-discover the
+schema from the warehouse. The counter (and the `edits` list) is scoped to
+`datasource_id` when it is supplied, else project-wide.
 
 ```bash
 curl "http://localhost:8080/api/v1/projects/507f.../schema-editor/edits?datasource_id=wh_redshift"
@@ -488,8 +488,7 @@ curl "http://localhost:8080/api/v1/projects/507f.../schema-editor/edits?datasour
         "at": "2026-09-17T14:20:00Z"
       }
     ],
-    "since_last_index": 1,
-    "since_last_cache": 1
+    "since_last_index": 1
   }
 }
 ```

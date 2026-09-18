@@ -63,8 +63,8 @@ export default function SchemaEditorPage() {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 
   const [edits, setEdits] = useState<SchemaEdit[]>([]);
-  // Edits a full rebuild (Clear schema cache) would discard — the broader count,
-  // so the "review before a rebuild" banner reflects persisted removals too.
+  // Manual edits the next re-index (or Clear schema cache) would discard — they
+  // are ephemeral, so the banner nudges a review before a rebuild.
   const [sinceRebuild, setSinceRebuild] = useState(0);
   const [showHistory, setShowHistory] = useState(false);
 
@@ -109,7 +109,7 @@ export default function SchemaEditorPage() {
     try {
       const res = await api.listSchemaEdits(id, datasourceId);
       setEdits(res.edits || []);
-      setSinceRebuild(res.since_last_cache || 0);
+      setSinceRebuild(res.since_last_index || 0);
     } catch {
       /* audit trail is best-effort — never blocks editing */
     }
@@ -205,16 +205,16 @@ export default function SchemaEditorPage() {
         <Text size="xs" c="dimmed" maw={760}>
           Correct a table&apos;s description (blurb), remove columns you don&apos;t want the
           agent to use, or drop a table entirely. Changes take effect immediately — discovery
-          and Ask read this schema directly. <strong>Note:</strong> a full rebuild
-          (<em>Clear schema cache</em> → re-index) rediscovers from the warehouse and discards
-          these edits, and a re-index regenerates blurbs. Every change is recorded in the edit
-          history below so you can re-apply it.
+          and Ask read this schema directly. <strong>Note:</strong> these edits are ephemeral —
+          the next re-index (or <em>Clear schema cache</em>) re-discovers the schema from the
+          warehouse and discards them. Every change is recorded in the edit history below so you
+          can re-apply it.
         </Text>
 
         {sinceRebuild > 0 && (
           <Alert color="yellow" variant="light" icon={<IconAlertCircle size={16} />} maw={760}>
-            {sinceRebuild} manual {sinceRebuild === 1 ? 'edit' : 'edits'} not yet in a full rebuild.
-            A rebuild (Clear schema cache) will discard {sinceRebuild === 1 ? 'it' : 'them'} — the edit history keeps a copy so you can re-apply.
+            {sinceRebuild} manual {sinceRebuild === 1 ? 'edit' : 'edits'} since the last index.
+            The next re-index or <em>Clear schema cache</em> will discard {sinceRebuild === 1 ? 'it' : 'them'} — the edit history keeps a copy so you can re-apply.
           </Alert>
         )}
 

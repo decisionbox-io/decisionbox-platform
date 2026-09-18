@@ -351,6 +351,51 @@ func TestSchemaIndex_Reindex_MissingProject(t *testing.T) {
 	}
 }
 
+// Model B: a re-index must drop the schema cache so the worker re-discovers
+// from the warehouse (making manual schema edits ephemeral and picking up
+// schema drift), and it must do so before flipping to pending_indexing.
+func TestSchemaIndex_Reindex_InvalidatesCache(t *testing.T) {
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3", SchemaIndexStatus: models.SchemaIndexStatusReady}
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{}
+	drop := &mockDropper{}
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), drop, nil, nil, ci, nil)
+
+	w := httptest.NewRecorder()
+	h.Reindex(w, newReq("POST", "/reindex", p.ID, ""))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if len(ci.called) != 1 || ci.called[0] != p.ID {
+		t.Errorf("Invalidate called with %v, want [%s]", ci.called, p.ID)
+	}
+	got, _ := projRepo.GetByID(context.Background(), p.ID)
+	if got.SchemaIndexStatus != models.SchemaIndexStatusPendingIndexing {
+		t.Errorf("status = %q, want pending_indexing", got.SchemaIndexStatus)
+	}
+}
+
+// A cache-invalidate failure aborts the re-index before the status flip, so the
+// project stays in its prior state and the user can retry.
+func TestSchemaIndex_Reindex_CacheInvalidateError_500(t *testing.T) {
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3", SchemaIndexStatus: models.SchemaIndexStatusReady}
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{err: errors.New("mongo down")}
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), &mockDropper{}, nil, nil, ci, nil)
+
+	w := httptest.NewRecorder()
+	h.Reindex(w, newReq("POST", "/reindex", p.ID, ""))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	got, _ := projRepo.GetByID(context.Background(), p.ID)
+	if got.SchemaIndexStatus == models.SchemaIndexStatusPendingIndexing {
+		t.Errorf("status flipped despite cache-invalidate failure: %q", got.SchemaIndexStatus)
+	}
+}
+
 // --- Cancel ---
 
 // mockCanceller captures Cancel calls so tests can assert the handler

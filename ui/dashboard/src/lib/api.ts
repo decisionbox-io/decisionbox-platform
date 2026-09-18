@@ -548,13 +548,11 @@ export interface SchemaEdit {
 
 export interface SchemaEditsResponse {
   edits: SchemaEdit[];
-  // Edits since the latest indexing run — what a re-index regenerates
-  // (blurb/keyword edits).
+  // Manual edits since the latest indexing run — the number a re-index OR a
+  // Clear schema cache will discard, because both re-discover the schema from
+  // the warehouse (edits are ephemeral). Covers every edit type: blurb,
+  // keywords, column removal, and table delete.
   since_last_index: number;
-  // Edits since the last full warehouse re-discovery — everything a full rebuild
-  // (Clear schema cache) would discard, including column/table removals that
-  // persist across a plain re-index.
-  since_last_cache: number;
   datasource_id?: string;
 }
 

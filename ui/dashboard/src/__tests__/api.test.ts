@@ -1204,15 +1204,14 @@ describe('api.deleteSchemaEditorTable', () => {
 });
 
 describe('api.listSchemaEdits', () => {
-  it('returns the audit trail + since_last_index / since_last_cache counts', async () => {
-    mockSuccess({ edits: [{ project_id: 'p1', datasource_id: 'default', table: 'dbo.orders', action: 'blurb_edit', at: '2026-09-17T00:00:00Z' }], since_last_index: 2, since_last_cache: 5 });
+  it('returns the audit trail + since_last_index count', async () => {
+    mockSuccess({ edits: [{ project_id: 'p1', datasource_id: 'default', table: 'dbo.orders', action: 'blurb_edit', at: '2026-09-17T00:00:00Z' }], since_last_index: 2 });
     const res = await api.listSchemaEdits('p1', 'default');
     expect(mockFetch).toHaveBeenCalledWith(
       '/api/v1/projects/p1/schema-editor/edits?datasource_id=default',
       expect.anything(),
     );
     expect(res.since_last_index).toBe(2);
-    expect(res.since_last_cache).toBe(5);
     expect(res.edits).toHaveLength(1);
   });
 });

@@ -437,6 +437,14 @@ func (h *SchemaIndexHandler) Retry(w http.ResponseWriter, r *http.Request) {
 // Advanced-tab UI uses this to apply config changes that don't
 // auto-reindex (plan §3.3). Drops the Qdrant collection so the worker
 // cannot accidentally resume against stale vectors.
+//
+// A re-index rebuilds the schema from the warehouse as it is *now*: it
+// drops the schema cache so the worker re-discovers the catalog instead
+// of reusing it. That has two effects — it picks up warehouse schema
+// drift (added/dropped tables and columns the config hash wouldn't
+// catch), and it discards any manual schema-editor edits, which are
+// ephemeral by design; the edit history lets a user re-apply the ones
+// that still make sense.
 // POST /api/v1/projects/{id}/reindex
 func (h *SchemaIndexHandler) Reindex(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -463,6 +471,19 @@ func (h *SchemaIndexHandler) Reindex(w http.ResponseWriter, r *http.Request) {
 	if h.dropper != nil {
 		if err := h.dropper.DropCollection(r.Context(), id); err != nil {
 			writeError(w, http.StatusBadGateway, "drop collection: "+err.Error())
+			return
+		}
+	}
+
+	// Drop the schema cache BEFORE flipping to pending_indexing so the
+	// worker that picks the project up re-discovers from the warehouse
+	// (a cache hit would otherwise reuse the stale catalog and preserve
+	// manual edits). Nil-safe on Qdrant-less builds; idempotent (a no-op
+	// when nothing is cached). Ordered before the status flip so a failure
+	// here leaves the project untouched and retryable.
+	if h.cacheRepo != nil {
+		if err := h.cacheRepo.Invalidate(r.Context(), id); err != nil {
+			writeError(w, http.StatusInternalServerError, "invalidate cache: "+err.Error())
 			return
 		}
 	}

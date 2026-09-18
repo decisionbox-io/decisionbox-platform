@@ -162,34 +162,30 @@ Reads are available to any `viewer`; edits and deletions require `member`.
 
 Manual edits are applied to the live stores, so they take effect immediately —
 discovery and Ask read table columns straight from `project_schema_cache`, and
-retrieval reads blurbs from Qdrant. What "resets" an edit depends on the store it
-touched:
+retrieval reads blurbs from Qdrant.
 
-- **Blurb / keyword edits** live in Qdrant. A **re-index** drops the Qdrant
-  collection and regenerates blurbs from the cached schema, so these edits are
-  overwritten by any re-index.
-- **Column / table removals** edit the Mongo schema cache — which *is* the schema
-  the agent reads. A plain re-index reuses that cache (it's keyed by a hash of
-  the warehouse config, so an unchanged config is a cache hit and skips
-  re-discovery), so a removal **persists across a re-index**. It is restored by
-  **Clear schema cache** (Settings → Advanced), which drops the cache and forces
-  a fresh re-discovery from the warehouse.
+Edits are **ephemeral**: the next **re-index** rebuilds the schema from the
+warehouse as it is *now*. A re-index drops the schema cache and re-discovers the
+catalog (rather than reusing the cached one), then regenerates blurbs and
+embeddings — so every manual edit, of any kind (blurb, keywords, removed columns,
+deleted tables), is discarded. This is intentional: it keeps a re-index meaning
+"reflect the real warehouse," which also picks up schema drift (added / dropped
+tables and columns) that an unchanged warehouse config would otherwise hide.
+**Clear schema cache** (Settings → Advanced) does the same re-discovery without
+kicking off the rebuild.
 
-There is deliberately **no durable overrides layer**: a full rebuild
-(clear cache → re-index) always returns to the warehouse's real schema. To make
-that non-destructive, every manual edit is written to a durable, append-only
-audit trail (`project_schema_edits`) capturing the table, action, before/after
-values, who made it, and when. The editor's "Edit history" panel shows this trail
-so you can review and re-apply your changes after a rebuild. Before a reset, the
-dashboard warns you when there are manual edits at risk — with the history a
-click away — so you never discard curation work unaware. `GET /schema-editor/edits`
-returns two counters for the two reset paths: `since_last_index` (edits since the
-latest indexing run, restricted to the blurb/keyword edits a **re-index**
-regenerates) and `since_last_cache` (all edits since the last full warehouse
-re-discovery — what a **Clear schema cache** / full rebuild discards, including
-column/table removals that persist across a plain re-index). Both are scoped to
-`datasource_id` when one is supplied. The re-index warning uses the former; the
-cache-clear warning and the editor's rebuild banner use the latter.
+There is deliberately **no durable overrides layer**: a re-index always returns
+to the warehouse's real schema. To make that non-destructive, every manual edit
+is written to a durable, append-only audit trail (`project_schema_edits`)
+capturing the table, action, before/after values, who made it, and when. The
+editor's "Edit history" panel shows this trail so you can review and re-apply
+your changes after a rebuild. Before a re-index or cache clear, the dashboard
+warns you when there are manual edits at risk — with the history a click away —
+so you never discard curation work unaware. `GET /schema-editor/edits` returns a
+single counter, `since_last_index`: the number of manual edits (all types) made
+since the latest indexing run — what a re-index *or* a Clear schema cache will
+discard, because both re-discover the schema. It is scoped to `datasource_id`
+when one is supplied.
 
 ```bash
 # Browse a datasource's indexed tables (structure + blurb + keywords).

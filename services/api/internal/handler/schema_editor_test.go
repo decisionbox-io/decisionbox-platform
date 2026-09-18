@@ -117,7 +117,7 @@ type fakeEditRecorder struct {
 	mu               sync.Mutex
 	records          []models.SchemaEdit
 	sinceCount       int
-	sinceArgs        []time.Time // every cutoff CountSince was called with (index + cache)
+	sinceArgs        []time.Time // every cutoff CountSince was called with
 	sinceActions     [][]string  // the action filter passed alongside each cutoff
 	sinceDatasources []string    // the datasource scope passed alongside each cutoff
 }
@@ -150,8 +150,7 @@ func (f *fakeEditRecorder) CountSince(_ context.Context, _, datasourceID string,
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sinceArgs = append(f.sinceArgs, since)
-	// Record the action filter (index count is restricted, cache count is not)
-	// and the datasource scope so tests can assert both.
+	// Record the action filter and the datasource scope so tests can assert them.
 	f.sinceActions = append(f.sinceActions, append([]string(nil), actions...))
 	f.sinceDatasources = append(f.sinceDatasources, datasourceID)
 	return f.sinceCount, nil
@@ -666,9 +665,11 @@ func TestSchemaEditor_ListEdits(t *testing.T) {
 }
 
 func TestSchemaEditor_ListEdits_DatesFromLatestRun(t *testing.T) {
-	// Codex R2 P2: "since last index" must be dated from the latest schema-index
-	// run (refreshed on every re-index), not the schema cache timestamp (which a
-	// cache-hit re-index doesn't refresh). When both exist, the run wins.
+	// "since last index" must be dated from the latest schema-index run
+	// (refreshed on every re-index), not the schema cache timestamp (which a
+	// cache-hit re-index doesn't refresh). When both exist, the run wins. Under
+	// Model B a re-index discards every edit type, so the single CountSince is
+	// unrestricted (no action filter).
 	runTime := time.Now().UTC()
 	cacheTime := runTime.Add(-48 * time.Hour) // stale cache timestamp
 	cache := newFakeEditorCache()
@@ -683,36 +684,19 @@ func TestSchemaEditor_ListEdits_DatesFromLatestRun(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	// since_last_index must be dated from the latest run (not the stale cache)
-	// AND restricted to the actions a re-index discards (blurb/keyword).
-	// since_last_cache uses the cache time and counts ALL actions.
 	edits.mu.Lock()
 	defer edits.mu.Unlock()
-	var sawRunRestricted, sawCacheUnrestricted bool
-	for i, s := range edits.sinceArgs {
-		acts := edits.sinceActions[i]
-		if s.Equal(runTime) && sliceContains(acts, models.SchemaEditActionBlurb) && sliceContains(acts, models.SchemaEditActionKeywords) {
-			sawRunRestricted = true
-		}
-		if s.Equal(cacheTime) && len(acts) == 0 {
-			sawCacheUnrestricted = true
-		}
+	// Exactly one CountSince, dated from the run time (not the stale cache), with
+	// no action filter — a re-index discards every kind of edit.
+	if len(edits.sinceArgs) != 1 {
+		t.Fatalf("expected exactly one CountSince, got args=%v", edits.sinceArgs)
 	}
-	if !sawRunRestricted {
-		t.Fatalf("expected an action-restricted CountSince at run time %v; got args=%v actions=%v", runTime, edits.sinceArgs, edits.sinceActions)
+	if !edits.sinceArgs[0].Equal(runTime) {
+		t.Fatalf("CountSince cutoff = %v, want run time %v (not stale cache %v)", edits.sinceArgs[0], runTime, cacheTime)
 	}
-	if !sawCacheUnrestricted {
-		t.Fatalf("expected an unrestricted CountSince at cache time %v; got args=%v actions=%v", cacheTime, edits.sinceArgs, edits.sinceActions)
+	if len(edits.sinceActions[0]) != 0 {
+		t.Fatalf("CountSince should be unrestricted (all actions), got %v", edits.sinceActions[0])
 	}
-}
-
-func sliceContains(ss []string, want string) bool {
-	for _, s := range ss {
-		if s == want {
-			return true
-		}
-	}
-	return false
 }
 
 func TestSchemaEditor_ListEdits_FallsBackToCacheTimeWithoutRuns(t *testing.T) {
@@ -730,7 +714,7 @@ func TestSchemaEditor_ListEdits_FallsBackToCacheTimeWithoutRuns(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	// No runs → both counts fall back to the cache time.
+	// No runs → the count falls back to the cache time.
 	if !edits.hasSince(cacheTime) {
 		t.Fatalf("expected CountSince at cache time %v; got %v", cacheTime, edits.sinceArgs)
 	}
