@@ -593,6 +593,13 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	case models.SchemaIndexStatusPendingIndexing, models.SchemaIndexStatusIndexing:
 		writeError(w, http.StatusConflict, "schema index is not ready yet — poll /api/v1/projects/"+projectID+"/schema-index/status")
 		return
+	case models.SchemaIndexStatusNeedsReindex:
+		// The schema cache / vector index has been invalidated (config drift, a
+		// cache clear, or a re-index in mid-cleanup). Ask reads the schema cache
+		// + Qdrant directly, so it must not run against an emptied/stale index —
+		// same holding state the discovery gate honours.
+		writeError(w, http.StatusConflict, "schema index needs a re-index — trigger POST /api/v1/projects/"+projectID+"/reindex first")
+		return
 	case models.SchemaIndexStatusFailed:
 		writeError(w, http.StatusConflict, "schema indexing failed: "+project.SchemaIndexError+" — click Retry indexing in project settings")
 		return
