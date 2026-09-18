@@ -97,26 +97,31 @@ from Mongo and connects exactly as discovery would — no new test endpoint, **n
 transient credential, no runner/agent/secret-delivery machinery.** "Test before
 Save fails" disappears because the wizard persists the draft before testing it.
 
-**What `Create` does today that a draft must defer** (`projects.go`): plan-quota
-reservations `CheckCreateProject` (`:328`) / `CheckAddDataSource` (`:347`) and
-the schema-index enqueue `SetSchemaIndexStatus(pending_indexing)` (`:400`). A
-draft skips **all** of these until activation.
+**What `Create` does today that a draft must defer** (`projects.go`, current
+`main`): the plan-quota reservations `CheckCreateProject` (`:328`) /
+`CheckAddDataSource` (`:347`) and `TrackProjectCreated` telemetry (`:400`).
+**Note — main already made indexing explicit-only:** `Create` no longer
+auto-enqueues schema indexing at all — it zeroes `SchemaIndexStatus` and the
+operator starts indexing later via the dashboard's "Build schema index" →
+`POST /reindex` (`:362-409`). So a draft has **no indexing to skip** (that's
+already the behavior for every project); it only needs to defer **quota + list
+visibility + telemetry** until activation.
 
 **Draft lifecycle**
 
 | Step | Endpoint | Behavior |
 |---|---|---|
-| Create draft | `POST /projects` `{state:"draft", …}` | Persist; **skip** quota reservation, schema-index enqueue, and telemetry. No side effects. |
-| Edit draft | `PUT /projects/{id}` | Drafts are **freely mutable** — bypass the settings route's datasource-edit guard (`:537`); still no indexing while draft. |
+| Create draft | `POST /projects` `{state:"draft", …}` | Persist; **skip** quota reservation + telemetry. (Indexing is already never done at create.) No side effects. |
+| Edit draft | `PUT /projects/{id}` | Drafts are **freely mutable** — bypass the settings route's datasource-edit guard (`:537`). |
 | Set draft secret | `PUT /projects/{id}/secrets/{key}` | Existing keys, encrypted — same as any project. |
 | **Test** draft | `POST /projects/{id}/test/{target}` | **Existing, unchanged.** Reads the draft's saved config + secret; runs the agent. |
-| **Activate** | `POST /projects/{id}/activate` (new) | Validate completeness → run the deferred plan gates → `state=ready` → **now** enqueue schema indexing + telemetry. |
+| **Activate** | `POST /projects/{id}/activate` (new) | Validate completeness → run the deferred plan gates → `state=ready` + telemetry. **No indexing** — that stays the separate explicit operator step (unchanged for all projects). |
 | Discard | `DELETE /projects/{id}` | Existing cascade (drops the draft's secrets too). Wizard calls on cancel. |
 | GC | API sweep | Delete drafts older than `PROJECT_DRAFT_TTL_HOURS` (default 24h) + cascade — backstop for abandoned wizards. |
 
 `GET /projects` **excludes** drafts (no dashboard pollution); `GET /projects/{id}`
-still returns them (the wizard reads its draft by id). The schema-index worker
-only picks up `pending_indexing`, which a draft never has — so no worker change.
+still returns them (the wizard reads its draft by id). Indexing is operator-
+triggered post-activation exactly as for any project — no worker change.
 
 **Sub-decisions (defaulted; flagged for Can):** (1) a dedicated
 `POST /projects/{id}/activate` rather than overloading `PUT` with a state
@@ -215,15 +220,15 @@ See the "P2 backend approach" section above for the full table. Concretely:
    so a draft can't run discovery.
 2. **`handler/projects.go` `Create` (`:207`)** — accept `state:"draft"`. For a
    draft: **skip** `CheckCreateProject`/`CheckAddDataSource` reservations
-   (`:328/347`), the `SetSchemaIndexStatus(pending_indexing)` enqueue (`:400`),
-   and `TrackProjectCreated`. A draft is a pure persist.
+   (`:328/347`) and `TrackProjectCreated` (`:400`). A draft is a pure persist.
+   (Create already never enqueues indexing — `:362-409`.)
 3. **`handler/projects.go` `Update` (`:455`)** — when `existing.IsDraft()`,
    bypass the datasource-edit guard (`:537`) so the wizard can freely set/replace
-   the warehouse; still no indexing while draft.
+   the warehouse.
 4. **`handler/projects.go` `Activate` (new, `POST /projects/{id}/activate`)** —
    validate the draft is complete (warehouse + llm + embedding present), run the
-   deferred plan gates, set `state=ready`, then enqueue schema indexing +
-   telemetry (the create-side side effects, now user-triggered).
+   deferred plan gates, set `state=ready` + telemetry. **No indexing** — the
+   operator starts it explicitly later, same as any project.
 5. **`handler/projects.go` `List` (`:412`)** — exclude `state=="draft"` (repo
    query filter) so drafts don't appear on the dashboard. `Get` returns them.
 6. **Draft GC** — a periodic API sweep deletes drafts older than
@@ -330,7 +335,7 @@ Exploration/Minimum-steps inputs, Estimate checkbox, "Run All Areas", and the
 | P1 | `ui/dashboard/src/components/ProviderCredentialsPhase.tsx` | Credential slot (covers embedding + blurb) |
 | P1 | `ui/dashboard/src/components/common/LLMModelField.tsx` | `DynamicField` credential guard |
 | P2 | `services/api/models/project.go` | Add `ProjectStateDraft = "draft"` + `IsDraft()` |
-| P2 | `services/api/internal/handler/projects.go` | `Create`: honor `state:"draft"` (skip quota/index/telemetry); `Update`: bypass datasource guard for drafts; **new** `Activate`; `List`: exclude drafts |
+| P2 | `services/api/internal/handler/projects.go` | `Create`: honor `state:"draft"` (skip quota + telemetry; create already never indexes); `Update`: bypass datasource guard for drafts; **new** `Activate`; `List`: exclude drafts |
 | P2 | `services/api/database/*project*` | Repo: `List` filter `state != draft`; draft-GC query (list drafts older than TTL) |
 | P2 | `services/api/apiserver/apiserver.go` | Register `POST /projects/{id}/activate`; wire the draft-GC sweep |
 | P2 | (new) draft-GC sweep | Periodic delete of stale drafts + cascade; `PROJECT_DRAFT_TTL_HOURS` (default 24h) |
@@ -380,10 +385,11 @@ enterprise CI builds against the platform bridge branch.
 - **API:** one new route `POST /projects/{id}/activate`; `Create` honors
   `state:"draft"`; `List` excludes drafts. **Test endpoint + agent + runner are
   unchanged** — the API still opens no DB connection.
-- **Behavior:** for a draft, schema-index enqueue + plan-quota reservation +
-  telemetry move from create → **activate** (user-triggered). Cloud plan counting
-  stays correct (drafts don't reserve until activated); no `contract.yaml`/helm
-  change. One new optional env var `PROJECT_DRAFT_TTL_HOURS` (default 24h).
+- **Behavior:** for a draft, plan-quota reservation + telemetry move from create
+  → **activate** (user-triggered). Indexing is unaffected — main already made it
+  explicit-only for every project. Cloud plan counting stays correct (drafts
+  don't reserve until activated); no `contract.yaml`/helm change. One new optional
+  env var `PROJECT_DRAFT_TTL_HOURS` (default 24h).
 - **UI:** credential inputs masked; wizard uses a draft; per-section
   Save/Save&Test; scrollable popover.
 
@@ -408,13 +414,13 @@ enterprise CI builds against the platform bridge branch.
 
 **Backend (Go, `make test-go`)**
 - Draft `Create`: `state:"draft"` → project persisted with **no** quota
-  reservation, **no** `pending_indexing`, **no** telemetry; a non-draft create is
-  unchanged (still reserves + enqueues).
+  reservation and **no** telemetry; a non-draft create is unchanged (still
+  reserves).
 - `Update` on a draft: datasource edits allowed (guard bypassed); on a ready
   project the guard still rejects them.
 - `Activate`: incomplete draft (missing warehouse/llm/embedding) → 400; complete
-  draft → `state=ready` + `pending_indexing` set + plan gates run (over-quota →
-  policy error, project stays draft); activating a non-draft → 409/no-op.
+  draft → `state=ready` + plan gates run (over-quota → policy error, project stays
+  draft); activating a non-draft → 409/no-op.
 - `List`: drafts excluded; `Get` by id returns a draft.
 - Draft GC: a draft older than the TTL is deleted with its secrets; a fresh draft
   and any ready project are untouched.
@@ -423,8 +429,8 @@ enterprise CI builds against the platform bridge branch.
 - Mongo-backed: create draft → set warehouse-credentials secret → existing
   `POST /projects/{id}/test/warehouse` against a Postgres testcontainer: good
   creds → success; wrong password → `success:false` with the driver error (the
-  real create-time "test the form" path). Then `activate` → assert
-  `pending_indexing`. Discard → assert project + secret both gone.
+  real create-time "test the form" path). Then `activate` → assert `state=ready`.
+  Discard → assert project + secret both gone.
 - Draft excluded from `List`; GC removes a stale draft + its secret.
 
 **Manual (local dashboard image, enterprise-overlay validation memory)**
@@ -438,15 +444,15 @@ enterprise CI builds against the platform bridge branch.
 ## Risks & mitigations
 - **Draft ripples into other reads** — any code that lists/counts projects must
   ignore drafts (dashboard list, cloud plan counting, run summaries). Mitigation:
-  filter at the repo `List`; drafts never get `pending_indexing` (worker ignores
-  them) and never reserve quota (moved to activate). Audit read sites during
-  build.
+  filter at the repo `List`; drafts don't reserve quota (moved to activate) and
+  are never indexed until the operator starts it post-activation. Audit read
+  sites during build.
 - **Abandoned drafts leak rows/secrets** — mitigated by wizard discard-on-cancel
   **plus** the GC sweep (TTL). GC uses the existing cascade so secrets go too.
-- **Activation partial failure** — plan gate passes but index-enqueue fails, or
-  vice-versa: order as gate → `state=ready` → enqueue, and treat a failed enqueue
-  as non-fatal (the existing create path already logs-and-continues at `:401`;
-  user can Re-index). The project is `ready` and usable regardless.
+- **Activation over-quota** — the deferred plan gate runs at activate; if the
+  deployment is over its project cap the activation returns the policy error and
+  the project **stays a draft** (the user can discard it or upgrade). No partial
+  state.
 - **Sub-decisions** — dedicated `/activate` vs `PUT` state-transition; GC TTL
   default. Defaulted above; flagged for Can.
 - **`-webkit-text-security` browser support** — Chromium/Safari/Firefox 117+;
