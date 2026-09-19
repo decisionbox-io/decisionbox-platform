@@ -126,6 +126,11 @@ type turnState struct {
 	// writeNudges bounds how many times the loop re-prompts a model that tries to
 	// answer with an outstanding requested-but-uncompleted write.
 	writeNudges int
+	// mutationAck is the acknowledgement supplied by the most recent write tool
+	// that offered one (askmutation.Result.Ack). It replaces the generic
+	// no-proposal wording on an ungrounded finish, because the loop cannot know
+	// what a plugin's tool produced. Plugin text, never model text.
+	mutationAck string
 }
 
 // maxWriteNudges bounds the outstanding-write re-prompts (one is enough to
@@ -1228,6 +1233,11 @@ const noWriteAckText = "I didn't create a new pending change this turn — it ei
 func mutationAck(st *turnState) string {
 	if st.writesSaved > 0 {
 		return writeAckText
+	}
+	// A tool that produced something other than a proposal knows what to say;
+	// the generic wording below can only describe a proposal.
+	if st.mutationAck != "" {
+		return st.mutationAck
 	}
 	return noWriteAckText
 }

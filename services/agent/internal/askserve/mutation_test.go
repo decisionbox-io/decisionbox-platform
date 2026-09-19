@@ -160,8 +160,8 @@ func TestMutation_ReservedNamesDropped(t *testing.T) {
 	run := func(ctx context.Context, in MutationInput) (MutationOutput, error) { return MutationOutput{}, nil }
 	tools := []MutationTool{
 		{Name: "save_note", Run: run},
-		{Name: "query_data", Run: run},     // shadows a built-in
-		{Name: "search_tables", Run: run},  // shadows a built-in
+		{Name: "query_data", Run: run},    // shadows a built-in
+		{Name: "search_tables", Run: run}, // shadows a built-in
 	}
 	names := map[string]bool{}
 	for _, d := range mutationDefs(tools) {
@@ -196,7 +196,10 @@ func TestLoopTools_ParallelMutationsDeferred(t *testing.T) {
 	saved := 0
 	mt := MutationTool{
 		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
-		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) { saved++; return MutationOutput{ProposalID: "p"}, nil },
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {
+			saved++
+			return MutationOutput{ProposalID: "p"}, nil
+		},
 	}
 	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
 		{
@@ -242,7 +245,10 @@ func TestLoopTools_DeferredWriteNudgedBeforeAnswer(t *testing.T) {
 	saved := 0
 	mt := MutationTool{
 		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
-		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) { saved++; return MutationOutput{ProposalID: "p1"}, nil },
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {
+			saved++
+			return MutationOutput{ProposalID: "p1"}, nil
+		},
 	}
 	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
 		{ // round 1: query + save in one batch → save deferred, query runs (grounds)
@@ -253,8 +259,8 @@ func TestLoopTools_DeferredWriteNudgedBeforeAnswer(t *testing.T) {
 			},
 			Usage: gollm.Usage{InputTokens: 10, OutputTokens: 5},
 		},
-		toolCall(string(actAnswer), map[string]any{"text": "The count is 100."}), // round 2: answer → nudged (write still pending)
-		toolCall("save_note", map[string]any{"title": "T", "body": "B"}),          // round 3: save on its own → proposal created
+		toolCall(string(actAnswer), map[string]any{"text": "The count is 100."}),        // round 2: answer → nudged (write still pending)
+		toolCall("save_note", map[string]any{"title": "T", "body": "B"}),                // round 3: save on its own → proposal created
 		toolCall(string(actAnswer), map[string]any{"text": "Saved; the count is 100."}), // round 4: answer → finishes
 	}}
 	cfg := Config{MaxRounds: 8, MaxQueriesPerTurn: 6, MaxFetchRows: 1000, PreviewRows: 50}
@@ -286,7 +292,10 @@ func TestLoopTools_DeferredWriteDisclosedWhenNudgeIgnored(t *testing.T) {
 	saved := 0
 	mt := MutationTool{
 		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
-		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) { saved++; return MutationOutput{ProposalID: "p1"}, nil },
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {
+			saved++
+			return MutationOutput{ProposalID: "p1"}, nil
+		},
 	}
 	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
 		{ // round 1: query + save batched → query grounds, save deferred
@@ -329,7 +338,10 @@ func TestLoopTools_DeferredWriteDisclosedOnDecline(t *testing.T) {
 	saved := 0
 	mt := MutationTool{
 		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
-		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) { saved++; return MutationOutput{ProposalID: "p1"}, nil },
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {
+			saved++
+			return MutationOutput{ProposalID: "p1"}, nil
+		},
 	}
 	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
 		{ // round 1: query + save batched → save deferred
@@ -371,7 +383,10 @@ func TestLoopTools_DeferredWriteClearedByReissueWithDifferentArgs(t *testing.T) 
 	saved := 0
 	mt := MutationTool{
 		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
-		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) { saved++; return MutationOutput{ProposalID: "p1"}, nil },
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {
+			saved++
+			return MutationOutput{ProposalID: "p1"}, nil
+		},
 	}
 	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
 		{ // round 1: query + save batched → query grounds, save deferred
@@ -412,7 +427,9 @@ func TestLoopTools_SaveThenDeclineReportsSaveNotFailure(t *testing.T) {
 	wh := testutil.NewMockWarehouseProvider("ds")
 	mt := MutationTool{
 		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
-		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) { return MutationOutput{ProposalID: "p1"}, nil },
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {
+			return MutationOutput{ProposalID: "p1"}, nil
+		},
 	}
 	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
 		toolCall("save_note", map[string]any{"title": "T", "body": "B"}),
@@ -439,7 +456,9 @@ func TestLoopTools_SaveThenClarifyAcknowledgesSave(t *testing.T) {
 	wh := testutil.NewMockWarehouseProvider("ds")
 	mt := MutationTool{
 		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
-		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) { return MutationOutput{ProposalID: "p1"}, nil },
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {
+			return MutationOutput{ProposalID: "p1"}, nil
+		},
 	}
 	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
 		toolCall("save_note", map[string]any{"title": "T", "body": "B"}),
@@ -529,7 +548,10 @@ func TestLoopTools_ReDeferredWriteNotDoubleCounted(t *testing.T) {
 	saved := 0
 	mt := MutationTool{
 		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
-		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) { saved++; return MutationOutput{ProposalID: "p1"}, nil },
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {
+			saved++
+			return MutationOutput{ProposalID: "p1"}, nil
+		},
 	}
 	batch := gollm.ChatResponse{
 		StopReason: "tool_use",
@@ -542,7 +564,7 @@ func TestLoopTools_ReDeferredWriteNotDoubleCounted(t *testing.T) {
 	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
 		batch, // round 1: save deferred
 		batch, // round 2: SAME save re-batched → re-deferred (idempotent, set stays size 1)
-		toolCall("save_note", map[string]any{"title": "T", "body": "B"}),          // round 3: save alone → completes, clears the entry
+		toolCall("save_note", map[string]any{"title": "T", "body": "B"}),         // round 3: save alone → completes, clears the entry
 		toolCall(string(actAnswer), map[string]any{"text": "The count is 100."}), // round 4: answer → no straggler
 	}}
 	cfg := Config{MaxRounds: 8, MaxQueriesPerTurn: 6, MaxFetchRows: 1000, PreviewRows: 50}
@@ -671,7 +693,10 @@ func TestLoopTools_PendingWriteDisclosedAtBudget(t *testing.T) {
 	saved := 0
 	mt := MutationTool{
 		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
-		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) { saved++; return MutationOutput{ProposalID: "p1"}, nil },
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {
+			saved++
+			return MutationOutput{ProposalID: "p1"}, nil
+		},
 	}
 	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
 		{ // round 1 (the only round): query + save batched → query runs, save deferred
@@ -706,6 +731,43 @@ func TestLoopTools_PendingWriteDisclosedAtBudget(t *testing.T) {
 	}
 }
 
+// A tool whose outcome is not a proposal supplies its own acknowledgement, so
+// an ungrounded finish says what actually happened instead of the generic
+// proposal wording — which the loop has no way to know is wrong.
+func TestExecMutation_ToolSuppliedAckWinsOnAnUngroundedFinish(t *testing.T) {
+	r := &runner{cfg: Config{}, store: &fakeStore{}}
+	st := &turnState{req: TurnRequest{ProjectID: "p", CallerRole: roleAdmin}}
+	mt := MutationTool{
+		Name: "generate_report",
+		Run: func(context.Context, MutationInput) (MutationOutput, error) {
+			return MutationOutput{Output: map[string]any{"report_id": "r1"}, Ack: "Your report is ready."}, nil
+		},
+	}
+	r.execMutation(context.Background(), st, mt, gollm.ToolCall{ID: "t1", Name: "generate_report"})
+
+	if st.mutationAck != "Your report is ready." {
+		t.Fatalf("the tool's acknowledgement was not kept, got %q", st.mutationAck)
+	}
+	if got := mutationAck(st); got != "Your report is ready." {
+		t.Fatalf("mutationAck = %q, want the tool's own sentence", got)
+	}
+
+	// A real proposal still wins: a saved change must be acknowledged as saved.
+	st.writesSaved = 1
+	if got := mutationAck(st); got != writeAckText {
+		t.Fatalf("a saved write should be acknowledged as saved, got %q", got)
+	}
+}
+
+// Without an acknowledgement the generic wording still applies, so existing
+// tools are unaffected.
+func TestMutationAck_FallsBackToTheGenericWording(t *testing.T) {
+	st := &turnState{}
+	if got := mutationAck(st); got != noWriteAckText {
+		t.Fatalf("mutationAck = %q, want the generic no-proposal wording", got)
+	}
+}
+
 func TestExecMutation_NoProposalCompletesButIsNotSaved(t *testing.T) {
 	// A mutation that returns nil error but no proposal id (no-op / already-exists)
 	// still RAN: it lets the turn finish to report the outcome (mutationsDone) and
@@ -732,8 +794,17 @@ func TestExecMutation_NoProposalCompletesButIsNotSaved(t *testing.T) {
 	if st.groundedEvents != 0 {
 		t.Fatal("a mutation is not evidence — it must not ground the turn")
 	}
-	if !strings.Contains(obs, "no pending change") {
-		t.Fatalf("observation should report no pending change, got %q", obs)
+	// The observation must not claim a change awaits approval, and must not
+	// frame the call as having fallen short — a mutation whose result IS the
+	// outcome (rather than something to approve) completed successfully.
+	if !strings.Contains(obs, "nothing for them to approve") {
+		t.Fatalf("observation should say nothing was created to approve, got %q", obs)
+	}
+	if strings.Contains(obs, "the user can review and apply") {
+		t.Fatalf("observation must not claim a pending change was created, got %q", obs)
+	}
+	if !strings.Contains(obs, "following any instruction in the result") {
+		t.Fatalf("observation should point the model at the tool's own result, got %q", obs)
 	}
 	if !strings.Contains(obs, "exists") {
 		t.Fatalf("the tool output should be surfaced to the model, got %q", obs)
