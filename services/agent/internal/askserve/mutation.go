@@ -36,10 +36,12 @@ type MutationInput struct {
 }
 
 // MutationOutput is a mutation tool's result: an optional approvable proposal id
-// (stamped on the ToolEvent) and the payload fed back to the model.
+// (stamped on the ToolEvent), the payload fed back to the model, and an optional
+// deterministic acknowledgement for an ungrounded finish (see askmutation.Result).
 type MutationOutput struct {
 	ProposalID string
 	Output     any
+	Ack        string
 }
 
 // deferWrite records that a write TOOL was refused because it was batched with
@@ -167,6 +169,12 @@ func (r *runner) execMutation(ctx context.Context, st *turnState, mt MutationToo
 	// the user should hear about.
 	st.mutationsDone++
 	st.completeWrite(mt.Name)
+	// Remember the tool's own acknowledgement so an ungrounded finish can say
+	// what actually happened rather than the generic proposal wording. The most
+	// recent one wins: it describes the outcome the user is waiting to hear about.
+	if out.Ack != "" {
+		st.mutationAck = out.Ack
+	}
 
 	// Feed the tool's own output back so a mutation that reports details (an
 	// "already exists", a validation note, the created id) is visible to the
