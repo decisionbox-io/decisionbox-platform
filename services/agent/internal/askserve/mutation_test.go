@@ -732,8 +732,17 @@ func TestExecMutation_NoProposalCompletesButIsNotSaved(t *testing.T) {
 	if st.groundedEvents != 0 {
 		t.Fatal("a mutation is not evidence — it must not ground the turn")
 	}
-	if !strings.Contains(obs, "no pending change") {
-		t.Fatalf("observation should report no pending change, got %q", obs)
+	// The observation must not claim a change awaits approval, and must not
+	// frame the call as having fallen short — a mutation whose result IS the
+	// outcome (rather than something to approve) completed successfully.
+	if !strings.Contains(obs, "nothing for them to approve") {
+		t.Fatalf("observation should say nothing was created to approve, got %q", obs)
+	}
+	if strings.Contains(obs, "the user can review and apply") {
+		t.Fatalf("observation must not claim a pending change was created, got %q", obs)
+	}
+	if !strings.Contains(obs, "following any instruction in the result") {
+		t.Fatalf("observation should point the model at the tool's own result, got %q", obs)
 	}
 	if !strings.Contains(obs, "exists") {
 		t.Fatalf("the tool output should be surfaced to the model, got %q", obs)

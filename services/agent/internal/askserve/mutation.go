@@ -178,11 +178,14 @@ func (r *runner) execMutation(ctx context.Context, st *turnState, mt MutationToo
 		}
 	}
 	if out.ProposalID == "" {
-		// Nil error but no proposal id (a no-op / already-exists / validation-only
-		// outcome — ProposalID is optional). Report the outcome, but do NOT claim a
-		// pending change was created (writesSaved stays flat → an ungrounded finish
-		// acknowledges the no-op without a false "saved").
-		return fmt.Sprintf("%s completed but created no pending change; report the outcome to the user based on the result.", mt.Name) + suffix
+		// Nil error but no proposal id — ProposalID is optional, so this covers a
+		// no-op, an already-exists, and a tool whose result IS the outcome rather
+		// than something to approve. The wording must not imply the call fell
+		// short: it is a success, just not one that produced an approval. What it
+		// must still avoid is claiming something was saved for approval
+		// (writesSaved stays flat → an ungrounded finish acknowledges the outcome
+		// without a false "saved").
+		return fmt.Sprintf("%s completed. Tell the user what happened, following any instruction in the result below; it produced nothing for them to approve, so do not say a change was saved and is awaiting approval.", mt.Name) + suffix
 	}
 	// A real proposal was created: acknowledge the save.
 	st.writesSaved++
