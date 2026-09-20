@@ -208,7 +208,7 @@ const maxGroundingNudges = 2
 const groundingNudge = "Do NOT answer yet — you have run no query, so you have no data to ground an answer in. " +
 	"Run a query_data action first to gather evidence; never state a table, count, total, or value you have not seen in a query result this turn. " +
 	"If you don't know the tables or columns, discover them with a query against INFORMATION_SCHEMA (e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES`) or use search_tables / lookup_schema. " +
-	"Only use clarify or decline if the question genuinely cannot be turned into any query."
+	"Only use clarify or decline if the question genuinely cannot be turned into any query, or if a tool you called asked you to confirm something with the user first."
 
 // turnRouting is the per-turn datasource plan: which datasources the model may
 // target and whether the turn is pinned to exactly one. Computed once at turn
