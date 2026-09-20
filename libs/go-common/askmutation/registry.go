@@ -46,6 +46,18 @@ type Request struct {
 type Result struct {
 	ProposalID string
 	Output     any
+	// Ack is the sentence the loop uses when this tool's outcome ends a turn
+	// that gathered no query evidence. The loop replaces the model's prose in
+	// that case (an ungrounded answer could carry invented figures) and
+	// otherwise falls back to a generic acknowledgement — which can only
+	// describe a proposal, because the loop has no idea what a plugin's tool
+	// actually did. A tool whose outcome is something else entirely should say
+	// so here.
+	//
+	// It is PLUGIN text, never model text: supply a fixed sentence, never
+	// anything derived from the model's arguments, or the safety property the
+	// deterministic acknowledgement exists for is lost. Optional.
+	Ack string
 }
 
 // Executor runs one mutation invocation. It MUST honour ctx and return a

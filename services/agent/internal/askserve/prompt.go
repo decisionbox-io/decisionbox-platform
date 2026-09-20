@@ -40,7 +40,7 @@ func buildSystemPrompt(rt *ProjectRuntime, routing turnRouting, cfg Config, char
 		b.WriteString(`  {"thinking":"...","render_chart":{"type":"bar","source_step_id":"q2","x":{"field":"month"},"y":[{"field":"revenue"}],"data":[...]}}` + "  — chart a prior query result\n")
 	}
 	b.WriteString(`  {"thinking":"...","answer":"final grounded answer for the user"}` + "  — when you can answer\n")
-	b.WriteString(`  {"thinking":"...","clarify":"a single clarifying question"}` + "  — when the question is too ambiguous to answer\n")
+	b.WriteString(`  {"thinking":"...","clarify":"a single clarifying question"}` + "  — when the question is too ambiguous to answer, or when a tool's result asks you to put something to the user before continuing\n")
 	b.WriteString(`  {"thinking":"...","decline":"why this cannot be answered from the data"}` + "  — when it is unanswerable\n")
 
 	writeResultHandling(&b, cfg)
@@ -48,7 +48,7 @@ func buildSystemPrompt(rt *ProjectRuntime, routing turnRouting, cfg Config, char
 		writeChartsSection(&b, cfg)
 	}
 
-	b.WriteString("\nGROUNDING (required): you MUST gather evidence and observe its result before you give an `answer`. Never state a table name, count, total, or specific value you have not seen in a result in this conversation — do not answer from prior knowledge or guesses. If you don't yet know the tables or columns, your FIRST action must be a discovery query — e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES` — or a search_tables / lookup_schema; do not invent table or column names. An answer with no evidence behind it will be rejected; only use clarify or decline if the question genuinely cannot be turned into any query.\n")
+	b.WriteString("\nGROUNDING (required): you MUST gather evidence and observe its result before you give an `answer`. Never state a table name, count, total, or specific value you have not seen in a result in this conversation — do not answer from prior knowledge or guesses. If you don't yet know the tables or columns, your FIRST action must be a discovery query — e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES` — or a search_tables / lookup_schema; do not invent table or column names. An answer with no evidence behind it will be rejected; only use clarify or decline if the question genuinely cannot be turned into any query, or if a tool you called asked you to confirm something with the user first.\n")
 	if rt.InsightsProvider != nil {
 		b.WriteString("For questions about what prior analysis found or recommended, a search_insights result is sufficient grounding on its own — you do not need to run SQL.\n")
 	}
@@ -104,7 +104,7 @@ func buildSystemPromptForTools(rt *ProjectRuntime, routing turnRouting, cfg Conf
 			}
 			fmt.Fprintf(&b, "- %s: %s\n", mt.Name, mt.Description)
 		}
-		b.WriteString("You are NOT read-only: the write tool(s) above let you persist a change when the user asks (e.g. \"save this as a note\"). A write creates a pending item the user reviews and applies — do it when asked, then confirm it was saved.\n")
+		b.WriteString("You are NOT read-only: the write tool(s) above let you persist a change when the user asks (e.g. \"save this as a note\"). Do it when asked, and then tell the user what the tool's own result says happened — not what you assume a write does, which differs from tool to tool. If a result asks you to put something to the user before it can finish, use clarify to ask; do not substitute a different tool.\n")
 	}
 	b.WriteString("- answer / clarify / decline: finish the turn.\n")
 
@@ -122,7 +122,7 @@ func buildSystemPromptForTools(rt *ProjectRuntime, routing turnRouting, cfg Conf
 	case rt.KnowledgeProvider != nil:
 		evidence = "query_data, search_tables, lookup_schema, or search_knowledge"
 	}
-	fmt.Fprintf(&b, "\nGROUNDING (required): you MUST run at least one %s call and observe its result before you answer. Never state a table name, count, total, or value you have not seen in a result this turn — do not answer from prior knowledge or guesses. If you don't know the tables or columns, start with search_tables or a discovery query (e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES`); do not invent names. Only clarify when the request is genuinely too ambiguous to query, and prefer gathering evidence before you decline.\n", evidence)
+	fmt.Fprintf(&b, "\nGROUNDING (required): you MUST run at least one %s call and observe its result before you answer. Never state a table name, count, total, or value you have not seen in a result this turn — do not answer from prior knowledge or guesses. If you don't know the tables or columns, start with search_tables or a discovery query (e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES`); do not invent names. Only clarify when the request is genuinely too ambiguous to query, or when a tool you called asked you to confirm something with the user first; and prefer gathering evidence before you decline.\n", evidence)
 	if rt.InsightsProvider != nil {
 		b.WriteString("For questions about what prior analysis found or recommended, a search_insights result is sufficient grounding on its own — you do not need to run SQL.\n")
 	}
