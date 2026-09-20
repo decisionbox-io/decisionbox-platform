@@ -1,5 +1,7 @@
 package runner
 
+import "strings"
+
 // This file holds the agent environment-variable wiring shared by the
 // container-spawning runners (Kubernetes Jobs and Docker containers). A
 // spawned agent runs in its own container — unlike the subprocess runner,
@@ -203,6 +205,51 @@ func agentBaseEnv() []envKV {
 		{Key: "TMPDIR", Value: "/tmp"},
 		{Key: "HOME", Value: "/tmp"},
 	}
+}
+
+// agentForwardEnvKey names the variable a deployment sets to forward
+// API-process variables this repo does not know the names of.
+//
+// The canonical list above cannot be complete. A plugin that ships
+// separately has gates this repo has never heard of, and a gate that is set
+// on the API but never reaches a spawned agent fails *silently*: the plugin
+// still loads, hands back its no-op implementation, and the run completes
+// looking healthy while doing none of what was switched on. That has now
+// been discovered four separate times, each time by someone wondering why a
+// feature they had enabled did nothing — and each time the fix was to append
+// one more name here, which only works for gates whose names are known here.
+//
+// A subprocess-runner deployment never had the problem: the agent inherits
+// the API process environment wholesale.
+//
+// The value is a comma-separated list of variable names, not values —
+// a name is only ever read back out of the API's own environment, so this
+// widens what is forwarded, never what is readable.
+const agentForwardEnvKey = "AGENT_FORWARD_ENV"
+
+// operatorForwardedEnvKeys returns the deployment's own forward list, in the
+// order given, dropping blanks and anything the canonical set already
+// carries so a container spec cannot end up with the same key twice.
+func operatorForwardedEnvKeys() []string {
+	raw := getEnv(agentForwardEnvKey, "")
+	if raw == "" {
+		return nil
+	}
+	seen := make(map[string]bool, len(agentForwardedEnvKeys))
+	for _, k := range agentForwardedEnvKeys {
+		seen[k] = true
+	}
+	var out []string
+	for _, k := range strings.Split(raw, ",") {
+		k = strings.TrimSpace(k)
+		// Also skips a name repeated within the list itself.
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, k)
+	}
+	return out
 }
 
 // collectForwardedEnv returns the entries from the given key groups that

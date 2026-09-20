@@ -203,7 +203,7 @@ func (r *DockerRunner) buildEnv() []string {
 	for _, kv := range agentBaseEnv() {
 		env = append(env, kv.Key+"="+kv.Value)
 	}
-	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys, dockerAgentExtraEnvKeys) {
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys, dockerAgentExtraEnvKeys, operatorForwardedEnvKeys()) {
 		env = append(env, kv.Key+"="+kv.Value)
 	}
 	return env
