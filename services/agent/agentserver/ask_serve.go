@@ -421,7 +421,7 @@ func buildMutationTools(db *mongo.Database) []askserve.MutationTool {
 				if err != nil {
 					return askserve.MutationOutput{}, err
 				}
-				return askserve.MutationOutput{ProposalID: res.ProposalID, Output: res.Output}, nil
+				return askserve.MutationOutput{ProposalID: res.ProposalID, Output: res.Output, Ack: res.Ack}, nil
 			},
 		})
 	}

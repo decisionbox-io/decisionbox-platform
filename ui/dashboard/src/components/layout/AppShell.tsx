@@ -4,11 +4,9 @@ import { ReactNode, useEffect, useState } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname, useParams } from 'next/navigation';
-import {
-  IconBook2, IconBookmark, IconHelpCircle, IconMessageCircle, IconNotebook, IconPackages, IconSearch, IconServer, IconSettings, IconSparkles, IconStack2, IconTimeline,
-} from '@tabler/icons-react';
 import { api, Project } from '@/lib/api';
 import SpotlightSearch from '@/components/common/SpotlightSearch';
+import { NavSections, COMMUNITY_NAV, passthroughGate } from '@/components/layout/nav';
 
 interface ShellProps {
   children: ReactNode;
@@ -31,8 +29,6 @@ export default function Shell({ children, breadcrumb, actions, fullWidth }: Shel
 
   // Derive null project from absent projectId (avoids setState in effect)
   const activeProject = projectId ? project : null;
-
-  const isActive = (path: string) => pathname === path;
 
   // Build initials from project name
   const initials = activeProject
@@ -114,130 +110,22 @@ export default function Shell({ children, breadcrumb, actions, fullWidth }: Shel
           </div>
         )}
 
-        {/* Navigation */}
-        {projectId && (
+        {/* Navigation — data-driven from COMMUNITY_NAV (see nav.tsx). */}
+        {projectId ? (
           <nav style={{ padding: '8px 12px', flex: 1, overflowY: 'auto' }}>
-            {/* Discover section */}
-            <div style={{
-              fontSize: 10,
-              fontWeight: 600,
-              textTransform: 'uppercase',
-              letterSpacing: '0.8px',
-              color: 'var(--db-text-tertiary)',
-              padding: '12px 10px 6px',
-            }}>
-              Discover
-            </div>
-
-            <NavItem
-              href={`/projects/${projectId}`}
-              icon={<IconSearch size={16} />}
-              label="Discovery runs"
-              active={isActive(`/projects/${projectId}`)}
-            />
-            <NavItem
-              href={`/projects/${projectId}/insights`}
-              icon={<IconBook2 size={16} />}
-              label="Insights"
-              active={isActive(`/projects/${projectId}/insights`)}
-            />
-            <NavItem
-              href={`/projects/${projectId}/recommendations`}
-              icon={<IconStack2 size={16} />}
-              label="Recommendations"
-              active={isActive(`/projects/${projectId}/recommendations`)}
-            />
-            <NavItem
-              href={`/projects/${projectId}/questions`}
-              icon={<IconHelpCircle size={16} />}
-              label="Questions"
-              active={isActive(`/projects/${projectId}/questions`)}
-            />
-            <NavItem
-              href={`/projects/${projectId}/ledger`}
-              icon={<IconTimeline size={16} />}
-              label="Ledger"
-              active={isActive(`/projects/${projectId}/ledger`)}
-            />
-            <NavItem
-              href={`/projects/${projectId}/lists`}
-              icon={<IconBookmark size={16} />}
-              label="Lists"
-              active={isActive(`/projects/${projectId}/lists`)}
-            />
-
-            {/* Intelligence section */}
-            <div style={{
-              fontSize: 10,
-              fontWeight: 600,
-              textTransform: 'uppercase',
-              letterSpacing: '0.8px',
-              color: 'var(--db-text-tertiary)',
-              padding: '12px 10px 6px',
-            }}>
-              Intelligence
-            </div>
-
-            <NavItem
-              href={`/projects/${projectId}/search`}
-              icon={<IconSparkles size={16} />}
-              label="Search"
-              active={isActive(`/projects/${projectId}/search`)}
-            />
-            <NavItem
-              href={`/projects/${projectId}/ask`}
-              icon={<IconMessageCircle size={16} />}
-              label="Ask Insights"
-              active={isActive(`/projects/${projectId}/ask`)}
-            />
-
-            {/* Configure section */}
-            <div style={{
-              fontSize: 10,
-              fontWeight: 600,
-              textTransform: 'uppercase',
-              letterSpacing: '0.8px',
-              color: 'var(--db-text-tertiary)',
-              padding: '12px 10px 6px',
-            }}>
-              Configure
-            </div>
-
-            <NavItem
-              href={`/projects/${projectId}/settings`}
-              icon={<IconSettings size={16} />}
-              label="Settings"
-              active={isActive(`/projects/${projectId}/settings`)}
-            />
-            <NavItem
-              href={`/projects/${projectId}/prompts`}
-              icon={<IconNotebook size={16} />}
-              label="Playbook"
-              active={isActive(`/projects/${projectId}/prompts`)}
+            <NavSections
+              sections={COMMUNITY_NAV.project}
+              projectId={projectId}
+              pathname={pathname ?? ''}
+              gate={passthroughGate}
             />
           </nav>
-        )}
-
-        {/* No project selected — show project list link */}
-        {!projectId && (
+        ) : (
           <nav style={{ padding: '8px 12px', flex: 1 }}>
-            <NavItem
-              href="/"
-              icon={<IconSearch size={16} />}
-              label="Projects"
-              active={isActive('/')}
-            />
-            <NavItem
-              href="/domain-packs"
-              icon={<IconPackages size={16} />}
-              label="Playbooks"
-              active={pathname?.startsWith('/domain-packs') ?? false}
-            />
-            <NavItem
-              href="/system"
-              icon={<IconServer size={16} />}
-              label="System"
-              active={pathname?.startsWith('/system') ?? false}
+            <NavSections
+              sections={COMMUNITY_NAV.root}
+              pathname={pathname ?? ''}
+              gate={passthroughGate}
             />
           </nav>
         )}
@@ -288,8 +176,9 @@ export default function Shell({ children, breadcrumb, actions, fullWidth }: Shel
             )}
           </div>
 
-          {/* Spotlight search */}
-          <SpotlightSearch />
+          {/* Spotlight search — project-scoped only. It early-returns with no
+              results when there is no projectId, so it's hidden on the root. */}
+          {projectId && <SpotlightSearch />}
 
           {/* Actions */}
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flex: '1 1 0', justifyContent: 'flex-end' }}>
@@ -307,64 +196,5 @@ export default function Shell({ children, breadcrumb, actions, fullWidth }: Shel
         </main>
       </div>
     </div>
-  );
-}
-
-/* --- Nav Item Component --- */
-
-function NavItem({ href, icon, label, active, count }: {
-  href: string;
-  icon: ReactNode;
-  label: string;
-  active: boolean;
-  count?: number;
-}) {
-  return (
-    <Link href={href} style={{ textDecoration: 'none', color: 'inherit' }}>
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-        padding: '7px 10px',
-        borderRadius: 6,
-        marginBottom: 1,
-        fontSize: 13,
-        cursor: 'pointer',
-        transition: 'background 120ms ease, color 120ms ease',
-        background: active ? 'var(--db-bg-muted)' : 'transparent',
-        color: active ? 'var(--db-text-primary)' : 'var(--db-text-secondary)',
-        fontWeight: active ? 500 : 400,
-      }}
-      onMouseEnter={e => {
-        if (!active) {
-          e.currentTarget.style.background = 'var(--db-bg-muted)';
-          e.currentTarget.style.color = 'var(--db-text-primary)';
-        }
-      }}
-      onMouseLeave={e => {
-        if (!active) {
-          e.currentTarget.style.background = 'transparent';
-          e.currentTarget.style.color = 'var(--db-text-secondary)';
-        }
-      }}
-      >
-        <span style={{ opacity: active ? 0.85 : 0.55, flexShrink: 0, display: 'flex' }}>{icon}</span>
-        <span style={{ flex: 1 }}>{label}</span>
-        {count !== undefined && count > 0 && (
-          <span style={{
-            marginLeft: 'auto',
-            fontSize: 11,
-            fontWeight: 500,
-            background: 'var(--db-blue-bg)',
-            color: 'var(--db-blue-text)',
-            padding: '0 6px',
-            borderRadius: 10,
-            lineHeight: '18px',
-          }}>
-            {count}
-          </span>
-        )}
-      </div>
-    </Link>
   );
 }

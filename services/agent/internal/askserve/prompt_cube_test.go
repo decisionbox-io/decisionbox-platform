@@ -310,10 +310,14 @@ func section(t *testing.T, prompt, start, end string) string {
 // on the call it is correcting — so a nudge pointing at INFORMATION_SCHEMA
 // outranks everything the system prompt said about a source with no tables.
 func TestGroundingNudge_CorrectsInTheShapeOfTheSource(t *testing.T) {
+	// The all-SQL text, tracked verbatim so the cube branching cannot alter it.
+	// It moves only when the SQL path itself is deliberately changed: the
+	// trailing clause arrived with #422 (a mutation tool may ask the user to
+	// confirm), which landed on main while this branch was open.
 	const historic = "Do NOT answer yet — you have run no query, so you have no data to ground an answer in. " +
 		"Run a query_data action first to gather evidence; never state a table, count, total, or value you have not seen in a query result this turn. " +
 		"If you don't know the tables or columns, discover them with a query against INFORMATION_SCHEMA (e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES`) or use search_tables / lookup_schema. " +
-		"Only use clarify or decline if the question genuinely cannot be turned into any query."
+		"Only use clarify or decline if the question genuinely cannot be turned into any query, or if a tool you called asked you to confirm something with the user first."
 
 	if got := groundingNudge(sourceShapes{}); got != historic {
 		t.Errorf("the all-SQL nudge changed:\ngot:  %q\nwant: %q", got, historic)

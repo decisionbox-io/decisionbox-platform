@@ -34,7 +34,10 @@ func RequireRole(minRole string) func(http.Handler) http.Handler {
 				return
 			}
 
-			if !hasMinRole(user.Roles, minLevel) {
+			// HierarchyRoles = EffectiveRoles when the resolver appended a
+			// built-in tier for a custom role, else the original Roles. Kept
+			// separate from the project-ACL roles (see CanAccessProject).
+			if !hasMinRole(user.HierarchyRoles(), minLevel) {
 				WriteJSONError(w, http.StatusForbidden, "insufficient permissions")
 				return
 			}

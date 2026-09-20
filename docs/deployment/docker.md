@@ -105,6 +105,10 @@ services:
     image: ghcr.io/decisionbox-io/decisionbox-dashboard:latest
 ```
 
+Release images are cosign-signed (from the first release published after signing
+was introduced) — see [Verifying image signatures](verifying-images.md) to
+confirm what you pulled.
+
 ### Persistent Data
 
 MongoDB and Qdrant data are stored in Docker volumes:

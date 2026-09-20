@@ -15,6 +15,21 @@ type Project struct {
 	Domain      string `bson:"domain" json:"domain"`
 	Category    string `bson:"category" json:"category"`
 
+	// OrgID scopes the project to an organization for multi-tenancy hygiene.
+	// Empty (legacy / single-org self-hosted) is treated as "any org" by
+	// auth.CanAccessProject, so existing projects stay visible with no
+	// backfill. On cloud a tenant is a single org, so this is forward-looking.
+	OrgID string `bson:"org_id,omitempty" json:"org_id,omitempty"`
+
+	// AllowedRoles is the role-based project ACL (advanced RBAC, #321). Empty
+	// (the default) means the project is OPEN to every role — backward
+	// compatible. When non-empty, only a principal holding one of these roles
+	// (or an admin/owner) may access the project; the community API enforces
+	// this in List/Get and the mutating paths via auth.CanAccessProject, and
+	// the enterprise RBAC plugin owns editing it. Kept role-keyed — never
+	// user-keyed — so self-hosted introduces no end-user store.
+	AllowedRoles []string `bson:"allowed_roles,omitempty" json:"allowed_roles,omitempty"`
+
 	// Warehouse is the LEGACY single-warehouse field. It is retained for
 	// backward compatibility: every community reader still uses it, and it
 	// is dual-written to the primary warehouse. New multi-warehouse code
