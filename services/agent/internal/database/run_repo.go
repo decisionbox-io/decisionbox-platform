@@ -84,9 +84,10 @@ func (r *RunRepository) RecordSchemaContextTelemetry(ctx context.Context, runID 
 }
 
 // IncrementSchemaActionCalls atomically bumps the per-action counters
-// on a run. action is one of "lookup_schema" or "search_tables"; any
-// other value is a no-op so a future action type doesn't accidentally
-// roll into the wrong counter. Safe to call concurrently.
+// on a run. action is one of "lookup_schema", "search_tables" or
+// "get_correlations"; any other value is a no-op so a future action type
+// doesn't accidentally roll into the wrong counter. Safe to call
+// concurrently.
 func (r *RunRepository) IncrementSchemaActionCalls(ctx context.Context, runID, action string, delta int) error {
 	if delta <= 0 {
 		return nil
@@ -97,6 +98,8 @@ func (r *RunRepository) IncrementSchemaActionCalls(ctx context.Context, runID, a
 		field = "schema_lookup_calls"
 	case "search_tables":
 		field = "schema_search_calls"
+	case "get_correlations":
+		field = "correlation_lookup_calls"
 	default:
 		return nil
 	}

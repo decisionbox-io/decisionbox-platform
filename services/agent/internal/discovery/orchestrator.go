@@ -828,8 +828,17 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// datasource's routing card and its own domain-pack focus areas, so the
 	// agent sets datasource_id per statement, hops between datasources, and
 	// applies the right playbook per datasource.
+	var guidance correlationGuidance
 	if dc != nil {
-		explorationPrompt += buildDatasourcesPromptSection(dc)
+		// Read only when there is a pair to read about. A run that degraded to
+		// one routable datasource cannot correlate, and its result would be
+		// discarded by the contract and the wiring both — after waiting out a
+		// slow provider to produce it.
+		if correlatable(dc) {
+			guidance = o.curatedCorrelations(ctx, dc)
+		}
+		explorationPrompt += buildDatasourcesPromptSection(dc, guidance)
+		o.logCorrelationContract(dc, guidance)
 	}
 
 	// Inject project knowledge sources (no-op if no enterprise plugin loaded
@@ -937,6 +946,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		Dataset:           datasetsStr,
 		SchemaProvider:    schemaProvider,
 		StepIndexer:       stepIndexer,
+		CorrelationLookup: o.correlationLookup(dc, guidance),
 
 		// R3: reasoning-aware, window-budgeted per-step output ceiling.
 		Window:             exploreWindow,
@@ -2797,6 +2807,133 @@ const (
 	knowledgeMinScore             = 0.4
 	knowledgeMaxRetrievalPerPhase = 3 * time.Second
 )
+
+// defaultCorrelationLookupTimeout bounds one call to the correlation provider.
+//
+// Needed because the surrounding error handling degrades a failed read to
+// "unread", and a provider that HANGS never fails: it would hold the run for
+// the whole run context, which defaults to 24 hours and can be turned off
+// entirely. A timeout is what turns a hang back into the failure the rest of
+// this code already knows how to handle.
+//
+// Wider than the knowledge-retrieval budget next door because a provider may
+// open its own store on first use, and a cold connect is the slowest call it
+// will make. Env-overridable (Rule 2) for a deployment whose store is further
+// away than that.
+const defaultCorrelationLookupTimeout = 15 * time.Second
+
+// correlationLookupTimeoutEnv overrides it, in seconds.
+const correlationLookupTimeoutEnv = "DISCOVERY_CORRELATION_LOOKUP_TIMEOUT_SECONDS"
+
+func correlationLookupTimeout() time.Duration {
+	if v := goconfig.GetEnvAsInt(correlationLookupTimeoutEnv, 0); v > 0 {
+		return time.Duration(v) * time.Second
+	}
+	return defaultCorrelationLookupTimeout
+}
+
+// correlationGuidance is what a run knows about reviewed correlation keys
+// before it starts.
+//
+// Two fields rather than one slice, because "nothing came back" has two causes
+// that must not be treated alike. Nobody having reviewed anything is a project
+// to leave alone. A read that FAILED has established nothing of the sort — and
+// treating it as the first would drop every recorded rejection for the length
+// of a run, silently, which is the outcome this whole feature exists to stop.
+type correlationGuidance struct {
+	keys   []agentplugin.CorrelationKey
+	unread bool
+}
+
+// offered reports whether this run gets the get_correlations action at all.
+//
+// A failed read still offers it: the store may answer the next time it is
+// asked, and a per-pair call during the run is the only way to find out.
+func (g correlationGuidance) offered() bool { return len(g.keys) > 0 || g.unread }
+
+// curatedCorrelations reads what somebody has decided about correlating this
+// run's datasources, for the routing contract to name.
+//
+// Once per run, over every datasource on it. The action re-reads per pair while
+// the run is in flight, so this is not a cache — it is the answer to a
+// different question: is there anything to tell the model about at all.
+//
+// A failure is a warning, never a stopped run: failing a discovery somebody
+// launched because a decision store hiccuped would be the worse trade. It is
+// reported as unread rather than as empty, so the contract says which.
+func (o *Orchestrator) curatedCorrelations(ctx context.Context, dc *datasourceContext) correlationGuidance {
+	ids := make([]string, 0, len(dc.descriptors))
+	for _, d := range dc.descriptors {
+		ids = append(ids, d.id)
+	}
+	readCtx, cancel := context.WithTimeout(ctx, correlationLookupTimeout())
+	defer cancel()
+	keys, err := agentplugin.Correlations(readCtx, agentplugin.CorrelationRequest{
+		ProjectID:     o.projectID,
+		DatasourceIDs: ids,
+	})
+	if err != nil {
+		applog.WithError(err).Warn("multi-warehouse discovery: could not read the reviewed correlation keys; " +
+			"the routing contract will say so and the agent can retry per pair")
+		return correlationGuidance{unread: true}
+	}
+	return correlationGuidance{keys: keys}
+}
+
+// logCorrelationContract records what the run was told about reviewed keys.
+//
+// Without it, "the model ignored the contract" and "the contract was never
+// rendered" look identical afterwards: the exploration prompt is not
+// persisted, and the per-action counter only counts calls that happened. One
+// line, at the moment the decision is made, is what makes the two
+// distinguishable — and the whole feature rests on which of them it is.
+func (o *Orchestrator) logCorrelationContract(dc *datasourceContext, guidance correlationGuidance) {
+	applog.WithFields(applog.Fields{
+		"offered":           correlatable(dc) && guidance.offered(),
+		"routable":          len(dc.descriptors),
+		"reviewed_keys":     len(guidance.keys),
+		"usable_pairings":   len(usablePairings(guidance.keys)),
+		"rejected_pairings": len(rejectedPairings(guidance.keys)),
+		"decisions_unread":  guidance.unread,
+	}).Info("multi-warehouse discovery: reviewed-correlation-key contract")
+}
+
+// correlationLookup is what serves the agent's get_correlations action.
+//
+// A closure over the project rather than the seam itself, so the exploration
+// engine neither imports the plugin registry nor carries a project id.
+//
+// Wired exactly when the routing contract TAUGHT the action — a single
+// datasource has nothing to correlate with, and a run whose project has no
+// decisions was never offered it. One rule rather than two: the engine
+// announces a budget for this action whenever the lookup is wired, so a run
+// that is not offered the action must not be told what it may spend on it.
+// Without that, every deployment with no provider at all — and every project
+// that has curated nothing — would have its opening message changed to
+// advertise an action that can only ever answer "nothing".
+//
+// A run whose decisions could not be READ is offered it, because that is the
+// case where asking again is worth something.
+//
+// A model that invents the action anyway is answered "not available on this
+// run", which is what it is.
+func (o *Orchestrator) correlationLookup(dc *datasourceContext, guidance correlationGuidance) ai.CorrelationLookupFunc {
+	if !correlatable(dc) || !guidance.offered() {
+		return nil
+	}
+	projectID := o.projectID
+	return func(ctx context.Context, a, b string) ([]agentplugin.CorrelationKey, error) {
+		// Bounded for the same reason the startup read is: the engine reports a
+		// failed lookup to the model and carries on, and a hang is the one
+		// outcome it cannot report.
+		lookupCtx, cancel := context.WithTimeout(ctx, correlationLookupTimeout())
+		defer cancel()
+		return agentplugin.Correlations(lookupCtx, agentplugin.CorrelationRequest{
+			ProjectID:     projectID,
+			DatasourceIDs: []string{a, b},
+		})
+	}
+}
 
 // injectKnowledgeSources walks every registered agentplugin context provider
 // (knowledge sources today; column hints / area priority later) and prepends
