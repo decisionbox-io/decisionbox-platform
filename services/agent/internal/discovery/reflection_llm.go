@@ -20,8 +20,14 @@ import (
 type parsedReflection struct {
 	CoverageSummary string   `json:"coverage_summary"`
 	CoveredTables   []string `json:"covered_tables"`
-	CoveredAreas    []string `json:"covered_areas"`
-	ConvergenceNote string   `json:"convergence_note"`
+	// CoveredCatalogItems are the cube metrics and dimensions the run queried.
+	// A separate field rather than more entries in CoveredTables because the
+	// two namespaces are untyped and overlapping — a catalog ref and a table
+	// name are both bare strings — so merging them would make it impossible to
+	// check either against the catalog it came from.
+	CoveredCatalogItems []string `json:"covered_catalog_items"`
+	CoveredAreas        []string `json:"covered_areas"`
+	ConvergenceNote     string   `json:"convergence_note"`
 
 	StatusUpdates []struct {
 		FindingID string `json:"finding_id"`
@@ -74,15 +80,17 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 		tasks, _ = o.taskRepo.List(ctx, o.projectID, commonmodels.LedgerTaskStatusOpen)
 	}
 
-	prompt := o.buildReflectionPrompt(result, prior, tasks, pol)
+	items := o.runCatalogItems()
+	prompt := o.buildReflectionPrompt(result, prior, tasks, pol, items)
 
 	window, modelOutputCap := o.resolveModelBudget()
 	// Default to the model's own cap, mirroring the analysis and recommendation
 	// paths; DISCOVERY_REFLECTION_MAX_OUTPUT stays available as an operator
 	// override. The response is bounded by the prompt caps
-	// (maxPriorFindingsInPrompt, maxLedgerTasksInPrompt, the 300-table catalog
-	// cap), so it does not grow without limit — a fixed default was simply
-	// below what an ordinary ledger needs, and truncated it mid-JSON (#403).
+	// (maxPriorFindingsInPrompt, maxLedgerTasksInPrompt, and
+	// maxCatalogNamesInPrompt on each catalog list), so it does not grow
+	// without limit — a fixed default was simply below what an ordinary ledger
+	// needs, and truncated it mid-JSON (#403).
 	outputCap := phaseOutputCap(discoveryReflectionMaxOutputEnv, modelOutputCap, 512, defaultDiscoveryReflectionMaxOutput)
 	maxTokens := budgetedMaxOutputTokens(window, approxTokens(ctx, prompt), outputCap, analysisMinOutputTokens())
 
@@ -100,7 +108,7 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		attemptPrompt := prompt
 		if attempt > 0 {
-			attemptPrompt = prompt + reflectionRepairSuffix(lastErr)
+			attemptPrompt = prompt + reflectionRepairSuffix(lastErr, len(items) > 0)
 			applog.WithField("attempt", attempt).Warn("Re-prompting reflection after an unusable response")
 		}
 		chatResult, cerr := o.aiClient.ChatWithFormat(ctx, attemptPrompt, "", maxTokens, format)
@@ -121,7 +129,7 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 // buildReflectionPrompt renders the embedded template with the run's findings,
 // the prior ledger findings (so the model can re-judge their status), the open
 // task queue, and the mode/frontier policy that governs what it may propose.
-func (o *Orchestrator) buildReflectionPrompt(result *models.DiscoveryResult, prior []commonmodels.LedgerFinding, tasks []commonmodels.LedgerTask, pol agentplugin.DiscoveryPolicy) string {
+func (o *Orchestrator) buildReflectionPrompt(result *models.DiscoveryResult, prior []commonmodels.LedgerFinding, tasks []commonmodels.LedgerTask, pol agentplugin.DiscoveryPolicy, catalogItems []string) string {
 	lang := o.language
 	if strings.TrimSpace(lang) == "" {
 		lang = "English"
@@ -136,8 +144,39 @@ func (o *Orchestrator) buildReflectionPrompt(result *models.DiscoveryResult, pri
 	p = strings.ReplaceAll(p, "{{RUN_FINDINGS}}", renderRunFindings(result.Insights))
 	p = strings.ReplaceAll(p, "{{PRIOR_FINDINGS}}", renderPriorFindings(prior))
 	p = strings.ReplaceAll(p, "{{OPEN_TASKS}}", renderOpenTasks(tasks))
-	p = strings.ReplaceAll(p, "{{CATALOG_TABLES}}", renderCatalogTables(result.Schemas))
+	p = strings.ReplaceAll(p, "{{CATALOG_SECTION}}", renderCatalogSection(result.Schemas, catalogItems))
+	p = strings.ReplaceAll(p, "{{COVERED_FIELDS}}", renderCoveredFields(len(catalogItems) > 0))
 	return p
+}
+
+// runCatalogItems is every metric and dimension the run's cube-shaped
+// datasources offer, flattened across them and sorted.
+//
+// Flattened because coverage is a project-level record and, to it, a name is a
+// name. The per-datasource keying the run carries exists so that one
+// datasource cannot vouch for another in a cross-datasource search — a
+// different question from "did this run touch it".
+func (o *Orchestrator) runCatalogItems() []string {
+	if len(o.runCatalogRefs) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(o.runCatalogRefs))
+	for _, refs := range o.runCatalogRefs {
+		for _, ref := range refs {
+			ref = strings.TrimSpace(ref)
+			if ref == "" {
+				continue
+			}
+			if _, dup := seen[ref]; dup {
+				continue
+			}
+			seen[ref] = struct{}{}
+			out = append(out, ref)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func evolutionModeGuidance(mode agentplugin.EvolutionMode) string {
@@ -197,6 +236,26 @@ func renderOpenTasks(tasks []commonmodels.LedgerTask) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// maxCatalogNamesInPrompt caps each catalog list the reflection prompt carries,
+// so a wide warehouse or a large cube cannot crowd out the findings the phase
+// exists to consolidate. Shared by both lists so they cannot drift apart.
+const maxCatalogNamesInPrompt = 300
+
+// joinCappedNames renders a sorted name list as the prompt carries it: comma
+// separated, capped, and honest about having been cut.
+func joinCappedNames(names []string) string {
+	truncated := false
+	if len(names) > maxCatalogNamesInPrompt {
+		names = names[:maxCatalogNamesInPrompt]
+		truncated = true
+	}
+	out := strings.Join(names, ", ")
+	if truncated {
+		out += ", … (catalog truncated)"
+	}
+	return out
+}
+
 // renderCatalogTables lists the warehouse catalog so the model can report which
 // tables it covered and which remain on the frontier. Capped to keep the prompt
 // bounded on large warehouses.
@@ -209,17 +268,62 @@ func renderCatalogTables(schemas map[string]models.TableSchema) string {
 		names = append(names, k)
 	}
 	sort.Strings(names)
-	const cap = 300
-	truncated := false
-	if len(names) > cap {
-		names = names[:cap]
-		truncated = true
+	return joinCappedNames(names)
+}
+
+// reflectionTableCatalogHeading is the warehouse-catalog heading. It is the
+// line the template carried inline before this section could vary, and a run
+// that reaches only tables must still render it to the byte.
+const reflectionTableCatalogHeading = "## Warehouse catalog (all tables — pick which were covered vs. still frontier)"
+
+// renderCatalogSection renders the catalog the model picks its coverage from.
+//
+// On a run that reaches only table-shaped datasources this is exactly the two
+// lines the template used to carry, unchanged. A run that also reaches a cube
+// gets a second catalog after it, because a cube contributes nothing to the
+// first one: its queryable surface is metrics and dimensions, and a model asked
+// to report coverage by copying table names verbatim has no name to copy for
+// work it genuinely did. That is the whole failure — not a cube missing from a
+// report, but a run that explored one recording nothing, so the next run
+// inherits a world model saying there is nothing left to look at.
+//
+// The cube section says what a cube is NOT as well as what it is. "No frontier
+// to tile" is the load-bearing half: the rest of this prompt is written around
+// a frontier that shrinks as it is covered, and a model handed a list of 470
+// metrics under that framing will either report them all as covered or treat
+// them as a backlog to exhaust. Neither is true of a combinatorial surface.
+func renderCatalogSection(schemas map[string]models.TableSchema, catalogItems []string) string {
+	var b strings.Builder
+	b.WriteString(reflectionTableCatalogHeading)
+	b.WriteByte('\n')
+	b.WriteString(renderCatalogTables(schemas))
+	if len(catalogItems) == 0 {
+		return b.String()
 	}
-	out := strings.Join(names, ", ")
-	if truncated {
-		out += ", … (catalog truncated)"
+	b.WriteString("\n\n## Cube catalog (metrics and dimensions — pick which this run actually queried)\n")
+	b.WriteString("Some of this project's datasources are cube-shaped. A cube has NO tables: a query names a metric or a dimension from the list below, verbatim.\n")
+	b.WriteString("A cube has no frontier to tile — its slices are combinatorial, so \"all of it\" is not a state a run can reach and coverage of it is not a fraction. Judge it by whether a new slice still yields something genuinely new. Report what this run queried in `covered_catalog_items`, and keep those names OUT of `covered_tables`: they are not tables.\n")
+	b.WriteString(joinCappedNames(catalogItems))
+	return b.String()
+}
+
+// reflectionCoveredTablesField is the covered_tables bullet as the template
+// carried it inline, kept verbatim for the table-only render.
+const reflectionCoveredTablesField = "- **covered_tables**: the fully-qualified tables (dataset.table) this run actually queried. Copy names verbatim from the catalog. Omit tables you did not touch."
+
+// renderCoveredFields renders the coverage bullets of the output contract.
+//
+// Both namespaces are bare strings, and a cube's dimensions and metrics share a
+// naming style with nothing — there is no shape to a name that tells the two
+// apart after the fact. So the prompt names the catalog each field is copied
+// from rather than leaving the model to infer it, and the apply path checks
+// each list against exactly that catalog.
+func renderCoveredFields(hasCube bool) string {
+	if !hasCube {
+		return reflectionCoveredTablesField
 	}
-	return out
+	return "- **covered_tables**: the fully-qualified tables (dataset.table) this run actually queried. Copy names verbatim from the WAREHOUSE catalog above — never a cube metric or dimension. Omit tables you did not touch.\n" +
+		"- **covered_catalog_items**: the cube metrics and dimensions this run actually queried. Copy names verbatim from the CUBE catalog above. Omit items you did not touch, and return `[]` if you queried none. This records what has already been sliced; it is not a coverage target."
 }
 
 // parseReflection decodes the model's response tolerantly. Accepts a bare object
@@ -238,13 +342,21 @@ func parseReflection(response string) (*parsedReflection, error) {
 	return &out, nil
 }
 
-func reflectionRepairSuffix(err error) string {
+// reflectionRepairSuffix re-states the output contract after an unusable
+// response. It names covered_catalog_items only on a run that has a cube
+// catalog, so a table-only run is never told to fill a field its prompt never
+// defined.
+func reflectionRepairSuffix(err error, hasCube bool) string {
 	reason := "it could not be parsed as JSON"
 	if err != nil {
 		reason = err.Error()
 	}
+	covered := "covered_tables, "
+	if hasCube {
+		covered = "covered_tables, covered_catalog_items, "
+	}
 	return "\n\nYour previous response could not be used: " + reason + ".\n" +
-		"Respond with ONLY a single JSON object with the fields coverage_summary, covered_tables, " +
+		"Respond with ONLY a single JSON object with the fields coverage_summary, " + covered +
 		"covered_areas, prior_status_updates, task_status_updates, learnings, next_tasks, domain_pack_deltas, " +
 		"convergence_note — no prose and no markdown fences."
 }

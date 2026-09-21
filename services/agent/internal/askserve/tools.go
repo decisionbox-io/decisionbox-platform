@@ -21,19 +21,48 @@ import (
 // runs against — one warehouse per statement, chained across a turn. On a
 // single-datasource / pinned turn the argument is omitted so behaviour is
 // identical to the single-warehouse path.
-func toolQueryData(multi bool) gollm.ToolDefinition {
+//
+// hasCube says whether any datasource the turn can reach has no tables. The
+// tool description is the most concrete instruction the model gets — more
+// concrete than the system prompt, and it arrives attached to the argument it
+// governs — so a description that says "SELECT / CTE only" is not softened by
+// prose elsewhere saying otherwise. It is branched rather than generalised so a
+// turn of only SQL datasources sends a byte-identical definition.
+func toolQueryData(multi, hasCube bool) gollm.ToolDefinition {
 	desc := "Run one read-only SQL query (SELECT / CTE only) against the data warehouse and observe a summary of the result " +
 		"(row count, columns, and a small row preview). This is how you gather evidence. For totals, counts, or distributions write " +
 		"aggregate SQL (COUNT/SUM/AVG/GROUP BY) rather than paging raw rows. If you don't yet know the tables, start with a discovery " +
 		"query against INFORMATION_SCHEMA."
+	queryDesc := "The read-only SQL to execute."
+	if hasCube {
+		desc = "Run one read-only query against a datasource and observe a summary of the result " +
+			"(row count, columns, and a small row preview). This is how you gather evidence. Write it in that datasource's own query " +
+			"language — not every datasource here is SQL, and the datasource block in the system prompt states which language each one " +
+			"takes. Against a SQL datasource: SELECT / CTE only, and for totals, counts, or distributions write aggregate SQL " +
+			"(COUNT/SUM/AVG/GROUP BY) rather than paging raw rows; if you don't yet know its tables, start with a discovery query " +
+			"against INFORMATION_SCHEMA. A datasource marked NO TABLES accepts no SQL at all — use search_tables to see the metrics " +
+			"and dimensions it offers."
+		queryDesc = "The read-only query to execute, written in the target datasource's query language."
+	}
 	props := map[string]interface{}{
-		"query":   map[string]interface{}{"type": "string", "description": "The read-only SQL to execute."},
+		"query":   map[string]interface{}{"type": "string", "description": queryDesc},
 		"purpose": map[string]interface{}{"type": "string", "description": "Short note on what this query answers (optional)."},
 	}
 	if multi {
 		desc += " This project has multiple datasources — set datasource_id to the one this query runs against (a single query cannot span datasources; " +
 			"to combine datasources, query one, then use its result values as literal filters in a follow-up query on another)."
 		props["datasource_id"] = map[string]interface{}{"type": "string", "description": "The datasource this query runs against (see the DATASOURCES list). Defaults to the primary if omitted."}
+		props["joins_on"] = map[string]interface{}{
+			"type": "object",
+			"description": "Set this when the query filters on values you read out of an EARLIER query against a DIFFERENT datasource, naming where those values came from. " +
+				"It is how a cross-datasource hop gets its join key checked: declared and confirmed, the result is marked scoped; left out, the result is returned but marked as not verified against the other datasource. " +
+				"Omit it for a query that stands on its own.",
+			"properties": map[string]interface{}{
+				"source_step": map[string]interface{}{"type": "string", "description": "The q<N> id of the earlier query you took the values from, e.g. \"q1\"."},
+				"field":       map[string]interface{}{"type": "string", "description": "The column IN THAT RESULT whose values this query filters on — the name as it appeared there, not the name it has in this datasource."},
+			},
+			"required": []string{"source_step", "field"},
+		}
 	}
 	return gollm.ToolDefinition{
 		Name:        string(actQuery),
@@ -70,15 +99,29 @@ func toolLookupSchema(multi bool) gollm.ToolDefinition {
 	}
 }
 
-func toolSearchTables() gollm.ToolDefinition {
+// toolSearchTables defines search_tables. It is the only discovery tool that
+// works against a source with no tables, and the prompt sends a cube turn
+// straight to it — so when one is reachable its description must stop saying
+// "tables". A tool description is part of tool selection on a native
+// tool-calling provider: a model told this searches tables, and told by the
+// prompt that its source has none, has been given a reason not to call the one
+// tool that would have worked.
+func toolSearchTables(hasCube bool) gollm.ToolDefinition {
+	desc := "Semantically search the indexed schema for tables relevant to a description. Use this first when you don't know which tables hold what you need."
+	topK := "Max number of tables to return (optional)."
+	if hasCube {
+		desc = "Semantically search what the datasources offer — tables, and for a datasource with no tables its metrics and dimensions. " +
+			"Use this first when you don't know which datasource holds what you need; each result says what it is."
+		topK = "Max number of results to return (optional)."
+	}
 	return gollm.ToolDefinition{
 		Name:        string(actSearch),
-		Description: "Semantically search the indexed schema for tables relevant to a description. Use this first when you don't know which tables hold what you need.",
+		Description: desc,
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"query": map[string]interface{}{"type": "string", "description": "Keywords describing the data you're looking for."},
-				"top_k": map[string]interface{}{"type": "integer", "description": "Max number of tables to return (optional)."},
+				"top_k": map[string]interface{}{"type": "integer", "description": topK},
 			},
 			"required": []string{"query"},
 		},
@@ -220,11 +263,23 @@ func toolDecline() gollm.ToolDefinition {
 // provider is wired; search_knowledge only when a knowledge provider is wired.
 // render_chart is offered only when charting is enabled for the turn AND a
 // non-truncated query result exists to ground a chart against. multi widens the
-// query/schema tools for a project with several warehouses.
-func toolsForPhase(grounded, hasSchema, hasInsights, hasKnowledge, multi, chartsEnabled, hasChartableQuery bool, mutations []gollm.ToolDefinition) []gollm.ToolDefinition {
-	tools := []gollm.ToolDefinition{toolQueryData(multi)}
+// query/schema tools for a project with several warehouses; shapes tells
+// query_data and search_tables that not every reachable datasource takes SQL,
+// and withholds lookup_schema entirely when none of them has tables for it to
+// look up.
+func toolsForPhase(grounded, hasSchema, hasInsights, hasKnowledge, multi bool, shapes sourceShapes, chartsEnabled, hasChartableQuery bool, mutations []gollm.ToolDefinition) []gollm.ToolDefinition {
+	tools := []gollm.ToolDefinition{toolQueryData(multi, shapes.anyCube)}
 	if hasSchema {
-		tools = append(tools, toolLookupSchema(multi), toolSearchTables())
+		// lookup_schema returns columns, so it can only fail when nothing
+		// reachable has any. Leaving it advertised is not merely untidy: while
+		// the turn is ungrounded the model is FORCED to call some tool, so an
+		// advertised-but-impossible tool can consume the very step that was
+		// meant to gather evidence. It stays offered on a mixed turn, where it
+		// is still the right tool for the SQL datasource.
+		if !shapes.allCube {
+			tools = append(tools, toolLookupSchema(multi))
+		}
+		tools = append(tools, toolSearchTables(shapes.anyCube))
 	}
 	if hasInsights {
 		tools = append(tools, toolSearchInsights())
@@ -279,7 +334,11 @@ func toolCallToAction(tc gollm.ToolCall) (*turnAction, error) {
 		if strings.TrimSpace(q) == "" {
 			return nil, fmt.Errorf("query_data requires a non-empty %q argument", "query")
 		}
-		return &turnAction{Kind: actQuery, Query: q, Purpose: getStr("purpose"), Datasource: getStr("datasource_id")}, nil
+		joins, jerr := joinsFromToolInput(tc.Input["joins_on"])
+		if jerr != nil {
+			return nil, jerr
+		}
+		return &turnAction{Kind: actQuery, Query: q, Purpose: getStr("purpose"), Datasource: getStr("datasource_id"), JoinsOn: joins}, nil
 	case actLookup:
 		tables := toStringSlice(tc.Input["tables"])
 		if len(tables) == 0 {
@@ -358,4 +417,33 @@ func toInt(v interface{}) int {
 		return int(n)
 	}
 	return 0
+}
+
+// joinsFromToolInput reads the optional joins_on argument of a query_data tool
+// call. An absent or null argument is not an error — the declaration is
+// optional. A present one missing either half IS: half a declaration says
+// values were carried across without saying from where, which is no more
+// checkable than saying nothing and reads as though it were.
+func joinsFromToolInput(v interface{}) (*joinDeclaration, error) {
+	if v == nil {
+		return nil, nil
+	}
+	obj, ok := v.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("query_data %q must be an object with %q and %q", "joins_on", "source_step", "field")
+	}
+	if len(obj) == 0 {
+		return nil, nil
+	}
+	str := func(k string) string {
+		if s, ok := obj[k].(string); ok {
+			return strings.TrimSpace(s)
+		}
+		return ""
+	}
+	step, field := str("source_step"), str("field")
+	if step == "" || field == "" {
+		return nil, fmt.Errorf("query_data %q requires both %q (the q<N> id of the earlier query) and %q (the column in that result the values came from); omit joins_on entirely if this query stands on its own", "joins_on", "source_step", "field")
+	}
+	return &joinDeclaration{SourceStep: step, Field: field}, nil
 }

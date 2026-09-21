@@ -37,6 +37,20 @@ const defaultDatasourceID = "default"
 // gRPC client is enough.
 type StepIndexer interface {
 	Upsert(ctx context.Context, step models.ExplorationStep) error
+
+	// Nearest reports the cosine score of the closest step already
+	// indexed for this run, which is how the engine tells a step that
+	// breaks new ground from one that repeats work already done.
+	//
+	// found is false when there is nothing to compare against — an empty
+	// index, or a step with nothing worth embedding. The caller must treat
+	// that as "cannot tell" rather than as "not similar".
+	//
+	// Required rather than an optional interface discovered by assertion:
+	// this seam is wrapped (see the orchestrator's telemetry decorator),
+	// and a wrapper that forgot to forward an optional method would strip
+	// the whole rule with nothing to notice it.
+	Nearest(ctx context.Context, step models.ExplorationStep) (score float64, found bool, err error)
 }
 
 // ExplorationEngine manages autonomous data exploration with LLM.
@@ -64,8 +78,12 @@ type ExplorationEngine struct {
 	tableDatasource map[string]string
 	maxSteps        int
 	minSteps        int
-	dataset         string
-	onStep          StepCallback
+	// stop decides whether a "done" signal is accepted — the step floor,
+	// or the marginal-value rule on a run that can query a cube. See
+	// exploration_stopping.go.
+	stop    stopRule
+	dataset string
+	onStep  StepCallback
 
 	// window / outputCap / reasoningEffective drive the reasoning-aware
 	// per-step output budget (R3). window and outputCap are the model's
@@ -84,6 +102,14 @@ type ExplorationEngine struct {
 	// to the model so a misconfigured run doesn't crash the loop.
 	schemaProvider SchemaProvider
 
+	// stepsIndexed and stepsIndexOffered count what the run-scoped index
+	// accepted and what it was asked to accept; consecutiveIndexFailures is
+	// how many of the most recent offers it refused, reset by any that lands.
+	// The stopping rule reads all three — see noveltyMeasurable.
+	stepsIndexed             int
+	stepsIndexOffered        int
+	consecutiveIndexFailures int
+
 	// stepIndexer ships each completed step to the run-scoped vector
 	// index. Optional — when nil the engine continues without
 	// indexing, which downgrades the analysis phase to keyword-only
@@ -98,11 +124,19 @@ type ExplorationEngine struct {
 	maxLookupsPerRun  int
 	maxSearchesPerRun int
 
+	// correlationLookup answers what has been decided about correlating two of
+	// this run's datasources. Optional — nil is a deployment where nobody can
+	// answer, and the engine says that rather than reporting "nothing
+	// decided", which a model would read as permission.
+	correlationLookup           CorrelationLookupFunc
+	maxCorrelationLookupsPerRun int
+
 	// Mutated state. Tracked on the engine (not the conversation) so
 	// the budgets persist across retried steps and across action types.
-	lookupsUsed   int
-	searchesUsed  int
-	fetchedTables map[string]struct{} // canonicalised refs already lookup'd; dedupes repeat asks
+	lookupsUsed            int
+	searchesUsed           int
+	correlationLookupsUsed int
+	fetchedTables          map[string]struct{} // canonicalised refs already lookup'd; dedupes repeat asks
 }
 
 // maxParseRetries caps how many times we re-prompt the LLM on a single step
@@ -263,8 +297,20 @@ type ExplorationEngineOptions struct {
 	// threshold are rejected with a nudge and exploration continues. Zero
 	// disables the floor.
 	MinSteps int
-	Dataset  string
-	OnStep   StepCallback // optional: called after each step for live status
+
+	// StopOnNoNewSignal replaces the MinSteps floor with a marginal-value
+	// rule: a "done" signal is rejected while recent steps are still
+	// turning up something the run has not already seen, and accepted once
+	// they stop. Set for a run that can query a cube-shaped datasource,
+	// where a step count says nothing about coverage — see
+	// exploration_stopping.go. MaxSteps is unaffected and remains the
+	// runaway cap.
+	//
+	// A run that sets this without a StepIndexer, or whose index fails,
+	// keeps the floor: novelty that cannot be measured decides nothing.
+	StopOnNoNewSignal bool
+	Dataset           string
+	OnStep            StepCallback // optional: called after each step for live status
 
 	// SchemaProvider serves on-demand schema actions issued by the LLM
 	// during a run (lookup_schema for L1 detail, search_tables for
@@ -281,6 +327,17 @@ type ExplorationEngineOptions struct {
 	// MaxSearchesPerRun caps total search_tables actions across the
 	// whole run. 0 → DefaultMaxSearchesPerRun. Negative → 0 (off).
 	MaxSearchesPerRun int
+
+	// CorrelationLookup serves get_correlations. Supplied by the caller that
+	// knows the project, so this package needs neither a plugin registry nor
+	// a project id. Nil disables the action's answer (the engine reports that
+	// nothing can be checked, not that nothing was decided).
+	CorrelationLookup CorrelationLookupFunc
+
+	// MaxCorrelationLookupsPerRun caps total get_correlations actions across
+	// the whole run. 0 → DefaultMaxCorrelationLookupsPerRun. Negative → 0
+	// (off).
+	MaxCorrelationLookupsPerRun int
 
 	// StepIndexer is the run-scoped vector index that receives one
 	// upsert per completed step. Optional in tests, required in
@@ -339,6 +396,13 @@ func NewExplorationEngine(opts ExplorationEngineOptions) *ExplorationEngine {
 	case maxSearches < 0:
 		maxSearches = 0
 	}
+	maxCorrelations := opts.MaxCorrelationLookupsPerRun
+	switch {
+	case maxCorrelations == 0:
+		maxCorrelations = DefaultMaxCorrelationLookupsPerRun
+	case maxCorrelations < 0:
+		maxCorrelations = 0
+	}
 
 	// Normalise the executor wiring into the per-datasource map. Multi-
 	// warehouse callers pass Executors + PrimaryDatasource; single-warehouse
@@ -368,6 +432,11 @@ func NewExplorationEngine(opts ExplorationEngineOptions) *ExplorationEngine {
 		tableDatasource:   opts.TableDatasource,
 		maxSteps:          opts.MaxSteps,
 		minSteps:          opts.MinSteps,
+		// Not armed without an index: the rule cannot measure anything, so
+		// it would reject every completion until the runaway cap while
+		// reporting a reason that had never been evaluated. A run wired
+		// this way keeps the floor, which is what the option documents.
+		stop:              stopRule{minSteps: opts.MinSteps, byNovelty: opts.StopOnNoNewSignal && opts.StepIndexer != nil},
 		dataset:           opts.Dataset,
 		onStep:            opts.OnStep,
 		schemaProvider:    opts.SchemaProvider,
@@ -375,6 +444,9 @@ func NewExplorationEngine(opts ExplorationEngineOptions) *ExplorationEngine {
 		maxLookupsPerRun:  maxLookups,
 		maxSearchesPerRun: maxSearches,
 		fetchedTables:     make(map[string]struct{}),
+
+		correlationLookup:           opts.CorrelationLookup,
+		maxCorrelationLookupsPerRun: maxCorrelations,
 
 		window:             opts.Window,
 		outputCap:          opts.OutputCap,
@@ -542,42 +614,45 @@ func (e *ExplorationEngine) Explore(
 			return result, err
 		}
 
-		// Reject premature completion: if the LLM says "done" before the min-step
-		// floor, nudge it to keep exploring instead of terminating. This guards
-		// against models (especially reasoning models) that are biased toward
-		// declaring completion quickly.
-		if action.Action == "complete" && step < e.minSteps {
-			logger.WithFields(logger.Fields{
-				"step":      step,
-				"min_steps": e.minSteps,
-			}).Warn("LLM signalled done before minimum steps — rejecting and continuing")
+		// Reject premature completion. Models — reasoning models especially —
+		// are biased toward declaring completion early, so a "done" signal has
+		// to earn it: either by clearing the step floor, or, on a run where a
+		// step count means nothing, by the exploration having stopped turning
+		// up anything new. See exploration_stopping.go.
+		if action.Action == "complete" {
+			if accepted, reason := e.stop.acceptDone(step, e.noveltyMeasurable()); !accepted {
+				nudge, why := e.rejectionFor(reason, step)
+				logger.WithFields(logger.Fields{
+					"step":              step,
+					"min_steps":         e.minSteps,
+					"reason":            reason,
+					"judged_steps":      e.stop.judged,
+					"repeated_in_a_row": e.stop.consecutiveRepeats,
+					"unjudged_in_a_row": e.stop.consecutiveUnjudged,
+					"steps_indexed":     e.stepsIndexed,
+					"steps_offered":     e.stepsIndexOffered,
+				}).Warn("LLM signalled done too early — rejecting and continuing")
 
-			nudge := fmt.Sprintf(
-				"You've only completed %d of the required minimum %d exploration steps. "+
-					"Do not signal completion yet — there are more analysis areas to cover. "+
-					"Respond with the next query in the documented JSON format: "+
-					`{"thinking": "...", "query": "SELECT ..."}.`,
-				step, e.minSteps,
-			)
-			conversation.AddUserMessage(nudge)
+				conversation.AddUserMessage(nudge)
 
-			// Record the rejected completion as a step so it's visible in logs / UI
-			// without short-circuiting the run.
-			result.Steps = append(result.Steps, models.ExplorationStep{
-				Step:      step,
-				Timestamp: time.Now(),
-				Action:    "complete_rejected",
-				Thinking:  action.Thinking,
-				Error:     fmt.Sprintf("rejected premature completion (%d < %d)", step, e.minSteps),
-				TokensIn:  inputTokens,
-				TokensOut: outputTokens,
-			})
-			result.TotalSteps = step
+				// Record the rejected completion as a step so it's visible in
+				// logs / UI without short-circuiting the run.
+				result.Steps = append(result.Steps, models.ExplorationStep{
+					Step:      step,
+					Timestamp: time.Now(),
+					Action:    "complete_rejected",
+					Thinking:  action.Thinking,
+					Error:     why,
+					TokensIn:  inputTokens,
+					TokensOut: outputTokens,
+				})
+				result.TotalSteps = step
 
-			if e.onStep != nil {
-				e.onStep(step, "complete_rejected", action.Thinking, "", 0, 0, false, fmt.Sprintf("rejected premature completion (%d < %d)", step, e.minSteps), inputTokens, outputTokens, "")
+				if e.onStep != nil {
+					e.onStep(step, "complete_rejected", action.Thinking, "", 0, 0, false, why, inputTokens, outputTokens, "")
+				}
+				continue
 			}
-			continue
 		}
 
 		// Create exploration step. Tokens are stamped here so the per-phase
@@ -605,6 +680,14 @@ func (e *ExplorationEngine) Explore(
 		// each area's identity. Failure is non-fatal — it degrades
 		// the analysis selection back to keyword-only behaviour but
 		// must not abort exploration.
+		// Judge how much new ground this step broke, BEFORE indexing it —
+		// once it is in the index it is its own nearest neighbour. Only the
+		// novelty rule consumes this; a floor run skips the call entirely
+		// rather than paying for a measurement it will not read.
+		if e.stop.byNovelty && noveltySubject(explorationStep) {
+			e.stop.observe(e.repeatsEarlierWork(ctx, explorationStep))
+		}
+
 		if e.stepIndexer != nil {
 			compactRowCount := 0
 			if explorationStep.CompactResult != nil {
@@ -617,12 +700,14 @@ func (e *ExplorationEngine) Explore(
 				"compact_row_count": compactRowCount,
 				"has_error":         explorationStep.Error != "",
 			}).Debug("exploration: indexing step into per-run vector index")
-			if err := e.stepIndexer.Upsert(ctx, explorationStep); err != nil {
+			err := e.stepIndexer.Upsert(ctx, explorationStep)
+			if err != nil {
 				logger.WithFields(logger.Fields{
 					"step":  step,
 					"error": err.Error(),
 				}).Warn("Run-step index upsert failed; analysis ranking quality will degrade for this step")
 			}
+			e.recordIndexOutcome(err == nil)
 		}
 
 		// Add to results
@@ -678,6 +763,11 @@ func (e *ExplorationEngine) Explore(
 //	"search_tables"— SearchTables is a free-text query the LLM wants
 //	                 ranked semantically against the per-project schema
 //	                 index. Top hits flow back as the next user message.
+//	"get_correlations" — GetCorrelations names two datasources the LLM is
+//	                 about to hop between; the answer is what somebody has
+//	                 decided about correlating them. Only available on a
+//	                 multi-warehouse run whose project has decisions, and
+//	                 taught there — see buildDatasourcesPromptSection.
 //
 // Legacy fields (Action, QueryPurpose, Reason) stay for the JSON
 // parser's "explicit action" path — older prompts still emit
@@ -713,6 +803,12 @@ type ExplorationAction struct {
 	// are clamped at execution time.
 	SearchTables string `json:"search_tables"`
 	SearchTopK   int    `json:"search_top_k"`
+
+	// get_correlations — the two datasources to ask about. A pointer, not a
+	// value, because the parser selects this mode on the key being PRESENT:
+	// a zero pair and an absent one are different questions, and only one of
+	// them is an error worth re-prompting for.
+	GetCorrelations *CorrelationPair `json:"get_correlations"`
 
 	// Legacy / explicit-action shape — kept so a prompt can still
 	// say {"action": "query_data", ...}. The parser normalises
@@ -822,7 +918,7 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 			break
 		}
 
-		conversation.AddUserMessage(explorationRepairNudge(err))
+		conversation.AddUserMessage(explorationRepairNudge(err, e.correlationsOffered()))
 	}
 
 	in, out := usage.Totals()
@@ -878,6 +974,11 @@ func ParseAction(response string, allowed []string) (*ExplorationAction, error) 
 	case strings.TrimSpace(action.SearchTables) != "":
 		// Modern key-driven: a non-empty search query selects mode.
 		action.Action = "search_tables"
+	case action.GetCorrelations != nil:
+		// Modern key-driven: presence of the pair object selects mode. An
+		// incomplete pair still dispatches, so the executor can name this
+		// run's datasources back — more use to a model than a parse error.
+		action.Action = "get_correlations"
 	case action.Action == "complete":
 		// Legacy explicit complete — accept.
 	case action.Action == "query_data" && action.Query != "":
@@ -886,10 +987,12 @@ func ParseAction(response string, allowed []string) (*ExplorationAction, error) 
 		// Legacy explicit lookup — accept.
 	case action.Action == "search_tables" && strings.TrimSpace(action.SearchTables) != "":
 		// Legacy explicit search — accept.
+	case action.Action == "get_correlations" && action.GetCorrelations != nil:
+		// Legacy explicit correlation lookup — accept.
 	default:
 		// JSON parsed but carries no recognised payload. Fail loudly so
 		// the caller can re-prompt instead of silently terminating.
-		return nil, fmt.Errorf("action JSON has no query, lookup_schema, search_tables, done flag, or recognized action (got action=%q)", action.Action)
+		return nil, fmt.Errorf("action JSON has no query, lookup_schema, search_tables, get_correlations, done flag, or recognized action (got action=%q)", action.Action)
 	}
 
 	if len(allowed) > 0 && !actionAllowed(action.Action, allowed) {
@@ -970,6 +1073,14 @@ func normaliseToolEnvelope(jsonStr string, action *ExplorationAction) {
 			if action.SearchTopK == 0 {
 				action.SearchTopK = in.TopK
 			}
+		}
+	case "get_correlations":
+		if action.GetCorrelations != nil {
+			return
+		}
+		var in CorrelationPair
+		if err := json.Unmarshal(env.Input, &in); err == nil && (in.A != "" || in.B != "") {
+			action.GetCorrelations = &in
 		}
 	case "query_data":
 		if action.Query != "" {
@@ -1205,7 +1316,7 @@ func jsonHasActionKey(s string) bool {
 	if err := json.Unmarshal([]byte(s), &probe); err != nil {
 		return false
 	}
-	for _, k := range []string{"query", "done", "action", "lookup_schema", "search_tables"} {
+	for _, k := range []string{"query", "done", "action", "lookup_schema", "search_tables", "get_correlations"} {
 		if _, ok := probe[k]; ok {
 			return true
 		}
@@ -1216,7 +1327,7 @@ func jsonHasActionKey(s string) bool {
 		var name string
 		if json.Unmarshal(nameRaw, &name) == nil {
 			switch name {
-			case "query_data", "lookup_schema", "search_tables", "complete":
+			case "query_data", "lookup_schema", "search_tables", "get_correlations", "complete":
 				return true
 			}
 		}
@@ -1230,22 +1341,38 @@ func jsonHasActionKey(s string) bool {
 // model corrects the specific failure instead of getting the same generic
 // re-ask each time (issue #341). The menu lists every recognised action shape
 // (including the schema-discovery actions the old nudge omitted).
-func explorationRepairNudge(parseErr error) string {
-	const menu = "Respond with EXACTLY ONE JSON object, no prose and no <think> blocks around it, matching one of:\n" +
-		`  {"thinking": "...", "query": "SELECT ..."}        — run one read-only query, or` + "\n" +
-		`  {"thinking": "...", "lookup_schema": ["ds.tbl"]}  — inspect table schemas, or` + "\n" +
-		`  {"thinking": "...", "search_tables": "..."}       — find relevant tables, or` + "\n" +
-		`  {"done": true, "summary": "..."}                  — only when exploration is truly finished.`
+//
+// withCorrelations adds the run-scoped correlation action. Run-scoped rather
+// than constant in both directions: a run that was never offered the action
+// must not be taught it here, and a run whose contract REQUIRES it must not be
+// handed a menu of four alternatives the moment its attempt at the fifth fails
+// to parse — that is the one moment the nudge would steer it away from the
+// check it was told to make.
+func explorationRepairNudge(parseErr error, withCorrelations bool) string {
+	var b strings.Builder
+	b.WriteString("Respond with EXACTLY ONE JSON object, no prose and no <think> blocks around it, matching one of:\n")
+	b.WriteString(`  {"thinking": "...", "query": "SELECT ..."}        — run one read-only query, or` + "\n")
+	b.WriteString(`  {"thinking": "...", "lookup_schema": ["ds.tbl"]}  — inspect table schemas, or` + "\n")
+	b.WriteString(`  {"thinking": "...", "search_tables": "..."}       — find relevant tables, or` + "\n")
+	carried := "query, lookup_schema, search_tables, or done"
+	if withCorrelations {
+		b.WriteString(`  {"thinking": "...", "get_correlations": {"a": "<datasource_id>", "b": "<datasource_id>"}} — check the reviewed join keys for a pair, or` + "\n")
+		carried = "query, lookup_schema, search_tables, get_correlations, or done"
+	}
+	b.WriteString(`  {"done": true, "summary": "..."}                  — only when exploration is truly finished.`)
+
 	lead := "Your previous response could not be parsed as an exploration action."
 	if parseErr != nil {
 		switch msg := parseErr.Error(); {
 		case strings.Contains(msg, "no action JSON"):
 			lead = "Your previous response contained no JSON action object (only prose or reasoning)."
 		case strings.Contains(msg, "no query, lookup_schema"):
-			lead = "Your previous JSON had no usable action — it must carry one of query, lookup_schema, search_tables, or done."
+			// Named from the same switch as the menu: a lead listing four
+			// actions above a menu of five is its own kind of confusing.
+			lead = "Your previous JSON had no usable action — it must carry one of " + carried + "."
 		}
 	}
-	return lead + " " + menu + "\nDo not emit planning JSON before the action, and do not wrap it in markdown fences."
+	return lead + " " + b.String() + "\nDo not emit planning JSON before the action, and do not wrap it in markdown fences."
 }
 
 // executeAction executes the action and returns the user-message string
@@ -1267,6 +1394,9 @@ func (e *ExplorationEngine) executeAction(
 
 	case "search_tables":
 		return e.executeSearchTables(ctx, action, step)
+
+	case "get_correlations":
+		return e.executeGetCorrelations(ctx, action, step)
 
 	case "complete":
 		return fmt.Sprintf("Exploration complete: %s", action.Reason)
@@ -1356,6 +1486,10 @@ func (e *ExplorationEngine) executeQuery(
 	step.FixAttempts = result.FixAttempts
 	step.Fixed = result.Fixed
 	step.FixHistory = result.FixHistory
+	// What the source said about the fidelity of these rows. It is knowable
+	// only here — the query succeeded and the rows look complete, so nothing
+	// downstream could re-derive that some were withheld.
+	step.Quality = result.Quality
 
 	// Build the per-step compact digest exactly once. Storing it on
 	// the step means the analysis phase can render the digest into
@@ -1372,7 +1506,17 @@ func (e *ExplorationEngine) executeQuery(
 		"has_tail_rows": compact.TailRows != nil,
 	}).Debug("exploration: built compact digest for step")
 
-	// Format result for Claude
+	return e.formatQuerySuccess(result)
+}
+
+// formatQuerySuccess renders the message the exploring model reads after a
+// query succeeds.
+//
+// Its own function so the message can be asserted on directly. What it does
+// with a degraded result is the part worth pinning, and that was previously
+// reachable only through a full query execution — which is how a caveat could
+// be carried onto the step and still never reach the model.
+func (e *ExplorationEngine) formatQuerySuccess(result *queryexec.ExecuteResult) string {
 	resultMsg := "Query executed successfully.\n\n"
 	resultMsg += fmt.Sprintf("Rows returned: %d\n", result.RowCount)
 	resultMsg += fmt.Sprintf("Execution time: %dms\n", result.ExecutionTimeMs)
@@ -1380,6 +1524,11 @@ func (e *ExplorationEngine) executeQuery(
 	if result.Fixed {
 		resultMsg += fmt.Sprintf("Note: Query was automatically fixed (%d attempts)\n", result.FixAttempts)
 	}
+
+	// The source's own caveats go in FRONT of the rows, not after them. The
+	// rows look complete either way, so a model that reads them first has
+	// already formed its conclusion by the time it reaches a footnote.
+	resultMsg += gowarehouse.CaveatInstruction(result.Quality)
 
 	resultMsg += "\n**Results**:\n"
 
@@ -1599,6 +1748,17 @@ func (e *ExplorationEngine) buildInitialMessage(explorationCtx ExplorationContex
 		)
 	}
 
+	// Only when something can answer, and only when it may be asked: announcing
+	// a budget for an action that is unwired — or switched off, which is what a
+	// zero budget means here — teaches the model to spend a step on a question
+	// with no answer.
+	if e.correlationsOffered() {
+		fmt.Fprintf(&msg,
+			"You also have %d get_correlations calls for checking what has been decided about correlating two datasources.\n",
+			e.maxCorrelationLookupsPerRun,
+		)
+	}
+
 	return msg.String()
 }
 
@@ -1716,10 +1876,20 @@ func formatSearchResult(query string, hits []SearchHit, searchesUsed, maxSearche
 	fmt.Fprintf(&b, "Search results for %q:\n", query)
 
 	if len(hits) == 0 {
-		b.WriteString("(no matching tables; try different terms or pick from the catalog in the system prompt)")
+		b.WriteString("(no matches; try different terms or pick from the catalog in the system prompt)")
 	} else {
+		anyTable := false
 		for i, h := range hits {
-			fmt.Fprintf(&b, "%d. `%s` — %s rows — score=%.3f", i+1, h.Table, formatRowCountShort(h.RowCount), h.Score)
+			// A hit that is not a table must not be rendered as one. Backticked
+			// and followed by "issue lookup_schema with the table refs", a
+			// metric reads as a SQL table — and the model then looks up a
+			// schema that does not exist, or writes a FROM clause against it.
+			if h.Kind != "" {
+				fmt.Fprintf(&b, "%d. `%s` (%s) — score=%.3f", i+1, h.Table, h.Kind, h.Score)
+			} else {
+				anyTable = true
+				fmt.Fprintf(&b, "%d. `%s` — %s rows — score=%.3f", i+1, h.Table, formatRowCountShort(h.RowCount), h.Score)
+			}
 			// On a multi-warehouse run, tag each hit with its datasource so
 			// the model knows which datasource_id to target on a follow-up.
 			if showDatasource && h.Datasource != "" {
@@ -1731,7 +1901,13 @@ func formatSearchResult(query string, hits []SearchHit, searchesUsed, maxSearche
 			}
 			b.WriteByte('\n')
 		}
-		b.WriteString("\nIssue lookup_schema with the table refs you want full column detail for before querying them.")
+		// Only advise lookup_schema when something in the result actually has
+		// a schema to look up. Telling the model to do it for a result made
+		// only of metrics and dimensions sends it after a table that does not
+		// exist.
+		if anyTable {
+			b.WriteString("\nIssue lookup_schema with the table refs you want full column detail for before querying them.")
+		}
 	}
 
 	if maxSearches > 0 {

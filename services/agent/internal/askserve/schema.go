@@ -42,10 +42,16 @@ type SchemaRouter struct {
 type TaggedHit struct {
 	DatasourceID    string
 	DatasourceLabel string
-	Table           string
-	Blurb           string
-	RowCount        int64
-	Score           float64
+	// Table is the reference a query must use to name this hit: a qualified
+	// table for a table-shaped datasource, or the item's own name for a
+	// catalog-shaped one. Kind says which.
+	Table string
+	// Kind is the sort of thing the hit describes. Empty means a table, which
+	// is what every hit was before catalog sources existed.
+	Kind     string
+	Blurb    string
+	RowCount int64
+	Score    float64
 }
 
 // SchemaRouterOptions assembles a SchemaRouter. Lookups is the per-datasource
@@ -121,9 +127,15 @@ func (s *SchemaRouter) SearchOne(ctx context.Context, datasourceID, query string
 			DatasourceID:    id,
 			DatasourceLabel: s.labels[id],
 			Table:           h.Table,
-			Blurb:           h.Blurb,
-			RowCount:        h.RowCount,
-			Score:           h.Score,
+			// Carried, not dropped. A single-datasource or pinned turn renders
+			// through the same formatter as a spanning one, so losing the kind
+			// here shows metrics and dimensions to the model as bare table
+			// names on exactly the turns where a catalog source is most likely
+			// to be the one being asked about.
+			Kind:     h.Kind,
+			Blurb:    h.Blurb,
+			RowCount: h.RowCount,
+			Score:    h.Score,
 		})
 	}
 	return out, nil

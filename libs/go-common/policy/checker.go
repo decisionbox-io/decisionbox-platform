@@ -115,13 +115,20 @@ const (
 	FeaturePackGen        = "pack_gen_enabled"
 	FeatureDataQuery      = "data_query_enabled"
 	FeatureAskCharts      = "ask_charts_enabled"
-	// FeatureMultiWarehouse gates attaching more than one SQL warehouse
-	// to a single project. When off, a project is capped at one warehouse
-	// (today's behaviour). Enforced at the add-warehouse chokepoint via
+	// FeatureMultiWarehouse gates attaching more than one datasource to a
+	// single project. When off, a project is capped at one (today's
+	// behaviour). Enforced at the add-datasource chokepoint via
 	// FeatureEnabled — deliberately NOT a Checker interface change, so the
-	// cloud/enterprise implementers are unaffected. Each warehouse still
-	// bills as one data source under data_sources_per_deployment (the
-	// enterprise DataSourceCount sums warehouses across projects).
+	// cloud/enterprise implementers are unaffected.
+	//
+	// Each datasource bills as one under data_sources_per_deployment, and
+	// they all bill the same: the gate and the counter read neither a
+	// provider's shape nor whether it can anchor. A source that only
+	// enriches an analysis costs the same to connect, index, query and
+	// support as one that can carry it, so pricing it differently would make
+	// the same connection cost different amounts depending on a capability
+	// declaration the customer did not choose. The absence of those checks
+	// here is the pricing model, not an omission.
 	FeatureMultiWarehouse = "multi_warehouse_enabled"
 	FeatureConnectors     = "connectors_enabled"
 	FeatureFileIngestion  = "file_ingestion_enabled"

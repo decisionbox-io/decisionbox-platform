@@ -242,9 +242,9 @@ func TestRecoverRelatedInsightIDs_BackfillsMissingAndAllBad(t *testing.T) {
 		{ID: "02665b9e-468f-41eb-b50e-28702b95e999"},
 	}
 	recs := []models.Recommendation{
-		{ID: "r1", RelatedInsightIDs: nil},                                        // missing
-		{ID: "r2", RelatedInsightIDs: []string{}},                                 // empty
-		{ID: "r3", RelatedInsightIDs: []string{"cat:crit:slug", "another-slug"}},  // all bad
+		{ID: "r1", RelatedInsightIDs: nil},                                       // missing
+		{ID: "r2", RelatedInsightIDs: []string{}},                                // empty
+		{ID: "r3", RelatedInsightIDs: []string{"cat:crit:slug", "another-slug"}}, // all bad
 	}
 	out, stats := recoverRelatedInsightIDs(recs, insights)
 	if len(out) != 3 {

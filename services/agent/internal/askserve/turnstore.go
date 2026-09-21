@@ -167,35 +167,7 @@ func (s *turnStore) SetStatus(ctx context.Context, turnID, status string) error 
 // that is already terminal (last-writer-wins is the wrong semantics here).
 func (s *turnStore) Finalize(ctx context.Context, fin TurnFinal) error {
 	now := time.Now()
-	set := bson.M{
-		"status":       fin.Status,
-		"disposition":  fin.Disposition,
-		"answer":       fin.Answer,
-		"model":        fin.Model,
-		"updated_at":   now,
-		"completed_at": now,
-	}
-	if fin.Error != "" {
-		set["error"] = fin.Error
-	}
-	if fin.InputTokens > 0 {
-		set["input_tokens"] = fin.InputTokens
-	}
-	if fin.OutputTokens > 0 {
-		set["output_tokens"] = fin.OutputTokens
-	}
-	if len(fin.RoutedDatasourceIDs) > 0 {
-		set["routed_datasource_ids"] = fin.RoutedDatasourceIDs
-	}
-	if fin.RoutingReason != "" {
-		set["routing_reason"] = fin.RoutingReason
-	}
-	if fin.RoutingConfidence > 0 {
-		set["routing_confidence"] = fin.RoutingConfidence
-	}
-	if fin.RoutingClarify {
-		set["routing_clarify"] = true
-	}
+	set := finalizeUpdate(fin, now)
 	res, err := s.turns.UpdateOne(ctx,
 		bson.M{"_id": fin.TurnID, "status": commonmodels.AskTurnStatusRunning},
 		bson.M{"$set": set},
@@ -291,6 +263,53 @@ func (s *turnStore) GetTurn(ctx context.Context, turnID string) (*commonmodels.A
 	return &t, nil
 }
 
+// finalizeUpdate builds the $set document for a terminal turn.
+//
+// Extracted from Finalize so it can be tested without a Mongo connection. It is
+// the only place that decides which telemetry survives to the stored record,
+// and every field here is conditional — a zero value is omitted rather than
+// written — so "the field is absent" and "the field was zero" are the same
+// state by design, and a bug that drops a field looks exactly like a turn that
+// had nothing to report.
+func finalizeUpdate(fin TurnFinal, now time.Time) bson.M {
+	set := bson.M{
+		"status":       fin.Status,
+		"disposition":  fin.Disposition,
+		"answer":       fin.Answer,
+		"model":        fin.Model,
+		"updated_at":   now,
+		"completed_at": now,
+	}
+	if fin.Error != "" {
+		set["error"] = fin.Error
+	}
+	if fin.InputTokens > 0 {
+		set["input_tokens"] = fin.InputTokens
+	}
+	if fin.OutputTokens > 0 {
+		set["output_tokens"] = fin.OutputTokens
+	}
+	if len(fin.RoutedDatasourceIDs) > 0 {
+		set["routed_datasource_ids"] = fin.RoutedDatasourceIDs
+	}
+	if fin.RoutingReason != "" {
+		set["routing_reason"] = fin.RoutingReason
+	}
+	if fin.RoutingConfidence > 0 {
+		set["routing_confidence"] = fin.RoutingConfidence
+	}
+	if len(fin.RoutingCandidateIDs) > 0 {
+		set["routing_candidate_ids"] = fin.RoutingCandidateIDs
+	}
+	if len(fin.RoutingChosenIDs) > 0 {
+		set["routing_chosen_ids"] = fin.RoutingChosenIDs
+	}
+	if fin.RoutingClarify {
+		set["routing_clarify"] = true
+	}
+	return set
+}
+
 // TurnFinal carries everything Finalize needs to close out a turn and write
 // its session message.
 type TurnFinal struct {
@@ -317,4 +336,10 @@ type TurnFinal struct {
 	RoutingReason     string
 	RoutingConfidence float64
 	RoutingClarify    bool
+	// RoutingCandidateIDs are the datasources the router chose FROM;
+	// RoutingChosenIDs the ones it chose. Both empty when the router did not
+	// run. See the model field docs for why the candidate set is recorded
+	// separately from what the turn queried.
+	RoutingCandidateIDs []string
+	RoutingChosenIDs    []string
 }

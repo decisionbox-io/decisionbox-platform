@@ -27,8 +27,13 @@ func TestPrompt_PermitsClarifyWhenAToolAsksForConfirmation(t *testing.T) {
 	if !strings.Contains(p, "asked you to confirm something with the user first") {
 		t.Error("the grounding rule still forbids clarify outright")
 	}
-	if !strings.Contains(groundingNudge, "asked you to confirm something with the user first") {
-		t.Error("the grounding nudge still forbids clarify outright")
+	// The nudge is branched by datasource shape (a cube turn must not be sent
+	// to INFORMATION_SCHEMA), so the allowance has to survive every branch —
+	// not just the all-SQL one that existed when this rule was written.
+	for _, shapes := range []sourceShapes{{}, {anyCube: true}, {anyCube: true, allCube: true}} {
+		if !strings.Contains(groundingNudge(shapes), "asked you to confirm something with the user first") {
+			t.Errorf("the grounding nudge still forbids clarify outright (shapes %+v)", shapes)
+		}
 	}
 	// The allowance is conditional, not an invitation: the default remains that
 	// an answerable question gets answered.

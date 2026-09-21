@@ -60,6 +60,14 @@ type compactedStep struct {
 	RowCount     int                    `json:"row_count"`
 	Error        string                 `json:"error,omitempty"`
 	Compact      gomodels.CompactResult `json:"query_result"`
+
+	// Quality is what the source said about the fidelity of this step's rows.
+	// It ships into the analysis prompt beside them because the rows alone
+	// cannot convey it: they are well-formed and complete-looking whether or
+	// not a threshold withheld half the population. Omitted when the source
+	// declared nothing, which is every SQL warehouse, so a prompt built from
+	// warehouse steps is byte-identical to before.
+	Quality []string `json:"quality_caveats,omitempty"`
 }
 
 func buildCompactedView(steps []models.ExplorationStep) []compactedStep {
@@ -74,6 +82,10 @@ func buildCompactedView(steps []models.ExplorationStep) []compactedStep {
 			// migration.
 			compact = gomodels.BuildCompactResult(s.QueryResult)
 		}
+		var caveats []string
+		for _, c := range s.Quality {
+			caveats = append(caveats, c.String())
+		}
 		out = append(out, compactedStep{
 			Step:         s.Step,
 			Action:       s.Action,
@@ -83,6 +95,7 @@ func buildCompactedView(steps []models.ExplorationStep) []compactedStep {
 			RowCount:     s.RowCount,
 			Error:        s.Error,
 			Compact:      compact,
+			Quality:      caveats,
 		})
 	}
 	return out
