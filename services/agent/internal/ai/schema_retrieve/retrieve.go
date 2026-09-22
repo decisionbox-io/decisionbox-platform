@@ -210,8 +210,18 @@ func (r *Retriever) DeleteWarehousePoints(ctx context.Context, projectID, wareho
 // TableBlurb is one row of the schema index — a per-table natural-language
 // description plus the metadata the renderer needs at retrieval time.
 type TableBlurb struct {
-	Table          string   // fully-qualified: dataset.table
-	Dataset        string   // just the dataset for filtering
+	// Table is the reference a query must use to name this item. For a
+	// table-shaped source that is the qualified "dataset.table" (or the
+	// three-part cross-project form). For a catalog-shaped source it is the
+	// item's own name — a dimension or metric — because that source has no
+	// tables and the item IS what a query names. Kind says which.
+	Table   string
+	Dataset string // just the dataset for filtering
+
+	// Kind is what sort of thing this point describes. Empty means a table,
+	// which is what every point written before catalogs existed is, so the
+	// zero value keeps legacy points correct. See warehouse.ItemKind*.
+	Kind           string
 	WarehouseID    string   // owning warehouse (multi-warehouse); "" == the project's default/primary
 	Blurb          string   // 2-4 sentence description, from the blurb LLM
 	Keywords       []string // 1-3 domain-pack keywords, used by sparse re-rank
@@ -442,7 +452,7 @@ func payloadFromBlurb(b TableBlurb, projectID, warehouseID string) map[string]in
 	// two fields. blurbFromPayload rehydrates the qualified form on read
 	// so consumers keep seeing the same contract.
 	bareTable := b.Table
-	if b.Dataset != "" {
+	if b.Kind == "" && b.Dataset != "" {
 		bareTable = strings.TrimPrefix(b.Table, b.Dataset+".")
 	}
 	return map[string]interface{}{
@@ -452,6 +462,7 @@ func payloadFromBlurb(b TableBlurb, projectID, warehouseID string) map[string]in
 		"dataset":         b.Dataset,
 		"blurb":           b.Blurb,
 		"keywords":        kws,
+		"kind":            b.Kind,
 		"row_count":       b.RowCount,
 		"column_count":    int64(b.ColumnCount),
 		"blurb_model":     b.BlurbModel,
@@ -475,8 +486,13 @@ func blurbFromPayload(payload map[string]*pb.Value) TableBlurb {
 	// "census.bigquery-public-data.census.Variable", and the search hit would
 	// be dropped as not-in-schemas.)
 	qualified := table
-	if dataset != "" && !strings.Contains(table, ".") {
-		qualified = dataset + "." + table
+	// Only a table ref is dataset-qualified. A catalog item's ref is the name
+	// a query must use verbatim — prefixing it would produce a name the
+	// source does not have, and the hit would then be unusable.
+	if kind := strVal(payload, "kind"); kind == "" {
+		if dataset != "" && !strings.Contains(table, ".") {
+			qualified = dataset + "." + table
+		}
 	}
 	// Legacy points (indexed before warehouse_id existed) carry no
 	// warehouse_id; treat them as the default warehouse so they keep
@@ -489,6 +505,7 @@ func blurbFromPayload(payload map[string]*pb.Value) TableBlurb {
 		Table:          qualified,
 		Dataset:        dataset,
 		WarehouseID:    whID,
+		Kind:           strVal(payload, "kind"),
 		Blurb:          strVal(payload, "blurb"),
 		Keywords:       strListVal(payload, "keywords"),
 		RowCount:       intVal(payload, "row_count"),

@@ -181,3 +181,50 @@ func TestProjectsHandler_Create_NoWarehouse_NoIndexingEnqueued(t *testing.T) {
 		t.Errorf("should not enqueue indexing without warehouse, got %q", got.SchemaIndexStatus)
 	}
 }
+
+// Discovery over sources that can only be correlated against something else,
+// with nothing to correlate against, is worse than no run: it looks like
+// analysis. The configuration routes refuse this set, but a project can arrive
+// here without passing through one — it may predate the rule, or its
+// provider's declaration may have changed between releases — so the run path
+// refuses it too.
+func TestDiscoveriesHandler_TriggerDiscovery_RefusesAProjectNothingCanAnchor(t *testing.T) {
+	enrich := anchoringProbe(t, "probe_discovery_enrich", false)
+	anchor := anchoringProbe(t, "probe_discovery_anchor", true)
+
+	start := func(t *testing.T, whs []models.WarehouseConfig) *httptest.ResponseRecorder {
+		t.Helper()
+		projRepo := newMockProjectRepo()
+		h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projRepo, newMockRunRepo(), nil, nil, nil, newMockRunner())
+
+		p := &models.Project{
+			Name: "p", Domain: "gaming", Category: "match3",
+			SchemaIndexStatus: models.SchemaIndexStatusReady,
+			Warehouses:        whs,
+		}
+		_ = projRepo.Create(context.Background(), p)
+
+		req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/discover", strings.NewReader("{}"))
+		req.SetPathValue("id", p.ID)
+		w := httptest.NewRecorder()
+		h.TriggerDiscovery(w, req)
+		return w
+	}
+
+	t.Run("enrichment sources only", func(t *testing.T) {
+		w := start(t, []models.WarehouseConfig{{ID: "ds_1", Provider: enrich}})
+		if w.Code != 409 {
+			t.Fatalf("status = %d, want 409; body: %s", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "carry an analysis") {
+			t.Errorf("the refusal does not say why: %s", w.Body.String())
+		}
+	})
+
+	t.Run("an anchor alongside them is enough", func(t *testing.T) {
+		w := start(t, []models.WarehouseConfig{{ID: "ds_1", Provider: enrich}, {ID: "wh_1", Provider: anchor}})
+		if w.Code == 409 && strings.Contains(w.Body.String(), "carry an analysis") {
+			t.Errorf("a project with an anchor was refused: %s", w.Body.String())
+		}
+	})
+}

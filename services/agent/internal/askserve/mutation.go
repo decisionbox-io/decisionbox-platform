@@ -36,10 +36,12 @@ type MutationInput struct {
 }
 
 // MutationOutput is a mutation tool's result: an optional approvable proposal id
-// (stamped on the ToolEvent) and the payload fed back to the model.
+// (stamped on the ToolEvent), the payload fed back to the model, and an optional
+// deterministic acknowledgement for an ungrounded finish (see askmutation.Result).
 type MutationOutput struct {
 	ProposalID string
 	Output     any
+	Ack        string
 }
 
 // deferWrite records that a write TOOL was refused because it was batched with
@@ -167,6 +169,12 @@ func (r *runner) execMutation(ctx context.Context, st *turnState, mt MutationToo
 	// the user should hear about.
 	st.mutationsDone++
 	st.completeWrite(mt.Name)
+	// Remember the tool's own acknowledgement so an ungrounded finish can say
+	// what actually happened rather than the generic proposal wording. The most
+	// recent one wins: it describes the outcome the user is waiting to hear about.
+	if out.Ack != "" {
+		st.mutationAck = out.Ack
+	}
 
 	// Feed the tool's own output back so a mutation that reports details (an
 	// "already exists", a validation note, the created id) is visible to the
@@ -178,11 +186,14 @@ func (r *runner) execMutation(ctx context.Context, st *turnState, mt MutationToo
 		}
 	}
 	if out.ProposalID == "" {
-		// Nil error but no proposal id (a no-op / already-exists / validation-only
-		// outcome — ProposalID is optional). Report the outcome, but do NOT claim a
-		// pending change was created (writesSaved stays flat → an ungrounded finish
-		// acknowledges the no-op without a false "saved").
-		return fmt.Sprintf("%s completed but created no pending change; report the outcome to the user based on the result.", mt.Name) + suffix
+		// Nil error but no proposal id — ProposalID is optional, so this covers a
+		// no-op, an already-exists, and a tool whose result IS the outcome rather
+		// than something to approve. The wording must not imply the call fell
+		// short: it is a success, just not one that produced an approval. What it
+		// must still avoid is claiming something was saved for approval
+		// (writesSaved stays flat → an ungrounded finish acknowledges the outcome
+		// without a false "saved").
+		return fmt.Sprintf("%s completed. Tell the user what happened, following any instruction in the result below; it produced nothing for them to approve, so do not say a change was saved and is awaiting approval.", mt.Name) + suffix
 	}
 	// A real proposal was created: acknowledge the save.
 	st.writesSaved++

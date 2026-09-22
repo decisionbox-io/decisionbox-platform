@@ -184,9 +184,13 @@ type Orchestrator struct {
 	projectPrompts *models.ProjectPrompts
 	datasets       []string
 	filterField    string
-	filterValue    string
-	llmProvider    string
-	llmModel       string
+	// warehouseProviderSlug is the primary datasource's registered provider.
+	// The executor reads the query language from the registry by this slug,
+	// which no middleware can erase.
+	warehouseProviderSlug string
+	filterValue           string
+	llmProvider           string
+	llmModel              string
 
 	// llmConfig is the project's LLM provider config (project.LLM.Config).
 	// Read for the max_input_tokens / max_output_tokens operator overrides
@@ -253,9 +257,26 @@ type Orchestrator struct {
 	// The cache is populated by the schema indexer (see
 	// agentserver/index_schema.go) and indexed by WarehouseConfigHash so
 	// any warehouse-config change self-invalidates the cache.
-	schemaCache   SchemaCache
-	warehouseHash string
-	warehouseID   string
+	schemaCache SchemaCache
+	// catalogRefs holds the items a catalog-shaped datasource offers, loaded
+	// alongside the schemas map. Nil for a table-shaped source. The schema
+	// provider needs them: without them its staleness filter rejects every
+	// catalog hit, so search returns nothing for exactly the sources that
+	// have nothing but catalog items.
+	catalogRefs []string
+	// runCatalogRefs is every catalog-shaped datasource's items for THIS run,
+	// keyed by datasource id — the same authority the schema provider filters
+	// hits against, kept so the end-of-run reflection can read it.
+	//
+	// Reflection needs it because it runs from the persisted DiscoveryResult,
+	// and a result's Schemas map is tables: a cube contributes nothing to it,
+	// so a phase reading only the result cannot tell a project with a cube
+	// from one without. Captured where the run wires it rather than re-read,
+	// so what reflection reasons about is what exploration could actually
+	// query.
+	runCatalogRefs map[string][]string
+	warehouseHash  string
+	warehouseID    string
 
 	// warehouseProviders holds one live warehouse provider per datasource
 	// id for a multi-warehouse run (keyed by normalised id, primary
@@ -456,47 +477,48 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 	}
 
 	return &Orchestrator{
-		aiClient:           opts.AIClient,
-		warehouse:          opts.Warehouse,
-		contextRepo:        opts.ContextRepo,
-		discoveryRepo:      opts.DiscoveryRepo,
-		discoveryLogRepo:   discoveryLogRepo,
-		questionRepo:       questionRepo,
-		ledgerRepo:         ledgerRepo,
-		findingRepo:        findingRepo,
-		taskRepo:           taskRepo,
-		proposalRepo:       proposalRepo,
-		feedbackRepo:       opts.FeedbackRepo,
-		debugLogRepo:       opts.DebugLogRepo,
-		debugLogger:        debugLogger,
-		statusReporter:     statusReporter,
-		projectID:          opts.ProjectID,
-		domain:             opts.Domain,
-		category:           opts.Category,
-		language:           opts.Language,
-		profile:            opts.Profile,
-		projectPrompts:     opts.ProjectPrompts,
-		datasets:           opts.Datasets,
-		filterField:        opts.FilterField,
-		filterValue:        opts.FilterValue,
-		llmProvider:        opts.LLMProvider,
-		llmModel:           opts.LLMModel,
-		llmConfig:          opts.LLMConfig,
-		llmInputWindow:     opts.LLMInputWindow,
-		llmOutputCap:       opts.LLMOutputCap,
-		modelWindowRepo:    opts.ModelWindowRepo,
-		vectorStore:        opts.VectorStore,
-		embeddingProvider:  opts.EmbeddingProvider,
-		embedIndexStore:    opts.EmbedIndexStore,
-		embedder:           opts.EmbeddingProvider, // same interface, named differently to avoid ambiguity
-		schemaRetriever:    opts.SchemaRetriever,
-		schemaCache:        opts.SchemaCache,
-		warehouseHash:      opts.WarehouseHash,
-		warehouseID:        opts.WarehouseID,
-		warehouseProviders: opts.WarehouseProviders,
-		warehouses:         opts.Warehouses,
-		runStepIndex:       opts.RunStepIndex,
-		runID:              opts.RunID,
+		aiClient:              opts.AIClient,
+		warehouse:             opts.Warehouse,
+		contextRepo:           opts.ContextRepo,
+		discoveryRepo:         opts.DiscoveryRepo,
+		discoveryLogRepo:      discoveryLogRepo,
+		questionRepo:          questionRepo,
+		ledgerRepo:            ledgerRepo,
+		findingRepo:           findingRepo,
+		taskRepo:              taskRepo,
+		proposalRepo:          proposalRepo,
+		feedbackRepo:          opts.FeedbackRepo,
+		debugLogRepo:          opts.DebugLogRepo,
+		debugLogger:           debugLogger,
+		statusReporter:        statusReporter,
+		projectID:             opts.ProjectID,
+		domain:                opts.Domain,
+		category:              opts.Category,
+		language:              opts.Language,
+		profile:               opts.Profile,
+		projectPrompts:        opts.ProjectPrompts,
+		datasets:              opts.Datasets,
+		filterField:           opts.FilterField,
+		warehouseProviderSlug: opts.WarehouseProvider,
+		filterValue:           opts.FilterValue,
+		llmProvider:           opts.LLMProvider,
+		llmModel:              opts.LLMModel,
+		llmConfig:             opts.LLMConfig,
+		llmInputWindow:        opts.LLMInputWindow,
+		llmOutputCap:          opts.LLMOutputCap,
+		modelWindowRepo:       opts.ModelWindowRepo,
+		vectorStore:           opts.VectorStore,
+		embeddingProvider:     opts.EmbeddingProvider,
+		embedIndexStore:       opts.EmbedIndexStore,
+		embedder:              opts.EmbeddingProvider, // same interface, named differently to avoid ambiguity
+		schemaRetriever:       opts.SchemaRetriever,
+		schemaCache:           opts.SchemaCache,
+		warehouseHash:         opts.WarehouseHash,
+		warehouseID:           opts.WarehouseID,
+		warehouseProviders:    opts.WarehouseProviders,
+		warehouses:            opts.Warehouses,
+		runStepIndex:          opts.RunStepIndex,
+		runID:                 opts.RunID,
 	}
 }
 
@@ -632,24 +654,15 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	datasetsStr := strings.Join(o.datasets, ", ")
 
 	// Initialize query executor (uses the warehouse provider which can query any dataset)
-	sqlFixWindow, sqlFixOutputCap := o.resolveModelBudget()
-	sqlFixer := ai.NewSQLFixer(ai.SQLFixerOptions{
-		Client:       o.aiClient,
-		SQLFixPrompt: o.warehouse.SQLFixPrompt(),
-		Dataset:      datasetsStr,
-		Filter:       filterClause,
-		// Budget the fix call against the resolved window/output cap so it can't
-		// overflow a small model (#347-class fix).
-		Window:    sqlFixWindow,
-		OutputCap: sqlFixOutputCap,
-	})
+	sqlFixer := o.newQueryFixer(o.warehouse, datasetsStr, filterClause)
 	executor := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
-		Warehouse:   o.warehouse,
-		SQLFixer:    sqlFixer,
-		DebugLogger: o.debugLogger,
-		MaxRetries:  5,
-		FilterField: o.filterField,
-		FilterValue: o.filterValue,
+		Warehouse:    o.warehouse,
+		ProviderSlug: o.warehouseProviderSlug,
+		SQLFixer:     sqlFixer,
+		DebugLogger:  o.debugLogger,
+		MaxRetries:   5,
+		FilterField:  o.filterField,
+		FilterValue:  o.filterValue,
 	})
 
 	// Initialize the LLM-native validation agent.
@@ -815,8 +828,17 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// datasource's routing card and its own domain-pack focus areas, so the
 	// agent sets datasource_id per statement, hops between datasources, and
 	// applies the right playbook per datasource.
+	var guidance correlationGuidance
 	if dc != nil {
-		explorationPrompt += buildDatasourcesPromptSection(dc)
+		// Read only when there is a pair to read about. A run that degraded to
+		// one routable datasource cannot correlate, and its result would be
+		// discarded by the contract and the wiring both — after waiting out a
+		// slow provider to produce it.
+		if correlatable(dc) {
+			guidance = o.curatedCorrelations(ctx, dc)
+		}
+		explorationPrompt += buildDatasourcesPromptSection(dc, guidance)
+		o.logCorrelationContract(dc, guidance)
 	}
 
 	// Inject project knowledge sources (no-op if no enterprise plugin loaded
@@ -847,11 +869,13 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		schemaSearchWarehouseID = ""
 		tableWarehouse = dc.tableWarehouse
 	}
+	o.runCatalogRefs = o.catalogRefsByDatasource(dc)
 	schemaProvider, spErr := NewCacheSchemaProvider(CacheSchemaProviderOptions{
 		ProjectID:      o.projectID,
 		WarehouseID:    schemaSearchWarehouseID,
 		Datasets:       o.datasets,
 		Schemas:        schemas,
+		CatalogRefs:    o.runCatalogRefs,
 		TableWarehouse: tableWarehouse,
 		Retriever:      o.schemaRetriever,
 		Embedder:       o.embedder,
@@ -897,6 +921,17 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// exploration ceiling regardless of these values.
 	exploreWindow, exploreOutputCap := o.resolveModelBudget()
 
+	// Which stopping rule this run's exploration uses. Logged because the
+	// two rules end a run for different reasons, and a run that stopped
+	// early is the first thing an operator will want explained.
+	reachesCube := runReachesCube(dsExecutors, o.warehouses, o.warehouseProviderSlug)
+	applog.WithFields(applog.Fields{
+		"reaches_cube":         reachesCube,
+		"routable_datasources": len(dsExecutors),
+		"min_steps":            opts.MinSteps,
+		"max_steps":            opts.MaxSteps,
+	}).Info("exploration: stopping rule resolved")
+
 	o.explorationEngine = ai.NewExplorationEngine(ai.ExplorationEngineOptions{
 		Client:            o.aiClient,
 		Executor:          executor,
@@ -905,9 +940,13 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		TableDatasource:   tableWarehouse,
 		MaxSteps:          opts.MaxSteps,
 		MinSteps:          opts.MinSteps,
+		// A run that can query a cube stops on whether it is still finding
+		// anything new, not on a step count — see exploration_stopping.go.
+		StopOnNoNewSignal: reachesCube,
 		Dataset:           datasetsStr,
 		SchemaProvider:    schemaProvider,
 		StepIndexer:       stepIndexer,
+		CorrelationLookup: o.correlationLookup(dc, guidance),
 
 		// R3: reasoning-aware, window-budgeted per-step output ceiling.
 		Window:             exploreWindow,
@@ -1193,6 +1232,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			areaResults, insightsValidatedThisRun = valPhase.validateInsights(ctx, insights, stepByID, area.ID, insightsValidatedThisRun)
 			step.ValidationResults = areaResults
 		}
+
+		// Label every insight with what its evidence was worth. Derived from
+		// the steps it cites rather than taken from the model: an insight
+		// computed over withheld rows reads exactly like one computed over
+		// complete rows, so a model that simply did not mention the caveat
+		// would produce a finding indistinguishable from a sound one. Deriving
+		// it means the label survives whatever the model wrote.
+		attachSourceQuality(insights, stepByID)
 
 		analysisLog = append(analysisLog, step)
 		allInsights = append(allInsights, insights...)
@@ -1576,6 +1623,12 @@ func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.I
 			continue
 		}
 
+		// Whatever the model may have put here, it is not evidence about the
+		// evidence. This field is derived from the cited steps further down;
+		// clearing it means an authored value cannot survive even if the
+		// output happened to use the field's own name.
+		insight.Quality = nil
+
 		insight.AnalysisArea = areaID
 		if insight.DiscoveredAt.IsZero() {
 			insight.DiscoveredAt = time.Now()
@@ -1600,6 +1653,44 @@ func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.I
 	}
 
 	return insights, dropped, nil
+}
+
+// attachSourceQuality stamps each insight with the union of the quality
+// caveats carried by the steps it was drawn from.
+//
+// Deduplicated by kind and detail, because several steps hitting the same
+// threshold is one fact about the evidence, not three. Order follows the
+// insight's own source steps so the output is stable across runs.
+//
+// An insight citing no steps, or citing steps that carried no caveats, is left
+// untouched — the overwhelming majority, since a SQL warehouse never reports
+// one.
+func attachSourceQuality(insights []models.Insight, stepByID map[int]*models.ExplorationStep) {
+	for i := range insights {
+		// Taken as a pointer rather than indexed twice: the write has to reach
+		// the caller's slice, and one binding is clearer than repeating the
+		// subscript for the read and the write.
+		ins := &insights[i]
+
+		var caveats []gowarehouse.QualityCaveat
+		seen := make(map[gowarehouse.QualityCaveat]bool)
+		for _, id := range ins.SourceSteps {
+			step, ok := stepByID[id]
+			if !ok || step == nil {
+				continue
+			}
+			for _, c := range step.Quality {
+				if seen[c] {
+					continue
+				}
+				seen[c] = true
+				caveats = append(caveats, c)
+			}
+		}
+		if len(caveats) > 0 {
+			ins.Quality = caveats
+		}
+	}
 }
 
 // analysisParseOutcome carries the result of one analysis area's chat +
@@ -2475,6 +2566,44 @@ func (o *Orchestrator) loadPreviousDiscoveryContext(ctx context.Context) (
 // (warehouse config changed without a re-index, the indexer wrote
 // nothing, the cache was cleared) — surface it as a hard error so the
 // user reaches for /reindex rather than silently waiting an hour.
+// catalogRefsByDatasource assembles the catalog authority the schema provider
+// filters hits against, keyed by owning datasource.
+//
+// On a single-datasource run that is this datasource's own refs. On a
+// multi-datasource run the provider searches across every datasource, so it
+// needs every datasource's refs — keyed, so a ref name shared between them
+// cannot let one vouch for another.
+func (o *Orchestrator) catalogRefsByDatasource(dc *datasourceContext) map[string][]string {
+	if dc != nil && len(dc.catalogRefs) > 0 {
+		return dc.catalogRefs
+	}
+	if len(o.catalogRefs) == 0 {
+		return nil
+	}
+	return map[string][]string{normDatasourceID(o.warehouseID): o.catalogRefs}
+}
+
+// indexedCatalogRefs returns the items this datasource offers, or nil when it
+// has no indexed catalog — which is what distinguishes "has no tables, by
+// nature" from "was never indexed".
+//
+// Best-effort: a cache that cannot answer, or one that does not support
+// catalogs at all, returns nil, which preserves the pre-existing re-index
+// error for every source that had it before. Guessing "catalog" on a failed
+// lookup would silently swallow a genuinely missing index.
+func (o *Orchestrator) indexedCatalogRefs(ctx context.Context) []string {
+	cc, ok := o.schemaCache.(CatalogCache)
+	if !ok {
+		return nil
+	}
+	refs, err := cc.FindCatalog(ctx, o.projectID, o.warehouseID, o.warehouseHash)
+	if err != nil {
+		applog.WithError(err).Debug("catalog cache lookup failed while checking for an indexed catalog")
+		return nil
+	}
+	return refs
+}
+
 func (o *Orchestrator) discoverSchemas(ctx context.Context) (map[string]models.TableSchema, error) {
 	if o.schemaCache == nil {
 		return nil, fmt.Errorf("schema cache not wired into orchestrator (programmer error)")
@@ -2487,6 +2616,21 @@ func (o *Orchestrator) discoverSchemas(ctx context.Context) (map[string]models.T
 		return nil, fmt.Errorf("read schema cache: %w", err)
 	}
 	if len(schemas) == 0 {
+		// A catalog source has no tables, so an empty table cache is its
+		// normal state rather than evidence of a missing index. Reporting
+		// "re-index required" for one would send the operator to re-run an
+		// index that already succeeded, and would do it every time.
+		if refs := o.indexedCatalogRefs(ctx); len(refs) > 0 {
+			// Keep them: the schema provider built later filters catalog hits
+			// against exactly this list, so discarding them here would let
+			// discovery start and then return nothing from every search.
+			o.catalogRefs = refs
+			applog.WithFields(applog.Fields{
+				"warehouse_id":  o.warehouseID,
+				"catalog_items": len(refs),
+			}).Info("Datasource has no tables but an indexed catalog; continuing with an empty table map")
+			return map[string]models.TableSchema{}, nil
+		}
 		return nil, fmt.Errorf("schema cache is empty for this project — re-index required (POST /api/v1/projects/%s/reindex)", o.projectID)
 	}
 	applog.WithField("cached_tables", len(schemas)).Info("Loaded schemas from cache")
@@ -2573,6 +2717,15 @@ func (c countingStepIndexer) Upsert(ctx context.Context, step models.Exploration
 	return nil
 }
 
+// Nearest delegates to the wrapped index. Forwarded explicitly because a
+// decorator that omits a method of the interface it stands in for removes
+// that capability from everything downstream — here, the novelty rule the
+// cube stopping decision reads, which would silently fall back to the step
+// floor with nothing to notice it.
+func (c countingStepIndexer) Nearest(ctx context.Context, step models.ExplorationStep) (float64, bool, error) {
+	return c.inner.Nearest(ctx, step)
+}
+
 // stepsFromPickResult flattens PickResult.Picked back to plain
 // ExplorationSteps so the renderer + the prompt counters can consume
 // them without knowing about pick scores.
@@ -2654,6 +2807,133 @@ const (
 	knowledgeMinScore             = 0.4
 	knowledgeMaxRetrievalPerPhase = 3 * time.Second
 )
+
+// defaultCorrelationLookupTimeout bounds one call to the correlation provider.
+//
+// Needed because the surrounding error handling degrades a failed read to
+// "unread", and a provider that HANGS never fails: it would hold the run for
+// the whole run context, which defaults to 24 hours and can be turned off
+// entirely. A timeout is what turns a hang back into the failure the rest of
+// this code already knows how to handle.
+//
+// Wider than the knowledge-retrieval budget next door because a provider may
+// open its own store on first use, and a cold connect is the slowest call it
+// will make. Env-overridable (Rule 2) for a deployment whose store is further
+// away than that.
+const defaultCorrelationLookupTimeout = 15 * time.Second
+
+// correlationLookupTimeoutEnv overrides it, in seconds.
+const correlationLookupTimeoutEnv = "DISCOVERY_CORRELATION_LOOKUP_TIMEOUT_SECONDS"
+
+func correlationLookupTimeout() time.Duration {
+	if v := goconfig.GetEnvAsInt(correlationLookupTimeoutEnv, 0); v > 0 {
+		return time.Duration(v) * time.Second
+	}
+	return defaultCorrelationLookupTimeout
+}
+
+// correlationGuidance is what a run knows about reviewed correlation keys
+// before it starts.
+//
+// Two fields rather than one slice, because "nothing came back" has two causes
+// that must not be treated alike. Nobody having reviewed anything is a project
+// to leave alone. A read that FAILED has established nothing of the sort — and
+// treating it as the first would drop every recorded rejection for the length
+// of a run, silently, which is the outcome this whole feature exists to stop.
+type correlationGuidance struct {
+	keys   []agentplugin.CorrelationKey
+	unread bool
+}
+
+// offered reports whether this run gets the get_correlations action at all.
+//
+// A failed read still offers it: the store may answer the next time it is
+// asked, and a per-pair call during the run is the only way to find out.
+func (g correlationGuidance) offered() bool { return len(g.keys) > 0 || g.unread }
+
+// curatedCorrelations reads what somebody has decided about correlating this
+// run's datasources, for the routing contract to name.
+//
+// Once per run, over every datasource on it. The action re-reads per pair while
+// the run is in flight, so this is not a cache — it is the answer to a
+// different question: is there anything to tell the model about at all.
+//
+// A failure is a warning, never a stopped run: failing a discovery somebody
+// launched because a decision store hiccuped would be the worse trade. It is
+// reported as unread rather than as empty, so the contract says which.
+func (o *Orchestrator) curatedCorrelations(ctx context.Context, dc *datasourceContext) correlationGuidance {
+	ids := make([]string, 0, len(dc.descriptors))
+	for _, d := range dc.descriptors {
+		ids = append(ids, d.id)
+	}
+	readCtx, cancel := context.WithTimeout(ctx, correlationLookupTimeout())
+	defer cancel()
+	keys, err := agentplugin.Correlations(readCtx, agentplugin.CorrelationRequest{
+		ProjectID:     o.projectID,
+		DatasourceIDs: ids,
+	})
+	if err != nil {
+		applog.WithError(err).Warn("multi-warehouse discovery: could not read the reviewed correlation keys; " +
+			"the routing contract will say so and the agent can retry per pair")
+		return correlationGuidance{unread: true}
+	}
+	return correlationGuidance{keys: keys}
+}
+
+// logCorrelationContract records what the run was told about reviewed keys.
+//
+// Without it, "the model ignored the contract" and "the contract was never
+// rendered" look identical afterwards: the exploration prompt is not
+// persisted, and the per-action counter only counts calls that happened. One
+// line, at the moment the decision is made, is what makes the two
+// distinguishable — and the whole feature rests on which of them it is.
+func (o *Orchestrator) logCorrelationContract(dc *datasourceContext, guidance correlationGuidance) {
+	applog.WithFields(applog.Fields{
+		"offered":           correlatable(dc) && guidance.offered(),
+		"routable":          len(dc.descriptors),
+		"reviewed_keys":     len(guidance.keys),
+		"usable_pairings":   len(usablePairings(guidance.keys)),
+		"rejected_pairings": len(rejectedPairings(guidance.keys)),
+		"decisions_unread":  guidance.unread,
+	}).Info("multi-warehouse discovery: reviewed-correlation-key contract")
+}
+
+// correlationLookup is what serves the agent's get_correlations action.
+//
+// A closure over the project rather than the seam itself, so the exploration
+// engine neither imports the plugin registry nor carries a project id.
+//
+// Wired exactly when the routing contract TAUGHT the action — a single
+// datasource has nothing to correlate with, and a run whose project has no
+// decisions was never offered it. One rule rather than two: the engine
+// announces a budget for this action whenever the lookup is wired, so a run
+// that is not offered the action must not be told what it may spend on it.
+// Without that, every deployment with no provider at all — and every project
+// that has curated nothing — would have its opening message changed to
+// advertise an action that can only ever answer "nothing".
+//
+// A run whose decisions could not be READ is offered it, because that is the
+// case where asking again is worth something.
+//
+// A model that invents the action anyway is answered "not available on this
+// run", which is what it is.
+func (o *Orchestrator) correlationLookup(dc *datasourceContext, guidance correlationGuidance) ai.CorrelationLookupFunc {
+	if !correlatable(dc) || !guidance.offered() {
+		return nil
+	}
+	projectID := o.projectID
+	return func(ctx context.Context, a, b string) ([]agentplugin.CorrelationKey, error) {
+		// Bounded for the same reason the startup read is: the engine reports a
+		// failed lookup to the model and carries on, and a hang is the one
+		// outcome it cannot report.
+		lookupCtx, cancel := context.WithTimeout(ctx, correlationLookupTimeout())
+		defer cancel()
+		return agentplugin.Correlations(lookupCtx, agentplugin.CorrelationRequest{
+			ProjectID:     projectID,
+			DatasourceIDs: []string{a, b},
+		})
+	}
+}
 
 // injectKnowledgeSources walks every registered agentplugin context provider
 // (knowledge sources today; column hints / area priority later) and prepends
