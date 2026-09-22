@@ -86,7 +86,7 @@ func TestAsk_Gate_NeedsReindex_Returns409(t *testing.T) {
 	// index — matching the discovery gate.
 	h := newAskHandlerWithStatus(models.SchemaIndexStatusNeedsReindex, "")
 	body, _ := json.Marshal(askRequest{Question: "x"})
-	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req := asCaller(httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body)), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	w := httptest.NewRecorder()
 	h.Ask(w, req)
