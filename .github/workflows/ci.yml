@@ -3,6 +3,11 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    # `labeled` is included so adding the `run-integration-tests` label actually
+    # starts the label-gated integration-tests job — the default activity types
+    # (opened/synchronize/reopened) don't fire on a label change, so without it
+    # the label can only take effect on the next push.
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
 

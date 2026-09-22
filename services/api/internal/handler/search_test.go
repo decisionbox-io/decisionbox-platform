@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,11 +11,13 @@ import (
 	"testing"
 	"time"
 
+	goauth "github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
+	"github.com/decisionbox-io/decisionbox/services/api/database"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
@@ -96,27 +97,102 @@ func (m *mockSearchHistoryRepo) ListByProject(_ context.Context, _ string, _ int
 	return nil, nil
 }
 
-// mockAskSessionRepo implements AskSessionRepo for testing.
-type mockAskSessionRepo struct {
-	session *commonmodels.AskSession
+// asCaller attaches an authenticated principal to a test request. Every request
+// that reaches these handlers in production has come through the auth middleware
+// — with authentication off it carries the NoAuth subject — so a request without
+// one is answered 401 before the handler runs. Tests build requests directly, so
+// they have to say who is asking.
+func asCaller(r *http.Request, sub string) *http.Request {
+	return r.WithContext(goauth.WithUser(r.Context(), &goauth.UserPrincipal{Sub: sub}))
 }
 
-func (m *mockAskSessionRepo) Create(_ context.Context, _ *commonmodels.AskSession) error {
-	return nil
+// mockAskSessionRepo implements AskSessionRepo for testing. It applies the same
+// (project, owner, id) key the real repository does, including the shared-NoAuth
+// -subject rule, so a handler test that passes here would pass against Mongo.
+type mockAskSessionRepo struct {
+	session *commonmodels.AskSession
+	// sessions is the multi-row store used by the ownership tests; the single
+	// `session` field stays for the many tests that only need one.
+	sessions []*commonmodels.AskSession
+	// created / appended / deleted record what the handler asked for, so a test
+	// can assert on the owner the handler resolved rather than on the response.
+	created  *commonmodels.AskSession
+	appended []appendCall
+	deleted  []string
 }
-func (m *mockAskSessionRepo) AppendMessage(_ context.Context, _ string, _ commonmodels.AskSessionMessage) error {
-	return nil
+
+type appendCall struct {
+	projectID string
+	userID    string
+	sessionID string
 }
-func (m *mockAskSessionRepo) GetByID(_ context.Context, id string) (*commonmodels.AskSession, error) {
-	if m.session != nil && m.session.ID == id {
-		return m.session, nil
+
+// matchesOwner mirrors database.sessionFilter: no filter for an empty userID,
+// plain equality when the caller is the NoAuth subject, and otherwise the
+// caller's own rows plus the shared legacy ones.
+func matchesOwner(sessionOwner, userID string) bool {
+	switch userID {
+	case "":
+		return true
+	case goauth.AnonymousSubject:
+		return sessionOwner == userID
+	default:
+		return sessionOwner == userID || sessionOwner == goauth.AnonymousSubject
 	}
-	return nil, fmt.Errorf("session not found")
 }
-func (m *mockAskSessionRepo) ListByProject(_ context.Context, _ string, _ int, _, _ string) ([]*commonmodels.AskSession, error) {
-	return nil, nil
+
+func (m *mockAskSessionRepo) all() []*commonmodels.AskSession {
+	out := m.sessions
+	if m.session != nil {
+		out = append([]*commonmodels.AskSession{m.session}, out...)
+	}
+	return out
 }
-func (m *mockAskSessionRepo) Delete(_ context.Context, _ string) error { return nil }
+
+func (m *mockAskSessionRepo) find(projectID, userID, id string) *commonmodels.AskSession {
+	for _, s := range m.all() {
+		if s.ID != id || s.ProjectID != projectID || !matchesOwner(s.UserID, userID) {
+			continue
+		}
+		return s
+	}
+	return nil
+}
+
+func (m *mockAskSessionRepo) Create(_ context.Context, session *commonmodels.AskSession) error {
+	m.created = session
+	m.sessions = append(m.sessions, session)
+	return nil
+}
+func (m *mockAskSessionRepo) AppendMessage(_ context.Context, projectID, userID, sessionID string, _ commonmodels.AskSessionMessage) error {
+	m.appended = append(m.appended, appendCall{projectID, userID, sessionID})
+	if m.find(projectID, userID, sessionID) == nil {
+		return database.ErrAskSessionNotFound
+	}
+	return nil
+}
+func (m *mockAskSessionRepo) GetByID(_ context.Context, projectID, userID, id string) (*commonmodels.AskSession, error) {
+	if s := m.find(projectID, userID, id); s != nil {
+		return s, nil
+	}
+	return nil, database.ErrAskSessionNotFound
+}
+func (m *mockAskSessionRepo) ListByProject(_ context.Context, projectID, userID string, _ int, _, _ string) ([]*commonmodels.AskSession, error) {
+	var out []*commonmodels.AskSession
+	for _, s := range m.all() {
+		if s.ProjectID == projectID && matchesOwner(s.UserID, userID) {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+func (m *mockAskSessionRepo) Delete(_ context.Context, projectID, userID, sessionID string) error {
+	m.deleted = append(m.deleted, sessionID)
+	if m.find(projectID, userID, sessionID) == nil {
+		return database.ErrAskSessionNotFound
+	}
+	return nil
+}
 
 // mockSecretProviderForSearch returns a pre-set API key.
 type mockSecretProviderForSearch struct{}
@@ -600,7 +676,7 @@ func TestListHistory_InvalidLimit(t *testing.T) {
 
 func TestListAskSessions_Success(t *testing.T) {
 	h := NewSearchHandler(nil, nil, nil, nil, &mockAskSessionRepo{}, nil, nil)
-	req := httptest.NewRequest("GET", "/api/v1/projects/proj-1/ask/sessions", nil)
+	req := asCaller(httptest.NewRequest("GET", "/api/v1/projects/proj-1/ask/sessions", nil), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	w := httptest.NewRecorder()
 	h.ListAskSessions(w, req)
@@ -611,7 +687,7 @@ func TestListAskSessions_Success(t *testing.T) {
 
 func TestListAskSessions_InvalidLimit(t *testing.T) {
 	h := NewSearchHandler(nil, nil, nil, nil, &mockAskSessionRepo{}, nil, nil)
-	req := httptest.NewRequest("GET", "/api/v1/projects/proj-1/ask/sessions?limit=xyz", nil)
+	req := asCaller(httptest.NewRequest("GET", "/api/v1/projects/proj-1/ask/sessions?limit=xyz", nil), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	w := httptest.NewRecorder()
 	h.ListAskSessions(w, req)
@@ -624,9 +700,9 @@ func TestListAskSessions_InvalidLimit(t *testing.T) {
 
 func TestGetAskSession_Success(t *testing.T) {
 	h := NewSearchHandler(nil, nil, nil, nil, &mockAskSessionRepo{
-		session: &commonmodels.AskSession{ID: "s1", ProjectID: "proj-1", Title: "Test"},
+		session: &commonmodels.AskSession{ID: "s1", ProjectID: "proj-1", UserID: goauth.AnonymousSubject, Title: "Test"},
 	}, nil, nil)
-	req := httptest.NewRequest("GET", "/api/v1/projects/proj-1/ask/sessions/s1", nil)
+	req := asCaller(httptest.NewRequest("GET", "/api/v1/projects/proj-1/ask/sessions/s1", nil), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	req.SetPathValue("sessionId", "s1")
 	w := httptest.NewRecorder()
@@ -638,9 +714,9 @@ func TestGetAskSession_Success(t *testing.T) {
 
 func TestGetAskSession_WrongProject(t *testing.T) {
 	h := NewSearchHandler(nil, nil, nil, nil, &mockAskSessionRepo{
-		session: &commonmodels.AskSession{ID: "s1", ProjectID: "proj-2", Title: "Test"},
+		session: &commonmodels.AskSession{ID: "s1", ProjectID: "proj-2", UserID: goauth.AnonymousSubject, Title: "Test"},
 	}, nil, nil)
-	req := httptest.NewRequest("GET", "/api/v1/projects/proj-1/ask/sessions/s1", nil)
+	req := asCaller(httptest.NewRequest("GET", "/api/v1/projects/proj-1/ask/sessions/s1", nil), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	req.SetPathValue("sessionId", "s1")
 	w := httptest.NewRecorder()
@@ -652,7 +728,7 @@ func TestGetAskSession_WrongProject(t *testing.T) {
 
 func TestGetAskSession_NotFound(t *testing.T) {
 	h := NewSearchHandler(nil, nil, nil, nil, &mockAskSessionRepo{}, nil, nil)
-	req := httptest.NewRequest("GET", "/api/v1/projects/proj-1/ask/sessions/nope", nil)
+	req := asCaller(httptest.NewRequest("GET", "/api/v1/projects/proj-1/ask/sessions/nope", nil), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	req.SetPathValue("sessionId", "nope")
 	w := httptest.NewRecorder()
@@ -666,9 +742,9 @@ func TestGetAskSession_NotFound(t *testing.T) {
 
 func TestDeleteAskSession_Success(t *testing.T) {
 	h := NewSearchHandler(nil, nil, nil, nil, &mockAskSessionRepo{
-		session: &commonmodels.AskSession{ID: "s1", ProjectID: "proj-1"},
+		session: &commonmodels.AskSession{ID: "s1", ProjectID: "proj-1", UserID: goauth.AnonymousSubject},
 	}, nil, nil)
-	req := httptest.NewRequest("DELETE", "/api/v1/projects/proj-1/ask/sessions/s1", nil)
+	req := asCaller(httptest.NewRequest("DELETE", "/api/v1/projects/proj-1/ask/sessions/s1", nil), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	req.SetPathValue("sessionId", "s1")
 	w := httptest.NewRecorder()
@@ -680,9 +756,9 @@ func TestDeleteAskSession_Success(t *testing.T) {
 
 func TestDeleteAskSession_WrongProject(t *testing.T) {
 	h := NewSearchHandler(nil, nil, nil, nil, &mockAskSessionRepo{
-		session: &commonmodels.AskSession{ID: "s1", ProjectID: "proj-2"},
+		session: &commonmodels.AskSession{ID: "s1", ProjectID: "proj-2", UserID: goauth.AnonymousSubject},
 	}, nil, nil)
-	req := httptest.NewRequest("DELETE", "/api/v1/projects/proj-1/ask/sessions/s1", nil)
+	req := asCaller(httptest.NewRequest("DELETE", "/api/v1/projects/proj-1/ask/sessions/s1", nil), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	req.SetPathValue("sessionId", "s1")
 	w := httptest.NewRecorder()
@@ -697,7 +773,7 @@ func TestDeleteAskSession_WrongProject(t *testing.T) {
 func TestAsk_NoVectorStore(t *testing.T) {
 	h := NewSearchHandler(nil, nil, nil, nil, nil, nil, nil)
 	body, _ := json.Marshal(askRequest{Question: "test"})
-	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req := asCaller(httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body)), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	w := httptest.NewRecorder()
 	h.Ask(w, req)
@@ -709,7 +785,7 @@ func TestAsk_NoVectorStore(t *testing.T) {
 func TestAsk_EmptyQuestion(t *testing.T) {
 	h := NewSearchHandler(nil, nil, nil, nil, nil, nil, &mockVectorStoreForSearch{})
 	body, _ := json.Marshal(askRequest{Question: ""})
-	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req := asCaller(httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body)), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	w := httptest.NewRecorder()
 	h.Ask(w, req)
@@ -724,7 +800,7 @@ func TestAsk_NoEmbeddingConfig(t *testing.T) {
 	}
 	h := NewSearchHandler(projectRepo, nil, nil, nil, nil, nil, &mockVectorStoreForSearch{})
 	body, _ := json.Marshal(askRequest{Question: "test"})
-	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req := asCaller(httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body)), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	w := httptest.NewRecorder()
 	h.Ask(w, req)
@@ -753,7 +829,7 @@ func TestAsk_NoResults(t *testing.T) {
 	vs := &mockVectorStoreForSearch{results: nil} // no results
 	h := NewSearchHandler(projectRepo, &mockInsightRepo{}, &mockRecommendationRepo{}, &mockSearchHistoryRepo{}, &mockAskSessionRepo{}, &mockSecretProviderForSearch{}, vs)
 	body, _ := json.Marshal(askRequest{Question: "anything"})
-	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req := asCaller(httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body)), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	w := httptest.NewRecorder()
 	h.Ask(w, req)
@@ -785,7 +861,7 @@ func TestAsk_Success(t *testing.T) {
 	}}
 	h := NewSearchHandler(projectRepo, insightRepo, &mockRecommendationRepo{}, &mockSearchHistoryRepo{}, &mockAskSessionRepo{}, &mockSecretProviderForSearch{}, vs)
 	body, _ := json.Marshal(askRequest{Question: "why are players leaving?"})
-	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req := asCaller(httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body)), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	w := httptest.NewRecorder()
 	h.Ask(w, req)
@@ -807,6 +883,9 @@ func TestAsk_Success(t *testing.T) {
 	}
 }
 
+// TestAsk_SessionProjectMismatch: resuming a session that belongs to another
+// project is not found, not refused. It used to be a 400 naming the reason,
+// which told the caller the id existed somewhere.
 func TestAsk_SessionProjectMismatch(t *testing.T) {
 	projectRepo := &mockProjectRepoForSearch{
 		project: &models.Project{
@@ -822,16 +901,20 @@ func TestAsk_SessionProjectMismatch(t *testing.T) {
 		{ID: "ins-1", ProjectID: "proj-1", DiscoveryID: "disc-1", Name: "Test", Description: "Desc"},
 	}}
 	sessionRepo := &mockAskSessionRepo{
-		session: &commonmodels.AskSession{ID: "wrong-session", ProjectID: "proj-2"},
+		session: &commonmodels.AskSession{ID: "wrong-session", ProjectID: "proj-2", UserID: goauth.AnonymousSubject},
 	}
 	h := NewSearchHandler(projectRepo, insightRepo, &mockRecommendationRepo{}, &mockSearchHistoryRepo{}, sessionRepo, &mockSecretProviderForSearch{}, vs)
 	body, _ := json.Marshal(askRequest{Question: "test", SessionID: "wrong-session"})
-	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req := asCaller(httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body)), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	w := httptest.NewRecorder()
 	h.Ask(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for session project mismatch, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for a session in another project, got %d: %s", w.Code, w.Body.String())
+	}
+	// And nothing was written into it on the way past.
+	if len(sessionRepo.appended) != 0 {
+		t.Errorf("appended to a session the caller cannot reach: %+v", sessionRepo.appended)
 	}
 }
 
@@ -874,7 +957,7 @@ func TestAsk_SystemPromptIncludesLanguageDirective(t *testing.T) {
 			h := NewSearchHandler(projectRepo, insightRepo, &mockRecommendationRepo{}, &mockSearchHistoryRepo{}, &mockAskSessionRepo{}, &mockSecretProviderForSearch{}, vs)
 
 			body, _ := json.Marshal(askRequest{Question: "why?"})
-			req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+			req := asCaller(httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body)), goauth.AnonymousSubject)
 			req.SetPathValue("id", "proj-1")
 			w := httptest.NewRecorder()
 			h.Ask(w, req)
@@ -909,6 +992,263 @@ func TestAsk_SystemPromptIncludesLanguageDirective(t *testing.T) {
 			// get translated when language is non-English.
 			if !strings.Contains(strings.ToLower(got.SystemPrompt), "english") {
 				t.Errorf("SystemPrompt missing keep-technical-tokens-English clause: %q", got.SystemPrompt)
+			}
+		})
+	}
+}
+
+// --- Conversation ownership -------------------------------------------------
+//
+// A conversation is per-user data, like a bookmark list, so these mirror
+// lists_test.go's ownership cases: another person's session is not found, a
+// list returns only the caller's, and a request with no resolvable caller is
+// refused before anything is read or written.
+
+func ownedSessions() *mockAskSessionRepo {
+	return &mockAskSessionRepo{sessions: []*commonmodels.AskSession{
+		{ID: "a1", ProjectID: "p1", UserID: "alice", Title: "alice one"},
+		{ID: "a2", ProjectID: "p1", UserID: "alice", Title: "alice two"},
+		{ID: "b1", ProjectID: "p1", UserID: "bob", Title: "bob one"},
+		{ID: "a3", ProjectID: "p2", UserID: "alice", Title: "alice elsewhere"},
+		// Written before per-user scoping, by a deployment that had no identity.
+		{ID: "legacy", ProjectID: "p1", UserID: goauth.AnonymousSubject, Title: "shared"},
+		// An owner we cannot explain: never shared with anyone.
+		{ID: "ownerless", ProjectID: "p1", UserID: "", Title: "unexplained"},
+	}}
+}
+
+func askSessionRequest(t *testing.T, method, sub, projectID, sessionID string) (*http.Request, *httptest.ResponseRecorder) {
+	t.Helper()
+	req := httptest.NewRequest(method, "/api/v1/projects/"+projectID+"/ask/sessions/"+sessionID, nil)
+	if sub != "" {
+		req = asCaller(req, sub)
+	}
+	req.SetPathValue("id", projectID)
+	req.SetPathValue("sessionId", sessionID)
+	return req, httptest.NewRecorder()
+}
+
+func TestGetAskSession_WrongUser_404(t *testing.T) {
+	h := NewSearchHandler(nil, nil, nil, nil, ownedSessions(), nil, nil)
+	req, w := askSessionRequest(t, "GET", "bob", "p1", "a1")
+	h.GetAskSession(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 (cross-user isolation)", w.Code)
+	}
+}
+
+func TestGetAskSession_LegacyAnonymousIsSharedButOwnerlessIsNot(t *testing.T) {
+	h := NewSearchHandler(nil, nil, nil, nil, ownedSessions(), nil, nil)
+
+	for _, sub := range []string{"alice", "bob"} {
+		req, w := askSessionRequest(t, "GET", sub, "p1", "legacy")
+		h.GetAskSession(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("%s reading the legacy shared session: status = %d, want 200", sub, w.Code)
+		}
+	}
+
+	req, w := askSessionRequest(t, "GET", "alice", "p1", "ownerless")
+	h.GetAskSession(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("session with no owner at all: status = %d, want 404", w.Code)
+	}
+}
+
+func TestGetAskSession_Unauthenticated_401(t *testing.T) {
+	h := NewSearchHandler(nil, nil, nil, nil, ownedSessions(), nil, nil)
+	req, w := askSessionRequest(t, "GET", "", "p1", "a1")
+	h.GetAskSession(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", w.Code)
+	}
+}
+
+func TestListAskSessions_ReturnsOnlyCallerSessions(t *testing.T) {
+	h := NewSearchHandler(nil, nil, nil, nil, ownedSessions(), nil, nil)
+	req := asCaller(httptest.NewRequest("GET", "/api/v1/projects/p1/ask/sessions", nil), "alice")
+	req.SetPathValue("id", "p1")
+	w := httptest.NewRecorder()
+	h.ListAskSessions(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp APIResponse
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	items, _ := resp.Data.([]interface{})
+	// alice's two in p1 plus the shared legacy one — not bob's, not her own in
+	// another project, and not the ownerless row.
+	if len(items) != 3 {
+		t.Fatalf("len = %d, want 3 (alice's p1 sessions + the legacy shared one): %v", len(items), items)
+	}
+	for _, it := range items {
+		if id := it.(map[string]interface{})["id"]; id == "b1" {
+			t.Errorf("bob's session leaked into alice's list")
+		}
+	}
+}
+
+func TestListAskSessions_Unauthenticated_401(t *testing.T) {
+	h := NewSearchHandler(nil, nil, nil, nil, ownedSessions(), nil, nil)
+	req := httptest.NewRequest("GET", "/api/v1/projects/p1/ask/sessions", nil)
+	req.SetPathValue("id", "p1")
+	w := httptest.NewRecorder()
+	h.ListAskSessions(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", w.Code)
+	}
+}
+
+// TestDeleteAskSession_OwnerDeletesOwn is the point of moving the route off the
+// admin tier: the handler authorizes by ownership, so a caller of any tier
+// reaching it may delete what they own.
+func TestDeleteAskSession_OwnerDeletesOwn(t *testing.T) {
+	repo := ownedSessions()
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	req, w := askSessionRequest(t, "DELETE", "alice", "p1", "a1")
+	h.DeleteAskSession(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeleteAskSession_WrongUser_404(t *testing.T) {
+	repo := ownedSessions()
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	req, w := askSessionRequest(t, "DELETE", "bob", "p1", "a1")
+	h.DeleteAskSession(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 (cross-user isolation)", w.Code)
+	}
+}
+
+func TestDeleteAskSession_Unauthenticated_401(t *testing.T) {
+	repo := ownedSessions()
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	req, w := askSessionRequest(t, "DELETE", "", "p1", "a1")
+	h.DeleteAskSession(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+	if len(repo.deleted) != 0 {
+		t.Errorf("unauthenticated request reached the repository: %v", repo.deleted)
+	}
+}
+
+// askOwnershipHandler builds an /ask handler with enough wiring to reach the
+// session code paths, over the given session repository.
+func askOwnershipHandler(repo *mockAskSessionRepo) *SearchHandler {
+	insightID := "11111111-1111-4111-8111-111111111111"
+	projectRepo := &mockProjectRepoForSearch{
+		project: &models.Project{
+			ID: "p1", Name: "Test",
+			Embedding: goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
+			LLM:       models.LLMConfig{Provider: "test-llm", Model: "test-llm-model"},
+		},
+	}
+	vs := &mockVectorStoreForSearch{results: []vectorstore.SearchResult{
+		{ID: insightID, Score: 0.9, Payload: map[string]interface{}{"type": "insight"}},
+	}}
+	insightRepo := &mockInsightRepo{insights: []*commonmodels.StandaloneInsight{
+		{ID: insightID, ProjectID: "p1", DiscoveryID: "disc-1", Name: "High churn", Description: "Players leaving", Severity: "high", DiscoveredAt: time.Now()},
+	}}
+	return NewSearchHandler(projectRepo, insightRepo, &mockRecommendationRepo{}, &mockSearchHistoryRepo{}, repo, &mockSecretProviderForSearch{}, vs)
+}
+
+func askRequestAs(sub, sessionID string) (*http.Request, *httptest.ResponseRecorder) {
+	body, _ := json.Marshal(askRequest{Question: "why are players leaving?", SessionID: sessionID})
+	req := httptest.NewRequest("POST", "/api/v1/projects/p1/ask", bytes.NewReader(body))
+	if sub != "" {
+		req = asCaller(req, sub)
+	}
+	req.SetPathValue("id", "p1")
+	return req, httptest.NewRecorder()
+}
+
+// TestAsk_ResumeForeignSession_404 is the hole this closes on the write side:
+// passing someone else's session id used to continue their conversation.
+func TestAsk_ResumeForeignSession_404(t *testing.T) {
+	repo := ownedSessions()
+	h := askOwnershipHandler(repo)
+	req, w := askRequestAs("bob", "a1")
+	h.Ask(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: %s", w.Code, w.Body.String())
+	}
+	if len(repo.appended) != 0 {
+		t.Errorf("appended a turn to another person's conversation: %+v", repo.appended)
+	}
+	if repo.created != nil {
+		t.Errorf("minted a session instead of reporting not-found: %+v", repo.created)
+	}
+}
+
+func TestAsk_ResumeOwnSession_AppendsAsCaller(t *testing.T) {
+	repo := ownedSessions()
+	h := askOwnershipHandler(repo)
+	req, w := askRequestAs("alice", "a1")
+	h.Ask(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if len(repo.appended) != 1 {
+		t.Fatalf("appends = %d, want 1", len(repo.appended))
+	}
+	if got := repo.appended[0]; got.userID != "alice" || got.projectID != "p1" || got.sessionID != "a1" {
+		t.Errorf("append scoped as %+v, want {p1 alice a1}", got)
+	}
+}
+
+// TestAsk_CreateStampsCallerAsOwner is what makes the read filter mean
+// anything: the write has to record the same subject the read filters on.
+func TestAsk_CreateStampsCallerAsOwner(t *testing.T) {
+	repo := &mockAskSessionRepo{}
+	h := askOwnershipHandler(repo)
+	req, w := askRequestAs("alice", "")
+	h.Ask(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if repo.created == nil {
+		t.Fatal("no session was created")
+	}
+	if repo.created.UserID != "alice" {
+		t.Errorf("session owner = %q, want %q", repo.created.UserID, "alice")
+	}
+}
+
+// TestAsk_NoResolvableCaller_401 pins the invariant the shared-legacy rule
+// rests on: a principal with no subject is refused rather than folded into the
+// NoAuth subject, so a real user's conversation can never join the shared set.
+func TestAsk_NoResolvableCaller_401(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		req  func() *http.Request
+	}{
+		{"no principal at all", func() *http.Request {
+			r, _ := askRequestAs("", "")
+			return r
+		}},
+		{"principal with an empty subject", func() *http.Request {
+			r, _ := askRequestAs("", "")
+			return r.WithContext(goauth.WithUser(r.Context(), &goauth.UserPrincipal{Sub: "", Email: "someone@example.com"}))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &mockAskSessionRepo{}
+			h := askOwnershipHandler(repo)
+			w := httptest.NewRecorder()
+			h.Ask(w, tc.req())
+
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401: %s", w.Code, w.Body.String())
+			}
+			if repo.created != nil {
+				t.Errorf("a session was created for a caller with no subject: %+v", repo.created)
 			}
 		})
 	}

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -543,6 +544,15 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A conversation belongs to the person who had it, so the caller has to be
+	// resolvable before one is started or continued. With the NoAuth provider
+	// this is "anonymous"; with a real provider it is the principal's subject.
+	uid, ok := userID(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthenticated")
+		return
+	}
+
 	if h.vectorStore == nil {
 		writeError(w, http.StatusServiceUnavailable, "vector search is not configured")
 		return
@@ -660,14 +670,16 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	var seed *commonmodels.AskSessionSeed
 	var priorSession *commonmodels.AskSession
 	if req.SessionID != "" {
-		priorSession, err = h.sessionRepo.GetByID(ctx, req.SessionID)
-		if err == nil && priorSession != nil {
-			if priorSession.ProjectID != projectID {
-				writeError(w, http.StatusBadRequest, "session does not belong to this project")
-				return
-			}
-			seed = priorSession.SeedContext
+		// Owner-scoped: a session in another project, or one belonging to someone
+		// else, is not found rather than refused, so the id cannot be probed. It
+		// also closes a quieter hole — a lookup that failed used to fall through
+		// and append this turn to whatever id was sent.
+		priorSession, err = h.sessionRepo.GetByID(ctx, projectID, uid, req.SessionID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "session not found")
+			return
 		}
+		seed = priorSession.SeedContext
 	} else {
 		seed = h.hydrateSeed(ctx, projectID, req.SeedContext)
 	}
@@ -876,7 +888,7 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		session := &commonmodels.AskSession{
 			ID:          sessionID,
 			ProjectID:   projectID,
-			UserID:      "anonymous",
+			UserID:      uid,
 			Title:       req.Question,
 			Messages:    []commonmodels.AskSessionMessage{msg},
 			SeedContext: seed,
@@ -885,7 +897,7 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 			apilog.WithError(err).Warn("Failed to create ask session")
 		}
 	} else {
-		if err := h.sessionRepo.AppendMessage(ctx, sessionID, msg); err != nil {
+		if err := h.sessionRepo.AppendMessage(ctx, projectID, uid, sessionID, msg); err != nil {
 			apilog.WithError(err).Warn("Failed to append to ask session")
 		}
 	}
@@ -981,12 +993,21 @@ func (h *SearchHandler) ListHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, entries)
 }
 
-// ListAskSessions returns recent ask sessions for a project.
+// ListAskSessions returns the caller's recent ask sessions for a project.
 // GET /api/v1/projects/{id}/ask/sessions?limit=20
+//
+// The list is scoped to the caller: a conversation is per-user data, like a
+// bookmark list. With the NoAuth provider every caller is the same principal, so
+// this returns the whole project exactly as it did before.
 func (h *SearchHandler) ListAskSessions(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
 	if projectID == "" {
 		writeError(w, http.StatusBadRequest, "project ID is required")
+		return
+	}
+	uid, ok := userID(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthenticated")
 		return
 	}
 
@@ -1012,7 +1033,7 @@ func (h *SearchHandler) ListAskSessions(w http.ResponseWriter, r *http.Request) 
 		seedType, seedID = "", ""
 	}
 
-	sessions, err := h.sessionRepo.ListByProject(r.Context(), projectID, limit, seedType, seedID)
+	sessions, err := h.sessionRepo.ListByProject(r.Context(), projectID, uid, limit, seedType, seedID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list sessions")
 		return
@@ -1021,8 +1042,12 @@ func (h *SearchHandler) ListAskSessions(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, sessions)
 }
 
-// GetAskSession returns a full ask session with all messages.
+// GetAskSession returns one of the caller's ask sessions, with all messages.
 // GET /api/v1/projects/{id}/ask/sessions/{sessionId}
+//
+// A session in another project and one belonging to another user are both "not
+// found" — the lookup key carries the owner, so there is nothing left to compare
+// afterwards.
 func (h *SearchHandler) GetAskSession(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
 	sessionID := r.PathValue("sessionId")
@@ -1030,13 +1055,14 @@ func (h *SearchHandler) GetAskSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "session ID is required")
 		return
 	}
-
-	session, err := h.sessionRepo.GetByID(r.Context(), sessionID)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "session not found")
+	uid, ok := userID(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthenticated")
 		return
 	}
-	if session.ProjectID != projectID {
+
+	session, err := h.sessionRepo.GetByID(r.Context(), projectID, uid, sessionID)
+	if err != nil {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
 	}
@@ -1044,8 +1070,14 @@ func (h *SearchHandler) GetAskSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, session)
 }
 
-// DeleteAskSession deletes an ask session.
+// DeleteAskSession deletes one of the caller's ask sessions.
 // DELETE /api/v1/projects/{id}/ask/sessions/{sessionId}
+//
+// The owner is part of the delete key, so the delete is its own authorization:
+// it matches a conversation only when the caller could read it. That is why the
+// route no longer asks for the admin tier — a person may throw away their own
+// conversation whatever their tier, and no tier lets them throw away anyone
+// else's.
 func (h *SearchHandler) DeleteAskSession(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
 	sessionID := r.PathValue("sessionId")
@@ -1053,19 +1085,18 @@ func (h *SearchHandler) DeleteAskSession(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "session ID is required")
 		return
 	}
+	uid, ok := userID(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthenticated")
+		return
+	}
 
-	// Verify session belongs to this project
-	session, err := h.sessionRepo.GetByID(r.Context(), sessionID)
+	err := h.sessionRepo.Delete(r.Context(), projectID, uid, sessionID)
+	if errors.Is(err, database.ErrAskSessionNotFound) {
+		writeError(w, http.StatusNotFound, "session not found")
+		return
+	}
 	if err != nil {
-		writeError(w, http.StatusNotFound, "session not found")
-		return
-	}
-	if session.ProjectID != projectID {
-		writeError(w, http.StatusNotFound, "session not found")
-		return
-	}
-
-	if err := h.sessionRepo.Delete(r.Context(), sessionID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete session")
 		return
 	}

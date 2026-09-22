@@ -302,7 +302,11 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	mux.HandleFunc("POST /api/v1/projects/{id}/ask", withRole(viewer, askWithOverride(search.Ask)))
 	mux.HandleFunc("GET /api/v1/projects/{id}/ask/sessions", withRole(viewer, search.ListAskSessions))
 	mux.HandleFunc("GET /api/v1/projects/{id}/ask/sessions/{sessionId}", withRole(viewer, search.GetAskSession))
-	mux.HandleFunc("DELETE /api/v1/projects/{id}/ask/sessions/{sessionId}", withRole(admin, search.DeleteAskSession))
+	// Viewer, not admin: the handler deletes by a key that carries the owner, so
+	// the tier gate only has to admit someone who could own a conversation. It
+	// used to be admin, which meant an admin could throw away anyone's
+	// conversation while its owner could not throw away their own.
+	mux.HandleFunc("DELETE /api/v1/projects/{id}/ask/sessions/{sessionId}", withRole(viewer, search.DeleteAskSession))
 	mux.HandleFunc("GET /api/v1/projects/{id}/search/history", withRole(viewer, search.ListHistory))
 
 	// Insights & Recommendations — viewer

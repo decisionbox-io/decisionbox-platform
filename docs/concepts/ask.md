@@ -9,6 +9,16 @@ The Ask feature (`POST /api/v1/projects/{id}/ask`) runs a RAG flow: it embeds th
 
 This page documents how the API keeps multi-turn sessions from overflowing the model's input window.
 
+## Who a conversation belongs to
+
+A conversation belongs to the person who started it.
+Every session records the subject of the principal that created it, and every lookup — list, read, continue, delete — matches on that subject alongside the project, so one person's conversations are not visible to another's.
+Deleting one is the same act as being able to see it: the owner may delete their own conversation whatever their role, and no role lets them delete anyone else's.
+A conversation that belongs to someone else is reported as **not found** rather than refused, so a session id cannot be probed for.
+
+With authentication off there is one caller, `anonymous`, so every session belongs to it and the behaviour is exactly as it was.
+On a deployment that has since turned authentication on, sessions written earlier carry that same `anonymous` subject and no real owner; they stay readable by everyone rather than disappearing, and nothing can be added to that set once real identities are in play.
+
 ## Why budgeting matters
 
 Every chat request carries:

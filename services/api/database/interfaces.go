@@ -124,13 +124,16 @@ type SearchHistoryRepo interface {
 	ListByProject(ctx context.Context, projectID string, limit int) ([]*commonmodels.SearchHistory, error)
 }
 
-// AskSessionRepo abstracts ask session (conversation) operations.
+// AskSessionRepo abstracts ask session (conversation) operations. Every lookup
+// takes the owner alongside the project, so a conversation is reachable only by
+// the person who started it; userID == "" skips the owner filter, for internal
+// callers that have already established access (see sessionFilter).
 type AskSessionRepo interface {
 	Create(ctx context.Context, session *commonmodels.AskSession) error
-	AppendMessage(ctx context.Context, sessionID string, msg commonmodels.AskSessionMessage) error
-	GetByID(ctx context.Context, sessionID string) (*commonmodels.AskSession, error)
-	ListByProject(ctx context.Context, projectID string, limit int, seedType, seedID string) ([]*commonmodels.AskSession, error)
-	Delete(ctx context.Context, sessionID string) error
+	AppendMessage(ctx context.Context, projectID, userID, sessionID string, msg commonmodels.AskSessionMessage) error
+	GetByID(ctx context.Context, projectID, userID, sessionID string) (*commonmodels.AskSession, error)
+	ListByProject(ctx context.Context, projectID, userID string, limit int, seedType, seedID string) ([]*commonmodels.AskSession, error)
+	Delete(ctx context.Context, projectID, userID, sessionID string) error
 }
 
 // BookmarkListRepo abstracts bookmark list operations for handler unit testing.

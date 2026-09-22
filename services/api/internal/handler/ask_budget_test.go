@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	goauth "github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
@@ -245,12 +246,12 @@ func TestAsk_TrimsHistoryWhenSessionTooLarge(t *testing.T) {
 		})
 	}
 	sessionRepo := &mockAskSessionRepo{
-		session: &commonmodels.AskSession{ID: "sess-1", ProjectID: "proj-1", Messages: msgs},
+		session: &commonmodels.AskSession{ID: "sess-1", ProjectID: "proj-1", UserID: goauth.AnonymousSubject, Messages: msgs},
 	}
 
 	h := NewSearchHandler(projectRepo, insightRepo, &mockRecommendationRepo{}, &mockSearchHistoryRepo{}, sessionRepo, &mockSecretProviderForSearch{}, vs)
 	body, _ := json.Marshal(askRequest{Question: "latest question", SessionID: "sess-1"})
-	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req := asCaller(httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body)), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	w := httptest.NewRecorder()
 	h.Ask(w, req)
@@ -296,7 +297,7 @@ func TestAsk_UpstreamOverflowSurfacesAsTyped413(t *testing.T) {
 
 	h := NewSearchHandler(projectRepo, insightRepo, &mockRecommendationRepo{}, &mockSearchHistoryRepo{}, &mockAskSessionRepo{}, &mockSecretProviderForSearch{}, vs)
 	body, _ := json.Marshal(askRequest{Question: "q"})
-	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req := asCaller(httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body)), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	w := httptest.NewRecorder()
 	h.Ask(w, req)
@@ -333,7 +334,7 @@ func TestAsk_NoLLMProviderReturns412Typed(t *testing.T) {
 
 	h := NewSearchHandler(projectRepo, insightRepo, &mockRecommendationRepo{}, &mockSearchHistoryRepo{}, &mockAskSessionRepo{}, &mockSecretProviderForSearch{}, vs)
 	body, _ := json.Marshal(askRequest{Question: "q"})
-	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req := asCaller(httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body)), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	w := httptest.NewRecorder()
 	h.Ask(w, req)
@@ -379,7 +380,7 @@ func TestAsk_QuestionAloneOverflowReturns413(t *testing.T) {
 	// 4K-char question — even with rune/4 approximation this is 1K
 	// tokens, way past the 64-token tiny window.
 	body, _ := json.Marshal(askRequest{Question: strings.Repeat("alpha ", 800)})
-	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req := asCaller(httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body)), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	w := httptest.NewRecorder()
 	h.Ask(w, req)
@@ -429,7 +430,7 @@ func TestAsk_AssembledPromptOverflowReturns413(t *testing.T) {
 	// but combined with the scaffolding wrapper + 1 insight it
 	// overshoots the tiny-llm 64-token window.
 	body, _ := json.Marshal(askRequest{Question: "what is happening with retention and churn here"})
-	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req := asCaller(httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body)), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	w := httptest.NewRecorder()
 	h.Ask(w, req)
@@ -471,7 +472,7 @@ func TestAsk_ExactVerifierOverflowReturns413(t *testing.T) {
 
 	h := NewSearchHandler(projectRepo, insightRepo, &mockRecommendationRepo{}, &mockSearchHistoryRepo{}, &mockAskSessionRepo{}, &mockSecretProviderForSearch{}, vs)
 	body, _ := json.Marshal(askRequest{Question: "small question"})
-	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req := asCaller(httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body)), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	w := httptest.NewRecorder()
 	h.Ask(w, req)
@@ -519,7 +520,7 @@ func TestAsk_FlakyExactVerifierIsNonFatal(t *testing.T) {
 
 	h := NewSearchHandler(projectRepo, insightRepo, &mockRecommendationRepo{}, &mockSearchHistoryRepo{}, &mockAskSessionRepo{}, &mockSecretProviderForSearch{}, vs)
 	body, _ := json.Marshal(askRequest{Question: "what is happening?"})
-	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req := asCaller(httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body)), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	w := httptest.NewRecorder()
 	h.Ask(w, req)

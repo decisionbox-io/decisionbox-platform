@@ -20,6 +20,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/api/internal/server"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 	tcmongo "github.com/testcontainers/testcontainers-go/modules/mongodb"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 var testServer *httptest.Server
@@ -1327,6 +1328,76 @@ func TestInteg_AskSessions(t *testing.T) {
 	if resp.StatusCode != 404 {
 		t.Errorf("expected 404 after delete, got %d", resp.StatusCode)
 	}
+}
+
+// TestInteg_AskSessions_OwnerScoped drives the real routes end to end, through
+// the real auth middleware, and pins both halves of the ownership rule at once.
+//
+// This server runs with authentication off, so every caller is the NoAuth
+// subject — which is why TestInteg_AskSessions above still passes unchanged,
+// and is the evidence that a single-user deployment is unaffected. A session
+// belonging to somebody else is invisible on every route; one written before
+// per-user scoping is still shared.
+func TestInteg_AskSessions_OwnerScoped(t *testing.T) {
+	resp := doRequest(t, "POST", "/api/v1/projects", map[string]interface{}{
+		"name": "session-owner-test", "domain": "gaming", "category": "match3",
+		"warehouse": map[string]interface{}{"provider": "bigquery", "project_id": "test", "datasets": []string{"ds"}},
+		"llm":       map[string]interface{}{"provider": "claude", "model": "test"},
+	})
+	r := decodeResponse(t, resp)
+	projectID := r.Data.(map[string]interface{})["id"].(string)
+	defer doRequest(t, "DELETE", "/api/v1/projects/"+projectID, nil)
+
+	sessionsCol := testDB.Collection("ask_sessions")
+	seed := func(id, owner string) {
+		t.Helper()
+		if _, err := sessionsCol.InsertOne(context.Background(), map[string]interface{}{
+			"_id": id, "project_id": projectID, "user_id": owner,
+			"title": "seeded " + id, "messages": []interface{}{}, "message_count": 0,
+			"created_at": time.Now(), "updated_at": time.Now(),
+		}); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	// The caller here is "anonymous" (auth off), so: one of their own, one
+	// somebody else wrote, and one written before per-user scoping.
+	seed("owned-by-caller", "anonymous")
+	seed("owned-by-bob", "bob")
+	seed("legacy-shared", "anonymous")
+
+	// The list carries the caller's own and the shared legacy one — never bob's.
+	resp = doRequest(t, "GET", fmt.Sprintf("/api/v1/projects/%s/ask/sessions", projectID), nil)
+	r = decodeResponse(t, resp)
+	for _, item := range r.Data.([]interface{}) {
+		if id := item.(map[string]interface{})["id"]; id == "owned-by-bob" {
+			t.Errorf("another user's session appeared in the list")
+		}
+	}
+	if n := len(r.Data.([]interface{})); n != 2 {
+		t.Errorf("list returned %d sessions, want 2 (the caller's own + the legacy shared one)", n)
+	}
+
+	// Direct reads and deletes of another user's session are not found — the
+	// same answer as a session that does not exist, so ids cannot be probed.
+	for _, method := range []string{"GET", "DELETE"} {
+		resp = doRequest(t, method, fmt.Sprintf("/api/v1/projects/%s/ask/sessions/owned-by-bob", projectID), nil)
+		if resp.StatusCode != 404 {
+			t.Errorf("%s another user's session: got %d, want 404", method, resp.StatusCode)
+		}
+	}
+	// And it is still there afterwards.
+	if n, err := sessionsCol.CountDocuments(context.Background(), bson.M{"_id": "owned-by-bob"}); err != nil || n != 1 {
+		t.Errorf("another user's session was deleted anyway (count=%d, err=%v)", n, err)
+	}
+
+	// The caller can delete their own, and the route no longer needs the admin
+	// tier to let them.
+	resp = doRequest(t, "DELETE", fmt.Sprintf("/api/v1/projects/%s/ask/sessions/owned-by-caller", projectID), nil)
+	if resp.StatusCode != 200 {
+		t.Errorf("deleting the caller's own session: got %d, want 200", resp.StatusCode)
+	}
+
+	_, _ = sessionsCol.DeleteMany(context.Background(), bson.M{"project_id": projectID})
 }
 
 // --- InitDatabase — New Collections ---

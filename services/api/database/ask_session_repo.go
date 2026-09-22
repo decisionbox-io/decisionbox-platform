@@ -7,15 +7,60 @@ import (
 	"strings"
 	"time"
 
+	goauth "github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
+// ErrAskSessionNotFound is returned when no session matches the lookup key.
+// Mirrors ErrBookmarkListNotFound: a session that does not exist, one in another
+// project, and one belonging to another user are all the same answer, so the API
+// cannot be used to probe for session ids.
+var ErrAskSessionNotFound = errors.New("ask session not found")
+
 // AskSessionRepository handles CRUD for the "ask_sessions" collection.
 type AskSessionRepository struct {
 	db *DB
+}
+
+// sessionFilter builds the (project_id, user_id, _id) lookup key every method
+// scopes on. Ownership lives in the key rather than in a check the caller is
+// expected to remember, so there is no un-scoped read path to forget.
+//
+// userID == "" means NO owner filter. It is for internal callers that have
+// already established the caller's access (an ops collector over a whole
+// project, a tool running inside a turn the API already authorized) — never for
+// a request that arrived from a user.
+//
+// A session whose owner is the NoAuth subject is shared rather than owned: with
+// authentication off there was one caller, so a deployment that has since turned
+// authentication on has rows nobody in particular wrote. They stay readable by
+// everyone, exactly as they were, instead of becoming invisible to the people
+// already reading them — and nothing can add to that set, because a request
+// carrying a real principal always writes that principal's subject. A missing or
+// empty owner is NOT shared: that is a row we cannot explain, and the safe answer
+// for one of those is invisible.
+func sessionFilter(projectID, userID, sessionID string) bson.M {
+	f := bson.M{}
+	if sessionID != "" {
+		f["_id"] = sessionID
+	}
+	if projectID != "" {
+		f["project_id"] = projectID
+	}
+	switch userID {
+	case "":
+		// no owner filter
+	case goauth.AnonymousSubject:
+		// The caller IS the shared subject (authentication off), so plain
+		// equality already matches every row it could own.
+		f["user_id"] = userID
+	default:
+		f["user_id"] = bson.M{"$in": []string{userID, goauth.AnonymousSubject}}
+	}
+	return f
 }
 
 func NewAskSessionRepository(db *DB) *AskSessionRepository {
@@ -43,18 +88,25 @@ func (r *AskSessionRepository) Create(ctx context.Context, session *commonmodels
 	return nil
 }
 
-// AppendMessage appends a Q&A turn to an existing session. Uses
-// $push for the steady-state O(1) append; falls back to an
+// AppendMessage appends a Q&A turn to an existing session, scoped by the
+// (project, owner, id) key so a turn cannot be written into a conversation the
+// caller does not own. userID == "" skips the owner filter — see sessionFilter.
+//
+// Uses $push for the steady-state O(1) append; falls back to an
 // aggregation-pipeline rewrite once when the document was created by
 // an older build whose Insert left messages as null (Mongo's $push
 // refuses to apply to a non-array field with a "Cannot apply $push"
 // error). The fallback rewrites the field once, after which every
 // subsequent append takes the fast path.
-func (r *AskSessionRepository) AppendMessage(ctx context.Context, sessionID string, msg commonmodels.AskSessionMessage) error {
+//
+// A write that matches nothing returns ErrAskSessionNotFound. It used to return
+// nil, so appending to a session that did not exist reported success.
+func (r *AskSessionRepository) AppendMessage(ctx context.Context, projectID, userID, sessionID string, msg commonmodels.AskSessionMessage) error {
 	col := r.db.Collection("ask_sessions")
+	filter := sessionFilter(projectID, userID, sessionID)
 	now := time.Now()
-	_, err := col.UpdateOne(ctx,
-		bson.M{"_id": sessionID},
+	res, err := col.UpdateOne(ctx,
+		filter,
 		bson.M{
 			"$push": bson.M{"messages": msg},
 			"$inc":  bson.M{"message_count": 1},
@@ -62,6 +114,9 @@ func (r *AskSessionRepository) AppendMessage(ctx context.Context, sessionID stri
 		},
 	)
 	if err == nil {
+		if res.MatchedCount == 0 {
+			return ErrAskSessionNotFound
+		}
 		return nil
 	}
 	if !isLegacyNullFieldError(err) {
@@ -69,9 +124,10 @@ func (r *AskSessionRepository) AppendMessage(ctx context.Context, sessionID stri
 	}
 	// Legacy doc: messages == null. Repair via aggregation pipeline so
 	// the array is coerced into existence; subsequent appends use $push
-	// without re-tripping this branch.
-	_, err = col.UpdateOne(ctx,
-		bson.M{"_id": sessionID},
+	// without re-tripping this branch. Same owner-scoped filter — the repair
+	// path must not be a way around the key.
+	res, err = col.UpdateOne(ctx,
+		filter,
 		mongo.Pipeline{
 			{{Key: "$set", Value: bson.M{
 				"messages": bson.M{"$concatArrays": bson.A{
@@ -88,6 +144,9 @@ func (r *AskSessionRepository) AppendMessage(ctx context.Context, sessionID stri
 	)
 	if err != nil {
 		return fmt.Errorf("append message (legacy repair) to session %s: %w", sessionID, err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrAskSessionNotFound
 	}
 	return nil
 }
@@ -125,21 +184,30 @@ func isLegacyNullFieldError(err error) bool {
 	return false
 }
 
-func (r *AskSessionRepository) GetByID(ctx context.Context, sessionID string) (*commonmodels.AskSession, error) {
+// GetByID loads one session by the (project, owner, id) key. userID == "" skips
+// the owner filter — see sessionFilter. Returns ErrAskSessionNotFound when
+// nothing matches, so callers need no follow-up project or owner comparison.
+func (r *AskSessionRepository) GetByID(ctx context.Context, projectID, userID, sessionID string) (*commonmodels.AskSession, error) {
 	var session commonmodels.AskSession
-	err := r.db.Collection("ask_sessions").FindOne(ctx, bson.M{"_id": sessionID}).Decode(&session)
+	err := r.db.Collection("ask_sessions").
+		FindOne(ctx, sessionFilter(projectID, userID, sessionID)).
+		Decode(&session)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, ErrAskSessionNotFound
+	}
 	if err != nil {
 		return nil, fmt.Errorf("get ask session %s: %w", sessionID, err)
 	}
 	return &session, nil
 }
 
-// ListByProject lists a project's Ask sessions, newest-first. When seedType and
-// seedID are both non-empty, the list is scoped to sessions seeded from that
-// exact insight / recommendation ("previous conversations about this item").
-// The seed reference (type/id/label) is projected so the caller can label the
-// list; the bulky hydrated seed text is deliberately excluded.
-func (r *AskSessionRepository) ListByProject(ctx context.Context, projectID string, limit int, seedType, seedID string) ([]*commonmodels.AskSession, error) {
+// ListByProject lists the caller's Ask sessions in a project, newest-first.
+// userID == "" lists every session in the project — see sessionFilter. When
+// seedType and seedID are both non-empty, the list is scoped to sessions seeded
+// from that exact insight / recommendation ("previous conversations about this
+// item"). The seed reference (type/id/label) is projected so the caller can label
+// the list; the bulky hydrated seed text is deliberately excluded.
+func (r *AskSessionRepository) ListByProject(ctx context.Context, projectID, userID string, limit int, seedType, seedID string) ([]*commonmodels.AskSession, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -159,7 +227,7 @@ func (r *AskSessionRepository) ListByProject(ctx context.Context, projectID stri
 			"seed_context.label": 1,
 		})
 
-	filter := bson.M{"project_id": projectID}
+	filter := sessionFilter(projectID, userID, "")
 	if seedType != "" && seedID != "" {
 		filter["seed_context.type"] = seedType
 		filter["seed_context.id"] = seedID
@@ -178,10 +246,17 @@ func (r *AskSessionRepository) ListByProject(ctx context.Context, projectID stri
 	return sessions, nil
 }
 
-func (r *AskSessionRepository) Delete(ctx context.Context, sessionID string) error {
-	_, err := r.db.Collection("ask_sessions").DeleteOne(ctx, bson.M{"_id": sessionID})
+// Delete removes one session by the (project, owner, id) key, so deleting a
+// session is the same act as being able to see it. userID == "" skips the owner
+// filter — see sessionFilter. Returns ErrAskSessionNotFound when nothing matched,
+// which is what stops a silent no-op reading as success.
+func (r *AskSessionRepository) Delete(ctx context.Context, projectID, userID, sessionID string) error {
+	res, err := r.db.Collection("ask_sessions").DeleteOne(ctx, sessionFilter(projectID, userID, sessionID))
 	if err != nil {
 		return fmt.Errorf("delete ask session %s: %w", sessionID, err)
+	}
+	if res.DeletedCount == 0 {
+		return ErrAskSessionNotFound
 	}
 	return nil
 }

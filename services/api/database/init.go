@@ -128,7 +128,12 @@ var schema = []struct {
 		Name: "ask_sessions",
 		Indexes: []mongo.IndexModel{
 			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "updated_at", Value: -1}}},
-			{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "updated_at", Value: -1}}},
+			// The conversation list: a project's sessions belonging to one user,
+			// newest first. Replaces a {user_id, updated_at} index that nothing
+			// ever queried. Creating indexes is all this does — the old one is
+			// left in place on an existing deployment, unused as it always was,
+			// for an operator to drop.
+			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "user_id", Value: 1}, {Key: "updated_at", Value: -1}}},
 		},
 	},
 	{

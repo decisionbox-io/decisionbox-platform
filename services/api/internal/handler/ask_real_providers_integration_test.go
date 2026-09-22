@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	goauth "github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
@@ -232,9 +233,12 @@ func runAskHappyPath(t *testing.T, setup realAskSetup, question string, timeout 
 	req.SetPathValue("id", setup.projectID)
 	w := httptest.NewRecorder()
 
+	// The timeout context replaces the request's own, so the principal has to be
+	// re-attached to it — Ask resolves the caller before doing anything else,
+	// because a conversation belongs to whoever had it.
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	setup.handler.Ask(w, req.WithContext(ctx))
+	setup.handler.Ask(w, asCaller(req.WithContext(ctx), goauth.AnonymousSubject))
 
 	if w.Code == http.StatusBadGateway {
 		var resp APIResponse
@@ -278,9 +282,12 @@ func runAskTrim(t *testing.T, setup realAskSetup, providerName, model string, tu
 	req.SetPathValue("id", setup.projectID)
 	w := httptest.NewRecorder()
 
+	// The timeout context replaces the request's own, so the principal has to be
+	// re-attached to it — Ask resolves the caller before doing anything else,
+	// because a conversation belongs to whoever had it.
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	setup.handler.Ask(w, req.WithContext(ctx))
+	setup.handler.Ask(w, asCaller(req.WithContext(ctx), goauth.AnonymousSubject))
 
 	if w.Code == http.StatusBadGateway {
 		var resp APIResponse

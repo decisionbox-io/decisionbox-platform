@@ -46,7 +46,13 @@ type AskTurn struct {
 	ID        string `bson:"_id" json:"id"`                // turn id (caller-supplied, e.g. a UUID)
 	SessionID string `bson:"session_id" json:"session_id"` // the AskSession this turn belongs to
 	ProjectID string `bson:"project_id" json:"project_id"`
-	Question  string `bson:"question" json:"question"`
+	// UserID is the subject of the principal whose question this is, copied from
+	// the session it belongs to. A turn is polled every couple of seconds while
+	// it runs and its event log carries the query text and row previews, so the
+	// poll checks the owner from this field rather than re-reading the session on
+	// every tick. Empty on a turn created before the field existed.
+	UserID   string `bson:"user_id,omitempty" json:"user_id,omitempty"`
+	Question string `bson:"question" json:"question"`
 
 	Status      string `bson:"status" json:"status"`
 	Disposition string `bson:"disposition,omitempty" json:"disposition,omitempty"`
