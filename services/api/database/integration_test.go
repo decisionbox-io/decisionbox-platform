@@ -4,11 +4,13 @@ package database
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
 	"time"
 
+	goauth "github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	tcmongo "github.com/testcontainers/testcontainers-go/modules/mongodb"
@@ -366,7 +368,7 @@ func TestInteg_AskSessionRepo_CRUD(t *testing.T) {
 	}
 
 	// Get
-	got, err := repo.GetByID(ctx, "session-integ-1")
+	got, err := repo.GetByID(ctx, "proj-integ-1", "user-1", "session-integ-1")
 	if err != nil {
 		t.Fatalf("GetByID: %v", err)
 	}
@@ -378,7 +380,7 @@ func TestInteg_AskSessionRepo_CRUD(t *testing.T) {
 	}
 
 	// Append message
-	err = repo.AppendMessage(ctx, "session-integ-1", commonmodels.AskSessionMessage{
+	err = repo.AppendMessage(ctx, "proj-integ-1", "user-1", "session-integ-1", commonmodels.AskSessionMessage{
 		Question:     "Tell me more about Level 45",
 		Answer:       "Level 45 shows...",
 		Model:        "claude-sonnet",
@@ -390,7 +392,7 @@ func TestInteg_AskSessionRepo_CRUD(t *testing.T) {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
-	got, _ = repo.GetByID(ctx, "session-integ-1")
+	got, _ = repo.GetByID(ctx, "proj-integ-1", "user-1", "session-integ-1")
 	if got.MessageCount != 2 {
 		t.Errorf("MessageCount after append = %d, want 2", got.MessageCount)
 	}
@@ -399,7 +401,7 @@ func TestInteg_AskSessionRepo_CRUD(t *testing.T) {
 	}
 
 	// List by project
-	sessions, err := repo.ListByProject(ctx, "proj-integ-1", 10, "", "")
+	sessions, err := repo.ListByProject(ctx, "proj-integ-1", "user-1", 10, "", "")
 	if err != nil {
 		t.Fatalf("ListByProject: %v", err)
 	}
@@ -415,11 +417,11 @@ func TestInteg_AskSessionRepo_CRUD(t *testing.T) {
 	// different insights, then confirm the seed filter returns only the matching
 	// one and projects the seed ref (not the bulky text).
 	seededA := &commonmodels.AskSession{
-		ID: "session-seed-a", ProjectID: "proj-integ-1", Title: "about insight A",
+		ID: "session-seed-a", ProjectID: "proj-integ-1", UserID: "user-1", Title: "about insight A",
 		SeedContext: &commonmodels.AskSessionSeed{Type: "insight", ID: "ins-A", Label: "Insight A", Text: "long text A"},
 	}
 	seededB := &commonmodels.AskSession{
-		ID: "session-seed-b", ProjectID: "proj-integ-1", Title: "about insight B",
+		ID: "session-seed-b", ProjectID: "proj-integ-1", UserID: "user-1", Title: "about insight B",
 		SeedContext: &commonmodels.AskSessionSeed{Type: "insight", ID: "ins-B", Label: "Insight B", Text: "long text B"},
 	}
 	if err := repo.Create(ctx, seededA); err != nil {
@@ -428,7 +430,7 @@ func TestInteg_AskSessionRepo_CRUD(t *testing.T) {
 	if err := repo.Create(ctx, seededB); err != nil {
 		t.Fatalf("create seededB: %v", err)
 	}
-	filtered, err := repo.ListByProject(ctx, "proj-integ-1", 10, "insight", "ins-A")
+	filtered, err := repo.ListByProject(ctx, "proj-integ-1", "user-1", 10, "insight", "ins-A")
 	if err != nil {
 		t.Fatalf("ListByProject seed filter: %v", err)
 	}
@@ -442,19 +444,23 @@ func TestInteg_AskSessionRepo_CRUD(t *testing.T) {
 		t.Errorf("bulky seed text should be excluded from the list projection, got %q", filtered[0].SeedContext.Text)
 	}
 	// A non-matching seed id returns nothing.
-	if none, _ := repo.ListByProject(ctx, "proj-integ-1", 10, "insight", "ins-ZZZ"); len(none) != 0 {
+	if none, _ := repo.ListByProject(ctx, "proj-integ-1", "user-1", 10, "insight", "ins-ZZZ"); len(none) != 0 {
 		t.Errorf("seed filter for unknown id should be empty, got %d", len(none))
 	}
 
 	// Delete
-	err = repo.Delete(ctx, "session-integ-1")
+	err = repo.Delete(ctx, "proj-integ-1", "user-1", "session-integ-1")
 	if err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	_, err = repo.GetByID(ctx, "session-integ-1")
-	if err == nil {
-		t.Error("expected error after delete")
+	_, err = repo.GetByID(ctx, "proj-integ-1", "user-1", "session-integ-1")
+	if !errors.Is(err, ErrAskSessionNotFound) {
+		t.Errorf("after delete: err = %v, want ErrAskSessionNotFound", err)
+	}
+	// Deleting it again matched nothing and must say so rather than report success.
+	if err := repo.Delete(ctx, "proj-integ-1", "user-1", "session-integ-1"); !errors.Is(err, ErrAskSessionNotFound) {
+		t.Errorf("second delete: err = %v, want ErrAskSessionNotFound", err)
 	}
 }
 
@@ -481,7 +487,7 @@ func TestInteg_AskSessionRepo_CreateWithNilMessages_ThenAppend(t *testing.T) {
 
 	// AppendMessage must succeed even though the session was created
 	// with no messages — the repository normalises nil → [] on insert.
-	err := repo.AppendMessage(ctx, "session-nil-msgs", commonmodels.AskSessionMessage{
+	err := repo.AppendMessage(ctx, "proj-nil-msgs", "user-1", "session-nil-msgs", commonmodels.AskSessionMessage{
 		Question:  "first turn",
 		Answer:    "ok",
 		Model:     "claude",
@@ -491,7 +497,7 @@ func TestInteg_AskSessionRepo_CreateWithNilMessages_ThenAppend(t *testing.T) {
 		t.Fatalf("AppendMessage on nil-Messages session: %v", err)
 	}
 
-	got, err := repo.GetByID(ctx, "session-nil-msgs")
+	got, err := repo.GetByID(ctx, "proj-nil-msgs", "user-1", "session-nil-msgs")
 	if err != nil {
 		t.Fatalf("GetByID: %v", err)
 	}
@@ -502,7 +508,7 @@ func TestInteg_AskSessionRepo_CreateWithNilMessages_ThenAppend(t *testing.T) {
 		t.Fatalf("Messages[0].Question = %q", got.Messages[0].Question)
 	}
 
-	_ = repo.Delete(ctx, "session-nil-msgs")
+	_ = repo.Delete(ctx, "proj-nil-msgs", "user-1", "session-nil-msgs")
 }
 
 // TestInteg_AskSessionRepo_AppendToLegacyNullSession is the
@@ -527,9 +533,9 @@ func TestInteg_AskSessionRepo_AppendToLegacyNullSession(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed legacy doc: %v", err)
 	}
-	t.Cleanup(func() { _ = repo.Delete(ctx, "session-legacy-null") })
+	t.Cleanup(func() { _ = repo.Delete(ctx, "proj-legacy", "user-1", "session-legacy-null") })
 
-	if err := repo.AppendMessage(ctx, "session-legacy-null", commonmodels.AskSessionMessage{
+	if err := repo.AppendMessage(ctx, "proj-legacy", "user-1", "session-legacy-null", commonmodels.AskSessionMessage{
 		Question:  "first turn after legacy null",
 		Answer:    "ok",
 		Model:     "claude",
@@ -537,12 +543,20 @@ func TestInteg_AskSessionRepo_AppendToLegacyNullSession(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AppendMessage on legacy null session: %v", err)
 	}
-	got, err := repo.GetByID(ctx, "session-legacy-null")
+	got, err := repo.GetByID(ctx, "proj-legacy", "user-1", "session-legacy-null")
 	if err != nil {
 		t.Fatalf("GetByID: %v", err)
 	}
 	if got.MessageCount != 1 || len(got.Messages) != 1 {
 		t.Fatalf("legacy null append: count=%d len=%d, want 1/1", got.MessageCount, len(got.Messages))
+	}
+
+	// The repair branch runs the same owner-scoped filter as the fast path, so it
+	// is not a way around the key.
+	if err := repo.AppendMessage(ctx, "proj-legacy", "someone-else", "session-legacy-null", commonmodels.AskSessionMessage{
+		Question: "not mine", Answer: "no", CreatedAt: time.Now(),
+	}); !errors.Is(err, ErrAskSessionNotFound) {
+		t.Errorf("append by another user: err = %v, want ErrAskSessionNotFound", err)
 	}
 }
 
@@ -581,5 +595,132 @@ func TestInteg_RecRepo_CreateMany(t *testing.T) {
 	results, _ := repo.ListByProject(ctx, "proj-many", 50, 0)
 	if len(results) != 2 {
 		t.Errorf("expected 2, got %d", len(results))
+	}
+}
+
+// TestInteg_AskSessionRepo_OwnerScoping is the isolation contract: a
+// conversation is reachable only through a key that carries its owner. It
+// mirrors the bookmark-list cases (TestInteg_BookmarkList_GetByID_WrongUser),
+// because a conversation is the same kind of per-user data.
+func TestInteg_AskSessionRepo_OwnerScoping(t *testing.T) {
+	ctx := context.Background()
+	repo := NewAskSessionRepository(testDB)
+	const project = "proj-owner"
+
+	seed := []*commonmodels.AskSession{
+		{ID: "own-a1", ProjectID: project, UserID: "alice", Title: "alice one"},
+		{ID: "own-a2", ProjectID: project, UserID: "alice", Title: "alice two"},
+		{ID: "own-b1", ProjectID: project, UserID: "bob", Title: "bob one"},
+		{ID: "own-a3", ProjectID: "proj-owner-other", UserID: "alice", Title: "alice elsewhere"},
+	}
+	for _, s := range seed {
+		if err := repo.Create(ctx, s); err != nil {
+			t.Fatalf("seed %s: %v", s.ID, err)
+		}
+		id := s.ID
+		pid := s.ProjectID
+		t.Cleanup(func() { _ = repo.Delete(ctx, pid, "", id) })
+	}
+
+	// Read
+	if _, err := repo.GetByID(ctx, project, "alice", "own-a1"); err != nil {
+		t.Errorf("alice reading her own session: %v", err)
+	}
+	if _, err := repo.GetByID(ctx, project, "bob", "own-a1"); !errors.Is(err, ErrAskSessionNotFound) {
+		t.Errorf("bob reading alice's session: err = %v, want ErrAskSessionNotFound", err)
+	}
+	if _, err := repo.GetByID(ctx, "proj-owner-other", "alice", "own-a1"); !errors.Is(err, ErrAskSessionNotFound) {
+		t.Errorf("alice reading her session through the wrong project: err = %v, want ErrAskSessionNotFound", err)
+	}
+
+	// List
+	got, err := repo.ListByProject(ctx, project, "alice", 10, "", "")
+	if err != nil {
+		t.Fatalf("ListByProject: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("alice's list = %d sessions, want 2 (not bob's, not her other project): %+v", len(got), got)
+	}
+	// The internal-caller contract: an empty owner sees the whole project.
+	if all, _ := repo.ListByProject(ctx, project, "", 10, "", ""); len(all) != 3 {
+		t.Errorf("unscoped list = %d, want 3", len(all))
+	}
+
+	// Write
+	msg := commonmodels.AskSessionMessage{Question: "q", Answer: "a", CreatedAt: time.Now()}
+	if err := repo.AppendMessage(ctx, project, "bob", "own-a1", msg); !errors.Is(err, ErrAskSessionNotFound) {
+		t.Errorf("bob appending to alice's session: err = %v, want ErrAskSessionNotFound", err)
+	}
+	after, _ := repo.GetByID(ctx, project, "alice", "own-a1")
+	if after.MessageCount != 0 || len(after.Messages) != 0 {
+		t.Errorf("a refused append still wrote: count=%d len=%d", after.MessageCount, len(after.Messages))
+	}
+
+	// Delete
+	if err := repo.Delete(ctx, project, "bob", "own-a1"); !errors.Is(err, ErrAskSessionNotFound) {
+		t.Errorf("bob deleting alice's session: err = %v, want ErrAskSessionNotFound", err)
+	}
+	if _, err := repo.GetByID(ctx, project, "alice", "own-a1"); err != nil {
+		t.Errorf("a refused delete removed the document anyway: %v", err)
+	}
+	if err := repo.Delete(ctx, project, "alice", "own-a1"); err != nil {
+		t.Errorf("alice deleting her own session: %v", err)
+	}
+}
+
+// TestInteg_AskSessionRepo_LegacyAnonymousIsShared covers the compatibility
+// rule: a session written before per-user scoping carries the NoAuth subject
+// and no real owner, so it stays readable by everyone rather than becoming
+// invisible to the people already reading it. A session with no owner at all is
+// a row we cannot explain, and is shared with nobody.
+func TestInteg_AskSessionRepo_LegacyAnonymousIsShared(t *testing.T) {
+	ctx := context.Background()
+	repo := NewAskSessionRepository(testDB)
+	const project = "proj-legacy-shared"
+
+	for _, s := range []*commonmodels.AskSession{
+		{ID: "leg-shared", ProjectID: project, UserID: goauth.AnonymousSubject, Title: "written with auth off"},
+		{ID: "leg-alice", ProjectID: project, UserID: "alice", Title: "alice's own"},
+	} {
+		if err := repo.Create(ctx, s); err != nil {
+			t.Fatalf("seed %s: %v", s.ID, err)
+		}
+		id := s.ID
+		t.Cleanup(func() { _ = repo.Delete(ctx, project, "", id) })
+	}
+	// A document with no user_id field at all, as only a direct write can make.
+	if _, err := testDB.Collection("ask_sessions").InsertOne(ctx, bson.M{
+		"_id": "leg-ownerless", "project_id": project, "title": "no owner",
+		"messages": []interface{}{}, "message_count": 0,
+		"created_at": time.Now(), "updated_at": time.Now(),
+	}); err != nil {
+		t.Fatalf("seed ownerless: %v", err)
+	}
+	t.Cleanup(func() { _ = repo.Delete(ctx, project, "", "leg-ownerless") })
+
+	for _, caller := range []string{"alice", "bob"} {
+		if _, err := repo.GetByID(ctx, project, caller, "leg-shared"); err != nil {
+			t.Errorf("%s reading the legacy shared session: %v", caller, err)
+		}
+		if _, err := repo.GetByID(ctx, project, caller, "leg-ownerless"); !errors.Is(err, ErrAskSessionNotFound) {
+			t.Errorf("%s reading the ownerless session: err = %v, want ErrAskSessionNotFound", caller, err)
+		}
+	}
+
+	// bob sees the shared one and nothing of alice's.
+	got, err := repo.ListByProject(ctx, project, "bob", 10, "", "")
+	if err != nil {
+		t.Fatalf("ListByProject: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "leg-shared" {
+		t.Fatalf("bob's list = %+v, want only leg-shared", got)
+	}
+
+	// With authentication off the caller IS the shared subject, so the list is
+	// the whole project's anonymous history exactly as it was — and still not
+	// the row we cannot explain.
+	got, _ = repo.ListByProject(ctx, project, goauth.AnonymousSubject, 10, "", "")
+	if len(got) != 1 || got[0].ID != "leg-shared" {
+		t.Fatalf("anonymous caller's list = %+v, want only leg-shared", got)
 	}
 }

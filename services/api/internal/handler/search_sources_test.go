@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	goauth "github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	gosources "github.com/decisionbox-io/decisionbox/libs/go-common/sources"
@@ -83,7 +84,7 @@ func TestAsk_KnowledgeSourcesIncluded(t *testing.T) {
 		&mockSearchHistoryRepo{}, &mockAskSessionRepo{}, &mockSecretProviderForSearch{}, vs)
 
 	body, _ := json.Marshal(askRequest{Question: "How do we measure retention?", Limit: 5})
-	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req := asCaller(httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body)), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	w := httptest.NewRecorder()
 
@@ -152,7 +153,7 @@ func TestAsk_OnlyKnowledgeSourcesNoInsights(t *testing.T) {
 		&mockSearchHistoryRepo{}, &mockAskSessionRepo{}, &mockSecretProviderForSearch{}, vs)
 
 	body, _ := json.Marshal(askRequest{Question: "what is a cohort?"})
-	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req := asCaller(httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body)), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	w := httptest.NewRecorder()
 
@@ -194,7 +195,7 @@ func TestAsk_NoInsightsNoSourcesReturnsFallbackMessage(t *testing.T) {
 		&mockSearchHistoryRepo{}, &mockAskSessionRepo{}, &mockSecretProviderForSearch{}, vs)
 
 	body, _ := json.Marshal(askRequest{Question: "anything?"})
-	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req := asCaller(httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body)), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	w := httptest.NewRecorder()
 

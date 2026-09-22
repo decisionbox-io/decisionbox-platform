@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	goauth "github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
@@ -40,7 +41,7 @@ func TestAsk_Gate_PendingIndexing_Returns409(t *testing.T) {
 	h := newAskHandlerWithStatus(models.SchemaIndexStatusPendingIndexing, "")
 	w := gatedAskRequest("proj-1")
 	body, _ := json.Marshal(askRequest{Question: "x"})
-	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req := asCaller(httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body)), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	h.Ask(w, req)
 	if w.Code != 409 {
@@ -54,7 +55,7 @@ func TestAsk_Gate_PendingIndexing_Returns409(t *testing.T) {
 func TestAsk_Gate_Indexing_Returns409(t *testing.T) {
 	h := newAskHandlerWithStatus(models.SchemaIndexStatusIndexing, "")
 	body, _ := json.Marshal(askRequest{Question: "x"})
-	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req := asCaller(httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body)), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	w := httptest.NewRecorder()
 	h.Ask(w, req)
@@ -66,7 +67,7 @@ func TestAsk_Gate_Indexing_Returns409(t *testing.T) {
 func TestAsk_Gate_Failed_Returns409WithError(t *testing.T) {
 	h := newAskHandlerWithStatus(models.SchemaIndexStatusFailed, "qdrant unreachable")
 	body, _ := json.Marshal(askRequest{Question: "x"})
-	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req := asCaller(httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body)), goauth.AnonymousSubject)
 	req.SetPathValue("id", "proj-1")
 	w := httptest.NewRecorder()
 	h.Ask(w, req)
