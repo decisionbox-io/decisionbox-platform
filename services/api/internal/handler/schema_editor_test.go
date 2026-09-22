@@ -265,7 +265,7 @@ func editorRequest(method, target, projectID, body string) *http.Request {
 	return r
 }
 
-func decodeData(t *testing.T, body []byte, into interface{}) {
+func decodeDataInto(t *testing.T, body []byte, into interface{}) {
 	t.Helper()
 	var wrap struct {
 		Data  json.RawMessage `json:"data"`
@@ -308,7 +308,7 @@ func TestSchemaEditor_ListTables(t *testing.T) {
 		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
 	}
 	var resp schemaEditorTablesResponse
-	decodeData(t, w.Body.Bytes(), &resp)
+	decodeDataInto(t, w.Body.Bytes(), &resp)
 	if resp.Total != 2 || len(resp.Tables) != 2 {
 		t.Fatalf("expected 2 tables, got total=%d len=%d", resp.Total, len(resp.Tables))
 	}
@@ -336,7 +336,7 @@ func TestSchemaEditor_ListTables_Search(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.ListTables(w, editorRequest(http.MethodGet, "/x?search=cust", "p1", ""))
 	var resp schemaEditorTablesResponse
-	decodeData(t, w.Body.Bytes(), &resp)
+	decodeDataInto(t, w.Body.Bytes(), &resp)
 	if resp.Total != 1 || resp.Tables[0].Table != "dbo.customers" {
 		t.Fatalf("search filter wrong: %+v", resp)
 	}
@@ -651,7 +651,7 @@ func TestSchemaEditor_ListEdits(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var resp schemaEditsResponse
-	decodeData(t, w.Body.Bytes(), &resp)
+	decodeDataInto(t, w.Body.Bytes(), &resp)
 	if len(resp.Edits) != 1 || resp.SinceLastIndex != 3 {
 		t.Fatalf("edits response wrong: %+v", resp)
 	}
@@ -752,7 +752,7 @@ func TestSchemaEditor_ListEdits_ProjectWide_AggregatesPerDatasource(t *testing.T
 		t.Fatalf("status = %d", w.Code)
 	}
 	var resp schemaEditsResponse
-	decodeData(t, w.Body.Bytes(), &resp)
+	decodeDataInto(t, w.Body.Bytes(), &resp)
 	if resp.SinceLastIndex != 4 { // 2 per datasource × 2 datasources
 		t.Fatalf("since_last_index = %d, want 4 (summed per datasource)", resp.SinceLastIndex)
 	}
@@ -780,7 +780,7 @@ func TestSchemaEditor_ListEdits_NoRepo(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var resp schemaEditsResponse
-	decodeData(t, w.Body.Bytes(), &resp)
+	decodeDataInto(t, w.Body.Bytes(), &resp)
 	if len(resp.Edits) != 0 {
 		t.Fatalf("expected empty edits, got %+v", resp.Edits)
 	}
