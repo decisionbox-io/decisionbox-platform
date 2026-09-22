@@ -379,6 +379,10 @@ jobs:
           (cd services/agent && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/agent-agentserver-integ.txt" ./agentserver/)
 
       - name: API integration tests
+        # Run even when an earlier integration step failed, so one flaky
+        # suite can't hide the state of the others (a red agent step used to
+        # skip these entirely, which made a fix here look like a no-op).
+        if: ${{ !cancelled() }}
         env:
           MONGODB_URI: mongodb://localhost:27017
           MONGODB_DB: decisionbox_test
@@ -391,12 +395,20 @@ jobs:
           (cd services/api && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/api-server-integ.txt" ./internal/server/)
 
       - name: Docker runner integration tests
+        # Run even when an earlier integration step failed, so one flaky
+        # suite can't hide the state of the others (a red agent step used to
+        # skip these entirely, which made a fix here look like a no-op).
+        if: ${{ !cancelled() }}
         run: |
           COV="${GITHUB_WORKSPACE}/coverage"
           mkdir -p "$COV"
           cd services/api && go test -tags=integration_docker -count=1 -timeout=5m -coverprofile="$COV/api-docker-runner-integ.txt" ./internal/runner/
 
       - name: Secrets provider integration tests
+        # Run even when an earlier integration step failed, so one flaky
+        # suite can't hide the state of the others (a red agent step used to
+        # skip these entirely, which made a fix here look like a no-op).
+        if: ${{ !cancelled() }}
         env:
           MONGODB_URI: mongodb://localhost:27017
           MONGODB_DB: decisionbox_test

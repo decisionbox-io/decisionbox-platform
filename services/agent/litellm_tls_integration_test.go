@@ -17,6 +17,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -132,7 +133,18 @@ func startLiteLLMTLS(t *testing.T, certPEM, keyPEM []byte) (string, func()) {
 			"--ssl_keyfile_path", "/certs/server.key",
 			"--ssl_certfile_path", "/certs/server.crt",
 		},
-		WaitingFor: wait.ForListeningPort("4000/tcp").WithStartupTimeout(180 * time.Second),
+		// LiteLLM binds the port well before uvicorn is serving TLS on it
+		// (~20s apart on this image), so ForListeningPort returns while the
+		// first handshake still gets EOF — whichever test won the race then
+		// failed with `EOF` instead of a certificate error or a reply.
+		// Wait for a real HTTPS response instead. /health/readiness needs no
+		// auth (no master key is configured) and is served by the same
+		// uvicorn TLS listener the tests then use.
+		WaitingFor: wait.ForHTTP("/health/readiness").
+			WithPort("4000/tcp").
+			//nolint:gosec // readiness probe against this test's own self-signed leaf
+			WithTLS(true, &tls.Config{InsecureSkipVerify: true}).
+			WithStartupTimeout(180 * time.Second),
 	}
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: req,
