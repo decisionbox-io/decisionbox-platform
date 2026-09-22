@@ -225,7 +225,9 @@ var projectChildCollections = []string{
 	"project_schema_index_progress",
 	"project_schema_cache",
 	"project_schema_index_logs",
-	"llm_model_windows",   // agent-written self-calibrated context windows, keyed by project_id
+	"project_schema_index_runs", // durable per-datasource index-run history, keyed by project_id
+	"project_schema_edits",      // durable manual schema-edit audit trail, keyed by project_id
+	"llm_model_windows",         // agent-written self-calibrated context windows, keyed by project_id
 	"discovery_questions", // agent-written clarifying questions + analyst answers, keyed by project_id
 }
 
@@ -383,6 +385,14 @@ func (r *ProjectRepository) EnsureIndexes(ctx context.Context) error {
 // This is the only entry point that writes schema_index_status — handlers
 // and the worker loop call it instead of hand-rolling UpdateOne. Prevents
 // drift between lifecycle transitions.
+// schemaReindexCleanupField is a transient boolean marker set on a project while
+// a /reindex holds the "indexing" cleanup lock (BeginReindex) and cleared by the
+// next status transition (SetSchemaIndexStatus / ClaimNextPendingIndex). It lets
+// the boot-time stale sweep tell an abandoned re-index cleanup (must re-run the
+// cache/Qdrant cleanup → park in needs_reindex) apart from a crashed worker run
+// (safe to requeue to pending_indexing). Not surfaced on the API.
+const schemaReindexCleanupField = "schema_reindex_cleanup"
+
 func (r *ProjectRepository) SetSchemaIndexStatus(ctx context.Context, id, status, errMsg string) error {
 	if !isValidSchemaIndexStatus(status) {
 		return fmt.Errorf("invalid schema_index_status: %q", status)
@@ -405,15 +415,21 @@ func (r *ProjectRepository) SetSchemaIndexStatus(ctx context.Context, id, status
 	}
 
 	update := bson.M{"$set": set}
-
+	// Any explicit status transition clears the transient re-index cleanup marker
+	// (set by BeginReindex): once we leave the cleanup lock — successfully to
+	// pending_indexing, or on failure to needs_reindex — the row is no longer an
+	// in-progress cleanup, so the boot-time stale sweep must treat a later
+	// "indexing" row as an ordinary worker run.
+	unset := bson.M{schemaReindexCleanupField: ""}
 	switch status {
 	case models.SchemaIndexStatusFailed:
 		update["$set"].(bson.M)["schema_index_error"] = errMsg
 	case models.SchemaIndexStatusReady, models.SchemaIndexStatusPendingIndexing, models.SchemaIndexStatusIndexing:
 		// Entering a non-failed state → clear any prior error message so the
 		// UI doesn't show a stale banner.
-		update["$unset"] = bson.M{"schema_index_error": ""}
+		unset["schema_index_error"] = ""
 	}
+	update["$unset"] = unset
 
 	res, err := r.col.UpdateOne(ctx, bson.M{"_id": oid}, update)
 	if err != nil {
@@ -423,6 +439,67 @@ func (r *ProjectRepository) SetSchemaIndexStatus(ctx context.Context, id, status
 		return fmt.Errorf("project not found")
 	}
 	return nil
+}
+
+// BeginReindex atomically and EXCLUSIVELY claims a project for a re-index by
+// transitioning it into "indexing" — the lock state held during the re-index's
+// destructive cleanup (cache invalidation + Qdrant drop). Using "indexing" as
+// the lock makes the claim mutually exclusive with everything that could
+// otherwise race the cleanup:
+//   - a concurrent /reindex: the loser's BeginReindex sees a *fresh* "indexing"
+//     row and matches nothing → false (the handler returns 409). Excluding only,
+//     say, needs_reindex would let two overlapping re-indexes both claim
+//     (needs_reindex is also the idle "cache cleared, click Re-index" state, so
+//     it can't be excluded) and both run cleanup — the classic double-owner race.
+//   - the indexing worker: it only claims pending_indexing projects
+//     (ClaimNextPendingIndex), so while this lock is held it cannot start a run.
+//
+// It DOES claim a *stale* "indexing" row — one whose updated_at is older than
+// staleIndexingBefore — so a project left stuck by a crash (or an abandoned
+// cleanup lock) stays recoverable via /reindex rather than only via the
+// boot-time stale sweep. The caller must first confirm no live worker is running
+// (IsRunning); a live run bumps updated_at, but a long quiet phase might not, so
+// the staleness cutoff alone is not a safe "is it running" test.
+//
+// The handler flips the lock to pending_indexing when cleanup succeeds (handing
+// the rebuild to the worker) or back to needs_reindex on a cleanup failure
+// (retryable). Returns:
+//   - (true, nil)  locked; the caller owns the cleanup.
+//   - (false, nil) another re-index's cleanup is in progress (fresh "indexing")
+//     or the project no longer exists — the /reindex handler has already
+//     confirmed the project exists, so it treats false as "in progress".
+func (r *ProjectRepository) BeginReindex(ctx context.Context, id string, staleIndexingBefore time.Time) (bool, error) {
+	oid, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return false, fmt.Errorf("invalid project id %q: %w", id, err)
+	}
+	filter := bson.M{
+		"_id": oid,
+		"$or": bson.A{
+			// Any non-indexing status is claimable (ready / failed / needs_reindex
+			// / pending / cancelled).
+			bson.M{"schema_index_status": bson.M{"$ne": models.SchemaIndexStatusIndexing}},
+			// A stale "indexing" row — a crashed run or abandoned cleanup lock with
+			// no live worker — is reclaimable; a fresh one (a live cleanup) is not.
+			bson.M{
+				"schema_index_status": models.SchemaIndexStatusIndexing,
+				"updated_at":          bson.M{"$lt": staleIndexingBefore},
+			},
+		},
+	}
+	update := bson.M{
+		"$set": bson.M{
+			"schema_index_status":     models.SchemaIndexStatusIndexing,
+			"updated_at":              time.Now().UTC(),
+			schemaReindexCleanupField: true, // mark this "indexing" row as a re-index cleanup lock
+		},
+		"$unset": bson.M{"schema_index_error": ""},
+	}
+	res, err := r.col.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return false, fmt.Errorf("begin reindex: %w", err)
+	}
+	return res.MatchedCount == 1, nil
 }
 
 // ResetStaleIndexingProjects flips projects stuck in "indexing" back to
@@ -436,22 +513,46 @@ func (r *ProjectRepository) SetSchemaIndexStatus(ctx context.Context, id, status
 // rebuild (~6 min) never trips this.
 func (r *ProjectRepository) ResetStaleIndexingProjects(ctx context.Context, staleAfter time.Duration) (int, error) {
 	cutoff := time.Now().UTC().Add(-staleAfter)
-	filter := bson.M{
-		"schema_index_status": models.SchemaIndexStatusIndexing,
-		"updated_at":          bson.M{"$lt": cutoff},
+	now := time.Now().UTC()
+
+	// An abandoned /reindex cleanup lock (marker set) must NOT be requeued to
+	// pending_indexing: its cache invalidation / Qdrant drop never ran, so a
+	// worker would reuse the un-invalidated cache and skip the re-index. Park it
+	// in needs_reindex so an explicit re-index performs the Model B cleanup, and
+	// clear the marker.
+	cleanupRes, err := r.col.UpdateMany(ctx, bson.M{
+		"schema_index_status":     models.SchemaIndexStatusIndexing,
+		"updated_at":              bson.M{"$lt": cutoff},
+		schemaReindexCleanupField: true,
+	}, bson.M{
+		"$set": bson.M{
+			"schema_index_status": models.SchemaIndexStatusNeedsReindex,
+			"schema_index_error":  "re-index was interrupted before it finished (process crash or shutdown) — click Re-index to rebuild",
+			"updated_at":          now,
+		},
+		"$unset": bson.M{schemaReindexCleanupField: ""},
+	})
+	if err != nil {
+		return 0, fmt.Errorf("reset stale reindex cleanup locks: %w", err)
 	}
-	update := bson.M{
+
+	// An ordinary crashed worker run (no marker) is safe to requeue — the worker
+	// resumes with the cache it already has (or rediscovers on a cache miss).
+	runRes, err := r.col.UpdateMany(ctx, bson.M{
+		"schema_index_status":     models.SchemaIndexStatusIndexing,
+		"updated_at":              bson.M{"$lt": cutoff},
+		schemaReindexCleanupField: bson.M{"$ne": true},
+	}, bson.M{
 		"$set": bson.M{
 			"schema_index_status": models.SchemaIndexStatusPendingIndexing,
 			"schema_index_error":  "previous indexing run did not complete (process crash or shutdown) — re-queued",
-			"updated_at":          time.Now().UTC(),
+			"updated_at":          now,
 		},
-	}
-	res, err := r.col.UpdateMany(ctx, filter, update)
+	})
 	if err != nil {
 		return 0, fmt.Errorf("reset stale indexing projects: %w", err)
 	}
-	return int(res.ModifiedCount), nil
+	return int(cleanupRes.ModifiedCount + runRes.ModifiedCount), nil
 }
 
 // ClaimNextPendingIndex atomically picks one project in
@@ -467,7 +568,10 @@ func (r *ProjectRepository) ClaimNextPendingIndex(ctx context.Context) (*models.
 			"schema_index_status": models.SchemaIndexStatusIndexing,
 			"updated_at":          now,
 		},
-		"$unset": bson.M{"schema_index_error": ""},
+		// Clear the error and (defensively) the re-index cleanup marker: this
+		// "indexing" row is a genuine worker run, so the stale sweep must requeue
+		// it, not park it.
+		"$unset": bson.M{"schema_index_error": "", schemaReindexCleanupField: ""},
 	}
 	opts := options.FindOneAndUpdate().
 		SetReturnDocument(options.After).

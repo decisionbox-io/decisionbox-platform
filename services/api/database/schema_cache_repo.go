@@ -25,13 +25,26 @@ func schemaCacheWarehouseCond(warehouseID string) interface{} {
 	return warehouseID
 }
 
+// SchemaCacheEntry is the on-disk shape of a project_schema_cache row —
+// mirror of the agent-side database.SchemaCacheEntry (the agent writes these
+// during indexing). SchemaKey is the qualified table name (e.g. "dbo.orders");
+// Schema carries the columns + sample metadata. Kept in lockstep with the
+// agent definition; a drift silently drops fields on decode.
+type SchemaCacheEntry struct {
+	ProjectID     string             `bson:"project_id"`
+	WarehouseID   string             `bson:"warehouse_id"`
+	WarehouseHash string             `bson:"warehouse_hash"`
+	SchemaKey     string             `bson:"schema_key"`
+	Schema        models.TableSchema `bson:"schema"`
+	CachedAt      time.Time          `bson:"cached_at"`
+}
+
 // SchemaCacheRepository provides the API-side surface for the
-// project_schema_cache collection. The agent owns Find/Save (those run
-// inside the index-schema subprocess); the API only needs to drop rows
-// when the user clicks "Clear schema cache" in Project Settings →
-// Advanced. Keeping the API-side repo to a single Invalidate method
-// matches the "least privilege" rule the rest of the API follows for
-// agent-owned collections.
+// project_schema_cache collection. The agent owns bulk Find/Save (those run
+// inside the index-schema subprocess); the API needs to drop rows when the
+// user clicks "Clear schema cache", list what's indexed, and — for the schema
+// editor — read one table's full schema and apply single-row column removals /
+// table deletions.
 type SchemaCacheRepository struct {
 	col *mongo.Collection
 }
@@ -94,6 +107,111 @@ func (r *SchemaCacheRepository) ListTables(ctx context.Context, projectID, wareh
 	return out, nil
 }
 
+// ListEntries returns the cached schema rows (columns, not just the table name)
+// for one of a project's warehouses, sorted by schema_key ascending. Backs the
+// schema editor's browse view, which shows each table's columns + blurb.
+// schema.sample_data is projected OUT — it can be many MB across a wide / ERP
+// warehouse, the browse view never shows it, and pulling it for every table
+// just to render the list would balloon the query. The single-table edit path
+// uses GetEntry, which keeps sample_data (needed to strip a removed column's
+// values). Empty (non-nil) slice when nothing is cached.
+func (r *SchemaCacheRepository) ListEntries(ctx context.Context, projectID, warehouseID string) ([]SchemaCacheEntry, error) {
+	if projectID == "" {
+		return nil, errors.New("projectID is required")
+	}
+	opts := options.Find().
+		SetSort(bson.D{{Key: "schema_key", Value: 1}}).
+		SetProjection(bson.M{"schema.sample_data": 0})
+	cur, err := r.col.Find(ctx, bson.M{
+		"project_id":   projectID,
+		"warehouse_id": schemaCacheWarehouseCond(warehouseID),
+	}, opts)
+	if err != nil {
+		return nil, fmt.Errorf("schema cache list entries: %w", err)
+	}
+	defer func() { _ = cur.Close(ctx) }()
+	entries := make([]SchemaCacheEntry, 0)
+	if err := cur.All(ctx, &entries); err != nil {
+		return nil, fmt.Errorf("decode schema cache entries: %w", err)
+	}
+	return entries, nil
+}
+
+// GetEntry returns a single cached table (by qualified schema_key) for one
+// warehouse, or (nil, nil) when it isn't cached. schemaKey is the qualified
+// name the agent stored (e.g. "dbo.orders").
+func (r *SchemaCacheRepository) GetEntry(ctx context.Context, projectID, warehouseID, schemaKey string) (*SchemaCacheEntry, error) {
+	if projectID == "" || schemaKey == "" {
+		return nil, errors.New("projectID and schemaKey are required")
+	}
+	var e SchemaCacheEntry
+	err := r.col.FindOne(ctx, bson.M{
+		"project_id":   projectID,
+		"warehouse_id": schemaCacheWarehouseCond(warehouseID),
+		"schema_key":   schemaKey,
+	}).Decode(&e)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("schema cache get entry: %w", err)
+	}
+	return &e, nil
+}
+
+// UpdateColumns replaces a cached table's column set (and the derived
+// key_columns / metrics / dimensions the caller narrowed to the surviving
+// columns) so a manual column removal is reflected in what the discovery agent
+// reads next run. sampleData is the cached sample rows already filtered to the
+// kept columns — the removed column's *values* must be stripped here too, or
+// the discovery / Ask schema provider (which surfaces SampleData as sample
+// rows) would keep leaking the removed column's data until a cache rebuild.
+// Returns mongo.ErrNoDocuments when the table isn't cached.
+func (r *SchemaCacheRepository) UpdateColumns(ctx context.Context, projectID, warehouseID, schemaKey string, columns []models.ColumnInfo, keyColumns, metrics, dimensions []string, sampleData []map[string]interface{}) error {
+	if projectID == "" || schemaKey == "" {
+		return errors.New("projectID and schemaKey are required")
+	}
+	res, err := r.col.UpdateOne(ctx, bson.M{
+		"project_id":   projectID,
+		"warehouse_id": schemaCacheWarehouseCond(warehouseID),
+		"schema_key":   schemaKey,
+	}, bson.M{"$set": bson.M{
+		"schema.columns":     columns,
+		"schema.key_columns": keyColumns,
+		"schema.metrics":     metrics,
+		"schema.dimensions":  dimensions,
+		"schema.sample_data": sampleData,
+	}})
+	if err != nil {
+		return fmt.Errorf("schema cache update columns: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return mongo.ErrNoDocuments
+	}
+	return nil
+}
+
+// DeleteTable removes one cached table (by qualified schema_key) for a
+// warehouse so it no longer appears in the discovery agent's schema view.
+// Returns mongo.ErrNoDocuments when the table isn't cached.
+func (r *SchemaCacheRepository) DeleteTable(ctx context.Context, projectID, warehouseID, schemaKey string) error {
+	if projectID == "" || schemaKey == "" {
+		return errors.New("projectID and schemaKey are required")
+	}
+	res, err := r.col.DeleteOne(ctx, bson.M{
+		"project_id":   projectID,
+		"warehouse_id": schemaCacheWarehouseCond(warehouseID),
+		"schema_key":   schemaKey,
+	})
+	if err != nil {
+		return fmt.Errorf("schema cache delete table: %w", err)
+	}
+	if res.DeletedCount == 0 {
+		return mongo.ErrNoDocuments
+	}
+	return nil
+}
+
 // LastCachedAt returns the most recent cached_at timestamp across all
 // rows for a project, or (zeroTime, nil) when the cache is empty for
 // that project. The agent writes every row in a Save() with the same
@@ -117,6 +235,39 @@ func (r *SchemaCacheRepository) LastCachedAt(ctx context.Context, projectID stri
 			return time.Time{}, nil
 		}
 		return time.Time{}, fmt.Errorf("schema cache last cached at: %w", err)
+	}
+	return doc.CachedAt, nil
+}
+
+// DatasourceCachedAt returns the most recent cached_at for ONE of a project's
+// warehouses (the last time that datasource's catalog was re-discovered), or
+// zero when it has no cached rows. This is the exact cutoff for "which of a
+// datasource's manual edits are still live": an edit is in the cache iff it was
+// applied after that datasource was last written. It differs from LastCachedAt
+// (a project-wide max, for the "Last cached: …" display) on a multi-warehouse
+// project whose datasources were indexed at different times — using the
+// project-wide max there would drop still-live edits on an older datasource. The
+// default/primary warehouse also matches legacy rows written before warehouse_id
+// existed (mirrors schemaCacheWarehouseCond).
+func (r *SchemaCacheRepository) DatasourceCachedAt(ctx context.Context, projectID, warehouseID string) (time.Time, error) {
+	if projectID == "" {
+		return time.Time{}, errors.New("projectID is required")
+	}
+	opts := options.FindOne().
+		SetSort(bson.D{{Key: "cached_at", Value: -1}}).
+		SetProjection(bson.M{"cached_at": 1, "_id": 0})
+	var doc struct {
+		CachedAt time.Time `bson:"cached_at"`
+	}
+	err := r.col.FindOne(ctx, bson.M{
+		"project_id":   projectID,
+		"warehouse_id": schemaCacheWarehouseCond(warehouseID),
+	}, opts).Decode(&doc)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return time.Time{}, nil
+		}
+		return time.Time{}, fmt.Errorf("schema cache datasource cached at: %w", err)
 	}
 	return doc.CachedAt, nil
 }

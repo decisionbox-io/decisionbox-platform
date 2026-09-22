@@ -145,8 +145,18 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	search := handler.NewSearchHandler(projectRepo, insightRepo, recommendationRepo, searchHistoryRepo, askSessionRepo, secretProvider, vs)
 	schemaIndexProgressRepo := database.NewSchemaIndexProgressRepository(db)
 	schemaIndexLogRepo := database.NewSchemaIndexLogRepository(db)
+	schemaIndexRunRepo := database.NewSchemaIndexRunRepository(db)
 	schemaCacheRepo := database.NewSchemaCacheRepository(db)
-	schemaIndex := handler.NewSchemaIndexHandler(projectRepo, schemaIndexProgressRepo, schemaCollectionDropper, schemaIndexLogRepo, indexCanceller, schemaCacheRepo)
+	schemaIndex := handler.NewSchemaIndexHandler(projectRepo, schemaIndexProgressRepo, schemaCollectionDropper, schemaIndexLogRepo, indexCanceller, schemaCacheRepo, schemaIndexRunRepo)
+
+	// Schema editor (Data Warehouse → advanced): browse/edit/delete indexed
+	// tables + blurbs. It needs the concrete Qdrant point operations, which the
+	// vectorstore.Provider interface doesn't expose — recover them from the
+	// live provider via a type assertion (nil for a mock / no-vector build, so
+	// the editor endpoints return 503 rather than panicking).
+	schemaEditRepo := database.NewSchemaEditRepository(db)
+	schemaVectors, _ := vs.(handler.SchemaVectorEditor)
+	schemaEditor := handler.NewSchemaEditorHandler(projectRepo, schemaCacheRepo, schemaEditRepo, schemaVectors, secretProvider)
 	// Live table listing so the discovery-scope picker is populated before the
 	// first index exists (the schema cache is empty until then). Guarded so a
 	// nil runner leaves the lister unset (avoids a typed-nil interface); the
@@ -229,6 +239,7 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 
 	// Schema-index lifecycle — viewer for status, member for retry/reindex
 	mux.HandleFunc("GET /api/v1/projects/{id}/schema-index/status", withRole(viewer, schemaIndex.GetStatus))
+	mux.HandleFunc("GET /api/v1/projects/{id}/schema-index/runs", withRole(viewer, schemaIndex.ListRuns))
 	mux.HandleFunc("GET /api/v1/projects/{id}/schema-index/logs", withRole(viewer, schemaIndex.ListLogs))
 	mux.HandleFunc("POST /api/v1/projects/{id}/schema-index/retry", withRole(member, schemaIndex.Retry))
 	mux.HandleFunc("POST /api/v1/projects/{id}/schema-index/cancel", withRole(member, schemaIndex.Cancel))
@@ -236,6 +247,14 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	mux.HandleFunc("GET /api/v1/projects/{id}/schema-index/cache-info", withRole(viewer, schemaIndex.GetCacheInfo))
 	mux.HandleFunc("GET /api/v1/projects/{id}/schema-cache/tables", withRole(viewer, schemaIndex.ListCachedTables))
 	mux.HandleFunc("POST /api/v1/projects/{id}/reindex", withRole(member, schemaIndex.Reindex))
+
+	// Schema editor — viewer for read (browse tables + audit trail), member for
+	// edit/delete (blurb rewrites, column/table removals). Manual edits are
+	// ephemeral (wiped by the next re-index) but recorded in the audit trail.
+	mux.HandleFunc("GET /api/v1/projects/{id}/schema-editor/tables", withRole(viewer, schemaEditor.ListTables))
+	mux.HandleFunc("PUT /api/v1/projects/{id}/schema-editor/tables", withRole(member, schemaEditor.UpdateTable))
+	mux.HandleFunc("DELETE /api/v1/projects/{id}/schema-editor/tables", withRole(member, schemaEditor.DeleteTable))
+	mux.HandleFunc("GET /api/v1/projects/{id}/schema-editor/edits", withRole(viewer, schemaEditor.ListEdits))
 
 	// Prompts — viewer for read, member for write
 	mux.HandleFunc("GET /api/v1/projects/{id}/prompts", withRole(viewer, handler.GetPrompts(projectRepo, domainPackRepo)))

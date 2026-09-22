@@ -12,13 +12,41 @@ const (
 	SchemaIndexStatusFailed          = "failed"
 )
 
-// Schema-indexing progress phases. Stored on SchemaIndexProgress.Phase.
+// Schema-indexing progress phases. Stored on SchemaIndexProgress.Phase
+// and used as keys in SchemaIndexRun.PhaseDurations.
 const (
 	SchemaIndexPhaseListingTables    = "listing_tables"
 	SchemaIndexPhaseSchemaDiscovery  = "schema_discovery" // per-table columns + samples (the longest leg on big warehouses)
 	SchemaIndexPhaseDescribingTables = "describing_tables"
 	SchemaIndexPhaseEmbedding        = "embedding"
 )
+
+// SchemaIndexRunKindTables is the object kind stamped on a run record for a
+// classic table-indexing pass. Generic so a future object kind slots in.
+const SchemaIndexRunKindTables = "tables"
+
+// SchemaIndexRun is a durable, per-(datasource × index run) result record the
+// agent stamps when a datasource finishes indexing (success or failure). One
+// document per (project_id, datasource_id, run_id) in project_schema_index_runs;
+// append-only (no TTL) — the audit record, unlike the reset-every-run
+// SchemaIndexProgress. API-side mirror lives in
+// services/api/models/schema_index.go — keep the two in sync.
+type SchemaIndexRun struct {
+	ProjectID       string           `bson:"project_id" json:"project_id"`
+	DatasourceID    string           `bson:"datasource_id" json:"datasource_id"`
+	DatasourceName  string           `bson:"datasource_name,omitempty" json:"datasource_name,omitempty"`
+	RunID           string           `bson:"run_id" json:"run_id"`
+	Kind            string           `bson:"kind" json:"kind"`
+	ObjectsIndexed  int              `bson:"objects_indexed" json:"objects_indexed"`
+	BlurbsGenerated int              `bson:"blurbs_generated" json:"blurbs_generated"`
+	Status          string           `bson:"status" json:"status"`
+	Error           string           `bson:"error,omitempty" json:"error,omitempty"`
+	PhaseDurations  map[string]int64 `bson:"phase_durations,omitempty" json:"phase_durations,omitempty"`
+	TokensIn        int              `bson:"tokens_in,omitempty" json:"tokens_in,omitempty"`
+	TokensOut       int              `bson:"tokens_out,omitempty" json:"tokens_out,omitempty"`
+	StartedAt       time.Time        `bson:"started_at" json:"started_at"`
+	FinishedAt      time.Time        `bson:"finished_at" json:"finished_at"`
+}
 
 // BlurbLLMConfig picks the LLM used to generate per-table natural-language
 // descriptions during schema indexing.

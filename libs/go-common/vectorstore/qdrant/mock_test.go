@@ -137,6 +137,58 @@ func (m *mockClient) Delete(_ context.Context, req *pb.DeletePoints) (*pb.Update
 	return &pb.UpdateResult{}, nil
 }
 
+func (m *mockClient) Get(_ context.Context, req *pb.GetPoints) ([]*pb.RetrievedPoint, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return nil, m.err
+	}
+	coll, ok := m.points[req.CollectionName]
+	if !ok {
+		return nil, fmt.Errorf("collection %q does not exist", req.CollectionName)
+	}
+	var out []*pb.RetrievedPoint
+	for _, id := range req.Ids {
+		pt, ok := coll[pointIDToString(id)]
+		if !ok {
+			continue
+		}
+		out = append(out, &pb.RetrievedPoint{Id: pt.Id, Payload: pt.Payload})
+	}
+	return out, nil
+}
+
+func (m *mockClient) SetPayload(_ context.Context, req *pb.SetPayloadPoints) (*pb.UpdateResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.err != nil {
+		return nil, m.err
+	}
+	coll, ok := m.points[req.CollectionName]
+	if !ok {
+		return nil, fmt.Errorf("collection %q does not exist", req.CollectionName)
+	}
+	// Merge the supplied fields into each selected point's payload (missing
+	// points are silently skipped, matching Qdrant).
+	if sel := req.PointsSelector; sel != nil {
+		if ids := sel.GetPoints(); ids != nil {
+			for _, id := range ids.Ids {
+				pt, ok := coll[pointIDToString(id)]
+				if !ok {
+					continue
+				}
+				if pt.Payload == nil {
+					pt.Payload = make(map[string]*pb.Value)
+				}
+				for k, v := range req.Payload {
+					pt.Payload[k] = v
+				}
+			}
+		}
+	}
+	return &pb.UpdateResult{}, nil
+}
+
 func (m *mockClient) HealthCheck(_ context.Context) (*pb.HealthCheckReply, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

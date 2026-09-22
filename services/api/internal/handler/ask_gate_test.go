@@ -77,3 +77,22 @@ func TestAsk_Gate_Failed_Returns409WithError(t *testing.T) {
 		t.Errorf("body should include error: %s", w.Body.String())
 	}
 }
+
+func TestAsk_Gate_NeedsReindex_Returns409(t *testing.T) {
+	// needs_reindex means the schema cache / vector index has been invalidated
+	// (a cache clear, config drift, or a re-index mid-cleanup). Ask reads those
+	// stores directly, so it must 409 rather than answer against an empty/stale
+	// index — matching the discovery gate.
+	h := newAskHandlerWithStatus(models.SchemaIndexStatusNeedsReindex, "")
+	body, _ := json.Marshal(askRequest{Question: "x"})
+	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/ask", bytes.NewReader(body))
+	req.SetPathValue("id", "proj-1")
+	w := httptest.NewRecorder()
+	h.Ask(w, req)
+	if w.Code != 409 {
+		t.Errorf("status = %d, want 409", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "re-index") {
+		t.Errorf("body should point the user at re-index: %s", w.Body.String())
+	}
+}

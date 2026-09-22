@@ -19,7 +19,7 @@ import { RunErrorIndicator } from '@/components/common/RunErrorIndicator';
 import { UpcomingInvestigation } from '@/components/projects/UpcomingInvestigation';
 import {
   api, ApiError, CostEstimate, DebugLogEntry, DiscoveryResult, DiscoveryRunStatus, Project, RunStep, SchemaIndexStatus,
-  PROJECT_STATE_READY,
+  PROJECT_STATE_READY, resolvePrimaryDatasourceId,
 } from '@/lib/api';
 
 // On DecisionBox Cloud, usage is billed in credits (not dollars), so the USD
@@ -334,15 +334,13 @@ export default function ProjectPage() {
 
   return (
     <Shell breadcrumb={breadcrumb} actions={topBarActions}>
-      {/* Schema-index status banner — polls every 2s while indexing.
-          hideWhenReady keeps the banner invisible on the discovery
-          steady state (status=ready), since the panel only adds value
-          when there's something to act on (indexing in flight,
-          needs_reindex after Settings → Clear cache, failed /
-          cancelled recovery). The Re-index entry point on the panel
-          re-appears the moment status flips back to non-ready. */}
+      {/* Schema-index status banner — polls every 2s while indexing, then
+          settles into a persistent per-datasource status roll-up (latest run
+          per datasource: objects indexed, time, link to the full history on the
+          Data Warehouse settings tab). Always visible, so a successful re-index
+          leaves a durable record on the hub rather than only a toast. */}
       <div style={{ marginBottom: 16 }}>
-        <SchemaIndexPanel projectId={id} onStatusChange={setSchemaIndexStatus} hideWhenReady />
+        <SchemaIndexPanel projectId={id} onStatusChange={setSchemaIndexStatus} primaryDatasourceId={resolvePrimaryDatasourceId(project)} />
       </div>
 
       {/* Aggregate Stats Row */}
