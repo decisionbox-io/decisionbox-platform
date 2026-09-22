@@ -123,4 +123,33 @@ describe('SchemaEditorPage', () => {
     mount();
     await waitFor(() => expect(screen.getByText(/3 manual edits since the last index/i)).toBeInTheDocument());
   });
+
+  it('removes a table through the confirm modal', async () => {
+    deleteSchemaEditorTable.mockResolvedValue(undefined);
+    mount();
+    fireEvent.click(await screen.findByRole('button', { name: /dbo\.orders/ }));
+    await screen.findByDisplayValue('All customer orders.');
+    // Open the confirm modal, then confirm.
+    fireEvent.click(screen.getByRole('button', { name: /Remove table/ }));
+    const confirm = await screen.findByRole('button', { name: /^Remove$/ });
+    fireEvent.click(confirm);
+    await waitFor(() => expect(deleteSchemaEditorTable).toHaveBeenCalledWith('p1', 'dbo.orders', 'default'));
+    // The table drops out of the list.
+    await waitFor(() => expect(screen.queryByRole('button', { name: /dbo\.orders/ })).not.toBeInTheDocument());
+  });
+
+  it('renders the edit-history trail when opened', async () => {
+    listSchemaEdits.mockResolvedValue({
+      edits: [{
+        project_id: 'p1', datasource_id: 'default', table: 'dbo.orders',
+        action: 'blurb_edit', before: 'Orders.', after: 'All customer orders.',
+        actor: 'analyst@example.com', at: '2026-09-20T10:00:00Z',
+      }],
+      since_last_index: 0,
+    });
+    mount();
+    fireEvent.click(await screen.findByRole('button', { name: /Edit history/ }));
+    expect(await screen.findByText('Blurb edited')).toBeInTheDocument();
+    expect(screen.getByText('analyst@example.com')).toBeInTheDocument();
+  });
 });
