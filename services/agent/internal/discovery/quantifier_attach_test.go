@@ -1,8 +1,10 @@
 package discovery
 
 import (
+	"encoding/json"
 	"testing"
 
+	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -61,5 +63,46 @@ func TestAttachQuantifierVerdicts_DiscardsModelAuthoredVerdicts(t *testing.T) {
 	attachQuantifierVerdicts(ins, step4ByID())
 	if len(ins[0].QuantifierVerdicts) != 0 {
 		t.Errorf("model-authored verdicts survived: %+v", ins[0].QuantifierVerdicts)
+	}
+}
+
+// A refuted quantifier claim must not make an insight ineligible for
+// recommendations. The moment it does, the verdict is a rejection whatever it
+// is called, and the two advisory layers stop being advisory.
+func TestQuantifierVerdictsDoNotGateRecommendationEligibility(t *testing.T) {
+	refuted := models.Insight{
+		Name: "refuted but eligible",
+		QuantifierVerdicts: []models.QuantifierVerdict{
+			{Claim: "the only loss-making line", Status: QuantifierFails, Reason: "2 of 10 rows"},
+		},
+	}
+	// Eligibility is decided from Validation alone; this insight has none, so
+	// it passes the filter exactly as it did before quantifier claims existed.
+	eligible := map[valmodels.Status]bool{valmodels.StatusSupported: true, valmodels.StatusConfirmed: true}
+	got := filterEligibleInsights([]models.Insight{refuted}, eligible)
+	if len(got) != 1 {
+		t.Fatalf("a refuted quantifier claim removed the insight from the eligible set: got %d, want 1", len(got))
+	}
+
+	// And a failing verdict must not flip an otherwise-eligible validated
+	// insight out either.
+	validated := refuted
+	validated.Validation = &models.InsightValidation{Combined: valmodels.StatusSupported}
+	if got := filterEligibleInsights([]models.Insight{validated}, eligible); len(got) != 1 {
+		t.Errorf("a refuted claim dropped a supported insight: got %d, want 1", len(got))
+	}
+}
+
+// The model must not be able to author its own pass through the JSON tag.
+func TestEvidenceChecksTagIsNotAKeyTheModelIsToldToEmit(t *testing.T) {
+	var ins models.Insight
+	// A model that has been asked for `quantifier_claims` volunteering the
+	// sibling key it would naturally guess.
+	raw := []byte(`{"name":"x","quantifier_verdicts":[{"claim":"self-certified","status":"holds"}]}`)
+	if err := json.Unmarshal(raw, &ins); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(ins.QuantifierVerdicts) != 0 {
+		t.Errorf("a model-emitted quantifier_verdicts key decoded into the derived field: %+v", ins.QuantifierVerdicts)
 	}
 }

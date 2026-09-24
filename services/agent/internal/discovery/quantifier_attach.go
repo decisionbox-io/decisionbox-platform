@@ -17,6 +17,22 @@ import (
 //
 // A failing verdict is logged at Warn because it is the one signal that the
 // model stated something its own evidence refutes.
+//
+// This is the second advisory layer, and it is advisory by the same reasoning
+// as the first. E1 attaches a truncation caveat and does not reject on it,
+// because its precision on the corpus was 2 of 7 and as a gate it would have
+// killed five sound insights. E3 is far more precise -- it evaluates a
+// predicate over rows rather than inferring intent from prose -- but precision
+// is not the reason it does not gate. The reason is that there is nowhere for a
+// rejected insight to go until E5 exists: a document with one refuted claim and
+// seven sound ones would be dropped whole. Both layers add information the
+// writer did not have and leave the decision downstream, and neither becomes a
+// gate without a repair path behind it.
+//
+// Verdicts deliberately do not reach filterEligibleInsights, which decides
+// which insights recommendations may cite. That function reads
+// Validation.Combined and nothing else. A verdict consulted there would be a
+// rejection in effect, whatever this comment called it.
 func attachQuantifierVerdicts(insights []models.Insight, stepByID map[int]*models.ExplorationStep) {
 	for i := range insights {
 		ins := &insights[i]

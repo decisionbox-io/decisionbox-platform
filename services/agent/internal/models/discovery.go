@@ -147,11 +147,23 @@ type Insight struct {
 
 	// QuantifierVerdicts is what Go concluded about each declared claim.
 	//
-	// Derived, and named so the model cannot author it: "quantifier_verdicts"
-	// appears nowhere in any prompt, so a key by that name in a response is an
-	// unknown field and is ignored -- the same reasoning that keeps
-	// evidence_quality out of the model's reach.
-	QuantifierVerdicts []QuantifierVerdict `bson:"quantifier_verdicts,omitempty" json:"quantifier_verdicts,omitempty"`
+	// The JSON name is deliberately not "quantifier_verdicts", for the reason
+	// Quality's is not "quality". Insights are decoded from model output with
+	// the standard decoder, so a key matching this tag would be read straight
+	// into the field -- letting the model author the very verdict whose point
+	// is that the model did not reach it. And the analysis prompt now asks for
+	// `quantifier_claims` by name, which makes a sibling `quantifier_verdicts`
+	// the obvious next key for a model to volunteer. Under a name no prompt
+	// mentions it is an unknown field and is ignored.
+	//
+	// attachQuantifierVerdicts also clears the field before it writes. Two
+	// defences for one hole, because the cost of the model marking its own
+	// work is that every measurement built on these verdicts is worthless.
+	//
+	// Kept out of Validation on purpose: that slot belongs to the verifier and
+	// refuter, and the two have to stay independent or a comparison between
+	// them measures nothing.
+	QuantifierVerdicts []QuantifierVerdict `bson:"quantifier_verdicts,omitempty" json:"evidence_checks,omitempty"`
 
 	SQLMetadata  *SQLMetadata `bson:"sql_metadata,omitempty" json:"sql_metadata,omitempty"`
 	DiscoveredAt time.Time    `bson:"discovered_at" json:"discovered_at"`
