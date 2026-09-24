@@ -265,6 +265,33 @@ func (e *QueryExecutor) ExecuteNative(ctx context.Context, query gowarehouse.Nat
 			result.Fixed = attempt > 0
 			result.Quality = qr.Quality
 
+			// A cap the query imposed on itself is the one degradation the
+			// source has no way to report: it answered exactly what was
+			// asked, so qr.Quality is nil, and the rows come back accurate,
+			// ordered and stopping precisely where the query said to. Nothing
+			// downstream can re-derive it either, because by then the digest
+			// has already reduced the rows to statistics that describe the
+			// capped set as if it were the population.
+			//
+			// Only when the cap and the row count are equal. Fewer rows than
+			// the cap means the cap never bound and the result is complete.
+			result.Quality = appendRowCapCaveat(result.Quality, e.runner, result.FinalQuery, result.RowCount)
+
+			// Logged separately from the source-reported caveats below, and
+			// not by widening that loop, because the message there says the
+			// SOURCE declared the degradation and this one nobody declared —
+			// it was derived from the query. A caveat that fires invisibly is
+			// the failure mode this whole check exists to remove.
+			if len(result.Quality) > len(qr.Quality) {
+				applog.WithFields(applog.Fields{
+					"purpose": purpose,
+					"phase":   e.currentPhase,
+					"step":    e.currentStep,
+					"rows":    result.RowCount,
+					"caveat":  result.Quality[len(result.Quality)-1].String(),
+				}).Warn("Query capped its own result: the rows are a top-N view, not the population")
+			}
+
 			if qr.Degraded() {
 				caveats := make([]string, 0, len(qr.Quality))
 				for _, c := range qr.Quality {
