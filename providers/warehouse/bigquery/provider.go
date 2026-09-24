@@ -396,6 +396,16 @@ func (p *BigQueryProvider) SampleQuery(dataset, table, filterClause string, limi
 	return fmt.Sprintf("SELECT * FROM `%s` %s LIMIT %d", p.QualifiedName(dataset, table), filterClause, limit)
 }
 
+// RowCap reports the row cap this query applies. GoogleSQL caps with a
+// trailing LIMIT; it has no TOP or FETCH FIRST.
+//
+// It is the recognition counterpart of SampleQuery: that method renders a
+// cap in this dialect, this one reads one back out of a query the model
+// wrote. Both live here because the dialect is what makes them differ.
+func (p *BigQueryProvider) RowCap(query string) (int, bool) {
+	return gowarehouse.AnyRowCap(query, gowarehouse.TrailingLimit)
+}
+
 func (p *BigQueryProvider) SQLFixPrompt() string {
 	return sqlFixPrompt
 }

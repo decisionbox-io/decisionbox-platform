@@ -328,6 +328,16 @@ func (p *SnowflakeProvider) SampleQuery(dataset, table, filterClause string, lim
 	return fmt.Sprintf(`SELECT * FROM "%s"."%s" %s LIMIT %d`, dataset, table, filterClause, limit)
 }
 
+// RowCap reports the row cap this query applies. Snowflake accepts a
+// trailing LIMIT, the ANSI FETCH FIRST form, and SELECT TOP n.
+//
+// It is the recognition counterpart of SampleQuery: that method renders a
+// cap in this dialect, this one reads one back out of a query the model
+// wrote. Both live here because the dialect is what makes them differ.
+func (p *SnowflakeProvider) RowCap(query string) (int, bool) {
+	return gowarehouse.AnyRowCap(query, gowarehouse.TrailingLimit, gowarehouse.TrailingFetchFirst, gowarehouse.LeadingTop)
+}
+
 func (p *SnowflakeProvider) SQLFixPrompt() string {
 	return sqlFixPrompt
 }

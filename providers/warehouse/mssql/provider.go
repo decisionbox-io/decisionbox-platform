@@ -388,6 +388,17 @@ func (p *MSSQLProvider) SampleQuery(dataset, table, filterClause string, limit i
 	return fmt.Sprintf("SELECT TOP %d * FROM [%s].[%s] %s", limit, dataset, table, filterClause)
 }
 
+// RowCap reports the row cap this query applies. T-SQL has no LIMIT: it
+// caps with SELECT TOP n, and since 2012 with an OFFSET ... FETCH NEXT n
+// ROWS ONLY tail.
+//
+// It is the recognition counterpart of SampleQuery: that method renders a
+// cap in this dialect, this one reads one back out of a query the model
+// wrote. Both live here because the dialect is what makes them differ.
+func (p *MSSQLProvider) RowCap(query string) (int, bool) {
+	return gowarehouse.AnyRowCap(query, gowarehouse.LeadingTop, gowarehouse.TrailingFetchFirst)
+}
+
 func (p *MSSQLProvider) SQLFixPrompt() string {
 	return sqlFixPrompt
 }

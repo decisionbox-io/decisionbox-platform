@@ -394,6 +394,16 @@ func (p *RedshiftProvider) SampleQuery(dataset, table, filterClause string, limi
 	return fmt.Sprintf(`SELECT * FROM "%s"."%s" %s LIMIT %d`, dataset, table, filterClause, limit)
 }
 
+// RowCap reports the row cap this query applies. Redshift accepts both a
+// trailing LIMIT and T-SQL-style SELECT TOP n.
+//
+// It is the recognition counterpart of SampleQuery: that method renders a
+// cap in this dialect, this one reads one back out of a query the model
+// wrote. Both live here because the dialect is what makes them differ.
+func (p *RedshiftProvider) RowCap(query string) (int, bool) {
+	return gowarehouse.AnyRowCap(query, gowarehouse.TrailingLimit, gowarehouse.LeadingTop)
+}
+
 func (p *RedshiftProvider) SQLFixPrompt() string {
 	return sqlFixPrompt
 }
