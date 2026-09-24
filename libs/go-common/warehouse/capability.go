@@ -127,6 +127,21 @@ func (r sqlRunner) RunQuery(ctx context.Context, q NativeQuery) (*QueryResult, e
 func (r sqlRunner) QueryLanguage() string  { return r.p.SQLDialect() }
 func (r sqlRunner) QueryFixPrompt() string { return r.p.SQLFixPrompt() }
 
+// RowCap forwards to the adapted provider when it can recognise a cap in its
+// own dialect, and reports none when it cannot.
+//
+// Forwarded rather than reimplemented because the dialect knowledge belongs to
+// the provider: this adapter cannot know whether the source it wraps caps with
+// LIMIT, TOP or FETCH FIRST. A provider that does not implement
+// RowCapInspector yields no caveat, which is the same answer it gave before
+// the interface existed.
+func (r sqlRunner) RowCap(query string) (int, bool) {
+	if i, ok := r.p.(RowCapInspector); ok {
+		return i.RowCap(query)
+	}
+	return 0, false
+}
+
 // Unwrap exposes the adapted Provider so callers that still need the
 // table-shaped surface (schema discovery, identifier quoting) can reach it
 // without keeping a second reference alongside the runner.
