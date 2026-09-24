@@ -277,6 +277,16 @@ func (o *Orchestrator) rewriteInsight(
 // a repair -- it is the same sentence with different evidence, unchecked. Pinning
 // the citation means the only thing a round can change is what the finding says.
 //
+// Known gap: a claim's own `step` field is authored and stays mutable, so within
+// the pinned citation set a claim can still hop to a step where it happens to
+// hold. Measured: the first repair arm moved two already-holding declarations
+// from step 30 to step 4 (both benign -- the two steps carry the same rows), and
+// the arm with the confinement instruction moved none. Not pinned here on
+// purpose, because pinning it would be wrong: E1's finding is that a population
+// claim needs the step that saw the population, so a correct repair sometimes
+// has to re-point. Watching it with more units is the next measurement, not a
+// speculative guard now.
+//
 // The id is kept because parseInsights mints a fresh UUID for an insight that
 // arrives without one, and that id is the standalone document key and the vector
 // point id. A repair that changed it would orphan every link to the finding.

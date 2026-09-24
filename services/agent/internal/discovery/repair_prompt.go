@@ -22,6 +22,16 @@ import (
 // not the whole area. An area prompt is the large one by construction, and
 // re-running it would regenerate the sound insights beside the refuted one --
 // making the change unattributable and the measurement meaningless.
+//
+// Within the insight it is scoped again, to the contradicted sentences. That
+// narrowing is the one thing the first repair measurement found wrong: fixing a
+// false superlative, the model also rewrote an untouched neighbour, turning
+// "the fourth-highest sales among the top-10 sub-categories by revenue" into
+// "substantial revenue". Tables really is rank 4, so a true and specific claim
+// was discarded while a false one was corrected -- and nothing downstream can
+// catch it, because a vague claim is not a refuted one. Hence the instruction is
+// stated three times over: as the opening constraint, in the list of what may
+// not be touched, and by naming that exact substitution as the failure.
 func buildInsightRepairPrompt(ins models.Insight, failed []models.QuantifierVerdict, steps []models.ExplorationStep) string {
 	var b strings.Builder
 
@@ -49,7 +59,11 @@ func buildInsightRepairPrompt(ins models.Insight, failed []models.QuantifierVerd
 	b.WriteString(RenderCompactedSteps(steps))
 	b.WriteString("\n```\n\n")
 
-	b.WriteString("### Rewrite it\n\nReturn this one finding, rewritten so that every statement it makes is true of those rows. You may:\n\n")
+	b.WriteString("### Rewrite it\n\nReturn this one finding with **only the contradicted sentences changed**. ")
+	b.WriteString("Every other sentence must come back word for word as you wrote it — same figures, same names, same ")
+	b.WriteString("wording. A sentence not listed above was not questioned, and shortening it, generalising it or ")
+	b.WriteString("dropping a figure out of it throws away something that was right.\n\nFor the sentences that are ")
+	b.WriteString("contradicted, you may:\n\n")
 	b.WriteString("- correct a number, a name, a rank or a direction to what the rows say;\n")
 	b.WriteString("- narrow the claim to a scope that is true — `top_n` / `top_n_column` if the claim is about the largest few;\n")
 	b.WriteString("- weaken it to a claim that holds (\"one of the loss-making lines\" rather than \"the only\");\n")
@@ -57,7 +71,10 @@ func buildInsightRepairPrompt(ins models.Insight, failed []models.QuantifierVerd
 	b.WriteString("You may not:\n\n")
 	b.WriteString("- change `source_steps`. The evidence is fixed; the sentence is what changes. A claim moved to a different step is a different claim.\n")
 	b.WriteString("- keep a contradicted sentence and drop its `quantifier_claims` entry. An undeclared claim is not thereby true, and a rewrite that removes the check instead of the error is rejected and does not count as a round.\n")
-	b.WriteString("- invent a figure no step returned.\n\n")
+	b.WriteString("- invent a figure no step returned.\n")
+	b.WriteString("- touch a sentence that is not listed above. Replacing a specific figure with a vague phrase " +
+		"(\"substantial revenue\" for \"the fourth-highest sales\") loses a true claim while fixing a false one, " +
+		"and is the one failure this instruction exists to prevent.\n\n")
 	// The contract goes in the repair prompt too. Without it the rewrite is asked
 	// to re-declare its claims under rules it cannot see: the area prompt carried
 	// them, this call is a fresh conversation, and a model reaching for the

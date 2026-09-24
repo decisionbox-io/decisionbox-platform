@@ -354,3 +354,24 @@ func TestRepairPrompt_CarriesTheDeclarationContract(t *testing.T) {
 		}
 	}
 }
+
+// The first repair measurement found exactly one weakness: fixing a false claim,
+// the model also vagued a true neighbouring sentence. Nothing downstream can
+// catch that, so the prompt has to ask for it.
+func TestRepairPrompt_ConfinesTheRewriteToTheContradictedSentences(t *testing.T) {
+	insights := []models.Insight{refutedInsight()}
+	attachQuantifierVerdicts(insights, step4ByID())
+	failed := refutedVerdicts(insights[0].QuantifierVerdicts)
+	prompt := buildInsightRepairPrompt(insights[0], failed, refutedSteps(failed, step4ByID()))
+
+	for _, want := range []string{
+		"only the contradicted sentences changed",
+		"word for word",
+		"was not questioned",
+		"touch a sentence that is not listed above",
+	} {
+		if !containsFold(prompt, want) {
+			t.Errorf("prompt is missing the confinement instruction %q", want)
+		}
+	}
+}
