@@ -65,7 +65,7 @@ func insightResponseSchema() map[string]interface{} {
 				"type": "object",
 				"properties": map[string]interface{}{
 					"claim":        str("The statement, verbatim as written in name, description or indicators"),
-					"kind":         str(`One of "only", "rank", "monotonic", "cardinality"`),
+					"kind":         str(`One of "only", "all", "rank", "monotonic", "cardinality"`),
 					"step":         map[string]interface{}{"type": "integer", "description": "Exploration step whose rows settle the claim"},
 					"column":       str("Column the claim ranks by, or whose direction it asserts"),
 					"filter":       str("Conjunction of `column <op> literal` terms joined by AND"),

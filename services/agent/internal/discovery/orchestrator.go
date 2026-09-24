@@ -1233,6 +1233,34 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// check.
 		attachQuantifierVerdicts(insights, stepByID)
 
+		// Bounded repair before discard (E5). Every insight whose own cited rows
+		// contradict a claim it declared gets the evaluator's reason handed back
+		// and up to ANALYSIS_REPAIR_MAX_ROUNDS attempts to say something true;
+		// whatever is still refuted loses the sentence rather than the finding.
+		// Runs before validation so the verifier judges the text that ships.
+		// A no-op on every insight that agreed with its evidence, which is
+		// almost all of them.
+		repair := o.repairRefutedInsights(ctx, area.ID, insights, stepByID, maxTokens)
+		step.InsightsRepaired = repair.repaired
+		step.InsightsClaimsDropped = repair.claimsDropped
+		step.InsightsUnrepaired = repair.unrepaired
+		step.AnalysisRepairRounds = repair.rounds
+		// Repair calls are LLM calls, so their cost belongs in this area's
+		// totals rather than disappearing into an untracked side channel.
+		step.TokensIn += repair.tokensIn
+		step.TokensOut += repair.tokensOut
+		step.DurationMs += repair.durationMs
+		if repair.rounds > 0 || repair.substituted > 0 {
+			applog.WithFields(applog.Fields{
+				"area":          area.ID,
+				"rounds":        repair.rounds,
+				"substituted":   repair.substituted,
+				"repaired":      repair.repaired,
+				"claim_dropped": repair.claimsDropped,
+				"unrepaired":    repair.unrepaired,
+			}).Info("Repaired insights whose declared claims their own evidence contradicted")
+		}
+
 		if len(insights) > 0 {
 			var areaResults []models.ValidationResult
 			areaResults, insightsValidatedThisRun = valPhase.validateInsights(ctx, insights, stepByID, area.ID, insightsValidatedThisRun)

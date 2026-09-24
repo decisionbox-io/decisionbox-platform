@@ -15,6 +15,12 @@ import (
 // claim does. The verdicts are attached so a repair loop can act on them and so
 // the effect can be measured before anything is gated on it.
 //
+// That repair loop now exists (repairRefutedInsights, E5) and runs immediately
+// after this function. It is still not a gate: it corrects the sentence, or
+// removes the sentence, and the finding ships either way. The verdicts left here
+// are what it reads, and the ones it cannot settle stay attached to the insight
+// so a refuted claim that survives is visible rather than silent.
+//
 // A failing verdict is logged at Warn because it is the one signal that the
 // model stated something its own evidence refutes.
 //
@@ -46,15 +52,7 @@ func attachQuantifierVerdicts(insights []models.Insight, stepByID map[int]*model
 		if len(ins.QuantifierClaims) == 0 {
 			continue
 		}
-		evidence := make(map[int]StepRows, len(ins.SourceSteps))
-		for _, id := range ins.SourceSteps {
-			step, ok := stepByID[id]
-			if !ok || step == nil {
-				continue
-			}
-			evidence[id] = StepRows{Rows: step.QueryResult, Quality: step.Quality}
-		}
-		verdicts := EvaluateQuantifierClaims(ins.QuantifierClaims, evidence)
+		verdicts := EvaluateQuantifierClaims(ins.QuantifierClaims, quantifierEvidence(*ins, stepByID))
 		ins.QuantifierVerdicts = verdicts
 		for _, v := range verdicts {
 			if v.Status != QuantifierFails {

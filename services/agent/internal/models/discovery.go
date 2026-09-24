@@ -165,6 +165,17 @@ type Insight struct {
 	// them measures nothing.
 	QuantifierVerdicts []QuantifierVerdict `bson:"quantifier_verdicts,omitempty" json:"evidence_checks,omitempty"`
 
+	// Repair records what bounded repair did to this insight after a claim of
+	// its own came back refuted: which sentences were corrected, which were
+	// removed, and how many corrective rounds that cost. Nil on the happy path,
+	// which is nearly every insight -- repair only runs on one whose declared
+	// claim its own evidence contradicts.
+	//
+	// The tag is `evidence_repair` for the reason the two above it are not
+	// `quality` and `quantifier_verdicts`: the model must not be able to author
+	// the record of its own correction.
+	Repair *InsightRepair `bson:"repair,omitempty" json:"evidence_repair,omitempty"`
+
 	SQLMetadata  *SQLMetadata `bson:"sql_metadata,omitempty" json:"sql_metadata,omitempty"`
 	DiscoveredAt time.Time    `bson:"discovered_at" json:"discovered_at"`
 
@@ -703,6 +714,32 @@ type AnalysisStep struct {
 	// from a non-empty response (bounded by ANALYSIS_PARSE_MAX_RETRIES). Zero
 	// on the happy path; omitted when zero.
 	AnalysisParseRetries int `bson:"analysis_parse_retries,omitempty" json:"analysis_parse_retries,omitempty"`
+
+	// Repair counters (E5). Every one of these is zero on an area whose
+	// insights all agreed with their own evidence, which is the common case, so
+	// all four are omitted on a clean run and a non-zero value is itself the
+	// signal worth looking at.
+	//
+	// InsightsRepaired counts insights that entered repair with a refuted claim
+	// and left with none.
+	InsightsRepaired int `bson:"insights_repaired,omitempty" json:"insights_repaired,omitempty"`
+
+	// InsightsClaimsDropped counts insights that kept a refuted claim through
+	// the round cap and had the sentence removed instead. Read against
+	// InsightsRepaired this is the repaired-vs-discarded ratio: the point of
+	// bounding repair is knowing how often it works.
+	InsightsClaimsDropped int `bson:"insights_claims_dropped,omitempty" json:"insights_claims_dropped,omitempty"`
+
+	// InsightsUnrepaired counts insights that shipped with a refuted claim
+	// still in the text because there was no sentence to remove -- the claim
+	// was the headline, or the whole description.
+	InsightsUnrepaired int `bson:"insights_unrepaired,omitempty" json:"insights_unrepaired,omitempty"`
+
+	// AnalysisRepairRounds is the total number of corrective repair calls this
+	// area issued across all its insights, bounded per insight by
+	// ANALYSIS_REPAIR_MAX_ROUNDS. This is what repair cost; the counters above
+	// are what it bought.
+	AnalysisRepairRounds int `bson:"analysis_repair_rounds,omitempty" json:"analysis_repair_rounds,omitempty"`
 
 	// Validation
 	ValidationResults []ValidationResult `bson:"validation_results,omitempty" json:"validation_results,omitempty"`
