@@ -283,3 +283,116 @@ func superstoreTop10BySales() []map[string]any {
 		{"sub_category": "Appliances", "sales": 108213.18499999995, "profit": 18329.484399999983},
 	}
 }
+
+// Step 19 of the Superstore audit run: four sub-categories over four years each.
+// A claim about one of them is not a claim about the step.
+func superstoreStep19() StepRows {
+	return StepRows{Rows: []map[string]any{
+		{"sub_category": "Binders", "yr": 2023, "profit": 5203.2512},
+		{"sub_category": "Binders", "yr": 2024, "profit": 7633.3726},
+		{"sub_category": "Binders", "yr": 2025, "profit": 10648.5871},
+		{"sub_category": "Binders", "yr": 2026, "profit": 7940.8894},
+		{"sub_category": "Bookcases", "yr": 2023, "profit": -346.2},
+		{"sub_category": "Bookcases", "yr": 2024, "profit": -2755.2},
+		{"sub_category": "Bookcases", "yr": 2025, "profit": 127.5},
+		{"sub_category": "Bookcases", "yr": 2026, "profit": -658.2},
+		{"sub_category": "Machines", "yr": 2023, "profit": 407.8},
+		{"sub_category": "Machines", "yr": 2024, "profit": 2977.5},
+		{"sub_category": "Machines", "yr": 2025, "profit": 2907.3},
+		{"sub_category": "Machines", "yr": 2026, "profit": -2830.6},
+		{"sub_category": "Tables", "yr": 2023, "profit": -3210.4},
+		{"sub_category": "Tables", "yr": 2024, "profit": -3500.2},
+		{"sub_category": "Tables", "yr": 2025, "profit": -2950.3},
+		{"sub_category": "Tables", "yr": 2026, "profit": -8092.3},
+	}}
+}
+
+// Both of these shipped in the frozen corpus, both are true, and both were
+// reported refuted before `scope` existed -- the evaluator had no way to be told
+// which series the sentence was about, so it answered a question about all four.
+func TestEvaluate_ScopeNarrowsToTheSeriesTheSentenceIsAbout(t *testing.T) {
+	steps := map[int]StepRows{19: superstoreStep19()}
+
+	tables := models.QuantifierClaim{
+		Claim: "Tables ran a loss in every year 2023-2026", Kind: QuantifierAll,
+		Step: 19, Scope: "sub_category = 'Tables'", Filter: "profit < 0",
+	}
+	if got := evaluateQuantifierClaim(tables, steps); got.Status != QuantifierHolds {
+		t.Errorf("Tables-every-year = %q (%s), want holds", got.Status, got.Reason)
+	}
+
+	// The same sentence with no scope asserts it of all four sub-categories,
+	// which is false -- so the scope has to be the thing that decides it, not a
+	// leniency applied either way.
+	unscoped := tables
+	unscoped.Scope = ""
+	if got := evaluateQuantifierClaim(unscoped, steps); got.Status != QuantifierFails {
+		t.Errorf("unscoped = %q (%s), want fails", got.Status, got.Reason)
+	}
+
+	// A year bound the sentence states belongs in the scope too.
+	machines := models.QuantifierClaim{
+		Claim: "Machines was profitable each year 2023-2025", Kind: QuantifierAll,
+		Step: 19, Scope: "sub_category = 'Machines' AND yr <= 2025", Filter: "profit > 0",
+	}
+	if got := evaluateQuantifierClaim(machines, steps); got.Status != QuantifierHolds {
+		t.Errorf("Machines-2023-2025 = %q (%s), want holds", got.Status, got.Reason)
+	}
+	// Extending it through 2026 makes it false, and must read as false.
+	through2026 := machines
+	through2026.Scope = "sub_category = 'Machines'"
+	if got := evaluateQuantifierClaim(through2026, steps); got.Status != QuantifierFails {
+		t.Errorf("Machines-through-2026 = %q (%s), want fails", got.Status, got.Reason)
+	}
+}
+
+// A scope that matches nothing is the evaluator unable to find the claim's
+// subject, not the claim being false.
+func TestEvaluate_EmptyScopeIsUndecidable(t *testing.T) {
+	c := models.QuantifierClaim{
+		Claim: "Envelopes ran a loss every year", Kind: QuantifierAll,
+		Step: 19, Scope: "sub_category = 'Envelopes'", Filter: "profit < 0",
+	}
+	got := evaluateQuantifierClaim(c, map[int]StepRows{19: superstoreStep19()})
+	if got.Status != QuantifierUndecidable {
+		t.Errorf("status = %q (%s), want undecidable", got.Status, got.Reason)
+	}
+}
+
+// A capped step withholds rows that could match the scope, so a scope alone
+// must not unlock a claim the cap makes unsettleable.
+func TestEvaluate_ScopeDoesNotExcuseATruncatedStep(t *testing.T) {
+	ev := superstoreStep19()
+	ev.Quality = []gowarehouse.QualityCaveat{{Kind: gowarehouse.QualityTruncated}}
+	c := models.QuantifierClaim{
+		Claim: "Tables ran a loss in every year", Kind: QuantifierAll,
+		Step: 19, Scope: "sub_category = 'Tables'", Filter: "profit < 0",
+	}
+	got := evaluateQuantifierClaim(c, map[int]StepRows{19: ev})
+	if got.Status != QuantifierUndecidable {
+		t.Errorf("status = %q (%s), want undecidable on a capped step", got.Status, got.Reason)
+	}
+}
+
+// A rank claim over a step grouped by two keys needs both in its subject. The
+// single-term wording in the contract produced exactly this undecidable during
+// the E5 repair measurement: "Tables 2026 loss is the largest single-year loss"
+// declared with subject `sub_category = 'Tables'`, which selects four rows.
+func TestEvaluate_RankSubjectTakesAConjunction(t *testing.T) {
+	steps := map[int]StepRows{19: superstoreStep19()}
+
+	underSpecified := models.QuantifierClaim{
+		Claim: "Tables 2026 loss is the largest single-year loss in the window", Kind: QuantifierRank,
+		Step: 19, Column: "profit", Order: "asc", Subject: "sub_category = 'Tables'", Rank: 1,
+	}
+	if got := evaluateQuantifierClaim(underSpecified, steps); got.Status != QuantifierUndecidable {
+		t.Errorf("under-specified subject = %q (%s), want undecidable", got.Status, got.Reason)
+	}
+
+	pinned := underSpecified
+	pinned.Subject = "sub_category = 'Tables' AND yr = 2026"
+	got := evaluateQuantifierClaim(pinned, steps)
+	if got.Status != QuantifierHolds {
+		t.Errorf("pinned subject = %q (%s), want holds", got.Status, got.Reason)
+	}
+}

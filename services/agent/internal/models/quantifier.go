@@ -14,6 +14,20 @@ type QuantifierClaim struct {
 	Column string `bson:"column,omitempty" json:"column,omitempty"`
 	Filter string `bson:"filter,omitempty" json:"filter,omitempty"`
 
+	// Scope narrows the rows before the predicate applies, as a filter rather
+	// than a ranking. It exists because a step commonly holds several series at
+	// once and a claim is about one of them: "Tables ran a loss in every year"
+	// rests on a step holding four sub-categories over four years each, and
+	// without a scope the only way to declare it is `all` + `profit < 0` over
+	// every row -- which asserts that Binders lost money too, and is false.
+	//
+	// Found by replaying the evaluator over a frozen corpus: two of five refuted
+	// claims were true sentences that the grammar could not express, so the
+	// evaluator was reporting its own missing vocabulary as the model being
+	// wrong. Same class as the absent universal quantifier, and the same cost --
+	// a gap here is a false refutation, not a silence.
+	Scope string `bson:"scope,omitempty" json:"scope,omitempty"`
+
 	// TopN / TopNColumn narrow the scope before the predicate applies. They
 	// exist because the claims that go wrong rank on one column while
 	// filtering on another: "the only top-10 revenue line running a loss" is

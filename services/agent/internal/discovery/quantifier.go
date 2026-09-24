@@ -150,9 +150,25 @@ func evaluateQuantifierClaim(c models.QuantifierClaim, steps map[int]StepRows) m
 	}
 }
 
-// scopeRows narrows the step's rows to the set the claim ranges over: the top N
-// by a column, when the claim says so.
+// scopeRows narrows the step's rows to the set the claim ranges over: the rows
+// matching Scope, and then the top N of those by a column, when the claim says
+// so.
+//
+// Scope is applied first. A claim about the ten largest Tables months means the
+// ten largest among the Tables rows, not the Tables rows among the ten largest
+// overall -- those are different sets and only the first is what the sentence
+// says.
 func scopeRows(rows []map[string]any, c models.QuantifierClaim) ([]map[string]any, error) {
+	if c.Scope != "" {
+		scoped, err := filterRows(rows, c.Scope)
+		if err != nil {
+			return nil, fmt.Errorf("scope %q: %w", c.Scope, err)
+		}
+		if len(scoped) == 0 {
+			return nil, fmt.Errorf("scope %q selects no rows of step %d", c.Scope, c.Step)
+		}
+		rows = scoped
+	}
 	if c.TopN <= 0 {
 		return rows, nil
 	}
@@ -207,6 +223,11 @@ func evalCardinality(v models.QuantifierVerdict, scope []map[string]any, c model
 
 // scopedWithinResult reports whether the claim ranges only over rows the step
 // actually returned.
+//
+// TopN only, deliberately. A Scope filter narrows the rows in hand but says
+// nothing about the rows the cap withheld -- one of those could match the scope
+// and refute the claim, which is the situation this refusal exists for. A top-N
+// scope is different in kind: it names a set the result contains in full.
 func scopedWithinResult(c models.QuantifierClaim, returned int) bool {
 	return c.TopN > 0 && c.TopN <= returned
 }

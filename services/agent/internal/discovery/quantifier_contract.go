@@ -31,8 +31,8 @@ const quantifierContract = "## Declaring quantifier claims\n\n" +
 	"   \"step\": 7, \"column\": \"margin\", \"trend\": \"increasing\"},\n" +
 	"  {\"claim\": \"3 of 17 sub-categories run a loss\", \"kind\": \"cardinality\",\n" +
 	"   \"step\": 4, \"filter\": \"profit < 0\", \"count\": 3},\n" +
-	"  {\"claim\": \"Tables ran a loss in every year\", \"kind\": \"all\",\n" +
-	"   \"step\": 19, \"filter\": \"profit < 0\"}\n" +
+	"  {\"claim\": \"the West region grew in every quarter of 2025\", \"kind\": \"all\",\n" +
+	"   \"step\": 19, \"scope\": \"region = 'West' AND yr = 2025\", \"filter\": \"growth > 0\"}\n" +
 	"]\n" +
 	"```\n\n" +
 	"- `kind` is `only` (exactly one row), `all` (every row), `rank`, `monotonic` (a trend) or " +
@@ -40,9 +40,16 @@ const quantifierContract = "## Declaring quantifier claims\n\n" +
 	"direction of change, which is a different claim and is usually false when `all` is true.\n" +
 	"- `filter` is a conjunction of `column <op> literal` terms joined by `AND`, with op one of " +
 	"`= != < <= > >=`. Nothing richer is evaluated.\n" +
-	"- `top_n` / `top_n_column` narrow the scope before the predicate applies. Use them whenever the " +
+	"- `scope` narrows **which rows** the claim is about, in the same grammar as `filter`. Use it whenever " +
+	"the step holds more series than the sentence names. A step grouped by two keys holds one series per " +
+	"combination, so a claim about one of them without a `scope` is read as a claim about all of them, and " +
+	"is usually false. Put every bound the sentence states into it — the entity it names, and any period " +
+	"or category it limits itself to, even when the step reaches past that period.\n" +
+	"- `top_n` / `top_n_column` narrow to the largest few, after `scope`. Use them whenever the " +
 	"claim ranks on one column and filters on another — that combination is where these claims go wrong.\n" +
-	"- `subject` names the single row a `rank` claim is about, as one `column = literal` term.\n" +
+	"- `subject` names the **single row** a `rank` claim is about, in the same grammar as `filter`. Where the " +
+	"step is grouped by two keys it takes both — `\"sub_category = 'Tables' AND yr = 2026\"`, not just the " +
+	"sub-category, which selects one row per year and settles nothing.\n" +
 	"- `order` is `desc` (default) or `asc`; rank 1 is the largest under `desc`, the smallest under `asc`.\n\n" +
 	"If a claim rests on a step whose `quality_caveats` say the result was capped, scope it to the " +
 	"rows that step returned and say so with `top_n` — \"the only loss-making line among the 10 " +

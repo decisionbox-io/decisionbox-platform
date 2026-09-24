@@ -58,7 +58,14 @@ func buildInsightRepairPrompt(ins models.Insight, failed []models.QuantifierVerd
 	b.WriteString("- change `source_steps`. The evidence is fixed; the sentence is what changes. A claim moved to a different step is a different claim.\n")
 	b.WriteString("- keep a contradicted sentence and drop its `quantifier_claims` entry. An undeclared claim is not thereby true, and a rewrite that removes the check instead of the error is rejected and does not count as a round.\n")
 	b.WriteString("- invent a figure no step returned.\n\n")
-	b.WriteString("Re-declare `quantifier_claims` for the text you actually write, under the same rules as before. ")
+	// The contract goes in the repair prompt too. Without it the rewrite is asked
+	// to re-declare its claims under rules it cannot see: the area prompt carried
+	// them, this call is a fresh conversation, and a model reaching for the
+	// nearest kind it can remember is how the misdeclared `monotonic` for "ran a
+	// loss in every year" arose in the first place. Re-stating it is ~1.5KB
+	// against a prompt whose whole purpose is that a declaration be right.
+	b.WriteString(quantifierContract)
+	b.WriteString("Re-declare `quantifier_claims` for the text you actually write. ")
 	b.WriteString("Respond with ONLY a single JSON object of the form ")
 	b.WriteString("`{\"insights\": [ <the one rewritten finding> ]}` — no prose, no markdown fences.\n")
 

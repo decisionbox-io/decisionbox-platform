@@ -334,3 +334,23 @@ func TestRepairPrompt_CarriesTheReasonAndPinsTheEvidence(t *testing.T) {
 		t.Errorf("prompt shows the model its own verdict field")
 	}
 }
+
+// A rewrite is asked to re-declare its claims, so it has to be told the rules
+// they follow. The area prompt carried them; this is a fresh call.
+func TestRepairPrompt_CarriesTheDeclarationContract(t *testing.T) {
+	insights := []models.Insight{refutedInsight()}
+	attachQuantifierVerdicts(insights, step4ByID())
+	failed := refutedVerdicts(insights[0].QuantifierVerdicts)
+	prompt := buildInsightRepairPrompt(insights[0], failed, refutedSteps(failed, step4ByID()))
+
+	for _, want := range []string{
+		"Declaring quantifier claims",
+		"`all` (every row)",
+		"is `all`, not `monotonic`",
+		"top_n_column",
+	} {
+		if !containsFold(prompt, want) {
+			t.Errorf("prompt is missing the contract fragment %q", want)
+		}
+	}
+}
