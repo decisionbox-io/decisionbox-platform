@@ -91,6 +91,35 @@ func BuildCompactResultWithLimits(rows []map[string]any, lim CompactLimits) Comp
 	}
 
 	out.Columns = summarizeColumns(rows)
+
+	// With every row inline the statistics are redundant, and redundancy is
+	// the lesser problem. See stripStatistics.
+	if out.AllRows != nil {
+		out.Columns = stripStatistics(out.Columns)
+	}
+	return out
+}
+
+// stripStatistics reduces each column to its name, inferred kind and null
+// count, dropping every derived summary value.
+//
+// Applied only when AllRows carries the entire result, where the statistics
+// duplicate rows the reader already has. The reason to remove them rather than
+// leave them as harmless duplication is that they do not read as duplication:
+// they read as population parameters.
+//
+// Two observed failures come from that. Interpolated percentiles over a
+// handful of rows correspond to no actual value — a three-row result yields a
+// p25 and p75 sitting between real rows — and one such interpolated spread is
+// the only quantity in its document's evidence matching a figure that document
+// stated and no query produced. And `distinct` over a capped result counts the
+// rows the cap allowed, which is how a 15-row top-N became "p_type has 15
+// values" for a column holding 150.
+func stripStatistics(cols []ColumnSummary) []ColumnSummary {
+	out := make([]ColumnSummary, len(cols))
+	for i, c := range cols {
+		out[i] = ColumnSummary{Name: c.Name, Kind: c.Kind, NullCount: c.NullCount}
+	}
 	return out
 }
 

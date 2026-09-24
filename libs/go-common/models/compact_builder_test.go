@@ -104,7 +104,7 @@ func TestBuildCompactResult_AllNumeric_IntFloat(t *testing.T) {
 		{"x": 2.5},
 		{"x": int64(3)},
 	}
-	got := BuildCompactResult(rows)
+	got := buildWithStatistics(rows)
 	col := findColumn(t, got, "x")
 
 	if col.Kind != ColumnKindNumber {
@@ -126,7 +126,7 @@ func TestBuildCompactResult_AllNumeric_VariousIntWidths(t *testing.T) {
 		{"x": int64(4)},
 		{"x": uint8(5)},
 	}
-	got := BuildCompactResult(rows)
+	got := buildWithStatistics(rows)
 	col := findColumn(t, got, "x")
 	if col.Kind != ColumnKindNumber {
 		t.Errorf("Kind: got %q want number (mixed integer widths)", col.Kind)
@@ -140,7 +140,7 @@ func TestBuildCompactResult_AllString(t *testing.T) {
 	rows := []map[string]any{
 		{"s": "a"}, {"s": "b"}, {"s": "a"}, {"s": "c"},
 	}
-	got := BuildCompactResult(rows)
+	got := buildWithStatistics(rows)
 	col := findColumn(t, got, "s")
 	if col.Kind != ColumnKindString {
 		t.Errorf("Kind: got %q want string", col.Kind)
@@ -154,7 +154,7 @@ func TestBuildCompactResult_AllBoolean(t *testing.T) {
 	rows := []map[string]any{
 		{"b": true}, {"b": false}, {"b": true},
 	}
-	got := BuildCompactResult(rows)
+	got := buildWithStatistics(rows)
 	col := findColumn(t, got, "b")
 	if col.Kind != ColumnKindBoolean {
 		t.Errorf("Kind: got %q want boolean", col.Kind)
@@ -177,7 +177,7 @@ func TestBuildCompactResult_AllTimestamp_TimeTime(t *testing.T) {
 	rows := []map[string]any{
 		{"ts": t2}, {"ts": t1}, {"ts": t2},
 	}
-	got := BuildCompactResult(rows)
+	got := buildWithStatistics(rows)
 	col := findColumn(t, got, "ts")
 	if col.Kind != ColumnKindTimestamp {
 		t.Errorf("Kind: got %q want timestamp", col.Kind)
@@ -235,7 +235,7 @@ func TestBuildCompactResult_NumericPercentiles_Even(t *testing.T) {
 	rows := []map[string]any{
 		{"x": 1.0}, {"x": 2.0}, {"x": 3.0}, {"x": 4.0},
 	}
-	got := BuildCompactResult(rows)
+	got := buildWithStatistics(rows)
 	col := findColumn(t, got, "x")
 
 	expectFloat(t, "Min", col.Min, 1.0)
@@ -249,7 +249,7 @@ func TestBuildCompactResult_NumericPercentiles_Odd(t *testing.T) {
 	rows := []map[string]any{
 		{"x": 10.0}, {"x": 20.0}, {"x": 30.0}, {"x": 40.0}, {"x": 50.0},
 	}
-	got := BuildCompactResult(rows)
+	got := buildWithStatistics(rows)
 	col := findColumn(t, got, "x")
 
 	expectFloat(t, "Min", col.Min, 10.0)
@@ -261,7 +261,7 @@ func TestBuildCompactResult_NumericPercentiles_Odd(t *testing.T) {
 
 func TestBuildCompactResult_NumericPercentiles_Single(t *testing.T) {
 	rows := []map[string]any{{"x": 42.0}}
-	got := BuildCompactResult(rows)
+	got := buildWithStatistics(rows)
 	col := findColumn(t, got, "x")
 	expectFloat(t, "Min", col.Min, 42.0)
 	expectFloat(t, "P25", col.P25, 42.0)
@@ -274,7 +274,7 @@ func TestBuildCompactResult_NumericWithNils(t *testing.T) {
 	rows := []map[string]any{
 		{"x": 1.0}, {"x": nil}, {"x": 3.0}, {"x": nil}, {"x": 5.0},
 	}
-	got := BuildCompactResult(rows)
+	got := buildWithStatistics(rows)
 	col := findColumn(t, got, "x")
 	if col.Kind != ColumnKindNumber {
 		t.Errorf("Kind: got %q want number", col.Kind)
@@ -290,7 +290,7 @@ func TestBuildCompactResult_StringLowCardinality_Top3(t *testing.T) {
 	rows := []map[string]any{
 		{"s": "a"}, {"s": "b"}, {"s": "a"}, {"s": "c"}, {"s": "a"}, {"s": "b"},
 	}
-	got := BuildCompactResult(rows)
+	got := buildWithStatistics(rows)
 	col := findColumn(t, got, "s")
 	if col.Distinct != 3 {
 		t.Errorf("Distinct: got %d want 3", col.Distinct)
@@ -312,7 +312,7 @@ func TestBuildCompactResult_StringLowCardinality_Top3(t *testing.T) {
 func TestBuildCompactResult_StringLowCardinality_TieOrder(t *testing.T) {
 	// Three values, all freq=1: ties must break in lexical order.
 	rows := []map[string]any{{"s": "c"}, {"s": "a"}, {"s": "b"}}
-	got := BuildCompactResult(rows)
+	got := buildWithStatistics(rows)
 	col := findColumn(t, got, "s")
 	if len(col.Top) != 3 {
 		t.Fatalf("Top: got %d want 3", len(col.Top))
@@ -343,7 +343,7 @@ func TestBuildCompactResult_StringWithNils(t *testing.T) {
 	rows := []map[string]any{
 		{"s": "a"}, {"s": nil}, {"s": "a"}, {"s": nil},
 	}
-	got := BuildCompactResult(rows)
+	got := buildWithStatistics(rows)
 	col := findColumn(t, got, "s")
 	if col.NullCount != 2 {
 		t.Errorf("NullCount: got %d want 2", col.NullCount)
@@ -403,7 +403,7 @@ func TestBuildCompactResult_NaN_Inf_Excluded(t *testing.T) {
 		{"x": math.Inf(-1)},
 		{"x": 5.0},
 	}
-	got := BuildCompactResult(rows)
+	got := buildWithStatistics(rows)
 	col := findColumn(t, got, "x")
 
 	if col.Kind != ColumnKindNumber {
@@ -461,7 +461,7 @@ func TestBuildCompactResult_ColumnOrderStableAcrossInputs(t *testing.T) {
 
 func TestBuildCompactResult_BooleanOnlyTrue(t *testing.T) {
 	rows := []map[string]any{{"b": true}, {"b": true}}
-	got := BuildCompactResult(rows)
+	got := buildWithStatistics(rows)
 	col := findColumn(t, got, "b")
 	if col.Kind != ColumnKindBoolean {
 		t.Errorf("Kind: got %q want boolean", col.Kind)
@@ -477,7 +477,7 @@ func TestBuildCompactResult_BooleanOnlyTrue(t *testing.T) {
 func TestBuildCompactResult_BooleanTieFalseFirst(t *testing.T) {
 	// Equal counts: lexical "false" < "true" tie-break must put false first.
 	rows := []map[string]any{{"b": true}, {"b": false}}
-	got := BuildCompactResult(rows)
+	got := buildWithStatistics(rows)
 	col := findColumn(t, got, "b")
 	if len(col.Top) != 2 {
 		t.Fatalf("Top: got %d want 2", len(col.Top))
@@ -673,5 +673,41 @@ func TestBuildCompactResultWithLimits_NonPositiveFallsBack(t *testing.T) {
 	want := BuildCompactResult(rows)
 	if !reflect.DeepEqual(want, got) {
 		t.Errorf("non-positive limits must fall back to defaults\n want=%+v\n got =%+v", want, got)
+	}
+}
+
+// buildWithStatistics builds a digest on the non-inline path, the one that
+// keeps per-column statistics.
+//
+// The inline path drops them on purpose (see stripStatistics), so a test about
+// how a statistic is computed has to ask for the path that computes it. Doing
+// it with a threshold rather than twenty-odd rows of fixture keeps the cases
+// readable and keeps them about the arithmetic.
+func buildWithStatistics(rows []map[string]any) CompactResult {
+	return CompactResult{RowCount: len(rows), Columns: summarizeColumns(rows)}
+}
+
+// Statistics are redundant once every row is inline, and they do not read as
+// redundant: an interpolated percentile over three rows looks like a
+// population parameter, and `distinct` over a capped result looks like the
+// column's cardinality. Both have been restated as fact in a shipped insight.
+func TestBuildCompactResult_InlineResultCarriesNoStatistics(t *testing.T) {
+	rows := []map[string]any{
+		{"n": 1, "s": "a"}, {"n": 2, "s": "b"}, {"n": 3, "s": "a"},
+	}
+	got := BuildCompactResult(rows)
+	if got.AllRows == nil {
+		t.Fatal("AllRows is nil, so this is not the inline path")
+	}
+	for _, c := range got.Columns {
+		if c.Name == "" || c.Kind == "" {
+			t.Errorf("column %+v lost its name or kind", c)
+		}
+		if c.Min != nil || c.P25 != nil || c.Median != nil || c.P75 != nil || c.Max != nil {
+			t.Errorf("column %q kept numeric statistics on the inline path: %+v", c.Name, c)
+		}
+		if c.Distinct != 0 || len(c.Top) != 0 || c.MinTime != "" || c.MaxTime != "" {
+			t.Errorf("column %q kept distinct/top/time statistics on the inline path: %+v", c.Name, c)
+		}
 	}
 }
