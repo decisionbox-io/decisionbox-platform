@@ -985,6 +985,13 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	}
 	applog.WithField("steps", explorationResult.TotalSteps).Info("Exploration completed")
 
+	// One line per executed step: the SQL, the row count, any fidelity caveat,
+	// and how much of the result the digest reproduces. A no-op unless
+	// DISCOVERY_TRACE is set.
+	for _, st := range explorationResult.Steps {
+		traceExplorationStep(st)
+	}
+
 	// Wire the exploration log into the verifier before the analysis loop
 	// runs. The verifier renders the SQL of cited source_steps into its
 	// generation prompt as authoritative column-grounding evidence — without
@@ -1138,6 +1145,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			"dropped": len(pickResult.Dropped),
 		}).Info("Analyzing area")
 
+		// How much of each cited step's result this area's prompt will show.
+		// A no-op unless DISCOVERY_TRACE is set.
+		traceExposure(area.ID, relevantSteps)
+
 		// Render the compacted view into the prompt. This replaces
 		// the old json.MarshalIndent of the full ExplorationStep,
 		// which on ERP-scale runs grew to >1M tokens.
@@ -1259,6 +1270,15 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 				"claim_dropped": repair.claimsDropped,
 				"unrepaired":    repair.unrepaired,
 			}).Info("Repaired insights whose declared claims their own evidence contradicted")
+		}
+
+		// Provenance of what is about to ship: declared claims with their
+		// verdicts, then one line per insight naming the steps it cited.
+		// Logged after repair so it reflects the text that ships, not the
+		// draft. A no-op unless DISCOVERY_TRACE is set.
+		for i := range insights {
+			traceClaims(area.ID, insights[i])
+			traceInsight(area.ID, insights[i])
 		}
 
 		if len(insights) > 0 {
