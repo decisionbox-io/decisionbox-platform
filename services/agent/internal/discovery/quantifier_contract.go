@@ -30,15 +30,22 @@ const quantifierContract = "## Declaring quantifier claims\n\n" +
 	"  {\"claim\": \"margin improved each year\", \"kind\": \"monotonic\",\n" +
 	"   \"step\": 7, \"column\": \"margin\", \"trend\": \"increasing\"},\n" +
 	"  {\"claim\": \"3 of 17 sub-categories run a loss\", \"kind\": \"cardinality\",\n" +
-	"   \"step\": 4, \"filter\": \"profit < 0\", \"count\": 3}\n" +
+	"   \"step\": 4, \"filter\": \"profit < 0\", \"count\": 3},\n" +
+	"  {\"claim\": \"Tables ran a loss in every year\", \"kind\": \"all\",\n" +
+	"   \"step\": 19, \"filter\": \"profit < 0\"}\n" +
 	"]\n" +
 	"```\n\n" +
-	"- `kind` is `only`, `rank`, `monotonic` or `cardinality`.\n" +
+	"- `kind` is `only` (exactly one row), `all` (every row), `rank`, `monotonic` (a trend) or " +
+	"`cardinality` (a count). *Every year X* is `all`, not `monotonic` — `monotonic` asserts a " +
+	"direction of change, which is a different claim and is usually false when `all` is true.\n" +
 	"- `filter` is a conjunction of `column <op> literal` terms joined by `AND`, with op one of " +
 	"`= != < <= > >=`. Nothing richer is evaluated.\n" +
 	"- `top_n` / `top_n_column` narrow the scope before the predicate applies. Use them whenever the " +
 	"claim ranks on one column and filters on another — that combination is where these claims go wrong.\n" +
 	"- `subject` names the single row a `rank` claim is about, as one `column = literal` term.\n" +
 	"- `order` is `desc` (default) or `asc`; rank 1 is the largest under `desc`, the smallest under `asc`.\n\n" +
-	"If a claim rests on a step whose `quality_caveats` say the result was capped, it cannot be " +
-	"settled at all — scope the sentence to the rows you have, or drop it.\n\n"
+	"If a claim rests on a step whose `quality_caveats` say the result was capped, scope it to the " +
+	"rows that step returned and say so with `top_n` — \"the only loss-making line among the 10 " +
+	"largest by sales\" is settleable against a step that returned exactly those 10. A claim over a " +
+	"capped step that reaches beyond the returned rows cannot be settled at all; drop it or rewrite " +
+	"it as one that can.\n\n"

@@ -50,6 +50,16 @@ const (
 	QuantifierMonotonic QuantifierKind = "monotonic"
 	// QuantifierCardinality — Count rows in scope satisfy Filter.
 	QuantifierCardinality QuantifierKind = "cardinality"
+	// QuantifierAll — every row in scope satisfies Filter.
+	//
+	// Added because its absence produced wrong answers rather than no answers.
+	// Without it the model reached for the nearest kind it had and declared
+	// "Tables ran a loss in every year" as monotonic, so the evaluator
+	// faithfully reported that profit was not monotonically decreasing -- true,
+	// irrelevant, and read as the claim being refuted. A missing kind is not a
+	// gap in coverage; it is a false positive waiting for the model to
+	// approximate it.
+	QuantifierAll QuantifierKind = "all"
 )
 
 // QuantifierStatus is the outcome of evaluating one claim.
@@ -105,12 +115,18 @@ func evaluateQuantifierClaim(c models.QuantifierClaim, steps map[int]StepRows) m
 		return undecidable("step %d returned no rows", c.Step)
 	}
 
-	// A capped step cannot settle a rank, a count or a uniqueness claim: the
-	// rows it withheld are exactly the ones that would refute one. Refusing
-	// here rather than evaluating is the difference between "we checked the
-	// top 15" and "we checked".
-	if isTruncated(ev.Quality) {
-		return undecidable("step %d is a capped top-N view, so no rank, count or uniqueness claim over it is decidable", c.Step)
+	// A capped step usually cannot settle a rank, a count or a uniqueness
+	// claim: the rows it withheld are exactly the ones that would refute one.
+	//
+	// Unless the claim is about the returned rows themselves. "the only
+	// loss-making line among the 10 largest by sales", declared with top_n 10
+	// against a step that returned exactly those 10, ranges over a set the
+	// step contains in full -- there the cap is the claim's scope, not a hole
+	// in its evidence. Refusing that one was measured: it is the shape of the
+	// claim this evaluator exists for, and a blanket refusal declined the only
+	// declaration in a five-sample replay that named the original defect.
+	if isTruncated(ev.Quality) && !scopedWithinResult(c, len(ev.Rows)) {
+		return undecidable("step %d is a capped top-N view and this claim ranges beyond the rows it returned, so it is not decidable", c.Step)
 	}
 
 	scope, err := scopeRows(ev.Rows, c)
@@ -123,6 +139,8 @@ func evaluateQuantifierClaim(c models.QuantifierClaim, steps map[int]StepRows) m
 		return evalOnly(v, scope, c)
 	case QuantifierCardinality:
 		return evalCardinality(v, scope, c)
+	case QuantifierAll:
+		return evalAll(v, scope, c)
 	case QuantifierRank:
 		return evalRank(v, scope, c)
 	case QuantifierMonotonic:
@@ -184,6 +202,42 @@ func evalCardinality(v models.QuantifierVerdict, scope []map[string]any, c model
 	}
 	v.Status = QuantifierFails
 	v.Reason = fmt.Sprintf("%d rows in scope satisfy the claim, not the %d asserted", len(matched), c.Count)
+	return v
+}
+
+// scopedWithinResult reports whether the claim ranges only over rows the step
+// actually returned.
+func scopedWithinResult(c models.QuantifierClaim, returned int) bool {
+	return c.TopN > 0 && c.TopN <= returned
+}
+
+func evalAll(v models.QuantifierVerdict, scope []map[string]any, c models.QuantifierClaim) models.QuantifierVerdict {
+	matched, err := filterRows(scope, c.Filter)
+	if err != nil {
+		v.Status, v.Reason = QuantifierUndecidable, err.Error()
+		return v
+	}
+	if len(matched) == len(scope) {
+		v.Status = QuantifierHolds
+		v.Reason = fmt.Sprintf("all %d rows in scope satisfy %s", len(scope), c.Filter)
+		return v
+	}
+	var counter []map[string]any
+	for _, r := range scope {
+		found := false
+		for _, m := range matched {
+			if sameRow(r, m) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			counter = append(counter, r)
+		}
+	}
+	v.Status = QuantifierFails
+	v.Reason = fmt.Sprintf("%d of %d rows in scope do not satisfy %s%s",
+		len(counter), len(scope), c.Filter, namesOf(scope, counter))
 	return v
 }
 

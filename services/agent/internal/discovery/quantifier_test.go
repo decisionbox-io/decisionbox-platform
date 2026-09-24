@@ -200,3 +200,86 @@ func TestEvaluate_LimitsAreUndecidable(t *testing.T) {
 		})
 	}
 }
+
+// The claim the evaluator exists for, declared exactly as a replay declared it:
+// scoped to the top 10 by sales, against the step that returned exactly those
+// 10 rows. The step is capped, but the cap is the claim's scope, so it is
+// decidable -- and false, because Bookcases is inside the top 10 and loses
+// money.
+func TestEvaluate_ClaimScopedToACappedResultIsStillDecidable(t *testing.T) {
+	top10 := StepRows{
+		Rows:    superstoreTop10BySales(),
+		Quality: []gowarehouse.QualityCaveat{gowarehouse.RowCapCaveat(10)},
+	}
+	v := EvaluateQuantifierClaims([]models.QuantifierClaim{{
+		Claim: "Tables is the only loss-making sub-category among the 10 largest by sales",
+		Kind:  QuantifierOnly, Step: 29, Filter: "profit < 0", TopN: 10, TopNColumn: "sales",
+	}}, map[int]StepRows{29: top10})[0]
+	if v.Status != QuantifierFails {
+		t.Fatalf("status = %q, want fails (reason: %s)", v.Status, v.Reason)
+	}
+	if !strings.Contains(v.Reason, "Bookcases") {
+		t.Errorf("reason %q does not name Bookcases", v.Reason)
+	}
+}
+
+// A claim over a capped step that ranges beyond the returned rows is still
+// refused: nothing here can speak for the rows the cap removed.
+func TestEvaluate_UnscopedClaimOverACappedStepIsRefused(t *testing.T) {
+	top10 := StepRows{
+		Rows:    superstoreTop10BySales(),
+		Quality: []gowarehouse.QualityCaveat{gowarehouse.RowCapCaveat(10)},
+	}
+	v := EvaluateQuantifierClaims([]models.QuantifierClaim{{
+		Claim: "the only loss-making sub-category", Kind: QuantifierOnly, Step: 29, Filter: "profit < 0",
+	}}, map[int]StepRows{29: top10})[0]
+	if v.Status != QuantifierUndecidable {
+		t.Errorf("status = %q, want undecidable", v.Status)
+	}
+}
+
+// "Tables ran a loss in every year" is a universal, not a trend. Declared as
+// monotonic it produced a confident wrong answer; declared as `all` it is
+// evaluated as written.
+func TestEvaluate_All(t *testing.T) {
+	years := StepRows{Rows: []map[string]any{
+		{"year": 2023, "profit": -2950.0}, {"year": 2024, "profit": -1204.0},
+		{"year": 2025, "profit": -5507.0}, {"year": 2026, "profit": -8092.0},
+	}}
+	v := EvaluateQuantifierClaims([]models.QuantifierClaim{{
+		Claim: "Tables ran a loss in every year", Kind: QuantifierAll, Step: 19, Filter: "profit < 0",
+	}}, map[int]StepRows{19: years})[0]
+	if v.Status != QuantifierHolds {
+		t.Errorf("status = %q, want holds (reason: %s)", v.Status, v.Reason)
+	}
+
+	mixed := StepRows{Rows: []map[string]any{
+		{"year": 2023, "sub": "Machines", "profit": 10648.0}, {"year": 2024, "sub": "Machines", "profit": 7940.0},
+		{"year": 2025, "sub": "Machines", "profit": 1230.0}, {"year": 2026, "sub": "Machines", "profit": -2831.0},
+	}}
+	v = EvaluateQuantifierClaims([]models.QuantifierClaim{{
+		Claim: "Machines was profitable every year", Kind: QuantifierAll, Step: 19, Filter: "profit > 0",
+	}}, map[int]StepRows{19: mixed})[0]
+	if v.Status != QuantifierFails {
+		t.Fatalf("status = %q, want fails (reason: %s)", v.Status, v.Reason)
+	}
+	if !strings.Contains(v.Reason, "1 of 4") {
+		t.Errorf("reason %q should say 1 of 4 rows fail", v.Reason)
+	}
+}
+
+// The real top 10 by sales, which is what step 29 returned.
+func superstoreTop10BySales() []map[string]any {
+	return []map[string]any{
+		{"sub_category": "Chairs", "sales": 335768.2490000009, "profit": 27223.532300000043},
+		{"sub_category": "Phones", "sales": 331842.6400000002, "profit": 45050.82649999996},
+		{"sub_category": "Storage", "sales": 224644.55400000035, "profit": 21285.111499999974},
+		{"sub_category": "Tables", "sales": 208020.182, "profit": -17753.2061},
+		{"sub_category": "Binders", "sales": 207354.8810000005, "profit": 31426.10030000002},
+		{"sub_category": "Machines", "sales": 189925.03100000008, "profit": 3461.9768999999915},
+		{"sub_category": "Accessories", "sales": 167380.31799999988, "profit": 41936.63569999998},
+		{"sub_category": "Copiers", "sales": 150745.28999999998, "profit": 56093.9365},
+		{"sub_category": "Bookcases", "sales": 115361.20429999995, "profit": -3632.073600000004},
+		{"sub_category": "Appliances", "sales": 108213.18499999995, "profit": 18329.484399999983},
+	}
+}
