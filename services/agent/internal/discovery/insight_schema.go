@@ -57,6 +57,28 @@ func insightResponseSchema() map[string]interface{} {
 			"description": "Signals/behaviours that characterize this pattern",
 			"items":       str("A single indicator"),
 		},
+		"quantifier_claims": map[string]interface{}{
+			"type": "array",
+			"description": "One entry per statement whose truth depends on rows besides those it names " +
+				"(only / every / largest / second largest / top N / improved each year / has N values)",
+			"items": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"claim":        str("The statement, verbatim as written in name, description or indicators"),
+					"kind":         str(`One of "only", "rank", "monotonic", "cardinality"`),
+					"step":         map[string]interface{}{"type": "integer", "description": "Exploration step whose rows settle the claim"},
+					"column":       str("Column the claim ranks by, or whose direction it asserts"),
+					"filter":       str("Conjunction of `column <op> literal` terms joined by AND"),
+					"top_n":        map[string]interface{}{"type": "integer", "description": "Narrow the scope to the top N rows before applying the predicate"},
+					"top_n_column": str("Column the top-N scope is ranked by"),
+					"subject":      str("One `column = literal` term naming the row a rank claim is about"),
+					"rank":         map[string]interface{}{"type": "integer", "description": "1-based rank from the order end"},
+					"count":        map[string]interface{}{"type": "integer", "description": "Asserted number of rows"},
+					"order":        str(`"desc" (default) or "asc"`),
+					"trend":        str(`"increasing" or "decreasing"`),
+				},
+			},
+		},
 		"source_steps": map[string]interface{}{
 			"type":        "array",
 			"description": "Exploration step numbers this insight is based on",

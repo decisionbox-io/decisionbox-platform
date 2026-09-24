@@ -133,6 +133,26 @@ type Insight struct {
 	// and is ignored.
 	Quality []gowarehouse.QualityCaveat `bson:"quality,omitempty" json:"evidence_quality,omitempty"`
 
+	// QuantifierClaims is the model's declaration of what each of this
+	// insight's quantifier statements rests on -- the step, column and
+	// predicate behind an "only", a rank, a monotonic trend or a count.
+	//
+	// Authored, unlike Quality, and deliberately so. The observed failure is
+	// not that the model cannot see the rows: it had all seventeen inline and
+	// still mis-ranked one on a column the table was not sorted by. What it
+	// cannot reliably do is check. Listing the claim it just wrote is
+	// mechanical; evaluating the predicate over every row is not, so only the
+	// evaluation is taken away from it.
+	QuantifierClaims []QuantifierClaim `bson:"quantifier_claims,omitempty" json:"quantifier_claims,omitempty"`
+
+	// QuantifierVerdicts is what Go concluded about each declared claim.
+	//
+	// Derived, and named so the model cannot author it: "quantifier_verdicts"
+	// appears nowhere in any prompt, so a key by that name in a response is an
+	// unknown field and is ignored -- the same reasoning that keeps
+	// evidence_quality out of the model's reach.
+	QuantifierVerdicts []QuantifierVerdict `bson:"quantifier_verdicts,omitempty" json:"quantifier_verdicts,omitempty"`
+
 	SQLMetadata  *SQLMetadata `bson:"sql_metadata,omitempty" json:"sql_metadata,omitempty"`
 	DiscoveredAt time.Time    `bson:"discovered_at" json:"discovered_at"`
 

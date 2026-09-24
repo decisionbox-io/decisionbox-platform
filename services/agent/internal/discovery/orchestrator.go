@@ -1227,6 +1227,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 		// Skip validation when the analysis step produced no insights.
 		// The verifier only runs for successfully parsed insights.
+		// Settle every quantifier claim the model declared against the rows of
+		// the step it cited, before anything downstream reads the insight. The
+		// rows are already here and already correct; what was missing was the
+		// check.
+		attachQuantifierVerdicts(insights, stepByID)
+
 		if len(insights) > 0 {
 			var areaResults []models.ValidationResult
 			areaResults, insightsValidatedThisRun = valPhase.validateInsights(ctx, insights, stepByID, area.ID, insightsValidatedThisRun)
@@ -2220,6 +2226,10 @@ func (o *Orchestrator) buildAnalysisAreaPrompt(baseContext, areaPrompt, datasets
 	// domain-pack templates, so one wording covers every pack and a pack
 	// author cannot ship an area prompt that renders the digest unexplained.
 	prompt = strings.ReplaceAll(prompt, "{{QUERY_RESULTS}}", digestLegend+queryResultsJSON)
+	// Appended after the area body for the same reason the discipline rules
+	// are: a contract that lives only in pack templates is one a custom area
+	// does not have.
+	prompt += "\n\n" + quantifierContract
 	prompt = substituteDialectTokens(prompt, o.warehouse, refDataset)
 	return discipline.AppendAnalysisRules(prompt)
 }
