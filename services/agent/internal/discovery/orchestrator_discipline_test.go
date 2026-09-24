@@ -97,12 +97,26 @@ func TestBuildAnalysisAreaPrompt_SubstitutesAndAppendsDiscipline(t *testing.T) {
 		"BASE_CONTEXT_BODY",
 		"dataset: events_prod",
 		"total: 7",
-		"rows: [{\"step\":1}]",
+		"[{\"step\":1}]",
 	}
 	for _, w := range wants {
 		if !strings.Contains(got, w) {
 			t.Errorf("buildAnalysisAreaPrompt missing substring %q", w)
 		}
+	}
+	// The digest legend is substituted in front of the rendered steps, so the
+	// placeholder no longer expands to the JSON alone. Pinning the order
+	// matters: a legend that landed after the digest would be read, if at all,
+	// only once every field it explains had already been interpreted.
+	legendAt := strings.Index(got, "## Reading `query_result`")
+	digestAt := strings.Index(got, "[{\"step\":1}]")
+	if legendAt < 0 {
+		t.Error("buildAnalysisAreaPrompt did not substitute the digest legend")
+	} else if legendAt > digestAt {
+		t.Errorf("digest legend at %d comes after the rendered steps at %d", legendAt, digestAt)
+	}
+	if !strings.Contains(got, "rows: ") {
+		t.Error("buildAnalysisAreaPrompt dropped the area template text around the placeholder")
 	}
 	if !strings.Contains(got, discipline.AnalysisRules()) {
 		t.Errorf("buildAnalysisAreaPrompt did not append AnalysisRules()")

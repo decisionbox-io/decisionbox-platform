@@ -2216,7 +2216,10 @@ func (o *Orchestrator) buildAnalysisAreaPrompt(baseContext, areaPrompt, datasets
 	prompt := baseContext + "\n\n" + areaPrompt
 	prompt = strings.ReplaceAll(prompt, "{{DATASET}}", datasetsStr)
 	prompt = strings.ReplaceAll(prompt, "{{TOTAL_QUERIES}}", fmt.Sprintf("%d", totalQueries))
-	prompt = strings.ReplaceAll(prompt, "{{QUERY_RESULTS}}", queryResultsJSON)
+	// The legend goes immediately in front of the digest rather than into the
+	// domain-pack templates, so one wording covers every pack and a pack
+	// author cannot ship an area prompt that renders the digest unexplained.
+	prompt = strings.ReplaceAll(prompt, "{{QUERY_RESULTS}}", digestLegend+queryResultsJSON)
 	prompt = substituteDialectTokens(prompt, o.warehouse, refDataset)
 	return discipline.AppendAnalysisRules(prompt)
 }
