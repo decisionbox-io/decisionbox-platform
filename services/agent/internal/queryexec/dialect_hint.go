@@ -1,6 +1,10 @@
 package queryexec
 
-import "strings"
+import (
+	"strings"
+
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
+)
 
 // A model writing SQL for one warehouse in another warehouse's dialect is the
 // single most common way a statement fails here: across two TPC-H runs every
@@ -39,12 +43,48 @@ import "strings"
 //
 // A false positive costs one extra paragraph in a prompt. A missed one costs
 // nothing -- the generic fixer path is unchanged.
-func dialectQuotingHint(err error) string {
-	if err == nil || !strings.Contains(err.Error(), "`") {
+func dialectQuotingHint(err error, sourceUsesBackticks bool) string {
+	if err == nil {
+		return ""
+	}
+	// BigQuery and Databricks quote identifiers with backticks. Their errors carry
+	// backticks constantly -- "Unrecognized name: foo; Did you mean `bar`?" -- and
+	// telling that model its backticks are invalid would send the fixer to change
+	// quoting that is already right instead of the error that actually occurred.
+	if sourceUsesBackticks {
+		return ""
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "`") {
+		return ""
+	}
+	// And the backtick has to be what the engine choked on, not merely something
+	// it mentioned. Every dialect that rejects a backtick says so as a syntax or
+	// compilation error and quotes the token: Postgres and Redshift "syntax error
+	// at or near", MSSQL "incorrect syntax near", Snowflake "SQL compilation
+	// error: syntax error". A message that carries a backtick for any other reason
+	// is left to the generic path.
+	low := strings.ToLower(msg)
+	if !strings.Contains(low, "syntax error") && !strings.Contains(low, "syntax near") {
 		return ""
 	}
 	return "The statement quotes identifiers with backticks (`like_this`), which is BigQuery's " +
 		"syntax and not this warehouse's. Re-emit the same statement using the identifier quoting " +
 		"shown for every table in the schema block above, and change NOTHING else: keep the same " +
 		"columns, the same filters, the same date bounds and the same functions. Only the quoting is wrong."
+}
+
+// sqlSource reports whether this executor's source is a SQL warehouse, on the
+// precedence the non-SQL guard uses: the registry is the answer a middleware
+// wrapper cannot erase, the live provider is next, and a caller that supplied only
+// a Runner has reached for the seam that exists for sources which are NOT SQL, so
+// that case declines rather than guesses.
+func sqlSource(opts QueryExecutorOptions) bool {
+	switch {
+	case opts.ProviderSlug != "":
+		return gowarehouse.NonSQLLanguageOf(opts.ProviderSlug) == ""
+	case opts.Warehouse != nil:
+		return gowarehouse.NonSQLLanguage(opts.Warehouse) == ""
+	}
+	return false
 }

@@ -30,8 +30,12 @@ type QueryExecutor struct {
 	// when that is not SQL, and is "" for every SQL warehouse. It decides
 	// whether the tenant filter can be verified at all — see verifyFilter.
 	nonSQLLanguage string
-	currentStep    int
-	currentPhase   string
+	// sourceUsesBackticks is whether this source quotes identifiers the way
+	// BigQuery does, resolved once at construction. It decides only whether the
+	// dialect-quoting hint is offered to the SQL fixer -- see dialect_hint.go.
+	sourceUsesBackticks bool
+	currentStep         int
+	currentPhase        string
 }
 
 // FixOpts carries per-call context for the SQL fixer that does not belong on
@@ -132,15 +136,30 @@ func NewQueryExecutor(opts QueryExecutorOptions) *QueryExecutor {
 	case opts.Warehouse != nil:
 		nonSQL = gowarehouse.NonSQLLanguage(opts.Warehouse)
 	}
+	// Whether this source's own identifier quoting is the backtick. Asked of the
+	// provider rather than tabulated, and only for a source the registry-first
+	// precedence above calls SQL -- a source whose queries are its own request
+	// format may satisfy QuoteRef solely by embedding Provider without
+	// implementing it, and probing that panics.
+	sourceUsesBackticks := false
+	if sqlSource(opts) {
+		if q, ok := any(opts.Warehouse).(interface{ QuoteRef(...string) string }); ok && opts.Warehouse != nil {
+			sourceUsesBackticks = strings.Contains(q.QuoteRef("x"), "`")
+		} else if q, ok := runner.(interface{ QuoteRef(...string) string }); ok {
+			sourceUsesBackticks = strings.Contains(q.QuoteRef("x"), "`")
+		}
+	}
+
 	return &QueryExecutor{
-		runner:         runner,
-		nonSQLLanguage: nonSQL,
-		sqlFixer:       opts.SQLFixer,
-		debugLogger:    opts.DebugLogger,
-		maxRetries:     opts.MaxRetries,
-		filterField:    opts.FilterField,
-		filterValue:    opts.FilterValue,
-		currentPhase:   "exploration",
+		runner:              runner,
+		sourceUsesBackticks: sourceUsesBackticks,
+		nonSQLLanguage:      nonSQL,
+		sqlFixer:            opts.SQLFixer,
+		debugLogger:         opts.DebugLogger,
+		maxRetries:          opts.MaxRetries,
+		filterField:         opts.FilterField,
+		filterValue:         opts.FilterValue,
+		currentPhase:        "exploration",
 	}
 }
 
@@ -377,7 +396,7 @@ func (e *QueryExecutor) ExecuteNative(ctx context.Context, query gowarehouse.Nat
 		// so. Read from the warehouse's error, never from our statement -- see
 		// dialect_hint.go for why this is a hint rather than a rewrite.
 		fixErrMsg := err.Error()
-		if hint := dialectQuotingHint(err); hint != "" {
+		if hint := dialectQuotingHint(err, e.sourceUsesBackticks); hint != "" {
 			fixErrMsg += "\n\n" + hint
 			applog.WithFields(applog.Fields{
 				"step":    e.currentStep,

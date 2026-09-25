@@ -16,7 +16,7 @@ func TestDialectQuotingHint(t *testing.T) {
 		"mssql: incorrect syntax near '`'",
 	}
 	for _, msg := range fires {
-		if dialectQuotingHint(errors.New(msg)) == "" {
+		if dialectQuotingHint(errors.New(msg), false) == "" {
 			t.Errorf("no hint for %q, want one", msg)
 		}
 	}
@@ -27,11 +27,11 @@ func TestDialectQuotingHint(t *testing.T) {
 		"",
 	}
 	for _, msg := range quiet {
-		if got := dialectQuotingHint(errors.New(msg)); got != "" {
+		if got := dialectQuotingHint(errors.New(msg), false); got != "" {
 			t.Errorf("hint for %q, want none: %q", msg, got)
 		}
 	}
-	if dialectQuotingHint(nil) != "" {
+	if dialectQuotingHint(nil, false) != "" {
 		t.Error("a nil error must not produce a hint")
 	}
 }
@@ -40,7 +40,7 @@ func TestDialectQuotingHint(t *testing.T) {
 // generic fixer rewriting more than the quoting — an approximate median became an
 // exact one in an observed run.
 func TestDialectQuotingHint_ForbidsCollateralEdits(t *testing.T) {
-	h := dialectQuotingHint(errors.New("syntax error at or near \"`\""))
+	h := dialectQuotingHint(errors.New("syntax error at or near \"`\""), false)
 	for _, want := range []string{"NOTHING else", "same filters", "same date bounds", "same functions"} {
 		if !strings.Contains(h, want) {
 			t.Errorf("hint does not say %q:\n%s", want, h)
@@ -70,7 +70,7 @@ func TestExecute_HandsTheFixerTheHintAndTheUnalteredStatement(t *testing.T) {
 	fixer := &errMsgFixer{}
 	e := NewQueryExecutor(QueryExecutorOptions{
 		Runner:   failingRunner{msg: "pq: syntax error at or near \"`\""},
-		SQLFixer: fixer, MaxRetries: 1,
+		SQLFixer: fixer, MaxRetries: 1, ProviderSlug: "queryexec-sql-probe",
 	})
 	_, err := e.Execute(context.Background(), stmt, "counts")
 	if err == nil {
@@ -94,7 +94,7 @@ func TestExecute_LeavesAnUnrelatedErrorAlone(t *testing.T) {
 	fixer := &errMsgFixer{}
 	e := NewQueryExecutor(QueryExecutorOptions{
 		Runner:   failingRunner{msg: `pq: column "revenue" does not exist`},
-		SQLFixer: fixer, MaxRetries: 1,
+		SQLFixer: fixer, MaxRetries: 1, ProviderSlug: "queryexec-sql-probe",
 	})
 	_, _ = e.Execute(context.Background(), "SELECT revenue FROM t", "counts")
 	if len(fixer.errsSeen) == 0 {
@@ -129,3 +129,41 @@ func (r capturingRunner) RunQuery(_ context.Context, q gowarehouse.NativeQuery) 
 }
 func (capturingRunner) QueryLanguage() string  { return "" }
 func (capturingRunner) QueryFixPrompt() string { return "" }
+
+// On a warehouse that quotes with backticks, a backtick in an error is ordinary --
+// "Unrecognized name: foo; Did you mean `bar`?" -- and telling that model its
+// quoting is invalid would send the fixer at quoting that is already right.
+func TestDialectQuotingHint_SilentOnABacktickQuotingSource(t *testing.T) {
+	err := errors.New("Syntax error: Unexpected identifier `orders` at [1:15]")
+	if got := dialectQuotingHint(err, true); got != "" {
+		t.Errorf("hint offered to a backtick-quoting source: %q", got)
+	}
+	if dialectQuotingHint(err, false) == "" {
+		t.Error("the same error on a non-backtick source must still get the hint")
+	}
+}
+
+// The backtick has to be what the engine choked on, not merely something it
+// mentioned.
+func TestDialectQuotingHint_RequiresASyntaxError(t *testing.T) {
+	quiet := []string{
+		"pq: column `revenue` does not exist",
+		"Unrecognized name: foo; Did you mean `bar`?",
+		"permission denied for table `orders`",
+	}
+	for _, msg := range quiet {
+		if got := dialectQuotingHint(errors.New(msg), false); got != "" {
+			t.Errorf("hint for a non-syntax error %q: %q", msg, got)
+		}
+	}
+	fires := []string{
+		"pq: syntax error at or near \"`\"",
+		"Incorrect syntax near '`'",
+		"SQL compilation error: syntax error line 1 at position 14 unexpected '`'",
+	}
+	for _, msg := range fires {
+		if dialectQuotingHint(errors.New(msg), false) == "" {
+			t.Errorf("no hint for %q, want one", msg)
+		}
+	}
+}

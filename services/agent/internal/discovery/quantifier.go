@@ -341,9 +341,19 @@ func evalRank(v models.QuantifierVerdict, scope []map[string]any, c models.Quant
 		v.Status, v.Reason = QuantifierUndecidable, "rank claim names no column to rank by"
 		return v
 	}
-	order := c.Order
-	if order == "" {
-		order = "desc"
+	// Same rule as the trend: a direction the evaluator cannot read is not
+	// guessed at. sortByColumn recognises only "asc" and sorts descending for
+	// everything else, so "ASC" or "ascending" used to invert the claim silently
+	// and refute a true lowest-rank statement.
+	asc, ok := rankOrder(c.Order)
+	if !ok {
+		v.Status, v.Reason = QuantifierUndecidable,
+			fmt.Sprintf("order %q is not one this evaluator reads; declare `asc` or `desc`", c.Order)
+		return v
+	}
+	order := "desc"
+	if asc {
+		order = "asc"
 	}
 	sorted, err := sortByColumn(scope, c.Column, order)
 	if err != nil {
@@ -421,6 +431,21 @@ func evalMonotonic(v models.QuantifierVerdict, scope []map[string]any, c models.
 	v.Status = QuantifierHolds
 	v.Reason = fmt.Sprintf("%s is %s across all %d rows", c.Column, trendWord(up), len(vals))
 	return v
+}
+
+// rankOrder reads a declared rank order, reporting true for ascending. An empty
+// order is the documented default, descending. Reports ok=false for any other
+// word, for the reason trendDirection does: a direction nobody stated is better
+// left unchecked than inferred, since inferring it backwards refutes a claim the
+// rows support.
+func rankOrder(order string) (asc bool, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(order)) {
+	case "", "desc":
+		return false, true
+	case "asc":
+		return true, true
+	}
+	return false, false
 }
 
 // trendDirection reads a declared trend, reporting true for increasing and false

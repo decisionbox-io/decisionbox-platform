@@ -97,6 +97,17 @@ func actualCardinality(c models.QuantifierClaim, evidence map[int]StepRows) (int
 func substituteCount(ins *models.Insight, c *models.QuantifierClaim, from, to int) bool {
 	fromTok, toTok := strconv.Itoa(from), strconv.Itoa(to)
 
+	// AffectedCount is an int, not text, so this pass cannot correct it -- and
+	// correcting the prose while it keeps the old number leaves the document
+	// disagreeing with its own structured field, which the API, the validation
+	// ordering and the recommendation inputs all read. Blindly overwriting it is
+	// the other error: affected_count is "entities affected" and need not be the
+	// same quantity as a row count that happens to match. So decline, and let the
+	// model rewrite with the whole insight in view.
+	if ins.AffectedCount == from {
+		return false
+	}
+
 	fields := []*string{&ins.Name, &ins.Description, &ins.DescriptionMd, &c.Claim}
 	for i := range ins.Indicators {
 		fields = append(fields, &ins.Indicators[i])

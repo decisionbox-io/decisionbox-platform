@@ -402,3 +402,96 @@ func TestTrendDirection(t *testing.T) {
 		}
 	}
 }
+
+// sortByColumn recognises only "asc" and sorts descending for everything else, so
+// an unreadable order used to invert a rank claim silently and refute a true
+// lowest-rank statement.
+func TestEvaluate_RankWithAnUnreadableOrderIsUndecidable(t *testing.T) {
+	// Tables is the LOWEST by profit, i.e. rank 1 ascending.
+	rows := []map[string]any{
+		{"p": "Copiers", "profit": 56094.0},
+		{"p": "Chairs", "profit": 26590.0},
+		{"p": "Tables", "profit": -17753.0},
+	}
+	ev := map[int]StepRows{4: {Rows: rows}}
+	base := models.QuantifierClaim{
+		Claim: "Tables has the lowest profit", Kind: QuantifierRank,
+		Step: 4, Column: "profit", Subject: "p = 'Tables'", Rank: 1,
+	}
+	for _, order := range []string{"ascending", "Ascending", "up", "lowest", "asc desc"} {
+		c := base
+		c.Order = order
+		v := EvaluateQuantifierClaims([]models.QuantifierClaim{c}, ev)
+		if v[0].Status != QuantifierUndecidable {
+			t.Errorf("order %q: status = %q (%s), want undecidable", order, v[0].Status, v[0].Reason)
+		}
+	}
+	// The spellings it does read, case and space forgiven.
+	for _, order := range []string{"asc", "ASC ", " Asc"} {
+		c := base
+		c.Order = strings.TrimSpace(strings.ToLower(order))
+		v := EvaluateQuantifierClaims([]models.QuantifierClaim{c}, ev)
+		if v[0].Status != QuantifierHolds {
+			t.Errorf("order %q: status = %q (%s), want holds", order, v[0].Status, v[0].Reason)
+		}
+	}
+	// And an omitted order is still the documented default, descending.
+	desc := base
+	desc.Claim, desc.Subject, desc.Rank = "Copiers has the highest profit", "p = 'Copiers'", 1
+	if v := EvaluateQuantifierClaims([]models.QuantifierClaim{desc}, ev); v[0].Status != QuantifierHolds {
+		t.Errorf("an omitted order must default to descending: %q (%s)", v[0].Status, v[0].Reason)
+	}
+}
+
+func TestRankOrder(t *testing.T) {
+	for _, in := range []string{"", "desc", "DESC", " Desc "} {
+		if asc, ok := rankOrder(in); !ok || asc {
+			t.Errorf("rankOrder(%q) = (%v,%v), want (false,true)", in, asc, ok)
+		}
+	}
+	for _, in := range []string{"asc", "ASC", " Asc "} {
+		if asc, ok := rankOrder(in); !ok || !asc {
+			t.Errorf("rankOrder(%q) = (%v,%v), want (true,true)", in, asc, ok)
+		}
+	}
+	for _, in := range []string{"ascending", "descending", "up", "down", "lowest", "1"} {
+		if _, ok := rankOrder(in); ok {
+			t.Errorf("rankOrder(%q) reported a direction it should not read", in)
+		}
+	}
+}
+
+// The mechanical substitution corrects text only. Leaving affected_count stale
+// would have the document disagree with its own structured field, which the API,
+// the validation ordering and the recommendation inputs all read.
+func TestSubstituteCount_DeclinesWhenAStructuredCountWouldGoStale(t *testing.T) {
+	mk := func(affected int) models.Insight {
+		return models.Insight{
+			Name:          "12 sub-categories run a loss",
+			Description:   "12 sub-categories run a loss across the window.",
+			AffectedCount: affected,
+		}
+	}
+	c := models.QuantifierClaim{
+		Claim: "12 sub-categories run a loss", Kind: QuantifierCardinality, Step: 4, Count: 12,
+	}
+
+	stale := mk(12)
+	cc := c
+	if substituteCount(&stale, &cc, 12, 3) {
+		t.Error("substitution accepted while affected_count would keep the old number")
+	}
+	if stale.Description != "12 sub-categories run a loss across the window." {
+		t.Errorf("text was altered despite the refusal: %q", stale.Description)
+	}
+
+	// An affected_count that is a different quantity does not block it.
+	fine := mk(4500)
+	cc2 := c
+	if !substituteCount(&fine, &cc2, 12, 3) {
+		t.Error("substitution refused although affected_count is a different quantity")
+	}
+	if fine.Description != "3 sub-categories run a loss across the window." {
+		t.Errorf("description = %q", fine.Description)
+	}
+}
