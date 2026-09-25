@@ -275,3 +275,48 @@ func TestScopedWithinResult_RefusesAScopeOverACappedResult(t *testing.T) {
 		t.Error("a scoped top-N over a capped result must stay undecidable")
 	}
 }
+
+// unitAfter is the discriminator that keeps the mechanical substitution off
+// numerals counting something else, so its answers are worth pinning.
+func TestUnitAfter(t *testing.T) {
+	cases := map[string]string{
+		"12 sub-categories run a loss": "sub-categories",
+		"12 products":                  "products",
+		"12-month decline":             "-month",
+		"12% average margin":           "",
+		"top 12":                       "",
+		"12  spaced  out":              "spaced",
+		"no numeral here":              "",
+		"112 products":                 "", // not a standalone 12
+		"12 and 12 again":              "", // ambiguous, so no answer
+	}
+	for text, want := range cases {
+		if got := unitAfter(text, "12"); got != want {
+			t.Errorf("unitAfter(%q) = %q, want %q", text, got, want)
+		}
+	}
+}
+
+// sortedDescBy is what turns "enough rows came back" into "these are the right
+// rows", so its refusals are the safety property.
+func TestSortedDescBy(t *testing.T) {
+	desc := []map[string]any{{"v": 3.0}, {"v": 2.0}, {"v": 2.0}, {"v": 1.0}}
+	if !sortedDescBy(desc, "v") {
+		t.Error("a non-increasing run, ties included, is sorted")
+	}
+	if sortedDescBy([]map[string]any{{"v": 1.0}, {"v": 2.0}}, "v") {
+		t.Error("an ascending run is not sorted descending")
+	}
+	if sortedDescBy(desc, "missing") {
+		t.Error("a column the rows do not carry cannot confirm an order")
+	}
+	if sortedDescBy([]map[string]any{{"v": "a"}, {"v": "b"}}, "v") {
+		t.Error("a non-numeric column cannot confirm an order")
+	}
+	if sortedDescBy(nil, "v") {
+		t.Error("no rows confirm nothing")
+	}
+	if sortedDescBy([]map[string]any{{"v": nil}}, "v") {
+		t.Error("a null value cannot confirm an order")
+	}
+}

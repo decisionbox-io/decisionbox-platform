@@ -68,6 +68,14 @@ func traceExplorationStep(s models.ExplorationStep) {
 	if !traceOn {
 		return
 	}
+	applog.WithFields(queryTraceFields(s)).Info("trace: exploration query")
+}
+
+// queryTraceFields is what the `query` event carries. Split from the emitter so a
+// test can assert the content rather than only that nothing panicked -- the
+// digest_shows value is the one a reader uses to decide whether a population
+// claim could have been grounded at all.
+func queryTraceFields(s models.ExplorationStep) applog.Fields {
 	f := applog.Fields{
 		"trace":     "query",
 		"step":      s.Step,
@@ -99,7 +107,7 @@ func traceExplorationStep(s models.ExplorationStep) {
 		f["digest_shows"] = digestRowsShown(s.CompactResult)
 		f["digest_inline"] = len(s.CompactResult.AllRows) > 0
 	}
-	applog.WithFields(f).Info("trace: exploration query")
+	return f
 }
 
 // digestRowsShown is how many of a step's rows the digest reproduces verbatim:
@@ -129,9 +137,22 @@ func traceExposure(areaID string, steps []models.ExplorationStep) {
 		return
 	}
 	for _, s := range steps {
-		if s.Action != "query_data" || s.CompactResult == nil {
+		f, ok := exposureTraceFields(areaID, s)
+		if !ok {
 			continue
 		}
+		applog.WithFields(f).Info("trace: analysis evidence exposure")
+	}
+}
+
+// exposureTraceFields is what one `exposure` event carries, and reports false for
+// a step the event does not apply to. Split from the emitter because `shown` and
+// `full` are the measurement this event exists for.
+func exposureTraceFields(areaID string, s models.ExplorationStep) (applog.Fields, bool) {
+	if s.Action != "query_data" || s.CompactResult == nil {
+		return nil, false
+	}
+	{
 		shown := digestRowsShown(s.CompactResult)
 		f := applog.Fields{
 			"trace":   "exposure",
@@ -149,7 +170,7 @@ func traceExposure(areaID string, steps []models.ExplorationStep) {
 			}
 			f["quality_caveats"] = cav
 		}
-		applog.WithFields(f).Info("trace: analysis evidence exposure")
+		return f, true
 	}
 }
 
@@ -161,7 +182,17 @@ func traceClaims(areaID string, ins models.Insight) {
 	if !traceOn {
 		return
 	}
-	for i, c := range ins.QuantifierClaims {
+	for i := range ins.QuantifierClaims {
+		applog.WithFields(claimTraceFields(areaID, ins, i)).Info("trace: declared quantifier claim")
+	}
+}
+
+// claimTraceFields is what one `claim` event carries. A claim with no verdict beside
+// it reads "not-evaluated" rather than being dropped: an insight whose declarations
+// and verdicts have drifted out of step is exactly what a reader needs told.
+func claimTraceFields(areaID string, ins models.Insight, i int) applog.Fields {
+	c := ins.QuantifierClaims[i]
+	{
 		f := applog.Fields{
 			"trace":   "claim",
 			"area":    areaID,
@@ -179,7 +210,7 @@ func traceClaims(areaID string, ins models.Insight) {
 			f["verdict"] = v.Status
 			f["reason"] = clip(v.Reason, 300)
 		}
-		applog.WithFields(f).Info("trace: declared quantifier claim")
+		return f
 	}
 }
 
@@ -191,6 +222,13 @@ func traceInsight(areaID string, ins models.Insight) {
 	if !traceOn {
 		return
 	}
+	applog.WithFields(insightTraceFields(areaID, ins)).Info("trace: shipped insight")
+}
+
+// insightTraceFields is what the `insight` event carries: the row a reader starts
+// from when a sentence turns out to be false, since it names the steps whose SQL to
+// re-run and what repair did.
+func insightTraceFields(areaID string, ins models.Insight) applog.Fields {
 	var holds, fails, undecidable int
 	for _, v := range ins.QuantifierVerdicts {
 		switch v.Status {
@@ -229,6 +267,7 @@ func traceInsight(areaID string, ins models.Insight) {
 		f["repair_fixed"] = ins.Repair.Fixed
 		f["repair_dropped"] = ins.Repair.Dropped
 		f["repair_unrepaired"] = ins.Repair.Unrepaired
+		f["repair_withdrawn"] = ins.Repair.Withdrawn
 	}
-	applog.WithFields(f).Info("trace: shipped insight")
+	return f
 }

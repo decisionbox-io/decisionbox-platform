@@ -78,3 +78,34 @@ func TestParseInsights_KeepsAWellFormedDeclaration(t *testing.T) {
 		t.Errorf("claims = %+v, want the declaration kept", insights[0].QuantifierClaims)
 	}
 }
+
+// decodeWithoutClaims is the salvage's whole mechanism, and its refusals matter as
+// much as its successes: it must not turn arbitrary broken JSON into an insight.
+func TestDecodeWithoutClaims(t *testing.T) {
+	// A declaration is present and the rest decodes: salvage.
+	got, ok := decodeWithoutClaims([]byte(`{"name":"n","severity":"high","quantifier_claims":{"bad":true}}`))
+	if !ok {
+		t.Fatal("want a salvage when only the declaration is malformed")
+	}
+	if got.Name != "n" || got.Severity != "high" {
+		t.Errorf("salvaged insight lost fields: %+v", got)
+	}
+	if len(got.QuantifierClaims) != 0 {
+		t.Errorf("claims = %+v, want them dropped", got.QuantifierClaims)
+	}
+
+	// The key is matched case-insensitively, as the decoder would.
+	if _, ok := decodeWithoutClaims([]byte(`{"name":"n","Quantifier_Claims":"bad"}`)); !ok {
+		t.Error("want the key matched case-insensitively")
+	}
+
+	for name, raw := range map[string]string{
+		"no declaration to strip":       `{"name":"n","severity":{"x":1}}`,
+		"not an object":                 `["a"]`,
+		"broken beyond the declaration": `{"severity":{"x":1},"quantifier_claims":"bad"}`,
+	} {
+		if _, ok := decodeWithoutClaims([]byte(raw)); ok {
+			t.Errorf("%s: want refusal", name)
+		}
+	}
+}
