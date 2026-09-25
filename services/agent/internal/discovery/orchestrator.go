@@ -1272,15 +1272,6 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			}).Info("Repaired insights whose declared claims their own evidence contradicted")
 		}
 
-		// Provenance of what is about to ship: declared claims with their
-		// verdicts, then one line per insight naming the steps it cited.
-		// Logged after repair so it reflects the text that ships, not the
-		// draft. A no-op unless DISCOVERY_TRACE is set.
-		for i := range insights {
-			traceClaims(area.ID, insights[i])
-			traceInsight(area.ID, insights[i])
-		}
-
 		if len(insights) > 0 {
 			var areaResults []models.ValidationResult
 			areaResults, insightsValidatedThisRun = valPhase.validateInsights(ctx, insights, stepByID, area.ID, insightsValidatedThisRun)
@@ -1294,6 +1285,19 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// would produce a finding indistinguishable from a sound one. Deriving
 		// it means the label survives whatever the model wrote.
 		attachSourceQuality(insights, stepByID)
+
+		// Provenance of what ships: declared claims with their verdicts, then one
+		// line per insight naming the steps it cited.
+		//
+		// After repair so it reflects the text that ships rather than the draft,
+		// and after attachSourceQuality because the caveat is the single field
+		// most likely to explain a later false claim -- tracing before it was
+		// attached omitted `quality_caveats` from precisely the insights that
+		// cited a capped or withheld step. A no-op unless DISCOVERY_TRACE is set.
+		for i := range insights {
+			traceClaims(area.ID, insights[i])
+			traceInsight(area.ID, insights[i])
+		}
 
 		analysisLog = append(analysisLog, step)
 		allInsights = append(allInsights, insights...)

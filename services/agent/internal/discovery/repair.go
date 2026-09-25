@@ -121,7 +121,17 @@ func (o *Orchestrator) repairInsight(
 	// The insight as it arrived. Kept only to ask later whether a claim was ever a
 	// sentence in it: repair edits *ins in place, so that cannot be read off it
 	// afterwards.
+	//
+	// The slices are copied, not shared. `*ins` copies a slice HEADER, so the
+	// mechanical count substitution -- which writes through &ins.Indicators[i] --
+	// would edit this snapshot too. An indicator-only claim corrected in place
+	// would then be absent from the snapshot, insightMentions would say the prose
+	// never carried it, and a genuine fix would be recorded as a withdrawal: the
+	// exact corruption of the fixed/withdrawn distinction that distinction was
+	// added to prevent.
 	entryText := *ins
+	entryText.Indicators = append([]string(nil), ins.Indicators...)
+	entryText.QuantifierClaims = append([]models.QuantifierClaim(nil), ins.QuantifierClaims...)
 
 	// Round zero: whatever Go can settle without asking. A count the evaluator
 	// has already computed is not something a model needs to be asked for, and a

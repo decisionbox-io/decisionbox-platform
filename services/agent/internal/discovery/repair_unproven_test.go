@@ -495,3 +495,49 @@ func TestSubstituteCount_DeclinesWhenAStructuredCountWouldGoStale(t *testing.T) 
 		t.Errorf("description = %q", fine.Description)
 	}
 }
+
+// The entry snapshot exists to answer "was this claim ever a sentence here". A
+// shallow copy shares the Indicators backing array, and the mechanical count
+// substitution writes through it — so an indicator-only claim corrected in place
+// would vanish from the snapshot and a genuine fix would be filed as a withdrawal.
+func TestRepair_AnIndicatorOnlyCountFixIsRecordedAsFixedNotWithdrawn(t *testing.T) {
+	const claim = "12 sub-categories run a loss"
+	ins := models.Insight{
+		ID: "insight-4", Name: "Loss-making lines",
+		Description: "Furniture drags the range.",
+		// The claim lives ONLY in an indicator, which is the shared-storage case.
+		Indicators:  []string{claim + " in the window"},
+		SourceSteps: []int{4}, Severity: "high",
+		QuantifierClaims: []models.QuantifierClaim{{
+			Claim: claim, Kind: QuantifierCardinality, Step: 4, Filter: "profit < 0", Count: 12,
+		}},
+	}
+	// No LLM: the mechanical substitution is the path under test.
+	t.Setenv(analysisRepairMaxRoundsEnv, "0")
+	o, _ := newRepairOrchestrator()
+
+	insights := []models.Insight{ins}
+	attachQuantifierVerdicts(insights, step4ByID())
+	if countRefuted(insights[0].QuantifierVerdicts) != 1 {
+		t.Fatalf("precondition: want the count refuted, got %+v", insights[0].QuantifierVerdicts)
+	}
+	tally := o.repairRefutedInsights(context.Background(), "profitability", insights, step4ByID(), 8000)
+	got := insights[0]
+
+	if len(got.Repair.Withdrawn) != 0 {
+		t.Errorf("withdrawn = %v; the indicator carried the claim and was corrected", got.Repair.Withdrawn)
+	}
+	if len(got.Repair.Fixed) != 1 {
+		t.Errorf("fixed = %v, want the corrected claim", got.Repair.Fixed)
+	}
+	if got.Repair.Outcome != models.RepairRepaired {
+		t.Errorf("outcome = %q, want %q", got.Repair.Outcome, models.RepairRepaired)
+	}
+	if tally.substituted != 1 {
+		t.Errorf("tally.substituted = %d, want 1", tally.substituted)
+	}
+	// And the indicator really was corrected: step 4 has 2 loss-making rows.
+	if strings.Contains(got.Indicators[0], "12") {
+		t.Errorf("indicator left stale: %q", got.Indicators[0])
+	}
+}
