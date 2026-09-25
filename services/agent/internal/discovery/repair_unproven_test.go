@@ -320,3 +320,85 @@ func TestSortedDescBy(t *testing.T) {
 		t.Error("a null value cannot confirm an order")
 	}
 }
+
+// Missing advisory metadata must never produce a refutation. An omitted `count`
+// decodes as zero, and zero read as an assertion means any matching row
+// contradicts a number the model never stated — sending a sound insight through
+// repair or deletion over metadata rather than rows.
+func TestEvaluate_CardinalityWithoutACountIsUndecidable(t *testing.T) {
+	rows := []map[string]any{{"p": "a", "profit": -1.0}, {"p": "b", "profit": -2.0}}
+	ev := map[int]StepRows{4: {Rows: rows}}
+	for name, c := range map[string]models.QuantifierClaim{
+		"count omitted":  {Claim: "some lines run a loss", Kind: QuantifierCardinality, Step: 4, Filter: "profit < 0"},
+		"count negative": {Claim: "some lines run a loss", Kind: QuantifierCardinality, Step: 4, Filter: "profit < 0", Count: -1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			v := EvaluateQuantifierClaims([]models.QuantifierClaim{c}, ev)
+			if v[0].Status != QuantifierUndecidable {
+				t.Errorf("status = %q (%s), want undecidable", v[0].Status, v[0].Reason)
+			}
+		})
+	}
+	// A declared count is still checked, both ways.
+	good := models.QuantifierClaim{Claim: "2 lines run a loss", Kind: QuantifierCardinality,
+		Step: 4, Filter: "profit < 0", Count: 2}
+	if v := EvaluateQuantifierClaims([]models.QuantifierClaim{good}, ev); v[0].Status != QuantifierHolds {
+		t.Errorf("a declared, correct count must hold: %q (%s)", v[0].Status, v[0].Reason)
+	}
+	bad := good
+	bad.Count = 5
+	if v := EvaluateQuantifierClaims([]models.QuantifierClaim{bad}, ev); v[0].Status != QuantifierFails {
+		t.Errorf("a declared, wrong count must fail: %q (%s)", v[0].Status, v[0].Reason)
+	}
+}
+
+// A direction nobody stated must not be inferred. Defaulting to increasing
+// refuted correctly decreasing series over a spelling.
+func TestEvaluate_MonotonicWithoutAReadableTrendIsUndecidable(t *testing.T) {
+	// Strictly decreasing.
+	rows := []map[string]any{{"yr": 2023.0, "v": 30.0}, {"yr": 2024.0, "v": 20.0}, {"yr": 2025.0, "v": 10.0}}
+	ev := map[int]StepRows{4: {Rows: rows}}
+	base := models.QuantifierClaim{Claim: "v falls every year", Kind: QuantifierMonotonic, Step: 4, Column: "v"}
+
+	for _, trend := range []string{"", "decrease", "down", "descending", "falling"} {
+		c := base
+		c.Trend = trend
+		v := EvaluateQuantifierClaims([]models.QuantifierClaim{c}, ev)
+		if v[0].Status != QuantifierUndecidable {
+			t.Errorf("trend %q: status = %q (%s), want undecidable", trend, v[0].Status, v[0].Reason)
+		}
+	}
+	// The two words it does read, case and space forgiven.
+	for _, trend := range []string{"decreasing", "DECREASING", "  Decreasing  "} {
+		c := base
+		c.Trend = trend
+		v := EvaluateQuantifierClaims([]models.QuantifierClaim{c}, ev)
+		if v[0].Status != QuantifierHolds {
+			t.Errorf("trend %q: status = %q (%s), want holds", trend, v[0].Status, v[0].Reason)
+		}
+	}
+	// And it still refutes a series that contradicts a readable trend.
+	c := base
+	c.Trend = "increasing"
+	if v := EvaluateQuantifierClaims([]models.QuantifierClaim{c}, ev); v[0].Status != QuantifierFails {
+		t.Errorf("a decreasing series declared increasing must fail: %q", v[0].Status)
+	}
+}
+
+func TestTrendDirection(t *testing.T) {
+	for _, in := range []string{"increasing", "INCREASING", " Increasing "} {
+		if up, ok := trendDirection(in); !ok || !up {
+			t.Errorf("trendDirection(%q) = (%v,%v), want (true,true)", in, up, ok)
+		}
+	}
+	for _, in := range []string{"decreasing", "DeCreAsing"} {
+		if up, ok := trendDirection(in); !ok || up {
+			t.Errorf("trendDirection(%q) = (%v,%v), want (false,true)", in, up, ok)
+		}
+	}
+	for _, in := range []string{"", "decrease", "down", "up", "flat", "increasing-ish"} {
+		if _, ok := trendDirection(in); ok {
+			t.Errorf("trendDirection(%q) reported a direction it should not read", in)
+		}
+	}
+}

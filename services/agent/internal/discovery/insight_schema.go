@@ -74,9 +74,16 @@ func insightResponseSchema() map[string]interface{} {
 					"top_n_column": str("Column the top-N scope is ranked by"),
 					"subject":      str("Terms selecting the single row a rank claim is about, same grammar as filter"),
 					"rank":         map[string]interface{}{"type": "integer", "description": "1-based rank from the order end"},
-					"count":        map[string]interface{}{"type": "integer", "description": "Asserted number of rows"},
-					"order":        str(`"desc" (default) or "asc"`),
-					"trend":        str(`"increasing" or "decreasing"`),
+					"count": map[string]interface{}{"type": "integer", "minimum": 1,
+						"description": "Asserted number of rows. Required for a cardinality claim, and must be positive: " +
+							"an omitted count cannot be told from an asserted zero, so a cardinality claim without one is not checked"},
+					"order": str(`"desc" (default) or "asc"`),
+					// An enum rather than a description, because a trend the evaluator
+					// cannot read is not checked at all. "decrease" or "down" used to be
+					// silently treated as increasing, which refuted correct series.
+					"trend": map[string]interface{}{"type": "string",
+						"enum":        []interface{}{"increasing", "decreasing"},
+						"description": "Required for a monotonic claim. Exactly \"increasing\" or \"decreasing\" — no other word is read"},
 				},
 			},
 		},

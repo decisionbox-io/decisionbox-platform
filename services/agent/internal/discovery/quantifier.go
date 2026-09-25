@@ -211,6 +211,22 @@ func evalCardinality(v models.QuantifierVerdict, scope []map[string]any, c model
 			return v
 		}
 	}
+	// An omitted count decodes as zero, and zero read as an assertion turns a
+	// sound insight into a refutation: any matching row then contradicts a number
+	// the model never stated, and repair rewrites or deletes the sentence over
+	// missing metadata rather than contradictory rows. The schema asks for `count`
+	// but cannot require it per-claim, so absence has to be handled here.
+	//
+	// The cost is that an asserted zero cannot be declared as a cardinality, which
+	// the reason says out loud. It is the smaller loss: "no row satisfies this" is
+	// what `only` and `all` already express, and this matches the mechanical
+	// substitution, which has always declined on a non-positive count.
+	if c.Count <= 0 {
+		v.Status = QuantifierUndecidable
+		v.Reason = "a cardinality claim needs a positive `count`; none was declared, " +
+			"and an omitted count cannot be told from an asserted zero"
+		return v
+	}
 	if len(matched) == c.Count {
 		v.Status = QuantifierHolds
 		v.Reason = fmt.Sprintf("%d rows in scope, as claimed", c.Count)
@@ -380,7 +396,16 @@ func evalMonotonic(v models.QuantifierVerdict, scope []map[string]any, c models.
 		v.Status, v.Reason = QuantifierUndecidable, "fewer than 2 rows, so no direction to check"
 		return v
 	}
-	up := c.Trend != "decreasing"
+	// The direction has to be stated, not assumed. Defaulting to increasing meant
+	// an omitted trend -- or any spelling the schema's description does not pin,
+	// "decrease", "down", "DECREASING" -- refuted a correctly decreasing series,
+	// again over metadata rather than rows.
+	up, ok := trendDirection(c.Trend)
+	if !ok {
+		v.Status = QuantifierUndecidable
+		v.Reason = fmt.Sprintf("trend %q is not one this evaluator reads; declare `increasing` or `decreasing`", c.Trend)
+		return v
+	}
 	for i := 1; i < len(vals); i++ {
 		broke := vals[i] <= vals[i-1]
 		if !up {
@@ -396,6 +421,23 @@ func evalMonotonic(v models.QuantifierVerdict, scope []map[string]any, c models.
 	v.Status = QuantifierHolds
 	v.Reason = fmt.Sprintf("%s is %s across all %d rows", c.Column, trendWord(up), len(vals))
 	return v
+}
+
+// trendDirection reads a declared trend, reporting true for increasing and false
+// for decreasing. Reports ok=false for anything else, including the empty string,
+// so a direction nobody stated is never inferred.
+//
+// Case and surrounding space are forgiven because they are transcription rather
+// than meaning; a different word is not, because guessing which direction
+// "decrease" or "down" meant is how a sound series gets refuted.
+func trendDirection(trend string) (up bool, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(trend)) {
+	case "increasing":
+		return true, true
+	case "decreasing":
+		return false, true
+	}
+	return false, false
 }
 
 func trendWord(up bool) string {
