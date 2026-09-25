@@ -49,6 +49,15 @@ func attachQuantifierVerdicts(insights []models.Insight, stepByID map[int]*model
 		// obvious thing to do. Clearing first means an insight that declared
 		// nothing cannot carry verdicts it wrote for itself.
 		ins.QuantifierVerdicts = nil
+		// Same reasoning, same decoder, one field further on. InsightRepair is
+		// derived too, and `evidence_repair` is an ordinary JSON tag, so a model
+		// that emits that key has its own repair record decoded straight onto the
+		// insight. Nothing downstream re-derives the field for an insight that
+		// never enters repair, so without this a model could ship the audit trail
+		// of its own correction. Cleared before the early return below, because an
+		// insight declaring no claims never reaches repair and is exactly where a
+		// volunteered record would survive.
+		ins.Repair = nil
 		if len(ins.QuantifierClaims) == 0 {
 			continue
 		}

@@ -118,6 +118,10 @@ func (o *Orchestrator) repairInsight(
 	evidence := quantifierEvidence(*ins, stepByID)
 	rep := &models.InsightRepair{}
 	refutedAtEntry := refutedClaims(ins.QuantifierVerdicts)
+	// The insight as it arrived. Kept only to ask later whether a claim was ever a
+	// sentence in it: repair edits *ins in place, so that cannot be read off it
+	// afterwards.
+	entryText := *ins
 
 	// Round zero: whatever Go can settle without asking. A count the evaluator
 	// has already computed is not something a model needs to be asked for, and a
@@ -162,6 +166,24 @@ func (o *Orchestrator) repairInsight(
 				"round":   round,
 				"claims":  stripped,
 			}).Warn("Rejecting repair round: a contradicted sentence survived with its declaration removed")
+			continue
+		}
+		if unproven := unprovenRepairs(*ins, merged); len(unproven) > 0 {
+			// A refuted claim that is still declared must now HOLD. A round that
+			// leaves it undecidable has corrected nothing -- and undecidable is
+			// reachable by editing the claim instead of the sentence, since `step`
+			// and `filter` are both authored: point the claim at a step this
+			// insight does not cite, or name a column the rows do not carry, and
+			// the evaluator declines rather than refuses. countRefuted alone reads
+			// that as progress because it counts only failures, and rep.Fixed
+			// would then report the original false claim as fixed with no
+			// predicate ever proven over the rows.
+			applog.WithFields(applog.Fields{
+				"area":    areaID,
+				"insight": ins.Name,
+				"round":   round,
+				"claims":  unproven,
+			}).Warn("Rejecting repair round: a contradicted claim survives without being proven to hold")
 			continue
 		}
 		if countRefuted(merged.QuantifierVerdicts) > countRefuted(ins.QuantifierVerdicts) {
@@ -212,7 +234,11 @@ func (o *Orchestrator) repairInsight(
 		ins.QuantifierVerdicts = EvaluateQuantifierClaims(ins.QuantifierClaims, evidence)
 	}
 
-	rep.Fixed = remaining(refutedAtEntry, rep.Dropped, rep.Unrepaired)
+	// A claim that left undeclared and was never a sentence here was withdrawn,
+	// not repaired -- the document never said it, so nothing about the document
+	// changed.
+	rep.Withdrawn = withdrawnClaims(refutedAtEntry, entryText, *ins)
+	rep.Fixed = remaining(refutedAtEntry, rep.Dropped, rep.Unrepaired, rep.Withdrawn)
 	rep.Outcome = repairOutcome(rep)
 	ins.Repair = rep
 
@@ -338,6 +364,56 @@ func mergeRepairedInsight(orig, rewritten models.Insight) models.Insight {
 // found and nothing is reported. A model that left the sentence alone and simply
 // dropped the entry is caught here, which is the only reason this function
 // exists: without it, the trivial pass is also the easiest one to write.
+// unprovenRepairs lists the claims that were refuted on entry, are still
+// declared after the rewrite, and do not now hold.
+//
+// "No longer refuted" is not "true". Undecidable means the evaluator declined,
+// and a rewrite can reach that by editing the declaration rather than the
+// sentence -- which is a claim quietly exempted from checking, not a claim made
+// correct.
+func unprovenRepairs(before, after models.Insight) []string {
+	status := make(map[string]QuantifierStatus, len(after.QuantifierVerdicts))
+	for _, v := range after.QuantifierVerdicts {
+		status[v.Claim] = v.Status
+	}
+	var out []string
+	for _, v := range before.QuantifierVerdicts {
+		if v.Status != QuantifierFails {
+			continue
+		}
+		st, stillDeclared := status[v.Claim]
+		if !stillDeclared {
+			// Gone from the declarations: undeclaredSurvivors judges that case --
+			// a rejected round when the sentence is still there, a withdrawal
+			// when the prose never carried the claim.
+			continue
+		}
+		if st != QuantifierHolds {
+			out = append(out, v.Claim)
+		}
+	}
+	return out
+}
+
+// withdrawnClaims lists the claims that entered refuted, are no longer declared,
+// and were never a sentence in the insight as it arrived.
+func withdrawnClaims(refutedAtEntry []string, entry, after models.Insight) []string {
+	declared := make(map[string]struct{}, len(after.QuantifierClaims))
+	for _, c := range after.QuantifierClaims {
+		declared[c.Claim] = struct{}{}
+	}
+	var out []string
+	for _, claim := range refutedAtEntry {
+		if _, ok := declared[claim]; ok {
+			continue
+		}
+		if !insightMentions(entry, claim) {
+			out = append(out, claim)
+		}
+	}
+	return out
+}
+
 func undeclaredSurvivors(before, after models.Insight) []string {
 	declared := make(map[string]struct{}, len(after.QuantifierClaims))
 	for _, c := range after.QuantifierClaims {
@@ -478,6 +554,12 @@ func repairOutcome(rep *models.InsightRepair) string {
 		return models.RepairUnrepaired
 	case len(rep.Dropped) > 0:
 		return models.RepairClaimDropped
+	case len(rep.Fixed) > 0:
+		return models.RepairRepaired
+	// Nothing corrected and nothing removed: the only change was a declaration
+	// about nothing in the prose going away.
+	case len(rep.Withdrawn) > 0:
+		return models.RepairWithdrawn
 	default:
 		return models.RepairRepaired
 	}

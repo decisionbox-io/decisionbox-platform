@@ -125,7 +125,7 @@ func evaluateQuantifierClaim(c models.QuantifierClaim, steps map[int]StepRows) m
 	// in its evidence. Refusing that one was measured: it is the shape of the
 	// claim this evaluator exists for, and a blanket refusal declined the only
 	// declaration in a five-sample replay that named the original defect.
-	if isTruncated(ev.Quality) && !scopedWithinResult(c, len(ev.Rows)) {
+	if isTruncated(ev.Quality) && !scopedWithinResult(c, ev.Rows) {
 		return undecidable("step %d is a capped top-N view and this claim ranges beyond the rows it returned, so it is not decidable", c.Step)
 	}
 
@@ -226,10 +226,55 @@ func evalCardinality(v models.QuantifierVerdict, scope []map[string]any, c model
 //
 // TopN only, deliberately. A Scope filter narrows the rows in hand but says
 // nothing about the rows the cap withheld -- one of those could match the scope
-// and refute the claim, which is the situation this refusal exists for. A top-N
-// scope is different in kind: it names a set the result contains in full.
-func scopedWithinResult(c models.QuantifierClaim, returned int) bool {
-	return c.TopN > 0 && c.TopN <= returned
+// and refute the claim, which is the situation this refusal exists for.
+//
+// A top-N scope is different in kind: it names a set the result may contain in
+// full. But "may" is the whole difficulty, and counting rows does not settle it.
+// `TopN <= returned` says only that enough rows came back; it does not say they
+// are the right ones. A query capped with `ORDER BY p_brand LIMIT 25` returns 25
+// rows that are not the top 25 by revenue, and evaluating a revenue top-N over
+// them silently ranks a sample -- which can refute a true claim and, with repair
+// downstream, delete a sound sentence over evidence that never contained the
+// answer.
+//
+// So the rows must show the order the claim assumes. scopeRows takes the top N by
+// TopNColumn descending, so a cap that produced this result by that same ordering
+// leaves it already sorted that way; one that ordered by anything else almost
+// certainly does not. This is a necessary condition rather than a sufficient one
+// -- a result ordered by something else could be coincidentally sorted, and ties
+// are indistinguishable -- but it turns an assumption into a check, using only
+// rows already in hand and no SQL parsing.
+func scopedWithinResult(c models.QuantifierClaim, rows []map[string]any) bool {
+	if c.TopN <= 0 || c.TopN > len(rows) {
+		return false
+	}
+	if c.TopNColumn == "" {
+		return false
+	}
+	return sortedDescBy(rows, c.TopNColumn)
+}
+
+// sortedDescBy reports whether rows are already in non-increasing order by a
+// numeric column. A row missing the column, or holding a value that is not
+// numeric, reports false: that is the evaluator unable to confirm the order, and
+// the caller treats that as out of reach rather than as confirmation.
+func sortedDescBy(rows []map[string]any, column string) bool {
+	prev, have := 0.0, false
+	for _, r := range rows {
+		v, ok := r[column]
+		if !ok {
+			return false
+		}
+		f, ok := asFloat(v)
+		if !ok {
+			return false
+		}
+		if have && f > prev {
+			return false
+		}
+		prev, have = f, true
+	}
+	return have
 }
 
 func evalAll(v models.QuantifierVerdict, scope []map[string]any, c models.QuantifierClaim) models.QuantifierVerdict {

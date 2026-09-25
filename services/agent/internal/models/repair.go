@@ -22,7 +22,8 @@ type InsightRepair struct {
 	Rounds int `bson:"rounds" json:"rounds"`
 
 	// Outcome is the worst thing that happened to any one claim:
-	// RepairUnrepaired beats RepairClaimDropped beats RepairRepaired. An
+	// RepairUnrepaired beats RepairClaimDropped beats RepairRepaired, and
+	// RepairWithdrawn is reported only when nothing else happened at all. An
 	// insight with one corrected claim and one removed sentence reads as
 	// RepairClaimDropped, because that is the part a reviewer needs to see.
 	Outcome string `bson:"outcome" json:"outcome"`
@@ -39,6 +40,20 @@ type InsightRepair struct {
 	// description, and there is no smaller unit to drop. These ship refuted
 	// and visibly so; the alternative is an insight with no name.
 	Unrepaired []string `bson:"unrepaired,omitempty" json:"unrepaired,omitempty"`
+
+	// Withdrawn names the claims that entered repair refuted, left undeclared,
+	// and were never a sentence in the insight at all -- the declaration was
+	// about nothing the document said.
+	//
+	// Separate from Fixed because nothing was fixed. An observed run spent a
+	// round on exactly this shape and recorded it as a repair: the model declared
+	// "all five segments have a never-ordered rate above 33%", the cited rows
+	// carried no rate column so the predicate was a count proxy that failed at
+	// the boundary, the sentence was true and was never in the body, and the
+	// rewrite simply dropped the declaration. The prose came back byte-identical.
+	// Counting that as a repair inflates the one number that says whether repair
+	// works.
+	Withdrawn []string `bson:"withdrawn,omitempty" json:"withdrawn,omitempty"`
 }
 
 // Repair outcomes, worst last.
@@ -50,4 +65,8 @@ const (
 	RepairClaimDropped = "claim_dropped"
 	// RepairUnrepaired -- at least one refuted claim survives in the text.
 	RepairUnrepaired = "unrepaired"
+	// RepairWithdrawn -- the only thing that happened was a declaration about
+	// nothing in the prose being withdrawn. The document is unchanged and no
+	// sentence was corrected or removed.
+	RepairWithdrawn = "withdrawn"
 )
