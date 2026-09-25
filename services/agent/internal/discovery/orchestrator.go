@@ -1662,7 +1662,28 @@ func decodeWithoutClaims(raw json.RawMessage) (*models.Insight, bool) {
 	return &insight, true
 }
 
+// parseInsights reads an analysis response, keeping every insight it can. An
+// insight whose only defect is an unparseable `quantifier_claims` is salvaged
+// without it -- at first write, losing an advisory check costs less than losing the
+// finding.
 func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.Insight, int, error) {
+	return o.parseInsightsWith(response, areaID, true)
+}
+
+// parseInsightsStrict is parseInsights with the salvage off, for the repair path.
+//
+// The salvage is right at first write and wrong during repair. A repair response
+// carrying a corrected sentence and malformed declarations would have its
+// declarations stripped, leave zero claims, evaluate zero verdicts, and be accepted
+// with the original refuted claim recorded as FIXED -- no predicate rechecked. That
+// is exactly the hole the round-one acceptance rule closed, reopened through the
+// salvage: a rewrite would pass by losing its checks rather than by passing them.
+// So during repair a declaration that will not parse fails the round.
+func (o *Orchestrator) parseInsightsStrict(response string, areaID string) ([]models.Insight, int, error) {
+	return o.parseInsightsWith(response, areaID, false)
+}
+
+func (o *Orchestrator) parseInsightsWith(response string, areaID string, salvage bool) ([]models.Insight, int, error) {
 	cleaned := cleanJSONResponse(response)
 
 	var raws []json.RawMessage
@@ -1714,7 +1735,7 @@ func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.I
 			// is reachable, and a strict decode would discard the name, body,
 			// metrics and indicators to protect a field none of them depend on.
 			// Retry once without it and keep what parsed.
-			if salvaged, ok := decodeWithoutClaims(raw); ok {
+			if salvaged, ok := decodeWithoutClaims(raw); ok && salvage {
 				applog.WithFields(applog.Fields{
 					"area":    areaID,
 					"index":   i,

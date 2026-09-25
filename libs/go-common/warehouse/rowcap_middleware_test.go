@@ -126,3 +126,37 @@ func TestRowOffsetCaveat(t *testing.T) {
 		}
 	}
 }
+
+// T-SQL and Oracle put the offset BEFORE the cap, so the trailing pattern cannot
+// see it: `ORDER BY x OFFSET 100 ROWS FETCH NEXT 100 ROWS ONLY`.
+func TestOffsetRows(t *testing.T) {
+	cases := map[string]struct {
+		want int
+		ok   bool
+	}{
+		"SELECT * FROM t ORDER BY x OFFSET 100 ROWS FETCH NEXT 100 ROWS ONLY": {100, true},
+		"select * from t order by x offset 25 row fetch next 10 rows only":    {25, true},
+		"SELECT * FROM t ORDER BY x OFFSET 0 ROWS FETCH NEXT 50 ROWS ONLY":    {0, false},
+		"SELECT * FROM t FETCH FIRST 10 ROWS ONLY":                            {0, false},
+		"SELECT TOP 10 * FROM t":                                              {0, false},
+	}
+	for q, want := range cases {
+		got, ok := OffsetRows(q)
+		if got != want.want || ok != want.ok {
+			t.Errorf("OffsetRows(%q) = (%d,%v), want (%d,%v)", q, got, ok, want.want, want.ok)
+		}
+	}
+}
+
+func TestAnyRowOffset(t *testing.T) {
+	// Either form, whichever the dialect renders.
+	if n, ok := AnyRowOffset("SELECT * FROM t LIMIT 10 OFFSET 30", TrailingOffset, OffsetRows); !ok || n != 30 {
+		t.Errorf("trailing form = (%d,%v), want (30,true)", n, ok)
+	}
+	if n, ok := AnyRowOffset("SELECT * FROM t ORDER BY x OFFSET 30 ROWS FETCH NEXT 10 ROWS ONLY", TrailingOffset, OffsetRows); !ok || n != 30 {
+		t.Errorf("rows form = (%d,%v), want (30,true)", n, ok)
+	}
+	if _, ok := AnyRowOffset("SELECT * FROM t", TrailingOffset, OffsetRows); ok {
+		t.Error("an unpaginated statement must report no offset")
+	}
+}

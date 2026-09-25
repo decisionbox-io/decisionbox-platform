@@ -301,7 +301,9 @@ func (o *Orchestrator) rewriteInsight(
 	tally.tokensOut += res.TokensOut
 	tally.durationMs += res.DurationMs
 
-	parsed, _, perr := o.parseInsights(res.Content, ins.AnalysisArea)
+	// Strict: a rewrite whose declarations will not parse must fail the round
+	// rather than be salvaged without them. See parseInsightsStrict.
+	parsed, _, perr := o.parseInsightsStrict(res.Content, ins.AnalysisArea)
 	if perr != nil {
 		return models.Insight{}, perr
 	}

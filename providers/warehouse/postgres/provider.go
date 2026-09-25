@@ -324,7 +324,7 @@ func (p *PostgresProvider) RowCap(query string) (int, bool) {
 // only paginated form this dialect renders, and a page is partial however few rows
 // come back -- see warehouse.RowOffsetInspector.
 func (p *PostgresProvider) RowOffset(query string) (int, bool) {
-	return gowarehouse.TrailingOffset(query)
+	return gowarehouse.AnyRowOffset(query, gowarehouse.TrailingOffset, gowarehouse.OffsetRows)
 }
 
 func (p *PostgresProvider) SQLFixPrompt() string {

@@ -1,6 +1,10 @@
 package discovery
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
+)
 
 // quantifier_claims is optional and advisory: it buys an evidence check. The
 // prompt asks the model to author it, so a slightly off shape is reachable — and
@@ -107,5 +111,57 @@ func TestDecodeWithoutClaims(t *testing.T) {
 		if _, ok := decodeWithoutClaims([]byte(raw)); ok {
 			t.Errorf("%s: want refusal", name)
 		}
+	}
+}
+
+// The salvage is right at first write and wrong during repair. A repair response
+// carrying a corrected sentence and malformed declarations would have them
+// stripped, leave zero claims, evaluate zero verdicts, and be accepted with the
+// original refuted claim recorded as FIXED — no predicate rechecked. That is the
+// round-one acceptance rule reopened through the salvage.
+func TestParseInsightsStrict_DoesNotSalvageAMalformedDeclaration(t *testing.T) {
+	o := &Orchestrator{}
+	body := `{"insights":[{"name":"n","description":"d.","severity":"high","source_steps":[4],
+		"quantifier_claims":[{"claim":"c","kind":"only","step":"4"}]}]}`
+
+	// First write keeps the finding.
+	if ins, dropped, err := o.parseInsights(body, "a"); err != nil || len(ins) != 1 || dropped != 0 {
+		t.Errorf("parseInsights: insights=%d dropped=%d err=%v, want the finding salvaged", len(ins), dropped, err)
+	}
+	// Repair does not.
+	ins, dropped, err := o.parseInsightsStrict(body, "a")
+	if err != nil {
+		t.Fatalf("parseInsightsStrict() error = %v", err)
+	}
+	if len(ins) != 0 || dropped != 1 {
+		t.Errorf("strict: insights=%d dropped=%d, want the rewrite rejected", len(ins), dropped)
+	}
+	// A well-formed rewrite still parses strictly.
+	good := `{"insights":[{"name":"n","description":"d.","severity":"high","source_steps":[4],
+		"quantifier_claims":[{"claim":"c","kind":"only","step":4,"filter":"x > 0"}]}]}`
+	if ins, _, err := o.parseInsightsStrict(good, "a"); err != nil || len(ins) != 1 || len(ins[0].QuantifierClaims) != 1 {
+		t.Errorf("a well-formed rewrite must parse strictly: %d insights, err=%v", len(ins), err)
+	}
+}
+
+// End to end: a repair round whose declarations will not parse must not be
+// accepted, and the refuted claim must not end up in Fixed.
+func TestRepair_ARoundWithUnparseableDeclarationsIsRejected(t *testing.T) {
+	// Corrected sentence, malformed declaration (string-typed step).
+	dodged := `{"insights":[{
+		"name":"Furniture drags the top ten",
+		"description":"Tables is one of two loss-making sub-categories. Chairs leads the category on volume.",
+		"severity":"high","source_steps":[4],
+		"quantifier_claims":[{"claim":"` + shippedOnlyClaim + `","kind":"only","step":"4","filter":"profit < 0"}]
+	}]}`
+	o, _ := newRepairOrchestrator(dodged, dodged)
+
+	got, _ := repairOne(t, o, refutedInsight())
+
+	if len(got.Repair.Fixed) != 0 {
+		t.Errorf("fixed = %v; no predicate was ever rechecked", got.Repair.Fixed)
+	}
+	if got.Repair.Outcome == models.RepairRepaired {
+		t.Errorf("outcome = %q; the rounds carried no readable declarations", got.Repair.Outcome)
 	}
 }

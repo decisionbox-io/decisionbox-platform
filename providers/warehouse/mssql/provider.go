@@ -399,6 +399,13 @@ func (p *MSSQLProvider) RowCap(query string) (int, bool) {
 	return gowarehouse.AnyRowCap(query, gowarehouse.LeadingTop, gowarehouse.TrailingFetchFirst)
 }
 
+// RowOffset reports the rows T-SQL pagination skips: `ORDER BY ... OFFSET m ROWS
+// FETCH NEXT n ROWS ONLY`. The offset precedes the cap in this dialect, so the
+// trailing matcher cannot see it -- see warehouse.OffsetRows.
+func (p *MSSQLProvider) RowOffset(query string) (int, bool) {
+	return gowarehouse.AnyRowOffset(query, gowarehouse.OffsetRows)
+}
+
 func (p *MSSQLProvider) SQLFixPrompt() string {
 	return sqlFixPrompt
 }

@@ -3,7 +3,9 @@ package models
 import (
 	"time"
 
+	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 )
 
 // InsightValidation aliases the shared validation type in
@@ -60,6 +62,21 @@ type Insight struct {
 	SourceSteps   []int                  `bson:"source_steps,omitempty" json:"source_steps,omitempty"`
 	Validation    *InsightValidation     `bson:"validation,omitempty" json:"validation,omitempty"`
 	DiscoveredAt  time.Time              `bson:"discovered_at" json:"discovered_at"`
+
+	// The evidence trail the agent derives while checking an insight against the
+	// rows it cited. Mirrored here because this struct -- not the agent's -- is
+	// what a discovery decodes into on its way to a client, so a field missing
+	// from it is a field BSON silently drops. All four were unreachable outside
+	// the agent until they were mirrored, however carefully their JSON names were
+	// chosen.
+	//
+	// Quality is what the sources said about the fidelity of the rows; the other
+	// three are derived and the model cannot author them, which is why their JSON
+	// names are not the names the analysis prompt uses.
+	Quality            []gowarehouse.QualityCaveat  `bson:"quality,omitempty" json:"evidence_quality,omitempty"`
+	QuantifierClaims   []gomodels.QuantifierClaim   `bson:"quantifier_claims,omitempty" json:"quantifier_claims,omitempty"`
+	QuantifierVerdicts []gomodels.QuantifierVerdict `bson:"quantifier_verdicts,omitempty" json:"evidence_checks,omitempty"`
+	Repair             *gomodels.InsightRepair      `bson:"repair,omitempty" json:"evidence_repair,omitempty"`
 }
 
 type Recommendation struct {

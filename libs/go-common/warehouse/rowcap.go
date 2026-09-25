@@ -46,6 +46,7 @@ var (
 	reLeadingTop    = regexp.MustCompile(`(?is)^\s*SELECT\s+(?:DISTINCT\s+|ALL\s+)?TOP\s*\(?\s*(\d+)\s*\)?\s*(\w+)?`)
 	reTrailingFetch = regexp.MustCompile(`(?is)\bFETCH\s+(?:FIRST|NEXT)\s+(\d+)\s+ROWS?\s+ONLY\s*;?\s*$`)
 	reRownum        = regexp.MustCompile(`(?is)\bROWNUM\s*(<=|<)\s*(\d+)\b`)
+	reOffsetRows    = regexp.MustCompile(`(?is)\bOFFSET\s+(\d+)\s+ROWS?\b`)
 )
 
 // TrailingLimit matches the `LIMIT n [OFFSET m]` that closes a statement, the
@@ -89,6 +90,31 @@ func TrailingOffset(query string) (int, bool) {
 		return 0, false
 	}
 	return atoiCap(m[2])
+}
+
+// OffsetRows matches the `OFFSET m ROWS` of T-SQL and Oracle pagination, the half
+// that precedes `FETCH NEXT n ROWS ONLY`.
+//
+// Separate from TrailingOffset because these dialects put the offset BEFORE the
+// cap, so it is not the tail of the statement and the trailing pattern cannot see
+// it. TrailingFetchFirst already reads the cap half.
+func OffsetRows(query string) (int, bool) {
+	m := reOffsetRows.FindStringSubmatch(query)
+	if m == nil {
+		return 0, false
+	}
+	return atoiCap(m[1])
+}
+
+// AnyRowOffset is AnyRowCap for the offset half: the first matcher that recognises
+// a skipped-row count wins.
+func AnyRowOffset(query string, matchers ...func(string) (int, bool)) (int, bool) {
+	for _, m := range matchers {
+		if n, ok := m(query); ok {
+			return n, true
+		}
+	}
+	return 0, false
 }
 
 // RowOffsetCaveat is what a paginated result carries.
