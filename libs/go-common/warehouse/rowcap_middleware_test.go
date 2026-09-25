@@ -1,6 +1,9 @@
 package warehouse
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // capProvider is a concrete provider that can recognise its own dialect's cap.
 type capProvider struct {
@@ -74,5 +77,52 @@ func TestSQLRunner_RowCapSurvivesAWrapper(t *testing.T) {
 	n, ok := r.RowCap("SELECT 1 LIMIT 15")
 	if !ok || n != 15 {
 		t.Errorf("RowCap = (%d, %v), want (15, true)", n, ok)
+	}
+}
+
+func TestTrailingOffset(t *testing.T) {
+	cases := map[string]struct {
+		want int
+		ok   bool
+	}{
+		"SELECT * FROM t LIMIT 100 OFFSET 100":        {100, true},
+		"select * from t limit 10 offset 5;":          {5, true},
+		"SELECT * FROM t LIMIT 100 OFFSET 100 ":       {100, true},
+		"SELECT * FROM t LIMIT 100":                   {0, false}, // capped, not paginated
+		"SELECT * FROM t":                             {0, false},
+		"SELECT * FROM t LIMIT 100 OFFSET 0":          {0, false}, // skips nothing
+		"SELECT * FROM (SELECT 1 LIMIT 5 OFFSET 5) x": {0, false}, // not the governing clause
+	}
+	for q, want := range cases {
+		got, ok := TrailingOffset(q)
+		if got != want.want || ok != want.ok {
+			t.Errorf("TrailingOffset(%q) = (%d,%v), want (%d,%v)", q, got, ok, want.want, want.ok)
+		}
+	}
+}
+
+// The cap reader must be unaffected by capturing the offset alongside it.
+func TestTrailingLimit_UnchangedByTheOffsetCapture(t *testing.T) {
+	for q, want := range map[string]int{
+		"SELECT * FROM t LIMIT 100":            100,
+		"SELECT * FROM t LIMIT 100 OFFSET 100": 100,
+		"select * from t limit 25;":            25,
+	} {
+		got, ok := TrailingLimit(q)
+		if !ok || got != want {
+			t.Errorf("TrailingLimit(%q) = (%d,%v), want (%d,true)", q, got, ok, want)
+		}
+	}
+}
+
+func TestRowOffsetCaveat(t *testing.T) {
+	c := RowOffsetCaveat(100)
+	if c.Kind != QualityWithheld {
+		t.Errorf("kind = %q, want %q", c.Kind, QualityWithheld)
+	}
+	for _, want := range []string{"skipped the first 100", "a page", "never about the population"} {
+		if !strings.Contains(c.Detail, want) {
+			t.Errorf("detail does not say %q: %s", want, c.Detail)
+		}
 	}
 }

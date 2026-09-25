@@ -42,7 +42,7 @@ type RowCapInspector interface {
 // caveat `... WHERE id IN (SELECT id FROM t LIMIT 10)` on the strength of a
 // bound that never reached the output.
 var (
-	reTrailingLimit = regexp.MustCompile(`(?is)\bLIMIT\s+(\d+)\s*(?:OFFSET\s+\d+\s*)?;?\s*$`)
+	reTrailingLimit = regexp.MustCompile(`(?is)\bLIMIT\s+(\d+)\s*(?:OFFSET\s+(\d+)\s*)?;?\s*$`)
 	reLeadingTop    = regexp.MustCompile(`(?is)^\s*SELECT\s+(?:DISTINCT\s+|ALL\s+)?TOP\s*\(?\s*(\d+)\s*\)?\s*(\w+)?`)
 	reTrailingFetch = regexp.MustCompile(`(?is)\bFETCH\s+(?:FIRST|NEXT)\s+(\d+)\s+ROWS?\s+ONLY\s*;?\s*$`)
 	reRownum        = regexp.MustCompile(`(?is)\bROWNUM\s*(<=|<)\s*(\d+)\b`)
@@ -56,6 +56,56 @@ func TrailingLimit(query string) (int, bool) {
 		return 0, false
 	}
 	return atoiCap(m[1])
+}
+
+// RowOffsetInspector is the companion to RowCapInspector for the other half of a
+// paginated statement.
+//
+// A cap is only half of what makes a result partial. `LIMIT 100 OFFSET 100`
+// returning 17 rows never trips the cap check -- 17 is not 100 -- yet the rows are
+// a page: a hundred were deliberately skipped, and the page reads exactly like a
+// complete small result. The cap check alone therefore exempts every final page
+// from the caveat whose whole purpose is that silence is the failure mode.
+//
+// Optional, like RowCapInspector, and for the same reason: a source that does not
+// implement it yields no caveat, which is the answer it gave before this existed.
+type RowOffsetInspector interface {
+	// RowOffset reports the number of leading rows this query skips, if any.
+	//
+	// ok is false for an unpaginated query and for an offset the source cannot
+	// read as a literal. False is the safe answer: no caveat, where a wrong true
+	// would teach the model to discount a complete result.
+	RowOffset(query string) (int, bool)
+}
+
+// TrailingOffset matches the `OFFSET m` of a trailing `LIMIT n OFFSET m`, the form
+// Postgres, Redshift, BigQuery, Databricks, Snowflake and MySQL share.
+//
+// Read from the same match TrailingLimit already makes, rather than a second
+// pattern: the offset was always being consumed by that pattern and thrown away.
+func TrailingOffset(query string) (int, bool) {
+	m := reTrailingLimit.FindStringSubmatch(query)
+	if m == nil || m[2] == "" {
+		return 0, false
+	}
+	return atoiCap(m[2])
+}
+
+// RowOffsetCaveat is what a paginated result carries.
+//
+// Worded around the rows that are missing rather than the ones present, because
+// the failure it prevents is a page being described as a population -- and unlike
+// a cap, an offset gives no hint of that in the rows themselves.
+func RowOffsetCaveat(n int) QualityCaveat {
+	return QualityCaveat{
+		Kind: QualityWithheld,
+		Detail: fmt.Sprintf(
+			"the query skipped the first %d rows of its own ordering, so this result is a page "+
+				"and not the whole population, however few rows came back: the %d rows before it are "+
+				"absent and the rows after it may be too. State any count, total, share, rank or "+
+				"\"only/largest/every\" claim about the rows present, never about the population",
+			n, n),
+	}
 }
 
 // LeadingTop matches T-SQL's `SELECT TOP n`, including the parenthesised

@@ -338,6 +338,13 @@ func (p *SnowflakeProvider) RowCap(query string) (int, bool) {
 	return gowarehouse.AnyRowCap(query, gowarehouse.TrailingLimit, gowarehouse.TrailingFetchFirst, gowarehouse.LeadingTop)
 }
 
+// RowOffset reports the rows this query skips. Trailing `LIMIT n OFFSET m` is the
+// only paginated form this dialect renders, and a page is partial however few rows
+// come back -- see warehouse.RowOffsetInspector.
+func (p *SnowflakeProvider) RowOffset(query string) (int, bool) {
+	return gowarehouse.TrailingOffset(query)
+}
+
 func (p *SnowflakeProvider) SQLFixPrompt() string {
 	return sqlFixPrompt
 }

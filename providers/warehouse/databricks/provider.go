@@ -391,6 +391,13 @@ func (p *DatabricksProvider) RowCap(query string) (int, bool) {
 	return gowarehouse.AnyRowCap(query, gowarehouse.TrailingLimit)
 }
 
+// RowOffset reports the rows this query skips. Trailing `LIMIT n OFFSET m` is the
+// only paginated form this dialect renders, and a page is partial however few rows
+// come back -- see warehouse.RowOffsetInspector.
+func (p *DatabricksProvider) RowOffset(query string) (int, bool) {
+	return gowarehouse.TrailingOffset(query)
+}
+
 func (p *DatabricksProvider) SQLFixPrompt() string {
 	return sqlFixPrompt
 }

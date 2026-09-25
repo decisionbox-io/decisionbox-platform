@@ -320,6 +320,13 @@ func (p *PostgresProvider) RowCap(query string) (int, bool) {
 	return gowarehouse.AnyRowCap(query, gowarehouse.TrailingLimit, gowarehouse.TrailingFetchFirst)
 }
 
+// RowOffset reports the rows this query skips. Trailing `LIMIT n OFFSET m` is the
+// only paginated form this dialect renders, and a page is partial however few rows
+// come back -- see warehouse.RowOffsetInspector.
+func (p *PostgresProvider) RowOffset(query string) (int, bool) {
+	return gowarehouse.TrailingOffset(query)
+}
+
 func (p *PostgresProvider) SQLFixPrompt() string {
 	return sqlFixPrompt
 }

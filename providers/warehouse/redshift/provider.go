@@ -322,9 +322,9 @@ func (p *RedshiftProvider) GetTableSchemaInDataset(ctx context.Context, dataset,
 	}
 
 	input := &redshiftdata.DescribeTableInput{
-		Database:      aws.String(p.database),
-		Schema:        aws.String(dataset),
-		Table:         aws.String(table),
+		Database: aws.String(p.database),
+		Schema:   aws.String(dataset),
+		Table:    aws.String(table),
 	}
 	if p.workgroup != "" {
 		input.WorkgroupName = aws.String(p.workgroup)
@@ -402,6 +402,13 @@ func (p *RedshiftProvider) SampleQuery(dataset, table, filterClause string, limi
 // wrote. Both live here because the dialect is what makes them differ.
 func (p *RedshiftProvider) RowCap(query string) (int, bool) {
 	return gowarehouse.AnyRowCap(query, gowarehouse.TrailingLimit, gowarehouse.LeadingTop)
+}
+
+// RowOffset reports the rows this query skips. Trailing `LIMIT n OFFSET m` is the
+// only paginated form this dialect renders, and a page is partial however few rows
+// come back -- see warehouse.RowOffsetInspector.
+func (p *RedshiftProvider) RowOffset(query string) (int, bool) {
+	return gowarehouse.TrailingOffset(query)
 }
 
 func (p *RedshiftProvider) SQLFixPrompt() string {
