@@ -637,3 +637,75 @@ func TestEvaluate_TiedRanksAreUndecidableNotRefuted(t *testing.T) {
 		t.Errorf("a wrong untied rank must still fail: %q (%s)", v2[0].Status, v2[0].Reason)
 	}
 }
+
+// A claim is authored beside a Markdown description, so it can arrive with the
+// markup. Description is the plain reduction of that same prose, so the marked-up
+// spelling never appears there. Searching one spelling removed the formatted
+// sentence, missed the plain one, and then agreed the claim was gone — shipping the
+// refuted sentence in the field API consumers and embeddings read.
+func TestDropClaimSentence_RemovesAMarkdownClaimFromBothRenditions(t *testing.T) {
+	const marked = "**Tables** is the only loss-making sub-category"
+	const plain = "Tables is the only loss-making sub-category"
+	ins := models.Insight{
+		Name:          "Furniture drags the range",
+		Description:   plain + " among the top ten. Chairs leads on volume.",
+		DescriptionMd: marked + " among the top ten. Chairs leads on volume.",
+	}
+	if !dropClaimSentence(&ins, marked) {
+		t.Fatal("the claim was not removed")
+	}
+	if strings.Contains(ins.Description, "loss-making") {
+		t.Errorf("the refuted sentence survived in the PLAIN description: %q", ins.Description)
+	}
+	if strings.Contains(ins.DescriptionMd, "loss-making") {
+		t.Errorf("the refuted sentence survived in the Markdown description: %q", ins.DescriptionMd)
+	}
+	for _, got := range []string{ins.Description, ins.DescriptionMd} {
+		if !strings.Contains(got, "Chairs leads on volume") {
+			t.Errorf("the sound neighbour was lost: %q", got)
+		}
+	}
+}
+
+func TestClaimNeedle(t *testing.T) {
+	const marked = "**Tables** is the only line"
+	const plain = "Tables is the only line"
+	if got := claimNeedle("x "+plain+" y", marked); got != plain {
+		t.Errorf("claimNeedle(plain text, marked claim) = %q, want the plain spelling", got)
+	}
+	if got := claimNeedle("x "+marked+" y", marked); got != marked {
+		t.Errorf("claimNeedle(marked text, marked claim) = %q, want the marked spelling", got)
+	}
+	if got := claimNeedle("nothing like it here", marked); got != "" {
+		t.Errorf("claimNeedle(absent) = %q, want empty", got)
+	}
+	if got := claimNeedle("", marked); got != "" {
+		t.Errorf("claimNeedle(empty text) = %q", got)
+	}
+	if got := claimNeedle("text", ""); got != "" {
+		t.Errorf("claimNeedle(empty claim) = %q", got)
+	}
+}
+
+// A paginated top-N cannot be rescued by sortedness: rows 101-117 of an ordering
+// are perfectly sorted and contain none of the top N.
+func TestEvaluate_APaginatedTopNStaysUndecidable(t *testing.T) {
+	// Sorted descending, so the order check alone would pass.
+	page := []map[string]any{{"p": "a", "rev": 30.0}, {"p": "b", "rev": 20.0}, {"p": "c", "rev": 10.0}}
+	claim := models.QuantifierClaim{
+		Claim: "a leads the top 3 by revenue", Kind: QuantifierOnly,
+		Step: 4, Filter: "rev > 25", TopN: 3, TopNColumn: "rev",
+	}
+	paginated := map[int]StepRows{4: {Rows: page,
+		Quality: []gowarehouse.QualityCaveat{gowarehouse.RowOffsetCaveat(100)}}}
+	if v := EvaluateQuantifierClaims([]models.QuantifierClaim{claim}, paginated); v[0].Status != QuantifierUndecidable {
+		t.Errorf("paginated: status = %q (%s), want undecidable", v[0].Status, v[0].Reason)
+	}
+	// A cap with the rows in the claimed order is still rescued — that is the case
+	// scopedWithinResult exists for.
+	capped := map[int]StepRows{4: {Rows: page,
+		Quality: []gowarehouse.QualityCaveat{gowarehouse.RowCapCaveat(3)}}}
+	if v := EvaluateQuantifierClaims([]models.QuantifierClaim{claim}, capped); v[0].Status == QuantifierUndecidable {
+		t.Errorf("capped and ordered: status = undecidable (%s), want it decided", v[0].Reason)
+	}
+}

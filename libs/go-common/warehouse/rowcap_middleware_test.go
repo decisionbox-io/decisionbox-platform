@@ -160,3 +160,29 @@ func TestAnyRowOffset(t *testing.T) {
 		t.Error("an unpaginated statement must report no offset")
 	}
 }
+
+// Anchoring is the whole design of this file: an unanchored match caveats a
+// complete aggregate on the strength of a bound inside a subquery.
+func TestOffsetRows_AnchoredToTheGoverningTail(t *testing.T) {
+	fires := []string{
+		"SELECT * FROM t ORDER BY x OFFSET 100 ROWS FETCH NEXT 100 ROWS ONLY",
+		"SELECT * FROM t ORDER BY x OFFSET 100 ROWS",
+		"select * from t order by x offset 25 rows fetch next 10 rows only;",
+	}
+	for _, q := range fires {
+		if n, ok := OffsetRows(q); !ok || n == 0 {
+			t.Errorf("OffsetRows(%q) = (%d,%v), want a governing offset", q, n, ok)
+		}
+	}
+	quiet := []string{
+		// The bound never reaches the output: one complete aggregate row.
+		"SELECT COUNT(*) FROM (SELECT x FROM t ORDER BY x OFFSET 100 ROWS FETCH NEXT 100 ROWS ONLY) s",
+		"SELECT * FROM (SELECT 1 ORDER BY x OFFSET 5 ROWS) a JOIN b ON 1=1",
+		"SELECT * FROM t",
+	}
+	for _, q := range quiet {
+		if n, ok := OffsetRows(q); ok {
+			t.Errorf("OffsetRows(%q) = (%d,true), want no caveat — the bound is not the governing clause", q, n)
+		}
+	}
+}

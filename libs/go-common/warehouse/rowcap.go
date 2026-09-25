@@ -46,7 +46,7 @@ var (
 	reLeadingTop    = regexp.MustCompile(`(?is)^\s*SELECT\s+(?:DISTINCT\s+|ALL\s+)?TOP\s*\(?\s*(\d+)\s*\)?\s*(\w+)?`)
 	reTrailingFetch = regexp.MustCompile(`(?is)\bFETCH\s+(?:FIRST|NEXT)\s+(\d+)\s+ROWS?\s+ONLY\s*;?\s*$`)
 	reRownum        = regexp.MustCompile(`(?is)\bROWNUM\s*(<=|<)\s*(\d+)\b`)
-	reOffsetRows    = regexp.MustCompile(`(?is)\bOFFSET\s+(\d+)\s+ROWS?\b`)
+	reOffsetRows    = regexp.MustCompile(`(?is)\bOFFSET\s+(\d+)\s+ROWS?\s*(?:FETCH\s+(?:FIRST|NEXT)\s+\d+\s+ROWS?\s+ONLY\s*)?;?\s*$`)
 )
 
 // TrailingLimit matches the `LIMIT n [OFFSET m]` that closes a statement, the
@@ -92,12 +92,19 @@ func TrailingOffset(query string) (int, bool) {
 	return atoiCap(m[2])
 }
 
-// OffsetRows matches the `OFFSET m ROWS` of T-SQL and Oracle pagination, the half
-// that precedes `FETCH NEXT n ROWS ONLY`.
+// OffsetRows matches the `OFFSET m ROWS [FETCH NEXT n ROWS ONLY]` that CLOSES a
+// T-SQL or Oracle statement.
 //
-// Separate from TrailingOffset because these dialects put the offset BEFORE the
-// cap, so it is not the tail of the statement and the trailing pattern cannot see
-// it. TrailingFetchFirst already reads the cap half.
+// Separate from TrailingOffset because these dialects put the offset before the cap
+// rather than after it, so the trailing-LIMIT pattern cannot see it.
+// TrailingFetchFirst already reads the cap half.
+//
+// Anchored to the tail for the reason every matcher in this file is: an unanchored
+// match caveats `SELECT COUNT(*) FROM (SELECT ... OFFSET 100 ROWS FETCH NEXT 100
+// ROWS ONLY) s` on the strength of a bound that never reached the output -- the
+// outer result is one complete aggregate row. A false caveat teaches the model to
+// discount sound evidence, which is the failure this whole file exists to avoid
+// causing.
 func OffsetRows(query string) (int, bool) {
 	m := reOffsetRows.FindStringSubmatch(query)
 	if m == nil {

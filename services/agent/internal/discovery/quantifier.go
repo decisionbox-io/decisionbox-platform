@@ -125,7 +125,7 @@ func evaluateQuantifierClaim(c models.QuantifierClaim, steps map[int]StepRows) m
 	// in its evidence. Refusing that one was measured: it is the shape of the
 	// claim this evaluator exists for, and a blanket refusal declined the only
 	// declaration in a five-sample replay that named the original defect.
-	if rowsIncomplete(ev.Quality) && !scopedWithinResult(c, ev.Rows) {
+	if rowsIncomplete(ev.Quality) && !decidableDespiteIncompleteRows(c, ev) {
 		return undecidable("step %d is a capped top-N view and this claim ranges beyond the rows it returned, so it is not decidable", c.Step)
 	}
 
@@ -235,6 +235,24 @@ func evalCardinality(v models.QuantifierVerdict, scope []map[string]any, c model
 	v.Status = QuantifierFails
 	v.Reason = fmt.Sprintf("%d rows in scope satisfy the claim, not the %d asserted", len(matched), c.Count)
 	return v
+}
+
+// decidableDespiteIncompleteRows reports whether a claim over an incomplete result
+// can still be settled.
+//
+// Only a CAP can be rescued, and only by a top-N scope that the rows show they
+// contain. A page cannot: rows 101-117 of an ordering are perfectly sorted by the
+// ranking column and contain none of the top N, so sortedness -- the evidence
+// scopedWithinResult relies on -- proves nothing there. Sampled rows are the same
+// kind of problem, values rather than positions. So anything beyond a cap refuses
+// outright.
+func decidableDespiteIncompleteRows(c models.QuantifierClaim, ev StepRows) bool {
+	for _, cav := range ev.Quality {
+		if cav.Kind != gowarehouse.QualityTruncated {
+			return false
+		}
+	}
+	return scopedWithinResult(c, ev.Rows)
 }
 
 // scopedWithinResult reports whether the claim ranges only over rows the step

@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/mdtext"
 	"regexp"
 	"strconv"
 	"strings"
@@ -241,16 +242,19 @@ func dropClaimSentence(ins *models.Insight, claim string) bool {
 	kept := make([]string, 0, len(ins.Indicators))
 	changed := false
 	for _, s := range ins.Indicators {
-		if containsFold(s, claim) {
+		if claimNeedle(s, claim) != "" {
 			changed = true
 			continue
 		}
 		kept = append(kept, s)
 	}
-	if out, ok := dropSentence(desc, claim); ok {
+	// Cut with the spelling the field actually carries: the plain body holds the
+	// plain rendition of a claim authored with Markdown, and the formatted body
+	// holds the markup.
+	if out, ok := dropSentence(desc, claimNeedle(desc, claim)); ok {
 		desc, changed = out, true
 	}
-	if out, ok := dropSentence(md, claim); ok {
+	if out, ok := dropSentence(md, claimNeedle(md, claim)); ok {
 		md, changed = out, true
 	}
 	if !changed {
@@ -377,16 +381,40 @@ func tidyWhitespace(s string) string {
 // insightMentions reports whether the claim text still appears anywhere a reader
 // would see it.
 func insightMentions(ins models.Insight, claim string) bool {
-	if containsFold(ins.Name, claim) || containsFold(ins.Description, claim) ||
-		containsFold(ins.DescriptionMd, claim) {
+	if claimNeedle(ins.Name, claim) != "" || claimNeedle(ins.Description, claim) != "" ||
+		claimNeedle(ins.DescriptionMd, claim) != "" {
 		return true
 	}
 	for _, s := range ins.Indicators {
-		if containsFold(s, claim) {
+		if claimNeedle(s, claim) != "" {
 			return true
 		}
 	}
 	return false
+}
+
+// claimNeedle returns the spelling of the claim that occurs in text, or "" when
+// neither does.
+//
+// A claim is authored beside a Markdown description, so it can arrive with the
+// markup: `**Tables** is the only loss-making line`. Description is the plain
+// reduction of that same prose, so the marked-up spelling does not appear in it.
+// Searching for one spelling only meant the sentence was removed from
+// DescriptionMd, missed in Description, and then the all-fields check -- searching
+// for the same marked-up spelling -- agreed the claim was gone. The refuted sentence
+// shipped in the field API consumers and embeddings read, while the formatted one it
+// contradicted was deleted.
+func claimNeedle(text, claim string) string {
+	if text == "" || claim == "" {
+		return ""
+	}
+	if indexFold(text, claim) >= 0 {
+		return claim
+	}
+	if plain := mdtext.ToPlainText(claim); plain != claim && plain != "" && indexFold(text, plain) >= 0 {
+		return plain
+	}
+	return ""
 }
 
 func containsFold(haystack, needle string) bool { return indexFold(haystack, needle) >= 0 }
