@@ -104,9 +104,9 @@ func substituteCount(ins *models.Insight, c *models.QuantifierClaim, from, to in
 
 	hits := 0
 	for _, f := range fields {
-		switch n := len(standaloneNumber(*f, fromTok)); {
-		case n == 0:
-		case n == 1:
+		switch len(standaloneNumber(*f, fromTok)) {
+		case 0:
+		case 1:
 			hits++
 		default:
 			// Ambiguous in this field, so ambiguous overall.

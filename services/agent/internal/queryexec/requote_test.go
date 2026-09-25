@@ -14,7 +14,6 @@ type recordingRunner struct {
 	seen       []string
 	openQ      string
 	closeQ     string
-	quotes     bool // false = does not implement QuoteRef at all
 	failOnTick bool // reject any statement containing a backtick, as Postgres does
 }
 

@@ -40,8 +40,8 @@ func buildInsightRepairPrompt(ins models.Insight, failed []models.QuantifierVerd
 	b.WriteString("The platform evaluated each declared predicate over the **full rows** of the step it cited. ")
 	b.WriteString("These claims do not hold:\n\n")
 	for i, v := range failed {
-		b.WriteString(fmt.Sprintf("%d. %q — declared as `%s` against step %d\n", i+1, v.Claim, v.Kind, v.Step))
-		b.WriteString(fmt.Sprintf("   → %s\n", v.Reason))
+		fmt.Fprintf(&b, "%d. %q — declared as `%s` against step %d\n", i+1, v.Claim, v.Kind, v.Step)
+		fmt.Fprintf(&b, "   → %s\n", v.Reason)
 	}
 	b.WriteString("\nThe rows are not in question. They are the rows you were given, complete and correct, ")
 	b.WriteString("and the arithmetic above was done over all of them. What is in question is the sentence.\n\n")
