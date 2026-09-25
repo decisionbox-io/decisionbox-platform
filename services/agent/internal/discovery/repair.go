@@ -196,6 +196,27 @@ func (o *Orchestrator) repairInsight(
 			}).Warn("Rejecting repair round: a contradicted claim survives without being proven to hold")
 			continue
 		}
+		if countUndecidable(merged.QuantifierVerdicts) > countUndecidable(ins.QuantifierVerdicts) {
+			// unprovenRepairs matches a claim by its text, so a rewrite that
+			// REPHRASES the sentence and points the new declaration at an uncited
+			// step slips past it: the old text is gone, so nothing recognises the
+			// refuted claim, and undecidable is not a failure, so the refutation
+			// simply disappears and the round is recorded as fixed. Counting is
+			// text-independent and closes that: a refutation turned into a decline
+			// is an exemption from checking, not a correction.
+			//
+			// A claim that was ALREADY undecidable at entry -- capped evidence, a
+			// column the rows do not carry -- is unaffected, because the count only
+			// has to not grow.
+			applog.WithFields(applog.Fields{
+				"area":    areaID,
+				"insight": ins.Name,
+				"round":   round,
+				"before":  countUndecidable(ins.QuantifierVerdicts),
+				"after":   countUndecidable(merged.QuantifierVerdicts),
+			}).Warn("Rejecting repair round: it left more claims unverifiable than it found")
+			continue
+		}
 		if countRefuted(merged.QuantifierVerdicts) > countRefuted(ins.QuantifierVerdicts) {
 			applog.WithFields(applog.Fields{
 				"area":    areaID,
@@ -489,6 +510,18 @@ func refutedSteps(failed []models.QuantifierVerdict, stepByID map[int]*models.Ex
 		}
 	}
 	return out
+}
+
+// countUndecidable counts the claims the evaluator declined to settle. A repair
+// round may not raise it: see the rejection that reads this.
+func countUndecidable(verdicts []models.QuantifierVerdict) int {
+	n := 0
+	for _, v := range verdicts {
+		if v.Status == QuantifierUndecidable {
+			n++
+		}
+	}
+	return n
 }
 
 func countRefuted(verdicts []models.QuantifierVerdict) int {

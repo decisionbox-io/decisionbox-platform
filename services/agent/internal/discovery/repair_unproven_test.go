@@ -709,3 +709,82 @@ func TestEvaluate_APaginatedTopNStaysUndecidable(t *testing.T) {
 		t.Errorf("capped and ordered: status = undecidable (%s), want it decided", v[0].Reason)
 	}
 }
+
+// unprovenRepairs matches a claim by its text, so a rewrite that REPHRASES the
+// sentence and points the new declaration at an uncited step slips past it: the old
+// text is gone so nothing recognises the refuted claim, and undecidable is not a
+// failure, so the refutation simply disappears. Counting is text-independent.
+func TestRepair_RejectsARoundThatRenamesAClaimIntoUndecidability(t *testing.T) {
+	renamed := `{"insights":[{
+		"name":"Furniture drags the top ten",
+		"description":"Tables is among the weakest lines by profit. Chairs leads the category on volume.",
+		"severity":"high","source_steps":[4],
+		"quantifier_claims":[{"claim":"Tables is among the weakest lines by profit","kind":"only",
+			"step":99,"filter":"profit < 0","top_n":10,"top_n_column":"sales"}]
+	}]}`
+	o, provider := newRepairOrchestrator(renamed, renamed)
+
+	got, _ := repairOne(t, o, refutedInsight())
+
+	if len(provider.Calls) != 2 {
+		t.Fatalf("LLM calls = %d, want 2 (both rounds attempted and both rejected)", len(provider.Calls))
+	}
+	if len(got.Repair.Fixed) != 0 {
+		t.Errorf("fixed = %v; the rewrite exempted the claim from checking rather than correcting it", got.Repair.Fixed)
+	}
+	if got.Repair.Outcome == models.RepairRepaired {
+		t.Errorf("outcome = %q; no predicate was ever proven", got.Repair.Outcome)
+	}
+}
+
+// A claim already undecidable at entry must not block repair of a different,
+// refuted one — the count only has to not grow.
+func TestRepair_AnAlreadyUndecidableClaimDoesNotBlockTheRound(t *testing.T) {
+	entry := refutedInsight()
+	// A second claim citing an uncited step: undecidable on arrival.
+	entry.QuantifierClaims = append(entry.QuantifierClaims, models.QuantifierClaim{
+		Claim: "Bookcases trails on volume", Kind: QuantifierOnly,
+		Step: 77, Filter: "sales < 1",
+	})
+	entry.Description += " Bookcases trails on volume."
+
+	fixed := `{"insights":[{
+		"name":"Furniture drags the top ten",
+		"description":"Tables is one of two loss-making sub-categories among the 10 largest by sales. Chairs leads the category on volume. Bookcases trails on volume.",
+		"severity":"high","source_steps":[4],
+		"quantifier_claims":[
+			{"claim":"Tables is one of two loss-making sub-categories among the 10 largest by sales","kind":"cardinality",
+			 "step":4,"filter":"profit < 0","top_n":10,"top_n_column":"sales","count":2},
+			{"claim":"Bookcases trails on volume","kind":"only","step":77,"filter":"sales < 1"}
+		]
+	}]}`
+	o, _ := newRepairOrchestrator(fixed)
+
+	insights := []models.Insight{entry}
+	attachQuantifierVerdicts(insights, step4ByID())
+	if countRefuted(insights[0].QuantifierVerdicts) != 1 || countUndecidable(insights[0].QuantifierVerdicts) != 1 {
+		t.Fatalf("precondition: want 1 refuted and 1 undecidable, got %+v", insights[0].QuantifierVerdicts)
+	}
+	o.repairRefutedInsights(context.Background(), "profitability", insights, step4ByID(), 8000)
+	got := insights[0]
+
+	if len(got.Repair.Fixed) != 1 {
+		t.Errorf("fixed = %v, want the refuted claim corrected despite a pre-existing undecidable one", got.Repair.Fixed)
+	}
+	if got.Repair.Outcome != models.RepairRepaired {
+		t.Errorf("outcome = %q, want %q", got.Repair.Outcome, models.RepairRepaired)
+	}
+}
+
+func TestCountUndecidable(t *testing.T) {
+	v := []models.QuantifierVerdict{
+		{Status: QuantifierHolds}, {Status: QuantifierFails},
+		{Status: QuantifierUndecidable}, {Status: QuantifierUndecidable},
+	}
+	if got := countUndecidable(v); got != 2 {
+		t.Errorf("countUndecidable() = %d, want 2", got)
+	}
+	if got := countUndecidable(nil); got != 0 {
+		t.Errorf("countUndecidable(nil) = %d, want 0", got)
+	}
+}
