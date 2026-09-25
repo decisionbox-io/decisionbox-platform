@@ -1,0 +1,660 @@
+package discovery
+
+import (
+	"fmt"
+	"math"
+	"sort"
+	"strconv"
+	"strings"
+
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
+)
+
+// A quantifier claim is any statement whose truth depends on rows other than
+// the ones it names: "the only loss-making line", "the second largest pool",
+// "margin improved every year", "p_type has 15 values". The model writes these
+// from a table it can see, and gets them wrong in a specific way — it reasons
+// over the ordering the table happens to carry rather than the one the claim
+// needs.
+//
+// The observed case: an insight claimed Tables was "the only top-10 revenue
+// line running a loss". Its cited step held all seventeen sub-categories with
+// both sales and profit, inline, ordered by profit. Ranking on sales while
+// filtering on profit needed a mental re-sort of seventeen rows, and Bookcases
+// — rank 9 by sales, and loss-making — was missed. The document's own body
+// named Bookcases as loss-making two sentences later.
+//
+// Nothing there was unknowable. The rows were present, correct and complete;
+// only the check was not performed. So the check is what moves into Go: the
+// model declares which step, column and predicate a quantifier claim rests on,
+// and Go evaluates the predicate over that step's full rows.
+//
+// This only ever catches a claim the model declares. A superlative it does not
+// recognise as one carries no declaration and is not checked. The alternative —
+// scanning prose for "only", "largest", "every" and failing an undeclared match
+// — is a regular expression over natural language deciding whether a claim is
+// true, which on this corpus produced one true positive and five false ones.
+// Declaring is mechanical and checking is not, so only the checking moves here.
+
+// QuantifierKind names the predicate shape a claim rests on. Each kind fixes
+// what Go must evaluate and which of QuantifierClaim's fields it reads.
+type QuantifierKind = string
+
+const (
+	// QuantifierOnly — exactly one row in scope satisfies Filter.
+	QuantifierOnly QuantifierKind = "only"
+	// QuantifierRank — the row Subject identifies sits at Rank by Column.
+	QuantifierRank QuantifierKind = "rank"
+	// QuantifierMonotonic — Column moves in one direction across the rows.
+	QuantifierMonotonic QuantifierKind = "monotonic"
+	// QuantifierCardinality — Count rows in scope satisfy Filter.
+	QuantifierCardinality QuantifierKind = "cardinality"
+	// QuantifierAll — every row in scope satisfies Filter.
+	//
+	// Added because its absence produced wrong answers rather than no answers.
+	// Without it the model reached for the nearest kind it had and declared
+	// "Tables ran a loss in every year" as monotonic, so the evaluator
+	// faithfully reported that profit was not monotonically decreasing -- true,
+	// irrelevant, and read as the claim being refuted. A missing kind is not a
+	// gap in coverage; it is a false positive waiting for the model to
+	// approximate it.
+	QuantifierAll QuantifierKind = "all"
+)
+
+// QuantifierStatus is the outcome of evaluating one claim.
+type QuantifierStatus = string
+
+const (
+	// QuantifierHolds — the predicate is true over the step's rows.
+	QuantifierHolds QuantifierStatus = "holds"
+	// QuantifierFails — the predicate is false over the step's rows. This is
+	// the only status that says the claim is wrong.
+	QuantifierFails QuantifierStatus = "fails"
+	// QuantifierUndecidable — the rows cannot settle it: the step is missing,
+	// the column is absent, the filter is richer than the evaluator reads, or
+	// the step is a capped view and no rank, count or uniqueness claim over a
+	// top-N is decidable at all.
+	//
+	// Distinct from Fails on purpose. Undecidable is the evaluator declining;
+	// treating it as a failure would reject sound claims for the evaluator's
+	// own limits, which is how a checker starts costing more than it catches.
+	QuantifierUndecidable QuantifierStatus = "undecidable"
+)
+
+// StepRows is the evidence an evaluation runs over: one step's full result rows
+// plus whatever the source (or E1) said about their fidelity.
+type StepRows struct {
+	Rows    []map[string]any
+	Quality []gowarehouse.QualityCaveat
+}
+
+// EvaluateQuantifierClaims settles every declared claim against the steps it
+// cites, in declaration order.
+func EvaluateQuantifierClaims(claims []models.QuantifierClaim, steps map[int]StepRows) []models.QuantifierVerdict {
+	out := make([]models.QuantifierVerdict, 0, len(claims))
+	for _, c := range claims {
+		out = append(out, evaluateQuantifierClaim(c, steps))
+	}
+	return out
+}
+
+func evaluateQuantifierClaim(c models.QuantifierClaim, steps map[int]StepRows) models.QuantifierVerdict {
+	v := models.QuantifierVerdict{Claim: c.Claim, Kind: c.Kind, Step: c.Step}
+	undecidable := func(format string, args ...any) models.QuantifierVerdict {
+		v.Status = QuantifierUndecidable
+		v.Reason = fmt.Sprintf(format, args...)
+		return v
+	}
+
+	ev, ok := steps[c.Step]
+	if !ok {
+		return undecidable("step %d is not among this insight's evidence", c.Step)
+	}
+	if len(ev.Rows) == 0 {
+		return undecidable("step %d returned no rows", c.Step)
+	}
+
+	// A capped step usually cannot settle a rank, a count or a uniqueness
+	// claim: the rows it withheld are exactly the ones that would refute one.
+	//
+	// Unless the claim is about the returned rows themselves. "the only
+	// loss-making line among the 10 largest by sales", declared with top_n 10
+	// against a step that returned exactly those 10, ranges over a set the
+	// step contains in full -- there the cap is the claim's scope, not a hole
+	// in its evidence. Refusing that one was measured: it is the shape of the
+	// claim this evaluator exists for, and a blanket refusal declined the only
+	// declaration in a five-sample replay that named the original defect.
+	if rowsIncomplete(ev.Quality) && !decidableDespiteIncompleteRows(c, ev) {
+		return undecidable("step %d is a capped top-N view and this claim ranges beyond the rows it returned, so it is not decidable", c.Step)
+	}
+
+	scope, err := scopeRows(ev.Rows, c)
+	if err != nil {
+		return undecidable("%v", err)
+	}
+
+	switch c.Kind {
+	case QuantifierOnly:
+		return evalOnly(v, scope, c)
+	case QuantifierCardinality:
+		return evalCardinality(v, scope, c)
+	case QuantifierAll:
+		return evalAll(v, scope, c)
+	case QuantifierRank:
+		return evalRank(v, scope, c)
+	case QuantifierMonotonic:
+		return evalMonotonic(v, scope, c)
+	default:
+		return undecidable("unrecognised quantifier kind %q", c.Kind)
+	}
+}
+
+// scopeRows narrows the step's rows to the set the claim ranges over: the rows
+// matching Scope, and then the top N of those by a column, when the claim says
+// so.
+//
+// Scope is applied first. A claim about the ten largest Tables months means the
+// ten largest among the Tables rows, not the Tables rows among the ten largest
+// overall -- those are different sets and only the first is what the sentence
+// says.
+func scopeRows(rows []map[string]any, c models.QuantifierClaim) ([]map[string]any, error) {
+	if c.Scope != "" {
+		scoped, err := filterRows(rows, c.Scope)
+		if err != nil {
+			return nil, fmt.Errorf("scope %q: %w", c.Scope, err)
+		}
+		if len(scoped) == 0 {
+			return nil, fmt.Errorf("scope %q selects no rows of step %d", c.Scope, c.Step)
+		}
+		rows = scoped
+	}
+	if c.TopN <= 0 {
+		return rows, nil
+	}
+	if c.TopNColumn == "" {
+		return nil, fmt.Errorf("top_n %d given without top_n_column", c.TopN)
+	}
+	sorted, err := sortByColumn(rows, c.TopNColumn, "desc")
+	if err != nil {
+		return nil, err
+	}
+	if c.TopN < len(sorted) {
+		sorted = sorted[:c.TopN]
+	}
+	return sorted, nil
+}
+
+func evalOnly(v models.QuantifierVerdict, scope []map[string]any, c models.QuantifierClaim) models.QuantifierVerdict {
+	matched, err := filterRows(scope, c.Filter)
+	if err != nil {
+		v.Status, v.Reason = QuantifierUndecidable, err.Error()
+		return v
+	}
+	if len(matched) == 1 {
+		v.Status = QuantifierHolds
+		v.Reason = fmt.Sprintf("exactly 1 of %d rows in scope satisfies %s", len(scope), c.Filter)
+		return v
+	}
+	v.Status = QuantifierFails
+	v.Reason = fmt.Sprintf("%d of %d rows in scope satisfy %s, not 1%s",
+		len(matched), len(scope), c.Filter, namesOf(scope, matched))
+	return v
+}
+
+func evalCardinality(v models.QuantifierVerdict, scope []map[string]any, c models.QuantifierClaim) models.QuantifierVerdict {
+	matched := scope
+	if c.Filter != "" {
+		var err error
+		if matched, err = filterRows(scope, c.Filter); err != nil {
+			v.Status, v.Reason = QuantifierUndecidable, err.Error()
+			return v
+		}
+	}
+	// An omitted count decodes as zero, and zero read as an assertion turns a
+	// sound insight into a refutation: any matching row then contradicts a number
+	// the model never stated, and repair rewrites or deletes the sentence over
+	// missing metadata rather than contradictory rows. The schema asks for `count`
+	// but cannot require it per-claim, so absence has to be handled here.
+	//
+	// The cost is that an asserted zero cannot be declared as a cardinality, which
+	// the reason says out loud. It is the smaller loss: "no row satisfies this" is
+	// what `only` and `all` already express, and this matches the mechanical
+	// substitution, which has always declined on a non-positive count.
+	if c.Count <= 0 {
+		v.Status = QuantifierUndecidable
+		v.Reason = "a cardinality claim needs a positive `count`; none was declared, " +
+			"and an omitted count cannot be told from an asserted zero"
+		return v
+	}
+	if len(matched) == c.Count {
+		v.Status = QuantifierHolds
+		v.Reason = fmt.Sprintf("%d rows in scope, as claimed", c.Count)
+		return v
+	}
+	v.Status = QuantifierFails
+	v.Reason = fmt.Sprintf("%d rows in scope satisfy the claim, not the %d asserted", len(matched), c.Count)
+	return v
+}
+
+// decidableDespiteIncompleteRows reports whether a claim over an incomplete result
+// can still be settled.
+//
+// Only a CAP can be rescued, and only by a top-N scope that the rows show they
+// contain. A page cannot: rows 101-117 of an ordering are perfectly sorted by the
+// ranking column and contain none of the top N, so sortedness -- the evidence
+// scopedWithinResult relies on -- proves nothing there. Sampled rows are the same
+// kind of problem, values rather than positions. So anything beyond a cap refuses
+// outright.
+func decidableDespiteIncompleteRows(c models.QuantifierClaim, ev StepRows) bool {
+	for _, cav := range ev.Quality {
+		if cav.Kind != gowarehouse.QualityTruncated {
+			return false
+		}
+	}
+	return scopedWithinResult(c, ev.Rows)
+}
+
+// scopedWithinResult reports whether the claim ranges only over rows the step
+// actually returned.
+//
+// TopN only, deliberately. A Scope filter narrows the rows in hand but says
+// nothing about the rows the cap withheld -- one of those could match the scope
+// and refute the claim, which is the situation this refusal exists for.
+//
+// A top-N scope is different in kind: it names a set the result may contain in
+// full. But "may" is the whole difficulty, and counting rows does not settle it.
+// `TopN <= returned` says only that enough rows came back; it does not say they
+// are the right ones. A query capped with `ORDER BY p_brand LIMIT 25` returns 25
+// rows that are not the top 25 by revenue, and evaluating a revenue top-N over
+// them silently ranks a sample -- which can refute a true claim and, with repair
+// downstream, delete a sound sentence over evidence that never contained the
+// answer.
+//
+// So the rows must show the order the claim assumes. scopeRows takes the top N by
+// TopNColumn descending, so a cap that produced this result by that same ordering
+// leaves it already sorted that way; one that ordered by anything else almost
+// certainly does not. This is a necessary condition rather than a sufficient one
+// -- a result ordered by something else could be coincidentally sorted, and ties
+// are indistinguishable -- but it turns an assumption into a check, using only
+// rows already in hand and no SQL parsing.
+func scopedWithinResult(c models.QuantifierClaim, rows []map[string]any) bool {
+	// A scope on top of a cap is out of reach whichever order they were applied
+	// in. The cap is global -- it ran in the warehouse, before any scope this
+	// claim names -- so the rows in hand are the global top N, and the scoped
+	// rows among them are not the scoped top N: the ones that would complete it
+	// were withheld by the cap. Filtering what came back would rank a sample and
+	// report it as the population.
+	if c.Scope != "" {
+		return false
+	}
+	if c.TopN <= 0 || c.TopN > len(rows) {
+		return false
+	}
+	if c.TopNColumn == "" {
+		return false
+	}
+	return sortedDescBy(rows, c.TopNColumn)
+}
+
+// sortedDescBy reports whether rows are already in non-increasing order by a
+// numeric column. A row missing the column, or holding a value that is not
+// numeric, reports false: that is the evaluator unable to confirm the order, and
+// the caller treats that as out of reach rather than as confirmation.
+func sortedDescBy(rows []map[string]any, column string) bool {
+	prev, have := 0.0, false
+	for _, r := range rows {
+		v, ok := r[column]
+		if !ok {
+			return false
+		}
+		f, ok := asFloat(v)
+		if !ok {
+			return false
+		}
+		if have && f > prev {
+			return false
+		}
+		prev, have = f, true
+	}
+	return have
+}
+
+func evalAll(v models.QuantifierVerdict, scope []map[string]any, c models.QuantifierClaim) models.QuantifierVerdict {
+	matched, err := filterRows(scope, c.Filter)
+	if err != nil {
+		v.Status, v.Reason = QuantifierUndecidable, err.Error()
+		return v
+	}
+	if len(matched) == len(scope) {
+		v.Status = QuantifierHolds
+		v.Reason = fmt.Sprintf("all %d rows in scope satisfy %s", len(scope), c.Filter)
+		return v
+	}
+	var counter []map[string]any
+	for _, r := range scope {
+		found := false
+		for _, m := range matched {
+			if sameRow(r, m) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			counter = append(counter, r)
+		}
+	}
+	v.Status = QuantifierFails
+	v.Reason = fmt.Sprintf("%d of %d rows in scope do not satisfy %s%s",
+		len(counter), len(scope), c.Filter, namesOf(scope, counter))
+	return v
+}
+
+func evalRank(v models.QuantifierVerdict, scope []map[string]any, c models.QuantifierClaim) models.QuantifierVerdict {
+	if c.Rank <= 0 {
+		v.Status, v.Reason = QuantifierUndecidable, "rank claim carries no rank"
+		return v
+	}
+	if c.Column == "" {
+		v.Status, v.Reason = QuantifierUndecidable, "rank claim names no column to rank by"
+		return v
+	}
+	// Same rule as the trend: a direction the evaluator cannot read is not
+	// guessed at. sortByColumn recognises only "asc" and sorts descending for
+	// everything else, so "ASC" or "ascending" used to invert the claim silently
+	// and refute a true lowest-rank statement.
+	asc, ok := rankOrder(c.Order)
+	if !ok {
+		v.Status, v.Reason = QuantifierUndecidable,
+			fmt.Sprintf("order %q is not one this evaluator reads; declare `asc` or `desc`", c.Order)
+		return v
+	}
+	order := "desc"
+	if asc {
+		order = "asc"
+	}
+	sorted, err := sortByColumn(scope, c.Column, order)
+	if err != nil {
+		v.Status, v.Reason = QuantifierUndecidable, err.Error()
+		return v
+	}
+	subject, err := filterRows(sorted, c.Subject)
+	if err != nil {
+		v.Status, v.Reason = QuantifierUndecidable, err.Error()
+		return v
+	}
+	if len(subject) != 1 {
+		v.Status = QuantifierUndecidable
+		v.Reason = fmt.Sprintf("subject %q selects %d rows, not 1", c.Subject, len(subject))
+		return v
+	}
+	// Rank by value, not by row position. Sorting is stable, so a tie used to be
+	// resolved by whichever row the warehouse happened to return first: two rows
+	// level at the top made "X is the largest" with rank 1 FAIL whenever X came
+	// second, and repair then rewrote or deleted a sentence the rows support.
+	//
+	// Competition ranking instead -- one plus the number of rows strictly ahead --
+	// and a tie AT the subject's own value is undecidable rather than either
+	// answer. "X is the largest" when X only ties for largest is not false, and it
+	// is not the exclusive claim the sentence makes either; the rows cannot settle
+	// which was meant.
+	subjectVal, ok := asFloat(subject[0][c.Column])
+	if !ok {
+		v.Status, v.Reason = QuantifierUndecidable,
+			fmt.Sprintf("column %q is missing or not numeric on the subject row", c.Column)
+		return v
+	}
+	ahead, level := 0, 0
+	for _, r := range sorted {
+		f, ok := asFloat(r[c.Column])
+		if !ok {
+			continue
+		}
+		switch {
+		case f == subjectVal:
+			level++
+		case asc && f < subjectVal, !asc && f > subjectVal:
+			ahead++
+		}
+	}
+	if level > 1 {
+		v.Status = QuantifierUndecidable
+		v.Reason = fmt.Sprintf("%d rows tie with %s at %g by %s, so its rank is not decided by the rows",
+			level, c.Subject, subjectVal, c.Column)
+		return v
+	}
+	actual := ahead + 1
+	if actual == c.Rank {
+		v.Status = QuantifierHolds
+		v.Reason = fmt.Sprintf("%s is rank %d by %s (%s)", c.Subject, actual, c.Column, order)
+		return v
+	}
+	v.Status = QuantifierFails
+	v.Reason = fmt.Sprintf("%s is rank %d by %s (%s), not %d", c.Subject, actual, c.Column, order, c.Rank)
+	return v
+}
+
+func evalMonotonic(v models.QuantifierVerdict, scope []map[string]any, c models.QuantifierClaim) models.QuantifierVerdict {
+	if c.Column == "" {
+		v.Status, v.Reason = QuantifierUndecidable, "monotonic claim names no column"
+		return v
+	}
+	vals := make([]float64, 0, len(scope))
+	for _, r := range scope {
+		f, ok := asFloat(r[c.Column])
+		if !ok {
+			v.Status = QuantifierUndecidable
+			v.Reason = fmt.Sprintf("column %q is not numeric in every row of step %d", c.Column, c.Step)
+			return v
+		}
+		vals = append(vals, f)
+	}
+	if len(vals) < 2 {
+		v.Status, v.Reason = QuantifierUndecidable, "fewer than 2 rows, so no direction to check"
+		return v
+	}
+	// The direction has to be stated, not assumed. Defaulting to increasing meant
+	// an omitted trend -- or any spelling the schema's description does not pin,
+	// "decrease", "down", "DECREASING" -- refuted a correctly decreasing series,
+	// again over metadata rather than rows.
+	up, ok := trendDirection(c.Trend)
+	if !ok {
+		v.Status = QuantifierUndecidable
+		v.Reason = fmt.Sprintf("trend %q is not one this evaluator reads; declare `increasing` or `decreasing`", c.Trend)
+		return v
+	}
+	for i := 1; i < len(vals); i++ {
+		broke := vals[i] <= vals[i-1]
+		if !up {
+			broke = vals[i] >= vals[i-1]
+		}
+		if broke {
+			v.Status = QuantifierFails
+			v.Reason = fmt.Sprintf("%s is not %s throughout: it goes %g -> %g between rows %d and %d",
+				c.Column, trendWord(up), vals[i-1], vals[i], i, i+1)
+			return v
+		}
+	}
+	v.Status = QuantifierHolds
+	v.Reason = fmt.Sprintf("%s is %s across all %d rows", c.Column, trendWord(up), len(vals))
+	return v
+}
+
+// rankOrder reads a declared rank order, reporting true for ascending. An empty
+// order is the documented default, descending. Reports ok=false for any other
+// word, for the reason trendDirection does: a direction nobody stated is better
+// left unchecked than inferred, since inferring it backwards refutes a claim the
+// rows support.
+func rankOrder(order string) (asc bool, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(order)) {
+	case "", "desc":
+		return false, true
+	case "asc":
+		return true, true
+	}
+	return false, false
+}
+
+// trendDirection reads a declared trend, reporting true for increasing and false
+// for decreasing. Reports ok=false for anything else, including the empty string,
+// so a direction nobody stated is never inferred.
+//
+// Case and surrounding space are forgiven because they are transcription rather
+// than meaning; a different word is not, because guessing which direction
+// "decrease" or "down" meant is how a sound series gets refuted.
+func trendDirection(trend string) (up bool, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(trend)) {
+	case "increasing":
+		return true, true
+	case "decreasing":
+		return false, true
+	}
+	return false, false
+}
+
+func trendWord(up bool) string {
+	if up {
+		return "increasing"
+	}
+	return "decreasing"
+}
+
+// namesOf lists the rows that refuted an "only" claim, so a repair prompt can
+// quote them rather than a count. A model told "2 rows, not 1" has to find
+// those rows again, which is the step it got wrong in the first place.
+//
+// The label column is chosen from the data rather than guessed: the string
+// column with the most distinct values across the scope, ties broken by column
+// name. Picking the first string column found would depend on Go's map
+// iteration order and could name "Furniture" twice where the rows are Tables
+// and Bookcases.
+func namesOf(scope, matched []map[string]any) string {
+	col := labelColumn(scope)
+	if col == "" {
+		return ""
+	}
+	labels := make([]string, 0, len(matched))
+	for _, r := range matched {
+		if s, ok := r[col].(string); ok && s != "" {
+			labels = append(labels, s)
+		}
+	}
+	if len(labels) == 0 {
+		return ""
+	}
+	sort.Strings(labels)
+	return " (" + strings.Join(labels, ", ") + ")"
+}
+
+// labelColumn picks the string column that best identifies a row.
+func labelColumn(rows []map[string]any) string {
+	if len(rows) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(rows[0]))
+	for k, v := range rows[0] {
+		if _, ok := v.(string); ok {
+			names = append(names, k)
+		}
+	}
+	sort.Strings(names)
+	best, bestN := "", 0
+	for _, n := range names {
+		seen := map[string]struct{}{}
+		for _, r := range rows {
+			if s, ok := r[n].(string); ok {
+				seen[s] = struct{}{}
+			}
+		}
+		if len(seen) > bestN {
+			best, bestN = n, len(seen)
+		}
+	}
+	return best
+}
+
+// rowsIncomplete reports whether the source said these rows are not all the rows
+// the query asked for.
+//
+// Three kinds say that, and the distinction between them does not matter here: a
+// cap stopped the result short, rows were withheld -- which is what a paginated
+// page is, since it skipped the ones before it -- or values were sampled. All three
+// mean a claim about the population cannot be settled from what came back.
+//
+// Checking only `truncated` meant a paginated result read as complete, and the
+// offset caveat added for exactly that failure was attached and then ignored.
+// QualityRestricted is deliberately absent: it narrows COLUMNS, and every row the
+// query matched is still present.
+func rowsIncomplete(q []gowarehouse.QualityCaveat) bool {
+	for _, c := range q {
+		switch c.Kind {
+		case gowarehouse.QualityTruncated, gowarehouse.QualityWithheld, gowarehouse.QualitySampled:
+			return true
+		}
+	}
+	return false
+}
+
+func sameRow(a, b map[string]any) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, av := range a {
+		bv, ok := b[k]
+		if !ok || fmt.Sprint(av) != fmt.Sprint(bv) {
+			return false
+		}
+	}
+	return true
+}
+
+// sortByColumn returns the rows ordered by one numeric column. Stable, so rows
+// tied on the column keep their result order and a rank over a tie is at least
+// reproducible.
+func sortByColumn(rows []map[string]any, col, order string) ([]map[string]any, error) {
+	out := make([]map[string]any, len(rows))
+	copy(out, rows)
+	for _, r := range out {
+		if _, ok := asFloat(r[col]); !ok {
+			return nil, fmt.Errorf("column %q is missing or not numeric in every row, so it cannot be ranked", col)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		a, _ := asFloat(out[i][col])
+		b, _ := asFloat(out[j][col])
+		if order == "asc" {
+			return a < b
+		}
+		return a > b
+	})
+	return out, nil
+}
+
+func asFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		if math.IsNaN(n) || math.IsInf(n, 0) {
+			return 0, false
+		}
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case uint8:
+		return float64(n), true
+	case uint32:
+		return float64(n), true
+	case uint64:
+		return float64(n), true
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(n), 64)
+		return f, err == nil
+	default:
+		return 0, false
+	}
+}

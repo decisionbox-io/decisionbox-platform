@@ -127,6 +127,64 @@ func (r sqlRunner) RunQuery(ctx context.Context, q NativeQuery) (*QueryResult, e
 func (r sqlRunner) QueryLanguage() string  { return r.p.SQLDialect() }
 func (r sqlRunner) QueryFixPrompt() string { return r.p.SQLFixPrompt() }
 
+// RowCap forwards to the adapted provider when it can recognise a cap in its
+// own dialect, and reports none when it cannot.
+//
+// Forwarded rather than reimplemented because the dialect knowledge belongs to
+// the provider: this adapter cannot know whether the source it wraps caps with
+// LIMIT, TOP or FETCH FIRST. A provider that does not implement
+// RowCapInspector yields no caveat, which is the same answer it gave before
+// the interface existed.
+func (r sqlRunner) RowCap(query string) (int, bool) {
+	if i, ok := rowCapInspectorOf(r.p); ok {
+		return i.RowCap(query)
+	}
+	return 0, false
+}
+
+// rowCapInspectorOf finds the nearest RowCapInspector in a provider's unwrap
+// chain.
+//
+// A plain type assertion is not enough because Middleware is func(Provider)
+// Provider: a wrapper only has to satisfy Provider, so every optional capability
+// the concrete provider implemented is erased unless the wrapper re-exposes it.
+// That has already cost this codebase one declaration -- the governance wrapper
+// hid QueryRunner, which is why NonSQLLanguageOf reads the registry instead. Here
+// the consequence is that a deployment with middleware registered silently stops
+// attaching row-cap caveats, and a capped result looks like the whole population
+// again, which is the defect that motivated the interface.
+//
+// Unwrapping past a wrapper is safe for THIS capability specifically: RowCap
+// inspects a query string and returns a number. It opens no connection, runs
+// nothing, and can bypass no control a middleware imposes, so reaching the
+// dialect knowledge behind the wrapper cannot reach anything else.
+//
+// A strict improvement rather than a guarantee: a middleware that neither
+// implements RowCapInspector nor exposes Unwrap still yields no caveat, exactly as
+// before. The durable fix is for the middleware contract to require forwarding,
+// which cannot be imposed from here.
+func rowCapInspectorOf(p Provider) (RowCapInspector, bool) {
+	// Bounded so a wrapper that returns itself cannot spin.
+	for range 16 {
+		if p == nil {
+			return nil, false
+		}
+		if i, ok := p.(RowCapInspector); ok {
+			return i, true
+		}
+		u, ok := p.(interface{ Unwrap() Provider })
+		if !ok {
+			return nil, false
+		}
+		next := u.Unwrap()
+		if next == p {
+			return nil, false
+		}
+		p = next
+	}
+	return nil, false
+}
+
 // Unwrap exposes the adapted Provider so callers that still need the
 // table-shaped surface (schema discovery, identifier quoting) can reach it
 // without keeping a second reference alongside the runner.

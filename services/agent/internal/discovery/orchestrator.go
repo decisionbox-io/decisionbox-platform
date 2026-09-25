@@ -985,6 +985,13 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	}
 	applog.WithField("steps", explorationResult.TotalSteps).Info("Exploration completed")
 
+	// One line per executed step: the SQL, the row count, any fidelity caveat,
+	// and how much of the result the digest reproduces. A no-op unless
+	// DISCOVERY_TRACE is set.
+	for _, st := range explorationResult.Steps {
+		traceExplorationStep(st)
+	}
+
 	// Wire the exploration log into the verifier before the analysis loop
 	// runs. The verifier renders the SQL of cited source_steps into its
 	// generation prompt as authoritative column-grounding evidence — without
@@ -1138,6 +1145,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			"dropped": len(pickResult.Dropped),
 		}).Info("Analyzing area")
 
+		// How much of each cited step's result this area's prompt will show.
+		// A no-op unless DISCOVERY_TRACE is set.
+		traceExposure(area.ID, relevantSteps)
+
 		// Render the compacted view into the prompt. This replaces
 		// the old json.MarshalIndent of the full ExplorationStep,
 		// which on ERP-scale runs grew to >1M tokens.
@@ -1227,6 +1238,40 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 		// Skip validation when the analysis step produced no insights.
 		// The verifier only runs for successfully parsed insights.
+		// Settle every quantifier claim the model declared against the rows of
+		// the step it cited, before anything downstream reads the insight. The
+		// rows are already here and already correct; what was missing was the
+		// check.
+		attachQuantifierVerdicts(insights, stepByID)
+
+		// Bounded repair before discard (E5). Every insight whose own cited rows
+		// contradict a claim it declared gets the evaluator's reason handed back
+		// and up to ANALYSIS_REPAIR_MAX_ROUNDS attempts to say something true;
+		// whatever is still refuted loses the sentence rather than the finding.
+		// Runs before validation so the verifier judges the text that ships.
+		// A no-op on every insight that agreed with its evidence, which is
+		// almost all of them.
+		repair := o.repairRefutedInsights(ctx, area.ID, insights, stepByID, maxTokens)
+		step.InsightsRepaired = repair.repaired
+		step.InsightsClaimsDropped = repair.claimsDropped
+		step.InsightsUnrepaired = repair.unrepaired
+		step.AnalysisRepairRounds = repair.rounds
+		// Repair calls are LLM calls, so their cost belongs in this area's
+		// totals rather than disappearing into an untracked side channel.
+		step.TokensIn += repair.tokensIn
+		step.TokensOut += repair.tokensOut
+		step.DurationMs += repair.durationMs
+		if repair.rounds > 0 || repair.substituted > 0 {
+			applog.WithFields(applog.Fields{
+				"area":          area.ID,
+				"rounds":        repair.rounds,
+				"substituted":   repair.substituted,
+				"repaired":      repair.repaired,
+				"claim_dropped": repair.claimsDropped,
+				"unrepaired":    repair.unrepaired,
+			}).Info("Repaired insights whose declared claims their own evidence contradicted")
+		}
+
 		if len(insights) > 0 {
 			var areaResults []models.ValidationResult
 			areaResults, insightsValidatedThisRun = valPhase.validateInsights(ctx, insights, stepByID, area.ID, insightsValidatedThisRun)
@@ -1240,6 +1285,19 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// would produce a finding indistinguishable from a sound one. Deriving
 		// it means the label survives whatever the model wrote.
 		attachSourceQuality(insights, stepByID)
+
+		// Provenance of what ships: declared claims with their verdicts, then one
+		// line per insight naming the steps it cited.
+		//
+		// After repair so it reflects the text that ships rather than the draft,
+		// and after attachSourceQuality because the caveat is the single field
+		// most likely to explain a later false claim -- tracing before it was
+		// attached omitted `quality_caveats` from precisely the insights that
+		// cited a capped or withheld step. A no-op unless DISCOVERY_TRACE is set.
+		for i := range insights {
+			traceClaims(area.ID, insights[i])
+			traceInsight(area.ID, insights[i])
+		}
 
 		analysisLog = append(analysisLog, step)
 		allInsights = append(allInsights, insights...)
@@ -1569,7 +1627,63 @@ func splitMarkdownDescription(authored string) (plain, md string) {
 // envelope nor a bare array). A well-formed but empty result returns
 // (empty, 0, nil) so callers can distinguish "no insights" from "could not
 // parse".
+// decodeWithoutClaims re-decodes one insight with its `quantifier_claims` key
+// removed, for the case where that optional advisory field is the only thing the
+// strict decoder choked on. Reports false when the rest of the object does not
+// decode either, which is a genuinely unparseable insight.
+//
+// The declaration is dropped rather than coerced on purpose: a coerced claim is a
+// predicate nobody wrote, evaluated against real rows, and a wrong verdict is
+// worse than no verdict. An insight that arrives here ships with no evidence check
+// -- which is the state every insight that declares nothing is already in.
+func decodeWithoutClaims(raw json.RawMessage) (*models.Insight, bool) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, false
+	}
+	found := false
+	for k := range fields {
+		if strings.EqualFold(k, "quantifier_claims") {
+			delete(fields, k)
+			found = true
+		}
+	}
+	if !found {
+		return nil, false
+	}
+	stripped, err := json.Marshal(fields)
+	if err != nil {
+		return nil, false
+	}
+	var insight models.Insight
+	if err := json.Unmarshal(stripped, &insight); err != nil {
+		return nil, false
+	}
+	return &insight, true
+}
+
+// parseInsights reads an analysis response, keeping every insight it can. An
+// insight whose only defect is an unparseable `quantifier_claims` is salvaged
+// without it -- at first write, losing an advisory check costs less than losing the
+// finding.
 func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.Insight, int, error) {
+	return o.parseInsightsWith(response, areaID, true)
+}
+
+// parseInsightsStrict is parseInsights with the salvage off, for the repair path.
+//
+// The salvage is right at first write and wrong during repair. A repair response
+// carrying a corrected sentence and malformed declarations would have its
+// declarations stripped, leave zero claims, evaluate zero verdicts, and be accepted
+// with the original refuted claim recorded as FIXED -- no predicate rechecked. That
+// is exactly the hole the round-one acceptance rule closed, reopened through the
+// salvage: a rewrite would pass by losing its checks rather than by passing them.
+// So during repair a declaration that will not parse fails the round.
+func (o *Orchestrator) parseInsightsStrict(response string, areaID string) ([]models.Insight, int, error) {
+	return o.parseInsightsWith(response, areaID, false)
+}
+
+func (o *Orchestrator) parseInsightsWith(response string, areaID string, salvage bool) ([]models.Insight, int, error) {
 	cleaned := cleanJSONResponse(response)
 
 	var raws []json.RawMessage
@@ -1614,13 +1728,30 @@ func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.I
 	for i, raw := range raws {
 		var insight models.Insight
 		if err := json.Unmarshal(raw, &insight); err != nil {
-			dropped++
-			applog.WithFields(applog.Fields{
-				"area":   areaID,
-				"index":  i,
-				"reason": err.Error(),
-			}).Warn("Dropping unparseable insight; keeping the rest of the area")
-			continue
+			// quantifier_claims is optional and advisory: it buys an evidence
+			// check, and losing the check is a far smaller loss than losing the
+			// finding. The prompt asks the model to author it, so a slightly off
+			// shape -- a single object instead of an array, a string-typed step --
+			// is reachable, and a strict decode would discard the name, body,
+			// metrics and indicators to protect a field none of them depend on.
+			// Retry once without it and keep what parsed.
+			if salvaged, ok := decodeWithoutClaims(raw); ok && salvage {
+				applog.WithFields(applog.Fields{
+					"area":    areaID,
+					"index":   i,
+					"insight": salvaged.Name,
+					"reason":  err.Error(),
+				}).Warn("Dropped an unparseable quantifier_claims declaration and kept the insight; it ships unchecked")
+				insight = *salvaged
+			} else {
+				dropped++
+				applog.WithFields(applog.Fields{
+					"area":   areaID,
+					"index":  i,
+					"reason": err.Error(),
+				}).Warn("Dropping unparseable insight; keeping the rest of the area")
+				continue
+			}
 		}
 
 		// Whatever the model may have put here, it is not evidence about the
@@ -2216,7 +2347,14 @@ func (o *Orchestrator) buildAnalysisAreaPrompt(baseContext, areaPrompt, datasets
 	prompt := baseContext + "\n\n" + areaPrompt
 	prompt = strings.ReplaceAll(prompt, "{{DATASET}}", datasetsStr)
 	prompt = strings.ReplaceAll(prompt, "{{TOTAL_QUERIES}}", fmt.Sprintf("%d", totalQueries))
-	prompt = strings.ReplaceAll(prompt, "{{QUERY_RESULTS}}", queryResultsJSON)
+	// The legend goes immediately in front of the digest rather than into the
+	// domain-pack templates, so one wording covers every pack and a pack
+	// author cannot ship an area prompt that renders the digest unexplained.
+	prompt = strings.ReplaceAll(prompt, "{{QUERY_RESULTS}}", digestLegend+queryResultsJSON)
+	// Appended after the area body for the same reason the discipline rules
+	// are: a contract that lives only in pack templates is one a custom area
+	// does not have.
+	prompt += "\n\n" + quantifierContract
 	prompt = substituteDialectTokens(prompt, o.warehouse, refDataset)
 	return discipline.AppendAnalysisRules(prompt)
 }

@@ -1,0 +1,167 @@
+package discovery
+
+import (
+	"testing"
+
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
+)
+
+// quantifier_claims is optional and advisory: it buys an evidence check. The
+// prompt asks the model to author it, so a slightly off shape is reachable — and
+// a strict per-item decode would discard the name, body, metrics and indicators
+// of an otherwise sound finding to protect a field none of them depend on.
+func TestParseInsights_KeepsTheInsightWhenOnlyItsDeclarationWillNotDecode(t *testing.T) {
+	o := &Orchestrator{}
+	cases := map[string]string{
+		"step is a string":          `"step":"4"`,
+		"claims is a single object": `"quantifier_claims":{"claim":"x","kind":"only","step":4}`,
+		"count is a string":         `"count":"three"`,
+		"claims is a bare string":   `"quantifier_claims":"Tables is the only one"`,
+	}
+	for name, frag := range cases {
+		t.Run(name, func(t *testing.T) {
+			body := `{"insights":[{"name":"Tables drags the top ten",
+				"description":"Tables runs a loss.","severity":"high","source_steps":[4],`
+			if frag[0] == '"' && frag[1] == 'q' {
+				body += frag + `}]}`
+			} else {
+				body += `"quantifier_claims":[{"claim":"x","kind":"only",` + frag + `}]}]}`
+			}
+			insights, dropped, err := o.parseInsights(body, "profitability")
+			if err != nil {
+				t.Fatalf("parseInsights() error = %v", err)
+			}
+			if len(insights) != 1 {
+				t.Fatalf("got %d insights, want the finding kept", len(insights))
+			}
+			if dropped != 0 {
+				t.Errorf("dropped = %d, want 0: the finding was salvaged, not discarded", dropped)
+			}
+			if insights[0].Name != "Tables drags the top ten" {
+				t.Errorf("name = %q, want the authored name preserved", insights[0].Name)
+			}
+			if insights[0].Description == "" {
+				t.Error("description was lost")
+			}
+			// The declaration is dropped, not coerced: a predicate nobody wrote,
+			// evaluated over real rows, would be a verdict worse than none.
+			if len(insights[0].QuantifierClaims) != 0 {
+				t.Errorf("claims = %+v, want the unparseable declaration dropped", insights[0].QuantifierClaims)
+			}
+		})
+	}
+}
+
+// An insight that is broken beyond its declaration is still dropped — the
+// salvage must not turn every malformed object into a shipped finding.
+func TestParseInsights_StillDropsAnInsightBrokenBeyondItsDeclaration(t *testing.T) {
+	o := &Orchestrator{}
+	// severity is an object where a string belongs, and there is no
+	// quantifier_claims key at all, so there is nothing to strip.
+	body := `{"insights":[{"name":"x","severity":{"level":"high"}}]}`
+	insights, dropped, err := o.parseInsights(body, "profitability")
+	if err != nil {
+		t.Fatalf("parseInsights() error = %v", err)
+	}
+	if len(insights) != 0 || dropped != 1 {
+		t.Errorf("insights=%d dropped=%d, want 0 kept and 1 dropped", len(insights), dropped)
+	}
+}
+
+// A well-formed declaration must be untouched, or the salvage path would be
+// silently discarding checks on every clean run.
+func TestParseInsights_KeepsAWellFormedDeclaration(t *testing.T) {
+	o := &Orchestrator{}
+	body := `{"insights":[{"name":"x","description":"y.","severity":"high","source_steps":[4],
+		"quantifier_claims":[{"claim":"c","kind":"only","step":4,"filter":"profit < 0"}]}]}`
+	insights, dropped, err := o.parseInsights(body, "profitability")
+	if err != nil || len(insights) != 1 || dropped != 0 {
+		t.Fatalf("insights=%d dropped=%d err=%v", len(insights), dropped, err)
+	}
+	if len(insights[0].QuantifierClaims) != 1 {
+		t.Errorf("claims = %+v, want the declaration kept", insights[0].QuantifierClaims)
+	}
+}
+
+// decodeWithoutClaims is the salvage's whole mechanism, and its refusals matter as
+// much as its successes: it must not turn arbitrary broken JSON into an insight.
+func TestDecodeWithoutClaims(t *testing.T) {
+	// A declaration is present and the rest decodes: salvage.
+	got, ok := decodeWithoutClaims([]byte(`{"name":"n","severity":"high","quantifier_claims":{"bad":true}}`))
+	if !ok {
+		t.Fatal("want a salvage when only the declaration is malformed")
+	}
+	if got.Name != "n" || got.Severity != "high" {
+		t.Errorf("salvaged insight lost fields: %+v", got)
+	}
+	if len(got.QuantifierClaims) != 0 {
+		t.Errorf("claims = %+v, want them dropped", got.QuantifierClaims)
+	}
+
+	// The key is matched case-insensitively, as the decoder would.
+	if _, ok := decodeWithoutClaims([]byte(`{"name":"n","Quantifier_Claims":"bad"}`)); !ok {
+		t.Error("want the key matched case-insensitively")
+	}
+
+	for name, raw := range map[string]string{
+		"no declaration to strip":       `{"name":"n","severity":{"x":1}}`,
+		"not an object":                 `["a"]`,
+		"broken beyond the declaration": `{"severity":{"x":1},"quantifier_claims":"bad"}`,
+	} {
+		if _, ok := decodeWithoutClaims([]byte(raw)); ok {
+			t.Errorf("%s: want refusal", name)
+		}
+	}
+}
+
+// The salvage is right at first write and wrong during repair. A repair response
+// carrying a corrected sentence and malformed declarations would have them
+// stripped, leave zero claims, evaluate zero verdicts, and be accepted with the
+// original refuted claim recorded as FIXED — no predicate rechecked. That is the
+// round-one acceptance rule reopened through the salvage.
+func TestParseInsightsStrict_DoesNotSalvageAMalformedDeclaration(t *testing.T) {
+	o := &Orchestrator{}
+	body := `{"insights":[{"name":"n","description":"d.","severity":"high","source_steps":[4],
+		"quantifier_claims":[{"claim":"c","kind":"only","step":"4"}]}]}`
+
+	// First write keeps the finding.
+	if ins, dropped, err := o.parseInsights(body, "a"); err != nil || len(ins) != 1 || dropped != 0 {
+		t.Errorf("parseInsights: insights=%d dropped=%d err=%v, want the finding salvaged", len(ins), dropped, err)
+	}
+	// Repair does not.
+	ins, dropped, err := o.parseInsightsStrict(body, "a")
+	if err != nil {
+		t.Fatalf("parseInsightsStrict() error = %v", err)
+	}
+	if len(ins) != 0 || dropped != 1 {
+		t.Errorf("strict: insights=%d dropped=%d, want the rewrite rejected", len(ins), dropped)
+	}
+	// A well-formed rewrite still parses strictly.
+	good := `{"insights":[{"name":"n","description":"d.","severity":"high","source_steps":[4],
+		"quantifier_claims":[{"claim":"c","kind":"only","step":4,"filter":"x > 0"}]}]}`
+	if ins, _, err := o.parseInsightsStrict(good, "a"); err != nil || len(ins) != 1 || len(ins[0].QuantifierClaims) != 1 {
+		t.Errorf("a well-formed rewrite must parse strictly: %d insights, err=%v", len(ins), err)
+	}
+}
+
+// End to end: a repair round whose declarations will not parse must not be
+// accepted, and the refuted claim must not end up in Fixed.
+func TestRepair_ARoundWithUnparseableDeclarationsIsRejected(t *testing.T) {
+	// Corrected sentence, malformed declaration (string-typed step).
+	dodged := `{"insights":[{
+		"name":"Furniture drags the top ten",
+		"description":"Tables is one of two loss-making sub-categories. Chairs leads the category on volume.",
+		"severity":"high","source_steps":[4],
+		"quantifier_claims":[{"claim":"` + shippedOnlyClaim + `","kind":"only","step":"4","filter":"profit < 0"}]
+	}]}`
+	o, _ := newRepairOrchestrator(dodged, dodged)
+
+	got, _ := repairOne(t, o, refutedInsight())
+
+	if len(got.Repair.Fixed) != 0 {
+		t.Errorf("fixed = %v; no predicate was ever rechecked", got.Repair.Fixed)
+	}
+	if got.Repair.Outcome == models.RepairRepaired {
+		t.Errorf("outcome = %q; the rounds carried no readable declarations", got.Repair.Outcome)
+	}
+}

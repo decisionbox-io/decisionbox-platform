@@ -57,6 +57,36 @@ func insightResponseSchema() map[string]interface{} {
 			"description": "Signals/behaviours that characterize this pattern",
 			"items":       str("A single indicator"),
 		},
+		"quantifier_claims": map[string]interface{}{
+			"type": "array",
+			"description": "One entry per statement whose truth depends on rows besides those it names " +
+				"(only / every / largest / second largest / top N / improved each year / has N values)",
+			"items": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"claim":        str("The statement, verbatim as written in name, description or indicators"),
+					"kind":         str(`One of "only", "all", "rank", "monotonic", "cardinality"`),
+					"step":         map[string]interface{}{"type": "integer", "description": "Exploration step whose rows settle the claim"},
+					"column":       str("Column the claim ranks by, or whose direction it asserts"),
+					"filter":       str("Conjunction of `column <op> literal` terms joined by AND"),
+					"scope":        str("Which rows the claim is about, same grammar as filter; applied before top_n"),
+					"top_n":        map[string]interface{}{"type": "integer", "description": "Narrow the scope to the top N rows before applying the predicate"},
+					"top_n_column": str("Column the top-N scope is ranked by"),
+					"subject":      str("Terms selecting the single row a rank claim is about, same grammar as filter"),
+					"rank":         map[string]interface{}{"type": "integer", "description": "1-based rank from the order end"},
+					"count": map[string]interface{}{"type": "integer", "minimum": 1,
+						"description": "Asserted number of rows. Required for a cardinality claim, and must be positive: " +
+							"an omitted count cannot be told from an asserted zero, so a cardinality claim without one is not checked"},
+					"order": str(`"desc" (default) or "asc"`),
+					// An enum rather than a description, because a trend the evaluator
+					// cannot read is not checked at all. "decrease" or "down" used to be
+					// silently treated as increasing, which refuted correct series.
+					"trend": map[string]interface{}{"type": "string",
+						"enum":        []interface{}{"increasing", "decreasing"},
+						"description": "Required for a monotonic claim. Exactly \"increasing\" or \"decreasing\" — no other word is read"},
+				},
+			},
+		},
 		"source_steps": map[string]interface{}{
 			"type":        "array",
 			"description": "Exploration step numbers this insight is based on",

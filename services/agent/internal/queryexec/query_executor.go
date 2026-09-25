@@ -30,8 +30,12 @@ type QueryExecutor struct {
 	// when that is not SQL, and is "" for every SQL warehouse. It decides
 	// whether the tenant filter can be verified at all — see verifyFilter.
 	nonSQLLanguage string
-	currentStep    int
-	currentPhase   string
+	// sourceUsesBackticks is whether this source quotes identifiers the way
+	// BigQuery does, resolved once at construction. It decides only whether the
+	// dialect-quoting hint is offered to the SQL fixer -- see dialect_hint.go.
+	sourceUsesBackticks bool
+	currentStep         int
+	currentPhase        string
 }
 
 // FixOpts carries per-call context for the SQL fixer that does not belong on
@@ -132,15 +136,30 @@ func NewQueryExecutor(opts QueryExecutorOptions) *QueryExecutor {
 	case opts.Warehouse != nil:
 		nonSQL = gowarehouse.NonSQLLanguage(opts.Warehouse)
 	}
+	// Whether this source's own identifier quoting is the backtick. Asked of the
+	// provider rather than tabulated, and only for a source the registry-first
+	// precedence above calls SQL -- a source whose queries are its own request
+	// format may satisfy QuoteRef solely by embedding Provider without
+	// implementing it, and probing that panics.
+	sourceUsesBackticks := false
+	if sqlSource(opts) {
+		if q, ok := any(opts.Warehouse).(interface{ QuoteRef(...string) string }); ok && opts.Warehouse != nil {
+			sourceUsesBackticks = strings.Contains(q.QuoteRef("x"), "`")
+		} else if q, ok := runner.(interface{ QuoteRef(...string) string }); ok {
+			sourceUsesBackticks = strings.Contains(q.QuoteRef("x"), "`")
+		}
+	}
+
 	return &QueryExecutor{
-		runner:         runner,
-		nonSQLLanguage: nonSQL,
-		sqlFixer:       opts.SQLFixer,
-		debugLogger:    opts.DebugLogger,
-		maxRetries:     opts.MaxRetries,
-		filterField:    opts.FilterField,
-		filterValue:    opts.FilterValue,
-		currentPhase:   "exploration",
+		runner:              runner,
+		sourceUsesBackticks: sourceUsesBackticks,
+		nonSQLLanguage:      nonSQL,
+		sqlFixer:            opts.SQLFixer,
+		debugLogger:         opts.DebugLogger,
+		maxRetries:          opts.MaxRetries,
+		filterField:         opts.FilterField,
+		filterValue:         opts.FilterValue,
+		currentPhase:        "exploration",
 	}
 }
 
@@ -265,6 +284,33 @@ func (e *QueryExecutor) ExecuteNative(ctx context.Context, query gowarehouse.Nat
 			result.Fixed = attempt > 0
 			result.Quality = qr.Quality
 
+			// A cap the query imposed on itself is the one degradation the
+			// source has no way to report: it answered exactly what was
+			// asked, so qr.Quality is nil, and the rows come back accurate,
+			// ordered and stopping precisely where the query said to. Nothing
+			// downstream can re-derive it either, because by then the digest
+			// has already reduced the rows to statistics that describe the
+			// capped set as if it were the population.
+			//
+			// Only when the cap and the row count are equal. Fewer rows than
+			// the cap means the cap never bound and the result is complete.
+			result.Quality = appendRowCapCaveat(result.Quality, e.runner, result.FinalQuery, result.RowCount)
+
+			// Logged separately from the source-reported caveats below, and
+			// not by widening that loop, because the message there says the
+			// SOURCE declared the degradation and this one nobody declared —
+			// it was derived from the query. A caveat that fires invisibly is
+			// the failure mode this whole check exists to remove.
+			if len(result.Quality) > len(qr.Quality) {
+				applog.WithFields(applog.Fields{
+					"purpose": purpose,
+					"phase":   e.currentPhase,
+					"step":    e.currentStep,
+					"rows":    result.RowCount,
+					"caveat":  result.Quality[len(result.Quality)-1].String(),
+				}).Warn("Query capped its own result: the rows are a top-N view, not the population")
+			}
+
 			if qr.Degraded() {
 				caveats := make([]string, 0, len(qr.Quality))
 				for _, c := range qr.Quality {
@@ -346,7 +392,20 @@ func (e *QueryExecutor) ExecuteNative(ctx context.Context, query gowarehouse.Nat
 			"error":   err.Error(),
 		}).Info("Attempting SQL fix via LLM")
 
-		fix, fixErr := e.sqlFixer.FixSQL(ctx, currentQuery.String(), err.Error(), attempt, opts)
+		// Tell the fixer what is actually wrong when the engine's own error says
+		// so. Read from the warehouse's error, never from our statement -- see
+		// dialect_hint.go for why this is a hint rather than a rewrite.
+		fixErrMsg := err.Error()
+		if hint := dialectQuotingHint(err, e.sourceUsesBackticks); hint != "" {
+			fixErrMsg += "\n\n" + hint
+			applog.WithFields(applog.Fields{
+				"step":    e.currentStep,
+				"phase":   e.currentPhase,
+				"attempt": attempt + 1,
+			}).Info("Query was rejected over another dialect's identifier quoting; telling the fixer so explicitly")
+		}
+
+		fix, fixErr := e.sqlFixer.FixSQL(ctx, currentQuery.String(), fixErrMsg, attempt, opts)
 		if fixErr != nil {
 			// The fixer call failed (LLM transport error OR the response
 			// couldn't be parsed into SQL). Record the attempt so the

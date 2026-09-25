@@ -3,7 +3,9 @@ package models
 import (
 	"time"
 
+	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 )
 
 // InsightValidation aliases the shared validation type in
@@ -60,6 +62,21 @@ type Insight struct {
 	SourceSteps   []int                  `bson:"source_steps,omitempty" json:"source_steps,omitempty"`
 	Validation    *InsightValidation     `bson:"validation,omitempty" json:"validation,omitempty"`
 	DiscoveredAt  time.Time              `bson:"discovered_at" json:"discovered_at"`
+
+	// The evidence trail the agent derives while checking an insight against the
+	// rows it cited. Mirrored here because this struct -- not the agent's -- is
+	// what a discovery decodes into on its way to a client, so a field missing
+	// from it is a field BSON silently drops. All four were unreachable outside
+	// the agent until they were mirrored, however carefully their JSON names were
+	// chosen.
+	//
+	// Quality is what the sources said about the fidelity of the rows; the other
+	// three are derived and the model cannot author them, which is why their JSON
+	// names are not the names the analysis prompt uses.
+	Quality            []gowarehouse.QualityCaveat  `bson:"quality,omitempty" json:"evidence_quality,omitempty"`
+	QuantifierClaims   []gomodels.QuantifierClaim   `bson:"quantifier_claims,omitempty" json:"quantifier_claims,omitempty"`
+	QuantifierVerdicts []gomodels.QuantifierVerdict `bson:"quantifier_verdicts,omitempty" json:"evidence_checks,omitempty"`
+	Repair             *gomodels.InsightRepair      `bson:"repair,omitempty" json:"evidence_repair,omitempty"`
 }
 
 type Recommendation struct {
@@ -99,11 +116,27 @@ type ExplorationStep struct {
 	Action       string `bson:"action" json:"action"`
 	Thinking     string `bson:"thinking" json:"thinking"`
 	QueryPurpose string `bson:"query_purpose,omitempty" json:"query_purpose,omitempty"`
-	Query        string `bson:"query,omitempty" json:"query,omitempty"`
-	RowCount     int    `bson:"row_count,omitempty" json:"row_count,omitempty"`
-	ExecutionMs  int64  `bson:"execution_time_ms,omitempty" json:"execution_time_ms,omitempty"`
-	Error        string `bson:"error,omitempty" json:"error,omitempty"`
-	Fixed        bool   `bson:"fixed,omitempty" json:"fixed,omitempty"`
+	// Query is the statement the model PROPOSED; QueryExecuted is the one that ran
+	// when the self-healing fixer rewrote it. Mirrored because a field absent from
+	// THIS struct is a field BSON drops on the way to a client -- without it
+	// /exploration-steps served only the rejected proposal, and a repair can change
+	// what the answer means. Read them through EffectiveQuery.
+	Query         string `bson:"query,omitempty" json:"query,omitempty"`
+	QueryExecuted string `bson:"query_executed,omitempty" json:"query_executed,omitempty"`
+	RowCount      int    `bson:"row_count,omitempty" json:"row_count,omitempty"`
+	ExecutionMs   int64  `bson:"execution_time_ms,omitempty" json:"execution_time_ms,omitempty"`
+	Error         string `bson:"error,omitempty" json:"error,omitempty"`
+	Fixed         bool   `bson:"fixed,omitempty" json:"fixed,omitempty"`
+}
+
+// EffectiveQuery is the statement that produced this step's rows: the repaired one
+// when the fixer rewrote the model's proposal, otherwise the proposal itself.
+// Mirrors the agent's accessor so a client reads the same answer.
+func (s ExplorationStep) EffectiveQuery() string {
+	if s.QueryExecuted != "" {
+		return s.QueryExecuted
+	}
+	return s.Query
 }
 
 type AnalysisStep struct {
@@ -119,6 +152,15 @@ type AnalysisStep struct {
 	DurationMs        int64                 `bson:"duration_ms" json:"duration_ms"`
 	InsightCount      int                   `bson:"insight_count,omitempty" json:"insight_count,omitempty"`
 	Error             string                `bson:"error,omitempty" json:"error,omitempty"`
+
+	// Repair counters, mirrored for the same reason the insight's evidence trail
+	// is: absent here, BSON drops them and no client can tell a run where repair
+	// fired from one where it never did. All omitted on a clean run, so a non-zero
+	// value is itself the signal.
+	InsightsRepaired      int `bson:"insights_repaired,omitempty" json:"insights_repaired,omitempty"`
+	InsightsClaimsDropped int `bson:"insights_claims_dropped,omitempty" json:"insights_claims_dropped,omitempty"`
+	InsightsUnrepaired    int `bson:"insights_unrepaired,omitempty" json:"insights_unrepaired,omitempty"`
+	AnalysisRepairRounds  int `bson:"analysis_repair_rounds,omitempty" json:"analysis_repair_rounds,omitempty"`
 }
 
 // SelectedStep mirrors the agent's struct: which exploration step
