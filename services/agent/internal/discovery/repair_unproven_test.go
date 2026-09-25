@@ -541,3 +541,99 @@ func TestRepair_AnIndicatorOnlyCountFixIsRecordedAsFixedNotWithdrawn(t *testing.
 		t.Errorf("indicator left stale: %q", got.Indicators[0])
 	}
 }
+
+// A paginated page is incomplete evidence. The offset caveat was attached for
+// exactly that and then ignored, because the gate only looked for `truncated`.
+func TestEvaluate_APaginatedResultIsNotThePopulation(t *testing.T) {
+	rows := []map[string]any{{"p": "a", "profit": -1.0}, {"p": "b", "profit": -2.0}}
+	for name, cav := range map[string]gowarehouse.QualityCaveat{
+		"paginated (withheld)": gowarehouse.RowOffsetCaveat(100),
+		"capped (truncated)":   gowarehouse.RowCapCaveat(2),
+	} {
+		t.Run(name, func(t *testing.T) {
+			ev := map[int]StepRows{4: {Rows: rows, Quality: []gowarehouse.QualityCaveat{cav}}}
+			v := EvaluateQuantifierClaims([]models.QuantifierClaim{{
+				Claim: "2 lines run a loss", Kind: QuantifierCardinality,
+				Step: 4, Filter: "profit < 0", Count: 2,
+			}}, ev)
+			if v[0].Status != QuantifierUndecidable {
+				t.Errorf("status = %q (%s), want undecidable over incomplete rows", v[0].Status, v[0].Reason)
+			}
+		})
+	}
+	// Complete rows are still decided.
+	ev := map[int]StepRows{4: {Rows: rows}}
+	v := EvaluateQuantifierClaims([]models.QuantifierClaim{{
+		Claim: "2 lines run a loss", Kind: QuantifierCardinality,
+		Step: 4, Filter: "profit < 0", Count: 2,
+	}}, ev)
+	if v[0].Status != QuantifierHolds {
+		t.Errorf("complete rows: status = %q (%s), want holds", v[0].Status, v[0].Reason)
+	}
+}
+
+func TestRowsIncomplete(t *testing.T) {
+	k := func(kind gowarehouse.QualityKind) []gowarehouse.QualityCaveat {
+		return []gowarehouse.QualityCaveat{{Kind: kind}}
+	}
+	for _, kind := range []gowarehouse.QualityKind{
+		gowarehouse.QualityTruncated, gowarehouse.QualityWithheld, gowarehouse.QualitySampled,
+	} {
+		if !rowsIncomplete(k(kind)) {
+			t.Errorf("%q must count as incomplete rows", kind)
+		}
+	}
+	// Restricted narrows columns; every matching row is still present.
+	if rowsIncomplete(k(gowarehouse.QualityRestricted)) {
+		t.Error("restricted narrows columns, not rows")
+	}
+	if rowsIncomplete(nil) {
+		t.Error("no caveats means complete rows")
+	}
+}
+
+// Sorting is stable, so a tie used to be resolved by whichever row the warehouse
+// returned first: two rows level at the top made "X is the largest" FAIL whenever X
+// came second, and repair then rewrote or deleted a sentence the rows support.
+func TestEvaluate_TiedRanksAreUndecidableNotRefuted(t *testing.T) {
+	// Chairs and Tables tie for largest; Chairs is returned second.
+	tied := []map[string]any{
+		{"p": "Tables", "sales": 100.0},
+		{"p": "Chairs", "sales": 100.0},
+		{"p": "Copiers", "sales": 50.0},
+	}
+	ev := map[int]StepRows{4: {Rows: tied}}
+	for _, subject := range []string{"p = 'Chairs'", "p = 'Tables'"} {
+		v := EvaluateQuantifierClaims([]models.QuantifierClaim{{
+			Claim: subject + " is the largest by sales", Kind: QuantifierRank,
+			Step: 4, Column: "sales", Subject: subject, Rank: 1,
+		}}, ev)
+		if v[0].Status != QuantifierUndecidable {
+			t.Errorf("%s: status = %q (%s), want undecidable — it ties for largest",
+				subject, v[0].Status, v[0].Reason)
+		}
+		if !strings.Contains(v[0].Reason, "tie") {
+			t.Errorf("%s: reason should name the tie: %q", subject, v[0].Reason)
+		}
+	}
+	// An untied rank below the tie is still decided, by competition ranking: two
+	// rows are ahead of Copiers, so it is rank 3.
+	v := EvaluateQuantifierClaims([]models.QuantifierClaim{{
+		Claim: "Copiers is third by sales", Kind: QuantifierRank,
+		Step: 4, Column: "sales", Subject: "p = 'Copiers'", Rank: 3,
+	}}, ev)
+	if v[0].Status != QuantifierHolds {
+		t.Errorf("untied rank: status = %q (%s), want holds", v[0].Status, v[0].Reason)
+	}
+	// And a genuinely wrong rank over untied rows still fails.
+	untied := []map[string]any{
+		{"p": "Tables", "sales": 100.0}, {"p": "Chairs", "sales": 90.0},
+	}
+	v2 := EvaluateQuantifierClaims([]models.QuantifierClaim{{
+		Claim: "Chairs is the largest by sales", Kind: QuantifierRank,
+		Step: 4, Column: "sales", Subject: "p = 'Chairs'", Rank: 1,
+	}}, map[int]StepRows{4: {Rows: untied}})
+	if v2[0].Status != QuantifierFails {
+		t.Errorf("a wrong untied rank must still fail: %q (%s)", v2[0].Status, v2[0].Reason)
+	}
+}

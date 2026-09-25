@@ -69,7 +69,7 @@ func actualCardinality(c models.QuantifierClaim, evidence map[int]StepRows) (int
 	if !ok || len(ev.Rows) == 0 {
 		return 0, false
 	}
-	if isTruncated(ev.Quality) && !scopedWithinResult(c, ev.Rows) {
+	if rowsIncomplete(ev.Quality) && !scopedWithinResult(c, ev.Rows) {
 		return 0, false
 	}
 	scope, err := scopeRows(ev.Rows, c)

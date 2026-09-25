@@ -125,7 +125,7 @@ func evaluateQuantifierClaim(c models.QuantifierClaim, steps map[int]StepRows) m
 	// in its evidence. Refusing that one was measured: it is the shape of the
 	// claim this evaluator exists for, and a blanket refusal declined the only
 	// declaration in a five-sample replay that named the original defect.
-	if isTruncated(ev.Quality) && !scopedWithinResult(c, ev.Rows) {
+	if rowsIncomplete(ev.Quality) && !scopedWithinResult(c, ev.Rows) {
 		return undecidable("step %d is a capped top-N view and this claim ranges beyond the rows it returned, so it is not decidable", c.Step)
 	}
 
@@ -370,13 +370,42 @@ func evalRank(v models.QuantifierVerdict, scope []map[string]any, c models.Quant
 		v.Reason = fmt.Sprintf("subject %q selects %d rows, not 1", c.Subject, len(subject))
 		return v
 	}
-	actual := 0
-	for i, r := range sorted {
-		if sameRow(r, subject[0]) {
-			actual = i + 1
-			break
+	// Rank by value, not by row position. Sorting is stable, so a tie used to be
+	// resolved by whichever row the warehouse happened to return first: two rows
+	// level at the top made "X is the largest" with rank 1 FAIL whenever X came
+	// second, and repair then rewrote or deleted a sentence the rows support.
+	//
+	// Competition ranking instead -- one plus the number of rows strictly ahead --
+	// and a tie AT the subject's own value is undecidable rather than either
+	// answer. "X is the largest" when X only ties for largest is not false, and it
+	// is not the exclusive claim the sentence makes either; the rows cannot settle
+	// which was meant.
+	subjectVal, ok := asFloat(subject[0][c.Column])
+	if !ok {
+		v.Status, v.Reason = QuantifierUndecidable,
+			fmt.Sprintf("column %q is missing or not numeric on the subject row", c.Column)
+		return v
+	}
+	ahead, level := 0, 0
+	for _, r := range sorted {
+		f, ok := asFloat(r[c.Column])
+		if !ok {
+			continue
+		}
+		switch {
+		case f == subjectVal:
+			level++
+		case asc && f < subjectVal, !asc && f > subjectVal:
+			ahead++
 		}
 	}
+	if level > 1 {
+		v.Status = QuantifierUndecidable
+		v.Reason = fmt.Sprintf("%d rows tie with %s at %g by %s, so its rank is not decided by the rows",
+			level, c.Subject, subjectVal, c.Column)
+		return v
+	}
+	actual := ahead + 1
 	if actual == c.Rank {
 		v.Status = QuantifierHolds
 		v.Reason = fmt.Sprintf("%s is rank %d by %s (%s)", c.Subject, actual, c.Column, order)
@@ -526,9 +555,22 @@ func labelColumn(rows []map[string]any) string {
 	return best
 }
 
-func isTruncated(q []gowarehouse.QualityCaveat) bool {
+// rowsIncomplete reports whether the source said these rows are not all the rows
+// the query asked for.
+//
+// Three kinds say that, and the distinction between them does not matter here: a
+// cap stopped the result short, rows were withheld -- which is what a paginated
+// page is, since it skipped the ones before it -- or values were sampled. All three
+// mean a claim about the population cannot be settled from what came back.
+//
+// Checking only `truncated` meant a paginated result read as complete, and the
+// offset caveat added for exactly that failure was attached and then ignored.
+// QualityRestricted is deliberately absent: it narrows COLUMNS, and every row the
+// query matched is still present.
+func rowsIncomplete(q []gowarehouse.QualityCaveat) bool {
 	for _, c := range q {
-		if c.Kind == gowarehouse.QualityTruncated {
+		switch c.Kind {
+		case gowarehouse.QualityTruncated, gowarehouse.QualityWithheld, gowarehouse.QualitySampled:
 			return true
 		}
 	}
