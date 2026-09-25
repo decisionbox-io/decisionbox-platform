@@ -102,11 +102,35 @@ func substituteCount(ins *models.Insight, c *models.QuantifierClaim, from, to in
 		fields = append(fields, &ins.Indicators[i])
 	}
 
+	// What the claim says the number counts. Every other occurrence in the
+	// insight has to be counting the same thing, or this pass is not looking at
+	// one quantity restated -- it is looking at two numbers that happen to match.
+	unit := unitAfter(c.Claim, fromTok)
+	if unit == "" {
+		return false
+	}
+
 	hits := 0
 	for _, f := range fields {
 		switch len(standaloneNumber(*f, fromTok)) {
 		case 0:
+			continue
 		case 1:
+			// The same numeral counting something else. "12-month decline" or
+			// "12% margin" beside a count of 12 would be rewritten into a
+			// statement nobody made, and the insight recorded as mechanically
+			// repaired with new false sentences in it -- from the path that needs
+			// no model and is therefore the one nothing reviews.
+			//
+			// Refuse the whole substitution rather than skip the field. Skipping
+			// fixes the body and leaves the headline stale, which is the
+			// headline-contradicts-body shape this project already ships too much
+			// of. Refusing hands the model the entire finding, where it can
+			// correct every mention coherently or leave it for the sentence to be
+			// dropped.
+			if unitAfter(*f, fromTok) != unit {
+				return false
+			}
 			hits++
 		default:
 			// Ambiguous in this field, so ambiguous overall.
@@ -155,6 +179,33 @@ func standaloneNumber(text, tok string) []int {
 
 func numAdjacent(c byte) bool {
 	return (c >= '0' && c <= '9') || c == '.' || c == ',' || c == '_'
+}
+
+// unitAfter returns what the first standalone occurrence of tok in text is
+// counting: the word immediately after it, lowercased, or "" when there is none.
+//
+// Only spaces are skipped, never punctuation, and that is the point. "12
+// sub-categories" yields "sub-categories" while "12-month" yields "-month" and
+// "12%" yields "", so a hyphenated or suffixed number can never match a
+// space-separated noun. The comparison is between two answers from this same
+// function, so the exact spelling matters less than that it is consistent.
+func unitAfter(text, tok string) string {
+	at := standaloneNumber(text, tok)
+	if len(at) != 1 {
+		return ""
+	}
+	rest := text[at[0]+len(tok):]
+	rest = strings.TrimLeft(rest, " \t")
+	end := 0
+	for end < len(rest) {
+		c := rest[end]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '-' {
+			end++
+			continue
+		}
+		break
+	}
+	return strings.ToLower(rest[:end])
 }
 
 // dropClaimSentence removes the sentence carrying a claim from the insight's

@@ -245,6 +245,15 @@ func evalCardinality(v models.QuantifierVerdict, scope []map[string]any, c model
 // are indistinguishable -- but it turns an assumption into a check, using only
 // rows already in hand and no SQL parsing.
 func scopedWithinResult(c models.QuantifierClaim, rows []map[string]any) bool {
+	// A scope on top of a cap is out of reach whichever order they were applied
+	// in. The cap is global -- it ran in the warehouse, before any scope this
+	// claim names -- so the rows in hand are the global top N, and the scoped
+	// rows among them are not the scoped top N: the ones that would complete it
+	// were withheld by the cap. Filtering what came back would rank a sample and
+	// report it as the population.
+	if c.Scope != "" {
+		return false
+	}
 	if c.TopN <= 0 || c.TopN > len(rows) {
 		return false
 	}

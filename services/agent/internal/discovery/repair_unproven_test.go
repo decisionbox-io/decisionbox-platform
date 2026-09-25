@@ -209,3 +209,69 @@ func TestRepair_BothClaimsInOneSentenceCountAsDropped(t *testing.T) {
 		t.Errorf("tally.unrepaired = %d, want 0", tally.unrepaired)
 	}
 }
+
+// The mechanical count substitution needs no model, so nothing reviews what it
+// writes. Given a count corrected from 12 to 3, an unrelated "12-month decline"
+// or "12% margin" elsewhere in the insight was rewritten too — fabricating text
+// nobody wrote, and recording the insight as repaired while doing it.
+func TestSubstituteCount_RefusesWhenTheNumeralCountsSomethingElse(t *testing.T) {
+	for _, other := range []string{"12-month decline in Furniture", "12% average margin", "top 12 clerks"} {
+		t.Run(other, func(t *testing.T) {
+			ins := models.Insight{
+				Name:        "Loss-making lines",
+				Description: "12 sub-categories run a loss across the window.",
+				Indicators:  []string{other},
+			}
+			c := models.QuantifierClaim{
+				Claim: "12 sub-categories run a loss", Kind: QuantifierCardinality, Step: 4, Count: 12,
+			}
+			if substituteCount(&ins, &c, 12, 3) {
+				t.Errorf("substitution accepted; it would rewrite %q", other)
+			}
+			if ins.Description != "12 sub-categories run a loss across the window." {
+				t.Errorf("description was altered despite the refusal: %q", ins.Description)
+			}
+			if ins.Indicators[0] != other {
+				t.Errorf("indicator was altered: %q", ins.Indicators[0])
+			}
+		})
+	}
+}
+
+// The same numeral counting the same thing in two places is one quantity
+// restated, and both must move together — the case the substitution exists for.
+func TestSubstituteCount_StillPatchesEveryMentionOfTheSameQuantity(t *testing.T) {
+	ins := models.Insight{
+		Name:        "12 sub-categories run a loss",
+		Description: "12 sub-categories run a loss across the window.",
+		Indicators:  []string{"12 sub-categories below zero"},
+	}
+	c := models.QuantifierClaim{
+		Claim: "12 sub-categories run a loss", Kind: QuantifierCardinality, Step: 4, Count: 12,
+	}
+	if !substituteCount(&ins, &c, 12, 3) {
+		t.Fatal("substitution refused for one quantity restated three times")
+	}
+	for _, got := range []string{ins.Name, ins.Description, ins.Indicators[0], c.Claim} {
+		if strings.Contains(got, "12") {
+			t.Errorf("a mention was left stale: %q", got)
+		}
+	}
+	if c.Count != 3 {
+		t.Errorf("count = %d, want 3", c.Count)
+	}
+}
+
+// A scope on top of a cap is out of reach whichever order they were applied in:
+// the cap ran in the warehouse before any scope the claim names, so the rows in
+// hand are the GLOBAL top N and the scoped rows among them are not the scoped
+// top N.
+func TestScopedWithinResult_RefusesAScopeOverACappedResult(t *testing.T) {
+	desc := []map[string]any{{"r": "West", "rev": 30.0}, {"r": "East", "rev": 20.0}, {"r": "West", "rev": 10.0}}
+	if !scopedWithinResult(models.QuantifierClaim{TopN: 3, TopNColumn: "rev"}, desc) {
+		t.Fatal("precondition: an unscoped, correctly ordered top-N is in reach")
+	}
+	if scopedWithinResult(models.QuantifierClaim{TopN: 3, TopNColumn: "rev", Scope: "r = 'West'"}, desc) {
+		t.Error("a scoped top-N over a capped result must stay undecidable")
+	}
+}
