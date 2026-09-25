@@ -717,7 +717,7 @@ func (e *ExplorationEngine) Explore(
 		// Report step for live status
 		if e.onStep != nil {
 			errMsg := explorationStep.Error
-			e.onStep(step, action.Action, action.Thinking, explorationStep.Query, explorationStep.RowCount, explorationStep.ExecutionTimeMs, explorationStep.Fixed, errMsg, inputTokens, outputTokens, explorationStep.WarehouseID)
+			e.onStep(step, action.Action, action.Thinking, explorationStep.EffectiveQuery(), explorationStep.RowCount, explorationStep.ExecutionTimeMs, explorationStep.Fixed, errMsg, inputTokens, outputTokens, explorationStep.WarehouseID)
 		}
 
 		// Check if exploration is complete
@@ -1486,6 +1486,13 @@ func (e *ExplorationEngine) executeQuery(
 	step.FixAttempts = result.FixAttempts
 	step.Fixed = result.Fixed
 	step.FixHistory = result.FixHistory
+	// Record the statement that actually answered, when it is not the one the
+	// model proposed. step.Query keeps the proposal; without this the two are
+	// indistinguishable and every consumer that reads a step's SQL as evidence
+	// is reading a statement the warehouse rejected.
+	if result.FinalQuery != "" && result.FinalQuery != step.Query {
+		step.QueryExecuted = result.FinalQuery
+	}
 	// What the source said about the fidelity of these rows. It is knowable
 	// only here — the query succeeded and the rows look complete, so nothing
 	// downstream could re-derive that some were withheld.

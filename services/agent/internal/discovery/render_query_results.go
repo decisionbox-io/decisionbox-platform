@@ -89,7 +89,7 @@ func buildCompactedView(steps []models.ExplorationStep) []compactedStep {
 		out = append(out, compactedStep{
 			Step:         s.Step,
 			Action:       s.Action,
-			Query:        s.Query,
+			Query:        s.EffectiveQuery(),
 			QueryPurpose: s.QueryPurpose,
 			Thinking:     s.Thinking,
 			RowCount:     s.RowCount,

@@ -544,7 +544,30 @@ type ExplorationStep struct {
 	QueryPurpose string `bson:"query_purpose,omitempty" json:"query_purpose,omitempty"`
 
 	// Query execution (if action = query_data)
-	Query           string                   `bson:"query,omitempty" json:"query,omitempty"`
+	//
+	// Query is the statement the MODEL PROPOSED. It is not necessarily the
+	// statement that produced QueryResult -- see QueryExecuted.
+	Query string `bson:"query,omitempty" json:"query,omitempty"`
+
+	// QueryExecuted is the statement that actually ran, when the self-healing
+	// fixer rewrote the proposal. Empty when the proposal ran unchanged, which
+	// is why every reader should go through EffectiveQuery() rather than
+	// choosing between the two fields itself.
+	//
+	// Both are kept because they answer different questions. The proposal is
+	// what the model wrote, and that is the training signal -- a run where every
+	// statement had to be repaired is a fact about the model worth keeping.
+	// QueryExecuted is what the warehouse answered, and that is the only
+	// statement that explains the rows.
+	//
+	// The gap between them is not cosmetic. A repair can change the semantics
+	// of the answer: an observed run had APPROX_QUANTILES(x,4)[OFFSET(2)]
+	// rewritten to PERCENTILE_CONT(0.5) WITHIN GROUP -- an approximate median
+	// replaced by an exact one -- and a BigQuery UNNEST rewritten into a
+	// different grouping. Anything that grounds a claim on "the SQL that
+	// produced this evidence" and reads Query is grounding it on a statement
+	// the warehouse rejected.
+	QueryExecuted   string                   `bson:"query_executed,omitempty" json:"query_executed,omitempty"`
 	QueryResult     []map[string]interface{} `bson:"query_result,omitempty" json:"query_result,omitempty"`
 	RowCount        int                      `bson:"row_count,omitempty" json:"row_count,omitempty"`
 	ExecutionTimeMs int64                    `bson:"execution_time_ms,omitempty" json:"execution_time_ms,omitempty"`
@@ -602,6 +625,24 @@ type ExplorationStep struct {
 	DurationMs  int64  `bson:"duration_ms,omitempty" json:"duration_ms,omitempty"`
 
 	IsInsight bool `bson:"is_insight" json:"is_insight"`
+}
+
+// EffectiveQuery is the statement that produced this step's rows: the repaired
+// one when the fixer rewrote the model's proposal, otherwise the proposal
+// itself.
+//
+// Every consumer that treats a step's SQL as evidence -- the analysis prompt,
+// the verifier's cited-step rendering, the live status feed -- reads this.
+// Consumers that use SQL only as retrieval text (the per-run vector index, the
+// step picker's table signature and dedupe key) deliberately still read Query:
+// switching them would change which evidence reaches analysis, and no defect
+// asks for that. The picker already strips identifier quoting, so the two agree
+// on table names regardless.
+func (s ExplorationStep) EffectiveQuery() string {
+	if s.QueryExecuted != "" {
+		return s.QueryExecuted
+	}
+	return s.Query
 }
 
 // FixAttempt is the per-attempt record produced by the self-healing SQL

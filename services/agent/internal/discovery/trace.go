@@ -75,9 +75,15 @@ func traceExplorationStep(s models.ExplorationStep) {
 		"rows":      s.RowCount,
 		"exec_ms":   s.ExecutionTimeMs,
 		"purpose":   clip(s.QueryPurpose, 200),
-		"sql":       clip(oneLine(s.Query), 1200),
+		"sql":       clip(oneLine(s.EffectiveQuery()), 1200),
 		"fixed":     s.Fixed,
 		"fix_tries": s.FixAttempts,
+	}
+	// The proposal, only when it differs from what ran. A trace that showed one
+	// SQL string could not distinguish "the model wrote this" from "this
+	// answered", which is the distinction a false figure turns on.
+	if s.QueryExecuted != "" {
+		f["sql_proposed"] = clip(oneLine(s.Query), 1200)
 	}
 	if s.Error != "" {
 		f["error"] = clip(oneLine(s.Error), 300)
