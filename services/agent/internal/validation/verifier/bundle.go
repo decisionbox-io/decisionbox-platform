@@ -296,7 +296,7 @@ func digestStep(s *agentmodels.ExplorationStep, cfg BundleConfig) SourceStepDige
 	}
 	return SourceStepDigest{
 		StepID: s.Step,
-		// The statement that produced these rows. A repaired or re-quoted step
+		// The statement that produced these rows. A repaired step
 		// kept the model's rejected proposal in Query, and pairing that with rows
 		// it never produced is what this bundle exists to prevent.
 		SQL:          s.EffectiveQuery(),

@@ -120,7 +120,7 @@ token usage is summed onto the same step.
 | `thinking` | string | AI's reasoning for this query |
 | `query_purpose` | string | Short description of query intent |
 | `query` | string | The SQL statement the model **proposed**. Not necessarily the one that produced `query_result` — see `query_executed`. |
-| `query_executed` | string | The statement that actually ran, present only when the self-healing fixer or the pre-flight identifier re-quote rewrote the proposal. Omitted when the proposal ran unchanged. Read through it rather than choosing between the two fields: a repair can change what the answer means (an observed run had `APPROX_QUANTILES(x,4)[OFFSET(2)]` rewritten to `PERCENTILE_CONT(0.5) WITHIN GROUP`, an approximate median for an exact one). Both are kept because they answer different questions — the proposal is the training signal, the executed statement is the only one that explains the rows. |
+| `query_executed` | string | The statement that actually ran, present only when the self-healing fixer rewrote the proposal. Omitted when the proposal ran unchanged. Read through it rather than choosing between the two fields: a repair can change what the answer means (an observed run had `APPROX_QUANTILES(x,4)[OFFSET(2)]` rewritten to `PERCENTILE_CONT(0.5) WITHIN GROUP`, an approximate median for an exact one). Both are kept because they answer different questions — the proposal is the training signal, the executed statement is the only one that explains the rows. |
 | `row_count` | int | Number of rows returned |
 | `execution_time_ms` | int64 | Query execution time in milliseconds |
 | `error` | string | Error message if query failed |

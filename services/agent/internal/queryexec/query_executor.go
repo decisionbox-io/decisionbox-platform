@@ -30,13 +30,8 @@ type QueryExecutor struct {
 	// when that is not SQL, and is "" for every SQL warehouse. It decides
 	// whether the tenant filter can be verified at all — see verifyFilter.
 	nonSQLLanguage string
-	// identifierOpen/identifierClose are how this source delimits identifiers,
-	// resolved once at construction. Empty when the source is not a SQL
-	// warehouse or could not say, and the pre-flight re-quote is then a no-op.
-	identifierOpen  string
-	identifierClose string
-	currentStep     int
-	currentPhase    string
+	currentStep    int
+	currentPhase   string
 }
 
 // FixOpts carries per-call context for the SQL fixer that does not belong on
@@ -137,38 +132,15 @@ func NewQueryExecutor(opts QueryExecutorOptions) *QueryExecutor {
 	case opts.Warehouse != nil:
 		nonSQL = gowarehouse.NonSQLLanguage(opts.Warehouse)
 	}
-	// Whether SQL identifier re-quoting applies at all, on the same precedence
-	// the non-SQL guard above uses: the registry is the answer that cannot be
-	// erased by a wrapper, the live provider is next, and a caller that supplied
-	// only a Runner has reached for the seam that exists for sources which are
-	// NOT SQL -- so that case declines rather than guesses.
-	sqlSource := false
-	switch {
-	case opts.ProviderSlug != "":
-		sqlSource = gowarehouse.NonSQLLanguageOf(opts.ProviderSlug) == ""
-	case opts.Warehouse != nil:
-		sqlSource = gowarehouse.NonSQLLanguage(opts.Warehouse) == ""
-	}
-	openQuote, closeQuote := "", ""
-	if sqlSource {
-		if q, ok := runner.(interface{ QuoteRef(...string) string }); ok {
-			openQuote, closeQuote, _ = gowarehouse.IdentifierDelimiters(q)
-		} else if opts.Warehouse != nil {
-			openQuote, closeQuote, _ = gowarehouse.IdentifierDelimiters(opts.Warehouse)
-		}
-	}
-
 	return &QueryExecutor{
-		runner:          runner,
-		identifierOpen:  openQuote,
-		identifierClose: closeQuote,
-		nonSQLLanguage:  nonSQL,
-		sqlFixer:        opts.SQLFixer,
-		debugLogger:     opts.DebugLogger,
-		maxRetries:      opts.MaxRetries,
-		filterField:     opts.FilterField,
-		filterValue:     opts.FilterValue,
-		currentPhase:    "exploration",
+		runner:         runner,
+		nonSQLLanguage: nonSQL,
+		sqlFixer:       opts.SQLFixer,
+		debugLogger:    opts.DebugLogger,
+		maxRetries:     opts.MaxRetries,
+		filterField:    opts.FilterField,
+		filterValue:    opts.FilterValue,
+		currentPhase:   "exploration",
 	}
 }
 
@@ -192,14 +164,6 @@ type ExecuteResult struct {
 	OriginalQuery   string
 	FinalQuery      string
 	Errors          []string
-
-	// RequotedIdentifiers counts identifiers rewritten from backtick quoting
-	// into this source's own before the statement was sent. Non-zero means the
-	// model wrote another dialect's quoting and the substitution was made
-	// deterministically instead of buying an LLM repair call. Distinct from
-	// Fixed, which stays false when a pre-flight rewrite was all that was
-	// needed, so the two kinds of correction stay tellable apart.
-	RequotedIdentifiers int
 
 	// FixHistory is one entry per LLM fix call made during this
 	// execution, in chronological order. Empty when no fix was needed.
@@ -274,18 +238,6 @@ func (e *QueryExecutor) ExecuteNative(ctx context.Context, query gowarehouse.Nat
 	if query.IsStructured() && e.filterField != "" {
 		return nil, fmt.Errorf("security violation: a structured query cannot be scope-checked against %s; "+
 			"the source must enforce scope through its own credential or payload", e.filterField)
-	}
-
-	// Convert another dialect's identifier quoting before the first attempt.
-	// Models write `dataset.table` at warehouses that reject a backtick outright,
-	// and the prompts already name the dialect and render every reference in the
-	// source's own quoting -- so this is not a missing instruction but an
-	// instruction that does not hold. Done before verifyFilter so the security
-	// check reads the text that will actually be sent.
-	if rq, n := e.requoteForRunner(currentQuery); n > 0 {
-		currentQuery = rq
-		result.RequotedIdentifiers += n
-		result.FinalQuery = currentQuery.String()
 	}
 
 	if err := e.verifyFilter(currentQuery.String()); err != nil {
@@ -421,7 +373,20 @@ func (e *QueryExecutor) ExecuteNative(ctx context.Context, query gowarehouse.Nat
 			"error":   err.Error(),
 		}).Info("Attempting SQL fix via LLM")
 
-		fix, fixErr := e.sqlFixer.FixSQL(ctx, currentQuery.String(), err.Error(), attempt, opts)
+		// Tell the fixer what is actually wrong when the engine's own error says
+		// so. Read from the warehouse's error, never from our statement -- see
+		// dialect_hint.go for why this is a hint rather than a rewrite.
+		fixErrMsg := err.Error()
+		if hint := dialectQuotingHint(err); hint != "" {
+			fixErrMsg += "\n\n" + hint
+			applog.WithFields(applog.Fields{
+				"step":    e.currentStep,
+				"phase":   e.currentPhase,
+				"attempt": attempt + 1,
+			}).Info("Query was rejected over another dialect's identifier quoting; telling the fixer so explicitly")
+		}
+
+		fix, fixErr := e.sqlFixer.FixSQL(ctx, currentQuery.String(), fixErrMsg, attempt, opts)
 		if fixErr != nil {
 			// The fixer call failed (LLM transport error OR the response
 			// couldn't be parsed into SQL). Record the attempt so the
@@ -486,12 +451,6 @@ func (e *QueryExecutor) ExecuteNative(ctx context.Context, query gowarehouse.Nat
 		applog.Debug("SQL fix applied, retrying with corrected query")
 		result.FixAttempts++
 		currentQuery = gowarehouse.SQLQuery(fix.FixedSQL)
-		// The fixer is the same model that wrote the backticks, so its output
-		// gets the same substitution rather than a second round trip.
-		if rq, n := e.requoteForRunner(currentQuery); n > 0 {
-			currentQuery = rq
-			result.RequotedIdentifiers += n
-		}
 		startTime = time.Now()
 	}
 

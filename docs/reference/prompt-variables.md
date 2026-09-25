@@ -219,7 +219,7 @@ Formatted list of all analysis areas the agent should explore.
 
 **Source:** Exploration results selected for the current analysis area by the area's step picker (vector retrieval + keyword boost + token-budget trim).
 
-JSON array of compacted exploration-step digests. Each entry carries the step's purpose / SQL (the statement that actually ran, i.e. `query_executed` when the fixer or the pre-flight re-quote rewrote the model's proposal) / thinking plus a `query_result` field whose value is a `CompactResult` produced by `services/agent/internal/discovery/render_query_results.go` — head and tail rows, per-column statistics, and small-result inlining when the row count fits — not the raw row blob.
+JSON array of compacted exploration-step digests. Each entry carries the step's purpose / SQL (the statement that actually ran, i.e. `query_executed` when the fixer rewrote the model's proposal) / thinking plus a `query_result` field whose value is a `CompactResult` produced by `services/agent/internal/discovery/render_query_results.go` — head and tail rows, per-column statistics, and small-result inlining when the row count fits — not the raw row blob.
 
 **Example value:**
 ```json

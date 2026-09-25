@@ -7,7 +7,7 @@ import (
 )
 
 // The bundle is the verifier's evidence: a step's SQL beside the rows it
-// returned. A repaired or re-quoted step keeps the model's REJECTED proposal in
+// returned. A repaired step keeps the model's REJECTED proposal in
 // Query, so pairing that with rows it never produced grounds the verifier on a
 // statement the warehouse refused.
 func TestDigestStep_CarriesTheStatementThatRan(t *testing.T) {
