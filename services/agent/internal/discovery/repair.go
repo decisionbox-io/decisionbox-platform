@@ -217,6 +217,15 @@ func (o *Orchestrator) repairInsight(
 			rep.Dropped = append(rep.Dropped, v.Claim)
 			continue
 		}
+		// Two refuted claims can share one sentence, and the first removal took
+		// it. dropClaimSentence then finds nothing to change and reports false,
+		// which would file a claim the reader can no longer see as unrepaired --
+		// escalating the outcome to its worst bucket and leaving a live failure
+		// recorded about text that is gone.
+		if !insightMentions(*ins, v.Claim) {
+			rep.Dropped = append(rep.Dropped, v.Claim)
+			continue
+		}
 		rep.Unrepaired = append(rep.Unrepaired, v.Claim)
 		applog.WithFields(applog.Fields{
 			"area":    areaID,

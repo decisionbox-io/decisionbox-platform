@@ -1623,6 +1623,41 @@ func splitMarkdownDescription(authored string) (plain, md string) {
 // envelope nor a bare array). A well-formed but empty result returns
 // (empty, 0, nil) so callers can distinguish "no insights" from "could not
 // parse".
+// decodeWithoutClaims re-decodes one insight with its `quantifier_claims` key
+// removed, for the case where that optional advisory field is the only thing the
+// strict decoder choked on. Reports false when the rest of the object does not
+// decode either, which is a genuinely unparseable insight.
+//
+// The declaration is dropped rather than coerced on purpose: a coerced claim is a
+// predicate nobody wrote, evaluated against real rows, and a wrong verdict is
+// worse than no verdict. An insight that arrives here ships with no evidence check
+// -- which is the state every insight that declares nothing is already in.
+func decodeWithoutClaims(raw json.RawMessage) (*models.Insight, bool) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, false
+	}
+	found := false
+	for k := range fields {
+		if strings.EqualFold(k, "quantifier_claims") {
+			delete(fields, k)
+			found = true
+		}
+	}
+	if !found {
+		return nil, false
+	}
+	stripped, err := json.Marshal(fields)
+	if err != nil {
+		return nil, false
+	}
+	var insight models.Insight
+	if err := json.Unmarshal(stripped, &insight); err != nil {
+		return nil, false
+	}
+	return &insight, true
+}
+
 func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.Insight, int, error) {
 	cleaned := cleanJSONResponse(response)
 
@@ -1668,13 +1703,30 @@ func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.I
 	for i, raw := range raws {
 		var insight models.Insight
 		if err := json.Unmarshal(raw, &insight); err != nil {
-			dropped++
-			applog.WithFields(applog.Fields{
-				"area":   areaID,
-				"index":  i,
-				"reason": err.Error(),
-			}).Warn("Dropping unparseable insight; keeping the rest of the area")
-			continue
+			// quantifier_claims is optional and advisory: it buys an evidence
+			// check, and losing the check is a far smaller loss than losing the
+			// finding. The prompt asks the model to author it, so a slightly off
+			// shape -- a single object instead of an array, a string-typed step --
+			// is reachable, and a strict decode would discard the name, body,
+			// metrics and indicators to protect a field none of them depend on.
+			// Retry once without it and keep what parsed.
+			if salvaged, ok := decodeWithoutClaims(raw); ok {
+				applog.WithFields(applog.Fields{
+					"area":    areaID,
+					"index":   i,
+					"insight": salvaged.Name,
+					"reason":  err.Error(),
+				}).Warn("Dropped an unparseable quantifier_claims declaration and kept the insight; it ships unchecked")
+				insight = *salvaged
+			} else {
+				dropped++
+				applog.WithFields(applog.Fields{
+					"area":   areaID,
+					"index":  i,
+					"reason": err.Error(),
+				}).Warn("Dropping unparseable insight; keeping the rest of the area")
+				continue
+			}
 		}
 
 		// Whatever the model may have put here, it is not evidence about the

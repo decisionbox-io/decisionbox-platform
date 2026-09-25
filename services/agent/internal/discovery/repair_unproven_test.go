@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -161,5 +162,50 @@ func TestEvaluate_CappedStepInTheWrongOrderIsUndecidable(t *testing.T) {
 	}
 	if !strings.Contains(v[0].Reason, "capped") {
 		t.Errorf("reason = %q, want it to name the cap", v[0].Reason)
+	}
+}
+
+// Two refuted claims can share one sentence. The first removal takes the whole
+// sentence, so the second finds nothing to change and dropClaimSentence reports
+// false -- which would file a claim the reader can no longer see as unrepaired,
+// escalating the outcome to its worst bucket and leaving a live failure recorded
+// about text that is gone.
+func TestRepair_BothClaimsInOneSentenceCountAsDropped(t *testing.T) {
+	const second = "Chairs leads the category on volume"
+	entry := models.Insight{
+		ID: "insight-3", Name: "Furniture drags the top ten",
+		Description: shippedOnlyClaim + " and " + second + ". Bookcases held flat all year.",
+		SourceSteps: []int{4}, Severity: "high",
+		QuantifierClaims: []models.QuantifierClaim{
+			{Claim: shippedOnlyClaim, Kind: QuantifierOnly,
+				Step: 4, Filter: "profit < 0", TopN: 10, TopNColumn: "sales"},
+			// Also refuted over the same rows, and living in the same sentence.
+			{Claim: second, Kind: QuantifierOnly,
+				Step: 4, Filter: "sales > 1000000", TopN: 10, TopNColumn: "sales"},
+		},
+	}
+	// No rounds: go straight to the removal pass, which is where this bites.
+	t.Setenv(analysisRepairMaxRoundsEnv, "0")
+	o, _ := newRepairOrchestrator()
+
+	insights := []models.Insight{entry}
+	attachQuantifierVerdicts(insights, step4ByID())
+	if countRefuted(insights[0].QuantifierVerdicts) != 2 {
+		t.Fatalf("precondition: want both claims refuted, got %d", countRefuted(insights[0].QuantifierVerdicts))
+	}
+	tally := o.repairRefutedInsights(context.Background(), "profitability", insights, step4ByID(), 8000)
+	got := insights[0]
+
+	if len(got.Repair.Unrepaired) != 0 {
+		t.Errorf("unrepaired = %v; both claims went with the sentence the reader no longer sees", got.Repair.Unrepaired)
+	}
+	if len(got.Repair.Dropped) != 2 {
+		t.Errorf("dropped = %v, want both claims", got.Repair.Dropped)
+	}
+	if got.Repair.Outcome != models.RepairClaimDropped {
+		t.Errorf("outcome = %q, want %q", got.Repair.Outcome, models.RepairClaimDropped)
+	}
+	if tally.unrepaired != 0 {
+		t.Errorf("tally.unrepaired = %d, want 0", tally.unrepaired)
 	}
 }
