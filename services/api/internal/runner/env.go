@@ -56,6 +56,17 @@ var agentForwardedEnvKeys = []string{
 	// agent side (not the API), so it has to be forwarded for container
 	// runs. Subprocess runs already inherit it from the API process env.
 	"DISCOVERY_MAX_DURATION",
+	// LLM behaviour knobs, read by the agent itself, so every runner must
+	// forward them for an agent to match the API's tuning. Without them a
+	// Kubernetes agent Job fell back to the provider's own HTTP timeout (five
+	// minutes for most), so an operator's raised LLM_TIMEOUT never reached
+	// discovery and a slow model's call was cut off mid-generation. (LLM API
+	// keys are NOT here — they live per-project in the secret provider.)
+	"LLM_TIMEOUT",
+	"LLM_MAX_RETRIES",
+	"LLM_REQUEST_DELAY_MS",
+	"LLM_RETRY_BASE_BACKOFF",
+	"LLM_RETRY_MAX_ATTEMPTS",
 	// LIST_TABLES_TIMEOUT_SECONDS bounds the agent's --list-tables run (the
 	// pre-index table preview). The API sizes the wait/Job deadline from it too;
 	// forward it so a container-spawned agent uses the same budget instead of
@@ -172,14 +183,6 @@ var dockerAgentExtraEnvKeys = []string{
 	// server / Workload Identity, or a credentials file baked into / mounted
 	// onto a custom AGENT_IMAGE). See docs/reference/configuration.md.
 	//
-	// LLM behaviour knobs the compose agent service also sets, so a Docker
-	// agent matches the API's tuning. (LLM API keys are NOT here — they
-	// live per-project in the secret provider.)
-	"LLM_TIMEOUT",
-	"LLM_MAX_RETRIES",
-	"LLM_REQUEST_DELAY_MS",
-	"LLM_RETRY_BASE_BACKOFF",
-	"LLM_RETRY_MAX_ATTEMPTS",
 	// Logging parity with the API process.
 	"ENV",
 	"LOG_LEVEL",

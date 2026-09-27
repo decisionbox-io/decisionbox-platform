@@ -516,6 +516,53 @@ func TestKubernetesRunner_Run_MinStepsZeroOmitted(t *testing.T) {
 	}
 }
 
+// TestKubernetesRunner_Run_ForwardsLLMTimeout pins that an operator's
+// LLM_TIMEOUT reaches the agent Job. It used to be forwarded only by the Docker
+// runner, so a Kubernetes agent silently used the provider's own HTTP timeout
+// (five minutes for most) and a slow model's analysis call was cut off.
+func TestKubernetesRunner_Run_ForwardsLLMTimeout(t *testing.T) {
+	t.Setenv("LLM_TIMEOUT", "1h")
+	t.Setenv("LLM_MAX_RETRIES", "5")
+
+	r := newFakeK8sRunner()
+	ctx := context.Background()
+	if err := r.Run(ctx, RunOptions{ProjectID: "proj-llm", RunID: "run-llm-timeout"}); err != nil {
+		t.Fatal(err)
+	}
+
+	jobs, _ := r.client.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	env := map[string]string{}
+	for _, e := range jobs.Items[0].Spec.Template.Spec.Containers[0].Env {
+		env[e.Name] = e.Value
+	}
+	if env["LLM_TIMEOUT"] != "1h" {
+		t.Errorf("LLM_TIMEOUT on the agent Job = %q, want %q", env["LLM_TIMEOUT"], "1h")
+	}
+	if env["LLM_MAX_RETRIES"] != "5" {
+		t.Errorf("LLM_MAX_RETRIES on the agent Job = %q, want %q", env["LLM_MAX_RETRIES"], "5")
+	}
+}
+
+// TestKubernetesRunner_Run_OmitsUnsetLLMTimeout pins that an unset LLM_TIMEOUT
+// stays absent from the Job, so the agent keeps its own default rather than
+// receiving an empty value.
+func TestKubernetesRunner_Run_OmitsUnsetLLMTimeout(t *testing.T) {
+	t.Setenv("LLM_TIMEOUT", "")
+
+	r := newFakeK8sRunner()
+	ctx := context.Background()
+	if err := r.Run(ctx, RunOptions{ProjectID: "proj-llm", RunID: "run-llm-unset"}); err != nil {
+		t.Fatal(err)
+	}
+
+	jobs, _ := r.client.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	for _, e := range jobs.Items[0].Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "LLM_TIMEOUT" {
+			t.Errorf("unset LLM_TIMEOUT must not be forwarded, got %q", e.Value)
+		}
+	}
+}
+
 func TestKubernetesRunner_Cancel_DeletesJob(t *testing.T) {
 	r := newFakeK8sRunner()
 	ctx := context.Background()

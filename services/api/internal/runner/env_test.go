@@ -101,3 +101,39 @@ func TestForwardedEnv_CloudPolicyAbsentOnSelfHosted(t *testing.T) {
 		}
 	}
 }
+
+// TestForwardedEnv_LLMBehaviourKnobs pins that the LLM behaviour knobs are in
+// the set every runner forwards, and in exactly one list, so the Docker runner
+// (which forwards both lists) never emits them twice.
+func TestForwardedEnv_LLMBehaviourKnobs(t *testing.T) {
+	knobs := map[string]string{
+		"LLM_TIMEOUT":            "1h",
+		"LLM_MAX_RETRIES":        "5",
+		"LLM_REQUEST_DELAY_MS":   "250",
+		"LLM_RETRY_BASE_BACKOFF": "2s",
+		"LLM_RETRY_MAX_ATTEMPTS": "4",
+	}
+	for k, v := range knobs {
+		t.Setenv(k, v)
+	}
+
+	found := map[string]string{}
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys) {
+		found[kv.Key] = kv.Value
+	}
+	for k, want := range knobs {
+		if found[k] != want {
+			t.Errorf("%s not forwarded to every runner: got %q, want %q", k, found[k], want)
+		}
+	}
+
+	counts := map[string]int{}
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys, dockerAgentExtraEnvKeys) {
+		counts[kv.Key]++
+	}
+	for k := range knobs {
+		if counts[k] != 1 {
+			t.Errorf("%s forwarded %d times by the Docker runner, want 1", k, counts[k])
+		}
+	}
+}
