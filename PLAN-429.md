@@ -211,7 +211,7 @@ The agent's `services/agent/internal/models/project.go` copy is **not** touched:
 
 The overlay's `lib/` does not shadow the community `src/lib/api.ts`, so the three new API calls are available there with no extra work.
 
-*(Kept deliberately unspecific here to respect Rule 11; the exact file list is in the review thread.)*
+*(Kept deliberately unspecific here to respect Rule 11 — this file and this PR are public. The exact repository, file list and diff plan were relayed to @abacigil out of band.)*
 
 ## 4. Phases
 
