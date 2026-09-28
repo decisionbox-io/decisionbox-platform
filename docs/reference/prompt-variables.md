@@ -272,7 +272,7 @@ Five fields on the stored insight are deliberately **not** in this variable: `va
 None of them is used to write a recommendation.
 `validation` in particular carries the verifier's and the refuter's full write-ups — about 80% of the rendered prompt on a typical run, enough on its own to exceed a 40 960-token context window and end the run with no recommendations.
 The validation verdict still governs which insights appear here at all; it is applied by the eligibility filter before the prompt is built (see [Discovery lifecycle → Recommendations](../concepts/discovery-lifecycle.md#phase-5-recommendations)).
-`source_steps` lists exploration-step numbers, and those steps are not part of this prompt, so the insights above are the only evidence it carries: every figure in a recommendation should be traceable to a field of the insight it cites.
+`source_steps` lists exploration-step numbers, and those steps are not part of this prompt, so the insights above are the only evidence it carries — the platform-enforced recommendation rules require every figure in a recommendation to be traceable to a field of the insight it cites.
 The stored insights keep every field — the trimming applies to the prompt copy only.
 
 **Example value:**

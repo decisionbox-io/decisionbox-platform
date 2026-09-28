@@ -21,7 +21,7 @@ The rules cover:
 - **Re-ranking from raw rows** — when writing a top-N claim, the LLM must walk the actual result rows, not its earlier prose summaries.
 - **Addressing counter-evidence** — silent dismissal of contradicting rows as "outlier" or "holiday" is forbidden.
 - **Cross-field self-consistency** — `description`, `indicators`, `metrics`, and `name` must agree on quantifier and window.
-- **Citing the step for every number** — every quantitative figure must trace to a row in `source_steps`.
+- **Citing the evidence for every number** — in an insight, every quantitative figure must trace to a row in `source_steps`. In a recommendation it must trace to a field of the insight it cites: the recommendation prompt carries the insights, not the exploration steps behind them, so there is no step row to point at there.
 - **Partial-period hygiene** — partial periods may not enter a ranking unless normalized.
 - **Non-dramatic prose** — describe findings via numbers; encode importance in the structured `severity` field, not in prose adjectives.
 - **Structured Markdown descriptions** — the `description` is authored as a small GitHub-Flavored Markdown subset (a bold one-line takeaway, short paragraphs, emphasis, lists, small sub-headings, simple tables) so it reads as organized content. The agent stores the Markdown in `description_md` and a plain-text reduction in `description`; custom analysis areas inherit this rule automatically.

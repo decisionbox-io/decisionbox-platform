@@ -501,3 +501,40 @@ func TestRulesDoNotOverlap(t *testing.T) {
 		seen[h] = name
 	}
 }
+
+// TestRulesCiteOnlyEvidenceTheirPromptCarries pins each writer rule block to
+// the evidence its own prompt actually contains.
+//
+// The analysis-area prompt carries {{QUERY_RESULTS}}, so its rule 6 can tell
+// the model to trace a figure to a row in `source_steps` and the model can
+// comply. The recommendation prompt carries only INSIGHTS_DATA — the
+// recommenderInsight projection, which is deliberately without `source_steps`
+// and without the exploration steps themselves — so naming `source_steps`
+// there would point the model at evidence it cannot see. That is not a style
+// preference: a grounding rule the model cannot satisfy invites it to reach for
+// the nearest plausible number, which is the failure the rule exists to stop.
+//
+// Both directions are asserted, so neither block can drift onto the other's
+// footing.
+func TestRulesCiteOnlyEvidenceTheirPromptCarries(t *testing.T) {
+	if !strings.Contains(AnalysisRules(), "`source_steps`") {
+		t.Error("AnalysisRules must still cite `source_steps` — the analysis prompt carries {{QUERY_RESULTS}}, so step rows are real evidence there")
+	}
+	if strings.Contains(RecommendationsRules(), "source_steps") {
+		t.Error("RecommendationsRules must not cite source_steps — the recommendation prompt carries only the trimmed insights, so a figure can only be traced to an insight's own fields")
+	}
+	// The rule that replaces it has to actually name where figures may come
+	// from, otherwise dropping source_steps would just loosen rule 6.
+	rec := RecommendationsRules()
+	for _, want := range []string{"CITE THE INSIGHT FOR EVERY NUMBER", "cited insights above", "`related_insight_ids`"} {
+		if !strings.Contains(rec, want) {
+			t.Errorf("RecommendationsRules is missing %q — rule 6 must still bind figures to the cited insight", want)
+		}
+	}
+	// Rule 3 has to name the insight fields the ranking is re-derived from.
+	for _, want := range []string{"RE-RANK FROM THE UNDERLYING INSIGHT", "`metrics`", "`indicators`", "`affected_count`"} {
+		if !strings.Contains(rec, want) {
+			t.Errorf("RecommendationsRules is missing %q — rule 3 must name the insight values to re-rank from", want)
+		}
+	}
+}
