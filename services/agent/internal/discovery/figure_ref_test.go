@@ -441,3 +441,83 @@ func TestRecommendationsPrompt_CarriesTheFigureContract(t *testing.T) {
 		t.Error("buildRecommendationsPrompt did not append the recommendation figure contract")
 	}
 }
+
+// TestInsightSchema_FigureEnumsMatchTheClosedSets pins the schema's prose enumerations to
+// the constants the evaluator actually reads.
+//
+// It exists because they drifted, in the direction that matters most. `days` was removed
+// from models.Figure's units after the first live run shipped "180.1 days days", and the
+// schema went on advertising it -- so the contract told the model in prose never to use a
+// word while the schema listed one by name, and the schema is the stronger signal. A field
+// description is not a free-text comment; for a decode-constrained provider it is the spec.
+//
+// Driven off the constants rather than a hand-written list, so adding or removing a unit,
+// scale or kind fails here until the schema is updated too.
+func TestInsightSchema_FigureEnumsMatchTheClosedSets(t *testing.T) {
+	figProps := insightSchemaProperties(t)["figures"].(map[string]interface{})["items"].(map[string]interface{})["properties"].(map[string]interface{})
+
+	desc := func(field string) string {
+		return figProps[field].(map[string]interface{})["description"].(string)
+	}
+
+	// Every member of the closed set must be named, and nothing outside it.
+	units := []string{models.UnitCount, models.UnitCurrency, models.UnitPercent, models.UnitMultiple, models.UnitPlain}
+	unitDesc := desc("unit")
+	for _, u := range units {
+		if !strings.Contains(unitDesc, `"`+u+`"`) {
+			t.Errorf("the schema's unit description omits %q, so the model is not told it is available: %s", u, unitDesc)
+		}
+	}
+	// The one that drifted. A word unit cannot be offered, however it is phrased.
+	if strings.Contains(unitDesc, `"days"`) {
+		t.Errorf("the schema offers a days unit; a unit is notation and a word is prose, which is why the code has no such unit: %s", unitDesc)
+	}
+
+	kinds := []string{models.FigureCell, models.FigureSum, models.FigureCount, models.FigureRatio, models.FigureDiff}
+	kindDesc := desc("kind")
+	for _, k := range kinds {
+		if !strings.Contains(kindDesc, `"`+k+`"`) {
+			t.Errorf("the schema's kind description omits %q: %s", k, kindDesc)
+		}
+	}
+	// A recommendation-only kind must not be offered to an insight: there is nothing in
+	// an insight's figure to hold a reference, so a `ref` here would be undecidable.
+	if strings.Contains(kindDesc, `"`+models.FigureRefKind+`"`) {
+		t.Errorf("the schema offers an insight the recommendation-only kind %q: %s", models.FigureRefKind, kindDesc)
+	}
+
+	scaleDesc := desc("scale")
+	for _, sc := range []string{models.ScaleThousands, models.ScaleMillions, models.ScaleBillions} {
+		if !strings.Contains(scaleDesc, `"`+sc+`"`) {
+			t.Errorf("the schema's scale description omits %q: %s", sc, scaleDesc)
+		}
+	}
+}
+
+// TestFigureContract_KeepsEveryRuleThatTracesToAMeasuredFailure guards the shortening.
+//
+// The contract was cut down once and will be again, and each of these clauses is there
+// because a run shipped something wrong without it. A trim that removes one should fail
+// here and be argued for explicitly rather than pass quietly.
+func TestFigureContract_KeepsEveryRuleThatTracesToAMeasuredFailure(t *testing.T) {
+	required := map[string]string{
+		"never a word":                 `the days unit that shipped "180.1 days days"`,
+		"precision you are claiming":   "decimals-as-interval, which is the whole check",
+		"does not loosen the check":    "a tilde must not be a way to make a figure unrefutable",
+		"even when you are unsure":     "an undeclared figure cannot be corrected",
+		"Never type a number":          "the instruction the entire layer rests on",
+		"Years are the only exception": "requiring a declaration for a period makes the common case unwriteable",
+		"**full** rows":                "the check runs over more rows than the digest showed",
+	}
+	for clause, why := range required {
+		if !strings.Contains(figureContract, clause) {
+			t.Errorf("the figure contract no longer says %q -- %s", clause, why)
+		}
+	}
+	// And the clause added when the first clean run produced three insights with no
+	// indicators at all, against four per insight before the contract existed.
+	if !strings.Contains(figureContract, "needs no declaration") {
+		t.Error("the contract does not say an indicator with no number needs no declaration, " +
+			"which is the likeliest reason a model reads \"never type a number\" as \"say nothing\"")
+	}
+}

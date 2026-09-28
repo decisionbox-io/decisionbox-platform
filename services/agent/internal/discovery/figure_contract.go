@@ -8,61 +8,73 @@ package discovery
 // area skips pack content entirely, so a contract that only exists in templates is one some
 // areas do not have.
 //
-// The instruction that carries the most weight is the last: never type a number. Everything
-// this design buys -- a precision that is known rather than parsed, a correction that is a
-// field assignment, a link between prose and evidence that is exact rather than inferred at
-// 1% tolerance -- holds only for figures that went through `figures`. A number typed into a
-// sentence is a number nothing checks, and it looks identical to a sound one.
+// The instruction that carries the most weight is the first: never type a number.
+// Everything this design buys -- a precision that is known rather than parsed, a correction
+// that is a field assignment, a link between prose and evidence that is exact rather than
+// inferred at 1% tolerance -- holds only for figures that went through `figures`. A number
+// typed into a sentence is a number nothing checks, and it looks identical to a sound one.
+//
+// Every rule that remains traces to a measured failure, which is the test each one had to
+// pass to survive the shortening that produced this version:
+//
+//   - "never a word" is why a days unit no longer ships "180.1 days days".
+//   - decimals-as-precision is the whole check: the interval is half the last place Go
+//     printed, which separated "$6.645B" against its cell (true) from "100,000" against
+//     99,996 (false) where no relative band could.
+//   - approx not loosening the check is what stops a tilde being a way to make a figure
+//     unrefutable.
+//   - declaring an uncertain figure is what makes the correction pass reachable at all.
+//
+// The one clause that is new rather than kept: an indicator with no number in it needs no
+// declaration. Three of thirteen insights in the first clean run emitted no indicators at
+// all, against four per insight before the contract existed, and "never type a number"
+// read as "say nothing" is the likeliest reason.
 const figureContract = "## Every number is data, not text\n\n" +
-	"Do not type numbers into `name`, `description` or `indicators`. Declare each one in a " +
-	"top-level `figures` array and put a reference in the prose. The platform renders the " +
-	"reference into the text a reader sees, after re-running your arithmetic over the step's " +
-	"**full** rows — which may be more rows than the digest showed you.\n\n" +
+	"**Never type a number into `name`, `description` or `indicators`.** A number in a " +
+	"sentence rather than in `figures` is checked by nothing and reads exactly like one that " +
+	"was checked. Declare each one in a top-level `figures` array and put a reference in the " +
+	"prose; the platform renders it into the text a reader sees, after re-running your " +
+	"arithmetic over the step's **full** rows — which may be more rows than the digest " +
+	"showed you.\n\n" +
+	"Years are the only exception: a period is prose (\"in 1997\", \"across 1992-1997\"), not a " +
+	"measurement. And an indicator with no number in it needs no declaration — write it.\n\n" +
 	"```json\n" +
 	"\"name\": \"Top decile of customers generates {{f1}} of 1997 revenue\",\n" +
-	"\"description\": \"The top decile contributed {{f1}} ({{f2}} of {{f3}}) across {{f4}} buyers.\",\n" +
+	"\"description\": \"The top decile contributed {{f2}} of {{f3}} in 1997.\",\n" +
 	"\"figures\": [\n" +
 	"  {\"id\": \"f1\", \"value\": 24.66, \"unit\": \"percent\", \"decimals\": 2,\n" +
 	"   \"step\": 48, \"kind\": \"ratio\", \"column\": \"revenue\", \"row\": \"decile = 1\"},\n" +
 	"  {\"id\": \"f2\", \"value\": 8476238553, \"unit\": \"currency\", \"scale\": \"billions\", \"decimals\": 2,\n" +
 	"   \"step\": 48, \"kind\": \"cell\", \"column\": \"revenue\", \"row\": \"decile = 1\"},\n" +
 	"  {\"id\": \"f3\", \"value\": 34373633413, \"unit\": \"currency\", \"scale\": \"billions\", \"decimals\": 2,\n" +
-	"   \"step\": 48, \"kind\": \"sum\", \"column\": \"revenue\"},\n" +
-	"  {\"id\": \"f4\", \"value\": 8668, \"unit\": \"count\",\n" +
-	"   \"step\": 48, \"kind\": \"cell\", \"column\": \"customers\", \"row\": \"decile = 1\"}\n" +
+	"   \"step\": 48, \"kind\": \"sum\", \"column\": \"revenue\"}\n" +
 	"]\n" +
 	"```\n\n" +
 	"### The arithmetic\n\n" +
-	"- `kind` is one of:\n" +
-	"  - `cell` — one cell. `column` plus `row`, which must select exactly **one** row.\n" +
-	"  - `sum` — the total of `column`, over `scope` if you give one, otherwise every row.\n" +
-	"  - `count` — how many rows are in `scope`, or in the whole result if you give none.\n" +
-	"  - `ratio` — `column` in `row`, divided by **either** the same column in `other`, **or**, " +
-	"when you give no `other`, the total of `column` over `scope`. The first form is how you " +
-	"declare a spread, a multiple or one row against another — *4.8x more often*, *3.5% above " +
-	"the lowest*. The second is a share of the whole column.\n" +
-	"  - `diff` — `column` in `row` minus `column` in `other`. Both selectors are required.\n" +
-	"- `row`, `other` and `scope` use the same grammar as `filter` above: `column <op> literal` " +
-	"terms joined by `AND`, with op one of `= != < <= > >=`. Nothing richer is read, and " +
-	"anything unreadable is reported as undecidable rather than guessed at.\n" +
-	"- `value` is the number in the units of the step's own column: `8476238553`, not `8.48`. " +
-	"Write a percentage as `24.66`, not `0.2466` — whichever way the column stores it.\n\n" +
+	"- `cell` — one cell: `column` plus `row`, which must select exactly **one** row.\n" +
+	"- `sum` — the total of `column`, over `scope` if given, otherwise every row.\n" +
+	"- `count` — how many rows are in `scope`, or in the whole result if you give none.\n" +
+	"- `ratio` — `column` in `row` over the same column in `other`; or, with no `other`, over " +
+	"the total of `column` across `scope`. The first form is one row against another — *4.8x " +
+	"more often*, *3.5% above the lowest*. The second is a share of the whole column.\n" +
+	"- `diff` — `column` in `row` minus `column` in `other`. Both required.\n\n" +
+	"`row`, `other` and `scope` use the same grammar as `filter` above: `column <op> literal` " +
+	"terms joined by `AND`, op one of `= != < <= > >=`. Nothing richer is read, and anything " +
+	"unreadable is reported as undecidable rather than guessed at.\n\n" +
+	"`value` is in the units of the step's own column: `8476238553`, not `8.48`. Write a " +
+	"percentage as `24.66`, not `0.2466` — whichever way the column stores it.\n\n" +
 	"### How it is written\n\n" +
 	"- `unit` is `count`, `currency`, `percent`, `multiple` or `plain`. A unit is part of the " +
-	"number's notation — a currency symbol, a percent sign, thousands separators — never a word. " +
-	"Write words like *days*, *orders* or *lines* in the sentence: `{{f1}} days`, not a days unit.\n" +
-	"- `scale` is `thousands`, `millions` or `billions` to abbreviate a large number; omit it " +
-	"to write the number in full with thousands separators.\n" +
-	"- `decimals` is how many decimal places to print. **This is the precision you are " +
-	"claiming.** `value` 8476238553 at `billions` with 2 decimals renders `$8.48B` and asserts " +
-	"the arithmetic lands within $5,000,000 of it; the same value with 0 decimals renders `$8B` " +
-	"and asserts far less. Choose the places the evidence supports — never more.\n" +
+	"number's notation — a currency symbol, a percent sign, thousands separators — **never a " +
+	"word**. Write *days*, *orders*, *lines* in the sentence: `{{f1}} days`.\n" +
+	"- `scale` is `thousands`, `millions` or `billions` to abbreviate; omit it to write the " +
+	"number in full with thousands separators.\n" +
+	"- `decimals` is how many places to print, and **it is the precision you are claiming.** " +
+	"8476238553 at `billions` with 2 decimals renders `$8.48B` and asserts the arithmetic " +
+	"lands within $5,000,000 of it; with 0 decimals it renders `$8B` and asserts far less. " +
+	"Choose the places the evidence supports — never more.\n" +
 	"- `approx: true` prints a tilde (`~911K`). It marks the number as rounded for the reader " +
 	"and does not loosen the check, so it is not a way to make a figure unrefutable.\n\n" +
-	"### Two rules\n\n" +
-	"**Never type a number into the prose.** A number in a sentence rather than in `figures` is " +
-	"checked by nothing and reads exactly like one that was checked. Years are the only " +
-	"exception — a period is prose (\"in 1997\", \"across 1992-1997\"), not a measurement.\n\n" +
 	"**Declare a figure even when you are unsure the arithmetic is right.** A declaration that " +
 	"turns out wrong is corrected for you, from your own evidence, before anyone reads it. A " +
 	"number you type instead ships as written."

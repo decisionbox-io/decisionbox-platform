@@ -64,9 +64,17 @@ func insightResponseSchema() map[string]interface{} {
 			"items": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"id":       str(`Reference the prose uses, e.g. "f1"; unique within this insight`),
-					"value":    map[string]interface{}{"type": "number", "description": "The number in the units of the step's own column: 8476238553, or 24.66 for a percentage"},
-					"unit":     str(`One of "count", "currency", "percent", "multiple", "days", "plain"`),
+					"id":    str(`Reference the prose uses, e.g. "f1"; unique within this insight`),
+					"value": map[string]interface{}{"type": "number", "description": "The number in the units of the step's own column: 8476238553, or 24.66 for a percentage"},
+					// No "days". The closed set in models.Figure deliberately has no unit
+					// for a word, because a unit here is notation and a word is prose --
+					// the first live run rendered "{{f1}} days" with a days unit and
+					// shipped "180.1 days days". This list advertised it for two commits
+					// after the code dropped it, which is the schema inviting exactly the
+					// mistake the contract forbids in prose; the schema is the stronger
+					// signal, so it was the one being obeyed. Pinned by
+					// TestInsightSchema_FigureEnumsMatchTheClosedSets.
+					"unit":     str(`One of "count", "currency", "percent", "multiple", "plain" -- notation, never a word like days`),
 					"scale":    str(`Abbreviation for a large number: "thousands", "millions", "billions"; omit to write it in full`),
 					"decimals": map[string]interface{}{"type": "integer", "description": "Decimal places to print; this is the precision being claimed"},
 					"approx":   map[string]interface{}{"type": "boolean", "description": "Print a tilde to mark the number as rounded"},
