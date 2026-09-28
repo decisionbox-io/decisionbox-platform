@@ -48,7 +48,9 @@ const figureContract = "## Every number is data, not text\n\n" +
 	"- `value` is the number in the units of the step's own column: `8476238553`, not `8.48`. " +
 	"Write a percentage as `24.66`, not `0.2466` — whichever way the column stores it.\n\n" +
 	"### How it is written\n\n" +
-	"- `unit` is `count`, `currency`, `percent`, `multiple`, `days` or `plain`.\n" +
+	"- `unit` is `count`, `currency`, `percent`, `multiple` or `plain`. A unit is part of the " +
+	"number's notation — a currency symbol, a percent sign, thousands separators — never a word. " +
+	"Write words like *days*, *orders* or *lines* in the sentence: `{{f1}} days`, not a days unit.\n" +
 	"- `scale` is `thousands`, `millions` or `billions` to abbreviate a large number; omit it " +
 	"to write the number in full with thousands separators.\n" +
 	"- `decimals` is how many decimal places to print. **This is the precision you are " +

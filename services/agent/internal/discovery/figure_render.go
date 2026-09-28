@@ -67,15 +67,19 @@ func renderFigure(f models.Figure) string {
 	b.WriteString(digits)
 	b.WriteString(sc.suffix)
 
-	switch f.Unit {
-	case models.UnitPercent:
-		b.WriteString("%")
-	case models.UnitMultiple:
-		b.WriteString("x")
-	case models.UnitDays:
-		b.WriteString(" days")
-	}
+	b.WriteString(unitSuffix(f.Unit))
 	return b.String()
+}
+
+// unitSuffix is what a unit appends after the digits.
+func unitSuffix(unit string) string {
+	switch unit {
+	case models.UnitPercent:
+		return "%"
+	case models.UnitMultiple:
+		return "x"
+	}
+	return ""
 }
 
 // figureSlack is the half-width of the interval a rendered figure claims.

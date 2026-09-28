@@ -37,7 +37,13 @@ var reFigureRef = regexp.MustCompile(`\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}\}`)
 // 1992-1997 window" -- and requiring a declaration for one would make the common case
 // unwriteable.
 var reBareDigit = regexp.MustCompile(`\d`)
-var reYearish = regexp.MustCompile(`\b(19|20)\d{2}\b`)
+
+// Dates and years are masked before the digit check. A period is prose, not a
+// measurement, and requiring a declaration for one would make the common case
+// unwriteable. Whole dates go first: the first live run reported "01", "06", "30" and
+// "02" as undeclared figures, which were the fragments of "1998-08-02" left behind once
+// only the year had been masked.
+var reDateish = regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}\b|\b\d{4}-\d{2}\b|\b(19|20)\d{2}\b`)
 
 // renderInsightFigures replaces every reference in an insight's prose with its figure's
 // rendered text, in place, and records the templates it rendered from.
@@ -70,16 +76,36 @@ func renderInsightFigures(insights []models.Insight) figureRenderTally {
 
 		var unresolved []string
 		render := func(s string) string {
-			return reFigureRef.ReplaceAllStringFunc(s, func(ref string) string {
-				id := reFigureRef.FindStringSubmatch(ref)[1]
+			// Index-aware rather than a plain ReplaceAllStringFunc, because the text
+			// immediately after a reference decides whether the unit's own suffix would
+			// be doubled. The first live run shipped "180.1 days days" from a days unit
+			// beside a sentence that already said it; the same collision is reachable
+			// with a template writing "{{f1}}%".
+			var b strings.Builder
+			last := 0
+			for _, m := range reFigureRef.FindAllStringSubmatchIndex(s, -1) {
+				b.WriteString(s[last:m[0]])
+				id := s[m[2]:m[3]]
 				f, ok := byID[id]
 				if !ok {
 					unresolved = append(unresolved, id)
-					return ref
+					b.WriteString(s[m[0]:m[1]])
+					last = m[1]
+					continue
 				}
 				tally.resolved++
-				return renderFigure(f)
-			})
+				text := renderFigure(f)
+				if suffix := unitSuffix(f.Unit); suffix != "" && strings.HasPrefix(s[m[1]:], suffix) {
+					// The template already writes the suffix, so render without it and
+					// let the sentence keep its own punctuation.
+					text = strings.TrimSuffix(text, suffix)
+					tally.suffixKept++
+				}
+				b.WriteString(text)
+				last = m[1]
+			}
+			b.WriteString(s[last:])
+			return b.String()
 		}
 		ins.Name = render(ins.Name)
 		ins.Description = render(ins.Description)
@@ -119,6 +145,9 @@ type figureRenderTally struct {
 	unresolved int
 	inlined    int
 	unused     int
+	// suffixKept counts references whose unit suffix the template already wrote, so the
+	// render dropped its own rather than doubling it.
+	suffixKept int
 }
 
 func hasFigureRef(ins models.Insight) bool {
@@ -153,7 +182,7 @@ func hasBareNumeral(s string) bool {
 	blanked := reFigureRef.ReplaceAllStringFunc(s, func(m string) string {
 		return strings.Repeat(" ", len(m))
 	})
-	blanked = reYearish.ReplaceAllStringFunc(blanked, func(m string) string {
+	blanked = reDateish.ReplaceAllStringFunc(blanked, func(m string) string {
 		return strings.Repeat(" ", len(m))
 	})
 	return reBareDigit.MatchString(blanked)

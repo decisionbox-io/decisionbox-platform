@@ -188,3 +188,60 @@ func TestTemplate_MarkdownCopyIsRenderedToo(t *testing.T) {
 		t.Fatalf("the markdown copy was not rendered: %q", ins[0].DescriptionMd)
 	}
 }
+
+// TestTemplate_DoesNotDoubleAUnitSuffix is the red-proof for the second defect the first
+// live run shipped: a template writing its own "%" or its own unit word beside a reference
+// whose unit renders the same thing.
+//
+// The run shipped "Inter-order interval averages 180.1 days days across repeat buyers".
+// The days unit is gone -- a word is prose -- but the collision is still reachable for the
+// symbol units, so the render checks what follows the reference before appending.
+func TestTemplate_DoesNotDoubleAUnitSuffix(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		template string
+		fig      models.Figure
+		want     string
+	}{
+		{"the template writes the percent sign", "Share is {{f1}}% of revenue",
+			models.Figure{ID: "f1", Value: 24.66, Unit: models.UnitPercent, Decimals: 2},
+			"Share is 24.66% of revenue"},
+		{"the template leaves the percent sign to the unit", "Share is {{f1}} of revenue",
+			models.Figure{ID: "f1", Value: 24.66, Unit: models.UnitPercent, Decimals: 2},
+			"Share is 24.66% of revenue"},
+		{"the template writes the multiple sign", "Spend is {{f1}}x higher",
+			models.Figure{ID: "f1", Value: 4.83, Unit: models.UnitMultiple, Decimals: 2},
+			"Spend is 4.83x higher"},
+		{"a word unit is the prose's job", "Interval averages {{f1}} days",
+			models.Figure{ID: "f1", Value: 180.06, Unit: models.UnitPlain, Decimals: 1},
+			"Interval averages 180.1 days"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ins := []models.Insight{{Name: tc.template, SourceSteps: []int{1}, Figures: []models.Figure{tc.fig}}}
+			renderInsightFigures(ins)
+			if ins[0].Name != tc.want {
+				t.Fatalf("rendered %q, want %q", ins[0].Name, tc.want)
+			}
+		})
+	}
+}
+
+// TestTemplate_DatesAreNotUndeclaredFigures. The run reported "01", "06", "30" and "02" as
+// numbers stated without a declaration; they were the fragments of "1998-08-02" left behind
+// when only the year had been masked.
+func TestTemplate_DatesAreNotUndeclaredFigures(t *testing.T) {
+	for _, prose := range []string{
+		"Ship dates run 1992-01-02 to 1998-08-02 across the window.",
+		"The 1998-08 partial month holds {{f1}}.",
+		"Across 1992-1997 revenue held near {{f1}}.",
+	} {
+		t.Run(prose, func(t *testing.T) {
+			if hasBareNumeral(prose) {
+				t.Errorf("a date was read as an undeclared figure: %q", prose)
+			}
+		})
+	}
+	if !hasBareNumeral("The top decile held 24.66% of revenue.") {
+		t.Error("a genuine inlined figure was not detected")
+	}
+}

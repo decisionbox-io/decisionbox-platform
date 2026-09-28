@@ -26,7 +26,6 @@ const (
 	UnitCurrency = gomodels.UnitCurrency
 	UnitPercent  = gomodels.UnitPercent
 	UnitMultiple = gomodels.UnitMultiple
-	UnitDays     = gomodels.UnitDays
 	UnitPlain    = gomodels.UnitPlain
 
 	ScaleNone      = gomodels.ScaleNone

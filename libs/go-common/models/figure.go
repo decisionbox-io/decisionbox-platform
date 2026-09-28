@@ -83,8 +83,14 @@ const (
 	UnitCurrency = "currency" // $8.48B
 	UnitPercent  = "percent"  // 24.66%
 	UnitMultiple = "multiple" // 1.008x
-	UnitDays     = "days"     // 122 days
 	UnitPlain    = "plain"    // 25.52
+
+	// There is deliberately no unit for a word like "days".
+	//
+	// A unit here is part of the number's NOTATION -- a currency symbol, a percent
+	// sign, a thousands separator. A word is prose, and prose is the template's job:
+	// the first live run rendered "{{f1}} days" with a days unit and shipped
+	// "180.1 days days". The sentence already said it.
 )
 
 // Scales. The suffix a figure is written with, and the divisor that goes with it.

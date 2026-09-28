@@ -89,7 +89,7 @@ func TestFigure_RenderedFormIsWhatTheReaderSees(t *testing.T) {
 		{"a percentage", models.Figure{Value: 24.66, Unit: models.UnitPercent, Decimals: 2}, "24.66%"},
 		{"a percentage to one place", models.Figure{Value: 49.343, Unit: models.UnitPercent, Decimals: 1}, "49.3%"},
 		{"a multiple", models.Figure{Value: 1.0077, Unit: models.UnitMultiple, Decimals: 3}, "1.008x"},
-		{"days", models.Figure{Value: 111.5, Unit: models.UnitDays, Decimals: 1}, "111.5 days"},
+		{"a value whose unit is a word belongs to the prose", models.Figure{Value: 111.5, Unit: models.UnitPlain, Decimals: 1}, "111.5"},
 		{"approximate at thousands", models.Figure{Value: 911395, Unit: models.UnitCount, Scale: models.ScaleThousands, Decimals: 0, Approx: true}, "~911K"},
 		{"plain", models.Figure{Value: 25.52, Unit: models.UnitPlain, Decimals: 2}, "25.52"},
 	} {
