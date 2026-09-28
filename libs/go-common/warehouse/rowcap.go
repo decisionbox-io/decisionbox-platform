@@ -144,6 +144,19 @@ func RowOffsetCaveat(n int) QualityCaveat {
 // LeadingTop matches T-SQL's `SELECT TOP n`, including the parenthesised
 // `TOP (n)` form.
 //
+// KNOWN GAP, deliberately unclosed: a statement that opens with a CTE --
+// `WITH q AS (...) SELECT TOP 10 ...` -- does not match, because the anchor is the
+// start of the string. On MSSQL, Snowflake and Redshift such a query is capped and
+// gets no caveat, so a top-N result can read as the whole population. Dialects that
+// cap with a trailing LIMIT or FETCH are unaffected.
+//
+// Closing it means finding the outermost SELECT, which means tracking balanced
+// parentheses through the CTE list -- parsing the statement rather than matching a
+// clause at a known position. That is out of scope by decision: this codebase does
+// not parse SQL, and a parser that is wrong about which SELECT governs would caveat
+// a complete result or miss a capped one, both silently. Recorded here so it is a
+// choice on the record rather than an oversight to be rediscovered.
+//
 // `TOP n PERCENT` is deliberately not a cap: it bounds a proportion, so the
 // row count it yields is a fact about the data rather than a ceiling the query
 // imposed, and equality between it and the row count carries no signal.
