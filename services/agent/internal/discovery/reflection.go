@@ -142,7 +142,17 @@ func (o *Orchestrator) RunPhaseReflection(ctx context.Context, result *models.Di
 	// 2. The bounded LLM call produces the judgment-heavy outputs: coverage
 	//    summary, prior-finding status re-judgement, durable learnings,
 	//    next-tasks, and domain-pack deltas. Skipped cleanly on any failure.
-	ref, err := o.generateReflection(rctx, result, pol)
+	// Findings the ledger carried INTO this run. consolidateFindings has
+	// already merged this run's own findings into the list generateReflection
+	// reads back, so that list cannot answer "does this project have prior
+	// findings?" — on a first run with insights it says yes about findings
+	// created seconds earlier. totalCount is the pre-run count plus newCount,
+	// so the difference is exactly what the ledger carried in. A consolidation
+	// that failed reports 0/0, which reads as "nothing carried" — the safe
+	// direction: the run is not asked to re-judge a history it cannot see.
+	carriedFindings := totalCount - newCount
+
+	ref, err := o.generateReflection(rctx, result, pol, carriedFindings > 0)
 	if err != nil {
 		applog.WithError(err).Warn("Reflection: consolidation LLM call failed; ledger findings still captured")
 		ref = nil

@@ -217,7 +217,7 @@ func TestRenderPriorStatusField_OnlyDemandsWhatThereIsToJudge(t *testing.T) {
 func TestBuildReflectionPrompt_FirstRunCarriesNoPriorDemand(t *testing.T) {
 	o, result, _, tasks, pol := reflectionPromptFixture()
 
-	got := o.buildReflectionPrompt(result, nil, tasks, pol, nil)
+	got := o.buildReflectionPrompt(result, nil, tasks, pol, nil, false)
 
 	if !strings.Contains(got, "(no prior findings — this is an early run)") {
 		t.Fatal("fixture no longer renders the empty prior-findings list")
@@ -254,6 +254,7 @@ func TestGenerateReflection_SchemaIsBuiltFromTheRun(t *testing.T) {
 	tests := []struct {
 		name         string
 		mode         agentplugin.EvolutionMode
+		carried      bool
 		prior        []commonmodels.LedgerFinding
 		wantRequired []string
 	}{
@@ -265,8 +266,29 @@ func TestGenerateReflection_SchemaIsBuiltFromTheRun(t *testing.T) {
 		{
 			name:         "suggest_only with a ledger behind it",
 			mode:         agentplugin.EvolutionModeSuggestOnly,
+			carried:      true,
 			prior:        []commonmodels.LedgerFinding{{ID: "f-1", Name: "Dead stock", Status: "confirmed"}},
 			wantRequired: []string{"coverage_summary", "learnings", "next_tasks", "prior_status_updates"},
+		},
+		{
+			// The findings are there, but they are THIS run's, merged into the
+			// ledger moments ago by consolidateFindings. Nothing was carried
+			// in, so there is nothing to re-judge.
+			name:         "suggest_only, first run whose own findings are already in the ledger",
+			mode:         agentplugin.EvolutionModeSuggestOnly,
+			carried:      false,
+			prior:        []commonmodels.LedgerFinding{{ID: "f-1", Name: "Dead stock", Status: "confirmed"}},
+			wantRequired: []string{"coverage_summary", "learnings", "next_tasks"},
+		},
+		{
+			// The mirror case: the ledger did carry findings in, but the list
+			// read failed, so the prompt shows none. Demanding a verdict on a
+			// list the model cannot see is how ids get invented.
+			name:         "carried findings the prompt cannot show",
+			mode:         agentplugin.EvolutionModeSuggestOnly,
+			carried:      true,
+			prior:        nil,
+			wantRequired: []string{"coverage_summary", "learnings", "next_tasks"},
 		},
 	}
 
@@ -292,6 +314,7 @@ func TestGenerateReflection_SchemaIsBuiltFromTheRun(t *testing.T) {
 			if _, err := o.generateReflection(context.Background(),
 				&models.DiscoveryResult{Schemas: map[string]models.TableSchema{"ds.orders": {}}},
 				agentplugin.DiscoveryPolicy{EvolutionMode: tc.mode, FrontierPolicy: agentplugin.FrontierBalanced},
+				tc.carried,
 			); err != nil {
 				t.Fatalf("generateReflection: %v", err)
 			}
@@ -313,4 +336,112 @@ func TestGenerateReflection_SchemaIsBuiltFromTheRun(t *testing.T) {
 			}
 		})
 	}
+}
+
+// statefulFindingRepo is a fakeFindingRepo that reads back what it wrote, the
+// way the Mongo repository does. The plain fake serves a fixed list, which
+// hides the ordering that matters here: RunPhaseReflection consolidates this
+// run's findings into the ledger BEFORE the reflection call lists them.
+type statefulFindingRepo struct {
+	findings []commonmodels.LedgerFinding
+}
+
+func (r *statefulFindingRepo) List(_ context.Context, _ string) ([]commonmodels.LedgerFinding, error) {
+	out := make([]commonmodels.LedgerFinding, len(r.findings))
+	copy(out, r.findings)
+	return out, nil
+}
+
+func (r *statefulFindingRepo) Upsert(_ context.Context, f *commonmodels.LedgerFinding) error {
+	for i := range r.findings {
+		if r.findings[i].ID == f.ID {
+			r.findings[i] = *f
+			return nil
+		}
+	}
+	r.findings = append(r.findings, *f)
+	return nil
+}
+
+func (r *statefulFindingRepo) Prune(_ context.Context, _ string, _ int) error { return nil }
+
+// TestRunPhaseReflection_FirstRunIsNotAskedToRejudgeItself is the regression
+// for the trap in the middle of this fix. The reflection phase consolidates
+// this run's insights into the ledger and only then lists findings for the
+// prompt, so on a first run that produced anything at all the list is
+// non-empty — and keying the prior-finding demand off it would order a
+// brand-new project to re-judge findings it created seconds earlier, on every
+// provider whose decoding actually enforces the schema.
+func TestRunPhaseReflection_FirstRunIsNotAskedToRejudgeItself(t *testing.T) {
+	const pn = "test-reflection-firstrun"
+	gollm.RegisterWithMeta(pn, func(_ gollm.ProviderConfig) (gollm.Provider, error) { return nil, nil },
+		gollm.ProviderMeta{
+			ID:                       pn,
+			Name:                     "reflection first-run test",
+			SupportsStructuredOutput: true,
+			Models:                   []gollm.ModelEntry{{ID: "mock-model", Wire: gollm.WireOpenAICompat, MaxOutputTokens: 8000}},
+		})
+
+	run := func(t *testing.T, seeded []commonmodels.LedgerFinding) *gollm.ResponseFormat {
+		t.Helper()
+		t.Setenv("DISCOVERY_REFLECTION_ENABLED", "true")
+		agentplugin.RegisterDiscoveryPolicyProvider(stubPolicy{mode: agentplugin.EvolutionModeSuggestOnly})
+		t.Cleanup(func() { agentplugin.RegisterDiscoveryPolicyProvider(stubPolicy{mode: agentplugin.EvolutionModeOff}) })
+
+		provider := testutil.NewMockLLMProvider()
+		provider.DefaultResponse = &gollm.ChatResponse{
+			Content: `{"coverage_summary":"orders covered","learnings":[{"note":"status 4 means closed"}],"next_tasks":[{"title":"Explore events","text":"explore the events tables"}]}`,
+			Usage:   gollm.Usage{InputTokens: 10, OutputTokens: 20},
+		}
+		client, err := ai.New(provider, "mock-model")
+		if err != nil {
+			t.Fatalf("ai.New: %v", err)
+		}
+		client.SetProvenance("proj-1", "run-1", pn)
+
+		o := &Orchestrator{
+			reflectionEnabled: true, projectID: "proj-1", runID: "run-1", datasets: []string{"ds"},
+			llmInputWindow: 200000, llmOutputCap: 4000, aiClient: client,
+			ledgerRepo:  &fakeLedgerRepo{},
+			findingRepo: &statefulFindingRepo{findings: seeded},
+			taskRepo:    &fakeTaskRepo{},
+		}
+		o.RunPhaseReflection(context.Background(), &models.DiscoveryResult{
+			ID: "disc-1", ProjectID: "proj-1",
+			Schemas:  map[string]models.TableSchema{"ds.orders": {}, "ds.events": {}},
+			Insights: []models.Insight{{AnalysisArea: "churn", Name: "High churn", Severity: "high", AffectedCount: 40}},
+		})
+
+		if len(provider.Calls) == 0 {
+			t.Fatal("the reflection LLM was not called")
+		}
+		rf := provider.Calls[0].Request.ResponseFormat
+		if rf == nil {
+			t.Fatal("ResponseFormat must reach a structured-output provider")
+		}
+		return rf
+	}
+
+	t.Run("first run, ledger empty before it", func(t *testing.T) {
+		rf := run(t, nil)
+		if requiredSet(t, rf.Schema)["prior_status_updates"] {
+			t.Error("a first run must not be required to re-judge a prior finding — the only findings in the ledger are its own")
+		}
+		// The demands that do apply are unaffected.
+		for _, name := range []string{"coverage_summary", "learnings", "next_tasks"} {
+			if !requiredSet(t, rf.Schema)[name] {
+				t.Errorf("%s must still be required on a first run", name)
+			}
+		}
+	})
+
+	t.Run("second run, the ledger carried a finding in", func(t *testing.T) {
+		rf := run(t, []commonmodels.LedgerFinding{{
+			ID: "f-old", ProjectID: "proj-1", Area: "inventory", Name: "Dead stock",
+			Status: "confirmed", SeenCount: 2, NormalizedKey: "inventory|dead stock",
+		}})
+		if !requiredSet(t, rf.Schema)["prior_status_updates"] {
+			t.Error("a run with a carried finding must be required to re-judge at least one")
+		}
+	})
 }

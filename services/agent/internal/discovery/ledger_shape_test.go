@@ -70,7 +70,7 @@ func TestReflectionPrompt_TableOnlyRunIsUnchanged(t *testing.T) {
 	}
 	o, result, prior, tasks, pol := reflectionPromptFixture()
 
-	got := o.buildReflectionPrompt(result, prior, tasks, pol, nil)
+	got := o.buildReflectionPrompt(result, prior, tasks, pol, nil, true)
 
 	if got != string(want) {
 		t.Errorf("table-only reflection prompt drifted from the pre-cube render.\n--- got ---\n%s\n--- want ---\n%s", got, want)
@@ -85,7 +85,7 @@ func TestReflectionPrompt_CubeRunCanReportWhatItSliced(t *testing.T) {
 	o, result, prior, tasks, pol := reflectionPromptFixture()
 	items := []string{"sessions", "activeUsers", "sessionDefaultChannelGroup"}
 
-	got := o.buildReflectionPrompt(result, prior, tasks, pol, items)
+	got := o.buildReflectionPrompt(result, prior, tasks, pol, items, true)
 
 	// The warehouse catalog is still there — a cube run has a table side too.
 	if !strings.Contains(got, reflectionTableCatalogHeading) {

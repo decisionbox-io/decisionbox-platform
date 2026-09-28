@@ -69,7 +69,12 @@ type parsedReflection struct {
 // generateQuestions / generateRecommendations): budget the output against the
 // model window, attach the structured-output format where supported, and
 // self-heal a bounded number of times on an unparseable response.
-func (o *Orchestrator) generateReflection(ctx context.Context, result *models.DiscoveryResult, pol agentplugin.DiscoveryPolicy) (*parsedReflection, error) {
+//
+// hasCarriedFindings says whether the ledger held findings BEFORE this run —
+// which the finding list read back here cannot say, because consolidation has
+// already merged this run's own findings into it. It gates the demand for a
+// prior-finding re-judgement, and only that.
+func (o *Orchestrator) generateReflection(ctx context.Context, result *models.DiscoveryResult, pol agentplugin.DiscoveryPolicy, hasCarriedFindings bool) (*parsedReflection, error) {
 	prior, err := o.findingRepo.List(ctx, o.projectID)
 	if err != nil {
 		applog.WithError(err).Warn("Reflection: list prior findings for prompt failed")
@@ -80,8 +85,14 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 		tasks, _ = o.taskRepo.List(ctx, o.projectID, commonmodels.LedgerTaskStatusOpen)
 	}
 
+	// Both halves must hold to demand a re-judgement: the ledger carried
+	// findings in, AND the prompt actually lists some. A failed list read
+	// renders "(no prior findings)", and asking for a verdict on a list the
+	// model cannot see is how ids get invented.
+	demandPriorRejudgement := hasCarriedFindings && len(prior) > 0
+
 	items := o.runCatalogItems()
-	prompt := o.buildReflectionPrompt(result, prior, tasks, pol, items)
+	prompt := o.buildReflectionPrompt(result, prior, tasks, pol, items, demandPriorRejudgement)
 
 	window, modelOutputCap := o.resolveModelBudget()
 	// Default to the model's own cap, mirroring the analysis and recommendation
@@ -94,7 +105,7 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 	outputCap := phaseOutputCap(discoveryReflectionMaxOutputEnv, modelOutputCap, 512, defaultDiscoveryReflectionMaxOutput)
 	maxTokens := budgetedMaxOutputTokens(window, approxTokens(ctx, prompt), outputCap, analysisMinOutputTokens())
 
-	format := reflectionResponseFormat(pol.EvolutionMode, len(prior) > 0)
+	format := reflectionResponseFormat(pol.EvolutionMode, demandPriorRejudgement)
 	if o.aiClient.SupportsStructuredOutput() {
 		applog.Info("Reflection generation using schema-constrained output")
 	}
@@ -129,7 +140,7 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 // buildReflectionPrompt renders the embedded template with the run's findings,
 // the prior ledger findings (so the model can re-judge their status), the open
 // task queue, and the mode/frontier policy that governs what it may propose.
-func (o *Orchestrator) buildReflectionPrompt(result *models.DiscoveryResult, prior []commonmodels.LedgerFinding, tasks []commonmodels.LedgerTask, pol agentplugin.DiscoveryPolicy, catalogItems []string) string {
+func (o *Orchestrator) buildReflectionPrompt(result *models.DiscoveryResult, prior []commonmodels.LedgerFinding, tasks []commonmodels.LedgerTask, pol agentplugin.DiscoveryPolicy, catalogItems []string, demandPriorRejudgement bool) string {
 	lang := o.language
 	if strings.TrimSpace(lang) == "" {
 		lang = "English"
@@ -143,7 +154,7 @@ func (o *Orchestrator) buildReflectionPrompt(result *models.DiscoveryResult, pri
 	p = strings.ReplaceAll(p, "{{EVOLUTION_GUIDANCE}}", evolutionModeGuidance(pol.EvolutionMode))
 	p = strings.ReplaceAll(p, "{{RUN_FINDINGS}}", renderRunFindings(result.Insights))
 	p = strings.ReplaceAll(p, "{{PRIOR_FINDINGS}}", renderPriorFindings(prior))
-	p = strings.ReplaceAll(p, "{{PRIOR_STATUS_FIELD}}", renderPriorStatusField(len(prior) > 0))
+	p = strings.ReplaceAll(p, "{{PRIOR_STATUS_FIELD}}", renderPriorStatusField(demandPriorRejudgement))
 	p = strings.ReplaceAll(p, "{{OPEN_TASKS}}", renderOpenTasks(tasks))
 	p = strings.ReplaceAll(p, "{{CATALOG_SECTION}}", renderCatalogSection(result.Schemas, catalogItems))
 	p = strings.ReplaceAll(p, "{{COVERED_FIELDS}}", renderCoveredFields(len(catalogItems) > 0))
@@ -193,7 +204,8 @@ func evolutionModeGuidance(mode agentplugin.EvolutionMode) string {
 const reflectionPriorStatusFieldBase = "- **prior_status_updates**: for PRIOR findings only, by their `id`. Update a status ONLY with grounded evidence from this run — e.g. a new finding contradicts a prior one (`refuted`), or the same finding now shows a different magnitude (`changed`). **Do NOT mark a finding `resolved` just because it did not reappear** — discovery is not exhaustive, so absence is not proof. Leave findings you have no evidence about alone."
 
 // renderPriorStatusField renders that bullet, demanding at least one
-// re-judgement on a run that actually lists prior findings.
+// re-judgement on a run whose ledger carried findings in and whose prompt
+// lists them.
 //
 // Conditional because the demand and the grounding rule above it only coexist
 // when there is something to judge: an early run has no prior findings, and a
@@ -202,8 +214,8 @@ const reflectionPriorStatusFieldBase = "- **prior_status_updates**: for PRIOR fi
 // this run saw again is evidence, and saying so is what stops the model from
 // reading "only with grounded evidence" as permission to skip the field
 // entirely, which is what it had been doing (#434).
-func renderPriorStatusField(hasPriorFindings bool) string {
-	if !hasPriorFindings {
+func renderPriorStatusField(demand bool) string {
+	if !demand {
 		return reflectionPriorStatusFieldBase
 	}
 	return reflectionPriorStatusFieldBase +

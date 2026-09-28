@@ -14,10 +14,10 @@ const reflectionResponseFormatName = "discovery_reflection"
 // this is a safe no-op on providers without it (the tolerant parser is the
 // always-on net). Strict is false for the same reason as the questions schema:
 // OpenAI strict mode requires every property required and forbids open objects.
-func reflectionResponseFormat(mode agentplugin.EvolutionMode, hasPriorFindings bool) *gollm.ResponseFormat {
+func reflectionResponseFormat(mode agentplugin.EvolutionMode, demandPriorRejudgement bool) *gollm.ResponseFormat {
 	return &gollm.ResponseFormat{
 		Name:   reflectionResponseFormatName,
-		Schema: reflectionResponseSchema(mode, hasPriorFindings),
+		Schema: reflectionResponseSchema(mode, demandPriorRejudgement),
 		Strict: false,
 	}
 }
@@ -37,16 +37,17 @@ func reflectionResponseFormat(mode agentplugin.EvolutionMode, hasPriorFindings b
 //
 //   - learnings — always. Every run touches this warehouse and learns
 //     something durable about it.
-//   - prior_status_updates — only when the prompt carries prior findings.
-//     There is nothing to re-judge on an early run, and requiring a verdict
-//     with no finding to attach it to invites an invented id.
+//   - prior_status_updates — only when the ledger carried findings INTO this
+//     run and the prompt lists them. There is nothing to re-judge on an early
+//     run, and requiring a verdict with no finding to attach it to invites an
+//     invented id.
 //   - next_tasks — only when evolution is on. Off means the ledger records but
 //     does not self-direct, so an empty queue is the correct answer there.
 //
 // domain_pack_deltas stays optional in every mode: a pack change is warranted
 // only by a signal that keeps recurring across runs, so most runs genuinely
 // have none and demanding one every time would churn the pack.
-func reflectionResponseSchema(mode agentplugin.EvolutionMode, hasPriorFindings bool) map[string]interface{} {
+func reflectionResponseSchema(mode agentplugin.EvolutionMode, demandPriorRejudgement bool) map[string]interface{} {
 	str := func(desc string) map[string]interface{} {
 		return map[string]interface{}{"type": "string", "description": desc}
 	}
@@ -149,7 +150,7 @@ func reflectionResponseSchema(mode agentplugin.EvolutionMode, hasPriorFindings b
 	required := []interface{}{"coverage_summary", "learnings"}
 	requireNonEmpty(props, "learnings",
 		"Give at least one: every run learns something durable about this warehouse.")
-	if hasPriorFindings {
+	if demandPriorRejudgement {
 		required = append(required, "prior_status_updates")
 		requireNonEmpty(props, "prior_status_updates",
 			"This run carries prior findings: re-judge at least one — a prior finding this run saw again is grounded evidence for confirmed.")
