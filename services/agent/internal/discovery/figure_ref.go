@@ -241,6 +241,9 @@ func evaluateRecommendationFigure(f models.Figure, ix figureRefIndex) models.Fig
 		total += got
 	}
 
+	if math.IsNaN(total) || math.IsInf(total, 0) {
+		return undecidable("the references do not total to a finite number")
+	}
 	v.Evaluated = total
 	v.Resolved = true
 	if unvouched != "" {
@@ -305,10 +308,10 @@ func evaluateRecommendationFigure(f models.Figure, ix figureRefIndex) models.Fig
 // confirming -- a model reliably reports what it used and unreliably computes over it.
 // 96,447 matched no combination of the bands, so the arithmetic was the broken part.
 func adoptResolvedFigureValues(rec *models.Recommendation, ix figureRefIndex) int {
-	byID := make(map[string]int, len(rec.Figures))
-	for j := range rec.Figures {
-		byID[rec.Figures[j].ID] = j
-	}
+	// Guarded, which it was not: a duplicated id here let one verdict's resolved value into
+	// a different declaration, and renderableFigures then dropped the zero-valued one so the
+	// duplication never reached the renderer that would have refused it.
+	byID := figureIndexByID(rec.Figures)
 
 	var corrections []models.FigureCorrection
 	filled := false
@@ -329,6 +332,30 @@ func adoptResolvedFigureValues(rec *models.Recommendation, ix figureRefIndex) in
 		if f.Value == 0 {
 			f.Value = v.Evaluated
 			filled = true
+			continue
+		}
+
+		// The same call substituteCount and the insight correction pass both make: a
+		// correction that would leave a structured field contradicting the prose is
+		// declined rather than guessed at. segment_size is an int no render touches, it
+		// feeds the dashboard's segment label and BuildRecommendationBundle, and "users in
+		// the target segment" need not be the quantity a figure that happens to match
+		// counts.
+		//
+		// The residual is stated rather than papered over, because it is real and this
+		// check does not reach it. On the contract-compliant path the model writes no
+		// figure value at all, so when it states segment_size 96,447 and the references
+		// resolve to 96,031 there is no declared number to compare and no link to detect.
+		// The prose then says 96,031 and the segment label says 96,447. Closing that needs
+		// the contract to tie segment_size to a figure id, which is a change worth a live
+		// run to validate rather than a heuristic bolted on here.
+		if rec.SegmentSize != 0 && float64(rec.SegmentSize) == f.Value {
+			applog.WithFields(applog.Fields{
+				"recommendation": rec.Title,
+				"figure":         v.ID,
+				"segment_size":   rec.SegmentSize,
+				"resolved":       v.Evaluated,
+			}).Warn("Not adopting this figure: segment_size states the same number and nothing here can establish they are the same quantity")
 			continue
 		}
 

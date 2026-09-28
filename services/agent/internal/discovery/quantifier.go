@@ -686,7 +686,7 @@ func asFloat(v any) (float64, bool) {
 		}
 		return n, true
 	case float32:
-		return float64(n), true
+		return finiteFloat(float64(n))
 	case int:
 		return float64(n), true
 	case int32:
@@ -701,8 +701,29 @@ func asFloat(v any) (float64, bool) {
 		return float64(n), true
 	case string:
 		f, err := strconv.ParseFloat(strings.TrimSpace(n), 64)
-		return f, err == nil
+		if err != nil {
+			return 0, false
+		}
+		return finiteFloat(f)
 	default:
 		return 0, false
 	}
+}
+
+// finiteFloat rejects a non-finite value, whichever path produced it.
+//
+// The float64 case checked this and the float32 and string cases did not, which left the
+// hole open on the two paths a warehouse most often uses: a driver returning numerics as
+// text hands over "NaN" or "Infinity" and ParseFloat accepts both. From there a sum is NaN,
+// every comparison against it is false, and the value lands in a verdict that cannot be
+// marshalled to JSON -- so one cell empties an insights payload.
+//
+// Fixed here rather than in each evaluator because both the quantifier and the figure paths
+// read their numbers through asFloat, and this round's lesson was that a guard added per
+// call site is a guard that will be missed at one.
+func finiteFloat(f float64) (float64, bool) {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, false
+	}
+	return f, true
 }

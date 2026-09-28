@@ -69,10 +69,7 @@ func correctRefutedFigures(areaID string, insights []models.Insight, stepByID ma
 			continue
 		}
 
-		byID := make(map[string]int, len(ins.Figures))
-		for j := range ins.Figures {
-			byID[ins.Figures[j].ID] = j
-		}
+		byID := figureIndexByID(ins.Figures)
 		dup := duplicateFigureIDs(ins.Figures)
 
 		var corrections []models.FigureCorrection

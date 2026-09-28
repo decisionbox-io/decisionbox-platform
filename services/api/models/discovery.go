@@ -180,6 +180,16 @@ type AnalysisStep struct {
 	InsightsClaimsDropped int `bson:"insights_claims_dropped,omitempty" json:"insights_claims_dropped,omitempty"`
 	InsightsUnrepaired    int `bson:"insights_unrepaired,omitempty" json:"insights_unrepaired,omitempty"`
 	AnalysisRepairRounds  int `bson:"analysis_repair_rounds,omitempty" json:"analysis_repair_rounds,omitempty"`
+
+	// Figure counters, mirrored for exactly the reason stated above -- and missed
+	// for two commits, so the lesson needs restating rather than assuming: these
+	// are the only numbers that say whether the figure contract is being used or
+	// filled in, and with the fields absent here BSON dropped all three on the way
+	// to a client. FiguresInlined is the one that matters most: it counts prose that
+	// stated a number instead of declaring it, which is prose nothing checked.
+	FiguresCorrected     int `bson:"figures_corrected,omitempty" json:"figures_corrected,omitempty"`
+	FiguresInlined       int `bson:"figures_inlined,omitempty" json:"figures_inlined,omitempty"`
+	FigureRefsUnresolved int `bson:"figure_refs_unresolved,omitempty" json:"figure_refs_unresolved,omitempty"`
 }
 
 // SelectedStep mirrors the agent's struct: which exploration step

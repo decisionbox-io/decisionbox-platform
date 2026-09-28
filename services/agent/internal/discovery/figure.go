@@ -78,6 +78,15 @@ func evaluateFigure(f models.Figure, steps map[int]StepRows) models.FigureVerdic
 	if err != nil {
 		return undecidable("%s", err.Error())
 	}
+	// A non-finite result is undecidable, not a refutation, and it must not be stored.
+	// Division by a zero column total gives infinity and a zero-over-zero ratio gives NaN;
+	// closeEnough already returns false for both, so the figure would be refuted for
+	// arithmetic that produced no answer -- and the value would then be written into a
+	// verdict that cannot be marshalled to JSON, which is how a single figure empties an
+	// insights payload.
+	if math.IsNaN(got) || math.IsInf(got, 0) {
+		return undecidable("%s over step %d has no finite answer", f.Kind, f.Step)
+	}
 	// Evaluated is recorded in the figure's OWN terms, not the column's raw ones.
 	//
 	// A share is stored either as a fraction or as a percentage and the figure cannot see
@@ -312,4 +321,37 @@ func duplicateFigureIDs(figures []models.Figure) map[string]bool {
 		}
 	}
 	return dup
+}
+
+// figuresByID and figureIndexByID are the only two ways this package should key figures by
+// id, and they exist because the duplicate guard kept being added one site at a time.
+//
+// It went in at the correction pass, the reference index and the renderer, and was missed at
+// the recommendation adoption pass -- where a review found exactly the crossing it was meant
+// to stop: two figures named f1 both omitting a value, the first resolving to 100 and the
+// second referencing nothing, let the first verdict's number into the second declaration.
+// Three sites guarded and one not is what happens when the guard is a line you remember to
+// write; here it is the constructor, so a lookup that skips it has to be written on purpose.
+func figuresByID(figures []models.Figure) map[string]models.Figure {
+	dup := duplicateFigureIDs(figures)
+	out := make(map[string]models.Figure, len(figures))
+	for _, f := range figures {
+		if strings.TrimSpace(f.ID) == "" || dup[f.ID] {
+			continue
+		}
+		out[f.ID] = f
+	}
+	return out
+}
+
+func figureIndexByID(figures []models.Figure) map[string]int {
+	dup := duplicateFigureIDs(figures)
+	out := make(map[string]int, len(figures))
+	for i, f := range figures {
+		if strings.TrimSpace(f.ID) == "" || dup[f.ID] {
+			continue
+		}
+		out[f.ID] = i
+	}
+	return out
 }

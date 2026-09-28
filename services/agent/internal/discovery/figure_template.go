@@ -216,14 +216,7 @@ type figureRenderer struct {
 }
 
 func newFigureRenderer(figures []models.Figure, tally *figureRenderTally) *figureRenderer {
-	dup := duplicateFigureIDs(figures)
-	byID := make(map[string]models.Figure, len(figures))
-	for _, f := range figures {
-		if strings.TrimSpace(f.ID) == "" || dup[f.ID] {
-			continue
-		}
-		byID[f.ID] = f
-	}
+	byID := figuresByID(figures)
 	return &figureRenderer{byID: byID, tally: tally, used: map[string]struct{}{}}
 }
 

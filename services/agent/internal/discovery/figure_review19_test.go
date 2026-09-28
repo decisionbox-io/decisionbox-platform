@@ -5,8 +5,11 @@ package discovery
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
+
+	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 
@@ -703,5 +706,165 @@ func TestFigures_DuplicateIDActsOnNothing(t *testing.T) {
 	attachRecommendationFigureVerdicts(recs, []models.Insight{dupIns})
 	if v := recs[0].FigureVerdicts[0]; v.Status != models.FigureUndecidable || !strings.Contains(v.Reason, "more than once") {
 		t.Errorf("verdict = %q / %q, want undecidable naming the duplication", v.Status, v.Reason)
+	}
+}
+
+// --- Review round 24. Three of the five were this layer's own guards applied at one site
+// and not all of them, which is why the fixes below are the guard becoming structural rather
+// than one more call added by hand.
+
+// TestFigures_DuplicateIDIsRefusedInRecommendationAdoptionToo — round 24.
+//
+// The duplicate guard went in at the correction pass, the reference index and the renderer,
+// and was missed at recommendation adoption -- where it produced exactly the crossing it was
+// meant to stop: two figures named f1 both omitting a value, the first resolving to 100 and
+// the second referencing nothing, let the first verdict's number into the second declaration,
+// and renderableFigures then dropped the zero-valued one so the duplication never reached the
+// renderer that would have refused it.
+func TestFigures_DuplicateIDIsRefusedInRecommendationAdoptionToo(t *testing.T) {
+	ins := bandInsight()
+	recs := []models.Recommendation{{
+		Description: "It holds {{f1}}.",
+		Figures: []models.Figure{
+			{ID: "f1", Unit: models.UnitCount, Kind: models.FigureRefKind, Refs: []models.FigureRef{ref(ins.ID, "f1")}},
+			{ID: "f1", Unit: models.UnitCount, Kind: models.FigureRefKind, Refs: []models.FigureRef{ref(ins.ID, "nope")}},
+		},
+	}}
+
+	attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	renderRecommendationFigures(recs)
+
+	for i, f := range recs[0].Figures {
+		if f.Value != 0 {
+			t.Errorf("figure[%d] was filled with %v despite an ambiguous id", i, f.Value)
+		}
+	}
+	if !strings.Contains(recs[0].Description, "{{f1}}") {
+		t.Errorf("description = %q, want the ambiguous reference left visible", recs[0].Description)
+	}
+}
+
+// TestFigures_TheGuardIsTheConstructor is the structural half: keying figures by id without
+// the duplicate guard should not be something a new call site can do by forgetting.
+func TestFigures_TheGuardIsTheConstructor(t *testing.T) {
+	figures := []models.Figure{
+		{ID: "f1", Value: 1}, {ID: "f1", Value: 2}, {ID: "f2", Value: 3}, {ID: "  ", Value: 4},
+	}
+	byID := figuresByID(figures)
+	if _, ok := byID["f1"]; ok {
+		t.Error("figuresByID kept a duplicated id")
+	}
+	if got, ok := byID["f2"]; !ok || got.Value != 3 {
+		t.Errorf("figuresByID lost a unique id: %+v", byID)
+	}
+	idx := figureIndexByID(figures)
+	if _, ok := idx["f1"]; ok {
+		t.Error("figureIndexByID kept a duplicated id")
+	}
+	if got, ok := idx["f2"]; !ok || got != 2 {
+		t.Errorf("figureIndexByID = %v, want f2 at 2", idx)
+	}
+}
+
+// TestFigures_NonFiniteArithmeticIsUndecidable — round 24.
+//
+// A ratio over a zero column total is infinite and zero-over-zero is NaN. closeEnough returns
+// false for both, so the figure was refuted for arithmetic that produced no answer -- and the
+// non-finite value was written into a verdict that cannot be marshalled, which is how one
+// figure empties an insights payload.
+func TestFigures_NonFiniteArithmeticIsUndecidable(t *testing.T) {
+	// The reachable path is a driver handing numerics back as text: ParseFloat accepts
+	// "NaN" and "Infinity", and asFloat only screened the float64 case.
+	for _, bad := range []any{"NaN", "Infinity", "-Inf", float32(math.NaN())} {
+		if got, ok := asFloat(bad); ok {
+			t.Errorf("asFloat(%v) = (%v, true), want rejected", bad, got)
+		}
+	}
+
+	rows := []map[string]any{{"band": "A", "net": "NaN"}, {"band": "B", "net": "10"}}
+	f := models.Figure{
+		ID: "f1", Value: 50, Unit: models.UnitCurrency,
+		Step: 2, Kind: models.FigureSum, Column: "net",
+	}
+	v := evaluateFigure(f, map[int]StepRows{2: {Rows: rows}})
+	if v.Status == models.FigureFails {
+		t.Errorf("status = fails, want undecidable: the arithmetic has no finite answer")
+	}
+	if math.IsNaN(v.Evaluated) || math.IsInf(v.Evaluated, 0) {
+		t.Errorf("evaluated = %v, which cannot be marshalled to JSON", v.Evaluated)
+	}
+	ins := []models.Insight{{Name: "n", Figures: []models.Figure{f}, FigureVerdicts: []models.FigureVerdict{v}}}
+	if _, err := json.Marshal(ins); err != nil {
+		t.Errorf("the verdict left the insight unmarshalable: %v", err)
+	}
+
+	// And the guard in the evaluator covers what the coercion cannot: a total that
+	// overflows from inputs that were each finite. Both layers are needed, and this is the
+	// case that proves the second one is not dead code.
+	huge := []map[string]any{
+		{"band": "A", "net": math.MaxFloat64},
+		{"band": "B", "net": math.MaxFloat64},
+	}
+	over := evaluateFigure(
+		models.Figure{ID: "f1", Value: 1, Unit: models.UnitCurrency, Step: 2, Kind: models.FigureSum, Column: "net"},
+		map[int]StepRows{2: {Rows: huge}})
+	if over.Status != models.FigureUndecidable {
+		t.Errorf("overflowing sum: status = %q, want undecidable", over.Status)
+	}
+	if math.IsInf(over.Evaluated, 0) {
+		t.Errorf("overflowing sum stored %v in the verdict, which cannot be marshalled", over.Evaluated)
+	}
+}
+
+// TestFigures_RepairIsNotOfferedAFiguresArray — round 24.
+//
+// rewriteInsight reuses the analysis response format, so describing `figures` there handed the
+// repair prompt a facility the repair path cannot support: mergeRepairedInsight copies the
+// rewritten prose and not its figures, and rendering has already finished by the time repair
+// runs. A structured-output repair could return "{{f1}}" with a matching declaration, pass the
+// quantifier checks, and ship the placeholder to a reader.
+func TestFigures_RepairIsNotOfferedAFiguresArray(t *testing.T) {
+	props := func(format *gollm.ResponseFormat) map[string]interface{} {
+		p := format.Schema["properties"].(map[string]interface{})
+		items := p["insights"].(map[string]interface{})["items"].(map[string]interface{})
+		return items["properties"].(map[string]interface{})
+	}
+	if _, ok := props(insightRepairResponseFormat())["figures"]; ok {
+		t.Error("the repair schema offers a figures array, which nothing downstream of repair renders")
+	}
+	// And the analysis schema still does, because that is where figures are authored.
+	if _, ok := props(insightResponseFormat())["figures"]; !ok {
+		t.Error("the analysis schema lost its figures array")
+	}
+	// The repair schema keeps everything else, so removing figures cannot have replaced it.
+	for _, key := range []string{"name", "description", "indicators", "quantifier_claims"} {
+		if _, ok := props(insightRepairResponseFormat())[key]; !ok {
+			t.Errorf("the repair schema lost %q", key)
+		}
+	}
+}
+
+// TestFigures_AdoptionDeclinesWhenSegmentSizeWouldDesync — round 24.
+//
+// The same call substituteCount and the insight correction pass make: a correction that leaves
+// a structured field contradicting the prose is declined rather than guessed at.
+func TestFigures_AdoptionDeclinesWhenSegmentSizeWouldDesync(t *testing.T) {
+	ins := bandInsight()
+	recs := []models.Recommendation{{
+		Title:       "Reach the {{f1}} buyers",
+		SegmentSize: 96447,
+		Figures: []models.Figure{{
+			ID: "f1", Value: 96447, Unit: models.UnitCount, Kind: models.FigureSum,
+			Refs: []models.FigureRef{ref(ins.ID, "f1"), ref(ins.ID, "f2")},
+		}},
+	}}
+
+	attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	if len(recs[0].FigureCorrections) != 0 {
+		t.Errorf("adopted despite the segment_size desync: %v", recs[0].FigureCorrections)
+	}
+	if recs[0].Figures[0].Value != 96447 || recs[0].SegmentSize != 96447 {
+		t.Errorf("figure %v / segment_size %d -- the two must not be left disagreeing",
+			recs[0].Figures[0].Value, recs[0].SegmentSize)
 	}
 }

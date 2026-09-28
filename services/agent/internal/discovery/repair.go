@@ -346,7 +346,10 @@ func (o *Orchestrator) rewriteInsight(
 	if budget <= 0 || budget > repairOutputCap {
 		budget = repairOutputCap
 	}
-	res, err := o.aiClient.ChatWithFormat(ctx, prompt, "", budget, insightResponseFormat())
+	// The repair format, not the analysis one: repair rewrites prose that already carries
+	// rendered numbers, so it must not be offered a `figures` array that nothing downstream
+	// of it will render.
+	res, err := o.aiClient.ChatWithFormat(ctx, prompt, "", budget, insightRepairResponseFormat())
 	if err != nil {
 		return models.Insight{}, err
 	}

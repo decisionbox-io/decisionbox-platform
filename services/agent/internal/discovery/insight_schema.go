@@ -144,3 +144,29 @@ func insightResponseSchema() map[string]interface{} {
 		"required": []interface{}{"insights"},
 	}
 }
+
+// insightRepairResponseFormat is the analysis schema with `figures` removed, for the bounded
+// repair pass.
+//
+// rewriteInsight reuses the analysis response format, so describing `figures` there quietly
+// handed the repair prompt a facility the repair path cannot support: mergeRepairedInsight
+// copies the rewritten prose and not its figures, and rendering has already finished by the
+// time repair runs. A structured-output repair could therefore return "{{f1}}" with a
+// matching declaration, pass the quantifier checks, and ship the placeholder to a reader.
+//
+// Removing the key is the fix rather than teaching repair to render, because by that point
+// every number in the insight is already rendered text and a repair that wants to change one
+// is changing prose. There is nothing for it to declare.
+func insightRepairResponseFormat() *gollm.ResponseFormat {
+	schema := insightResponseSchema()
+	props, _ := schema["properties"].(map[string]interface{})
+	items, _ := props["insights"].(map[string]interface{})["items"].(map[string]interface{})
+	if itemProps, ok := items["properties"].(map[string]interface{}); ok {
+		delete(itemProps, "figures")
+	}
+	return &gollm.ResponseFormat{
+		Name:   insightResponseFormatName,
+		Schema: schema,
+		Strict: false,
+	}
+}
