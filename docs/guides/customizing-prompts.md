@@ -139,7 +139,7 @@ The most commonly used:
 | `{{DATASET}}` | exploration.md, analysis_*.md | Dataset names |
 | `{{DIALECT}}` | any prompt | Warehouse SQL dialect name (e.g. `"BigQuery Standard SQL"`, `"Microsoft SQL Server T-SQL …"`) returned by the connected provider |
 | `{{REF:tablename}}` | any prompt | Dialect-correct fully-qualified table reference (`` `ds`.`tablename` `` on BigQuery, `[ds].[tablename]` on SQL Server, `"ds"."tablename"` on PostgreSQL/Redshift/Snowflake). Use this for every SQL table reference in example queries; the orchestrator renders it with the connected warehouse's native quoting. |
-| `{{INSIGHTS_DATA}}` | recommendations.md | All insights as JSON (for linking) |
+| `{{INSIGHTS_DATA}}` | recommendations.md | The eligible insights as JSON, trimmed to the fields the recommender reasons over (each with its `id`, for linking) — see [Prompt Variables Reference](../reference/prompt-variables.md#insights_data) |
 
 ## Tips for Better Prompts
 
