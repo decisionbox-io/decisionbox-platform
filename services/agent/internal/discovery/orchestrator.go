@@ -1552,6 +1552,16 @@ func (o *Orchestrator) persistSplitLogs(
 // contract: every models.Insight field is either listed here or named as
 // deliberately dropped, and every tag here exists on the model under the same
 // name.
+//
+// Note for whoever reads discipline.RecommendationsRules() next: its rules 3
+// and 6 name source_steps as somewhere a figure may be traced to, and this
+// projection does not carry it. That gap is deliberate and was decided
+// knowingly — do not close it by adding source_steps here, which would put the
+// transcript-sized payload problem back within reach of the next field, nor by
+// editing the rule text without asking. Those rules were already only half
+// applicable: source_steps is a list of step numbers, and the steps themselves
+// have never been part of this prompt, so the insights below have always been
+// the only evidence it carries.
 type recommenderInsight struct {
 	ID            string                      `json:"id"`
 	AnalysisArea  string                      `json:"analysis_area"`
