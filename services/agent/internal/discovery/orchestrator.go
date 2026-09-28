@@ -1597,6 +1597,18 @@ func insightsForRecommenderPrompt(insights []models.Insight) []models.Insight {
 	copy(out, insights)
 	for i := range out {
 		out[i].DescriptionMd = ""
+		// The evidence trail is an audit record, not input to a recommendation, and
+		// leaving it in is worse than noise: Repair.Fixed and Repair.Dropped carry
+		// the ORIGINAL refuted claim verbatim. So a sentence this pipeline removed
+		// for being false is still in the prompt, and the recommender can build on
+		// it -- a route back for a claim that was deliberately deleted. The
+		// declarations and verdicts carry the same text.
+		//
+		// Quality stays: it says the rows behind a finding were capped or withheld,
+		// which is context for acting on it rather than a record of correction.
+		out[i].QuantifierClaims = nil
+		out[i].QuantifierVerdicts = nil
+		out[i].Repair = nil
 	}
 	return out
 }

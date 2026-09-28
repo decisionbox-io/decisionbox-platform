@@ -1,8 +1,11 @@
 package discovery
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -163,5 +166,51 @@ func TestRepair_ARoundWithUnparseableDeclarationsIsRejected(t *testing.T) {
 	}
 	if got.Repair.Outcome == models.RepairRepaired {
 		t.Errorf("outcome = %q; the rounds carried no readable declarations", got.Repair.Outcome)
+	}
+}
+
+// Repair.Fixed and Repair.Dropped hold the ORIGINAL refuted claim verbatim. If that
+// record reaches the recommendation prompt, a sentence this pipeline deleted for
+// being false is back in front of a model that can build on it.
+func TestInsightsForRecommenderPrompt_DropsTheAuditTrail(t *testing.T) {
+	const refuted = "Tables is the only loss-making sub-category among the 10 largest by sales"
+	in := []models.Insight{{
+		ID: "i1", Name: "Furniture drags the range", Description: "Chairs leads on volume.",
+		DescriptionMd:      "**Chairs** leads on volume.",
+		QuantifierClaims:   []models.QuantifierClaim{{Claim: refuted, Kind: "only", Step: 4}},
+		QuantifierVerdicts: []models.QuantifierVerdict{{Claim: refuted, Status: "fails", Reason: "2 of 10 rows"}},
+		Repair:             &models.InsightRepair{Rounds: 1, Outcome: "claim_dropped", Dropped: []string{refuted}},
+		Quality:            []gowarehouse.QualityCaveat{gowarehouse.RowCapCaveat(15)},
+	}}
+	out := insightsForRecommenderPrompt(in)
+
+	if len(out) != 1 {
+		t.Fatalf("got %d insights, want 1", len(out))
+	}
+	if out[0].Repair != nil || out[0].QuantifierClaims != nil || out[0].QuantifierVerdicts != nil {
+		t.Errorf("the audit trail survived: repair=%+v claims=%+v verdicts=%+v",
+			out[0].Repair, out[0].QuantifierClaims, out[0].QuantifierVerdicts)
+	}
+	// The whole point: the deleted claim's text must not be reachable from the copy.
+	blob, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(blob), refuted) {
+		t.Errorf("the refuted claim text is still in the recommender payload:\n%s", blob)
+	}
+	// What the recommender does use is untouched, and Quality stays as context.
+	if out[0].Name != in[0].Name || out[0].Description != in[0].Description {
+		t.Error("the fields the recommender reads were altered")
+	}
+	if len(out[0].Quality) != 1 {
+		t.Errorf("quality = %+v, want it kept as context for acting on the finding", out[0].Quality)
+	}
+	if out[0].DescriptionMd != "" {
+		t.Errorf("description_md should still be cleared, got %q", out[0].DescriptionMd)
+	}
+	// The originals are not mutated.
+	if in[0].Repair == nil || len(in[0].QuantifierClaims) != 1 {
+		t.Error("the stored insight was mutated; only the prompt copy may be trimmed")
 	}
 }

@@ -1054,3 +1054,38 @@ func TestDeletedByModel_SeparatesARephraseFromADeletion(t *testing.T) {
 		t.Errorf("a withdrawal was read as a deletion: %v", got)
 	}
 }
+
+// With rounds disabled, a refuted declaration whose claim the prose never carried
+// reaches the removal fallback. insightMentions is false, so it used to be filed as
+// Dropped — reporting claim_dropped for a document nothing was cut from.
+func TestRepair_WithRoundsOffADeclarationAboutNothingIsStillWithdrawn(t *testing.T) {
+	const body = "Chairs leads the category on volume."
+	entry := models.Insight{
+		ID: "insight-5", Name: "Furniture drags the top ten",
+		Description: body, SourceSteps: []int{4}, Severity: "high",
+		QuantifierClaims: []models.QuantifierClaim{{
+			Claim: shippedOnlyClaim, Kind: QuantifierOnly,
+			Step: 4, Filter: "profit < 0", TopN: 10, TopNColumn: "sales",
+		}},
+	}
+	t.Setenv(analysisRepairMaxRoundsEnv, "0")
+	o, _ := newRepairOrchestrator()
+
+	got, tally := repairOne(t, o, entry)
+
+	if len(got.Repair.Dropped) != 0 {
+		t.Errorf("dropped = %v; no sentence was removed because none existed", got.Repair.Dropped)
+	}
+	if len(got.Repair.Withdrawn) != 1 {
+		t.Errorf("withdrawn = %v, want the declaration that was about nothing", got.Repair.Withdrawn)
+	}
+	if got.Repair.Outcome != models.RepairWithdrawn {
+		t.Errorf("outcome = %q, want %q", got.Repair.Outcome, models.RepairWithdrawn)
+	}
+	if tally.claimsDropped != 0 {
+		t.Errorf("tally = %+v, want no drop counted", tally)
+	}
+	if got.Description != body {
+		t.Errorf("the body was edited: %q", got.Description)
+	}
+}

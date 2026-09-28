@@ -249,6 +249,9 @@ func (o *Orchestrator) repairInsight(
 	// does the surgery in the normal case and this coarse cut is the fallback.
 	// A declaration can outlive its sentence this way; it is re-settled below and
 	// still holds over the rows, so it stays as the record of what was checked.
+	// Refuted claims the prose never carried. Collected rather than dropped, because
+	// nothing about the document changes for them.
+	var neverInProse []string
 	for _, v := range ins.QuantifierVerdicts {
 		if v.Status != QuantifierFails {
 			continue
@@ -263,6 +266,17 @@ func (o *Orchestrator) repairInsight(
 		// escalating the outcome to its worst bucket and leaving a live failure
 		// recorded about text that is gone.
 		if !insightMentions(*ins, v.Claim) {
+			// Absent now AND absent on arrival is a withdrawal, not a removal: no
+			// sentence existed to remove, so reporting claim_dropped would say a
+			// document was cut when nothing was. Its declaration goes with the
+			// dropped ones below -- a verdict about text the document does not
+			// contain reads downstream as a live failure, which is the same reason
+			// a removed sentence takes its declaration with it -- and
+			// withdrawnClaims then files it once it is no longer declared.
+			if !insightMentions(entryText, v.Claim) {
+				neverInProse = append(neverInProse, v.Claim)
+				continue
+			}
 			rep.Dropped = append(rep.Dropped, v.Claim)
 			continue
 		}
@@ -278,8 +292,8 @@ func (o *Orchestrator) repairInsight(
 	// Drop the declarations whose sentences are gone, then settle the claims
 	// that remain. A stored verdict about a sentence the document no longer
 	// contains would be read as a live failure by everything downstream.
-	if len(rep.Dropped) > 0 {
-		ins.QuantifierClaims = withoutClaims(ins.QuantifierClaims, rep.Dropped)
+	if undeclare := append(append([]string{}, rep.Dropped...), neverInProse...); len(undeclare) > 0 {
+		ins.QuantifierClaims = withoutClaims(ins.QuantifierClaims, undeclare)
 		ins.QuantifierVerdicts = EvaluateQuantifierClaims(ins.QuantifierClaims, evidence)
 	}
 
