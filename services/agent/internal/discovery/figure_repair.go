@@ -145,6 +145,15 @@ func substituteFigureText(ins *models.Insight, c *models.FigureClaim, from, to s
 	for i := range ins.Indicators {
 		fields = append(fields, &ins.Indicators[i])
 	}
+	// The quantifier claims' text too. Each is a quotation of a sentence in the
+	// prose, so correcting the prose and leaving the quotation stale would make the
+	// two disagree about what the insight says -- and those strings are what a
+	// reader and a later repair round both match on. Included in the ambiguity
+	// checks as well as the rewrite, so a numeral that means something else inside a
+	// claim declines the whole substitution like any other field.
+	for i := range ins.QuantifierClaims {
+		fields = append(fields, &ins.QuantifierClaims[i].Claim)
+	}
 
 	// What the figure measures, read from the declaration's own text. Every other
 	// occurrence has to be measuring the same thing, or this is not one quantity

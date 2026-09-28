@@ -290,3 +290,73 @@ func TestWrittenNumerals_ExcludesWhatMeasuresNothing(t *testing.T) {
 		}
 	}
 }
+
+// TestFigureRepair_AlsoCorrectsTheQuantifierClaimQuotation covers the field list's
+// last entry. A quantifier claim's text quotes a sentence in the prose, so
+// correcting the prose and leaving the quotation stale makes the insight disagree
+// with itself about what it said -- and those strings are what a reader and a later
+// repair round both match on.
+func TestFigureRepair_AlsoCorrectsTheQuantifierClaimQuotation(t *testing.T) {
+	ins := []models.Insight{{
+		Name:        "Buyer base",
+		Description: "All 100,000 buyers ordered at least once.",
+		SourceSteps: []int{7},
+		QuantifierClaims: []models.QuantifierClaim{{
+			Claim: "100,000 buyers ordered at least once", Kind: QuantifierCardinality, Step: 7,
+		}},
+		FigureClaims: []models.FigureClaim{{
+			Figure: "100,000 buyers", Value: 100000, Step: 7, Kind: models.FigureSum,
+			Column: "customers", Scope: "bucket != '0_never_ordered'",
+		}},
+	}}
+	steps := stepIndex(7, step7Rows())
+
+	attachFigureVerdicts(ins, steps)
+	if n := repairRefutedFigures("retention", ins, steps); n != 1 {
+		t.Fatalf("substitutions = %d, want 1", n)
+	}
+	if got := ins[0].QuantifierClaims[0].Claim; !strings.Contains(got, "99,996") {
+		t.Errorf("the claim quotation was left stale: %q", got)
+	}
+}
+
+// TestFigureVerdicts_AreDerivedFromTheCurrentProse pins the property the pass's
+// placement depends on.
+//
+// mergeRepairedInsight replaces an insight's prose and declared claims but carries
+// FigureClaims over from the original, so running the figure check BEFORE repair
+// leaves every figure record describing sentences that no longer exist. The check is
+// therefore ordered after repair, and this asserts that re-running it genuinely
+// re-derives rather than preserving whatever was attached first.
+func TestFigureVerdicts_AreDerivedFromTheCurrentProse(t *testing.T) {
+	ins := []models.Insight{{
+		Name:        "Five materials span $6.595B to $6.645B over 911,395 lines",
+		Description: "TIN leads at $6.645B.",
+		SourceSteps: []int{28},
+		FigureClaims: []models.FigureClaim{{
+			Figure: "$6.645B", Value: 6645000000, Step: 28, Kind: models.FigureCell,
+			Column: "net_rev", Row: "material = 'TIN'",
+		}},
+	}}
+	steps := stepIndex(28, step28Rows())
+
+	attachFigureVerdicts(ins, steps)
+	first := *ins[0].FigureCoverage
+	if first.Written == 0 {
+		t.Fatal("no numerals were counted in the first pass")
+	}
+
+	// Stand in for a repair round: the prose is rewritten, the declarations are not.
+	ins[0].Name = "Materials are evenly spread"
+	ins[0].Description = "No category dominates."
+
+	attachFigureVerdicts(ins, steps)
+	second := *ins[0].FigureCoverage
+	if second.Written >= first.Written {
+		t.Fatalf("coverage did not follow the prose: %d numerals before the rewrite, %d after",
+			first.Written, second.Written)
+	}
+	if len(ins[0].FigureVerdicts) != 1 {
+		t.Fatalf("verdicts = %d, want 1 re-derived verdict", len(ins[0].FigureVerdicts))
+	}
+}

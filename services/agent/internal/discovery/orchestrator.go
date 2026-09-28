@@ -1244,19 +1244,6 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// check.
 		attachQuantifierVerdicts(insights, stepByID)
 
-		// Same idea one layer down: re-run the arithmetic the model declared for
-		// each figure it wrote, over the step's full rows rather than the digest
-		// it saw. Runs after the quantifier pass and before repair, so a refuted
-		// figure reaches the same rewrite path a refuted claim does.
-		attachFigureVerdicts(insights, stepByID)
-
-		// A refuted figure needs no model to fix: the arithmetic that refuted it
-		// already produced the right number. Swap the numeral, re-settle, and
-		// leave anything ambiguous refuted and visible.
-		if swapped := repairRefutedFigures(area.ID, insights, stepByID); swapped > 0 {
-			step.FiguresCorrected = swapped
-		}
-
 		// Bounded repair before discard (E5). Every insight whose own cited rows
 		// contradict a claim it declared gets the evaluator's reason handed back
 		// and up to ANALYSIS_REPAIR_MAX_ROUNDS attempts to say something true;
@@ -1283,6 +1270,26 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 				"claim_dropped": repair.claimsDropped,
 				"unrepaired":    repair.unrepaired,
 			}).Info("Repaired insights whose declared claims their own evidence contradicted")
+		}
+
+		// Re-run the arithmetic the model declared for each figure it wrote, over
+		// the step's full rows rather than the digest it saw.
+		//
+		// After repair, not before, and that ordering is load-bearing.
+		// mergeRepairedInsight replaces the prose and the declared claims but
+		// carries FigureClaims over from the original, so a rewrite leaves every
+		// figure record describing sentences that no longer exist -- stale figure
+		// text, stale verdicts, stale coverage. Checking the text that ships is the
+		// only ordering in which those records mean anything, and it is the same
+		// reason repair itself runs before validation.
+		attachFigureVerdicts(insights, stepByID)
+
+		// A refuted figure needs no model to fix: the arithmetic that refuted it
+		// already produced the right number. Swap the numeral, re-settle, and leave
+		// anything ambiguous refuted and visible. Before validation, so the
+		// verifier judges the corrected text.
+		if swapped := repairRefutedFigures(area.ID, insights, stepByID); swapped > 0 {
+			step.FiguresCorrected = swapped
 		}
 
 		if len(insights) > 0 {
