@@ -228,6 +228,15 @@ type FigureTemplate struct {
 	Name        string   `bson:"name,omitempty" json:"name,omitempty"`
 	Description string   `bson:"description,omitempty" json:"description,omitempty"`
 	Indicators  []string `bson:"indicators,omitempty" json:"indicators,omitempty"`
+
+	// Claims is the quantifier claim text as authored, references intact.
+	//
+	// Here because the claim is rendered as well, and it has to be: the quantifier
+	// contract asks for the claim verbatim as written in the prose, the figure contract
+	// has the prose carrying references, and every consumer matches claim text against
+	// the rendered fields above. Leaving it unrendered meant a refuted sentence could
+	// survive while its declaration was recorded as withdrawn.
+	Claims []string `bson:"claims,omitempty" json:"claims,omitempty"`
 }
 
 // RecommendationFigureTemplate keeps a recommendation's prose as the model authored it,

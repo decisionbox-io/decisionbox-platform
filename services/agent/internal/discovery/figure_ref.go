@@ -43,6 +43,12 @@ type figureRefIndex map[string]map[string]refValue
 // reference that resolves to nothing has no number behind it at all.
 type refValue struct {
 	value float64
+	// slack is the half-interval the SOURCE figure was verified at, which is the
+	// precision its own insight printed it to. A `holds` verdict says the arithmetic
+	// landed inside that interval and nothing narrower: "~911K" at the thousands scale
+	// vouches for the value to within 500, so a recommendation restating it unscaled as
+	// "911,000" would assert ±0.5 on a number checked to ±500.
+	slack float64
 	// found is false when the id resolves to nothing: no such insight, no such figure.
 	// There is no number to carry.
 	found bool
@@ -65,6 +71,33 @@ func buildFigureRefIndex(insights []models.Insight) figureRefIndex {
 		if ins.ID == "" || len(ins.Figures) == 0 {
 			continue
 		}
+		// An insight whose prose was repaired can no longer vouch for its figures.
+		//
+		// Repair runs after the figures are rendered, and it edits text: it substitutes a
+		// refuted count or drops a sentence outright, and it touches no figure. So a
+		// figure stating 12 can pass its own check, have its sentence repaired to 302,
+		// and keep the value 12 -- at which point a reference with no declared value
+		// adopts 12 and puts the corrected error back into a second document.
+		//
+		// The insight itself is fine: its prose says 302 and that is what a reader sees.
+		// What is broken is the figure's link to the sentence, which a text edit severed,
+		// and there is no way from here to tell which figures the edit reached. So the
+		// whole insight's figures become unreferenceable rather than guessed at. Repair is
+		// rare -- it runs only where a declared claim its own evidence contradicts -- and
+		// the cost is a recommendation typing a number instead of referencing one, which
+		// is the status quo. The cost of the alternative is a false number.
+		if ins.Repair != nil {
+			why := "the insight's prose was repaired after its figures were rendered, so the figure no longer tracks the sentence"
+			byID := make(map[string]refValue, len(ins.Figures))
+			for _, f := range ins.Figures {
+				if strings.TrimSpace(f.ID) == "" {
+					continue
+				}
+				byID[f.ID] = refValue{value: f.Value, slack: figureSlack(f), found: true, why: why}
+			}
+			ix[ins.ID] = byID
+			continue
+		}
 		status := make(map[string]string, len(ins.FigureVerdicts))
 		for _, v := range ins.FigureVerdicts {
 			status[v.ID] = v.Status
@@ -80,11 +113,12 @@ func buildFigureRefIndex(insights []models.Insight) figureRefIndex {
 			// declined to fix still reads fails.
 			switch st := status[f.ID]; st {
 			case models.FigureHolds:
-				byID[f.ID] = refValue{value: f.Value, found: true, vouched: true}
+				byID[f.ID] = refValue{value: f.Value, slack: figureSlack(f), found: true, vouched: true}
 			case "":
-				byID[f.ID] = refValue{value: f.Value, found: true, why: "it was never checked"}
+				byID[f.ID] = refValue{value: f.Value, slack: figureSlack(f), found: true,
+					why: "it was never checked"}
 			default:
-				byID[f.ID] = refValue{value: f.Value, found: true,
+				byID[f.ID] = refValue{value: f.Value, slack: figureSlack(f), found: true,
 					why: fmt.Sprintf("its own check came back %s, so the insight carries it unvouched too", st)}
 			}
 		}
@@ -99,19 +133,19 @@ func buildFigureRefIndex(insights []models.Insight) figureRefIndex {
 // A missing reference is an error, because there is no number. An unvouched one is not:
 // the value comes back with vouched false, and the caller carries it while refusing to
 // call the figure checked.
-func (ix figureRefIndex) resolve(r models.FigureRef) (value float64, vouched bool, why string, err error) {
+func (ix figureRefIndex) resolve(r models.FigureRef) (value float64, slack float64, vouched bool, why string, err error) {
 	figures, ok := ix[r.Insight]
 	if !ok {
-		return 0, false, "", fmt.Errorf("insight %s is not among the insights this recommendation was given", shortID(r.Insight))
+		return 0, 0, false, "", fmt.Errorf("insight %s is not among the insights this recommendation was given", shortID(r.Insight))
 	}
 	rv, ok := figures[r.Figure]
 	if !ok || !rv.found {
-		return 0, false, "", fmt.Errorf("insight %s declares no figure %s", shortID(r.Insight), r.Figure)
+		return 0, 0, false, "", fmt.Errorf("insight %s declares no figure %s", shortID(r.Insight), r.Figure)
 	}
 	if !rv.vouched {
-		return rv.value, false, fmt.Sprintf("figure %s of insight %s is not vouched for: %s", r.Figure, shortID(r.Insight), rv.why), nil
+		return rv.value, rv.slack, false, fmt.Sprintf("figure %s of insight %s is not vouched for: %s", r.Figure, shortID(r.Insight), rv.why), nil
 	}
-	return rv.value, true, "", nil
+	return rv.value, rv.slack, true, "", nil
 }
 
 // EvaluateRecommendationFigures settles every figure a recommendation declares against
@@ -150,13 +184,19 @@ func evaluateRecommendationFigure(f models.Figure, ix figureRefIndex) models.Fig
 
 	total := 0.0
 	unvouched := ""
+	// A sum is verified no better than the coarsest of its operands: adding a value known
+	// to within 500 to one known exactly leaves the total known to within 500.
+	sourceSlack := 0.0
 	for _, r := range f.Refs {
-		got, vouched, why, err := ix.resolve(r)
+		got, slack, vouched, why, err := ix.resolve(r)
 		if err != nil {
 			return undecidable("%s", err.Error())
 		}
 		if !vouched && unvouched == "" {
 			unvouched = why
+		}
+		if slack > sourceSlack {
+			sourceSlack = slack
 		}
 		total += got
 	}
@@ -173,6 +213,19 @@ func evaluateRecommendationFigure(f models.Figure, ix figureRefIndex) models.Fig
 	// number. The first live replay recorded eighteen of nineteen figures as corrected
 	// from zero, which made compliance look identical to being wrong in exactly the
 	// telemetry used to measure it.
+	// A restatement may not assert more accuracy than the source was checked to. The
+	// insight that printed "~911K" vouched for its value to within 500; a recommendation
+	// rewriting it unscaled as "911,000" asserts a half-unit, and its `holds` would be
+	// claiming a precision nothing established. The value still renders -- it is the
+	// number the insight itself shows -- and the verdict says so.
+	if own := figureSlack(f); own < sourceSlack {
+		if f.Value == 0 {
+			v.Claimed = total
+		}
+		return undecidable(
+			"the figures referenced were checked to within %s, and this one is written to within %s, "+
+				"which is finer than anything established", formatFigure(sourceSlack), formatFigure(own))
+	}
 	if f.Value == 0 {
 		v.Claimed = total
 		v.Status = models.FigureHolds
@@ -216,6 +269,7 @@ func adoptResolvedFigureValues(rec *models.Recommendation, ix figureRefIndex) in
 	}
 
 	var corrections []models.FigureCorrection
+	filled := false
 	for _, v := range rec.FigureVerdicts {
 		if !v.Resolved {
 			continue
@@ -232,6 +286,7 @@ func adoptResolvedFigureValues(rec *models.Recommendation, ix figureRefIndex) in
 		// is already showing that number to the same reader.
 		if f.Value == 0 {
 			f.Value = v.Evaluated
+			filled = true
 			continue
 		}
 
@@ -256,13 +311,16 @@ func adoptResolvedFigureValues(rec *models.Recommendation, ix figureRefIndex) in
 			ID: f.ID, From: v.Claimed, To: v.Evaluated, Text: before + " -> " + after,
 		})
 	}
-	if len(corrections) == 0 {
-		return 0
+	if len(corrections) > 0 {
+		rec.FigureCorrections = corrections
 	}
-	rec.FigureCorrections = corrections
-	// Re-settle, so the verdicts describe the values that will be rendered rather than
-	// the ones that were refuted.
-	rec.FigureVerdicts = EvaluateRecommendationFigures(rec.Figures, ix)
+	// Re-settle whenever a value moved, which includes the fill-in path and not only the
+	// corrected one. Skipping it there left the audit trail saying `display: "0"` on a
+	// figure whose claimed and evaluated values were both 52134 -- every contract-
+	// compliant figure, since the contract is what tells the model to omit the value.
+	if filled || len(corrections) > 0 {
+		rec.FigureVerdicts = EvaluateRecommendationFigures(rec.Figures, ix)
+	}
 	return len(corrections)
 }
 

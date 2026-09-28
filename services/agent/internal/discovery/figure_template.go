@@ -59,10 +59,15 @@ func renderInsightFigures(insights []models.Insight) figureRenderTally {
 			continue
 		}
 
+		claims := make([]string, len(ins.QuantifierClaims))
+		for j := range ins.QuantifierClaims {
+			claims[j] = ins.QuantifierClaims[j].Claim
+		}
 		tpl := models.FigureTemplate{
 			Name:        ins.Name,
 			Description: ins.Description,
 			Indicators:  append([]string(nil), ins.Indicators...),
+			Claims:      claims,
 		}
 		ins.FigureTemplate = &tpl
 
@@ -71,6 +76,20 @@ func renderInsightFigures(insights []models.Insight) figureRenderTally {
 		ins.Description = r.render(ins.Description)
 		for j := range ins.Indicators {
 			ins.Indicators[j] = r.render(ins.Indicators[j])
+		}
+
+		// Quantifier claim text is rendered too, and it has to be.
+		//
+		// The quantifier contract asks for the claim verbatim as written in the name,
+		// description or indicators -- and the figure contract has those carrying
+		// references. So a model obeying both writes "{{f1}} of customers" in the claim.
+		// Every consumer downstream matches claim text against the rendered prose:
+		// insightMentions, dropClaimSentence and substituteRefutedCounts all look for the
+		// claim inside those fields. An unrendered claim matches none of them, so a
+		// refuted sentence survives while its declaration is recorded as withdrawn --
+		// the repair reporting a fix it did not make.
+		for j := range ins.QuantifierClaims {
+			ins.QuantifierClaims[j].Claim = r.render(ins.QuantifierClaims[j].Claim)
 		}
 
 		// DescriptionMd is derived from Description at parse time, so a template that

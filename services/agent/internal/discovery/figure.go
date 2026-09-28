@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -57,14 +58,31 @@ func evaluateFigure(f models.Figure, steps map[int]StepRows) models.FigureVerdic
 	if err != nil {
 		return undecidable("%s", err.Error())
 	}
+	// Evaluated is recorded in the figure's OWN terms, not the column's raw ones.
+	//
+	// A share is stored either as a fraction or as a percentage and the figure cannot see
+	// which, so percentScalings offers both readings. Recording the raw value regardless
+	// left the correction gate comparing a claim of 14.15% against an evaluated 0.1414,
+	// judging them different quantities, and declining a correction to 14.14% that was
+	// well inside its 1% limit -- and had it corrected, it would have written 0.1414 and
+	// rendered "0.14%". So the scaling that was actually compared is the one kept: the
+	// matching one when a reading holds, and otherwise the nearest, which is the only one
+	// a correction could sensibly be measured against.
 	v.Evaluated = got
 
+	best, bestGap := got, math.Inf(1)
 	for _, candidate := range percentScalings(f, got) {
 		if closeEnough(f, candidate) {
+			v.Evaluated = candidate
 			v.Status = models.FigureHolds
 			return v
 		}
+		if gap := relativeDistance(f.Value, candidate); gap < bestGap {
+			best, bestGap = candidate, gap
+		}
 	}
+	v.Evaluated = best
+	got = best
 	v.Status = models.FigureFails
 	v.Reason = fmt.Sprintf("%s over step %d gives %s, and the figure states %s (%s)",
 		f.Kind, f.Step, formatFigure(got), v.Display, relativeGap(f.Value, got))

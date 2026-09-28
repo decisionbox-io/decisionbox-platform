@@ -150,6 +150,19 @@ func percentScalings(f models.Figure, got float64) []float64 {
 	return []float64{got, got * 100, got / 100}
 }
 
+// relativeDistance is the same measure relativeGap reports, as a number.
+//
+// Used to pick which of a percentage's candidate readings a refutation should be measured
+// against, so the correction gate compares two readings of one quantity rather than a
+// percentage against a fraction.
+func relativeDistance(claimed, got float64) float64 {
+	scale := math.Max(math.Abs(claimed), math.Abs(got))
+	if scale == 0 {
+		return 0
+	}
+	return math.Abs(claimed-got) / scale
+}
+
 func relativeGap(claimed, got float64) string {
 	scale := math.Max(math.Abs(claimed), math.Abs(got))
 	if scale == 0 {
