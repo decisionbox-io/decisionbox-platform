@@ -57,6 +57,17 @@ func AnalysisRules() string {
 // recommendation JSON schema (title, description, actions,
 // related_insight_ids) and reiterates the non-dramatic-language
 // principle from rule 8 for recommendation prose.
+//
+// Rules 3 and 6 bind figures to the cited insight's own fields and to
+// nothing else, because the insights are the only evidence this prompt
+// carries: INSIGHTS_DATA is the recommenderInsight projection, and the
+// exploration steps behind an insight are not in it. Both rules used to
+// offer `source_steps` as a second path, which the model could never
+// take — `source_steps` is a list of step numbers and the steps
+// themselves have never been part of this prompt. AnalysisRules does
+// carry its query results, which is why its rule 6 can point at step
+// rows and this one cannot. The two rule sets are pinned apart by
+// TestRulesCiteOnlyEvidenceTheirPromptCarries.
 func RecommendationsRules() string {
 	return recommendationsRulesText
 }
@@ -279,9 +290,9 @@ language the recommendation is being written in.
 3. RE-RANK FROM THE UNDERLYING INSIGHT
    When a recommendation references a "top N" pattern (e.g. "target
    the 3 highest-churn segments"), re-derive the ranking from the
-   insight's ` + "`metrics`" + ` or the step rows in its ` + "`source_steps`" + ` — not
-   from earlier prose. The recommendation must agree with the
-   insight it cites.
+   cited insight's own values — its ` + "`metrics`" + `, ` + "`indicators`" + ` and
+   ` + "`affected_count`" + ` — not from earlier prose. The recommendation
+   must agree with the insight it cites.
 
 4. ADDRESS COUNTER-EVIDENCE EXPLICITLY
    If the underlying insight had counter-evidence rows, the
@@ -298,10 +309,13 @@ language the recommendation is being written in.
 
 6. CITE THE INSIGHT FOR EVERY NUMBER
    Every quantitative figure that appears in ` + "`title`" + `, ` + "`description`" + `,
-   ` + "`actions`" + `, or ` + "`expected_impact`" + ` must be traceable either to the cited
-   insight's own values or to a row in one of that insight's
-   ` + "`source_steps`" + `. ` + "`related_insight_ids`" + ` must point at the insights the
-   numbers actually come from.
+   ` + "`actions`" + `, or ` + "`expected_impact`" + ` must be traceable to a value carried
+   by one of the cited insights above. Those insights are the only
+   evidence this prompt contains — the exploration steps behind them are
+   not included here — so a figure you cannot point at in an insight's
+   own fields may not appear at all. Do not reconstruct one, and do not
+   carry one over from earlier prose. ` + "`related_insight_ids`" + ` must point
+   at the insights the numbers actually come from.
 
 R. RELATED_INSIGHT_IDS MUST BE VERBATIM UUIDs FROM THE INPUT
    Each entry in ` + "`related_insight_ids`" + ` MUST be an exact, character-

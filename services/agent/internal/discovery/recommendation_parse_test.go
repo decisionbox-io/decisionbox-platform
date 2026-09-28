@@ -386,3 +386,76 @@ func TestRecommendationSchema_MatchesStructTags(t *testing.T) {
 		}
 	}
 }
+
+// --- the rendered prompt carries no validation transcript (#432) ---
+
+// TestGenerateRecommendations_PromptCarriesNoValidationTranscript builds the
+// real recommendation prompt — pack template, INSIGHTS_DATA, discipline rules,
+// knowledge-source injection, all of it — and asserts the verifier and refuter
+// write-ups are nowhere in it.
+//
+// They used to be about 80% of it: the whole models.Insight was serialised into
+// INSIGHTS_DATA, so #238's transcripts arrived without anyone choosing to send
+// them, and a model with a 40,960-token window rejected the request and finished
+// the run with zero recommendations.
+func TestGenerateRecommendations_PromptCarriesNoValidationTranscript(t *testing.T) {
+	o, _ := newRecOrchestrator(validRecEnvelope)
+	insights := []models.Insight{fullyPopulatedInsight("i-1")}
+
+	_, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", insights, "", "ds")
+
+	if step.Prompt == "" {
+		t.Fatal("step.Prompt is empty — the assertions below would pass vacuously")
+	}
+	for _, marker := range transcriptMarkers {
+		if strings.Contains(step.Prompt, marker) {
+			t.Errorf("the rendered prompt carries dropped content %q", marker)
+		}
+	}
+	// Quoted and colon-terminated, so this can only match a JSON key in
+	// INSIGHTS_DATA and never the discipline rules' prose about a field.
+	for _, key := range droppedJSONKeys() {
+		if strings.Contains(step.Prompt, key) {
+			t.Errorf("the rendered prompt carries the dropped key %s", key)
+		}
+	}
+
+	// Fails on an over-trim too: the recommender cannot cite an insight it
+	// cannot see, and validateRelatedInsightIDs drops a recommendation whose
+	// related_insight_ids it cannot resolve.
+	for _, want := range []string{`"id": "i-1"`, `"name": "Day 0-to-Day 1 Drop"`} {
+		if !strings.Contains(step.Prompt, want) {
+			t.Errorf("the rendered prompt is missing %s", want)
+		}
+	}
+
+	// The input is read, not consumed: the recommendation-validation phase
+	// unions these SourceSteps and the transcripts are persisted for the
+	// dashboard, both after this call.
+	if insights[0].Validation == nil || insights[0].Validation.Verifier == nil {
+		t.Error("generateRecommendations stripped validation from its input")
+	}
+	if len(insights[0].SourceSteps) != 3 {
+		t.Errorf("insights[0].SourceSteps = %v, want 3 entries", insights[0].SourceSteps)
+	}
+}
+
+// TestGenerateRecommendations_PromptSizeIndependentOfTranscript states the fix
+// as a property of the whole prompt rather than of the projection alone: the
+// transcript can grow without bound and the prompt does not move.
+func TestGenerateRecommendations_PromptSizeIndependentOfTranscript(t *testing.T) {
+	lean := fullyPopulatedInsight("i-1")
+	lean.Validation.Verifier = nil
+	lean.Validation.Refuter = nil
+
+	o1, _ := newRecOrchestrator(validRecEnvelope)
+	_, leanStep := o1.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", []models.Insight{lean}, "", "ds")
+
+	o2, _ := newRecOrchestrator(validRecEnvelope)
+	_, fullStep := o2.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", []models.Insight{fullyPopulatedInsight("i-1")}, "", "ds")
+
+	if leanStep.Prompt != fullStep.Prompt {
+		t.Errorf("the transcript changed the prompt: %d bytes without it, %d with it",
+			len(leanStep.Prompt), len(fullStep.Prompt))
+	}
+}

@@ -1526,19 +1526,77 @@ func (o *Orchestrator) persistSplitLogs(
 	}
 }
 
-// parseInsights parses LLM response JSON into Insight structs.
-// insightsForRecommenderPrompt returns a copy of insights with the Markdown
-// rendition (DescriptionMd) cleared. The recommender reads the plain
-// `description`; carrying description_md into INSIGHTS_DATA would put a second
-// full copy of every insight's description in the prompt, roughly doubling the
-// per-insight description tokens and risking the context/budget cap. The
-// originals (which still need DescriptionMd for storage and rendering) are
-// left untouched.
-func insightsForRecommenderPrompt(insights []models.Insight) []models.Insight {
-	out := make([]models.Insight, len(insights))
-	copy(out, insights)
-	for i := range out {
-		out[i].DescriptionMd = ""
+// recommenderInsight is the projection of models.Insight sent to the
+// recommendation prompt as INSIGHTS_DATA: an explicit allow-list of the fields
+// the recommender reasons over.
+//
+// It is an allow-list rather than a copy-and-clear because the prompt used to
+// carry the whole struct, so every field added to models.Insight reached the
+// prompt whether the recommender had a use for it or not. The cost stayed
+// invisible until it was fatal: the verifier and refuter transcripts attached
+// to Validation made up roughly 80% of the prompt (51,135 of 63,658 tokens on a
+// 14-insight run), a model with a 40,960-token window rejected the request, and
+// the run finished with zero recommendations. A field this struct does not name
+// cannot reach the prompt, so sending a new one is a decision someone makes
+// here rather than a side effect of adding it to the model.
+//
+// Clearing fields on a copy could not have expressed the same thing anyway:
+// DiscoveredAt's tag carries no omitempty, and encoding/json does not apply
+// omitempty to a time.Time, so a zeroed value still renders as
+// "discovered_at": "0001-01-01T00:00:00Z".
+//
+// The json tags mirror models.Insight exactly, so INSIGHTS_DATA is unchanged
+// for every field the recommender does use — including the key order, which
+// follows the model's own declaration order.
+// TestRecommenderInsightProjectionIsExhaustive holds both halves of that
+// contract: every models.Insight field is either listed here or named as
+// deliberately dropped, and every tag here exists on the model under the same
+// name.
+//
+// discipline.RecommendationsRules() is kept in step with this list: its rules 3
+// and 6 bind every figure to the cited insight's own fields, because these
+// insights are the only evidence the recommendation prompt carries.
+type recommenderInsight struct {
+	ID            string                      `json:"id"`
+	AnalysisArea  string                      `json:"analysis_area"`
+	Name          string                      `json:"name"`
+	Description   string                      `json:"description"`
+	Severity      string                      `json:"severity"`
+	AffectedCount int                         `json:"affected_count"`
+	RiskScore     float64                     `json:"risk_score"`
+	Confidence    float64                     `json:"confidence"`
+	Metrics       map[string]interface{}      `json:"metrics,omitempty"`
+	Indicators    []string                    `json:"indicators,omitempty"`
+	TargetSegment string                      `json:"target_segment,omitempty"`
+	Quality       []gowarehouse.QualityCaveat `json:"evidence_quality,omitempty"`
+}
+
+// insightsForRecommenderPrompt projects insights onto recommenderInsight. The
+// argument is read, never written: the caller's insights keep description_md,
+// validation, source_steps, sql_metadata and discovered_at for storage, the
+// dashboard, and the recommendation-validation phase, which unions their
+// SourceSteps after this call.
+//
+// Metrics, Indicators and Quality are carried by reference, as the previous
+// slice copy also did. Nothing between here and json.Marshal writes them.
+func insightsForRecommenderPrompt(insights []models.Insight) []recommenderInsight {
+	out := make([]recommenderInsight, 0, len(insights))
+	for i := range insights {
+		in := &insights[i]
+		out = append(out, recommenderInsight{
+			ID:            in.ID,
+			AnalysisArea:  in.AnalysisArea,
+			Name:          in.Name,
+			Description:   in.Description,
+			Severity:      in.Severity,
+			AffectedCount: in.AffectedCount,
+			RiskScore:     in.RiskScore,
+			Confidence:    in.Confidence,
+			Metrics:       in.Metrics,
+			Indicators:    in.Indicators,
+			TargetSegment: in.TargetSegment,
+			Quality:       in.Quality,
+		})
 	}
 	return out
 }
