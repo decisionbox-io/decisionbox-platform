@@ -1,5 +1,12 @@
 package models
 
+import (
+	"bytes"
+	"encoding/json"
+	"strconv"
+	"strings"
+)
+
 // A figure is a number the model puts in an insight, emitted as data rather than
 // typed into the prose.
 //
@@ -254,4 +261,61 @@ type RecommendationFigureTemplate struct {
 	ImpactMetric      string `bson:"impact_metric,omitempty" json:"impact_metric,omitempty"`
 	ImpactImprovement string `bson:"impact_improvement,omitempty" json:"impact_improvement,omitempty"`
 	ImpactReasoning   string `bson:"impact_reasoning,omitempty" json:"impact_reasoning,omitempty"`
+}
+
+// UnmarshalJSON decodes a figure tolerantly.
+//
+// Small and open models emit numbers as strings -- `"value": "100"`, `"step": "48"` -- and
+// the insight and recommendation decoders have coerced that since issue #342, where one
+// off-typed field failed a whole batch and silently zeroed an area's findings. Figures are
+// nested inside those structs and so were decoded strictly regardless, which put the same
+// hole back: one mistyped figure discards the entire insight it belongs to, and the
+// claim-dropping salvage path cannot rescue it because the failure is not in the claims.
+//
+// Only JSON decoding is customised; BSON is untouched, so stored figures read back
+// unchanged, and well-typed input from a large model decodes to identical values.
+func (f *Figure) UnmarshalJSON(data []byte) error {
+	type alias Figure
+	aux := &struct {
+		Value    json.RawMessage `json:"value"`
+		Step     json.RawMessage `json:"step"`
+		Decimals json.RawMessage `json:"decimals"`
+		*alias
+	}{alias: (*alias)(f)}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	f.Value = flexFloat(aux.Value)
+	f.Step = int(flexFloat(aux.Step))
+	f.Decimals = int(flexFloat(aux.Decimals))
+	return nil
+}
+
+// flexFloat reads a number that may have been written as a string, with thousands
+// separators, or omitted. An unreadable value yields 0, which the evaluator then reports as
+// undecidable rather than refuting -- the same choice made everywhere else in this layer.
+func flexFloat(raw json.RawMessage) float64 {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0
+	}
+	if raw[0] == '"' {
+		var str string
+		if err := json.Unmarshal(raw, &str); err != nil {
+			return 0
+		}
+		str = strings.TrimSpace(strings.ReplaceAll(str, ",", ""))
+		str = strings.TrimPrefix(str, "$")
+		str = strings.TrimSuffix(str, "%")
+		v, err := strconv.ParseFloat(str, 64)
+		if err != nil {
+			return 0
+		}
+		return v
+	}
+	var v float64
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return 0
+	}
+	return v
 }

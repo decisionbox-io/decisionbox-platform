@@ -1648,6 +1648,10 @@ func insightsForRecommenderPrompt(insights []models.Insight) []models.Insight {
 	out := make([]models.Insight, len(insights))
 	copy(out, insights)
 	for i := range out {
+		// Captured before the audit trail is cleared below, and read from the copy rather
+		// than from the source slice so there is only one indexed expression in the loop.
+		repaired := out[i].Repair != nil
+
 		out[i].DescriptionMd = ""
 		// The evidence trail is an audit record, not input to a recommendation, and
 		// leaving it in is worse than noise: Repair.Fixed and Repair.Dropped carry
@@ -1672,6 +1676,19 @@ func insightsForRecommenderPrompt(insights []models.Insight) []models.Insight {
 		out[i].FigureVerdicts = nil
 		out[i].FigureCorrections = nil
 		out[i].FigureTemplate = nil
+
+		// And for a repaired insight, the figures go too.
+		//
+		// buildFigureRefIndex refuses every figure of a repaired insight, because repair
+		// edited the prose and the figure no longer matches a sentence a reader sees. But
+		// the contract tells the model to reference what it is shown, so leaving them here
+		// advertised ids that were guaranteed to resolve to nothing -- a model following
+		// the instruction exactly would ship "{{f1}}" in its prose. Withheld at both ends
+		// or neither; the number is still in the repaired prose for the model to read and
+		// state plainly, which is the pre-contract behaviour and the right fallback.
+		if repaired {
+			out[i].Figures = nil
+		}
 	}
 	return out
 }

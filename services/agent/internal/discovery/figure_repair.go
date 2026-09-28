@@ -3,6 +3,7 @@ package discovery
 import (
 	"fmt"
 	"math"
+	"strings"
 
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -117,6 +118,7 @@ func correctRefutedFigures(areaID string, insights []models.Insight, stepByID ma
 			continue
 		}
 		ins.FigureCorrections = corrections
+		reconcileClaimCounts(ins, corrections)
 		// Re-settle against the same evidence, so the verdicts describe the values that
 		// will be rendered rather than the ones that were refuted.
 		ins.FigureVerdicts = EvaluateFigures(ins.Figures, quantifierEvidence(*ins, stepByID))
@@ -157,4 +159,38 @@ func sameQuantity(claimed, evaluated float64) bool {
 		return true
 	}
 	return math.Abs(claimed-evaluated)/scale <= correctionGap
+}
+
+// reconcileClaimCounts moves a cardinality declaration with the figure it was written from.
+//
+// A claim of kind `count` carries the number twice: once in its text, which by now is a
+// reference, and once in its own Count field, which the quantifier evaluator reads. So a
+// figure corrected from 101 to 100 left the claim's text rendering 100 and its Count saying
+// 101, and the next pass refuted the sentence for disagreeing with a number it no longer
+// contained. substituteRefutedCounts cannot undo that either, because the numeral it would
+// look for is already gone -- and with repair rounds disabled the fallback deletes the
+// sentence, which by then is the correct one.
+//
+// Linked by the reference, which is the only honest link available: the claim's authored
+// text names the figure. And only when the Count matches the value that was replaced, so a
+// claim that happens to sit beside a corrected figure while counting something else is left
+// alone. Count only, deliberately -- Rank and TopN are positions rather than quantities, and
+// inventing coverage for them would be the false positive the quantifier work warned about.
+func reconcileClaimCounts(ins *models.Insight, corrections []models.FigureCorrection) {
+	for _, c := range corrections {
+		marker := "{{" + c.ID + "}}"
+		for i := range ins.QuantifierClaims {
+			q := &ins.QuantifierClaims[i]
+			if q.Kind != QuantifierCardinality || q.Count == 0 {
+				continue
+			}
+			if !strings.Contains(q.Claim, marker) {
+				continue
+			}
+			if float64(q.Count) != c.From {
+				continue
+			}
+			q.Count = int(math.Round(c.To))
+		}
+	}
 }

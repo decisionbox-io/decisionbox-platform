@@ -4,8 +4,11 @@ package discovery
 // verified in the code before being accepted, and each is pinned here.
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
@@ -358,5 +361,137 @@ func TestFigures_TallyCountsAnInsightWhoseEveryReferenceFailed(t *testing.T) {
 	if tally.resolved != 0 || tally.inlined != 0 {
 		t.Fatalf("premise stale: resolved=%d inlined=%d; this is the combination the orchestrator's guard discarded",
 			tally.resolved, tally.inlined)
+	}
+}
+
+// --- Review round 21.
+
+// TestFigures_AggregateOverIncompleteEvidenceIsUndecidable — round 21, P1, and the one place
+// in this layer where getting it wrong does active harm rather than failing to catch
+// something.
+//
+// The quantifier evaluator has refused incomplete evidence since the truncation work. This
+// path read the same StepRows and ignored the same caveats, so a `sum` over a capped result
+// gave a partial total, the figure stating the TRUE total was refuted for disagreeing with
+// it, and the correction gate -- which acts only inside 1%, exactly where a small truncation
+// lands -- replaced the correct number with the partial one and re-settled it to `holds`.
+func TestFigures_AggregateOverIncompleteEvidenceIsUndecidable(t *testing.T) {
+	// Nine of ten rows came back; the tenth is the one the cap dropped.
+	rows := make([]map[string]any, 0, 9)
+	for i := 0; i < 9; i++ {
+		rows = append(rows, map[string]any{"region": i, "net": 100.0})
+	}
+	truncated := map[int]StepRows{
+		7: {Rows: rows, Quality: []gowarehouse.QualityCaveat{{Kind: gowarehouse.QualityTruncated}}},
+	}
+
+	// The model declared the true total of 1000, which no longer matches the 900 visible.
+	sum := models.Figure{ID: "f1", Value: 1000, Unit: models.UnitCurrency, Step: 7, Kind: models.FigureSum, Column: "net"}
+	v := evaluateFigure(sum, truncated)
+	if v.Status != models.FigureUndecidable {
+		t.Fatalf("status = %q, want undecidable -- a capped result cannot settle a total", v.Status)
+	}
+
+	// And nothing corrects it, so the true number survives.
+	ins := []models.Insight{{Name: "n", Figures: []models.Figure{sum}, FigureVerdicts: []models.FigureVerdict{v}}}
+	correctRefutedFigures("area", ins, map[int]*models.ExplorationStep{})
+	if got := ins[0].Figures[0].Value; got != 1000 {
+		t.Errorf("figure value = %v, want the declared 1000 left alone; a partial sum must never overwrite a total", got)
+	}
+
+	// A row-specific kind is unaffected: the row it names is either present or it is not.
+	cell := models.Figure{ID: "f2", Value: 100, Unit: models.UnitCurrency, Step: 7,
+		Kind: models.FigureCell, Column: "net", Row: "region = 3"}
+	if got := evaluateFigure(cell, truncated); got.Status != models.FigureHolds {
+		t.Errorf("cell status = %q (%s), want holds -- a named row does not need the whole result", got.Status, got.Reason)
+	}
+}
+
+// TestFigures_CorrectionCarriesItsCardinalityDeclaration — round 21.
+//
+// A cardinality claim holds its number twice: in its text, which by now is a reference, and
+// in its own Count field, which the quantifier evaluator reads. A figure corrected from 101
+// to 100 left the text rendering 100 and Count saying 101, so the next pass refuted the
+// sentence for disagreeing with a number it no longer contained -- and substituteRefutedCounts
+// cannot undo that, because the numeral it would look for is already gone.
+func TestFigures_CorrectionCarriesItsCardinalityDeclaration(t *testing.T) {
+	step := &models.ExplorationStep{Step: 4, QueryResult: []map[string]any{}}
+	for i := 0; i < 100; i++ {
+		step.QueryResult = append(step.QueryResult, map[string]any{"id": i})
+	}
+	ins := []models.Insight{{
+		Name:        "There are {{f1}} distinct parts",
+		SourceSteps: []int{4},
+		Figures:     []models.Figure{{ID: "f1", Value: 101, Unit: models.UnitCount, Step: 4, Kind: models.FigureCount}},
+		QuantifierClaims: []models.QuantifierClaim{
+			{Claim: "There are {{f1}} distinct parts", Kind: QuantifierCardinality, Step: 4, Count: 101},
+		},
+	}}
+	byID := map[int]*models.ExplorationStep{4: step}
+
+	attachFigureVerdicts(ins, byID)
+	if n := correctRefutedFigures("area", ins, byID); n != 1 {
+		t.Fatalf("corrections = %d, want 1 (101 -> 100); premise stale", n)
+	}
+	if got := ins[0].QuantifierClaims[0].Count; got != 100 {
+		t.Errorf("claim Count = %d, want 100 -- the declaration must move with the figure it was written from", got)
+	}
+}
+
+// TestFigures_RepairedInsightAdvertisesNoFiguresToTheRecommender — round 21, and a direct
+// consequence of round 20's fix.
+//
+// buildFigureRefIndex refuses every figure of a repaired insight. Leaving them in the prompt
+// advertised ids guaranteed to resolve to nothing, so a model following the contract exactly
+// would ship "{{f1}}" in its prose. Withheld at both ends or neither.
+func TestFigures_RepairedInsightAdvertisesNoFiguresToTheRecommender(t *testing.T) {
+	in := []models.Insight{
+		{
+			ID: "repaired", Name: "302 sub-categories are loss-making",
+			Figures: []models.Figure{{ID: "f1", Value: 12, Unit: models.UnitCount}},
+			Repair:  &models.InsightRepair{Rounds: 1, Outcome: "claim_fixed"},
+		},
+		{
+			ID: "clean", Name: "A sound finding",
+			Figures: []models.Figure{{ID: "f1", Value: 50004, Unit: models.UnitCount}},
+		},
+	}
+	out := insightsForRecommenderPrompt(in)
+
+	if len(out[0].Figures) != 0 {
+		t.Errorf("a repaired insight still advertises figures the index will reject: %+v", out[0].Figures)
+	}
+	if len(out[1].Figures) != 1 {
+		t.Errorf("a clean insight lost its figures: %+v", out[1].Figures)
+	}
+	// The originals are untouched, because they are what gets stored.
+	if len(in[0].Figures) != 1 {
+		t.Error("the stored insight's figures were mutated")
+	}
+}
+
+// TestFigures_NumbersWrittenAsStringsStillDecode — round 21.
+//
+// Small and open models emit numbers as strings, and the insight and recommendation decoders
+// have coerced that since issue #342, where one off-typed field silently zeroed an area's
+// findings. Figures nest inside those structs and were decoded strictly regardless, so one
+// mistyped figure discarded the whole insight it belonged to.
+func TestFigures_NumbersWrittenAsStringsStillDecode(t *testing.T) {
+	const body = `{"name":"n","description":"d","figures":[
+      {"id":"f1","value":"1,234.5","step":"48","decimals":"2","unit":"currency","kind":"cell"},
+      {"id":"f2","value":100,"step":48,"kind":"sum"}]}`
+
+	var ins models.Insight
+	if err := json.Unmarshal([]byte(body), &ins); err != nil {
+		t.Fatalf("a string-typed figure failed the whole insight: %v", err)
+	}
+	if len(ins.Figures) != 2 {
+		t.Fatalf("figures = %d, want 2", len(ins.Figures))
+	}
+	if ins.Figures[0].Value != 1234.5 || ins.Figures[0].Step != 48 || ins.Figures[0].Decimals != 2 {
+		t.Errorf("coerced figure = %+v, want value 1234.5 step 48 decimals 2", ins.Figures[0])
+	}
+	if ins.Figures[1].Value != 100 || ins.Figures[1].Step != 48 {
+		t.Errorf("well-typed figure changed: %+v", ins.Figures[1])
 	}
 }

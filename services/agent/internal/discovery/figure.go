@@ -53,6 +53,26 @@ func evaluateFigure(f models.Figure, steps map[int]StepRows) models.FigureVerdic
 	if len(ev.Rows) == 0 {
 		return undecidable("step %d returned no rows", f.Step)
 	}
+	// A partial result cannot settle a figure that aggregates across rows, and this is the
+	// one place in the layer where getting it wrong does active harm rather than merely
+	// failing to catch something.
+	//
+	// The quantifier evaluator has refused incomplete evidence since the truncation work;
+	// this path was reading the same StepRows and ignoring the same caveats. So a `sum`
+	// over a capped result gave a partial total, the figure stating the true total was
+	// refuted for disagreeing with it, and the correction gate -- which acts only inside
+	// 1%, exactly where a small truncation lands -- replaced the correct number with the
+	// partial one and re-settled it to `holds`. A right number becomes a wrong number and
+	// is then certified, and a recommendation referencing it inherits both.
+	//
+	// Row-specific kinds are unaffected: `cell`, `diff` and a cell-over-cell `ratio` name
+	// the rows they read, and a row is either in what came back or it is not, which oneCell
+	// already reports. Only the kinds that fold the whole result need all of it.
+	if aggregatesAcrossRows(f) && rowsIncomplete(ev.Quality) {
+		return undecidable(
+			"step %d came back incomplete, and %s folds every row, so the total it gives is a partial one",
+			f.Step, f.Kind)
+	}
 
 	got, err := evalFigure(f, ev.Rows)
 	if err != nil {
@@ -243,4 +263,20 @@ func scopeFigureRows(rows []map[string]any, scope string) ([]map[string]any, err
 		return rows, nil
 	}
 	return filterRows(rows, scope)
+}
+
+// aggregatesAcrossRows reports whether a figure's arithmetic folds the result set rather
+// than reading named rows out of it.
+//
+// A ratio is in both camps depending on how it was declared: with `other` it is one row
+// against another, and without it the denominator is the column total over scope, which is
+// a fold.
+func aggregatesAcrossRows(f models.Figure) bool {
+	switch f.Kind {
+	case models.FigureSum, models.FigureCount:
+		return true
+	case models.FigureRatio:
+		return strings.TrimSpace(f.Other) == ""
+	}
+	return false
 }
