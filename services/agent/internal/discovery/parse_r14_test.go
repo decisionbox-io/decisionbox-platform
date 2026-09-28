@@ -132,3 +132,26 @@ func TestParseInsights_EmptyShellIsDroppedButANamelessBodyIsKept(t *testing.T) {
 		t.Errorf("dropped = %d, want 1", dropped)
 	}
 }
+
+// The trailing-JSON test must not fire on prose that merely starts with a bracket.
+// A legitimately empty area is the common case -- TPC-H has no session data, so
+// `{"insights":[]}` plus an explanation is the correct answer -- and rejecting it
+// re-prompts for nothing.
+func TestParseInsights_EmptyEnvelopeThenBracketedProseIsAccepted(t *testing.T) {
+	o := &Orchestrator{}
+	for name, in := range map[string]string{
+		"bracketed note": "{\"insights\": []}\n\n[No session-level data is present in this schema.]",
+		"braced note":    "{\"insights\": []}\n\n{No funnel events exist in these tables.}",
+		"json example":   "{\"insights\": []}\n\nThe schema would need a shape like [{\"session_id\": \"...\"}] to answer this.",
+	} {
+		t.Run(name, func(t *testing.T) {
+			insights, _, err := o.parseInsights(in, "session_behavior")
+			if err != nil {
+				t.Fatalf("err = %v, want nil: trailing prose is not a second answer just because it opens with a bracket", err)
+			}
+			if len(insights) != 0 {
+				t.Fatalf("got %d insights, want 0", len(insights))
+			}
+		})
+	}
+}

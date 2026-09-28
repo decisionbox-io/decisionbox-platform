@@ -2999,18 +2999,26 @@ func droppedToTelemetry(dropped []DroppedStep) []models.DroppedAnalysisStep {
 // rejects an empty result that has another value behind it, and the retry happens as it
 // did before.
 //
-// json.Decoder.More is not the test for this. It peeks for anything that is not a
-// closing delimiter, so it reports true for a trailing paragraph as well, and using it
-// would reinstate the bug this function exists to fix. The offset of the end of the
-// decoded value is the honest boundary: a second value begins with a brace or a
-// bracket, prose does not.
+// Whether a second value follows is decided by decoding one, not by inspecting the
+// next character. Two cheaper tests were tried and both are wrong:
+//
+//   - json.Decoder.More peeks for anything that is not a closing delimiter, so it
+//     reports true for a trailing paragraph and would reinstate the very bug this
+//     function exists to fix.
+//   - "does the remaining text start with { or [" rejects an explanation that happens
+//     to open with a bracket -- `[No session-level data is present in this schema.]`
+//     -- and a legitimately empty area is the common case, not the rare one, so that
+//     costs a re-prompt for nothing.
+//
+// Decoding settles it: prose fails to decode whatever it starts with, and a real
+// second envelope does not. The reader is already positioned after the first value.
 func decodeLeadingJSON(s string, v any) (trailingJSON bool, err error) {
 	dec := json.NewDecoder(strings.NewReader(s))
 	if err := dec.Decode(v); err != nil {
 		return false, err
 	}
-	rest := strings.TrimSpace(s[dec.InputOffset():])
-	return strings.HasPrefix(rest, "{") || strings.HasPrefix(rest, "["), nil
+	var next json.RawMessage
+	return dec.Decode(&next) == nil, nil
 }
 
 func cleanJSONResponse(response string) string {
