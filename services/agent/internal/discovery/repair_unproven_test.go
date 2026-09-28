@@ -924,3 +924,133 @@ func TestEvaluate_MonotonicOtherRefusals(t *testing.T) {
 		t.Errorf("baseline status = %q (%s), want holds", v.Status, v.Reason)
 	}
 }
+
+// The prompt offers the model the option of removing the contradicted sentence. When
+// it takes it, nothing is refuted, nothing was cut by the removal pass, and it is
+// not a withdrawal because the prose did carry the claim — so it used to fall
+// through to Fixed. Fixed means "refuted and now hold", and a sentence that is gone
+// holds nothing.
+func TestRepair_ASentenceTheModelDeletedIsDroppedNotFixed(t *testing.T) {
+	deleted := `{"insights":[{
+		"name":"Furniture drags the top ten",
+		"description":"Chairs leads the category on volume.",
+		"severity":"high","source_steps":[4]
+	}]}`
+	o, _ := newRepairOrchestrator(deleted)
+
+	got, tally := repairOne(t, o, refutedInsight())
+
+	if len(got.Repair.Fixed) != 0 {
+		t.Errorf("fixed = %v; the sentence was removed, not corrected", got.Repair.Fixed)
+	}
+	if len(got.Repair.Dropped) != 1 || got.Repair.Dropped[0] != shippedOnlyClaim {
+		t.Errorf("dropped = %v, want the removed claim", got.Repair.Dropped)
+	}
+	if len(got.Repair.Withdrawn) != 0 {
+		t.Errorf("withdrawn = %v; the prose did carry this claim on arrival", got.Repair.Withdrawn)
+	}
+	if got.Repair.Outcome != models.RepairClaimDropped {
+		t.Errorf("outcome = %q, want %q", got.Repair.Outcome, models.RepairClaimDropped)
+	}
+	if tally.repaired != 0 || tally.claimsDropped != 1 {
+		t.Errorf("tally = %+v, want a drop, not a repair", tally)
+	}
+}
+
+// A correction usually REPHRASES, which removes the old claim text exactly as a
+// deletion does. Telling them apart is what stops every corrected claim being
+// recorded as removed.
+func TestRepair_ARephrasedCorrectionIsStillFixed(t *testing.T) {
+	o, _ := newRepairOrchestrator(`{"insights":[{
+		"name":"Furniture drags the top ten",
+		"description":"Tables is one of two loss-making sub-categories among the 10 largest by sales. Chairs leads the category on volume.",
+		"severity":"high","source_steps":[4],
+		"quantifier_claims":[{"claim":"Tables is one of two loss-making sub-categories among the 10 largest by sales",
+			"kind":"cardinality","step":4,"filter":"profit < 0","top_n":10,"top_n_column":"sales","count":2}]
+	}]}`)
+
+	got, tally := repairOne(t, o, refutedInsight())
+
+	if len(got.Repair.Fixed) != 1 || got.Repair.Fixed[0] != shippedOnlyClaim {
+		t.Errorf("fixed = %v, want the original claim recorded as corrected", got.Repair.Fixed)
+	}
+	if len(got.Repair.Dropped) != 0 {
+		t.Errorf("dropped = %v; the claim was rephrased, not removed", got.Repair.Dropped)
+	}
+	if got.Repair.Outcome != models.RepairRepaired || tally.repaired != 1 {
+		t.Errorf("outcome = %q tally = %+v, want a repair", got.Repair.Outcome, tally)
+	}
+}
+
+// A cardinality corrected to zero would be written as count 0, which the evaluator
+// declines rather than confirms — so the loop would see no failure left and record
+// the claim as fixed without anything holding. "No row satisfies this" needs a
+// sentence rewritten or removed, not a numeral swapped.
+func TestSubstituteRefutedCounts_RefusesAZeroActual(t *testing.T) {
+	ins := models.Insight{
+		Name:        "Loss-making lines",
+		Description: "3 sub-categories run a loss across the window.",
+		QuantifierClaims: []models.QuantifierClaim{{
+			Claim: "3 sub-categories run a loss", Kind: QuantifierCardinality,
+			Step: 4, Filter: "profit > 1000000", Count: 3,
+		}},
+	}
+	// No row satisfies the filter, so the true count is 0.
+	ev := map[int]StepRows{4: {Rows: []map[string]any{{"p": "a", "profit": -1.0}}}}
+	ins.QuantifierVerdicts = EvaluateQuantifierClaims(ins.QuantifierClaims, ev)
+	if ins.QuantifierVerdicts[0].Status != QuantifierFails {
+		t.Fatalf("precondition: want the claim refuted, got %q", ins.QuantifierVerdicts[0].Status)
+	}
+
+	if fixed := substituteRefutedCounts(&ins, ev); len(fixed) != 0 {
+		t.Errorf("substituted %v; a zero count cannot be written as an assertion", fixed)
+	}
+	if ins.Description != "3 sub-categories run a loss across the window." {
+		t.Errorf("text was altered: %q", ins.Description)
+	}
+	if ins.QuantifierClaims[0].Count != 3 {
+		t.Errorf("count = %d, want it untouched", ins.QuantifierClaims[0].Count)
+	}
+}
+
+// deletedByModel has to separate two rewrites that look identical from the old
+// claim's point of view: one that REPHRASED it (the text is gone, and something new
+// stands in its place and holds) and one that DELETED it (the text is gone and
+// nothing replaced it). Tested directly, because the integration path reaches the
+// same outcome through the acceptance guards and so does not isolate this.
+func TestDeletedByModel_SeparatesARephraseFromADeletion(t *testing.T) {
+	entry := refutedInsight()
+	ev := step4ByID()
+
+	rephrased := entry
+	rephrased.Description = "Tables is one of two loss-making sub-categories among the 10 largest by sales. Chairs leads the category on volume."
+	rephrased.QuantifierClaims = []models.QuantifierClaim{{
+		Claim: "Tables is one of two loss-making sub-categories among the 10 largest by sales",
+		Kind:  QuantifierCardinality, Step: 4, Filter: "profit < 0", TopN: 10, TopNColumn: "sales", Count: 2,
+	}}
+	rephrased.QuantifierVerdicts = EvaluateQuantifierClaims(rephrased.QuantifierClaims, quantifierEvidence(rephrased, ev))
+	if rephrased.QuantifierVerdicts[0].Status != QuantifierHolds {
+		t.Fatalf("precondition: the replacement claim must hold, got %q", rephrased.QuantifierVerdicts[0].Status)
+	}
+	if got := deletedByModel([]string{shippedOnlyClaim}, entry, rephrased); len(got) != 0 {
+		t.Errorf("a rephrase was read as a deletion: %v", got)
+	}
+
+	deleted := entry
+	deleted.Description = "Chairs leads the category on volume."
+	deleted.QuantifierClaims, deleted.QuantifierVerdicts = nil, nil
+	got := deletedByModel([]string{shippedOnlyClaim}, entry, deleted)
+	if len(got) != 1 || got[0] != shippedOnlyClaim {
+		t.Errorf("a deletion was not recorded: %v", got)
+	}
+
+	// A claim the prose never carried is a withdrawal, not a deletion.
+	neverSaid := entry
+	neverSaid.Description = "Chairs leads the category on volume."
+	neverSaid.QuantifierClaims, neverSaid.QuantifierVerdicts = nil, nil
+	entryWithoutIt := entry
+	entryWithoutIt.Description = "Chairs leads the category on volume."
+	if got := deletedByModel([]string{shippedOnlyClaim}, entryWithoutIt, neverSaid); len(got) != 0 {
+		t.Errorf("a withdrawal was read as a deletion: %v", got)
+	}
+}

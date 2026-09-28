@@ -186,3 +186,40 @@ func TestOffsetRows_AnchoredToTheGoverningTail(t *testing.T) {
 		}
 	}
 }
+
+// A cap of one is the only value where this caveat can be false: it fires when the
+// rows returned equal the cap, and a scalar aggregate always returns exactly one
+// row. So at n=1 it is conditional, and this pins that — a later edit must not
+// quietly restore the flat assertion.
+func TestRowCapCaveat_IsConditionalAtOne(t *testing.T) {
+	one := RowCapCaveat(1).Detail
+	// It must not assert what it cannot know about a one-row result.
+	for _, forbidden := range []string{"may be far larger", "the true number of groups is unknown"} {
+		if strings.Contains(one, forbidden) {
+			t.Errorf("the cap-1 caveat asserts %q, which is false for an aggregate: %s", forbidden, one)
+		}
+	}
+	// It must still steer a genuine top-1 view.
+	for _, want := range []string{"If more rows matched", "never about the population", "aggregate over the whole table"} {
+		if !strings.Contains(one, want) {
+			t.Errorf("the cap-1 caveat does not say %q: %s", want, one)
+		}
+	}
+	// And it must read as one row, not "1 rows".
+	if strings.Contains(one, "1 rows") {
+		t.Errorf("cap-1 caveat reads as plural: %s", one)
+	}
+
+	// Above one the wording is unchanged: there, more rows genuinely were withheld.
+	many := RowCapCaveat(15).Detail
+	if !strings.Contains(many, "may be far larger") || !strings.Contains(many, "top-15 view") {
+		t.Errorf("the cap-15 caveat lost its assertion: %s", many)
+	}
+	if many == one {
+		t.Error("the two caveats must differ; that difference is the whole point")
+	}
+	// Both stay the same kind, so every consumer that branches on Kind is unaffected.
+	if RowCapCaveat(1).Kind != QualityTruncated || RowCapCaveat(15).Kind != QualityTruncated {
+		t.Error("both caveats must remain QualityTruncated")
+	}
+}

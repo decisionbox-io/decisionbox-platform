@@ -51,6 +51,15 @@ func substituteRefutedCounts(ins *models.Insight, evidence map[int]StepRows) []s
 		if !ok || actual == c.Count {
 			continue
 		}
+		// Writing a count of zero would make the claim UNDECIDABLE rather than
+		// true: evalCardinality declines a non-positive count, because an omitted
+		// count cannot be told from an asserted zero. The repair loop would then
+		// see no remaining failure and record the original claim as fixed without
+		// anything holding. "No row satisfies this" needs a sentence rewritten or
+		// removed, which is the model's path, not a numeral swap.
+		if actual <= 0 {
+			continue
+		}
 		before := c.Claim
 		if !substituteCount(ins, c, c.Count, actual) {
 			continue

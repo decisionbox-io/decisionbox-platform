@@ -230,6 +230,38 @@ func atoiCap(s string) (int, bool) {
 // a population count ("p_type has 15 values" over 150) or as a population
 // superlative ("12 Products Each Loss-Making" over 302).
 func RowCapCaveat(n int) QualityCaveat {
+	// A cap of one is the single value where this caveat can be false, and it is
+	// worded conditionally there.
+	//
+	// The caveat fires when the rows returned equal the cap, and a scalar aggregate
+	// -- `SELECT COUNT(*) FROM orders LIMIT 1` -- always returns exactly one row.
+	// So at n=1, and only at n=1, "the true number of groups is unknown and may be
+	// far larger" can be flatly wrong: that row IS the population answer, and
+	// telling the model to distrust it produces a hedge over a number that is
+	// exact.
+	//
+	// Suppressing the caveat instead would be the worse error. `... WHERE profit < 0
+	// LIMIT 1` also returns one row, and there "only one sub-category runs a loss"
+	// is a false claim the caveat exists to prevent. Between hedged prose and a
+	// false claim, hedged prose is the safe failure.
+	//
+	// Telling the two apart needs to know whether the projection is an aggregate,
+	// which means reading the SQL. The conditional avoids that by handing back the
+	// one fact the model has and this code does not -- whether its own query could
+	// return more than one row. That is the model reading its own statement, not
+	// judging its own claim, so it is the reliable side of the declaration bet. The
+	// checking layer is unaffected either way: a population claim over a capped
+	// result is refused by the evaluator regardless of how this reads.
+	if n == 1 {
+		return QualityCaveat{
+			Kind: QualityTruncated,
+			Detail: "the query capped this result at 1 row. If more rows matched it, this is the first of " +
+				"them and not the population -- state any count, total, share, rank or " +
+				"\"only/largest/every\" claim about this row, never about the population. If the query " +
+				"could only ever return one row, such as an aggregate over the whole table, this does " +
+				"not apply",
+		}
+	}
 	return QualityCaveat{
 		Kind: QualityTruncated,
 		Detail: fmt.Sprintf(

@@ -230,6 +230,15 @@ func (o *Orchestrator) repairInsight(
 		*ins = merged
 	}
 
+	// What the rounds left, before the removal pass below edits it further. The
+	// model-deletion check has to read this rather than the final state: after the
+	// pass, a claim it removed is also absent from the declarations and the prose,
+	// and the two causes become indistinguishable.
+	afterRounds := *ins
+	afterRounds.Indicators = append([]string(nil), ins.Indicators...)
+	afterRounds.QuantifierClaims = append([]models.QuantifierClaim(nil), ins.QuantifierClaims...)
+	modelDeleted := deletedByModel(refutedAtEntry, entryText, afterRounds)
+
 	// Whatever is still refuted loses its sentence. This is the "before discard"
 	// half: the claim goes, the finding stays.
 	//
@@ -278,6 +287,15 @@ func (o *Orchestrator) repairInsight(
 	// not repaired -- the document never said it, so nothing about the document
 	// changed.
 	rep.Withdrawn = withdrawnClaims(refutedAtEntry, entryText, *ins)
+	// The prompt offers the model the option of removing the contradicted sentence
+	// itself. When it takes it, the claim leaves the declarations AND the prose, so
+	// nothing is refuted, nothing was dropped by the pass below, and it is not a
+	// withdrawal because the prose did carry the claim on arrival. It would
+	// otherwise fall through to Fixed and count as a correction -- but Fixed means
+	// "refuted and now hold", and a sentence that is gone holds nothing. Recording
+	// it as dropped is what keeps the repaired-versus-removed ratio honest, which is
+	// the whole reason this record lists claims instead of counting them.
+	rep.Dropped = append(rep.Dropped, modelDeleted...)
 	rep.Fixed = remaining(refutedAtEntry, rep.Dropped, rep.Unrepaired, rep.Withdrawn)
 	rep.Outcome = repairOutcome(rep)
 	ins.Repair = rep
@@ -433,6 +451,60 @@ func unprovenRepairs(before, after models.Insight) []string {
 		if st != QuantifierHolds {
 			out = append(out, v.Claim)
 		}
+	}
+	return out
+}
+
+// deletedByModel lists the claims a repair round removed from the prose itself,
+// declaration and sentence together.
+//
+// Distinct from a withdrawal, where the prose never carried the claim, and from the
+// removal pass below, which cuts what is still refuted after the rounds are spent.
+func deletedByModel(refutedAtEntry []string, entry, after models.Insight) []string {
+	declared := make(map[string]struct{}, len(after.QuantifierClaims))
+	for _, c := range after.QuantifierClaims {
+		declared[c.Claim] = struct{}{}
+	}
+	// A correction usually REPHRASES: the old claim text disappears and a new one
+	// takes its place, which looks identical to a deletion if only the old text is
+	// examined. So a rewrite that declared something new which now holds is read as
+	// a correction, and only a rewrite that declared nothing new is read as a
+	// deletion. Exact for the single-claim case; a multi-claim rewrite that both
+	// deletes one sentence and corrects another leans toward correction, which is
+	// what this did before.
+	wasDeclared := make(map[string]struct{}, len(entry.QuantifierClaims))
+	for _, c := range entry.QuantifierClaims {
+		wasDeclared[c.Claim] = struct{}{}
+	}
+	newHolds := false
+	for _, v := range after.QuantifierVerdicts {
+		if v.Status != QuantifierHolds {
+			continue
+		}
+		if _, existed := wasDeclared[v.Claim]; !existed {
+			newHolds = true
+			break
+		}
+	}
+
+	var out []string
+	for _, claim := range refutedAtEntry {
+		if _, ok := declared[claim]; ok {
+			continue
+		}
+		// A withdrawal: the prose never said it.
+		if !insightMentions(entry, claim) {
+			continue
+		}
+		// Still in the prose: undeclaredSurvivors already rejected that round, so
+		// this cannot be a silent survival.
+		if insightMentions(after, claim) {
+			continue
+		}
+		if newHolds {
+			continue
+		}
+		out = append(out, claim)
 	}
 	return out
 }
