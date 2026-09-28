@@ -11,7 +11,13 @@ type (
 	FigureVerdict    = gomodels.FigureVerdict
 	FigureCorrection = gomodels.FigureCorrection
 	FigureTemplate   = gomodels.FigureTemplate
+
+	FigureRef                    = gomodels.FigureRef
+	RecommendationFigureTemplate = gomodels.RecommendationFigureTemplate
 )
+
+// RecommendationFigureKinds is the closed set of kinds a recommendation may declare.
+var RecommendationFigureKinds = gomodels.RecommendationFigureKinds
 
 // Kinds, units, scales and verdict statuses, re-exported so callers in this service keep
 // one import.
@@ -21,6 +27,8 @@ const (
 	FigureCount = gomodels.FigureCount
 	FigureRatio = gomodels.FigureRatio
 	FigureDiff  = gomodels.FigureDiff
+
+	FigureRefKind = gomodels.FigureRefKind
 
 	UnitCount    = gomodels.UnitCount
 	UnitCurrency = gomodels.UnitCurrency

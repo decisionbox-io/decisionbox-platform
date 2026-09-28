@@ -1401,6 +1401,27 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		var dropStats RecommendationDropStats
 		recommendations, dropStats = validateRelatedInsightIDs(recommendations, recommenderInput)
 		applyRecommendationDropStats(recStep, recommendations, dropStats)
+
+		// Resolve every figure a recommendation declared against the insights it was
+		// given, adopt the values those references produced, and render the prose.
+		//
+		// Order matters the same way it does in the analysis phase: the figures are
+		// settled and written into the text before anything downstream reads it. The
+		// recommendation-validation phase below sees finished prose, and so does the
+		// dashboard, the API and the exec summary -- none of them learns this format
+		// exists.
+		//
+		// After the id validation rather than before, so a recommendation dropped for
+		// citing an insight that does not exist is not first given rendered numbers.
+		figSettled, figAdopted := attachRecommendationFigureVerdicts(recommendations, recommenderInput)
+		figTally := renderRecommendationFigures(recommendations)
+		if recStep != nil {
+			recStep.FiguresSettled = figSettled
+			recStep.FiguresAdopted = figAdopted
+			recStep.FiguresResolved = figTally.resolved
+			recStep.FiguresUnresolved = figTally.unresolved
+			recStep.FiguresInlined = figTally.inlined
+		}
 	}
 
 	// Emit a per-call RunStep so the live UI carries the recommendation
@@ -1637,6 +1658,17 @@ func insightsForRecommenderPrompt(insights []models.Insight) []models.Insight {
 		out[i].QuantifierClaims = nil
 		out[i].QuantifierVerdicts = nil
 		out[i].Repair = nil
+
+		// Figures stay -- the recommender references them by id, and by this point
+		// their values are the corrected ones. The three records derived from them
+		// go, for the same reason Repair does: a verdict carries the original
+		// refuted value in `claimed` and the original rendered text in `display`, so
+		// a number this pipeline corrected would still be in the prompt for the
+		// recommender to build on. The template is dropped as redundant -- the
+		// rendered prose and the figures say the same thing in fewer tokens.
+		out[i].FigureVerdicts = nil
+		out[i].FigureCorrections = nil
+		out[i].FigureTemplate = nil
 	}
 	return out
 }
@@ -2461,6 +2493,11 @@ func (o *Orchestrator) buildRecommendationsPrompt(baseContext, template, insight
 	prompt = strings.ReplaceAll(prompt, "{{DISCOVERY_DATE}}", time.Now().Format("2006-01-02"))
 	prompt = strings.ReplaceAll(prompt, "{{INSIGHTS_SUMMARY}}", insightsSummary)
 	prompt = strings.ReplaceAll(prompt, "{{INSIGHTS_DATA}}", insightsJSON)
+	// Appended in code rather than added to the pack templates, for the reason the
+	// analysis contracts are: a pack file can be edited and a custom template skips
+	// pack content, so a contract that only lives in templates is one some runs do
+	// not have.
+	prompt += "\n\n" + recommendationFigureContract
 	prompt = substituteDialectTokens(prompt, o.warehouse, refDataset)
 	return discipline.AppendRecommendationsRules(prompt)
 }

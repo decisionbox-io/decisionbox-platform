@@ -59,6 +59,35 @@ type Figure struct {
 	Row    string `bson:"row,omitempty" json:"row,omitempty"`
 	Other  string `bson:"other,omitempty" json:"other,omitempty"`
 	Scope  string `bson:"scope,omitempty" json:"scope,omitempty"`
+
+	// Refs is the second grammar this type carries, and the only one a recommendation
+	// can use.
+	//
+	// A recommendation is never shown warehouse rows -- it is given the insights and
+	// nothing else -- so it cannot declare arithmetic over a step. What it can do is
+	// point at a figure an insight already declared and Go already checked, which is
+	// what nearly every number in a recommendation is: over four adjudicated runs, 602
+	// of 638 numerals in recommendation prose were restatements of an insight's number.
+	//
+	// The two grammars share this struct because the expensive half is shared -- the
+	// rendering, the interval that follows from having rendered, the verdict, the
+	// correction record. Only resolution differs: Step/Column/Row resolve against rows,
+	// Refs resolve against figures. Which one applies is decided by the document rather
+	// than by the fields, so there is no mode to get wrong: an insight resolves steps,
+	// a recommendation resolves references.
+	Refs []FigureRef `bson:"refs,omitempty" json:"refs,omitempty"`
+}
+
+// FigureRef points at a figure another document declared and Go already settled.
+//
+// Both halves are needed because a recommendation draws on several insights and figure
+// ids are only unique within one of them: every insight has an f1.
+type FigureRef struct {
+	// Insight is the referenced insight's id, copied verbatim from the input -- the
+	// same id related_insight_ids carries.
+	Insight string `bson:"insight" json:"insight"`
+	// Figure is the figure's id within that insight, "f2".
+	Figure string `bson:"figure" json:"figure"`
 }
 
 // Figure kinds. Each fixes what Go evaluates and which fields it reads.
@@ -74,7 +103,31 @@ const (
 	FigureRatio = "ratio"
 	// FigureDiff — Column in Row's row minus Column in Other's row.
 	FigureDiff = "diff"
+
+	// FigureRefKind — one figure another document already declared, restated. Refs
+	// holds exactly one reference and no value is read from the figure itself: Go
+	// takes the checked value from the reference and writes it with this figure's
+	// notation. A recommendation kind.
+	//
+	// It is the reason a restatement cannot be mistyped and a headline cannot
+	// contradict its own body -- both are the same reference, rendered twice.
+	FigureRefKind = "ref"
 )
+
+// The kinds a recommendation may declare. Two, and both are there because the
+// measurement asked for them: `ref` covers the 94% of recommendation numerals that
+// restate an insight, and `sum` covers the one class of fresh arithmetic that has
+// actually shipped a false number -- a total over several insight figures.
+//
+// Deliberately no others. The rule the quantifier work arrived at holds here too: a
+// missing kind is not a gap in coverage, it is a false positive waiting for the model to
+// approximate something into it. A projection ("a 3% conversion yields ~1,500 buyers")
+// and a policy parameter ("a 45-60 day track") are not measurements, and giving them a
+// kind would make an estimate look checked when only its arithmetic was.
+var RecommendationFigureKinds = map[string]bool{
+	FigureRefKind: true,
+	FigureSum:     true,
+}
 
 // Units. A closed set, because Go renders from it and an unknown unit would have to
 // be guessed at.
@@ -167,4 +220,21 @@ type FigureTemplate struct {
 	Name        string   `bson:"name,omitempty" json:"name,omitempty"`
 	Description string   `bson:"description,omitempty" json:"description,omitempty"`
 	Indicators  []string `bson:"indicators,omitempty" json:"indicators,omitempty"`
+}
+
+// RecommendationFigureTemplate keeps a recommendation's prose as the model authored it,
+// references intact, after the rendered text has been written into its own fields.
+//
+// A separate type from FigureTemplate rather than a reuse of it, because the audit trail
+// is only worth keeping if it says which field a reference was in, and a recommendation's
+// fields are not an insight's. Flattening title/actions/impact into name/indicators would
+// make the record ambiguous in exactly the place it is consulted.
+type RecommendationFigureTemplate struct {
+	Title       string   `bson:"title,omitempty" json:"title,omitempty"`
+	Description string   `bson:"description,omitempty" json:"description,omitempty"`
+	Actions     []string `bson:"actions,omitempty" json:"actions,omitempty"`
+
+	ImpactMetric      string `bson:"impact_metric,omitempty" json:"impact_metric,omitempty"`
+	ImpactImprovement string `bson:"impact_improvement,omitempty" json:"impact_improvement,omitempty"`
+	ImpactReasoning   string `bson:"impact_reasoning,omitempty" json:"impact_reasoning,omitempty"`
 }

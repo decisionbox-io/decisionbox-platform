@@ -273,6 +273,36 @@ type Recommendation struct {
 	Confidence float64   `bson:"confidence" json:"confidence"`
 	CreatedAt  time.Time `bson:"created_at" json:"created_at"`
 
+	// Figures are the numbers this recommendation states, emitted as data rather
+	// than typed into the prose -- the same format the insights use, with the one
+	// grammar a recommendation can actually support.
+	//
+	// A recommendation is shown the insights and no warehouse rows, so it cannot
+	// declare arithmetic over a step. Every figure here points at a figure an
+	// insight already declared and Go already checked: `ref` restates one, `sum`
+	// totals several. That covers what recommendations do with numbers -- over four
+	// adjudicated runs, 602 of 638 numerals in recommendation prose were
+	// restatements of an insight's number, and the one class of fresh arithmetic
+	// that shipped a false number was a total over bands.
+	Figures []Figure `bson:"figures,omitempty" json:"figures,omitempty"`
+
+	// FigureVerdicts is what Go concluded about each figure's references.
+	//
+	// The tag is `evidence_figures` rather than `figure_verdicts` for the reason the
+	// insight's is: the model must not be able to author the record of its own
+	// check. A verdict decoded off the model's own output would read as Go's.
+	FigureVerdicts []FigureVerdict `bson:"figure_verdicts,omitempty" json:"evidence_figures,omitempty"`
+
+	// FigureCorrections records figures whose value Go replaced with the one the
+	// references produced. Unlike the insight pass this is not a rare event, and it
+	// is not meant to be: Go renders what Go computed from the references, so a
+	// declared value that disagrees is recorded here rather than shipped.
+	FigureCorrections []FigureCorrection `bson:"figure_corrections,omitempty" json:"evidence_figure_corrections,omitempty"`
+
+	// FigureTemplate keeps the prose as authored, references intact, after the
+	// rendered text has been written into the fields above it.
+	FigureTemplate *RecommendationFigureTemplate `bson:"figure_template,omitempty" json:"evidence_figure_template,omitempty"`
+
 	// Validation is the verifier+refuter verdict attached after the
 	// orchestrator's recommendation-validation phase runs. Nil on
 	// legacy docs.
@@ -902,6 +932,23 @@ type RecommendationStep struct {
 	// be measured independently of the related_insight_ids drops above.
 	// Omitted on a clean run.
 	RecommendationsDroppedParse int `bson:"recommendations_dropped_parse,omitempty" json:"recommendations_dropped_parse,omitempty"`
+
+	// Figure telemetry for the recommendation phase, mirroring the per-area
+	// counters on AnalysisStep. Omitted on a run whose model declared no figures,
+	// so a provider that ignores the contract is visible as absence rather than as
+	// zeroes that look like compliance.
+	//
+	// FiguresSettled is how many figures were given a verdict; FiguresAdopted how
+	// many had their declared value replaced by the one their references produced.
+	// FiguresResolved and FiguresUnresolved count references the prose carried, and
+	// FiguresInlined counts prose fields that stated a number directly instead of
+	// referencing one -- the number that measures whether the contract is being
+	// used or filled in.
+	FiguresSettled    int `bson:"figures_settled,omitempty" json:"figures_settled,omitempty"`
+	FiguresAdopted    int `bson:"figures_adopted,omitempty" json:"figures_adopted,omitempty"`
+	FiguresResolved   int `bson:"figures_resolved,omitempty" json:"figures_resolved,omitempty"`
+	FiguresUnresolved int `bson:"figures_unresolved,omitempty" json:"figures_unresolved,omitempty"`
+	FiguresInlined    int `bson:"figures_inlined,omitempty" json:"figures_inlined,omitempty"`
 
 	// RecommendationParseRetries counts how many corrective re-prompts the
 	// recommendation phase issued after the model's first response yielded

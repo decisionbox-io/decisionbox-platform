@@ -105,6 +105,16 @@ type Recommendation struct {
 	RelatedInsightIDs []string `bson:"related_insight_ids,omitempty" json:"related_insight_ids,omitempty"`
 	Confidence        float64  `bson:"confidence" json:"confidence"`
 
+	// The figure trail, mirrored for the reason every field in this struct is: a
+	// field absent from THIS struct is a field BSON drops on the way to a client.
+	// Figures carry the references a recommendation's numbers came from, and the
+	// verdicts are what makes it checkable after the fact that a number in the
+	// prose was resolved from an insight rather than typed.
+	Figures           []gomodels.Figure                      `bson:"figures,omitempty" json:"figures,omitempty"`
+	FigureVerdicts    []gomodels.FigureVerdict               `bson:"figure_verdicts,omitempty" json:"evidence_figures,omitempty"`
+	FigureCorrections []gomodels.FigureCorrection            `bson:"figure_corrections,omitempty" json:"evidence_figure_corrections,omitempty"`
+	FigureTemplate    *gomodels.RecommendationFigureTemplate `bson:"figure_template,omitempty" json:"evidence_figure_template,omitempty"`
+
 	// Validation is the verifier+refuter verdict attached after the
 	// agent's recommendation-validation phase runs. Nil on legacy docs.
 	Validation *InsightValidation `bson:"validation,omitempty" json:"validation,omitempty"`
