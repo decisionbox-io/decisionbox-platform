@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"fmt"
+	"math"
 
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -22,10 +23,44 @@ import (
 // quantity at a different scale, and then re-settled and reported the insight as holding.
 // None of that machinery is reachable from here, because there is no text to edit.
 //
-// Every refuted figure is corrected. There is nothing left to decline over: no ambiguity
-// about which numeral to swap, no field that might mean something else, no minimum length.
-// The one case still left alone is a figure the evaluator could not settle, which is not a
-// refutation and has no known correct value.
+// What it must still decline over is WHICH of the two is wrong.
+//
+// A refutation says the stated value and the declared arithmetic disagree. It does not say
+// which one is at fault, and the first live run showed the assumption running the wrong
+// way round. Of nine refutations, seven were a sound figure with a mis-declared
+// arithmetic, and correcting the value wrote the arithmetic's answer into a sentence built
+// for a different quantity:
+//
+//	$37,724 -> $7          a per-line dollar value declared as a ratio
+//	$34.4B -> $206.6B      "annual revenue flat near $206.6B per year" -- the sum of all years
+//	9.97% -> 111.08%       a discount rate declared as an unscoped ratio
+//	2.51% -> 102.51%       a spread declared as the ratio it is the excess of
+//
+// Those are worse than the refutation they were meant to fix: a visible wrong number
+// becomes an invisible one, in prose that now reads as nonsense, from the path with no
+// model in the loop and therefore nothing reviewing it.
+//
+// So the gap decides. Two numbers within correctionGap of each other have to be the same
+// quantity, differing by a rounding or a slipped digit, and the value is what is wrong.
+// Two numbers 80% apart are different quantities, and it is the declaration that is wrong
+// -- which Go cannot repair, because the prose is the only statement of what was meant.
+// Those stay refuted and visible, which is the same choice undecidable makes and for the
+// same reason.
+//
+// This restores, on a principle rather than by accident, what the previous design's
+// refusals were doing: that pass declined most of these because a swap needed a matching
+// unit and an unambiguous occurrence. Removing the refusals as "nothing left to decline
+// over" was wrong, and one run was enough to show it.
+
+// correctionGap is how close the stated and evaluated values must be for a correction to
+// be a correction rather than a substitution of one quantity for another.
+//
+// 1% relative. Measured against the ten corrections observed across two runs it keeps
+// every case where the two plainly agree -- 61.44 against 61.43, 54.66 against 55.04, and
+// the digit transposition 34,363,832,414 against 34,373,633,413 that was the only genuine
+// catch of the previous run -- and declines all seven where they do not.
+const correctionGap = 0.01
+
 func correctRefutedFigures(areaID string, insights []models.Insight, stepByID map[int]*models.ExplorationStep) int {
 	total := 0
 	for i := range insights {
@@ -49,6 +84,21 @@ func correctRefutedFigures(areaID string, insights []models.Insight, stepByID ma
 				continue
 			}
 			f := &ins.Figures[j]
+			if !sameQuantity(v.Claimed, v.Evaluated) {
+				// The declaration describes a different quantity than the figure states.
+				// Rewriting the figure to match it would replace a number a reader can
+				// check against the prose with one that contradicts the sentence around
+				// it. Left refuted, and visible.
+				applog.WithFields(applog.Fields{
+					"area":      areaID,
+					"insight":   ins.Name,
+					"figure":    v.ID,
+					"display":   v.Display,
+					"claimed":   v.Claimed,
+					"evaluated": v.Evaluated,
+				}).Warn("Not correcting this figure: its declared arithmetic answers a different question, so the declaration is what is wrong")
+				continue
+			}
 			before := renderFigure(*f)
 			f.Value = v.Evaluated
 			after := renderFigure(*f)
@@ -94,4 +144,17 @@ func countRefutedFigures(verdicts []models.FigureVerdict) int {
 		}
 	}
 	return n
+}
+
+// sameQuantity reports whether a stated value and an evaluated one are close enough to be
+// two renderings of one number rather than two different numbers.
+func sameQuantity(claimed, evaluated float64) bool {
+	if math.IsNaN(claimed) || math.IsNaN(evaluated) || math.IsInf(claimed, 0) || math.IsInf(evaluated, 0) {
+		return false
+	}
+	scale := math.Max(math.Abs(claimed), math.Abs(evaluated))
+	if scale == 0 {
+		return true
+	}
+	return math.Abs(claimed-evaluated)/scale <= correctionGap
 }

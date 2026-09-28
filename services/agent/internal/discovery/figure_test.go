@@ -403,3 +403,75 @@ func TestFigure_CorrectionIsAFieldAssignment(t *testing.T) {
 		}
 	}
 }
+
+// TestFigure_CorrectionDeclinesWhenTheDeclarationIsWhatIsWrong is the red-proof for the
+// defect the first live run exposed, and every case is verbatim from it.
+//
+// A refutation says the stated value and the declared arithmetic disagree; it does not say
+// which is at fault. Seven of nine refutations in that run were a sound figure with a
+// mis-declared arithmetic, and correcting the value wrote the arithmetic's answer into a
+// sentence built for a different quantity -- "annual revenue flat near $206.6B per year",
+// a per-line value of $37,724 rewritten to $7. Those are worse than the refutation they
+// replace: a visible wrong number becomes an invisible one, in prose that now reads as
+// nonsense, from the path with no model in the loop.
+func TestFigure_CorrectionDeclinesWhenTheDeclarationIsWhatIsWrong(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		claimed   float64
+		evaluated float64
+		unit      string
+		scale     string
+		decimals  int
+		wantFixed bool
+	}{
+		// Observed in run s10, all seven declined.
+		{"a per-line value declared as a ratio", 37723.75, 6.984264944268963, models.UnitCurrency, models.ScaleNone, 0, false},
+		{"a per-year value declared as a sum of all years", 34436097423, 206616584541.93, models.UnitCurrency, models.ScaleBillions, 1, false},
+		{"a discount rate declared as an unscoped ratio", 9.97, 111.0840768340196, models.UnitPercent, models.ScaleNone, 2, false},
+		{"a spread declared as the ratio it is the excess of", 2.51, 102.50940149405443, models.UnitPercent, models.ScaleNone, 2, false},
+		{"a mean declared as a ratio", 5.6, 1.0, models.UnitPlain, models.ScaleNone, 1, false},
+		{"a decile share against the wrong denominator", 19.75, 33.86218385956127, models.UnitPercent, models.ScaleNone, 2, false},
+		{"a bottom-decile share against the wrong denominator", 2.77, 6.695461440653398, models.UnitPercent, models.ScaleNone, 2, false},
+
+		// Observed in the same run, and genuinely the value being slightly off.
+		{"a share off in its last place", 61.44, 61.43234432675047, models.UnitPercent, models.ScaleNone, 2, true},
+		{"a share off by a third of a point", 54.66, 55.03593311971261, models.UnitPercent, models.ScaleNone, 2, true},
+
+		// Run s9's only genuine catch: a digit transposition. This must keep working.
+		{"a digit transposition", 34363832414, 34373633413, models.UnitCurrency, models.ScaleBillions, 2, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rows := []map[string]any{{"k": "only", "v": tc.evaluated}}
+			ins := []models.Insight{{
+				Name:        "Probe {{f1}}",
+				Description: "The figure is {{f1}} in context.",
+				SourceSteps: []int{1},
+				Figures: []models.Figure{{
+					ID: "f1", Value: tc.claimed, Unit: tc.unit, Scale: tc.scale, Decimals: tc.decimals,
+					Step: 1, Kind: models.FigureCell, Column: "v",
+				}},
+			}}
+			steps := stepIndex(1, rows)
+			attachFigureVerdicts(ins, steps)
+			if ins[0].FigureVerdicts[0].Status != models.FigureFails {
+				t.Fatalf("expected a refutation, got %q", ins[0].FigureVerdicts[0].Status)
+			}
+
+			n := correctRefutedFigures("probe", ins, steps)
+			if tc.wantFixed && n != 1 {
+				t.Fatalf("correction declined, want it applied (claimed %v, evaluated %v)", tc.claimed, tc.evaluated)
+			}
+			if !tc.wantFixed {
+				if n != 0 {
+					t.Fatalf("correction applied, want it declined: %v -> %v", tc.claimed, tc.evaluated)
+				}
+				if ins[0].Figures[0].Value != tc.claimed {
+					t.Errorf("the value was changed anyway: %v", ins[0].Figures[0].Value)
+				}
+				if countRefutedFigures(ins[0].FigureVerdicts) != 1 {
+					t.Error("the figure must stay refuted and visible")
+				}
+			}
+		})
+	}
+}
