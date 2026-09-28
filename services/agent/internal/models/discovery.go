@@ -165,6 +165,41 @@ type Insight struct {
 	// them measures nothing.
 	QuantifierVerdicts []QuantifierVerdict `bson:"quantifier_verdicts,omitempty" json:"evidence_checks,omitempty"`
 
+	// FigureClaims is the model's declaration of the arithmetic behind each
+	// number it wrote: the step, and which cell, total, count, ratio or
+	// difference over that step's rows produced it.
+	//
+	// Authored, like QuantifierClaims and for a sharper version of the same
+	// reason. Three variants of having Go find a figure's origin in the rows were
+	// measured against three hand-adjudicated corpora; the best ran at 23%
+	// precision, because a number in a sound insight is typically two or three
+	// operations from the rows and that space contains almost anything. The model
+	// already knows which arithmetic it did. Saying so is mechanical; checking it
+	// over every row is not, so only the checking is taken away.
+	FigureClaims []FigureClaim `bson:"figure_claims,omitempty" json:"figure_claims,omitempty"`
+
+	// FigureVerdicts is what Go concluded about each declared figure.
+	//
+	// The JSON name is deliberately not "figure_verdicts", for the reason
+	// QuantifierVerdicts' is not "quantifier_verdicts": insights are decoded from
+	// model output with the standard decoder, so a key matching this tag would be
+	// read straight into the field, letting the model author the verdict whose
+	// whole point is that the model did not reach it. And with the prompt now
+	// asking for `figure_claims` by name, a sibling `figure_verdicts` is the
+	// obvious next key to volunteer. attachFigureVerdicts also clears the field
+	// before writing -- two defences for one hole, because if the model can mark
+	// its own work then every measurement built on these verdicts is worthless.
+	FigureVerdicts []FigureVerdict `bson:"figure_verdicts,omitempty" json:"evidence_figures,omitempty"`
+
+	// FigureCoverage counts how many of the numerals in this insight's prose the
+	// declarations account for.
+	//
+	// Recorded because the comparable layer's weakness was invisible until it was
+	// counted by hand: a quarter of insights declared no quantifier claim, so
+	// every verdict those documents carried was about nothing. Derived, never
+	// authored, and under a tag no prompt mentions for the same reason as above.
+	FigureCoverage *FigureCoverage `bson:"figure_coverage,omitempty" json:"evidence_figure_coverage,omitempty"`
+
 	// Repair records what bounded repair did to this insight after a claim of
 	// its own came back refuted: which sentences were corrected, which were
 	// removed, and how many corrective rounds that cost. Nil on the happy path,
