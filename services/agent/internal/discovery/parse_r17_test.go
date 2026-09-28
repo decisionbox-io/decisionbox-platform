@@ -31,29 +31,19 @@ func TestParseInsights_EmptyEnvelopeThenJSONLookingProseIsAccepted(t *testing.T)
 	}
 }
 
-// A second envelope that is malformed rather than truncated -- a trailing comma -- is
-// still an attempt at an answer, and shipping the empty placeholder would lose it.
-//
-// Recognised by the unparsed remainder naming the envelope key in QUOTED form, which is
-// the whole of the test. An unquoted key (`{insights:[...]}`) is therefore missed, and
-// deliberately: searching for the bare word would fire on the prose this all exists to
-// accept -- the captured conversion response says "no valid conversion funnel insights
-// can be produced". Missing an invalid-JSON shape no model has been seen to emit costs
-// less than re-prompting every correctly empty area.
-func TestParseInsights_EmptyEnvelopeThenMalformedRealOneIsRetried(t *testing.T) {
+// A COMPLETE second envelope is still recovered -- that is the part that matters and it
+// is not a heuristic, because the value parsed. Only a BROKEN second envelope is missed,
+// and that limit is asserted in parse_r15_test.go with the reasoning.
+func TestParseInsights_EmptyEnvelopeThenCompleteRealOneRecoversIt(t *testing.T) {
 	o := &Orchestrator{}
-	for name, in := range map[string]string{
-		"trailing comma": `{"insights":[]}
-{"insights":[{"name":"Actual finding","severity":"high",}]}`,
-		"truncated": `{"insights":[]}
-{"insights":[{"name":"Actual finding","severity":"high"`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			insights, _, err := o.parseInsights(in, "revenue")
-			if err == nil {
-				t.Fatalf("err = nil with %d insights, want an error: a broken second answer must be re-prompted", len(insights))
-			}
-		})
+	const in = `{"insights":[]}
+{"insights":[{"name":"Actual finding","severity":"high"}]}`
+	insights, _, err := o.parseInsights(in, "revenue")
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(insights) != 1 || insights[0].Name != "Actual finding" {
+		t.Fatalf("got %d insights (%+v), want the real one", len(insights), insights)
 	}
 }
 

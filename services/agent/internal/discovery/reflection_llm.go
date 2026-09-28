@@ -364,7 +364,7 @@ func parseReflection(response string) (*parsedReflection, error) {
 	if !strings.HasPrefix(strings.TrimSpace(cleaned), "{") {
 		return nil, fmt.Errorf("reflection response is not a JSON object")
 	}
-	vals, _, ferr := jsonValues(cleaned)
+	vals, ferr := jsonValues(cleaned)
 	if len(vals) == 0 {
 		if ferr == nil {
 			ferr = fmt.Errorf("no JSON value in response")

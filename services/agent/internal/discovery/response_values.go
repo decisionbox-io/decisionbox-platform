@@ -26,16 +26,25 @@ package discovery
 // without being judged. A placeholder in front of the real answer no longer costs a
 // re-prompt either -- the real answer is simply used.
 //
-// One thing still has to be caught: a further answer that was TRYING to parse and
-// failed, whether truncated by a token limit or malformed. That is the one case where
-// shipping the empty first value loses content silently, and it is recognisable without
-// classifying prose -- the unparsed remainder names the envelope key.
+// Nothing at all is inferred from the unparsed remainder either. The last version
+// searched it for the quoted envelope key, to catch a further answer that was trying to
+// parse and failed -- and that broke the same common case a sixth time, because an
+// explanation may quote the key it is explaining: `The "insights" array is empty
+// because this schema has no session-level data.`
+//
+// The trade is now decided on what has actually been seen rather than on what could
+// happen. A correctly empty area with an explanation attached was observed 17 times over
+// 12 replays and in every full run; a truncated second answer behind an empty first one
+// has never been observed once. Guarding the second at the cost of the first had it
+// backwards. A response cut off by a token limit is also not the parser's to detect --
+// the stop reason on the LLM result says so directly, and that is where it belongs.
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 )
 
@@ -46,41 +55,27 @@ const maxResponseValues = 16
 
 // jsonValues decodes the top-level JSON values in s, in order.
 //
-// tail is what was left when decoding stopped, empty when the input was consumed
-// cleanly. firstErr is set only when nothing decoded at all, so a caller can report why
-// a response was unreadable rather than inventing a reason.
-func jsonValues(s string) (vals []json.RawMessage, tail string, firstErr error) {
+// err is set when nothing decoded at all, so a caller can report why a response was
+// unreadable rather than inventing a reason, and when the response ran past
+// maxResponseValues -- a response with that many top-level values is not one this
+// understands, and quietly answering from the first of them would hide the rest.
+// Trailing text that is not JSON is not an error and is not reported: see the note above
+// on why nothing is inferred from it.
+func jsonValues(s string) (vals []json.RawMessage, err error) {
 	dec := json.NewDecoder(strings.NewReader(s))
-	off := int64(0)
-	for len(vals) < maxResponseValues {
+	for {
 		var v json.RawMessage
-		if err := dec.Decode(&v); err != nil {
-			if errors.Is(err, io.EOF) {
-				return vals, "", nil
+		if derr := dec.Decode(&v); derr != nil {
+			if errors.Is(derr, io.EOF) || len(vals) > 0 {
+				return vals, nil
 			}
-			if len(vals) == 0 {
-				firstErr = err
-			}
-			return vals, strings.TrimSpace(s[off:]), firstErr
+			return nil, derr
 		}
 		vals = append(vals, v)
-		off = dec.InputOffset()
+		if len(vals) > maxResponseValues {
+			return nil, fmt.Errorf("response holds more than %d top-level JSON values", maxResponseValues)
+		}
 	}
-	return vals, strings.TrimSpace(s[off:]), nil
-}
-
-// tailAttemptsAnswer reports whether unparsed trailing text was trying to be another
-// answer under key, rather than prose.
-//
-// Deliberately a single narrow test -- does the unparsed remainder name the envelope
-// key -- and not an attempt to tell prose from JSON, which is what failed four times.
-// An explanation of why an area is empty does not contain `"insights"`; a truncated or
-// malformed second envelope does.
-func tailAttemptsAnswer(tail, key string) bool {
-	if tail == "" {
-		return false
-	}
-	return strings.Contains(strings.ToLower(tail), `"`+strings.ToLower(key)+`"`)
 }
 
 // envelopeItems pulls the item array out of one decoded JSON value: a bare array, or an
@@ -104,13 +99,21 @@ func envelopeItems(val json.RawMessage, key string) ([]json.RawMessage, error) {
 		return nil, err
 	}
 	// Matched case-insensitively, as encoding/json does when decoding into a struct
-	// tag -- some models capitalise it (`{"Insights":[…]}`).
-	var itemsRaw json.RawMessage
-	found := false
-	for k, v := range envelope {
-		if strings.EqualFold(k, key) {
-			itemsRaw, found = v, true
-			break
+	// tag -- some models capitalise it (`{"Insights":[…]}`). An exact match wins, and
+	// among case variants the first in sorted order does: breaking out of a map range on
+	// the first EqualFold hit made the result depend on Go's randomised iteration order,
+	// so `{"Insights":[],"insights":[{...}]}` returned either one.
+	itemsRaw, found := envelope[key]
+	if !found {
+		variants := make([]string, 0, 2)
+		for k := range envelope {
+			if strings.EqualFold(k, key) {
+				variants = append(variants, k)
+			}
+		}
+		if len(variants) > 0 {
+			sort.Strings(variants)
+			itemsRaw, found = envelope[variants[0]], true
 		}
 	}
 	if !found {

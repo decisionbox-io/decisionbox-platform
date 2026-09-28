@@ -428,7 +428,7 @@ type parsedQuestion struct {
 // unparseable (rawCount > 0, kept empty → retry). A non-nil error is returned
 // only when the response is not recognizable as questions at all.
 func parseQuestions(response string) ([]parsedQuestion, int, error) {
-	vals, tail, ferr := jsonValues(cleanJSONResponse(response))
+	vals, ferr := jsonValues(cleanJSONResponse(response))
 	if len(vals) == 0 {
 		if ferr == nil {
 			ferr = fmt.Errorf("no JSON value in response")
@@ -459,9 +459,6 @@ func parseQuestions(response string) ([]parsedQuestion, int, error) {
 	}
 	if firstErr != nil {
 		return nil, 0, firstErr
-	}
-	if tailAttemptsAnswer(tail, "questions") {
-		return nil, 0, fmt.Errorf("response holds no questions and unparsed trailing text that names the questions key")
 	}
 	return firstOut, firstRaw, nil
 }

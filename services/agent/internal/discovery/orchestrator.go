@@ -1696,7 +1696,7 @@ func (o *Orchestrator) parseInsightsStrict(response string, areaID string) ([]mo
 }
 
 func (o *Orchestrator) parseInsightsWith(response string, areaID string, salvage, requireTitle bool) ([]models.Insight, int, error) {
-	vals, tail, ferr := jsonValues(cleanJSONResponse(response))
+	vals, ferr := jsonValues(cleanJSONResponse(response))
 	if len(vals) == 0 {
 		if ferr == nil {
 			ferr = fmt.Errorf("no JSON value in response")
@@ -1730,12 +1730,6 @@ func (o *Orchestrator) parseInsightsWith(response string, areaID string, salvage
 	// so "missing the insights key" still reads as that rather than as an empty area.
 	if firstErr != nil {
 		return nil, 0, firstErr
-	}
-	// An area with no matching data is correctly empty, and two of five are in every
-	// run -- but a further answer that was trying to parse and failed would be lost
-	// silently, so that one case is still a retry.
-	if tailAttemptsAnswer(tail, "insights") {
-		return nil, 0, fmt.Errorf("response holds no insights and unparsed trailing text that names the insights key")
 	}
 	return firstInsights, firstDropped, nil
 }
@@ -2238,7 +2232,7 @@ func recommendationCitationRepairSuffix(insights []models.Insight) string {
 // returns (empty, 0, nil) so callers can distinguish "no recommendations" from
 // "could not parse".
 func parseRecommendations(response string) ([]models.Recommendation, int, error) {
-	vals, tail, ferr := jsonValues(cleanJSONResponse(response))
+	vals, ferr := jsonValues(cleanJSONResponse(response))
 	if len(vals) == 0 {
 		if ferr == nil {
 			ferr = fmt.Errorf("no JSON value in response")
@@ -2267,9 +2261,6 @@ func parseRecommendations(response string) ([]models.Recommendation, int, error)
 	}
 	if firstErr != nil {
 		return nil, 0, firstErr
-	}
-	if tailAttemptsAnswer(tail, "recommendations") {
-		return nil, 0, fmt.Errorf("response holds no recommendations and unparsed trailing text that names the recommendations key")
 	}
 	return firstRecs, firstDropped, nil
 }
