@@ -1238,6 +1238,34 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 		// Skip validation when the analysis step produced no insights.
 		// The verifier only runs for successfully parsed insights.
+		// Settle the figures first, then render them into the prose.
+		//
+		// Before the quantifier pass and before repair, because until the references are
+		// rendered the prose is a template: a smoke run showed the repair prompt being
+		// handed sentences reading "{{f1}} of customers placed 11+ orders" and asked to
+		// rewrite them. Repair edits prose and has no notion of this format, so it has to
+		// be given ordinary text -- which also means its behaviour is unchanged from
+		// before figures existed.
+		//
+		// Settling first costs nothing, because a figure is checked against the step's
+		// rows rather than against the prose. Nothing here needs the text.
+		attachFigureVerdicts(insights, stepByID)
+
+		// A refuted figure needs no model to fix: the arithmetic that refuted it already
+		// produced the right number, and the prose holds a reference rather than the
+		// number, so correcting it is assigning a field.
+		if corrected := correctRefutedFigures(area.ID, insights, stepByID); corrected > 0 {
+			step.FiguresCorrected = corrected
+		}
+
+		// Render the references. From here on the insight carries ordinary sentences, and
+		// every later phase -- the quantifier pass, repair, validation, the API, the
+		// dashboard, the exec summary -- reads them without knowing this format exists.
+		if rendered := renderInsightFigures(insights); rendered.resolved > 0 || rendered.inlined > 0 {
+			step.FiguresInlined = rendered.inlined
+			step.FigureRefsUnresolved = rendered.unresolved
+		}
+
 		// Settle every quantifier claim the model declared against the rows of
 		// the step it cited, before anything downstream reads the insight. The
 		// rows are already here and already correct; what was missing was the
@@ -1270,34 +1298,6 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 				"claim_dropped": repair.claimsDropped,
 				"unrepaired":    repair.unrepaired,
 			}).Info("Repaired insights whose declared claims their own evidence contradicted")
-		}
-
-		// Re-run the arithmetic the model declared for each figure it wrote, over
-		// the step's full rows rather than the digest it saw.
-		//
-		// After repair, not before, and that ordering is load-bearing.
-		// mergeRepairedInsight replaces the prose and the declared claims but
-		// carries FigureClaims over from the original, so a rewrite leaves every
-		// figure record describing sentences that no longer exist -- stale figure
-		// text, stale verdicts, stale coverage. Checking the text that ships is the
-		// only ordering in which those records mean anything, and it is the same
-		// reason repair itself runs before validation.
-		attachFigureVerdicts(insights, stepByID)
-
-		// A refuted figure needs no model to fix: the arithmetic that refuted it
-		// already produced the right number. Swap the numeral, re-settle, and leave
-		// anything ambiguous refuted and visible. Before validation, so the
-		// verifier judges the corrected text.
-		if swapped := correctRefutedFigures(area.ID, insights, stepByID); swapped > 0 {
-			step.FiguresCorrected = swapped
-		}
-
-		// Render the figure references into the prose. Last, so everything downstream --
-		// validation, the API, the dashboard, the exec summary -- reads ordinary
-		// sentences and never learns this format exists.
-		if rendered := renderInsightFigures(insights); rendered.resolved > 0 || rendered.inlined > 0 {
-			step.FiguresInlined = rendered.inlined
-			step.FigureRefsUnresolved = rendered.unresolved
 		}
 
 		if len(insights) > 0 {
