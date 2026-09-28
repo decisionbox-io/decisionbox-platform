@@ -233,7 +233,7 @@ func TestConsolidateFindings_NewAndTrend(t *testing.T) {
 			{AnalysisArea: "fraud", Name: "Card testing spike", Severity: "critical", AffectedCount: 12},
 		},
 	}
-	newCount, total, err := o.consolidateFindings(context.Background(), result)
+	newCount, total, reSeen, err := o.consolidateFindings(context.Background(), result)
 	if err != nil {
 		t.Fatalf("consolidate: %v", err)
 	}
@@ -242,6 +242,11 @@ func TestConsolidateFindings_NewAndTrend(t *testing.T) {
 	}
 	if total != 2 {
 		t.Errorf("want total 2, got %d", total)
+	}
+	// The carried finding was surfaced again — that, and only that, is what
+	// licenses asking the model to re-judge it.
+	if len(reSeen) != 1 {
+		t.Errorf("want 1 carried finding re-seen, got %d", len(reSeen))
 	}
 	// The merged finding must be marked changed with a bumped seen count.
 	var merged *commonmodels.LedgerFinding
@@ -475,7 +480,7 @@ func TestConsolidateFindings_SameRunDuplicateMerges(t *testing.T) {
 			{AnalysisArea: "churn", Name: "High churn", Severity: "high", AffectedCount: 100}, // dup
 		},
 	}
-	newCount, total, err := o.consolidateFindings(context.Background(), result)
+	newCount, total, reSeen, err := o.consolidateFindings(context.Background(), result)
 	if err != nil {
 		t.Fatalf("consolidate: %v", err)
 	}
@@ -484,5 +489,11 @@ func TestConsolidateFindings_SameRunDuplicateMerges(t *testing.T) {
 	}
 	if total != 1 {
 		t.Errorf("total should be 1 (one deduped finding), got %d", total)
+	}
+	// The duplicate merged into a finding this run created moments earlier.
+	// That is not evidence about the project's history, and counting it as
+	// such would order a first run to re-judge its own work.
+	if len(reSeen) != 0 {
+		t.Errorf("a same-run duplicate merge is not a re-seen prior finding, got %d", len(reSeen))
 	}
 }

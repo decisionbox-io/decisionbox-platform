@@ -89,6 +89,10 @@ Like the clarifying-questions hop it runs *after* the run is finalized, with its
 Off by default; where enabled it respects a per-project **Reflection** toggle (Settings → Advanced, on by default).
 Semantic dedup / trend detection and per-analysis-area retrieval of prior findings additionally require an embedding provider and a configured vector store.
 
+The reflection answer is a *required* contract, not a menu: every run must return at least one durable **learning**, a run that surfaced a carried ledger finding **again** must re-judge at least one of them, and a project whose evolution mode is anything but `off` must propose at least one **next task or hypothesis**.
+The demand is written into both the JSON schema (for providers with structured output) and the prompt (for every other provider), and it tracks the run — `off` still returns an empty next-task queue, and a re-judgement is asked for only where there is evidence to ground it and the evidence is on the page, never of a first run about findings it created itself, of a run that touched none of the project's history, or about a finding the prompt's cap left out.
+Proposed domain-pack changes stay optional in every mode: they are warranted only by a signal that recurs across runs.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DISCOVERY_REFLECTION_ENABLED` | `false` | Master switch for the reflection / Discovery Ledger hop. Off by default. Forwarded from the API process to spawned agent containers automatically. |
