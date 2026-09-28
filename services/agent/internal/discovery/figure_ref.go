@@ -269,7 +269,16 @@ func evaluateRecommendationFigure(f models.Figure, ix figureRefIndex) models.Fig
 			"the figures referenced were checked to within %s, and this one is written to within %s, "+
 				"which is finer than anything established", formatFigure(coarsest), formatFigure(own))
 	}
-	if f.Value == 0 {
+	// No value declared is the contract being followed, not a disagreement: the
+	// recommendation contract has no `value` field and says the platform supplies the
+	// number.
+	//
+	// Either signal counts, and the asymmetry with the insight side is deliberate. There,
+	// ValueMissing alone decides, because a declared count of zero is a real claim worth
+	// checking. Here the contract says write no value at all, so a zero carries no claim
+	// either way -- and taking both means the behaviour does not depend on the figure
+	// having arrived through JSON, which is the only path that can set the flag.
+	if noStatedValue(f) {
 		v.Claimed = total
 		v.Status = models.FigureHolds
 		return v
@@ -329,8 +338,9 @@ func adoptResolvedFigureValues(rec *models.Recommendation, ix figureRefIndex) in
 		// The contract tells the model not to write a value, so absence is the normal
 		// case; and where the operand is one Go declined to vouch for, the cited insight
 		// is already showing that number to the same reader.
-		if f.Value == 0 {
+		if noStatedValue(*f) {
 			f.Value = v.Evaluated
+			f.ValueMissing = false
 			filled = true
 			continue
 		}
@@ -349,7 +359,7 @@ func adoptResolvedFigureValues(rec *models.Recommendation, ix figureRefIndex) in
 		// The prose then says 96,031 and the segment label says 96,447. Closing that needs
 		// the contract to tie segment_size to a figure id, which is a change worth a live
 		// run to validate rather than a heuristic bolted on here.
-		if rec.SegmentSize != 0 && float64(rec.SegmentSize) == f.Value {
+		if rec.SegmentSize != 0 && !noStatedValue(*f) && float64(rec.SegmentSize) == f.Value {
 			applog.WithFields(applog.Fields{
 				"recommendation": rec.Title,
 				"figure":         v.ID,
@@ -359,14 +369,22 @@ func adoptResolvedFigureValues(rec *models.Recommendation, ix figureRefIndex) in
 			continue
 		}
 
-		// A number the model did state is overwritten only when Go can vouch for the
-		// replacement, which is what a refutation means here. An unvouched operand
-		// leaves the model's own figure standing: swapping it for a number Go explicitly
-		// would not stand behind is not a correction, and recording it as one would put
-		// an unverified substitution in the log that exists to show verified ones.
-		if v.Status != models.FigureFails {
+		// An unvouched operand leaves the model's own figure standing: swapping it for a
+		// number Go explicitly would not stand behind is not a correction, and recording it
+		// as one would put an unverified substitution in the log that exists to show
+		// verified ones.
+		if v.Status == models.FigureUndecidable {
 			continue
 		}
+
+		// Everything else is vouched, and a vouched reference takes the resolved value
+		// unconditionally -- not only when the declared one was refuted.
+		//
+		// Restricting it to refutations left the agreement tolerance deciding what ships,
+		// and that tolerance is wider than a whole unit once a sum's drift is added: a
+		// reference to a checked count of 100 could declare 101, land inside 0.5 + 0.5, be
+		// marked `holds`, and ship 101. The tolerance's job is to decide whether the
+		// disagreement is worth RECORDING; it was never meant to decide the number.
 		before := renderFigure(*f)
 		f.Value = v.Evaluated
 		after := renderFigure(*f)
@@ -451,4 +469,9 @@ func shortID(id string) string {
 		return "(none)"
 	}
 	return id
+}
+
+// noStatedValue reports that a recommendation figure carries no number of its own.
+func noStatedValue(f models.Figure) bool {
+	return f.ValueMissing || f.Value == 0
 }

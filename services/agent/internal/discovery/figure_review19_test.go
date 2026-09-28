@@ -868,3 +868,134 @@ func TestFigures_AdoptionDeclinesWhenSegmentSizeWouldDesync(t *testing.T) {
 			recs[0].Figures[0].Value, recs[0].SegmentSize)
 	}
 }
+
+// --- Review round 25.
+
+// TestFigures_MissingValueIsNotAClaimOfZero — round 25.
+//
+// An insight figure with no readable value -- the key absent, or "1.2M" that no number can be
+// recovered from -- decoded to zero and was then settled as a claim of zero. The correction
+// gate refuses to replace it, because zero is more than 1% from any real total, so "0" shipped
+// in the sentence. The same defect as the recommendation side's fabricated 0.00%, reached from
+// the decoder instead of from the contract.
+func TestFigures_MissingValueIsNotAClaimOfZero(t *testing.T) {
+	for _, bad := range []string{`"value":null`, `"value":"1.2M"`, `"kind":"sum"`} {
+		body := `{"name":"Revenue reached {{f1}}","figures":[{"id":"f1",` + bad + `,"step":1,"unit":"currency"}]}`
+		var ins models.Insight
+		if err := json.Unmarshal([]byte(body), &ins); err != nil {
+			t.Fatalf("%s: %v", bad, err)
+		}
+		if !ins.Figures[0].ValueMissing {
+			t.Errorf("%s: ValueMissing = false, so a missing value reads as a claim of zero", bad)
+			continue
+		}
+
+		list := []models.Insight{ins}
+		attachFigureVerdicts(list, map[int]*models.ExplorationStep{
+			1: {Step: 1, QueryResult: []map[string]any{{"net": 500.0}}},
+		})
+		if got := list[0].FigureVerdicts[0].Status; got != models.FigureUndecidable {
+			t.Errorf("%s: status = %q, want undecidable", bad, got)
+		}
+		renderInsightFigures(list)
+		if strings.Contains(list[0].Name, "$0") || strings.Contains(list[0].Name, " 0") {
+			t.Errorf("%s: a fabricated zero shipped: %q", bad, list[0].Name)
+		}
+		if !strings.Contains(list[0].Name, "{{f1}}") {
+			t.Errorf("%s: name = %q, want the reference left visible", bad, list[0].Name)
+		}
+	}
+
+	// A figure that would otherwise settle cleanly, so ValueMissing is the ONLY reason it
+	// cannot. Without this case the status assertion above is vacuous: every input there
+	// reaches undecidable through a missing kind or column as well, which is how a sabotage
+	// of the guard passed unnoticed the first time this was proved.
+	var only models.Insight
+	if err := json.Unmarshal([]byte(
+		`{"name":"Revenue reached {{f1}}","source_steps":[1],`+
+			`"figures":[{"id":"f1","step":1,"kind":"sum","column":"net","unit":"currency"}]}`), &only); err != nil {
+		t.Fatal(err)
+	}
+	list := []models.Insight{only}
+	attachFigureVerdicts(list, map[int]*models.ExplorationStep{
+		1: {Step: 1, QueryResult: []map[string]any{{"net": 500.0}}},
+	})
+	v := list[0].FigureVerdicts[0]
+	if v.Status != models.FigureUndecidable {
+		t.Errorf("status = %q (%s), want undecidable -- the arithmetic is sound and only the value is absent",
+			v.Status, v.Reason)
+	}
+	if !strings.Contains(v.Reason, "no readable value") {
+		t.Errorf("reason = %q, want it to name the missing value rather than some other gap", v.Reason)
+	}
+
+	// A declared zero is a different thing and stays a claim: a count of none is a finding.
+	var zero models.Insight
+	if err := json.Unmarshal([]byte(`{"name":"n","figures":[{"id":"f1","value":0,"step":1,"kind":"count"}]}`), &zero); err != nil {
+		t.Fatal(err)
+	}
+	if zero.Figures[0].ValueMissing {
+		t.Error("an explicit zero was treated as missing; a count of none is a real claim")
+	}
+}
+
+// TestFigures_VouchedReferenceAlwaysTakesTheResolvedValue — round 25.
+//
+// Adopting only on a refutation left the agreement tolerance deciding what ships, and that
+// tolerance is wider than a whole unit once a sum's drift is added: a reference to a checked
+// count of 100 could declare 101, land inside 0.5 + 0.5, be marked `holds`, and ship 101. The
+// tolerance decides whether a disagreement is worth recording; it was never meant to decide
+// the number.
+func TestFigures_VouchedReferenceAlwaysTakesTheResolvedValue(t *testing.T) {
+	ins := models.Insight{
+		ID:             "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+		Figures:        []models.Figure{{ID: "f1", Value: 100, Unit: models.UnitCount}},
+		FigureVerdicts: []models.FigureVerdict{{ID: "f1", Status: models.FigureHolds}},
+	}
+	recs := []models.Recommendation{{
+		Description: "It covers {{f1}} accounts.",
+		Figures: []models.Figure{{
+			ID: "f1", Value: 101, Unit: models.UnitCount, Kind: models.FigureRefKind,
+			Refs: []models.FigureRef{ref(ins.ID, "f1")},
+		}},
+	}}
+
+	attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	renderRecommendationFigures(recs)
+
+	if got := recs[0].Figures[0].Value; got != 100 {
+		t.Errorf("figure value = %v, want the reference's 100", got)
+	}
+	if strings.Contains(recs[0].Description, "101") {
+		t.Errorf("the declared 101 shipped: %q", recs[0].Description)
+	}
+}
+
+// TestFigures_AFilterCannotManufactureUniqueness — round 25.
+//
+// renderableFigures drops an unresolved zero-valued declaration. With two figures sharing an
+// id, one resolved and one not, that left a single declaration and the renderer saw nothing
+// ambiguous to refuse -- so the guard was intact and a later transformation removed the
+// evidence it reads.
+func TestFigures_AFilterCannotManufactureUniqueness(t *testing.T) {
+	ins := bandInsight()
+	recs := []models.Recommendation{{
+		Description: "It holds {{f1}}.",
+		Figures: []models.Figure{
+			{ID: "f1", Value: 52134, Unit: models.UnitCount, Kind: models.FigureRefKind,
+				Refs: []models.FigureRef{ref(ins.ID, "f1")}},
+			{ID: "f1", Unit: models.UnitCount, Kind: models.FigureRefKind,
+				Refs: []models.FigureRef{ref(ins.ID, "missing")}},
+		},
+	}}
+
+	attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	renderRecommendationFigures(recs)
+
+	if strings.Contains(recs[0].Description, "52,134") {
+		t.Errorf("an ambiguous reference rendered anyway: %q", recs[0].Description)
+	}
+	if !strings.Contains(recs[0].Description, "{{f1}}") {
+		t.Errorf("description = %q, want the ambiguous reference left visible", recs[0].Description)
+	}
+}

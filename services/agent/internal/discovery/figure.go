@@ -46,6 +46,13 @@ func evaluateFigure(f models.Figure, steps map[int]StepRows) models.FigureVerdic
 		return v
 	}
 
+	if f.ValueMissing {
+		// No value was declared, so there is no claim to settle -- and settling it as a
+		// claim of zero is what printed "0" into a sentence, because the correction gate
+		// then declines to replace it: zero is more than 1% from any real total.
+		return undecidable("the figure declares no readable value")
+	}
+
 	ev, ok := steps[f.Step]
 	if !ok {
 		return undecidable("step %d is not among this insight's evidence", f.Step)

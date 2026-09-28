@@ -71,7 +71,9 @@ func renderInsightFigures(insights []models.Insight) figureRenderTally {
 		}
 		ins.FigureTemplate = &tpl
 
-		r := newFigureRenderer(ins.Figures, &tally)
+		// A figure whose value could not be read renders nothing: the reference ships
+		// visible rather than printing the zero the decode fell back to.
+		r := newFigureRenderer(withReadableValues(ins.Figures), &tally)
 		ins.Name = r.render(ins.Name)
 		ins.Description = r.render(ins.Description)
 		for j := range ins.Indicators {
@@ -185,12 +187,21 @@ func renderRecommendationFigures(recs []models.Recommendation) figureRenderTally
 // renderableFigures drops the figures that have no number behind them: unresolved, and
 // stating no value of their own.
 func renderableFigures(figures []models.Figure, verdicts []models.FigureVerdict) []models.Figure {
+	// Duplicates are taken from the ORIGINAL list, because this filter can otherwise
+	// manufacture the uniqueness the renderer's own guard tests for: with two figures
+	// sharing an id, one resolved and one not, dropping the unresolved one leaves a single
+	// declaration and the renderer sees nothing ambiguous to refuse. The guard was intact
+	// and a later transformation removed the evidence it reads.
+	dup := duplicateFigureIDs(figures)
 	resolved := make(map[string]bool, len(verdicts))
 	for _, v := range verdicts {
 		resolved[v.ID] = v.Resolved
 	}
 	out := make([]models.Figure, 0, len(figures))
 	for _, f := range figures {
+		if dup[f.ID] {
+			continue
+		}
 		if !resolved[f.ID] && f.Value == 0 {
 			continue
 		}
@@ -373,5 +384,17 @@ func unusedFigures(used map[string]struct{}, figures []models.Figure) []string {
 		}
 	}
 	sort.Strings(out)
+	return out
+}
+
+// withReadableValues drops the figures whose value the model never supplied.
+func withReadableValues(figures []models.Figure) []models.Figure {
+	out := make([]models.Figure, 0, len(figures))
+	for _, f := range figures {
+		if f.ValueMissing {
+			continue
+		}
+		out = append(out, f)
+	}
 	return out
 }

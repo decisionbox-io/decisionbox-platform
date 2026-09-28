@@ -84,6 +84,20 @@ type Figure struct {
 	// than by the fields, so there is no mode to get wrong: an insight resolves steps,
 	// a recommendation resolves references.
 	Refs []FigureRef `bson:"refs,omitempty" json:"refs,omitempty"`
+
+	// ValueMissing records that the model declared no readable value for this figure --
+	// the key absent, or holding something like "1.2M" that no number can be recovered
+	// from. Set by UnmarshalJSON, and neither stored nor served: a figure read back from
+	// the database has a real value by construction, and the flag is only needed between
+	// decoding a response and settling it in the same process.
+	//
+	// It exists because a missing value and a value of zero are not the same claim, and
+	// treating them alike printed a fabricated number into the prose. An insight figure
+	// with no value became a claim of 0, which the correction gate then refused to replace
+	// because 0 is more than 1% from any real total, so "0" shipped in the sentence. The
+	// recommendation side had the same defect from the other direction and was fixed
+	// first; this is the same distinction, drawn once and used by both.
+	ValueMissing bool `bson:"-" json:"-"`
 }
 
 // FigureRef points at a figure another document declared and Go already settled.
@@ -286,7 +300,9 @@ func (f *Figure) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, aux); err != nil {
 		return err
 	}
-	f.Value = flexFloat(aux.Value)
+	var ok bool
+	f.Value, ok = flexFloatOK(aux.Value)
+	f.ValueMissing = !ok
 	f.Step = int(flexFloat(aux.Step))
 	f.Decimals = int(flexFloat(aux.Decimals))
 	return nil
@@ -296,29 +312,37 @@ func (f *Figure) UnmarshalJSON(data []byte) error {
 // separators, or omitted. An unreadable value yields 0, which the evaluator then reports as
 // undecidable rather than refuting -- the same choice made everywhere else in this layer.
 func flexFloat(raw json.RawMessage) float64 {
+	v, _ := flexFloatOK(raw)
+	return v
+}
+
+// flexFloatOK reads a number that may have been written as a string, and says whether one
+// was actually there. The bool is the whole point: a caller that cannot tell "absent" from
+// "zero" turns missing data into a reported measurement.
+func flexFloatOK(raw json.RawMessage) (float64, bool) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || string(raw) == "null" {
-		return 0
+		return 0, false
 	}
 	if raw[0] == '"' {
 		var str string
 		if err := json.Unmarshal(raw, &str); err != nil {
-			return 0
+			return 0, false
 		}
 		str = strings.TrimSpace(strings.ReplaceAll(str, ",", ""))
 		str = strings.TrimPrefix(str, "$")
 		str = strings.TrimSuffix(str, "%")
 		v, err := strconv.ParseFloat(str, 64)
 		if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
-			return 0
+			return 0, false
 		}
-		return v
+		return v, true
 	}
 	var v float64
 	if err := json.Unmarshal(raw, &v); err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
-		return 0
+		return 0, false
 	}
-	return v
+	return v, true
 }
 
 // MaxFigureDecimals bounds the decimal places a figure may be written to.
