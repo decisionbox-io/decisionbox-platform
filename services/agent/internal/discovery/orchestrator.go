@@ -3,9 +3,7 @@ package discovery
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"sort"
 	"strings"
 	"sync"
@@ -1681,7 +1679,7 @@ func decodeWithoutClaims(raw json.RawMessage) (*models.Insight, bool) {
 // without it -- at first write, losing an advisory check costs less than losing the
 // finding.
 func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.Insight, int, error) {
-	return o.parseInsightsWith(response, areaID, true)
+	return o.parseInsightsWith(response, areaID, true, true)
 }
 
 // parseInsightsStrict is parseInsights with the salvage off, for the repair path.
@@ -1694,77 +1692,57 @@ func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.I
 // salvage: a rewrite would pass by losing its checks rather than by passing them.
 // So during repair a declaration that will not parse fails the round.
 func (o *Orchestrator) parseInsightsStrict(response string, areaID string) ([]models.Insight, int, error) {
-	return o.parseInsightsWith(response, areaID, false)
+	return o.parseInsightsWith(response, areaID, false, false)
 }
 
-func (o *Orchestrator) parseInsightsWith(response string, areaID string, salvage bool) ([]models.Insight, int, error) {
-	cleaned := cleanJSONResponse(response)
-
-	var raws []json.RawMessage
-	more := false
-	if strings.HasPrefix(strings.TrimSpace(cleaned), "[") {
-		// Bare top-level array (some models emit the array directly).
-		var err error
-		if more, err = decodeLeadingJSON(cleaned, &raws); err != nil {
-			return nil, 0, err
+func (o *Orchestrator) parseInsightsWith(response string, areaID string, salvage, requireTitle bool) ([]models.Insight, int, error) {
+	vals, tail, ferr := jsonValues(cleanJSONResponse(response))
+	if len(vals) == 0 {
+		if ferr == nil {
+			ferr = fmt.Errorf("no JSON value in response")
 		}
-	} else {
-		// Envelope object: the "insights" key must be present. An object with a
-		// different key is a parse failure, not a legitimately empty result —
-		// otherwise it would silently yield 0 insights with no retry.
-		var envelope map[string]json.RawMessage
-		var err error
-		if more, err = decodeLeadingJSON(cleaned, &envelope); err != nil {
-			return nil, 0, fmt.Errorf("failed to parse analysis response: %w", err)
-		}
-		// Match the key case-insensitively, as encoding/json does when decoding
-		// into a struct tag — some models capitalize it (`{"Insights":[…]}`).
-		var insRaw json.RawMessage
-		found := false
-		for k, v := range envelope {
-			if strings.EqualFold(k, "insights") {
-				insRaw, found = v, true
-				break
-			}
-		}
-		if !found {
-			return nil, 0, fmt.Errorf(`response is missing the "insights" key`)
-		}
-		if strings.TrimSpace(string(insRaw)) == "null" {
-			// A null array decodes into a nil slice without error; treat it as a
-			// parse failure (→ retry) rather than a silent empty result.
-			return nil, 0, fmt.Errorf(`"insights" is null`)
-		}
-		// Some models emit the array as a JSON-encoded string rather than an
-		// array -- `{"insights":"[{\"name\": ...}]"}`. Observed once on a
-		// re-prompt, carrying a complete and sound insight that was discarded on
-		// the wrapper. Unwrap one level and let the decode below judge the
-		// contents: a string that is not an encoded array still fails, so a
-		// refusal written in prose cannot become a silent empty result.
-		if strings.HasPrefix(strings.TrimSpace(string(insRaw)), `"`) {
-			var inner string
-			if err := json.Unmarshal(insRaw, &inner); err == nil {
-				insRaw = json.RawMessage(inner)
-			}
-			// The null check above ran on the quoted form, so `"null"` reached
-			// here as an unquoted null -- which decodes into a nil slice with no
-			// error and would have shipped as a legitimately empty area. Re-check
-			// what the unwrap produced, not only what arrived.
-			if strings.TrimSpace(string(insRaw)) == "null" {
-				return nil, 0, fmt.Errorf(`"insights" is null`)
-			}
-		}
-		if err := json.Unmarshal(insRaw, &raws); err != nil {
-			return nil, 0, fmt.Errorf(`"insights" is not an array: %w`, err)
-		}
-	}
-	// An empty result with another JSON value behind it is a placeholder, not an
-	// answer: the response that matters is the one being dropped. Re-prompt, which is
-	// what happened before trailing bytes were ignored.
-	if more && len(raws) == 0 {
-		return nil, 0, fmt.Errorf("response holds an empty insights array followed by another JSON value")
+		return nil, 0, fmt.Errorf("failed to parse analysis response: %w", ferr)
 	}
 
+	// The first value that actually produces a finding is the answer. Anything before
+	// it that yielded nothing was a placeholder or prose, and is passed over without
+	// being judged -- see response_values.go for why judging it was abandoned.
+	var firstInsights []models.Insight
+	var firstDropped int
+	var firstErr error
+	for i, val := range vals {
+		raws, err := envelopeItems(val, "insights")
+		if err != nil {
+			if i == 0 {
+				firstErr = err
+			}
+			continue
+		}
+		kept, dropped := o.decodeInsightItems(raws, areaID, salvage, requireTitle)
+		if len(kept) > 0 {
+			return kept, dropped, nil
+		}
+		if i == 0 {
+			firstInsights, firstDropped = kept, dropped
+		}
+	}
+	// Nothing produced a finding. Report the first value's own complaint if it had one,
+	// so "missing the insights key" still reads as that rather than as an empty area.
+	if firstErr != nil {
+		return nil, 0, firstErr
+	}
+	// An area with no matching data is correctly empty, and two of five are in every
+	// run -- but a further answer that was trying to parse and failed would be lost
+	// silently, so that one case is still a retry.
+	if tailAttemptsAnswer(tail, "insights") {
+		return nil, 0, fmt.Errorf("response holds no insights and unparsed trailing text that names the insights key")
+	}
+	return firstInsights, firstDropped, nil
+}
+
+// decodeInsightItems decodes the items of one insights array, dropping what cannot ship
+// and counting each drop.
+func (o *Orchestrator) decodeInsightItems(raws []json.RawMessage, areaID string, salvage, requireTitle bool) ([]models.Insight, int) {
 	insights := make([]models.Insight, 0, len(raws))
 	dropped := 0
 	for i, raw := range raws {
@@ -1830,7 +1808,7 @@ func (o *Orchestrator) parseInsightsWith(response string, areaID string, salvage
 		// from the body would keep the content, and is recorded as a follow-up
 		// rather than done here, because a parser is the wrong place to author
 		// prose.
-		if strings.TrimSpace(insight.Name) == "" {
+		if requireTitle && strings.TrimSpace(insight.Name) == "" {
 			dropped++
 			applog.WithFields(applog.Fields{"area": areaID, "index": i}).
 				Warn("Dropping an insight with no name; keeping the rest of the area")
@@ -1856,7 +1834,7 @@ func (o *Orchestrator) parseInsightsWith(response string, areaID string, salvage
 		insights = append(insights, insight)
 	}
 
-	return insights, dropped, nil
+	return insights, dropped
 }
 
 // attachSourceQuality stamps each insight with the union of the quality
@@ -2260,55 +2238,45 @@ func recommendationCitationRepairSuffix(insights []models.Insight) string {
 // returns (empty, 0, nil) so callers can distinguish "no recommendations" from
 // "could not parse".
 func parseRecommendations(response string) ([]models.Recommendation, int, error) {
-	cleaned := cleanJSONResponse(response)
-
-	var raws []json.RawMessage
-	more := false
-	if strings.HasPrefix(strings.TrimSpace(cleaned), "[") {
-		// Bare top-level array (some models emit the array directly).
-		var err error
-		if more, err = decodeLeadingJSON(cleaned, &raws); err != nil {
-			return nil, 0, err
+	vals, tail, ferr := jsonValues(cleanJSONResponse(response))
+	if len(vals) == 0 {
+		if ferr == nil {
+			ferr = fmt.Errorf("no JSON value in response")
 		}
-	} else {
-		// Envelope object: the "recommendations" key must be present. An object
-		// with a different key (e.g. {"recommendation":[…]} or {"items":[…]})
-		// is a parse failure, not a legitimately empty result — otherwise it
-		// would silently yield 0 recommendations with no retry (issue #342).
-		var envelope map[string]json.RawMessage
-		var err error
-		if more, err = decodeLeadingJSON(cleaned, &envelope); err != nil {
-			return nil, 0, err
-		}
-		// Match the key case-insensitively, as encoding/json does when
-		// decoding into a struct tag — some models capitalize it
-		// (`{"Recommendations":[…]}`).
-		var recRaw json.RawMessage
-		found := false
-		for k, v := range envelope {
-			if strings.EqualFold(k, "recommendations") {
-				recRaw, found = v, true
-				break
+		return nil, 0, ferr
+	}
+	// First value that produces a recommendation wins -- see response_values.go.
+	var firstRecs []models.Recommendation
+	var firstDropped int
+	var firstErr error
+	for i, val := range vals {
+		raws, err := envelopeItems(val, "recommendations")
+		if err != nil {
+			if i == 0 {
+				firstErr = err
 			}
+			continue
 		}
-		if !found {
-			return nil, 0, fmt.Errorf(`response is missing the "recommendations" key`)
+		kept, dropped := decodeRecommendationItems(raws)
+		if len(kept) > 0 {
+			return kept, dropped, nil
 		}
-		if strings.TrimSpace(string(recRaw)) == "null" {
-			// A null array decodes into a nil slice without error; treat it as a
-			// parse failure (→ retry) rather than a silent empty result.
-			return nil, 0, fmt.Errorf(`"recommendations" is null`)
-		}
-		if err := json.Unmarshal(recRaw, &raws); err != nil {
-			return nil, 0, fmt.Errorf(`"recommendations" is not an array: %w`, err)
+		if i == 0 {
+			firstRecs, firstDropped = kept, dropped
 		}
 	}
-	// An empty result with another JSON value behind it is a placeholder, not an
-	// answer -- see decodeLeadingJSON.
-	if more && len(raws) == 0 {
-		return nil, 0, fmt.Errorf("response holds an empty recommendations array followed by another JSON value")
+	if firstErr != nil {
+		return nil, 0, firstErr
 	}
+	if tailAttemptsAnswer(tail, "recommendations") {
+		return nil, 0, fmt.Errorf("response holds no recommendations and unparsed trailing text that names the recommendations key")
+	}
+	return firstRecs, firstDropped, nil
+}
 
+// decodeRecommendationItems decodes the items of one recommendations array, dropping
+// what cannot ship and counting each drop.
+func decodeRecommendationItems(raws []json.RawMessage) ([]models.Recommendation, int) {
 	recs := make([]models.Recommendation, 0, len(raws))
 	dropped := 0
 	for i, raw := range raws {
@@ -2343,7 +2311,7 @@ func parseRecommendations(response string) ([]models.Recommendation, int, error)
 		}
 		recs = append(recs, rec)
 	}
-	return recs, dropped, nil
+	return recs, dropped
 }
 
 // recommendationRepairSuffix builds the reason-aware corrective instruction
@@ -3004,76 +2972,16 @@ func droppedToTelemetry(dropped []DroppedStep) []models.DroppedAnalysisStep {
 	return out
 }
 
-// decodeLeadingJSON decodes the first JSON value in s into v and ignores whatever
-// follows it.
-//
-// cleanJSONResponse trims everything before the opening brace and nothing after the
-// closing one, so a model that answers and then explains itself -- a valid envelope
-// followed by a paragraph saying why it is empty -- was rejected with
-// `invalid character 'T' after top-level value`. That is not a malformed response; it
-// is a correct one with a note attached. 17 of them over 12 replays of the frozen
-// corpora, each costing a re-prompt that re-sent the whole area prompt, and one of
-// those re-prompts lost a genuine insight.
-//
-// A json.Decoder reads exactly one value and stops, which is the whole fix: no brace
-// matching, no scanner, nothing that parses text we authored. A truncated value still
-// fails, so a genuinely incomplete response is still retried.
-//
-// The returned bool says whether what follows is another JSON value rather than prose,
-// which callers need in order to tell the two shapes apart:
-//
-//	{"insights":[{...}]}  followed by a paragraph  -- an answer with a note; take it
-//	{"insights":[]}       followed by a second envelope -- a placeholder; re-prompt
-//
-// Resolving to the FIRST value is deliberate when that value carries content: the
-// alternative is rejecting a complete, usable answer. It is wrong when the first value
-// is empty, because then the answer is the one being discarded -- so each caller
-// rejects an empty result that has another value behind it, and the retry happens as it
-// did before.
-//
-// What counts as "another answer" took four attempts, so all of them are recorded --
-// each was plausible and each let a real case through:
-//
-//   - json.Decoder.More peeks for anything that is not a closing delimiter, so it
-//     reports true for a trailing paragraph and would reinstate the very bug this
-//     function exists to fix.
-//   - "does the remaining text start with { or [" rejects an explanation that opens
-//     with a bracket -- `[No session-level data is present in this schema.]`.
-//   - "does a second value decode at all" accepts a scalar, so an explanation opening
-//     with a number, a bare null, a bool or a quote -- `0 session-level rows were
-//     available, so ...` -- was read as a second answer. It also discarded the second
-//     decode's error, so a placeholder followed by a TRUNCATED real answer looked
-//     exactly like a placeholder followed by prose and shipped as empty.
-//
-// A legitimately empty area is the common case for this data, not the rare one: two of
-// five areas are correctly empty in every run, each with an explanation attached. So
-// every false positive here costs a re-prompt on the answer that is already right.
-//
-// What actually distinguishes them: another answer is a composite value -- an object or
-// an array -- because that is the shape of the contract. Prose is not, whatever
-// character it starts with. And a composite value that runs out mid-way is a truncated
-// answer, not prose, so ErrUnexpectedEOF counts as one and is retried.
-func decodeLeadingJSON(s string, v any) (trailingJSON bool, err error) {
-	dec := json.NewDecoder(strings.NewReader(s))
-	if err := dec.Decode(v); err != nil {
-		return false, err
-	}
-	var next json.RawMessage
-	switch err := dec.Decode(&next); {
-	case err == nil:
-		t := strings.TrimSpace(string(next))
-		return strings.HasPrefix(t, "{") || strings.HasPrefix(t, "["), nil
-	case errors.Is(err, io.ErrUnexpectedEOF):
-		// Began a composite value and ran out of input. Prose fails at its first
-		// character with a syntax error instead, so this is a truncated answer.
-		return true, nil
-	default:
-		return false, nil
-	}
-}
-
 func cleanJSONResponse(response string) string {
 	response = strings.TrimSpace(response)
+
+	// A response that already opens with JSON is the answer, and a fence later in it is
+	// something the model is quoting -- an example of an empty envelope, a schema it is
+	// referring to. Preferring the fence discarded the real answer and returned the
+	// example, so the leading value wins whenever there is one.
+	if strings.HasPrefix(response, "{") || strings.HasPrefix(response, "[") {
+		return response
+	}
 
 	if idx := strings.Index(response, "```json"); idx >= 0 {
 		start := idx + len("```json")

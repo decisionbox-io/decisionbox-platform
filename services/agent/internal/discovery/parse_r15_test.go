@@ -12,12 +12,15 @@ import "testing"
 // that spells out every field as an empty array produces something semantically empty
 // whose slices are non-nil, so it compared unequal, passed as an answer, and silenced
 // the real reflection behind it.
-func TestParseReflection_ExplicitlyEmptyObjectThenRealOneIsRetried(t *testing.T) {
+func TestParseReflection_ExplicitlyEmptyObjectThenRealOneRecoversTheRealOne(t *testing.T) {
 	const in = `{"coverage_summary":"","covered_tables":[],"covered_catalog_items":[],"covered_areas":[],"prior_status_updates":[],"learnings":[],"task_status_updates":[],"next_tasks":[],"domain_pack_deltas":[],"convergence_note":""}
 {"coverage_summary":"orders covered","next_tasks":[{"title":"Review orders","text":"Look at margin outliers"}]}`
 	got, err := parseReflection(in)
-	if err == nil {
-		t.Fatalf("err = nil (%+v), want an error: every field spelled out empty is still empty", got)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if got == nil || got.CoverageSummary != "orders covered" {
+		t.Fatalf("got %+v, want the real reflection: every field spelled out empty is still empty", got)
 	}
 }
 

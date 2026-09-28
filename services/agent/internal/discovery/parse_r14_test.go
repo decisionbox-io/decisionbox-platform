@@ -6,24 +6,28 @@ package discovery
 import "testing"
 
 // A model that emits a placeholder envelope and then its real answer. Before the
-// change this failed on the trailing data and was re-prompted; ignoring trailing bytes
-// made the placeholder the answer and silently threw the findings away. The comment in
-// decodeLeadingJSON called resolving to the first value a deliberate consequence -- and
-// it is, when that value carries content. An empty first value is not an answer.
-func TestParseInsights_EmptyEnvelopeThenRealOneIsRetried(t *testing.T) {
+// trailing-prose change this failed on the trailing data and was re-prompted; ignoring
+// trailing bytes made the placeholder the answer and silently threw the findings away.
+//
+// Neither is what this does now: the real answer is USED. Retrying was the second-best
+// outcome -- it costs a call and the re-prompt is not guaranteed to reproduce what was
+// already sitting in the response.
+func TestParseInsights_EmptyEnvelopeThenRealOneRecoversTheRealOne(t *testing.T) {
 	o := &Orchestrator{}
 	const in = `{"insights":[]}
 {"insights":[{"name":"Actual finding","severity":"high","affected_count":12}]}`
 	insights, _, err := o.parseInsights(in, "revenue")
-	if err == nil {
-		t.Fatalf("err = nil with %d insights, want an error: an empty envelope followed by a second one must be re-prompted, not shipped as empty", len(insights))
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(insights) != 1 || insights[0].Name != "Actual finding" {
+		t.Fatalf("got %d insights (%+v), want the real one", len(insights), insights)
 	}
 }
 
 func TestParseInsights_NonEmptyEnvelopeThenAnotherTakesTheFirst(t *testing.T) {
-	// The deliberate half of the same rule: a first value that carries content is a
-	// usable answer, and rejecting it would cost a finding to protect against a shape
-	// no model has been seen to emit.
+	// The other half of the rule: the FIRST value that produces a finding wins, so a
+	// second envelope behind a usable one is ignored rather than preferred.
 	o := &Orchestrator{}
 	const in = `{"insights":[{"name":"First","severity":"high"}]}
 {"insights":[{"name":"Second","severity":"low"}]}`
@@ -36,30 +40,39 @@ func TestParseInsights_NonEmptyEnvelopeThenAnotherTakesTheFirst(t *testing.T) {
 	}
 }
 
-func TestParseRecommendations_EmptyEnvelopeThenRealOneIsRetried(t *testing.T) {
+func TestParseRecommendations_EmptyEnvelopeThenRealOneRecoversTheRealOne(t *testing.T) {
 	const in = `{"recommendations":[]}
 {"recommendations":[{"title":"Actual action","priority":"high"}]}`
 	recs, _, err := parseRecommendations(in)
-	if err == nil {
-		t.Fatalf("err = nil with %d recommendations, want an error", len(recs))
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(recs) != 1 || recs[0].Title != "Actual action" {
+		t.Fatalf("got %d recommendations (%+v), want the real one", len(recs), recs)
 	}
 }
 
-func TestParseQuestions_EmptyEnvelopeThenRealOneIsRetried(t *testing.T) {
+func TestParseQuestions_EmptyEnvelopeThenRealOneRecoversTheRealOne(t *testing.T) {
 	const in = `{"questions":[]}
 {"questions":[{"question":"Which region drives returns?"}]}`
 	qs, _, err := parseQuestions(in)
-	if err == nil {
-		t.Fatalf("err = nil with %d questions, want an error", len(qs))
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(qs) != 1 || qs[0].Question != "Which region drives returns?" {
+		t.Fatalf("got %d questions (%+v), want the real one", len(qs), qs)
 	}
 }
 
-func TestParseReflection_EmptyObjectThenRealOneIsRetried(t *testing.T) {
+func TestParseReflection_EmptyObjectThenRealOneRecoversTheRealOne(t *testing.T) {
 	const in = `{}
-{"drop_steps":[4,7]}`
+{"covered_areas":["revenue"]}`
 	got, err := parseReflection(in)
-	if err == nil {
-		t.Fatalf("err = nil (%+v), want an error: an empty leading object must not silence a real reflection", got)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if got == nil || len(got.CoveredAreas) != 1 {
+		t.Fatalf("got %+v, want the real reflection", got)
 	}
 }
 

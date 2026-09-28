@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -363,19 +364,40 @@ func parseReflection(response string) (*parsedReflection, error) {
 	if !strings.HasPrefix(strings.TrimSpace(cleaned), "{") {
 		return nil, fmt.Errorf("reflection response is not a JSON object")
 	}
-	var out parsedReflection
-	more, err := decodeLeadingJSON(cleaned, &out)
-	if err != nil {
-		return nil, fmt.Errorf("reflection response is not a JSON object: %w", err)
+	vals, _, ferr := jsonValues(cleaned)
+	if len(vals) == 0 {
+		if ferr == nil {
+			ferr = fmt.Errorf("no JSON value in response")
+		}
+		return nil, fmt.Errorf("reflection response is not a JSON object: %w", ferr)
 	}
-	// An empty reflection with another JSON value behind it is a placeholder, not an
-	// answer -- see decodeLeadingJSON. Nothing distinguishes "reflected and found
-	// nothing to change" from "the real reflection was thrown away" once it is
-	// returned, so it has to be caught here.
-	if more && out.isEmpty() {
-		return nil, fmt.Errorf("reflection response is an empty object followed by another JSON value")
+	// First value that says anything wins -- see response_values.go. A leading
+	// placeholder, whether `{}` or every field spelled out empty, no longer silences the
+	// real reflection behind it, and no longer costs a re-prompt either.
+	var first *parsedReflection
+	var firstErr error
+	for i, val := range vals {
+		var out parsedReflection
+		if err := json.Unmarshal(val, &out); err != nil {
+			if i == 0 {
+				firstErr = fmt.Errorf("reflection response is not a JSON object: %w", err)
+			}
+			continue
+		}
+		if !out.isEmpty() {
+			return &out, nil
+		}
+		if i == 0 {
+			first = &out
+		}
 	}
-	return &out, nil
+	if first != nil {
+		return first, nil
+	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return nil, fmt.Errorf("reflection response is not a JSON object")
 }
 
 // reflectionRepairSuffix re-states the output contract after an unusable
