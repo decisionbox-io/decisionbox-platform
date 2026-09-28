@@ -200,6 +200,11 @@ type Insight struct {
 	// authored, and under a tag no prompt mentions for the same reason as above.
 	FigureCoverage *FigureCoverage `bson:"figure_coverage,omitempty" json:"evidence_figure_coverage,omitempty"`
 
+	// FigureFixes records the figures Go corrected in place, before any rewrite
+	// round. Empty on nearly every insight. Derived, and under a tag no prompt
+	// mentions, for the reason the two fields above it are.
+	FigureFixes []FigureFix `bson:"figure_fixes,omitempty" json:"evidence_figure_fixes,omitempty"`
+
 	// Repair records what bounded repair did to this insight after a claim of
 	// its own came back refuted: which sentences were corrected, which were
 	// removed, and how many corrective rounds that cost. Nil on the happy path,
@@ -799,6 +804,12 @@ type AnalysisStep struct {
 	// InsightsRepaired counts insights that entered repair with a refuted claim
 	// and left with none.
 	InsightsRepaired int `bson:"insights_repaired,omitempty" json:"insights_repaired,omitempty"`
+
+	// FiguresCorrected counts the numerals this area's figure check swapped for the
+	// value its own declared arithmetic produced. Separate from InsightsRepaired
+	// because it costs no LLM call: the correct number arrives with the refutation,
+	// so nothing is asked and no round is spent.
+	FiguresCorrected int `bson:"figures_corrected,omitempty" json:"figures_corrected,omitempty"`
 
 	// InsightsClaimsDropped counts insights that kept a refuted claim through
 	// the round cap and had the sentence removed instead. Read against

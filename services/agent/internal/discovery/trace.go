@@ -261,6 +261,37 @@ func insightTraceFields(areaID string, ins models.Insight) applog.Fields {
 		}
 		f["quality_caveats"] = cav
 	}
+	// The figure layer, alongside the claim counts. Coverage is included even when
+	// nothing was declared, because "no refuted figures" and "no figures checked"
+	// read identically without it -- and the second is the common case worth
+	// seeing.
+	if ins.FigureCoverage != nil {
+		f["figures_written"] = ins.FigureCoverage.Written
+		f["figures_declared"] = ins.FigureCoverage.Declared
+	}
+	if len(ins.FigureVerdicts) > 0 {
+		var fh, ff, fu int
+		for _, v := range ins.FigureVerdicts {
+			switch v.Status {
+			case gomodels.FigureHolds:
+				fh++
+			case gomodels.FigureFails:
+				ff++
+			default:
+				fu++
+			}
+		}
+		f["figures_hold"] = fh
+		f["figures_fail"] = ff
+		f["figures_undecidable"] = fu
+	}
+	if len(ins.FigureFixes) > 0 {
+		swaps := make([]string, 0, len(ins.FigureFixes))
+		for _, x := range ins.FigureFixes {
+			swaps = append(swaps, x.Text)
+		}
+		f["figures_corrected"] = swaps
+	}
 	if ins.Repair != nil {
 		f["repair_outcome"] = ins.Repair.Outcome
 		f["repair_rounds"] = ins.Repair.Rounds

@@ -1244,6 +1244,19 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// check.
 		attachQuantifierVerdicts(insights, stepByID)
 
+		// Same idea one layer down: re-run the arithmetic the model declared for
+		// each figure it wrote, over the step's full rows rather than the digest
+		// it saw. Runs after the quantifier pass and before repair, so a refuted
+		// figure reaches the same rewrite path a refuted claim does.
+		attachFigureVerdicts(insights, stepByID)
+
+		// A refuted figure needs no model to fix: the arithmetic that refuted it
+		// already produced the right number. Swap the numeral, re-settle, and
+		// leave anything ambiguous refuted and visible.
+		if swapped := repairRefutedFigures(area.ID, insights, stepByID); swapped > 0 {
+			step.FiguresCorrected = swapped
+		}
+
 		// Bounded repair before discard (E5). Every insight whose own cited rows
 		// contradict a claim it declared gets the evaluator's reason handed back
 		// and up to ANALYSIS_REPAIR_MAX_ROUNDS attempts to say something true;
@@ -2415,6 +2428,10 @@ func (o *Orchestrator) buildAnalysisAreaPrompt(baseContext, areaPrompt, datasets
 	// are: a contract that lives only in pack templates is one a custom area
 	// does not have.
 	prompt += "\n\n" + quantifierContract
+	// And the figure contract, for the same reason, immediately after it: the two
+	// ask for the same kind of declaration about different statements, and a model
+	// reading them together writes both arrays or neither.
+	prompt += "\n\n" + figureContract
 	prompt = substituteDialectTokens(prompt, o.warehouse, refDataset)
 	return discipline.AppendAnalysisRules(prompt)
 }

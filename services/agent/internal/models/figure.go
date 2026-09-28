@@ -11,6 +11,7 @@ type (
 	FigureClaim    = gomodels.FigureClaim
 	FigureVerdict  = gomodels.FigureVerdict
 	FigureCoverage = gomodels.FigureCoverage
+	FigureFix      = gomodels.FigureFix
 )
 
 // Figure kinds and verdict statuses, re-exported so callers in this service keep

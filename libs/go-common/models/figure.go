@@ -134,3 +134,26 @@ type FigureCoverage struct {
 	// Declared is how many of those a declaration accounts for, by value.
 	Declared int `bson:"declared" json:"declared"`
 }
+
+// FigureFix records one figure corrected in place, without asking the model.
+//
+// The correction is available for free, which is why this exists: a refuted figure
+// arrives with the arithmetic already evaluated, so the right number is known and
+// the wrong one is known as text. Every false figure measured across the three
+// corpora -- 100,000 for 99,996, 150,004 for 150,000, 47.1% and 49.7% for 49.3% --
+// is a numeral substitution and nothing more. A rewrite round for any of them would
+// be an LLM call to retype a number Go already has.
+//
+// The same shape as the cardinality substitution the quantifier layer does before
+// its rewrite rounds, and it inherits that pass's refusals: all fields or none, and
+// decline wherever the numeral appears twice or measures two different things.
+type FigureFix struct {
+	// Figure is the text as the model declared it, before the swap.
+	Figure string `bson:"figure" json:"figure"`
+	// From and To are the written value and the evaluated one.
+	From float64 `bson:"from" json:"from"`
+	To   float64 `bson:"to" json:"to"`
+	// Text is the substitution as performed, "100,000 -> 99,996", because the
+	// numerals as rendered are what a reader has to be able to find in the prose.
+	Text string `bson:"text" json:"text"`
+}
