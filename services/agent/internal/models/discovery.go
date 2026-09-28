@@ -165,45 +165,39 @@ type Insight struct {
 	// them measures nothing.
 	QuantifierVerdicts []QuantifierVerdict `bson:"quantifier_verdicts,omitempty" json:"evidence_checks,omitempty"`
 
-	// FigureClaims is the model's declaration of the arithmetic behind each
-	// number it wrote: the step, and which cell, total, count, ratio or
-	// difference over that step's rows produced it.
+	// Figures are the numbers this insight states, emitted as data: the value, the
+	// arithmetic over the evidence that produced it, and how it should be written. The
+	// prose carries a reference -- "{{f1}} of 1997 revenue" -- and Go renders it.
 	//
-	// Authored, like QuantifierClaims and for a sharper version of the same
-	// reason. Three variants of having Go find a figure's origin in the rows were
-	// measured against three hand-adjudicated corpora; the best ran at 23%
-	// precision, because a number in a sound insight is typically two or three
-	// operations from the rows and that space contains almost anything. The model
-	// already knows which arithmetic it did. Saying so is mechanical; checking it
-	// over every row is not, so only the checking is taken away.
-	FigureClaims []FigureClaim `bson:"figure_claims,omitempty" json:"figure_claims,omitempty"`
+	// Authored, and the indirection is the point: no number in an insight is ever
+	// recovered by parsing its prose. Three earlier designs did parse it and each failed
+	// at the parse rather than at the checking -- a regex enumerator at 7-14% precision,
+	// a precision read back out of a figure's own text that took "5.0% of $34.86B" to
+	// mean five, and a prose-to-data match at 1% tolerance that could not separate 21 of
+	// the declared figure pairs in one sample.
+	Figures []Figure `bson:"figures,omitempty" json:"figures,omitempty"`
 
-	// FigureVerdicts is what Go concluded about each declared figure.
+	// FigureVerdicts is what Go concluded about each figure's declared arithmetic.
 	//
 	// The JSON name is deliberately not "figure_verdicts", for the reason
-	// QuantifierVerdicts' is not "quantifier_verdicts": insights are decoded from
-	// model output with the standard decoder, so a key matching this tag would be
-	// read straight into the field, letting the model author the verdict whose
-	// whole point is that the model did not reach it. And with the prompt now
-	// asking for `figure_claims` by name, a sibling `figure_verdicts` is the
-	// obvious next key to volunteer. attachFigureVerdicts also clears the field
-	// before writing -- two defences for one hole, because if the model can mark
-	// its own work then every measurement built on these verdicts is worthless.
+	// QuantifierVerdicts' is not "quantifier_verdicts": insights are decoded from model
+	// output with the standard decoder, so a key matching this tag would be read straight
+	// into the field, letting the model author the verdict whose whole point is that the
+	// model did not reach it. attachFigureVerdicts also clears the field before writing.
 	FigureVerdicts []FigureVerdict `bson:"figure_verdicts,omitempty" json:"evidence_figures,omitempty"`
 
-	// FigureCoverage counts how many of the numerals in this insight's prose the
-	// declarations account for.
-	//
-	// Recorded because the comparable layer's weakness was invisible until it was
-	// counted by hand: a quarter of insights declared no quantifier claim, so
-	// every verdict those documents carried was about nothing. Derived, never
-	// authored, and under a tag no prompt mentions for the same reason as above.
-	FigureCoverage *FigureCoverage `bson:"figure_coverage,omitempty" json:"evidence_figure_coverage,omitempty"`
+	// FigureCorrections records figures whose value Go replaced with the one their own
+	// declared arithmetic produced. Derived, and under a tag no prompt mentions.
+	FigureCorrections []FigureCorrection `bson:"figure_corrections,omitempty" json:"evidence_figure_corrections,omitempty"`
 
-	// FigureFixes records the figures Go corrected in place, before any rewrite
-	// round. Empty on nearly every insight. Derived, and under a tag no prompt
-	// mentions, for the reason the two fields above it are.
-	FigureFixes []FigureFix `bson:"figure_fixes,omitempty" json:"evidence_figure_fixes,omitempty"`
+	// FigureTemplate keeps the prose as authored, references intact, after the rendered
+	// text has been written into Name, Description and Indicators.
+	//
+	// Those rendered fields are what every reader downstream consumes, so none of them
+	// has to know this format exists. The template is the audit trail: it is what makes
+	// it checkable after the fact that a number in the prose came from a declaration
+	// rather than from the model typing one.
+	FigureTemplate *FigureTemplate `bson:"figure_template,omitempty" json:"evidence_figure_template,omitempty"`
 
 	// Repair records what bounded repair did to this insight after a claim of
 	// its own came back refuted: which sentences were corrected, which were
@@ -805,11 +799,21 @@ type AnalysisStep struct {
 	// and left with none.
 	InsightsRepaired int `bson:"insights_repaired,omitempty" json:"insights_repaired,omitempty"`
 
-	// FiguresCorrected counts the numerals this area's figure check swapped for the
-	// value its own declared arithmetic produced. Separate from InsightsRepaired
-	// because it costs no LLM call: the correct number arrives with the refutation,
-	// so nothing is asked and no round is spent.
+	// FiguresCorrected counts the figures this area's check replaced with the value
+	// their own declared arithmetic produced. Separate from InsightsRepaired because
+	// it costs no LLM call: the correct number arrives with the refutation, and
+	// correcting it is a field assignment rather than a rewrite.
 	FiguresCorrected int `bson:"figures_corrected,omitempty" json:"figures_corrected,omitempty"`
+
+	// FiguresInlined counts template fields that stated a number directly instead of
+	// referencing a declared figure. Those numbers are checked by nothing, so this is
+	// the measure of whether the format is being used or merely filled in.
+	FiguresInlined int `bson:"figures_inlined,omitempty" json:"figures_inlined,omitempty"`
+
+	// FigureRefsUnresolved counts references the prose made to figures it never
+	// declared. Those ship as written, so a reader sees the reference rather than a
+	// hole.
+	FigureRefsUnresolved int `bson:"figure_refs_unresolved,omitempty" json:"figure_refs_unresolved,omitempty"`
 
 	// InsightsClaimsDropped counts insights that kept a refuted claim through
 	// the round cap and had the sentence removed instead. Read against

@@ -261,15 +261,9 @@ func insightTraceFields(areaID string, ins models.Insight) applog.Fields {
 		}
 		f["quality_caveats"] = cav
 	}
-	// The figure layer, alongside the claim counts. Coverage is included even when
-	// nothing was declared, because "no refuted figures" and "no figures checked"
-	// read identically without it -- and the second is the common case worth
-	// seeing.
-	if ins.FigureCoverage != nil {
-		f["figures_written"] = ins.FigureCoverage.Written
-		f["figures_declared"] = ins.FigureCoverage.Declared
-	}
-	if len(ins.FigureVerdicts) > 0 {
+	// The figure layer, alongside the claim counts.
+	if len(ins.Figures) > 0 {
+		f["figures"] = len(ins.Figures)
 		var fh, ff, fu int
 		for _, v := range ins.FigureVerdicts {
 			switch v.Status {
@@ -285,12 +279,18 @@ func insightTraceFields(areaID string, ins models.Insight) applog.Fields {
 		f["figures_fail"] = ff
 		f["figures_undecidable"] = fu
 	}
-	if len(ins.FigureFixes) > 0 {
-		swaps := make([]string, 0, len(ins.FigureFixes))
-		for _, x := range ins.FigureFixes {
-			swaps = append(swaps, x.Text)
+	if len(ins.FigureCorrections) > 0 {
+		swaps := make([]string, 0, len(ins.FigureCorrections))
+		for _, c := range ins.FigureCorrections {
+			swaps = append(swaps, c.Text)
 		}
 		f["figures_corrected"] = swaps
+	}
+	// Whether the prose actually used the format. A template that states a number
+	// directly opts that number out of every check in this layer, silently, so the
+	// count is worth carrying even when it is zero.
+	if ins.FigureTemplate != nil {
+		f["figures_inlined_fields"] = bareNumeralFields(*ins.FigureTemplate)
 	}
 	if ins.Repair != nil {
 		f["repair_outcome"] = ins.Repair.Outcome

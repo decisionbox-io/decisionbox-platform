@@ -57,24 +57,27 @@ func insightResponseSchema() map[string]interface{} {
 			"description": "Signals/behaviours that characterize this pattern",
 			"items":       str("A single indicator"),
 		},
-		"figure_claims": map[string]interface{}{
+		"figures": map[string]interface{}{
 			"type": "array",
-			"description": "One entry per number written in name, description or indicators, naming the " +
-				"step and the arithmetic over that step's rows that produced it",
+			"description": "Every number this insight states, as data. The prose references them " +
+				"as {{id}} and the platform renders the text.",
 			"items": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"figure": str("The number as written in the prose, e.g. \"$6.645B\" or \"20.1%\""),
-					"value":  map[string]interface{}{"type": "number", "description": "The figure in the units of the step's own column: 6645000000, or 20.1 for a percentage"},
-					"step":   map[string]interface{}{"type": "integer", "description": "Exploration step whose rows produced the figure"},
-					"kind":   str(`One of "cell", "sum", "count", "ratio", "diff"`),
-					"column": str("Column the arithmetic runs over"),
-					"row":    str("Terms selecting the single row a cell, a ratio numerator or a diff's left operand comes from, same grammar as filter"),
-					"other":  str("Terms selecting a diff's right operand or a ratio's denominator row, same grammar as filter"),
-					"scope":  str("Which rows a sum, a count or a ratio denominator covers, same grammar as filter"),
-					"pct":    map[string]interface{}{"type": "boolean", "description": "True when the figure is written as a percentage rather than a fraction"},
+					"id":       str(`Reference the prose uses, e.g. "f1"; unique within this insight`),
+					"value":    map[string]interface{}{"type": "number", "description": "The number in the units of the step's own column: 8476238553, or 24.66 for a percentage"},
+					"unit":     str(`One of "count", "currency", "percent", "multiple", "days", "plain"`),
+					"scale":    str(`Abbreviation for a large number: "thousands", "millions", "billions"; omit to write it in full`),
+					"decimals": map[string]interface{}{"type": "integer", "description": "Decimal places to print; this is the precision being claimed"},
+					"approx":   map[string]interface{}{"type": "boolean", "description": "Print a tilde to mark the number as rounded"},
+					"step":     map[string]interface{}{"type": "integer", "description": "Exploration step whose rows produced the figure"},
+					"kind":     str(`One of "cell", "sum", "count", "ratio", "diff"`),
+					"column":   str("Column the arithmetic runs over"),
+					"row":      str("Terms selecting the single row a cell, a ratio numerator or a diff's left operand comes from"),
+					"other":    str("Terms selecting a diff's right operand or a ratio's denominator row"),
+					"scope":    str("Which rows a sum, a count or a ratio denominator covers"),
 				},
-				"required": []string{"figure", "value", "step", "kind"},
+				"required": []string{"id", "value", "step", "kind"},
 			},
 		},
 		"quantifier_claims": map[string]interface{}{

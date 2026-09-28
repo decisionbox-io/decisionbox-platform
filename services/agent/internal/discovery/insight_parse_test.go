@@ -257,7 +257,7 @@ func TestInsightSchema_DescribesEveryArrayTheContractsAskFor(t *testing.T) {
 	// Every top-level key a contract instructs the model to add to an insight.
 	asked := map[string]string{
 		"quantifier_claims": quantifierContract,
-		"figure_claims":     figureContract,
+		"figures":           figureContract,
 	}
 	for key, contract := range asked {
 		if !strings.Contains(contract, key) {

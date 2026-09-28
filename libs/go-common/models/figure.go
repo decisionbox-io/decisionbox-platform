@@ -1,75 +1,67 @@
 package models
 
-// A figure claim is one number the model wrote, together with the arithmetic
-// over its evidence that produced it.
+// A figure is a number the model puts in an insight, emitted as data rather than
+// typed into the prose.
 //
-// It exists because three successive attempts to check figures the other way
-// round -- Go extracts the numerals and hunts for them in the rows -- were
-// measured on three hand-adjudicated corpora and none was usable. Recall was
-// perfect and precision was 7-14%; narrowing by shape reached 23% and cost a
-// red-proof; a near-miss test tripled precision and halved recall. The cause is
-// structural and no threshold removes it: a numeral in a sound insight is
-// typically two or three arithmetic steps from the rows, and the space of
-// two-or-three-step derivations over a step's cells contains almost any number.
-// One corpus had an exact sum of two cells, an exact sum of three percentages
-// and a ratio of two derived ratios all reported as invented, while the
-// operation that would have grounded them -- sum of two arbitrary cells -- also
-// grounds a known-false figure in another corpus.
+// The prose carries a reference -- "{{f1}} of 1997 revenue" -- and this struct carries
+// the value, the arithmetic over the evidence that produced it, and how it should be
+// written. Go renders the reference into text at the end of the analysis phase, so the
+// stored name and description read exactly as they would have if the model had typed
+// the number.
 //
-// So the question moves, the way it did for quantifier claims: the model says
-// which step and which arithmetic a figure came from, and Go does the
-// arithmetic. There is no unreachability problem left, because the model
-// supplies the reach. A figure it will not declare is counted as undeclared
-// rather than guessed at.
+// The point of the indirection is that **no number is ever recovered by parsing prose.**
+// Three earlier designs did parse it, and each failed in a way that traces back to the
+// parse rather than to the checking:
 //
-// Lives in this shared module for the reason QuantifierClaim does: the API
-// decodes a stored discovery into its own mirror of Insight and cannot import an
-// internal package, so a type kept internal loses the whole audit trail to BSON
-// before any client sees it.
-type FigureClaim struct {
-	// Figure is the number as written, "$33.12B" or "17.92%", because a
-	// refutation has to name the text that must change rather than the value
-	// that failed.
-	Figure string `bson:"figure" json:"figure"`
+//   - Enumerating numerals with a regex to find which were checkable ran at 7-14%
+//     precision, and its residual was honest arithmetic it could not reach.
+//   - Reading a figure's precision back out of its own text produced false refutations
+//     on "5.0% of $34.86B", "1997 Q4 $8.61B" and "1.234.567", because the first
+//     numeral in a phrase need not be the quantity being checked. One of those went on
+//     to rewrite the wrong numeral and report the insight as holding.
+//   - Matching a prose numeral to its declaration by value needed a 1% tolerance, and
+//     over 50 replayed insights 21 pairs of distinct declared figures sat inside that
+//     tolerance of each other. The link was ambiguous by construction.
+//
+// Every one of those disappears when the figure is data and the prose points at it.
+// Because Go renders, Go knows the precision exactly instead of inferring it; because
+// the prose holds a reference, a correction updates one value and every mention
+// follows; and because a figure cannot appear in the prose without a reference, there
+// is nothing to enumerate.
+type Figure struct {
+	// ID is what the prose references, "f1". Unique within one insight.
+	ID string `bson:"id" json:"id"`
 
-	// Value is what Figure means in the units of the step's own column: 33.12B
-	// written as 33116752392, a percentage written as 17.92 rather than 0.1792.
-	// Asked for separately because parsing "$33.12B" back to a number is the
-	// one part of this the model should not be trusted with, and because the
-	// gap between the two is itself worth seeing.
+	// Value is the number, in the units of the step's own column: 8476238553 for
+	// $8.48B, 24.66 for a percentage written as 24.66%.
 	Value float64 `bson:"value" json:"value"`
 
-	Step int    `bson:"step" json:"step"`
-	Kind string `bson:"kind" json:"kind"`
+	// Unit, Scale and Decimals are how the figure is written. Go renders from them,
+	// which is the whole reason the precision is known rather than parsed: the
+	// interval a figure claims is half the last place Go printed, and Go chose it.
+	Unit     string `bson:"unit,omitempty" json:"unit,omitempty"`
+	Scale    string `bson:"scale,omitempty" json:"scale,omitempty"`
+	Decimals int    `bson:"decimals,omitempty" json:"decimals,omitempty"`
 
-	// Column is the column the arithmetic runs over. Required by every kind
-	// except count.
+	// Approx marks a figure the prose rounds on purpose -- "~911K lines". It widens
+	// nothing in the check; it only adds the tilde when rendering, so the reader is
+	// told the number is approximate and the arithmetic is still held to the
+	// precision actually printed.
+	Approx bool `bson:"approx,omitempty" json:"approx,omitempty"`
+
+	// The arithmetic. Same closed grammar the quantifier evaluator's filters use, and
+	// the same kinds as before, because that part of the design measured well: over
+	// 345 declarations the evaluator produced 3 undecidables and no refutation that
+	// was not traceable to a defect in its own coverage.
+	Step   int    `bson:"step" json:"step"`
+	Kind   string `bson:"kind" json:"kind"`
 	Column string `bson:"column,omitempty" json:"column,omitempty"`
-
-	// Row selects the single row a cell, a ratio's numerator or a diff's left
-	// operand comes from, in the filter grammar parseFilter reads.
-	Row string `bson:"row,omitempty" json:"row,omitempty"`
-
-	// Other selects a diff's right operand, in the same grammar as Row.
-	Other string `bson:"other,omitempty" json:"other,omitempty"`
-
-	// Scope narrows which rows a sum, a count or a ratio's denominator covers.
-	// Empty means every row the step returned.
-	Scope string `bson:"scope,omitempty" json:"scope,omitempty"`
-
-	// Pct multiplies a ratio by 100, so a share written "20.1%" is compared
-	// against 20.1 rather than 0.201. Without it the same declaration would be
-	// refuted by a factor of a hundred, which is an evaluator reporting its own
-	// convention as the model being wrong.
-	Pct bool `bson:"pct,omitempty" json:"pct,omitempty"`
+	Row    string `bson:"row,omitempty" json:"row,omitempty"`
+	Other  string `bson:"other,omitempty" json:"other,omitempty"`
+	Scope  string `bson:"scope,omitempty" json:"scope,omitempty"`
 }
 
 // Figure kinds. Each fixes what Go evaluates and which fields it reads.
-//
-// Five rather than four because a missing kind does not produce silence, it
-// produces the model reaching for the nearest kind it has -- the lesson
-// QuantifierAll was added for. "X is N more than Y" is a common enough sentence
-// that without FigureDiff it would be declared as a cell.
 const (
 	// FigureCell — one cell: Column, in the row Row selects.
 	FigureCell = "cell"
@@ -77,83 +69,96 @@ const (
 	FigureSum = "sum"
 	// FigureCount — how many rows are in Scope.
 	FigureCount = "count"
-	// FigureRatio — Column in the row Row selects, over the total of Column
-	// across Scope. Pct scales it to a percentage.
+	// FigureRatio — Column in Row's row, over the same column in Other's row when
+	// Other is given, and over the column total across Scope when it is not.
 	FigureRatio = "ratio"
 	// FigureDiff — Column in Row's row minus Column in Other's row.
 	FigureDiff = "diff"
 )
 
-// FigureVerdict is what Go concluded about one declared figure.
+// Units. A closed set, because Go renders from it and an unknown unit would have to
+// be guessed at.
+const (
+	UnitCount    = "count"    // 8,668
+	UnitCurrency = "currency" // $8.48B
+	UnitPercent  = "percent"  // 24.66%
+	UnitMultiple = "multiple" // 1.008x
+	UnitDays     = "days"     // 122 days
+	UnitPlain    = "plain"    // 25.52
+)
+
+// Scales. The suffix a figure is written with, and the divisor that goes with it.
+const (
+	ScaleNone      = ""
+	ScaleThousands = "thousands" // K
+	ScaleMillions  = "millions"  // M
+	ScaleBillions  = "billions"  // B
+)
+
+// FigureVerdict is what Go concluded about one figure's declared arithmetic.
 type FigureVerdict struct {
-	Figure string `bson:"figure" json:"figure"`
+	// ID and Display name the figure both ways: the reference a template carries and
+	// the text a reader sees.
+	ID      string `bson:"id" json:"id"`
+	Display string `bson:"display" json:"display"`
+
 	Step   int    `bson:"step" json:"step"`
 	Kind   string `bson:"kind" json:"kind"`
 	Status string `bson:"status" json:"status"`
 
-	// Claimed and Evaluated are both recorded even when they agree, so a
-	// measurement over these verdicts can see how far a refutation missed by
-	// without re-running the arithmetic.
+	// Claimed and Evaluated are both recorded even when they agree, so a measurement
+	// over these verdicts can see how far a refutation missed by without re-running
+	// the arithmetic.
 	Claimed   float64 `bson:"claimed" json:"claimed"`
 	Evaluated float64 `bson:"evaluated,omitempty" json:"evaluated,omitempty"`
 
 	Reason string `bson:"reason,omitempty" json:"reason,omitempty"`
 }
 
-// Figure verdict statuses, mirroring the quantifier ones and for the same
-// reason: an evaluator that reports its own limits as the document's errors
-// costs more than it catches.
+// Figure verdict statuses. An evaluator that reports its own limits as the document's
+// errors costs more than it catches, so anything it cannot settle is undecidable and
+// never a refutation.
 const (
-	// FigureHolds — the arithmetic reproduces the written figure.
+	// FigureHolds — the arithmetic reproduces the figure at the precision it is
+	// written to.
 	FigureHolds = "holds"
-	// FigureFails — the arithmetic gives a different number. The only status
-	// that says the figure is wrong.
+	// FigureFails — the arithmetic gives a different number. The only status that says
+	// the figure is wrong.
 	FigureFails = "fails"
-	// FigureUndecidable — the rows cannot settle it: the step is not cited, the
-	// column is absent, the filter is richer than the grammar reads, or the row
-	// selector matched none or several rows.
+	// FigureUndecidable — the rows cannot settle it: the step is not cited, the column
+	// is absent, the filter is richer than the grammar reads, or the row selector
+	// matched none or several rows.
 	FigureUndecidable = "undecidable"
 )
 
-// FigureCoverage counts how much of an insight's prose the declarations reach.
+// FigureCorrection records a figure whose value Go replaced with the one its own
+// declared arithmetic produced.
 //
-// Recorded because the comparable layer's weakness was invisible until it was
-// measured by hand: a quarter of insights declared no quantifier claim at all,
-// and every verdict those documents carried was therefore about nothing. Here
-// the count is mechanical -- the numerals in the prose are extracted and
-// compared against the declared set.
-//
-// The extractor used for Declared/Written is the same one whose 7-14% precision
-// disqualified it from driving a rewrite. That is the right job for it: an
-// over-extracted numeral costs one spurious Undeclared in a counter, never a
-// rewritten sentence, and nothing branches on its opinion about truth.
-type FigureCoverage struct {
-	// Written is how many distinct numerals the extractor found in name,
-	// description and indicators.
-	Written int `bson:"written" json:"written"`
-	// Declared is how many of those a declaration accounts for, by value.
-	Declared int `bson:"declared" json:"declared"`
-}
-
-// FigureFix records one figure corrected in place, without asking the model.
-//
-// The correction is available for free, which is why this exists: a refuted figure
-// arrives with the arithmetic already evaluated, so the right number is known and
-// the wrong one is known as text. Every false figure measured across the three
-// corpora -- 100,000 for 99,996, 150,004 for 150,000, 47.1% and 49.7% for 49.3% --
-// is a numeral substitution and nothing more. A rewrite round for any of them would
-// be an LLM call to retype a number Go already has.
-//
-// The same shape as the cardinality substitution the quantifier layer does before
-// its rewrite rounds, and it inherits that pass's refusals: all fields or none, and
-// decline wherever the numeral appears twice or measures two different things.
-type FigureFix struct {
-	// Figure is the text as the model declared it, before the swap.
-	Figure string `bson:"figure" json:"figure"`
-	// From and To are the written value and the evaluated one.
+// Correcting is a re-render rather than a text edit, which is the second thing the
+// format buys. Under the old design a correction had to find every standalone
+// occurrence of a numeral across the name, the description, the indicators and the
+// claim texts, agree that they all measured the same thing, and rewrite each -- and a
+// measured failure of exactly that rewrote the wrong numeral in a compound phrase and
+// then reported the insight as holding. Here the prose holds a reference, so one value
+// changes and every mention of it follows, identically and by construction.
+type FigureCorrection struct {
+	ID   string  `bson:"id" json:"id"`
 	From float64 `bson:"from" json:"from"`
 	To   float64 `bson:"to" json:"to"`
-	// Text is the substitution as performed, "100,000 -> 99,996", because the
-	// numerals as rendered are what a reader has to be able to find in the prose.
+	// Text is the substitution as a reader sees it, "$34.36B -> $34.37B".
 	Text string `bson:"text" json:"text"`
+}
+
+// FigureTemplate keeps the prose as the model authored it, references intact, after
+// the rendered text has been written into the insight's own fields.
+//
+// Kept because the rendered fields are what every reader downstream consumes -- the
+// API, the dashboard, the exec summary -- and none of them should have to know this
+// format exists. The templates are the audit trail: they are what makes it checkable
+// after the fact that a figure in the prose came from a declaration rather than from
+// the model typing a number.
+type FigureTemplate struct {
+	Name        string   `bson:"name,omitempty" json:"name,omitempty"`
+	Description string   `bson:"description,omitempty" json:"description,omitempty"`
+	Indicators  []string `bson:"indicators,omitempty" json:"indicators,omitempty"`
 }

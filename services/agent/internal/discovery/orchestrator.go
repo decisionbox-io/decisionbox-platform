@@ -1288,8 +1288,16 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// already produced the right number. Swap the numeral, re-settle, and leave
 		// anything ambiguous refuted and visible. Before validation, so the
 		// verifier judges the corrected text.
-		if swapped := repairRefutedFigures(area.ID, insights, stepByID); swapped > 0 {
+		if swapped := correctRefutedFigures(area.ID, insights, stepByID); swapped > 0 {
 			step.FiguresCorrected = swapped
+		}
+
+		// Render the figure references into the prose. Last, so everything downstream --
+		// validation, the API, the dashboard, the exec summary -- reads ordinary
+		// sentences and never learns this format exists.
+		if rendered := renderInsightFigures(insights); rendered.resolved > 0 || rendered.inlined > 0 {
+			step.FiguresInlined = rendered.inlined
+			step.FigureRefsUnresolved = rendered.unresolved
 		}
 
 		if len(insights) > 0 {

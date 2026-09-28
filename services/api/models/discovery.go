@@ -78,14 +78,14 @@ type Insight struct {
 	QuantifierVerdicts []gomodels.QuantifierVerdict `bson:"quantifier_verdicts,omitempty" json:"evidence_checks,omitempty"`
 	Repair             *gomodels.InsightRepair      `bson:"repair,omitempty" json:"evidence_repair,omitempty"`
 
-	// The figure layer, mirrored for the same reason and at the same risk. Each
-	// number the model wrote, the arithmetic it declared for it, what that
-	// arithmetic evaluated to, how much of the prose was declared at all, and any
-	// numeral Go corrected in place.
-	FigureClaims   []gomodels.FigureClaim   `bson:"figure_claims,omitempty" json:"figure_claims,omitempty"`
-	FigureVerdicts []gomodels.FigureVerdict `bson:"figure_verdicts,omitempty" json:"evidence_figures,omitempty"`
-	FigureCoverage *gomodels.FigureCoverage `bson:"figure_coverage,omitempty" json:"evidence_figure_coverage,omitempty"`
-	FigureFixes    []gomodels.FigureFix     `bson:"figure_fixes,omitempty" json:"evidence_figure_fixes,omitempty"`
+	// The figure layer, mirrored for the same reason and at the same risk. Each number
+	// the insight states as data with the arithmetic behind it, what that arithmetic
+	// evaluated to, any value Go corrected, and the prose as authored with its
+	// references intact.
+	Figures           []gomodels.Figure           `bson:"figures,omitempty" json:"figures,omitempty"`
+	FigureVerdicts    []gomodels.FigureVerdict    `bson:"figure_verdicts,omitempty" json:"evidence_figures,omitempty"`
+	FigureCorrections []gomodels.FigureCorrection `bson:"figure_corrections,omitempty" json:"evidence_figure_corrections,omitempty"`
+	FigureTemplate    *gomodels.FigureTemplate    `bson:"figure_template,omitempty" json:"evidence_figure_template,omitempty"`
 }
 
 type Recommendation struct {
