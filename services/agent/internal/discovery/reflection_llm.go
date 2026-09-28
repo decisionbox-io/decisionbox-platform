@@ -3,7 +3,6 @@ package discovery
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"sort"
 	"strings"
 
@@ -330,6 +329,27 @@ func renderCoveredFields(hasCube bool) string {
 // or a fenced one; unknown fields are ignored. Missing arrays decode as nil,
 // which the apply path treats as "nothing to do". A non-nil error is returned
 // only when the response is not a JSON object at all.
+// isEmpty reports whether this reflection says nothing: no summary, no note, and every
+// list empty.
+//
+// A zero-value comparison is not the test. A model that spells every field out as an
+// empty array produces something semantically empty whose slices are non-nil, so it
+// compared unequal to the zero value, passed as an answer, and silenced the real
+// reflection behind it. Emptiness is a property of the contents, not of how the JSON
+// happened to be written.
+func (r parsedReflection) isEmpty() bool {
+	return strings.TrimSpace(r.CoverageSummary) == "" &&
+		strings.TrimSpace(r.ConvergenceNote) == "" &&
+		len(r.CoveredTables) == 0 &&
+		len(r.CoveredCatalogItems) == 0 &&
+		len(r.CoveredAreas) == 0 &&
+		len(r.StatusUpdates) == 0 &&
+		len(r.Learnings) == 0 &&
+		len(r.TaskStatusUpdates) == 0 &&
+		len(r.NextTasks) == 0 &&
+		len(r.PackDeltas) == 0
+}
+
 func parseReflection(response string) (*parsedReflection, error) {
 	cleaned := cleanJSONResponse(response)
 	if strings.TrimSpace(cleaned) == "" {
@@ -344,7 +364,7 @@ func parseReflection(response string) (*parsedReflection, error) {
 	// answer -- see decodeLeadingJSON. Nothing distinguishes "reflected and found
 	// nothing to change" from "the real reflection was thrown away" once it is
 	// returned, so it has to be caught here.
-	if more && reflect.DeepEqual(out, parsedReflection{}) {
+	if more && out.isEmpty() {
 		return nil, fmt.Errorf("reflection response is an empty object followed by another JSON value")
 	}
 	return &out, nil

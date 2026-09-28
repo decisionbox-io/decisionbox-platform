@@ -2300,6 +2300,16 @@ func parseRecommendations(response string) ([]models.Recommendation, int, error)
 	recs := make([]models.Recommendation, 0, len(raws))
 	dropped := 0
 	for i, raw := range raws {
+		// The same two guards the insight loop carries, for the same reasons. A null
+		// element unmarshals into a zero-value Recommendation without error, and
+		// generateRecommendations accepts a batch because it is non-empty -- so a blank
+		// recommendation would be assigned an ID and reach citation recovery.
+		if strings.TrimSpace(string(raw)) == "null" {
+			dropped++
+			applog.WithFields(applog.Fields{"index": i}).
+				Warn("Dropping a null recommendation element; keeping the rest of the batch")
+			continue
+		}
 		var rec models.Recommendation
 		if err := json.Unmarshal(raw, &rec); err != nil {
 			dropped++
@@ -2307,6 +2317,14 @@ func parseRecommendations(response string) ([]models.Recommendation, int, error)
 				"index":  i,
 				"reason": err.Error(),
 			}).Warn("Dropping unparseable recommendation; keeping the rest of the batch")
+			continue
+		}
+		// Nothing to show a reader. Narrow on purpose, as with insights: a body
+		// without a title is still an action someone can act on.
+		if strings.TrimSpace(rec.Title) == "" && strings.TrimSpace(rec.Description) == "" {
+			dropped++
+			applog.WithFields(applog.Fields{"index": i}).
+				Warn("Dropping a recommendation with neither a title nor a description; keeping the rest of the batch")
 			continue
 		}
 		recs = append(recs, rec)

@@ -469,10 +469,24 @@ func parseQuestions(response string) ([]parsedQuestion, int, error) {
 
 	out := make([]parsedQuestion, 0, len(raws))
 	for i, raw := range raws {
+		// A null element unmarshals into a zero-value question without error, so it
+		// would be asked as a blank one.
+		if strings.TrimSpace(string(raw)) == "null" {
+			applog.WithFields(applog.Fields{"index": i}).
+				Warn("Dropping a null clarifying question; keeping the rest of the batch")
+			continue
+		}
 		var q parsedQuestion
 		if err := json.Unmarshal(raw, &q); err != nil {
 			applog.WithFields(applog.Fields{"index": i, "reason": err.Error()}).
 				Warn("Dropping unparseable clarifying question; keeping the rest of the batch")
+			continue
+		}
+		// No question text is nothing to ask. Unlike an insight or a recommendation
+		// there is no second field that could carry the content instead.
+		if strings.TrimSpace(q.Question) == "" {
+			applog.WithFields(applog.Fields{"index": i}).
+				Warn("Dropping a clarifying question with no question text; keeping the rest of the batch")
 			continue
 		}
 		out = append(out, q)
