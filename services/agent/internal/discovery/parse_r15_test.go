@@ -71,9 +71,11 @@ func TestParseRecommendations_NullElementIsDropped(t *testing.T) {
 	}
 }
 
-func TestParseRecommendations_EmptyShellIsDroppedButATitlelessBodyIsKept(t *testing.T) {
-	// Same narrow rule as insights: nothing to show is dropped, a body without a title
-	// is kept.
+func TestParseRecommendations_TitlelessRecommendationIsDropped(t *testing.T) {
+	// Same reversal as insights, and review found the breakage here first: the run page
+	// renders the recommendation link from `rec.title`, and the recommendations page
+	// deduplicates by title, so every titleless recommendation collapses under the same
+	// empty-string key.
 	const in = `{"recommendations":[
 		{"priority":"high","segment_size":10},
 		{"description":"Re-approve the bulk discount tier before renewal.","priority":"high"},
@@ -83,11 +85,11 @@ func TestParseRecommendations_EmptyShellIsDroppedButATitlelessBodyIsKept(t *test
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
-	if len(recs) != 2 {
-		t.Fatalf("got %d recommendations (%+v), want 2", len(recs), recs)
+	if len(recs) != 1 || recs[0].Title != "Real" {
+		t.Fatalf("got %d recommendations (%+v), want just the titled one", len(recs), recs)
 	}
-	if dropped != 1 {
-		t.Errorf("dropped = %d, want 1", dropped)
+	if dropped != 2 {
+		t.Errorf("dropped = %d, want 2", dropped)
 	}
 }
 
@@ -111,5 +113,63 @@ func TestParseQuestions_QuestionlessElementIsDropped(t *testing.T) {
 	}
 	if len(qs) != 1 || qs[0].Question != "Real?" {
 		t.Fatalf("got %d questions (%+v), want just the real one", len(qs), qs)
+	}
+}
+
+// --- round 16 ---
+
+// The second decode's error was discarded, so a placeholder followed by a TRUNCATED real
+// answer looked like a placeholder followed by prose, and shipped as an empty area.
+func TestParseInsights_EmptyEnvelopeThenTruncatedRealOneIsRetried(t *testing.T) {
+	o := &Orchestrator{}
+	const in = `{"insights":[]}
+{"insights":[{"name":"Actual finding","severity":"high"`
+	insights, _, err := o.parseInsights(in, "revenue")
+	if err == nil {
+		t.Fatalf("err = nil with %d insights, want an error: a truncated second answer must be re-prompted", len(insights))
+	}
+}
+
+func TestParseRecommendations_EmptyEnvelopeThenTruncatedRealOneIsRetried(t *testing.T) {
+	const in = `{"recommendations":[]}
+{"recommendations":[{"title":"Actual action"`
+	recs, _, err := parseRecommendations(in)
+	if err == nil {
+		t.Fatalf("err = nil with %d recommendations, want an error", len(recs))
+	}
+}
+
+// A second JSON value that is a SCALAR is prose, not an answer. An explanation opening
+// with a number, a bare null, a bool or a quote parsed as a valid JSON value and got the
+// correct empty answer rejected -- the common case for this data, since two of five
+// areas are legitimately empty in every run.
+func TestParseInsights_EmptyEnvelopeThenScalarLeadingProseIsAccepted(t *testing.T) {
+	o := &Orchestrator{}
+	for name, tail := range map[string]string{
+		"number": "0 session-level rows were available, so no session insights can be produced.",
+		"null":   "null means no insight is supported by this schema.",
+		"bool":   "true: no funnel table exists in these tables.",
+		"quoted": "\"No session data is present.\" is the only honest summary here.",
+	} {
+		t.Run(name, func(t *testing.T) {
+			insights, _, err := o.parseInsights("{\"insights\": []}\n\n"+tail, "session_behavior")
+			if err != nil {
+				t.Fatalf("err = %v, want nil: a scalar is prose, not a second answer", err)
+			}
+			if len(insights) != 0 {
+				t.Fatalf("got %d insights, want 0", len(insights))
+			}
+		})
+	}
+}
+
+// JSON null unmarshals into a non-pointer struct without error, so a bare `null` came
+// back as an empty reflection and was accepted instead of retried.
+func TestParseReflection_BareNullIsAnError(t *testing.T) {
+	for _, in := range []string{"null", "  null  ", "[]", `"nothing to reflect on"`, "42"} {
+		got, err := parseReflection(in)
+		if err == nil {
+			t.Errorf("parseReflection(%q) = %+v, nil; want an error: the contract is an object", in, got)
+		}
 	}
 }

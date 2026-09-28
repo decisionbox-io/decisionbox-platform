@@ -99,16 +99,21 @@ func TestParseInsights_NullArrayElementIsDropped(t *testing.T) {
 	}
 }
 
-func TestParseInsights_EmptyShellIsDroppedButANamelessBodyIsKept(t *testing.T) {
-	// The same hole as the null element, reached by a different route: an object that
-	// decodes cleanly but carries neither a name nor a body has nothing to show and is
-	// not a finding.
+func TestParseInsights_TitlelessInsightIsDropped(t *testing.T) {
+	// An insight with no name is dropped, and so is one with no name but a full body.
 	//
-	// Deliberately narrow. Dropping every insight with no `name` would be the obvious
-	// rule and would lose real findings: a model that writes the body first -- which is
-	// exactly what the Fix T prompt reordering asks it to do -- and then omits or
-	// truncates the title has still produced the analysis. Only an insight with nothing
-	// at all to show is discarded.
+	// This reverses an earlier call in this branch. The first version kept a bodied
+	// insight with no title, reasoning that a model asked to write the body before the
+	// title -- which is what the Fix T reordering asks -- might omit the title and still
+	// have produced the analysis. Review found that concrete: the insights page
+	// deduplicates on `${analysis_area}:${insight.name}`, so every titleless insight in
+	// an area collapses into one, and renders `{insight.name}` as the visible label and
+	// the search seed title, so what survives is a blank row. A finding that cannot be
+	// read or linked is not shipped by keeping it.
+	//
+	// Nothing observed emits one: every insight in 12 replays and both adjudicated runs
+	// carried a name. Synthesising a title from the body would keep the content and is
+	// recorded as a follow-up, but the parser is the wrong place to author prose.
 	o := &Orchestrator{}
 	const in = `{"insights":[
 		{"severity":"high","affected_count":10},
@@ -119,17 +124,11 @@ func TestParseInsights_EmptyShellIsDroppedButANamelessBodyIsKept(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
-	if len(insights) != 2 {
-		t.Fatalf("got %d insights (%+v), want 2: the empty shell dropped, the nameless body kept", len(insights), insights)
+	if len(insights) != 1 || insights[0].Name != "Real" {
+		t.Fatalf("got %d insights (%+v), want just the named one", len(insights), insights)
 	}
-	if insights[0].Name != "" || insights[0].Description == "" {
-		t.Errorf("first kept insight should be the nameless body, got %+v", insights[0])
-	}
-	if insights[1].Name != "Real" {
-		t.Errorf("second kept insight = %q, want Real", insights[1].Name)
-	}
-	if dropped != 1 {
-		t.Errorf("dropped = %d, want 1", dropped)
+	if dropped != 2 {
+		t.Errorf("dropped = %d, want 2", dropped)
 	}
 }
 

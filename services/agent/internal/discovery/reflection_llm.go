@@ -355,6 +355,14 @@ func parseReflection(response string) (*parsedReflection, error) {
 	if strings.TrimSpace(cleaned) == "" {
 		return nil, fmt.Errorf("empty reflection response")
 	}
+	// The contract is an object. A bare `null` unmarshals into a non-pointer struct
+	// without error, so it arrived as an empty reflection and was accepted instead of
+	// retried; cleanJSONResponse leaves it untouched because it holds no brace. An
+	// array or a scalar fails the decode anyway -- this makes the requirement explicit
+	// rather than incidental.
+	if !strings.HasPrefix(strings.TrimSpace(cleaned), "{") {
+		return nil, fmt.Errorf("reflection response is not a JSON object")
+	}
 	var out parsedReflection
 	more, err := decodeLeadingJSON(cleaned, &out)
 	if err != nil {

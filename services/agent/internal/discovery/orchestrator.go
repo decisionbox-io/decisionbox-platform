@@ -3,7 +3,9 @@ package discovery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"sync"
@@ -1813,15 +1815,25 @@ func (o *Orchestrator) parseInsightsWith(response string, areaID string, salvage
 		if insight.DiscoveredAt.IsZero() {
 			insight.DiscoveredAt = time.Now()
 		}
-		// An object that decodes cleanly but carries neither a title nor a body has
-		// nothing to show a reader. Deliberately narrow: dropping every insight
-		// with no `name` would lose real findings, because a model that writes the
-		// body before the title can omit or truncate the title and still have
-		// produced the analysis.
-		if strings.TrimSpace(insight.Name) == "" && strings.TrimSpace(insight.Description) == "" {
+		// An insight with no name is not shippable. The insights page deduplicates
+		// on `${analysis_area}:${insight.name}`, so every titleless insight in an
+		// area collapses into one, and it renders `{insight.name}` as the visible
+		// label and the search seed title -- so what survives is a blank row that
+		// hides its siblings.
+		//
+		// This is narrower than it first was. The first version kept a bodied
+		// insight with no title, reasoning that a model asked to write the body
+		// before the title might omit the title and still have produced the
+		// analysis. That trade only makes sense if the result can be read, and it
+		// cannot. Nothing observed emits one either: every insight across 12
+		// replays and both adjudicated runs carried a name. Synthesising a title
+		// from the body would keep the content, and is recorded as a follow-up
+		// rather than done here, because a parser is the wrong place to author
+		// prose.
+		if strings.TrimSpace(insight.Name) == "" {
 			dropped++
 			applog.WithFields(applog.Fields{"area": areaID, "index": i}).
-				Warn("Dropping an insight with neither a name nor a description; keeping the rest of the area")
+				Warn("Dropping an insight with no name; keeping the rest of the area")
 			continue
 		}
 
@@ -2319,12 +2331,14 @@ func parseRecommendations(response string) ([]models.Recommendation, int, error)
 			}).Warn("Dropping unparseable recommendation; keeping the rest of the batch")
 			continue
 		}
-		// Nothing to show a reader. Narrow on purpose, as with insights: a body
-		// without a title is still an action someone can act on.
-		if strings.TrimSpace(rec.Title) == "" && strings.TrimSpace(rec.Description) == "" {
+		// Same as insights, and the breakage was found here first: the run page
+		// renders the recommendation link from `rec.title`, and the recommendations
+		// page deduplicates by title, so every titleless recommendation collapses
+		// under the same empty-string key.
+		if strings.TrimSpace(rec.Title) == "" {
 			dropped++
 			applog.WithFields(applog.Fields{"index": i}).
-				Warn("Dropping a recommendation with neither a title nor a description; keeping the rest of the batch")
+				Warn("Dropping a recommendation with no title; keeping the rest of the batch")
 			continue
 		}
 		recs = append(recs, rec)
@@ -3017,26 +3031,45 @@ func droppedToTelemetry(dropped []DroppedStep) []models.DroppedAnalysisStep {
 // rejects an empty result that has another value behind it, and the retry happens as it
 // did before.
 //
-// Whether a second value follows is decided by decoding one, not by inspecting the
-// next character. Two cheaper tests were tried and both are wrong:
+// What counts as "another answer" took four attempts, so all of them are recorded --
+// each was plausible and each let a real case through:
 //
 //   - json.Decoder.More peeks for anything that is not a closing delimiter, so it
 //     reports true for a trailing paragraph and would reinstate the very bug this
 //     function exists to fix.
-//   - "does the remaining text start with { or [" rejects an explanation that happens
-//     to open with a bracket -- `[No session-level data is present in this schema.]`
-//     -- and a legitimately empty area is the common case, not the rare one, so that
-//     costs a re-prompt for nothing.
+//   - "does the remaining text start with { or [" rejects an explanation that opens
+//     with a bracket -- `[No session-level data is present in this schema.]`.
+//   - "does a second value decode at all" accepts a scalar, so an explanation opening
+//     with a number, a bare null, a bool or a quote -- `0 session-level rows were
+//     available, so ...` -- was read as a second answer. It also discarded the second
+//     decode's error, so a placeholder followed by a TRUNCATED real answer looked
+//     exactly like a placeholder followed by prose and shipped as empty.
 //
-// Decoding settles it: prose fails to decode whatever it starts with, and a real
-// second envelope does not. The reader is already positioned after the first value.
+// A legitimately empty area is the common case for this data, not the rare one: two of
+// five areas are correctly empty in every run, each with an explanation attached. So
+// every false positive here costs a re-prompt on the answer that is already right.
+//
+// What actually distinguishes them: another answer is a composite value -- an object or
+// an array -- because that is the shape of the contract. Prose is not, whatever
+// character it starts with. And a composite value that runs out mid-way is a truncated
+// answer, not prose, so ErrUnexpectedEOF counts as one and is retried.
 func decodeLeadingJSON(s string, v any) (trailingJSON bool, err error) {
 	dec := json.NewDecoder(strings.NewReader(s))
 	if err := dec.Decode(v); err != nil {
 		return false, err
 	}
 	var next json.RawMessage
-	return dec.Decode(&next) == nil, nil
+	switch err := dec.Decode(&next); {
+	case err == nil:
+		t := strings.TrimSpace(string(next))
+		return strings.HasPrefix(t, "{") || strings.HasPrefix(t, "["), nil
+	case errors.Is(err, io.ErrUnexpectedEOF):
+		// Began a composite value and ran out of input. Prose fails at its first
+		// character with a syntax error instead, so this is a truncated answer.
+		return true, nil
+	default:
+		return false, nil
+	}
 }
 
 func cleanJSONResponse(response string) string {
