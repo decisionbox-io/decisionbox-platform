@@ -123,7 +123,14 @@ func renderRecommendationFigures(recs []models.Recommendation) figureRenderTally
 		}
 		rec.FigureTemplate = &tpl
 
-		r := newFigureRenderer(rec.Figures, &tally)
+		// A figure that resolved to nothing and states no value of its own must not
+		// render. Its value is zero because the contract tells the model not to write
+		// one, and rendering that ships a fabricated number into the sentence -- the
+		// first live replay produced "$11.48B — 0.00% of gross $229.58B" exactly this
+		// way. Leaving the reference visible is the honest failure: a reader seeing
+		// "{{f2}}" knows something went wrong, and 0.00% reads like a finding.
+		renderable := renderableFigures(rec.Figures, rec.FigureVerdicts)
+		r := newFigureRenderer(renderable, &tally)
 		rec.Title = r.render(rec.Title)
 		rec.Description = r.render(rec.Description)
 		for j := range rec.Actions {
@@ -151,9 +158,26 @@ func renderRecommendationFigures(recs []models.Recommendation) figureRenderTally
 				"fields":         bare,
 			}).Warn("Recommendation prose states a number directly instead of referencing an insight figure, so nothing checks it")
 		}
-		tally.unused += len(unusedFigures(r.used, rec.Figures))
+		tally.unused += len(unusedFigures(r.used, renderable))
 	}
 	return tally
+}
+
+// renderableFigures drops the figures that have no number behind them: unresolved, and
+// stating no value of their own.
+func renderableFigures(figures []models.Figure, verdicts []models.FigureVerdict) []models.Figure {
+	resolved := make(map[string]bool, len(verdicts))
+	for _, v := range verdicts {
+		resolved[v.ID] = v.Resolved
+	}
+	out := make([]models.Figure, 0, len(figures))
+	for _, f := range figures {
+		if !resolved[f.ID] && f.Value == 0 {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // figureRenderer renders references from one document's figure table.
@@ -280,6 +304,18 @@ func bareNumeralFields(tpl models.FigureTemplate) []string {
 
 // bareRecommendationNumeralFields names the recommendation template fields carrying a
 // digit outside a reference.
+//
+// It over-reports, measurably and on purpose. The first live replay flagged nine fields,
+// and reading them showed the digits were band labels ("0% discount", "1-5 orders") and
+// chosen thresholds ("a 45-day window") -- prose by the contract's own rules -- not
+// undeclared measurements. Nothing typed in that replay was fabricated.
+//
+// Left as it is rather than tuned, because tuning it is the trap this project already spent
+// five rounds in: every successive attempt to classify a numeral by looking at the text
+// around it let a real case through. This counter is advisory. It logs and it feeds a
+// telemetry integer; nothing branches on it, nothing is rejected by it. That is the same
+// standing the truncation caveat ships on at 2-of-7 precision -- a signal worth having
+// bounds what it is allowed to do, not whether it exists.
 //
 // The impact fields are excluded, and that exclusion is the measured part. A projection
 // ("+1,500 first-time buyers", "a conservative 3% conversion") is the model's own estimate

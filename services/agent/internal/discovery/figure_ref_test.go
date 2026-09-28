@@ -176,6 +176,9 @@ func TestRecommendationFigures_UnusableOperandIsUndecidableNotRefuted(t *testing
 		{"its own check failed", refuted, "came back fails"},
 		{"never checked", unchecked, "never checked"},
 	}
+	// And in both cases the model's own stated number must survive. Overwriting it with
+	// a value Go declined to vouch for is not a correction, and the cited insight is
+	// already showing that number to the same reader anyway.
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			recs := []models.Recommendation{{
@@ -195,6 +198,10 @@ func TestRecommendationFigures_UnusableOperandIsUndecidableNotRefuted(t *testing
 			}
 			if len(recs[0].FigureCorrections) != 0 {
 				t.Errorf("an undecidable figure must not be corrected, got %v", recs[0].FigureCorrections)
+			}
+			if got := recs[0].Figures[0].Value; got != 100000 {
+				t.Errorf("figure value = %v, want the model's own 100000 left standing -- Go must not "+
+					"overwrite a stated number with one it will not vouch for", got)
 			}
 		})
 	}
@@ -519,5 +526,117 @@ func TestFigureContract_KeepsEveryRuleThatTracesToAMeasuredFailure(t *testing.T)
 	if !strings.Contains(figureContract, "needs no declaration") {
 		t.Error("the contract does not say an indicator with no number needs no declaration, " +
 			"which is the likeliest reason a model reads \"never type a number\" as \"say nothing\"")
+	}
+}
+
+// The three cases below all come from the first live replay of this layer. Each one is a
+// defect the unit tests above did not reach, because each needed a model that actually
+// follows the contract -- and the contract says do not write a value.
+
+// TestRecommendationFigures_NoStatedValueIsComplianceNotACorrection.
+//
+// The replay declared nineteen figures and stated a value on none of them, which is exactly
+// what the contract asks for. Eighteen were then logged as corrected from zero, so
+// following the instruction looked identical to getting the number wrong -- in the one
+// counter that would be used to measure whether the layer works.
+func TestRecommendationFigures_NoStatedValueIsComplianceNotACorrection(t *testing.T) {
+	ins := bandInsight()
+	recs := []models.Recommendation{{
+		Description: "The band holds {{f1}} customers.",
+		Figures: []models.Figure{{
+			ID: "f1", Unit: models.UnitCount, Kind: models.FigureRefKind,
+			Refs: []models.FigureRef{ref(ins.ID, "f1")},
+		}},
+	}}
+
+	_, adopted := attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	renderRecommendationFigures(recs)
+
+	if v := recs[0].FigureVerdicts[0]; v.Status != models.FigureHolds {
+		t.Errorf("status = %q (%s), want holds -- an unstated value is the contract being followed", v.Status, v.Reason)
+	}
+	if len(recs[0].FigureCorrections) != 0 {
+		t.Errorf("following the contract was logged as a correction: %v", recs[0].FigureCorrections)
+	}
+	if adopted != 0 {
+		t.Errorf("adopted = %d, want 0 -- filling in a number the model was told not to write is not an adoption", adopted)
+	}
+	if !strings.Contains(recs[0].Description, "52,134") {
+		t.Errorf("description = %q, want the resolved value rendered", recs[0].Description)
+	}
+}
+
+// TestRecommendationFigures_UnvouchedOperandCarriesItsNumberNotAZero is the sentence the
+// replay shipped: "Discounts reduced gross revenue by $11.48B — 0.00% of gross $229.58B".
+//
+// The reference pointed at an insight figure whose own check had come back refuted. The
+// operand was treated as unusable, the model had written no value because the contract told
+// it not to, and the absence rendered as zero -- so a fabricated 0.00% went into the prose
+// where the true share is around 5%. A typed number would have been right, which makes this
+// strictly worse than having no contract at all.
+//
+// A refuted insight figure still has a value, and the correction gate leaves it visible in
+// that insight on purpose. So the restatement carries it, and says undecidable.
+func TestRecommendationFigures_UnvouchedOperandCarriesItsNumberNotAZero(t *testing.T) {
+	ins := models.Insight{
+		ID: "30ee25a4-1111-2222-3333-444444444444",
+		Figures: []models.Figure{
+			{ID: "f3", Value: 4.9983, Unit: models.UnitPercent, Decimals: 2},
+		},
+		FigureVerdicts: []models.FigureVerdict{
+			{ID: "f3", Status: models.FigureFails, Claimed: 4.9983, Evaluated: 0.049983},
+		},
+	}
+	recs := []models.Recommendation{{
+		Description: "Discounts gave up {{f2}} of gross revenue.",
+		Figures: []models.Figure{{
+			ID: "f2", Unit: models.UnitPercent, Decimals: 2, Kind: models.FigureRefKind,
+			Refs: []models.FigureRef{ref(ins.ID, "f3")},
+		}},
+	}}
+
+	attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	renderRecommendationFigures(recs)
+
+	if strings.Contains(recs[0].Description, "0.00%") {
+		t.Fatalf("a fabricated zero shipped into the prose: %q", recs[0].Description)
+	}
+	if !strings.Contains(recs[0].Description, "5.00%") {
+		t.Errorf("description = %q, want the cited insight's own number (5.00%%)", recs[0].Description)
+	}
+	v := recs[0].FigureVerdicts[0]
+	if v.Status != models.FigureUndecidable {
+		t.Errorf("status = %q, want undecidable -- the number is carried, not vouched for", v.Status)
+	}
+	if !v.Resolved {
+		t.Error("resolved = false, but a value was produced; the renderer needs that distinction")
+	}
+}
+
+// TestRecommendationFigures_UnresolvableAndUnstatedKeepsItsMarker is the other half. When
+// there is no number anywhere -- the id resolves to nothing and the model wrote no value --
+// the reference stays visible rather than rendering zero. "{{f2}}" tells a reader something
+// went wrong; "0.00%" reads like a finding.
+func TestRecommendationFigures_UnresolvableAndUnstatedKeepsItsMarker(t *testing.T) {
+	ins := bandInsight()
+	recs := []models.Recommendation{{
+		Description: "Target the {{f1}} buyers.",
+		Figures: []models.Figure{{
+			ID: "f1", Unit: models.UnitCount, Kind: models.FigureRefKind,
+			Refs: []models.FigureRef{ref("no-such-insight", "f1")},
+		}},
+	}}
+
+	attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	tally := renderRecommendationFigures(recs)
+
+	if strings.Contains(recs[0].Description, " 0 ") || strings.Contains(recs[0].Description, "the 0 buyers") {
+		t.Fatalf("a fabricated zero shipped into the prose: %q", recs[0].Description)
+	}
+	if !strings.Contains(recs[0].Description, "{{f1}}") {
+		t.Errorf("description = %q, want the reference left visible when there is no number behind it", recs[0].Description)
+	}
+	if tally.unresolved != 1 {
+		t.Errorf("tally.unresolved = %d, want 1", tally.unresolved)
 	}
 }

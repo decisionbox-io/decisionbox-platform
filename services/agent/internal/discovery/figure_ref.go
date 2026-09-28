@@ -33,14 +33,24 @@ import (
 // every insight has an f1 -- so both halves are needed.
 type figureRefIndex map[string]map[string]refValue
 
-// refValue is one figure's settled value, or the reason it cannot be used.
+// refValue is one figure's value and what Go is willing to say about it.
+//
+// The three states are distinct because they need different answers, which the first live
+// replay proved by conflating two of them. A figure whose own check did not stand still
+// HAS a value, and that value is already in the insight's prose -- the correction gate
+// leaves a refuted figure visible on purpose. So a recommendation restating it is faithful
+// to the document it cites, and the refutation stays recorded where it happened. Only a
+// reference that resolves to nothing has no number behind it at all.
 type refValue struct {
 	value float64
-	// usable is false for a figure whose own check did not stand. Referencing it would
-	// carry a number Go declined to vouch for into a second document, with the
-	// reference making it look checked.
-	usable bool
-	why    string
+	// found is false when the id resolves to nothing: no such insight, no such figure.
+	// There is no number to carry.
+	found bool
+	// vouched is false for a figure whose own check came back refuted or never ran. The
+	// value is still used -- the alternative is fabricating one -- but the recommendation
+	// figure is undecidable rather than holding, so nothing claims it was checked here.
+	vouched bool
+	why     string
 }
 
 // buildFigureRefIndex indexes the insights the recommender was given.
@@ -70,11 +80,12 @@ func buildFigureRefIndex(insights []models.Insight) figureRefIndex {
 			// declined to fix still reads fails.
 			switch st := status[f.ID]; st {
 			case models.FigureHolds:
-				byID[f.ID] = refValue{value: f.Value, usable: true}
+				byID[f.ID] = refValue{value: f.Value, found: true, vouched: true}
 			case "":
-				byID[f.ID] = refValue{why: "it was never checked"}
+				byID[f.ID] = refValue{value: f.Value, found: true, why: "it was never checked"}
 			default:
-				byID[f.ID] = refValue{why: fmt.Sprintf("its own check came back %s", st)}
+				byID[f.ID] = refValue{value: f.Value, found: true,
+					why: fmt.Sprintf("its own check came back %s, so the insight carries it unvouched too", st)}
 			}
 		}
 		ix[ins.ID] = byID
@@ -82,20 +93,25 @@ func buildFigureRefIndex(insights []models.Insight) figureRefIndex {
 	return ix
 }
 
-// resolve returns the settled value behind one reference.
-func (ix figureRefIndex) resolve(r models.FigureRef) (float64, error) {
+// resolve returns the value behind one reference, whether Go vouches for it, and -- when
+// it does not -- why.
+//
+// A missing reference is an error, because there is no number. An unvouched one is not:
+// the value comes back with vouched false, and the caller carries it while refusing to
+// call the figure checked.
+func (ix figureRefIndex) resolve(r models.FigureRef) (value float64, vouched bool, why string, err error) {
 	figures, ok := ix[r.Insight]
 	if !ok {
-		return 0, fmt.Errorf("insight %s is not among the insights this recommendation was given", shortID(r.Insight))
+		return 0, false, "", fmt.Errorf("insight %s is not among the insights this recommendation was given", shortID(r.Insight))
 	}
 	rv, ok := figures[r.Figure]
-	if !ok {
-		return 0, fmt.Errorf("insight %s declares no figure %s", shortID(r.Insight), r.Figure)
+	if !ok || !rv.found {
+		return 0, false, "", fmt.Errorf("insight %s declares no figure %s", shortID(r.Insight), r.Figure)
 	}
-	if !rv.usable {
-		return 0, fmt.Errorf("figure %s of insight %s cannot be referenced: %s", r.Figure, shortID(r.Insight), rv.why)
+	if !rv.vouched {
+		return rv.value, false, fmt.Sprintf("figure %s of insight %s is not vouched for: %s", r.Figure, shortID(r.Insight), rv.why), nil
 	}
-	return rv.value, nil
+	return rv.value, true, "", nil
 }
 
 // EvaluateRecommendationFigures settles every figure a recommendation declares against
@@ -133,21 +149,41 @@ func evaluateRecommendationFigure(f models.Figure, ix figureRefIndex) models.Fig
 	}
 
 	total := 0.0
+	unvouched := ""
 	for _, r := range f.Refs {
-		got, err := ix.resolve(r)
+		got, vouched, why, err := ix.resolve(r)
 		if err != nil {
 			return undecidable("%s", err.Error())
+		}
+		if !vouched && unvouched == "" {
+			unvouched = why
 		}
 		total += got
 	}
 
 	v.Evaluated = total
+	v.Resolved = true
+	if unvouched != "" {
+		// The value is carried so the prose gets the number the cited insight itself
+		// shows, but nothing here claims it was checked.
+		return undecidable("%s", unvouched)
+	}
+	// No declared value is the contract being followed, not a disagreement: the
+	// recommendation contract has no `value` field and says the platform supplies the
+	// number. The first live replay recorded eighteen of nineteen figures as corrected
+	// from zero, which made compliance look identical to being wrong in exactly the
+	// telemetry used to measure it.
+	if f.Value == 0 {
+		v.Claimed = total
+		v.Status = models.FigureHolds
+		return v
+	}
 	if closeEnough(f, total) {
 		v.Status = models.FigureHolds
 		return v
 	}
 	v.Status = models.FigureFails
-	v.Reason = fmt.Sprintf("the references total %s, %s", formatFigure(total), relativeGap(f.Value, total))
+	v.Reason = fmt.Sprintf("the references give %s, %s", formatFigure(total), relativeGap(f.Value, total))
 	return v
 }
 
@@ -181,7 +217,7 @@ func adoptResolvedFigureValues(rec *models.Recommendation, ix figureRefIndex) in
 
 	var corrections []models.FigureCorrection
 	for _, v := range rec.FigureVerdicts {
-		if v.Status != models.FigureFails {
+		if !v.Resolved {
 			continue
 		}
 		j, ok := byID[v.ID]
@@ -189,6 +225,24 @@ func adoptResolvedFigureValues(rec *models.Recommendation, ix figureRefIndex) in
 			continue
 		}
 		f := &rec.Figures[j]
+
+		// An absent number is filled in from the best source there is, vouched or not.
+		// The contract tells the model not to write a value, so absence is the normal
+		// case; and where the operand is one Go declined to vouch for, the cited insight
+		// is already showing that number to the same reader.
+		if f.Value == 0 {
+			f.Value = v.Evaluated
+			continue
+		}
+
+		// A number the model did state is overwritten only when Go can vouch for the
+		// replacement, which is what a refutation means here. An unvouched operand
+		// leaves the model's own figure standing: swapping it for a number Go explicitly
+		// would not stand behind is not a correction, and recording it as one would put
+		// an unverified substitution in the log that exists to show verified ones.
+		if v.Status != models.FigureFails {
+			continue
+		}
 		before := renderFigure(*f)
 		f.Value = v.Evaluated
 		after := renderFigure(*f)

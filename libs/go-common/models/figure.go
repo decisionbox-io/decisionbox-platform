@@ -172,6 +172,14 @@ type FigureVerdict struct {
 	Evaluated float64 `bson:"evaluated,omitempty" json:"evaluated,omitempty"`
 
 	Reason string `bson:"reason,omitempty" json:"reason,omitempty"`
+
+	// Resolved says a value was actually produced for this figure, which is not the
+	// same as the figure holding. A recommendation figure whose reference points at an
+	// insight figure Go declined to vouch for is undecidable AND resolved: the number
+	// exists and is carried into the prose, because the alternative -- discovered by
+	// shipping it -- is a sentence reading "$11.48B — 0.00% of gross $229.58B" where a
+	// model told not to write a value wrote none and the absence rendered as zero.
+	Resolved bool `bson:"resolved,omitempty" json:"resolved,omitempty"`
 }
 
 // Figure verdict statuses. An evaluator that reports its own limits as the document's
