@@ -131,6 +131,14 @@ func buildFigureRefIndex(insights []models.Insight) figureRefIndex {
 				byID[f.ID] = refValue{why: "the insight declares that id more than once, so which figure it names is ambiguous"}
 				continue
 			}
+			// found stays false: there is no number here. The insight's own prose keeps the
+			// reference visible for the same reason, and indexing it as found handed the
+			// decode's zero to a recommendation, which adopted it and printed a fabricated
+			// measurement -- and a sum including it was quietly short by the whole term.
+			if f.ValueMissing {
+				byID[f.ID] = refValue{why: "the insight declared no readable value for it"}
+				continue
+			}
 			// Holds is the only status a reference may stand on, and by the time this
 			// runs it means checked and standing: the correction pass re-settles every
 			// verdict it touched, so a figure Go fixed reads holds and a figure Go

@@ -71,9 +71,10 @@ func renderInsightFigures(insights []models.Insight) figureRenderTally {
 		}
 		ins.FigureTemplate = &tpl
 
-		// A figure whose value could not be read renders nothing: the reference ships
-		// visible rather than printing the zero the decode fell back to.
-		r := newFigureRenderer(withReadableValues(ins.Figures), &tally)
+		// Through the one gate: an ambiguous id and a value the model never supplied both
+		// render nothing, and the reference ships visible rather than printing the zero the
+		// decode fell back to.
+		r := newFigureRenderer(usableFigures(ins.Figures), &tally)
 		ins.Name = r.render(ins.Name)
 		ins.Description = r.render(ins.Description)
 		for j := range ins.Indicators {
@@ -184,24 +185,45 @@ func renderRecommendationFigures(recs []models.Recommendation) figureRenderTally
 	return tally
 }
 
-// renderableFigures drops the figures that have no number behind them: unresolved, and
-// stating no value of their own.
-func renderableFigures(figures []models.Figure, verdicts []models.FigureVerdict) []models.Figure {
-	// Duplicates are taken from the ORIGINAL list, because this filter can otherwise
-	// manufacture the uniqueness the renderer's own guard tests for: with two figures
-	// sharing an id, one resolved and one not, dropping the unresolved one leaves a single
-	// declaration and the renderer sees nothing ambiguous to refuse. The guard was intact
-	// and a later transformation removed the evidence it reads.
+// usableFigures returns the figures anything in this layer may act on: an id declared once,
+// and a value the model actually supplied.
+//
+// One function because two separate filters both lost the same property. renderableFigures
+// and withReadableValues each dropped some declarations and then handed the remainder to a
+// renderer whose guard tests for a duplicated id -- so removing one of two declarations that
+// shared an id manufactured the uniqueness the guard looks for, and the survivor rendered
+// every reference to an ambiguous name. The second filter was written in the same commit that
+// fixed the first, which is the argument for there being one.
+//
+// Duplicates are therefore always computed from the ORIGINAL list, before anything is
+// removed. That is the property a filter cannot be trusted to preserve on its own.
+func usableFigures(figures []models.Figure) []models.Figure {
 	dup := duplicateFigureIDs(figures)
+	out := make([]models.Figure, 0, len(figures))
+	for _, f := range figures {
+		if dup[f.ID] || f.ValueMissing {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// renderableFigures is usableFigures plus the recommendation-only rule: a reference that
+// resolved to nothing, and states no value of its own, has no number to print.
+//
+// Its value is zero because the contract tells the model not to write one, and rendering that
+// ships a fabricated number into the sentence -- the first live replay produced
+// "$11.48B — 0.00% of gross $229.58B" exactly this way. Leaving the reference visible is the
+// honest failure: a reader seeing "{{f2}}" knows something went wrong, and 0.00% reads like a
+// finding.
+func renderableFigures(figures []models.Figure, verdicts []models.FigureVerdict) []models.Figure {
 	resolved := make(map[string]bool, len(verdicts))
 	for _, v := range verdicts {
 		resolved[v.ID] = v.Resolved
 	}
 	out := make([]models.Figure, 0, len(figures))
-	for _, f := range figures {
-		if dup[f.ID] {
-			continue
-		}
+	for _, f := range usableFigures(figures) {
 		if !resolved[f.ID] && f.Value == 0 {
 			continue
 		}
@@ -384,17 +406,5 @@ func unusedFigures(used map[string]struct{}, figures []models.Figure) []string {
 		}
 	}
 	sort.Strings(out)
-	return out
-}
-
-// withReadableValues drops the figures whose value the model never supplied.
-func withReadableValues(figures []models.Figure) []models.Figure {
-	out := make([]models.Figure, 0, len(figures))
-	for _, f := range figures {
-		if f.ValueMissing {
-			continue
-		}
-		out = append(out, f)
-	}
 	return out
 }

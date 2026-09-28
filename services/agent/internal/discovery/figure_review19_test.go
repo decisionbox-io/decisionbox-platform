@@ -999,3 +999,102 @@ func TestFigures_AFilterCannotManufactureUniqueness(t *testing.T) {
 		t.Errorf("description = %q, want the ambiguous reference left visible", recs[0].Description)
 	}
 }
+
+// --- Review round 26. Both findings were round 25's own fixes applied at one site and not
+// the adjacent one, so both are pinned against the one gate rather than against a filter.
+
+// TestFigures_OneGateHoldsBothPropertiesForBothSides — round 26.
+//
+// withReadableValues was written in the same commit that fixed renderableFigures' identical
+// defect: dropping one of two declarations that share an id manufactures the uniqueness the
+// renderer's guard tests for, and the survivor renders every reference to an ambiguous name.
+// Two filters, one property lost twice -- so there is one gate now, and this covers both
+// properties on both sides of it.
+func TestFigures_OneGateHoldsBothPropertiesForBothSides(t *testing.T) {
+	figures := []models.Figure{
+		{ID: "f1", Value: 52134, Unit: models.UnitCount},
+		{ID: "f1", ValueMissing: true, Unit: models.UnitCount},
+		{ID: "f2", ValueMissing: true, Unit: models.UnitCount},
+		{ID: "f3", Value: 10, Unit: models.UnitCount},
+	}
+	got := usableFigures(figures)
+	if len(got) != 1 || got[0].ID != "f3" {
+		t.Fatalf("usableFigures = %+v, want only f3: f1 is ambiguous and f2 has no value", got)
+	}
+
+	// The insight render path: the duplicated id must not render even though one of its two
+	// declarations carries a perfectly good value.
+	ins := []models.Insight{{
+		Name:        "It holds {{f1}} and {{f2}} and {{f3}}",
+		Description: "d",
+		Figures:     figures,
+	}}
+	renderInsightFigures(ins)
+	if strings.Contains(ins[0].Name, "52,134") {
+		t.Errorf("an ambiguous id rendered after the valueless twin was filtered away: %q", ins[0].Name)
+	}
+	for _, want := range []string{"{{f1}}", "{{f2}}"} {
+		if !strings.Contains(ins[0].Name, want) {
+			t.Errorf("name = %q, want %s left visible", ins[0].Name, want)
+		}
+	}
+	if !strings.Contains(ins[0].Name, "10") {
+		t.Errorf("name = %q, want the sound figure rendered", ins[0].Name)
+	}
+}
+
+// TestFigures_ReferenceToAValuelessFigureResolvesToNothing — round 26.
+//
+// The insight side refused to render a figure whose value was never supplied, and the index
+// went on advertising it as found with the decode's zero. A recommendation referencing it got
+// Resolved true, adopted zero and printed a fabricated measurement -- and a sum including it
+// was quietly short by the whole term.
+func TestFigures_ReferenceToAValuelessFigureResolvesToNothing(t *testing.T) {
+	ins := models.Insight{
+		ID: "11111111-2222-3333-4444-555555555555",
+		Figures: []models.Figure{
+			{ID: "f1", ValueMissing: true, Unit: models.UnitCount},
+			{ID: "f2", Value: 43897, Unit: models.UnitCount},
+		},
+		FigureVerdicts: []models.FigureVerdict{
+			{ID: "f1", Status: models.FigureUndecidable},
+			{ID: "f2", Status: models.FigureHolds},
+		},
+	}
+
+	// A plain restatement of it renders nothing.
+	recs := []models.Recommendation{{
+		Description: "It covers {{f1}} accounts.",
+		Figures: []models.Figure{{
+			ID: "f1", Unit: models.UnitCount, Kind: models.FigureRefKind,
+			Refs: []models.FigureRef{ref(ins.ID, "f1")},
+		}},
+	}}
+	attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	renderRecommendationFigures(recs)
+	v := recs[0].FigureVerdicts[0]
+	if v.Resolved {
+		t.Error("resolved = true for a figure that has no value")
+	}
+	if recs[0].Figures[0].Value != 0 || !strings.Contains(recs[0].Description, "{{f1}}") {
+		t.Errorf("description = %q / value %v, want the reference left visible and unfilled",
+			recs[0].Description, recs[0].Figures[0].Value)
+	}
+
+	// And a sum must not quietly treat it as zero and report the rest as the total.
+	sums := []models.Recommendation{{
+		Description: "Together {{f1}}.",
+		Figures: []models.Figure{{
+			ID: "f1", Unit: models.UnitCount, Kind: models.FigureSum,
+			Refs: []models.FigureRef{ref(ins.ID, "f1"), ref(ins.ID, "f2")},
+		}},
+	}}
+	attachRecommendationFigureVerdicts(sums, []models.Insight{ins})
+	renderRecommendationFigures(sums)
+	if strings.Contains(sums[0].Description, "43,897") {
+		t.Errorf("the sum shipped one term as if it were the total: %q", sums[0].Description)
+	}
+	if sv := sums[0].FigureVerdicts[0]; sv.Resolved {
+		t.Errorf("sum resolved = true despite an operand with no value (%s)", sv.Reason)
+	}
+}
