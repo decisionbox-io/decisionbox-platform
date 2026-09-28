@@ -56,11 +56,13 @@ func reflectionPromptFixture() (*Orchestrator, *models.DiscoveryResult, []common
 // --- the prompt -----------------------------------------------------------
 
 // TestReflectionPrompt_TableOnlyRunIsUnchanged is the protection for every
-// deployment that exists today. The golden was captured by rendering this same
-// fixture on the parent commit, so a drift of even one byte — a heading, a
-// bullet, a stray newline left behind by the new token substitution — fails
-// here rather than quietly changing what every SQL-only project's reflection
-// is asked to do.
+// deployment that exists today. The golden is a full render of this fixture,
+// so a drift of even one byte — a heading, a bullet, a stray newline left
+// behind by a token substitution — fails here rather than quietly changing
+// what every SQL-only project's reflection is asked to do. It is re-captured
+// only when a change to the prompt is the point: the cube catalog, and the
+// mandatory-output wording of #434 (this fixture runs with evolution on and
+// prior findings present, so it carries both demands).
 func TestReflectionPrompt_TableOnlyRunIsUnchanged(t *testing.T) {
 	want, err := os.ReadFile("testdata/reflection_prompt_table_only.golden")
 	if err != nil {
@@ -496,7 +498,7 @@ func TestRunPhaseReflection_CubeRunSortsCoverageIntoTheRightNamespace(t *testing
 // model that declined to answer.
 func TestReflectionSchema_MatchesStructTags(t *testing.T) {
 	tags := jsonTagSet(reflect.TypeOf(parsedReflection{}))
-	props := reflectionResponseSchema()["properties"].(map[string]interface{})
+	props := reflectionResponseSchema(agentplugin.EvolutionModeAuto, true)["properties"].(map[string]interface{})
 
 	for name := range props {
 		if !tags[name] {

@@ -94,7 +94,7 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 	outputCap := phaseOutputCap(discoveryReflectionMaxOutputEnv, modelOutputCap, 512, defaultDiscoveryReflectionMaxOutput)
 	maxTokens := budgetedMaxOutputTokens(window, approxTokens(ctx, prompt), outputCap, analysisMinOutputTokens())
 
-	format := reflectionResponseFormat()
+	format := reflectionResponseFormat(pol.EvolutionMode, len(prior) > 0)
 	if o.aiClient.SupportsStructuredOutput() {
 		applog.Info("Reflection generation using schema-constrained output")
 	}
@@ -143,6 +143,7 @@ func (o *Orchestrator) buildReflectionPrompt(result *models.DiscoveryResult, pri
 	p = strings.ReplaceAll(p, "{{EVOLUTION_GUIDANCE}}", evolutionModeGuidance(pol.EvolutionMode))
 	p = strings.ReplaceAll(p, "{{RUN_FINDINGS}}", renderRunFindings(result.Insights))
 	p = strings.ReplaceAll(p, "{{PRIOR_FINDINGS}}", renderPriorFindings(prior))
+	p = strings.ReplaceAll(p, "{{PRIOR_STATUS_FIELD}}", renderPriorStatusField(len(prior) > 0))
 	p = strings.ReplaceAll(p, "{{OPEN_TASKS}}", renderOpenTasks(tasks))
 	p = strings.ReplaceAll(p, "{{CATALOG_SECTION}}", renderCatalogSection(result.Schemas, catalogItems))
 	p = strings.ReplaceAll(p, "{{COVERED_FIELDS}}", renderCoveredFields(len(catalogItems) > 0))
@@ -183,7 +184,30 @@ func evolutionModeGuidance(mode agentplugin.EvolutionMode) string {
 	if mode == agentplugin.EvolutionModeOff {
 		return "Domain-pack evolution is OFF for this project: return an EMPTY next_tasks array and an EMPTY domain_pack_deltas array. You may still produce coverage, learnings, prior-finding status updates, and task_status_updates that close resolved open tasks."
 	}
-	return "You may propose next_tasks (self-directed investigation threads for the next run) and domain_pack_deltas (analysis-area changes). Ground every proposal in the findings above."
+	return "Propose AT LEAST ONE next_task (a self-directed investigation thread for the next run), grounded in this run's findings and coverage — an empty next_tasks array is not an acceptable answer for this project. You may also propose domain_pack_deltas (analysis-area changes). Ground every proposal in the findings above."
+}
+
+// reflectionPriorStatusFieldBase is the prior_status_updates bullet of the
+// output contract as the template carried it inline, kept verbatim for the run
+// that has no prior findings to re-judge.
+const reflectionPriorStatusFieldBase = "- **prior_status_updates**: for PRIOR findings only, by their `id`. Update a status ONLY with grounded evidence from this run — e.g. a new finding contradicts a prior one (`refuted`), or the same finding now shows a different magnitude (`changed`). **Do NOT mark a finding `resolved` just because it did not reappear** — discovery is not exhaustive, so absence is not proof. Leave findings you have no evidence about alone."
+
+// renderPriorStatusField renders that bullet, demanding at least one
+// re-judgement on a run that actually lists prior findings.
+//
+// Conditional because the demand and the grounding rule above it only coexist
+// when there is something to judge: an early run has no prior findings, and a
+// model told to produce a verdict anyway has no id to attach it to but the one
+// it invents. Where priors do exist the two do not conflict — a prior finding
+// this run saw again is evidence, and saying so is what stops the model from
+// reading "only with grounded evidence" as permission to skip the field
+// entirely, which is what it had been doing (#434).
+func renderPriorStatusField(hasPriorFindings bool) string {
+	if !hasPriorFindings {
+		return reflectionPriorStatusFieldBase
+	}
+	return reflectionPriorStatusFieldBase +
+		" Prior findings ARE listed above, so re-judge **at least one**: a prior finding this run surfaced again is grounded evidence for `confirmed`, and one whose magnitude moved is `changed`."
 }
 
 func renderRunFindings(insights []models.Insight) string {
