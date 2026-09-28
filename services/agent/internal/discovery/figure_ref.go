@@ -204,6 +204,9 @@ func evaluateRecommendationFigure(f models.Figure, ix figureRefIndex) models.Fig
 		return v
 	}
 
+	if !figureIDPattern.MatchString(f.ID) {
+		return undecidable("%q is not an id the prose can reference; use a letter followed by letters, digits or underscores", f.ID)
+	}
 	if !models.RecommendationFigureKinds[f.Kind] {
 		// Not a refutation. A kind this layer does not carry says nothing about whether
 		// the number is right, and reporting the evaluator's own limits as the

@@ -151,7 +151,20 @@ func closeEnough(f models.Figure, got float64) bool {
 	if math.IsNaN(f.Value) || math.IsNaN(got) || math.IsInf(f.Value, 0) || math.IsInf(got, 0) {
 		return false
 	}
-	return math.Abs(renderedValue(f)-got) <= figureSlack(f)
+	rendered := renderedValue(f)
+	// The comparison has to tolerate its own floating point. 12.375 printed to two places
+	// renders 12.38, and subtracting the evidence 12.375 from it gives
+	// 0.005000000000000782 -- past a slack of exactly 0.005, so a figure equal to its
+	// evidence was refuted, and the correction pass could not rescue it because assigning
+	// the evaluated value renders the same text. A reference to it then inherited an
+	// unvouched figure.
+	//
+	// Relative to the magnitudes being compared rather than a fixed epsilon, because the
+	// error is in the subtraction and scales with them. 1e-12 is far above the
+	// double-precision error at any magnitude this layer sees and far below any slack a
+	// printed figure claims, so it moves no honest verdict.
+	slop := 1e-12 * math.Max(math.Abs(rendered), math.Abs(got))
+	return math.Abs(rendered-got) <= figureSlack(f)+slop
 }
 
 // percentScalings returns the evaluated values a percentage figure may legitimately be

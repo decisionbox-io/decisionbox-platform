@@ -17,6 +17,12 @@ package discovery
 // Every rule that remains traces to a measured failure, which is the test each one had to
 // pass to survive the shortening that produced this version:
 //
+//   - the ratio bullet says "the quotient, not the excess" because the earlier wording
+//     offered *3.5% above the lowest* as an example of what `ratio` declares. evalFigure
+//     computes 100*numerator/denominator, so a model following that example on 103.5 against
+//     100 declares the correct 3.5% and is refuted by arithmetic that answers 103.5%. A
+//     contract that advertises an operation the evaluator does not implement is a false
+//     refutation generator, which is the one failure mode this whole layer exists to avoid.
 //   - "never a word" is why a days unit no longer ships "180.1 days days".
 //   - decimals-as-precision is the whole check: the interval is half the last place Go
 //     printed, which separated "$6.645B" against its cell (true) from "100,000" against
@@ -50,13 +56,17 @@ const figureContract = "## Every number is data, not text\n\n" +
 	"   \"step\": 48, \"kind\": \"sum\", \"column\": \"revenue\"}\n" +
 	"]\n" +
 	"```\n\n" +
+	"Each figure's `id` is a letter followed by letters, digits or underscores — `f1`, `f12`, " +
+	"`rev_share`. The prose reference must match it exactly.\n\n" +
 	"### The arithmetic\n\n" +
 	"- `cell` — one cell: `column` plus `row`, which must select exactly **one** row.\n" +
 	"- `sum` — the total of `column`, over `scope` if given, otherwise every row.\n" +
 	"- `count` — how many rows are in `scope`, or in the whole result if you give none.\n" +
 	"- `ratio` — `column` in `row` over the same column in `other`; or, with no `other`, over " +
 	"the total of `column` across `scope`. The first form is one row against another — *4.8x " +
-	"more often*, *3.5% above the lowest*. The second is a share of the whole column.\n" +
+	"the lowest band*; the second is a share of the whole column. Either way it is the " +
+	"quotient, **not the excess**: for 103.5 against 100 it is `103.5%`, and if you want to " +
+	"say *3.5% higher* then write that in the sentence and declare the two amounts.\n" +
 	"- `diff` — `column` in `row` minus `column` in `other`. Both required.\n\n" +
 	"`row`, `other` and `scope` use the same grammar as `filter` above: `column <op> literal` " +
 	"terms joined by `AND`, op one of `= != < <= > >=`. Nothing richer is read, and anything " +

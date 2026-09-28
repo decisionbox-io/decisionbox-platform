@@ -46,6 +46,18 @@ func evaluateFigure(f models.Figure, steps map[int]StepRows) models.FigureVerdic
 		return v
 	}
 
+	// An id the prose cannot reference earns no verdict.
+	//
+	// The schemas accept any string, the resolving pattern accepts a letter followed by
+	// letters, digits or underscores, and the evaluator never looked at the shape at all --
+	// so `id: "revenue-total"` could be settled as holding while "{{revenue-total}}" shipped
+	// in the published sentence. Refusing it in the render gate alone was no fix: the
+	// renderer could not resolve that placeholder either way, and the verdict claiming the
+	// figure was checked is the part a reader inherits.
+	if !figureIDPattern.MatchString(f.ID) {
+		return undecidable("%q is not an id the prose can reference; use a letter followed by letters, digits or underscores", f.ID)
+	}
+
 	if f.ValueMissing {
 		// No value was declared, so there is no claim to settle -- and settling it as a
 		// claim of zero is what printed "0" into a sentence, because the correction gate

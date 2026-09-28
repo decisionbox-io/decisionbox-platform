@@ -1098,3 +1098,129 @@ func TestFigures_ReferenceToAValuelessFigureResolvesToNothing(t *testing.T) {
 		t.Errorf("sum resolved = true despite an operand with no value (%s)", sv.Reason)
 	}
 }
+
+// --- Review round 27. Three of the four are new rather than a repeat, and one of those is a
+// mistake in the contract text itself.
+
+// TestFigures_ContractDoesNotAdvertiseAnExcessRatio — round 27.
+//
+// The ratio bullet offered "3.5% above the lowest" as an example of what `ratio` declares.
+// evalFigure computes 100*numerator/denominator, so a model following that example on 103.5
+// against 100 declares the correct 3.5% and is refuted by arithmetic that answers 103.5%. A
+// contract that advertises an operation the evaluator does not implement is a false-refutation
+// generator, which is the failure this layer exists to avoid -- written into the prompt by me.
+func TestFigures_ContractDoesNotAdvertiseAnExcessRatio(t *testing.T) {
+	if strings.Contains(figureContract, "above the lowest") {
+		t.Error("the contract still offers an excess as an example of `ratio`, which the evaluator does not compute")
+	}
+	if !strings.Contains(figureContract, "not the excess") {
+		t.Error("the contract does not warn that ratio is the quotient rather than the excess")
+	}
+
+	// And the arithmetic the contract now describes is what the evaluator does.
+	f := models.Figure{
+		ID: "f1", Value: 103.5, Unit: models.UnitPercent, Decimals: 1,
+		Step: 1, Kind: models.FigureRatio, Column: "v", Row: "band = hi", Other: "band = lo",
+	}
+	rows := []map[string]any{{"band": "hi", "v": 103.5}, {"band": "lo", "v": 100.0}}
+	if v := evaluateFigure(f, map[int]StepRows{1: {Rows: rows}}); v.Status != models.FigureHolds {
+		t.Errorf("status = %q (%s), want holds: 103.5 over 100 is 103.5%%", v.Status, v.Reason)
+	}
+}
+
+// TestFigures_BoundaryComparisonToleratesItsOwnArithmetic — round 27.
+//
+// 12.375 printed to two places renders 12.38, and subtracting the evidence 12.375 gives
+// 0.005000000000000782 -- past a slack of exactly 0.005. So a figure equal to its evidence was
+// refuted, the correction pass could not rescue it because assigning the evaluated value
+// renders the same text, and a reference to it inherited an unvouched figure.
+func TestFigures_BoundaryComparisonToleratesItsOwnArithmetic(t *testing.T) {
+	f := models.Figure{
+		ID: "f1", Value: 12.375, Unit: models.UnitPlain, Decimals: 2,
+		Step: 1, Kind: models.FigureCell, Column: "v", Row: "k = a",
+	}
+	if got := renderFigure(f); got != "12.38" {
+		t.Fatalf("renderFigure = %q, want 12.38; premise stale", got)
+	}
+	v := evaluateFigure(f, map[int]StepRows{1: {Rows: []map[string]any{{"k": "a", "v": 12.375}}}})
+	if v.Status != models.FigureHolds {
+		t.Errorf("status = %q (%s), want holds: the value IS the evidence", v.Status, v.Reason)
+	}
+
+	// The tolerance must not swallow a real miss: one whole last place out is still refuted.
+	off := f
+	off.Value = 12.395
+	if got := evaluateFigure(off, map[int]StepRows{1: {Rows: []map[string]any{{"k": "a", "v": 12.375}}}}); got.Status != models.FigureFails {
+		t.Errorf("status = %q, want fails: 12.40 against 12.375 is outside the printed interval", got.Status)
+	}
+}
+
+// TestFigures_AnUnresolvableIDIsRefusedAndStillCounted — round 27.
+//
+// The schemas accept any string as an id and the resolving pattern accepts only a
+// letter-prefixed alphanumeric one, so `id: "revenue-total"` earned a holding verdict -- the
+// evaluator never looks at the shape of an id -- and shipped "{{revenue-total}}" in the
+// published prose. The unresolved counter is built on the same pattern, so the placeholder
+// escaped the telemetry that exists to report exactly this.
+func TestFigures_AnUnresolvableIDIsRefusedAndStillCounted(t *testing.T) {
+	ins := []models.Insight{{
+		Name:        "Revenue reached {{revenue-total}}",
+		Description: "d",
+		Figures:     []models.Figure{{ID: "revenue-total", Value: 500, Unit: models.UnitCurrency}},
+	}}
+	tally := renderInsightFigures(ins)
+
+	if strings.Contains(ins[0].Name, "$500") {
+		t.Errorf("an id outside the reference grammar rendered anyway: %q", ins[0].Name)
+	}
+	if !strings.Contains(ins[0].Name, "{{revenue-total}}") {
+		t.Errorf("name = %q, want the placeholder left visible", ins[0].Name)
+	}
+	if tally.unresolved != 1 {
+		t.Errorf("tally.unresolved = %d, want 1 -- a placeholder the grammar cannot express must still be counted", tally.unresolved)
+	}
+	// And the verdict must not say the figure was checked, which is the half a reader
+	// inherits: refusing it in the render gate alone changed nothing, because the renderer
+	// could not resolve that placeholder either way.
+	list := []models.Insight{{
+		Name:        "Revenue reached {{revenue-total}}",
+		SourceSteps: []int{1},
+		Figures:     []models.Figure{{ID: "revenue-total", Value: 500, Unit: models.UnitCurrency, Step: 1, Kind: models.FigureSum, Column: "net"}},
+	}}
+	attachFigureVerdicts(list, map[int]*models.ExplorationStep{
+		1: {Step: 1, QueryResult: []map[string]any{{"net": 500.0}}},
+	})
+	if v := list[0].FigureVerdicts[0]; v.Status != models.FigureUndecidable {
+		t.Errorf("verdict = %q, want undecidable: a figure the prose cannot reference must not be reported as checked", v.Status)
+	}
+	// The contract has to state the grammar, or this refusal is a trap rather than a rule.
+	if !strings.Contains(figureContract, "letters, digits or underscores") {
+		t.Error("the contract does not state the id grammar the renderer requires")
+	}
+}
+
+// TestFigures_CorrectionDeclinesWhenAMetricWouldDesync — round 27.
+//
+// The third structured field to need this, after affected_count and segment_size: metrics ride
+// along in BuildInsightBundle and in the recommender payload, so correcting the prose while a
+// metric keeps the old number hands two different answers to the same consumer.
+func TestFigures_CorrectionDeclinesWhenAMetricWouldDesync(t *testing.T) {
+	step := &models.ExplorationStep{Step: 4, QueryResult: []map[string]any{{"net": 995.0}}}
+	byID := map[int]*models.ExplorationStep{4: step}
+	ins := []models.Insight{{
+		Name:        "Revenue was {{f1}}",
+		SourceSteps: []int{4},
+		Metrics:     map[string]interface{}{"revenue": 1000.0},
+		Figures:     []models.Figure{{ID: "f1", Value: 1000, Unit: models.UnitCurrency, Step: 4, Kind: models.FigureSum, Column: "net"}},
+	}}
+	attachFigureVerdicts(ins, byID)
+	if ins[0].FigureVerdicts[0].Status != models.FigureFails {
+		t.Fatalf("premise stale: verdict = %q", ins[0].FigureVerdicts[0].Status)
+	}
+	if n := correctRefutedFigures("area", ins, byID); n != 0 {
+		t.Errorf("corrections = %d, want 0 -- correcting here desyncs metrics.revenue", n)
+	}
+	if ins[0].Figures[0].Value != 1000 {
+		t.Errorf("figure = %v, want the two left consistent", ins[0].Figures[0].Value)
+	}
+}

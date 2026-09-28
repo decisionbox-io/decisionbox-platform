@@ -21,8 +21,25 @@ import (
 // thing that makes it checkable after the fact that a number in the prose came from a
 // declaration rather than from the model typing it.
 
-// reFigureRef matches a reference: {{f1}}, with optional spaces.
+// reFigureRef matches a reference this layer can resolve: {{f1}}, with optional spaces.
 var reFigureRef = regexp.MustCompile(`\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}\}`)
+
+// reAnyRef matches anything SHAPED like a reference, whatever it names.
+//
+// Needed because the two grammars disagreed and the gap was silent in both directions. The
+// schemas accept any string as an id, so a model could declare `id: "revenue-total"`, get a
+// holding verdict for it -- the evaluator never looks at the shape of an id -- and ship
+// "{{revenue-total}}" in the published prose, because the resolving pattern does not match a
+// hyphen. Worse, the unresolved-reference counter is built on that same pattern, so the
+// placeholder escaped the telemetry that exists to report exactly this.
+//
+// This one is for detection only: it never yields a value or a figure, it answers whether the
+// prose still carries something a reader will see as broken.
+var reAnyRef = regexp.MustCompile(`\{\{[^{}]*\}\}`)
+
+// figureIDPattern is the id grammar the contract states and the renderer resolves. A figure
+// whose id falls outside it is refused by usableFigures rather than left half-working.
+var figureIDPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
 
 // reBareDigit finds a digit outside any reference, after references are blanked.
 //
@@ -101,11 +118,15 @@ func renderInsightFigures(insights []models.Insight) figureRenderTally {
 			ins.DescriptionMd = r.render(ins.DescriptionMd)
 		}
 
-		if len(r.unresolved) > 0 {
+		if left := strayRefs(ins.Name, ins.Description, ins.Indicators...); len(left) > 0 {
+			// Counted from what the prose still carries rather than from what the renderer
+			// tried to resolve, so a placeholder naming an id the grammar cannot express is
+			// reported instead of slipping past the counter built on that same grammar.
+			tally.unresolved += len(left) - len(r.unresolved)
 			applog.WithFields(applog.Fields{
 				"insight": ins.Name,
-				"refs":    r.unresolved,
-			}).Warn("Insight prose references figures it did not declare; the references ship as written")
+				"refs":    left,
+			}).Warn("Insight prose still carries references after rendering; they ship as written")
 		}
 		if bare := bareNumeralFields(tpl); len(bare) > 0 {
 			tally.inlined += len(bare)
@@ -201,7 +222,10 @@ func usableFigures(figures []models.Figure) []models.Figure {
 	dup := duplicateFigureIDs(figures)
 	out := make([]models.Figure, 0, len(figures))
 	for _, f := range figures {
-		if dup[f.ID] || f.ValueMissing {
+		// An id the reference grammar cannot express is refused here rather than allowed to
+		// hold silently while its placeholder ships. Refusing is the honest half; the other
+		// half is reAnyRef, so the placeholder is still counted as unresolved.
+		if dup[f.ID] || f.ValueMissing || !figureIDPattern.MatchString(f.ID) {
 			continue
 		}
 		out = append(out, f)
@@ -406,5 +430,14 @@ func unusedFigures(used map[string]struct{}, figures []models.Figure) []string {
 		}
 	}
 	sort.Strings(out)
+	return out
+}
+
+// strayRefs lists the reference-shaped placeholders still present in rendered prose.
+func strayRefs(name, description string, indicators ...string) []string {
+	var out []string
+	for _, s := range append([]string{name, description}, indicators...) {
+		out = append(out, reAnyRef.FindAllString(s, -1)...)
+	}
 	return out
 }

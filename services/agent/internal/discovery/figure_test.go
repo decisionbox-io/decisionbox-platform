@@ -64,6 +64,13 @@ func stepIndex(step int, rows []map[string]any) map[int]*models.ExplorationStep 
 
 func oneVerdict(t *testing.T, f models.Figure, steps map[int]StepRows) models.FigureVerdict {
 	t.Helper()
+	// These cases are about the arithmetic, so they leave the id out. A real figure always
+	// has one -- the evaluator now refuses an id the prose cannot reference, since a figure
+	// settled as holding while its placeholder ships is the worst of both -- so the helper
+	// supplies it rather than every case repeating it.
+	if f.ID == "" {
+		f.ID = "f1"
+	}
 	v := EvaluateFigures([]models.Figure{f}, steps)
 	if len(v) != 1 {
 		t.Fatalf("got %d verdicts, want 1", len(v))

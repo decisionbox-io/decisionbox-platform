@@ -97,6 +97,13 @@ func correctRefutedFigures(areaID string, insights []models.Insight, stepByID ma
 			// error: affected_count is "entities affected" and need not be the same
 			// quantity as a figure that happens to match. So decline, and leave the figure
 			// refuted and visible, which is this gate's safe fallback anyway.
+			if metric, ok := metricStating(ins.Metrics, v.Claimed); ok {
+				applog.WithFields(applog.Fields{
+					"area": areaID, "insight": ins.Name, "figure": v.ID, "metric": metric,
+					"claimed": v.Claimed, "evaluated": v.Evaluated,
+				}).Warn("Not correcting this figure: a metric states the same number and nothing here can establish they are the same quantity")
+				continue
+			}
 			if ins.AffectedCount != 0 && float64(ins.AffectedCount) == v.Claimed {
 				applog.WithFields(applog.Fields{
 					"area":           areaID,
@@ -231,4 +238,20 @@ func referencesFigure(text, id string) bool {
 		}
 	}
 	return false
+}
+
+// metricStating names a metric holding exactly the value a correction would replace.
+//
+// The third structured field to need this, after affected_count and a recommendation's
+// segment_size, and the reasoning has not changed: metrics ride along in BuildInsightBundle
+// and in the recommender payload, so correcting the prose while a metric keeps the old number
+// hands two different answers to the same consumer. Overwriting it is the other error, since
+// a metric named "revenue" need not be the quantity a figure that happens to match counts.
+func metricStating(metrics map[string]interface{}, value float64) (string, bool) {
+	for name, raw := range metrics {
+		if n, ok := asFloat(raw); ok && n == value {
+			return name, true
+		}
+	}
+	return "", false
 }
