@@ -53,7 +53,7 @@ func substituteRefutedFigures(ins *models.Insight) []models.FigureFix {
 			continue
 		}
 		c := &ins.FigureClaims[i]
-		from, to, ok := renderFigureSwap(c.Figure, v.Evaluated)
+		from, to, ok := renderFigureSwap(c.Figure, v.Claimed, v.Evaluated)
 		if !ok {
 			continue
 		}
@@ -77,12 +77,17 @@ func substituteRefutedFigures(ins *models.Insight) []models.FigureFix {
 // "49.342999999999996". "100,000" becomes "99,996" with its separator kept. A
 // figure written in scaled units keeps its scale: a refuted "$6.9B" is rendered
 // against the same billions its suffix declares.
-func renderFigureSwap(figure string, evaluated float64) (from, to string, ok bool) {
-	m := reNumeral.FindStringSubmatchIndex(figure)
-	if m == nil {
+func renderFigureSwap(figure string, claimed, evaluated float64) (from, to string, ok bool) {
+	// The SAME numeral the precision was read from, selected by matching Value
+	// rather than by position. Taking the first numeral here was half of a measured
+	// corruption: a figure like "5.0 pct of $34.86B" had its interval read off the
+	// 5.0, was refuted for it, and then had that 5.0 rewritten into a billions
+	// figure -- after which re-settling reported the insight as holding.
+	sel, selected := selectNumeral(figure, claimed)
+	if !selected {
 		return "", "", false
 	}
-	digits := group(figure, m, 3)
+	digits := sel.digits
 	if len(strings.ReplaceAll(digits, ",", "")) < minSubstitutableDigits {
 		return "", "", false
 	}
@@ -92,9 +97,7 @@ func renderFigureSwap(figure string, evaluated float64) (from, to string, ok boo
 		decimals = len(digits) - i - 1
 	}
 	scale := 1.0
-	suffix := strings.ToLower(strings.TrimSpace(strings.Trim(group(figure, m, 4), "^$")))
-	suffix = strings.TrimRight(suffix, ".,;:)")
-	if s, isScaled := numeralScale[suffix]; isScaled {
+	if s, isScaled := numeralScale[sel.suffix]; isScaled {
 		scale = s
 	}
 

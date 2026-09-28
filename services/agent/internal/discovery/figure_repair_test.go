@@ -72,19 +72,24 @@ func TestFigureRepair_RendersAtTheWrittenPrecision(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		figure    string
+		claimed   float64
 		evaluated float64
 		wantFrom  string
 		wantTo    string
 	}{
-		{"a percentage to one place", "49.7%", 49.343, "49.7", "49.3"},
-		{"a headline percentage", "47.1%", 49.343, "47.1", "49.3"},
-		{"a grouped integer", "150,004", 150000, "150,004", "150,000"},
-		{"an ungrouped integer", "267065", 266465, "267065", "266465"},
-		{"a scaled figure keeps its scale", "$6.9B", 6645321129.9441, "6.9", "6.6"},
-		{"a thousands-scaled figure", "911K", 899000, "911", "899"},
+		{"a percentage to one place", "49.7%", 49.7, 49.343, "49.7", "49.3"},
+		{"a headline percentage", "47.1%", 47.1, 49.343, "47.1", "49.3"},
+		{"a grouped integer", "150,004", 150004, 150000, "150,004", "150,000"},
+		{"an ungrouped integer", "267065", 267065, 266465, "267065", "266465"},
+		{"a scaled figure keeps its scale", "$6.9B", 6900000000, 6645321129.9441, "6.9", "6.6"},
+		{"a thousands-scaled figure", "911K", 911000, 899000, "911", "899"},
+		// The compound case: the swap must land on the numeral Value names, not the
+		// first one in the string. Reading the 5.0 here and rewriting it was a
+		// measured prose corruption.
+		{"a compound figure swaps the right numeral", "5.0% of $34.86B", 34860000000, 34000000000, "34.86", "34.00"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			from, to, ok := renderFigureSwap(tc.figure, tc.evaluated)
+			from, to, ok := renderFigureSwap(tc.figure, tc.claimed, tc.evaluated)
 			if !ok {
 				t.Fatalf("declined to render a swap for %q", tc.figure)
 			}

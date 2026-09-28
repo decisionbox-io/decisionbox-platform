@@ -3,6 +3,7 @@ package discovery
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -73,7 +74,7 @@ import (
 // can read, which errs toward holds -- the direction every unreadable case in this
 // layer errs in.
 func figureSlack(figure string, value float64) float64 {
-	place, ok := statedPlace(figure)
+	place, ok := statedPlace(figure, value)
 	if !ok {
 		return math.Max(math.Abs(value)*0.005, 0.005)
 	}
@@ -82,28 +83,127 @@ func figureSlack(figure string, value float64) float64 {
 
 // statedPlace is the size of the last place the figure string writes: 1 for
 // "100,000", 0.1 for "49.7%", 1e6 for "$6.645B", 1000 for "911K".
-func statedPlace(figure string) (float64, bool) {
-	m := reNumeral.FindStringSubmatchIndex(figure)
-	if m == nil {
+func statedPlace(figure string, value float64) (float64, bool) {
+	sel, ok := selectNumeral(figure, value)
+	if !ok {
 		return 0, false
 	}
-	digits := group(figure, m, 3)
-	if digits == "" {
-		return 0, false
-	}
-	suffix := strings.ToLower(strings.TrimSpace(strings.Trim(group(figure, m, 4), "^$")))
-	suffix = strings.TrimRight(suffix, ".,;:)")
-
 	place := 1.0
-	if i := strings.IndexByte(digits, '.'); i >= 0 {
-		for range digits[i+1:] {
+	if i := strings.IndexByte(sel.digits, '.'); i >= 0 {
+		for range sel.digits[i+1:] {
 			place /= 10
 		}
 	}
-	if scale, ok := numeralScale[suffix]; ok {
+	if scale, found := numeralScale[sel.suffix]; found {
 		place *= scale
 	}
 	return place, true
+}
+
+// selectedNumeral is one numeral read out of a figure string.
+type selectedNumeral struct {
+	digits string // as written, separators included: "6.645", "100,000"
+	suffix string // normalised scale word, "" | "k" | "m" | "b" | ...
+}
+
+// selectNumeral picks the numeral in a figure string that Value refers to.
+//
+// Not the first one. A figure's text is prose and routinely carries more than one
+// number -- "5.0% of $34.86B", "1997 Q4 $8.61B", "17 of 99,996 customers" -- and
+// taking the first meant reading the precision off a quantity at a different scale
+// than the one being checked. The measured consequence was a false refutation whose
+// substitution then rewrote that first numeral and re-settled to `holds`: a
+// destroyed sentence with a clean verdict.
+//
+// Value is authoritative and the text is not, so the numeral is chosen by matching
+// magnitudes. Nothing close enough means the string cannot be read, which returns
+// false and falls back to the loose band.
+//
+// Ambiguously formatted numerals are rejected rather than guessed at. "1.234.567"
+// and "150 004" and "1,50,004" are a decimal point, a space and a lakh separator
+// that this parser does not read, and each one silently produced a wrong precision:
+// 1.234.567 was read as "1.234" and claimed an interval of half a thousandth around
+// a value of 1.2 million. There is no prose localisation in this pipeline today, so
+// these are unreachable rather than live -- but they are unreachable by accident,
+// and a parser that mis-reads them silently is one prose-language feature away from
+// refuting correct figures.
+func selectNumeral(figure string, value float64) (selectedNumeral, bool) {
+	want := math.Abs(value)
+	var best selectedNumeral
+	var bestGap float64
+	found := false
+
+	for _, m := range reNumeral.FindAllStringSubmatchIndex(figure, -1) {
+		digits := group(figure, m, 3)
+		if digits == "" {
+			continue
+		}
+		start, end := m[2*3], m[2*3+1]
+		if ambiguousNumeral(figure, start, end) {
+			continue
+		}
+		suffix := strings.ToLower(strings.TrimSpace(strings.Trim(group(figure, m, 4), "^$")))
+		suffix = strings.TrimRight(suffix, ".,;:)")
+
+		magnitude, err := strconv.ParseFloat(strings.ReplaceAll(digits, ",", ""), 64)
+		if err != nil {
+			continue
+		}
+		if scale, isScaled := numeralScale[suffix]; isScaled {
+			magnitude *= scale
+		}
+		// Relative distance, so "34.86" against 34,860,028,821 scores the same as
+		// "5.0" against 5. A percentage written as a fraction is handled by the
+		// caller's own scalings, not here.
+		gap := math.Abs(magnitude-want) / math.Max(math.Max(math.Abs(magnitude), want), 1)
+		if gap > 0.05 {
+			continue
+		}
+		if !found || gap < bestGap {
+			best, bestGap, found = selectedNumeral{digits: digits, suffix: suffix}, gap, true
+		}
+	}
+	return best, found
+}
+
+// ambiguousNumeral reports whether a matched numeral sits inside a longer number
+// this parser does not read: a second separator followed by digits, a neighbouring
+// digit, or scientific notation.
+func ambiguousNumeral(figure string, start, end int) bool {
+	if start > 0 {
+		switch prev := figure[start-1]; {
+		case prev >= '0' && prev <= '9', prev == '.', prev == ',', prev == '\'':
+			return true
+		}
+	}
+	if end >= len(figure) {
+		return false
+	}
+	switch next := figure[end]; {
+	case next >= '0' && next <= '9':
+		return true
+	case next == 'e', next == 'E':
+		return end+1 < len(figure) && figure[end+1] >= '0' && figure[end+1] <= '9'
+	case next == '.', next == ',', next == '\'', next == ' ':
+		// A separator followed by exactly three digits is a thousands group this
+		// parser did not consume, so the real number is longer than the match.
+		// A fourth digit means it is not a group, and this ambiguity does not apply.
+		rest := figure[end+1:]
+		if len(rest) >= 3 && allDigits(rest[:3]) {
+			fourthIsDigit := len(rest) > 3 && rest[3] >= '0' && rest[3] <= '9'
+			return !fourthIsDigit
+		}
+	}
+	return false
+}
+
+func allDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // EvaluateFigureClaims settles every declared figure against the steps it
@@ -138,9 +238,11 @@ func evaluateFigureClaim(c models.FigureClaim, steps map[int]StepRows) models.Fi
 	}
 	v.Evaluated = got
 
-	if closeEnough(c.Figure, c.Value, got) {
-		v.Status = models.FigureHolds
-		return v
+	for _, candidate := range percentScalings(c, got) {
+		if closeEnough(c.Figure, c.Value, candidate) {
+			v.Status = models.FigureHolds
+			return v
+		}
 	}
 	v.Status = models.FigureFails
 	v.Reason = fmt.Sprintf("%s over step %d gives %s, and the text writes %s (%s)",
@@ -196,16 +298,34 @@ func evalFigure(c models.FigureClaim, rows []map[string]any) (float64, error) {
 		if err != nil {
 			return 0, err
 		}
-		scoped, err := scopeFigureRows(rows, c.Scope)
-		if err != nil {
-			return 0, err
-		}
-		den, err := columnTotal(scoped, c.Column)
-		if err != nil {
-			return 0, err
+		// The denominator is another cell when `other` names one, and the column
+		// total over `scope` otherwise.
+		//
+		// Cell-over-cell was missing from the first version, and its absence did not
+		// merely cost coverage. Every spread, multiple and percentage change in a
+		// document is a ratio of two cells -- "4.8x more often", "within 5% of each
+		// other", "3.5% above the lowest" -- and with no way to declare one the model
+		// declared the nearest kind it had: a share of the column total. That reads
+		// as a different quantity and is refuted, so the figure was reported false
+		// when only the declaration was. The same lesson QuantifierAll was added for:
+		// a missing kind is not a gap in coverage, it is a false positive waiting for
+		// the model to approximate it.
+		var den float64
+		if strings.TrimSpace(c.Other) != "" {
+			if den, err = oneCell(rows, c.Column, c.Other, "other"); err != nil {
+				return 0, err
+			}
+		} else {
+			scoped, serr := scopeFigureRows(rows, c.Scope)
+			if serr != nil {
+				return 0, serr
+			}
+			if den, err = columnTotal(scoped, c.Column); err != nil {
+				return 0, err
+			}
 		}
 		if den == 0 {
-			return 0, fmt.Errorf("the total of %q over the scoped rows is zero, so a ratio is undefined", c.Column)
+			return 0, fmt.Errorf("the denominator of this ratio is zero, so it is undefined")
 		}
 		q := num / den
 		if c.Pct {
@@ -213,6 +333,14 @@ func evalFigure(c models.FigureClaim, rows []map[string]any) (float64, error) {
 		}
 		return q, nil
 	case models.FigureDiff:
+		// Both operands required. Without this, a diff declared with no `other`
+		// resolved that operand to "every row", which on a single-row step is the
+		// same cell as the left one -- so the arithmetic silently gave zero and
+		// refuted the figure. Observed: "158 parts" declared as a diff with one
+		// operand, refuted against an evaluated 0.
+		if strings.TrimSpace(c.Other) == "" {
+			return 0, fmt.Errorf("a diff needs an `other` row selector and none was given")
+		}
 		left, err := oneCell(rows, c.Column, c.Row, "row")
 		if err != nil {
 			return 0, err
@@ -300,4 +428,29 @@ func scopeFigureRows(rows []map[string]any, scope string) ([]map[string]any, err
 		return rows, nil
 	}
 	return filterRows(rows, scope)
+}
+
+// percentScalings returns the evaluated values a percentage figure may legitimately
+// be compared against.
+//
+// A warehouse stores a share either as a fraction or as a percentage, and which one
+// is a property of the query the model wrote, not of the prose. The `pct` flag says
+// "I wrote this as a percentage"; it cannot say what units the column is in. The
+// first version applied the flag only inside `ratio`, where the evaluator does its
+// own division and the scaling is therefore known -- and silently ignored it
+// everywhere else. One replay produced three refutations from that single omission:
+// three cells of `avg_top_brand_share`, correctly declared `pct: true`, evaluated as
+// 0.1414 and compared against a written 14.1%.
+//
+// So both scalings are accepted whenever the claim concerns a percentage. The cost
+// is stated plainly: an error that is exactly a factor of one hundred cannot be
+// caught. That is a rarer mistake than the storage convention the model cannot see,
+// and the alternative -- multiplying by a hundred on the model's word -- turns a
+// column already stored in percent into a refutation of a correct figure, which is
+// the same defect in the other direction.
+func percentScalings(c models.FigureClaim, got float64) []float64 {
+	if !c.Pct && !strings.Contains(c.Figure, "%") {
+		return []float64{got}
+	}
+	return []float64{got, got * 100, got / 100}
 }

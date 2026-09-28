@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -355,7 +356,7 @@ func TestFigure_UnreadableFigureStringFallsBackLoosely(t *testing.T) {
 		{"most of them", 980, models.FigureFails},
 	} {
 		t.Run(tc.figure, func(t *testing.T) {
-			if _, ok := statedPlace(tc.figure); ok {
+			if _, ok := statedPlace(tc.figure, tc.claimed); ok {
 				t.Fatalf("%q was parsed for a precision, so this case no longer tests the fallback", tc.figure)
 			}
 			v := oneVerdict(t, models.FigureClaim{
@@ -363,6 +364,191 @@ func TestFigure_UnreadableFigureStringFallsBackLoosely(t *testing.T) {
 			}, evidence(1, rows))
 			if v.Status != tc.want {
 				t.Fatalf("status = %q, want %q", v.Status, tc.want)
+			}
+		})
+	}
+}
+
+// step45Rows is the brand-loyalty step from arm C rep 1, verbatim. Its column stores
+// a share as a FRACTION, and the three figures drawn from it were written as
+// percentages with `pct: true` correctly declared. All three were refuted, because
+// the first version of the evaluator applied Pct only inside `ratio`.
+func step45Rows() []map[string]any {
+	return []map[string]any{
+		{"loyalty_bucket": "11plus_brands", "avg_top_brand_share": 0.14139702489528622},
+		{"loyalty_bucket": "4-10_brands", "avg_top_brand_share": 0.22262278177021078},
+		{"loyalty_bucket": "1-3_brands", "avg_top_brand_share": 0.5816180685719439},
+	}
+}
+
+// TestFigure_PctIsHonouredOnEveryKind is the red-proof for the defect that produced
+// three of the five refutations in arm C rep 1. A warehouse stores a share either as
+// a fraction or as a percentage, and which one is a property of the query rather than
+// of the prose, so `pct` has to work wherever the model puts it.
+func TestFigure_PctIsHonouredOnEveryKind(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		figure string
+		value  float64
+		bucket string
+	}{
+		{"11+ brands", "14.1%", 14.14, "11plus_brands"},
+		{"4-10 brands", "22.3%", 22.26, "4-10_brands"},
+		{"1-3 brands", "58.2%", 58.16, "1-3_brands"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := oneVerdict(t, models.FigureClaim{
+				Figure: tc.figure, Value: tc.value, Step: 45, Kind: models.FigureCell,
+				Column: "avg_top_brand_share", Row: "loyalty_bucket = '" + tc.bucket + "'",
+				Pct: true,
+			}, evidence(45, step45Rows()))
+			if v.Status != models.FigureHolds {
+				t.Fatalf("status = %q, want holds (evaluated %v, reason %q)", v.Status, v.Evaluated, v.Reason)
+			}
+		})
+	}
+
+	t.Run("a column already stored in percent still holds", func(t *testing.T) {
+		// The defect in the other direction: multiplying by a hundred on the model's
+		// word would refute a correct figure whose column is already percent-scaled.
+		rows := []map[string]any{{"decile": 1.0, "pct_of_total": 18.38}}
+		v := oneVerdict(t, models.FigureClaim{
+			Figure: "18.38%", Value: 18.38, Step: 14, Kind: models.FigureCell,
+			Column: "pct_of_total", Row: "decile = 1", Pct: true,
+		}, evidence(14, rows))
+		if v.Status != models.FigureHolds {
+			t.Fatalf("status = %q, want holds (evaluated %v)", v.Status, v.Evaluated)
+		}
+	})
+
+	t.Run("a percentage that is simply wrong is still refuted", func(t *testing.T) {
+		// The cost of accepting both scalings is stated, not unlimited: anything that
+		// is not a factor of a hundred out must still fail.
+		v := oneVerdict(t, models.FigureClaim{
+			Figure: "30.0%", Value: 30.0, Step: 45, Kind: models.FigureCell,
+			Column: "avg_top_brand_share", Row: "loyalty_bucket = '11plus_brands'", Pct: true,
+		}, evidence(45, step45Rows()))
+		if v.Status != models.FigureFails {
+			t.Fatalf("status = %q, want fails", v.Status)
+		}
+	})
+}
+
+// TestFigure_DiffNeedsBothOperands is the red-proof for the fourth refutation in arm
+// C rep 1: "158 parts" declared as a diff with no `other`, whose missing operand
+// resolved to the same cell as the first, giving zero and refuting the figure.
+func TestFigure_DiffNeedsBothOperands(t *testing.T) {
+	rows := []map[string]any{{"total_parts": 200000.0, "ordered_parts": 199842.0}}
+	v := oneVerdict(t, models.FigureClaim{
+		Figure: "158 parts", Value: 158, Step: 18, Kind: models.FigureDiff,
+		Column: "total_parts", Row: "total_parts = 200000",
+	}, evidence(18, rows))
+	if v.Status != models.FigureUndecidable {
+		t.Fatalf("status = %q, want undecidable; a malformed diff is a statement about the declaration, not the figure", v.Status)
+	}
+}
+
+// TestFigure_RatioOverAnotherCell covers the kind whose absence made the model
+// approximate. Every spread and multiple in these documents is a ratio of two cells.
+func TestFigure_RatioOverAnotherCell(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		figure string
+		value  float64
+		pct    bool
+	}{
+		// TIN over STEEL: 6,645,321,129.94 / 6,594,526,319.08 = 1.0077
+		{"a multiple", "1.008x", 1.008, false},
+		{"the same ratio as a percentage", "100.8%", 100.8, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := oneVerdict(t, models.FigureClaim{
+				Figure: tc.figure, Value: tc.value, Step: 28, Kind: models.FigureRatio,
+				Column: "net_rev", Row: "material = 'TIN'", Other: "material = 'STEEL'",
+				Pct: tc.pct,
+			}, evidence(28, step28Rows()))
+			if v.Status != models.FigureHolds {
+				t.Fatalf("status = %q, want holds (evaluated %v, reason %q)", v.Status, v.Evaluated, v.Reason)
+			}
+		})
+	}
+}
+
+// TestFigure_PrecisionComesFromTheNumeralValueNames is the red-proof for the
+// corruption found while the reps were running: a compound figure string had its
+// interval read off the leading numeral, at a different scale from the quantity being
+// checked, and the substitution then rewrote that leading numeral.
+func TestFigure_PrecisionComesFromTheNumeralValueNames(t *testing.T) {
+	rows := []map[string]any{{"k": "only", "gross": 34860028821.0}}
+
+	for _, figure := range []string{
+		"$34.86B",
+		"5.0% of $34.86B",
+		"5.0 pct of $34.86B",
+		"1997 Q4 $34.86B",
+		"$1.74B of $34.86B gross",
+	} {
+		t.Run(figure, func(t *testing.T) {
+			v := oneVerdict(t, models.FigureClaim{
+				Figure: figure, Value: 34860000000, Step: 10,
+				Kind: models.FigureCell, Column: "gross",
+			}, evidence(10, rows))
+			if v.Status != models.FigureHolds {
+				t.Fatalf("status = %q for %q, want holds: the precision must come from the 34.86, not the leading numeral (slack %v)",
+					v.Status, figure, figureSlack(figure, 34860000000))
+			}
+		})
+	}
+
+	t.Run("prose is not corrupted when a compound figure is genuinely refuted", func(t *testing.T) {
+		prose := "Discounts ran 5.0 pct of $34.86B gross in 1997."
+		ins := []models.Insight{{
+			Name: "Probe", Description: prose, SourceSteps: []int{10},
+			FigureClaims: []models.FigureClaim{{
+				Figure: "5.0 pct of $34.86B", Value: 34860000000, Step: 10,
+				Kind: models.FigureCell, Column: "gross",
+			}},
+		}}
+		steps := stepIndex(10, []map[string]any{{"k": "only", "gross": 30000000000.0}})
+		attachFigureVerdicts(ins, steps)
+		if ins[0].FigureVerdicts[0].Status != models.FigureFails {
+			t.Fatalf("expected a genuine refutation, got %q", ins[0].FigureVerdicts[0].Status)
+		}
+		repairRefutedFigures("probe", ins, steps)
+		if strings.Contains(ins[0].Description, "34860") || strings.Contains(ins[0].Description, "30000000000") {
+			t.Fatalf("the swap landed on the wrong numeral: %q", ins[0].Description)
+		}
+		if strings.Contains(ins[0].Description, "5.0 pct") && !strings.Contains(ins[0].Description, "30.00B") {
+			t.Logf("declined the substitution rather than guessing, which is acceptable: %q", ins[0].Description)
+		}
+	})
+}
+
+// TestFigure_AmbiguousNumberFormatsFallBackLoosely covers the formats this parser
+// does not read. None is reachable today -- there is no prose localisation in this
+// pipeline -- but each one silently produced a wrong interval, and erring toward
+// holds is the only safe direction for a format the parser cannot see.
+func TestFigure_AmbiguousNumberFormatsFallBackLoosely(t *testing.T) {
+	for _, tc := range []struct {
+		figure string
+		value  float64
+	}{
+		{"1.234.567", 1234567}, // de/tr thousands grouping
+		{"150 004", 150004},    // fr thousands grouping
+		{"150'004", 150004},    // ch thousands grouping
+		{"6.6e9", 6600000000},  // scientific
+	} {
+		t.Run(tc.figure, func(t *testing.T) {
+			if _, ok := statedPlace(tc.figure, tc.value); ok {
+				t.Fatalf("%q was read for a precision; this parser cannot read it and must decline", tc.figure)
+			}
+			// And the loose fallback must be loose enough that an honest rounding holds.
+			rows := []map[string]any{{"k": "only", "v": tc.value * 1.0001}}
+			v := oneVerdict(t, models.FigureClaim{
+				Figure: tc.figure, Value: tc.value, Step: 1, Kind: models.FigureCell, Column: "v",
+			}, evidence(1, rows))
+			if v.Status == models.FigureFails {
+				t.Fatalf("%q: an honest 0.01%% rounding was refuted (slack %v)", tc.figure, figureSlack(tc.figure, tc.value))
 			}
 		})
 	}

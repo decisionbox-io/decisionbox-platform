@@ -39,22 +39,28 @@ const figureContract = "## Declaring the arithmetic behind each figure\n\n" +
 	"   \"column\": \"net_revenue\", \"row\": \"l_returnflag = 'R' AND l_linestatus = 'F'\",\n" +
 	"   \"scope\": \"l_linestatus = 'F'\"},\n" +
 	"  {\"figure\": \"$50.8M apart\", \"value\": 50800000, \"step\": 28, \"kind\": \"diff\",\n" +
-	"   \"column\": \"net_rev\", \"row\": \"material = 'TIN'\", \"other\": \"material = 'STEEL'\"}\n" +
+	"   \"column\": \"net_rev\", \"row\": \"material = 'TIN'\", \"other\": \"material = 'STEEL'\"},\n" +
+	"  {\"figure\": \"4.8x more often\", \"value\": 4.83, \"step\": 14, \"kind\": \"ratio\",\n" +
+	"   \"column\": \"orders\", \"row\": \"decile = 1\", \"other\": \"decile = 10\"}\n" +
 	"]\n" +
 	"```\n\n" +
 	"- `kind` is one of:\n" +
 	"  - `cell` — one cell. `column` plus `row`, which must select exactly **one** row.\n" +
 	"  - `sum` — the total of `column`, over `scope` if you give one, otherwise every row.\n" +
 	"  - `count` — how many rows are in `scope`, or in the whole result if you give none.\n" +
-	"  - `ratio` — `column` in the row `row` names, divided by the total of `column` over `scope`. " +
-	"Omit `scope` for a share of the whole column. Add `\"pct\": true` whenever you wrote it as a " +
-	"percentage, or it will be compared against a fraction and refuted by a factor of a hundred.\n" +
-	"  - `diff` — `column` in `row`'s row minus `column` in `other`'s row.\n" +
+	"  - `ratio` — `column` in the row `row` names, divided by **either** the same column in the row " +
+	"`other` names, **or**, when you give no `other`, the total of `column` over `scope`. The first form " +
+	"is how you declare a spread, a multiple or a share of one row against another — *4.8x more often*, " +
+	"*3.5% above the lowest*, *within 5% of each other*. The second is a share of the whole column. Add " +
+	"`\"pct\": true` whenever you wrote the figure as a percentage.\n" +
+	"  - `diff` — `column` in `row`'s row minus `column` in `other`'s row. Both selectors are required.\n" +
 	"- `row`, `other` and `scope` use the same grammar as `filter` above: `column <op> literal` terms " +
 	"joined by `AND`, with op one of `= != < <= > >=`. Nothing richer is read, and anything unreadable " +
 	"is reported as undecidable rather than guessed at.\n" +
 	"- `value` is the number in the units of the step's own column: write `6645000000`, not `6.645`; " +
-	"write a percentage as `20.1`, not `0.201`.\n" +
+	"write a percentage as `20.1`, not `0.201`. When the figure text carries more than one number — " +
+	"`5.0% of $34.86B` — `value` is the one this entry is about, and the platform uses it to work out " +
+	"which numeral in your text you meant.\n" +
 	"- `figure` is the text as it appears in your prose, because a refutation has to name the words " +
 	"that must change.\n\n" +
 	"**Write each figure only as precisely as the evidence supports.** The check reads the interval " +
