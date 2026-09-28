@@ -599,3 +599,109 @@ func TestFigures_ClaimReconciliationAcceptsASpacedReference(t *testing.T) {
 		t.Errorf("claim Count = %d, want 100 -- a spaced reference is the same reference", got)
 	}
 }
+
+// --- Review round 23: three ways malformed model output could hurt the process rather than
+// the reader. Late-round findings, and the right kind to be left with.
+
+// TestFigures_NonFiniteValuesAreRejected — round 23.
+//
+// ParseFloat accepts "NaN" and "Inf", and a non-finite float cannot be marshalled to JSON --
+// so one such figure made generateRecommendations emit an empty insights payload and made any
+// API response carrying the persisted figure unencodable. flexNumber has rejected non-finite
+// values on both paths since #342; the figure decoder did not.
+func TestFigures_NonFiniteValuesAreRejected(t *testing.T) {
+	for _, bad := range []string{`"NaN"`, `"Inf"`, `"-Inf"`, `"+inf"`} {
+		body := `{"name":"n","figures":[{"id":"f1","value":` + bad + `,"step":1,"kind":"sum"}]}`
+		var ins models.Insight
+		if err := json.Unmarshal([]byte(body), &ins); err != nil {
+			t.Fatalf("value %s failed the decode outright: %v", bad, err)
+		}
+		if got := ins.Figures[0].Value; got != 0 {
+			t.Errorf("value %s decoded to %v, want 0", bad, got)
+		}
+		// And the whole insight must still marshal, which is the failure this prevents.
+		if _, err := json.Marshal(ins); err != nil {
+			t.Errorf("value %s left the insight unmarshalable: %v", bad, err)
+		}
+	}
+}
+
+// TestFigures_DecimalPrecisionIsBounded — round 23.
+//
+// Decimals comes from model output and FormatFloat allocates in proportion to it, so
+// `"decimals": 1000000000` builds a gigabyte-scale string and the slack calculation loops a
+// billion times, both before any evidence is read. Bounded at rendering rather than only at
+// decode, so a figure read back from storage is bounded too.
+func TestFigures_DecimalPrecisionIsBounded(t *testing.T) {
+	huge := models.Figure{ID: "f1", Value: 1.5, Unit: models.UnitPlain, Decimals: 1000000000}
+	if got := huge.Places(); got != models.MaxFigureDecimals {
+		t.Fatalf("Places() = %d, want %d", got, models.MaxFigureDecimals)
+	}
+	// Both of these would hang or exhaust memory on the raw value.
+	if got := renderFigure(huge); len(got) > 32 {
+		t.Errorf("renderFigure produced %d characters", len(got))
+	}
+	if s := figureSlack(huge); s <= 0 {
+		t.Errorf("figureSlack = %v, want a positive interval", s)
+	}
+	// Negative is clamped to zero, not passed to FormatFloat as "shortest unique".
+	if got := (models.Figure{Value: 1.5, Decimals: -3}).Places(); got != 0 {
+		t.Errorf("Places() = %d for negative decimals, want 0", got)
+	}
+}
+
+// TestFigures_DuplicateIDActsOnNothing — round 23.
+//
+// A repeated id makes every lookup last-wins while the evaluator still produces a verdict per
+// declaration, so the two get crossed: two figures both called f1, one refuted at 100 against
+// 99 and one holding at 200, let the first verdict's numbers through the proximity gate and
+// write 99 over the second figure.
+func TestFigures_DuplicateIDActsOnNothing(t *testing.T) {
+	step := &models.ExplorationStep{Step: 4, QueryResult: []map[string]any{}}
+	for i := 0; i < 99; i++ {
+		step.QueryResult = append(step.QueryResult, map[string]any{"id": i})
+	}
+	byID := map[int]*models.ExplorationStep{4: step}
+
+	ins := []models.Insight{{
+		Name:        "Both are {{f1}}",
+		SourceSteps: []int{4},
+		Figures: []models.Figure{
+			{ID: "f1", Value: 100, Unit: models.UnitCount, Step: 4, Kind: models.FigureCount},
+			{ID: "f1", Value: 200, Unit: models.UnitCount, Step: 4, Kind: models.FigureCount},
+		},
+	}}
+	attachFigureVerdicts(ins, byID)
+	if n := correctRefutedFigures("area", ins, byID); n != 0 {
+		t.Errorf("corrections = %d, want 0 on an ambiguous id", n)
+	}
+	if ins[0].Figures[0].Value != 100 || ins[0].Figures[1].Value != 200 {
+		t.Errorf("figures were crossed: %v and %v", ins[0].Figures[0].Value, ins[0].Figures[1].Value)
+	}
+	// Nor is it rendered: the reference ships visible rather than resolving to a guess.
+	renderInsightFigures(ins)
+	if !strings.Contains(ins[0].Name, "{{f1}}") {
+		t.Errorf("name = %q, want the ambiguous reference left visible", ins[0].Name)
+	}
+
+	// And it cannot be referenced from a recommendation either.
+	dupIns := models.Insight{
+		ID: "11111111-2222-3333-4444-555555555555",
+		Figures: []models.Figure{
+			{ID: "f1", Value: 100, Unit: models.UnitCount},
+			{ID: "f1", Value: 200, Unit: models.UnitCount},
+		},
+		FigureVerdicts: []models.FigureVerdict{{ID: "f1", Status: models.FigureHolds}},
+	}
+	recs := []models.Recommendation{{
+		Description: "It holds {{f1}}.",
+		Figures: []models.Figure{{
+			ID: "f1", Unit: models.UnitCount, Kind: models.FigureRefKind,
+			Refs: []models.FigureRef{ref(dupIns.ID, "f1")},
+		}},
+	}}
+	attachRecommendationFigureVerdicts(recs, []models.Insight{dupIns})
+	if v := recs[0].FigureVerdicts[0]; v.Status != models.FigureUndecidable || !strings.Contains(v.Reason, "more than once") {
+		t.Errorf("verdict = %q / %q, want undecidable naming the duplication", v.Status, v.Reason)
+	}
+}

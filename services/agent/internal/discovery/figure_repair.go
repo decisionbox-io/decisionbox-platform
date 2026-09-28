@@ -73,10 +73,17 @@ func correctRefutedFigures(areaID string, insights []models.Insight, stepByID ma
 		for j := range ins.Figures {
 			byID[ins.Figures[j].ID] = j
 		}
+		dup := duplicateFigureIDs(ins.Figures)
 
 		var corrections []models.FigureCorrection
 		for _, v := range ins.FigureVerdicts {
 			if v.Status != models.FigureFails {
+				continue
+			}
+			if dup[v.ID] {
+				applog.WithFields(applog.Fields{
+					"area": areaID, "insight": ins.Name, "figure": v.ID,
+				}).Warn("Not correcting this figure: the id is declared more than once, so which declaration the verdict belongs to is ambiguous")
 				continue
 			}
 			j, ok := byID[v.ID]

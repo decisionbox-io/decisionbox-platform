@@ -45,7 +45,7 @@ func renderFigure(f models.Figure) string {
 		sc = figureScales[models.ScaleNone]
 	}
 	scaled := f.Value / sc.div
-	digits := strconv.FormatFloat(scaled, 'f', f.Decimals, 64)
+	digits := strconv.FormatFloat(scaled, 'f', f.Places(), 64)
 
 	var b strings.Builder
 	if f.Approx {
@@ -95,7 +95,7 @@ func figureSlack(f models.Figure) float64 {
 		sc = figureScales[models.ScaleNone]
 	}
 	place := sc.div
-	for i := 0; i < f.Decimals; i++ {
+	for i := 0; i < f.Places(); i++ {
 		place /= 10
 	}
 	return place / 2
@@ -138,7 +138,7 @@ func renderedValue(f models.Figure) float64 {
 	if !ok {
 		sc = figureScales[models.ScaleNone]
 	}
-	printed, err := strconv.ParseFloat(strconv.FormatFloat(f.Value/sc.div, 'f', f.Decimals, 64), 64)
+	printed, err := strconv.ParseFloat(strconv.FormatFloat(f.Value/sc.div, 'f', f.Places(), 64), 64)
 	if err != nil {
 		return f.Value
 	}

@@ -280,3 +280,36 @@ func aggregatesAcrossRows(f models.Figure) bool {
 	}
 	return false
 }
+
+// duplicateFigureIDs names the ids a document declared more than once.
+//
+// A repeated id makes every lookup in this layer last-wins while the evaluator still
+// produces a verdict for each declaration, so the two get crossed: two figures both called
+// f1, one refuted at 100 against 99 and one holding at 200, let the first verdict's numbers
+// through the proximity gate and write 99 over the second figure. Rendering has the same
+// ambiguity with no way to resolve it.
+//
+// So nothing acts on a duplicated id: it is not corrected, not referenceable, and not
+// rendered. The reference ships visible, which is this layer's standing answer to a
+// reference it cannot resolve -- a reader seeing "{{f1}}" knows something went wrong, and a
+// reader seeing the wrong number does not.
+func duplicateFigureIDs(figures []models.Figure) map[string]bool {
+	seen := make(map[string]int, len(figures))
+	for _, f := range figures {
+		id := strings.TrimSpace(f.ID)
+		if id == "" {
+			continue
+		}
+		seen[id]++
+	}
+	var dup map[string]bool
+	for id, n := range seen {
+		if n > 1 {
+			if dup == nil {
+				dup = map[string]bool{}
+			}
+			dup[id] = true
+		}
+	}
+	return dup
+}

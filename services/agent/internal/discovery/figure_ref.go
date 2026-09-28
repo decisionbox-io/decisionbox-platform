@@ -121,9 +121,14 @@ func buildFigureRefIndex(insights []models.Insight) figureRefIndex {
 		for _, v := range ins.FigureVerdicts {
 			status[v.ID] = v.Status
 		}
+		dup := duplicateFigureIDs(ins.Figures)
 		byID := make(map[string]refValue, len(ins.Figures))
 		for _, f := range ins.Figures {
 			if strings.TrimSpace(f.ID) == "" {
+				continue
+			}
+			if dup[f.ID] {
+				byID[f.ID] = refValue{why: "the insight declares that id more than once, so which figure it names is ambiguous"}
 				continue
 			}
 			// Holds is the only status a reference may stand on, and by the time this

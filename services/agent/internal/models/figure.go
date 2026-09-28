@@ -30,6 +30,11 @@ const (
 
 	FigureRefKind = gomodels.FigureRefKind
 
+	// MaxFigureDecimals bounds the decimal places a figure may be written to -- a
+	// resource limit, not a style one: FormatFloat allocates in proportion to the
+	// precision asked for, and Decimals arrives from model output.
+	MaxFigureDecimals = gomodels.MaxFigureDecimals
+
 	UnitCount    = gomodels.UnitCount
 	UnitCurrency = gomodels.UnitCurrency
 	UnitPercent  = gomodels.UnitPercent

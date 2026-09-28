@@ -3,6 +3,7 @@ package models
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -308,14 +309,41 @@ func flexFloat(raw json.RawMessage) float64 {
 		str = strings.TrimPrefix(str, "$")
 		str = strings.TrimSuffix(str, "%")
 		v, err := strconv.ParseFloat(str, 64)
-		if err != nil {
+		if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
 			return 0
 		}
 		return v
 	}
 	var v float64
-	if err := json.Unmarshal(raw, &v); err != nil {
+	if err := json.Unmarshal(raw, &v); err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
 		return 0
 	}
 	return v
+}
+
+// MaxFigureDecimals bounds the decimal places a figure may be written to.
+//
+// Not a style limit -- a resource one. Decimals arrives from model output, and
+// strconv.FormatFloat allocates in proportion to the precision asked for, so a response
+// carrying `"decimals": 1000000000` builds a gigabyte-scale string and the slack calculation
+// loops a billion times, all before any evidence is looked at. Six places is past anything a
+// currency, a share or a multiple needs, and the clamp is applied at rendering rather than
+// only at decode so a figure read back from storage is bounded too.
+const MaxFigureDecimals = 6
+
+// Places is the decimal precision to render this figure at, bounded.
+//
+// Negative is clamped to zero rather than passed through: FormatFloat reads a negative
+// precision as "the smallest number of digits necessary to represent the value uniquely",
+// which is a different contract from the one this layer rests on -- the interval a figure
+// claims is half the last place it printed, and that is only knowable if the count of places
+// is the count that was asked for.
+func (f Figure) Places() int {
+	switch {
+	case f.Decimals < 0:
+		return 0
+	case f.Decimals > MaxFigureDecimals:
+		return MaxFigureDecimals
+	}
+	return f.Decimals
 }
