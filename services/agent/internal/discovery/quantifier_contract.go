@@ -28,7 +28,7 @@ const quantifierContract = "## Declaring quantifier claims\n\n" +
 	"  {\"claim\": \"Chairs is the largest sub-category by sales\", \"kind\": \"rank\",\n" +
 	"   \"step\": 4, \"column\": \"sales\", \"subject\": \"sub_category = 'Chairs'\", \"rank\": 1},\n" +
 	"  {\"claim\": \"margin improved each year\", \"kind\": \"monotonic\",\n" +
-	"   \"step\": 7, \"column\": \"margin\", \"trend\": \"increasing\"},\n" +
+	"   \"step\": 7, \"column\": \"margin\", \"order_by\": \"yr\", \"trend\": \"increasing\"},\n" +
 	"  {\"claim\": \"3 of 17 sub-categories run a loss\", \"kind\": \"cardinality\",\n" +
 	"   \"step\": 4, \"filter\": \"profit < 0\", \"count\": 3},\n" +
 	"  {\"claim\": \"the West region grew in every quarter of 2025\", \"kind\": \"all\",\n" +
@@ -38,6 +38,10 @@ const quantifierContract = "## Declaring quantifier claims\n\n" +
 	"- `kind` is `only` (exactly one row), `all` (every row), `rank`, `monotonic` (a trend) or " +
 	"`cardinality` (a count). *Every year X* is `all`, not `monotonic` — `monotonic` asserts a " +
 	"direction of change, which is a different claim and is usually false when `all` is true.\n" +
+	"- `order_by` is required for `monotonic`: the column that puts the rows in sequence, such as the " +
+	"year or the decile. The platform sorts by it ascending and then checks `column` against `trend`, so " +
+	"whatever order your query returned is irrelevant — but a monotonic claim without it is not checked " +
+	"at all. It must be numeric, and it must differ from `column`.\n" +
 	"- `filter` is a conjunction of `column <op> literal` terms joined by `AND`, with op one of " +
 	"`= != < <= > >=`. Nothing richer is evaluated.\n" +
 	"- `scope` narrows **which rows** the claim is about, in the same grammar as `filter`. Use it whenever " +

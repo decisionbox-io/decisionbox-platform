@@ -439,15 +439,63 @@ func evalMonotonic(v models.QuantifierVerdict, scope []map[string]any, c models.
 		v.Status, v.Reason = QuantifierUndecidable, "monotonic claim names no column"
 		return v
 	}
-	vals := make([]float64, 0, len(scope))
-	for _, r := range scope {
+	// A trend is a claim about an ORDER, and the rows arrive in whatever order the
+	// warehouse chose. So the claim has to name the sequence, and this sorts by it
+	// rather than trusting the result -- which makes the query's own ordering
+	// irrelevant instead of load-bearing.
+	if c.OrderBy == "" {
+		v.Status = QuantifierUndecidable
+		v.Reason = "a monotonic claim needs `order_by`, the column that puts the rows in sequence; " +
+			"without it a trend is being read from whatever order the warehouse returned"
+		return v
+	}
+	if strings.EqualFold(strings.TrimSpace(c.OrderBy), strings.TrimSpace(c.Column)) {
+		// Sorting by the measured column and then checking that same column moves
+		// in one direction is true of every series, so this would turn the check
+		// into a rubber stamp -- a way to launder a false claim into a passing one.
+		v.Status = QuantifierUndecidable
+		v.Reason = fmt.Sprintf("`order_by` and `column` are both %q, which would make any series pass", c.Column)
+		return v
+	}
+	if c.TopN > 0 {
+		// A top-N picks the largest rows by one column; a trend reads them in the
+		// order of another. Combined, the sequence is a ranked subset and the claim
+		// does not say what it means.
+		v.Status = QuantifierUndecidable
+		v.Reason = "a monotonic claim cannot also carry `top_n`: a ranked subset is not a sequence"
+		return v
+	}
+	ordered, err := sortByColumn(scope, c.OrderBy, "asc")
+	if err != nil {
+		// Missing, or not numeric in every row. A non-numeric sequence column is
+		// out of reach rather than guessed at.
+		v.Status, v.Reason = QuantifierUndecidable, fmt.Sprintf("order_by %q: %s", c.OrderBy, err.Error())
+		return v
+	}
+
+	vals := make([]float64, 0, len(ordered))
+	seq := make([]float64, 0, len(ordered))
+	for _, r := range ordered {
 		f, ok := asFloat(r[c.Column])
 		if !ok {
 			v.Status = QuantifierUndecidable
 			v.Reason = fmt.Sprintf("column %q is not numeric in every row of step %d", c.Column, c.Step)
 			return v
 		}
+		o, _ := asFloat(r[c.OrderBy]) // sortByColumn already proved this reads
 		vals = append(vals, f)
+		seq = append(seq, o)
+	}
+	for i := 1; i < len(seq); i++ {
+		if seq[i] == seq[i-1] {
+			// Two rows at the same point in the sequence leave the order between
+			// them undetermined, so the direction would again depend on which the
+			// warehouse returned first -- the thing order_by exists to remove.
+			v.Status = QuantifierUndecidable
+			v.Reason = fmt.Sprintf("two rows share %s = %g, so the sequence does not determine an order",
+				c.OrderBy, seq[i])
+			return v
+		}
 	}
 	if len(vals) < 2 {
 		v.Status, v.Reason = QuantifierUndecidable, "fewer than 2 rows, so no direction to check"
@@ -470,13 +518,13 @@ func evalMonotonic(v models.QuantifierVerdict, scope []map[string]any, c models.
 		}
 		if broke {
 			v.Status = QuantifierFails
-			v.Reason = fmt.Sprintf("%s is not %s throughout: it goes %g -> %g between rows %d and %d",
-				c.Column, trendWord(up), vals[i-1], vals[i], i, i+1)
+			v.Reason = fmt.Sprintf("%s is not %s throughout: it goes %g -> %g between %s %g and %g",
+				c.Column, trendWord(up), vals[i-1], vals[i], c.OrderBy, seq[i-1], seq[i])
 			return v
 		}
 	}
 	v.Status = QuantifierHolds
-	v.Reason = fmt.Sprintf("%s is %s across all %d rows", c.Column, trendWord(up), len(vals))
+	v.Reason = fmt.Sprintf("%s is %s across all %d rows in %s order", c.Column, trendWord(up), len(vals), c.OrderBy)
 	return v
 }
 

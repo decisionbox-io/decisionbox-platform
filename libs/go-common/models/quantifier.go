@@ -47,6 +47,19 @@ type QuantifierClaim struct {
 	Count   int    `bson:"count,omitempty" json:"count,omitempty"`
 	Order   string `bson:"order,omitempty" json:"order,omitempty"`
 	Trend   string `bson:"trend,omitempty" json:"trend,omitempty"`
+
+	// OrderBy names the column that puts a monotonic claim's rows in sequence --
+	// the year, the decile, the band. Required for `monotonic`, and the evaluator
+	// sorts by it ascending before it looks at Column.
+	//
+	// It exists because a trend is a statement about an ORDER, and the rows arrive
+	// in whatever order the warehouse chose. Nothing asked the model to order its
+	// query and nothing checked, so "margin improved each year" over a result
+	// returned newest-first read as falling and was refuted -- a true sentence
+	// rewritten or deleted because of a clause nobody wrote. Sorting here makes the
+	// query's own ordering irrelevant: a badly ordered result now yields the right
+	// verdict instead of the wrong one.
+	OrderBy string `bson:"order_by,omitempty" json:"order_by,omitempty"`
 }
 
 // QuantifierVerdict is what Go concluded about one declared claim, in terms a

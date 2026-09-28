@@ -147,7 +147,8 @@ func TestEvaluate_Cardinality(t *testing.T) {
 func TestEvaluate_Monotonic(t *testing.T) {
 	rising := StepRows{Rows: []map[string]any{{"y": 2023, "m": 28.06}, {"y": 2024, "m": 37.93}, {"y": 2025, "m": 35.77}, {"y": 2026, "m": 39.8}}}
 	v := EvaluateQuantifierClaims([]models.QuantifierClaim{{
-		Claim: "margin improved each year", Kind: QuantifierMonotonic, Step: 1, Column: "m", Trend: "increasing",
+		Claim: "margin improved each year", Kind: QuantifierMonotonic, Step: 1,
+		Column: "m", OrderBy: "y", Trend: "increasing",
 	}}, map[int]StepRows{1: rising})[0]
 	if v.Status != QuantifierFails {
 		t.Fatalf("status = %q, want fails (reason: %s)", v.Status, v.Reason)

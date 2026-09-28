@@ -81,6 +81,10 @@ func insightResponseSchema() map[string]interface{} {
 					// An enum rather than a description, because a trend the evaluator
 					// cannot read is not checked at all. "decrease" or "down" used to be
 					// silently treated as increasing, which refuted correct series.
+					"order_by": str("Required for a monotonic claim: the column that puts the rows in " +
+						"sequence — the year, the decile, the band. The platform sorts by it ascending before " +
+						"checking the trend, so the order your query returned does not matter. It must be a " +
+						"numeric column, and it must not be the same column as `column`"),
 					"trend": map[string]interface{}{"type": "string",
 						"enum":        []interface{}{"increasing", "decreasing"},
 						"description": "Required for a monotonic claim. Exactly \"increasing\" or \"decreasing\" — no other word is read"},

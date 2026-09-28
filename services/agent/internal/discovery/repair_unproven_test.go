@@ -358,7 +358,8 @@ func TestEvaluate_MonotonicWithoutAReadableTrendIsUndecidable(t *testing.T) {
 	// Strictly decreasing.
 	rows := []map[string]any{{"yr": 2023.0, "v": 30.0}, {"yr": 2024.0, "v": 20.0}, {"yr": 2025.0, "v": 10.0}}
 	ev := map[int]StepRows{4: {Rows: rows}}
-	base := models.QuantifierClaim{Claim: "v falls every year", Kind: QuantifierMonotonic, Step: 4, Column: "v"}
+	base := models.QuantifierClaim{Claim: "v falls every year", Kind: QuantifierMonotonic,
+		Step: 4, Column: "v", OrderBy: "yr"}
 
 	for _, trend := range []string{"", "decrease", "down", "descending", "falling"} {
 		c := base
@@ -786,5 +787,140 @@ func TestCountUndecidable(t *testing.T) {
 	}
 	if got := countUndecidable(nil); got != 0 {
 		t.Errorf("countUndecidable(nil) = %d, want 0", got)
+	}
+}
+
+// A trend is a claim about an ORDER, and the rows arrive in whatever order the
+// warehouse chose. Nothing asked the model to order its query and nothing checked,
+// so a true increasing series returned newest-first read as falling and was
+// refuted. order_by makes the query's ordering irrelevant.
+func TestEvaluate_MonotonicSortsByTheDeclaredSequence(t *testing.T) {
+	// The SAME series, returned newest-first. Margin rises with the year.
+	descending := []map[string]any{
+		{"yr": 2026.0, "m": 40.0}, {"yr": 2025.0, "m": 35.0}, {"yr": 2024.0, "m": 30.0},
+	}
+	ev := map[int]StepRows{4: {Rows: descending}}
+	claim := models.QuantifierClaim{
+		Claim: "margin improved each year", Kind: QuantifierMonotonic,
+		Step: 4, Column: "m", OrderBy: "yr", Trend: "increasing",
+	}
+	v := EvaluateQuantifierClaims([]models.QuantifierClaim{claim}, ev)[0]
+	if v.Status != QuantifierHolds {
+		t.Errorf("status = %q (%s), want holds — the rows are newest-first but the series rises by year",
+			v.Status, v.Reason)
+	}
+	if !strings.Contains(v.Reason, "yr") {
+		t.Errorf("reason should name the sequence it used: %q", v.Reason)
+	}
+	// And the same rows still refute the opposite direction.
+	falling := claim
+	falling.Trend = "decreasing"
+	if v := EvaluateQuantifierClaims([]models.QuantifierClaim{falling}, ev)[0]; v.Status != QuantifierFails {
+		t.Errorf("status = %q (%s), want fails", v.Status, v.Reason)
+	} else if !strings.Contains(v.Reason, "yr") {
+		t.Errorf("the failure should name where in the sequence it broke: %q", v.Reason)
+	}
+}
+
+// Without a declared sequence the check would be reading an order nobody
+// guaranteed, so it declines rather than guessing.
+func TestEvaluate_MonotonicWithoutASequenceIsUndecidable(t *testing.T) {
+	rows := []map[string]any{{"yr": 2024.0, "m": 30.0}, {"yr": 2025.0, "m": 35.0}}
+	ev := map[int]StepRows{4: {Rows: rows}}
+	v := EvaluateQuantifierClaims([]models.QuantifierClaim{{
+		Claim: "margin improved each year", Kind: QuantifierMonotonic,
+		Step: 4, Column: "m", Trend: "increasing",
+	}}, ev)[0]
+	if v.Status != QuantifierUndecidable {
+		t.Errorf("status = %q (%s), want undecidable", v.Status, v.Reason)
+	}
+	// The sort would refuse an empty column anyway, so this guard earns its place
+	// through the MESSAGE: the model has to be told a sequence is required and why,
+	// not handed a complaint about a column called "".
+	for _, want := range []string{"order_by", "puts the rows in sequence", "whatever order the warehouse returned"} {
+		if !strings.Contains(v.Reason, want) {
+			t.Errorf("reason does not say %q: %q", want, v.Reason)
+		}
+	}
+}
+
+// The risk the change introduces: sorting by the measured column and then checking
+// that same column moves in one direction is true of EVERY series, so it would turn
+// the check into a rubber stamp and let a false claim pass on purpose.
+func TestEvaluate_MonotonicRefusesToSortByTheMeasuredColumn(t *testing.T) {
+	// Deliberately NOT monotonic by year: 30 -> 40 -> 20.
+	rows := []map[string]any{
+		{"yr": 2024.0, "m": 30.0}, {"yr": 2025.0, "m": 40.0}, {"yr": 2026.0, "m": 20.0},
+	}
+	ev := map[int]StepRows{4: {Rows: rows}}
+	for _, orderBy := range []string{"m", "M", " m "} {
+		v := EvaluateQuantifierClaims([]models.QuantifierClaim{{
+			Claim: "margin improved each year", Kind: QuantifierMonotonic,
+			Step: 4, Column: "m", OrderBy: orderBy, Trend: "increasing",
+		}}, ev)[0]
+		if v.Status == QuantifierHolds {
+			t.Errorf("order_by %q laundered a false claim into a pass (%s)", orderBy, v.Reason)
+		}
+		if v.Status != QuantifierUndecidable {
+			t.Errorf("order_by %q: status = %q, want undecidable", orderBy, v.Status)
+		}
+	}
+	// Declared properly, the same series fails.
+	if v := EvaluateQuantifierClaims([]models.QuantifierClaim{{
+		Claim: "margin improved each year", Kind: QuantifierMonotonic,
+		Step: 4, Column: "m", OrderBy: "yr", Trend: "increasing",
+	}}, ev)[0]; v.Status != QuantifierFails {
+		t.Errorf("status = %q, want fails", v.Status)
+	}
+}
+
+// Two rows at the same point in the sequence leave the order between them
+// undetermined, so the direction would again depend on which came back first.
+func TestEvaluate_MonotonicWithATiedSequenceIsUndecidable(t *testing.T) {
+	rows := []map[string]any{
+		{"yr": 2024.0, "m": 30.0}, {"yr": 2024.0, "m": 35.0}, {"yr": 2025.0, "m": 40.0},
+	}
+	v := EvaluateQuantifierClaims([]models.QuantifierClaim{{
+		Claim: "margin improved each year", Kind: QuantifierMonotonic,
+		Step: 4, Column: "m", OrderBy: "yr", Trend: "increasing",
+	}}, map[int]StepRows{4: {Rows: rows}})[0]
+	if v.Status != QuantifierUndecidable {
+		t.Errorf("status = %q (%s), want undecidable — two rows share yr = 2024", v.Status, v.Reason)
+	}
+}
+
+// A ranked subset is not a sequence, and a non-numeric or absent sequence column is
+// out of reach rather than guessed at.
+func TestEvaluate_MonotonicOtherRefusals(t *testing.T) {
+	rows := []map[string]any{{"yr": 2024.0, "m": 30.0, "q": "Q1"}, {"yr": 2025.0, "m": 35.0, "q": "Q2"}}
+	ev := map[int]StepRows{4: {Rows: rows}}
+	base := models.QuantifierClaim{
+		Claim: "margin improved each year", Kind: QuantifierMonotonic,
+		Step: 4, Column: "m", OrderBy: "yr", Trend: "increasing",
+	}
+	cases := map[string]func(models.QuantifierClaim) models.QuantifierClaim{
+		"top_n turns it into a ranked subset": func(c models.QuantifierClaim) models.QuantifierClaim {
+			c.TopN, c.TopNColumn = 2, "m"
+			return c
+		},
+		"a non-numeric sequence column": func(c models.QuantifierClaim) models.QuantifierClaim {
+			c.OrderBy = "q"
+			return c
+		},
+		"a sequence column the rows do not carry": func(c models.QuantifierClaim) models.QuantifierClaim {
+			c.OrderBy = "missing"
+			return c
+		},
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			if v := EvaluateQuantifierClaims([]models.QuantifierClaim{mutate(base)}, ev)[0]; v.Status != QuantifierUndecidable {
+				t.Errorf("status = %q (%s), want undecidable", v.Status, v.Reason)
+			}
+		})
+	}
+	// The unmutated claim still holds, so the refusals are not blanket.
+	if v := EvaluateQuantifierClaims([]models.QuantifierClaim{base}, ev)[0]; v.Status != QuantifierHolds {
+		t.Errorf("baseline status = %q (%s), want holds", v.Status, v.Reason)
 	}
 }
