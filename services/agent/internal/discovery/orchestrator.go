@@ -1701,7 +1701,7 @@ func (o *Orchestrator) parseInsightsWith(response string, areaID string, salvage
 	var raws []json.RawMessage
 	if strings.HasPrefix(strings.TrimSpace(cleaned), "[") {
 		// Bare top-level array (some models emit the array directly).
-		if err := json.Unmarshal([]byte(cleaned), &raws); err != nil {
+		if err := decodeLeadingJSON(cleaned, &raws); err != nil {
 			return nil, 0, err
 		}
 	} else {
@@ -1709,7 +1709,7 @@ func (o *Orchestrator) parseInsightsWith(response string, areaID string, salvage
 		// different key is a parse failure, not a legitimately empty result —
 		// otherwise it would silently yield 0 insights with no retry.
 		var envelope map[string]json.RawMessage
-		if err := json.Unmarshal([]byte(cleaned), &envelope); err != nil {
+		if err := decodeLeadingJSON(cleaned, &envelope); err != nil {
 			return nil, 0, fmt.Errorf("failed to parse analysis response: %w", err)
 		}
 		// Match the key case-insensitively, as encoding/json does when decoding
@@ -1729,6 +1729,18 @@ func (o *Orchestrator) parseInsightsWith(response string, areaID string, salvage
 			// A null array decodes into a nil slice without error; treat it as a
 			// parse failure (→ retry) rather than a silent empty result.
 			return nil, 0, fmt.Errorf(`"insights" is null`)
+		}
+		// Some models emit the array as a JSON-encoded string rather than an
+		// array -- `{"insights":"[{\"name\": ...}]"}`. Observed once on a
+		// re-prompt, carrying a complete and sound insight that was discarded on
+		// the wrapper. Unwrap one level and let the decode below judge the
+		// contents: a string that is not an encoded array still fails, so a
+		// refusal written in prose cannot become a silent empty result.
+		if strings.HasPrefix(strings.TrimSpace(string(insRaw)), `"`) {
+			var inner string
+			if err := json.Unmarshal(insRaw, &inner); err == nil {
+				insRaw = json.RawMessage(inner)
+			}
 		}
 		if err := json.Unmarshal(insRaw, &raws); err != nil {
 			return nil, 0, fmt.Errorf(`"insights" is not an array: %w`, err)
@@ -2204,7 +2216,7 @@ func parseRecommendations(response string) ([]models.Recommendation, int, error)
 	var raws []json.RawMessage
 	if strings.HasPrefix(strings.TrimSpace(cleaned), "[") {
 		// Bare top-level array (some models emit the array directly).
-		if err := json.Unmarshal([]byte(cleaned), &raws); err != nil {
+		if err := decodeLeadingJSON(cleaned, &raws); err != nil {
 			return nil, 0, err
 		}
 	} else {
@@ -2213,7 +2225,7 @@ func parseRecommendations(response string) ([]models.Recommendation, int, error)
 		// is a parse failure, not a legitimately empty result — otherwise it
 		// would silently yield 0 recommendations with no retry (issue #342).
 		var envelope map[string]json.RawMessage
-		if err := json.Unmarshal([]byte(cleaned), &envelope); err != nil {
+		if err := decodeLeadingJSON(cleaned, &envelope); err != nil {
 			return nil, 0, err
 		}
 		// Match the key case-insensitively, as encoding/json does when
@@ -2913,6 +2925,28 @@ func droppedToTelemetry(dropped []DroppedStep) []models.DroppedAnalysisStep {
 		})
 	}
 	return out
+}
+
+// decodeLeadingJSON decodes the first JSON value in s into v and ignores whatever
+// follows it.
+//
+// cleanJSONResponse trims everything before the opening brace and nothing after the
+// closing one, so a model that answers and then explains itself -- a valid envelope
+// followed by a paragraph saying why it is empty -- was rejected with
+// `invalid character 'T' after top-level value`. That is not a malformed response; it
+// is a correct one with a note attached. 17 of them over 12 replays of the frozen
+// corpora, each costing a re-prompt that re-sent the whole area prompt, and one of
+// those re-prompts lost a genuine insight.
+//
+// A json.Decoder reads exactly one value and stops, which is the whole fix: no brace
+// matching, no scanner, nothing that parses text we authored. A truncated value still
+// fails, so a genuinely incomplete response is still retried.
+//
+// Two envelopes in one response resolve to the first. That is a deliberate
+// consequence: the alternative is rejecting a response whose first value is complete
+// and usable.
+func decodeLeadingJSON(s string, v any) error {
+	return json.NewDecoder(strings.NewReader(s)).Decode(v)
 }
 
 func cleanJSONResponse(response string) string {

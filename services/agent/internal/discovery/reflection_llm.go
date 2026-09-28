@@ -2,7 +2,6 @@ package discovery
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -336,7 +335,7 @@ func parseReflection(response string) (*parsedReflection, error) {
 		return nil, fmt.Errorf("empty reflection response")
 	}
 	var out parsedReflection
-	if err := json.Unmarshal([]byte(cleaned), &out); err != nil {
+	if err := decodeLeadingJSON(cleaned, &out); err != nil {
 		return nil, fmt.Errorf("reflection response is not a JSON object: %w", err)
 	}
 	return &out, nil

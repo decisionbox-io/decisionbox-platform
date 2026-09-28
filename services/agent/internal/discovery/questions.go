@@ -432,12 +432,12 @@ func parseQuestions(response string) ([]parsedQuestion, int, error) {
 
 	var raws []json.RawMessage
 	if strings.HasPrefix(strings.TrimSpace(cleaned), "[") {
-		if err := json.Unmarshal([]byte(cleaned), &raws); err != nil {
+		if err := decodeLeadingJSON(cleaned, &raws); err != nil {
 			return nil, 0, err
 		}
 	} else {
 		var envelope map[string]json.RawMessage
-		if err := json.Unmarshal([]byte(cleaned), &envelope); err != nil {
+		if err := decodeLeadingJSON(cleaned, &envelope); err != nil {
 			return nil, 0, err
 		}
 		var qRaw json.RawMessage
