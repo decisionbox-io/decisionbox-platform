@@ -431,13 +431,16 @@ func parseQuestions(response string) ([]parsedQuestion, int, error) {
 	cleaned := cleanJSONResponse(response)
 
 	var raws []json.RawMessage
+	more := false
 	if strings.HasPrefix(strings.TrimSpace(cleaned), "[") {
-		if err := decodeLeadingJSON(cleaned, &raws); err != nil {
+		var err error
+		if more, err = decodeLeadingJSON(cleaned, &raws); err != nil {
 			return nil, 0, err
 		}
 	} else {
 		var envelope map[string]json.RawMessage
-		if err := decodeLeadingJSON(cleaned, &envelope); err != nil {
+		var err error
+		if more, err = decodeLeadingJSON(cleaned, &envelope); err != nil {
 			return nil, 0, err
 		}
 		var qRaw json.RawMessage
@@ -457,6 +460,11 @@ func parseQuestions(response string) ([]parsedQuestion, int, error) {
 		if err := json.Unmarshal(qRaw, &raws); err != nil {
 			return nil, 0, fmt.Errorf(`"questions" is not an array: %w`, err)
 		}
+	}
+	// An empty result with another JSON value behind it is a placeholder, not an
+	// answer -- see decodeLeadingJSON.
+	if more && len(raws) == 0 {
+		return nil, 0, fmt.Errorf("response holds an empty questions array followed by another JSON value")
 	}
 
 	out := make([]parsedQuestion, 0, len(raws))

@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -335,8 +336,16 @@ func parseReflection(response string) (*parsedReflection, error) {
 		return nil, fmt.Errorf("empty reflection response")
 	}
 	var out parsedReflection
-	if err := decodeLeadingJSON(cleaned, &out); err != nil {
+	more, err := decodeLeadingJSON(cleaned, &out)
+	if err != nil {
 		return nil, fmt.Errorf("reflection response is not a JSON object: %w", err)
+	}
+	// An empty reflection with another JSON value behind it is a placeholder, not an
+	// answer -- see decodeLeadingJSON. Nothing distinguishes "reflected and found
+	// nothing to change" from "the real reflection was thrown away" once it is
+	// returned, so it has to be caught here.
+	if more && reflect.DeepEqual(out, parsedReflection{}) {
+		return nil, fmt.Errorf("reflection response is an empty object followed by another JSON value")
 	}
 	return &out, nil
 }
