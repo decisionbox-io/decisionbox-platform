@@ -122,13 +122,36 @@ func groupThousands(s string) string {
 	return b.String() + frac
 }
 
-// closeEnough compares a figure's value against an evaluated one at the interval the
-// rendering claims.
+// renderedValue is the number the prose actually carries, as a number.
+//
+// Not the same as Value whenever Value holds more precision than the format prints, and
+// that gap is what the check has to be about. A figure of 100,490,000 at the millions scale
+// with no decimals PRINTS "$100M". Evidence of 100,510,000 sits 20,000 from the value and
+// 510,000 from what was printed, so measuring from the value called it holding while the
+// sentence said $100M and the evidence said $101M.
+//
+// Derived by rendering and reading back, deliberately: it is the one place where parsing a
+// number is not a guess, because Go wrote the string from a float a line earlier and the
+// alternative is a second rounding implementation that can disagree with the first.
+func renderedValue(f models.Figure) float64 {
+	sc, ok := figureScales[f.Scale]
+	if !ok {
+		sc = figureScales[models.ScaleNone]
+	}
+	printed, err := strconv.ParseFloat(strconv.FormatFloat(f.Value/sc.div, 'f', f.Decimals, 64), 64)
+	if err != nil {
+		return f.Value
+	}
+	return printed * sc.div
+}
+
+// closeEnough compares what a figure PRINTS against an evaluated value, at the interval the
+// printing claims.
 func closeEnough(f models.Figure, got float64) bool {
 	if math.IsNaN(f.Value) || math.IsNaN(got) || math.IsInf(f.Value, 0) || math.IsInf(got, 0) {
 		return false
 	}
-	return math.Abs(f.Value-got) <= figureSlack(f)
+	return math.Abs(renderedValue(f)-got) <= figureSlack(f)
 }
 
 // percentScalings returns the evaluated values a percentage figure may legitimately be

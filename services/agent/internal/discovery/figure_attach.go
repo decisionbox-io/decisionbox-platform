@@ -29,6 +29,13 @@ func attachFigureVerdicts(insights []models.Insight, stepByID map[int]*models.Ex
 		// declared nothing is exactly where a volunteered verdict would survive unnoticed.
 		ins.FigureVerdicts = nil
 		ins.FigureCorrections = nil
+		// The template too, and for the same reason. An insight with no figures and no
+		// references is skipped by renderInsightFigures, so a model-authored
+		// `evidence_figure_template` on one of those survived persistence and API
+		// serialisation as the platform's own provenance record -- the model authoring the
+		// proof that its numbers came from declarations. The recommendation pass already
+		// cleared all three; this one cleared two.
+		ins.FigureTemplate = nil
 
 		if len(ins.Figures) == 0 {
 			continue

@@ -1261,7 +1261,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// Render the references. From here on the insight carries ordinary sentences, and
 		// every later phase -- the quantifier pass, repair, validation, the API, the
 		// dashboard, the exec summary -- reads them without knowing this format exists.
-		if rendered := renderInsightFigures(insights); rendered.resolved > 0 || rendered.inlined > 0 {
+		// Unresolved counts too. Gating on resolved-or-inlined discarded the tally in the
+		// one case it mattered most -- an area where every reference failed to resolve
+		// reported FigureRefsUnresolved as zero, which reads as nothing went wrong.
+		if rendered := renderInsightFigures(insights); rendered.resolved > 0 || rendered.inlined > 0 || rendered.unresolved > 0 {
 			step.FiguresInlined = rendered.inlined
 			step.FigureRefsUnresolved = rendered.unresolved
 		}

@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
@@ -87,13 +88,25 @@ func buildFigureRefIndex(insights []models.Insight) figureRefIndex {
 		// the cost is a recommendation typing a number instead of referencing one, which
 		// is the status quo. The cost of the alternative is a false number.
 		if ins.Repair != nil {
-			why := "the insight's prose was repaired after its figures were rendered, so the figure no longer tracks the sentence"
+			// found is false, and that is the whole point of this case.
+			//
+			// The first attempt at this withheld `vouched` but left `found` true, which
+			// withheld the verdict and handed over the number anyway: a figure still
+			// stating 12 behind a sentence repaired to 302 was filled into the
+			// recommendation and rendered as 12. Half a fix.
+			//
+			// The distinction it missed is between the two unvouched cases. A refuted
+			// figure Go declined to correct is still ON THE PAGE -- the correction gate
+			// leaves it visible in the insight -- so restating it matches what the reader
+			// sees. A repaired one is not: repair rewrote or removed that sentence, so
+			// the insight shows 302 and the figure's 12 exists nowhere a reader can see
+			// it. There is no number here to restate.
 			byID := make(map[string]refValue, len(ins.Figures))
 			for _, f := range ins.Figures {
 				if strings.TrimSpace(f.ID) == "" {
 					continue
 				}
-				byID[f.ID] = refValue{value: f.Value, slack: figureSlack(f), found: true, why: why}
+				byID[f.ID] = refValue{why: "the insight's prose was repaired after its figures were rendered, so the figure no longer matches any sentence a reader sees"}
 			}
 			ix[ins.ID] = byID
 			continue
@@ -139,8 +152,12 @@ func (ix figureRefIndex) resolve(r models.FigureRef) (value float64, slack float
 		return 0, 0, false, "", fmt.Errorf("insight %s is not among the insights this recommendation was given", shortID(r.Insight))
 	}
 	rv, ok := figures[r.Figure]
-	if !ok || !rv.found {
+	if !ok {
 		return 0, 0, false, "", fmt.Errorf("insight %s declares no figure %s", shortID(r.Insight), r.Figure)
+	}
+	if !rv.found {
+		// Known, but with no number behind it any more.
+		return 0, 0, false, "", fmt.Errorf("figure %s of insight %s cannot be referenced: %s", r.Figure, shortID(r.Insight), rv.why)
 	}
 	if !rv.vouched {
 		return rv.value, rv.slack, false, fmt.Sprintf("figure %s of insight %s is not vouched for: %s", r.Figure, shortID(r.Insight), rv.why), nil
@@ -184,9 +201,20 @@ func evaluateRecommendationFigure(f models.Figure, ix figureRefIndex) models.Fig
 
 	total := 0.0
 	unvouched := ""
-	// A sum is verified no better than the coarsest of its operands: adding a value known
-	// to within 500 to one known exactly leaves the total known to within 500.
-	sourceSlack := 0.0
+	// Two different questions, which the first version of this ran together on one knob.
+	//
+	// coarsest answers "is this figure printed finer than any operand was verified to?".
+	// That is about printed PLACES, and summing ten figures written to the thousand does
+	// not make the answer finer or coarser than a thousand -- so it is a maximum.
+	//
+	// drift answers "how far can the computed total be from the evidence?". Each operand's
+	// value may sit anywhere inside its own printed interval, and those errors can lean
+	// the same way, so they add. Sources printed 1K and 2K can hold against 1400 and 2400.
+	//
+	// Accumulating into the first question is what broke: two exact counts, each carrying
+	// the half-unit interval every unscaled whole number carries, summed to a full unit
+	// and made their own total unstatable at the precision both operands already had.
+	coarsest, drift := 0.0, 0.0
 	for _, r := range f.Refs {
 		got, slack, vouched, why, err := ix.resolve(r)
 		if err != nil {
@@ -195,9 +223,10 @@ func evaluateRecommendationFigure(f models.Figure, ix figureRefIndex) models.Fig
 		if !vouched && unvouched == "" {
 			unvouched = why
 		}
-		if slack > sourceSlack {
-			sourceSlack = slack
+		if slack > coarsest {
+			coarsest = slack
 		}
+		drift += slack
 		total += got
 	}
 
@@ -218,20 +247,22 @@ func evaluateRecommendationFigure(f models.Figure, ix figureRefIndex) models.Fig
 	// rewriting it unscaled as "911,000" asserts a half-unit, and its `holds` would be
 	// claiming a precision nothing established. The value still renders -- it is the
 	// number the insight itself shows -- and the verdict says so.
-	if own := figureSlack(f); own < sourceSlack {
+	if own := figureSlack(f); own < coarsest {
 		if f.Value == 0 {
 			v.Claimed = total
 		}
 		return undecidable(
 			"the figures referenced were checked to within %s, and this one is written to within %s, "+
-				"which is finer than anything established", formatFigure(sourceSlack), formatFigure(own))
+				"which is finer than anything established", formatFigure(coarsest), formatFigure(own))
 	}
 	if f.Value == 0 {
 		v.Claimed = total
 		v.Status = models.FigureHolds
 		return v
 	}
-	if closeEnough(f, total) {
+	// The stated value is held to its own printed interval WIDENED by the drift its
+	// operands allow, because the total Go computed is itself only known that well.
+	if math.Abs(renderedValue(f)-total) <= figureSlack(f)+drift {
 		v.Status = models.FigureHolds
 		return v
 	}

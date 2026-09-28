@@ -194,3 +194,169 @@ func TestFigures_FilledInValueRefreshesTheVerdictDisplay(t *testing.T) {
 		t.Errorf("status = %q, want holds", v.Status)
 	}
 }
+
+// --- Review round 20. One of these is a defect in round 19's own fix, and one is a
+// finding from round 19 I miscounted and did not fix, which round 20 raised again.
+
+// TestFigures_RepairedInsightLendsNoNumberAtAll — round 20, on round 19's fix.
+//
+// That fix withheld `vouched` but left `found` true, so it withheld the verdict and handed
+// over the number anyway: a figure still stating 12 behind a sentence repaired to 302 was
+// filled into the recommendation and rendered as 12.
+//
+// The distinction it missed is between the two unvouched cases. A refuted figure Go declined
+// to correct is still on the page, so restating it matches what the reader sees. A repaired
+// one is not -- repair rewrote that sentence -- so there is no number to restate.
+func TestFigures_RepairedInsightLendsNoNumberAtAll(t *testing.T) {
+	stale := models.Insight{
+		ID:          "11111111-2222-3333-4444-555555555555",
+		Description: "302 sub-categories are loss-making.", // repaired from 12
+		Figures:     []models.Figure{{ID: "f1", Value: 12, Unit: models.UnitCount}},
+		FigureVerdicts: []models.FigureVerdict{
+			{ID: "f1", Status: models.FigureHolds, Claimed: 12, Evaluated: 12},
+		},
+		Repair: &models.InsightRepair{Rounds: 1, Outcome: "claim_fixed"},
+	}
+	recs := []models.Recommendation{{
+		Description: "Address the {{f1}} loss-making sub-categories.",
+		Figures: []models.Figure{{
+			ID: "f1", Unit: models.UnitCount, Kind: models.FigureRefKind,
+			Refs: []models.FigureRef{ref(stale.ID, "f1")},
+		}},
+	}}
+
+	attachRecommendationFigureVerdicts(recs, []models.Insight{stale})
+	renderRecommendationFigures(recs)
+
+	if strings.Contains(recs[0].Description, "12") {
+		t.Fatalf("the repaired-away number reached a second document: %q", recs[0].Description)
+	}
+	v := recs[0].FigureVerdicts[0]
+	if v.Resolved {
+		t.Error("resolved = true, but a repaired insight has no number behind that reference")
+	}
+	if v.Status != models.FigureUndecidable {
+		t.Errorf("status = %q, want undecidable", v.Status)
+	}
+	if recs[0].Figures[0].Value != 0 {
+		t.Errorf("figure value = %v, want it left unfilled", recs[0].Figures[0].Value)
+	}
+}
+
+// TestFigures_ToleranceIsCentredOnWhatWasPrinted — raised in round 19, missed, re-raised in
+// round 20.
+//
+// The interval is half the last place printed, but it was measured from Value, which can
+// hold more precision than the format shows. 100,490,000 at the millions scale with no
+// decimals prints "$100M". Evidence of 100,510,000 sits 20,000 from the value and 510,000
+// from what was printed — so the check passed while the sentence said $100M and the
+// evidence said $101M.
+func TestFigures_ToleranceIsCentredOnWhatWasPrinted(t *testing.T) {
+	f := models.Figure{
+		ID: "f1", Value: 100490000, Unit: models.UnitCurrency, Scale: models.ScaleMillions, Decimals: 0,
+		Step: 1, Kind: models.FigureCell, Column: "net", Row: "region = A",
+	}
+	if got := renderFigure(f); got != "$100M" {
+		t.Fatalf("renderFigure = %q, want $100M -- this test's premise is stale", got)
+	}
+	v := evaluateFigure(f, map[int]StepRows{1: {Rows: []map[string]any{{"region": "A", "net": 100510000.0}}}})
+	if v.Status != models.FigureFails {
+		t.Errorf("status = %q, want fails: the prose says $100M and the evidence rounds to $101M", v.Status)
+	}
+
+	// And the honest case still holds: evidence inside the printed interval.
+	v = evaluateFigure(f, map[int]StepRows{1: {Rows: []map[string]any{{"region": "A", "net": 100010000.0}}}})
+	if v.Status != models.FigureHolds {
+		t.Errorf("status = %q (%s), want holds: $100M covers 100,010,000", v.Status, v.Reason)
+	}
+}
+
+// TestFigures_SumOfEquallyCoarseOperandsIsStatableAtTheirPrecision.
+//
+// Round 20 asked for operand uncertainty to accumulate, and accumulating it into the
+// precision guard broke a working case: two exact counts each carry the half-unit interval
+// every unscaled whole number carries, and summed they made their own total unstatable at
+// the precision both operands already had.
+//
+// The two questions are separate. Whether a figure is printed finer than any operand was
+// verified to is about printed places, so it is a maximum. How far the computed total can
+// sit from the evidence does accumulate, so it widens the agreement check instead.
+func TestFigures_SumOfEquallyCoarseOperandsIsStatableAtTheirPrecision(t *testing.T) {
+	ins := bandInsight() // two unscaled counts, 52134 and 43897
+	recs := []models.Recommendation{{
+		Description: "{{f1}} buyers in the two highest bands.",
+		Figures: []models.Figure{{
+			ID: "f1", Unit: models.UnitCount, Kind: models.FigureSum,
+			Refs: []models.FigureRef{ref(ins.ID, "f1"), ref(ins.ID, "f2")},
+		}},
+	}}
+	attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	renderRecommendationFigures(recs)
+
+	if v := recs[0].FigureVerdicts[0]; v.Status != models.FigureHolds {
+		t.Errorf("status = %q (%s), want holds -- summing two counts must not make their total unstatable", v.Status, v.Reason)
+	}
+	if !strings.Contains(recs[0].Description, "96,031") {
+		t.Errorf("description = %q, want the total", recs[0].Description)
+	}
+
+	// But a genuinely coarser source still blocks a finer restatement.
+	coarse := models.Insight{
+		ID:             "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+		Figures:        []models.Figure{{ID: "f1", Value: 911395, Unit: models.UnitCount, Scale: models.ScaleThousands, Decimals: 0}},
+		FigureVerdicts: []models.FigureVerdict{{ID: "f1", Status: models.FigureHolds}},
+	}
+	fine := []models.Recommendation{{
+		Description: "{{f1}} lines.",
+		Figures: []models.Figure{{
+			ID: "f1", Unit: models.UnitCount, Kind: models.FigureRefKind,
+			Refs: []models.FigureRef{ref(coarse.ID, "f1")},
+		}},
+	}}
+	attachRecommendationFigureVerdicts(fine, []models.Insight{coarse})
+	if v := fine[0].FigureVerdicts[0]; v.Status != models.FigureUndecidable {
+		t.Errorf("status = %q, want undecidable for a finer restatement of a coarser source", v.Status)
+	}
+}
+
+// TestFigures_ModelAuthoredInsightTemplateIsCleared.
+//
+// An insight with no figures and no references is skipped by renderInsightFigures, so a
+// model-authored `evidence_figure_template` survived persistence and API serialisation as
+// the platform's own provenance record -- the model authoring the proof that its numbers
+// came from declarations. The recommendation pass already cleared all three derived fields;
+// the insight pass cleared two.
+func TestFigures_ModelAuthoredInsightTemplateIsCleared(t *testing.T) {
+	ins := []models.Insight{{
+		Name:           "Revenue grew last year",
+		FigureTemplate: &models.FigureTemplate{Name: "Revenue grew {{f1}} last year"},
+		FigureVerdicts: []models.FigureVerdict{{ID: "f1", Status: models.FigureHolds}},
+	}}
+	attachFigureVerdicts(ins, map[int]*models.ExplorationStep{})
+	if ins[0].FigureTemplate != nil {
+		t.Errorf("a model-authored provenance record survived: %+v", ins[0].FigureTemplate)
+	}
+	if ins[0].FigureVerdicts != nil {
+		t.Errorf("a model-authored verdict survived: %+v", ins[0].FigureVerdicts)
+	}
+}
+
+// TestFigures_TallyCountsAnInsightWhoseEveryReferenceFailed.
+//
+// The orchestrator gated the figure tally on resolved-or-inlined, which discarded it in the
+// one case it mattered most: an area where every reference failed to resolve reported
+// FigureRefsUnresolved as zero, reading as nothing went wrong.
+func TestFigures_TallyCountsAnInsightWhoseEveryReferenceFailed(t *testing.T) {
+	ins := []models.Insight{{
+		Name:        "Revenue reached {{f1}}",
+		Description: "No figures were declared at all.",
+	}}
+	tally := renderInsightFigures(ins)
+	if tally.unresolved != 1 {
+		t.Errorf("tally.unresolved = %d, want 1", tally.unresolved)
+	}
+	if tally.resolved != 0 || tally.inlined != 0 {
+		t.Fatalf("premise stale: resolved=%d inlined=%d; this is the combination the orchestrator's guard discarded",
+			tally.resolved, tally.inlined)
+	}
+}
