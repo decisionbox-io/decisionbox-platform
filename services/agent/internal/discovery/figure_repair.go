@@ -207,16 +207,41 @@ func sameQuantity(claimed, evaluated float64) bool {
 // alone. Count only, deliberately -- Rank and TopN are positions rather than quantities, and
 // inventing coverage for them would be the false positive the quantifier work warned about.
 func reconcileClaimCounts(ins *models.Insight, corrections []models.FigureCorrection) {
+	// Values as they were BEFORE this pass rewrote them: the figures already carry their
+	// corrected values by the time this runs, so comparing against the current ones finds
+	// nothing. Reconstructed from the corrections, which record both ends.
+	pre := make(map[string]float64, len(ins.Figures))
+	for id, f := range figuresByID(ins.Figures) {
+		pre[id] = f.Value
+	}
+	for _, c := range corrections {
+		pre[c.ID] = c.From
+	}
+
 	for _, c := range corrections {
 		for i := range ins.QuantifierClaims {
 			q := &ins.QuantifierClaims[i]
 			if q.Kind != QuantifierCardinality || q.Count == 0 {
 				continue
 			}
-			if !referencesFigure(q.Claim, c.ID) {
+			if !referencesFigure(q.Claim, c.ID) || float64(q.Count) != c.From {
 				continue
 			}
-			if float64(q.Count) != c.From {
+			// The claim must name exactly one figure that could be the counted one.
+			//
+			// Matching any referenced figure whose value equals the count was too loose:
+			// "{{n}} categories contribute {{revenue}}" with both figures at 100 and a
+			// correction of revenue to 99 moved Count to 99 while {{n}} still rendered 100,
+			// so the next pass refuted a sentence that was correct. Where the link is
+			// ambiguous the count is left alone -- a stale count is checked against the
+			// prose and can be repaired; a wrongly moved one refutes the truth.
+			candidates := 0
+			for _, ref := range reFigureRef.FindAllStringSubmatch(q.Claim, -1) {
+				if v, ok := pre[ref[1]]; ok && v == c.From {
+					candidates++
+				}
+			}
+			if candidates != 1 {
 				continue
 			}
 			q.Count = int(math.Round(c.To))

@@ -75,6 +75,7 @@ func insightResponseSchema() map[string]interface{} {
 					// signal, so it was the one being obeyed. Pinned by
 					// TestInsightSchema_FigureEnumsMatchTheClosedSets.
 					"unit":     str(`One of "count", "currency", "percent", "multiple", "plain" -- notation, never a word like days`),
+					"currency": str(`Symbol a currency figure prints; omit for dollars, set it when the data is not in dollars (e.g. "€")`),
 					"scale":    str(`Abbreviation for a large number: "thousands", "millions", "billions"; omit to write it in full`),
 					"decimals": map[string]interface{}{"type": "integer", "description": "Decimal places to print; this is the precision being claimed"},
 					"approx":   map[string]interface{}{"type": "boolean", "description": "Print a tilde to mark the number as rounded"},

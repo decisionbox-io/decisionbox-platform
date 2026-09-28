@@ -47,7 +47,19 @@ type Figure struct {
 	// Unit, Scale and Decimals are how the figure is written. Go renders from them,
 	// which is the whole reason the precision is known rather than parsed: the
 	// interval a figure claims is half the last place Go printed, and Go chose it.
-	Unit     string `bson:"unit,omitempty" json:"unit,omitempty"`
+	Unit string `bson:"unit,omitempty" json:"unit,omitempty"`
+
+	// Currency is the symbol a currency figure prints, "$" by default.
+	//
+	// Here because Go took over the rendering. While the model typed its own numbers it
+	// typed its own symbol with them, and a euro-denominated warehouse got euros; once Go
+	// rendered from `unit: "currency"` alone, every amount became dollars regardless of the
+	// data. That is a regression this format introduced, not a limitation it inherited.
+	//
+	// Presentation belongs to the model and rendering to Go, the same division as unit,
+	// scale and decimals -- so the model says which symbol and Go writes it. Defaulting to
+	// "$" keeps the common case unchanged rather than silently dropping the symbol.
+	Currency string `bson:"currency,omitempty" json:"currency,omitempty"`
 	Scale    string `bson:"scale,omitempty" json:"scale,omitempty"`
 	Decimals int    `bson:"decimals,omitempty" json:"decimals,omitempty"`
 
@@ -362,6 +374,14 @@ const MaxFigureDecimals = 6
 // which is a different contract from the one this layer rests on -- the interval a figure
 // claims is half the last place it printed, and that is only knowable if the count of places
 // is the count that was asked for.
+// Symbol is the currency symbol this figure prints.
+func (f Figure) Symbol() string {
+	if c := strings.TrimSpace(f.Currency); c != "" {
+		return c
+	}
+	return "$"
+}
+
 func (f Figure) Places() int {
 	switch {
 	case f.Decimals < 0:

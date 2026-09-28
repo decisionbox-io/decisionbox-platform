@@ -1224,3 +1224,210 @@ func TestFigures_CorrectionDeclinesWhenAMetricWouldDesync(t *testing.T) {
 		t.Errorf("figure = %v, want the two left consistent", ins[0].Figures[0].Value)
 	}
 }
+
+// --- Review round 28.
+
+// TestFigures_ARestatementCannotChangeTheUnit — round 28.
+//
+// A checked 0.25x referenced with unit percent became "0.25%" where the same quantity is 25%,
+// and held, because the value copied across untouched. Converting would mean inventing an
+// operation the contract never described, so the mismatch is refused.
+func TestFigures_ARestatementCannotChangeTheUnit(t *testing.T) {
+	ins := models.Insight{
+		ID:             "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+		Figures:        []models.Figure{{ID: "f1", Value: 0.25, Unit: models.UnitMultiple, Decimals: 2}},
+		FigureVerdicts: []models.FigureVerdict{{ID: "f1", Status: models.FigureHolds}},
+	}
+	recs := []models.Recommendation{{
+		Description: "It runs at {{f1}}.",
+		Figures: []models.Figure{{
+			ID: "f1", Unit: models.UnitPercent, Decimals: 2, Kind: models.FigureRefKind,
+			Refs: []models.FigureRef{ref(ins.ID, "f1")},
+		}},
+	}}
+	attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	renderRecommendationFigures(recs)
+
+	if v := recs[0].FigureVerdicts[0]; v.Status != models.FigureUndecidable {
+		t.Errorf("status = %q, want undecidable for a unit change", v.Status)
+	}
+	if strings.Contains(recs[0].Description, "0.25%") {
+		t.Errorf("a multiple was published as a percentage: %q", recs[0].Description)
+	}
+
+	// The same unit restates freely, including a notation change within it.
+	same := []models.Recommendation{{
+		Description: "It runs at {{f1}}.",
+		Figures: []models.Figure{{
+			ID: "f1", Unit: models.UnitMultiple, Decimals: 1, Kind: models.FigureRefKind,
+			Refs: []models.FigureRef{ref(ins.ID, "f1")},
+		}},
+	}}
+	attachRecommendationFigureVerdicts(same, []models.Insight{ins})
+	if v := same[0].FigureVerdicts[0]; v.Status != models.FigureHolds {
+		t.Errorf("status = %q (%s), want holds for the same unit", v.Status, v.Reason)
+	}
+}
+
+// TestFigures_AmbiguousClaimLinkLeavesTheCountAlone — round 28, on round 21's fix.
+//
+// Matching any referenced figure whose value equalled the count was too loose:
+// "{{n}} categories contribute {{revenue}}" with both at 100, and a correction of revenue to
+// 99, moved Count to 99 while {{n}} still rendered 100 -- so the next pass refuted a correct
+// sentence. A stale count is checked against the prose and can be repaired; a wrongly moved one
+// refutes the truth.
+func TestFigures_AmbiguousClaimLinkLeavesTheCountAlone(t *testing.T) {
+	// Two steps, so the count and the sum can disagree independently -- and the sum is built
+	// from halves, which are exact in binary. An earlier version of this test used 0.99 a
+	// hundred times, whose float total is 98.99999999999986, a gap of 1.0000000000001% that
+	// the correction gate declines: no correction happened, the reconciliation never ran, and
+	// the assertion passed without testing anything.
+	counted := &models.ExplorationStep{Step: 4}
+	for i := 0; i < 100; i++ {
+		counted.QueryResult = append(counted.QueryResult, map[string]any{"id": i})
+	}
+	summed := &models.ExplorationStep{Step: 5}
+	for i := 0; i < 199; i++ {
+		summed.QueryResult = append(summed.QueryResult, map[string]any{"rev": 0.5})
+	}
+	byID := map[int]*models.ExplorationStep{4: counted, 5: summed}
+
+	ins := []models.Insight{{
+		Name:        "{{n}} categories contribute {{revenue}}",
+		SourceSteps: []int{4, 5},
+		Figures: []models.Figure{
+			{ID: "n", Value: 100, Unit: models.UnitCount, Step: 4, Kind: models.FigureCount},
+			{ID: "revenue", Value: 100, Unit: models.UnitCurrency, Decimals: 1, Step: 5, Kind: models.FigureSum, Column: "rev"},
+		},
+		QuantifierClaims: []models.QuantifierClaim{
+			{Claim: "{{n}} categories contribute {{revenue}}", Kind: QuantifierCardinality, Step: 4, Count: 100},
+		},
+	}}
+	attachFigureVerdicts(ins, byID)
+	if n := correctRefutedFigures("area", ins, byID); n != 1 {
+		t.Fatalf("corrections = %d, want 1 (revenue 100 -> 99.5); the premise of this test is stale", n)
+	}
+	if got := ins[0].QuantifierClaims[0].Count; got != 100 {
+		t.Errorf("claim Count = %d, want 100 left alone: two referenced figures shared the value, so which one is counted is ambiguous", got)
+	}
+
+	// With only one candidate the link is unambiguous and the count does move -- otherwise
+	// this test would pass just as well if reconciliation had been deleted.
+	solo := []models.Insight{{
+		Name:        "{{revenue}} was contributed",
+		SourceSteps: []int{5},
+		Figures: []models.Figure{
+			// One decimal place, so the corrected 99.5 renders differently from 100 and the
+			// correction is recorded at all: at zero places both print "100", which the
+			// gate treats as a rounding boundary rather than a change.
+			{ID: "revenue", Value: 100, Unit: models.UnitPlain, Decimals: 1, Step: 5, Kind: models.FigureSum, Column: "rev"},
+		},
+		QuantifierClaims: []models.QuantifierClaim{
+			{Claim: "{{revenue}} was contributed", Kind: QuantifierCardinality, Step: 5, Count: 100},
+		},
+	}}
+	attachFigureVerdicts(solo, byID)
+	if n := correctRefutedFigures("area", solo, byID); n != 1 {
+		t.Fatalf("solo corrections = %d, want 1", n)
+	}
+	if got := solo[0].QuantifierClaims[0].Count; got != 100 {
+		t.Errorf("solo claim Count = %d, want 100 (99.5 rounds to it) -- but it must have been reconciled, not skipped", got)
+	}
+}
+
+// TestFigures_DecliningAnAdoptionDoesNotCertifyTheNumber — round 28, on round 24's fix.
+//
+// Declining the substitution protects a structured field from contradicting the prose, but it
+// must not also certify what it left standing: 101 declared with segment_size 101 against a
+// checked count of 100 sat inside the combined tolerance, reported holds, and kept 101 in the
+// sentence with that verdict attached.
+func TestFigures_DecliningAnAdoptionDoesNotCertifyTheNumber(t *testing.T) {
+	ins := models.Insight{
+		ID:             "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+		Figures:        []models.Figure{{ID: "f1", Value: 100, Unit: models.UnitCount}},
+		FigureVerdicts: []models.FigureVerdict{{ID: "f1", Status: models.FigureHolds}},
+	}
+	recs := []models.Recommendation{{
+		Title:       "Reach the {{f1}} accounts",
+		SegmentSize: 101,
+		Figures: []models.Figure{{
+			ID: "f1", Value: 101, Unit: models.UnitCount, Kind: models.FigureRefKind,
+			Refs: []models.FigureRef{ref(ins.ID, "f1")},
+		}},
+	}}
+	attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+
+	if recs[0].Figures[0].Value != 101 || recs[0].SegmentSize != 101 {
+		t.Errorf("the two were left disagreeing: figure %v / segment_size %d",
+			recs[0].Figures[0].Value, recs[0].SegmentSize)
+	}
+	if v := recs[0].FigureVerdicts[0]; v.Status == models.FigureHolds {
+		t.Errorf("status = holds, but 101 disagrees with the reference's 100 and nothing resolved it")
+	}
+}
+
+// TestFigures_AResolvedReferenceBecomesACitation — round 28.
+//
+// BuildRecommendationBundle gathers evidence through related_insight_ids alone, so a
+// recommendation citing insight A while referencing a figure from insight B handed the verifier
+// A's source steps and none of the evidence behind the number it was about to check.
+func TestFigures_AResolvedReferenceBecomesACitation(t *testing.T) {
+	a := models.Insight{ID: "insight-a", Name: "cited"}
+	b := bandInsight() // the figures actually referenced
+	recs := []models.Recommendation{{
+		Description:       "It holds {{f1}}.",
+		RelatedInsightIDs: []string{a.ID},
+		Figures: []models.Figure{{
+			ID: "f1", Unit: models.UnitCount, Kind: models.FigureRefKind,
+			Refs: []models.FigureRef{ref(b.ID, "f1")},
+		}},
+	}}
+	attachRecommendationFigureVerdicts(recs, []models.Insight{a, b})
+
+	got := recs[0].RelatedInsightIDs
+	if len(got) != 2 || got[0] != a.ID || got[1] != b.ID {
+		t.Errorf("related_insight_ids = %v, want both the cited insight and the referenced one", got)
+	}
+
+	// An unresolved reference names nothing and must not be added, or the invalid-id class
+	// validateRelatedInsightIDs exists to drop comes back.
+	bad := []models.Recommendation{{
+		RelatedInsightIDs: []string{a.ID},
+		Figures: []models.Figure{{
+			ID: "f1", Unit: models.UnitCount, Kind: models.FigureRefKind,
+			Refs: []models.FigureRef{ref("no-such-insight", "f1")},
+		}},
+	}}
+	attachRecommendationFigureVerdicts(bad, []models.Insight{a, b})
+	if len(bad[0].RelatedInsightIDs) != 1 {
+		t.Errorf("related_insight_ids = %v, want the unresolved reference not cited", bad[0].RelatedInsightIDs)
+	}
+}
+
+// TestFigures_CurrencySymbolComesFromTheData — round 28, and a regression this format
+// introduced rather than inherited.
+//
+// While the model typed its own numbers it typed its own symbol with them, and a
+// euro-denominated warehouse got euros. Once Go rendered from `unit: "currency"` alone, every
+// amount became dollars regardless of the data.
+func TestFigures_CurrencySymbolComesFromTheData(t *testing.T) {
+	euro := models.Figure{Value: 8476238553, Unit: models.UnitCurrency, Currency: "€", Scale: models.ScaleBillions, Decimals: 2}
+	if got := renderFigure(euro); got != "€8.48B" {
+		t.Errorf("renderFigure = %q, want €8.48B", got)
+	}
+	// Omitted still means dollars, so the common case is unchanged.
+	usd := euro
+	usd.Currency = ""
+	if got := renderFigure(usd); got != "$8.48B" {
+		t.Errorf("renderFigure = %q, want $8.48B when the symbol is omitted", got)
+	}
+	// And the negative sign stays outside the symbol, whichever symbol it is.
+	neg := euro
+	neg.Value = -8476238553
+	if got := renderFigure(neg); got != "-€8.48B" {
+		t.Errorf("renderFigure = %q, want -€8.48B", got)
+	}
+	if !strings.Contains(figureContract, "currency") {
+		t.Error("the contract does not tell the model it can set the symbol")
+	}
+}

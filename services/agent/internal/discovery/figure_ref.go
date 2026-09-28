@@ -52,6 +52,12 @@ type refValue struct {
 	// and summing their raw values gives 2980, rendered 3K, against evidence totalling
 	// 1020 -- outside even the accumulated drift.
 	//
+	// unit is the source figure's own notation. A restatement that changes it is not a
+	// restatement: a checked 0.25x referenced as a percent becomes "0.25%" where the same
+	// quantity is 25%, and it holds, because the value copies across untouched. Converting
+	// would mean inventing an operation the contract never described, so the mismatch is
+	// refused instead.
+	unit string
 	// slack is the half-interval it was verified at, which is the precision that print
 	// chose. "~911K" vouches to within 500, so a recommendation restating it unscaled as
 	// "911,000" would assert ±0.5 on a number checked to ±500.
@@ -145,12 +151,12 @@ func buildFigureRefIndex(insights []models.Insight) figureRefIndex {
 			// declined to fix still reads fails.
 			switch st := status[f.ID]; st {
 			case models.FigureHolds:
-				byID[f.ID] = refValue{value: renderedValue(f), slack: figureSlack(f), found: true, vouched: true}
+				byID[f.ID] = refValue{value: renderedValue(f), unit: f.Unit, slack: figureSlack(f), found: true, vouched: true}
 			case "":
-				byID[f.ID] = refValue{value: renderedValue(f), slack: figureSlack(f), found: true,
+				byID[f.ID] = refValue{value: renderedValue(f), unit: f.Unit, slack: figureSlack(f), found: true,
 					why: "it was never checked"}
 			default:
-				byID[f.ID] = refValue{value: renderedValue(f), slack: figureSlack(f), found: true,
+				byID[f.ID] = refValue{value: renderedValue(f), unit: f.Unit, slack: figureSlack(f), found: true,
 					why: fmt.Sprintf("its own check came back %s, so the insight carries it unvouched too", st)}
 			}
 		}
@@ -165,23 +171,23 @@ func buildFigureRefIndex(insights []models.Insight) figureRefIndex {
 // A missing reference is an error, because there is no number. An unvouched one is not:
 // the value comes back with vouched false, and the caller carries it while refusing to
 // call the figure checked.
-func (ix figureRefIndex) resolve(r models.FigureRef) (value float64, slack float64, vouched bool, why string, err error) {
+func (ix figureRefIndex) resolve(r models.FigureRef) (value float64, unit string, slack float64, vouched bool, why string, err error) {
 	figures, ok := ix[r.Insight]
 	if !ok {
-		return 0, 0, false, "", fmt.Errorf("insight %s is not among the insights this recommendation was given", shortID(r.Insight))
+		return 0, "", 0, false, "", fmt.Errorf("insight %s is not among the insights this recommendation was given", shortID(r.Insight))
 	}
 	rv, ok := figures[r.Figure]
 	if !ok {
-		return 0, 0, false, "", fmt.Errorf("insight %s declares no figure %s", shortID(r.Insight), r.Figure)
+		return 0, "", 0, false, "", fmt.Errorf("insight %s declares no figure %s", shortID(r.Insight), r.Figure)
 	}
 	if !rv.found {
 		// Known, but with no number behind it any more.
-		return 0, 0, false, "", fmt.Errorf("figure %s of insight %s cannot be referenced: %s", r.Figure, shortID(r.Insight), rv.why)
+		return 0, "", 0, false, "", fmt.Errorf("figure %s of insight %s cannot be referenced: %s", r.Figure, shortID(r.Insight), rv.why)
 	}
 	if !rv.vouched {
-		return rv.value, rv.slack, false, fmt.Sprintf("figure %s of insight %s is not vouched for: %s", r.Figure, shortID(r.Insight), rv.why), nil
+		return rv.value, rv.unit, rv.slack, false, fmt.Sprintf("figure %s of insight %s is not vouched for: %s", r.Figure, shortID(r.Insight), rv.why), nil
 	}
-	return rv.value, rv.slack, true, "", nil
+	return rv.value, rv.unit, rv.slack, true, "", nil
 }
 
 // EvaluateRecommendationFigures settles every figure a recommendation declares against
@@ -238,9 +244,14 @@ func evaluateRecommendationFigure(f models.Figure, ix figureRefIndex) models.Fig
 	// and made their own total unstatable at the precision both operands already had.
 	coarsest, drift := 0.0, 0.0
 	for _, r := range f.Refs {
-		got, slack, vouched, why, err := ix.resolve(r)
+		got, srcUnit, slack, vouched, why, err := ix.resolve(r)
 		if err != nil {
 			return undecidable("%s", err.Error())
+		}
+		if !sameNotation(f.Unit, srcUnit) {
+			return undecidable(
+				"this figure is written as %s and the one it references was checked as %s; a restatement cannot change the unit",
+				notationName(f.Unit), notationName(srcUnit))
 		}
 		if !vouched && unvouched == "" {
 			unvouched = why
@@ -327,6 +338,20 @@ func evaluateRecommendationFigure(f models.Figure, ix figureRefIndex) models.Fig
 // totals them. That is the bet the whole layer rests on and the one the measurements keep
 // confirming -- a model reliably reports what it used and unreliably computes over it.
 // 96,447 matched no combination of the bands, so the arithmetic was the broken part.
+// declineAdoption records that a disagreement was left unresolved.
+//
+// Declining the substitution protects a structured field from contradicting the prose, but it
+// must not also certify the number it left standing: a recommendation declaring 101 with
+// segment_size 101 against a checked count of 100 sat inside the combined tolerance, reported
+// `holds`, and kept 101 in the sentence with that verdict attached. The disagreement is real
+// and unresolved, so the verdict says undecidable.
+func declineAdoption(v *models.FigureVerdict, reason string) {
+	if v.Claimed != v.Evaluated {
+		v.Status = models.FigureUndecidable
+		v.Reason = reason
+	}
+}
+
 func adoptResolvedFigureValues(rec *models.Recommendation, ix figureRefIndex) int {
 	// Guarded, which it was not: a duplicated id here let one verdict's resolved value into
 	// a different declaration, and renderableFigures then dropped the zero-valued one so the
@@ -335,7 +360,8 @@ func adoptResolvedFigureValues(rec *models.Recommendation, ix figureRefIndex) in
 
 	var corrections []models.FigureCorrection
 	filled := false
-	for _, v := range rec.FigureVerdicts {
+	for vi := range rec.FigureVerdicts {
+		v := rec.FigureVerdicts[vi]
 		if !v.Resolved {
 			continue
 		}
@@ -377,6 +403,8 @@ func adoptResolvedFigureValues(rec *models.Recommendation, ix figureRefIndex) in
 				"segment_size":   rec.SegmentSize,
 				"resolved":       v.Evaluated,
 			}).Warn("Not adopting this figure: segment_size states the same number and nothing here can establish they are the same quantity")
+			declineAdoption(&rec.FigureVerdicts[vi],
+				"segment_size states the declared value, so replacing it here would leave the two disagreeing; the difference is unresolved")
 			continue
 		}
 
@@ -447,6 +475,7 @@ func attachRecommendationFigureVerdicts(recs []models.Recommendation, insights [
 		rec.FigureVerdicts = EvaluateRecommendationFigures(rec.Figures, ix)
 		settled += len(rec.FigureVerdicts)
 		adopted += adoptResolvedFigureValues(rec, ix)
+		citeResolvedInsights(rec)
 
 		for _, v := range rec.FigureVerdicts {
 			if v.Status != models.FigureUndecidable {
@@ -485,4 +514,53 @@ func shortID(id string) string {
 // noStatedValue reports that a recommendation figure carries no number of its own.
 func noStatedValue(f models.Figure) bool {
 	return f.ValueMissing || f.Value == 0
+}
+
+// sameNotation reports whether two units describe the same kind of quantity, treating an
+// omitted unit as `plain`.
+func sameNotation(a, b string) bool {
+	return notationName(a) == notationName(b)
+}
+
+func notationName(u string) string {
+	if strings.TrimSpace(u) == "" {
+		return models.UnitPlain
+	}
+	return u
+}
+
+// citeResolvedInsights adds to related_insight_ids any insight a rendered figure came from.
+//
+// BuildRecommendationBundle gathers evidence through RelatedInsightIDs alone, so a
+// recommendation citing insight A while referencing a figure from insight B handed the
+// verifier A's source steps and none of the evidence behind the number it was about to check.
+// A reference IS a citation -- the recommendation is restating that insight's finding -- so
+// resolving one makes the dependency explicit rather than leaving the verifier to check a
+// number whose provenance it was not given.
+//
+// Only successfully resolved references count. An unresolved one names nothing, and adding it
+// would reintroduce the invalid-id class validateRelatedInsightIDs exists to drop.
+func citeResolvedInsights(rec *models.Recommendation) {
+	resolved := make(map[string]bool, len(rec.FigureVerdicts))
+	for _, v := range rec.FigureVerdicts {
+		if v.Resolved {
+			resolved[v.ID] = true
+		}
+	}
+	cited := make(map[string]bool, len(rec.RelatedInsightIDs))
+	for _, id := range rec.RelatedInsightIDs {
+		cited[id] = true
+	}
+	for _, f := range rec.Figures {
+		if !resolved[f.ID] {
+			continue
+		}
+		for _, r := range f.Refs {
+			if r.Insight == "" || cited[r.Insight] {
+				continue
+			}
+			cited[r.Insight] = true
+			rec.RelatedInsightIDs = append(rec.RelatedInsightIDs, r.Insight)
+		}
+	}
 }

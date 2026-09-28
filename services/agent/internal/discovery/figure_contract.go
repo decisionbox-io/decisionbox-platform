@@ -77,6 +77,8 @@ const figureContract = "## Every number is data, not text\n\n" +
 	"- `unit` is `count`, `currency`, `percent`, `multiple` or `plain`. A unit is part of the " +
 	"number's notation — a currency symbol, a percent sign, thousands separators — **never a " +
 	"word**. Write *days*, *orders*, *lines* in the sentence: `{{f1}} days`.\n" +
+	"- `currency` is the symbol a currency figure prints. Omit it for dollars; set it when " +
+	"the data is not in dollars — `{\"unit\": \"currency\", \"currency\": \"€\"}` writes `€8.48B`.\n" +
 	"- `scale` is `thousands`, `millions` or `billions` to abbreviate; omit it to write the " +
 	"number in full with thousands separators.\n" +
 	"- `decimals` is how many places to print, and **it is the precision you are claiming.** " +

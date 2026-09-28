@@ -57,7 +57,7 @@ func renderFigure(f models.Figure) string {
 			b.WriteString("-")
 			digits = strings.TrimPrefix(digits, "-")
 		}
-		b.WriteString("$")
+		b.WriteString(f.Symbol())
 	}
 	// Thousands separators on anything unscaled, because an unscaled count or amount
 	// is where they matter and a scaled one has at most four digits.
