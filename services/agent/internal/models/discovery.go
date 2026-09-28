@@ -811,16 +811,6 @@ type AnalysisStep struct {
 	// so nothing is asked and no round is spent.
 	FiguresCorrected int `bson:"figures_corrected,omitempty" json:"figures_corrected,omitempty"`
 
-	// FiguresDemanded counts the numerals this area's prose stated without saying
-	// where they came from, which the platform then named back to the model.
-	// FiguresExplained and FiguresLabelled are what came back: arithmetic, or a
-	// statement that the numeral measures nothing. Kept apart because a demand
-	// answered with declarations and a demand answered with dismissals are not the
-	// same outcome.
-	FiguresDemanded  int `bson:"figures_demanded,omitempty" json:"figures_demanded,omitempty"`
-	FiguresExplained int `bson:"figures_explained,omitempty" json:"figures_explained,omitempty"`
-	FiguresLabelled  int `bson:"figures_labelled,omitempty" json:"figures_labelled,omitempty"`
-
 	// InsightsClaimsDropped counts insights that kept a refuted claim through
 	// the round cap and had the sentence removed instead. Read against
 	// InsightsRepaired this is the repaired-vs-discarded ratio: the point of

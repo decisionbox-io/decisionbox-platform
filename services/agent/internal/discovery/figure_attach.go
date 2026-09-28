@@ -86,62 +86,22 @@ func attachFigureVerdicts(insights []models.Insight, stepByID map[int]*models.Ex
 // not counted against anything. The model may reasonably declare a figure it then
 // phrases in words, and the extractor's own precision is too poor to call the
 // difference.
-//
-// Labels already on the insight are carried over and counted, so this is safe to
-// re-run after the declaration demand. It is the CALLER that decides whether a label
-// may survive: attachFigureVerdicts clears the whole field before calling this, which
-// discards anything the model authored, and resettleFigures does not, because those
-// labels came from Go's own reading of the reply.
 func figureCoverage(ins models.Insight) models.FigureCoverage {
 	texts := make([]string, 0, 2+len(ins.Indicators))
 	texts = append(texts, ins.Name, ins.Description)
 	texts = append(texts, ins.Indicators...)
 
 	written := writtenNumerals(texts...)
-	out := models.FigureCoverage{Written: len(written)}
-	if ins.FigureCoverage != nil {
-		out.Labels = ins.FigureCoverage.Labels
-	}
+	declared := 0
 	for _, w := range written {
-		if declaredFor(ins, w) {
-			out.Declared++
-			continue
-		}
-		if labelledAlready(out, w) {
-			out.Labelled++
-		}
-	}
-	return out
-}
-
-func declaredFor(ins models.Insight, w float64) bool {
-	for _, c := range ins.FigureClaims {
-		if sameFigureLoosely(w, c.Value) {
-			return true
+		for _, c := range ins.FigureClaims {
+			if sameFigureLoosely(w, c.Value) {
+				declared++
+				break
+			}
 		}
 	}
-	return false
-}
-
-// resettleFigures recomputes verdicts and coverage over the insights as they now
-// stand, keeping the labels the declaration demand collected.
-//
-// Separate from attachFigureVerdicts because the two have opposite jobs with respect
-// to trust. attachFigureVerdicts runs on model output and clears every derived field
-// first, so a model that volunteered its own verdicts -- or pre-dismissed its own
-// figures as labels -- cannot have that survive. This runs after Go has read a reply
-// itself, so what is on the insight is Go's own and is kept.
-func resettleFigures(insights []models.Insight, stepByID map[int]*models.ExplorationStep) {
-	for i := range insights {
-		ins := &insights[i]
-		coverage := figureCoverage(*ins)
-		ins.FigureCoverage = &coverage
-		if len(ins.FigureClaims) == 0 {
-			ins.FigureVerdicts = nil
-			continue
-		}
-		ins.FigureVerdicts = EvaluateFigureClaims(ins.FigureClaims, quantifierEvidence(*ins, stepByID))
-	}
+	return models.FigureCoverage{Written: len(written), Declared: declared}
 }
 
 // sameFigureLoosely is the coverage matcher: within 1% counts as the same figure.

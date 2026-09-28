@@ -50,50 +50,29 @@ var numeralScale = map[string]float64{
 // indicator is one figure and counting it twice would make coverage reward
 // terseness rather than declaration.
 func writtenNumerals(texts ...string) []float64 {
-	hits := writtenNumeralHits(texts...)
-	out := make([]float64, 0, len(hits))
-	for _, h := range hits {
-		out = append(out, h.value)
-	}
-	return out
-}
-
-// numeralHit is one numeral found in prose: the value, and the text the prose used for
-// it.
-//
-// The text matters as much as the value. A demand that asks the model about `3299`
-// when its own sentence says `3,299` asks about a number the model has to translate
-// back, and the sentence it sits in cannot be located to quote.
-type numeralHit struct {
-	raw   string
-	value float64
-}
-
-// writtenNumeralHits is the same walk, keeping the text each value was written as.
-func writtenNumeralHits(texts ...string) []numeralHit {
 	seen := make(map[float64]struct{})
-	var out []numeralHit
+	var out []float64
 	for _, text := range texts {
-		for _, h := range numeralsIn(text) {
-			key := roundTo(h.value, 6)
+		for _, v := range numeralsIn(text) {
+			key := roundTo(v, 6)
 			if _, dup := seen[key]; dup {
 				continue
 			}
 			seen[key] = struct{}{}
-			out = append(out, h)
+			out = append(out, v)
 		}
 	}
 	return out
 }
 
-func numeralsIn(text string) []numeralHit {
+func numeralsIn(text string) []float64 {
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}
 	masked := reDateish.ReplaceAllStringFunc(text, func(m string) string {
 		return strings.Repeat(" ", len(m))
 	})
-	var out []numeralHit
+	var out []float64
 	for _, m := range reNumeral.FindAllStringSubmatchIndex(masked, -1) {
 		cur := group(masked, m, 1)
 		sign := group(masked, m, 2)
@@ -149,9 +128,7 @@ func numeralsIn(text string) []numeralHit {
 		if scale, ok := numeralScale[suffix]; ok {
 			n *= scale
 		}
-		// The text exactly as the prose wrote it, separators and all, taken from the
-		// original rather than the date-masked copy so nothing is blanked out.
-		out = append(out, numeralHit{raw: strings.TrimSpace(text[m[0]:m[1]]), value: n})
+		out = append(out, n)
 	}
 	return out
 }
