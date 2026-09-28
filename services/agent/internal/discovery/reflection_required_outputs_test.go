@@ -2,10 +2,12 @@ package discovery
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
@@ -258,10 +260,12 @@ func TestGenerateReflection_SchemaIsBuiltFromTheRun(t *testing.T) {
 			Models:                   []gollm.ModelEntry{{ID: "mock-model", Wire: gollm.WireOpenAICompat, MaxOutputTokens: 8000}},
 		})
 
+	oneFinding := []commonmodels.LedgerFinding{{ID: "f-1", Name: "Dead stock", Status: "confirmed"}}
+
 	tests := []struct {
 		name         string
 		mode         agentplugin.EvolutionMode
-		reSeen       bool
+		reSeen       map[string]struct{}
 		prior        []commonmodels.LedgerFinding
 		wantRequired []string
 	}{
@@ -273,8 +277,8 @@ func TestGenerateReflection_SchemaIsBuiltFromTheRun(t *testing.T) {
 		{
 			name:         "suggest_only, a carried finding surfaced again",
 			mode:         agentplugin.EvolutionModeSuggestOnly,
-			reSeen:       true,
-			prior:        []commonmodels.LedgerFinding{{ID: "f-1", Name: "Dead stock", Status: "confirmed"}},
+			reSeen:       map[string]struct{}{"f-1": {}},
+			prior:        oneFinding,
 			wantRequired: []string{"coverage_summary", "learnings", "next_tasks", "prior_status_updates"},
 		},
 		{
@@ -284,8 +288,8 @@ func TestGenerateReflection_SchemaIsBuiltFromTheRun(t *testing.T) {
 			// honest to say and the demand must not fire.
 			name:         "suggest_only, findings in the ledger but none re-seen",
 			mode:         agentplugin.EvolutionModeSuggestOnly,
-			reSeen:       false,
-			prior:        []commonmodels.LedgerFinding{{ID: "f-1", Name: "Dead stock", Status: "confirmed"}},
+			reSeen:       nil,
+			prior:        oneFinding,
 			wantRequired: []string{"coverage_summary", "learnings", "next_tasks"},
 		},
 		{
@@ -294,7 +298,7 @@ func TestGenerateReflection_SchemaIsBuiltFromTheRun(t *testing.T) {
 			// list the model cannot see is how ids get invented.
 			name:         "re-seen finding the prompt cannot show",
 			mode:         agentplugin.EvolutionModeSuggestOnly,
-			reSeen:       true,
+			reSeen:       map[string]struct{}{"f-1": {}},
 			prior:        nil,
 			wantRequired: []string{"coverage_summary", "learnings", "next_tasks"},
 		},
@@ -474,4 +478,52 @@ func TestRunPhaseReflection_PriorDemandNeedsEvidence(t *testing.T) {
 			t.Error("a carried finding surfaced again IS grounded evidence — re-judging at least one must be required")
 		}
 	})
+}
+
+// TestReSeenPriorIsOnThePage_RespectsTheCap. The prompt shows at most
+// maxPriorFindingsInPrompt findings, and every finding a run touches — the new
+// ones it just created and the carried one it surfaced again — shares the same
+// LastSeen, so the tie-break decides who makes the page. A run that created
+// enough new findings can push its one re-sighting off it. Demanding a
+// re-judgement then puts the model in front of a page of ids it has no
+// evidence about, which is precisely the invented verdict the gate exists to
+// prevent: it must be membership of the rendered page, not a count.
+func TestReSeenPriorIsOnThePage_RespectsTheCap(t *testing.T) {
+	now := time.Now()
+	carried := commonmodels.LedgerFinding{ID: "f-carried", Name: "Dead stock", LastSeen: now}
+
+	// Every finding this run touched carries the same LastSeen. The carried
+	// one is last in list order, so the stable sort leaves it last.
+	crowded := make([]commonmodels.LedgerFinding, 0, maxPriorFindingsInPrompt+1)
+	for i := 0; i < maxPriorFindingsInPrompt; i++ {
+		crowded = append(crowded, commonmodels.LedgerFinding{
+			ID: fmt.Sprintf("f-new-%d", i), Name: "Fresh finding", LastSeen: now,
+		})
+	}
+	crowded = append(crowded, carried)
+
+	reSeen := map[string]struct{}{"f-carried": {}}
+
+	if reSeenPriorIsOnThePage(crowded, reSeen) {
+		t.Error("the re-seen finding was pushed off the page; no re-judgement may be demanded")
+	}
+	// The rendered prompt and the gate must agree on what "the page" is.
+	if strings.Contains(renderPriorFindings(crowded), "id=f-carried") {
+		t.Error("the fixture no longer exercises the cap — the carried finding is still rendered")
+	}
+
+	// It fits once the crowd does not fill the page.
+	roomy := append([]commonmodels.LedgerFinding{}, crowded[:maxPriorFindingsInPrompt-1]...)
+	roomy = append(roomy, carried)
+	if !reSeenPriorIsOnThePage(roomy, reSeen) {
+		t.Error("a re-seen finding the prompt does show must license the demand")
+	}
+
+	// And the degenerate inputs behave: nothing re-seen, nothing shown.
+	if reSeenPriorIsOnThePage(roomy, nil) {
+		t.Error("no re-seen finding means no demand")
+	}
+	if reSeenPriorIsOnThePage(nil, reSeen) {
+		t.Error("an empty prior list shows nothing, so nothing can be demanded of it")
+	}
 }

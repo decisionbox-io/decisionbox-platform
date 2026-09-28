@@ -245,8 +245,8 @@ func TestConsolidateFindings_NewAndTrend(t *testing.T) {
 	}
 	// The carried finding was surfaced again — that, and only that, is what
 	// licenses asking the model to re-judge it.
-	if reSeen != 1 {
-		t.Errorf("want 1 carried finding re-seen, got %d", reSeen)
+	if len(reSeen) != 1 {
+		t.Errorf("want 1 carried finding re-seen, got %d", len(reSeen))
 	}
 	// The merged finding must be marked changed with a bumped seen count.
 	var merged *commonmodels.LedgerFinding
@@ -493,7 +493,7 @@ func TestConsolidateFindings_SameRunDuplicateMerges(t *testing.T) {
 	// The duplicate merged into a finding this run created moments earlier.
 	// That is not evidence about the project's history, and counting it as
 	// such would order a first run to re-judge its own work.
-	if reSeen != 0 {
-		t.Errorf("a same-run duplicate merge is not a re-seen prior finding, got %d", reSeen)
+	if len(reSeen) != 0 {
+		t.Errorf("a same-run duplicate merge is not a re-seen prior finding, got %d", len(reSeen))
 	}
 }

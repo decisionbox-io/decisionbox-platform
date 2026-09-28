@@ -127,8 +127,8 @@ func TestLedgerLoop_Integration(t *testing.T) {
 	if newCount != 3 || total != 3 {
 		t.Fatalf("run1 expected 3 new / 3 total, got %d / %d", newCount, total)
 	}
-	if reSeen != 0 {
-		t.Fatalf("run1 is the first run — nothing can have been re-seen, got %d", reSeen)
+	if len(reSeen) != 0 {
+		t.Fatalf("run1 is the first run — nothing can have been re-seen, got %d", len(reSeen))
 	}
 	o.updateLedgerMeta(ctx, run1, &parsedReflection{
 		CoverageSummary: "orders + users covered; the events tables are untouched",
@@ -199,8 +199,8 @@ func TestLedgerLoop_Integration(t *testing.T) {
 	if total2 != 4 {
 		t.Errorf("run2 total should be 4 (3 + 1 new), got %d", total2)
 	}
-	if reSeen2 != 1 {
-		t.Errorf("run2 surfaced exactly 1 carried finding again, got %d", reSeen2)
+	if len(reSeen2) != 1 {
+		t.Errorf("run2 surfaced exactly 1 carried finding again, got %d", len(reSeen2))
 	}
 	after, _ := findingRepo.List(ctx, projectID)
 	if len(after) != 4 {

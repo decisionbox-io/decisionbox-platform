@@ -70,12 +70,12 @@ type parsedReflection struct {
 // model window, attach the structured-output format where supported, and
 // self-heal a bounded number of times on an unparseable response.
 //
-// priorFindingReSeen says whether this run surfaced again a finding the ledger
-// carried IN. It gates the demand for a prior-finding re-judgement, and only
-// that: it is the phase's grounded evidence about the past, and the finding
-// list read back here cannot supply it, because consolidation has already
-// merged this run's own findings into that list.
-func (o *Orchestrator) generateReflection(ctx context.Context, result *models.DiscoveryResult, pol agentplugin.DiscoveryPolicy, priorFindingReSeen bool) (*parsedReflection, error) {
+// reSeenPriorIDs are the findings the ledger carried IN that this run surfaced
+// again. They gate the demand for a prior-finding re-judgement, and only that:
+// they are the phase's grounded evidence about the past, and the finding list
+// read back here cannot supply them, because consolidation has already merged
+// this run's own findings into that list.
+func (o *Orchestrator) generateReflection(ctx context.Context, result *models.DiscoveryResult, pol agentplugin.DiscoveryPolicy, reSeenPriorIDs map[string]struct{}) (*parsedReflection, error) {
 	prior, err := o.findingRepo.List(ctx, o.projectID)
 	if err != nil {
 		applog.WithError(err).Warn("Reflection: list prior findings for prompt failed")
@@ -86,14 +86,7 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 		tasks, _ = o.taskRepo.List(ctx, o.projectID, commonmodels.LedgerTaskStatusOpen)
 	}
 
-	// Both halves must hold to demand a re-judgement: this run re-saw a
-	// carried finding, AND the prompt actually lists prior findings. A failed
-	// list read renders "(no prior findings)", and asking for a verdict on a
-	// list the model cannot see is how ids get invented. Without the evidence
-	// half the demand would contradict the rule printed beside it — a project
-	// with history and a run that touched none of it has nothing honest to
-	// say, and the model's only way to comply would be to make something up.
-	demandPriorRejudgement := priorFindingReSeen && len(prior) > 0
+	demandPriorRejudgement := reSeenPriorIsOnThePage(prior, reSeenPriorIDs)
 
 	items := o.runCatalogItems()
 	prompt := o.buildReflectionPrompt(result, prior, tasks, pol, items, demandPriorRejudgement)
@@ -242,17 +235,45 @@ func renderRunFindings(insights []models.Insight) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// priorFindingsForPrompt is the subset of the ledger's findings the prompt
+// actually carries: most-recently-seen first so the cap keeps the freshest
+// context. The renderer and the re-judgement gate both go through it, because
+// a demand to re-judge a finding is only honest about findings on the page.
+func priorFindingsForPrompt(prior []commonmodels.LedgerFinding) []commonmodels.LedgerFinding {
+	sort.SliceStable(prior, func(i, j int) bool { return prior[i].LastSeen.After(prior[j].LastSeen) })
+	if len(prior) > maxPriorFindingsInPrompt {
+		return prior[:maxPriorFindingsInPrompt]
+	}
+	return prior
+}
+
+// reSeenPriorIsOnThePage reports whether the prompt shows at least one finding
+// this run surfaced again — the whole condition for demanding a re-judgement.
+//
+// Membership, not a count, because the list is capped and every finding this
+// run touched shares the same LastSeen: a run that created enough new findings
+// can tie the re-seen one off the end of the page. A model required to answer
+// about a finding it cannot see answers about one it can, which is the
+// invented verdict this gate exists to prevent. It also covers the empty-list
+// case — a failed read renders "(no prior findings)" and shows nothing.
+func reSeenPriorIsOnThePage(prior []commonmodels.LedgerFinding, reSeenPriorIDs map[string]struct{}) bool {
+	if len(reSeenPriorIDs) == 0 {
+		return false
+	}
+	for _, f := range priorFindingsForPrompt(prior) {
+		if _, ok := reSeenPriorIDs[f.ID]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func renderPriorFindings(prior []commonmodels.LedgerFinding) string {
 	if len(prior) == 0 {
 		return "(no prior findings — this is an early run)"
 	}
-	// Most-recently-seen first so the cap keeps the freshest context.
-	sort.SliceStable(prior, func(i, j int) bool { return prior[i].LastSeen.After(prior[j].LastSeen) })
-	if len(prior) > maxPriorFindingsInPrompt {
-		prior = prior[:maxPriorFindingsInPrompt]
-	}
 	var b strings.Builder
-	for _, f := range prior {
+	for _, f := range priorFindingsForPrompt(prior) {
 		fmt.Fprintf(&b, "- id=%s [%s] %q (status %s, seen %d)", f.ID, f.Area, f.Name, f.Status, f.SeenCount)
 		if f.KeyMetric != "" {
 			fmt.Fprintf(&b, " metric: %s", f.KeyMetric)
