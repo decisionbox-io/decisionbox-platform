@@ -3,7 +3,6 @@ package discovery
 import (
 	"fmt"
 	"math"
-	"strings"
 
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -85,6 +84,26 @@ func correctRefutedFigures(areaID string, insights []models.Insight, stepByID ma
 				continue
 			}
 			f := &ins.Figures[j]
+			// The same decision substituteCount already made, for the same reason.
+			//
+			// AffectedCount is an int, so no text pass touches it, and correcting the prose
+			// while it keeps the old number leaves the document disagreeing with its own
+			// structured field -- which the API, the dashboard's affected badge, the
+			// verifier bundle and the recommender all read. Overwriting it is the other
+			// error: affected_count is "entities affected" and need not be the same
+			// quantity as a figure that happens to match. So decline, and leave the figure
+			// refuted and visible, which is this gate's safe fallback anyway.
+			if ins.AffectedCount != 0 && float64(ins.AffectedCount) == v.Claimed {
+				applog.WithFields(applog.Fields{
+					"area":           areaID,
+					"insight":        ins.Name,
+					"figure":         v.ID,
+					"affected_count": ins.AffectedCount,
+					"claimed":        v.Claimed,
+					"evaluated":      v.Evaluated,
+				}).Warn("Not correcting this figure: affected_count states the same number and nothing here can establish they are the same quantity")
+				continue
+			}
 			if !sameQuantity(v.Claimed, v.Evaluated) {
 				// The declaration describes a different quantity than the figure states.
 				// Rewriting the figure to match it would replace a number a reader can
@@ -178,13 +197,12 @@ func sameQuantity(claimed, evaluated float64) bool {
 // inventing coverage for them would be the false positive the quantifier work warned about.
 func reconcileClaimCounts(ins *models.Insight, corrections []models.FigureCorrection) {
 	for _, c := range corrections {
-		marker := "{{" + c.ID + "}}"
 		for i := range ins.QuantifierClaims {
 			q := &ins.QuantifierClaims[i]
 			if q.Kind != QuantifierCardinality || q.Count == 0 {
 				continue
 			}
-			if !strings.Contains(q.Claim, marker) {
+			if !referencesFigure(q.Claim, c.ID) {
 				continue
 			}
 			if float64(q.Count) != c.From {
@@ -193,4 +211,20 @@ func reconcileClaimCounts(ins *models.Insight, corrections []models.FigureCorrec
 			q.Count = int(math.Round(c.To))
 		}
 	}
+}
+
+// referencesFigure reports whether text carries a reference to the named figure.
+//
+// Through reFigureRef rather than a literal "{{id}}" match, because the renderer accepts
+// "{{ f1 }}" with spaces and a literal match does not. The two disagreeing meant a spaced
+// reference rendered the corrected sentence while its declaration kept the old count, which
+// is the defect this reconciliation exists to prevent -- reintroduced by matching the
+// reference differently from the code that resolves it.
+func referencesFigure(text, id string) bool {
+	for _, m := range reFigureRef.FindAllStringSubmatch(text, -1) {
+		if m[1] == id {
+			return true
+		}
+	}
+	return false
 }

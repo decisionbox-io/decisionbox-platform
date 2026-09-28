@@ -44,10 +44,16 @@ type figureRefIndex map[string]map[string]refValue
 // reference that resolves to nothing has no number behind it at all.
 type refValue struct {
 	value float64
-	// slack is the half-interval the SOURCE figure was verified at, which is the
-	// precision its own insight printed it to. A `holds` verdict says the arithmetic
-	// landed inside that interval and nothing narrower: "~911K" at the thousands scale
-	// vouches for the value to within 500, so a recommendation restating it unscaled as
+	// value is what the source figure PRINTED, not the raw number behind it, because the
+	// printed one is what `holds` vouched for -- closeEnough compares the rendered value
+	// against the evidence. Carrying the raw value with the printed interval mixed two
+	// descriptions of one figure and could certify a total built from neither: two figures
+	// of 1490 at the thousands scale both print 1K and both hold against evidence of 510,
+	// and summing their raw values gives 2980, rendered 3K, against evidence totalling
+	// 1020 -- outside even the accumulated drift.
+	//
+	// slack is the half-interval it was verified at, which is the precision that print
+	// chose. "~911K" vouches to within 500, so a recommendation restating it unscaled as
 	// "911,000" would assert ±0.5 on a number checked to ±500.
 	slack float64
 	// found is false when the id resolves to nothing: no such insight, no such figure.
@@ -126,12 +132,12 @@ func buildFigureRefIndex(insights []models.Insight) figureRefIndex {
 			// declined to fix still reads fails.
 			switch st := status[f.ID]; st {
 			case models.FigureHolds:
-				byID[f.ID] = refValue{value: f.Value, slack: figureSlack(f), found: true, vouched: true}
+				byID[f.ID] = refValue{value: renderedValue(f), slack: figureSlack(f), found: true, vouched: true}
 			case "":
-				byID[f.ID] = refValue{value: f.Value, slack: figureSlack(f), found: true,
+				byID[f.ID] = refValue{value: renderedValue(f), slack: figureSlack(f), found: true,
 					why: "it was never checked"}
 			default:
-				byID[f.ID] = refValue{value: f.Value, slack: figureSlack(f), found: true,
+				byID[f.ID] = refValue{value: renderedValue(f), slack: figureSlack(f), found: true,
 					why: fmt.Sprintf("its own check came back %s, so the insight carries it unvouched too", st)}
 			}
 		}

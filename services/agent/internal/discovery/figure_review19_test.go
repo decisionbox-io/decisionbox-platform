@@ -495,3 +495,107 @@ func TestFigures_NumbersWrittenAsStringsStillDecode(t *testing.T) {
 		t.Errorf("well-typed figure changed: %+v", ins.Figures[1])
 	}
 }
+
+// --- Review round 22. All three follow from the round-20 and round-21 fixes.
+
+// TestFigures_ReferenceIndexesWhatWasPrinted — round 22.
+//
+// `holds` compares the RENDERED value against the evidence, so that is what it vouches for.
+// Indexing the raw value with the printed interval mixed two descriptions of one figure: two
+// figures of 1490 at the thousands scale both print 1K and both hold against evidence of
+// 510, and summing their raw values gives 2980 -- rendered 3K, against evidence totalling
+// 1020, which is outside even the accumulated drift.
+func TestFigures_ReferenceIndexesWhatWasPrinted(t *testing.T) {
+	coarse := models.Insight{
+		ID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+		Figures: []models.Figure{
+			{ID: "f1", Value: 1490, Unit: models.UnitCount, Scale: models.ScaleThousands, Decimals: 0},
+			{ID: "f2", Value: 1490, Unit: models.UnitCount, Scale: models.ScaleThousands, Decimals: 0},
+		},
+		FigureVerdicts: []models.FigureVerdict{
+			{ID: "f1", Status: models.FigureHolds},
+			{ID: "f2", Status: models.FigureHolds},
+		},
+	}
+	recs := []models.Recommendation{{
+		Description: "Together they hold {{f1}}.",
+		Figures: []models.Figure{{
+			ID: "f1", Unit: models.UnitCount, Scale: models.ScaleThousands, Decimals: 0,
+			Kind: models.FigureSum,
+			Refs: []models.FigureRef{ref(coarse.ID, "f1"), ref(coarse.ID, "f2")},
+		}},
+	}}
+
+	attachRecommendationFigureVerdicts(recs, []models.Insight{coarse})
+	renderRecommendationFigures(recs)
+
+	// 1000 + 1000, the two printed values, not 1490 + 1490.
+	if got := recs[0].Figures[0].Value; got != 2000 {
+		t.Errorf("sum = %v, want 2000 from the two printed values; the raw values give 2980", got)
+	}
+	if !strings.Contains(recs[0].Description, "2K") {
+		t.Errorf("description = %q, want 2K", recs[0].Description)
+	}
+}
+
+// TestFigures_CorrectionDeclinesWhenAffectedCountWouldDesync — round 22.
+//
+// substituteCount already declines exactly this, and says why: affected_count is an int no
+// text pass touches, correcting the prose around it leaves the document disagreeing with its
+// own structured field, and overwriting it is the other error because "entities affected"
+// need not be the quantity a matching figure counts.
+func TestFigures_CorrectionDeclinesWhenAffectedCountWouldDesync(t *testing.T) {
+	step := &models.ExplorationStep{Step: 4, QueryResult: []map[string]any{}}
+	for i := 0; i < 99996; i++ {
+		step.QueryResult = append(step.QueryResult, map[string]any{"id": i})
+	}
+	byID := map[int]*models.ExplorationStep{4: step}
+
+	ins := []models.Insight{{
+		Name:          "All {{f1}} buyers",
+		SourceSteps:   []int{4},
+		AffectedCount: 100000,
+		Figures:       []models.Figure{{ID: "f1", Value: 100000, Unit: models.UnitCount, Step: 4, Kind: models.FigureCount}},
+	}}
+	attachFigureVerdicts(ins, byID)
+	if ins[0].FigureVerdicts[0].Status != models.FigureFails {
+		t.Fatalf("premise stale: verdict = %q, want fails", ins[0].FigureVerdicts[0].Status)
+	}
+	if n := correctRefutedFigures("area", ins, byID); n != 0 {
+		t.Errorf("corrections = %d, want 0 -- correcting here desyncs affected_count", n)
+	}
+	if ins[0].Figures[0].Value != 100000 || ins[0].AffectedCount != 100000 {
+		t.Errorf("figure %v / affected_count %d -- the two must not be left disagreeing",
+			ins[0].Figures[0].Value, ins[0].AffectedCount)
+	}
+}
+
+// TestFigures_ClaimReconciliationAcceptsASpacedReference — round 22.
+//
+// The renderer accepts "{{ f1 }}"; the reconciliation matched only "{{f1}}". So a spaced
+// reference rendered the corrected sentence while its declaration kept the old count, which
+// is the very defect the reconciliation was added to prevent -- put back by matching the
+// reference differently from the code that resolves it.
+func TestFigures_ClaimReconciliationAcceptsASpacedReference(t *testing.T) {
+	step := &models.ExplorationStep{Step: 4, QueryResult: []map[string]any{}}
+	for i := 0; i < 100; i++ {
+		step.QueryResult = append(step.QueryResult, map[string]any{"id": i})
+	}
+	byID := map[int]*models.ExplorationStep{4: step}
+
+	ins := []models.Insight{{
+		Name:        "There are {{ f1 }} distinct parts",
+		SourceSteps: []int{4},
+		Figures:     []models.Figure{{ID: "f1", Value: 101, Unit: models.UnitCount, Step: 4, Kind: models.FigureCount}},
+		QuantifierClaims: []models.QuantifierClaim{
+			{Claim: "There are {{ f1 }} distinct parts", Kind: QuantifierCardinality, Step: 4, Count: 101},
+		},
+	}}
+	attachFigureVerdicts(ins, byID)
+	if n := correctRefutedFigures("area", ins, byID); n != 1 {
+		t.Fatalf("corrections = %d, want 1; premise stale", n)
+	}
+	if got := ins[0].QuantifierClaims[0].Count; got != 100 {
+		t.Errorf("claim Count = %d, want 100 -- a spaced reference is the same reference", got)
+	}
+}
