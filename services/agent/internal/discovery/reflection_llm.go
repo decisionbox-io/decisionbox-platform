@@ -70,11 +70,12 @@ type parsedReflection struct {
 // model window, attach the structured-output format where supported, and
 // self-heal a bounded number of times on an unparseable response.
 //
-// hasCarriedFindings says whether the ledger held findings BEFORE this run —
-// which the finding list read back here cannot say, because consolidation has
-// already merged this run's own findings into it. It gates the demand for a
-// prior-finding re-judgement, and only that.
-func (o *Orchestrator) generateReflection(ctx context.Context, result *models.DiscoveryResult, pol agentplugin.DiscoveryPolicy, hasCarriedFindings bool) (*parsedReflection, error) {
+// priorFindingReSeen says whether this run surfaced again a finding the ledger
+// carried IN. It gates the demand for a prior-finding re-judgement, and only
+// that: it is the phase's grounded evidence about the past, and the finding
+// list read back here cannot supply it, because consolidation has already
+// merged this run's own findings into that list.
+func (o *Orchestrator) generateReflection(ctx context.Context, result *models.DiscoveryResult, pol agentplugin.DiscoveryPolicy, priorFindingReSeen bool) (*parsedReflection, error) {
 	prior, err := o.findingRepo.List(ctx, o.projectID)
 	if err != nil {
 		applog.WithError(err).Warn("Reflection: list prior findings for prompt failed")
@@ -85,11 +86,14 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 		tasks, _ = o.taskRepo.List(ctx, o.projectID, commonmodels.LedgerTaskStatusOpen)
 	}
 
-	// Both halves must hold to demand a re-judgement: the ledger carried
-	// findings in, AND the prompt actually lists some. A failed list read
-	// renders "(no prior findings)", and asking for a verdict on a list the
-	// model cannot see is how ids get invented.
-	demandPriorRejudgement := hasCarriedFindings && len(prior) > 0
+	// Both halves must hold to demand a re-judgement: this run re-saw a
+	// carried finding, AND the prompt actually lists prior findings. A failed
+	// list read renders "(no prior findings)", and asking for a verdict on a
+	// list the model cannot see is how ids get invented. Without the evidence
+	// half the demand would contradict the rule printed beside it — a project
+	// with history and a run that touched none of it has nothing honest to
+	// say, and the model's only way to comply would be to make something up.
+	demandPriorRejudgement := priorFindingReSeen && len(prior) > 0
 
 	items := o.runCatalogItems()
 	prompt := o.buildReflectionPrompt(result, prior, tasks, pol, items, demandPriorRejudgement)
@@ -204,8 +208,8 @@ func evolutionModeGuidance(mode agentplugin.EvolutionMode) string {
 const reflectionPriorStatusFieldBase = "- **prior_status_updates**: for PRIOR findings only, by their `id`. Update a status ONLY with grounded evidence from this run — e.g. a new finding contradicts a prior one (`refuted`), or the same finding now shows a different magnitude (`changed`). **Do NOT mark a finding `resolved` just because it did not reappear** — discovery is not exhaustive, so absence is not proof. Leave findings you have no evidence about alone."
 
 // renderPriorStatusField renders that bullet, demanding at least one
-// re-judgement on a run whose ledger carried findings in and whose prompt
-// lists them.
+// re-judgement on a run that surfaced a carried finding again and whose
+// prompt lists it.
 //
 // Conditional because the demand and the grounding rule above it only coexist
 // when there is something to judge: an early run has no prior findings, and a
@@ -219,7 +223,7 @@ func renderPriorStatusField(demand bool) string {
 		return reflectionPriorStatusFieldBase
 	}
 	return reflectionPriorStatusFieldBase +
-		" Prior findings ARE listed above, so re-judge **at least one**: a prior finding this run surfaced again is grounded evidence for `confirmed`, and one whose magnitude moved is `changed`."
+		" This run surfaced at least one of the prior findings above again, which IS grounded evidence about it — so re-judge **at least one**: still there at the same magnitude is `confirmed`, and a magnitude that moved is `changed`."
 }
 
 func renderRunFindings(insights []models.Insight) string {

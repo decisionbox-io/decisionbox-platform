@@ -186,27 +186,34 @@ func TestEvolutionModeGuidance_ByMode(t *testing.T) {
 	}
 }
 
-// TestRenderPriorStatusField_OnlyDemandsWhatThereIsToJudge. An early run has
-// no prior findings, and a model told to produce a verdict anyway has no id to
-// attach it to but one it invents — so the demand appears only alongside a
-// non-empty PRIOR FINDINGS list.
+// TestRenderPriorStatusField_OnlyDemandsWhatThereIsToJudge. A run with no
+// grounded evidence about the project's past — no prior findings at all, or
+// none of them surfaced again — has nothing honest to re-judge, and a model
+// told to produce a verdict anyway invents one. So the demand appears only
+// where the evidence does.
 func TestRenderPriorStatusField_OnlyDemandsWhatThereIsToJudge(t *testing.T) {
-	first := renderPriorStatusField(false)
-	if first != reflectionPriorStatusFieldBase {
-		t.Errorf("a run with no prior findings must get the bullet unchanged, got %q", first)
+	noEvidence := renderPriorStatusField(false)
+	if noEvidence != reflectionPriorStatusFieldBase {
+		t.Errorf("a run with no re-seen prior finding must get the bullet unchanged, got %q", noEvidence)
 	}
 
-	withPrior := renderPriorStatusField(true)
-	if !strings.HasPrefix(withPrior, reflectionPriorStatusFieldBase) {
+	withEvidence := renderPriorStatusField(true)
+	if !strings.HasPrefix(withEvidence, reflectionPriorStatusFieldBase) {
 		t.Error("the demand must be added to the bullet, not replace it")
 	}
-	if !strings.Contains(withPrior, "at least one") {
-		t.Errorf("a run with prior findings must be asked to re-judge at least one, got %q", withPrior)
+	if !strings.Contains(withEvidence, "at least one") {
+		t.Errorf("a run that re-saw a prior finding must be asked to re-judge at least one, got %q", withEvidence)
 	}
-	// The grounding rule is what keeps the demand honest — it must survive.
-	for _, keep := range []string{"Do NOT mark a finding `resolved` just because it did not reappear", "grounded evidence for `confirmed`"} {
-		if !strings.Contains(withPrior, keep) {
-			t.Errorf("bullet lost %q: %s", keep, withPrior)
+	// The grounding rule is what keeps the demand honest — it must survive,
+	// and the demand must name the evidence it rests on rather than just
+	// overruling it.
+	for _, keep := range []string{
+		"Do NOT mark a finding `resolved` just because it did not reappear",
+		"surfaced at least one of the prior findings above again",
+		"IS grounded evidence",
+	} {
+		if !strings.Contains(withEvidence, keep) {
+			t.Errorf("bullet lost %q: %s", keep, withEvidence)
 		}
 	}
 }
@@ -254,7 +261,7 @@ func TestGenerateReflection_SchemaIsBuiltFromTheRun(t *testing.T) {
 	tests := []struct {
 		name         string
 		mode         agentplugin.EvolutionMode
-		carried      bool
+		reSeen       bool
 		prior        []commonmodels.LedgerFinding
 		wantRequired []string
 	}{
@@ -264,29 +271,30 @@ func TestGenerateReflection_SchemaIsBuiltFromTheRun(t *testing.T) {
 			wantRequired: []string{"coverage_summary", "learnings"},
 		},
 		{
-			name:         "suggest_only with a ledger behind it",
+			name:         "suggest_only, a carried finding surfaced again",
 			mode:         agentplugin.EvolutionModeSuggestOnly,
-			carried:      true,
+			reSeen:       true,
 			prior:        []commonmodels.LedgerFinding{{ID: "f-1", Name: "Dead stock", Status: "confirmed"}},
 			wantRequired: []string{"coverage_summary", "learnings", "next_tasks", "prior_status_updates"},
 		},
 		{
-			// The findings are there, but they are THIS run's, merged into the
-			// ledger moments ago by consolidateFindings. Nothing was carried
-			// in, so there is nothing to re-judge.
-			name:         "suggest_only, first run whose own findings are already in the ledger",
+			// The findings are in the ledger, but this run touched none of
+			// them — either they are its own, just consolidated, or the run
+			// explored elsewhere. Absence is not proof, so there is nothing
+			// honest to say and the demand must not fire.
+			name:         "suggest_only, findings in the ledger but none re-seen",
 			mode:         agentplugin.EvolutionModeSuggestOnly,
-			carried:      false,
+			reSeen:       false,
 			prior:        []commonmodels.LedgerFinding{{ID: "f-1", Name: "Dead stock", Status: "confirmed"}},
 			wantRequired: []string{"coverage_summary", "learnings", "next_tasks"},
 		},
 		{
-			// The mirror case: the ledger did carry findings in, but the list
-			// read failed, so the prompt shows none. Demanding a verdict on a
+			// The mirror case: a carried finding WAS re-seen, but the list
+			// read failed so the prompt shows none. Demanding a verdict on a
 			// list the model cannot see is how ids get invented.
-			name:         "carried findings the prompt cannot show",
+			name:         "re-seen finding the prompt cannot show",
 			mode:         agentplugin.EvolutionModeSuggestOnly,
-			carried:      true,
+			reSeen:       true,
 			prior:        nil,
 			wantRequired: []string{"coverage_summary", "learnings", "next_tasks"},
 		},
@@ -314,7 +322,7 @@ func TestGenerateReflection_SchemaIsBuiltFromTheRun(t *testing.T) {
 			if _, err := o.generateReflection(context.Background(),
 				&models.DiscoveryResult{Schemas: map[string]models.TableSchema{"ds.orders": {}}},
 				agentplugin.DiscoveryPolicy{EvolutionMode: tc.mode, FrontierPolicy: agentplugin.FrontierBalanced},
-				tc.carried,
+				tc.reSeen,
 			); err != nil {
 				t.Fatalf("generateReflection: %v", err)
 			}
@@ -365,14 +373,21 @@ func (r *statefulFindingRepo) Upsert(_ context.Context, f *commonmodels.LedgerFi
 
 func (r *statefulFindingRepo) Prune(_ context.Context, _ string, _ int) error { return nil }
 
-// TestRunPhaseReflection_FirstRunIsNotAskedToRejudgeItself is the regression
-// for the trap in the middle of this fix. The reflection phase consolidates
-// this run's insights into the ledger and only then lists findings for the
-// prompt, so on a first run that produced anything at all the list is
-// non-empty — and keying the prior-finding demand off it would order a
-// brand-new project to re-judge findings it created seconds earlier, on every
-// provider whose decoding actually enforces the schema.
-func TestRunPhaseReflection_FirstRunIsNotAskedToRejudgeItself(t *testing.T) {
+// TestRunPhaseReflection_PriorDemandNeedsEvidence holds the two traps in the
+// middle of this fix, both through the real phase.
+//
+// The reflection phase consolidates this run's insights into the ledger and
+// only then lists findings for the prompt, so on any run that produced
+// anything the list is non-empty. Keying the prior-finding demand off that
+// list would order a brand-new project to re-judge findings it created
+// seconds earlier — and, on a project with real history whose run touched
+// none of it, would demand a verdict the prompt's own rule forbids. Either
+// way the model's only route to compliance is to invent one, and an invented
+// `resolved` moves a real finding to the front of the prune queue.
+//
+// The demand therefore rides on evidence: a finding the ledger carried in
+// that THIS run surfaced again.
+func TestRunPhaseReflection_PriorDemandNeedsEvidence(t *testing.T) {
 	const pn = "test-reflection-firstrun"
 	gollm.RegisterWithMeta(pn, func(_ gollm.ProviderConfig) (gollm.Provider, error) { return nil, nil },
 		gollm.ProviderMeta{
@@ -382,7 +397,7 @@ func TestRunPhaseReflection_FirstRunIsNotAskedToRejudgeItself(t *testing.T) {
 			Models:                   []gollm.ModelEntry{{ID: "mock-model", Wire: gollm.WireOpenAICompat, MaxOutputTokens: 8000}},
 		})
 
-	run := func(t *testing.T, seeded []commonmodels.LedgerFinding) *gollm.ResponseFormat {
+	run := func(t *testing.T, seeded []commonmodels.LedgerFinding, insight models.Insight) *gollm.ResponseFormat {
 		t.Helper()
 		t.Setenv("DISCOVERY_REFLECTION_ENABLED", "true")
 		agentplugin.RegisterDiscoveryPolicyProvider(stubPolicy{mode: agentplugin.EvolutionModeSuggestOnly})
@@ -409,7 +424,7 @@ func TestRunPhaseReflection_FirstRunIsNotAskedToRejudgeItself(t *testing.T) {
 		o.RunPhaseReflection(context.Background(), &models.DiscoveryResult{
 			ID: "disc-1", ProjectID: "proj-1",
 			Schemas:  map[string]models.TableSchema{"ds.orders": {}, "ds.events": {}},
-			Insights: []models.Insight{{AnalysisArea: "churn", Name: "High churn", Severity: "high", AffectedCount: 40}},
+			Insights: []models.Insight{insight},
 		})
 
 		if len(provider.Calls) == 0 {
@@ -422,8 +437,17 @@ func TestRunPhaseReflection_FirstRunIsNotAskedToRejudgeItself(t *testing.T) {
 		return rf
 	}
 
+	newChurn := models.Insight{AnalysisArea: "churn", Name: "High churn", Severity: "high", AffectedCount: 40}
+	carried := func() []commonmodels.LedgerFinding {
+		return []commonmodels.LedgerFinding{{
+			ID: "f-old", ProjectID: "proj-1", Area: "inventory", Name: "Dead stock",
+			Status: "confirmed", SeenCount: 2,
+			NormalizedKey: commonmodels.NormalizedFindingKey("inventory", "Dead stock"),
+		}}
+	}
+
 	t.Run("first run, ledger empty before it", func(t *testing.T) {
-		rf := run(t, nil)
+		rf := run(t, nil, newChurn)
 		if requiredSet(t, rf.Schema)["prior_status_updates"] {
 			t.Error("a first run must not be required to re-judge a prior finding — the only findings in the ledger are its own")
 		}
@@ -435,13 +459,19 @@ func TestRunPhaseReflection_FirstRunIsNotAskedToRejudgeItself(t *testing.T) {
 		}
 	})
 
-	t.Run("second run, the ledger carried a finding in", func(t *testing.T) {
-		rf := run(t, []commonmodels.LedgerFinding{{
-			ID: "f-old", ProjectID: "proj-1", Area: "inventory", Name: "Dead stock",
-			Status: "confirmed", SeenCount: 2, NormalizedKey: "inventory|dead stock",
-		}})
+	t.Run("a carried finding this run never touched", func(t *testing.T) {
+		rf := run(t, carried(), newChurn)
+		if requiredSet(t, rf.Schema)["prior_status_updates"] {
+			t.Error("history alone is not evidence: a run that re-saw none of it has nothing honest to re-judge")
+		}
+	})
+
+	t.Run("a carried finding this run surfaced again", func(t *testing.T) {
+		rf := run(t, carried(), models.Insight{
+			AnalysisArea: "inventory", Name: "Dead stock", Severity: "high", AffectedCount: 44,
+		})
 		if !requiredSet(t, rf.Schema)["prior_status_updates"] {
-			t.Error("a run with a carried finding must be required to re-judge at least one")
+			t.Error("a carried finding surfaced again IS grounded evidence — re-judging at least one must be required")
 		}
 	})
 }

@@ -37,10 +37,11 @@ func reflectionResponseFormat(mode agentplugin.EvolutionMode, demandPriorRejudge
 //
 //   - learnings — always. Every run touches this warehouse and learns
 //     something durable about it.
-//   - prior_status_updates — only when the ledger carried findings INTO this
-//     run and the prompt lists them. There is nothing to re-judge on an early
-//     run, and requiring a verdict with no finding to attach it to invites an
-//     invented id.
+//   - prior_status_updates — only when this run surfaced again a finding the
+//     ledger carried IN, and the prompt lists it. That is the phase's only
+//     grounded evidence about the past; demanded without it, the model's only
+//     way to comply is to invent a verdict, and an invented `resolved` moves a
+//     real finding to the front of the prune queue.
 //   - next_tasks — only when evolution is on. Off means the ledger records but
 //     does not self-direct, so an empty queue is the correct answer there.
 //
@@ -153,7 +154,7 @@ func reflectionResponseSchema(mode agentplugin.EvolutionMode, demandPriorRejudge
 	if demandPriorRejudgement {
 		required = append(required, "prior_status_updates")
 		requireNonEmpty(props, "prior_status_updates",
-			"This run carries prior findings: re-judge at least one — a prior finding this run saw again is grounded evidence for confirmed.")
+			"This run surfaced at least one of the prior findings again, which is grounded evidence about it: re-judge at least one.")
 	}
 	if mode != agentplugin.EvolutionModeOff {
 		required = append(required, "next_tasks")

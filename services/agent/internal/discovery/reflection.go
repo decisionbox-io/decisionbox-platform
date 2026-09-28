@@ -134,7 +134,7 @@ func (o *Orchestrator) RunPhaseReflection(ctx context.Context, result *models.Di
 
 	// 1. Capture this run's insights as durable ledger findings WITH substance,
 	//    deduped/trended against prior findings. Always runs (low-risk).
-	newCount, totalCount, err := o.consolidateFindings(rctx, result)
+	newCount, totalCount, reSeenCount, err := o.consolidateFindings(rctx, result)
 	if err != nil {
 		applog.WithError(err).Warn("Reflection: finding consolidation failed")
 	}
@@ -142,17 +142,16 @@ func (o *Orchestrator) RunPhaseReflection(ctx context.Context, result *models.Di
 	// 2. The bounded LLM call produces the judgment-heavy outputs: coverage
 	//    summary, prior-finding status re-judgement, durable learnings,
 	//    next-tasks, and domain-pack deltas. Skipped cleanly on any failure.
-	// Findings the ledger carried INTO this run. consolidateFindings has
-	// already merged this run's own findings into the list generateReflection
-	// reads back, so that list cannot answer "does this project have prior
-	// findings?" — on a first run with insights it says yes about findings
-	// created seconds earlier. totalCount is the pre-run count plus newCount,
-	// so the difference is exactly what the ledger carried in. A consolidation
-	// that failed reports 0/0, which reads as "nothing carried" — the safe
-	// direction: the run is not asked to re-judge a history it cannot see.
-	carriedFindings := totalCount - newCount
-
-	ref, err := o.generateReflection(rctx, result, pol, carriedFindings > 0)
+	// reSeenCount is what licenses asking the model to re-judge a prior
+	// finding: it counted the findings the ledger carried IN that this run
+	// surfaced again, which is grounded evidence about them and the only kind
+	// this phase has. The finding list generateReflection reads cannot supply
+	// it — consolidation has already merged this run's own findings into that
+	// list, so a first run that found anything looks like it has a history.
+	// A consolidation that failed reports 0, which reads as "no evidence":
+	// the safe direction, since the alternative is a fabricated verdict on a
+	// real finding and a `resolved` moves it to the front of the prune queue.
+	ref, err := o.generateReflection(rctx, result, pol, reSeenCount > 0)
 	if err != nil {
 		applog.WithError(err).Warn("Reflection: consolidation LLM call failed; ledger findings still captured")
 		ref = nil
@@ -180,12 +179,21 @@ func (o *Orchestrator) RunPhaseReflection(ctx context.Context, result *models.Di
 // consolidateFindings turns this run's insights into durable ledger findings,
 // deduping (exact + semantic) and trend-marking against prior findings, and
 // indexes new/updated findings into Qdrant when the embedder is wired. Returns
-// the count of genuinely-new findings and the project's total afterward.
-func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.DiscoveryResult) (newCount, totalCount int, err error) {
+// the count of genuinely-new findings, the project's total afterward, and how
+// many findings the ledger CARRIED IN that this run surfaced again.
+//
+// That last count is the reflection phase's only grounded evidence about the
+// project's history: a carried finding this run saw again can honestly be
+// re-judged, and one it did not see cannot — absence is not proof. It is
+// counted here because only this function can tell the two apart afterwards: a
+// merge stamps SourceDiscoveryID with this run either way, so a carried
+// finding re-seen now and one created a moment ago by an earlier candidate in
+// the same loop are indistinguishable in the stored document.
+func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.DiscoveryResult) (newCount, totalCount, reSeenCount int, err error) {
 	candidates := buildFindingCandidates(result)
 	prior, lerr := o.findingRepo.List(ctx, o.projectID)
 	if lerr != nil {
-		return 0, 0, fmt.Errorf("list prior findings: %w", lerr)
+		return 0, 0, 0, fmt.Errorf("list prior findings: %w", lerr)
 	}
 
 	// Embed candidates once (used for both semantic dedup and indexing). Best
@@ -206,6 +214,11 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 	trendDelta := getEnvAsFloat(discoveryLedgerTrendDeltaEnv, defaultDiscoveryLedgerTrendDelta)
 	dedupMinScore := getEnvAsFloat(discoveryLedgerDedupMinScoreEnv, defaultDiscoveryLedgerDedupMinScore)
 	now := time.Now()
+
+	// insertedThisRun holds the ids this loop creates. They join priorByKey /
+	// priorByID so a later candidate merges into them instead of duplicating,
+	// which means a "merge" below is not by itself evidence about the past.
+	insertedThisRun := make(map[string]struct{})
 
 	priorByKey := make(map[string]*commonmodels.LedgerFinding, len(prior))
 	priorByID := make(map[string]*commonmodels.LedgerFinding, len(prior))
@@ -236,6 +249,9 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 		}
 
 		if match != nil {
+			if _, ownWork := insertedThisRun[match.ID]; !ownWork {
+				reSeenCount++
+			}
 			// Merge / trend-mark the existing finding in place.
 			changed := findingMagnitudeChanged(match, &cand, trendDelta)
 			match.Description = cand.Description
@@ -284,6 +300,7 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 		inserted := cand
 		priorByKey[inserted.NormalizedKey] = &inserted
 		priorByID[inserted.ID] = &inserted
+		insertedThisRun[inserted.ID] = struct{}{}
 		if vec != nil {
 			toIndex = append(toIndex, indexItem{finding: cand, vector: vec})
 		}
@@ -322,7 +339,7 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 	}
 
 	totalCount = len(prior) + newCount
-	return newCount, totalCount, nil
+	return newCount, totalCount, reSeenCount, nil
 }
 
 // searchLedgerNeighbour returns the id of the nearest prior ledger finding above
