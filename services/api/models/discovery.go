@@ -70,13 +70,22 @@ type Insight struct {
 	// the agent until they were mirrored, however carefully their JSON names were
 	// chosen.
 	//
-	// Quality is what the sources said about the fidelity of the rows; the other
-	// three are derived and the model cannot author them, which is why their JSON
+	// Quality is what the sources said about the fidelity of the rows; everything
+	// else here is derived and the model cannot author it, which is why those JSON
 	// names are not the names the analysis prompt uses.
 	Quality            []gowarehouse.QualityCaveat  `bson:"quality,omitempty" json:"evidence_quality,omitempty"`
 	QuantifierClaims   []gomodels.QuantifierClaim   `bson:"quantifier_claims,omitempty" json:"quantifier_claims,omitempty"`
 	QuantifierVerdicts []gomodels.QuantifierVerdict `bson:"quantifier_verdicts,omitempty" json:"evidence_checks,omitempty"`
 	Repair             *gomodels.InsightRepair      `bson:"repair,omitempty" json:"evidence_repair,omitempty"`
+
+	// The figure layer, mirrored for the same reason and at the same risk. Each
+	// number the model wrote, the arithmetic it declared for it, what that
+	// arithmetic evaluated to, how much of the prose was declared at all, and any
+	// numeral Go corrected in place.
+	FigureClaims   []gomodels.FigureClaim   `bson:"figure_claims,omitempty" json:"figure_claims,omitempty"`
+	FigureVerdicts []gomodels.FigureVerdict `bson:"figure_verdicts,omitempty" json:"evidence_figures,omitempty"`
+	FigureCoverage *gomodels.FigureCoverage `bson:"figure_coverage,omitempty" json:"evidence_figure_coverage,omitempty"`
+	FigureFixes    []gomodels.FigureFix     `bson:"figure_fixes,omitempty" json:"evidence_figure_fixes,omitempty"`
 }
 
 type Recommendation struct {

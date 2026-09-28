@@ -16,6 +16,14 @@ func TestInsight_CarriesTheEvidenceTrailThroughBSON(t *testing.T) {
 		"quantifier_claims":   bson.A{bson.M{"claim": "c", "kind": "only", "step": 4}},
 		"quantifier_verdicts": bson.A{bson.M{"claim": "c", "status": "fails", "reason": "2 of 10"}},
 		"repair":              bson.M{"rounds": 1, "outcome": "repaired", "fixed": bson.A{"c"}},
+		"figure_claims": bson.A{bson.M{
+			"figure": "100,000", "value": 100000.0, "step": 7, "kind": "sum", "column": "customers"}},
+		"figure_verdicts": bson.A{bson.M{
+			"figure": "100,000", "step": 7, "kind": "sum", "status": "fails",
+			"claimed": 100000.0, "evaluated": 99996.0}},
+		"figure_coverage": bson.M{"written": 9, "declared": 4},
+		"figure_fixes": bson.A{bson.M{
+			"figure": "100,000", "from": 100000.0, "to": 99996.0, "text": "100,000 -> 99,996"}},
 	}
 	raw, err := bson.Marshal(stored)
 	if err != nil {
@@ -36,6 +44,18 @@ func TestInsight_CarriesTheEvidenceTrailThroughBSON(t *testing.T) {
 	}
 	if got.Repair == nil || got.Repair.Outcome != "repaired" || len(got.Repair.Fixed) != 1 {
 		t.Errorf("repair record dropped: %+v", got.Repair)
+	}
+	if len(got.FigureClaims) != 1 || got.FigureClaims[0].Column != "customers" {
+		t.Errorf("declared figures dropped: %+v", got.FigureClaims)
+	}
+	if len(got.FigureVerdicts) != 1 || got.FigureVerdicts[0].Evaluated != 99996 {
+		t.Errorf("figure verdicts dropped: %+v", got.FigureVerdicts)
+	}
+	if got.FigureCoverage == nil || got.FigureCoverage.Written != 9 || got.FigureCoverage.Declared != 4 {
+		t.Errorf("figure coverage dropped: %+v", got.FigureCoverage)
+	}
+	if len(got.FigureFixes) != 1 || got.FigureFixes[0].Text != "100,000 -> 99,996" {
+		t.Errorf("figure fixes dropped: %+v", got.FigureFixes)
 	}
 }
 
