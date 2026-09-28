@@ -470,10 +470,12 @@ func TestGenerateRecommendations_EmptyInsights(t *testing.T) {
 	}
 }
 
-// TestInsightsForRecommenderPrompt_ClearsMarkdownCopy verifies the recommender
-// prompt copy drops description_md (so INSIGHTS_DATA carries one description per
-// insight, not two) while leaving the originals — which still need the Markdown
-// for storage and rendering — untouched.
+// TestInsightsForRecommenderPrompt_ClearsMarkdownCopy verifies INSIGHTS_DATA
+// carries exactly the fields the recommender reasons over: one description per
+// insight rather than a plain copy and a Markdown copy, and none of the
+// validation transcript, source steps, SQL metadata or timestamp it does not
+// reason over. The originals — which still need all of it for storage, the
+// dashboard and the recommendation-validation phase — are left untouched.
 func TestInsightsForRecommenderPrompt_ClearsMarkdownCopy(t *testing.T) {
 	insights := []models.Insight{
 		{Name: "a", Description: "plain a", DescriptionMd: "**plain a**"},
@@ -482,17 +484,55 @@ func TestInsightsForRecommenderPrompt_ClearsMarkdownCopy(t *testing.T) {
 
 	got := insightsForRecommenderPrompt(insights)
 
-	for i := range got {
-		if got[i].DescriptionMd != "" {
-			t.Errorf("got[%d].DescriptionMd = %q, want empty", i, got[i].DescriptionMd)
-		}
-	}
 	if got[0].Description != "plain a" {
 		t.Errorf("plain Description should be preserved, got %q", got[0].Description)
 	}
 	// Originals must not be mutated — the stored insight keeps its Markdown.
 	if insights[0].DescriptionMd != "**plain a**" {
 		t.Errorf("original DescriptionMd was mutated: %q", insights[0].DescriptionMd)
+	}
+
+	// The rendered payload is what actually reaches the prompt, so the dropped
+	// fields are asserted on the JSON rather than on the struct: a field the
+	// projection does not carry has no key at all, which is the point — clearing
+	// DiscoveredAt on a copy would still have emitted
+	// "discovered_at": "0001-01-01T00:00:00Z", since its tag has no omitempty.
+	payload := mustMarshalProjection(t, []models.Insight{fullyPopulatedInsight("6e9261f5-c4ec-404b-bdf0-760a4644f384")})
+
+	for _, key := range droppedJSONKeys() {
+		if strings.Contains(payload, key) {
+			t.Errorf("payload still carries the dropped key %s:\n%s", key, payload)
+		}
+	}
+	for _, marker := range transcriptMarkers {
+		if strings.Contains(payload, marker) {
+			t.Errorf("payload still carries dropped content %q:\n%s", marker, payload)
+		}
+	}
+
+	// Every field on the keep list survives, with its value.
+	for _, want := range []string{
+		`"id": "6e9261f5-c4ec-404b-bdf0-760a4644f384"`,
+		`"analysis_area": "churn"`,
+		`"name": "Day 0-to-Day 1 Drop"`,
+		`"description": "67% of new players`,
+		`"severity": "critical"`,
+		`"affected_count": 16695`,
+		`"risk_score": 0.67`,
+		`"confidence": 0.85`,
+		`"churn_rate": 0.67`,
+		`"Only 33% return after Day 1"`,
+		`"target_segment": "Players who attempted fewer than 3 levels"`,
+		`"detail": "37 of 412 rows withheld"`,
+	} {
+		if !strings.Contains(payload, want) {
+			t.Errorf("payload is missing %s:\n%s", want, payload)
+		}
+	}
+	for _, key := range []string{`"metrics":`, `"indicators":`, `"evidence_quality":`} {
+		if !strings.Contains(payload, key) {
+			t.Errorf("payload is missing the kept key %s:\n%s", key, payload)
+		}
 	}
 }
 

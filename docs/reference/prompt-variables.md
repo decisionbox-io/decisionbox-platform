@@ -20,7 +20,7 @@ Template variables in prompt files use the `{{VARIABLE_NAME}}` syntax. The agent
 | `{{QUERY_RESULTS}}` | `analysis_*.md` | Exploration query results for this area | JSON array |
 | `{{DISCOVERY_DATE}}` | `recommendations.md` | Current date (ISO format) | Date string |
 | `{{INSIGHTS_SUMMARY}}` | `recommendations.md` | Text summary of insight counts | Text |
-| `{{INSIGHTS_DATA}}` | `recommendations.md` | Full insight array with IDs | JSON array |
+| `{{INSIGHTS_DATA}}` | `recommendations.md` | The eligible insights, trimmed to the fields the recommender reasons over, each with its `id` | JSON array |
 | `{{LANGUAGE}}` | `base_context.md` + verifier / refuter prompt templates | Project output language (defaults to `English`) used to localize narrative fields | Plain text |
 
 ## Detailed Reference
@@ -262,15 +262,24 @@ Text summary with counts per area.
 
 ### {{INSIGHTS_DATA}}
 
-**Source:** All validated insights from the analysis phase
+**Source:** The insights the recommendation-eligibility filter forwarded from the analysis phase
 
-Full JSON array of all insights, including their IDs. The LLM uses insight IDs to populate `related_insight_ids` on recommendations.
+A JSON array of those insights, trimmed to the fields the recommender reasons over.
+Each entry carries `id`, `analysis_area`, `name`, `description`, `severity`, `affected_count`, `risk_score`, `confidence`, `metrics`, `indicators`, `target_segment` and `evidence_quality`.
+The LLM uses `id` to populate `related_insight_ids` on the recommendations it emits, so `id` is always present and must be copied verbatim.
+
+Five fields on the stored insight are deliberately **not** in this variable: `validation`, `source_steps`, `sql_metadata`, `discovered_at` and `description_md`.
+None of them is used to write a recommendation.
+`validation` in particular carries the verifier's and the refuter's full write-ups — about 80% of the rendered prompt on a typical run, enough on its own to exceed a 40 960-token context window and end the run with no recommendations.
+The validation verdict still governs which insights appear here at all; it is applied by the eligibility filter before the prompt is built (see [Discovery lifecycle → Recommendations](../concepts/discovery-lifecycle.md#phase-5-recommendations)).
+`source_steps` lists exploration-step numbers, and those steps are not part of this prompt, so the insights above are the only evidence it carries — the platform-enforced recommendation rules require every figure in a recommendation to be traceable to a field of the insight it cites.
+The stored insights keep every field — the trimming applies to the prompt copy only.
 
 **Example value:**
 ```json
 [
   {
-    "id": "churn-1",
+    "id": "6e9261f5-c4ec-404b-bdf0-760a4644f384",
     "analysis_area": "churn",
     "name": "Day 0-to-Day 1 Drop: 67% Never Return",
     "description": "67% of new players...",
@@ -280,10 +289,13 @@ Full JSON array of all insights, including their IDs. The LLM uses insight IDs t
     "confidence": 0.85,
     "metrics": {"churn_rate": 0.67, "avg_sessions_before_churn": 1.2},
     "indicators": ["Only 33% return after Day 1", "Avg session: 4.2 minutes"],
-    "source_steps": [1, 3, 5]
+    "target_segment": "Players who attempted fewer than 3 levels"
   }
 ]
 ```
+
+The projection lives in `insightsForRecommenderPrompt` (`services/agent/internal/discovery/orchestrator.go`).
+It is an allow-list: a field it does not name cannot reach the prompt, so adding one to the insight model is a deliberate choice rather than an automatic one.
 
 ## Variable Substitution Code
 
