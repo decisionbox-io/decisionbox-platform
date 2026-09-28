@@ -133,6 +133,31 @@ type FigureCoverage struct {
 	Written int `bson:"written" json:"written"`
 	// Declared is how many of those a declaration accounts for, by value.
 	Declared int `bson:"declared" json:"declared"`
+
+	// Labelled is how many the model stated measure nothing -- a bucket edge, a
+	// top-N bound, an identifier -- when it was asked about them directly.
+	//
+	// Counted apart from Declared and never folded into it. A model can satisfy a
+	// demand for declarations by calling everything a label, and the only defence
+	// against that is for the two to be separately visible: coverage that rose
+	// because figures were explained reads differently from coverage that rose
+	// because figures were dismissed. Nothing verifies a label, by construction.
+	Labelled int `bson:"labelled,omitempty" json:"labelled,omitempty"`
+
+	// Labels are those numerals as written, kept so the claim is auditable rather
+	// than only counted.
+	Labels []string `bson:"labels,omitempty" json:"labels,omitempty"`
+}
+
+// Unexplained is the residual: numerals the prose states that are neither declared
+// nor claimed to be labels. This is the honest measure of how much of a document
+// went unchecked, and the number a report leads with.
+func (c FigureCoverage) Unexplained() int {
+	n := c.Written - c.Declared - c.Labelled
+	if n < 0 {
+		return 0
+	}
+	return n
 }
 
 // FigureFix records one figure corrected in place, without asking the model.

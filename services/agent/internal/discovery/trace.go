@@ -268,6 +268,15 @@ func insightTraceFields(areaID string, ins models.Insight) applog.Fields {
 	if ins.FigureCoverage != nil {
 		f["figures_written"] = ins.FigureCoverage.Written
 		f["figures_declared"] = ins.FigureCoverage.Declared
+		// Labels and the residual, always, including when both are zero. A document
+		// whose figures were all explained and one whose figures were all dismissed
+		// have the same declared count, and telling them apart is the whole reason
+		// labels are counted separately.
+		f["figures_labelled"] = ins.FigureCoverage.Labelled
+		f["figures_unexplained"] = ins.FigureCoverage.Unexplained()
+		if len(ins.FigureCoverage.Labels) > 0 {
+			f["figure_labels"] = ins.FigureCoverage.Labels
+		}
 	}
 	if len(ins.FigureVerdicts) > 0 {
 		var fh, ff, fu int

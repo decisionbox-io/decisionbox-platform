@@ -1284,10 +1284,33 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// reason repair itself runs before validation.
 		attachFigureVerdicts(insights, stepByID)
 
+		// The figures the prose states and the declarations do not account for, named
+		// back to the model with a demand for arithmetic or an explicit dismissal.
+		//
+		// Not optional politeness: measured over four replays, an undeclared numeral
+		// was seven times as likely to be ungroundable as a declared one. Checking
+		// only what the model volunteered runs the check on the figures that were
+		// never in doubt, so which figures get checked is taken away from it. The
+		// prose is untouchable in that exchange -- a model able to edit it would
+		// answer a demand for provenance by deleting the number.
+		if demand := o.demandFigureDeclarations(ctx, area.ID, insights, stepByID, maxTokens); demand.demanded > 0 {
+			step.FiguresDemanded = demand.demanded
+			step.FiguresExplained = demand.explained
+			step.FiguresLabelled = demand.labelled
+			step.TokensIn += demand.tokensIn
+			step.TokensOut += demand.tokensOut
+			step.DurationMs += demand.durationMs
+			// Settle the declarations that just arrived. Keeps the labels, unlike the
+			// first attach, because these came from Go reading the reply rather than
+			// from model output.
+			resettleFigures(insights, stepByID)
+		}
+
 		// A refuted figure needs no model to fix: the arithmetic that refuted it
 		// already produced the right number. Swap the numeral, re-settle, and leave
-		// anything ambiguous refuted and visible. Before validation, so the
-		// verifier judges the corrected text.
+		// anything ambiguous refuted and visible. After the demand, so a figure that
+		// only became checkable a moment ago is still corrected. Before validation, so
+		// the verifier judges the corrected text.
 		if swapped := repairRefutedFigures(area.ID, insights, stepByID); swapped > 0 {
 			step.FiguresCorrected = swapped
 		}
