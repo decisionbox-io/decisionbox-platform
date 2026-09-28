@@ -245,3 +245,39 @@ func TestTemplate_DatesAreNotUndeclaredFigures(t *testing.T) {
 		t.Error("a genuine inlined figure was not detected")
 	}
 }
+
+// TestTemplate_DoesNotDoubleAnApproxMarker is the same defect at the other end of the
+// number. The suffix fix shipped "24.66%%" fixed, and the very next run shipped
+// "(~~$151,417)" -- one fix per end was one fix short.
+func TestTemplate_DoesNotDoubleAnApproxMarker(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		template string
+		want     string
+	}{
+		{"the template writes the tilde", "AOV is flat (~{{f1}}) across bands", "AOV is flat (~$151,417) across bands"},
+		{"the template leaves the tilde to the figure", "AOV is flat ({{f1}}) across bands", "AOV is flat (~$151,417) across bands"},
+		{"a tilde with no bracket", "AOV is about ~{{f1}} overall", "AOV is about ~$151,417 overall"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ins := []models.Insight{{Name: tc.template, SourceSteps: []int{1}, Figures: []models.Figure{{
+				ID: "f1", Value: 151416.87, Unit: models.UnitCurrency, Decimals: 0, Approx: true,
+			}}}}
+			renderInsightFigures(ins)
+			if ins[0].Name != tc.want {
+				t.Fatalf("rendered %q, want %q", ins[0].Name, tc.want)
+			}
+		})
+	}
+
+	// And both ends at once.
+	t.Run("both a tilde and a percent sign", func(t *testing.T) {
+		ins := []models.Insight{{Name: "Share is ~{{f1}}% of revenue", SourceSteps: []int{1}, Figures: []models.Figure{{
+			ID: "f1", Value: 24.66, Unit: models.UnitPercent, Decimals: 2, Approx: true,
+		}}}}
+		renderInsightFigures(ins)
+		if ins[0].Name != "Share is ~24.66% of revenue" {
+			t.Fatalf("rendered %q", ins[0].Name)
+		}
+	})
+}

@@ -95,11 +95,18 @@ func renderInsightFigures(insights []models.Insight) figureRenderTally {
 				}
 				tally.resolved++
 				text := renderFigure(f)
+				// A marker the template already writes is dropped from the render, at
+				// both ends. The suffix case shipped "24.66%%" in one run and the prefix
+				// case shipped "(~~$151,417)" in the next -- one fix per end was one fix
+				// short, so both are handled by the same rule: whatever notation the
+				// surrounding text already carries, the render does not repeat.
+				if f.Approx && strings.HasSuffix(b.String(), "~") {
+					text = strings.TrimPrefix(text, "~")
+					tally.markerKept++
+				}
 				if suffix := unitSuffix(f.Unit); suffix != "" && strings.HasPrefix(s[m[1]:], suffix) {
-					// The template already writes the suffix, so render without it and
-					// let the sentence keep its own punctuation.
 					text = strings.TrimSuffix(text, suffix)
-					tally.suffixKept++
+					tally.markerKept++
 				}
 				b.WriteString(text)
 				last = m[1]
@@ -145,9 +152,10 @@ type figureRenderTally struct {
 	unresolved int
 	inlined    int
 	unused     int
-	// suffixKept counts references whose unit suffix the template already wrote, so the
-	// render dropped its own rather than doubling it.
-	suffixKept int
+	// markerKept counts references whose notation -- a unit suffix, an approximation
+	// tilde -- the template already wrote, so the render dropped its own rather than
+	// doubling it.
+	markerKept int
 }
 
 func hasFigureRef(ins models.Insight) bool {
