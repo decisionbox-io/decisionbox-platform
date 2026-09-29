@@ -160,10 +160,27 @@ func closeEnough(f models.Figure, got float64) bool {
 	// unvouched figure.
 	//
 	// Relative to the magnitudes being compared rather than a fixed epsilon, because the
-	// error is in the subtraction and scales with them. 1e-12 is far above the
-	// double-precision error at any magnitude this layer sees and far below any slack a
-	// printed figure claims, so it moves no honest verdict.
-	slop := 1e-12 * math.Max(math.Abs(rendered), math.Abs(got))
+	// error scales with them -- and bounded by a hundredth of the interval, because the
+	// error is not always in this subtraction.
+	//
+	// The bound is what makes the allowance safe to raise, and it had to be raised. An
+	// excess divides a small difference by a large denominator, so it inherits the
+	// operands' representation error amplified by |num|/|num-den|: cells of 137.00685 and
+	// 137 evaluate to 0.004999999999989644 where the figure states 0.005, which at two
+	// decimals prints "0.01%" and claims a half-hundredth. A gap of 1e-14 refuted a figure
+	// equal to its evidence, and the correction gate then read a gap that small as the same
+	// quantity and rewrote the prose to "0.00%" -- a right number replaced by a wrong one
+	// with no model in the loop, which is the failure this layer exists to prevent.
+	//
+	// An allowance relative to the RESULT cannot see error inherited from operands seven
+	// orders of magnitude larger, which is why 1e-12 was not enough. Growing with magnitude
+	// alone is not the answer either: at 1e12 that allowance reaches 1 and overtakes a
+	// half-unit interval, so the check would end up looser than the precision the figure
+	// printed. The cap ties it to what the figure claimed instead, so it can never widen an
+	// interval by more than a hundredth of itself at any magnitude -- stricter than the old
+	// expression above 1e11, looser below it, and in both directions it is the figure's own
+	// stated precision that decides.
+	slop := math.Min(1e-9*math.Max(math.Abs(rendered), math.Abs(got)), 0.01*figureSlack(f))
 	return math.Abs(rendered-got) <= figureSlack(f)+slop
 }
 

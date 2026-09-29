@@ -450,6 +450,101 @@ func TestFigureContract_ExcessDoesNotCaptureAnAbsoluteDifference(t *testing.T) {
 	}
 }
 
+// --- Review round 30, on round 29's own fixes.
+
+// TestFigures_ExcessOnARoundingBoundarySurvivesOperandError — r30 P2.
+//
+// (a-b)/b removed the cancellation in the subtraction but not the error the operands
+// arrive with. 137.00685 is not that number in binary, and an excess divides the small
+// difference by the large denominator, so the representation error is amplified by
+// |num|/|num-den| -- about 2.7 million here. The result lands 1e-14 from 0.005, which for
+// a figure printing "0.01%" is just past the half-hundredth it claims, so a figure equal
+// to its evidence is refuted and then rewritten to "0.00%".
+//
+// The allowance in closeEnough is capped at a hundredth of the interval, so raising it
+// cannot make the check looser than the precision the figure printed.
+func TestFigures_ExcessOnARoundingBoundarySurvivesOperandError(t *testing.T) {
+	rows := []map[string]any{
+		{"seg": "high", "spend": 137.00685},
+		{"seg": "low", "spend": 137.0},
+	}
+	f := models.Figure{
+		ID: "f1", Value: 0.005, Unit: models.UnitPercent, Decimals: 2,
+		Step: 1, Kind: models.FigureExcess,
+		Column: "spend", Row: "seg = 'high'", Other: "seg = 'low'",
+	}
+	v := oneVerdict(t, f, evidence(1, rows))
+	if v.Status != models.FigureHolds {
+		t.Fatalf("status = %q (%s), want holds -- 0.005%% is the excess and the figure states it",
+			v.Status, v.Reason)
+	}
+	insights := []models.Insight{{
+		Name: "spread", Figures: []models.Figure{f}, SourceSteps: []int{1},
+		FigureVerdicts: []models.FigureVerdict{v},
+	}}
+	if n := correctRefutedFigures("area", insights, stepIndex(1, rows)); n != 0 {
+		t.Errorf("%d corrections applied to a figure that holds: %+v", n, insights[0].FigureCorrections)
+	}
+}
+
+// TestFigures_ClosenessIsNeverLooserThanTheStatedPrecision guards the cap.
+//
+// The allowance above grows with the magnitudes compared, and at 1e12 an unbounded one
+// reaches a whole unit -- past the half-unit a figure written to no decimals claims. That
+// would make the check looser than the precision the figure printed, which is the one
+// property this whole layer rests on.
+func TestFigures_ClosenessIsNeverLooserThanTheStatedPrecision(t *testing.T) {
+	f := models.Figure{ID: "f1", Value: 1e12, Unit: models.UnitCount, Decimals: 0}
+	// A full unit out. The interval is half a unit, so this must not hold however the
+	// allowance is computed.
+	if closeEnough(f, 1e12+1) {
+		t.Error("a figure written to whole units held against evidence a whole unit away")
+	}
+	if !closeEnough(f, 1e12) {
+		t.Error("a figure equal to its evidence did not hold")
+	}
+}
+
+// TestFigures_RepairWithholdsAFigureThatNeverRendered — r30 P2.
+//
+// A figure usableFigures excluded -- no value, a duplicated id -- leaves its reference
+// unresolved in the prose, and re-rendering reproduces the same placeholder. So the field
+// reads as untouched and the figure as surviving, when the prose never showed a number for
+// it at all. The prompt would advertise an id that buildFigureRefIndex separately rejects,
+// which breaks "withheld at both ends or neither" from the other side.
+func TestFigures_RepairWithholdsAFigureThatNeverRendered(t *testing.T) {
+	// A duplicated id: usableFigures drops both declarations, so "{{f1}}" ships visible.
+	dup := models.Insight{
+		ID:          "11111111-2222-3333-4444-555555555555",
+		Description: "{{f1}} sub-categories are loss-making, up from 302.",
+		Figures: []models.Figure{
+			{ID: "f1", Value: 12, Unit: models.UnitCount},
+			{ID: "f1", Value: 19, Unit: models.UnitCount},
+		},
+		FigureTemplate: &models.FigureTemplate{
+			Description: "{{f1}} sub-categories are loss-making, up from 302.",
+		},
+		Repair: &models.InsightRepair{Rounds: 1, Outcome: models.RepairRepaired},
+	}
+	if broken := figuresBrokenByRepair(dup); !broken["f1"] {
+		t.Errorf("withheld = %v, want f1 -- its id is ambiguous, so the prose never rendered it", broken)
+	}
+	if out := insightsForRecommenderPrompt([]models.Insight{dup}); len(out[0].Figures) != 0 {
+		t.Errorf("the prompt advertises %+v, which the reference index rejects", out[0].Figures)
+	}
+
+	// And a figure the model declared with no readable value, which would serialise into
+	// the prompt as `value: 0`.
+	missing := dup
+	missing.Figures = []models.Figure{{ID: "f1", Unit: models.UnitCount, ValueMissing: true}}
+	if broken := figuresBrokenByRepair(missing); !broken["f1"] {
+		t.Errorf("withheld = %v, want f1 -- it declares no value to lend", broken)
+	}
+	if out := insightsForRecommenderPrompt([]models.Insight{missing}); len(out[0].Figures) != 0 {
+		t.Errorf("the prompt advertises %+v with no value behind it", out[0].Figures)
+	}
+}
+
 // --- The malformed reference.
 
 // TestRecommendationFigures_AnEmptyReferenceIsTheRecommendationsFault is the second half

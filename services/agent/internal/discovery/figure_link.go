@@ -89,10 +89,26 @@ func figuresBrokenByRepair(ins models.Insight) map[string]bool {
 	// figure with no placeholder to find, no changed reference, and the value 12. Requiring
 	// a surviving reference is what makes the audit trail the evidence rather than the
 	// absence of evidence.
+	//
+	// Only ids the render could actually resolve count, in either set. A field holding
+	// "{{f1}}" for a figure usableFigures excluded -- no value, a duplicated id, an id the
+	// grammar cannot express -- re-renders to the same placeholder the shipped text
+	// carries, so the field reads as untouched and the figure as surviving. It is not: the
+	// prose never showed a number for it. The prompt would then advertise an id that
+	// buildFigureRefIndex separately rejects, which is the "withheld at both ends or
+	// neither" rule broken from the other side, and a missing value serialises into the
+	// prompt as `value: 0`. Filtering both sets is enough, because an id absent from
+	// survived is withheld whether or not it is also in changed.
+	usable := make(map[string]bool, len(ins.Figures))
+	for _, f := range usableFigures(ins.Figures) {
+		usable[f.ID] = true
+	}
 	survived, changed := map[string]bool{}, map[string]bool{}
 	note := func(into map[string]bool, authored string) {
 		for _, m := range reFigureRef.FindAllStringSubmatch(authored, -1) {
-			into[m[1]] = true
+			if usable[m[1]] {
+				into[m[1]] = true
+			}
 		}
 	}
 	field := func(authored, shippedText string) {
