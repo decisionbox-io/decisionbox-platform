@@ -545,6 +545,60 @@ func TestFigures_RepairWithholdsAFigureThatNeverRendered(t *testing.T) {
 	}
 }
 
+// --- Review round 31, on round 30's own fix.
+
+// TestFigures_HighPrecisionFigureEqualToItsEvidenceHolds — r31 P2.
+//
+// Round 30 capped the closeness allowance at a hundredth of the interval, which was too
+// tight at the top of float64's range. An unscaled cell of 100000000.0000045 written to six
+// decimals prints "100000000.000005"; reading that print back lands 5.0664e-7 from the
+// value it came from, and the figure claims 5e-7 -- so a figure exactly equal to its own
+// evidence was refuted, and correction cannot rescue it because assigning the same number
+// renders the same text. Six decimals at 1e8 is sixteen significant digits, past what a
+// float64 holds, so the machine cannot tell these apart and must not claim to.
+func TestFigures_HighPrecisionFigureEqualToItsEvidenceHolds(t *testing.T) {
+	const v = 100000000.0000045
+	rows := []map[string]any{{"seg": "one", "amount": v}}
+	f := models.Figure{
+		ID: "f1", Value: v, Unit: models.UnitPlain, Decimals: 6,
+		Step: 1, Kind: models.FigureCell, Column: "amount", Row: "seg = 'one'",
+	}
+	if v := oneVerdict(t, f, evidence(1, rows)); v.Status != models.FigureHolds {
+		t.Errorf("status = %q (%s), want holds -- the figure states exactly its evidence",
+			v.Status, v.Reason)
+	}
+}
+
+// TestFigures_RepairKeysWithheldFiguresByTheirDeclaredIDs — r31 P2.
+//
+// figuresBrokenByRepair trimmed ids when recording them and both callers look them up
+// untrimmed, so an id of " f1 " was recorded under "f1", found under neither, and kept. A
+// blank id was skipped outright, same result. Either way the prompt advertised a figure the
+// renderer cannot resolve and reference resolution rejects, so the recommendation shipped a
+// visible placeholder.
+func TestFigures_RepairKeysWithheldFiguresByTheirDeclaredIDs(t *testing.T) {
+	for _, id := range []string{" f1 ", "", "revenue-total"} {
+		ins := models.Insight{
+			ID:             "11111111-2222-3333-4444-555555555555",
+			Description:    "302 sub-categories are loss-making.",
+			Figures:        []models.Figure{{ID: id, Value: 12, Unit: models.UnitCount}},
+			FigureTemplate: &models.FigureTemplate{Description: "12 sub-categories are loss-making."},
+			Repair:         &models.InsightRepair{Rounds: 1, Outcome: models.RepairRepaired},
+		}
+		if broken := figuresBrokenByRepair(ins); !broken[id] {
+			t.Errorf("id %q: withheld = %v, want it keyed by the id as declared", id, broken)
+		}
+		if out := insightsForRecommenderPrompt([]models.Insight{ins}); len(out[0].Figures) != 0 {
+			t.Errorf("id %q: the prompt advertises %+v, which nothing can resolve", id, out[0].Figures)
+		}
+		// Same for the branch with no audit trail to consult.
+		ins.FigureTemplate = nil
+		if broken := figuresBrokenByRepair(ins); !broken[id] {
+			t.Errorf("id %q with no template: withheld = %v, want every figure", id, broken)
+		}
+	}
+}
+
 // --- The malformed reference.
 
 // TestRecommendationFigures_AnEmptyReferenceIsTheRecommendationsFault is the second half

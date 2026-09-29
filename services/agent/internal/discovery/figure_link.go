@@ -1,8 +1,6 @@
 package discovery
 
 import (
-	"strings"
-
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -60,9 +58,7 @@ func figuresBrokenByRepair(ins models.Insight) map[string]bool {
 	if ins.FigureTemplate == nil {
 		broken := make(map[string]bool, len(ins.Figures))
 		for _, f := range ins.Figures {
-			if id := strings.TrimSpace(f.ID); id != "" {
-				broken[id] = true
-			}
+			broken[f.ID] = true
 		}
 		return broken
 	}
@@ -149,14 +145,16 @@ func figuresBrokenByRepair(ins models.Insight) map[string]bool {
 	// The surviving field does still show its value, so lending it would not be wrong --
 	// but an insight whose two mentions of one figure disagree is a repair defect, and
 	// this is not the place to decide which mention a second document should inherit.
+	// Keyed by the id exactly as declared, blank and malformed ones included, because both
+	// callers look it up as `broken[f.ID]`. Trimming here and not there meant an id of
+	// " f1 " was recorded under "f1", found under neither, and kept -- so the prompt
+	// advertised a figure the renderer cannot resolve and reference resolution rejects, and
+	// the recommendation shipped a visible placeholder. A blank id was skipped outright,
+	// with the same result.
 	broken := make(map[string]bool, len(ins.Figures))
 	for _, f := range ins.Figures {
-		id := strings.TrimSpace(f.ID)
-		if id == "" {
-			continue
-		}
-		if !survived[id] || changed[id] {
-			broken[id] = true
+		if !survived[f.ID] || changed[f.ID] {
+			broken[f.ID] = true
 		}
 	}
 	return broken
