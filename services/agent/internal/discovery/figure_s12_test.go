@@ -816,6 +816,90 @@ func TestFigures_AnErrorBoundThatOverflowsIsUndecidable(t *testing.T) {
 	}
 }
 
+// --- Review round 34. The error bound cuts both ways.
+
+// TestFigures_AWideErrorBoundCertifiesNothing — r34 P2.
+//
+// Rounds 30 to 33 were all about a bound too NARROW, which refuted correct figures. This is
+// the same bound too wide, which is worse: a thousand rows alternating 1e10 and -1e10 total
+// exactly zero, and the worst-case bound on adding a thousand numbers that large is about
+// 1.11. A figure claiming 1 to whole units sat inside that and was certified `holds`, where
+// the true total refutes it -- and a recommendation referencing it would inherit the
+// certification.
+//
+// The bound is not wrong; it is a worst case, and this column happens to cancel exactly.
+// What is wrong is treating the whole uncertainty as acceptable error. A bound wider than
+// the interval the figure printed means the arithmetic cannot resolve what the figure
+// claims, so nothing can be established either way.
+func TestFigures_AWideErrorBoundCertifiesNothing(t *testing.T) {
+	rows := make([]map[string]any, 0, 1000)
+	for i := 0; i < 1000; i++ {
+		v := 1e10
+		if i%2 == 1 {
+			v = -1e10
+		}
+		rows = append(rows, map[string]any{"amount": v})
+	}
+	f := models.Figure{
+		ID: "f1", Value: 1, Unit: models.UnitPlain, Decimals: 0,
+		Step: 1, Kind: models.FigureSum, Column: "amount",
+	}
+	v := oneVerdict(t, f, evidence(1, rows))
+	if v.Status == models.FigureHolds {
+		t.Fatalf("status = holds: a claim of 1 was certified against a total of exactly zero")
+	}
+	if v.Status != models.FigureUndecidable {
+		t.Errorf("status = %q, want undecidable -- the bound is a worst case, so the total "+
+			"cannot be refuted at unit precision either", v.Status)
+	}
+	if !strings.Contains(v.Reason, "wider than") {
+		t.Errorf("reason = %q, want it to say the arithmetic is less precise than the figure claims", v.Reason)
+	}
+
+	// The reference index must not lend it, since nothing vouched for it.
+	ins := models.Insight{
+		ID: "11111111-2222-3333-4444-555555555555", Name: "totals",
+		Figures: []models.Figure{f}, FigureVerdicts: []models.FigureVerdict{v},
+	}
+	recs := []models.Recommendation{{
+		Description: "Act on the {{r1}} total.",
+		Figures: []models.Figure{{
+			ID: "r1", Unit: models.UnitPlain, Kind: models.FigureRefKind,
+			Refs: []models.FigureRef{ref(ins.ID, "f1")},
+		}},
+	}}
+	attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	if rv := recs[0].FigureVerdicts[0]; rv.Status == models.FigureHolds {
+		t.Errorf("a recommendation certified a reference to an unvouched figure: %+v", rv)
+	}
+}
+
+// TestFigures_DisagreementIsStillReportedWhenTheBoundIsWide.
+//
+// The other half of the rule above, and the reason it applies only to agreement. A figure
+// outside even the widened interval is wrong wherever in that interval the truth sits, so it
+// is still refuted -- declining those too would hand the evaluator an excuse to settle
+// nothing whenever the arithmetic is imprecise.
+func TestFigures_DisagreementIsStillReportedWhenTheBoundIsWide(t *testing.T) {
+	rows := make([]map[string]any, 0, 1000)
+	for i := 0; i < 1000; i++ {
+		v := 1e10
+		if i%2 == 1 {
+			v = -1e10
+		}
+		rows = append(rows, map[string]any{"amount": v})
+	}
+	// A claim far outside the uncertainty of about 1.11.
+	f := models.Figure{
+		ID: "f1", Value: 500, Unit: models.UnitPlain, Decimals: 0,
+		Step: 1, Kind: models.FigureSum, Column: "amount",
+	}
+	if v := oneVerdict(t, f, evidence(1, rows)); v.Status != models.FigureFails {
+		t.Errorf("status = %q (%s), want fails -- 500 is wrong wherever inside the bound the "+
+			"true total sits", v.Status, v.Reason)
+	}
+}
+
 // --- The malformed reference.
 
 // TestRecommendationFigures_AnEmptyReferenceIsTheRecommendationsFault is the second half

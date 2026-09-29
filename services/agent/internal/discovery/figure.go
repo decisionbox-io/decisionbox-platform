@@ -111,6 +111,13 @@ func evaluateFigure(f models.Figure, steps map[int]StepRows) models.FigureVerdic
 	// claim however wrong -- the mirror of a false refutation and worse, because it comes
 	// back as `holds`. The arithmetic below is ordered to stay finite; this is the guard for
 	// the case where the numbers are large enough that it cannot.
+	//
+	// Kept as an explicit invariant although it is no longer reachable on the outcome. The
+	// precision rule below sends an infinite bound to undecidable anyway, since infinity
+	// exceeds any interval, and a NaN bound would need a single term of eps*x to be infinite,
+	// which no finite x produces. So there is no case that distinguishes this guard from the
+	// rule below, and it is therefore NOT covered by the sabotage suite -- it states the
+	// invariant rather than carrying it.
 	if math.IsNaN(slack) || math.IsInf(slack, 0) {
 		return undecidable(
 			"the numbers behind %s over step %d are too large to bound its rounding error, so nothing here can say how far it could be out",
@@ -129,11 +136,39 @@ func evaluateFigure(f models.Figure, steps map[int]StepRows) models.FigureVerdic
 	v.Evaluated = got
 
 	best, bestGap := got, math.Inf(1)
+	unresolvable := ""
 	for _, factor := range percentScalings(f) {
 		// The error bound scales with the reading, because it is an absolute bound on the
 		// same quantity.
-		candidate := got * factor
-		if closeEnough(f, candidate, slack*factor) {
+		candidate, candidateSlack := got*factor, slack*factor
+		if closeEnough(f, candidate, candidateSlack) {
+			// Agreement inside an uncertainty WIDER than the figure's own precision
+			// establishes nothing, and vouching for it is a false certification rather than
+			// a false refutation -- which is worse, because it ships as `holds` and every
+			// reference to it inherits the certification.
+			//
+			// A thousand rows alternating 1e10 and -1e10 total exactly zero, and the
+			// worst-case bound on adding a thousand numbers that large is about 1.11. A
+			// figure claiming 1 to whole units then sits inside the uncertainty and was
+			// certified, where the true total refutes it. The bound is not wrong -- it is a
+			// worst case, and this column happens to cancel exactly -- but a bound that
+			// exceeds the interval the figure printed means the arithmetic cannot resolve
+			// what the figure claims, whichever way the answer fell.
+			//
+			// So the same rule this layer applies everywhere else: what the evaluator cannot
+			// settle is undecidable, never a verdict. Disagreement is still reported, because
+			// a figure outside even the widened interval is refuted no matter where in that
+			// interval the truth sits -- only agreement needs the arithmetic to be precise
+			// enough to mean something.
+			if candidateSlack > figureSlack(f) {
+				if unresolvable == "" {
+					v.Evaluated = candidate
+					unresolvable = fmt.Sprintf(
+						"%s over step %d can only be computed to within %s, which is wider than the %s this figure's precision claims, so nothing here can establish it either way",
+						f.Kind, f.Step, formatFigure(candidateSlack), formatFigure(figureSlack(f)))
+				}
+				continue
+			}
 			v.Evaluated = candidate
 			v.Status = models.FigureHolds
 			return v
@@ -141,6 +176,17 @@ func evaluateFigure(f models.Figure, steps map[int]StepRows) models.FigureVerdic
 		if gap := relativeDistance(f.Value, candidate); gap < bestGap {
 			best, bestGap = candidate, gap
 		}
+	}
+	// Reported only once every reading has been tried, so a percentage that settles cleanly
+	// under one scaling is not lost to an unresolvable reading under another.
+	//
+	// Defensive rather than demonstrated: the bound scales with the reading, so a scaling that
+	// agrees and a scaling that is precise enough pull in the same direction, and no fixture
+	// has been found where returning at the first unresolvable reading differs from scanning
+	// them all. Scanning cannot be worse, so it stays -- but this is not pinned by the
+	// sabotage suite, because nothing reachable tells the two apart.
+	if unresolvable != "" {
+		return undecidable("%s", unresolvable)
 	}
 	v.Evaluated = best
 	got = best
