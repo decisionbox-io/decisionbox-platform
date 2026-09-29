@@ -291,6 +291,15 @@ func evalFigure(f models.Figure, rows []map[string]any) (value, slack float64, e
 			// Before the percent scaling, so an excess written as a percentage is
 			// 100*(a-b)/b and not 100*a/b - 1.
 			q = (num.value - den.value) / den.value
+			if math.IsInf(q, 0) {
+				// The subtraction overflowed although the answer is representable: 1e308
+				// against -1e308 is an excess of exactly -2, but the difference is 2e308 and
+				// there is no such float64. a/b-1 has no intermediate that large, so it
+				// answers where the stable form cannot -- less accurately, which is the
+				// trade this branch exists to make and only at magnitudes where the stable
+				// form gives nothing at all.
+				q = num.value/den.value - 1
+			}
 		}
 		// Both readings differentiate the same way -- d/da = 1/b and d/db = -a/b^2, since
 		// (a-b)/b is a/b minus a constant -- so each operand's own error passes through the

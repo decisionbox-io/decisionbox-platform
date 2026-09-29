@@ -1084,6 +1084,47 @@ func TestFigures_AnOperandThatUnderflowedToZero(t *testing.T) {
 	}
 }
 
+// TestFigures_ExcessSurvivesAnOverflowingSubtraction — r39 P3.
+//
+// (a-b)/b is the accurate form and it has one blind spot: the difference can overflow where
+// the answer does not. 1e308 against -1e308 is an excess of exactly -2, but 2e308 is not a
+// float64, so the stable form gave infinity and a computable figure came back undecidable --
+// a capability lost rather than a number got wrong, which is why this is the mildest finding
+// in the series. a/b-1 has no intermediate that large and answers it.
+func TestFigures_ExcessSurvivesAnOverflowingSubtraction(t *testing.T) {
+	rows := []map[string]any{
+		{"seg": "high", "amount": 1e308},
+		{"seg": "low", "amount": -1e308},
+	}
+	f := models.Figure{
+		ID: "f1", Value: -200, Unit: models.UnitPercent, Decimals: 0,
+		Step: 1, Kind: models.FigureExcess,
+		Column: "amount", Row: "seg = 'high'", Other: "seg = 'low'",
+	}
+	v := oneVerdict(t, f, evidence(1, rows))
+	if v.Status != models.FigureHolds {
+		t.Fatalf("status = %q (%s), want holds -- the excess is exactly -200%%", v.Status, v.Reason)
+	}
+	if math.IsInf(v.Evaluated, 0) || math.IsNaN(v.Evaluated) {
+		t.Errorf("evaluated = %v, which cannot be marshalled to JSON", v.Evaluated)
+	}
+	// And the accurate form is still what ordinary operands get: the fallback must not become
+	// the default. 50.0025 against 50 lands closer under (a-b)/b than under a/b-1.
+	near := []map[string]any{
+		{"seg": "high", "amount": 100.0000015},
+		{"seg": "low", "amount": 100.0},
+	}
+	fine := models.Figure{
+		ID: "f1", Value: 0.0000015, Unit: models.UnitPercent, Decimals: 6,
+		Step: 1, Kind: models.FigureExcess,
+		Column: "amount", Row: "seg = 'high'", Other: "seg = 'low'",
+	}
+	if got := oneVerdict(t, fine, evidence(1, near)).Evaluated; math.Abs(got-0.0000015) > 5e-15 {
+		t.Errorf("evaluated = %.20g, off by %.3g -- the stable form must still be the default",
+			got, math.Abs(got-0.0000015))
+	}
+}
+
 // --- The malformed reference.
 
 // TestRecommendationFigures_AnEmptyReferenceIsTheRecommendationsFault is the second half
