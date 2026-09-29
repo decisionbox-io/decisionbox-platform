@@ -44,10 +44,15 @@ import (
 
 // figuresBrokenByRepair names the figures whose link to the prose repair severed.
 //
-// Empty for an insight repair never touched, and for one where every edited field
-// referenced no figure. Every figure for a repaired insight with no template: without the
-// authored prose there is no way to ask the question, and the answer that withholds is the
-// one that cannot ship a stale number.
+// A figure survives when some field that still matches its re-render references it, and no
+// field that changed does. So it is withheld three ways: its field was edited, its field
+// was removed, or no field ever referenced it -- the last because a number the model typed
+// instead of referencing has no link for this to check, and repair may have just rewritten
+// it.
+//
+// Empty for an insight repair never touched. Every figure for a repaired insight with no
+// template: without the authored prose there is no way to ask the question, and the answer
+// that withholds is the one that cannot ship a stale number.
 func figuresBrokenByRepair(ins models.Insight) map[string]bool {
 	if ins.Repair == nil || len(ins.Figures) == 0 {
 		return nil
@@ -70,20 +75,37 @@ func figuresBrokenByRepair(ins models.Insight) map[string]bool {
 	var tally figureRenderTally
 	r := newFigureRenderer(usableFigures(ins.Figures), &tally)
 
-	broken := make(map[string]bool)
-	mark := func(authored string) {
+	// Two sets, and a figure needs to be in the first and out of the second.
+	//
+	// survived holds the ids a field that still matches its re-render references: the
+	// number is on the page, in that sentence, unchanged. changed holds the ids a field
+	// repair touched references: that mention is gone or now says something else.
+	//
+	// A figure in NEITHER set is referenced from no field at all, and it is withheld. That
+	// is not symmetry with the unrepaired path, where an unreferenced figure is lent
+	// freely; it is the one case that path cannot have. A model may declare a figure and
+	// then type its number into the sentence instead of referencing it -- the render still
+	// records a template -- and repair editing "12 sub-categories" to "302" leaves that
+	// figure with no placeholder to find, no changed reference, and the value 12. Requiring
+	// a surviving reference is what makes the audit trail the evidence rather than the
+	// absence of evidence.
+	survived, changed := map[string]bool{}, map[string]bool{}
+	note := func(into map[string]bool, authored string) {
 		for _, m := range reFigureRef.FindAllStringSubmatch(authored, -1) {
-			broken[m[1]] = true
+			into[m[1]] = true
 		}
+	}
+	field := func(authored, shippedText string) {
+		if r.render(authored) == shippedText {
+			note(survived, authored)
+			return
+		}
+		note(changed, authored)
 	}
 
 	tpl := ins.FigureTemplate
-	if r.render(tpl.Name) != ins.Name {
-		mark(tpl.Name)
-	}
-	if r.render(tpl.Description) != ins.Description {
-		mark(tpl.Description)
-	}
+	field(tpl.Name, ins.Name)
+	field(tpl.Description, ins.Description)
 	// Indicators are matched as a multiset rather than by position, because repair
 	// removes one and the rest shift up. Two indicators with identical text are
 	// consumed one each, so removing one of a duplicated pair is still detected.
@@ -95,9 +117,10 @@ func figuresBrokenByRepair(ins models.Insight) map[string]bool {
 		rendered := r.render(authored)
 		if shipped[rendered] > 0 {
 			shipped[rendered]--
+			note(survived, authored)
 			continue
 		}
-		mark(authored)
+		note(changed, authored)
 	}
 
 	// Quantifier claim text is deliberately not consulted. Repair undeclares a claim
@@ -105,5 +128,20 @@ func figuresBrokenByRepair(ins models.Insight) map[string]bool {
 	// it was drawn from is untouched -- and a declaration is not a sentence a reader
 	// sees. Asking here would withhold a figure for the removal of a record, which is
 	// precisely the over-withholding this function exists to end.
+	//
+	// A figure referenced from one surviving field and one changed field stays withheld.
+	// The surviving field does still show its value, so lending it would not be wrong --
+	// but an insight whose two mentions of one figure disagree is a repair defect, and
+	// this is not the place to decide which mention a second document should inherit.
+	broken := make(map[string]bool, len(ins.Figures))
+	for _, f := range ins.Figures {
+		id := strings.TrimSpace(f.ID)
+		if id == "" {
+			continue
+		}
+		if !survived[id] || changed[id] {
+			broken[id] = true
+		}
+	}
 	return broken
 }

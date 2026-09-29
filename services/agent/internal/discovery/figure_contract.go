@@ -74,12 +74,14 @@ const figureContract = "## Every number is data, not text\n\n" +
 	"the lowest band*; the second is a share of the whole column. Either way it is the " +
 	"quotient, **not the excess**: for 103.5 against 100 it is `103.5%`.\n" +
 	"- `excess` — the same two operands, quotient **minus one**: how much more `row` is than " +
-	"`other`, as a share of `other`. For 103.5 against 100 it is `3.5%`.\n" +
-	"  **This is the kind whenever your sentence says one thing exceeds another *by* some " +
-	"amount** — *more*, *higher*, *above*, *lift*, *uplift*. *\"109.6% of the lowest band\"* is " +
-	"a `ratio`; *\"109.6% more than the lowest band\"* is a different number and a wrong " +
-	"sentence — as an `excess` the same two cells give `9.6%`. Pick the kind from what the " +
-	"sentence says, because that is the only thing that tells the two apart.\n" +
+	"`other`, **as a share of** `other`. For 103.5 against 100 it is `3.5%`.\n" +
+	"  Use it when the sentence states the gap as a **proportion of** the other amount — " +
+	"*3.5% higher*, *9.6% more*, *a 9.6% lift*. *\"109.6% of the lowest band\"* is a `ratio`; " +
+	"*\"109.6% more than the lowest band\"* is a different number and a wrong sentence — as an " +
+	"`excess` the same two cells give `9.6%`. Pick the kind from what the sentence says, " +
+	"because that is the only thing that tells the two apart.\n" +
+	"  When the gap is stated in the column's **own units** instead — *$3.50 higher*, *12 " +
+	"more orders*, *3 percentage points up* — that is `diff`, not `excess`.\n" +
 	"- `diff` — `column` in `row` minus `column` in `other`. Both required.\n\n" +
 	"`row`, `other` and `scope` use the same grammar as `filter` above: `column <op> literal` " +
 	"terms joined by `AND`, op one of `= != < <= > >=`. Nothing richer is read, and anything " +

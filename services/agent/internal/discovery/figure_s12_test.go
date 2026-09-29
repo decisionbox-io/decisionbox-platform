@@ -290,6 +290,24 @@ func TestFigures_RepairNoticesAnIndicatorRewrittenInPlace(t *testing.T) {
 	}
 }
 
+// TestFigures_RepairLendsAFigureCarriedOnlyByASurvivingIndicator.
+//
+// The indicator path is the one survival check that is not a direct string comparison --
+// it matches as a multiset, because repair removes an indicator and the rest shift up. A
+// red-proof found nothing covering it: every other fixture here also mentions its figures
+// in the name or the description, so the indicator could stop clearing figures and no test
+// would notice.
+func TestFigures_RepairLendsAFigureCarriedOnlyByASurvivingIndicator(t *testing.T) {
+	ins := repairedQuartileInsight()
+	// Strip f2's other mention, so the surviving indicator is the only thing carrying it.
+	ins.FigureTemplate.Name = "Order frequency is concentrated in the middle bands"
+	ins.Name = ins.FigureTemplate.Name
+
+	if broken := figuresBrokenByRepair(ins); broken["f2"] {
+		t.Errorf("withheld = %v, want f2 lent -- the indicator carrying it is untouched", broken)
+	}
+}
+
 // TestFigures_RepairWithNoTemplateLendsNothing.
 //
 // The template is what makes the question answerable: it is the authored prose, so
@@ -322,6 +340,113 @@ func TestFigures_UnrepairedInsightIsNotReRendered(t *testing.T) {
 
 	if broken := figuresBrokenByRepair(ins); len(broken) != 0 {
 		t.Errorf("withheld = %v on an insight that never entered repair", broken)
+	}
+}
+
+// --- Review round 29, on the three fixes above.
+
+// TestFigures_RepairWithholdsAFigureTheProseNeverReferenced — r29 P2.
+//
+// The blanket rule's replacement had a hole in the direction the blanket rule existed to
+// cover. A model may declare a figure and then type its number into the sentence instead
+// of referencing it; renderInsightFigures still records a template, and that template
+// carries no placeholder for it. Repair rewriting "12 sub-categories" to "302" then leaves
+// the figure with no reference to find broken, and it went on being lent at 12 -- the exact
+// defect, reached by the path that has no reference at all.
+//
+// So a surviving reference is required, not merely the absence of a broken one.
+func TestFigures_RepairWithholdsAFigureTheProseNeverReferenced(t *testing.T) {
+	ins := models.Insight{
+		ID: "11111111-2222-3333-4444-555555555555",
+		// Repaired from 12. The model typed the number rather than referencing f1.
+		Description: "302 sub-categories are loss-making.",
+		Figures:     []models.Figure{{ID: "f1", Value: 12, Unit: models.UnitCount}},
+		FigureVerdicts: []models.FigureVerdict{
+			{ID: "f1", Status: models.FigureHolds, Claimed: 12, Evaluated: 12},
+		},
+		FigureTemplate: &models.FigureTemplate{
+			Description: "12 sub-categories are loss-making.",
+		},
+		Repair: &models.InsightRepair{Rounds: 1, Outcome: models.RepairRepaired},
+	}
+
+	if broken := figuresBrokenByRepair(ins); !broken["f1"] {
+		t.Errorf("withheld = %v, want f1 -- nothing in the prose references it, so nothing "+
+			"establishes the value survived the repair", broken)
+	}
+	if out := insightsForRecommenderPrompt([]models.Insight{ins}); len(out[0].Figures) != 0 {
+		t.Errorf("the prompt advertises %+v, want nothing", out[0].Figures)
+	}
+
+	recs := []models.Recommendation{{
+		Description: "Address the {{f1}} loss-making sub-categories.",
+		Figures: []models.Figure{{
+			ID: "f1", Unit: models.UnitCount, Kind: models.FigureRefKind,
+			Refs: []models.FigureRef{ref(ins.ID, "f1")},
+		}},
+	}}
+	attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	renderRecommendationFigures(recs)
+	if strings.Contains(recs[0].Description, "12") {
+		t.Errorf("the repaired-away number reached a second document: %q", recs[0].Description)
+	}
+}
+
+// TestFigures_SmallExcessSurvivesItsOwnArithmetic — r29 P2.
+//
+// a/b-1 rounds the quotient near 1 and then subtracts, which keeps the absolute error while
+// the result shrinks. For 50.0025 over 50 that gave 0.004999999999988 against a figure
+// stating 0.005 -- outside the interval "0.01%" claims, so a correct figure was refuted,
+// and the correction gate reads a gap that small as the same quantity and rewrites the
+// sentence to "0.00%". A right number becomes a wrong one with no model in the loop.
+//
+// (a-b)/b is the same value in exact arithmetic and stable here, because a-b is exact when
+// the two are close.
+func TestFigures_SmallExcessSurvivesItsOwnArithmetic(t *testing.T) {
+	rows := []map[string]any{
+		{"seg": "high", "spend": 50.0025},
+		{"seg": "low", "spend": 50.0},
+	}
+	f := models.Figure{
+		ID: "f1", Value: 0.005, Unit: models.UnitPercent, Decimals: 2,
+		Step: 1, Kind: models.FigureExcess,
+		Column: "spend", Row: "seg = 'high'", Other: "seg = 'low'",
+	}
+	v := oneVerdict(t, f, evidence(1, rows))
+	if v.Status != models.FigureHolds {
+		t.Fatalf("status = %q (%s), want holds -- the excess is 0.005%% and the figure states it",
+			v.Status, v.Reason)
+	}
+
+	// And nothing rewrites it, which is the half that puts a wrong number on the page.
+	insights := []models.Insight{{
+		Name: "spread", Figures: []models.Figure{f}, SourceSteps: []int{1},
+		FigureVerdicts: []models.FigureVerdict{v},
+	}}
+	if n := correctRefutedFigures("area", insights, stepIndex(1, rows)); n != 0 {
+		t.Errorf("%d corrections applied to a figure that holds: %+v", n, insights[0].FigureCorrections)
+	}
+}
+
+// TestFigureContract_ExcessDoesNotCaptureAnAbsoluteDifference — r29 P2.
+//
+// The first wording said `excess` was the kind "whenever your sentence says one thing
+// exceeds another by some amount", which also reads onto "spend is $3.50 higher" -- an
+// absolute difference, where `excess` evaluates 0.035 and refutes an accurate sentence.
+// That is the failure mode the contract's own doc comment names: a contract advertising an
+// operation the evaluator does not implement generates false refutations.
+func TestFigureContract_ExcessDoesNotCaptureAnAbsoluteDifference(t *testing.T) {
+	if !strings.Contains(figureContract, "as a share of") &&
+		!strings.Contains(figureContract, "proportion of") {
+		t.Error("the contract does not say an excess is a share of the other amount, so a " +
+			"sentence stating an absolute gap reads as an excess")
+	}
+	if !strings.Contains(figureContract, "own units") {
+		t.Error("the contract does not send a gap stated in the column's own units to `diff`")
+	}
+	if !strings.Contains(figureContract, "percentage points") {
+		t.Error("the contract does not name a percentage-point change, which is a `diff` on a " +
+			"percent column and the likeliest thing to be mistaken for an excess")
 	}
 }
 

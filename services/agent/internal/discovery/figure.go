@@ -176,9 +176,23 @@ func evalFigure(f models.Figure, rows []map[string]any) (float64, error) {
 		}
 		q := num / den
 		if f.Kind == models.FigureExcess {
+			// (a-b)/b rather than a/b-1, which is the same number in exact arithmetic and
+			// not in floating point.
+			//
+			// a/b-1 rounds the quotient first, near 1, and the subtraction then keeps that
+			// absolute error while the result shrinks -- so the relative error explodes for
+			// exactly the small excesses this kind is most often written for. 50.0025 over
+			// 50 gave 0.004999999999988 where the figure states 0.005, which lands outside
+			// the interval "0.01%" claims and refutes it; the correction gate then reads a
+			// gap that small as the same quantity and rewrites the prose to "0.00%". A
+			// correct figure becomes a wrong one, silently, with no model in the loop.
+			//
+			// (a-b)/b has no such step. When a and b are close -- which is when it matters
+			// -- a-b is EXACT in floating point, so the only rounding left is the division.
+			//
 			// Before the percent scaling, so an excess written as a percentage is
-			// 100*(a/b - 1) and not 100*a/b - 1.
-			q -= 1
+			// 100*(a-b)/b and not 100*a/b - 1.
+			q = (num - den) / den
 		}
 		if f.Unit == models.UnitPercent {
 			q *= 100
