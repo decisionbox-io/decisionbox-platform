@@ -22,11 +22,12 @@ var RecommendationFigureKinds = gomodels.RecommendationFigureKinds
 // Kinds, units, scales and verdict statuses, re-exported so callers in this service keep
 // one import.
 const (
-	FigureCell  = gomodels.FigureCell
-	FigureSum   = gomodels.FigureSum
-	FigureCount = gomodels.FigureCount
-	FigureRatio = gomodels.FigureRatio
-	FigureDiff  = gomodels.FigureDiff
+	FigureCell   = gomodels.FigureCell
+	FigureSum    = gomodels.FigureSum
+	FigureCount  = gomodels.FigureCount
+	FigureRatio  = gomodels.FigureRatio
+	FigureExcess = gomodels.FigureExcess
+	FigureDiff   = gomodels.FigureDiff
 
 	FigureRefKind = gomodels.FigureRefKind
 

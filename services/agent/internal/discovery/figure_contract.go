@@ -23,6 +23,13 @@ package discovery
 //     100 declares the correct 3.5% and is refuted by arithmetic that answers 103.5%. A
 //     contract that advertises an operation the evaluator does not implement is a false
 //     refutation generator, which is the one failure mode this whole layer exists to avoid.
+//   - the `excess` bullet, and its instruction to pick the kind from the sentence, is what
+//     that correction turned out to need. Telling the model `ratio` is the quotient worked
+//     -- it complied -- and the error simply moved from the declaration into the prose,
+//     which nothing checks: one run shipped a VOUCHED figure behind "spend only about
+//     109.6% more" where the excess is 9.6%, and refuted a second insight that had written
+//     its excess correctly. A word like "more" is in neither the figure nor the evaluator,
+//     so the fix has to be a kind the model declares rather than a reading of the text.
 //   - "never a word" is why a days unit no longer ships "180.1 days days".
 //   - decimals-as-precision is the whole check: the interval is half the last place Go
 //     printed, which separated "$6.645B" against its cell (true) from "100,000" against
@@ -65,8 +72,14 @@ const figureContract = "## Every number is data, not text\n\n" +
 	"- `ratio` — `column` in `row` over the same column in `other`; or, with no `other`, over " +
 	"the total of `column` across `scope`. The first form is one row against another — *4.8x " +
 	"the lowest band*; the second is a share of the whole column. Either way it is the " +
-	"quotient, **not the excess**: for 103.5 against 100 it is `103.5%`, and if you want to " +
-	"say *3.5% higher* then write that in the sentence and declare the two amounts.\n" +
+	"quotient, **not the excess**: for 103.5 against 100 it is `103.5%`.\n" +
+	"- `excess` — the same two operands, quotient **minus one**: how much more `row` is than " +
+	"`other`, as a share of `other`. For 103.5 against 100 it is `3.5%`.\n" +
+	"  **This is the kind whenever your sentence says one thing exceeds another *by* some " +
+	"amount** — *more*, *higher*, *above*, *lift*, *uplift*. *\"109.6% of the lowest band\"* is " +
+	"a `ratio`; *\"109.6% more than the lowest band\"* is a different number and a wrong " +
+	"sentence — as an `excess` the same two cells give `9.6%`. Pick the kind from what the " +
+	"sentence says, because that is the only thing that tells the two apart.\n" +
 	"- `diff` — `column` in `row` minus `column` in `other`. Both required.\n\n" +
 	"`row`, `other` and `scope` use the same grammar as `filter` above: `column <op> literal` " +
 	"terms joined by `AND`, op one of `= != < <= > >=`. Nothing richer is read, and anything " +

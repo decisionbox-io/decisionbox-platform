@@ -183,6 +183,23 @@ func percentScalings(f models.Figure, got float64) []float64 {
 	if f.Unit != models.UnitPercent {
 		return []float64{got}
 	}
+	// An excess has no such ambiguity, and offering it one puts a number in the verdict
+	// that no arithmetic over the rows produces.
+	//
+	// The ambiguity is about a COLUMN: a share column is stored either as a fraction or as
+	// a percentage, and the figure cannot see which. An excess is a quotient of two cells
+	// of one column, so the convention cancels, and evalFigure has already applied the only
+	// factor of a hundred there is. Left in, the readings of a true 9.59 included 958.78,
+	// which is the one nearest a figure stating 109.59 -- so the verdict on the falsehood
+	// this kind was added for reported a value from nowhere.
+	//
+	// `ratio` is dimensionless in the same way and is deliberately NOT changed here. Its
+	// readings are what three corpora of verdicts were measured against, and narrowing them
+	// moves settled behaviour rather than defining a new kind. Worth doing on its own
+	// evidence; not worth folding into this.
+	if f.Kind == models.FigureExcess {
+		return []float64{got}
+	}
 	return []float64{got, got * 100, got / 100}
 }
 

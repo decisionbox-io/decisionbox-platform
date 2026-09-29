@@ -1650,7 +1650,9 @@ func insightsForRecommenderPrompt(insights []models.Insight) []models.Insight {
 	for i := range out {
 		// Captured before the audit trail is cleared below, and read from the copy rather
 		// than from the source slice so there is only one indexed expression in the loop.
-		repaired := out[i].Repair != nil
+		// The template is one of the inputs, so this cannot move below the line that
+		// drops it.
+		broken := figuresBrokenByRepair(out[i])
 
 		out[i].DescriptionMd = ""
 		// The evidence trail is an audit record, not input to a recommendation, and
@@ -1677,17 +1679,29 @@ func insightsForRecommenderPrompt(insights []models.Insight) []models.Insight {
 		out[i].FigureCorrections = nil
 		out[i].FigureTemplate = nil
 
-		// And for a repaired insight, the figures go too.
+		// And the figures whose sentences repair rewrote go too.
 		//
-		// buildFigureRefIndex refuses every figure of a repaired insight, because repair
-		// edited the prose and the figure no longer matches a sentence a reader sees. But
-		// the contract tells the model to reference what it is shown, so leaving them here
-		// advertised ids that were guaranteed to resolve to nothing -- a model following
-		// the instruction exactly would ship "{{f1}}" in its prose. Withheld at both ends
-		// or neither; the number is still in the repaired prose for the model to read and
-		// state plainly, which is the pre-contract behaviour and the right fallback.
-		if repaired {
-			out[i].Figures = nil
+		// buildFigureRefIndex refuses those, because the figure no longer matches a
+		// sentence a reader sees. But the contract tells the model to reference what it is
+		// shown, so leaving them here advertises ids that are guaranteed to resolve to
+		// nothing -- a model following the instruction exactly ships "{{f1}}" in its
+		// prose. Withheld at both ends or neither, through the same predicate, which is
+		// the only way the two stay in step.
+		//
+		// This was a blanket rule -- any repair withdrew every figure of that insight --
+		// and the cost was measured: a run dropped one indicator carrying no figure at
+		// all and withdrew eight true, held figures with it, after which the model
+		// borrowed a wrong id and shipped an empty reference. The number still being in
+		// the prose is not the fallback it reads like; a model denied an id does not go
+		// back to typing, it finds another id.
+		if len(broken) > 0 {
+			kept := make([]models.Figure, 0, len(out[i].Figures))
+			for _, f := range out[i].Figures {
+				if !broken[f.ID] {
+					kept = append(kept, f)
+				}
+			}
+			out[i].Figures = kept
 		}
 	}
 	return out

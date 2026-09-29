@@ -135,6 +135,28 @@ const (
 	// FigureRatio — Column in Row's row, over the same column in Other's row when
 	// Other is given, and over the column total across Scope when it is not.
 	FigureRatio = "ratio"
+	// FigureExcess — how much more Column in Row's row is than the same column in
+	// Other's row, as a proportion of it: the quotient minus one, with the same
+	// denominator rules as FigureRatio.
+	//
+	// Added because `ratio` alone made one gap produce two opposite failures in the
+	// same run, and neither was catchable by anything that looks at the arithmetic.
+	// An insight declared a lifetime-spend lift as `ratio`, Go evaluated the quotient
+	// 109.59 and held it, and the sentence read "spend only about 109.6% more" where
+	// the excess is 9.6%: a vouched figure behind a false sentence. Another insight in
+	// the same run wrote its excess correctly -- "above the lowest by only 0.77%" --
+	// declared it as `ratio`, and was refuted for it. The contract had just been
+	// corrected to say `ratio` is the quotient and not the excess; the model complied,
+	// and the error moved out of the declaration and into the prose, where nothing
+	// checks it.
+	//
+	// So the gap is in the grammar, not in the model and not in the wording. The word
+	// "more" is in neither the figure nor the evaluator, and classifying it out of the
+	// surrounding text is the approach five measured rounds rejected: every attempt to
+	// decide what a numeral means by reading the words around it let a real case
+	// through. A kind the model can declare is the only form of this fix that Go can
+	// check.
+	FigureExcess = "excess"
 	// FigureDiff — Column in Row's row minus Column in Other's row.
 	FigureDiff = "diff"
 

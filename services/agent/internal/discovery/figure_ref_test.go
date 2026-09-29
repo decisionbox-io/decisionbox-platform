@@ -480,7 +480,8 @@ func TestInsightSchema_FigureEnumsMatchTheClosedSets(t *testing.T) {
 		t.Errorf("the schema offers a days unit; a unit is notation and a word is prose, which is why the code has no such unit: %s", unitDesc)
 	}
 
-	kinds := []string{models.FigureCell, models.FigureSum, models.FigureCount, models.FigureRatio, models.FigureDiff}
+	kinds := []string{models.FigureCell, models.FigureSum, models.FigureCount,
+		models.FigureRatio, models.FigureExcess, models.FigureDiff}
 	kindDesc := desc("kind")
 	for _, k := range kinds {
 		if !strings.Contains(kindDesc, `"`+k+`"`) {
@@ -515,6 +516,13 @@ func TestFigureContract_KeepsEveryRuleThatTracesToAMeasuredFailure(t *testing.T)
 		"Never type a number":          "the instruction the entire layer rests on",
 		"Years are the only exception": "requiring a declaration for a period makes the common case unwriteable",
 		"**full** rows":                "the check runs over more rows than the digest showed",
+		// The `excess` kind, and the instruction to pick it from what the sentence says.
+		// Naming the kinds is not enough: one run had the contract correctly stating that
+		// `ratio` is the quotient, the model complied, and the error moved into the prose
+		// as "109.6% more" behind a VOUCHED figure whose excess is 9.6%.
+		"- `excess`":                  "the kind has to be named or the model cannot declare it",
+		"quotient **minus one**":      "what `excess` computes, for a sentence saying one thing exceeds another",
+		"Pick the kind from what the": "which of the two a declaration means is only in the sentence",
 	}
 	for clause, why := range required {
 		if !strings.Contains(figureContract, clause) {

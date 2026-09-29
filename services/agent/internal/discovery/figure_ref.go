@@ -84,7 +84,7 @@ func buildFigureRefIndex(insights []models.Insight) figureRefIndex {
 		if ins.ID == "" || len(ins.Figures) == 0 {
 			continue
 		}
-		// An insight whose prose was repaired can no longer vouch for its figures.
+		// A figure whose sentence repair rewrote can no longer be referenced.
 		//
 		// Repair runs after the figures are rendered, and it edits text: it substitutes a
 		// refuted count or drops a sentence outright, and it touches no figure. So a
@@ -93,36 +93,11 @@ func buildFigureRefIndex(insights []models.Insight) figureRefIndex {
 		// adopts 12 and puts the corrected error back into a second document.
 		//
 		// The insight itself is fine: its prose says 302 and that is what a reader sees.
-		// What is broken is the figure's link to the sentence, which a text edit severed,
-		// and there is no way from here to tell which figures the edit reached. So the
-		// whole insight's figures become unreferenceable rather than guessed at. Repair is
-		// rare -- it runs only where a declared claim its own evidence contradicts -- and
-		// the cost is a recommendation typing a number instead of referencing one, which
-		// is the status quo. The cost of the alternative is a false number.
-		if ins.Repair != nil {
-			// found is false, and that is the whole point of this case.
-			//
-			// The first attempt at this withheld `vouched` but left `found` true, which
-			// withheld the verdict and handed over the number anyway: a figure still
-			// stating 12 behind a sentence repaired to 302 was filled into the
-			// recommendation and rendered as 12. Half a fix.
-			//
-			// The distinction it missed is between the two unvouched cases. A refuted
-			// figure Go declined to correct is still ON THE PAGE -- the correction gate
-			// leaves it visible in the insight -- so restating it matches what the reader
-			// sees. A repaired one is not: repair rewrote or removed that sentence, so
-			// the insight shows 302 and the figure's 12 exists nowhere a reader can see
-			// it. There is no number here to restate.
-			byID := make(map[string]refValue, len(ins.Figures))
-			for _, f := range ins.Figures {
-				if strings.TrimSpace(f.ID) == "" {
-					continue
-				}
-				byID[f.ID] = refValue{why: "the insight's prose was repaired after its figures were rendered, so the figure no longer matches any sentence a reader sees"}
-			}
-			ix[ins.ID] = byID
-			continue
-		}
+		// What is broken is the figure's link to the sentence, which a text edit severed.
+		// figuresBrokenByRepair says which figures that is, by re-rendering the template
+		// and asking which fields no longer match -- see the file comment there, and the
+		// falsehood the earlier all-or-nothing rule cost.
+		broken := figuresBrokenByRepair(ins)
 		status := make(map[string]string, len(ins.FigureVerdicts))
 		for _, v := range ins.FigureVerdicts {
 			status[v.ID] = v.Status
@@ -135,6 +110,23 @@ func buildFigureRefIndex(insights []models.Insight) figureRefIndex {
 			}
 			if dup[f.ID] {
 				byID[f.ID] = refValue{why: "the insight declares that id more than once, so which figure it names is ambiguous"}
+				continue
+			}
+			// found stays false, and that is the whole point of this case.
+			//
+			// The first attempt at withholding a repaired insight's figures withheld
+			// `vouched` but left `found` true, which withheld the verdict and handed over
+			// the number anyway: a figure still stating 12 behind a sentence repaired to
+			// 302 was filled into the recommendation and rendered as 12. Half a fix.
+			//
+			// The distinction it missed is between the two unvouched cases. A refuted
+			// figure Go declined to correct is still ON THE PAGE -- the correction gate
+			// leaves it visible in the insight -- so restating it matches what the reader
+			// sees. One whose sentence repair rewrote is not: the insight shows 302 and
+			// the figure's 12 exists nowhere a reader can see it. There is no number here
+			// to restate.
+			if broken[f.ID] {
+				byID[f.ID] = refValue{why: "the sentence carrying it was repaired after the figures were rendered, so the figure no longer matches anything a reader sees"}
 				continue
 			}
 			// found stays false: there is no number here. The insight's own prose keeps the
@@ -172,6 +164,23 @@ func buildFigureRefIndex(insights []models.Insight) figureRefIndex {
 // the value comes back with vouched false, and the caller carries it while refusing to
 // call the figure checked.
 func (ix figureRefIndex) resolve(r models.FigureRef) (value float64, unit string, slack float64, vouched bool, why string, err error) {
+	// A reference has to name something before anything can be looked up, and saying so
+	// is the difference between reporting the recommendation's fault and reporting the
+	// insight's. One measured run emitted `refs: [{"figure": ""}]`, and the lookup that
+	// followed read as "insight 8ac98428 declares no figure" -- which blames a document
+	// that declares eight, for a reference that named none of them. The reader of a
+	// verdict inherits whichever of those it says.
+	//
+	// Checked against the same pattern the renderer resolves and the evaluator requires of
+	// a figure's own id, so the two halves of a reference are held to one grammar. Nothing
+	// here is recoverable: an id outside the grammar names no figure in any insight, and
+	// guessing which one was meant is how a number ends up attached to the wrong sentence.
+	if strings.TrimSpace(r.Insight) == "" {
+		return 0, "", 0, false, "", fmt.Errorf("this reference names no insight, so there is nothing to resolve it against")
+	}
+	if !figureIDPattern.MatchString(r.Figure) {
+		return 0, "", 0, false, "", fmt.Errorf("%q is not a figure id a reference can name; use a letter followed by letters, digits or underscores", r.Figure)
+	}
 	figures, ok := ix[r.Insight]
 	if !ok {
 		return 0, "", 0, false, "", fmt.Errorf("insight %s is not among the insights this recommendation was given", shortID(r.Insight))

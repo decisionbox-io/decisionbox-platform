@@ -80,11 +80,15 @@ func insightResponseSchema() map[string]interface{} {
 					"decimals": map[string]interface{}{"type": "integer", "description": "Decimal places to print; this is the precision being claimed"},
 					"approx":   map[string]interface{}{"type": "boolean", "description": "Print a tilde to mark the number as rounded"},
 					"step":     map[string]interface{}{"type": "integer", "description": "Exploration step whose rows produced the figure"},
-					"kind":     str(`One of "cell", "sum", "count", "ratio", "diff"`),
-					"column":   str("Column the arithmetic runs over"),
-					"row":      str("Terms selecting the single row a cell, a ratio numerator or a diff's left operand comes from"),
-					"other":    str("Terms selecting a diff's right operand or a ratio's denominator row"),
-					"scope":    str("Which rows a sum, a count or a ratio denominator covers"),
+					// "excess" is listed beside "ratio" with the difference spelled out,
+					// because the two read the same two cells and only the sentence tells
+					// them apart. A run offering ratio alone shipped a vouched figure
+					// behind "109.6% more" where the excess is 9.6%.
+					"kind":   str(`One of "cell", "sum", "count", "ratio", "excess", "diff". "ratio" is a/b and "excess" is a/b-1, so a sentence saying one thing is N% MORE than another is an excess`),
+					"column": str("Column the arithmetic runs over"),
+					"row":    str("Terms selecting the single row a cell, a ratio or excess numerator, or a diff's left operand comes from"),
+					"other":  str("Terms selecting a diff's right operand, or the denominator row of a ratio or an excess"),
+					"scope":  str("Which rows a sum, a count, or a ratio or excess denominator covers"),
 				},
 				"required": []string{"id", "value", "step", "kind"},
 			},

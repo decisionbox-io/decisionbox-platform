@@ -159,40 +159,27 @@ func evalFigure(f models.Figure, rows []map[string]any) (float64, error) {
 		}
 		return float64(len(scoped)), nil
 
-	case models.FigureRatio:
-		num, err := oneCell(rows, f.Column, f.Row, "row")
+	case models.FigureRatio, models.FigureExcess:
+		// Two kinds, one pair of operands. `ratio` is the quotient and `excess` is the
+		// quotient minus one, and separating them is the whole reason `excess` exists:
+		// the two answer different sentences -- "109.6% OF the lowest band" and "109.6%
+		// MORE than it" -- and the only thing distinguishing them in the prose is a word
+		// the evaluator cannot read. A run that offered only `ratio` shipped a vouched
+		// figure behind "109.6% more" where the excess is 9.6%, and refuted a second
+		// insight that wrote its excess correctly. See models.FigureExcess.
+		num, den, err := ratioOperands(f, rows)
 		if err != nil {
 			return 0, err
 		}
-		// The denominator is another cell when `other` names one, and the column total
-		// over `scope` otherwise.
-		//
-		// Cell-over-cell was missing from the first version, and its absence did not
-		// merely cost coverage. Every spread, multiple and percentage change in a
-		// document is a ratio of two cells -- "4.8x more often", "within 5% of each
-		// other" -- and with no way to declare one the model declared the nearest kind
-		// it had, a share of the column total. That reads as a different quantity and is
-		// refuted, so the figure was reported false when only the declaration was. The
-		// lesson QuantifierAll was added for: a missing kind is not a gap in coverage,
-		// it is a false positive waiting for the model to approximate it.
-		var den float64
-		if strings.TrimSpace(f.Other) != "" {
-			if den, err = oneCell(rows, f.Column, f.Other, "other"); err != nil {
-				return 0, err
-			}
-		} else {
-			scoped, serr := scopeFigureRows(rows, f.Scope)
-			if serr != nil {
-				return 0, serr
-			}
-			if den, err = columnTotal(scoped, f.Column); err != nil {
-				return 0, err
-			}
-		}
 		if den == 0 {
-			return 0, fmt.Errorf("the denominator of this ratio is zero, so it is undefined")
+			return 0, fmt.Errorf("the denominator of this %s is zero, so it is undefined", f.Kind)
 		}
 		q := num / den
+		if f.Kind == models.FigureExcess {
+			// Before the percent scaling, so an excess written as a percentage is
+			// 100*(a/b - 1) and not 100*a/b - 1.
+			q -= 1
+		}
 		if f.Unit == models.UnitPercent {
 			q *= 100
 		}
@@ -218,8 +205,40 @@ func evalFigure(f models.Figure, rows []map[string]any) (float64, error) {
 	case "":
 		return 0, fmt.Errorf("the figure names no kind")
 	default:
-		return 0, fmt.Errorf("kind %q is not one of cell, sum, count, ratio, diff", f.Kind)
+		return 0, fmt.Errorf("kind %q is not one of cell, sum, count, ratio, excess, diff", f.Kind)
 	}
+}
+
+// ratioOperands resolves the numerator and denominator a `ratio` or an `excess` declares.
+//
+// The numerator is one cell. The denominator is another cell when `other` names one, and
+// the column total over `scope` otherwise.
+//
+// Cell-over-cell was missing from the first version, and its absence did not merely cost
+// coverage. Every spread, multiple and percentage change in a document is a ratio of two
+// cells -- "4.8x more often", "within 5% of each other" -- and with no way to declare one
+// the model declared the nearest kind it had, a share of the column total. That reads as a
+// different quantity and is refuted, so the figure was reported false when only the
+// declaration was. The lesson QuantifierAll was added for: a missing kind is not a gap in
+// coverage, it is a false positive waiting for the model to approximate it.
+func ratioOperands(f models.Figure, rows []map[string]any) (num, den float64, err error) {
+	if num, err = oneCell(rows, f.Column, f.Row, "row"); err != nil {
+		return 0, 0, err
+	}
+	if strings.TrimSpace(f.Other) != "" {
+		if den, err = oneCell(rows, f.Column, f.Other, "other"); err != nil {
+			return 0, 0, err
+		}
+		return num, den, nil
+	}
+	scoped, err := scopeFigureRows(rows, f.Scope)
+	if err != nil {
+		return 0, 0, err
+	}
+	if den, err = columnTotal(scoped, f.Column); err != nil {
+		return 0, 0, err
+	}
+	return num, den, nil
 }
 
 // oneCell resolves a single-row selector to one numeric cell.
@@ -296,14 +315,14 @@ func scopeFigureRows(rows []map[string]any, scope string) ([]map[string]any, err
 // aggregatesAcrossRows reports whether a figure's arithmetic folds the result set rather
 // than reading named rows out of it.
 //
-// A ratio is in both camps depending on how it was declared: with `other` it is one row
-// against another, and without it the denominator is the column total over scope, which is
-// a fold.
+// A ratio and an excess are in both camps depending on how they were declared: with
+// `other` it is one row against another, and without it the denominator is the column
+// total over scope, which is a fold.
 func aggregatesAcrossRows(f models.Figure) bool {
 	switch f.Kind {
 	case models.FigureSum, models.FigureCount:
 		return true
-	case models.FigureRatio:
+	case models.FigureRatio, models.FigureExcess:
 		return strings.TrimSpace(f.Other) == ""
 	}
 	return false
