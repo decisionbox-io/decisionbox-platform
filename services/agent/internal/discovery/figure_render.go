@@ -145,53 +145,83 @@ func renderedValue(f models.Figure) float64 {
 	return printed * sc.div
 }
 
-// closeEnough compares what a figure PRINTS against an evaluated value, at the interval the
-// printing claims.
-func closeEnough(f models.Figure, got, evalSlack float64) bool {
-	if math.IsNaN(f.Value) || math.IsNaN(got) || math.IsInf(f.Value, 0) || math.IsInf(got, 0) {
-		return false
-	}
+// figureAgreement is what the comparison is able to establish, which is three answers and
+// not two.
+//
+// Two was the mistake that took six review rounds to surface. `holds` or `fails` forces the
+// arithmetic's own uncertainty to be folded into one of them: fold it into the interval and
+// a figure is certified whenever the two merely OVERLAP -- a total of 0.25 known to within
+// 0.4 certified a claim of 1, because [-0.15, 0.65] reaches into [0.5, 1.5]. Leave it out
+// and a figure equal to its evidence is refuted for a gap of 1e-14. Neither is a tolerance
+// problem; both are what happens when an uncertain measurement is forced to a verdict.
+type figureAgreement int
+
+const (
+	// figureAgrees -- every value the arithmetic could have produced is inside the interval
+	// the figure printed. Agreement is established.
+	figureAgrees figureAgreement = iota
+	// figureDisagrees -- none of them is. Disagreement is established, wherever inside its
+	// uncertainty the true answer sits.
+	figureDisagrees
+	// figureUnresolved -- some are and some are not, so the arithmetic cannot settle this
+	// figure at the precision it claims. Never a verdict.
+	figureUnresolved
+)
+
+// compareFigure asks what the evidence establishes about one figure.
+//
+// evalSlack is the bound evalFigure derived on its own arithmetic, so [got-evalSlack,
+// got+evalSlack] is where the true answer lies. The figure claims [rendered-claim,
+// rendered+claim], where claim is half the last place it printed, widened by the cost of
+// printing and reading it back.
+//
+// Containment, not overlap. That is the whole of it, and it replaces every tuned constant
+// the previous rounds added: there is nothing left to size, because both intervals are
+// derived -- one from the precision the figure chose, one from the arithmetic it declared.
+func compareFigure(f models.Figure, got, evalSlack float64) figureAgreement {
 	rendered := renderedValue(f)
-	// The comparison has to tolerate its own floating point. 12.375 printed to two places
-	// renders 12.38, and subtracting the evidence 12.375 from it gives
-	// 0.005000000000000782 -- past a slack of exactly 0.005, so a figure equal to its
-	// evidence was refuted, and the correction pass could not rescue it because assigning
-	// the evaluated value renders the same text. A reference to it then inherited an
-	// unvouched figure.
-	//
-	// The allowance is the two places the comparison can lose precision, added because they
-	// compound: reading the printed figure back, and computing the evidence.
-	//
-	// It took four review rounds to get here, and the wrong turn was the same every time: a
-	// single expression in the RESULT's own magnitude, raised whenever a case came in just
-	// outside it. 1e-12 relative was short for the excess of 137.00685 over 137; capping it
-	// at a hundredth of the interval broke a cell of 100000000.0000045 written to six
-	// decimals; adding a hardware floor was still short for the excess of 100.0000015 over
-	// 100. Each constant was too small by a factor of a few, which is the signature of a
-	// wrong model rather than a wrong number -- the error a figure carries is set by the
-	// operands that went into it, and an excess divides a small difference by a large
-	// denominator, so it inherits error from numbers orders of magnitude bigger than the
-	// answer. Nothing computed from the answer can see that.
-	//
-	// So evalFigure derives it where the operands are and passes it in. evalSlack is a bound,
-	// not an estimate, and it is zero for a cell and a count -- which are read rather than
-	// computed -- so those are held to exactly the interval they print, as before.
-	//
-	// floatSpacing covers the other half: renderedValue prints the figure and parses it back,
-	// which costs about half the gap between representable values at that magnitude. A cell
-	// of 100000000.0000045 at six decimals prints "100000000.000005" and parses back 5.0664e-7
-	// away from the number it came from, against an interval of 5e-7 -- so a figure exactly
-	// equal to its evidence was refuted. Six decimals at 1e8 is sixteen significant digits,
-	// past what a float64 holds; the figure asks for precision the machine does not have, and
-	// allowing it is the honest answer.
-	//
-	// Neither term is capped, and neither needs to be: both are bounds on real error rather
-	// than chosen tolerances. At 1e12 written to whole units -- where float64 is exact, since
-	// it holds every integer to 9e15 -- a cell's evalSlack is zero and the spacing term is
-	// 8e-4, so the half-unit interval still refuses evidence a whole unit away.
-	m := math.Max(math.Abs(rendered), math.Abs(got))
-	slop := 4*floatSpacing(m) + math.Abs(evalSlack)
-	return math.Abs(rendered-got) <= figureSlack(f)+slop
+	if math.IsNaN(rendered) || math.IsNaN(got) || math.IsNaN(evalSlack) ||
+		math.IsInf(rendered, 0) || math.IsInf(got, 0) || math.IsInf(evalSlack, 0) {
+		// Nothing is established by arithmetic that produced no number. Unresolved rather
+		// than disagreeing, because reporting the evaluator's own limit as the document's
+		// error is the failure this layer exists to avoid.
+		return figureUnresolved
+	}
+	claim := figureSlack(f) + printingSlack(rendered, got)
+	gap := math.Abs(rendered - got)
+	evalSlack = math.Abs(evalSlack)
+	switch {
+	case gap+evalSlack <= claim:
+		return figureAgrees
+	case gap-evalSlack > claim:
+		return figureDisagrees
+	default:
+		return figureUnresolved
+	}
+}
+
+// printingSlack is what the figure's own interval must be widened by to account for having
+// been printed and read back.
+//
+// renderedValue formats the value and parses the result, which costs about half the gap
+// between representable float64 values at that magnitude. An unscaled cell of
+// 100000000.0000045 written to six decimals prints "100000000.000005" and reads back
+// 5.0664e-7 from the number it came from, against an interval of 5e-7 -- so a figure exactly
+// equal to its evidence missed by the cost of printing it. Six decimals at 1e8 is sixteen
+// significant digits, past what a float64 holds; the figure is asking for precision the
+// machine does not have, and allowing it is the honest answer.
+//
+// Part of the figure's interval rather than the arithmetic's uncertainty, because that is
+// where it comes from: it is doubt about what the figure claims, not about what the evidence
+// is.
+func printingSlack(rendered, got float64) float64 {
+	return 4 * floatSpacing(math.Max(math.Abs(rendered), math.Abs(got)))
+}
+
+// closeEnough reports whether agreement is established, which is the common question and
+// the only one the render path asks.
+func closeEnough(f models.Figure, got, evalSlack float64) bool {
+	return compareFigure(f, got, evalSlack) == figureAgrees
 }
 
 // floatSpacing is the gap between representable float64 values next to m -- one unit in the

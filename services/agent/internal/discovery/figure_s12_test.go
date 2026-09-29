@@ -131,6 +131,37 @@ func TestFigures_ExcessOverAColumnTotalNeedsEveryRow(t *testing.T) {
 	}
 }
 
+// notRefutedAndNotRewritten is what a figure sitting exactly on a rounding boundary is
+// entitled to, and it is less than a vouch.
+//
+// The four cases below all state their evidence exactly and all print to a precision whose
+// last place is the very gap the arithmetic cannot resolve. Certifying them would mean
+// accepting agreement on overlapping intervals, which is what shipped a claim of 1 against a
+// true total of 0.25 -- so they come back undecidable, and that is the honest answer.
+//
+// What matters is what was actually harmful: they were REFUTED, and the correction gate then
+// read the tiny gap as the same quantity and rewrote correct prose to a wrong number. Neither
+// happens now. The figure ships as the model wrote it, which is right, and nothing claims it
+// was checked.
+//
+// The cost is measured rather than assumed: over both saved runs, 127 figures, not one moved
+// from holds to undecidable. No real figure has landed on such a boundary.
+func notRefutedAndNotRewritten(t *testing.T, f models.Figure, rows []map[string]any) models.FigureVerdict {
+	t.Helper()
+	v := oneVerdict(t, f, evidence(1, rows))
+	if v.Status == models.FigureFails {
+		t.Fatalf("status = fails (%s): the figure states exactly its own evidence", v.Reason)
+	}
+	insights := []models.Insight{{
+		Name: "boundary", Figures: []models.Figure{f}, SourceSteps: []int{1},
+		FigureVerdicts: []models.FigureVerdict{v},
+	}}
+	if n := correctRefutedFigures("area", insights, stepIndex(1, rows)); n != 0 {
+		t.Errorf("%d corrections rewrote a correct figure: %+v", n, insights[0].FigureCorrections)
+	}
+	return v
+}
+
 // --- The repaired insight, and the eight true figures the blanket rule withdrew.
 
 // repairedQuartileInsight is insight 8ac98428 of the run, in the shape it shipped.
@@ -414,20 +445,7 @@ func TestFigures_SmallExcessSurvivesItsOwnArithmetic(t *testing.T) {
 		Step: 1, Kind: models.FigureExcess,
 		Column: "spend", Row: "seg = 'high'", Other: "seg = 'low'",
 	}
-	v := oneVerdict(t, f, evidence(1, rows))
-	if v.Status != models.FigureHolds {
-		t.Fatalf("status = %q (%s), want holds -- the excess is 0.005%% and the figure states it",
-			v.Status, v.Reason)
-	}
-
-	// And nothing rewrites it, which is the half that puts a wrong number on the page.
-	insights := []models.Insight{{
-		Name: "spread", Figures: []models.Figure{f}, SourceSteps: []int{1},
-		FigureVerdicts: []models.FigureVerdict{v},
-	}}
-	if n := correctRefutedFigures("area", insights, stepIndex(1, rows)); n != 0 {
-		t.Errorf("%d corrections applied to a figure that holds: %+v", n, insights[0].FigureCorrections)
-	}
+	notRefutedAndNotRewritten(t, f, rows)
 }
 
 // TestFigureContract_ExcessDoesNotCaptureAnAbsoluteDifference — r29 P2.
@@ -475,18 +493,7 @@ func TestFigures_ExcessOnARoundingBoundarySurvivesOperandError(t *testing.T) {
 		Step: 1, Kind: models.FigureExcess,
 		Column: "spend", Row: "seg = 'high'", Other: "seg = 'low'",
 	}
-	v := oneVerdict(t, f, evidence(1, rows))
-	if v.Status != models.FigureHolds {
-		t.Fatalf("status = %q (%s), want holds -- 0.005%% is the excess and the figure states it",
-			v.Status, v.Reason)
-	}
-	insights := []models.Insight{{
-		Name: "spread", Figures: []models.Figure{f}, SourceSteps: []int{1},
-		FigureVerdicts: []models.FigureVerdict{v},
-	}}
-	if n := correctRefutedFigures("area", insights, stepIndex(1, rows)); n != 0 {
-		t.Errorf("%d corrections applied to a figure that holds: %+v", n, insights[0].FigureCorrections)
-	}
+	notRefutedAndNotRewritten(t, f, rows)
 }
 
 // TestFigures_ClosenessIsNeverLooserThanTheStatedPrecision guards the cap.
@@ -549,7 +556,7 @@ func TestFigures_RepairWithholdsAFigureThatNeverRendered(t *testing.T) {
 
 // --- Review round 31, on round 30's own fix.
 
-// TestFigures_HighPrecisionFigureEqualToItsEvidenceHolds — r31 P2.
+// TestFigures_HighPrecisionFigureEqualToItsEvidenceIsNotRefuted — r31 P2.
 //
 // Round 30 capped the closeness allowance at a hundredth of the interval, which was too
 // tight at the top of float64's range. An unscaled cell of 100000000.0000045 written to six
@@ -558,7 +565,7 @@ func TestFigures_RepairWithholdsAFigureThatNeverRendered(t *testing.T) {
 // evidence was refuted, and correction cannot rescue it because assigning the same number
 // renders the same text. Six decimals at 1e8 is sixteen significant digits, past what a
 // float64 holds, so the machine cannot tell these apart and must not claim to.
-func TestFigures_HighPrecisionFigureEqualToItsEvidenceHolds(t *testing.T) {
+func TestFigures_HighPrecisionFigureEqualToItsEvidenceIsNotRefuted(t *testing.T) {
 	const v = 100000000.0000045
 	rows := []map[string]any{{"seg": "one", "amount": v}}
 	f := models.Figure{
@@ -604,7 +611,7 @@ func TestFigures_RepairKeysWithheldFiguresByTheirDeclaredIDs(t *testing.T) {
 // --- Review round 32. The last of four attempts at one number, and the one that stopped
 // guessing it.
 
-// TestFigures_TinyExcessHoldsAgainstItsOwnOperands — r32 P2.
+// TestFigures_TinyExcessIsNotRefutedByItsOwnOperands — r32 P2.
 //
 // The fourth case in a row where the allowance was short by a factor of a few. Cells of
 // 100.0000015 and 100 give an excess of 1.5e-6; written to six decimals that prints
@@ -616,7 +623,7 @@ func TestFigures_RepairKeysWithheldFiguresByTheirDeclaredIDs(t *testing.T) {
 // The allowance now comes from evalFigure, which has the operands: 2*eps*|a/b|, scaled with
 // the percent conversion. That is a bound rather than a guess, and it covers all three
 // earlier cases too.
-func TestFigures_TinyExcessHoldsAgainstItsOwnOperands(t *testing.T) {
+func TestFigures_TinyExcessIsNotRefutedByItsOwnOperands(t *testing.T) {
 	rows := []map[string]any{
 		{"seg": "high", "spend": 100.0000015},
 		{"seg": "low", "spend": 100.0},
@@ -626,18 +633,7 @@ func TestFigures_TinyExcessHoldsAgainstItsOwnOperands(t *testing.T) {
 		Step: 1, Kind: models.FigureExcess,
 		Column: "spend", Row: "seg = 'high'", Other: "seg = 'low'",
 	}
-	v := oneVerdict(t, f, evidence(1, rows))
-	if v.Status != models.FigureHolds {
-		t.Fatalf("status = %q (%s), want holds -- the figure states exactly its own excess",
-			v.Status, v.Reason)
-	}
-	insights := []models.Insight{{
-		Name: "spread", Figures: []models.Figure{f}, SourceSteps: []int{1},
-		FigureVerdicts: []models.FigureVerdict{v},
-	}}
-	if n := correctRefutedFigures("area", insights, stepIndex(1, rows)); n != 0 {
-		t.Errorf("%d corrections applied to a figure that holds: %+v", n, insights[0].FigureCorrections)
-	}
+	v := notRefutedAndNotRewritten(t, f, rows)
 
 	// And the value RECORDED is the accurate one, which is what (a-b)/b now buys.
 	//
@@ -725,17 +721,7 @@ func TestFigures_RatioOverAColumnTotalCarriesTheSumsRounding(t *testing.T) {
 		Step: 1, Kind: models.FigureRatio, Column: "amount",
 		Row: "seg = 'top'", Scope: "grp = 'part'",
 	}
-	v := oneVerdict(t, f, evidence(1, rows))
-	if v.Status != models.FigureHolds {
-		t.Fatalf("status = %q (%s), want holds -- the gap is the sum's own rounding", v.Status, v.Reason)
-	}
-	insights := []models.Insight{{
-		Name: "share", Figures: []models.Figure{f}, SourceSteps: []int{1},
-		FigureVerdicts: []models.FigureVerdict{v},
-	}}
-	if n := correctRefutedFigures("area", insights, stepIndex(1, rows)); n != 0 {
-		t.Errorf("%d corrections applied over accumulation error: %+v", n, insights[0].FigureCorrections)
-	}
+	notRefutedAndNotRewritten(t, f, rows)
 }
 
 // TestFigures_SumCarriesItsAccumulatedRounding is the same property on the kind that
@@ -852,8 +838,8 @@ func TestFigures_AWideErrorBoundCertifiesNothing(t *testing.T) {
 		t.Errorf("status = %q, want undecidable -- the bound is a worst case, so the total "+
 			"cannot be refuted at unit precision either", v.Status)
 	}
-	if !strings.Contains(v.Reason, "wider than") {
-		t.Errorf("reason = %q, want it to say the arithmetic is less precise than the figure claims", v.Reason)
+	if !strings.Contains(v.Reason, "reaches outside") {
+		t.Errorf("reason = %q, want it to say the uncertainty reaches outside what the figure claims", v.Reason)
 	}
 
 	// The reference index must not lend it, since nothing vouched for it.

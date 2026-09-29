@@ -141,40 +141,36 @@ func evaluateFigure(f models.Figure, steps map[int]StepRows) models.FigureVerdic
 		// The error bound scales with the reading, because it is an absolute bound on the
 		// same quantity.
 		candidate, candidateSlack := got*factor, slack*factor
-		if closeEnough(f, candidate, candidateSlack) {
-			// Agreement inside an uncertainty WIDER than the figure's own precision
-			// establishes nothing, and vouching for it is a false certification rather than
-			// a false refutation -- which is worse, because it ships as `holds` and every
-			// reference to it inherits the certification.
-			//
-			// A thousand rows alternating 1e10 and -1e10 total exactly zero, and the
-			// worst-case bound on adding a thousand numbers that large is about 1.11. A
-			// figure claiming 1 to whole units then sits inside the uncertainty and was
-			// certified, where the true total refutes it. The bound is not wrong -- it is a
-			// worst case, and this column happens to cancel exactly -- but a bound that
-			// exceeds the interval the figure printed means the arithmetic cannot resolve
-			// what the figure claims, whichever way the answer fell.
-			//
-			// So the same rule this layer applies everywhere else: what the evaluator cannot
-			// settle is undecidable, never a verdict. Disagreement is still reported, because
-			// a figure outside even the widened interval is refuted no matter where in that
-			// interval the truth sits -- only agreement needs the arithmetic to be precise
-			// enough to mean something.
-			if candidateSlack > figureSlack(f) {
-				if unresolvable == "" {
-					v.Evaluated = candidate
-					unresolvable = fmt.Sprintf(
-						"%s over step %d can only be computed to within %s, which is wider than the %s this figure's precision claims, so nothing here can establish it either way",
-						f.Kind, f.Step, formatFigure(candidateSlack), formatFigure(figureSlack(f)))
-				}
-				continue
-			}
+		switch compareFigure(f, candidate, candidateSlack) {
+		case figureAgrees:
 			v.Evaluated = candidate
 			v.Status = models.FigureHolds
 			return v
-		}
-		if gap := relativeDistance(f.Value, candidate); gap < bestGap {
-			best, bestGap = candidate, gap
+
+		case figureUnresolved:
+			// The arithmetic's uncertainty straddles the edge of what the figure claims, so
+			// some answers it could have produced agree and some do not. Nothing is
+			// established, and certifying it would be a false `holds` -- worse than a false
+			// refutation, because it ships as checked and every reference inherits that.
+			//
+			// Both halves of this were shipped. A total of exactly zero over a thousand
+			// alternating 1e10 rows carries a worst-case bound of 1.11, which certified a
+			// claim of 1; and 600 of those rows followed by 0.25 gives a true total of 0.25
+			// with a bound of 0.40, which certified a claim of 1 because [-0.15, 0.65]
+			// reaches into [0.5, 1.5]. The bound is not wrong in either -- it is a worst
+			// case, and those columns happen to cancel -- but overlap is not agreement.
+			if unresolvable == "" {
+				v.Evaluated = candidate
+				unresolvable = fmt.Sprintf(
+					"%s over step %d comes to %s give or take %s, which reaches outside the %s this figure's precision claims, so nothing here can settle it either way",
+					f.Kind, f.Step, formatFigure(candidate), formatFigure(candidateSlack),
+					formatFigure(figureSlack(f)))
+			}
+
+		case figureDisagrees:
+			if gap := relativeDistance(f.Value, candidate); gap < bestGap {
+				best, bestGap = candidate, gap
+			}
 		}
 	}
 	// Reported only once every reading has been tried, so a percentage that settles cleanly
