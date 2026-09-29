@@ -106,6 +106,16 @@ func evaluateFigure(f models.Figure, steps map[int]StepRows) models.FigureVerdic
 	if math.IsNaN(got) || math.IsInf(got, 0) {
 		return undecidable("%s over step %d has no finite answer", f.Kind, f.Step)
 	}
+	// And a bound that is not finite settles nothing. Two operands of 1e308 differ by zero,
+	// but their magnitudes overflow when added, and an infinite tolerance certifies every
+	// claim however wrong -- the mirror of a false refutation and worse, because it comes
+	// back as `holds`. The arithmetic below is ordered to stay finite; this is the guard for
+	// the case where the numbers are large enough that it cannot.
+	if math.IsNaN(slack) || math.IsInf(slack, 0) {
+		return undecidable(
+			"the numbers behind %s over step %d are too large to bound its rounding error, so nothing here can say how far it could be out",
+			f.Kind, f.Step)
+	}
 	// Evaluated is recorded in the figure's OWN terms, not the column's raw ones.
 	//
 	// A share is stored either as a fraction or as a percentage and the figure cannot see
@@ -169,16 +179,11 @@ func evalFigure(f models.Figure, rows []map[string]any) (value, slack float64, e
 		if err != nil {
 			return 0, 0, err
 		}
-		total, err := columnTotal(scoped, f.Column)
+		total, slack, err := columnTotal(scoped, f.Column)
 		if err != nil {
 			return 0, 0, err
 		}
-		// n roundings of a running total, each bounded by eps times the magnitudes summed.
-		abs, err := columnAbsTotal(scoped, f.Column)
-		if err != nil {
-			return 0, 0, err
-		}
-		return total, float64(len(scoped)) * floatEps * abs, nil
+		return total, slack, nil
 
 	case models.FigureCount:
 		scoped, err := scopeFigureRows(rows, f.Scope)
@@ -200,10 +205,10 @@ func evalFigure(f models.Figure, rows []map[string]any) (value, slack float64, e
 		if err != nil {
 			return 0, 0, err
 		}
-		if den == 0 {
+		if den.value == 0 {
 			return 0, 0, fmt.Errorf("the denominator of this %s is zero, so it is undefined", f.Kind)
 		}
-		q := num / den
+		q := num.value / den.value
 		if f.Kind == models.FigureExcess {
 			// (a-b)/b rather than a/b-1, which is the same number in exact arithmetic and
 			// not in floating point.
@@ -222,13 +227,18 @@ func evalFigure(f models.Figure, rows []map[string]any) (value, slack float64, e
 			//
 			// Before the percent scaling, so an excess written as a percentage is
 			// 100*(a-b)/b and not 100*a/b - 1.
-			q = (num - den) / den
+			q = (num.value - den.value) / den.value
 		}
-		// Both readings differentiate to the same bound: d/da = 1/b and d/db = -a/b^2, so
-		// the error is at most 2*eps*|a/b| either way. For a ratio that is proportional to
-		// the answer; for an excess it is not, and that difference is the whole reason this
-		// is computed here rather than from the result.
-		slack := 2 * floatEps * math.Abs(num/den)
+		// Both readings differentiate the same way -- d/da = 1/b and d/db = -a/b^2, since
+		// (a-b)/b is a/b minus a constant -- so each operand's own error passes through the
+		// same partials: |dq| <= (ea + |a/b|*eb) / |b|.
+		//
+		// Written from the operands' bounds rather than from |a/b| alone, because a
+		// denominator that is a column total carries the rounding of every addition in it,
+		// not just the error of one double. With two cells this reduces to 2*eps*|a/b|,
+		// which is what it was before review round 33.
+		quotient := math.Abs(num.value / den.value)
+		slack := (num.slack + quotient*den.slack) / math.Abs(den.value)
 		if f.Unit == models.UnitPercent {
 			q *= 100
 			slack *= 100
@@ -252,7 +262,12 @@ func evalFigure(f models.Figure, rows []map[string]any) (value, slack float64, e
 		}
 		// Two operands, each out by at most eps of its own magnitude. Proportional to the
 		// answer only when they are far apart, which is exactly when it does not matter.
-		return left - right, floatEps * (math.Abs(left) + math.Abs(right)), nil
+		//
+		// Each term scaled before they are added. Adding the magnitudes first overflows to
+		// infinity for two operands of 1e308 -- whose difference is zero -- and an infinite
+		// bound certifies every claim, however wrong. The order below stays finite; a bound
+		// that goes non-finite anyway is caught in evaluateFigure.
+		return left - right, floatEps*math.Abs(left) + floatEps*math.Abs(right), nil
 
 	case "":
 		return 0, 0, fmt.Errorf("the figure names no kind")
@@ -264,6 +279,24 @@ func evalFigure(f models.Figure, rows []map[string]any) (value, slack float64, e
 // floatEps is the relative error of one float64: half the gap between 1 and the next
 // representable value. eps*|x| bounds how far x sits from the decimal it was written as.
 const floatEps = 1.1102230246251565e-16
+
+// figureOperand is one number the arithmetic read, with a bound on how far it can be out.
+//
+// The bound travels with the value because the two cannot be recombined later. A cell is out
+// by at most the error of writing it as a double; a column total is out by the rounding every
+// addition accumulated, which on a hundred rows is two orders of magnitude more. A ratio over
+// a column total inherits the second, and review round 33 found the bound short by ninefold
+// for exactly that: a numerator of 1.23455 over a hundred cells of 0.1 evaluated to
+// 12.345500000000024, which refuted a figure printing "12.345%" and then rewrote it to
+// "12.346%" over accumulation error alone.
+type figureOperand struct {
+	value float64
+	slack float64
+}
+
+func cellOperand(v float64) figureOperand {
+	return figureOperand{value: v, slack: floatEps * math.Abs(v)}
+}
 
 // ratioOperands resolves the numerator and denominator a `ratio` or an `excess` declares.
 //
@@ -277,24 +310,28 @@ const floatEps = 1.1102230246251565e-16
 // different quantity and is refuted, so the figure was reported false when only the
 // declaration was. The lesson QuantifierAll was added for: a missing kind is not a gap in
 // coverage, it is a false positive waiting for the model to approximate it.
-func ratioOperands(f models.Figure, rows []map[string]any) (num, den float64, err error) {
-	if num, err = oneCell(rows, f.Column, f.Row, "row"); err != nil {
-		return 0, 0, err
+func ratioOperands(f models.Figure, rows []map[string]any) (num, den figureOperand, err error) {
+	n, err := oneCell(rows, f.Column, f.Row, "row")
+	if err != nil {
+		return num, den, err
 	}
+	num = cellOperand(n)
 	if strings.TrimSpace(f.Other) != "" {
-		if den, err = oneCell(rows, f.Column, f.Other, "other"); err != nil {
-			return 0, 0, err
+		o, err := oneCell(rows, f.Column, f.Other, "other")
+		if err != nil {
+			return num, den, err
 		}
-		return num, den, nil
+		return num, cellOperand(o), nil
 	}
 	scoped, err := scopeFigureRows(rows, f.Scope)
 	if err != nil {
-		return 0, 0, err
+		return num, den, err
 	}
-	if den, err = columnTotal(scoped, f.Column); err != nil {
-		return 0, 0, err
+	total, slack, err := columnTotal(scoped, f.Column)
+	if err != nil {
+		return num, den, err
 	}
-	return num, den, nil
+	return num, figureOperand{value: total, slack: slack}, nil
 }
 
 // oneCell resolves a single-row selector to one numeric cell.
@@ -336,48 +373,34 @@ func oneCell(rows []map[string]any, column, selector, field string) (float64, er
 	return n, nil
 }
 
-// columnTotal sums a column over the rows given. A row missing the column is an error
-// rather than a zero: a total silently short by one row reads as the model having
-// written the wrong number.
-func columnTotal(rows []map[string]any, column string) (float64, error) {
+// columnTotal sums a column over the rows given, and bounds the rounding the sum
+// accumulated. A row missing the column is an error rather than a zero: a total silently
+// short by one row reads as the model having written the wrong number.
+//
+// The bound is n times the sum of eps|x|, which is the standard bound for adding n numbers
+// one after another. Each term is scaled by eps as it is added rather than afterwards, so a
+// column of values near the top of the float64 range does not overflow to an infinite --
+// and therefore unlimited -- tolerance.
+func columnTotal(rows []map[string]any, column string) (total, slack float64, err error) {
 	if strings.TrimSpace(column) == "" {
-		return 0, fmt.Errorf("the figure names no column")
+		return 0, 0, fmt.Errorf("the figure names no column")
 	}
 	if len(rows) == 0 {
-		return 0, fmt.Errorf("the scope selects none of the step's rows")
+		return 0, 0, fmt.Errorf("the scope selects none of the step's rows")
 	}
-	total := 0.0
 	for i, r := range rows {
 		raw, present := r[column]
 		if !present {
-			return 0, fmt.Errorf("the step's rows do not carry a column %q", column)
+			return 0, 0, fmt.Errorf("the step's rows do not carry a column %q", column)
 		}
 		n, ok := asFloat(raw)
 		if !ok {
-			return 0, fmt.Errorf("column %q holds %v in row %d, which is not a number", column, raw, i+1)
+			return 0, 0, fmt.Errorf("column %q holds %v in row %d, which is not a number", column, raw, i+1)
 		}
 		total += n
+		slack += floatEps * math.Abs(n)
 	}
-	return total, nil
-}
-
-// columnAbsTotal sums the magnitudes of a column, which is what bounds the rounding error
-// a total accumulates. Separate from columnTotal because a total of mixed signs can be far
-// smaller than the numbers that made it, and it is those numbers the error scales with.
-func columnAbsTotal(rows []map[string]any, column string) (float64, error) {
-	total := 0.0
-	for i, r := range rows {
-		raw, present := r[column]
-		if !present {
-			return 0, fmt.Errorf("the step's rows do not carry a column %q", column)
-		}
-		n, ok := asFloat(raw)
-		if !ok {
-			return 0, fmt.Errorf("column %q holds %v in row %d, which is not a number", column, raw, i+1)
-		}
-		total += math.Abs(n)
-	}
-	return total, nil
+	return total, float64(len(rows)) * slack, nil
 }
 
 func scopeFigureRows(rows []map[string]any, scope string) ([]map[string]any, error) {

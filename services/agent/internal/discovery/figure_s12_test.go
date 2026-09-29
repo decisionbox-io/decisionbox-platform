@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -697,6 +698,121 @@ func TestFigures_SpacingStaysFiniteAtTheTopOfTheRange(t *testing.T) {
 	}
 	if floatSpacing(0) != 0 {
 		t.Error("floatSpacing(0) should be zero")
+	}
+}
+
+// --- Review round 33, on round 32's own bound.
+
+// TestFigures_RatioOverAColumnTotalCarriesTheSumsRounding — r33 P2.
+//
+// A ratio with no `other` divides by the column total, and a total of a hundred rows carries
+// the rounding of a hundred additions -- two orders of magnitude more than one double's own
+// error. Round 32's bound read only the two operands' representation error, so it was short
+// ninefold here: a numerator of 1.23455 over a hundred cells of 0.1 evaluates to
+// 12.345500000000024, which refuted a figure printing "12.345%" and then rewrote it to
+// "12.346%" over accumulation error alone.
+func TestFigures_RatioOverAColumnTotalCarriesTheSumsRounding(t *testing.T) {
+	rows := make([]map[string]any, 0, 101)
+	rows = append(rows, map[string]any{"seg": "top", "grp": "whole", "amount": 1.23455})
+	for i := 0; i < 100; i++ {
+		rows = append(rows, map[string]any{"seg": fmt.Sprintf("r%d", i), "grp": "part", "amount": 0.1})
+	}
+	// Numerator one cell, denominator the total of a hundred tenths -- which a float64 adds
+	// up to 9.999999999999998, not 10. So the ratio evaluates to 12.345500000000024 where
+	// the figure states 12.3455, and the whole gap is the sum's accumulated rounding.
+	f := models.Figure{
+		ID: "f1", Value: 12.3455, Unit: models.UnitPercent, Decimals: 3,
+		Step: 1, Kind: models.FigureRatio, Column: "amount",
+		Row: "seg = 'top'", Scope: "grp = 'part'",
+	}
+	v := oneVerdict(t, f, evidence(1, rows))
+	if v.Status != models.FigureHolds {
+		t.Fatalf("status = %q (%s), want holds -- the gap is the sum's own rounding", v.Status, v.Reason)
+	}
+	insights := []models.Insight{{
+		Name: "share", Figures: []models.Figure{f}, SourceSteps: []int{1},
+		FigureVerdicts: []models.FigureVerdict{v},
+	}}
+	if n := correctRefutedFigures("area", insights, stepIndex(1, rows)); n != 0 {
+		t.Errorf("%d corrections applied over accumulation error: %+v", n, insights[0].FigureCorrections)
+	}
+}
+
+// TestFigures_SumCarriesItsAccumulatedRounding is the same property on the kind that
+// accumulates it directly, rather than inheriting it through a denominator.
+func TestFigures_SumCarriesItsAccumulatedRounding(t *testing.T) {
+	rows := make([]map[string]any, 0, 100)
+	for i := 0; i < 100; i++ {
+		rows = append(rows, map[string]any{"amount": 0.1})
+	}
+	// A hundred tenths total 9.999999999999998, not 10.
+	f := models.Figure{
+		ID: "f1", Value: 10, Unit: models.UnitPlain, Decimals: 15,
+		Step: 1, Kind: models.FigureSum, Column: "amount",
+	}
+	if v := oneVerdict(t, f, evidence(1, rows)); v.Status != models.FigureHolds {
+		t.Errorf("status = %q (%s), want holds -- a total of a hundred tenths is 10 to any "+
+			"precision a float64 has", v.Status, v.Reason)
+	}
+}
+
+// TestFigures_AnErrorBoundThatOverflowsIsUndecidable — r33 P3.
+//
+// Two operands of 1e308 differ by zero, but adding their magnitudes overflows to infinity --
+// and an infinite tolerance certifies every claim however wrong. That is the mirror of a
+// false refutation and worse, because it comes back as `holds` and a reference to it inherits
+// the certification. The arithmetic is ordered to stay finite, and anything that gets past
+// that is undecidable, never a verdict.
+func TestFigures_AnErrorBoundThatOverflowsIsUndecidable(t *testing.T) {
+	// A diff of two enormous operands: finite inputs, finite answer, and a bound that must
+	// not become infinite.
+	rows := []map[string]any{
+		{"seg": "a", "amount": 1e308},
+		{"seg": "b", "amount": 1e308},
+	}
+	f := models.Figure{
+		ID: "f1", Value: 1e300, Unit: models.UnitPlain, Decimals: 0,
+		Step: 1, Kind: models.FigureDiff,
+		Column: "amount", Row: "seg = 'a'", Other: "seg = 'b'",
+	}
+	// Refuted, and decidedly so. Merely "not holds" would also be satisfied by undecidable,
+	// which is what an overflowing bound produces -- so this asserts the bound stayed finite
+	// and the figure was actually judged, not that the guard caught it.
+	if v := oneVerdict(t, f, evidence(1, rows)); v.Status != models.FigureFails {
+		t.Errorf("status = %q (%s), want fails: the difference is zero and the figure claims "+
+			"1e300, and the bound on two operands of 1e308 must stay finite", v.Status, v.Reason)
+	}
+
+	// And the case the guard is actually for: a finite answer with a bound that overflows.
+	//
+	// The denominator's magnitudes cancel, so a scope summing to 1e-5 carries rounding
+	// proportional to 1e300. The quotient is then large enough that multiplying the two
+	// overflows, while the quotient itself -- the answer -- is an ordinary 1e25.
+	cancelling := []map[string]any{
+		{"seg": "top", "grp": "whole", "amount": 1e20},
+		{"seg": "a", "grp": "part", "amount": 1e300},
+		{"seg": "b", "grp": "part", "amount": -1e300},
+		{"seg": "c", "grp": "part", "amount": 1e-5},
+	}
+	ratio := models.Figure{
+		ID: "f1", Value: 1e25, Unit: models.UnitPlain, Decimals: 0,
+		Step: 1, Kind: models.FigureRatio, Column: "amount",
+		Row: "seg = 'top'", Scope: "grp = 'part'",
+	}
+	if v := oneVerdict(t, ratio, evidence(1, cancelling)); v.Status != models.FigureUndecidable {
+		t.Errorf("status = %q, want undecidable: the answer is finite but nothing here can "+
+			"bound how far out it is, and an unlimited tolerance certifies anything", v.Status)
+	}
+
+	// A total that overflows outright was already undecidable on the answer alone; kept so a
+	// change to the bound cannot turn it into a verdict.
+	big := []map[string]any{{"amount": math.MaxFloat64}, {"amount": math.MaxFloat64}}
+	sum := models.Figure{
+		ID: "f1", Value: 1e300, Unit: models.UnitPlain, Decimals: 0,
+		Step: 1, Kind: models.FigureSum, Column: "amount",
+	}
+	if v := oneVerdict(t, sum, evidence(1, big)); v.Status != models.FigureUndecidable {
+		t.Errorf("status = %q, want undecidable for a total that overflows", v.Status)
 	}
 }
 
