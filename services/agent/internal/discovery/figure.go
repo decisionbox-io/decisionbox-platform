@@ -141,6 +141,19 @@ func evaluateFigure(f models.Figure, steps map[int]StepRows) models.FigureVerdic
 		// The error bound scales with the reading, because it is an absolute bound on the
 		// same quantity.
 		candidate, candidateSlack := got*factor, slack*factor
+		// A scaled reading that overflowed is not a reading, and it must not reach the
+		// verdict. A percentage evaluating to 1e307 overflows on the `got*100` reading;
+		// compareFigure calls that unresolved, but the assignment below had already stored
+		// +Inf in Evaluated, and if the finite readings then disagreed the verdict shipped
+		// carrying an infinity -- which cannot be marshalled, and takes the whole insights
+		// payload with it. The same failure round 24 fixed for the answer itself.
+		//
+		// The unscaled reading is always finite here, because got is checked above, so
+		// skipping the others never leaves the loop with nothing to compare.
+		if math.IsNaN(candidate) || math.IsInf(candidate, 0) ||
+			math.IsNaN(candidateSlack) || math.IsInf(candidateSlack, 0) {
+			continue
+		}
 		switch compareFigure(f, candidate, candidateSlack) {
 		case figureAgrees:
 			v.Evaluated = candidate
@@ -247,8 +260,16 @@ func evalFigure(f models.Figure, rows []map[string]any) (value, slack float64, e
 		if err != nil {
 			return 0, 0, err
 		}
-		if den.value == 0 {
-			return 0, 0, fmt.Errorf("the denominator of this %s is zero, so it is undefined", f.Kind)
+		// Zero is not the only undefined denominator. One whose own uncertainty reaches zero
+		// is just as undefined, because the quotient is then unbounded -- and the bound below
+		// cannot say so, since it scales with the quotient and a zero numerator collapses it
+		// to nothing. A denominator column of [1e9, 0.01, -1e9, -0.01] totals exactly zero
+		// but accumulates to -9.5e-9 with an uncertainty of 8.9e-7, and an excess with a zero
+		// numerator over that was certified as exactly -100%.
+		if math.Abs(den.value) <= den.slack {
+			return 0, 0, fmt.Errorf(
+				"the denominator of this %s cannot be told apart from zero (%s give or take %s), so the quotient is unbounded",
+				f.Kind, formatFigure(den.value), formatFigure(den.slack))
 		}
 		q := num.value / den.value
 		if f.Kind == models.FigureExcess {

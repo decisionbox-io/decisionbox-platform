@@ -1694,9 +1694,19 @@ func insightsForRecommenderPrompt(insights []models.Insight) []models.Insight {
 		// borrowed a wrong id and shipped an empty reference. The number still being in
 		// the prose is not the fallback it reads like; a model denied an id does not go
 		// back to typing, it finds another id.
-		if len(broken) > 0 {
-			kept := make([]models.Figure, 0, len(out[i].Figures))
-			for _, f := range out[i].Figures {
+		//
+		// And the same gate the renderer and the reference index use, on every insight
+		// rather than only a repaired one. A figure whose id the reference grammar cannot
+		// express -- `revenue-total` -- was advertised unchanged, and the contract tells the
+		// model to copy that id verbatim; reference resolution then refuses it, so a
+		// recommendation that followed the instruction exactly shipped "{{f1}}" instead of
+		// the value. Same for a duplicated id and a figure with no value: all three are
+		// unreferenceable, and advertising any of them breaks the rule this block exists to
+		// keep.
+		usable := usableFigures(out[i].Figures)
+		if len(broken) > 0 || len(usable) != len(out[i].Figures) {
+			kept := make([]models.Figure, 0, len(usable))
+			for _, f := range usable {
 				if !broken[f.ID] {
 					kept = append(kept, f)
 				}

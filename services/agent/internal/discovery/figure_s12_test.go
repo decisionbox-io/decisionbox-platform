@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
@@ -883,6 +884,103 @@ func TestFigures_DisagreementIsStillReportedWhenTheBoundIsWide(t *testing.T) {
 	if v := oneVerdict(t, f, evidence(1, rows)); v.Status != models.FigureFails {
 		t.Errorf("status = %q (%s), want fails -- 500 is wrong wherever inside the bound the "+
 			"true total sits", v.Status, v.Reason)
+	}
+}
+
+// --- Review round 36.
+
+// TestFigures_ADenominatorIndistinguishableFromZeroIsUndecidable — r36 P2.
+//
+// Exact zero was refused; a denominator whose own uncertainty reaches zero was not. A column
+// of [1e9, 0.01, -1e9, -0.01] totals exactly zero but accumulates to -9.5e-9 with an
+// uncertainty of 8.9e-7, so the division is undefined -- and the error bound could not say so,
+// because it scales with the quotient and a zero numerator collapses it to nothing. An excess
+// over that was certified as exactly -100%.
+func TestFigures_ADenominatorIndistinguishableFromZeroIsUndecidable(t *testing.T) {
+	rows := []map[string]any{
+		{"seg": "top", "grp": "whole", "amount": 0.0},
+		{"seg": "a", "grp": "part", "amount": 1e9},
+		{"seg": "b", "grp": "part", "amount": 0.01},
+		{"seg": "c", "grp": "part", "amount": -1e9},
+		{"seg": "d", "grp": "part", "amount": -0.01},
+	}
+	f := models.Figure{
+		ID: "f1", Value: -100, Unit: models.UnitPercent, Decimals: 0,
+		Step: 1, Kind: models.FigureExcess, Column: "amount",
+		Row: "seg = 'top'", Scope: "grp = 'part'",
+	}
+	v := oneVerdict(t, f, evidence(1, rows))
+	if v.Status != models.FigureUndecidable {
+		t.Fatalf("status = %q, want undecidable -- the denominator cannot be told from zero, so "+
+			"the quotient is unbounded", v.Status)
+	}
+	if !strings.Contains(v.Reason, "zero") {
+		t.Errorf("reason = %q, want it to name the denominator", v.Reason)
+	}
+	// An exact zero denominator is still refused, which is the case this subsumes.
+	exact := []map[string]any{
+		{"seg": "top", "grp": "whole", "amount": 5.0},
+		{"seg": "a", "grp": "part", "amount": 0.0},
+	}
+	if v := oneVerdict(t, f, evidence(1, exact)); v.Status != models.FigureUndecidable {
+		t.Errorf("status = %q, want undecidable for a denominator of exactly zero", v.Status)
+	}
+}
+
+// TestFigures_AnOverflowingPercentReadingNeverReachesTheVerdict — r36 P3.
+//
+// A percentage figure is compared against three readings of its evidence, because a share
+// column stores a fraction or a percentage and the figure cannot see which. For a value near
+// the top of the float64 range the `got*100` reading overflows, and the infinity was written
+// into Evaluated before the comparison rejected it -- so a verdict could ship carrying an
+// infinity, which cannot be marshalled and takes the whole insights payload with it. The same
+// failure round 24 fixed for the answer itself.
+func TestFigures_AnOverflowingPercentReadingNeverReachesTheVerdict(t *testing.T) {
+	rows := []map[string]any{{"seg": "one", "share": 1e307}}
+	f := models.Figure{
+		ID: "f1", Value: 1, Unit: models.UnitPercent, Decimals: 0,
+		Step: 1, Kind: models.FigureCell, Column: "share", Row: "seg = 'one'",
+	}
+	v := oneVerdict(t, f, evidence(1, rows))
+	if math.IsInf(v.Evaluated, 0) || math.IsNaN(v.Evaluated) {
+		t.Fatalf("evaluated = %v, which cannot be marshalled to JSON", v.Evaluated)
+	}
+	ins := []models.Insight{{Name: "n", Figures: []models.Figure{f}, FigureVerdicts: []models.FigureVerdict{v}}}
+	if _, err := json.Marshal(ins); err != nil {
+		t.Errorf("the verdict left the insight unmarshalable: %v", err)
+	}
+}
+
+// TestFigures_TheRecommenderIsOnlyShownFiguresItCanReference — r36 P2.
+//
+// The other half of "withheld at both ends or neither", on the path that has no repair. An id
+// the reference grammar cannot express was advertised unchanged, and the contract tells the
+// model to copy it verbatim -- so reference resolution refused it and a recommendation that
+// followed the instruction exactly shipped "{{f1}}" rather than the value. A duplicated id and
+// a figure with no readable value are unreferenceable for the same reason.
+func TestFigures_TheRecommenderIsOnlyShownFiguresItCanReference(t *testing.T) {
+	in := []models.Insight{{
+		ID: "11111111-2222-3333-4444-555555555555", Name: "mixed",
+		Figures: []models.Figure{
+			{ID: "revenue-total", Value: 10, Unit: models.UnitCount}, // outside the id grammar
+			{ID: "dup", Value: 20, Unit: models.UnitCount},
+			{ID: "dup", Value: 21, Unit: models.UnitCount},
+			{ID: "novalue", Unit: models.UnitCount, ValueMissing: true},
+			{ID: "f1", Value: 50004, Unit: models.UnitCount}, // the only referenceable one
+		},
+	}}
+	out := insightsForRecommenderPrompt(in)
+	if len(out[0].Figures) != 1 || out[0].Figures[0].ID != "f1" {
+		ids := make([]string, 0, len(out[0].Figures))
+		for _, f := range out[0].Figures {
+			ids = append(ids, f.ID)
+		}
+		t.Errorf("the prompt advertises %v, want f1 alone -- every other id is one reference "+
+			"resolution refuses", ids)
+	}
+	// The stored insight is untouched, because it is what gets persisted.
+	if len(in[0].Figures) != 5 {
+		t.Error("the stored insight's figures were mutated")
 	}
 }
 
