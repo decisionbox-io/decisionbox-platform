@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -461,8 +462,8 @@ func TestFigureContract_ExcessDoesNotCaptureAnAbsoluteDifference(t *testing.T) {
 // a figure printing "0.01%" is just past the half-hundredth it claims, so a figure equal
 // to its evidence is refuted and then rewritten to "0.00%".
 //
-// The allowance in closeEnough is capped at a hundredth of the interval, so raising it
-// cannot make the check looser than the precision the figure printed.
+// The allowance now comes from the evaluator, which derives it from the operands rather
+// than guessing it from the answer.
 func TestFigures_ExcessOnARoundingBoundarySurvivesOperandError(t *testing.T) {
 	rows := []map[string]any{
 		{"seg": "high", "spend": 137.00685},
@@ -497,10 +498,10 @@ func TestFigures_ClosenessIsNeverLooserThanTheStatedPrecision(t *testing.T) {
 	f := models.Figure{ID: "f1", Value: 1e12, Unit: models.UnitCount, Decimals: 0}
 	// A full unit out. The interval is half a unit, so this must not hold however the
 	// allowance is computed.
-	if closeEnough(f, 1e12+1) {
+	if closeEnough(f, 1e12+1, 0) {
 		t.Error("a figure written to whole units held against evidence a whole unit away")
 	}
-	if !closeEnough(f, 1e12) {
+	if !closeEnough(f, 1e12, 0) {
 		t.Error("a figure equal to its evidence did not hold")
 	}
 }
@@ -596,6 +597,106 @@ func TestFigures_RepairKeysWithheldFiguresByTheirDeclaredIDs(t *testing.T) {
 		if broken := figuresBrokenByRepair(ins); !broken[id] {
 			t.Errorf("id %q with no template: withheld = %v, want every figure", id, broken)
 		}
+	}
+}
+
+// --- Review round 32. The last of four attempts at one number, and the one that stopped
+// guessing it.
+
+// TestFigures_TinyExcessHoldsAgainstItsOwnOperands — r32 P2.
+//
+// The fourth case in a row where the allowance was short by a factor of a few. Cells of
+// 100.0000015 and 100 give an excess of 1.5e-6; written to six decimals that prints
+// "0.000002%" and claims 5e-7, and the evaluation lands 3.8e-16 past that. Every previous
+// allowance was computed from the ANSWER, and the answer here is eight orders of magnitude
+// smaller than the operands whose representation error it carries, so no expression in the
+// answer's magnitude could ever have covered it.
+//
+// The allowance now comes from evalFigure, which has the operands: 2*eps*|a/b|, scaled with
+// the percent conversion. That is a bound rather than a guess, and it covers all three
+// earlier cases too.
+func TestFigures_TinyExcessHoldsAgainstItsOwnOperands(t *testing.T) {
+	rows := []map[string]any{
+		{"seg": "high", "spend": 100.0000015},
+		{"seg": "low", "spend": 100.0},
+	}
+	f := models.Figure{
+		ID: "f1", Value: 0.0000015, Unit: models.UnitPercent, Decimals: 6,
+		Step: 1, Kind: models.FigureExcess,
+		Column: "spend", Row: "seg = 'high'", Other: "seg = 'low'",
+	}
+	v := oneVerdict(t, f, evidence(1, rows))
+	if v.Status != models.FigureHolds {
+		t.Fatalf("status = %q (%s), want holds -- the figure states exactly its own excess",
+			v.Status, v.Reason)
+	}
+	insights := []models.Insight{{
+		Name: "spread", Figures: []models.Figure{f}, SourceSteps: []int{1},
+		FigureVerdicts: []models.FigureVerdict{v},
+	}}
+	if n := correctRefutedFigures("area", insights, stepIndex(1, rows)); n != 0 {
+		t.Errorf("%d corrections applied to a figure that holds: %+v", n, insights[0].FigureCorrections)
+	}
+
+	// And the value RECORDED is the accurate one, which is what (a-b)/b now buys.
+	//
+	// The bound above is wide enough to absorb a/b-1's error too, so the verdict no longer
+	// depends on which form is used -- but Evaluated is stored, served, and read by the
+	// correction gate, so it should be the better number. (a-b)/b lands 3.8e-15 from the
+	// truth here and a/b-1 lands 9.1e-15, and float64 arithmetic is exact and repeatable, so
+	// a threshold between them is a stable test rather than a lucky one.
+	if err := math.Abs(v.Evaluated - 0.0000015); err > 5e-15 {
+		t.Errorf("evaluated = %.20g, off by %.3g -- want the numerically stable form, which "+
+			"lands within 4e-15 where a/b-1 lands at 9e-15", v.Evaluated, err)
+	}
+}
+
+// TestFigures_ReadFiguresAreHeldToExactlyTheirPrintedInterval.
+//
+// The counterpart to the case above, and the reason the allowance is per-kind rather than
+// global. A cell and a count are read, not computed, so their bound is zero and they are
+// held to exactly the interval they printed -- no looser than before any of this. A test
+// here because a later widening of the bound would silently loosen every figure in the
+// corpus, and that is the property the whole layer rests on.
+func TestFigures_ReadFiguresAreHeldToExactlyTheirPrintedInterval(t *testing.T) {
+	rows := []map[string]any{{"seg": "one", "amount": 100.006}}
+	// Two decimals claims +/-0.005, and the evidence is 0.006 away.
+	f := models.Figure{
+		ID: "f1", Value: 100.0, Unit: models.UnitPlain, Decimals: 2,
+		Step: 1, Kind: models.FigureCell, Column: "amount", Row: "seg = 'one'",
+	}
+	if v := oneVerdict(t, f, evidence(1, rows)); v.Status != models.FigureFails {
+		t.Errorf("status = %q, want fails -- a cell is read, so it gets no error allowance", v.Status)
+	}
+	// And the same figure exactly on its interval still holds.
+	rows[0]["amount"] = 100.005
+	if v := oneVerdict(t, f, evidence(1, rows)); v.Status != models.FigureHolds {
+		t.Errorf("status = %q, want holds -- the evidence is exactly on the interval", v.Status)
+	}
+}
+
+// TestFigures_SpacingStaysFiniteAtTheTopOfTheRange — r32 P3.
+//
+// floatSpacing measured upwards, and one place above MaxFloat64 is infinity -- so the
+// spacing was infinite, the allowance was infinite, and every comparison held. A figure
+// claiming zero was certified against evidence of MaxFloat64. The non-finite guards
+// elsewhere reject neither input, because both are finite numbers.
+func TestFigures_SpacingStaysFiniteAtTheTopOfTheRange(t *testing.T) {
+	if sp := floatSpacing(math.MaxFloat64); math.IsInf(sp, 0) || math.IsNaN(sp) || sp <= 0 {
+		t.Errorf("floatSpacing(MaxFloat64) = %v, want a finite positive width", sp)
+	}
+	f := models.Figure{ID: "f1", Value: 0, Unit: models.UnitCount, Decimals: 0}
+	if closeEnough(f, math.MaxFloat64, 0) {
+		t.Error("a figure claiming zero held against evidence of MaxFloat64")
+	}
+	// The ordinary case is unchanged: spacing grows with magnitude and stays positive.
+	for _, m := range []float64{1e-300, 1, 1e8, 1e12, 1e300} {
+		if sp := floatSpacing(m); sp <= 0 || math.IsInf(sp, 0) {
+			t.Errorf("floatSpacing(%g) = %v, want finite and positive", m, sp)
+		}
+	}
+	if floatSpacing(0) != 0 {
+		t.Error("floatSpacing(0) should be zero")
 	}
 }
 

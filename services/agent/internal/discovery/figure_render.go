@@ -147,7 +147,7 @@ func renderedValue(f models.Figure) float64 {
 
 // closeEnough compares what a figure PRINTS against an evaluated value, at the interval the
 // printing claims.
-func closeEnough(f models.Figure, got float64) bool {
+func closeEnough(f models.Figure, got, evalSlack float64) bool {
 	if math.IsNaN(f.Value) || math.IsNaN(got) || math.IsInf(f.Value, 0) || math.IsInf(got, 0) {
 		return false
 	}
@@ -159,39 +159,38 @@ func closeEnough(f models.Figure, got float64) bool {
 	// the evaluated value renders the same text. A reference to it then inherited an
 	// unvouched figure.
 	//
-	// The allowance is two terms, and each covers a case the other cannot reach. Both were
-	// arrived at by a case that shipped, and the pair has to be read together: a single
-	// expression was tried twice and was wrong twice, in opposite directions.
+	// The allowance is the two places the comparison can lose precision, added because they
+	// compound: reading the printed figure back, and computing the evidence.
 	//
-	// The first term is the hardware floor: a few times the distance between representable
-	// float64 values at this magnitude. Below that, two numbers are the same number, and
-	// nothing this layer does can tell them apart. renderedValue prints and parses back, and
-	// that round trip costs about half that distance on its own -- so an unscaled cell of
-	// 100000000.0000045 written to six decimals prints "100000000.000005", parses back
-	// 5.0664e-7 away from its own evidence, and a figure claiming 5e-7 was refuted for being
-	// exactly equal to the number it came from. Six decimals at 1e8 is sixteen significant
-	// digits, past what a float64 holds, so the figure is asking for precision the machine
-	// does not have and the honest answer is to allow it.
+	// It took four review rounds to get here, and the wrong turn was the same every time: a
+	// single expression in the RESULT's own magnitude, raised whenever a case came in just
+	// outside it. 1e-12 relative was short for the excess of 137.00685 over 137; capping it
+	// at a hundredth of the interval broke a cell of 100000000.0000045 written to six
+	// decimals; adding a hardware floor was still short for the excess of 100.0000015 over
+	// 100. Each constant was too small by a factor of a few, which is the signature of a
+	// wrong model rather than a wrong number -- the error a figure carries is set by the
+	// operands that went into it, and an excess divides a small difference by a large
+	// denominator, so it inherits error from numbers orders of magnitude bigger than the
+	// answer. Nothing computed from the answer can see that.
 	//
-	// The second term covers error a figure INHERITED rather than made here, and it is
-	// relative to the magnitudes compared because that error scales with them. An excess
-	// divides a small difference by a large denominator, so it carries the operands'
-	// representation error amplified by |num|/|num-den|: cells of 137.00685 and 137 evaluate
-	// to 0.004999999999989644 where the figure states 0.005, which at two decimals prints
-	// "0.01%" and claims a half-hundredth. A gap of 1e-14 refuted a figure equal to its
-	// evidence, and the correction gate then read a gap that small as the same quantity and
-	// rewrote the prose to "0.00%" -- a right number replaced by a wrong one with no model in
-	// the loop, which is the failure this layer exists to prevent. The hardware floor cannot
-	// reach that one: the error came from operands seven orders of magnitude larger than the
-	// result, so the spacing at the result says nothing about it.
+	// So evalFigure derives it where the operands are and passes it in. evalSlack is a bound,
+	// not an estimate, and it is zero for a cell and a count -- which are read rather than
+	// computed -- so those are held to exactly the interval they print, as before.
 	//
-	// And that second term is capped at a hundredth of the interval, because unbounded it
-	// reaches a whole unit at 1e12 and overtakes the half-unit a figure written to no
-	// decimals claims -- where whole-number precision IS achievable, since float64 holds
-	// every integer to 9e15. Uncapped, a count of a trillion would hold against evidence a
-	// thousand away.
+	// floatSpacing covers the other half: renderedValue prints the figure and parses it back,
+	// which costs about half the gap between representable values at that magnitude. A cell
+	// of 100000000.0000045 at six decimals prints "100000000.000005" and parses back 5.0664e-7
+	// away from the number it came from, against an interval of 5e-7 -- so a figure exactly
+	// equal to its evidence was refuted. Six decimals at 1e8 is sixteen significant digits,
+	// past what a float64 holds; the figure asks for precision the machine does not have, and
+	// allowing it is the honest answer.
+	//
+	// Neither term is capped, and neither needs to be: both are bounds on real error rather
+	// than chosen tolerances. At 1e12 written to whole units -- where float64 is exact, since
+	// it holds every integer to 9e15 -- a cell's evalSlack is zero and the spacing term is
+	// 8e-4, so the half-unit interval still refuses evidence a whole unit away.
 	m := math.Max(math.Abs(rendered), math.Abs(got))
-	slop := math.Max(4*floatSpacing(m), math.Min(1e-9*m, 0.01*figureSlack(f)))
+	slop := 4*floatSpacing(m) + math.Abs(evalSlack)
 	return math.Abs(rendered-got) <= figureSlack(f)+slop
 }
 
@@ -203,7 +202,16 @@ func floatSpacing(m float64) float64 {
 	if m == 0 || math.IsInf(m, 0) || math.IsNaN(m) {
 		return 0
 	}
-	return math.Nextafter(m, math.Inf(1)) - m
+	// Measured upwards, except at the very top of the range, where the next value up IS
+	// infinity -- which made the spacing infinite and every comparison hold, so a figure
+	// claiming zero was certified against evidence of MaxFloat64. Downwards there is always
+	// a finite neighbour, and one place below is the same width as one place above except
+	// exactly at a power of two, where it is half. Half a place is the right answer at the
+	// one magnitude that has no place above it.
+	if up := math.Nextafter(m, math.Inf(1)); !math.IsInf(up, 0) {
+		return up - m
+	}
+	return m - math.Nextafter(m, 0)
 }
 
 // percentScalings returns the evaluated values a percentage figure may legitimately be
@@ -218,9 +226,9 @@ func floatSpacing(m float64) float64 {
 // caught. That is rarer than the storage convention the model cannot see, and the
 // alternative -- scaling on the model's word -- refutes a correct figure whose column
 // is already in percent, which is the same defect mirrored.
-func percentScalings(f models.Figure, got float64) []float64 {
+func percentScalings(f models.Figure) []float64 {
 	if f.Unit != models.UnitPercent {
-		return []float64{got}
+		return []float64{1}
 	}
 	// An excess has no such ambiguity, and offering it one puts a number in the verdict
 	// that no arithmetic over the rows produces.
@@ -237,9 +245,9 @@ func percentScalings(f models.Figure, got float64) []float64 {
 	// moves settled behaviour rather than defining a new kind. Worth doing on its own
 	// evidence; not worth folding into this.
 	if f.Kind == models.FigureExcess {
-		return []float64{got}
+		return []float64{1}
 	}
-	return []float64{got, got * 100, got / 100}
+	return []float64{1, 100, 0.01}
 }
 
 // relativeDistance is the same measure relativeGap reports, as a number.
