@@ -363,20 +363,28 @@ func cellOperand(v float64) figureOperand {
 
 // roundingSlack bounds how far one double sits from the decimal it was written as.
 //
-// eps times the magnitude, which is the relative error of a float64 -- except at the very
-// bottom of the range, where that product UNDERFLOWS to zero and the true error is larger
-// rather than smaller. A subnormal has fewer significand bits than a normal value, so its
-// spacing is an absolute 4.9e-324 rather than a relative eps; cells of "1.1e-320" and
-// "1e-320" gave an excess a bound of exactly zero, which refuted a correct 10.00% and let
-// the correction gate rewrite it to 9.98% and certify that.
+// eps times the magnitude, which is the relative error of a float64 -- floored at the
+// smallest positive double, because at the bottom of the range that product UNDERFLOWS to
+// zero while the true error gets larger rather than smaller. A subnormal has fewer
+// significand bits than a normal value, so its spacing is an absolute 4.9e-324 rather than a
+// relative eps: cells of "1.1e-320" and "1e-320" gave an excess a bound of exactly zero,
+// which refuted a correct 10.00% and let the correction gate rewrite it to 9.98% and certify
+// that.
 //
-// An exact zero keeps a bound of zero: it is the one value with no representation error.
+// The floor applies to zero as well, and that is the part worth explaining. A first attempt
+// exempted it -- an exact zero being the one value with no representation error -- and review
+// walked straight through the exception: "1e-324" is below the smallest subnormal, so it
+// PARSES to zero, and a numerator that underflowed was then treated as exact. The same
+// certified correction, one value over. Nothing here can tell an exact zero from a decimal
+// that vanished into it, because both arrive as the same float64, so the bound has to cover
+// both. It costs the smallest positive double on a genuine zero, which cannot change any
+// comparison at any magnitude.
+//
+// So the floor is unconditional, and the class is closed rather than one instance of it:
+// every value gets a bound, and no value gets none.
 func roundingSlack(v float64) float64 {
-	if s := floatEps * math.Abs(v); s > 0 {
+	if s := floatEps * math.Abs(v); s > math.SmallestNonzeroFloat64 {
 		return s
-	}
-	if v == 0 {
-		return 0
 	}
 	return math.SmallestNonzeroFloat64
 }

@@ -1000,8 +1000,12 @@ func TestFigures_SubnormalOperandsStillCarryRoundingError(t *testing.T) {
 	if got := roundingSlack(1.1e-320); got <= 0 {
 		t.Fatalf("roundingSlack(1.1e-320) = %v, want a positive bound", got)
 	}
-	if got := roundingSlack(0); got != 0 {
-		t.Errorf("roundingSlack(0) = %v, want zero -- an exact zero has no representation error", got)
+	// Zero is floored too, which round 38 had to correct: "1e-324" is below the smallest
+	// subnormal, so it PARSES to zero, and nothing here can tell that from an exact zero
+	// because both arrive as the same float64. See TestFigures_AnOperandThatUnderflowedToZero.
+	if got := roundingSlack(0); got != math.SmallestNonzeroFloat64 {
+		t.Errorf("roundingSlack(0) = %v, want the floor -- a decimal that underflowed to zero "+
+			"cannot be told from an exact one", got)
 	}
 	// A normal value is unaffected, which is every figure any run has produced.
 	if got, want := roundingSlack(1000), floatEps*1000; got != want {
@@ -1028,6 +1032,55 @@ func TestFigures_SubnormalOperandsStillCarryRoundingError(t *testing.T) {
 	}}
 	if n := correctRefutedFigures("area", insights, stepIndex(1, rows)); n != 0 {
 		t.Errorf("%d corrections rewrote a correct figure: %+v", n, insights[0].FigureCorrections)
+	}
+}
+
+// --- Review round 38, on round 37's own exception.
+
+// TestFigures_AnOperandThatUnderflowedToZero — r38 P3.
+//
+// Round 37 floored the rounding bound for subnormal operands but exempted zero, on the
+// grounds that an exact zero has no representation error. Review walked through the
+// exception: "1e-324" is below the smallest subnormal, so asFloat parses it to zero, and a
+// numerator that had underflowed was then treated as exact. An excess correctly claiming
+// -99.90% evaluated to -100% with a bound of zero, was refuted, and the correction gate --
+// acting inside 1% -- replaced the correct value with -100% and certified it.
+//
+// Nothing at this point can tell an exact zero from a decimal that vanished into one, since
+// both arrive as the same float64. So the floor is unconditional, which closes the class
+// rather than this one instance of it.
+func TestFigures_AnOperandThatUnderflowedToZero(t *testing.T) {
+	rows := []map[string]any{
+		{"seg": "high", "amount": "1e-324"},
+		{"seg": "low", "amount": "1e-321"},
+	}
+	f := models.Figure{
+		ID: "f1", Value: -99.90, Unit: models.UnitPercent, Decimals: 2,
+		Step: 1, Kind: models.FigureExcess,
+		Column: "amount", Row: "seg = 'high'", Other: "seg = 'low'",
+	}
+	v := oneVerdict(t, f, evidence(1, rows))
+	if v.Status == models.FigureFails {
+		t.Errorf("status = fails (%s): the numerator underflowed, so it carries error rather "+
+			"than none, and -99.90%% cannot be refuted here", v.Reason)
+	}
+	insights := []models.Insight{{
+		Name: "underflow", Figures: []models.Figure{f}, SourceSteps: []int{1},
+		FigureVerdicts: []models.FigureVerdict{v},
+	}}
+	if n := correctRefutedFigures("area", insights, stepIndex(1, rows)); n != 0 {
+		t.Errorf("%d corrections rewrote a correct figure: %+v", n, insights[0].FigureCorrections)
+	}
+
+	// And the floor never changes a comparison at a magnitude anything real uses.
+	normal := models.Figure{
+		ID: "f1", Value: 100, Unit: models.UnitPlain, Decimals: 0,
+		Step: 1, Kind: models.FigureCell, Column: "amount", Row: "seg = 'x'",
+	}
+	exact := []map[string]any{{"seg": "x", "amount": 100.6}}
+	if v := oneVerdict(t, normal, evidence(1, exact)); v.Status != models.FigureFails {
+		t.Errorf("status = %q, want fails -- a cell 0.6 from a figure claiming half a unit is "+
+			"refuted, floor or no floor", v.Status)
 	}
 }
 
