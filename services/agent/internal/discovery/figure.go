@@ -358,7 +358,27 @@ type figureOperand struct {
 }
 
 func cellOperand(v float64) figureOperand {
-	return figureOperand{value: v, slack: floatEps * math.Abs(v)}
+	return figureOperand{value: v, slack: roundingSlack(v)}
+}
+
+// roundingSlack bounds how far one double sits from the decimal it was written as.
+//
+// eps times the magnitude, which is the relative error of a float64 -- except at the very
+// bottom of the range, where that product UNDERFLOWS to zero and the true error is larger
+// rather than smaller. A subnormal has fewer significand bits than a normal value, so its
+// spacing is an absolute 4.9e-324 rather than a relative eps; cells of "1.1e-320" and
+// "1e-320" gave an excess a bound of exactly zero, which refuted a correct 10.00% and let
+// the correction gate rewrite it to 9.98% and certify that.
+//
+// An exact zero keeps a bound of zero: it is the one value with no representation error.
+func roundingSlack(v float64) float64 {
+	if s := floatEps * math.Abs(v); s > 0 {
+		return s
+	}
+	if v == 0 {
+		return 0
+	}
+	return math.SmallestNonzeroFloat64
 }
 
 // ratioOperands resolves the numerator and denominator a `ratio` or an `excess` declares.
@@ -440,10 +460,11 @@ func oneCell(rows []map[string]any, column, selector, field string) (float64, er
 // accumulated. A row missing the column is an error rather than a zero: a total silently
 // short by one row reads as the model having written the wrong number.
 //
-// The bound is n times the sum of eps|x|, which is the standard bound for adding n numbers
-// one after another. Each term is scaled by eps as it is added rather than afterwards, so a
-// column of values near the top of the float64 range does not overflow to an infinite --
-// and therefore unlimited -- tolerance.
+// The bound is n times the sum of each term's own rounding, which is the standard bound for
+// adding n numbers one after another. Each term is scaled as it is added rather than
+// afterwards, so a column of values near the top of the float64 range does not overflow to
+// an infinite -- and therefore unlimited -- tolerance, and roundingSlack keeps a term near
+// the bottom of the range from contributing nothing.
 func columnTotal(rows []map[string]any, column string) (total, slack float64, err error) {
 	if strings.TrimSpace(column) == "" {
 		return 0, 0, fmt.Errorf("the figure names no column")
@@ -461,7 +482,7 @@ func columnTotal(rows []map[string]any, column string) (total, slack float64, er
 			return 0, 0, fmt.Errorf("column %q holds %v in row %d, which is not a number", column, raw, i+1)
 		}
 		total += n
-		slack += floatEps * math.Abs(n)
+		slack += roundingSlack(n)
 	}
 	return total, float64(len(rows)) * slack, nil
 }

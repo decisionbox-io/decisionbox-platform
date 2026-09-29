@@ -984,6 +984,53 @@ func TestFigures_TheRecommenderIsOnlyShownFiguresItCanReference(t *testing.T) {
 	}
 }
 
+// --- Review round 37.
+
+// TestFigures_SubnormalOperandsStillCarryRoundingError — r37 P3.
+//
+// eps times the magnitude is the relative error of a float64, and for a value near the bottom
+// of the range that product underflows to exactly zero -- where the true error is larger
+// rather than smaller, because a subnormal has fewer significand bits and an absolute spacing
+// of 4.9e-324. Cells of "1.1e-320" and "1e-320" gave an excess a bound of zero, so a correct
+// 10.00% was refuted and the correction gate rewrote it to 9.98% and certified that.
+//
+// Reached through string cells, which is the same path round 21 covered: drivers hand numerics
+// back as text and the decoders coerce them.
+func TestFigures_SubnormalOperandsStillCarryRoundingError(t *testing.T) {
+	if got := roundingSlack(1.1e-320); got <= 0 {
+		t.Fatalf("roundingSlack(1.1e-320) = %v, want a positive bound", got)
+	}
+	if got := roundingSlack(0); got != 0 {
+		t.Errorf("roundingSlack(0) = %v, want zero -- an exact zero has no representation error", got)
+	}
+	// A normal value is unaffected, which is every figure any run has produced.
+	if got, want := roundingSlack(1000), floatEps*1000; got != want {
+		t.Errorf("roundingSlack(1000) = %v, want %v -- the floor must not touch normal values", got, want)
+	}
+
+	rows := []map[string]any{
+		{"seg": "high", "amount": "1.1e-320"},
+		{"seg": "low", "amount": "1e-320"},
+	}
+	f := models.Figure{
+		ID: "f1", Value: 10, Unit: models.UnitPercent, Decimals: 2,
+		Step: 1, Kind: models.FigureExcess,
+		Column: "amount", Row: "seg = 'high'", Other: "seg = 'low'",
+	}
+	v := oneVerdict(t, f, evidence(1, rows))
+	if v.Status == models.FigureFails {
+		t.Errorf("status = fails (%s): the operands carry more error than a normal value, not "+
+			"none, so nothing here can refute 10.00%%", v.Reason)
+	}
+	insights := []models.Insight{{
+		Name: "subnormal", Figures: []models.Figure{f}, SourceSteps: []int{1},
+		FigureVerdicts: []models.FigureVerdict{v},
+	}}
+	if n := correctRefutedFigures("area", insights, stepIndex(1, rows)); n != 0 {
+		t.Errorf("%d corrections rewrote a correct figure: %+v", n, insights[0].FigureCorrections)
+	}
+}
+
 // --- The malformed reference.
 
 // TestRecommendationFigures_AnEmptyReferenceIsTheRecommendationsFault is the second half
