@@ -304,9 +304,22 @@ func (r *figureRenderer) render(s string) string {
 		// A marker the template already writes is dropped from the render, at both
 		// ends. Whatever notation the surrounding text already carries, the render does
 		// not repeat.
-		if f.Approx && strings.HasSuffix(b.String(), "~") {
+		//
+		// The front is matched against the whole run of notation the template left
+		// before the reference, not against its last character, because renderFigure
+		// writes more than one marker there -- the tilde, then the sign, then the
+		// currency symbol. A template that wrote "~$" ends in "$", so a check on the
+		// final character alone would repeat the tilde.
+		written := trailingNotation(b.String(), f)
+		if f.Approx && strings.Contains(written, "~") {
 			text = strings.TrimPrefix(text, "~")
 			r.tally.markerKept++
+		}
+		if sym := f.Symbol(); f.Unit == models.UnitCurrency && strings.Contains(written, sym) {
+			if trimmed, dropped := dropCurrencySymbol(text, sym); dropped {
+				text = trimmed
+				r.tally.markerKept++
+			}
 		}
 		if suffix := unitSuffix(f.Unit); suffix != "" && strings.HasPrefix(s[m[1]:], suffix) {
 			text = strings.TrimSuffix(text, suffix)
@@ -328,6 +341,59 @@ type figureRenderTally struct {
 	// tilde -- the template already wrote, so the render dropped its own rather than
 	// doubling it.
 	markerKept int
+}
+
+// trailingNotation is the run of figure notation a template left immediately before a
+// reference: the approximation tilde and the currency symbol, in whatever order it wrote
+// them.
+//
+// Read as a run rather than as the final character because renderFigure writes the tilde
+// in front of the currency symbol, so a template that already wrote both ends in the
+// symbol and a check on the last character would repeat the tilde. Order is not required
+// to match: a template that writes "$~" has written the same two markers as one that
+// writes "~$", and neither should be doubled.
+func trailingNotation(before string, f models.Figure) string {
+	sym := ""
+	if f.Unit == models.UnitCurrency {
+		sym = f.Symbol()
+	}
+	rest := before
+	for rest != "" {
+		switch {
+		case strings.HasSuffix(rest, "~"):
+			rest = rest[:len(rest)-1]
+		case sym != "" && strings.HasSuffix(rest, sym):
+			rest = rest[:len(rest)-len(sym)]
+		default:
+			return before[len(rest):]
+		}
+	}
+	return before
+}
+
+// dropCurrencySymbol removes the one currency symbol renderFigure wrote.
+//
+// It is not at the front of the rendered text: renderFigure writes the approximation
+// tilde first and the sign second, so "~-$1.2M" carries the symbol third and a plain
+// TrimPrefix would miss exactly the approximate and the negative amounts -- which is how
+// a guard for the observed "$$4,491.13" would have shipped with a hole in it.
+//
+// What it cannot fix is the order the template chose. A template that writes "$" in
+// front of a figure that is approximate or negative gets "$~151,417" or "$-1.2M": the
+// marker is not doubled and nothing the figure declared is lost, but the render cannot
+// move text the model already wrote. Pinned by test rather than left to chance.
+func dropCurrencySymbol(text, sym string) (string, bool) {
+	i := 0
+	if strings.HasPrefix(text[i:], "~") {
+		i++
+	}
+	if strings.HasPrefix(text[i:], "-") {
+		i++
+	}
+	if !strings.HasPrefix(text[i:], sym) {
+		return text, false
+	}
+	return text[:i] + text[i+len(sym):], true
 }
 
 func hasFigureRef(ins models.Insight) bool {

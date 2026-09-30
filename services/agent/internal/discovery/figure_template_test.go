@@ -281,3 +281,113 @@ func TestTemplate_DoesNotDoubleAnApproxMarker(t *testing.T) {
 		}
 	})
 }
+
+// TestTemplate_DoesNotDoubleACurrencySymbol is the same defect a third time, and the
+// reason this one is written as the class rather than as the instance.
+//
+// The suffix guard shipped after a run wrote "24.66%%". The tilde guard shipped after the
+// very next run wrote "(~~$151,417)". Session 13 then shipped "($$4,491.13)", "$$53.74B"
+// and "$$151,099.91" in every recommendation that stated money: the currency symbol is a
+// third prefix marker, and it had no guard.
+//
+// The cases below are the ones a guard written only for the observed "$$" would have got
+// wrong. renderFigure writes the tilde first, the sign second and the symbol third, so
+// the symbol is not at the front of "~-$1.2M" and TrimPrefix would silently do nothing
+// for every approximate or negative amount -- shipping the fix and the defect together.
+func TestTemplate_DoesNotDoubleACurrencySymbol(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		template string
+		fig      models.Figure
+		want     string
+	}{
+		{
+			"the template writes the dollar sign -- the shipped defect",
+			"Average order value is ${{f1}} per order",
+			models.Figure{ID: "f1", Value: 4491.13, Unit: models.UnitCurrency, Decimals: 2},
+			"Average order value is $4,491.13 per order",
+		},
+		{
+			"the template leaves the symbol to the unit",
+			"Average order value is {{f1}} per order",
+			models.Figure{ID: "f1", Value: 4491.13, Unit: models.UnitCurrency, Decimals: 2},
+			"Average order value is $4,491.13 per order",
+		},
+		{
+			"the template writes both markers in render order",
+			"AOV is flat (~${{f1}}) across bands",
+			models.Figure{ID: "f1", Value: 151416.87, Unit: models.UnitCurrency, Decimals: 0, Approx: true},
+			"AOV is flat (~$151,417) across bands",
+		},
+		{
+			"a currency that is not dollars",
+			"Revenue reached €{{f1}}",
+			models.Figure{ID: "f1", Value: 8_476_238_553, Unit: models.UnitCurrency, Currency: "€", Scale: models.ScaleBillions, Decimals: 2},
+			"Revenue reached €8.48B",
+		},
+		{
+			"a symbol the template did not write is still rendered",
+			"Revenue reached {{f1}}",
+			models.Figure{ID: "f1", Value: 8_476_238_553, Unit: models.UnitCurrency, Currency: "€", Scale: models.ScaleBillions, Decimals: 2},
+			"Revenue reached €8.48B",
+		},
+		{
+			// The symbol is third in the render, so a TrimPrefix guard leaves "$-$1.2M".
+			"a negative amount, where the symbol is not the first character",
+			"The swing is ${{f1}} against plan",
+			models.Figure{ID: "f1", Value: -1_200_000, Unit: models.UnitCurrency, Scale: models.ScaleMillions, Decimals: 1},
+			"The swing is $-1.2M against plan",
+		},
+		{
+			// Same reason: the tilde comes first, so the symbol is not at index 0. The
+			// render cannot move the "$" the model already wrote, so the tilde lands
+			// after it. Nothing is doubled and nothing the figure declared is lost,
+			// which is the property being pinned -- not the prettiness of the result.
+			"the template writes only the symbol for an approximate amount",
+			"AOV is flat (${{f1}}) across bands",
+			models.Figure{ID: "f1", Value: 151416.87, Unit: models.UnitCurrency, Decimals: 0, Approx: true},
+			"AOV is flat ($~151,417) across bands",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ins := []models.Insight{{Name: tc.template, SourceSteps: []int{1}, Figures: []models.Figure{tc.fig}}}
+			renderInsightFigures(ins)
+			if ins[0].Name != tc.want {
+				t.Fatalf("rendered %q, want %q", ins[0].Name, tc.want)
+			}
+		})
+	}
+
+	// Two references in one sentence, each with its own symbol written by the template --
+	// the exact shape session 13 shipped as "$$53.74B of a $$218.10B".
+	t.Run("two symbols in one sentence", func(t *testing.T) {
+		ins := []models.Insight{{
+			Name:        "Returns",
+			Description: "Returns cost ${{f1}} of a ${{f2}} book.",
+			SourceSteps: []int{1},
+			Figures: []models.Figure{
+				{ID: "f1", Value: 53_740_000_000, Unit: models.UnitCurrency, Scale: models.ScaleBillions, Decimals: 2},
+				{ID: "f2", Value: 218_100_000_000, Unit: models.UnitCurrency, Scale: models.ScaleBillions, Decimals: 2},
+			},
+		}}
+		renderInsightFigures(ins)
+		if want := "Returns cost $53.74B of a $218.10B book."; ins[0].Description != want {
+			t.Fatalf("rendered %q, want %q", ins[0].Description, want)
+		}
+	})
+
+	// A symbol elsewhere in the sentence must not be read as the one before the
+	// reference: only the run immediately preceding it counts.
+	t.Run("an earlier symbol in the sentence is not the adjacent one", func(t *testing.T) {
+		ins := []models.Insight{{
+			Name:        "Spend",
+			Description: "Against a $1B plan the segment spends {{f1}}.",
+			SourceSteps: []int{1},
+			Figures:     []models.Figure{{ID: "f1", Value: 4491.13, Unit: models.UnitCurrency, Decimals: 2}},
+		}}
+		renderInsightFigures(ins)
+		if want := "Against a $1B plan the segment spends $4,491.13."; ins[0].Description != want {
+			t.Fatalf("rendered %q, want %q", ins[0].Description, want)
+		}
+	})
+}
