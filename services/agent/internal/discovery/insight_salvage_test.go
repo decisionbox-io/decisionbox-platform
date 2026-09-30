@@ -187,15 +187,19 @@ func TestInsightsForRecommenderPrompt_DropsTheAuditTrail(t *testing.T) {
 	if len(out) != 1 {
 		t.Fatalf("got %d insights, want 1", len(out))
 	}
-	if out[0].Repair != nil || out[0].QuantifierClaims != nil || out[0].QuantifierVerdicts != nil {
-		t.Errorf("the audit trail survived: repair=%+v claims=%+v verdicts=%+v",
-			out[0].Repair, out[0].QuantifierClaims, out[0].QuantifierVerdicts)
-	}
-	// The whole point: the deleted claim's text must not be reachable from the copy.
+	// The audit trail cannot survive a field the projection does not declare, so what
+	// this asserts is that none of it was added back. Checked on the rendered payload
+	// rather than on the struct, because that is what reaches the model.
 	blob, err := json.Marshal(out)
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, key := range []string{`"evidence_repair":`, `"quantifier_claims":`, `"evidence_checks":`} {
+		if strings.Contains(string(blob), key) {
+			t.Errorf("the audit trail is in the recommender payload (%s):\n%s", key, blob)
+		}
+	}
+	// The whole point: the deleted claim's text must not be reachable from the copy.
 	if strings.Contains(string(blob), refuted) {
 		t.Errorf("the refuted claim text is still in the recommender payload:\n%s", blob)
 	}
@@ -206,8 +210,8 @@ func TestInsightsForRecommenderPrompt_DropsTheAuditTrail(t *testing.T) {
 	if len(out[0].Quality) != 1 {
 		t.Errorf("quality = %+v, want it kept as context for acting on the finding", out[0].Quality)
 	}
-	if out[0].DescriptionMd != "" {
-		t.Errorf("description_md should still be cleared, got %q", out[0].DescriptionMd)
+	if strings.Contains(string(blob), `"description_md":`) || strings.Contains(string(blob), in[0].DescriptionMd) {
+		t.Errorf("description_md is still in the recommender payload:\n%s", blob)
 	}
 	// The originals are not mutated.
 	if in[0].Repair == nil || len(in[0].QuantifierClaims) != 1 {

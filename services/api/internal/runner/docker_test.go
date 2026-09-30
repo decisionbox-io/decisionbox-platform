@@ -805,6 +805,7 @@ func TestDockerRunner_BuildEnv_ForwardsSetVarsOnly(t *testing.T) {
 	t.Setenv("AZURE_TENANT_ID", "tenant-test")
 	t.Setenv("ENV", "prod")
 	t.Setenv("TELEMETRY_ENABLED", "false")
+	t.Setenv("LLM_TIMEOUT", "1h")
 	// Ensure an unset forwarded var stays absent.
 	t.Setenv("QDRANT_URL", "")
 
@@ -829,6 +830,9 @@ func TestDockerRunner_BuildEnv_ForwardsSetVarsOnly(t *testing.T) {
 	// Telemetry opt-out must propagate so a docker agent honours it.
 	if v, ok := envValue(env, "TELEMETRY_ENABLED"); !ok || v != "false" {
 		t.Errorf("TELEMETRY_ENABLED = %q, ok=%v", v, ok)
+	}
+	if v, ok := envValue(env, "LLM_TIMEOUT"); !ok || v != "1h" {
+		t.Errorf("LLM_TIMEOUT = %q, ok=%v", v, ok)
 	}
 	// Writable scratch dirs always present.
 	if v, _ := envValue(env, "HOME"); v != "/tmp" {

@@ -419,15 +419,20 @@ func TestInsightsForRecommenderPrompt_KeepsFiguresAndDropsTheirAuditTrail(t *tes
 	if len(out[0].Figures) != 1 || out[0].Figures[0].ID != "f1" {
 		t.Fatalf("figures did not survive: %+v -- the recommender cannot reference what it cannot see", out[0].Figures)
 	}
-	if out[0].FigureVerdicts != nil || out[0].FigureCorrections != nil || out[0].FigureTemplate != nil {
-		t.Errorf("the derived figure records survived: verdicts=%+v corrections=%+v template=%+v",
-			out[0].FigureVerdicts, out[0].FigureCorrections, out[0].FigureTemplate)
-	}
-	// The corrected-away value must not be reachable from the payload at all.
+	// The derived records cannot survive a field the projection does not declare,
+	// so what this asserts is that none of them was added back to it. Checked on the
+	// rendered payload rather than on the struct, because that is what reaches the
+	// model.
 	blob, err := json.Marshal(out)
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, key := range []string{`"evidence_figures":`, `"evidence_figure_corrections":`, `"evidence_figure_template":`} {
+		if strings.Contains(string(blob), key) {
+			t.Errorf("a derived figure record is in the recommender payload (%s):\n%s", key, blob)
+		}
+	}
+	// The corrected-away value must not be reachable from the payload at all.
 	if strings.Contains(string(blob), "100000") || strings.Contains(string(blob), "100,000") {
 		t.Errorf("the refuted value is still in the recommender payload:\n%s", blob)
 	}

@@ -1636,85 +1636,131 @@ func (o *Orchestrator) persistSplitLogs(
 	}
 }
 
-// parseInsights parses LLM response JSON into Insight structs.
-// insightsForRecommenderPrompt returns a copy of insights with the Markdown
-// rendition (DescriptionMd) cleared. The recommender reads the plain
-// `description`; carrying description_md into INSIGHTS_DATA would put a second
-// full copy of every insight's description in the prompt, roughly doubling the
-// per-insight description tokens and risking the context/budget cap. The
-// originals (which still need DescriptionMd for storage and rendering) are
-// left untouched.
-func insightsForRecommenderPrompt(insights []models.Insight) []models.Insight {
-	out := make([]models.Insight, len(insights))
-	copy(out, insights)
-	for i := range out {
-		// Captured before the audit trail is cleared below, and read from the copy rather
-		// than from the source slice so there is only one indexed expression in the loop.
-		// The template is one of the inputs, so this cannot move below the line that
-		// drops it.
-		broken := figuresBrokenByRepair(out[i])
+// recommenderInsight is the projection of models.Insight sent to the
+// recommendation prompt as INSIGHTS_DATA: an explicit allow-list of the fields
+// the recommender reasons over.
+//
+// It is an allow-list rather than a copy-and-clear because the prompt used to
+// carry the whole struct, so every field added to models.Insight reached the
+// prompt whether the recommender had a use for it or not. The cost stayed
+// invisible until it was fatal: the verifier and refuter transcripts attached
+// to Validation made up roughly 80% of the prompt (51,135 of 63,658 tokens on a
+// 14-insight run), a model with a 40,960-token window rejected the request, and
+// the run finished with zero recommendations. A field this struct does not name
+// cannot reach the prompt, so sending a new one is a decision someone makes
+// here rather than a side effect of adding it to the model.
+//
+// Clearing fields on a copy could not have expressed the same thing anyway:
+// DiscoveredAt's tag carries no omitempty, and encoding/json does not apply
+// omitempty to a time.Time, so a zeroed value still renders as
+// "discovered_at": "0001-01-01T00:00:00Z".
+//
+// Figures is the one derived-looking field that is sent, and it has to be: the
+// recommendation contract tells the model to reference an insight's figures by
+// id rather than retype their values, so an allow-list that dropped them would
+// leave every reference naming an id the prompt never showed. The three records
+// derived FROM them are dropped, for the reason the repair record is -- a
+// verdict carries the original refuted value in `claimed` and the original
+// rendered text in `display`, so a number this pipeline corrected would still
+// be in the prompt for the recommender to build on.
+//
+// The json tags mirror models.Insight exactly, so INSIGHTS_DATA is unchanged
+// for every field the recommender does use — including the key order, which
+// follows the model's own declaration order.
+// TestRecommenderInsightProjectionIsExhaustive holds both halves of that
+// contract: every models.Insight field is either listed here or named as
+// deliberately dropped, and every tag here exists on the model under the same
+// name.
+//
+// discipline.RecommendationsRules() is kept in step with this list: its rules 3
+// and 6 bind every figure to the cited insight's own fields, because these
+// insights are the only evidence the recommendation prompt carries.
+type recommenderInsight struct {
+	ID            string                      `json:"id"`
+	AnalysisArea  string                      `json:"analysis_area"`
+	Name          string                      `json:"name"`
+	Description   string                      `json:"description"`
+	Severity      string                      `json:"severity"`
+	AffectedCount int                         `json:"affected_count"`
+	RiskScore     float64                     `json:"risk_score"`
+	Confidence    float64                     `json:"confidence"`
+	Metrics       map[string]interface{}      `json:"metrics,omitempty"`
+	Indicators    []string                    `json:"indicators,omitempty"`
+	TargetSegment string                      `json:"target_segment,omitempty"`
+	Quality       []gowarehouse.QualityCaveat `json:"evidence_quality,omitempty"`
+	Figures       []models.Figure             `json:"figures,omitempty"`
+}
 
-		out[i].DescriptionMd = ""
-		// The evidence trail is an audit record, not input to a recommendation, and
-		// leaving it in is worse than noise: Repair.Fixed and Repair.Dropped carry
-		// the ORIGINAL refuted claim verbatim. So a sentence this pipeline removed
-		// for being false is still in the prompt, and the recommender can build on
-		// it -- a route back for a claim that was deliberately deleted. The
-		// declarations and verdicts carry the same text.
-		//
-		// Quality stays: it says the rows behind a finding were capped or withheld,
-		// which is context for acting on it rather than a record of correction.
-		out[i].QuantifierClaims = nil
-		out[i].QuantifierVerdicts = nil
-		out[i].Repair = nil
-
-		// Figures stay -- the recommender references them by id, and by this point
-		// their values are the corrected ones. The three records derived from them
-		// go, for the same reason Repair does: a verdict carries the original
-		// refuted value in `claimed` and the original rendered text in `display`, so
-		// a number this pipeline corrected would still be in the prompt for the
-		// recommender to build on. The template is dropped as redundant -- the
-		// rendered prose and the figures say the same thing in fewer tokens.
-		out[i].FigureVerdicts = nil
-		out[i].FigureCorrections = nil
-		out[i].FigureTemplate = nil
-
-		// And the figures whose sentences repair rewrote go too.
-		//
-		// buildFigureRefIndex refuses those, because the figure no longer matches a
-		// sentence a reader sees. But the contract tells the model to reference what it is
-		// shown, so leaving them here advertises ids that are guaranteed to resolve to
-		// nothing -- a model following the instruction exactly ships "{{f1}}" in its
-		// prose. Withheld at both ends or neither, through the same predicate, which is
-		// the only way the two stay in step.
-		//
-		// This was a blanket rule -- any repair withdrew every figure of that insight --
-		// and the cost was measured: a run dropped one indicator carrying no figure at
-		// all and withdrew eight true, held figures with it, after which the model
-		// borrowed a wrong id and shipped an empty reference. The number still being in
-		// the prose is not the fallback it reads like; a model denied an id does not go
-		// back to typing, it finds another id.
-		//
-		// And the same gate the renderer and the reference index use, on every insight
-		// rather than only a repaired one. A figure whose id the reference grammar cannot
-		// express -- `revenue-total` -- was advertised unchanged, and the contract tells the
-		// model to copy that id verbatim; reference resolution then refuses it, so a
-		// recommendation that followed the instruction exactly shipped "{{f1}}" instead of
-		// the value. Same for a duplicated id and a figure with no value: all three are
-		// unreferenceable, and advertising any of them breaks the rule this block exists to
-		// keep.
-		usable := usableFigures(out[i].Figures)
-		if len(broken) > 0 || len(usable) != len(out[i].Figures) {
-			kept := make([]models.Figure, 0, len(usable))
-			for _, f := range usable {
-				if !broken[f.ID] {
-					kept = append(kept, f)
-				}
-			}
-			out[i].Figures = kept
-		}
+// insightsForRecommenderPrompt projects insights onto recommenderInsight. The
+// argument is read, never written: the caller's insights keep description_md,
+// validation, source_steps, sql_metadata and discovered_at for storage, the
+// dashboard, and the recommendation-validation phase, which unions their
+// SourceSteps after this call.
+//
+// Metrics, Indicators and Quality are carried by reference, as the previous
+// slice copy also did. Nothing between here and json.Marshal writes them.
+// Figures is a fresh slice, because it is filtered.
+func insightsForRecommenderPrompt(insights []models.Insight) []recommenderInsight {
+	out := make([]recommenderInsight, 0, len(insights))
+	for i := range insights {
+		in := &insights[i]
+		out = append(out, recommenderInsight{
+			ID:            in.ID,
+			AnalysisArea:  in.AnalysisArea,
+			Name:          in.Name,
+			Description:   in.Description,
+			Severity:      in.Severity,
+			AffectedCount: in.AffectedCount,
+			RiskScore:     in.RiskScore,
+			Confidence:    in.Confidence,
+			Metrics:       in.Metrics,
+			Indicators:    in.Indicators,
+			TargetSegment: in.TargetSegment,
+			Quality:       in.Quality,
+			Figures:       figuresForRecommenderPrompt(*in),
+		})
 	}
 	return out
+}
+
+// figuresForRecommenderPrompt is the figure set an insight advertises to the
+// recommender: the ones a reference can name and still resolve.
+//
+// Two filters, and both exist because a model that follows the contract exactly
+// ships "{{f1}}" to a reader when the id it was shown resolves to nothing.
+//
+// usableFigures is the same gate the renderer and the reference index use, and
+// it is applied to every insight rather than only a repaired one. A figure
+// whose id the reference grammar cannot express -- `revenue-total` -- was
+// advertised unchanged, and the contract tells the model to copy that id
+// verbatim; reference resolution then refuses it. Same for a duplicated id and
+// a figure with no value: all three are unreferenceable, and advertising any of
+// them breaks the rule this filter exists to keep.
+//
+// figuresBrokenByRepair withholds the figures whose sentences repair rewrote.
+// buildFigureRefIndex refuses those, because the figure no longer matches a
+// sentence a reader sees, so withholding here keeps the two ends in step --
+// withheld at both or at neither, through the same predicate.
+//
+// That second filter used to be a blanket rule, any repair withdrawing every
+// figure of that insight, and the cost was measured: a run dropped one
+// indicator carrying no figure at all and withdrew eight true, held figures
+// with it, after which the model borrowed a wrong id and shipped an empty
+// reference. The number still being in the prose is not the fallback it reads
+// like; a model denied an id does not go back to typing, it finds another id.
+func figuresForRecommenderPrompt(ins models.Insight) []models.Figure {
+	usable := usableFigures(ins.Figures)
+	broken := figuresBrokenByRepair(ins)
+	if len(broken) == 0 {
+		return usable
+	}
+	kept := make([]models.Figure, 0, len(usable))
+	for _, f := range usable {
+		if !broken[f.ID] {
+			kept = append(kept, f)
+		}
+	}
+	return kept
 }
 
 // splitMarkdownDescription reduces an authored Markdown description to plain

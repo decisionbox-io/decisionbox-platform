@@ -69,7 +69,13 @@ type parsedReflection struct {
 // generateQuestions / generateRecommendations): budget the output against the
 // model window, attach the structured-output format where supported, and
 // self-heal a bounded number of times on an unparseable response.
-func (o *Orchestrator) generateReflection(ctx context.Context, result *models.DiscoveryResult, pol agentplugin.DiscoveryPolicy) (*parsedReflection, error) {
+//
+// reSeenPriorIDs are the findings the ledger carried IN that this run surfaced
+// again. They gate the demand for a prior-finding re-judgement, and only that:
+// they are the phase's grounded evidence about the past, and the finding list
+// read back here cannot supply them, because consolidation has already merged
+// this run's own findings into that list.
+func (o *Orchestrator) generateReflection(ctx context.Context, result *models.DiscoveryResult, pol agentplugin.DiscoveryPolicy, reSeenPriorIDs map[string]struct{}) (*parsedReflection, error) {
 	prior, err := o.findingRepo.List(ctx, o.projectID)
 	if err != nil {
 		applog.WithError(err).Warn("Reflection: list prior findings for prompt failed")
@@ -80,8 +86,10 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 		tasks, _ = o.taskRepo.List(ctx, o.projectID, commonmodels.LedgerTaskStatusOpen)
 	}
 
+	demandPriorRejudgement := reSeenPriorIsOnThePage(prior, reSeenPriorIDs)
+
 	items := o.runCatalogItems()
-	prompt := o.buildReflectionPrompt(result, prior, tasks, pol, items)
+	prompt := o.buildReflectionPrompt(result, prior, tasks, pol, items, demandPriorRejudgement)
 
 	window, modelOutputCap := o.resolveModelBudget()
 	// Default to the model's own cap, mirroring the analysis and recommendation
@@ -94,7 +102,7 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 	outputCap := phaseOutputCap(discoveryReflectionMaxOutputEnv, modelOutputCap, 512, defaultDiscoveryReflectionMaxOutput)
 	maxTokens := budgetedMaxOutputTokens(window, approxTokens(ctx, prompt), outputCap, analysisMinOutputTokens())
 
-	format := reflectionResponseFormat()
+	format := reflectionResponseFormat(pol.EvolutionMode, demandPriorRejudgement)
 	if o.aiClient.SupportsStructuredOutput() {
 		applog.Info("Reflection generation using schema-constrained output")
 	}
@@ -129,7 +137,7 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 // buildReflectionPrompt renders the embedded template with the run's findings,
 // the prior ledger findings (so the model can re-judge their status), the open
 // task queue, and the mode/frontier policy that governs what it may propose.
-func (o *Orchestrator) buildReflectionPrompt(result *models.DiscoveryResult, prior []commonmodels.LedgerFinding, tasks []commonmodels.LedgerTask, pol agentplugin.DiscoveryPolicy, catalogItems []string) string {
+func (o *Orchestrator) buildReflectionPrompt(result *models.DiscoveryResult, prior []commonmodels.LedgerFinding, tasks []commonmodels.LedgerTask, pol agentplugin.DiscoveryPolicy, catalogItems []string, demandPriorRejudgement bool) string {
 	lang := o.language
 	if strings.TrimSpace(lang) == "" {
 		lang = "English"
@@ -143,6 +151,7 @@ func (o *Orchestrator) buildReflectionPrompt(result *models.DiscoveryResult, pri
 	p = strings.ReplaceAll(p, "{{EVOLUTION_GUIDANCE}}", evolutionModeGuidance(pol.EvolutionMode))
 	p = strings.ReplaceAll(p, "{{RUN_FINDINGS}}", renderRunFindings(result.Insights))
 	p = strings.ReplaceAll(p, "{{PRIOR_FINDINGS}}", renderPriorFindings(prior))
+	p = strings.ReplaceAll(p, "{{PRIOR_STATUS_FIELD}}", renderPriorStatusField(demandPriorRejudgement))
 	p = strings.ReplaceAll(p, "{{OPEN_TASKS}}", renderOpenTasks(tasks))
 	p = strings.ReplaceAll(p, "{{CATALOG_SECTION}}", renderCatalogSection(result.Schemas, catalogItems))
 	p = strings.ReplaceAll(p, "{{COVERED_FIELDS}}", renderCoveredFields(len(catalogItems) > 0))
@@ -183,7 +192,31 @@ func evolutionModeGuidance(mode agentplugin.EvolutionMode) string {
 	if mode == agentplugin.EvolutionModeOff {
 		return "Domain-pack evolution is OFF for this project: return an EMPTY next_tasks array and an EMPTY domain_pack_deltas array. You may still produce coverage, learnings, prior-finding status updates, and task_status_updates that close resolved open tasks."
 	}
-	return "You may propose next_tasks (self-directed investigation threads for the next run) and domain_pack_deltas (analysis-area changes). Ground every proposal in the findings above."
+	return "Propose AT LEAST ONE next_task (a self-directed investigation thread for the next run), grounded in this run's findings and coverage — an empty next_tasks array is not an acceptable answer for this project. You may also propose domain_pack_deltas (analysis-area changes). Ground every proposal in the findings above."
+}
+
+// reflectionPriorStatusFieldBase is the prior_status_updates bullet of the
+// output contract as the template carried it inline, kept verbatim for the run
+// that has no prior findings to re-judge.
+const reflectionPriorStatusFieldBase = "- **prior_status_updates**: for PRIOR findings only, by their `id`. Update a status ONLY with grounded evidence from this run — e.g. a new finding contradicts a prior one (`refuted`), or the same finding now shows a different magnitude (`changed`). **Do NOT mark a finding `resolved` just because it did not reappear** — discovery is not exhaustive, so absence is not proof. Leave findings you have no evidence about alone."
+
+// renderPriorStatusField renders that bullet, demanding at least one
+// re-judgement on a run that surfaced a carried finding again and whose
+// prompt lists it.
+//
+// Conditional because the demand and the grounding rule above it only coexist
+// when there is something to judge: an early run has no prior findings, and a
+// model told to produce a verdict anyway has no id to attach it to but the one
+// it invents. Where priors do exist the two do not conflict — a prior finding
+// this run saw again is evidence, and saying so is what stops the model from
+// reading "only with grounded evidence" as permission to skip the field
+// entirely, which is what it had been doing (#434).
+func renderPriorStatusField(demand bool) string {
+	if !demand {
+		return reflectionPriorStatusFieldBase
+	}
+	return reflectionPriorStatusFieldBase +
+		" This run surfaced at least one of the prior findings above again, which IS grounded evidence about it — so re-judge **at least one**: still there at the same magnitude is `confirmed`, and a magnitude that moved is `changed`."
 }
 
 func renderRunFindings(insights []models.Insight) string {
@@ -202,17 +235,45 @@ func renderRunFindings(insights []models.Insight) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// priorFindingsForPrompt is the subset of the ledger's findings the prompt
+// actually carries: most-recently-seen first so the cap keeps the freshest
+// context. The renderer and the re-judgement gate both go through it, because
+// a demand to re-judge a finding is only honest about findings on the page.
+func priorFindingsForPrompt(prior []commonmodels.LedgerFinding) []commonmodels.LedgerFinding {
+	sort.SliceStable(prior, func(i, j int) bool { return prior[i].LastSeen.After(prior[j].LastSeen) })
+	if len(prior) > maxPriorFindingsInPrompt {
+		return prior[:maxPriorFindingsInPrompt]
+	}
+	return prior
+}
+
+// reSeenPriorIsOnThePage reports whether the prompt shows at least one finding
+// this run surfaced again — the whole condition for demanding a re-judgement.
+//
+// Membership, not a count, because the list is capped and every finding this
+// run touched shares the same LastSeen: a run that created enough new findings
+// can tie the re-seen one off the end of the page. A model required to answer
+// about a finding it cannot see answers about one it can, which is the
+// invented verdict this gate exists to prevent. It also covers the empty-list
+// case — a failed read renders "(no prior findings)" and shows nothing.
+func reSeenPriorIsOnThePage(prior []commonmodels.LedgerFinding, reSeenPriorIDs map[string]struct{}) bool {
+	if len(reSeenPriorIDs) == 0 {
+		return false
+	}
+	for _, f := range priorFindingsForPrompt(prior) {
+		if _, ok := reSeenPriorIDs[f.ID]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func renderPriorFindings(prior []commonmodels.LedgerFinding) string {
 	if len(prior) == 0 {
 		return "(no prior findings — this is an early run)"
 	}
-	// Most-recently-seen first so the cap keeps the freshest context.
-	sort.SliceStable(prior, func(i, j int) bool { return prior[i].LastSeen.After(prior[j].LastSeen) })
-	if len(prior) > maxPriorFindingsInPrompt {
-		prior = prior[:maxPriorFindingsInPrompt]
-	}
 	var b strings.Builder
-	for _, f := range prior {
+	for _, f := range priorFindingsForPrompt(prior) {
 		fmt.Fprintf(&b, "- id=%s [%s] %q (status %s, seen %d)", f.ID, f.Area, f.Name, f.Status, f.SeenCount)
 		if f.KeyMetric != "" {
 			fmt.Fprintf(&b, " metric: %s", f.KeyMetric)
