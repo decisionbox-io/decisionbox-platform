@@ -985,6 +985,13 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	}
 	applog.WithField("steps", explorationResult.TotalSteps).Info("Exploration completed")
 
+	// One line per executed step: the SQL, the row count, any fidelity caveat,
+	// and how much of the result the digest reproduces. A no-op unless
+	// DISCOVERY_TRACE is set.
+	for _, st := range explorationResult.Steps {
+		traceExplorationStep(st)
+	}
+
 	// Wire the exploration log into the verifier before the analysis loop
 	// runs. The verifier renders the SQL of cited source_steps into its
 	// generation prompt as authoritative column-grounding evidence — without
@@ -1138,6 +1145,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			"dropped": len(pickResult.Dropped),
 		}).Info("Analyzing area")
 
+		// How much of each cited step's result this area's prompt will show.
+		// A no-op unless DISCOVERY_TRACE is set.
+		traceExposure(area.ID, relevantSteps)
+
 		// Render the compacted view into the prompt. This replaces
 		// the old json.MarshalIndent of the full ExplorationStep,
 		// which on ERP-scale runs grew to >1M tokens.
@@ -1227,6 +1238,71 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 		// Skip validation when the analysis step produced no insights.
 		// The verifier only runs for successfully parsed insights.
+		// Settle the figures first, then render them into the prose.
+		//
+		// Before the quantifier pass and before repair, because until the references are
+		// rendered the prose is a template: a smoke run showed the repair prompt being
+		// handed sentences reading "{{f1}} of customers placed 11+ orders" and asked to
+		// rewrite them. Repair edits prose and has no notion of this format, so it has to
+		// be given ordinary text -- which also means its behaviour is unchanged from
+		// before figures existed.
+		//
+		// Settling first costs nothing, because a figure is checked against the step's
+		// rows rather than against the prose. Nothing here needs the text.
+		attachFigureVerdicts(insights, stepByID)
+
+		// A refuted figure needs no model to fix: the arithmetic that refuted it already
+		// produced the right number, and the prose holds a reference rather than the
+		// number, so correcting it is assigning a field.
+		if corrected := correctRefutedFigures(area.ID, insights, stepByID); corrected > 0 {
+			step.FiguresCorrected = corrected
+		}
+
+		// Render the references. From here on the insight carries ordinary sentences, and
+		// every later phase -- the quantifier pass, repair, validation, the API, the
+		// dashboard, the exec summary -- reads them without knowing this format exists.
+		// Unresolved counts too. Gating on resolved-or-inlined discarded the tally in the
+		// one case it mattered most -- an area where every reference failed to resolve
+		// reported FigureRefsUnresolved as zero, which reads as nothing went wrong.
+		if rendered := renderInsightFigures(insights); rendered.resolved > 0 || rendered.inlined > 0 || rendered.unresolved > 0 {
+			step.FiguresInlined = rendered.inlined
+			step.FigureRefsUnresolved = rendered.unresolved
+		}
+
+		// Settle every quantifier claim the model declared against the rows of
+		// the step it cited, before anything downstream reads the insight. The
+		// rows are already here and already correct; what was missing was the
+		// check.
+		attachQuantifierVerdicts(insights, stepByID)
+
+		// Bounded repair before discard (E5). Every insight whose own cited rows
+		// contradict a claim it declared gets the evaluator's reason handed back
+		// and up to ANALYSIS_REPAIR_MAX_ROUNDS attempts to say something true;
+		// whatever is still refuted loses the sentence rather than the finding.
+		// Runs before validation so the verifier judges the text that ships.
+		// A no-op on every insight that agreed with its evidence, which is
+		// almost all of them.
+		repair := o.repairRefutedInsights(ctx, area.ID, insights, stepByID, maxTokens)
+		step.InsightsRepaired = repair.repaired
+		step.InsightsClaimsDropped = repair.claimsDropped
+		step.InsightsUnrepaired = repair.unrepaired
+		step.AnalysisRepairRounds = repair.rounds
+		// Repair calls are LLM calls, so their cost belongs in this area's
+		// totals rather than disappearing into an untracked side channel.
+		step.TokensIn += repair.tokensIn
+		step.TokensOut += repair.tokensOut
+		step.DurationMs += repair.durationMs
+		if repair.rounds > 0 || repair.substituted > 0 {
+			applog.WithFields(applog.Fields{
+				"area":          area.ID,
+				"rounds":        repair.rounds,
+				"substituted":   repair.substituted,
+				"repaired":      repair.repaired,
+				"claim_dropped": repair.claimsDropped,
+				"unrepaired":    repair.unrepaired,
+			}).Info("Repaired insights whose declared claims their own evidence contradicted")
+		}
+
 		if len(insights) > 0 {
 			var areaResults []models.ValidationResult
 			areaResults, insightsValidatedThisRun = valPhase.validateInsights(ctx, insights, stepByID, area.ID, insightsValidatedThisRun)
@@ -1240,6 +1316,19 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// would produce a finding indistinguishable from a sound one. Deriving
 		// it means the label survives whatever the model wrote.
 		attachSourceQuality(insights, stepByID)
+
+		// Provenance of what ships: declared claims with their verdicts, then one
+		// line per insight naming the steps it cited.
+		//
+		// After repair so it reflects the text that ships rather than the draft,
+		// and after attachSourceQuality because the caveat is the single field
+		// most likely to explain a later false claim -- tracing before it was
+		// attached omitted `quality_caveats` from precisely the insights that
+		// cited a capped or withheld step. A no-op unless DISCOVERY_TRACE is set.
+		for i := range insights {
+			traceClaims(area.ID, insights[i])
+			traceInsight(area.ID, insights[i])
+		}
 
 		analysisLog = append(analysisLog, step)
 		allInsights = append(allInsights, insights...)
@@ -1315,6 +1404,27 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		var dropStats RecommendationDropStats
 		recommendations, dropStats = validateRelatedInsightIDs(recommendations, recommenderInput)
 		applyRecommendationDropStats(recStep, recommendations, dropStats)
+
+		// Resolve every figure a recommendation declared against the insights it was
+		// given, adopt the values those references produced, and render the prose.
+		//
+		// Order matters the same way it does in the analysis phase: the figures are
+		// settled and written into the text before anything downstream reads it. The
+		// recommendation-validation phase below sees finished prose, and so does the
+		// dashboard, the API and the exec summary -- none of them learns this format
+		// exists.
+		//
+		// After the id validation rather than before, so a recommendation dropped for
+		// citing an insight that does not exist is not first given rendered numbers.
+		figSettled, figAdopted := attachRecommendationFigureVerdicts(recommendations, recommenderInput)
+		figTally := renderRecommendationFigures(recommendations)
+		if recStep != nil {
+			recStep.FiguresSettled = figSettled
+			recStep.FiguresAdopted = figAdopted
+			recStep.FiguresResolved = figTally.resolved
+			recStep.FiguresUnresolved = figTally.unresolved
+			recStep.FiguresInlined = figTally.inlined
+		}
 	}
 
 	// Emit a per-call RunStep so the live UI carries the recommendation
@@ -1545,6 +1655,15 @@ func (o *Orchestrator) persistSplitLogs(
 // omitempty to a time.Time, so a zeroed value still renders as
 // "discovered_at": "0001-01-01T00:00:00Z".
 //
+// Figures is the one derived-looking field that is sent, and it has to be: the
+// recommendation contract tells the model to reference an insight's figures by
+// id rather than retype their values, so an allow-list that dropped them would
+// leave every reference naming an id the prompt never showed. The three records
+// derived FROM them are dropped, for the reason the repair record is -- a
+// verdict carries the original refuted value in `claimed` and the original
+// rendered text in `display`, so a number this pipeline corrected would still
+// be in the prompt for the recommender to build on.
+//
 // The json tags mirror models.Insight exactly, so INSIGHTS_DATA is unchanged
 // for every field the recommender does use — including the key order, which
 // follows the model's own declaration order.
@@ -1569,6 +1688,7 @@ type recommenderInsight struct {
 	Indicators    []string                    `json:"indicators,omitempty"`
 	TargetSegment string                      `json:"target_segment,omitempty"`
 	Quality       []gowarehouse.QualityCaveat `json:"evidence_quality,omitempty"`
+	Figures       []models.Figure             `json:"figures,omitempty"`
 }
 
 // insightsForRecommenderPrompt projects insights onto recommenderInsight. The
@@ -1579,6 +1699,7 @@ type recommenderInsight struct {
 //
 // Metrics, Indicators and Quality are carried by reference, as the previous
 // slice copy also did. Nothing between here and json.Marshal writes them.
+// Figures is a fresh slice, because it is filtered.
 func insightsForRecommenderPrompt(insights []models.Insight) []recommenderInsight {
 	out := make([]recommenderInsight, 0, len(insights))
 	for i := range insights {
@@ -1596,9 +1717,50 @@ func insightsForRecommenderPrompt(insights []models.Insight) []recommenderInsigh
 			Indicators:    in.Indicators,
 			TargetSegment: in.TargetSegment,
 			Quality:       in.Quality,
+			Figures:       figuresForRecommenderPrompt(*in),
 		})
 	}
 	return out
+}
+
+// figuresForRecommenderPrompt is the figure set an insight advertises to the
+// recommender: the ones a reference can name and still resolve.
+//
+// Two filters, and both exist because a model that follows the contract exactly
+// ships "{{f1}}" to a reader when the id it was shown resolves to nothing.
+//
+// usableFigures is the same gate the renderer and the reference index use, and
+// it is applied to every insight rather than only a repaired one. A figure
+// whose id the reference grammar cannot express -- `revenue-total` -- was
+// advertised unchanged, and the contract tells the model to copy that id
+// verbatim; reference resolution then refuses it. Same for a duplicated id and
+// a figure with no value: all three are unreferenceable, and advertising any of
+// them breaks the rule this filter exists to keep.
+//
+// figuresBrokenByRepair withholds the figures whose sentences repair rewrote.
+// buildFigureRefIndex refuses those, because the figure no longer matches a
+// sentence a reader sees, so withholding here keeps the two ends in step --
+// withheld at both or at neither, through the same predicate.
+//
+// That second filter used to be a blanket rule, any repair withdrawing every
+// figure of that insight, and the cost was measured: a run dropped one
+// indicator carrying no figure at all and withdrew eight true, held figures
+// with it, after which the model borrowed a wrong id and shipped an empty
+// reference. The number still being in the prose is not the fallback it reads
+// like; a model denied an id does not go back to typing, it finds another id.
+func figuresForRecommenderPrompt(ins models.Insight) []models.Figure {
+	usable := usableFigures(ins.Figures)
+	broken := figuresBrokenByRepair(ins)
+	if len(broken) == 0 {
+		return usable
+	}
+	kept := make([]models.Figure, 0, len(usable))
+	for _, f := range usable {
+		if !broken[f.ID] {
+			kept = append(kept, f)
+		}
+	}
+	return kept
 }
 
 // splitMarkdownDescription reduces an authored Markdown description to plain
@@ -1627,58 +1789,142 @@ func splitMarkdownDescription(authored string) (plain, md string) {
 // envelope nor a bare array). A well-formed but empty result returns
 // (empty, 0, nil) so callers can distinguish "no insights" from "could not
 // parse".
-func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.Insight, int, error) {
-	cleaned := cleanJSONResponse(response)
-
-	var raws []json.RawMessage
-	if strings.HasPrefix(strings.TrimSpace(cleaned), "[") {
-		// Bare top-level array (some models emit the array directly).
-		if err := json.Unmarshal([]byte(cleaned), &raws); err != nil {
-			return nil, 0, err
-		}
-	} else {
-		// Envelope object: the "insights" key must be present. An object with a
-		// different key is a parse failure, not a legitimately empty result —
-		// otherwise it would silently yield 0 insights with no retry.
-		var envelope map[string]json.RawMessage
-		if err := json.Unmarshal([]byte(cleaned), &envelope); err != nil {
-			return nil, 0, fmt.Errorf("failed to parse analysis response: %w", err)
-		}
-		// Match the key case-insensitively, as encoding/json does when decoding
-		// into a struct tag — some models capitalize it (`{"Insights":[…]}`).
-		var insRaw json.RawMessage
-		found := false
-		for k, v := range envelope {
-			if strings.EqualFold(k, "insights") {
-				insRaw, found = v, true
-				break
-			}
-		}
-		if !found {
-			return nil, 0, fmt.Errorf(`response is missing the "insights" key`)
-		}
-		if strings.TrimSpace(string(insRaw)) == "null" {
-			// A null array decodes into a nil slice without error; treat it as a
-			// parse failure (→ retry) rather than a silent empty result.
-			return nil, 0, fmt.Errorf(`"insights" is null`)
-		}
-		if err := json.Unmarshal(insRaw, &raws); err != nil {
-			return nil, 0, fmt.Errorf(`"insights" is not an array: %w`, err)
+// decodeWithoutClaims re-decodes one insight with its `quantifier_claims` key
+// removed, for the case where that optional advisory field is the only thing the
+// strict decoder choked on. Reports false when the rest of the object does not
+// decode either, which is a genuinely unparseable insight.
+//
+// The declaration is dropped rather than coerced on purpose: a coerced claim is a
+// predicate nobody wrote, evaluated against real rows, and a wrong verdict is
+// worse than no verdict. An insight that arrives here ships with no evidence check
+// -- which is the state every insight that declares nothing is already in.
+func decodeWithoutClaims(raw json.RawMessage) (*models.Insight, bool) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, false
+	}
+	found := false
+	for k := range fields {
+		if strings.EqualFold(k, "quantifier_claims") {
+			delete(fields, k)
+			found = true
 		}
 	}
+	if !found {
+		return nil, false
+	}
+	stripped, err := json.Marshal(fields)
+	if err != nil {
+		return nil, false
+	}
+	var insight models.Insight
+	if err := json.Unmarshal(stripped, &insight); err != nil {
+		return nil, false
+	}
+	return &insight, true
+}
 
+// parseInsights reads an analysis response, keeping every insight it can. An
+// insight whose only defect is an unparseable `quantifier_claims` is salvaged
+// without it -- at first write, losing an advisory check costs less than losing the
+// finding.
+func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.Insight, int, error) {
+	return o.parseInsightsWith(response, areaID, true, true)
+}
+
+// parseInsightsStrict is parseInsights with the salvage off, for the repair path.
+//
+// The salvage is right at first write and wrong during repair. A repair response
+// carrying a corrected sentence and malformed declarations would have its
+// declarations stripped, leave zero claims, evaluate zero verdicts, and be accepted
+// with the original refuted claim recorded as FIXED -- no predicate rechecked. That
+// is exactly the hole the round-one acceptance rule closed, reopened through the
+// salvage: a rewrite would pass by losing its checks rather than by passing them.
+// So during repair a declaration that will not parse fails the round.
+func (o *Orchestrator) parseInsightsStrict(response string, areaID string) ([]models.Insight, int, error) {
+	return o.parseInsightsWith(response, areaID, false, false)
+}
+
+func (o *Orchestrator) parseInsightsWith(response string, areaID string, salvage, requireTitle bool) ([]models.Insight, int, error) {
+	vals, ferr := jsonValues(cleanJSONResponse(response))
+	if len(vals) == 0 {
+		if ferr == nil {
+			ferr = fmt.Errorf("no JSON value in response")
+		}
+		return nil, 0, fmt.Errorf("failed to parse analysis response: %w", ferr)
+	}
+
+	// The first value that actually produces a finding is the answer. Anything before
+	// it that yielded nothing was a placeholder or prose, and is passed over without
+	// being judged -- see response_values.go for why judging it was abandoned.
+	var firstInsights []models.Insight
+	var firstDropped int
+	var firstErr error
+	for i, val := range vals {
+		raws, err := envelopeItems(val, "insights")
+		if err != nil {
+			if i == 0 {
+				firstErr = err
+			}
+			continue
+		}
+		kept, dropped := o.decodeInsightItems(raws, areaID, salvage, requireTitle)
+		if len(kept) > 0 {
+			return kept, dropped, nil
+		}
+		if i == 0 {
+			firstInsights, firstDropped = kept, dropped
+		}
+	}
+	// Nothing produced a finding. Report the first value's own complaint if it had one,
+	// so "missing the insights key" still reads as that rather than as an empty area.
+	if firstErr != nil {
+		return nil, 0, firstErr
+	}
+	return firstInsights, firstDropped, nil
+}
+
+// decodeInsightItems decodes the items of one insights array, dropping what cannot ship
+// and counting each drop.
+func (o *Orchestrator) decodeInsightItems(raws []json.RawMessage, areaID string, salvage, requireTitle bool) ([]models.Insight, int) {
 	insights := make([]models.Insight, 0, len(raws))
 	dropped := 0
 	for i, raw := range raws {
+		// A null element unmarshals into a zero-value Insight without error, so it
+		// shipped as a finding with no name, no body and no cited step. Reachable
+		// both as `[null]` and, once the string unwrap existed, as `"[null]"`.
+		if strings.TrimSpace(string(raw)) == "null" {
+			dropped++
+			applog.WithFields(applog.Fields{"area": areaID, "index": i}).
+				Warn("Dropping a null insight element; keeping the rest of the area")
+			continue
+		}
 		var insight models.Insight
 		if err := json.Unmarshal(raw, &insight); err != nil {
-			dropped++
-			applog.WithFields(applog.Fields{
-				"area":   areaID,
-				"index":  i,
-				"reason": err.Error(),
-			}).Warn("Dropping unparseable insight; keeping the rest of the area")
-			continue
+			// quantifier_claims is optional and advisory: it buys an evidence
+			// check, and losing the check is a far smaller loss than losing the
+			// finding. The prompt asks the model to author it, so a slightly off
+			// shape -- a single object instead of an array, a string-typed step --
+			// is reachable, and a strict decode would discard the name, body,
+			// metrics and indicators to protect a field none of them depend on.
+			// Retry once without it and keep what parsed.
+			if salvaged, ok := decodeWithoutClaims(raw); ok && salvage {
+				applog.WithFields(applog.Fields{
+					"area":    areaID,
+					"index":   i,
+					"insight": salvaged.Name,
+					"reason":  err.Error(),
+				}).Warn("Dropped an unparseable quantifier_claims declaration and kept the insight; it ships unchecked")
+				insight = *salvaged
+			} else {
+				dropped++
+				applog.WithFields(applog.Fields{
+					"area":   areaID,
+					"index":  i,
+					"reason": err.Error(),
+				}).Warn("Dropping unparseable insight; keeping the rest of the area")
+				continue
+			}
 		}
 
 		// Whatever the model may have put here, it is not evidence about the
@@ -1691,6 +1937,28 @@ func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.I
 		if insight.DiscoveredAt.IsZero() {
 			insight.DiscoveredAt = time.Now()
 		}
+		// An insight with no name is not shippable. The insights page deduplicates
+		// on `${analysis_area}:${insight.name}`, so every titleless insight in an
+		// area collapses into one, and it renders `{insight.name}` as the visible
+		// label and the search seed title -- so what survives is a blank row that
+		// hides its siblings.
+		//
+		// This is narrower than it first was. The first version kept a bodied
+		// insight with no title, reasoning that a model asked to write the body
+		// before the title might omit the title and still have produced the
+		// analysis. That trade only makes sense if the result can be read, and it
+		// cannot. Nothing observed emits one either: every insight across 12
+		// replays and both adjudicated runs carried a name. Synthesising a title
+		// from the body would keep the content, and is recorded as a follow-up
+		// rather than done here, because a parser is the wrong place to author
+		// prose.
+		if requireTitle && strings.TrimSpace(insight.Name) == "" {
+			dropped++
+			applog.WithFields(applog.Fields{"area": areaID, "index": i}).
+				Warn("Dropping an insight with no name; keeping the rest of the area")
+			continue
+		}
+
 		// Split the authored description: the LLM writes Markdown into
 		// `description`; keep that rendition in DescriptionMd for the
 		// dashboard, and reduce Description to the plain-text form that API
@@ -1710,7 +1978,7 @@ func (o *Orchestrator) parseInsights(response string, areaID string) ([]models.I
 		insights = append(insights, insight)
 	}
 
-	return insights, dropped, nil
+	return insights, dropped
 }
 
 // attachSourceQuality stamps each insight with the union of the quality
@@ -2114,50 +2382,55 @@ func recommendationCitationRepairSuffix(insights []models.Insight) string {
 // returns (empty, 0, nil) so callers can distinguish "no recommendations" from
 // "could not parse".
 func parseRecommendations(response string) ([]models.Recommendation, int, error) {
-	cleaned := cleanJSONResponse(response)
-
-	var raws []json.RawMessage
-	if strings.HasPrefix(strings.TrimSpace(cleaned), "[") {
-		// Bare top-level array (some models emit the array directly).
-		if err := json.Unmarshal([]byte(cleaned), &raws); err != nil {
-			return nil, 0, err
+	vals, ferr := jsonValues(cleanJSONResponse(response))
+	if len(vals) == 0 {
+		if ferr == nil {
+			ferr = fmt.Errorf("no JSON value in response")
 		}
-	} else {
-		// Envelope object: the "recommendations" key must be present. An object
-		// with a different key (e.g. {"recommendation":[…]} or {"items":[…]})
-		// is a parse failure, not a legitimately empty result — otherwise it
-		// would silently yield 0 recommendations with no retry (issue #342).
-		var envelope map[string]json.RawMessage
-		if err := json.Unmarshal([]byte(cleaned), &envelope); err != nil {
-			return nil, 0, err
-		}
-		// Match the key case-insensitively, as encoding/json does when
-		// decoding into a struct tag — some models capitalize it
-		// (`{"Recommendations":[…]}`).
-		var recRaw json.RawMessage
-		found := false
-		for k, v := range envelope {
-			if strings.EqualFold(k, "recommendations") {
-				recRaw, found = v, true
-				break
+		return nil, 0, ferr
+	}
+	// First value that produces a recommendation wins -- see response_values.go.
+	var firstRecs []models.Recommendation
+	var firstDropped int
+	var firstErr error
+	for i, val := range vals {
+		raws, err := envelopeItems(val, "recommendations")
+		if err != nil {
+			if i == 0 {
+				firstErr = err
 			}
+			continue
 		}
-		if !found {
-			return nil, 0, fmt.Errorf(`response is missing the "recommendations" key`)
+		kept, dropped := decodeRecommendationItems(raws)
+		if len(kept) > 0 {
+			return kept, dropped, nil
 		}
-		if strings.TrimSpace(string(recRaw)) == "null" {
-			// A null array decodes into a nil slice without error; treat it as a
-			// parse failure (→ retry) rather than a silent empty result.
-			return nil, 0, fmt.Errorf(`"recommendations" is null`)
-		}
-		if err := json.Unmarshal(recRaw, &raws); err != nil {
-			return nil, 0, fmt.Errorf(`"recommendations" is not an array: %w`, err)
+		if i == 0 {
+			firstRecs, firstDropped = kept, dropped
 		}
 	}
+	if firstErr != nil {
+		return nil, 0, firstErr
+	}
+	return firstRecs, firstDropped, nil
+}
 
+// decodeRecommendationItems decodes the items of one recommendations array, dropping
+// what cannot ship and counting each drop.
+func decodeRecommendationItems(raws []json.RawMessage) ([]models.Recommendation, int) {
 	recs := make([]models.Recommendation, 0, len(raws))
 	dropped := 0
 	for i, raw := range raws {
+		// The same two guards the insight loop carries, for the same reasons. A null
+		// element unmarshals into a zero-value Recommendation without error, and
+		// generateRecommendations accepts a batch because it is non-empty -- so a blank
+		// recommendation would be assigned an ID and reach citation recovery.
+		if strings.TrimSpace(string(raw)) == "null" {
+			dropped++
+			applog.WithFields(applog.Fields{"index": i}).
+				Warn("Dropping a null recommendation element; keeping the rest of the batch")
+			continue
+		}
 		var rec models.Recommendation
 		if err := json.Unmarshal(raw, &rec); err != nil {
 			dropped++
@@ -2167,9 +2440,19 @@ func parseRecommendations(response string) ([]models.Recommendation, int, error)
 			}).Warn("Dropping unparseable recommendation; keeping the rest of the batch")
 			continue
 		}
+		// Same as insights, and the breakage was found here first: the run page
+		// renders the recommendation link from `rec.title`, and the recommendations
+		// page deduplicates by title, so every titleless recommendation collapses
+		// under the same empty-string key.
+		if strings.TrimSpace(rec.Title) == "" {
+			dropped++
+			applog.WithFields(applog.Fields{"index": i}).
+				Warn("Dropping a recommendation with no title; keeping the rest of the batch")
+			continue
+		}
 		recs = append(recs, rec)
 	}
-	return recs, dropped, nil
+	return recs, dropped
 }
 
 // recommendationRepairSuffix builds the reason-aware corrective instruction
@@ -2274,7 +2557,18 @@ func (o *Orchestrator) buildAnalysisAreaPrompt(baseContext, areaPrompt, datasets
 	prompt := baseContext + "\n\n" + areaPrompt
 	prompt = strings.ReplaceAll(prompt, "{{DATASET}}", datasetsStr)
 	prompt = strings.ReplaceAll(prompt, "{{TOTAL_QUERIES}}", fmt.Sprintf("%d", totalQueries))
-	prompt = strings.ReplaceAll(prompt, "{{QUERY_RESULTS}}", queryResultsJSON)
+	// The legend goes immediately in front of the digest rather than into the
+	// domain-pack templates, so one wording covers every pack and a pack
+	// author cannot ship an area prompt that renders the digest unexplained.
+	prompt = strings.ReplaceAll(prompt, "{{QUERY_RESULTS}}", digestLegend+queryResultsJSON)
+	// Appended after the area body for the same reason the discipline rules
+	// are: a contract that lives only in pack templates is one a custom area
+	// does not have.
+	prompt += "\n\n" + quantifierContract
+	// And the figure contract, for the same reason, immediately after it: the two
+	// ask for the same kind of declaration about different statements, and a model
+	// reading them together writes both arrays or neither.
+	prompt += "\n\n" + figureContract
 	prompt = substituteDialectTokens(prompt, o.warehouse, refDataset)
 	return discipline.AppendAnalysisRules(prompt)
 }
@@ -2289,6 +2583,11 @@ func (o *Orchestrator) buildRecommendationsPrompt(baseContext, template, insight
 	prompt = strings.ReplaceAll(prompt, "{{DISCOVERY_DATE}}", time.Now().Format("2006-01-02"))
 	prompt = strings.ReplaceAll(prompt, "{{INSIGHTS_SUMMARY}}", insightsSummary)
 	prompt = strings.ReplaceAll(prompt, "{{INSIGHTS_DATA}}", insightsJSON)
+	// Appended in code rather than added to the pack templates, for the reason the
+	// analysis contracts are: a pack file can be edited and a custom template skips
+	// pack content, so a contract that only lives in templates is one some runs do
+	// not have.
+	prompt += "\n\n" + recommendationFigureContract
 	prompt = substituteDialectTokens(prompt, o.warehouse, refDataset)
 	return discipline.AppendRecommendationsRules(prompt)
 }
@@ -2825,6 +3124,14 @@ func droppedToTelemetry(dropped []DroppedStep) []models.DroppedAnalysisStep {
 
 func cleanJSONResponse(response string) string {
 	response = strings.TrimSpace(response)
+
+	// A response that already opens with JSON is the answer, and a fence later in it is
+	// something the model is quoting -- an example of an empty envelope, a schema it is
+	// referring to. Preferring the fence discarded the real answer and returned the
+	// example, so the leading value wins whenever there is one.
+	if strings.HasPrefix(response, "{") || strings.HasPrefix(response, "[") {
+		return response
+	}
 
 	if idx := strings.Index(response, "```json"); idx >= 0 {
 		start := idx + len("```json")

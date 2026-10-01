@@ -17,7 +17,7 @@ import (
 var recommenderSentInsightFields = []string{
 	"id", "analysis_area", "name", "description", "severity",
 	"affected_count", "risk_score", "confidence", "metrics", "indicators",
-	"target_segment", "evidence_quality",
+	"target_segment", "evidence_quality", "figures",
 }
 
 // recommenderDroppedInsightFields are the models.Insight json names the
@@ -28,6 +28,20 @@ var recommenderDroppedInsightFields = map[string]string{
 	"source_steps":   "exploration step numbers; the steps themselves are not in this prompt",
 	"sql_metadata":   "the recommender does not reason over SQL",
 	"discovered_at":  "a timestamp",
+
+	// The figures themselves ARE sent -- the contract tells the recommender to
+	// reference them by id. These three are derived from them, and each one
+	// carries the pre-correction number or text, which is the whole reason they
+	// cannot go: a verdict holds the original refuted value in `claimed` and the
+	// original rendered prose in `display`, so a figure this pipeline corrected
+	// would still be in the prompt for the recommender to build on. The repair
+	// record is dropped for the same reason.
+	"evidence_checks":             "quantifier verdicts; an audit record, and one carrying the original refuted claim verbatim",
+	"quantifier_claims":           "the declarations those verdicts answer; the prose the recommender reads is already repaired",
+	"evidence_figures":            "per-figure verdicts, carrying the pre-correction value in `claimed` and the pre-correction text in `display`",
+	"evidence_figure_corrections": "what Go replaced, i.e. the wrong number beside the right one",
+	"evidence_figure_template":    "the prose with references unrendered; the rendered prose and `figures` say the same thing in fewer tokens",
+	"evidence_repair":             "carries the ORIGINAL refuted claim verbatim, so a sentence this pipeline deleted for being false would be back in the prompt",
 }
 
 // fullyPopulatedInsight returns an insight with every field set, the dropped

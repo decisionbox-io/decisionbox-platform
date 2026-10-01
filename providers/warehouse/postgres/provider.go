@@ -310,6 +310,23 @@ func (p *PostgresProvider) SampleQuery(dataset, table, filterClause string, limi
 	return fmt.Sprintf(`SELECT * FROM "%s"."%s" %s LIMIT %d`, dataset, table, filterClause, limit)
 }
 
+// RowCap reports the row cap this query applies. PostgreSQL caps with a
+// trailing LIMIT, and accepts the ANSI FETCH FIRST form as well.
+//
+// It is the recognition counterpart of SampleQuery: that method renders a
+// cap in this dialect, this one reads one back out of a query the model
+// wrote. Both live here because the dialect is what makes them differ.
+func (p *PostgresProvider) RowCap(query string) (int, bool) {
+	return gowarehouse.AnyRowCap(query, gowarehouse.TrailingLimit, gowarehouse.TrailingFetchFirst)
+}
+
+// RowOffset reports the rows this query skips. Trailing `LIMIT n OFFSET m` is the
+// only paginated form this dialect renders, and a page is partial however few rows
+// come back -- see warehouse.RowOffsetInspector.
+func (p *PostgresProvider) RowOffset(query string) (int, bool) {
+	return gowarehouse.AnyRowOffset(query, gowarehouse.TrailingOffset, gowarehouse.OffsetRows)
+}
+
 func (p *PostgresProvider) SQLFixPrompt() string {
 	return sqlFixPrompt
 }

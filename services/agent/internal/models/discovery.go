@@ -133,6 +133,83 @@ type Insight struct {
 	// and is ignored.
 	Quality []gowarehouse.QualityCaveat `bson:"quality,omitempty" json:"evidence_quality,omitempty"`
 
+	// QuantifierClaims is the model's declaration of what each of this
+	// insight's quantifier statements rests on -- the step, column and
+	// predicate behind an "only", a rank, a monotonic trend or a count.
+	//
+	// Authored, unlike Quality, and deliberately so. The observed failure is
+	// not that the model cannot see the rows: it had all seventeen inline and
+	// still mis-ranked one on a column the table was not sorted by. What it
+	// cannot reliably do is check. Listing the claim it just wrote is
+	// mechanical; evaluating the predicate over every row is not, so only the
+	// evaluation is taken away from it.
+	QuantifierClaims []QuantifierClaim `bson:"quantifier_claims,omitempty" json:"quantifier_claims,omitempty"`
+
+	// QuantifierVerdicts is what Go concluded about each declared claim.
+	//
+	// The JSON name is deliberately not "quantifier_verdicts", for the reason
+	// Quality's is not "quality". Insights are decoded from model output with
+	// the standard decoder, so a key matching this tag would be read straight
+	// into the field -- letting the model author the very verdict whose point
+	// is that the model did not reach it. And the analysis prompt now asks for
+	// `quantifier_claims` by name, which makes a sibling `quantifier_verdicts`
+	// the obvious next key for a model to volunteer. Under a name no prompt
+	// mentions it is an unknown field and is ignored.
+	//
+	// attachQuantifierVerdicts also clears the field before it writes. Two
+	// defences for one hole, because the cost of the model marking its own
+	// work is that every measurement built on these verdicts is worthless.
+	//
+	// Kept out of Validation on purpose: that slot belongs to the verifier and
+	// refuter, and the two have to stay independent or a comparison between
+	// them measures nothing.
+	QuantifierVerdicts []QuantifierVerdict `bson:"quantifier_verdicts,omitempty" json:"evidence_checks,omitempty"`
+
+	// Figures are the numbers this insight states, emitted as data: the value, the
+	// arithmetic over the evidence that produced it, and how it should be written. The
+	// prose carries a reference -- "{{f1}} of 1997 revenue" -- and Go renders it.
+	//
+	// Authored, and the indirection is the point: no number in an insight is ever
+	// recovered by parsing its prose. Three earlier designs did parse it and each failed
+	// at the parse rather than at the checking -- a regex enumerator at 7-14% precision,
+	// a precision read back out of a figure's own text that took "5.0% of $34.86B" to
+	// mean five, and a prose-to-data match at 1% tolerance that could not separate 21 of
+	// the declared figure pairs in one sample.
+	Figures []Figure `bson:"figures,omitempty" json:"figures,omitempty"`
+
+	// FigureVerdicts is what Go concluded about each figure's declared arithmetic.
+	//
+	// The JSON name is deliberately not "figure_verdicts", for the reason
+	// QuantifierVerdicts' is not "quantifier_verdicts": insights are decoded from model
+	// output with the standard decoder, so a key matching this tag would be read straight
+	// into the field, letting the model author the verdict whose whole point is that the
+	// model did not reach it. attachFigureVerdicts also clears the field before writing.
+	FigureVerdicts []FigureVerdict `bson:"figure_verdicts,omitempty" json:"evidence_figures,omitempty"`
+
+	// FigureCorrections records figures whose value Go replaced with the one their own
+	// declared arithmetic produced. Derived, and under a tag no prompt mentions.
+	FigureCorrections []FigureCorrection `bson:"figure_corrections,omitempty" json:"evidence_figure_corrections,omitempty"`
+
+	// FigureTemplate keeps the prose as authored, references intact, after the rendered
+	// text has been written into Name, Description and Indicators.
+	//
+	// Those rendered fields are what every reader downstream consumes, so none of them
+	// has to know this format exists. The template is the audit trail: it is what makes
+	// it checkable after the fact that a number in the prose came from a declaration
+	// rather than from the model typing one.
+	FigureTemplate *FigureTemplate `bson:"figure_template,omitempty" json:"evidence_figure_template,omitempty"`
+
+	// Repair records what bounded repair did to this insight after a claim of
+	// its own came back refuted: which sentences were corrected, which were
+	// removed, and how many corrective rounds that cost. Nil on the happy path,
+	// which is nearly every insight -- repair only runs on one whose declared
+	// claim its own evidence contradicts.
+	//
+	// The tag is `evidence_repair` for the reason the two above it are not
+	// `quality` and `quantifier_verdicts`: the model must not be able to author
+	// the record of its own correction.
+	Repair *InsightRepair `bson:"repair,omitempty" json:"evidence_repair,omitempty"`
+
 	SQLMetadata  *SQLMetadata `bson:"sql_metadata,omitempty" json:"sql_metadata,omitempty"`
 	DiscoveredAt time.Time    `bson:"discovered_at" json:"discovered_at"`
 
@@ -195,6 +272,36 @@ type Recommendation struct {
 
 	Confidence float64   `bson:"confidence" json:"confidence"`
 	CreatedAt  time.Time `bson:"created_at" json:"created_at"`
+
+	// Figures are the numbers this recommendation states, emitted as data rather
+	// than typed into the prose -- the same format the insights use, with the one
+	// grammar a recommendation can actually support.
+	//
+	// A recommendation is shown the insights and no warehouse rows, so it cannot
+	// declare arithmetic over a step. Every figure here points at a figure an
+	// insight already declared and Go already checked: `ref` restates one, `sum`
+	// totals several. That covers what recommendations do with numbers -- over four
+	// adjudicated runs, 602 of 638 numerals in recommendation prose were
+	// restatements of an insight's number, and the one class of fresh arithmetic
+	// that shipped a false number was a total over bands.
+	Figures []Figure `bson:"figures,omitempty" json:"figures,omitempty"`
+
+	// FigureVerdicts is what Go concluded about each figure's references.
+	//
+	// The tag is `evidence_figures` rather than `figure_verdicts` for the reason the
+	// insight's is: the model must not be able to author the record of its own
+	// check. A verdict decoded off the model's own output would read as Go's.
+	FigureVerdicts []FigureVerdict `bson:"figure_verdicts,omitempty" json:"evidence_figures,omitempty"`
+
+	// FigureCorrections records figures whose value Go replaced with the one the
+	// references produced. Unlike the insight pass this is not a rare event, and it
+	// is not meant to be: Go renders what Go computed from the references, so a
+	// declared value that disagrees is recorded here rather than shipped.
+	FigureCorrections []FigureCorrection `bson:"figure_corrections,omitempty" json:"evidence_figure_corrections,omitempty"`
+
+	// FigureTemplate keeps the prose as authored, references intact, after the
+	// rendered text has been written into the fields above it.
+	FigureTemplate *RecommendationFigureTemplate `bson:"figure_template,omitempty" json:"evidence_figure_template,omitempty"`
 
 	// Validation is the verifier+refuter verdict attached after the
 	// orchestrator's recommendation-validation phase runs. Nil on
@@ -501,7 +608,30 @@ type ExplorationStep struct {
 	QueryPurpose string `bson:"query_purpose,omitempty" json:"query_purpose,omitempty"`
 
 	// Query execution (if action = query_data)
-	Query           string                   `bson:"query,omitempty" json:"query,omitempty"`
+	//
+	// Query is the statement the MODEL PROPOSED. It is not necessarily the
+	// statement that produced QueryResult -- see QueryExecuted.
+	Query string `bson:"query,omitempty" json:"query,omitempty"`
+
+	// QueryExecuted is the statement that actually ran, when the self-healing
+	// fixer rewrote the proposal. Empty when the proposal ran unchanged, which
+	// is why every reader should go through EffectiveQuery() rather than
+	// choosing between the two fields itself.
+	//
+	// Both are kept because they answer different questions. The proposal is
+	// what the model wrote, and that is the training signal -- a run where every
+	// statement had to be repaired is a fact about the model worth keeping.
+	// QueryExecuted is what the warehouse answered, and that is the only
+	// statement that explains the rows.
+	//
+	// The gap between them is not cosmetic. A repair can change the semantics
+	// of the answer: an observed run had APPROX_QUANTILES(x,4)[OFFSET(2)]
+	// rewritten to PERCENTILE_CONT(0.5) WITHIN GROUP -- an approximate median
+	// replaced by an exact one -- and a BigQuery UNNEST rewritten into a
+	// different grouping. Anything that grounds a claim on "the SQL that
+	// produced this evidence" and reads Query is grounding it on a statement
+	// the warehouse rejected.
+	QueryExecuted   string                   `bson:"query_executed,omitempty" json:"query_executed,omitempty"`
 	QueryResult     []map[string]interface{} `bson:"query_result,omitempty" json:"query_result,omitempty"`
 	RowCount        int                      `bson:"row_count,omitempty" json:"row_count,omitempty"`
 	ExecutionTimeMs int64                    `bson:"execution_time_ms,omitempty" json:"execution_time_ms,omitempty"`
@@ -559,6 +689,24 @@ type ExplorationStep struct {
 	DurationMs  int64  `bson:"duration_ms,omitempty" json:"duration_ms,omitempty"`
 
 	IsInsight bool `bson:"is_insight" json:"is_insight"`
+}
+
+// EffectiveQuery is the statement that produced this step's rows: the repaired
+// one when the fixer rewrote the model's proposal, otherwise the proposal
+// itself.
+//
+// Every consumer that treats a step's SQL as evidence -- the analysis prompt,
+// the verifier's cited-step rendering, the live status feed -- reads this.
+// Consumers that use SQL only as retrieval text (the per-run vector index, the
+// step picker's table signature and dedupe key) deliberately still read Query:
+// switching them would change which evidence reaches analysis, and no defect
+// asks for that. The picker already strips identifier quoting, so the two agree
+// on table names regardless.
+func (s ExplorationStep) EffectiveQuery() string {
+	if s.QueryExecuted != "" {
+		return s.QueryExecuted
+	}
+	return s.Query
 }
 
 // FixAttempt is the per-attempt record produced by the self-healing SQL
@@ -672,6 +820,48 @@ type AnalysisStep struct {
 	// on the happy path; omitted when zero.
 	AnalysisParseRetries int `bson:"analysis_parse_retries,omitempty" json:"analysis_parse_retries,omitempty"`
 
+	// Repair counters (E5). Every one of these is zero on an area whose
+	// insights all agreed with their own evidence, which is the common case, so
+	// all four are omitted on a clean run and a non-zero value is itself the
+	// signal worth looking at.
+	//
+	// InsightsRepaired counts insights that entered repair with a refuted claim
+	// and left with none.
+	InsightsRepaired int `bson:"insights_repaired,omitempty" json:"insights_repaired,omitempty"`
+
+	// FiguresCorrected counts the figures this area's check replaced with the value
+	// their own declared arithmetic produced. Separate from InsightsRepaired because
+	// it costs no LLM call: the correct number arrives with the refutation, and
+	// correcting it is a field assignment rather than a rewrite.
+	FiguresCorrected int `bson:"figures_corrected,omitempty" json:"figures_corrected,omitempty"`
+
+	// FiguresInlined counts template fields that stated a number directly instead of
+	// referencing a declared figure. Those numbers are checked by nothing, so this is
+	// the measure of whether the format is being used or merely filled in.
+	FiguresInlined int `bson:"figures_inlined,omitempty" json:"figures_inlined,omitempty"`
+
+	// FigureRefsUnresolved counts references the prose made to figures it never
+	// declared. Those ship as written, so a reader sees the reference rather than a
+	// hole.
+	FigureRefsUnresolved int `bson:"figure_refs_unresolved,omitempty" json:"figure_refs_unresolved,omitempty"`
+
+	// InsightsClaimsDropped counts insights that kept a refuted claim through
+	// the round cap and had the sentence removed instead. Read against
+	// InsightsRepaired this is the repaired-vs-discarded ratio: the point of
+	// bounding repair is knowing how often it works.
+	InsightsClaimsDropped int `bson:"insights_claims_dropped,omitempty" json:"insights_claims_dropped,omitempty"`
+
+	// InsightsUnrepaired counts insights that shipped with a refuted claim
+	// still in the text because there was no sentence to remove -- the claim
+	// was the headline, or the whole description.
+	InsightsUnrepaired int `bson:"insights_unrepaired,omitempty" json:"insights_unrepaired,omitempty"`
+
+	// AnalysisRepairRounds is the total number of corrective repair calls this
+	// area issued across all its insights, bounded per insight by
+	// ANALYSIS_REPAIR_MAX_ROUNDS. This is what repair cost; the counters above
+	// are what it bought.
+	AnalysisRepairRounds int `bson:"analysis_repair_rounds,omitempty" json:"analysis_repair_rounds,omitempty"`
+
 	// Validation
 	ValidationResults []ValidationResult `bson:"validation_results,omitempty" json:"validation_results,omitempty"`
 
@@ -742,6 +932,23 @@ type RecommendationStep struct {
 	// be measured independently of the related_insight_ids drops above.
 	// Omitted on a clean run.
 	RecommendationsDroppedParse int `bson:"recommendations_dropped_parse,omitempty" json:"recommendations_dropped_parse,omitempty"`
+
+	// Figure telemetry for the recommendation phase, mirroring the per-area
+	// counters on AnalysisStep. Omitted on a run whose model declared no figures,
+	// so a provider that ignores the contract is visible as absence rather than as
+	// zeroes that look like compliance.
+	//
+	// FiguresSettled is how many figures were given a verdict; FiguresAdopted how
+	// many had their declared value replaced by the one their references produced.
+	// FiguresResolved and FiguresUnresolved count references the prose carried, and
+	// FiguresInlined counts prose fields that stated a number directly instead of
+	// referencing one -- the number that measures whether the contract is being
+	// used or filled in.
+	FiguresSettled    int `bson:"figures_settled,omitempty" json:"figures_settled,omitempty"`
+	FiguresAdopted    int `bson:"figures_adopted,omitempty" json:"figures_adopted,omitempty"`
+	FiguresResolved   int `bson:"figures_resolved,omitempty" json:"figures_resolved,omitempty"`
+	FiguresUnresolved int `bson:"figures_unresolved,omitempty" json:"figures_unresolved,omitempty"`
+	FiguresInlined    int `bson:"figures_inlined,omitempty" json:"figures_inlined,omitempty"`
 
 	// RecommendationParseRetries counts how many corrective re-prompts the
 	// recommendation phase issued after the model's first response yielded

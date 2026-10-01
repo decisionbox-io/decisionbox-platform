@@ -186,7 +186,7 @@ func pickCitedSteps(indexed map[int]models.ExplorationStep, ids []int) []models.
 }
 
 func isExecutableQueryStep(s models.ExplorationStep) bool {
-	if strings.TrimSpace(s.Query) == "" {
+	if strings.TrimSpace(s.EffectiveQuery()) == "" {
 		return false
 	}
 	if s.Action != "" && s.Action != "query_data" {
@@ -273,7 +273,7 @@ func writeStep(b *strings.Builder, s models.ExplorationStep) {
 	}
 	fmt.Fprintf(b, "### Step %d — %s\n\n", s.Step, purpose)
 	b.WriteString("```sql\n")
-	b.WriteString(strings.TrimRight(s.Query, "\n"))
+	b.WriteString(strings.TrimRight(s.EffectiveQuery(), "\n"))
 	b.WriteString("\n```\n\n")
 	if s.Error != "" {
 		fmt.Fprintf(b, "Returned an error: %s\n\n", s.Error)

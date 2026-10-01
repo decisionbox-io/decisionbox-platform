@@ -70,9 +70,9 @@ type DocDigest struct {
 // the verifier can build claims against the same fields. Maps 1:1
 // to models.Recommendation.ExpectedImpact.
 type ExpectedImpactDigest struct {
-	Metric                string `json:"metric,omitempty"`
-	EstimatedImprovement  string `json:"estimated_improvement,omitempty"`
-	Reasoning             string `json:"reasoning,omitempty"`
+	Metric               string `json:"metric,omitempty"`
+	EstimatedImprovement string `json:"estimated_improvement,omitempty"`
+	Reasoning            string `json:"reasoning,omitempty"`
 }
 
 // SourceStepDigest is one exploration step boiled down to schema +
@@ -295,8 +295,11 @@ func digestStep(s *agentmodels.ExplorationStep, cfg BundleConfig) SourceStepDige
 		sampled = append(sampled, normaliseRow(r, cfg.CellCharCap))
 	}
 	return SourceStepDigest{
-		StepID:       s.Step,
-		SQL:          s.Query,
+		StepID: s.Step,
+		// The statement that produced these rows. A repaired step
+		// kept the model's rejected proposal in Query, and pairing that with rows
+		// it never produced is what this bundle exists to prevent.
+		SQL:          s.EffectiveQuery(),
 		Reasoning:    s.Thinking,
 		Schema:       inferSchema(rows),
 		SampleRows:   sampled,

@@ -57,6 +57,76 @@ func insightResponseSchema() map[string]interface{} {
 			"description": "Signals/behaviours that characterize this pattern",
 			"items":       str("A single indicator"),
 		},
+		"figures": map[string]interface{}{
+			"type": "array",
+			"description": "Every number this insight states, as data. The prose references them " +
+				"as {{id}} and the platform renders the text.",
+			"items": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"id":    str(`Reference the prose uses, e.g. "f1"; unique within this insight`),
+					"value": map[string]interface{}{"type": "number", "description": "The number in the units of the step's own column: 8476238553, or 24.66 for a percentage"},
+					// No "days". The closed set in models.Figure deliberately has no unit
+					// for a word, because a unit here is notation and a word is prose --
+					// the first live run rendered "{{f1}} days" with a days unit and
+					// shipped "180.1 days days". This list advertised it for two commits
+					// after the code dropped it, which is the schema inviting exactly the
+					// mistake the contract forbids in prose; the schema is the stronger
+					// signal, so it was the one being obeyed. Pinned by
+					// TestInsightSchema_FigureEnumsMatchTheClosedSets.
+					"unit":     str(`One of "count", "currency", "percent", "multiple", "plain" -- notation, never a word like days`),
+					"currency": str(`Symbol a currency figure prints; omit for dollars, set it when the data is not in dollars (e.g. "€")`),
+					"scale":    str(`Abbreviation for a large number: "thousands", "millions", "billions"; omit to write it in full`),
+					"decimals": map[string]interface{}{"type": "integer", "description": "Decimal places to print; this is the precision being claimed"},
+					"approx":   map[string]interface{}{"type": "boolean", "description": "Print a tilde to mark the number as rounded"},
+					"step":     map[string]interface{}{"type": "integer", "description": "Exploration step whose rows produced the figure"},
+					// "excess" is listed beside "ratio" with the difference spelled out,
+					// because the two read the same two cells and only the sentence tells
+					// them apart. A run offering ratio alone shipped a vouched figure
+					// behind "109.6% more" where the excess is 9.6%.
+					"kind":   str(`One of "cell", "sum", "count", "ratio", "excess", "diff". "ratio" is a/b and "excess" is a/b-1, so a sentence saying one thing is N% MORE than another is an excess`),
+					"column": str("Column the arithmetic runs over"),
+					"row":    str("Terms selecting the single row a cell, a ratio or excess numerator, or a diff's left operand comes from"),
+					"other":  str("Terms selecting a diff's right operand, or the denominator row of a ratio or an excess"),
+					"scope":  str("Which rows a sum, a count, or a ratio or excess denominator covers"),
+				},
+				"required": []string{"id", "value", "step", "kind"},
+			},
+		},
+		"quantifier_claims": map[string]interface{}{
+			"type": "array",
+			"description": "One entry per statement whose truth depends on rows besides those it names " +
+				"(only / every / largest / second largest / top N / improved each year / has N values)",
+			"items": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"claim":        str("The statement, verbatim as written in name, description or indicators"),
+					"kind":         str(`One of "only", "all", "rank", "monotonic", "cardinality"`),
+					"step":         map[string]interface{}{"type": "integer", "description": "Exploration step whose rows settle the claim"},
+					"column":       str("Column the claim ranks by, or whose direction it asserts"),
+					"filter":       str("Conjunction of `column <op> literal` terms joined by AND"),
+					"scope":        str("Which rows the claim is about, same grammar as filter; applied before top_n"),
+					"top_n":        map[string]interface{}{"type": "integer", "description": "Narrow the scope to the top N rows before applying the predicate"},
+					"top_n_column": str("Column the top-N scope is ranked by"),
+					"subject":      str("Terms selecting the single row a rank claim is about, same grammar as filter"),
+					"rank":         map[string]interface{}{"type": "integer", "description": "1-based rank from the order end"},
+					"count": map[string]interface{}{"type": "integer", "minimum": 1,
+						"description": "Asserted number of rows. Required for a cardinality claim, and must be positive: " +
+							"an omitted count cannot be told from an asserted zero, so a cardinality claim without one is not checked"},
+					"order": str(`"desc" (default) or "asc"`),
+					// An enum rather than a description, because a trend the evaluator
+					// cannot read is not checked at all. "decrease" or "down" used to be
+					// silently treated as increasing, which refuted correct series.
+					"order_by": str("Required for a monotonic claim: the column that puts the rows in " +
+						"sequence — the year, the decile, the band. The platform sorts by it ascending before " +
+						"checking the trend, so the order your query returned does not matter. It must be a " +
+						"numeric column, and it must not be the same column as `column`"),
+					"trend": map[string]interface{}{"type": "string",
+						"enum":        []interface{}{"increasing", "decreasing"},
+						"description": "Required for a monotonic claim. Exactly \"increasing\" or \"decreasing\" — no other word is read"},
+				},
+			},
+		},
 		"source_steps": map[string]interface{}{
 			"type":        "array",
 			"description": "Exploration step numbers this insight is based on",
@@ -77,5 +147,31 @@ func insightResponseSchema() map[string]interface{} {
 			},
 		},
 		"required": []interface{}{"insights"},
+	}
+}
+
+// insightRepairResponseFormat is the analysis schema with `figures` removed, for the bounded
+// repair pass.
+//
+// rewriteInsight reuses the analysis response format, so describing `figures` there quietly
+// handed the repair prompt a facility the repair path cannot support: mergeRepairedInsight
+// copies the rewritten prose and not its figures, and rendering has already finished by the
+// time repair runs. A structured-output repair could therefore return "{{f1}}" with a
+// matching declaration, pass the quantifier checks, and ship the placeholder to a reader.
+//
+// Removing the key is the fix rather than teaching repair to render, because by that point
+// every number in the insight is already rendered text and a repair that wants to change one
+// is changing prose. There is nothing for it to declare.
+func insightRepairResponseFormat() *gollm.ResponseFormat {
+	schema := insightResponseSchema()
+	props, _ := schema["properties"].(map[string]interface{})
+	items, _ := props["insights"].(map[string]interface{})["items"].(map[string]interface{})
+	if itemProps, ok := items["properties"].(map[string]interface{}); ok {
+		delete(itemProps, "figures")
+	}
+	return &gollm.ResponseFormat{
+		Name:   insightResponseFormatName,
+		Schema: schema,
+		Strict: false,
 	}
 }

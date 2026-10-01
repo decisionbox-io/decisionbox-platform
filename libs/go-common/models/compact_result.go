@@ -83,7 +83,14 @@ type ColumnSummary struct {
 	Name      string     `bson:"name" json:"name"`
 	Kind      ColumnKind `bson:"kind" json:"kind"`
 	NullCount int        `bson:"null_count" json:"null_count"`
-	Distinct  int        `bson:"distinct,omitempty" json:"distinct,omitempty"`
+	// Distinct is the number of distinct values among the rows THIS RESULT
+	// returned, not in the underlying column. The JSON name says so
+	// because the prompt is where the difference gets lost: a reader shown
+	// `distinct: 15` beside a `GROUP BY p_type ... LIMIT 15` query has
+	// been handed the cap, and has written "p_type has 15 values" over a
+	// column holding 150. The BSON name is unchanged so digests already
+	// stored in Mongo still decode.
+	Distinct int `bson:"distinct,omitempty" json:"distinct_in_result,omitempty"`
 
 	// Numeric percentiles (float64-coerced). Populated only when
 	// Kind == ColumnKindNumber and at least one non-nil value exists.

@@ -391,16 +391,74 @@ func renderCoveredFields(hasCube bool) string {
 // or a fenced one; unknown fields are ignored. Missing arrays decode as nil,
 // which the apply path treats as "nothing to do". A non-nil error is returned
 // only when the response is not a JSON object at all.
+// isEmpty reports whether this reflection says nothing: no summary, no note, and every
+// list empty.
+//
+// A zero-value comparison is not the test. A model that spells every field out as an
+// empty array produces something semantically empty whose slices are non-nil, so it
+// compared unequal to the zero value, passed as an answer, and silenced the real
+// reflection behind it. Emptiness is a property of the contents, not of how the JSON
+// happened to be written.
+func (r parsedReflection) isEmpty() bool {
+	return strings.TrimSpace(r.CoverageSummary) == "" &&
+		strings.TrimSpace(r.ConvergenceNote) == "" &&
+		len(r.CoveredTables) == 0 &&
+		len(r.CoveredCatalogItems) == 0 &&
+		len(r.CoveredAreas) == 0 &&
+		len(r.StatusUpdates) == 0 &&
+		len(r.Learnings) == 0 &&
+		len(r.TaskStatusUpdates) == 0 &&
+		len(r.NextTasks) == 0 &&
+		len(r.PackDeltas) == 0
+}
+
 func parseReflection(response string) (*parsedReflection, error) {
 	cleaned := cleanJSONResponse(response)
 	if strings.TrimSpace(cleaned) == "" {
 		return nil, fmt.Errorf("empty reflection response")
 	}
-	var out parsedReflection
-	if err := json.Unmarshal([]byte(cleaned), &out); err != nil {
-		return nil, fmt.Errorf("reflection response is not a JSON object: %w", err)
+	// The contract is an object. A bare `null` unmarshals into a non-pointer struct
+	// without error, so it arrived as an empty reflection and was accepted instead of
+	// retried; cleanJSONResponse leaves it untouched because it holds no brace. An
+	// array or a scalar fails the decode anyway -- this makes the requirement explicit
+	// rather than incidental.
+	if !strings.HasPrefix(strings.TrimSpace(cleaned), "{") {
+		return nil, fmt.Errorf("reflection response is not a JSON object")
 	}
-	return &out, nil
+	vals, ferr := jsonValues(cleaned)
+	if len(vals) == 0 {
+		if ferr == nil {
+			ferr = fmt.Errorf("no JSON value in response")
+		}
+		return nil, fmt.Errorf("reflection response is not a JSON object: %w", ferr)
+	}
+	// First value that says anything wins -- see response_values.go. A leading
+	// placeholder, whether `{}` or every field spelled out empty, no longer silences the
+	// real reflection behind it, and no longer costs a re-prompt either.
+	var first *parsedReflection
+	var firstErr error
+	for i, val := range vals {
+		var out parsedReflection
+		if err := json.Unmarshal(val, &out); err != nil {
+			if i == 0 {
+				firstErr = fmt.Errorf("reflection response is not a JSON object: %w", err)
+			}
+			continue
+		}
+		if !out.isEmpty() {
+			return &out, nil
+		}
+		if i == 0 {
+			first = &out
+		}
+	}
+	if first != nil {
+		return first, nil
+	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return nil, fmt.Errorf("reflection response is not a JSON object")
 }
 
 // reflectionRepairSuffix re-states the output contract after an unusable
