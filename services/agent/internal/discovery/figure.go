@@ -208,7 +208,7 @@ func evaluateFigure(f models.Figure, steps map[int]StepRows) models.FigureVerdic
 // evalFigure runs one figure's arithmetic, and reports how far the answer can be out.
 //
 // The second return is an absolute bound on this computation's own floating-point error,
-// in the units of the value beside it. It exists because four review rounds tried to guess
+// in the units of the value beside it. It exists because four rounds of review tried to guess
 // it from the RESULT and were each just short: the error a figure carries is set by the
 // numbers that went in, and an excess of 100.0000015 over 100 divides a difference of
 // 1.5e-6 by 100, so it inherits error from operands eight orders of magnitude larger than
@@ -308,7 +308,7 @@ func evalFigure(f models.Figure, rows []map[string]any) (value, slack float64, e
 		// Written from the operands' bounds rather than from |a/b| alone, because a
 		// denominator that is a column total carries the rounding of every addition in it,
 		// not just the error of one double. With two cells this reduces to 2*eps*|a/b|,
-		// which is what it was before review round 33.
+		// which is what it was before the bound was derived rather than guessed.
 		quotient := math.Abs(num.value / den.value)
 		slack := (num.slack + quotient*den.slack) / math.Abs(den.value)
 		if f.Unit == models.UnitPercent {
@@ -357,7 +357,7 @@ const floatEps = 1.1102230246251565e-16
 // The bound travels with the value because the two cannot be recombined later. A cell is out
 // by at most the error of writing it as a double; a column total is out by the rounding every
 // addition accumulated, which on a hundred rows is two orders of magnitude more. A ratio over
-// a column total inherits the second, and review round 33 found the bound short by ninefold
+// a column total inherits the second, and review found the bound short by ninefold
 // for exactly that: a numerator of 1.23455 over a hundred cells of 0.1 evaluated to
 // 12.345500000000024, which refuted a figure printing "12.345%" and then rewrote it to
 // "12.346%" over accumulation error alone.

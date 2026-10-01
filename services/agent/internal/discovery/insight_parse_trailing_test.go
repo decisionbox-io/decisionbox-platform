@@ -4,7 +4,7 @@ package discovery
 // answer was malformed.
 //
 // The two fixtures below are verbatim first-attempt responses from
-// us.anthropic.claude-opus-4-8 replaying the frozen s8 corpus, captured 2026-09-28
+// us.anthropic.claude-opus-4-8 replaying a frozen exploration corpus, captured 2026-09-28
 // because analyzeAreaInsights keeps only the last attempt and the failing shape was
 // therefore never stored. Both are a valid envelope followed by the reason it is empty.
 // Both were rejected with `invalid character 'T' after top-level value` -- the T of
@@ -17,12 +17,12 @@ import (
 	"testing"
 )
 
-// Verbatim capture, s8/session_behavior.
+// Verbatim capture, the session_behavior area.
 const trailingProseEmpty = `{"insights": []}
 
 The provided query results are drawn from a TPC-H schema (customer, orders, lineitem, part, partsupp, supplier, nation, region) and contain no session-level, event-level, or browsing-behavior data. There are no session identifiers, page views, cart events, timestamps of browsing activity, or event types. The available queries cover regional revenue, customer revenue deciles, and negative-margin part-supplier pairs — none of which support session or browsing behavior analysis. No session and browsing patterns can be identified from this data.`
 
-// Verbatim capture, s8/conversion. Pretty-printed envelope, longer tail.
+// Verbatim capture, the conversion area. Pretty-printed envelope, longer tail.
 const trailingProseEmptyPretty = `{
   "insights": []
 }
@@ -91,7 +91,7 @@ Only one finding is supported by these results.`
 }
 
 // The other shape the model demonstrably emits: the array as a JSON-encoded string.
-// s8's frozen conversion re-prompt came back this way, carrying a real insight that was
+// The frozen conversion re-prompt came back this way, carrying a real insight that was
 // then dropped -- a loss downstream of the trailing-prose rejection, since the
 // re-prompt only ran because of it.
 func TestParseInsights_StringifiedInsightsArray(t *testing.T) {

@@ -34,7 +34,8 @@ func ref(insight, figure string) models.FigureRef {
 	return models.FigureRef{Insight: insight, Figure: figure}
 }
 
-// TestRecommendationFigures_FabricatedTotalIsReplacedByTheReferences is s11 R5.
+// TestRecommendationFigures_FabricatedTotalIsReplacedByTheReferences is a recommendation a
+// live run shipped: a headline total that matched no combination of the figures it cited.
 //
 // The shipped headline read "Build a Retention Program for the 96,447 Buyers in the 6+
 // Order Frequency Bands". The bands it named hold 52,134 and 43,897, which total 96,031 --
@@ -109,7 +110,7 @@ func TestRecommendationFigures_TitleAndBodyCannotDisagree(t *testing.T) {
 
 // TestRecommendationFigures_RefTakesTheInsightsCheckedValue is the restatement case, which
 // is 94% of the numerals a recommendation writes. The model declares no value and cannot
-// mistype one; s7 R4.4 and s8 R1.4 were both retyped numbers.
+// mistype one, and two live runs each shipped a recommendation that retyped one.
 func TestRecommendationFigures_RefTakesTheInsightsCheckedValue(t *testing.T) {
 	ins := bandInsight()
 	recs := []models.Recommendation{{

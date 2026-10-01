@@ -431,7 +431,7 @@ func TestFigure_CorrectionDeclinesWhenTheDeclarationIsWhatIsWrong(t *testing.T) 
 		decimals  int
 		wantFixed bool
 	}{
-		// Observed in run s10, all seven declined.
+		// Observed in a live run, all seven declined.
 		{"a per-line value declared as a ratio", 37723.75, 6.984264944268963, models.UnitCurrency, models.ScaleNone, 0, false},
 		{"a per-year value declared as a sum of all years", 34436097423, 206616584541.93, models.UnitCurrency, models.ScaleBillions, 1, false},
 		{"a discount rate declared as an unscoped ratio", 9.97, 111.0840768340196, models.UnitPercent, models.ScaleNone, 2, false},
@@ -444,7 +444,8 @@ func TestFigure_CorrectionDeclinesWhenTheDeclarationIsWhatIsWrong(t *testing.T) 
 		{"a share off in its last place", 61.44, 61.43234432675047, models.UnitPercent, models.ScaleNone, 2, true},
 		{"a share off by a third of a point", 54.66, 55.03593311971261, models.UnitPercent, models.ScaleNone, 2, true},
 
-		// Run s9's only genuine catch: a digit transposition. This must keep working.
+		// The one genuine catch from a frozen-corpus replay: a digit transposition. This must
+		// keep working.
 		{"a digit transposition", 34363832414, 34373633413, models.UnitCurrency, models.ScaleBillions, 2, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

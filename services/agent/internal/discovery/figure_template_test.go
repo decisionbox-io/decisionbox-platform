@@ -359,7 +359,7 @@ func TestTemplate_DoesNotDoubleACurrencySymbol(t *testing.T) {
 	}
 
 	// Two references in one sentence, each with its own symbol written by the template --
-	// the exact shape session 13 shipped as "$$53.74B of a $$218.10B".
+	// the exact shape a live run shipped as "$$53.74B of a $$218.10B".
 	t.Run("two symbols in one sentence", func(t *testing.T) {
 		ins := []models.Insight{{
 			Name:        "Returns",

@@ -148,7 +148,7 @@ func renderedValue(f models.Figure) float64 {
 // figureAgreement is what the comparison is able to establish, which is three answers and
 // not two.
 //
-// Two was the mistake that took six review rounds to surface. `holds` or `fails` forces the
+// Two was the mistake that took six rounds of review to surface. `holds` or `fails` forces the
 // arithmetic's own uncertainty to be folded into one of them: fold it into the interval and
 // a figure is certified whenever the two merely OVERLAP -- a total of 0.25 known to within
 // 0.4 certified a claim of 1, because [-0.15, 0.65] reaches into [0.5, 1.5]. Leave it out

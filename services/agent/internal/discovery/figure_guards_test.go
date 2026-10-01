@@ -1,7 +1,13 @@
 package discovery
 
-// The five concerns codex review round 19 raised against the figure layer. Each was
-// verified in the code before being accepted, and each is pinned here.
+// The figure layer's guards, and what each of them refuses.
+//
+// Every case here is a way bad input or an unanswerable comparison could have reached the
+// prose, found by adversarial review of the layer rather than by a run producing it: a
+// duplicated figure id, an id outside the grammar, a non-finite value, a precision finer
+// than the source it restates, a correction that would leave a structured field disagreeing
+// with the sentence. Each was verified against the code before being accepted, and each is
+// pinned here so it cannot come back.
 
 import (
 	"encoding/json"
