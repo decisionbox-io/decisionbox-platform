@@ -37,6 +37,15 @@ package discovery
 //   - approx not loosening the check is what stops a tilde being a way to make a figure
 //     unrefutable.
 //   - declaring an uncertain figure is what makes the correction pass reachable at all.
+//   - the two exceptions -- a period, and a number you CHOSE rather than read -- are what the
+//     earlier years-only wording could not express. Of 17 headlines in one run the bare-numeral
+//     detector flagged 8, and 7 were a bucket index ("bucket 1 of 5"), a band edge ("above
+//     20%"), a year label ("year 1") or part of a product name ("imageCLASS 2200"). A rule the
+//     model must break to write an ordinary headline is a rule it also breaks where it matters.
+//   - the `name` clause is the one case that WAS a measurement: a headline read "159 customers
+//     are net unprofitable" with 159 undeclared, and because a recommendation can restate only
+//     a declared figure, the one that needed that count aimed a `count` reference at the
+//     insight's first figure -- an amount -- and shipped `{{f1}}` in its own title.
 //
 // The one clause that is new rather than kept: an indicator with no number in it needs no
 // declaration. Three of thirteen insights in the first clean run emitted no indicators at
@@ -49,8 +58,15 @@ const figureContract = "## Every number is data, not text\n\n" +
 	"prose; the platform renders it into the text a reader sees, after re-running your " +
 	"arithmetic over the step's **full** rows — which may be more rows than the digest " +
 	"showed you.\n\n" +
-	"Years are the only exception: a period is prose (\"in 1997\", \"across 1992-1997\"), not a " +
-	"measurement. And an indicator with no number in it needs no declaration — write it.\n\n" +
+	"Two kinds of number are not measurements and stay in the sentence: a **period** (\"in 1997\", " +
+	"\"across 1992-1997\"), and a number you **chose** rather than read — a band edge, a bucket " +
+	"index, a rank cut-off (\"bucket 1 of 5\", \"year 1\", \"above 20%\", \"3-category buyers\"). " +
+	"Everything you measured is a figure. And an indicator with no number in it needs no " +
+	"declaration — write it.\n\n" +
+	"**`name` is where this matters most.** A recommendation can restate only what an insight " +
+	"declared, so a measurement typed into your headline is one nothing can reference. One " +
+	"measured run headlined *\"159 customers are net unprofitable\"* with 159 undeclared, and the " +
+	"recommendation that needed that count shipped `{{f1}}` to the reader in its own title.\n\n" +
 	"```json\n" +
 	"\"name\": \"Top decile of customers generates {{f1}} of 1997 revenue\",\n" +
 	"\"description\": \"The top decile contributed {{f2}} of {{f3}} in 1997.\",\n" +
@@ -120,6 +136,14 @@ const figureContract = "## Every number is data, not text\n\n" +
 // which is fixed at the insight, not here. The single remaining one was a total over
 // insight figures that matched no combination of them, in a headline its own body
 // contradicted. That is what `sum` is for, and it is why there is no third kind.
+// Two clauses trace to the run that shipped a marker in a title. `unit` used to be listed
+// among the things the model chooses, which is what the renderer does for `scale` and
+// `decimals` -- but resolveRef requires sameNotation, so a `count` restating a `currency`
+// figure is refused outright. A contract offering an operation the evaluator does not
+// implement is the false-refutation generator this file's first comment warns about, and here
+// it cost a reader a visible `{{f1}}`. The second clause says what to do instead, because the
+// measured behaviour of a model denied an id is not to fall back to prose -- it is to find
+// another id.
 const recommendationFigureContract = "## Numbers come from the insights, by reference\n\n" +
 	"Every number you report is already in your input: an insight declared it and the " +
 	"platform has checked it. Do not retype one. Put a reference in the prose and name the " +
@@ -142,9 +166,15 @@ const recommendationFigureContract = "## Numbers come from the insights, by refe
 	"- `insight` is the insight's `id`, copied verbatim, the same way you copy it into " +
 	"`related_insight_ids`. `figure` is the `id` inside that insight's own `figures` array.\n" +
 	"- **You do not write the number.** There is no `value` field to fill: the platform " +
-	"takes it from the figure you named. `unit`, `scale` and `decimals` are yours, so you " +
-	"choose how it is written — `{\"unit\": \"currency\", \"scale\": \"millions\", " +
-	"\"decimals\": 1}` writes `$8.5M` from the same figure the insight wrote in full.\n" +
+	"takes it from the figure you named. `scale` and `decimals` are yours, so you choose how " +
+	"it is written — `{\"scale\": \"millions\", \"decimals\": 1}` writes `$8.5M` from the " +
+	"same figure the insight wrote in full. **`unit` is the figure's, not yours** — a " +
+	"restatement cannot turn an amount into a count, and one written as `count` against a " +
+	"`currency` figure is refused and ships its reference visible to the reader.\n" +
+	"- **If the number you need is not an insight's figure, write it as ordinary text.** Never " +
+	"aim a reference at a different figure to get close. That is what put `{{f1}}` into a " +
+	"shipped title: a headline count had never been declared, so the reference was pointed at " +
+	"the insight's first figure, which was an amount.\n" +
 	"- Reference the same figure everywhere you mention it. A title and a body that share " +
 	"a reference cannot disagree; one measured run headlined 96,447 buyers while its own " +
 	"body said 96,031.\n\n" +
