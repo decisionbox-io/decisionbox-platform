@@ -514,23 +514,13 @@ func TestInsightSchema_FigureEnumsMatchTheClosedSets(t *testing.T) {
 // here and be argued for explicitly rather than pass quietly.
 func TestFigureContract_KeepsEveryRuleThatTracesToAMeasuredFailure(t *testing.T) {
 	required := map[string]string{
-		"never a word":               `the days unit that shipped "180.1 days days"`,
-		"precision you are claiming": "decimals-as-interval, which is the whole check",
-		"does not loosen the check":  "a tilde must not be a way to make a figure unrefutable",
-		"even when you are unsure":   "an undeclared figure cannot be corrected",
-		"Never type a number":        "the instruction the entire layer rests on",
-		"across 1992-1997":           "a period is prose; requiring a declaration for one makes the common case unwriteable",
-		// Replaced the narrower "years are the only exception". Of 17 headlines in one run the
-		// bare-numeral detector flagged 8, and 7 were a bucket index, a band edge, a year label
-		// or part of a product name -- all prose by the recommendation contract's own standard,
-		// and none of them declarable. A rule the model must break to write an ordinary headline
-		// is a rule it also breaks where it matters.
-		"a number you **chose**":  "a band edge or bucket index is chosen, not measured, so it cannot be a figure",
-		"Everything you measured": "the other half of that exception, or it reads as licence to type measurements",
-		// The one headline number in that run that WAS a measurement went undeclared, and the
-		// recommendation that needed it shipped a visible reference in its own title.
-		"`name` is where this matters most": "a measurement in the headline is the one nothing downstream can reference",
-		"**full** rows":                     "the check runs over more rows than the digest showed",
+		"never a word":                 `the days unit that shipped "180.1 days days"`,
+		"precision you are claiming":   "decimals-as-interval, which is the whole check",
+		"does not loosen the check":    "a tilde must not be a way to make a figure unrefutable",
+		"even when you are unsure":     "an undeclared figure cannot be corrected",
+		"Never type a number":          "the instruction the entire layer rests on",
+		"Years are the only exception": "requiring a declaration for a period makes the common case unwriteable",
+		"**full** rows":                "the check runs over more rows than the digest showed",
 		// The `excess` kind, and the instruction to pick it from what the sentence says.
 		// Naming the kinds is not enough: one run had the contract correctly stating that
 		// `ratio` is the quotient, the model complied, and the error moved into the prose
