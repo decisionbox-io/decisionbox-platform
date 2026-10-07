@@ -139,6 +139,18 @@ func (r *RunRepository) BeginResume(ctx context.Context, runID string) (*models.
 			// dispatch-pending again, which is exactly what it is: it has a
 			// terminal outcome still to come.
 			"completion_hooks_fired_at": "",
+			// The back-reference to the PREVIOUS attempt's partial result.
+			// Clearing the hook marker above re-arms dispatch, so leaving
+			// this would point the re-fired hooks at a result this attempt
+			// did not produce — and if the resumed attempt fails before
+			// saving anything (an init failure, a checkpoint TTL race), that
+			// stale result is all a consumer would ever see for it.
+			//
+			// The agent re-stamps it from its own Complete / Fail, so a run
+			// that produces a result has the right one; one that produces
+			// nothing now reads as having produced nothing, which is both
+			// honest and what a fresh run that failed early looks like.
+			"discovery_id": "",
 		},
 		"$push": bson.M{"lifecycle": models.RunLifecycleEvent{
 			Status:  "running",

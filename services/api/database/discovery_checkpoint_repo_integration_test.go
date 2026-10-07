@@ -443,6 +443,49 @@ func TestInteg_RunRepo_BeginResumeReArmsTheCompletionHooks(t *testing.T) {
 	}
 }
 
+// TestInteg_RunRepo_BeginResumeDropsTheStaleResultPointer pins that a resumed
+// run stops claiming the previous attempt's output.
+//
+// The resume re-arms completion-hook dispatch. Leaving discovery_id pointing
+// at the failed attempt's partial result would aim those re-fired hooks at
+// output this attempt did not produce — and if the resumed attempt fails
+// before saving anything, that stale result is all a consumer would ever see
+// for it.
+func TestInteg_RunRepo_BeginResumeDropsTheStaleResultPointer(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	fired := time.Now().Add(-time.Minute)
+	runID := seedRun(t, ctx, "failed", &fired, nil, time.Now())
+	if _, err := testDB.Collection("discovery_runs").UpdateByID(ctx, mustOID(t, runID), bson.M{
+		"$set": bson.M{"discovery_id": "disc-from-attempt-1", "attempt": 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resumed, err := repo.BeginResume(ctx, runID)
+	if err != nil {
+		t.Fatalf("BeginResume: %v", err)
+	}
+	if resumed.DiscoveryID != "" {
+		t.Errorf("discovery_id = %q, want cleared — the resumed attempt has produced nothing yet", resumed.DiscoveryID)
+	}
+
+	// And the run now reads as dispatch-pending with no result, which is
+	// exactly what a fresh run that failed early looks like.
+	stored, err := repo.GetByID(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.DiscoveryID != "" {
+		t.Errorf("stored discovery_id = %q, want cleared", stored.DiscoveryID)
+	}
+	if stored.CompletionHooksFiredAt != nil {
+		t.Error("completion_hooks_fired_at must be cleared alongside it")
+	}
+}
+
 // TestInteg_RunRepo_FailAttemptIgnoresASupersededAttempt is the P1 race.
 //
 // A previous attempt's background watcher outlives the attempt itself — the
