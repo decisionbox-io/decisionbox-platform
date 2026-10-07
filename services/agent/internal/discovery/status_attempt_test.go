@@ -20,9 +20,12 @@ import (
 // fakeRunDoc records what the reporter wrote and can report that this attempt
 // no longer owns the run — which is what an orphaned agent sees.
 type fakeRunDoc struct {
-	owns     bool
-	ownsErr  error
-	applied  bool
+	owns    bool
+	ownsErr error
+	applied bool
+	// writeErr fails every write, which is how a Mongo hiccup reaches the
+	// reporter. None of them may take the run down with them.
+	writeErr error
 	statuses []string
 	markers  []int
 	active   []time.Duration
@@ -35,14 +38,20 @@ func newFakeRunDoc() *fakeRunDoc { return &fakeRunDoc{owns: true, applied: true}
 func (f *fakeRunDoc) UpdateStatus(_ context.Context, _ string, status, _, _ string, _ int, attempt int) error {
 	f.statuses = append(f.statuses, status)
 	f.attempts = append(f.attempts, attempt)
-	return nil
+	return f.writeErr
 }
 func (f *fakeRunDoc) Complete(_ context.Context, _, _ string, _ int, attempt int) (bool, error) {
 	f.attempts = append(f.attempts, attempt)
+	if f.writeErr != nil {
+		return false, f.writeErr
+	}
 	return f.applied, nil
 }
 func (f *fakeRunDoc) Fail(_ context.Context, _, _, _ string, attempt int) (bool, error) {
 	f.attempts = append(f.attempts, attempt)
+	if f.writeErr != nil {
+		return false, f.writeErr
+	}
 	return f.applied, nil
 }
 func (f *fakeRunDoc) OwnsRun(_ context.Context, _ string, attempt int) (bool, error) {
@@ -55,33 +64,36 @@ func (f *fakeRunDoc) OwnsRun(_ context.Context, _ string, attempt int) (bool, er
 func (f *fakeRunDoc) MarkExplorationCheckpoint(_ context.Context, _ string, step int, attempt int) (bool, error) {
 	f.markers = append(f.markers, step)
 	f.attempts = append(f.attempts, attempt)
+	if f.writeErr != nil {
+		return false, f.writeErr
+	}
 	return f.applied, nil
 }
 func (f *fakeRunDoc) AddActiveTime(_ context.Context, _ string, d time.Duration, attempt int) error {
 	f.active = append(f.active, d)
 	f.attempts = append(f.attempts, attempt)
-	return nil
+	return f.writeErr
 }
 func (f *fakeRunDoc) AppendLifecycle(_ context.Context, _ string, ev models.RunLifecycleEvent, attempt int) error {
 	f.events = append(f.events, ev)
 	f.attempts = append(f.attempts, attempt)
-	return nil
+	return f.writeErr
 }
 func (f *fakeRunDoc) IncrementQueryCount(_ context.Context, _ string, _ bool, attempt int) error {
 	f.attempts = append(f.attempts, attempt)
-	return nil
+	return f.writeErr
 }
 func (f *fakeRunDoc) IncrementSchemaActionCalls(_ context.Context, _, _ string, _ int, attempt int) error {
 	f.attempts = append(f.attempts, attempt)
-	return nil
+	return f.writeErr
 }
 func (f *fakeRunDoc) IncrementAnalysisCounter(_ context.Context, _, _ string, _ int, attempt int) error {
 	f.attempts = append(f.attempts, attempt)
-	return nil
+	return f.writeErr
 }
 func (f *fakeRunDoc) RecordSchemaContextTelemetry(_ context.Context, _ string, _, _ int, attempt int) error {
 	f.attempts = append(f.attempts, attempt)
-	return nil
+	return f.writeErr
 }
 
 // fakeStepWriter satisfies the other half of enabled().
@@ -312,4 +324,44 @@ func TestRecordAttemptOutcome_BooksThisAttemptsTimeAndEvent(t *testing.T) {
 	t.Run("no reporter is a no-op", func(t *testing.T) {
 		(&Orchestrator{runID: "run-1"}).recordAttemptOutcome(ctx, time.Second, nil)
 	})
+}
+
+// TestStatusReporter_AWriteFailureNeverTakesTheRunDown pins the swallow
+// semantics on every run-document write.
+//
+// All of these are telemetry or affordance: losing one costs an operator some
+// visibility. None of them is worth failing a discovery over, and the fence
+// they now carry must not turn a Mongo hiccup into a reason to abandon a
+// working run.
+func TestStatusReporter_AWriteFailureNeverTakesTheRunDown(t *testing.T) {
+	doc := newFakeRunDoc()
+	doc.writeErr = errors.New("mongo down")
+	r := reporterFor(doc, 2)
+	ctx := context.Background()
+
+	// None of these may panic or propagate.
+	r.SetPhase(ctx, models.PhaseAnalysis, "analysing", 70)
+	r.AddExplorationStep(ctx, 4, "query_data", "think", "SELECT 1", 10, 5, false, "", 1, 2, "")
+	r.AddExplorationStep(ctx, 5, "lookup_schema", "think", "", 0, 0, false, "", 1, 2, "")
+	r.RecordSchemaTelemetry(ctx, 100, 20)
+	r.IncrementAnalysisCounter(ctx, "steps_dropped", 1)
+	r.AddActiveTime(ctx, 30*time.Second)
+	r.AppendLifecycle(ctx, models.RunLifecycleEvent{Status: models.RunStatusFailed})
+
+	// A failed MARKER write still reports ownership: it is not evidence of
+	// being superseded, and reading it as such would have a healthy attempt
+	// stand itself down and abandon a run that is working.
+	if !r.MarkExplorationCheckpoint(ctx, 4) {
+		t.Error("a failed marker write must not be read as a lost run")
+	}
+
+	// A failed TERMINAL write reports no claim, which is the safe direction:
+	// the attempt cannot prove it owns the run, so it must not go on to
+	// delete another attempt's results.
+	if r.Complete(ctx, "disc-1", 1) {
+		t.Error("a failed Complete must not claim the run")
+	}
+	if r.Fail(ctx, "disc-1", "boom") {
+		t.Error("a failed Fail must not claim the run")
+	}
 }
