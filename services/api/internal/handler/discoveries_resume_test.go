@@ -437,6 +437,87 @@ func TestResumeRun_SpawnFailureLeavesTheRunResumable(t *testing.T) {
 	}
 }
 
+// TestResumeRun_FailureCallbackIsScopedToItsOwnAttempt pins the P1 race at the
+// handler boundary: the callback the resumed run registers must name THIS
+// attempt, so that when it fires late — after another resume has superseded it
+// — it cannot mark the live attempt failed.
+func TestResumeRun_FailureCallbackIsScopedToItsOwnAttempt(t *testing.T) {
+	f := newResumeFixture(t)
+
+	if w := f.post("run-1"); w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body = %s", w.Code, w.Body.String())
+	}
+	calls := f.runner.calls()
+	if len(calls) != 1 || calls[0].OnFailure == nil {
+		t.Fatal("the resumed run registered no failure callback")
+	}
+	onFailure := calls[0].OnFailure
+
+	// Another resume supersedes attempt 2. (Marking it failed first is what
+	// an operator would be reacting to.)
+	f.runs.runs["run-1"].Status = "failed"
+	if w := f.post("run-1"); w.Code != http.StatusAccepted {
+		t.Fatalf("second resume: status = %d; body = %s", w.Code, w.Body.String())
+	}
+	if got := f.runs.runs["run-1"].Attempt; got != 3 {
+		t.Fatalf("attempt = %d, want 3", got)
+	}
+
+	// Attempt 2's watcher finally fires.
+	onFailure("run-1", "job failed (observed late)")
+
+	if got := f.runs.runs["run-1"].Status; got != "running" {
+		t.Errorf("run status = %q, want running — attempt 2's stale callback killed the live attempt 3", got)
+	}
+	if got := f.runs.runs["run-1"].Error; got != "" {
+		t.Errorf("run error = %q, want it untouched by the stale callback", got)
+	}
+
+	// And the LIVE attempt's own callback still works.
+	live := f.runner.calls()[1].OnFailure
+	live("run-1", "attempt 3 died")
+	if got := f.runs.runs["run-1"].Status; got != "failed" {
+		t.Errorf("run status = %q, want failed — the live attempt's callback must apply", got)
+	}
+}
+
+// TestStartRun_FailureCallbackIsScopedToAttemptOne is the same guarantee for a
+// fresh run: its watcher must not be able to kill the first resume.
+func TestStartRun_FailureCallbackIsScopedToAttemptOne(t *testing.T) {
+	projs := newMockProjectRepo()
+	projs.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
+	runs := newMockRunRepo()
+	rr := &recordingRunner{}
+	cps := &mockCheckpointRepo{prefixLen: 12}
+	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projs, runs, nil, nil, nil, rr).WithCheckpoints(cps)
+
+	res, err := h.StartRun(context.Background(), discoveryTriggerOptions("p1", 50, nil, nil))
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	onFailure := rr.calls()[0].OnFailure
+	if onFailure == nil {
+		t.Fatal("StartRun registered no failure callback")
+	}
+
+	// It fails, then is resumed.
+	runs.runs[res.RunID].Status = "failed"
+	req := httptest.NewRequest("POST", "/api/v1/runs/"+res.RunID+"/resume", nil)
+	req.SetPathValue("runId", res.RunID)
+	w := httptest.NewRecorder()
+	h.ResumeRun(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("resume: status = %d; body = %s", w.Code, w.Body.String())
+	}
+
+	// Attempt 1's watcher fires late.
+	onFailure(res.RunID, "job failed (observed late)")
+
+	if got := runs.runs[res.RunID].Status; got != "running" {
+		t.Errorf("run status = %q, want running — attempt 1's stale callback killed the resumed attempt", got)
+	}
+}
+
 // --- the money question ----------------------------------------------------
 
 // TestResumeRun_NeverMetersOrReserves is the "no double-charge, no

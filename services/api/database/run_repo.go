@@ -402,6 +402,63 @@ func (r *RunRepository) Fail(ctx context.Context, runID string, errMsg string) e
 	return err
 }
 
+// FailAttempt marks a run failed only if it is still on the attempt the
+// caller is reporting about, and says whether it applied.
+//
+// Fail() guards on status alone, which is enough while a run has one attempt.
+// Once a run can be resumed it is not: a previous attempt's background watcher
+// outlives the attempt itself (the K8s Job watcher polls, the Docker watcher
+// waits on the container), and the agent writes its own `failed` status before
+// the watcher observes the dead Job. So the sequence
+//
+//	agent writes failed → operator resumes → run is `running` again
+//	→ old watcher finally fires OnFailure
+//
+// would have the dead attempt's callback mark the LIVE one failed, killing a
+// run that is working. The window is small but it is the window an operator
+// clicking Resume on a just-failed run sits in, and the same race repeats on
+// every subsequent attempt.
+//
+// attempt <= 0 means "unknown", and matches any attempt — the behaviour of a
+// caller that cannot say which attempt it belongs to. Attempt 1 also matches a
+// document with NO attempt field, which is how every run created before the
+// counter existed reads.
+func (r *RunRepository) FailAttempt(ctx context.Context, runID string, attempt int, errMsg string) (bool, error) {
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		return false, err
+	}
+
+	now := time.Now()
+	update := bson.M{
+		"$set": bson.M{
+			"status":       "failed",
+			"error":        errMsg,
+			"phase_detail": "Failed: " + errMsg,
+			"completed_at": now,
+			"updated_at":   now,
+		},
+	}
+	filter := bson.M{
+		"_id":    oid,
+		"status": bson.M{"$in": []string{"pending", "running"}},
+	}
+	switch {
+	case attempt == 1:
+		// A legacy run carries no attempt field; it can only be its first.
+		filter["attempt"] = bson.M{"$in": []any{1, nil}}
+	case attempt > 1:
+		// Resumed attempts always have the field — BeginResume writes it.
+		filter["attempt"] = attempt
+	}
+
+	res, err := r.col.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount > 0, nil
+}
+
 // Cancel marks a run as cancelled.
 func (r *RunRepository) Cancel(ctx context.Context, runID string) error {
 	oid, err := primitive.ObjectIDFromHex(runID)

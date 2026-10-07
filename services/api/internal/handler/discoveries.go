@@ -481,8 +481,17 @@ func (h *DiscoveriesHandler) StartRun(ctx context.Context, opts discoverytrigger
 			apilog.WithFields(apilog.Fields{
 				"run_id": failedRunID, "error": errMsg,
 			}).Error("Agent failed — updating run status")
-			if err := h.runRepo.Fail(context.Background(), failedRunID, errMsg); err != nil {
+			// Guarded on the attempt this callback belongs to. The watcher
+			// behind it outlives its attempt, so once a run can be resumed
+			// an unguarded Fail here could mark a LIVE resumed attempt
+			// failed on behalf of the dead one. A fresh run is attempt 1.
+			if applied, err := h.runRepo.FailAttempt(context.Background(), failedRunID, 1, errMsg); err != nil {
 				apilog.WithError(err).Error("failed to mark run as failed")
+			} else if !applied {
+				apilog.WithFields(apilog.Fields{
+					"run_id": failedRunID, "attempt": 1,
+				}).Info("ignored a failure callback for an attempt that is no longer the live one")
+				return
 			}
 			if reservationID != "" {
 				if err := policy.GetChecker().ConfirmDiscoveryRunEnded(context.Background(), reservationID, policy.RunOutcome{
@@ -686,6 +695,9 @@ func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 	// created before these were persisted read as zero, which the agent
 	// resolves to its documented defaults — the same thing that happens
 	// today for a run whose parameters were never recorded anywhere.
+	// Captured for the failure callback below, which may fire long after
+	// this attempt has been superseded by another resume.
+	attempt := resumed.Attempt
 	runErr := h.agentRunner.Run(ctx, runner.RunOptions{
 		ProjectID: run.ProjectID,
 		RunID:     runID,
@@ -693,13 +705,20 @@ func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 		MaxSteps:  resumed.MaxSteps,
 		MinSteps:  resumed.MinSteps,
 		Resume:    true,
-		Attempt:   resumed.Attempt,
+		Attempt:   attempt,
 		OnFailure: func(failedRunID string, errMsg string) {
 			apilog.WithFields(apilog.Fields{
-				"run_id": failedRunID, "error": errMsg,
+				"run_id": failedRunID, "error": errMsg, "attempt": attempt,
 			}).Error("Resumed agent failed — updating run status")
-			if err := h.runRepo.Fail(context.Background(), failedRunID, errMsg); err != nil {
+			// Guarded on THIS attempt. Without it, this attempt's watcher
+			// could outlive it and mark the NEXT resume failed — the same
+			// race on every subsequent attempt.
+			if applied, err := h.runRepo.FailAttempt(context.Background(), failedRunID, attempt, errMsg); err != nil {
 				apilog.WithError(err).Error("failed to mark resumed run as failed")
+			} else if !applied {
+				apilog.WithFields(apilog.Fields{
+					"run_id": failedRunID, "attempt": attempt,
+				}).Info("ignored a failure callback for an attempt that is no longer the live one")
 			}
 		},
 	})

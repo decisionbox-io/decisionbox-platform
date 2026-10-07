@@ -442,3 +442,112 @@ func TestInteg_RunRepo_BeginResumeReArmsTheCompletionHooks(t *testing.T) {
 		t.Error("the completed resumed run is not dispatch-pending; its hooks will never fire")
 	}
 }
+
+// TestInteg_RunRepo_FailAttemptIgnoresASupersededAttempt is the P1 race.
+//
+// A previous attempt's background watcher outlives the attempt itself — the
+// K8s Job watcher polls, the Docker watcher waits on the container — and the
+// agent writes its own `failed` status before the watcher observes the dead
+// Job. So: agent writes failed → operator resumes → run is `running` again →
+// the OLD watcher finally fires. An unguarded Fail there marks the LIVE
+// attempt failed on behalf of the dead one, killing a run that is working.
+func TestInteg_RunRepo_FailAttemptIgnoresASupersededAttempt(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	runID, err := repo.Create(ctx, "proj-integ", models.RunParams{MaxSteps: 50, MinSteps: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Attempt 1 fails, the operator resumes, attempt 2 is live.
+	if _, err := repo.FailAttempt(ctx, runID, 1, "agent exited: signal: killed"); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := repo.BeginResume(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Attempt != 2 || resumed.Status != "running" {
+		t.Fatalf("resumed run = attempt %d / %q, want 2 / running", resumed.Attempt, resumed.Status)
+	}
+
+	// Attempt 1's watcher finally fires. It must not touch attempt 2.
+	applied, err := repo.FailAttempt(ctx, runID, 1, "job failed (observed late)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied {
+		t.Error("a stale callback from attempt 1 was applied to the live attempt 2")
+	}
+	run, _ := repo.GetByID(ctx, runID)
+	if run.Status != "running" {
+		t.Errorf("run status = %q, want running — a dead attempt's watcher killed the live one", run.Status)
+	}
+	if run.Error != "" {
+		t.Errorf("run error = %q, want it untouched", run.Error)
+	}
+
+	// The LIVE attempt's own callback still works.
+	applied, err = repo.FailAttempt(ctx, runID, 2, "attempt 2 died too")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied {
+		t.Fatal("the live attempt's own failure callback was ignored")
+	}
+	run, _ = repo.GetByID(ctx, runID)
+	if run.Status != "failed" || run.Error != "attempt 2 died too" {
+		t.Errorf("run = %q / %q, want failed with attempt 2's error", run.Status, run.Error)
+	}
+}
+
+// TestInteg_RunRepo_FailAttemptOnALegacyRun covers a run created before the
+// attempt counter existed: it carries no attempt field, and its watcher
+// reports attempt 1, so the guard must still let it through.
+func TestInteg_RunRepo_FailAttemptOnALegacyRun(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+	runID := seedRun(t, ctx, "running", nil, nil, time.Now()) // no attempt field
+
+	applied, err := repo.FailAttempt(ctx, runID, 1, "agent crashed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied {
+		t.Error("a legacy run with no attempt field must still be failable by its attempt-1 watcher")
+	}
+	run, _ := repo.GetByID(ctx, runID)
+	if run.Status != "failed" {
+		t.Errorf("status = %q, want failed", run.Status)
+	}
+}
+
+// TestInteg_RunRepo_FailAttemptLeavesTerminalRunsAlone keeps the invariant
+// Fail already had: a run that reached a terminal status is not flipped back
+// by a late watcher. The K8s watcher's exhaustion fallback fires OnFailure
+// even when the agent has already stamped Complete.
+func TestInteg_RunRepo_FailAttemptLeavesTerminalRunsAlone(t *testing.T) {
+	ctx := context.Background()
+	repo := NewRunRepository(testDB)
+
+	for _, status := range []string{"completed", "cancelled", "failed"} {
+		t.Run(status, func(t *testing.T) {
+			dropRuns(t, ctx)
+			runID := seedRun(t, ctx, status, nil, nil, time.Now())
+
+			applied, err := repo.FailAttempt(ctx, runID, 1, "late watcher")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if applied {
+				t.Errorf("a %s run must not be flipped to failed by a late watcher", status)
+			}
+			run, _ := repo.GetByID(ctx, runID)
+			if run.Status != status {
+				t.Errorf("status = %q, want %q", run.Status, status)
+			}
+		})
+	}
+}

@@ -475,6 +475,41 @@ func (m *mockRunRepo) GetRunningByProject(_ context.Context, projectID string) (
 	return &cp, nil
 }
 
+// FailAttempt mirrors the repository's semantics: it applies only while the
+// run is non-terminal AND still on the attempt the caller names, so a stale
+// callback from a superseded attempt is a no-op.
+func (m *mockRunRepo) FailAttempt(_ context.Context, runID string, attempt int, errMsg string) (bool, error) {
+	if m.failErr != nil {
+		return false, m.failErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.runs[runID]
+	if !ok {
+		return false, fmt.Errorf("run not found: %s", runID)
+	}
+	if r.Status != "pending" && r.Status != "running" {
+		return false, nil
+	}
+	// attempt <= 0 means "unknown, match anything".
+	if attempt > 0 {
+		recorded := r.Attempt
+		if recorded == 0 {
+			// A run with no attempt recorded predates the counter, so it
+			// can only ever be on its first.
+			recorded = 1
+		}
+		if recorded != attempt {
+			return false, nil
+		}
+	}
+	r.Status = "failed"
+	r.Error = errMsg
+	now := time.Now()
+	r.CompletedAt = &now
+	return true, nil
+}
+
 func (m *mockRunRepo) Fail(_ context.Context, runID string, errMsg string) error {
 	if m.failErr != nil {
 		return m.failErr

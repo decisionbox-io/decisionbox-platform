@@ -54,6 +54,11 @@ type RunRepo interface {
 	GetLatestByProject(ctx context.Context, projectID string) (*models.DiscoveryRun, error)
 	GetRunningByProject(ctx context.Context, projectID string) (*models.DiscoveryRun, error)
 	Fail(ctx context.Context, runID string, errMsg string) error
+	// FailAttempt marks a run failed only if it is still on the given
+	// attempt, and reports whether it applied. Used by the runner's
+	// asynchronous OnFailure callback, which can outlive the attempt it
+	// belongs to once a run can be resumed.
+	FailAttempt(ctx context.Context, runID string, attempt int, errMsg string) (bool, error)
 	Cancel(ctx context.Context, runID string) error
 	SetPolicyReservationID(ctx context.Context, runID, reservationID string) error
 	ListTerminalWithReservation(ctx context.Context, limit int) ([]*models.DiscoveryRun, error)
