@@ -10,6 +10,25 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
+// runDocWriter is the slice of *database.RunRepository that StatusReporter
+// calls. Held as an interface for the same reason runStepWriter below is: so
+// the reporter's behaviour — which is now where the attempt fence lives, and
+// so where "this attempt no longer owns the run" is decided — can be
+// exercised by a unit test instead of only through a MongoDB container.
+type runDocWriter interface {
+	UpdateStatus(ctx context.Context, runID string, status, phase, detail string, progress int, attempt int) error
+	Complete(ctx context.Context, runID, discoveryID string, insightsFound int, attempt int) (bool, error)
+	Fail(ctx context.Context, runID, discoveryID, errMsg string, attempt int) (bool, error)
+	OwnsRun(ctx context.Context, runID string, attempt int) (bool, error)
+	MarkExplorationCheckpoint(ctx context.Context, runID string, step int, attempt int) (bool, error)
+	AddActiveTime(ctx context.Context, runID string, d time.Duration, attempt int) error
+	AppendLifecycle(ctx context.Context, runID string, ev models.RunLifecycleEvent, attempt int) error
+	IncrementQueryCount(ctx context.Context, runID string, success bool, attempt int) error
+	IncrementSchemaActionCalls(ctx context.Context, runID, action string, delta int, attempt int) error
+	IncrementAnalysisCounter(ctx context.Context, runID, metric string, delta int, attempt int) error
+	RecordSchemaContextTelemetry(ctx context.Context, runID string, tokens, tableCount int, attempt int) error
+}
+
 // runStepWriter is the slice of *database.RunStepRepository that
 // StatusReporter actually calls. Held as an interface so unit tests can
 // inject a fake without bringing up MongoDB.
@@ -27,7 +46,7 @@ type runStepWriter interface {
 // grew unbounded under streaming and ran into the same 16MB BSON limit
 // that killed discovery saves.
 type StatusReporter struct {
-	repo        *database.RunRepository
+	repo        runDocWriter
 	runStepRepo runStepWriter
 	projectID   string
 	runID       string
@@ -56,9 +75,15 @@ func NewStatusReporter(repo *database.RunRepository, runStepRepo *database.RunSt
 // a typed-nil concrete pointer back to an untyped-nil interface so the
 // `s.runStepRepo != nil` check in enabled() does not get fooled by Go's
 // interface-conversion semantics.
-func newStatusReporter(repo *database.RunRepository, runStepRepo runStepWriter, projectID, runID string, maxSteps int) *StatusReporter {
+func newStatusReporter(repo runDocWriter, runStepRepo runStepWriter, projectID, runID string, maxSteps int) *StatusReporter {
 	if rs, ok := runStepRepo.(*database.RunStepRepository); ok && rs == nil {
 		runStepRepo = nil
+	}
+	// Same typed-nil → untyped-nil normalisation: a nil *RunRepository boxed
+	// into the interface would make the enabled() guard false-negative and
+	// every write below dereference it.
+	if r, ok := repo.(*database.RunRepository); ok && r == nil {
+		repo = nil
 	}
 	return &StatusReporter{
 		repo:        repo,
