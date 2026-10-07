@@ -318,9 +318,25 @@ func CheckpointSample(rows []map[string]any, cfg BundleConfig) []map[string]any 
 	if len(rows) > cap {
 		rows = rows[:cap]
 	}
+	// Both caps are defaulted here rather than trusted from the config,
+	// because bounding the payload is this function's entire job and it must
+	// hold however it is called. A run with validation DISABLED never loads a
+	// verifier config at all, so it arrives with a zero BundleConfig — and a
+	// zero CellCharCap means "do not cap" to normaliseRow, which would leave
+	// fifty rows of wide text or JSON cells unbounded and could put the
+	// checkpoint document over Mongo's 16MB limit. A step that cannot be
+	// written is a step that cannot be resumed.
+	//
+	// Capping here and not capping in the bundle stays consistent: an
+	// already-capped cell is within any larger cap, so re-normalising the
+	// persisted sample on the way into a bundle is still a no-op.
+	cellCap := cfg.CellCharCap
+	if cellCap <= 0 {
+		cellCap = DefaultBundleConfig().CellCharCap
+	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, normaliseRow(r, cfg.CellCharCap))
+		out = append(out, normaliseRow(r, cellCap))
 	}
 	return out
 }

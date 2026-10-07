@@ -225,6 +225,41 @@ func TestCheckpointSample_EdgeCases(t *testing.T) {
 	}
 }
 
+// TestCheckpointSample_BoundsCellsEvenWithAZeroConfig is the case a run with
+// validation DISABLED takes: it never loads a verifier config, so the sample
+// is cut with a zero BundleConfig. A zero CellCharCap means "do not cap" to
+// normaliseRow, which would leave fifty rows of wide text or JSON cells
+// unbounded and could put the checkpoint document over Mongo's 16MB limit —
+// and a step that cannot be written is a step that cannot be resumed.
+func TestCheckpointSample_BoundsCellsEvenWithAZeroConfig(t *testing.T) {
+	wide := []map[string]any{{
+		"blob":   strings.Repeat("x", 100_000),
+		"nested": map[string]any{"inner": strings.Repeat("y", 100_000)},
+	}}
+
+	got := CheckpointSample(wide, BundleConfig{})
+	if len(got) != 1 {
+		t.Fatalf("rows = %d, want 1", len(got))
+	}
+	want := DefaultBundleConfig().CellCharCap
+	for col, v := range got[0] {
+		s, ok := v.(string)
+		if !ok {
+			t.Fatalf("column %q came back as %T, want a string", col, v)
+		}
+		// capCell appends an ellipsis, so the cap plus one rune.
+		if n := len([]rune(s)); n > want+1 {
+			t.Errorf("column %q is %d runes, want it capped at %d", col, n, want)
+		}
+	}
+
+	// An explicit cap is still honoured over the default.
+	got = CheckpointSample(wide, BundleConfig{SampleRows: 5, CellCharCap: 10})
+	if n := len([]rune(got[0]["blob"].(string))); n > 11 {
+		t.Errorf("an explicit cell cap must win: %d runes, want 10", n)
+	}
+}
+
 // --- ReadStepRows ----------------------------------------------------------
 
 // TestReadStepRows_DoesNotPanicPastTheRetainedSample is the slice-bounds
