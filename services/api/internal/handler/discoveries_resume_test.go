@@ -96,6 +96,16 @@ type meteringChecker struct {
 	charges      []policy.Operation
 	refunds      []string
 	reservations int
+	// confirmErr makes ConfirmDiscoveryRunEnded fail, which is what a
+	// control plane that cannot be reached looks like.
+	confirmErr error
+}
+
+func (m *meteringChecker) ConfirmDiscoveryRunEnded(ctx context.Context, id string, outcome policy.RunOutcome) error {
+	if m.confirmErr != nil {
+		return m.confirmErr
+	}
+	return m.stubChecker.ConfirmDiscoveryRunEnded(ctx, id, outcome)
 }
 
 // CheckStartDiscoveryRun counts reservations so the test can assert resume
@@ -594,6 +604,33 @@ func TestResumeRun_EndsTheSupersededAttemptsReservation(t *testing.T) {
 	}
 	if n := len(ck.charges); n != 0 {
 		t.Errorf("resume metered %d operations, want 0", n)
+	}
+	// Cleared only AFTER the confirm landed.
+	if got := f.runs.runs["run-1"].PolicyReservationID; got != "" {
+		t.Errorf("reservation id = %q, want cleared once confirmed", got)
+	}
+}
+
+// TestResumeRun_KeepsTheReservationIdWhenTheConfirmFails pins the ordering
+// that matters more than the happy path: the id is the only handle anyone has
+// on the reservation, so it must survive a failed confirm. Clearing first
+// would turn any crash in between into a leaked concurrent-run slot with
+// nothing left to reconcile from.
+func TestResumeRun_KeepsTheReservationIdWhenTheConfirmFails(t *testing.T) {
+	ck := &meteringChecker{}
+	ck.confirmErr = errors.New("control plane unreachable")
+	swapChecker(t, ck)
+
+	f := newResumeFixture(t)
+	f.runs.runs["run-1"].PolicyReservationID = "res-attempt-1"
+
+	// The resume still goes ahead — refusing it over an accounting problem
+	// would be the wrong trade.
+	if w := f.post("run-1"); w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body = %s", w.Code, w.Body.String())
+	}
+	if got := f.runs.runs["run-1"].PolicyReservationID; got != "res-attempt-1" {
+		t.Errorf("reservation id = %q, want it kept so the background confirmer can retry", got)
 	}
 }
 

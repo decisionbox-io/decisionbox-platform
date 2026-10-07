@@ -897,8 +897,19 @@ func TestCheckpointSupersededStopsTheRun(t *testing.T) {
 	if len(h.llm.Calls) != 2 {
 		t.Errorf("LLM calls = %d, want 2 — the run kept spending after being superseded", len(h.llm.Calls))
 	}
-	if res.TotalSteps != 2 {
-		t.Errorf("TotalSteps = %d, want 2", res.TotalSteps)
+	// The superseded step is NOT counted. The ownership probe runs before the
+	// step is indexed, reported or appended, so a step the run was not
+	// allowed to record anywhere is not one it claims to have taken.
+	if res.TotalSteps != 1 {
+		t.Errorf("TotalSteps = %d, want 1 — only the steps this attempt actually recorded", res.TotalSteps)
+	}
+	if len(res.Steps) != 1 {
+		t.Errorf("Steps = %d, want 1", len(res.Steps))
+	}
+	// And the step feed saw only the recorded step, so the live attempt's
+	// dashboard is not polluted by the orphan's work.
+	if len(h.onSteps) != 1 || h.onSteps[0] != 1 {
+		t.Errorf("onStep calls = %v, want exactly [1]", h.onSteps)
 	}
 }
 

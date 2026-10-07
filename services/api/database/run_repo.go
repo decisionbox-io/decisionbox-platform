@@ -139,6 +139,14 @@ func (r *RunRepository) BeginResume(ctx context.Context, runID string) (*models.
 			// dispatch-pending again, which is exactly what it is: it has a
 			// terminal outcome still to come.
 			"completion_hooks_fired_at": "",
+			// NOT cleared here: policy_reservation_id. Resume deliberately
+			// opens no reservation of its own, so the previous attempt's has
+			// to be ended — but clearing the id before that confirm succeeds
+			// loses the only handle anyone has on it. A crash in between
+			// would leak the concurrent-run reservation with nothing left to
+			// reconcile from. ResumeRun confirms it and clears it after, in
+			// that order, the way StartRun already does for Release.
+			//
 			// The back-reference to the PREVIOUS attempt's partial result.
 			// Clearing the hook marker above re-arms dispatch, so leaving
 			// this would point the re-fired hooks at a result this attempt
@@ -151,15 +159,6 @@ func (r *RunRepository) BeginResume(ctx context.Context, runID string) (*models.
 			// nothing now reads as having produced nothing, which is both
 			// honest and what a fresh run that failed early looks like.
 			"discovery_id": "",
-			// The PREVIOUS attempt's plan reservation. Resume deliberately
-			// opens none of its own (the run's charge is keyed on its run id,
-			// so resume is free by construction), so carrying this one into
-			// the resumed attempt would have the post-completion confirmer
-			// report the resumed outcome against a reservation that attempt
-			// never made. The caller ends it explicitly before spawning —
-			// see ResumeRun — because confirming is a policy call and this is
-			// a repository.
-			"policy_reservation_id": "",
 		},
 		"$push": bson.M{"lifecycle": models.RunLifecycleEvent{
 			Status:  "running",

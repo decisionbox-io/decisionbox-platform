@@ -703,6 +703,17 @@ function LiveRunPanel({ run, onCancel, onResume }: { run: DiscoveryRunStatus; on
       Math.max(0, Math.round((new Date(run.updated_at || from).getTime() - new Date(from).getTime()) / 1000));
 
     // A finished run that booked its time: active_ms is the whole answer.
+    //
+    // It undercounts one case, deliberately: a resumed attempt that was hard
+    // killed before its terminal write books nothing, so a run whose EARLIER
+    // attempt did book shows only that earlier time. Adding the wall-clock
+    // since last_resumed_at here would fix it — and would double-count every
+    // resumed attempt that finished normally, because active_ms already
+    // includes those. Nothing on the document distinguishes the two without
+    // inferring it from the lifecycle log, which is a coupling the display
+    // layer should not carry for a bounded, one-attempt discrepancy. The
+    // run document says as much (DiscoveryRun.ActiveMs): a dead attempt's
+    // compute is not worth counting.
     if (isTerminal && priorActive > 0) return priorActive;
 
     // Anything else about a resumed run measures from THIS attempt, never

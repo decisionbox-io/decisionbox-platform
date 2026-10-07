@@ -731,16 +731,21 @@ func (e *ExplorationEngine) Explore(
 				})
 				result.TotalSteps = step
 
-				if e.onStep != nil {
-					e.onStep(step, "complete_rejected", action.Thinking, "", 0, 0, false, why, inputTokens, outputTokens, "")
-				}
 				// Checkpointed like any other step, with the reason class so
 				// the nudge can be re-derived. Skipping it would renumber
 				// every later step on a resumed run.
+				//
+				// Before the live feed, for the same reason as the executed
+				// step above: the row it writes is keyed on run_id alone, so
+				// a superseded attempt must not add one.
 				if e.checkpoint(ctx, result.Steps[len(result.Steps)-1], models.CheckpointArgs{RejectReason: reason}) {
 					result.Error = ErrAttemptSuperseded
 					result.Duration = time.Since(startTime)
 					return result, ErrAttemptSuperseded
+				}
+
+				if e.onStep != nil {
+					e.onStep(step, "complete_rejected", action.Thinking, "", 0, 0, false, why, inputTokens, outputTokens, "")
 				}
 				continue
 			}
@@ -765,6 +770,25 @@ func (e *ExplorationEngine) Explore(
 		}).Info("Executing exploration action")
 
 		actionResult := e.executeAction(ctx, action, &explorationStep)
+
+		// Durably record the step, BEFORE anything shared is written.
+		//
+		// This is also where the process learns it has been superseded (the
+		// hook's ownership probe rides on a write it makes anyway), and the
+		// ordering is the point: the two writes below — the per-run vector
+		// index and the dashboard's step row — are keyed on run_id alone, so
+		// a superseded attempt reaching them would add a point for a step
+		// the live attempt never executed (skewing the novelty rule and the
+		// analysis picker) and a row the live feed never earned.
+		//
+		// Nothing is lost by checkpointing first: executeAction has
+		// returned, so the step is complete, and the checkpoint is the
+		// durable record the other two are derived from.
+		if e.checkpoint(ctx, explorationStep, checkpointArgsFor(action)) {
+			result.Error = ErrAttemptSuperseded
+			result.Duration = time.Since(startTime)
+			return result, ErrAttemptSuperseded
+		}
 
 		// Index the completed step into the per-run vector index so
 		// the analysis phase can semantically rank steps against
@@ -809,22 +833,6 @@ func (e *ExplorationEngine) Explore(
 		if e.onStep != nil {
 			errMsg := explorationStep.Error
 			e.onStep(step, action.Action, action.Thinking, explorationStep.Query, explorationStep.RowCount, explorationStep.ExecutionTimeMs, explorationStep.Fixed, errMsg, inputTokens, outputTokens, explorationStep.WarehouseID)
-		}
-
-		// Durably record the step. Last thing in the iteration, so a
-		// checkpoint exists only for work that fully completed — a step
-		// checkpointed before its result landed would replay a turn the
-		// model never saw.
-		//
-		// It is also where this process learns it has been superseded, on a
-		// write it was making anyway. Stopping here is what keeps a dead
-		// attempt from writing a checkpoint for a step the live attempt has
-		// not reached — which a later resume would replay as the live
-		// attempt's own work — and from spending anything further.
-		if e.checkpoint(ctx, explorationStep, checkpointArgsFor(action)) {
-			result.Error = ErrAttemptSuperseded
-			result.Duration = time.Since(startTime)
-			return result, ErrAttemptSuperseded
 		}
 
 		// Check if exploration is complete

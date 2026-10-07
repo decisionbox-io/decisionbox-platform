@@ -693,26 +693,34 @@ func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 		"exploration_complete": explorationComplete,
 	}).Info("Resuming discovery run")
 
-	// End the previous attempt's plan reservation, which BeginResume has just
-	// cleared off the document.
+	// End the previous attempt's plan reservation.
 	//
 	// Confirm rather than Release: the period counter was consumed when the
 	// run started and a resume does not refund it — the concurrent-runs
-	// counter is what needs to come down. Doing it here rather than leaving
-	// it on the document matters because resume opens NO reservation of its
-	// own: the resumed attempt would otherwise be reported against one it
-	// never made, by the post-completion confirmer, with its own outcome.
+	// counter is what needs to come down. It has to be ended at all because
+	// resume opens NO reservation of its own: left in place, the resumed
+	// attempt would be reported against one it never made, by the
+	// post-completion confirmer, with its own outcome.
 	//
-	// Best-effort. A reservation that cannot be confirmed is an accounting
-	// problem for the control plane to reconcile; refusing to resume the run
-	// over it would be the wrong trade.
+	// Confirm FIRST, then clear the id — never the other way round. The id is
+	// the only handle anyone has on the reservation, so clearing it before
+	// the confirm lands would turn a crash in between into a leaked
+	// concurrent-run slot with nothing left to reconcile from. Same order
+	// StartRun uses for Release.
+	//
+	// Both halves are best-effort: a reservation that cannot be ended is an
+	// accounting problem for the control plane, and refusing to resume the
+	// run over it would be the wrong trade. Leaving the id in place on
+	// failure is deliberate — the background confirmer retries from it.
 	if run.PolicyReservationID != "" {
 		if err := policy.GetChecker().ConfirmDiscoveryRunEnded(ctx, run.PolicyReservationID, policy.RunOutcome{
 			Status:  "failure",
 			EndedAt: time.Now().UTC(),
 			Error:   "attempt superseded by a resume",
 		}); err != nil {
-			apilog.WithError(err).Warn("failed to confirm the superseded attempt's reservation; the control plane will reconcile it")
+			apilog.WithError(err).Warn("failed to confirm the superseded attempt's reservation; leaving its id on the run so the confirmer can retry")
+		} else if err := h.runRepo.ClearPolicyReservationID(ctx, runID); err != nil {
+			apilog.WithError(err).Warn("confirmed the superseded attempt's reservation but failed to clear its id; the confirmer will retry an already-confirmed reservation until the run ages out")
 		}
 	}
 
