@@ -8,6 +8,7 @@ package discovery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -130,6 +131,11 @@ func (o *Orchestrator) checkpointStep(ctx context.Context, step models.Explorati
 		Args:      args,
 	})
 	if err != nil {
+		// The store reports a lost race as its own fact; translate it into
+		// the pipeline's control signal, which is what stops the run.
+		if errors.Is(err, database.ErrSupersededAttempt) {
+			return ai.ErrAttemptSuperseded
+		}
 		return err
 	}
 	// The run is now resumable, so its per-run vector index must survive a
@@ -185,6 +191,14 @@ func (o *Orchestrator) checkpointExplorationSummary(ctx context.Context, res *ai
 		},
 	})
 	if err != nil {
+		if errors.Is(err, database.ErrSupersededAttempt) {
+			// Not a write failure — a newer attempt wrote the summary first,
+			// which means this one lost the run between the ownership check
+			// above and here. Stop, rather than carrying the whole analysis
+			// phase on its behalf.
+			applog.WithField("run_id", o.runID).Warn("a newer attempt recorded the exploration summary first; stopping before analysis")
+			return ai.ErrAttemptSuperseded
+		}
 		applog.WithFields(applog.Fields{
 			"run_id": o.runID,
 			"error":  err.Error(),

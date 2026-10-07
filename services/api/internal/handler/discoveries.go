@@ -600,9 +600,20 @@ func (h *DiscoveriesHandler) GetRun(w http.ResponseWriter, r *http.Request) {
 //     for. The per-project concurrency invariant is instead enforced at the
 //     repository level below, unconditionally.
 //
-// The cost of that choice is named in the PR: the plan-level CONCURRENT-runs
-// cap is not re-reserved, so a resume does not count against it. Per-project
-// concurrency still holds, and attempt is persisted so a future
+// The cost of that choice, stated plainly because it is not fully closable
+// from this side: a resumed run holds NO reservation, so it is invisible to
+// anything that enforces concurrency through reservations. The repo-level
+// check below (and its re-check after the flip) catches a competing run that
+// is already visible, which covers resume-versus-resume and the self-hosted
+// path. It does not serialise a resume against a FRESH trigger on a
+// deployment whose per-project concurrency is governed by the reservation
+// rather than by that check — the fresh trigger's reservation has nothing to
+// see.
+//
+// Closing it needs a CheckResumeDiscoveryRun on the policy checker that
+// reserves concurrency WITHOUT consuming a runs-per-period slot. That is a
+// new seam in a shared interface and a pricing decision, so it is flagged for
+// sign-off rather than taken here. `attempt` is persisted so a future
 // per-attempt price can key on runID:attempt rather than silently no-op'ing
 // against the original charge.
 func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {

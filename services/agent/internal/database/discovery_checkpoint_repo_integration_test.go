@@ -4,6 +4,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -548,12 +549,14 @@ func TestInteg_Checkpoint_ANewerAttemptOwnsItsSteps(t *testing.T) {
 	}
 
 	// The orphaned attempt (1) tries to write the same step with its own
-	// content. Refused — and NOT reported as an error, because nothing is
-	// wrong and there is nothing to retry: the newer attempt owns the step.
+	// content. Refused — and reported as supersession rather than as a write
+	// failure, because the only correct response is to stop: an agent that
+	// read this as "retry later" would carry on into the analysis phase on
+	// behalf of a run it no longer owns.
 	orphan := checkpointStepInput("run-1", 1, 111)
 	orphan.Attempt = 1
-	if err := repo.SaveStep(ctx, orphan); err != nil {
-		t.Fatalf("a superseded attempt's write must be refused quietly, got: %v", err)
+	if err := repo.SaveStep(ctx, orphan); !errors.Is(err, ErrSupersededAttempt) {
+		t.Fatalf("a superseded attempt's write = %v, want ErrSupersededAttempt", err)
 	}
 
 	set, err := repo.LoadPrefix(ctx, "run-1")
@@ -619,8 +622,9 @@ func TestInteg_Checkpoint_ANewerAttemptOwnsTheSummary(t *testing.T) {
 		ProjectID: "proj-1", RunID: "run-1", Attempt: 1,
 		Summary: models.ExplorationCheckpointSummary{Completed: true, TotalSteps: 99},
 	})
-	if err != nil {
-		t.Fatalf("a superseded attempt's summary write must be refused quietly, got: %v", err)
+	if !errors.Is(err, ErrSupersededAttempt) {
+		t.Fatalf("a superseded attempt's summary write = %v, want ErrSupersededAttempt — "+
+			"swallowing it would let the orphan believe it still owned the run and spend the whole analysis phase", err)
 	}
 
 	set, err := repo.LoadPrefix(ctx, "run-1")

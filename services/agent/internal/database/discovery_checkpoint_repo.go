@@ -76,6 +76,17 @@ const (
 	indexOptionsConflictCode = 85
 )
 
+// ErrSupersededAttempt means a newer attempt of the run already owns the row
+// this write was for.
+//
+// It is reported rather than swallowed because it is not a failure — it is a
+// fact about ownership, and the only correct response to it is to stop. An
+// agent that read it as "the write was refused, carry on" would go on to
+// spend the analysis phase on a result that will be discarded. The caller
+// translates it into its own control signal; this package deliberately does
+// not know what that is.
+var ErrSupersededAttempt = errors.New("a newer attempt of this run owns this checkpoint")
+
 // DiscoveryCheckpointRepository persists and reads exploration checkpoints.
 type DiscoveryCheckpointRepository struct {
 	col       *mongo.Collection
@@ -253,15 +264,16 @@ func (r *DiscoveryCheckpointRepository) SaveStep(ctx context.Context, in Checkpo
 	// A duplicate key here means precisely one thing: the filter above found
 	// nothing, so the upsert tried to insert, and the unique
 	// (run_id, step_number) index refused it because a row already exists —
-	// under a HIGHER attempt. The write is correctly refused and there is
-	// nothing to retry; the newer attempt owns this step.
+	// under a HIGHER attempt. So this attempt has been superseded, and that
+	// is worth saying rather than swallowing: the caller must stop, not
+	// shrug and continue into the expensive half of the pipeline.
 	if mongo.IsDuplicateKeyError(err) {
 		applog.WithFields(applog.Fields{
 			"run_id":  in.RunID,
 			"step":    in.Step.Step,
 			"attempt": in.Attempt,
 		}).Info("checkpoint refused: a newer attempt of this run owns this step")
-		return nil
+		return ErrSupersededAttempt
 	}
 	return fmt.Errorf("checkpoint step %d of run %s: %w", in.Step.Step, in.RunID, err)
 }
@@ -295,12 +307,16 @@ func (r *DiscoveryCheckpointRepository) SaveExplorationSummary(ctx context.Conte
 	if err == nil {
 		return nil
 	}
+	// Same reading as SaveStep, and it matters more here: returning nil would
+	// tell the caller its ownership check still stood, and it would walk
+	// into analysis, recommendations and validation on behalf of a run
+	// another attempt owns.
 	if mongo.IsDuplicateKeyError(err) {
 		applog.WithFields(applog.Fields{
 			"run_id":  in.RunID,
 			"attempt": in.Attempt,
 		}).Info("exploration summary checkpoint refused: a newer attempt of this run owns it")
-		return nil
+		return ErrSupersededAttempt
 	}
 	return fmt.Errorf("checkpoint exploration summary of run %s: %w", in.RunID, err)
 }
