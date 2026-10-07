@@ -1038,6 +1038,11 @@ export interface DiscoveryRunStatus {
   attempt?: number;
   last_checkpoint_step?: number;
   active_ms?: number;
+  // last_resumed_at is when the latest attempt was requested. The elapsed
+  // label needs it: active_ms excludes the attempt currently running (each
+  // attempt books its time at its terminal write), so a live resumed run's
+  // elapsed is active_ms plus the time since this attempt began.
+  last_resumed_at?: string;
 }
 
 // RunStep is one row in the live run-step stream. `id` is the opaque

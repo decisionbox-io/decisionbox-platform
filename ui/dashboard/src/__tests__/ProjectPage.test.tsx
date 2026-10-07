@@ -276,6 +276,41 @@ describe('Resume affordance on a failed run (#438)', () => {
     expect(screen.getByText('Discovery failed')).toBeInTheDocument();
   });
 
+  it('keeps the elapsed label advancing on a resumed run that is still going', async () => {
+    // active_ms holds only the attempts that have FINISHED — each books its
+    // time at its terminal write — so using it alone would freeze the label
+    // at the previous attempts' total while the run visibly progresses.
+    // 120s booked + 65s since this attempt started = 3m 5s.
+    getProjectStatus.mockResolvedValue(status(makeRun({
+      status: 'running',
+      attempt: 2,
+      active_ms: 120_000,
+      started_at: '2026-01-01T00:00:00Z',      // hours of downtime before the resume
+      last_resumed_at: '2026-01-02T00:00:00Z',
+      updated_at: '2026-01-02T00:01:05Z',
+    })));
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('3m 5s elapsed')).toBeInTheDocument());
+  });
+
+  it('does not count the downtime before a resume, even when the prior attempt booked nothing', async () => {
+    // A prior attempt hard-killed before its terminal write books 0. Falling
+    // back to started_at here would report a full day of "work".
+    getProjectStatus.mockResolvedValue(status(makeRun({
+      status: 'running',
+      attempt: 2,
+      started_at: '2026-01-01T00:00:00Z',
+      last_resumed_at: '2026-01-02T00:00:00Z',
+      updated_at: '2026-01-02T00:00:45Z',
+    })));
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('45s elapsed')).toBeInTheDocument());
+  });
+
   it('reports cumulative active time rather than wall-clock across attempts', async () => {
     // Wall-clock from started_at would count the hours a failed run sat
     // waiting to be noticed as work. 185s = 3m 5s.

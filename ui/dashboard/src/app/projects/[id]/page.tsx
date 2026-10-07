@@ -683,15 +683,31 @@ function LiveRunPanel({ run, onCancel, onResume }: { run: DiscoveryRunStatus; on
     saving: 'saving', complete: 'complete',
   };
 
-  // Prefer the run's own cumulative ACTIVE time when it has one. Wall-clock
-  // between started_at and updated_at is the right answer for a single
-  // attempt, but on a run resumed the next morning it counts the hours the
-  // failed run spent waiting to be noticed as work.
-  const elapsed = run.active_ms && run.active_ms > 0
-    ? Math.round(run.active_ms / 1000)
-    : run.started_at
-      ? Math.round((new Date(run.updated_at || run.started_at).getTime() - new Date(run.started_at).getTime()) / 1000)
-      : 0;
+  // Elapsed time has three cases once a run can be resumed, and the naive
+  // answer is wrong for two of them.
+  //
+  // `active_ms` is cumulative ACTIVE compute, booked by each attempt at its
+  // terminal write. So for a run that has FINISHED it is the whole answer, and
+  // using wall-clock instead would count the hours a failed run sat waiting to
+  // be noticed as work.
+  //
+  // But for an attempt still RUNNING, its own time is not in there yet — so
+  // `active_ms` alone would freeze the label at the previous attempts' total
+  // while the run visibly progresses. For those, add the time since this
+  // attempt started: prior attempts plus this one, excluding the downtime
+  // between them.
+  const elapsed = (() => {
+    const priorActive = run.active_ms && run.active_ms > 0 ? Math.round(run.active_ms / 1000) : 0;
+    const isTerminal = run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled';
+    const since = (from: string) =>
+      Math.max(0, Math.round((new Date(run.updated_at || from).getTime() - new Date(from).getTime()) / 1000));
+
+    if (!isTerminal && run.last_resumed_at) {
+      return priorActive + since(run.last_resumed_at);
+    }
+    if (priorActive > 0) return priorActive;
+    return run.started_at ? since(run.started_at) : 0;
+  })();
 
   // Resume is offered only for a FAILED run that actually has a checkpoint
   // to resume from. A cancelled run is a deliberate hard kill and stays
