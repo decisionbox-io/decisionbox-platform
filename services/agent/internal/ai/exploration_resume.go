@@ -51,6 +51,10 @@ func checkpointArgsFor(action *ExplorationAction) models.CheckpointArgs {
 	}
 	args := models.CheckpointArgs{Datasource: action.Datasource}
 	switch action.Action {
+	case "complete":
+		// The model's own summary. The step struct has no field for it, and
+		// a replayed completion that loses it would have to invent one.
+		args.CompletionReason = action.Reason
 	case "lookup_schema":
 		args.LookupSchema = action.LookupSchema
 	case "search_tables":
@@ -84,6 +88,7 @@ type replayedAction struct {
 	SearchTopK   int              `json:"search_top_k,omitempty"`
 	Correlations *CorrelationPair `json:"get_correlations,omitempty"`
 	Done         bool             `json:"done,omitempty"`
+	Summary      string           `json:"summary,omitempty"`
 }
 
 // replayedActionJSON renders the assistant message for one replayed step.
@@ -104,6 +109,9 @@ func replayedActionJSON(cp models.ExplorationCheckpoint) string {
 		if cp.Args.CorrelationA != "" || cp.Args.CorrelationB != "" {
 			ra.Correlations = &CorrelationPair{A: cp.Args.CorrelationA, B: cp.Args.CorrelationB}
 		}
+	case "complete":
+		ra.Done = true
+		ra.Summary = cp.Args.CompletionReason
 	case "complete_rejected":
 		// The model said done; the engine refused. The assistant turn it
 		// actually produced was a completion signal, and showing it as
@@ -154,14 +162,31 @@ func (e *ExplorationEngine) replayedQueryResult(step models.ExplorationStep) str
 	})
 }
 
-// replayStep appends one already-executed step's turn pair to the
-// conversation and returns the step as it should appear in result.Steps.
-func (e *ExplorationEngine) replayStep(ctx context.Context, conversation *Conversation, cp models.ExplorationCheckpoint) models.ExplorationStep {
+// replayStep appends one already-executed step's turn to the conversation and
+// returns the step as it should appear in result.Steps.
+//
+// terminal is true for a step that ENDED the original exploration — an
+// accepted `complete`. The live loop breaks on it before appending any result
+// message, so replay must not append one either, and must not carry on past
+// it: the model had already stopped.
+func (e *ExplorationEngine) replayStep(ctx context.Context, conversation *Conversation, cp models.ExplorationCheckpoint) (step models.ExplorationStep, terminal bool) {
 	conversation.AddAssistantMessage(replayedActionJSON(cp))
 
-	step := cp.Step
+	step = cp.Step
 	var resultMsg string
 	switch step.Action {
+	case "complete":
+		// The exploration finished here. The live path breaks out of the
+		// loop at this point, so there is no result message to replay — and
+		// appending one would put a turn in the transcript the original run
+		// never had.
+		//
+		// Reachable when the process died between this step's checkpoint and
+		// the exploration summary's. Without this case the step fell through
+		// to "Unknown action: complete" and the run carried on exploring
+		// past a completion it had already earned, which is the exact spend
+		// resume exists to avoid.
+		return step, true
 	case "query_data":
 		resultMsg = e.replayedQueryResult(step)
 
@@ -210,7 +235,18 @@ func (e *ExplorationEngine) replayStep(ctx context.Context, conversation *Conver
 		resultMsg = fmt.Sprintf("Unknown action: %s", step.Action)
 	}
 	conversation.AddUserMessage(resultMsg)
-	return step
+	return step, false
+}
+
+// replayOutcome is what a replayed prefix tells the loop.
+type replayOutcome struct {
+	// Steps seed result.Steps.
+	Steps []models.ExplorationStep
+	// Completed is true when the prefix ends with an accepted `complete`, so
+	// there is nothing left to explore and the loop must not run.
+	Completed bool
+	// CompletionMsg is the model's own summary from that step.
+	CompletionMsg string
 }
 
 // replayPrefix rebuilds the conversation for an already-executed prefix and
@@ -222,14 +258,19 @@ func (e *ExplorationEngine) replayStep(ctx context.Context, conversation *Conver
 // dashboard's step feed and double-count the run's totals. The persist hook
 // IS called, so a replayed prefix is re-checkpointed under this attempt and a
 // run that dies twice still resumes from the same place.
-func (e *ExplorationEngine) replayPrefix(ctx context.Context, conversation *Conversation, resume *ResumeState) []models.ExplorationStep {
+func (e *ExplorationEngine) replayPrefix(ctx context.Context, conversation *Conversation, resume *ResumeState) replayOutcome {
+	out := replayOutcome{}
 	if resume.Len() == 0 {
-		return nil
+		return out
 	}
 	steps := make([]models.ExplorationStep, 0, len(resume.Steps))
 	for _, cp := range resume.Steps {
-		step := e.replayStep(ctx, conversation, cp)
+		step, terminal := e.replayStep(ctx, conversation, cp)
 		steps = append(steps, step)
+		if terminal {
+			out.Completed = true
+			out.CompletionMsg = cp.Args.CompletionReason
+		}
 
 		// Re-indexing a replayed step is exact and idempotent: the embedded
 		// text is the step's purpose plus its query, both checkpointed, and
@@ -255,12 +296,14 @@ func (e *ExplorationEngine) replayPrefix(ctx context.Context, conversation *Conv
 		e.checkpoint(ctx, step, cp.Args)
 	}
 
+	out.Steps = steps
 	logger.WithFields(logger.Fields{
-		"replayed_steps": len(steps),
-		"resume_at":      len(steps) + 1,
-		"max_steps":      e.maxSteps,
+		"replayed_steps":    len(steps),
+		"resume_at":         len(steps) + 1,
+		"max_steps":         e.maxSteps,
+		"already_completed": out.Completed,
 	}).Info("exploration: replayed checkpointed prefix; resuming")
-	return steps
+	return out
 }
 
 // checkpoint durably records one completed step. A failure is logged and

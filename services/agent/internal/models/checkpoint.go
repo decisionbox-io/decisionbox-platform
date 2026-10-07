@@ -35,6 +35,12 @@ type CheckpointArgs struct {
 	// model is re-derived from it rather than stored, so a replayed run
 	// shows whatever the current rejection wording is.
 	RejectReason string `bson:"reject_reason,omitempty" json:"reject_reason,omitempty"`
+
+	// CompletionReason is the summary the model gave when it signalled done
+	// on an accepted `complete` step. Kept so a replayed completion carries
+	// the model's own words rather than a placeholder — and because the step
+	// struct has no field for it.
+	CompletionReason string `bson:"completion_reason,omitempty" json:"completion_reason,omitempty"`
 }
 
 // ExplorationCheckpoint is one checkpointed exploration step: the step as

@@ -655,11 +655,27 @@ func (e *ExplorationEngine) Explore(
 	// last step finished, so the loop below picks up at the next step
 	// number with nothing else to special-case. An empty or absent prefix
 	// leaves everything here untouched.
-	if replayed := e.replayPrefix(ctx, conversation, e.resume); len(replayed) > 0 {
-		result.Steps = append(result.Steps, replayed...)
-		result.TotalSteps = replayed[len(replayed)-1].Step
+	replayed := e.replayPrefix(ctx, conversation, e.resume)
+	if len(replayed.Steps) > 0 {
+		result.Steps = append(result.Steps, replayed.Steps...)
+		result.TotalSteps = replayed.Steps[len(replayed.Steps)-1].Step
 	}
 	firstStep := result.TotalSteps + 1
+	if replayed.Completed {
+		// The replayed prefix ends with a completion the engine already
+		// accepted, so there is nothing left to explore. Reachable when the
+		// process died between that step's checkpoint and the exploration
+		// summary's; carrying on would re-explore past a completion the run
+		// had already earned.
+		result.Completed = true
+		result.CompletionMsg = replayed.CompletionMsg
+		result.Duration = time.Since(startTime)
+		logger.WithFields(logger.Fields{
+			"total_steps": result.TotalSteps,
+			"completed":   true,
+		}).Info("Exploration was already complete in the replayed prefix; nothing left to explore")
+		return result, nil
+	}
 
 	// Exploration loop
 	for step := firstStep; step <= e.maxSteps; step++ {

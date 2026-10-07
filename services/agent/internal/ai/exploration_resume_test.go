@@ -600,6 +600,90 @@ func TestReplay_CompleteRejectedRederivesTheNudge(t *testing.T) {
 	}
 }
 
+// TestReplay_PrefixEndingInCompleteDoesNotExploreFurther pins the window
+// between a completion's checkpoint and the exploration summary's.
+//
+// If the process died in it, the prefix carries an accepted `complete` step
+// with no summary beside it. Falling through left the model an "Unknown
+// action: complete" message it never saw and carried on exploring past a
+// completion the run had already earned — paying again for exactly the work
+// resume exists to protect.
+func TestReplay_PrefixEndingInCompleteDoesNotExploreFurther(t *testing.T) {
+	prefix := []models.ExplorationCheckpoint{
+		queryStep(1, 3, rows(3)),
+		queryStep(2, 5, rows(5)),
+		{
+			Step: models.ExplorationStep{Step: 3, Action: "complete", Thinking: "covered it"},
+			Args: models.CheckpointArgs{CompletionReason: "covered every area"},
+		},
+	}
+	h := newResumeHarness(t, ExplorationEngineOptions{
+		MaxSteps: 20,
+		Resume:   &ResumeState{Steps: prefix},
+	}) // no scripted responses: any LLM call is a failure
+
+	res := h.run(t)
+
+	if len(h.llm.Calls) != 0 {
+		t.Errorf("LLM calls = %d, want 0 — the exploration had already finished", len(h.llm.Calls))
+	}
+	if h.warehouseQueries() != 0 {
+		t.Errorf("warehouse queries = %d, want 0", h.warehouseQueries())
+	}
+	if !res.Completed {
+		t.Error("the replayed completion must mark the result completed")
+	}
+	if res.CompletionMsg != "covered every area" {
+		t.Errorf("CompletionMsg = %q, want the model's own summary", res.CompletionMsg)
+	}
+	if res.TotalSteps != 3 || len(res.Steps) != 3 {
+		t.Errorf("steps = %d / total = %d, want 3 / 3", len(res.Steps), res.TotalSteps)
+	}
+	if res.Steps[2].Action != "complete" {
+		t.Errorf("the final replayed step's action = %q, want complete", res.Steps[2].Action)
+	}
+}
+
+// TestReplay_CompleteStepAppendsNoResultMessage pins the conversation shape.
+// The live loop breaks BEFORE appending a result message for the completion,
+// so replay must too — otherwise the transcript gains a turn the original run
+// never had.
+func TestReplay_CompleteStepAppendsNoResultMessage(t *testing.T) {
+	prefix := []models.ExplorationCheckpoint{
+		queryStep(1, 3, rows(3)),
+		{
+			Step: models.ExplorationStep{Step: 2, Action: "complete", Thinking: "done here"},
+			Args: models.CheckpointArgs{CompletionReason: "nothing left"},
+		},
+	}
+	h := newResumeHarness(t, ExplorationEngineOptions{MaxSteps: 20})
+
+	// Driven directly: no LLM call happens on this path, so there is no
+	// recorded request to read the conversation back out of.
+	conv := NewConversation(ConversationOptions{SystemPrompt: "sys", MaxMessages: 50})
+	conv.AddUserMessage("initial")
+	out := h.engine.replayPrefix(context.Background(), conv, &ResumeState{Steps: prefix})
+
+	if !out.Completed || out.CompletionMsg != "nothing left" {
+		t.Errorf("outcome = %+v, want completed with the model's summary", out)
+	}
+
+	msgs := conv.GetMessages()
+	// initial user message + (assistant, user) for step 1 + the completion's
+	// assistant turn, and nothing after it.
+	if len(msgs) != 4 {
+		t.Fatalf("messages = %d, want 4: %+v", len(msgs), msgs)
+	}
+	if msgs[3].Role != "assistant" {
+		t.Errorf("the last message is %q, want the completion's assistant turn with no reply after it", msgs[3].Role)
+	}
+	for _, m := range msgs {
+		if strings.Contains(m.Content, "Unknown action") {
+			t.Errorf("replay produced an Unknown-action message: %q", m.Content)
+		}
+	}
+}
+
 // --- replayedActionJSON: deterministic rendering --------------------------
 
 // TestReplayedActionJSON_Golden pins the exact assistant turn per action
@@ -650,6 +734,14 @@ func TestReplayedActionJSON_Golden(t *testing.T) {
 				Args: models.CheckpointArgs{CorrelationA: "ds", CorrelationB: "crm"},
 			},
 			want: `{"thinking":"ask","action":"get_correlations","get_correlations":{"a":"ds","b":"crm"}}`,
+		},
+		{
+			name: "complete carries the model's summary",
+			cp: models.ExplorationCheckpoint{
+				Step: models.ExplorationStep{Step: 7, Action: "complete", Thinking: "covered it"},
+				Args: models.CheckpointArgs{CompletionReason: "covered every area"},
+			},
+			want: `{"thinking":"covered it","action":"complete","done":true,"summary":"covered every area"}`,
 		},
 		{
 			name: "complete_rejected renders as the completion it was",
