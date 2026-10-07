@@ -380,3 +380,65 @@ func TestInteg_RunRepo_BeginResumeOnALegacyRunReportsAttemptTwo(t *testing.T) {
 		t.Errorf("stored attempt = %d, want 2", stored.Attempt)
 	}
 }
+
+// TestInteg_RunRepo_BeginResumeReArmsTheCompletionHooks pins the fix for a
+// silent hook loss.
+//
+// A failed run is terminal, so the completion-hook dispatcher fires its hooks
+// and stamps `completion_hooks_fired_at`. If a resume left that in place,
+// ListTerminalWithoutCompletionHook would filter the run out forever — and
+// when the resumed attempt finally produced a result, no plugin would ever
+// see it. The run has a terminal outcome still to come, so it has to read as
+// dispatch-pending again.
+func TestInteg_RunRepo_BeginResumeReArmsTheCompletionHooks(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	fired := time.Now().Add(-30 * time.Minute)
+	completed := time.Now().Add(-time.Hour)
+	runID := seedRun(t, ctx, "failed", &fired, &completed, time.Now().Add(-2*time.Hour))
+
+	// Before the resume the dispatcher correctly ignores it.
+	pending, err := repo.ListTerminalWithoutCompletionHook(ctx, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range pending {
+		if r.ID == runID {
+			t.Fatal("test setup is wrong: the run should already be marked hooks-fired")
+		}
+	}
+
+	if _, err := repo.BeginResume(ctx, runID); err != nil {
+		t.Fatalf("BeginResume: %v", err)
+	}
+
+	run, err := repo.GetByID(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.CompletionHooksFiredAt != nil {
+		t.Errorf("completion_hooks_fired_at = %v, want cleared — otherwise the resumed attempt's result never reaches a hook", run.CompletionHooksFiredAt)
+	}
+
+	// Once the resumed attempt terminates, the dispatcher picks it up again.
+	if _, err := testDB.Collection("discovery_runs").UpdateByID(ctx, mustOID(t, runID), bson.M{
+		"$set": bson.M{"status": "completed", "completed_at": time.Now()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = repo.ListTerminalWithoutCompletionHook(ctx, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range pending {
+		if r.ID == runID {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the completed resumed run is not dispatch-pending; its hooks will never fire")
+	}
+}

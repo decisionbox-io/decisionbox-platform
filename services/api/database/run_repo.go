@@ -131,6 +131,14 @@ func (r *RunRepository) BeginResume(ctx context.Context, runID string) (*models.
 			// an error and a completion time.
 			"error":        "",
 			"completed_at": "",
+			// A failed run is terminal, so the completion-hook dispatcher
+			// will already have fired its hooks and stamped this. Leaving it
+			// set means ListTerminalWithoutCompletionHook filters the run
+			// out forever — so when the RESUMED attempt finishes, no plugin
+			// ever sees the result it produced. Clearing it makes the run
+			// dispatch-pending again, which is exactly what it is: it has a
+			// terminal outcome still to come.
+			"completion_hooks_fired_at": "",
 		},
 		"$push": bson.M{"lifecycle": models.RunLifecycleEvent{
 			Status:  "running",
