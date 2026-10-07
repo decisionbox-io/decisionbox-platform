@@ -665,10 +665,12 @@ func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 	// because resume opens no policy reservation — so this is the only thing
 	// bounding concurrency for the project.
 	if running, _ := h.runRepo.GetRunningByProject(ctx, run.ProjectID); running != nil && running.ID != runID {
-		writeJSON(w, http.StatusConflict, map[string]string{
-			"error":  "a discovery run is already in progress for this project",
-			"run_id": running.ID,
-		})
+		// writeError, not writeJSON: the dashboard's request helper reads
+		// only the top-level `error` on a non-2xx, so a body under `data`
+		// would surface as a bare "API error: 409" and lose the one detail
+		// that makes this actionable — which run is in the way.
+		writeError(w, http.StatusConflict,
+			"a discovery run is already in progress for this project (run "+running.ID+")")
 		return
 	}
 

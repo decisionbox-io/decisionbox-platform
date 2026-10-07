@@ -291,19 +291,51 @@ func (r *RunRepository) Fail(ctx context.Context, runID, discoveryID, errMsg str
 // $max rather than $set: a resumed run re-checkpoints the prefix it replayed,
 // so a plain write would walk the value back down to 1 and climb again,
 // making the field briefly claim less progress than the run actually has.
-func (r *RunRepository) MarkExplorationCheckpoint(ctx context.Context, runID string, step int, attempt int) error {
+// Returns whether the write landed. Because the filter is attempt-fenced,
+// that doubles as a free ownership probe: a `false` means this attempt no
+// longer owns the run, on a write the agent was making anyway. The checkpoint
+// path uses it to stop a superseded agent before it writes anything further.
+func (r *RunRepository) MarkExplorationCheckpoint(ctx context.Context, runID string, step int, attempt int) (bool, error) {
 	if step <= 0 {
-		return nil
+		return true, nil
 	}
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {
-		return fmt.Errorf("invalid run ID: %w", err)
+		return false, fmt.Errorf("invalid run ID: %w", err)
 	}
-	_, err = r.col.UpdateOne(ctx, attemptFilter(oid, attempt), bson.M{
+	res, err := r.col.UpdateOne(ctx, attemptFilter(oid, attempt), bson.M{
 		"$max": bson.M{"last_checkpoint_step": step},
 		"$set": bson.M{"updated_at": time.Now()},
 	})
-	return err
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount > 0, nil
+}
+
+// OwnsRun reports whether the run is still on the given attempt.
+//
+// A dedicated read, used where there is no write to piggyback the question on
+// — the end-of-exploration summary, which is written once per run and whose
+// loss to a superseded attempt is the worst case of all: a later resume would
+// read it, believe exploration finished, and skip Phase 3 over another
+// attempt's work.
+//
+// attempt <= 0 means "unknown", which owns everything — the behaviour before
+// attempts existed.
+func (r *RunRepository) OwnsRun(ctx context.Context, runID string, attempt int) (bool, error) {
+	if attempt <= 0 {
+		return true, nil
+	}
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		return false, fmt.Errorf("invalid run ID: %w", err)
+	}
+	n, err := r.col.CountDocuments(ctx, attemptFilter(oid, attempt))
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // AddActiveTime adds this attempt's elapsed compute time to the run's

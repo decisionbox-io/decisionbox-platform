@@ -594,3 +594,62 @@ func TestInteg_RunRepo_FailAttemptLeavesTerminalRunsAlone(t *testing.T) {
 		})
 	}
 }
+
+// TestInteg_RunRepo_HookMarkDoesNotLandOnAResumedRun closes the race the
+// resume's hook-marker clearing opens.
+//
+// The dispatcher selects a batch of terminal runs and marks each one
+// afterwards. A resume can land in between: it clears the marker to re-arm
+// dispatch, and an unfenced mark would stamp it straight back onto the
+// now-RUNNING resumed attempt. When that attempt finished,
+// ListTerminalWithoutCompletionHook would filter it out and the hooks for the
+// final discovery would never fire — the bug the clearing exists to prevent,
+// reintroduced by a race.
+func TestInteg_RunRepo_HookMarkDoesNotLandOnAResumedRun(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	runID := seedRun(t, ctx, "failed", nil, nil, time.Now())
+
+	// The dispatcher has selected this run and is about to mark it...
+	pending, err := repo.ListTerminalWithoutCompletionHook(ctx, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("dispatch-pending runs = %d, want 1", len(pending))
+	}
+
+	// ...but a resume gets there first.
+	if _, err := repo.BeginResume(ctx, runID); err != nil {
+		t.Fatal(err)
+	}
+
+	// The late mark must not land on the running attempt.
+	if err := repo.MarkCompletionHooksFired(ctx, runID); err != nil {
+		t.Fatalf("a no-op mark must not be an error: %v", err)
+	}
+	run, err := repo.GetByID(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.CompletionHooksFiredAt != nil {
+		t.Error("a stale mark landed on the resumed attempt; its hooks would never fire")
+	}
+
+	// And once the resumed attempt terminates, the dispatcher picks it up and
+	// the mark sticks.
+	if _, err := testDB.Collection("discovery_runs").UpdateByID(ctx, mustOID(t, runID), bson.M{
+		"$set": bson.M{"status": "completed", "completed_at": time.Now()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.MarkCompletionHooksFired(ctx, runID); err != nil {
+		t.Fatal(err)
+	}
+	run, _ = repo.GetByID(ctx, runID)
+	if run.CompletionHooksFiredAt == nil {
+		t.Error("the mark must land once the run is terminal again")
+	}
+}

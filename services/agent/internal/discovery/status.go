@@ -370,13 +370,38 @@ func (s *StatusReporter) Complete(ctx context.Context, discoveryID string, insig
 // MarkExplorationCheckpoint records that this run now has a checkpoint for
 // the given exploration step — what the dashboard reads to offer Resume on a
 // failed run.
-func (s *StatusReporter) MarkExplorationCheckpoint(ctx context.Context, step int) {
+// Returns whether this attempt still owns the run. The write is
+// attempt-fenced, so its applied-ness answers that for free — no extra read on
+// a path that runs once per step.
+func (s *StatusReporter) MarkExplorationCheckpoint(ctx context.Context, step int) bool {
 	if !s.enabled() {
-		return
+		// No run document, so no competing attempt to lose to.
+		return true
 	}
-	if err := s.repo.MarkExplorationCheckpoint(ctx, s.runID, step, s.attempt); err != nil {
+	applied, err := s.repo.MarkExplorationCheckpoint(ctx, s.runID, step, s.attempt)
+	if err != nil {
+		// A transient failure is not evidence of being superseded. Say we
+		// still own the run so the step is checkpointed anyway — losing the
+		// marker costs the dashboard's Resume affordance, not the run.
 		logger.WithError(err).Warn("failed to stamp the exploration checkpoint marker; the dashboard may not offer Resume for this run")
+		return true
 	}
+	return applied
+}
+
+// OwnsRun reports whether this attempt still owns the run.
+func (s *StatusReporter) OwnsRun(ctx context.Context) bool {
+	if !s.enabled() {
+		return true
+	}
+	owns, err := s.repo.OwnsRun(ctx, s.runID, s.attempt)
+	if err != nil {
+		// Same reasoning as above: a failed read is not evidence of being
+		// superseded.
+		logger.WithError(err).Warn("could not confirm this attempt still owns the run")
+		return true
+	}
+	return owns
 }
 
 // AddActiveTime adds one attempt's elapsed compute time to the run's

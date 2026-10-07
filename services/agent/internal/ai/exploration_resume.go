@@ -35,6 +35,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	logger "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
@@ -247,6 +248,9 @@ type replayOutcome struct {
 	Completed bool
 	// CompletionMsg is the model's own summary from that step.
 	CompletionMsg string
+	// Superseded is true when another attempt took the run over mid-replay,
+	// so this process must stop without exploring.
+	Superseded bool
 }
 
 // replayPrefix rebuilds the conversation for an already-executed prefix and
@@ -293,11 +297,15 @@ func (e *ExplorationEngine) replayPrefix(ctx context.Context, conversation *Conv
 			// nothing.
 			e.recordIndexOutcome(err == nil)
 		}
-		e.checkpoint(ctx, step, cp.Args)
+		if e.checkpoint(ctx, step, cp.Args) {
+			out.Superseded = true
+			return out
+		}
 	}
 
 	out.Steps = steps
 	logger.WithFields(logger.Fields{
+		"superseded":        out.Superseded,
 		"replayed_steps":    len(steps),
 		"resume_at":         len(steps) + 1,
 		"max_steps":         e.maxSteps,
@@ -306,17 +314,45 @@ func (e *ExplorationEngine) replayPrefix(ctx context.Context, conversation *Conv
 	return out
 }
 
-// checkpoint durably records one completed step. A failure is logged and
-// swallowed: the run is working, and losing the ability to resume it is
-// strictly better than killing it over a Mongo hiccup.
-func (e *ExplorationEngine) checkpoint(ctx context.Context, step models.ExplorationStep, args models.CheckpointArgs) {
+// ErrAttemptSuperseded means another attempt of this run has taken over, so
+// this process must stop.
+//
+// It is reachable without anything exotic: the API's startup sweep marks
+// in-flight runs `failed` after a restart WITHOUT reaping their workloads, so
+// an operator resuming such a run leaves the previous agent alive. Everything
+// that agent would write is refused, so continuing only spends LLM and
+// warehouse money on results that will be discarded — and risks it writing a
+// checkpoint for a step the live attempt has not reached yet, which a later
+// resume would replay as if it were the live attempt's own work.
+//
+// A PersistStep hook returns it to stop the exploration loop. Every other
+// error from the hook is logged and swallowed.
+var ErrAttemptSuperseded = errors.New("another attempt of this run has taken over")
+
+// checkpoint durably records one completed step, and reports whether the run
+// may continue.
+//
+// An ordinary failure is logged and swallowed: the run is working, and losing
+// the ability to resume it is strictly better than killing it over a Mongo
+// hiccup. ErrAttemptSuperseded is the one exception — it does not mean the
+// write failed, it means this process is no longer the run.
+func (e *ExplorationEngine) checkpoint(ctx context.Context, step models.ExplorationStep, args models.CheckpointArgs) (superseded bool) {
 	if e.persistStep == nil {
-		return
+		return false
 	}
-	if err := e.persistStep(ctx, step, args); err != nil {
+	err := e.persistStep(ctx, step, args)
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrAttemptSuperseded) {
 		logger.WithFields(logger.Fields{
-			"step":  step.Step,
-			"error": err.Error(),
-		}).Warn("exploration: checkpoint write failed; this step will be re-explored if the run is resumed")
+			"step": step.Step,
+		}).Warn("exploration: another attempt of this run has taken over; stopping so this one writes nothing further")
+		return true
 	}
+	logger.WithFields(logger.Fields{
+		"step":  step.Step,
+		"error": err.Error(),
+	}).Warn("exploration: checkpoint write failed; this step will be re-explored if the run is resumed")
+	return false
 }

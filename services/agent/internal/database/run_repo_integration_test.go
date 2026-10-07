@@ -6,6 +6,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
@@ -318,4 +319,129 @@ func TestRunRepository_TerminalWritesAreFencedByAttempt(t *testing.T) {
 			t.Errorf("status = %q, want completed", run.Status)
 		}
 	})
+}
+
+// TestRunRepository_MarkExplorationCheckpointIsTheOwnershipProbe pins the
+// write the checkpoint path uses to find out whether it still owns the run.
+//
+// It is attempt-fenced, so its applied-ness answers that question for free on
+// a write the agent makes anyway — which is what lets a superseded agent stop
+// before writing a checkpoint for a step the live attempt has not reached
+// yet. A row like that would otherwise end up in the prefix, and a later
+// resume would replay a transcript spliced from two different runs.
+func TestRunRepository_MarkExplorationCheckpointIsTheOwnershipProbe(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewRunRepository(db)
+
+	runID, err := repo.Create(ctx, &models.DiscoveryRun{ProjectID: "proj-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oid, _ := primitive.ObjectIDFromHex(runID)
+	if _, err := db.Collection(CollectionDiscoveryRuns).UpdateByID(ctx, oid, bson.M{
+		"$set": bson.M{"attempt": 2},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The live attempt owns the run, and its marker lands.
+	owns, err := repo.MarkExplorationCheckpoint(ctx, runID, 40, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !owns {
+		t.Fatal("the live attempt must own the run")
+	}
+	run, _ := repo.GetByID(ctx, runID)
+	if run.LastCheckpointStep != 40 {
+		t.Errorf("last_checkpoint_step = %d, want 40", run.LastCheckpointStep)
+	}
+
+	// The orphaned attempt learns it does not, and leaves the marker alone.
+	owns, err = repo.MarkExplorationCheckpoint(ctx, runID, 41, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owns {
+		t.Error("a superseded attempt must not be told it owns the run")
+	}
+	run, _ = repo.GetByID(ctx, runID)
+	if run.LastCheckpointStep != 40 {
+		t.Errorf("last_checkpoint_step = %d, want 40 — the orphan advanced the live attempt's marker", run.LastCheckpointStep)
+	}
+
+	// $max, so the live attempt re-checkpointing a replayed prefix does not
+	// walk the marker backwards.
+	if _, err := repo.MarkExplorationCheckpoint(ctx, runID, 3, 2); err != nil {
+		t.Fatal(err)
+	}
+	run, _ = repo.GetByID(ctx, runID)
+	if run.LastCheckpointStep != 40 {
+		t.Errorf("last_checkpoint_step = %d, want 40 — a replayed prefix must not lower it", run.LastCheckpointStep)
+	}
+}
+
+// TestRunRepository_OwnsRun pins the dedicated probe, used where there is no
+// write to piggyback the question on: the end-of-exploration summary, whose
+// loss to a superseded attempt is the worst case of all — a later resume
+// reads it, believes exploration finished, and skips Phase 3 over work
+// another attempt did.
+func TestRunRepository_OwnsRun(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewRunRepository(db)
+
+	runID, err := repo.Create(ctx, &models.DiscoveryRun{ProjectID: "proj-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oid, _ := primitive.ObjectIDFromHex(runID)
+	if _, err := db.Collection(CollectionDiscoveryRuns).UpdateByID(ctx, oid, bson.M{
+		"$set": bson.M{"attempt": 3},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := map[int]bool{
+		3: true,  // the live attempt
+		2: false, // superseded
+		1: false, // superseded
+		0: true,  // "unknown" owns everything — the behaviour before attempts
+	}
+	for attempt, want := range cases {
+		owns, err := repo.OwnsRun(ctx, runID, attempt)
+		if err != nil {
+			t.Fatalf("attempt %d: %v", attempt, err)
+		}
+		if owns != want {
+			t.Errorf("OwnsRun(attempt %d) = %v, want %v", attempt, owns, want)
+		}
+	}
+
+	// A run with no attempt recorded is on its first.
+	legacy := seedRunDocWithoutAttempt(t, ctx, db)
+	if owns, _ := repo.OwnsRun(ctx, legacy, 1); !owns {
+		t.Error("attempt 1 must own a run that predates the counter")
+	}
+	if owns, _ := repo.OwnsRun(ctx, legacy, 2); owns {
+		t.Error("attempt 2 must not own a run that never advanced past its first")
+	}
+}
+
+// seedRunDocWithoutAttempt inserts a run document with no attempt field —
+// how every run created before the counter existed reads.
+func seedRunDocWithoutAttempt(t *testing.T, ctx context.Context, db *DB) string {
+	t.Helper()
+	res, err := db.Collection(CollectionDiscoveryRuns).InsertOne(ctx, bson.M{
+		"project_id": "proj-1",
+		"status":     models.RunStatusRunning,
+		"started_at": time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res.InsertedID.(primitive.ObjectID).Hex()
 }

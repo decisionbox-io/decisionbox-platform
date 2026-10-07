@@ -362,8 +362,21 @@ func TestResumeRun_AnotherActiveRunIs409(t *testing.T) {
 	if w.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409; body = %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "run-2") {
-		t.Errorf("the refusal should name the run that is in the way; body = %s", w.Body.String())
+	// In the standard error envelope, not under `data`: the dashboard's
+	// request helper reads only the top-level `error` on a non-2xx, so a body
+	// under `data` would surface as a bare "API error: 409".
+	var envelope struct {
+		Error string `json:"error"`
+		Data  any    `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Error == "" {
+		t.Errorf("the refusal must ride in the top-level error field; body = %s", w.Body.String())
+	}
+	if !strings.Contains(envelope.Error, "run-2") {
+		t.Errorf("the refusal should name the run that is in the way; got %q", envelope.Error)
 	}
 	if n := len(f.runner.calls()); n != 0 {
 		t.Errorf("spawned %d agents alongside a running one", n)

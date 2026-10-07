@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -853,6 +854,79 @@ func TestCheckpointFailureDoesNotAbortTheRun(t *testing.T) {
 	}
 	if res.TotalSteps != 2 {
 		t.Errorf("TotalSteps = %d, want 2", res.TotalSteps)
+	}
+}
+
+// TestCheckpointSupersededStopsTheRun pins the one checkpoint failure that is
+// NOT swallowed.
+//
+// ErrAttemptSuperseded does not mean the write failed; it means this process
+// is no longer the run. Continuing would spend LLM and warehouse money on
+// results that will be discarded, and — worse — could write a checkpoint for
+// a step the live attempt has not reached yet, which a later resume would
+// replay as the live attempt's own work.
+func TestCheckpointSupersededStopsTheRun(t *testing.T) {
+	h := newResumeHarness(t, ExplorationEngineOptions{MaxSteps: 10},
+		`{"thinking": "one", "query": "SELECT 1 FROM ds.t"}`,
+		`{"thinking": "two", "query": "SELECT 2 FROM ds.t"}`,
+		`{"done": true, "summary": "done"}`,
+	)
+	// Superseded from the second step onward.
+	calls := 0
+	h.engine.persistStep = func(_ context.Context, step models.ExplorationStep, _ models.CheckpointArgs) error {
+		calls++
+		if calls >= 2 {
+			return ErrAttemptSuperseded
+		}
+		return nil
+	}
+
+	res, err := h.engine.Explore(context.Background(), ExplorationContext{
+		ProjectID: "proj", Dataset: "ds", InitialPrompt: "Explore.",
+	})
+	if !errors.Is(err, ErrAttemptSuperseded) {
+		t.Fatalf("Explore err = %v, want ErrAttemptSuperseded", err)
+	}
+	if !errors.Is(res.Error, ErrAttemptSuperseded) {
+		t.Errorf("result.Error = %v, want ErrAttemptSuperseded", res.Error)
+	}
+	if res.Completed {
+		t.Error("a superseded run must not report itself completed")
+	}
+	// It stopped at the step that found out, rather than running to the cap.
+	if len(h.llm.Calls) != 2 {
+		t.Errorf("LLM calls = %d, want 2 — the run kept spending after being superseded", len(h.llm.Calls))
+	}
+	if res.TotalSteps != 2 {
+		t.Errorf("TotalSteps = %d, want 2", res.TotalSteps)
+	}
+}
+
+// TestCheckpointSupersededDuringReplayStopsBeforeExploring is the same guard
+// on the replay path: a resumed run that is itself superseded mid-replay must
+// stop without making a single LLM call.
+func TestCheckpointSupersededDuringReplayStopsBeforeExploring(t *testing.T) {
+	h := newResumeHarness(t, ExplorationEngineOptions{
+		MaxSteps: 10,
+		Resume: &ResumeState{Steps: []models.ExplorationCheckpoint{
+			queryStep(1, 3, rows(3)), queryStep(2, 3, rows(3)),
+		}},
+	}, `{"done": true, "summary": "done"}`)
+	h.engine.persistStep = func(context.Context, models.ExplorationStep, models.CheckpointArgs) error {
+		return ErrAttemptSuperseded
+	}
+
+	_, err := h.engine.Explore(context.Background(), ExplorationContext{
+		ProjectID: "proj", Dataset: "ds", InitialPrompt: "Explore.",
+	})
+	if !errors.Is(err, ErrAttemptSuperseded) {
+		t.Fatalf("Explore err = %v, want ErrAttemptSuperseded", err)
+	}
+	if len(h.llm.Calls) != 0 {
+		t.Errorf("LLM calls = %d, want 0 — a superseded run must not explore", len(h.llm.Calls))
+	}
+	if h.warehouseQueries() != 0 {
+		t.Errorf("warehouse queries = %d, want 0", h.warehouseQueries())
 	}
 }
 

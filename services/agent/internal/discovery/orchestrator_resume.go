@@ -92,6 +92,27 @@ func (o *Orchestrator) checkpointStep(ctx context.Context, step models.Explorati
 	if o.checkpointRepo == nil {
 		return nil
 	}
+	// Stamp the run-document marker FIRST, and read its answer. The write is
+	// attempt-fenced, so whether it landed tells us — for free, on a write
+	// this path makes anyway — whether this attempt still owns the run.
+	//
+	// Order matters. Asking before writing the checkpoint is what stops a
+	// superseded agent from inserting a row for a step the live attempt has
+	// not reached yet: the row-level attempt fence in SaveStep only refuses a
+	// write where a higher-attempt row ALREADY exists, so a dead attempt
+	// running AHEAD of the live one would otherwise insert its own work into
+	// the prefix, and a later resume would replay a transcript spliced from
+	// two different runs.
+	//
+	// Not airtight, and worth being precise about: a resume landing between
+	// these two writes still lets one row through. That window is two
+	// consecutive operations wide rather than the whole remaining run, and
+	// the row-level fence catches it whenever the live attempt has already
+	// written that step.
+	if o.statusReporter != nil && !o.statusReporter.MarkExplorationCheckpoint(ctx, step.Step) {
+		return ai.ErrAttemptSuperseded
+	}
+
 	err := o.checkpointRepo.SaveStep(ctx, database.CheckpointStepInput{
 		ProjectID: o.projectID,
 		RunID:     o.runID,
@@ -106,10 +127,6 @@ func (o *Orchestrator) checkpointStep(ctx context.Context, step models.Explorati
 	// The run is now resumable, so its per-run vector index must survive a
 	// failure rather than being dropped on the way out.
 	o.keepStepIndex = true
-
-	if o.statusReporter != nil {
-		o.statusReporter.MarkExplorationCheckpoint(ctx, step.Step)
-	}
 	return nil
 }
 
@@ -118,6 +135,15 @@ func (o *Orchestrator) checkpointStep(ctx context.Context, step models.Explorati
 // exploration LLM calls, zero warehouse queries.
 func (o *Orchestrator) checkpointExplorationSummary(ctx context.Context, res *ai.ExplorationResult) {
 	if o.checkpointRepo == nil || res == nil {
+		return
+	}
+	// A dedicated ownership read, because there is no write to piggyback the
+	// question on here — and because this row is the worst one to lose to a
+	// superseded attempt: a later resume reads it, believes exploration
+	// finished, and skips Phase 3 over work another attempt did. Once per
+	// run, against an indexed _id.
+	if o.statusReporter != nil && !o.statusReporter.OwnsRun(ctx) {
+		applog.WithField("run_id", o.runID).Warn("not recording the exploration summary: another attempt of this run has taken over")
 		return
 	}
 	err := o.checkpointRepo.SaveExplorationSummary(ctx, database.CheckpointSummaryInput{

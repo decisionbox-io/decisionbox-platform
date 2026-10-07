@@ -314,7 +314,22 @@ func (r *RunRepository) MarkCompletionHooksFired(ctx context.Context, runID stri
 		return fmt.Errorf("invalid run ID: %w", err)
 	}
 	now := time.Now()
-	_, err = r.col.UpdateByID(ctx, oid, bson.M{
+	// Only while the run is still TERMINAL. The dispatcher selects a batch
+	// and marks each row afterwards, so a resume can land in between: it
+	// clears this field to re-arm dispatch, and an unfenced mark would then
+	// stamp it right back onto the now-running resumed attempt. When that
+	// attempt finished, ListTerminalWithoutCompletionHook would filter it
+	// out and the hooks for the final discovery would never fire — the exact
+	// bug clearing the field on resume exists to prevent, reintroduced by a
+	// race.
+	//
+	// A no-op here is correct: the run has a new terminal outcome coming, and
+	// the dispatcher will pick it up on a later scan.
+	filter := bson.M{
+		"_id":    oid,
+		"status": bson.M{"$in": []string{"completed", "failed", "cancelled"}},
+	}
+	_, err = r.col.UpdateOne(ctx, filter, bson.M{
 		"$set": bson.M{
 			"completion_hooks_fired_at": now,
 			"updated_at":                now,

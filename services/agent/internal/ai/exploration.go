@@ -661,6 +661,11 @@ func (e *ExplorationEngine) Explore(
 		result.TotalSteps = replayed.Steps[len(replayed.Steps)-1].Step
 	}
 	firstStep := result.TotalSteps + 1
+	if replayed.Superseded {
+		result.Error = ErrAttemptSuperseded
+		result.Duration = time.Since(startTime)
+		return result, ErrAttemptSuperseded
+	}
 	if replayed.Completed {
 		// The replayed prefix ends with a completion the engine already
 		// accepted, so there is nothing left to explore. Reachable when the
@@ -732,7 +737,11 @@ func (e *ExplorationEngine) Explore(
 				// Checkpointed like any other step, with the reason class so
 				// the nudge can be re-derived. Skipping it would renumber
 				// every later step on a resumed run.
-				e.checkpoint(ctx, result.Steps[len(result.Steps)-1], models.CheckpointArgs{RejectReason: reason})
+				if e.checkpoint(ctx, result.Steps[len(result.Steps)-1], models.CheckpointArgs{RejectReason: reason}) {
+					result.Error = ErrAttemptSuperseded
+					result.Duration = time.Since(startTime)
+					return result, ErrAttemptSuperseded
+				}
 				continue
 			}
 		}
@@ -806,7 +815,17 @@ func (e *ExplorationEngine) Explore(
 		// checkpoint exists only for work that fully completed — a step
 		// checkpointed before its result landed would replay a turn the
 		// model never saw.
-		e.checkpoint(ctx, explorationStep, checkpointArgsFor(action))
+		//
+		// It is also where this process learns it has been superseded, on a
+		// write it was making anyway. Stopping here is what keeps a dead
+		// attempt from writing a checkpoint for a step the live attempt has
+		// not reached — which a later resume would replay as the live
+		// attempt's own work — and from spending anything further.
+		if e.checkpoint(ctx, explorationStep, checkpointArgsFor(action)) {
+			result.Error = ErrAttemptSuperseded
+			result.Duration = time.Since(startTime)
+			return result, ErrAttemptSuperseded
+		}
 
 		// Check if exploration is complete
 		if action.Action == "complete" {
