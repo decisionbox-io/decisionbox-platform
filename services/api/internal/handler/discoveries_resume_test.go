@@ -550,6 +550,57 @@ func TestResumeRun_NeverMetersOrReserves(t *testing.T) {
 	}
 }
 
+// TestResumeRun_EndsTheSupersededAttemptsReservation pins the bookkeeping that
+// makes "resume opens no reservation" coherent.
+//
+// The previous attempt's reservation is still on the document. Resume opens
+// none of its own, so leaving it would have the post-completion confirmer
+// report the RESUMED attempt's outcome against a reservation that attempt
+// never made. It is confirmed (not released — the period counter stays
+// consumed; the concurrent-runs counter is what must come down) and cleared.
+func TestResumeRun_EndsTheSupersededAttemptsReservation(t *testing.T) {
+	ck := &meteringChecker{}
+	swapChecker(t, ck)
+
+	f := newResumeFixture(t)
+	f.runs.runs["run-1"].PolicyReservationID = "res-attempt-1"
+
+	if w := f.post("run-1"); w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body = %s", w.Code, w.Body.String())
+	}
+
+	if len(ck.confirms) != 1 {
+		t.Fatalf("confirms = %d, want 1 — the superseded attempt's reservation must be ended", len(ck.confirms))
+	}
+	if got := ck.confirms[0].Status; got != "failure" {
+		t.Errorf("confirmed outcome = %q, want failure — the attempt did fail", got)
+	}
+	// Still no NEW reservation, which is the whole point.
+	if n := ck.reservationCount(); n != 0 {
+		t.Errorf("resume opened %d reservations, want 0", n)
+	}
+	if n := len(ck.charges); n != 0 {
+		t.Errorf("resume metered %d operations, want 0", n)
+	}
+}
+
+// TestResumeRun_NoReservationToEndIsSilent covers the self-hosted path and a
+// run whose reservation was already released: nothing to confirm, and the
+// resume must not invent one.
+func TestResumeRun_NoReservationToEndIsSilent(t *testing.T) {
+	ck := &meteringChecker{}
+	swapChecker(t, ck)
+
+	f := newResumeFixture(t) // no PolicyReservationID
+
+	if w := f.post("run-1"); w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", w.Code)
+	}
+	if len(ck.confirms) != 0 {
+		t.Errorf("confirms = %d, want 0 — there was no reservation to end", len(ck.confirms))
+	}
+}
+
 // TestResumeRun_SpawnFailureStillDoesNotRefund is the other half of the leak.
 // The start path refunds on a spawn failure because nothing ran; here the
 // run's earlier attempt DID run and was paid for, so a refund would hand back

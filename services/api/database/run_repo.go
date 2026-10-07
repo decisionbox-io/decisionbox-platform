@@ -151,6 +151,15 @@ func (r *RunRepository) BeginResume(ctx context.Context, runID string) (*models.
 			// nothing now reads as having produced nothing, which is both
 			// honest and what a fresh run that failed early looks like.
 			"discovery_id": "",
+			// The PREVIOUS attempt's plan reservation. Resume deliberately
+			// opens none of its own (the run's charge is keyed on its run id,
+			// so resume is free by construction), so carrying this one into
+			// the resumed attempt would have the post-completion confirmer
+			// report the resumed outcome against a reservation that attempt
+			// never made. The caller ends it explicitly before spawning —
+			// see ResumeRun — because confirming is a policy call and this is
+			// a repository.
+			"policy_reservation_id": "",
 		},
 		"$push": bson.M{"lifecycle": models.RunLifecycleEvent{
 			Status:  "running",

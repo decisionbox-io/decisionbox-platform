@@ -702,9 +702,18 @@ function LiveRunPanel({ run, onCancel, onResume }: { run: DiscoveryRunStatus; on
     const since = (from: string) =>
       Math.max(0, Math.round((new Date(run.updated_at || from).getTime() - new Date(from).getTime()) / 1000));
 
-    if (!isTerminal && run.last_resumed_at) {
-      return priorActive + since(run.last_resumed_at);
-    }
+    // A finished run that booked its time: active_ms is the whole answer.
+    if (isTerminal && priorActive > 0) return priorActive;
+
+    // Anything else about a resumed run measures from THIS attempt, never
+    // from started_at. That holds for a live attempt (whose own time is not
+    // booked yet) and for one that reached a terminal state without booking
+    // any — an OOM, a pod eviction, a startup failure right after the
+    // resume. Falling back to started_at there would report all the downtime
+    // before the resume as work, which is the overcount this whole branch
+    // exists to avoid.
+    if (run.last_resumed_at) return priorActive + since(run.last_resumed_at);
+
     if (priorActive > 0) return priorActive;
     return run.started_at ? since(run.started_at) : 0;
   })();

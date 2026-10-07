@@ -311,6 +311,24 @@ describe('Resume affordance on a failed run (#438)', () => {
     await waitFor(() => expect(screen.getByText('45s elapsed')).toBeInTheDocument());
   });
 
+  it('does not report pre-resume downtime for an attempt that died before booking its time', async () => {
+    // An OOM, a pod eviction, or a startup failure right after the resume
+    // leaves active_ms at 0 on a terminal run. Falling back to started_at
+    // would report the whole day the failed run sat idle as work.
+    getProjectStatus.mockResolvedValue(status(makeRun({
+      status: 'failed',
+      attempt: 2,
+      last_checkpoint_step: 42,
+      started_at: '2026-01-01T00:00:00Z',
+      last_resumed_at: '2026-01-02T00:00:00Z',
+      updated_at: '2026-01-02T00:00:12Z',
+    })));
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('12s elapsed')).toBeInTheDocument());
+  });
+
   it('reports cumulative active time rather than wall-clock across attempts', async () => {
     // Wall-clock from started_at would count the hours a failed run sat
     // waiting to be noticed as work. 185s = 3m 5s.
