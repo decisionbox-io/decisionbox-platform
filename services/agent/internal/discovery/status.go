@@ -78,7 +78,7 @@ func (s *StatusReporter) SetPhase(ctx context.Context, phase, detail string, pro
 	if !s.enabled() {
 		return
 	}
-	if err := s.repo.UpdateStatus(ctx, s.runID, models.RunStatusRunning, phase, detail, progress); err != nil {
+	if err := s.repo.UpdateStatus(ctx, s.runID, models.RunStatusRunning, phase, detail, progress, s.attempt); err != nil {
 		logger.WithError(err).Warn("failed to update run status")
 	}
 }
@@ -164,7 +164,7 @@ func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, ac
 		progress = 60
 	}
 	detail := fmt.Sprintf("Step %d/%d: exploring data...", stepNum, s.maxSteps)
-	if err := s.repo.UpdateStatus(ctx, s.runID, models.RunStatusRunning, models.PhaseExploration, detail, progress); err != nil {
+	if err := s.repo.UpdateStatus(ctx, s.runID, models.RunStatusRunning, models.PhaseExploration, detail, progress, s.attempt); err != nil {
 		logger.WithError(err).Warn("failed to update exploration status")
 	}
 
@@ -172,11 +172,11 @@ func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, ac
 	// type lands in the right bucket.
 	switch action {
 	case "query_data":
-		if err := s.repo.IncrementQueryCount(ctx, s.runID, errStr == ""); err != nil {
+		if err := s.repo.IncrementQueryCount(ctx, s.runID, errStr == "", s.attempt); err != nil {
 			logger.WithError(err).Warn("failed to increment query count")
 		}
 	case "lookup_schema", "search_tables", "get_correlations":
-		if err := s.repo.IncrementSchemaActionCalls(ctx, s.runID, action, 1); err != nil {
+		if err := s.repo.IncrementSchemaActionCalls(ctx, s.runID, action, 1, s.attempt); err != nil {
 			logger.WithError(err).Warn("failed to increment schema-action count")
 		}
 	}
@@ -345,13 +345,26 @@ func (s *StatusReporter) AddValidationStep(ctx context.Context, insightName, sta
 // the run produced. discoveryID must be the `_id` of the
 // `discoveries` document the orchestrator just saved — see
 // RunRepository.Complete for why the back-reference matters.
-func (s *StatusReporter) Complete(ctx context.Context, discoveryID string, insightsFound int) {
+// Returns whether the write landed — this attempt's claim on the run. False
+// means another attempt owns it now, and the caller must not go on to delete
+// that attempt's results. See database.attemptFilter.
+func (s *StatusReporter) Complete(ctx context.Context, discoveryID string, insightsFound int) bool {
 	if !s.enabled() {
-		return
+		// Nothing to claim and nothing to protect: a run without status
+		// reporting has no run document and no competing attempt.
+		return true
 	}
-	if err := s.repo.Complete(ctx, s.runID, discoveryID, insightsFound, s.attempt); err != nil {
+	applied, err := s.repo.Complete(ctx, s.runID, discoveryID, insightsFound, s.attempt)
+	if err != nil {
 		logger.WithError(err).Warn("failed to complete run")
+		return false
 	}
+	if !applied {
+		logger.WithFields(logger.Fields{
+			"run_id": s.runID, "attempt": s.attempt,
+		}).Warn("this attempt no longer owns the run; its completion was not recorded")
+	}
+	return applied
 }
 
 // MarkExplorationCheckpoint records that this run now has a checkpoint for
@@ -361,7 +374,7 @@ func (s *StatusReporter) MarkExplorationCheckpoint(ctx context.Context, step int
 	if !s.enabled() {
 		return
 	}
-	if err := s.repo.MarkExplorationCheckpoint(ctx, s.runID, step); err != nil {
+	if err := s.repo.MarkExplorationCheckpoint(ctx, s.runID, step, s.attempt); err != nil {
 		logger.WithError(err).Warn("failed to stamp the exploration checkpoint marker; the dashboard may not offer Resume for this run")
 	}
 }
@@ -372,7 +385,7 @@ func (s *StatusReporter) AddActiveTime(ctx context.Context, d time.Duration) {
 	if !s.enabled() {
 		return
 	}
-	if err := s.repo.AddActiveTime(ctx, s.runID, d); err != nil {
+	if err := s.repo.AddActiveTime(ctx, s.runID, d, s.attempt); err != nil {
 		logger.WithError(err).Warn("failed to add this attempt's active time to the run")
 	}
 }
@@ -383,7 +396,7 @@ func (s *StatusReporter) AppendLifecycle(ctx context.Context, ev models.RunLifec
 	if !s.enabled() {
 		return
 	}
-	if err := s.repo.AppendLifecycle(ctx, s.runID, ev); err != nil {
+	if err := s.repo.AppendLifecycle(ctx, s.runID, ev, s.attempt); err != nil {
 		logger.WithError(err).Warn("failed to append a run lifecycle event")
 	}
 }
@@ -395,7 +408,7 @@ func (s *StatusReporter) RecordSchemaTelemetry(ctx context.Context, tokens, tabl
 	if !s.enabled() {
 		return
 	}
-	if err := s.repo.RecordSchemaContextTelemetry(ctx, s.runID, tokens, tableCount); err != nil {
+	if err := s.repo.RecordSchemaContextTelemetry(ctx, s.runID, tokens, tableCount, s.attempt); err != nil {
 		logger.WithError(err).Warn("failed to record schema-context telemetry")
 	}
 }
@@ -408,7 +421,7 @@ func (s *StatusReporter) IncrementSchemaActionCalls(ctx context.Context, action 
 	if !s.enabled() {
 		return
 	}
-	if err := s.repo.IncrementSchemaActionCalls(ctx, s.runID, action, delta); err != nil {
+	if err := s.repo.IncrementSchemaActionCalls(ctx, s.runID, action, delta, s.attempt); err != nil {
 		logger.WithError(err).Warn("failed to increment schema-action calls")
 	}
 }
@@ -421,7 +434,7 @@ func (s *StatusReporter) IncrementAnalysisCounter(ctx context.Context, metric st
 	if !s.enabled() {
 		return
 	}
-	if err := s.repo.IncrementAnalysisCounter(ctx, s.runID, metric, delta); err != nil {
+	if err := s.repo.IncrementAnalysisCounter(ctx, s.runID, metric, delta, s.attempt); err != nil {
 		logger.WithError(err).Warn("failed to increment analysis counter")
 	}
 }
@@ -432,11 +445,20 @@ func (s *StatusReporter) IncrementAnalysisCounter(ctx context.Context, metric st
 // the underlying repo stamps it on the run doc so plugin-hooks Hook
 // 5 and the discovery-log APIs can navigate to the partial result
 // the same way they would for a completed run.
-func (s *StatusReporter) Fail(ctx context.Context, discoveryID, errMsg string) {
+// Returns whether the write landed — see Complete.
+func (s *StatusReporter) Fail(ctx context.Context, discoveryID, errMsg string) bool {
 	if !s.enabled() {
-		return
+		return true
 	}
-	if err := s.repo.Fail(ctx, s.runID, discoveryID, errMsg, s.attempt); err != nil {
+	applied, err := s.repo.Fail(ctx, s.runID, discoveryID, errMsg, s.attempt)
+	if err != nil {
 		logger.WithError(err).Warn("failed to mark run as failed")
+		return false
 	}
+	if !applied {
+		logger.WithFields(logger.Fields{
+			"run_id": s.runID, "attempt": s.attempt,
+		}).Warn("this attempt no longer owns the run; its failure was not recorded")
+	}
+	return applied
 }

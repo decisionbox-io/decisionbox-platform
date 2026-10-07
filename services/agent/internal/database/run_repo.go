@@ -42,7 +42,7 @@ func (r *RunRepository) Create(ctx context.Context, run *models.DiscoveryRun) (s
 }
 
 // UpdateStatus updates the run's status, phase, and detail.
-func (r *RunRepository) UpdateStatus(ctx context.Context, runID string, status, phase, detail string, progress int) error {
+func (r *RunRepository) UpdateStatus(ctx context.Context, runID string, status, phase, detail string, progress int, attempt int) error {
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {
 		return fmt.Errorf("invalid run ID: %w", err)
@@ -58,7 +58,7 @@ func (r *RunRepository) UpdateStatus(ctx context.Context, runID string, status, 
 		},
 	}
 
-	_, err = r.col.UpdateByID(ctx, oid, update)
+	_, err = r.col.UpdateOne(ctx, attemptFilter(oid, attempt), update)
 	return err
 }
 
@@ -67,7 +67,7 @@ func (r *RunRepository) UpdateStatus(ctx context.Context, runID string, status, 
 // schema renderer builds the catalog. The on-demand action counters
 // (lookup_schema, search_tables) are updated separately via
 // IncrementSchemaActionCalls as the engine services each action.
-func (r *RunRepository) RecordSchemaContextTelemetry(ctx context.Context, runID string, tokens, tableCount int) error {
+func (r *RunRepository) RecordSchemaContextTelemetry(ctx context.Context, runID string, tokens, tableCount int, attempt int) error {
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {
 		return fmt.Errorf("invalid run ID: %w", err)
@@ -79,7 +79,7 @@ func (r *RunRepository) RecordSchemaContextTelemetry(ctx context.Context, runID 
 			"updated_at":         time.Now(),
 		},
 	}
-	_, err = r.col.UpdateByID(ctx, oid, update)
+	_, err = r.col.UpdateOne(ctx, attemptFilter(oid, attempt), update)
 	return err
 }
 
@@ -88,7 +88,7 @@ func (r *RunRepository) RecordSchemaContextTelemetry(ctx context.Context, runID 
 // "get_correlations"; any other value is a no-op so a future action type
 // doesn't accidentally roll into the wrong counter. Safe to call
 // concurrently.
-func (r *RunRepository) IncrementSchemaActionCalls(ctx context.Context, runID, action string, delta int) error {
+func (r *RunRepository) IncrementSchemaActionCalls(ctx context.Context, runID, action string, delta int, attempt int) error {
 	if delta <= 0 {
 		return nil
 	}
@@ -111,7 +111,7 @@ func (r *RunRepository) IncrementSchemaActionCalls(ctx context.Context, runID, a
 		"$inc": bson.M{field: delta},
 		"$set": bson.M{"updated_at": time.Now()},
 	}
-	_, err = r.col.UpdateByID(ctx, oid, update)
+	_, err = r.col.UpdateOne(ctx, attemptFilter(oid, attempt), update)
 	return err
 }
 
@@ -124,7 +124,7 @@ func (r *RunRepository) IncrementSchemaActionCalls(ctx context.Context, runID, a
 //
 // Any other value is a no-op so a future metric name doesn't roll
 // into the wrong field.
-func (r *RunRepository) IncrementAnalysisCounter(ctx context.Context, runID, metric string, delta int) error {
+func (r *RunRepository) IncrementAnalysisCounter(ctx context.Context, runID, metric string, delta int, attempt int) error {
 	if delta <= 0 {
 		return nil
 	}
@@ -147,7 +147,7 @@ func (r *RunRepository) IncrementAnalysisCounter(ctx context.Context, runID, met
 		"$inc": bson.M{field: delta},
 		"$set": bson.M{"updated_at": time.Now()},
 	}
-	_, err = r.col.UpdateByID(ctx, oid, update)
+	_, err = r.col.UpdateOne(ctx, attemptFilter(oid, attempt), update)
 	return err
 }
 
@@ -166,13 +166,17 @@ func (r *RunRepository) IncrementAnalysisCounter(ctx context.Context, runID, met
 // discovery is a contract violation the caller must surface. An
 // empty string returns an error rather than silently writing a
 // half-state.
-func (r *RunRepository) Complete(ctx context.Context, runID, discoveryID string, insightsFound int, attempt int) error {
+//
+// Returns whether the write landed. That is this attempt's CLAIM on the run,
+// and the caller needs it: the attempt that did not claim the run must not go
+// on to delete the other attempt's results.
+func (r *RunRepository) Complete(ctx context.Context, runID, discoveryID string, insightsFound int, attempt int) (bool, error) {
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {
-		return fmt.Errorf("invalid run ID: %w", err)
+		return false, fmt.Errorf("invalid run ID: %w", err)
 	}
 	if discoveryID == "" {
-		return fmt.Errorf("run %s: complete requires a discovery_id", runID)
+		return false, fmt.Errorf("run %s: complete requires a discovery_id", runID)
 	}
 
 	now := time.Now()
@@ -195,8 +199,11 @@ func (r *RunRepository) Complete(ctx context.Context, runID, discoveryID string,
 		},
 	}
 
-	_, err = r.col.UpdateOne(ctx, attemptFilter(oid, attempt), update)
-	return err
+	res, err := r.col.UpdateOne(ctx, attemptFilter(oid, attempt), update)
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount > 0, nil
 }
 
 // attemptFilter builds a run filter that matches only while the run is still
@@ -248,10 +255,10 @@ func attemptFilter(oid primitive.ObjectID, attempt int) bson.M {
 // DiscoveryRun.DiscoveryID; stamping it on the failed run lets
 // consumers navigate to the partial result the same way they would
 // for a completed run.
-func (r *RunRepository) Fail(ctx context.Context, runID, discoveryID, errMsg string, attempt int) error {
+func (r *RunRepository) Fail(ctx context.Context, runID, discoveryID, errMsg string, attempt int) (bool, error) {
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {
-		return fmt.Errorf("invalid run ID: %w", err)
+		return false, fmt.Errorf("invalid run ID: %w", err)
 	}
 
 	now := time.Now()
@@ -271,8 +278,11 @@ func (r *RunRepository) Fail(ctx context.Context, runID, discoveryID, errMsg str
 		models.RunStatusPending,
 		models.RunStatusRunning,
 	}}
-	_, err = r.col.UpdateOne(ctx, filter, bson.M{"$set": set})
-	return err
+	res, err := r.col.UpdateOne(ctx, filter, bson.M{"$set": set})
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount > 0, nil
 }
 
 // MarkExplorationCheckpoint records that a checkpoint now exists for this
@@ -281,7 +291,7 @@ func (r *RunRepository) Fail(ctx context.Context, runID, discoveryID, errMsg str
 // $max rather than $set: a resumed run re-checkpoints the prefix it replayed,
 // so a plain write would walk the value back down to 1 and climb again,
 // making the field briefly claim less progress than the run actually has.
-func (r *RunRepository) MarkExplorationCheckpoint(ctx context.Context, runID string, step int) error {
+func (r *RunRepository) MarkExplorationCheckpoint(ctx context.Context, runID string, step int, attempt int) error {
 	if step <= 0 {
 		return nil
 	}
@@ -289,7 +299,7 @@ func (r *RunRepository) MarkExplorationCheckpoint(ctx context.Context, runID str
 	if err != nil {
 		return fmt.Errorf("invalid run ID: %w", err)
 	}
-	_, err = r.col.UpdateByID(ctx, oid, bson.M{
+	_, err = r.col.UpdateOne(ctx, attemptFilter(oid, attempt), bson.M{
 		"$max": bson.M{"last_checkpoint_step": step},
 		"$set": bson.M{"updated_at": time.Now()},
 	})
@@ -302,7 +312,7 @@ func (r *RunRepository) MarkExplorationCheckpoint(ctx context.Context, runID str
 // Called once at the terminal write, which is also its limitation: an
 // attempt hard-killed before it gets here contributes nothing. See
 // DiscoveryRun.ActiveMs.
-func (r *RunRepository) AddActiveTime(ctx context.Context, runID string, d time.Duration) error {
+func (r *RunRepository) AddActiveTime(ctx context.Context, runID string, d time.Duration, attempt int) error {
 	if d <= 0 {
 		return nil
 	}
@@ -310,7 +320,7 @@ func (r *RunRepository) AddActiveTime(ctx context.Context, runID string, d time.
 	if err != nil {
 		return fmt.Errorf("invalid run ID: %w", err)
 	}
-	_, err = r.col.UpdateByID(ctx, oid, bson.M{
+	_, err = r.col.UpdateOne(ctx, attemptFilter(oid, attempt), bson.M{
 		"$inc": bson.M{"active_ms": d.Milliseconds()},
 		"$set": bson.M{"updated_at": time.Now()},
 	})
@@ -320,7 +330,7 @@ func (r *RunRepository) AddActiveTime(ctx context.Context, runID string, d time.
 // AppendLifecycle pushes one transition onto the run's append-only lifecycle
 // log. See models.RunLifecycleEvent for why a single mutable status stops
 // being enough once a run can be resumed.
-func (r *RunRepository) AppendLifecycle(ctx context.Context, runID string, ev models.RunLifecycleEvent) error {
+func (r *RunRepository) AppendLifecycle(ctx context.Context, runID string, ev models.RunLifecycleEvent, attempt int) error {
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {
 		return fmt.Errorf("invalid run ID: %w", err)
@@ -328,7 +338,7 @@ func (r *RunRepository) AppendLifecycle(ctx context.Context, runID string, ev mo
 	if ev.At.IsZero() {
 		ev.At = time.Now()
 	}
-	_, err = r.col.UpdateByID(ctx, oid, bson.M{
+	_, err = r.col.UpdateOne(ctx, attemptFilter(oid, attempt), bson.M{
 		"$push": bson.M{"lifecycle": ev},
 		"$set":  bson.M{"updated_at": time.Now()},
 	})
@@ -336,7 +346,7 @@ func (r *RunRepository) AppendLifecycle(ctx context.Context, runID string, ev mo
 }
 
 // IncrementQueryCount increments query counters.
-func (r *RunRepository) IncrementQueryCount(ctx context.Context, runID string, success bool) error {
+func (r *RunRepository) IncrementQueryCount(ctx context.Context, runID string, success bool, attempt int) error {
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {
 		return err
@@ -354,7 +364,7 @@ func (r *RunRepository) IncrementQueryCount(ctx context.Context, runID string, s
 		"$set": bson.M{"updated_at": time.Now()},
 	}
 
-	_, err = r.col.UpdateByID(ctx, oid, update)
+	_, err = r.col.UpdateOne(ctx, attemptFilter(oid, attempt), update)
 	return err
 }
 

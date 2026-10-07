@@ -210,18 +210,24 @@ type fakeRunFinalizer struct {
 	failedID        string
 	failedMsg       string
 	failedCalled    bool
+
+	// notClaimed makes the terminal write report that it did NOT land —
+	// what a superseded attempt sees, and what must suppress the cleanup.
+	notClaimed bool
 }
 
-func (f *fakeRunFinalizer) Complete(_ context.Context, discoveryID string, insightsFound int) {
+func (f *fakeRunFinalizer) Complete(_ context.Context, discoveryID string, insightsFound int) bool {
 	f.completedCalled = true
 	f.completedID = discoveryID
 	f.completedCount = insightsFound
+	return !f.notClaimed
 }
 
-func (f *fakeRunFinalizer) Fail(_ context.Context, discoveryID, errMsg string) {
+func (f *fakeRunFinalizer) Fail(_ context.Context, discoveryID, errMsg string) bool {
 	f.failedCalled = true
 	f.failedID = discoveryID
 	f.failedMsg = errMsg
+	return !f.notClaimed
 }
 
 func TestFinalizeStatus_HappyPathCompletes(t *testing.T) {
@@ -231,7 +237,7 @@ func TestFinalizeStatus_HappyPathCompletes(t *testing.T) {
 	rep := &fakeRunFinalizer{}
 	result := &models.DiscoveryResult{ID: "disc-123"}
 
-	err := finalizeStatus(context.Background(), rep, nil, result, 7)
+	_, err := finalizeStatus(context.Background(), rep, nil, result, 7)
 	if err != nil {
 		t.Fatalf("happy path returned err = %v, want nil", err)
 	}
@@ -267,7 +273,7 @@ func TestFinalizeStatus_ComputeCancelledCallsFailNotComplete(t *testing.T) {
 	rep := &fakeRunFinalizer{}
 	result := &models.DiscoveryResult{ID: "disc-456"}
 
-	err := finalizeStatus(context.Background(), rep, context.DeadlineExceeded, result, 3)
+	_, err := finalizeStatus(context.Background(), rep, context.DeadlineExceeded, result, 3)
 	if err == nil {
 		t.Fatal("expected non-nil error when computeErr != nil")
 	}
@@ -294,7 +300,7 @@ func TestFinalizeStatus_ContextCanceledTreatedAsFailure(t *testing.T) {
 	rep := &fakeRunFinalizer{}
 	result := &models.DiscoveryResult{ID: "disc-789"}
 
-	err := finalizeStatus(context.Background(), rep, context.Canceled, result, 0)
+	_, err := finalizeStatus(context.Background(), rep, context.Canceled, result, 0)
 	if err == nil {
 		t.Fatal("expected non-nil error when computeErr != nil")
 	}
@@ -321,7 +327,7 @@ func TestFinalizeStatus_UsesFreshCtxIndependentOfParent(t *testing.T) {
 	parent, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_ = finalizeStatus(parent, rep, context.DeadlineExceeded, &models.DiscoveryResult{}, 0)
+	_, _ = finalizeStatus(parent, rep, context.DeadlineExceeded, &models.DiscoveryResult{}, 0)
 
 	if capturedErr != nil {
 		t.Errorf("reporter ctx must be live (independent of cancelled parent); got %v", capturedErr)
@@ -336,11 +342,65 @@ type runFinalizerFunc struct {
 	fail     func(ctx context.Context, discoveryID, errMsg string)
 }
 
-func (f runFinalizerFunc) Complete(ctx context.Context, discoveryID string, insightsFound int) {
+func (f runFinalizerFunc) Complete(ctx context.Context, discoveryID string, insightsFound int) bool {
 	f.complete(ctx, discoveryID, insightsFound)
+	return true
 }
-func (f runFinalizerFunc) Fail(ctx context.Context, discoveryID, errMsg string) {
+func (f runFinalizerFunc) Fail(ctx context.Context, discoveryID, errMsg string) bool {
 	f.fail(ctx, discoveryID, errMsg)
+	return true
+}
+
+// TestFinalizeStatus_ReportsWhetherItClaimedTheRun pins the signal the
+// destructive cleanup is gated on.
+//
+// The terminal write is attempt-fenced, so whether it landed is this attempt's
+// claim on the run. The orchestrator uses that to decide whether it may retire
+// the OTHER attempt's results — which it deletes by run_id, so a superseded
+// attempt acting on a false claim would delete the live attempt's discovery,
+// split logs, standalone docs and vectors and keep its own.
+func TestFinalizeStatus_ReportsWhetherItClaimedTheRun(t *testing.T) {
+	cases := []struct {
+		name        string
+		computeErr  error
+		notClaimed  bool
+		wantClaimed bool
+	}{
+		{"completed and owns the run", nil, false, true},
+		{"completed but superseded", nil, true, false},
+		{"failed and owns the run", context.DeadlineExceeded, false, true},
+		{"failed and superseded", context.DeadlineExceeded, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := &fakeRunFinalizer{notClaimed: tc.notClaimed}
+			claimed, err := finalizeStatus(context.Background(), rep, tc.computeErr,
+				&models.DiscoveryResult{ID: "disc-1"}, 3)
+
+			if claimed != tc.wantClaimed {
+				t.Errorf("claimed = %v, want %v", claimed, tc.wantClaimed)
+			}
+			// The error contract is unchanged: it tracks the compute outcome,
+			// not the claim.
+			if (err != nil) != (tc.computeErr != nil) {
+				t.Errorf("err = %v, want it to track computeErr (%v)", err, tc.computeErr)
+			}
+		})
+	}
+}
+
+// TestFinalizeStatus_UnreportedRunAlwaysClaims pins the single-binary case: a
+// run with no status reporting has no run document and no competing attempt,
+// so it must not be treated as superseded and have its cleanup suppressed.
+func TestFinalizeStatus_UnreportedRunAlwaysClaims(t *testing.T) {
+	// A reporter with no runID is disabled — enabled() is false.
+	rep := newStatusReporter(nil, nil, "proj", "", 10)
+	if !rep.Complete(context.Background(), "disc-1", 1) {
+		t.Error("a disabled reporter must report a claim; otherwise cleanup is skipped on every single-binary run")
+	}
+	if !rep.Fail(context.Background(), "disc-1", "boom") {
+		t.Error("a disabled reporter must report a claim on the failure path too")
+	}
 }
 
 // Compile-time assertion — the production *StatusReporter satisfies

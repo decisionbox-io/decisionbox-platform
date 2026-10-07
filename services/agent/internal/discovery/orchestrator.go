@@ -78,8 +78,11 @@ const completeTimeout = 30 * time.Second
 // that records which terminal method was called without bringing up
 // MongoDB.
 type runFinalizer interface {
-	Complete(ctx context.Context, discoveryID string, insightsFound int)
-	Fail(ctx context.Context, discoveryID, errMsg string)
+	// Both report whether the terminal write landed — this attempt's claim
+	// on the run. False means another attempt owns it, and the caller must
+	// not go on to delete that attempt's results.
+	Complete(ctx context.Context, discoveryID string, insightsFound int) bool
+	Fail(ctx context.Context, discoveryID, errMsg string) bool
 }
 
 // finalizeStatus stamps the terminal status on the run document. On
@@ -96,7 +99,11 @@ type runFinalizer interface {
 // near-expiry persistCtx never prevents the final status write from
 // landing — the run-completion UpdateOne (and the discovery_id
 // back-reference Hook 5 in plugin-hooks.md depends on) always lands.
-func finalizeStatus(parent context.Context, reporter runFinalizer, computeErr error, result *models.DiscoveryResult, insightCount int) error {
+// Returns whether the terminal write CLAIMED the run, alongside the error the
+// caller propagates. The claim is what licenses the destructive cleanup that
+// follows (retiring a superseded attempt's results): an attempt that no longer
+// owns the run must not delete the owner's data.
+func finalizeStatus(parent context.Context, reporter runFinalizer, computeErr error, result *models.DiscoveryResult, insightCount int) (bool, error) {
 	completeCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), completeTimeout)
 	defer cancel()
 
@@ -105,12 +112,11 @@ func finalizeStatus(parent context.Context, reporter runFinalizer, computeErr er
 		// APIs can find the partial result the same way they would
 		// for a completed run. Empty when Save itself failed and we
 		// never got an ID — Fail then records the error only.
-		reporter.Fail(completeCtx, result.ID, fmt.Sprintf("discovery cancelled: %v", computeErr))
-		return fmt.Errorf("discovery cancelled mid-compute: %w", computeErr)
+		claimed := reporter.Fail(completeCtx, result.ID, fmt.Sprintf("discovery cancelled: %v", computeErr))
+		return claimed, fmt.Errorf("discovery cancelled mid-compute: %w", computeErr)
 	}
 
-	reporter.Complete(completeCtx, result.ID, insightCount)
-	return nil
+	return reporter.Complete(completeCtx, result.ID, insightCount), nil
 }
 
 // persistContext derives the durable-write ctx from the run ctx.
@@ -1594,14 +1600,34 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// "which model ran which attempt" is answerable.
 	o.recordAttemptOutcome(persistCtx, time.Since(startTime), computeErr)
 
-	// Retire the results of this run's earlier attempts, now that this
-	// attempt's result is fully written. A no-op on every run that was not
-	// resumed, and on a resumed run whose previous attempt died before it
-	// saved anything — which is the common case.
-	o.retireSupersededAttempts(persistCtx, result.ID)
+	// Final step: update run status (success or failure) based on execution
+	// result. It runs BEFORE the cleanup below, and that order is load-bearing:
+	// the terminal write is attempt-fenced, so whether it landed is this
+	// attempt's claim on the run — and the cleanup deletes data.
+	claimed, err := finalizeStatus(ctx, o.statusReporter, computeErr, result, len(allInsights))
 
-	// Final step: update run status (success or failure) based on execution result
-	if err := finalizeStatus(ctx, o.statusReporter, computeErr, result, len(allInsights)); err != nil {
+	// Retire the results of this run's earlier attempts, now that this
+	// attempt's result is fully written AND this attempt is provably the one
+	// that owns the run. A no-op on every run that was not resumed, and on a
+	// resumed run whose previous attempt died before it saved anything —
+	// which is the common case.
+	//
+	// Gated on the claim because retire deletes by run_id: an orphaned
+	// previous attempt reaching here after the live one had already saved
+	// would otherwise delete the LIVE attempt's discovery, split logs,
+	// standalone docs and vectors, and keep its own. Losing the good result
+	// to the dead attempt's cleanup is far worse than leaving a stale one
+	// behind, so a superseded attempt deletes nothing.
+	if claimed {
+		o.retireSupersededAttempts(persistCtx, result.ID)
+	} else {
+		applog.WithFields(applog.Fields{
+			"run_id":       o.runID,
+			"discovery_id": result.ID,
+		}).Warn("this attempt no longer owns the run; skipping cleanup so the owning attempt's results survive")
+	}
+
+	if err != nil {
 		// The run is ending resumable. Keep the checkpoints (and the per-run
 		// vector index) so an operator can resume it rather than paying for
 		// exploration again.
@@ -1610,8 +1636,11 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 	// The run reached a terminal success, so there is nothing left to resume
 	// from. Discarding the checkpoints also re-arms the deferred Drop of the
-	// per-run vector collection.
-	o.discardCheckpoints(persistCtx, "run completed")
+	// per-run vector collection. Gated on the claim for the same reason: a
+	// superseded attempt must not delete the live one's checkpoints.
+	if claimed {
+		o.discardCheckpoints(persistCtx, "run completed")
+	}
 
 	// The clarifying-questions hop (RunPhaseQuestions) is deliberately NOT invoked
 	// here: agentserver calls it AFTER RunDiscovery returns and the completion

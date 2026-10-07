@@ -32,7 +32,7 @@ func TestRunRepository_Complete_StampsDiscoveryID(t *testing.T) {
 	}
 
 	const discoveryID = "69f64ae5494f0c382c059adf"
-	if err := repo.Complete(ctx, runID, discoveryID, 7, 0); err != nil {
+	if _, err := repo.Complete(ctx, runID, discoveryID, 7, 0); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 
@@ -68,7 +68,7 @@ func TestRunRepository_Complete_RejectsEmptyDiscoveryID(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	err = repo.Complete(ctx, runID, "", 0, 0)
+	_, err = repo.Complete(ctx, runID, "", 0, 0)
 	if err == nil {
 		t.Fatal("Complete accepted empty discovery_id")
 	}
@@ -87,7 +87,7 @@ func TestRunRepository_Complete_InvalidRunIDErrors(t *testing.T) {
 	defer cleanup()
 
 	repo := NewRunRepository(db)
-	if err := repo.Complete(ctx, "not-a-hex", "disc-1", 1, 0); err == nil {
+	if _, err := repo.Complete(ctx, "not-a-hex", "disc-1", 1, 0); err == nil {
 		t.Fatal("Complete accepted malformed run id")
 	}
 }
@@ -110,12 +110,12 @@ func TestRunRepository_Fail_DoesNotOverwriteCompleted(t *testing.T) {
 	}
 
 	const discoveryID = "69f64ae5494f0c382c059adf"
-	if err := repo.Complete(ctx, runID, discoveryID, 7, 0); err != nil {
+	if _, err := repo.Complete(ctx, runID, discoveryID, 7, 0); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 
 	// Simulate the watcher exhaustion path firing AFTER Complete.
-	if err := repo.Fail(ctx, runID, "", "watcher exhausted", 0); err != nil {
+	if _, err := repo.Fail(ctx, runID, "", "watcher exhausted", 0); err != nil {
 		t.Fatalf("Fail returned error: %v", err)
 	}
 
@@ -155,7 +155,7 @@ func TestRunRepository_Fail_DoesNotOverwriteCancelled(t *testing.T) {
 		t.Fatalf("seed cancelled: %v", err)
 	}
 
-	if err := repo.Fail(ctx, runID, "", "watcher exhausted", 0); err != nil {
+	if _, err := repo.Fail(ctx, runID, "", "watcher exhausted", 0); err != nil {
 		t.Fatalf("Fail returned error: %v", err)
 	}
 
@@ -190,7 +190,7 @@ func TestRunRepository_Fail_UpdatesRunningRuns(t *testing.T) {
 		t.Fatalf("seed running: %v", err)
 	}
 
-	if err := repo.Fail(ctx, runID, "disc-99", "compute error", 0); err != nil {
+	if _, err := repo.Fail(ctx, runID, "disc-99", "compute error", 0); err != nil {
 		t.Fatalf("Fail returned error: %v", err)
 	}
 
@@ -227,7 +227,7 @@ func TestRunRepository_TerminalWritesAreFencedByAttempt(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := repo.UpdateStatus(ctx, id, models.RunStatusRunning, models.PhaseExploration, "", 20); err != nil {
+		if err := repo.UpdateStatus(ctx, id, models.RunStatusRunning, models.PhaseExploration, "", 20, 0); err != nil {
 			t.Fatal(err)
 		}
 		oid, _ := primitive.ObjectIDFromHex(id)
@@ -243,7 +243,7 @@ func TestRunRepository_TerminalWritesAreFencedByAttempt(t *testing.T) {
 		runID := newRunOnAttempt(t, 2)
 
 		// The orphaned attempt 1 finishes and tries to stamp success.
-		if err := repo.Complete(ctx, runID, "disc-from-orphan", 9, 1); err != nil {
+		if _, err := repo.Complete(ctx, runID, "disc-from-orphan", 9, 1); err != nil {
 			t.Fatal(err)
 		}
 
@@ -259,7 +259,7 @@ func TestRunRepository_TerminalWritesAreFencedByAttempt(t *testing.T) {
 		}
 
 		// The owning attempt's own write still lands.
-		if err := repo.Complete(ctx, runID, "disc-from-live", 3, 2); err != nil {
+		if _, err := repo.Complete(ctx, runID, "disc-from-live", 3, 2); err != nil {
 			t.Fatal(err)
 		}
 		run, _ = repo.GetByID(ctx, runID)
@@ -271,7 +271,7 @@ func TestRunRepository_TerminalWritesAreFencedByAttempt(t *testing.T) {
 	t.Run("an orphan cannot fail a run the live attempt owns", func(t *testing.T) {
 		runID := newRunOnAttempt(t, 3)
 
-		if err := repo.Fail(ctx, runID, "", "orphan gave up", 2); err != nil {
+		if _, err := repo.Fail(ctx, runID, "", "orphan gave up", 2); err != nil {
 			t.Fatal(err)
 		}
 		run, _ := repo.GetByID(ctx, runID)
@@ -282,7 +282,7 @@ func TestRunRepository_TerminalWritesAreFencedByAttempt(t *testing.T) {
 			t.Errorf("error = %q, want untouched by the orphan", run.Error)
 		}
 
-		if err := repo.Fail(ctx, runID, "", "live attempt gave up", 3); err != nil {
+		if _, err := repo.Fail(ctx, runID, "", "live attempt gave up", 3); err != nil {
 			t.Fatal(err)
 		}
 		run, _ = repo.GetByID(ctx, runID)
@@ -298,7 +298,7 @@ func TestRunRepository_TerminalWritesAreFencedByAttempt(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := repo.Complete(ctx, id, "disc-legacy", 1, 1); err != nil {
+		if _, err := repo.Complete(ctx, id, "disc-legacy", 1, 1); err != nil {
 			t.Fatal(err)
 		}
 		run, _ := repo.GetByID(ctx, id)
@@ -310,7 +310,7 @@ func TestRunRepository_TerminalWritesAreFencedByAttempt(t *testing.T) {
 	t.Run("attempt 0 means unknown and matches anything", func(t *testing.T) {
 		// The behaviour every caller had before attempts existed.
 		runID := newRunOnAttempt(t, 4)
-		if err := repo.Complete(ctx, runID, "disc-any", 1, 0); err != nil {
+		if _, err := repo.Complete(ctx, runID, "disc-any", 1, 0); err != nil {
 			t.Fatal(err)
 		}
 		run, _ := repo.GetByID(ctx, runID)
