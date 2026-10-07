@@ -166,7 +166,7 @@ func (r *RunRepository) IncrementAnalysisCounter(ctx context.Context, runID, met
 // discovery is a contract violation the caller must surface. An
 // empty string returns an error rather than silently writing a
 // half-state.
-func (r *RunRepository) Complete(ctx context.Context, runID, discoveryID string, insightsFound int) error {
+func (r *RunRepository) Complete(ctx context.Context, runID, discoveryID string, insightsFound int, attempt int) error {
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {
 		return fmt.Errorf("invalid run ID: %w", err)
@@ -195,8 +195,33 @@ func (r *RunRepository) Complete(ctx context.Context, runID, discoveryID string,
 		},
 	}
 
-	_, err = r.col.UpdateByID(ctx, oid, update)
+	_, err = r.col.UpdateOne(ctx, attemptFilter(oid, attempt), update)
 	return err
+}
+
+// attemptFilter builds a run filter that matches only while the run is still
+// on the given attempt.
+//
+// It fences a previous attempt's agent that is somehow still alive. That is
+// reachable: the API's startup sweep marks in-flight runs `failed` after a
+// restart WITHOUT reaping their workloads, so an operator resuming such a run
+// can have two agents on one run id — and the terminal status the agent writes
+// is the authoritative one. Without this, the orphan's eventual Complete or
+// Fail would overwrite the live attempt's outcome.
+//
+// attempt <= 0 means "unknown" and matches anything, which is what a caller
+// that cannot say its attempt gets — the behaviour before attempts existed.
+// Attempt 1 also matches a document with NO attempt field, which is how every
+// run created before the counter existed reads.
+func attemptFilter(oid primitive.ObjectID, attempt int) bson.M {
+	filter := bson.M{"_id": oid}
+	switch {
+	case attempt == 1:
+		filter["attempt"] = bson.M{"$in": []any{1, nil}}
+	case attempt > 1:
+		filter["attempt"] = attempt
+	}
+	return filter
 }
 
 // Fail marks a run as failed. discoveryID is the _id of the partial
@@ -223,7 +248,7 @@ func (r *RunRepository) Complete(ctx context.Context, runID, discoveryID string,
 // DiscoveryRun.DiscoveryID; stamping it on the failed run lets
 // consumers navigate to the partial result the same way they would
 // for a completed run.
-func (r *RunRepository) Fail(ctx context.Context, runID, discoveryID, errMsg string) error {
+func (r *RunRepository) Fail(ctx context.Context, runID, discoveryID, errMsg string, attempt int) error {
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {
 		return fmt.Errorf("invalid run ID: %w", err)
@@ -241,13 +266,11 @@ func (r *RunRepository) Fail(ctx context.Context, runID, discoveryID, errMsg str
 		set["discovery_id"] = discoveryID
 	}
 
-	filter := bson.M{
-		"_id": oid,
-		"status": bson.M{"$in": []string{
-			models.RunStatusPending,
-			models.RunStatusRunning,
-		}},
-	}
+	filter := attemptFilter(oid, attempt)
+	filter["status"] = bson.M{"$in": []string{
+		models.RunStatusPending,
+		models.RunStatusRunning,
+	}}
 	_, err = r.col.UpdateOne(ctx, filter, bson.M{"$set": set})
 	return err
 }

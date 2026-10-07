@@ -32,6 +32,12 @@ type StatusReporter struct {
 	projectID   string
 	runID       string
 	maxSteps    int
+	// attempt is which attempt of the run this process is. It fences the
+	// terminal status write against a previous attempt's agent that is still
+	// alive — see database.attemptFilter. Zero means "unknown", which
+	// matches any attempt and is the behaviour every caller had before
+	// resume existed.
+	attempt int
 }
 
 // NewStatusReporter creates a status reporter. Pass empty runID to disable.
@@ -343,7 +349,7 @@ func (s *StatusReporter) Complete(ctx context.Context, discoveryID string, insig
 	if !s.enabled() {
 		return
 	}
-	if err := s.repo.Complete(ctx, s.runID, discoveryID, insightsFound); err != nil {
+	if err := s.repo.Complete(ctx, s.runID, discoveryID, insightsFound, s.attempt); err != nil {
 		logger.WithError(err).Warn("failed to complete run")
 	}
 }
@@ -430,7 +436,7 @@ func (s *StatusReporter) Fail(ctx context.Context, discoveryID, errMsg string) {
 	if !s.enabled() {
 		return
 	}
-	if err := s.repo.Fail(ctx, s.runID, discoveryID, errMsg); err != nil {
+	if err := s.repo.Fail(ctx, s.runID, discoveryID, errMsg, s.attempt); err != nil {
 		logger.WithError(err).Warn("failed to mark run as failed")
 	}
 }

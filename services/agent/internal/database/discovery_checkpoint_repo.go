@@ -230,11 +230,40 @@ func (r *DiscoveryCheckpointRepository) SaveStep(ctx context.Context, in Checkpo
 		ExplorationStep: checkpointPayload(in.Step, in.RowSample),
 		CheckpointArgs:  in.Args,
 	}
-	filter := bson.M{"run_id": in.RunID, "step_number": in.Step.Step}
-	if _, err := r.col.ReplaceOne(ctx, filter, doc, options.Replace().SetUpsert(true)); err != nil {
-		return fmt.Errorf("checkpoint step %d of run %s: %w", in.Step.Step, in.RunID, err)
+	// The attempt bound is a fence against a previous attempt's agent that is
+	// somehow still alive. That is reachable: the API's startup sweep marks
+	// in-flight runs `failed` after a restart WITHOUT reaping their
+	// workloads, so an operator resuming such a run can have two agents on
+	// one run id — and both write checkpoints keyed on (run_id, step_number).
+	// Without this, the orphan would overwrite the live attempt's steps with
+	// its own, and replay would reconstruct a conversation spliced together
+	// from two different runs.
+	//
+	// $lte, not equality: a resumed run legitimately replaces the rows of the
+	// prefix it replayed, which were written under a lower attempt.
+	filter := bson.M{
+		"run_id":      in.RunID,
+		"step_number": in.Step.Step,
+		"attempt":     bson.M{"$lte": in.Attempt},
 	}
-	return nil
+	_, err := r.col.ReplaceOne(ctx, filter, doc, options.Replace().SetUpsert(true))
+	if err == nil {
+		return nil
+	}
+	// A duplicate key here means precisely one thing: the filter above found
+	// nothing, so the upsert tried to insert, and the unique
+	// (run_id, step_number) index refused it because a row already exists —
+	// under a HIGHER attempt. The write is correctly refused and there is
+	// nothing to retry; the newer attempt owns this step.
+	if mongo.IsDuplicateKeyError(err) {
+		applog.WithFields(applog.Fields{
+			"run_id":  in.RunID,
+			"step":    in.Step.Step,
+			"attempt": in.Attempt,
+		}).Info("checkpoint refused: a newer attempt of this run owns this step")
+		return nil
+	}
+	return fmt.Errorf("checkpoint step %d of run %s: %w", in.Step.Step, in.RunID, err)
 }
 
 // SaveExplorationSummary records that exploration finished, which is what
@@ -255,11 +284,25 @@ func (r *DiscoveryCheckpointRepository) SaveExplorationSummary(ctx context.Conte
 		TotalSteps:    in.Summary.TotalSteps,
 		DurationMs:    in.Summary.Duration.Milliseconds(),
 	}
-	filter := bson.M{"run_id": in.RunID, "step_number": checkpointSummaryStepNumber}
-	if _, err := r.col.ReplaceOne(ctx, filter, doc, options.Replace().SetUpsert(true)); err != nil {
-		return fmt.Errorf("checkpoint exploration summary of run %s: %w", in.RunID, err)
+	// Same attempt fence as SaveStep: an orphaned previous attempt must not
+	// declare exploration finished on behalf of the live one.
+	filter := bson.M{
+		"run_id":      in.RunID,
+		"step_number": checkpointSummaryStepNumber,
+		"attempt":     bson.M{"$lte": in.Attempt},
 	}
-	return nil
+	_, err := r.col.ReplaceOne(ctx, filter, doc, options.Replace().SetUpsert(true))
+	if err == nil {
+		return nil
+	}
+	if mongo.IsDuplicateKeyError(err) {
+		applog.WithFields(applog.Fields{
+			"run_id":  in.RunID,
+			"attempt": in.Attempt,
+		}).Info("exploration summary checkpoint refused: a newer attempt of this run owns it")
+		return nil
+	}
+	return fmt.Errorf("checkpoint exploration summary of run %s: %w", in.RunID, err)
 }
 
 // LoadPrefix returns the CONTIGUOUS prefix 1..K of a run's checkpointed

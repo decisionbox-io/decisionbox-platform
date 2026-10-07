@@ -205,6 +205,7 @@ No synthetic "you were resumed" message is injected. The replayed transcript *is
 - **Cancel stays terminal.** Cancelling is a deliberate hard kill; its checkpoints are deleted and the run cannot be resumed.
 - **Analysis restarts.** A resumed run re-runs the whole analysis phase; only exploration is checkpointed today.
 - **The novelty counters reset.** A cube-reaching resumed run has to re-establish its judged steps. Since that rule can only ever lengthen a run, resume can never end one early.
+- **A previous attempt's agent may still be alive, and cannot corrupt the new one.** The API's startup sweep marks in-flight runs `failed` after a restart without reaping their workloads, so resuming such a run can leave two agents on one run id. Every write either agent makes is fenced by attempt: a superseded attempt cannot overwrite a newer one's checkpoints, declare exploration finished on its behalf, or stamp its terminal status. The orphan logs that its writes were refused and exits; the live attempt is unaffected.
 - **A re-executed `lookup_schema` can answer differently** if the schema cache was re-indexed between attempts. That is visible rather than hidden: the replayed turn shows what the cache says now, which is also what the resumed run will query against.
 
 ### Across attempts

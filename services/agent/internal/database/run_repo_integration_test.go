@@ -32,7 +32,7 @@ func TestRunRepository_Complete_StampsDiscoveryID(t *testing.T) {
 	}
 
 	const discoveryID = "69f64ae5494f0c382c059adf"
-	if err := repo.Complete(ctx, runID, discoveryID, 7); err != nil {
+	if err := repo.Complete(ctx, runID, discoveryID, 7, 0); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 
@@ -68,7 +68,7 @@ func TestRunRepository_Complete_RejectsEmptyDiscoveryID(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	err = repo.Complete(ctx, runID, "", 0)
+	err = repo.Complete(ctx, runID, "", 0, 0)
 	if err == nil {
 		t.Fatal("Complete accepted empty discovery_id")
 	}
@@ -87,7 +87,7 @@ func TestRunRepository_Complete_InvalidRunIDErrors(t *testing.T) {
 	defer cleanup()
 
 	repo := NewRunRepository(db)
-	if err := repo.Complete(ctx, "not-a-hex", "disc-1", 1); err == nil {
+	if err := repo.Complete(ctx, "not-a-hex", "disc-1", 1, 0); err == nil {
 		t.Fatal("Complete accepted malformed run id")
 	}
 }
@@ -110,12 +110,12 @@ func TestRunRepository_Fail_DoesNotOverwriteCompleted(t *testing.T) {
 	}
 
 	const discoveryID = "69f64ae5494f0c382c059adf"
-	if err := repo.Complete(ctx, runID, discoveryID, 7); err != nil {
+	if err := repo.Complete(ctx, runID, discoveryID, 7, 0); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 
 	// Simulate the watcher exhaustion path firing AFTER Complete.
-	if err := repo.Fail(ctx, runID, "", "watcher exhausted"); err != nil {
+	if err := repo.Fail(ctx, runID, "", "watcher exhausted", 0); err != nil {
 		t.Fatalf("Fail returned error: %v", err)
 	}
 
@@ -155,7 +155,7 @@ func TestRunRepository_Fail_DoesNotOverwriteCancelled(t *testing.T) {
 		t.Fatalf("seed cancelled: %v", err)
 	}
 
-	if err := repo.Fail(ctx, runID, "", "watcher exhausted"); err != nil {
+	if err := repo.Fail(ctx, runID, "", "watcher exhausted", 0); err != nil {
 		t.Fatalf("Fail returned error: %v", err)
 	}
 
@@ -190,7 +190,7 @@ func TestRunRepository_Fail_UpdatesRunningRuns(t *testing.T) {
 		t.Fatalf("seed running: %v", err)
 	}
 
-	if err := repo.Fail(ctx, runID, "disc-99", "compute error"); err != nil {
+	if err := repo.Fail(ctx, runID, "disc-99", "compute error", 0); err != nil {
 		t.Fatalf("Fail returned error: %v", err)
 	}
 
@@ -204,4 +204,118 @@ func TestRunRepository_Fail_UpdatesRunningRuns(t *testing.T) {
 	if got.DiscoveryID != "disc-99" {
 		t.Errorf("DiscoveryID = %q, want disc-99", got.DiscoveryID)
 	}
+}
+
+// TestRunRepository_TerminalWritesAreFencedByAttempt is the other half of the
+// two-agents-on-one-run fence, and the more damaging half: the agent's
+// terminal status is the authoritative one.
+//
+// Reachable because the API's startup sweep marks in-flight runs `failed`
+// after a restart WITHOUT reaping their workloads. An operator resuming such
+// a run has the orphaned previous agent still alive; when it eventually
+// finishes it would stamp `completed` (or `failed`) over the live attempt,
+// reporting an outcome the live attempt never reached.
+func TestRunRepository_TerminalWritesAreFencedByAttempt(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewRunRepository(db)
+
+	newRunOnAttempt := func(t *testing.T, attempt int) string {
+		t.Helper()
+		id, err := repo.Create(ctx, &models.DiscoveryRun{ProjectID: "proj-1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.UpdateStatus(ctx, id, models.RunStatusRunning, models.PhaseExploration, "", 20); err != nil {
+			t.Fatal(err)
+		}
+		oid, _ := primitive.ObjectIDFromHex(id)
+		if _, err := db.Collection(CollectionDiscoveryRuns).UpdateByID(ctx, oid, bson.M{
+			"$set": bson.M{"attempt": attempt},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+
+	t.Run("an orphan cannot complete a run the live attempt owns", func(t *testing.T) {
+		runID := newRunOnAttempt(t, 2)
+
+		// The orphaned attempt 1 finishes and tries to stamp success.
+		if err := repo.Complete(ctx, runID, "disc-from-orphan", 9, 1); err != nil {
+			t.Fatal(err)
+		}
+
+		run, err := repo.GetByID(ctx, runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if run.Status != models.RunStatusRunning {
+			t.Errorf("status = %q, want running — an orphan reported an outcome for the live attempt", run.Status)
+		}
+		if run.DiscoveryID != "" {
+			t.Errorf("discovery_id = %q, want untouched", run.DiscoveryID)
+		}
+
+		// The owning attempt's own write still lands.
+		if err := repo.Complete(ctx, runID, "disc-from-live", 3, 2); err != nil {
+			t.Fatal(err)
+		}
+		run, _ = repo.GetByID(ctx, runID)
+		if run.Status != models.RunStatusCompleted || run.DiscoveryID != "disc-from-live" {
+			t.Errorf("run = %q / %q, want completed with the live attempt's result", run.Status, run.DiscoveryID)
+		}
+	})
+
+	t.Run("an orphan cannot fail a run the live attempt owns", func(t *testing.T) {
+		runID := newRunOnAttempt(t, 3)
+
+		if err := repo.Fail(ctx, runID, "", "orphan gave up", 2); err != nil {
+			t.Fatal(err)
+		}
+		run, _ := repo.GetByID(ctx, runID)
+		if run.Status != models.RunStatusRunning {
+			t.Errorf("status = %q, want running", run.Status)
+		}
+		if run.Error != "" {
+			t.Errorf("error = %q, want untouched by the orphan", run.Error)
+		}
+
+		if err := repo.Fail(ctx, runID, "", "live attempt gave up", 3); err != nil {
+			t.Fatal(err)
+		}
+		run, _ = repo.GetByID(ctx, runID)
+		if run.Status != models.RunStatusFailed || run.Error != "live attempt gave up" {
+			t.Errorf("run = %q / %q, want failed with the live attempt's error", run.Status, run.Error)
+		}
+	})
+
+	t.Run("attempt 1 matches a run with no attempt recorded", func(t *testing.T) {
+		// Every run created before the counter existed reads as absent, and
+		// its agent reports attempt 1. It must still be able to finish.
+		id, err := repo.Create(ctx, &models.DiscoveryRun{ProjectID: "proj-1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.Complete(ctx, id, "disc-legacy", 1, 1); err != nil {
+			t.Fatal(err)
+		}
+		run, _ := repo.GetByID(ctx, id)
+		if run.Status != models.RunStatusCompleted {
+			t.Errorf("status = %q, want completed — a legacy run must still be completable", run.Status)
+		}
+	})
+
+	t.Run("attempt 0 means unknown and matches anything", func(t *testing.T) {
+		// The behaviour every caller had before attempts existed.
+		runID := newRunOnAttempt(t, 4)
+		if err := repo.Complete(ctx, runID, "disc-any", 1, 0); err != nil {
+			t.Fatal(err)
+		}
+		run, _ := repo.GetByID(ctx, runID)
+		if run.Status != models.RunStatusCompleted {
+			t.Errorf("status = %q, want completed", run.Status)
+		}
+	})
 }

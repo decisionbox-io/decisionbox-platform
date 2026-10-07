@@ -520,3 +520,117 @@ func TestInteg_Checkpoint_LoadPrefixOnAnUnknownRunIsEmptyNotAnError(t *testing.T
 		t.Errorf("set = %+v, want nothing to resume from", set)
 	}
 }
+
+// TestInteg_Checkpoint_ANewerAttemptOwnsItsSteps is the fence against two
+// agents on one run.
+//
+// That is reachable without anything exotic: the API's startup sweep marks
+// in-flight runs `failed` after a restart WITHOUT reaping their workloads, so
+// an operator resuming such a run can have the orphaned previous agent and the
+// live one both writing checkpoints keyed on (run_id, step_number). Unfenced,
+// the orphan would overwrite the live attempt's steps with its own and replay
+// would reconstruct a conversation spliced from two different runs.
+func TestInteg_Checkpoint_ANewerAttemptOwnsItsSteps(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	repo := NewDiscoveryCheckpointRepository(db)
+	if err := repo.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("EnsureIndexes: %v", err)
+	}
+
+	// The live attempt (2) writes step 1.
+	live := checkpointStepInput("run-1", 1, 777)
+	live.Attempt = 2
+	if err := repo.SaveStep(ctx, live); err != nil {
+		t.Fatal(err)
+	}
+
+	// The orphaned attempt (1) tries to write the same step with its own
+	// content. Refused — and NOT reported as an error, because nothing is
+	// wrong and there is nothing to retry: the newer attempt owns the step.
+	orphan := checkpointStepInput("run-1", 1, 111)
+	orphan.Attempt = 1
+	if err := repo.SaveStep(ctx, orphan); err != nil {
+		t.Fatalf("a superseded attempt's write must be refused quietly, got: %v", err)
+	}
+
+	set, err := repo.LoadPrefix(ctx, "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set.Len() != 1 {
+		t.Fatalf("prefix len = %d, want 1 — the refused write must not have inserted a second row", set.Len())
+	}
+	if got := set.Steps[0].Step.RowCount; got != 777 {
+		t.Errorf("step row count = %d, want 777 — the orphan overwrote the live attempt's step", got)
+	}
+	if set.Attempt != 2 {
+		t.Errorf("set attempt = %d, want 2", set.Attempt)
+	}
+
+	// The live attempt can still re-write its own step (a replayed prefix
+	// does exactly that), and a LATER attempt can replace it.
+	live.Step.RowCount = 888
+	if err := repo.SaveStep(ctx, live); err != nil {
+		t.Fatalf("the owning attempt must still be able to rewrite its step: %v", err)
+	}
+	newer := checkpointStepInput("run-1", 1, 999)
+	newer.Attempt = 3
+	if err := repo.SaveStep(ctx, newer); err != nil {
+		t.Fatalf("a newer attempt must be able to replace an older attempt's step: %v", err)
+	}
+	set, _ = repo.LoadPrefix(ctx, "run-1")
+	if got := set.Steps[0].Step.RowCount; got != 999 {
+		t.Errorf("step row count = %d, want 999 — a newer attempt must win", got)
+	}
+}
+
+// TestInteg_Checkpoint_ANewerAttemptOwnsTheSummary is the same fence on the
+// summary row: an orphan must not declare exploration finished on behalf of
+// the live attempt, which would send it straight to analysis.
+func TestInteg_Checkpoint_ANewerAttemptOwnsTheSummary(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	repo := NewDiscoveryCheckpointRepository(db)
+	if err := repo.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("EnsureIndexes: %v", err)
+	}
+	if err := repo.SaveStep(ctx, func() CheckpointStepInput {
+		in := checkpointStepInput("run-1", 1, 10)
+		in.Attempt = 2
+		return in
+	}()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The live attempt has NOT finished exploring. The orphan says it has.
+	err := repo.SaveExplorationSummary(ctx, CheckpointSummaryInput{
+		ProjectID: "proj-1", RunID: "run-1", Attempt: 2,
+		Summary: models.ExplorationCheckpointSummary{Completed: true, TotalSteps: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = repo.SaveExplorationSummary(ctx, CheckpointSummaryInput{
+		ProjectID: "proj-1", RunID: "run-1", Attempt: 1,
+		Summary: models.ExplorationCheckpointSummary{Completed: true, TotalSteps: 99},
+	})
+	if err != nil {
+		t.Fatalf("a superseded attempt's summary write must be refused quietly, got: %v", err)
+	}
+
+	set, err := repo.LoadPrefix(ctx, "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !set.ExplorationComplete() {
+		t.Fatal("the live attempt's own summary should stand")
+	}
+	if set.Summary.TotalSteps != 1 {
+		t.Errorf("summary total steps = %d, want 1 — the orphan's summary won", set.Summary.TotalSteps)
+	}
+}

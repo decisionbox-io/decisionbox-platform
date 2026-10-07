@@ -683,6 +683,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// resume existed.
 	o.resume = opts.Resume
 
+	// Which attempt this process is, so the terminal status write cannot be
+	// overwritten by a previous attempt's agent that is somehow still alive
+	// (see database.attemptFilter). Must come after o.resume is assigned —
+	// read before it, this would be 1 on every attempt and fence nothing.
+	o.statusReporter.attempt = o.resume.attemptNumber()
+
 	// A resumed run HAS checkpoints — that is what it was resumed from — so
 	// it is resumable before it writes a single new one. Set here rather than
 	// only when a checkpoint lands, because the skip-exploration path never
