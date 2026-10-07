@@ -90,11 +90,11 @@ func (r *RunRepository) BeginResume(ctx context.Context, runID string) (*models.
 	}
 	now := time.Now()
 
-	// Read the attempt we are about to become, so the lifecycle event we
-	// push carries the right number. $inc and $push cannot reference each
-	// other inside one update, and the pushed event is read by humans
-	// reconstructing what happened — an off-by-one there is worse than an
-	// extra read.
+	// Read the attempt we are about to become, so the counter, the returned
+	// document and the pushed lifecycle event all carry the SAME number.
+	// $inc and $push cannot reference each other inside one update, and the
+	// event is read by humans reconstructing what happened — an off-by-one
+	// between the two is worse than an extra read.
 	var current models.DiscoveryRun
 	if err := r.col.FindOne(ctx, bson.M{"_id": oid}).Decode(&current); err != nil {
 		if err == mongo.ErrNoDocuments {
@@ -104,8 +104,10 @@ func (r *RunRepository) BeginResume(ctx context.Context, runID string) (*models.
 	}
 	nextAttempt := current.Attempt + 1
 	if nextAttempt < 2 {
-		// A run created before the attempt counter existed reads as 0.
-		// Its first resume is attempt 2.
+		// A run created before the attempt counter existed reads as 0, so
+		// $inc would leave it at 1 — claiming a resumed run is on its first
+		// attempt, and disagreeing with the event we are about to push. Its
+		// first resume is attempt 2.
 		nextAttempt = 2
 	}
 
@@ -116,8 +118,13 @@ func (r *RunRepository) BeginResume(ctx context.Context, runID string) (*models.
 			"phase_detail":    "Resuming from the last exploration checkpoint",
 			"last_resumed_at": now,
 			"updated_at":      now,
+			// Set, not $inc. The filter below already serialises the flip —
+			// only one caller can move a run out of `failed` — so there is
+			// no counter to race, and writing the computed value is the only
+			// way the stored attempt, the returned document and the pushed
+			// event agree on a run whose counter predates this field.
+			"attempt": nextAttempt,
 		},
-		"$inc": bson.M{"attempt": 1},
 		"$unset": bson.M{
 			// The previous attempt's failure is history now; the lifecycle
 			// log keeps it. Leaving them set would show a running run with
@@ -141,11 +148,6 @@ func (r *RunRepository) BeginResume(ctx context.Context, runID string) (*models.
 			return nil, ErrNoResumableRun
 		}
 		return nil, fmt.Errorf("begin resume of run %s: %w", runID, err)
-	}
-	if run.Attempt < 2 {
-		// A legacy run's $inc took it from 0 to 1; report the attempt the
-		// lifecycle event recorded so the caller and the log agree.
-		run.Attempt = nextAttempt
 	}
 	return &run, nil
 }
