@@ -10,6 +10,7 @@ A complete discovery run output. Stored in the `discoveries` MongoDB collection.
 |-------|------|-------------|
 | `id` | string | MongoDB ObjectID |
 | `project_id` | string | Project that owns this discovery |
+| `run_id` | string | The run that produced this result. Lets a resumed run retire the partial result its previous attempt left behind, and keep that result out of its own "previously discovered" context. Absent on documents written before resume shipped, which every reader treats as "not this run". |
 | `domain` | string | Domain (e.g., `gaming`, `social`) |
 | `category` | string | Category (e.g., `match3`, `idle`, `casual`, `content_sharing`) |
 | `run_type` | string | `full` (all areas), `partial` (some areas or some failed), `failed` (all areas failed) |
@@ -231,6 +232,28 @@ Live status of a running discovery. Stored in `discovery_runs` collection, updat
 | `successful_queries` | int | Queries that returned results |
 | `failed_queries` | int | Queries that errored |
 | `insights_found` | int | Insights generated so far |
+| `attempt` | int | How many times the run has been started: 1 on create, incremented by each resume. |
+| `last_resumed_at` | timestamp | When the latest attempt was requested. |
+| `last_checkpoint_step` | int | Highest exploration step with a checkpoint. `> 0` on a `failed` run is what makes it resumable; zeroed on completion. Normally also the replayable prefix — the two differ only if an earlier checkpoint write failed, in which case replay honestly stops at the gap. |
+| `active_ms` | int64 | Cumulative **active** compute across attempts, so elapsed time excludes the hours a failed run sat waiting to be noticed. Recorded at each attempt's terminal write, so an attempt killed before reaching it contributes nothing — a slight undercount on hard crashes. |
+| `lifecycle` | RunLifecycleEvent[] | Append-only transition log. |
+| `max_steps`, `min_steps` | int | The run's own step budget, so a resume replays what the caller chose rather than the agent's defaults. |
+| `areas` | string[] | The run's own area selection. |
+| `effort` | string | The run's own effort level. |
+
+All the fields from `attempt` down are optional and absent on runs that predate checkpointing — such a run reads as attempt 0 with no checkpoint, which is correct: it has nothing to resume.
+
+### RunLifecycleEvent
+
+One transition in a run's history. A single mutable `status` field is enough while a run has one attempt; once a run can be resumed it shows only the LATEST attempt and silently overwrites every earlier one.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | string | The status the run entered |
+| `at` | timestamp | When |
+| `reason` | string | Free text: the failure message, or what triggered the transition |
+| `attempt` | int | Which attempt this event belongs to |
+| `llm_provider`, `llm_model` | string | The model that served this attempt, set on the terminal event the agent writes — which is how "which model ran which attempt" stays answerable |
 
 ### RunStep
 
@@ -252,6 +275,36 @@ One step in the live progress feed.
 | `insight_name` | string | Insight name (if type=insight) |
 | `insight_severity` | string | Insight severity (if type=insight) |
 | `error` | string | Error message (if type=error) |
+
+## ExplorationCheckpoint
+
+One exploration step of an **in-flight** run. Stored in the `discovery_checkpoints` collection, keyed by `run_id`, and the reason a crashed run can be resumed instead of paying for its whole exploration phase again.
+
+One document per step rather than an array on the run document, for the same reason the discovery logs were split out: an embedded array grows with run length and a long run hits the 16MB BSON limit exactly when the checkpoint matters most.
+
+Not the same thing as `discovery_exploration_steps`, which is the tail-written audit log keyed by `discovery_id`, carries full rows and fix history, and is read by the dashboard. These rows exist only while a run is in flight, carry a bounded row sample, and are deleted when the run completes or is cancelled — with `DISCOVERY_CHECKPOINT_RETENTION` as the backstop.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `run_id` | string | The run this checkpoint belongs to |
+| `project_id` | string | Project that owns the run |
+| `step_number` | int | 1-based step number; `0` is the reserved exploration-summary document |
+| `attempt` | int | Which attempt wrote this row (observability — a mixed set across a prefix is how an operator sees where the previous attempt stopped) |
+| `kind` | string | `step` or `exploration_summary` |
+| `created_at` | timestamp | TTL anchor |
+| *(inline)* | ExplorationStep | The step itself, with its result set reduced to a bounded row sample and its fix history and raw LLM dialog stripped |
+| `datasource_id` | string | Replay argument: the datasource the action targeted |
+| `lookup_schema` | string[] | Replay argument for a `lookup_schema` step |
+| `search_tables`, `search_top_k` | string, int | Replay arguments for a `search_tables` step |
+| `correlation_a`, `correlation_b` | string | Replay arguments for a `get_correlations` step |
+| `reject_reason` | string | Reason class behind a `complete_rejected` step, so the nudge can be re-derived |
+| `completed`, `completion_msg`, `total_steps`, `exploration_duration_ms` | — | Summary document only (`kind` = `exploration_summary`). Its presence is what lets a resumed run skip exploration entirely. |
+
+Indexes: `(run_id, step_number)` unique — which makes a retried write a replace rather than a duplicate — and a `created_at` TTL named `ttl_discovery_checkpoint`.
+
+The replay arguments are stored separately because an `ExplorationStep` records what came BACK (rows, counts, errors, digest) but has no field for what was ASKED — there is nowhere on it to put a lookup's table refs or a search's query text, and replay has to rebuild the model's own prior turn.
+
+See [Discovery lifecycle](../concepts/discovery-lifecycle.md#checkpointing-and-resume) for what a checkpoint deliberately does not keep, and why.
 
 ## Feedback
 

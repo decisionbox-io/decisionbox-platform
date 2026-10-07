@@ -160,6 +160,61 @@ Whether a run takes this path is decided from the registered shape of its dataso
 - `validation` — Insight validation result
 - `error` — Something went wrong (with error message)
 
+## Checkpointing and resume
+
+Exploration is where a run's cost sits: one agentic LLM call and one warehouse query per step, dozens of steps. Until checkpointing existed, none of that was written anywhere replayable until Phase 7, so a process that died anywhere earlier lost all of it — and the run was marked `failed`, which is terminal.
+
+Each completed exploration step now lands in its own `discovery_checkpoints` document as it finishes, plus one summary document when exploration ends. A failed run with a checkpoint can be **resumed**: it re-enters the **same run id**, replays the steps already executed instead of re-querying them, and continues from the next one. A run that died *after* exploration finished goes straight to analysis, making zero exploration LLM calls and zero warehouse queries.
+
+Resume is operator-initiated — the dashboard shows a **Resume from step N** button on a failed run that has a checkpoint, and the same thing is available as `POST /api/v1/runs/{runId}/resume`. Nothing retries automatically.
+
+### What a checkpoint keeps
+
+| Kept | Why |
+|---|---|
+| The action, its reasoning, the SQL and its purpose | Replay rebuilds the model's own prior turn from them |
+| `row_count`, timing, token counts, self-heal summary | The result message and the run's accounting |
+| The compact result digest | What the analysis phase renders |
+| Up to 50 rows of the result, normalised | The insight validation phases read raw rows; their evidence bundle is already a 50-row sample on the live path, so a resumed run's verifier sees the same evidence |
+| Quality caveats | Every insight's evidence label derives from them, and they are knowable nowhere else — a resumed run without them would relabel findings computed over withheld rows as sound |
+
+Deliberately **not** kept: the full result set (what makes a step unbounded in size), the per-attempt SQL-fix log (audit data, written once at Phase 7), and the raw LLM dialog.
+
+A resumed run's audit log therefore carries the 50-row sample for its pre-crash steps rather than their full results — those rows died with the crashed process. A normal run, and the steps a resumed run executes itself, are unchanged.
+
+### What replay re-executes
+
+Split by cost, so the expensive thing is never paid for twice:
+
+| Action | On replay |
+|---|---|
+| `query_data` | **Never re-executed.** The result message is rebuilt from the retained rows and the step's metadata. |
+| `lookup_schema` | Re-executed against the schema cache — a map lookup plus a Mongo read, no warehouse traffic and no LLM call. |
+| `search_tables` | Re-executed — one embedding call and one vector query. |
+| `get_correlations` | Re-executed — an in-process lookup. |
+| `complete_rejected` | The nudge is re-derived from the persisted reason. |
+
+Re-executing the cheap actions through their real code paths is what restores the per-run `lookup_schema` / `search_tables` / `get_correlations` budgets and the already-fetched-table dedupe as a side effect, so a resumed run cannot be handed a fresh schema budget.
+
+No synthetic "you were resumed" message is injected. The replayed transcript *is* the signal: the model sees its own prior actions and the last result, and answers with the next step.
+
+### Limits worth knowing
+
+- **Checkpoints expire.** `DISCOVERY_CHECKPOINT_RETENTION` (default 48h) must exceed `DISCOVERY_MAX_DURATION`, or a long run's early checkpoints expire while it is still running. Raise them together. A resume with nothing left to replay is refused with an explanation rather than silently re-exploring.
+- **A gap stops the replay.** Checkpoint writes are best-effort so they can never abort a working run. If one fails, replay stops at that step and re-explores from there — replaying across a hole would misnumber every later step, and insights cite step numbers.
+- **Cancel stays terminal.** Cancelling is a deliberate hard kill; its checkpoints are deleted and the run cannot be resumed.
+- **Analysis restarts.** A resumed run re-runs the whole analysis phase; only exploration is checkpointed today.
+- **The novelty counters reset.** A cube-reaching resumed run has to re-establish its judged steps. Since that rule can only ever lengthen a run, resume can never end one early.
+- **A re-executed `lookup_schema` can answer differently** if the schema cache was re-indexed between attempts. That is visible rather than hidden: the replayed turn shows what the cache says now, which is also what the resumed run will query against.
+
+### Across attempts
+
+The run document records `attempt`, `last_resumed_at`, `last_checkpoint_step`, `active_ms` and an append-only `lifecycle` log, plus the run's own `max_steps` / `min_steps` / `areas` / `effort` so a resume replays the budget the operator chose rather than the defaults.
+
+`active_ms` is cumulative **active** compute across attempts, which is what the dashboard shows as elapsed — otherwise a run resumed the next morning would report the hours it spent waiting to be noticed as work. It is recorded at each attempt's terminal write, so an attempt killed hard enough never to reach that point contributes nothing: a slight undercount, accepted because a dead attempt's compute is not worth counting.
+
+Each attempt's `lifecycle` event carries the LLM provider and model that served it, which is how "which model ran which attempt" stays answerable.
+
 ## Phase 4: Analysis
 
 For each analysis area defined by the domain pack (e.g., churn, engagement, monetization for gaming; growth, engagement, retention for social), the agent:
@@ -310,6 +365,9 @@ The agent writes the complete `DiscoveryResult` to MongoDB:
 ```
 DiscoveryResult:
   - project_id, domain, category
+  - run_id (the run that produced it — lets a resumed run retire the partial
+    result its previous attempt left behind, and keep that result out of its
+    own "previously discovered" context)
   - run_type: "full" | "partial" | "failed"
   - areas_requested (if selective run)
   - total_steps, duration
@@ -324,6 +382,8 @@ DiscoveryResult:
 
 The run status is updated to `completed` (or `failed` if critical errors occurred).
 
+A **resumed** run writes its new result first and retires the superseded one afterwards, rather than clearing the old rows before writing the new ones. There is no window in which the project shows no result at all, and because the new rows go in under a freshly minted `discovery_id`, the unique index on `discovery_recommendation_log.discovery_id` cannot be violated by a second pass. Once the result is durable the run's checkpoints are deleted; on a failure they are kept, which is what leaves the run resumable.
+
 ## Error Handling
 
 | Error | What happens |
@@ -333,8 +393,11 @@ The run status is updated to `completed` (or `failed` if critical errors occurre
 | All areas timeout | Run marked "failed". Error banner shown in dashboard. |
 | SQL query error | Agent asks LLM to fix the SQL. If still fails, step is skipped. |
 | Warehouse unreachable | Agent fails during schema discovery. Run marked "failed". |
-| Agent process crash | Subprocess runner detects exit code, updates run to "failed" with error from stderr. |
-| K8s Job failure | K8s runner polls Job status, detects failure, updates run. |
+| Agent process crash | Subprocess runner detects exit code, updates run to "failed" with error from stderr. **Resumable** from the last exploration checkpoint. |
+| K8s Job failure | K8s runner polls Job status, detects failure, updates run. **Resumable** from the last exploration checkpoint. |
+| API restarted mid-run | Startup sweep marks the run "failed". **Resumable** — the checkpoints outlive the process that wrote them. |
+| Run exceeded `DISCOVERY_MAX_DURATION` | Partial result is saved and the run is marked "failed". **Resumable**: exploration is replayed, not re-run. |
+| Resume with no checkpoint | Refused with 409 and an explanation (it expired, or the run died before its first step). Start a new run. |
 
 ## Cost
 

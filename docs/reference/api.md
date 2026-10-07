@@ -699,14 +699,67 @@ curl http://localhost:8080/api/v1/runs/507f1f77bcf86cd799439012
     "total_queries": 22,
     "successful_queries": 21,
     "failed_queries": 1,
-    "insights_found": 3
+    "insights_found": 3,
+    "attempt": 2,
+    "last_checkpoint_step": 42,
+    "active_ms": 185000,
+    "last_resumed_at": "2026-03-14T10:34:00Z",
+    "max_steps": 100,
+    "min_steps": 60,
+    "lifecycle": [
+      {"status": "pending", "at": "2026-03-14T09:10:00Z", "reason": "manual", "attempt": 1},
+      {"status": "failed", "at": "2026-03-14T10:02:00Z", "reason": "agent exited: signal: killed", "attempt": 1,
+       "llm_provider": "claude", "llm_model": "claude-sonnet-5-5"},
+      {"status": "running", "at": "2026-03-14T10:34:00Z", "reason": "resumed from the last exploration checkpoint", "attempt": 2}
+    ]
   }
 }
 ```
 
+The resume-related fields are all optional and absent on runs that predate checkpointing:
+
+| Field | Meaning |
+|-------|---------|
+| `attempt` | How many times the run has been started. 1 on create, incremented by each resume. |
+| `last_checkpoint_step` | Highest exploration step with a checkpoint. `> 0` on a `failed` run is what makes it resumable; zeroed on success. |
+| `active_ms` | Cumulative **active** compute across attempts, so elapsed time excludes the hours a failed run sat waiting to be noticed. Best-effort: an attempt killed before its terminal write contributes nothing. |
+| `last_resumed_at` | When the latest attempt was requested. |
+| `max_steps`, `min_steps`, `areas`, `effort` | The run's own parameters, so a resume replays the budget the caller chose. |
+| `lifecycle` | Append-only transition log. Each attempt's terminal event carries the LLM provider and model that served it. |
+
+### POST /api/v1/runs/{runId}/resume
+
+Resume a **failed** discovery run from its last exploration checkpoint, re-entering the same run id. The agent replays the steps already executed — no warehouse re-queries and no exploration LLM calls for them — and continues from the next one. A run that died after exploration finished goes straight to analysis.
+
+Requires the `member` role, matching `POST /api/v1/projects/{id}/discover`.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/runs/507f1f77bcf86cd799439012/resume
+```
+
+```json
+{"data": {"status": "resumed", "run_id": "507f1f77bcf86cd799439012", "attempt": 2}}
+```
+
+Refusals — all of these are real answers, not errors to retry blindly:
+
+| Status | When |
+|--------|------|
+| `404` | No such run, or the project it belongs to is gone. |
+| `409` | The run is not `failed`. Only a failed run is resumable — `cancelled` is a deliberate hard kill and stays terminal, `completed` has nothing left, and `running` / `pending` already have an agent. The message names the run's actual status. |
+| `409` | No checkpoint to resume from: it expired (see `DISCOVERY_CHECKPOINT_RETENTION`) or the run died before its first step. Start a new run. |
+| `409` | The project fails a precondition a fresh run would also fail — its schema index is not ready, or a plugin owns its lifecycle state. A resume re-enters exploration, so it needs the same guarantees. |
+| `409` | Another discovery run is already in progress for the project. |
+| `409` | The run stopped being resumable between the check and the flip — another request got there first. |
+| `500` | The agent could not be spawned. The run is left `failed` with its checkpoints intact, so it is resumable again. |
+
+Resume does not meter, charge, refund, or open a plan reservation: the run's charge is keyed on its run id and a resume re-enters that id, so it is free by construction.
+
 ### DELETE /api/v1/runs/{runId}
 
 Cancel a running discovery. Kills the agent process and updates the run status.
+
+Cancellation is terminal: the run's exploration checkpoints are deleted and it cannot be resumed.
 
 ```bash
 curl -X DELETE http://localhost:8080/api/v1/runs/507f1f77bcf86cd799439012
