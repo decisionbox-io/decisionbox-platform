@@ -47,7 +47,7 @@ func (r *DiscoveryCheckpointRepository) ResumeState(ctx context.Context, runID s
 		bson.M{"run_id": runID},
 		options.Find().
 			SetSort(bson.D{{Key: "step_number", Value: 1}}).
-			SetProjection(bson.M{"step_number": 1, "kind": 1}),
+			SetProjection(bson.M{"step_number": 1, "kind": 1, "total_steps": 1}),
 	)
 	if findErr != nil {
 		return 0, false, fmt.Errorf("read checkpoints for run %s: %w", runID, findErr)
@@ -55,11 +55,12 @@ func (r *DiscoveryCheckpointRepository) ResumeState(ctx context.Context, runID s
 	defer cur.Close(ctx) //nolint:errcheck
 
 	expected := 1
-	gap := false
+	summaryTotalSteps := 0
 	for cur.Next(ctx) {
 		var doc struct {
 			StepNumber int    `bson:"step_number"`
 			Kind       string `bson:"kind"`
+			TotalSteps int    `bson:"total_steps"`
 		}
 		if decodeErr := cur.Decode(&doc); decodeErr != nil {
 			return 0, false, fmt.Errorf("decode checkpoint for run %s: %w", runID, decodeErr)
@@ -67,13 +68,12 @@ func (r *DiscoveryCheckpointRepository) ResumeState(ctx context.Context, runID s
 		// step_number 0 is the reserved exploration-summary row.
 		if doc.StepNumber == 0 {
 			explorationComplete = true
-			continue
-		}
-		if gap {
+			summaryTotalSteps = doc.TotalSteps
 			continue
 		}
 		if doc.StepNumber != expected {
-			gap = true
+			// Past the contiguous prefix. Keep reading only so the summary
+			// row (which sorts first) is not the reason we stop.
 			continue
 		}
 		prefixLen++
@@ -82,10 +82,13 @@ func (r *DiscoveryCheckpointRepository) ResumeState(ctx context.Context, runID s
 	if curErr := cur.Err(); curErr != nil {
 		return 0, false, fmt.Errorf("cursor checkpoints for run %s: %w", runID, curErr)
 	}
-	if gap {
-		// Matches what the agent's loader does: a summary reached over a
-		// broken prefix would send the resumed run straight to analysis
-		// over an incomplete step set. The gap is the stronger fact.
+
+	// The same rule the agent's loader applies, and it has to be the same or
+	// the API would promise a resume that behaves differently: the summary is
+	// only trustworthy when the replayable prefix covers every step it
+	// claims. A hole leaves a short prefix; a failed write on the LAST step
+	// leaves a prefix that looks clean but is one short of the claim.
+	if explorationComplete && summaryTotalSteps > prefixLen {
 		explorationComplete = false
 	}
 	return prefixLen, explorationComplete, nil

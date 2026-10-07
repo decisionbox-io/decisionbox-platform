@@ -258,6 +258,64 @@ func TestInteg_Checkpoint_SummaryIsDroppedOverAHole(t *testing.T) {
 	}
 }
 
+// TestInteg_Checkpoint_SummaryIsDroppedWhenItClaimsMoreThanThePrefixHolds is
+// the shape a gap check alone misses, and the one that actually loses work.
+//
+// If the checkpoint write that failed was for the LAST step, there is no later
+// row to leave a hole: the prefix looks perfectly clean at 39 steps while the
+// summary says 40. Trusting it sends the resumed run straight to analysis over
+// 39 steps' worth of evidence, silently dropping the final query instead of
+// re-exploring it.
+func TestInteg_Checkpoint_SummaryIsDroppedWhenItClaimsMoreThanThePrefixHolds(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	repo := NewDiscoveryCheckpointRepository(db)
+	if err := repo.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("EnsureIndexes: %v", err)
+	}
+
+	// Steps 1..3 landed; step 4's write failed; exploration then finished.
+	for n := 1; n <= 3; n++ {
+		if err := repo.SaveStep(ctx, checkpointStepInput("run-1", n, 10)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := repo.SaveExplorationSummary(ctx, CheckpointSummaryInput{
+		ProjectID: "proj-1", RunID: "run-1", Attempt: 1,
+		Summary: models.ExplorationCheckpointSummary{Completed: true, TotalSteps: 4, Duration: time.Minute},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	set, err := repo.LoadPrefix(ctx, "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set.Len() != 3 {
+		t.Fatalf("prefix len = %d, want 3", set.Len())
+	}
+	if set.ExplorationComplete() {
+		t.Error("a summary claiming 4 steps over a 3-step prefix must not be trusted — the resumed run has to keep exploring")
+	}
+
+	// And the honest case still works: a summary whose count the prefix
+	// covers is trusted.
+	if err := repo.SaveStep(ctx, checkpointStepInput("run-1", 4, 10)); err != nil {
+		t.Fatal(err)
+	}
+	set, err = repo.LoadPrefix(ctx, "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set.Len() != 4 || !set.ExplorationComplete() {
+		t.Errorf("once the missing step lands, the summary must be trusted: len=%d complete=%v",
+			set.Len(), set.ExplorationComplete())
+	}
+}
+
 // TestInteg_Checkpoint_SummaryRoundTrip covers the cheapest resume path: a run
 // that died after exploration finished goes straight to analysis, and
 // everything that branch needs comes from this one document.

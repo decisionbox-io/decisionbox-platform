@@ -53,7 +53,7 @@ func seedCheckpointStep(t *testing.T, ctx context.Context, runID string, step in
 }
 
 // seedCheckpointSummary writes the exploration-summary row (step_number 0).
-func seedCheckpointSummary(t *testing.T, ctx context.Context, runID string) {
+func seedCheckpointSummary(t *testing.T, ctx context.Context, runID string, totalSteps int) {
 	t.Helper()
 	_, err := testDB.Collection(gomongo.CollectionDiscoveryCheckpoints).InsertOne(ctx, bson.M{
 		"run_id":      runID,
@@ -62,7 +62,7 @@ func seedCheckpointSummary(t *testing.T, ctx context.Context, runID string) {
 		"attempt":     1,
 		"kind":        "exploration_summary",
 		"completed":   true,
-		"total_steps": 3,
+		"total_steps": totalSteps,
 		"created_at":  time.Now(),
 	})
 	if err != nil {
@@ -81,24 +81,31 @@ func TestInteg_CheckpointRepo_ResumeStateCountsTheReplayablePrefix(t *testing.T)
 	repo := NewDiscoveryCheckpointRepository(testDB)
 
 	cases := []struct {
-		name       string
-		steps      []int
-		summary    bool
-		wantPrefix int
-		wantDone   bool
+		name  string
+		steps []int
+		// summaryTotalSteps > 0 writes the exploration-summary row claiming
+		// that many steps; 0 writes none.
+		summaryTotalSteps int
+		wantPrefix        int
+		wantDone          bool
 	}{
-		{"nothing written", nil, false, 0, false},
-		{"a clean prefix", []int{1, 2, 3}, false, 3, false},
-		{"a hole at 3", []int{1, 2, 4, 5}, false, 2, false},
-		{"a hole at 1", []int{2, 3}, false, 0, false},
-		{"exploration finished", []int{1, 2, 3}, true, 3, true},
+		{"nothing written", nil, 0, 0, false},
+		{"a clean prefix", []int{1, 2, 3}, 0, 3, false},
+		{"a hole at 3", []int{1, 2, 4, 5}, 0, 2, false},
+		{"a hole at 1", []int{2, 3}, 0, 0, false},
+		{"exploration finished", []int{1, 2, 3}, 3, 3, true},
 		// Resumable with no replayable steps at all: the summary landed and
 		// the step rows have since been pruned, so the run goes straight to
 		// analysis.
-		{"summary only", nil, true, 0, true},
+		{"summary only", nil, 0, 0, false},
+		{"summary only, claiming nothing", nil, -1, 0, true},
 		// The gap is the stronger fact — a summary over a broken prefix must
 		// not send the run to analysis over an incomplete step set.
-		{"summary over a hole", []int{1, 3}, true, 1, false},
+		{"summary over a hole", []int{1, 3}, 3, 1, false},
+		// The shape a gap check alone misses: the write that failed was for
+		// the LAST step, so the prefix looks clean while the summary claims
+		// one more than it holds.
+		{"summary claiming more than the prefix holds", []int{1, 2}, 3, 2, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -106,8 +113,12 @@ func TestInteg_CheckpointRepo_ResumeStateCountsTheReplayablePrefix(t *testing.T)
 			for _, s := range tc.steps {
 				seedCheckpointStep(t, ctx, "run-1", s)
 			}
-			if tc.summary {
-				seedCheckpointSummary(t, ctx, "run-1")
+			if tc.summaryTotalSteps != 0 {
+				total := tc.summaryTotalSteps
+				if total < 0 {
+					total = 0
+				}
+				seedCheckpointSummary(t, ctx, "run-1", total)
 			}
 
 			prefix, done, err := repo.ResumeState(ctx, "run-1")

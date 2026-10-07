@@ -331,10 +331,25 @@ func (r *DiscoveryCheckpointRepository) LoadPrefix(ctx context.Context, runID st
 			"first_missing":   gapAt,
 			"summary_present": set.Summary != nil,
 		}).Warn("checkpoint prefix has a gap; resume will re-explore from the first missing step")
-		// A summary past a gap would promise "exploration finished" over a
-		// prefix that cannot be replayed in full, and the resumed run would
-		// skip straight to analysis over an incomplete step set. The gap is
-		// the stronger fact.
+	}
+
+	// The summary may only be trusted when the replayable prefix covers every
+	// step it claims. Otherwise it promises "exploration finished" over a step
+	// set that cannot be replayed in full, and the resumed run skips straight
+	// to analysis over incomplete evidence — silently dropping paid-for work
+	// instead of re-exploring it.
+	//
+	// This covers BOTH shapes a failed checkpoint write takes, and the second
+	// is the one a gap check alone misses: if the write that failed was for
+	// the LAST step, there is no later row to leave a hole, so the prefix
+	// looks clean at 39 steps while the summary says 40. The prefix is the
+	// stronger fact either way — it is what replay can actually produce.
+	if set.Summary != nil && set.Summary.TotalSteps > len(set.Steps) {
+		applog.WithFields(applog.Fields{
+			"run_id":              runID,
+			"replayable":          len(set.Steps),
+			"summary_total_steps": set.Summary.TotalSteps,
+		}).Warn("exploration summary claims more steps than the replayable prefix holds; resume will continue exploring rather than skip to analysis")
 		set.Summary = nil
 	}
 	return set, nil
