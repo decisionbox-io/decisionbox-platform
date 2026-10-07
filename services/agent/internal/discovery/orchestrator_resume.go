@@ -92,24 +92,31 @@ func (o *Orchestrator) checkpointStep(ctx context.Context, step models.Explorati
 	if o.checkpointRepo == nil {
 		return nil
 	}
-	// Stamp the run-document marker FIRST, and read its answer. The write is
-	// attempt-fenced, so whether it landed tells us — for free, on a write
-	// this path makes anyway — whether this attempt still owns the run.
+	// Ask whether this attempt still owns the run BEFORE writing anything.
 	//
-	// Order matters. Asking before writing the checkpoint is what stops a
-	// superseded agent from inserting a row for a step the live attempt has
-	// not reached yet: the row-level attempt fence in SaveStep only refuses a
-	// write where a higher-attempt row ALREADY exists, so a dead attempt
-	// running AHEAD of the live one would otherwise insert its own work into
-	// the prefix, and a later resume would replay a transcript spliced from
-	// two different runs.
+	// That order is what stops a superseded agent inserting a row for a step
+	// the live attempt has not reached yet: the row-level attempt fence in
+	// SaveStep only refuses a write where a higher-attempt row ALREADY
+	// exists, so a dead attempt running AHEAD of the live one would
+	// otherwise splice its own work into the prefix, and a later resume would
+	// replay a transcript assembled from two different runs.
+	//
+	// A dedicated read rather than reusing the run-document marker below,
+	// even though that write is attempt-fenced and would answer for free.
+	// The marker means "a checkpoint exists for this step", and writing it
+	// first breaks that: a SaveStep failure is logged and swallowed so the
+	// run can continue, which would leave the marker advertising a
+	// checkpoint that was never written — and the dashboard offering a
+	// Resume that then refuses with 409 because there is no prefix to
+	// replay. One extra indexed read per step, next to an LLM call and a
+	// warehouse query, buys back the field's meaning.
 	//
 	// Not airtight, and worth being precise about: a resume landing between
-	// these two writes still lets one row through. That window is two
+	// this read and the write still lets one row through. That window is two
 	// consecutive operations wide rather than the whole remaining run, and
 	// the row-level fence catches it whenever the live attempt has already
 	// written that step.
-	if o.statusReporter != nil && !o.statusReporter.MarkExplorationCheckpoint(ctx, step.Step) {
+	if o.statusReporter != nil && !o.statusReporter.OwnsRun(ctx) {
 		return ai.ErrAttemptSuperseded
 	}
 
@@ -127,6 +134,13 @@ func (o *Orchestrator) checkpointStep(ctx context.Context, step models.Explorati
 	// The run is now resumable, so its per-run vector index must survive a
 	// failure rather than being dropped on the way out.
 	o.keepStepIndex = true
+
+	// Only now: the row is durable, so the marker is true. This is what the
+	// dashboard reads to offer Resume, and it must never advertise a
+	// checkpoint that does not exist.
+	if o.statusReporter != nil {
+		o.statusReporter.MarkExplorationCheckpoint(ctx, step.Step)
+	}
 	return nil
 }
 
@@ -332,6 +346,35 @@ type retireDeps struct {
 // have to stub a dozen search methods to assert which points were deleted.
 type vectorDeleter interface {
 	Delete(ctx context.Context, ids []string) error
+}
+
+// retireOwnResult deletes the result THIS attempt just saved, along with
+// everything derived from it.
+//
+// For the attempt that lost the run. It has already written its discovery,
+// split logs, standalone docs and vectors by the time it finds out — those
+// happen before the terminal write that establishes ownership — and leaving
+// them is worse than the problem skipping the cleanup avoided: the orphan's
+// discovery_date is typically LATER than the live attempt's, so its result
+// becomes the project's latest and the dead attempt wins the display.
+//
+// It deletes only its own, never the owner's. Idempotent: the live attempt's
+// own retire may have removed it already.
+func (o *Orchestrator) retireOwnResult(ctx context.Context, discoveryID string) {
+	if discoveryID == "" {
+		// Save never got far enough to produce one; nothing to clean up.
+		return
+	}
+	applog.WithFields(applog.Fields{
+		"run_id":       o.runID,
+		"discovery_id": discoveryID,
+	}).Warn("this attempt lost the run; removing the result it produced so the owning attempt's stays the project's latest")
+	retireDiscovery(ctx, o.runID, discoveryID, retireDeps{
+		discoveries: o.discoveryRepo,
+		logs:        o.discoveryLogRepo,
+		embed:       o.embedIndexStore,
+		vectors:     o.vectorStore,
+	})
 }
 
 func (o *Orchestrator) retireSupersededAttempts(ctx context.Context, keepDiscoveryID string) {

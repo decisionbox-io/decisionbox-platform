@@ -560,6 +560,58 @@ func TestRetireSuperseded_DeletesTheParentEvenWhenDerivedDeletesFail(t *testing.
 	}
 }
 
+// TestRetireOwnResult_ASupersededAttemptCleansUpAfterItself pins the other
+// half of the claim gate, and the half that is easy to miss.
+//
+// An attempt that loses the run has ALREADY written its discovery, split
+// logs, standalone docs and vectors — all of that happens before the terminal
+// write that establishes ownership. Just skipping the cleanup leaves them, and
+// the orphan's discovery_date is typically later than the owner's, so its
+// result becomes the project's LATEST: the dead attempt wins the display.
+func TestRetireOwnResult_ASupersededAttemptCleansUpAfterItself(t *testing.T) {
+	disc := &fakeDiscoveryRetirer{byRun: map[string][]string{
+		"run-1": {"disc-orphan", "disc-live"},
+	}}
+	logs := &fakeDiscoveryLogPersister{}
+	embed := &mockEmbedIndexStore{
+		deleteInsightIDs: []string{"ins-orphan"},
+		deleteRecIDs:     []string{"rec-orphan"},
+	}
+	vecs := &fakeVectorStore{}
+
+	// Driven through the free function the method delegates to: the
+	// Orchestrator's discovery repo is a concrete type, so the fakes go in
+	// here. What the method adds on top is the empty-id guard, covered below.
+	retireDiscovery(context.Background(), "run-1", "disc-orphan", retireDeps{
+		discoveries: disc, logs: logs, embed: embed, vectors: vecs,
+	})
+
+	if len(disc.deleted) != 1 || disc.deleted[0] != "disc-orphan" {
+		t.Fatalf("deleted = %v, want only the orphan's own result", disc.deleted)
+	}
+	if len(logs.deletedDiscoveryIDs) != 1 || logs.deletedDiscoveryIDs[0] != "disc-orphan" {
+		t.Errorf("split-log deletes = %v, want only the orphan's", logs.deletedDiscoveryIDs)
+	}
+	if len(embed.deletedDiscoveries) != 1 || embed.deletedDiscoveries[0] != "disc-orphan" {
+		t.Errorf("standalone deletes = %v, want only the orphan's", embed.deletedDiscoveries)
+	}
+	want := []string{"ins-orphan", "rec-orphan"}
+	if len(vecs.deleted) != len(want) {
+		t.Errorf("deleted vectors = %v, want %v", vecs.deleted, want)
+	}
+}
+
+// TestRetireOwnResult_NothingSavedIsANoOp covers the attempt that lost the
+// run before Save produced an id at all.
+func TestRetireOwnResult_NothingSavedIsANoOp(t *testing.T) {
+	disc := &fakeDiscoveryRetirer{}
+	o := &Orchestrator{runID: "run-1"}
+	o.retireOwnResult(context.Background(), "")
+	if len(disc.deleted) != 0 {
+		t.Errorf("deleted %v with no result to clean up", disc.deleted)
+	}
+}
+
 // --- checkpoint discard --------------------------------------------------
 
 // TestDiscardCheckpoints_ReArmsTheStepIndexDrop pins the coupling between

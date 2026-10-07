@@ -60,11 +60,15 @@ type DiscoveryRun struct {
 	// checkpoint for. It drives the dashboard's Resume affordance and is
 	// zeroed on completion (a completed run is not resumable).
 	//
-	// It is the highest step CHECKPOINTED, which is normally also the
-	// replayable prefix. The two differ only if an earlier checkpoint write
-	// failed — writes are best-effort so they can never abort a run — in
-	// which case replay honestly stops at the gap and this reads as an
-	// over-estimate of the work a resume would skip.
+	// Stamped only AFTER the checkpoint row is durably written, so it never
+	// advertises a checkpoint that does not exist — otherwise the dashboard
+	// would offer a Resume that the API then refuses for want of a prefix.
+	//
+	// It can still exceed the REPLAYABLE prefix: if an earlier write failed
+	// (writes are best-effort so they can never abort a run) and a later one
+	// succeeded, replay stops at the gap while this reflects the later step.
+	// A resume with nothing left to replay is refused rather than silently
+	// re-exploring.
 	LastCheckpointStep int `bson:"last_checkpoint_step,omitempty" json:"last_checkpoint_step,omitempty"`
 
 	// ActiveMs is cumulative ACTIVE compute time across attempts, so a run

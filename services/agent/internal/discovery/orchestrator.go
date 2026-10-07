@@ -1617,14 +1617,22 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// would otherwise delete the LIVE attempt's discovery, split logs,
 	// standalone docs and vectors, and keep its own. Losing the good result
 	// to the dead attempt's cleanup is far worse than leaving a stale one
-	// behind, so a superseded attempt deletes nothing.
+	// behind — so a superseded attempt cleans up after ITSELF instead, which
+	// is the branch below.
 	if claimed {
 		o.retireSupersededAttempts(persistCtx, result.ID)
 	} else {
-		applog.WithFields(applog.Fields{
-			"run_id":       o.runID,
-			"discovery_id": result.ID,
-		}).Warn("this attempt no longer owns the run; skipping cleanup so the owning attempt's results survive")
+		// This attempt lost the run — but it has already written its own
+		// discovery, split logs, standalone docs and vectors above, because
+		// all of that happens before the terminal write that establishes
+		// ownership. Leaving them is worse than the problem the claim gate
+		// solves: the orphan's discovery_date is typically LATER than the
+		// owner's, so its result becomes the project's latest and the dead
+		// attempt wins the display.
+		//
+		// So it deletes its OWN output and nothing else. The owner's result
+		// is untouched either way.
+		o.retireOwnResult(persistCtx, result.ID)
 	}
 
 	if err != nil {

@@ -234,7 +234,7 @@ Live status of a running discovery. Stored in `discovery_runs` collection, updat
 | `insights_found` | int | Insights generated so far |
 | `attempt` | int | How many times the run has been started: 1 on create, incremented by each resume. |
 | `last_resumed_at` | timestamp | When the latest attempt was requested. |
-| `last_checkpoint_step` | int | Highest exploration step with a checkpoint. `> 0` on a `failed` run is what makes it resumable; zeroed on completion. Normally also the replayable prefix — the two differ only if an earlier checkpoint write failed, in which case replay honestly stops at the gap. |
+| `last_checkpoint_step` | int | Highest exploration step with a checkpoint. `> 0` on a `failed` run is what makes it resumable; zeroed on completion. Stamped only after the checkpoint row is durably written, so it never advertises a checkpoint that does not exist. It can still exceed the *replayable* prefix if an earlier write failed and a later one succeeded — replay then stops at the gap, and a resume with nothing left to replay is refused rather than silently re-exploring. |
 | `active_ms` | int64 | Cumulative **active** compute across attempts, so elapsed time excludes the hours a failed run sat waiting to be noticed. Recorded at each attempt's terminal write, so an attempt killed before reaching it contributes nothing — a slight undercount on hard crashes. |
 | `lifecycle` | RunLifecycleEvent[] | Append-only transition log. |
 | `max_steps`, `min_steps` | int | The run's own step budget, so a resume replays what the caller chose rather than the agent's defaults. |
