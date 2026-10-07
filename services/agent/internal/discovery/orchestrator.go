@@ -1653,6 +1653,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// So it deletes its OWN output and nothing else. The owner's result
 		// is untouched either way.
 		o.retireOwnResult(persistCtx, result.ID)
+
+		// And it must NOT fall through to the success path. Compute may have
+		// gone perfectly — err is nil here — but the result it produced has
+		// just been deleted, so reporting success would have the entrypoint
+		// send a completed notification and run the post-completion phases
+		// (clarifying questions, reflection) against a discovery id that no
+		// longer exists, for a run another attempt owns.
+		return result, ai.ErrAttemptSuperseded
 	}
 
 	if err != nil {

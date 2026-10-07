@@ -350,6 +350,10 @@ type mockRunRepo struct {
 	createdParams   []models.RunParams
 	beginResumeErr  error
 	beginResumeRuns []string
+	// onBeginResume fires inside BeginResume, after the flip — the hook a
+	// test uses to make a competing run appear in the window the pre-check
+	// cannot see.
+	onBeginResume func()
 }
 
 func newMockRunRepo() *mockRunRepo {
@@ -407,6 +411,9 @@ func (m *mockRunRepo) BeginResume(_ context.Context, runID string) (*models.Disc
 	run.Error = ""
 	run.UpdatedAt = now
 	copied := *run
+	if m.onBeginResume != nil {
+		m.onBeginResume()
+	}
 	return &copied, nil
 }
 
@@ -443,6 +450,24 @@ func (m *mockRunRepo) GetLatestByProject(_ context.Context, projectID string) (*
 	}
 	cp := *latest
 	return &cp, nil
+}
+
+func (m *mockRunRepo) GetOtherRunningByProject(_ context.Context, projectID, excludeRunID string) (*models.DiscoveryRun, error) {
+	if m.getRunningErr != nil {
+		return nil, m.getRunningErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, r := range m.runs {
+		if r.ID == excludeRunID || r.ProjectID != projectID {
+			continue
+		}
+		if r.Status == "pending" || r.Status == "running" {
+			copied := *r
+			return &copied, nil
+		}
+	}
+	return nil, nil
 }
 
 func (m *mockRunRepo) GetRunningByProject(_ context.Context, projectID string) (*models.DiscoveryRun, error) {

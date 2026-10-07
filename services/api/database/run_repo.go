@@ -167,7 +167,23 @@ func (r *RunRepository) BeginResume(ctx context.Context, runID string) (*models.
 			Attempt: nextAttempt,
 		}},
 	}
+	// Fenced on the attempt we READ, not just on the status. Without it a
+	// stale resume request could land after another resume had advanced the
+	// run to attempt 2 and that attempt had failed back to `failed`: the
+	// filter would match, and it would write `attempt: 2` a second time. Two
+	// different attempts both numbered 2 means the same suffixed Kubernetes
+	// Job name — which may still exist for the first of them — and
+	// attempt-fenced callbacks that can no longer tell them apart, which is
+	// the whole mechanism every other guard in this feature rests on.
+	//
+	// A run that predates the counter reads as 0, and a missing field has to
+	// match that, or its first resume could never be fenced at all.
 	filter := bson.M{"_id": oid, "status": "failed"}
+	if current.Attempt == 0 {
+		filter["attempt"] = bson.M{"$in": []any{0, nil}}
+	} else {
+		filter["attempt"] = current.Attempt
+	}
 	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
 
 	var run models.DiscoveryRun
@@ -538,6 +554,38 @@ func (r *RunRepository) CleanupStaleRuns(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	return int(result.ModifiedCount), nil
+}
+
+// GetOtherRunningByProject returns an active run for the project that is NOT
+// the given one, or nil.
+//
+// Needed because GetRunningByProject returns ONE active run with no ordering,
+// and the caller that matters here — the resume path re-checking concurrency
+// after it has already flipped its own run to `running` — would otherwise get
+// its own run back and conclude there was no competitor. Excluding at the
+// query level is the only way to ask the question it is actually asking.
+func (r *RunRepository) GetOtherRunningByProject(ctx context.Context, projectID, excludeRunID string) (*models.DiscoveryRun, error) {
+	filter := bson.M{
+		"project_id": projectID,
+		"status":     bson.M{"$in": []string{"pending", "running"}},
+	}
+	if excludeRunID != "" {
+		oid, err := primitive.ObjectIDFromHex(excludeRunID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid run ID: %w", err)
+		}
+		filter["_id"] = bson.M{"$ne": oid}
+	}
+
+	var run models.DiscoveryRun
+	err := r.col.FindOne(ctx, filter).Decode(&run)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &run, nil
 }
 
 // GetRunningByProject checks if there's an active run for a project.

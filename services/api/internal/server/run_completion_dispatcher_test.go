@@ -77,6 +77,9 @@ func (m *mockRunRepo) BeginResume(context.Context, string) (*models.DiscoveryRun
 func (m *mockRunRepo) FailAttempt(context.Context, string, int, string) (bool, error) {
 	panic("not implemented")
 }
+func (m *mockRunRepo) GetOtherRunningByProject(context.Context, string, string) (*models.DiscoveryRun, error) {
+	panic("not implemented")
+}
 func (m *mockRunRepo) GetByID(context.Context, string) (*models.DiscoveryRun, error) {
 	panic("not implemented")
 }

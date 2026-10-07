@@ -393,6 +393,49 @@ func TestResumeRun_AnotherActiveRunIs409(t *testing.T) {
 	}
 }
 
+// TestResumeRun_StandsDownWhenItLosesTheConcurrencyRace pins the recheck
+// after the flip.
+//
+// The pre-check and a fresh trigger's own check can both pass before either
+// write is visible, and they do not serialise against each other — a fresh
+// trigger's plan reservation does not see a resume, because resume opens
+// none. Re-checking after the flip means at least one of the two sees the
+// other.
+func TestResumeRun_StandsDownWhenItLosesTheConcurrencyRace(t *testing.T) {
+	f := newResumeFixture(t)
+	// A competing run becomes visible only AFTER BeginResume — which is
+	// exactly the window the pre-check cannot see.
+	f.runs.onBeginResume = func() {
+		f.runs.runs["run-rival"] = &models.DiscoveryRun{ID: "run-rival", ProjectID: "p1", Status: "running"}
+	}
+
+	w := f.post("run-1")
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body = %s", w.Code, w.Body.String())
+	}
+	if n := len(f.runner.calls()); n != 0 {
+		t.Errorf("spawned %d agents after losing the race", n)
+	}
+	// Stood down as a recorded failure, not silently: the run is resumable
+	// again, with a reason that says what happened.
+	run := f.runs.runs["run-1"]
+	if run.Status != "failed" {
+		t.Errorf("run status = %q, want failed so it stays resumable", run.Status)
+	}
+	if !strings.Contains(run.Error, "another discovery run") {
+		t.Errorf("run error = %q, want it to say why the resume stood down", run.Error)
+	}
+	// The attempt keeps its increment — this attempt happened, and it did
+	// not start.
+	if run.Attempt != 2 {
+		t.Errorf("attempt = %d, want 2", run.Attempt)
+	}
+	if len(f.cps.deleted) != 0 {
+		t.Errorf("checkpoints were deleted (%v); a stood-down resume must leave them", f.cps.deleted)
+	}
+}
+
 // TestResumeRun_DoubleClickSpawnsExactlyOneAgent is the race this endpoint's
 // atomic flip exists for. Two requests, two agents on one run id would mean
 // two processes writing one run's checkpoints and results.

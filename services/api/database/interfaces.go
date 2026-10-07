@@ -53,6 +53,10 @@ type RunRepo interface {
 	GetByID(ctx context.Context, runID string) (*models.DiscoveryRun, error)
 	GetLatestByProject(ctx context.Context, projectID string) (*models.DiscoveryRun, error)
 	GetRunningByProject(ctx context.Context, projectID string) (*models.DiscoveryRun, error)
+	// GetOtherRunningByProject answers "is another run active for this
+	// project", excluding one. The resume path needs the exclusion: by the
+	// time it re-checks, its own run is already `running`.
+	GetOtherRunningByProject(ctx context.Context, projectID, excludeRunID string) (*models.DiscoveryRun, error)
 	Fail(ctx context.Context, runID string, errMsg string) error
 	// FailAttempt marks a run failed only if it is still on the given
 	// attempt, and reports whether it applied. Used by the runner's
