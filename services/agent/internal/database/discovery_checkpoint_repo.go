@@ -412,6 +412,27 @@ func (r *DiscoveryCheckpointRepository) DeleteByRun(ctx context.Context, runID s
 	return res.DeletedCount, nil
 }
 
+// TouchByRun re-anchors the retention clock on every checkpoint of a run,
+// and reports how many rows moved.
+//
+// For a resumed run that rebuilds from its checkpoints without rewriting
+// them — the skip-exploration path — whose created_at would otherwise stay at
+// whatever the previous attempt stamped. One bulk update rather than N
+// rewrites, because only the anchor needs moving.
+func (r *DiscoveryCheckpointRepository) TouchByRun(ctx context.Context, runID string) (int64, error) {
+	if runID == "" {
+		return 0, errors.New("touch checkpoints: run_id is required")
+	}
+	res, err := r.col.UpdateMany(ctx,
+		bson.M{"run_id": runID},
+		bson.M{"$set": bson.M{"created_at": time.Now()}},
+	)
+	if err != nil {
+		return 0, fmt.Errorf("touch checkpoints for run %s: %w", runID, err)
+	}
+	return res.ModifiedCount, nil
+}
+
 // ListRunIDsWithCheckpoints returns the distinct run ids that still have
 // checkpoints. The boot-time orphan sweep adds them to its live set so it
 // does not drop a resumable run's per-run Qdrant collection. Bounded by the

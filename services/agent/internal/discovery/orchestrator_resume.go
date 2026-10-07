@@ -26,6 +26,7 @@ type explorationCheckpointStore interface {
 	SaveStep(ctx context.Context, in database.CheckpointStepInput) error
 	SaveExplorationSummary(ctx context.Context, in database.CheckpointSummaryInput) error
 	DeleteByRun(ctx context.Context, runID string) (int64, error)
+	TouchByRun(ctx context.Context, runID string) (int64, error)
 }
 
 // ResumeState is what a resumed run is handed at construction: how far the
@@ -138,8 +139,16 @@ func (o *Orchestrator) checkpointStep(ctx context.Context, step models.Explorati
 	// Only now: the row is durable, so the marker is true. This is what the
 	// dashboard reads to offer Resume, and it must never advertise a
 	// checkpoint that does not exist.
-	if o.statusReporter != nil {
-		o.statusReporter.MarkExplorationCheckpoint(ctx, step.Step)
+	//
+	// Its answer is also a second fence, and the one that closes most of the
+	// window left by the probe above. If a resume landed in between, the
+	// marker write does not apply — and stopping on that keeps this attempt
+	// out of the SHARED writes that follow in the engine (the per-run vector
+	// index and the live step feed), which is what the
+	// checkpoint-before-shared-writes ordering exists for. The checkpoint row
+	// itself is already written by then; that is the documented residual.
+	if o.statusReporter != nil && !o.statusReporter.MarkExplorationCheckpoint(ctx, step.Step) {
+		return ai.ErrAttemptSuperseded
 	}
 	return nil
 }
@@ -147,9 +156,13 @@ func (o *Orchestrator) checkpointStep(ctx context.Context, step models.Explorati
 // checkpointExplorationSummary records that exploration finished. Its
 // presence is what lets a later attempt go straight to analysis — zero
 // exploration LLM calls, zero warehouse queries.
-func (o *Orchestrator) checkpointExplorationSummary(ctx context.Context, res *ai.ExplorationResult) {
+// Returns ErrAttemptSuperseded when this attempt has lost the run, which the
+// caller must propagate rather than carry on: everything after exploration —
+// analysis, recommendations, validation — is expensive, and a superseded
+// attempt would spend all of it on a result it then deletes at the tail.
+func (o *Orchestrator) checkpointExplorationSummary(ctx context.Context, res *ai.ExplorationResult) error {
 	if o.checkpointRepo == nil || res == nil {
-		return
+		return nil
 	}
 	// A dedicated ownership read, because there is no write to piggyback the
 	// question on here — and because this row is the worst one to lose to a
@@ -157,8 +170,8 @@ func (o *Orchestrator) checkpointExplorationSummary(ctx context.Context, res *ai
 	// finished, and skips Phase 3 over work another attempt did. Once per
 	// run, against an indexed _id.
 	if o.statusReporter != nil && !o.statusReporter.OwnsRun(ctx) {
-		applog.WithField("run_id", o.runID).Warn("not recording the exploration summary: another attempt of this run has taken over")
-		return
+		applog.WithField("run_id", o.runID).Warn("another attempt of this run has taken over; stopping before analysis rather than spending it on a result that will be discarded")
+		return ai.ErrAttemptSuperseded
 	}
 	err := o.checkpointRepo.SaveExplorationSummary(ctx, database.CheckpointSummaryInput{
 		ProjectID: o.projectID,
@@ -176,9 +189,40 @@ func (o *Orchestrator) checkpointExplorationSummary(ctx context.Context, res *ai
 			"run_id": o.runID,
 			"error":  err.Error(),
 		}).Warn("failed to checkpoint the exploration summary; a resumed run would re-explore instead of going straight to analysis")
-		return
+		return nil
 	}
 	o.keepStepIndex = true
+	return nil
+}
+
+// refreshCheckpointTTL re-anchors the retention clock on a run's checkpoints.
+//
+// For the skip-exploration path, which rebuilds from the rows without
+// rewriting them: their created_at — the TTL anchor — would stay at whatever
+// the previous attempt stamped. An operator resuming near
+// DISCOVERY_CHECKPOINT_RETENTION would then watch the rows expire while the
+// resumed attempt was still working, and a second resume would be impossible.
+// The replay path has no such problem: it rewrites every row it replays.
+//
+// One bulk update rather than N rewrites — the content is unchanged and only
+// the anchor needs moving. Best-effort: losing it costs resumability on a
+// later attempt, not this run.
+func (o *Orchestrator) refreshCheckpointTTL(ctx context.Context) {
+	if o.checkpointRepo == nil || o.runID == "" {
+		return
+	}
+	touched, err := o.checkpointRepo.TouchByRun(ctx, o.runID)
+	if err != nil {
+		applog.WithFields(applog.Fields{
+			"run_id": o.runID,
+			"error":  err.Error(),
+		}).Warn("could not re-anchor the checkpoint retention clock; these rows may expire while this attempt is still running")
+		return
+	}
+	applog.WithFields(applog.Fields{
+		"run_id":  o.runID,
+		"touched": touched,
+	}).Debug("re-anchored the checkpoint retention clock for the resumed attempt")
 }
 
 // explorationFromCheckpoints rebuilds the ExplorationResult of a run whose

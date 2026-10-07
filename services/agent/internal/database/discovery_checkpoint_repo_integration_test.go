@@ -634,3 +634,94 @@ func TestInteg_Checkpoint_ANewerAttemptOwnsTheSummary(t *testing.T) {
 		t.Errorf("summary total steps = %d, want 1 — the orphan's summary won", set.Summary.TotalSteps)
 	}
 }
+
+// TestInteg_Checkpoint_TouchByRunReAnchorsRetention pins the fix for the
+// skip-exploration path's retention problem.
+//
+// That path rebuilds from the checkpoints without rewriting them, so their
+// created_at — the TTL anchor — would stay at whatever the previous attempt
+// stamped. An operator resuming near DISCOVERY_CHECKPOINT_RETENTION would
+// then watch the rows expire while the resumed attempt was still working, and
+// a second resume would be impossible.
+func TestInteg_Checkpoint_TouchByRunReAnchorsRetention(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	repo := NewDiscoveryCheckpointRepository(db)
+	if err := repo.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("EnsureIndexes: %v", err)
+	}
+	for n := 1; n <= 3; n++ {
+		if err := repo.SaveStep(ctx, checkpointStepInput("run-1", n, 10)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repo.SaveExplorationSummary(ctx, CheckpointSummaryInput{
+		ProjectID: "proj-1", RunID: "run-1", Attempt: 1,
+		Summary: models.ExplorationCheckpointSummary{Completed: true, TotalSteps: 3},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Another run's rows, which must not move.
+	if err := repo.SaveStep(ctx, checkpointStepInput("run-2", 1, 10)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Backdate everything to just inside a 48h horizon.
+	stale := time.Now().Add(-47 * time.Hour)
+	if _, err := db.Collection(CollectionDiscoveryCheckpoints).UpdateMany(ctx,
+		bson.M{}, bson.M{"$set": bson.M{"created_at": stale}}); err != nil {
+		t.Fatal(err)
+	}
+
+	touched, err := repo.TouchByRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("TouchByRun: %v", err)
+	}
+	// Three steps plus the summary row.
+	if touched != 4 {
+		t.Errorf("touched = %d, want 4 (every row of the run, summary included)", touched)
+	}
+
+	anchors := func(runID string) []time.Time {
+		t.Helper()
+		cur, err := db.Collection(CollectionDiscoveryCheckpoints).Find(ctx, bson.M{"run_id": runID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cur.Close(ctx)
+		var out []time.Time
+		for cur.Next(ctx) {
+			var doc struct {
+				CreatedAt time.Time `bson:"created_at"`
+			}
+			if err := cur.Decode(&doc); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, doc.CreatedAt)
+		}
+		return out
+	}
+
+	for i, at := range anchors("run-1") {
+		if !at.After(stale.Add(time.Hour)) {
+			t.Errorf("run-1 row %d still anchored at %s; the retention clock did not move", i, at)
+		}
+	}
+	// Run-scoped: another run's retention is untouched.
+	for i, at := range anchors("run-2") {
+		if at.After(stale.Add(time.Hour)) {
+			t.Errorf("run-2 row %d was re-anchored to %s; the touch must not reach another run", i, at)
+		}
+	}
+
+	// The step content is unchanged — only the anchor moved.
+	set, err := repo.LoadPrefix(ctx, "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set.Len() != 3 || !set.ExplorationComplete() {
+		t.Errorf("after the touch: prefix %d / complete %v, want 3 / true", set.Len(), set.ExplorationComplete())
+	}
+}

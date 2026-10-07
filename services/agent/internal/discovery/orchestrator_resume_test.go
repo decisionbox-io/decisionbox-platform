@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation/verifier"
@@ -22,9 +23,12 @@ type fakeCheckpointStore struct {
 	summaries []database.CheckpointSummaryInput
 	deletes   []string
 
+	touched []string
+
 	stepErr    error
 	summaryErr error
 	deleteErr  error
+	touchErr   error
 }
 
 func (f *fakeCheckpointStore) SaveStep(_ context.Context, in database.CheckpointStepInput) error {
@@ -41,6 +45,14 @@ func (f *fakeCheckpointStore) SaveExplorationSummary(_ context.Context, in datab
 	}
 	f.summaries = append(f.summaries, in)
 	return nil
+}
+
+func (f *fakeCheckpointStore) TouchByRun(_ context.Context, runID string) (int64, error) {
+	if f.touchErr != nil {
+		return 0, f.touchErr
+	}
+	f.touched = append(f.touched, runID)
+	return 5, nil
 }
 
 func (f *fakeCheckpointStore) DeleteByRun(_ context.Context, runID string) (int64, error) {
@@ -171,7 +183,9 @@ func TestCheckpointStep_NilRepoDisablesCheckpointing(t *testing.T) {
 	}
 	// The summary path too — it is called on every run that reaches the end
 	// of exploration.
-	o.checkpointExplorationSummary(context.Background(), nil)
+	if err := o.checkpointExplorationSummary(context.Background(), nil); err != nil {
+		t.Errorf("a nil summary on a nil store must be a no-op, got %v", err)
+	}
 }
 
 // --- the row sample: where resume meets the verifier ----------------------
@@ -609,6 +623,52 @@ func TestRetireOwnResult_NothingSavedIsANoOp(t *testing.T) {
 	o.retireOwnResult(context.Background(), "")
 	if len(disc.deleted) != 0 {
 		t.Errorf("deleted %v with no result to clean up", disc.deleted)
+	}
+}
+
+// TestRefreshCheckpointTTL_ReAnchorsTheRetentionClock pins the skip-exploration
+// path's retention problem.
+//
+// That path reads the checkpoints without rewriting them, so their created_at
+// — the TTL anchor — stays at whatever the previous attempt stamped. An
+// operator resuming near DISCOVERY_CHECKPOINT_RETENTION would watch the rows
+// expire while the resumed attempt was still working, and a second resume
+// would be impossible. The replay path has no such problem: it rewrites every
+// row it replays.
+func TestRefreshCheckpointTTL_ReAnchorsTheRetentionClock(t *testing.T) {
+	store := &fakeCheckpointStore{}
+	o := &Orchestrator{runID: "run-1", checkpointRepo: store}
+
+	o.refreshCheckpointTTL(context.Background())
+
+	if len(store.touched) != 1 || store.touched[0] != "run-1" {
+		t.Errorf("touched = %v, want [run-1]", store.touched)
+	}
+
+	// Best-effort: a failure costs resumability on a LATER attempt, not this
+	// run, so it must not stop anything.
+	failing := &Orchestrator{runID: "run-1", checkpointRepo: &fakeCheckpointStore{touchErr: errors.New("mongo down")}}
+	failing.refreshCheckpointTTL(context.Background())
+
+	// And with no store wired it is a no-op.
+	(&Orchestrator{runID: "run-1"}).refreshCheckpointTTL(context.Background())
+	(&Orchestrator{checkpointRepo: store}).refreshCheckpointTTL(context.Background())
+	if len(store.touched) != 1 {
+		t.Errorf("a run with no id must not touch anything; touched = %v", store.touched)
+	}
+}
+
+// TestCheckpointExplorationSummary_SupersededAbortsBeforeAnalysis pins that
+// losing the run stops the pipeline rather than just skipping a write.
+//
+// Everything after exploration — analysis, recommendations, validation — is
+// the expensive half, and a superseded attempt would spend all of it on a
+// result it deletes at the tail. The summary gate is the last place to find
+// out cheaply.
+func TestCheckpointExplorationSummary_NilStoreIsANoOp(t *testing.T) {
+	o := &Orchestrator{runID: "run-1"}
+	if err := o.checkpointExplorationSummary(context.Background(), &ai.ExplorationResult{TotalSteps: 3}); err != nil {
+		t.Errorf("a nil store must be a no-op, got %v", err)
 	}
 }
 

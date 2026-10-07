@@ -1184,6 +1184,22 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		Resume:                     resumeState,
 	})
 	if err != nil {
+		// Losing the run to a newer attempt is not a discovery failure, and
+		// must not be reported as one: the run is alive and another agent
+		// owns it. Announcing a failure here would notify the operator that
+		// a run failed while it was still working, and bank a failure in
+		// telemetry for an outcome that has not happened yet.
+		//
+		// This process has already stopped writing to the run (every write
+		// it makes is attempt-fenced), so there is nothing to undo — it just
+		// exits. The run's real outcome comes from whichever attempt owns it.
+		if errors.Is(err, ai.ErrAttemptSuperseded) {
+			applog.WithFields(applog.Fields{
+				"project_id": projectID,
+				"run_id":     runID,
+			}).Warn("another attempt of this run has taken over; exiting without reporting a failure")
+			return nil
+		}
 		notify.NotifyAll(ctx, notify.Event{
 			Type:        notify.EventDiscoveryFailed,
 			ProjectID:   projectID,

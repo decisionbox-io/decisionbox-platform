@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -1088,6 +1089,11 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// against an empty collection for the whole run.
 		explorationResult = o.explorationFromCheckpoints()
 		o.reindexReplayedSteps(ctx, explorationResult.Steps)
+		// This path reads the checkpoints without rewriting them, so their
+		// retention clock would still be running from the previous attempt.
+		// Re-anchor it, or an operator resuming near the retention horizon
+		// watches the rows expire mid-run and cannot resume a second time.
+		o.refreshCheckpointTTL(ctx)
 		applog.WithFields(applog.Fields{
 			"run_id": o.runID,
 			"steps":  explorationResult.TotalSteps,
@@ -1100,12 +1106,26 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			InitialPrompt: explorationPrompt,
 		})
 		if err != nil {
+			// Losing the run to a newer attempt is not a discovery failure.
+			// Returned unwrapped so the caller can tell the two apart and
+			// exit quietly instead of announcing a failed run that another
+			// attempt is still working on.
+			if errors.Is(err, ai.ErrAttemptSuperseded) {
+				return nil, err
+			}
 			return nil, fmt.Errorf("exploration failed: %w", err)
 		}
 		// Record that exploration is done BEFORE analysis starts. A run
 		// that dies in analysis then resumes straight back into analysis
 		// rather than re-exploring, which is the expensive mistake.
-		o.checkpointExplorationSummary(ctx, explorationResult)
+		//
+		// It is also the last ownership gate before the expensive half of
+		// the pipeline: everything after this — analysis, recommendations,
+		// validation — would otherwise be spent by a superseded attempt on
+		// a result it deletes at the tail.
+		if err := o.checkpointExplorationSummary(ctx, explorationResult); err != nil {
+			return nil, err
+		}
 		applog.WithField("steps", explorationResult.TotalSteps).Info("Exploration completed")
 	}
 
