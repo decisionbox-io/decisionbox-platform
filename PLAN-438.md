@@ -94,6 +94,20 @@ truncated := len(rows) < fullCount
 
 Live path: identical output for every case (`RowCount == len(QueryResult)`, `queryexec/query_executor.go:262`). Resumed step: `full_row_count: 50000`, `truncated: true`, fifty sample rows — byte-identical to live. This also protects the **manual re-validation** path, which reads `discovery_exploration_steps` (`validate_doc.go:175`) and will find the ≤50-row sample there for a resumed run's pre-crash slice.
 
+`ReadStepRows` needs the same count but **cannot take the same one-liner**: its `total` is used twice — once as the number it reports and once as the slice bound (`tools.go:178-191`). Setting it to `RowCount` alone would compute `end = 200` against a 50-element slice and **panic** (`s.QueryResult[0:200]`), crashing the validation phase on the first deep read of a resumed run. What it reports and what it holds have to be separate values:
+
+```go
+total := s.RowCount                    // what the step returned — reported
+have := len(s.QueryResult)             // what we retained — bounds every slice
+if total < have { total = have }
+if req.Offset >= have {                // nothing retained at this offset
+    return {row_count: total, rows: [], truncated: true, rows_retained: false}
+}
+end := min(req.Offset+req.Limit, have)
+slice := s.QueryResult[req.Offset:end]
+truncated := end < total
+```
+
 The only residual is `read_step_rows` paging **past** the sample (it reads the full in-memory `QueryResult`, ≤200/call). On a replayed step a page past the retained sample returns `rows: [], truncated: true`, which the verifier is already told to turn into `unverifiable` — **not** a false `rejected` (`tools.go:148-156`, `bundle.go:80`). So deep paging degrades gracefully; it does **not** re-run SQL. `RowsRetained: false` on `SourceStepDigest` marks the out-of-sample case; `ReadStepRows` returns `rows_retained: false` for pages past the sample.
 
 Re-query is explicitly **rejected as the default**: it spends warehouse money on the common path and re-runs the SQL against **drifted** data (the warehouse may have changed since the insight was computed), so it can confirm/refute against different rows than the insight was built on — a correctness risk, not a clean fallback. The drift risk is reduced, not abolished: `query_warehouse` stays in the verifier's tool set and `SourceStepDigest`'s own doc comment (`bundle.go:78-81`) tells the agent an out-of-snapshot offset means "run query_warehouse **or** mark unverifiable". So the model may still re-query on its own initiative — what changes is that nothing in the design *pushes* it there.
@@ -363,7 +377,7 @@ Rule 9: failure and edge cases, not the happy path; integration tests use the re
 - A nil `checkpointRepo` disables checkpointing without changing the run (typed-nil normalisation).
 - `Drop` is skipped when ending resumable and fires when ending successfully.
 
-`verifier/bundle_test.go`, `verifier/tools_test.go`: **a 50-row sample of a 50 000-row step produces `full_row_count: 50000` + `truncated: true`, byte-identical to what the live 50 000-row step produces** — the regression the §2.5 one-liner exists to prevent, and the one that would otherwise pass every other test; `RowCount == len(QueryResult)` (live) is byte-identical to today for a short result, a sampled result and a failed step; a page past the retained sample returns empty + `truncated: true` + `rows_retained: false` and never a tool error.
+`verifier/bundle_test.go`, `verifier/tools_test.go`: **a 50-row sample of a 50 000-row step produces `full_row_count: 50000` + `truncated: true`, byte-identical to what the live 50 000-row step produces** — the regression the §2.5 one-liner exists to prevent, and the one that would otherwise pass every other test; `RowCount == len(QueryResult)` (live) is byte-identical to today for a short result, a sampled result and a failed step; a page past the retained sample returns empty + `truncated: true` + `rows_retained: false` and never a tool error; and **a read whose `offset+limit` runs past the retained sample but not past `RowCount` returns the rows it has instead of panicking** (offset 0 / limit 200 against a 50-row sample of a 50 000-row step) — the slice-bounds trap in the count substitution.
 
 `discovery/status_test.go`: `last_checkpoint_step` stamped; lifecycle pushed.
 
