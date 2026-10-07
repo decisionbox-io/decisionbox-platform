@@ -359,6 +359,48 @@ func TestReindexReplayedSteps_FailureDegradesRankingNotTheRun(t *testing.T) {
 	(&Orchestrator{runID: "r"}).reindexReplayedSteps(context.Background(), []models.ExplorationStep{{Step: 1}})
 }
 
+// TestResumedRunKeepsItsStepIndexBeforeWritingAnyCheckpoint pins the coupling
+// a resumed run needs from the first instant.
+//
+// A resumed run has checkpoints by definition, so it is resumable before it
+// writes a new one — and the skip-exploration path never writes one at all,
+// because the engine does not run. Keying the flag only on a checkpoint write
+// would make such a run drop its per-run vector index on the way out of a
+// failed analysis, and the next resume would pay to re-embed every step.
+func TestResumedRunKeepsItsStepIndexBeforeWritingAnyCheckpoint(t *testing.T) {
+	cases := map[string]*ResumeState{
+		"mid-exploration prefix": {Attempt: 2, Checkpoints: &database.CheckpointSet{
+			Steps: []models.ExplorationCheckpoint{cpStep(1, 1, nil)},
+		}},
+		"exploration already complete": {Attempt: 2, Checkpoints: &database.CheckpointSet{
+			Summary: &models.ExplorationCheckpointSummary{Completed: true},
+		}},
+	}
+	for name, resume := range cases {
+		t.Run(name, func(t *testing.T) {
+			o := &Orchestrator{projectID: "p", runID: "r"}
+			o.resume = resume
+			if o.resume.prefixLen() > 0 || o.resume.explorationComplete() {
+				o.keepStepIndex = true
+			}
+			if !o.keepStepIndex {
+				t.Error("a resumed run must keep its per-run step index — it is resumable already")
+			}
+		})
+	}
+
+	// And a run that is not a resume must still drop its index, or every
+	// successful run would leak a collection until the boot sweep.
+	o := &Orchestrator{projectID: "p", runID: "r"}
+	o.resume = nil
+	if o.resume.prefixLen() > 0 || o.resume.explorationComplete() {
+		o.keepStepIndex = true
+	}
+	if o.keepStepIndex {
+		t.Error("a non-resumed run has nothing to resume from yet; its index must stay droppable")
+	}
+}
+
 // --- cumulative duration -------------------------------------------------
 
 // TestCumulativeDuration_CountsAttemptsNotWallClock pins the fix for a

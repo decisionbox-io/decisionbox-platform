@@ -683,6 +683,17 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// resume existed.
 	o.resume = opts.Resume
 
+	// A resumed run HAS checkpoints — that is what it was resumed from — so
+	// it is resumable before it writes a single new one. Set here rather than
+	// only when a checkpoint lands, because the skip-exploration path never
+	// writes one: the engine does not run. Without this, a resumed run that
+	// then failed in analysis would drop its per-run vector index on the way
+	// out even though its checkpoints survive, and the next resume would pay
+	// to re-embed every step it replays.
+	if o.resume.prefixLen() > 0 || o.resume.explorationComplete() {
+		o.keepStepIndex = true
+	}
+
 	applog.WithFields(applog.Fields{
 		"project_id":           o.projectID,
 		"domain":               o.domain,
