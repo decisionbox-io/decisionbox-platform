@@ -46,6 +46,9 @@ func (r *SubprocessRunner) Run(ctx context.Context, opts RunOptions) error {
 	if opts.MinSteps > 0 {
 		args = append(args, "--min-steps", strconv.Itoa(opts.MinSteps))
 	}
+	if opts.Resume {
+		args = append(args, "--resume")
+	}
 
 	cmd := exec.Command("decisionbox-agent", args...) //nolint:gosec // controlled binary name
 	cmd.Env = append(os.Environ(),

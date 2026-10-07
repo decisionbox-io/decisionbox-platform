@@ -33,7 +33,13 @@ type DiscoveriesHandler struct {
 	debugLogRepo     database.DebugLogRepo
 	discoveryLogRepo database.DiscoveryLogRepo
 	runStepRepo      database.RunStepRepo
-	agentRunner      runner.Runner
+	// checkpointRepo backs the resume endpoint and the cancel-time purge of
+	// a run's exploration checkpoints. May be nil — resume then refuses with
+	// "checkpointing is not available in this deployment" and cancel skips
+	// the purge, which is what a build without the agent's checkpoint
+	// collection wants.
+	checkpointRepo database.CheckpointRepo
+	agentRunner    runner.Runner
 }
 
 // NewDiscoveriesHandler wires the handler. `debugLogRepo` may be nil — in
@@ -41,6 +47,7 @@ type DiscoveriesHandler struct {
 // and for builds that ship without the agent's debug log collection).
 // discoveryLogRepo and runStepRepo back the paginated split-log endpoints
 // (the embedded log fields are gone — see services/api/database/discovery_log_repo.go).
+// The checkpoint repository is attached separately via WithCheckpoints.
 func NewDiscoveriesHandler(
 	repo database.DiscoveryRepo,
 	projectRepo database.ProjectRepo,
@@ -59,6 +66,20 @@ func NewDiscoveriesHandler(
 		runStepRepo:      runStepRepo,
 		agentRunner:      r,
 	}
+}
+
+// WithCheckpoints attaches the exploration-checkpoint repository, enabling
+// the resume endpoint and the cancel-time purge. Returns the same handler
+// for chaining, matching how the other handlers take their optional
+// dependencies.
+//
+// A builder rather than another positional parameter: the constructor
+// already takes seven, and every one of the existing read-path tests passes
+// nils through it — growing it again would mean editing twenty call sites to
+// say nothing.
+func (h *DiscoveriesHandler) WithCheckpoints(checkpointRepo database.CheckpointRepo) *DiscoveriesHandler {
+	h.checkpointRepo = checkpointRepo
+	return h
 }
 
 // List returns discovery results for a project.
@@ -208,6 +229,75 @@ func (h *DiscoveriesHandler) TriggerDiscovery(w http.ResponseWriter, r *http.Req
 	})
 }
 
+// gateProjectForRun applies every precondition a discovery run must satisfy:
+// the datasource set can anchor an analysis, the project lifecycle is ready,
+// and the schema index is built.
+//
+// Extracted so StartRun and ResumeRun cannot drift apart. They must not: a
+// resume re-enters exploration, so it queries the warehouse and reads the
+// schema index exactly as a fresh run does, and a resume path that skipped
+// these checks would be a way to run discovery against a project the normal
+// route refuses.
+//
+// Returns a *discoverytrigger.ConflictError (HTTP 409) naming what is wrong,
+// or nil when the project may run.
+func gateProjectForRun(p *models.Project) error {
+	// Gate on the datasource set: discovery over sources that can only be
+	// correlated against something else, with nothing to correlate against,
+	// produces a confident restatement of what those sources' own reporting
+	// already shows. That is worse than no run — it looks like analysis.
+	//
+	// Checked here as well as at configuration time because a project can
+	// reach this state without passing through a route that refuses it: an
+	// existing project predates the rule, and a datasource's provider can
+	// change what it declares between one release and the next.
+	if whs := p.EffectiveWarehouses(); len(whs) > 0 && !models.AnyAnchors(whs) {
+		// Counted apart from the configuration refusals on purpose. Those are
+		// the rule working; this one means a project REACHED a state no
+		// configuration route should have allowed — it predates the rule, or a
+		// provider changed what it declares between releases. A refusal here
+		// is the signal that something upstream is missing a check.
+		recordAnchoringRefusal(telemetry.AnchoringAtDiscoveryRun, p.ID, whs)
+		return &discoverytrigger.ConflictError{Message: "this project has no data source that can carry an analysis on its own — discovery would only restate what those sources already report; add a system-of-record data source first"}
+	}
+
+	// Gate on lifecycle state. Discovery is only valid for projects
+	// in the ready (or legacy-empty) state. Plugins may transition
+	// projects into their own opaque states (e.g. while a
+	// long-running setup flow is in progress) and own the
+	// transition back to ready — discovery must refuse to run while
+	// those states are active even though the schema index might
+	// already be ready. A direct API call from a stale dashboard
+	// or curl that bypassed the UI gate must not be able to start
+	// the agent.
+	if effectiveState := p.EffectiveState(); effectiveState != models.ProjectStateReady {
+		return &discoverytrigger.ConflictError{Message: "project is in state \"" + effectiveState + "\" — discovery cannot run until the managing plugin transitions it to \"" + models.ProjectStateReady + "\""}
+	}
+
+	// Gate on schema-index lifecycle: discovery requires a ready
+	// index. Empty status means the project was created before
+	// schema indexing shipped and never migrated — treat it the
+	// same as pending_indexing so the migration path kicks in on
+	// first run. The dashboard polls /schema-index/status to tell
+	// the user what to do next.
+	switch p.SchemaIndexStatus {
+	case models.SchemaIndexStatusReady:
+		// ok — proceed
+	case models.SchemaIndexStatusPendingIndexing, models.SchemaIndexStatusIndexing:
+		return &discoverytrigger.ConflictError{Message: "schema index is not ready yet — poll /api/v1/projects/" + p.ID + "/schema-index/status"}
+	case models.SchemaIndexStatusFailed:
+		return &discoverytrigger.ConflictError{Message: "schema indexing failed: " + p.SchemaIndexError + " — click Retry indexing in project settings"}
+	case models.SchemaIndexStatusNeedsReindex:
+		return &discoverytrigger.ConflictError{Message: "schema cache was cleared; re-indexing is required before discovery — trigger POST /api/v1/projects/" + p.ID + "/reindex"}
+	case models.SchemaIndexStatusCancelled:
+		return &discoverytrigger.ConflictError{Message: "previous schema-indexing run was cancelled — trigger POST /api/v1/projects/" + p.ID + "/reindex to rebuild"}
+	default:
+		// empty status — pre-existing project not yet migrated
+		return &discoverytrigger.ConflictError{Message: "project has not been indexed yet — trigger POST /api/v1/projects/" + p.ID + "/reindex first"}
+	}
+	return nil
+}
+
 // StartRun performs a discovery-run trigger: lifecycle/schema-index
 // gating, run-record reservation, plan-policy enforcement, and agent
 // spawn. It is the single implementation shared by the HTTP endpoint
@@ -231,58 +321,12 @@ func (h *DiscoveriesHandler) StartRun(ctx context.Context, opts discoverytrigger
 		return discoverytrigger.Result{}, discoverytrigger.ErrProjectNotFound
 	}
 
-	// Gate on the datasource set: discovery over sources that can only be
-	// correlated against something else, with nothing to correlate against,
-	// produces a confident restatement of what those sources' own reporting
-	// already shows. That is worse than no run — it looks like analysis.
-	//
-	// Checked here as well as at configuration time because a project can
-	// reach this state without passing through a route that refuses it: an
-	// existing project predates the rule, and a datasource's provider can
-	// change what it declares between one release and the next.
-	if whs := p.EffectiveWarehouses(); len(whs) > 0 && !models.AnyAnchors(whs) {
-		// Counted apart from the configuration refusals on purpose. Those are
-		// the rule working; this one means a project REACHED a state no
-		// configuration route should have allowed — it predates the rule, or a
-		// provider changed what it declares between releases. A refusal here
-		// is the signal that something upstream is missing a check.
-		recordAnchoringRefusal(telemetry.AnchoringAtDiscoveryRun, p.ID, whs)
-		return discoverytrigger.Result{}, &discoverytrigger.ConflictError{Message: "this project has no data source that can carry an analysis on its own — discovery would only restate what those sources already report; add a system-of-record data source first"}
-	}
-
-	// Gate on lifecycle state. Discovery is only valid for projects
-	// in the ready (or legacy-empty) state. Plugins may transition
-	// projects into their own opaque states (e.g. while a
-	// long-running setup flow is in progress) and own the
-	// transition back to ready — discovery must refuse to run while
-	// those states are active even though the schema index might
-	// already be ready. A direct API call from a stale dashboard
-	// or curl that bypassed the UI gate must not be able to start
-	// the agent.
-	if effectiveState := p.EffectiveState(); effectiveState != models.ProjectStateReady {
-		return discoverytrigger.Result{}, &discoverytrigger.ConflictError{Message: "project is in state \"" + effectiveState + "\" — discovery cannot run until the managing plugin transitions it to \"" + models.ProjectStateReady + "\""}
-	}
-
-	// Gate on schema-index lifecycle: discovery requires a ready
-	// index. Empty status means the project was created before
-	// schema indexing shipped and never migrated — treat it the
-	// same as pending_indexing so the migration path kicks in on
-	// first run. The dashboard polls /schema-index/status to tell
-	// the user what to do next.
-	switch p.SchemaIndexStatus {
-	case models.SchemaIndexStatusReady:
-		// ok — proceed
-	case models.SchemaIndexStatusPendingIndexing, models.SchemaIndexStatusIndexing:
-		return discoverytrigger.Result{}, &discoverytrigger.ConflictError{Message: "schema index is not ready yet — poll /api/v1/projects/" + opts.ProjectID + "/schema-index/status"}
-	case models.SchemaIndexStatusFailed:
-		return discoverytrigger.Result{}, &discoverytrigger.ConflictError{Message: "schema indexing failed: " + p.SchemaIndexError + " — click Retry indexing in project settings"}
-	case models.SchemaIndexStatusNeedsReindex:
-		return discoverytrigger.Result{}, &discoverytrigger.ConflictError{Message: "schema cache was cleared; re-indexing is required before discovery — trigger POST /api/v1/projects/" + opts.ProjectID + "/reindex"}
-	case models.SchemaIndexStatusCancelled:
-		return discoverytrigger.Result{}, &discoverytrigger.ConflictError{Message: "previous schema-indexing run was cancelled — trigger POST /api/v1/projects/" + opts.ProjectID + "/reindex to rebuild"}
-	default:
-		// empty status — pre-existing project not yet migrated
-		return discoverytrigger.Result{}, &discoverytrigger.ConflictError{Message: "project has not been indexed yet — trigger POST /api/v1/projects/" + opts.ProjectID + "/reindex first"}
+	// Every gate a run must clear. Shared with the resume path, which
+	// re-enters exploration and so needs exactly the same guarantees — a
+	// resumed run that re-queries a warehouse whose schema index was
+	// cleared in the meantime would be worse than one that never started.
+	if err := gateProjectForRun(p); err != nil {
+		return discoverytrigger.Result{}, err
 	}
 
 	// An effort level (cloud's customer-facing intensity) resolves to a
@@ -330,15 +374,25 @@ func (h *DiscoveriesHandler) StartRun(ctx context.Context, opts discoverytrigger
 	// re-enforced here (Create only returns an ID; race is closed by
 	// the policy reservation on cloud and by the runRepo uniqueness on
 	// self-hosted).
-	runID, err := h.runRepo.Create(ctx, opts.ProjectID)
-	if err != nil {
-		return discoverytrigger.Result{}, fmt.Errorf("failed to create run: %w", err)
-	}
-
 	source := opts.Source
 	if source == "" {
 		source = "manual"
 	}
+
+	// The run's own parameters go on the document. Nothing recorded them
+	// before, so a resumed run spawned from the document alone would have
+	// silently taken the agent's defaults instead of the budget chosen here.
+	runID, err := h.runRepo.Create(ctx, opts.ProjectID, models.RunParams{
+		MaxSteps: opts.MaxSteps,
+		MinSteps: minSteps,
+		Areas:    opts.Areas,
+		Effort:   opts.Effort,
+		Source:   source,
+	})
+	if err != nil {
+		return discoverytrigger.Result{}, fmt.Errorf("failed to create run: %w", err)
+	}
+
 	apilog.WithFields(apilog.Fields{
 		"project_id": opts.ProjectID, "run_id": runID, "trigger_source": source,
 	}).Info("Starting discovery run")
@@ -515,6 +569,158 @@ func (h *DiscoveriesHandler) GetRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, run)
 }
 
+// ResumeRun restarts a failed discovery run from its last exploration
+// checkpoint, re-entering the SAME run id.
+// POST /api/v1/runs/{runId}/resume
+//
+// Exploration is where a discovery run's cost sits — N agentic LLM calls and
+// N warehouse queries — and before checkpointing existed a process that died
+// anywhere before the persistence tail lost all of it with no way back in.
+// This is the way back in: the agent replays the steps already executed and
+// continues from the next one, and a run that died after exploration
+// finished goes straight to analysis without a single query.
+//
+// Nothing here meters, charges, refunds, or opens a policy reservation, and
+// that is a design decision rather than an omission:
+//
+//   - The run's metered charge is keyed on its runID, and a resume re-enters
+//     the same runID. So resume is free BY CONSTRUCTION; there is no second
+//     debit to suppress and no refund path to leak through.
+//   - Opening a CheckStartDiscoveryRun reservation would consume another
+//     runs-per-period slot, which is a hidden charge for work already paid
+//     for. The per-project concurrency invariant is instead enforced at the
+//     repository level below, unconditionally.
+//
+// The cost of that choice is named in the PR: the plan-level CONCURRENT-runs
+// cap is not re-reserved, so a resume does not count against it. Per-project
+// concurrency still holds, and attempt is persisted so a future
+// per-attempt price can key on runID:attempt rather than silently no-op'ing
+// against the original charge.
+func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runId")
+	ctx := r.Context()
+
+	run, err := h.runRepo.GetByID(ctx, runID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get run: "+err.Error())
+		return
+	}
+	if run == nil {
+		writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+
+	// `failed` is the only resumable status, and the message says what the
+	// run actually is so a stale dashboard's user is not left guessing.
+	// `cancelled` is a deliberate hard kill and stays terminal.
+	if run.Status != "failed" {
+		writeError(w, http.StatusConflict, "run is not resumable (status: "+run.Status+") — only a failed run can be resumed")
+		return
+	}
+
+	p, err := h.projectRepo.GetByID(ctx, run.ProjectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to look up project: "+err.Error())
+		return
+	}
+	if p == nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	// The same preconditions a fresh run must clear. A resume re-enters
+	// exploration, so it needs them all — notably a ready schema index.
+	if gateErr := gateProjectForRun(p); gateErr != nil {
+		writeError(w, http.StatusConflict, gateErr.Error())
+		return
+	}
+
+	// Nothing to resume from is a real answer, not a bug: checkpoints are
+	// bounded by DISCOVERY_CHECKPOINT_RETENTION, and a run that died before
+	// its first step never wrote one.
+	if h.checkpointRepo == nil {
+		writeError(w, http.StatusConflict, "no checkpoint to resume from — checkpointing is not available in this deployment")
+		return
+	}
+	prefixLen, explorationComplete, err := h.checkpointRepo.ResumeState(ctx, runID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read checkpoints: "+err.Error())
+		return
+	}
+	if prefixLen == 0 && !explorationComplete {
+		writeError(w, http.StatusConflict, "no checkpoint to resume from — it expired or was never written; start a new run instead")
+		return
+	}
+
+	// One active run per project. Applied unconditionally here, rather than
+	// only under the self-hosted no-op checker as the start path does,
+	// because resume opens no policy reservation — so this is the only thing
+	// bounding concurrency for the project.
+	if running, _ := h.runRepo.GetRunningByProject(ctx, run.ProjectID); running != nil && running.ID != runID {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error":  "a discovery run is already in progress for this project",
+			"run_id": running.ID,
+		})
+		return
+	}
+
+	// The atomic flip. Its filter is the race guard: a double-clicked Resume
+	// matches nothing the second time, so two agents can never be spawned
+	// onto one run.
+	resumed, err := h.runRepo.BeginResume(ctx, runID)
+	if err != nil {
+		if errors.Is(err, database.ErrNoResumableRun) {
+			writeError(w, http.StatusConflict, "run is no longer resumable — another request got there first")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to begin resume: "+err.Error())
+		return
+	}
+
+	apilog.WithFields(apilog.Fields{
+		"project_id": run.ProjectID, "run_id": runID,
+		"attempt": resumed.Attempt, "replayable_steps": prefixLen,
+		"exploration_complete": explorationComplete,
+	}).Info("Resuming discovery run")
+
+	// Replay the run's OWN parameters, not the current defaults. Runs
+	// created before these were persisted read as zero, which the agent
+	// resolves to its documented defaults — the same thing that happens
+	// today for a run whose parameters were never recorded anywhere.
+	runErr := h.agentRunner.Run(ctx, runner.RunOptions{
+		ProjectID: run.ProjectID,
+		RunID:     runID,
+		Areas:     resumed.Areas,
+		MaxSteps:  resumed.MaxSteps,
+		MinSteps:  resumed.MinSteps,
+		Resume:    true,
+		Attempt:   resumed.Attempt,
+		OnFailure: func(failedRunID string, errMsg string) {
+			apilog.WithFields(apilog.Fields{
+				"run_id": failedRunID, "error": errMsg,
+			}).Error("Resumed agent failed — updating run status")
+			if err := h.runRepo.Fail(context.Background(), failedRunID, errMsg); err != nil {
+				apilog.WithError(err).Error("failed to mark resumed run as failed")
+			}
+		},
+	})
+	if runErr != nil {
+		// Back to `failed`, which leaves the run resumable again — the
+		// checkpoints are untouched, so a spawn failure costs nothing but
+		// the attempt counter.
+		if err := h.runRepo.Fail(ctx, runID, "failed to start resume: "+runErr.Error()); err != nil {
+			apilog.WithError(err).Error("failed to mark run as failed after a resume spawn failure")
+		}
+		writeError(w, http.StatusInternalServerError, "failed to start agent: "+runErr.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]interface{}{
+		"status":  "resumed",
+		"run_id":  runID,
+		"attempt": resumed.Attempt,
+	})
+}
+
 // CancelRun cancels a running discovery.
 // DELETE /api/v1/runs/{runId}
 func (h *DiscoveriesHandler) CancelRun(w http.ResponseWriter, r *http.Request) {
@@ -543,6 +749,19 @@ func (h *DiscoveriesHandler) CancelRun(w http.ResponseWriter, r *http.Request) {
 	// Mark as cancelled in MongoDB
 	if err := h.runRepo.Cancel(r.Context(), runID); err != nil {
 		apilog.WithError(err).Warn("failed to cancel run in database")
+	}
+
+	// Cancellation is a deliberate hard kill and stays terminal, so the
+	// checkpoints have no one left to serve. Dropped eagerly rather than
+	// left to the retention TTL, both to reclaim the rows and so the
+	// boot-time orphan sweep stops treating the run as live and keeping its
+	// per-run vector collection alive. Best-effort: the TTL is the backstop.
+	if h.checkpointRepo != nil {
+		if deleted, err := h.checkpointRepo.DeleteByRun(r.Context(), runID); err != nil {
+			apilog.WithError(err).Warn("failed to delete checkpoints of a cancelled run; the retention TTL will reclaim them")
+		} else if deleted > 0 {
+			apilog.WithFields(apilog.Fields{"run_id": runID, "deleted": deleted}).Info("deleted the checkpoints of a cancelled run")
+		}
 	}
 
 	// Confirm the policy reservation ended. We call Confirm rather than

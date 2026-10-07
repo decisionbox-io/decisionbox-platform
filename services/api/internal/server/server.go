@@ -57,6 +57,10 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	// they're read-only.
 	discoveryLogRepo := database.NewDiscoveryLogRepository(db)
 	runStepRepo := database.NewRunStepRepository(db)
+	// Read / purge side of the exploration checkpoints the agent writes:
+	// whether a failed run has anything to resume from, and dropping the
+	// rows when a run is cancelled.
+	checkpointRepo := database.NewDiscoveryCheckpointRepository(db)
 	feedbackRepo := database.NewFeedbackRepository(db)
 	pricingRepo := database.NewPricingRepository(db)
 	insightRepo := database.NewInsightRepository(db)
@@ -125,7 +129,8 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	projects := handler.NewProjectsHandler(projectRepo, domainPackRepo).
 		WithDeleteCascadeDeps(schemaCollectionDropper, secretProvider, indexCanceller).
 		WithRunSummaries(runRepo)
-	discoveries := handler.NewDiscoveriesHandler(discoveryRepo, projectRepo, runRepo, debugLogRepo, discoveryLogRepo, runStepRepo, agentRunner)
+	discoveries := handler.NewDiscoveriesHandler(discoveryRepo, projectRepo, runRepo, debugLogRepo, discoveryLogRepo, runStepRepo, agentRunner).
+		WithCheckpoints(checkpointRepo)
 	// Expose the discovery-run trigger in-process so composed binaries
 	// (e.g. the enterprise scheduler) can start a run through the exact
 	// same path as POST /api/v1/projects/{id}/discover, reusing all
@@ -278,6 +283,9 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	mux.HandleFunc("GET /api/v1/discoveries/{id}/analysis-steps", withRole(viewer, discoveries.ListAnalysisSteps))
 	mux.HandleFunc("GET /api/v1/discoveries/{id}/validation-results", withRole(viewer, discoveries.ListValidationResults))
 	mux.HandleFunc("GET /api/v1/discoveries/{id}/recommendation-log", withRole(viewer, discoveries.GetRecommendationLog))
+	// member, matching POST .../discover: resume starts work rather than
+	// destroying it. Cancel stays admin.
+	mux.HandleFunc("POST /api/v1/runs/{runId}/resume", withRole(member, discoveries.ResumeRun))
 	mux.HandleFunc("DELETE /api/v1/runs/{runId}", withRole(admin, discoveries.CancelRun))
 
 	// Manual validation — enqueue / cancel / list.

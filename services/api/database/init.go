@@ -49,6 +49,32 @@ var schema = []struct {
 			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "discovery_date", Value: -1}}},
 			{Keys: bson.D{{Key: "project_id", Value: 1}}},
 			{Keys: bson.D{{Key: "created_at", Value: -1}}},
+			// Answers "which discoveries did this run produce" — the
+			// retire step of a resumed run, and the filter that keeps a
+			// run's own partial result out of its previous-discovery
+			// context. Absent on documents written before resume shipped.
+			{Keys: bson.D{{Key: "run_id", Value: 1}}},
+		},
+	},
+	{
+		// Exploration checkpoints — the agent writes one row per step of an
+		// in-flight run so a crashed run can be resumed; the API reads
+		// whether a prefix exists and purges the rows on cancel.
+		//
+		// The retention TTL is NOT created here: its expiry comes from
+		// DISCOVERY_CHECKPOINT_RETENTION, and the agent's EnsureIndexes owns
+		// it because it also owns the drop-and-recreate dance a changed
+		// expiry needs (expireAfterSeconds cannot be mutated in place).
+		// Two creators with two values would conflict on every boot.
+		Name: "discovery_checkpoints",
+		Indexes: []mongo.IndexModel{
+			{
+				Keys: bson.D{
+					{Key: "run_id", Value: 1},
+					{Key: "step_number", Value: 1},
+				},
+				Options: options.Index().SetUnique(true).SetName("uq_run_step"),
+			},
 		},
 	},
 	{

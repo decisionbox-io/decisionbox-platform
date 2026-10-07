@@ -99,6 +99,16 @@ type RunOptions struct {
 	// "no floor" (explicitly disabled by the caller).
 	MinSteps int
 
+	// Resume tells the agent to continue the run named by RunID from its
+	// last exploration checkpoint instead of starting fresh. Default false
+	// is an ordinary run.
+	Resume bool
+
+	// Attempt is this attempt's 1-based number. Only the Kubernetes runner
+	// reads it, to keep the Job name unique across attempts of the same
+	// run — see KubernetesRunner.Run. 0 and 1 both mean "first attempt".
+	Attempt int
+
 	// OnFailure is called when the agent process exits with an error.
 	// The runner passes the error message so the caller can update the run status.
 	OnFailure func(runID string, errMsg string)

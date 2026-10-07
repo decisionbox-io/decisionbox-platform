@@ -87,6 +87,16 @@ type SourceStepDigest struct {
 	SampleRows   []map[string]any `json:"sample_rows"`
 	FullRowCount int              `json:"full_row_count"`
 	Truncated    bool             `json:"truncated"`
+
+	// RowsRetained reports whether the rows behind this digest are still
+	// available to read_step_rows beyond the sample shown here.
+	//
+	// True on every live step and on a checkpointed step whose result fitted
+	// inside the sample. False only when the step's rows came from a
+	// checkpoint that kept a bounded sample of a larger result: paging past
+	// that sample returns no rows, so the agent should treat an offset beyond
+	// it as unverifiable rather than as an empty answer.
+	RowsRetained bool `json:"rows_retained"`
 }
 
 type ColumnInfo struct {
@@ -278,17 +288,69 @@ func priorityLabel(p int) string {
 	}
 }
 
-func digestStep(s *agentmodels.ExplorationStep, cfg BundleConfig) SourceStepDigest {
-	fullCount := len(s.QueryResult)
-	rows := s.QueryResult
-	truncated := false
-	sampleCap := cfg.SampleRows
-	if sampleCap <= 0 {
-		sampleCap = 50
+// sampleCapOf resolves the per-step row cap, defaulting to 50 for a
+// zero-value config (tests construct BundleConfig inline).
+func sampleCapOf(cfg BundleConfig) int {
+	if cfg.SampleRows <= 0 {
+		return 50
 	}
-	if fullCount > sampleCap {
+	return cfg.SampleRows
+}
+
+// CheckpointSample returns the bounded, normalised row sample a resumed run's
+// evidence bundle is rebuilt from.
+//
+// It is the same slice and the same per-cell normalisation digestStep applies
+// below, exported so the checkpoint writer uses this code rather than its own
+// copy of it. That is what makes the rebuilt bundle equal to the live one:
+// normalisation is idempotent (a capped cell is already within the cap, a
+// serialised map is already a string), so re-normalising a persisted sample on
+// the way into the bundle is a no-op.
+//
+// Rows beyond the cap are dropped. They were never in the bundle — the live
+// path samples to exactly this cap — so a resumed run's verifier is not shown
+// less evidence than a live one. What IS lost is read_step_rows paging past
+// the sample, which returns `truncated: true` and leads the agent to
+// unverifiable rather than to a false verdict. See ReadStepRows.
+func CheckpointSample(rows []map[string]any, cfg BundleConfig) []map[string]any {
+	if len(rows) == 0 {
+		return nil
+	}
+	cap := sampleCapOf(cfg)
+	if len(rows) > cap {
+		rows = rows[:cap]
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, normaliseRow(r, cfg.CellCharCap))
+	}
+	return out
+}
+
+func digestStep(s *agentmodels.ExplorationStep, cfg BundleConfig) SourceStepDigest {
+	// The step's own RowCount is the authoritative size of the result, NOT
+	// the length of the slice we happen to be holding. On the live path they
+	// are equal by construction (queryexec sets RowCount = len(Data)), so
+	// this changes nothing there.
+	//
+	// They diverge for a step whose rows came from a checkpoint, which keeps
+	// a bounded sample. Deriving the count from the slice would then report
+	// a 50 000-row step as `full_row_count: 50, truncated: false`: the
+	// verifier would be told the query returned exactly fifty rows and that
+	// it holds all of them. That is a confident falsehood, and worse than
+	// saying nothing, because nothing in the bundle flags it — the agent
+	// would compute shares of a population fifty times smaller than the real
+	// one and confirm or refute claims against it.
+	fullCount := s.RowCount
+	if fullCount < len(s.QueryResult) {
+		// Defensive: a historical row with no row_count persisted, or a
+		// hand-edited document. Never under-report what we are holding.
+		fullCount = len(s.QueryResult)
+	}
+	rows := s.QueryResult
+	sampleCap := sampleCapOf(cfg)
+	if len(rows) > sampleCap {
 		rows = rows[:sampleCap]
-		truncated = true
 	}
 	sampled := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
@@ -301,7 +363,13 @@ func digestStep(s *agentmodels.ExplorationStep, cfg BundleConfig) SourceStepDige
 		Schema:       inferSchema(rows),
 		SampleRows:   sampled,
 		FullRowCount: fullCount,
-		Truncated:    truncated,
+		Truncated:    len(sampled) < fullCount,
+		// Whether paging past the sample has anything to return is a
+		// question about the SLICE we hold, not about the sample we cut
+		// from it: a live 50 000-row step samples 50 into the bundle and
+		// still holds all 50 000 for read_step_rows, while a checkpointed
+		// one holds only the 50.
+		RowsRetained: len(s.QueryResult) >= fullCount,
 	}
 }
 

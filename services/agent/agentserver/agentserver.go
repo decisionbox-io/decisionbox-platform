@@ -76,6 +76,7 @@ func Run() {
 		areasFlag       = flag.String("areas", "", "Comma-separated analysis areas to run (empty = all)")
 		maxSteps        = flag.Int("max-steps", 100, "Maximum exploration steps")
 		minSteps        = flag.Int("min-steps", 0, "Minimum exploration steps before accepting a done signal (0 = no floor). If the LLM says 'done' before this count, it is rejected and exploration continues. Guards against reasoning models that terminate too early.")
+		resume          = flag.Bool("resume", false, "Resume the run named by --run-id from its last exploration checkpoint instead of starting fresh. Replays the steps already executed (no warehouse re-queries, no exploration LLM calls for them) and continues from the next one; a run whose exploration already finished goes straight to analysis. Requires --run-id.")
 		includeLog      = flag.Bool("include-log", false, "Include full exploration log")
 		testMode        = flag.Bool("test", false, "Test mode - limit analyses for faster testing")
 		enableDebugLogs = flag.Bool("enable-debug-logs", true, "Enable detailed debug logging to MongoDB")
@@ -239,7 +240,7 @@ func Run() {
 		}
 	}
 
-	if err := runDiscovery(cfg, *projectID, *runID, selectedAreas, *maxSteps, *minSteps, *includeLog, *testMode, *enableDebugLogs, *estimateOnly); err != nil {
+	if err := runDiscovery(cfg, *projectID, *runID, selectedAreas, *maxSteps, *minSteps, *includeLog, *testMode, *enableDebugLogs, *estimateOnly, *resume); err != nil {
 		applog.WithError(err).Fatal("Discovery failed")
 	}
 
@@ -796,7 +797,7 @@ func runTestConnection(cfg *config.Config, projectID, target, warehouseID string
 
 // --- Discovery ---
 
-func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAreas []string, maxSteps, minSteps int, includeLog, testMode, enableDebugLogs, estimateOnly bool) error {
+func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAreas []string, maxSteps, minSteps int, includeLog, testMode, enableDebugLogs, estimateOnly, resume bool) error {
 	ctx := context.Background()
 
 	// Set project ID in context for warehouse middleware (e.g. governance)
@@ -931,6 +932,10 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	// hit the 16MB BSON limit on long runs.
 	discoveryLogRepo := database.NewDiscoveryLogRepository(db)
 	discoveryQuestionRepo := database.NewDiscoveryQuestionRepository(db)
+	// One row per exploration step while the run is in flight, so a run
+	// killed mid-flight can be resumed instead of paying for the whole
+	// phase again.
+	discoveryCheckpointRepo := database.NewDiscoveryCheckpointRepository(db)
 
 	// Discovery Ledger repositories (compounding discovery, enterprise#261).
 	ledgerRepo := database.NewLedgerRepository(db)
@@ -949,6 +954,13 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	}
 	if err := discoveryQuestionRepo.EnsureIndexes(ctx); err != nil {
 		applog.WithError(err).Warn("Failed to ensure discovery question indexes")
+	}
+	if err := discoveryCheckpointRepo.EnsureIndexes(ctx); err != nil {
+		// A warning, not fatal: without the indexes the checkpoint writes
+		// still work (they just lose the uniqueness guarantee and the TTL),
+		// and refusing to run discovery over it would trade a working run
+		// for a retention problem.
+		applog.WithError(err).Warn("Failed to ensure discovery checkpoint indexes")
 	}
 	for _, li := range []interface{ EnsureIndexes(context.Context) error }{
 		ledgerRepo, ledgerFindingRepo, ledgerTaskRepo, ledgerProposalRepo,
@@ -1060,48 +1072,49 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 
 	// Create orchestrator
 	orchestrator := discovery.NewOrchestrator(discovery.OrchestratorOptions{
-		AIClient:              aiClient,
-		Warehouse:             warehouseProvider,
-		ContextRepo:           contextRepo,
-		DiscoveryRepo:         discoveryRepo,
-		DiscoveryLogRepo:      discoveryLogRepo,
-		DiscoveryQuestionRepo: discoveryQuestionRepo,
-		LedgerRepo:            ledgerRepo,
-		LedgerFindingRepo:     ledgerFindingRepo,
-		LedgerTaskRepo:        ledgerTaskRepo,
-		LedgerProposalRepo:    ledgerProposalRepo,
-		FeedbackRepo:          database.NewFeedbackRepository(db),
-		DebugLogRepo:          debugLogRepo,
-		RunRepo:               runRepo,
-		RunStepRepo:           runStepRepo,
-		RunID:                 runID,
-		ProjectID:             projectID,
-		Domain:                warehouseDomainOr(primaryWH, project.Domain),
-		Category:              project.Category,
-		Language:              project.Language,
-		Profile:               project.Profile,
-		ProjectPrompts:        project.Prompts,
-		Datasets:              datasets,
-		FilterField:           primaryWH.FilterField,
-		FilterValue:           primaryWH.FilterValue,
-		LLMProvider:           project.LLM.Provider,
-		LLMModel:              project.LLM.Model,
-		LLMConfig:             project.LLM.Config,
-		LLMInputWindow:        resolvedWindow,
-		LLMOutputCap:          resolvedOutputCap,
-		ModelWindowRepo:       projectModelWindowStore{repo: modelWindowRepo, projectID: projectID},
-		WarehouseProvider:     primaryWH.Provider,
-		EnableDebugLogs:       enableDebugLogs,
-		VectorStore:           qdrantProvider,
-		EmbeddingProvider:     embeddingProvider,
-		EmbedIndexStore:       discovery.NewMongoEmbedIndexStore(db),
-		SchemaRetriever:       schemaRetriever,
-		SchemaCache:           schemaCache,
-		WarehouseHash:         warehouseHash,
-		WarehouseID:           warehouseIDOrDefault(primaryWH),
-		WarehouseProviders:    warehouseProviders,
-		Warehouses:            effectiveWarehouses,
-		RunStepIndex:          runStepIndex,
+		AIClient:                aiClient,
+		Warehouse:               warehouseProvider,
+		ContextRepo:             contextRepo,
+		DiscoveryRepo:           discoveryRepo,
+		DiscoveryLogRepo:        discoveryLogRepo,
+		DiscoveryQuestionRepo:   discoveryQuestionRepo,
+		LedgerRepo:              ledgerRepo,
+		LedgerFindingRepo:       ledgerFindingRepo,
+		LedgerTaskRepo:          ledgerTaskRepo,
+		LedgerProposalRepo:      ledgerProposalRepo,
+		FeedbackRepo:            database.NewFeedbackRepository(db),
+		DebugLogRepo:            debugLogRepo,
+		RunRepo:                 runRepo,
+		RunStepRepo:             runStepRepo,
+		RunID:                   runID,
+		ProjectID:               projectID,
+		Domain:                  warehouseDomainOr(primaryWH, project.Domain),
+		Category:                project.Category,
+		Language:                project.Language,
+		Profile:                 project.Profile,
+		ProjectPrompts:          project.Prompts,
+		Datasets:                datasets,
+		FilterField:             primaryWH.FilterField,
+		FilterValue:             primaryWH.FilterValue,
+		LLMProvider:             project.LLM.Provider,
+		LLMModel:                project.LLM.Model,
+		LLMConfig:               project.LLM.Config,
+		LLMInputWindow:          resolvedWindow,
+		LLMOutputCap:            resolvedOutputCap,
+		ModelWindowRepo:         projectModelWindowStore{repo: modelWindowRepo, projectID: projectID},
+		WarehouseProvider:       primaryWH.Provider,
+		EnableDebugLogs:         enableDebugLogs,
+		VectorStore:             qdrantProvider,
+		EmbeddingProvider:       embeddingProvider,
+		EmbedIndexStore:         discovery.NewMongoEmbedIndexStore(db),
+		DiscoveryCheckpointRepo: discoveryCheckpointRepo,
+		SchemaRetriever:         schemaRetriever,
+		SchemaCache:             schemaCache,
+		WarehouseHash:           warehouseHash,
+		WarehouseID:             warehouseIDOrDefault(primaryWH),
+		WarehouseProviders:      warehouseProviders,
+		Warehouses:              effectiveWarehouses,
+		RunStepIndex:            runStepIndex,
 	})
 
 	// Estimate mode: calculate costs without running discovery
@@ -1122,6 +1135,26 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		estimateJSON, _ := json.MarshalIndent(estimate, "", "  ")
 		fmt.Println(string(estimateJSON))
 		return nil
+	}
+
+	// Load the resume state before entering the run. The API checks that a
+	// checkpoint exists before it spawns us, but a TTL expiry can race that
+	// check, so this fails fast with a message that says what happened
+	// rather than quietly re-exploring a run the operator was told would
+	// resume.
+	var resumeState *discovery.ResumeState
+	if resume {
+		resumeState, err = loadResumeState(ctx, runID, runRepo, discoveryCheckpointRepo)
+		if err != nil {
+			return err
+		}
+		applog.WithFields(applog.Fields{
+			"run_id":               runID,
+			"attempt":              resumeState.Attempt,
+			"replayable_steps":     resumeState.Checkpoints.Len(),
+			"exploration_complete": resumeState.Checkpoints.ExplorationComplete(),
+			"prior_active_ms":      resumeState.PriorActiveMs,
+		}).Info("Resuming discovery run from its exploration checkpoints")
 	}
 
 	// Run discovery. The outer cap is intentionally generous —
@@ -1148,6 +1181,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		RecommendationVerdicts:     project.EffectiveRecommendationVerdicts(),
 		ClarifyingQuestionsEnabled: project.EffectiveClarifyingQuestionsEnabled(),
 		ReflectionEnabled:          project.EffectiveReflectionEnabled(),
+		Resume:                     resumeState,
 	})
 	if err != nil {
 		notify.NotifyAll(ctx, notify.Event{
@@ -1337,7 +1371,91 @@ func loadActiveRunIDs(ctx context.Context, db *database.DB) map[string]struct{} 
 			out[r.ID] = struct{}{}
 		}
 	}
+
+	// A run with live checkpoints is resumable, so its per-run step
+	// collection must survive the sweep: dropping it would make the
+	// resume pay to re-embed every step it replays.
+	//
+	// Not covered by the active-runs query above, and that is the whole
+	// point — a crashed run's status is `failed`, which is terminal, and
+	// terminal is exactly the state a resumable run sits in. Bounded by
+	// DISCOVERY_CHECKPOINT_RETENTION, which reclaims the rows.
+	cpRepo := database.NewDiscoveryCheckpointRepository(db)
+	checkpointed, err := cpRepo.ListRunIDsWithCheckpoints(ctx)
+	if err != nil {
+		applog.WithError(err).Warn("Could not list runs with checkpoints for orphan sweep; a resumable run's step index may be dropped")
+		return out
+	}
+	kept := 0
+	for _, id := range checkpointed {
+		if _, already := out[id]; already {
+			continue
+		}
+		out[id] = struct{}{}
+		kept++
+	}
+	if kept > 0 {
+		applog.WithField("resumable_runs", kept).Info("orphan sweep: keeping the step index of runs that still have checkpoints")
+	}
 	return out
+}
+
+// loadResumeState assembles what a resumed run needs: which attempt this is,
+// how much compute the earlier attempts already spent, and the contiguous
+// prefix of exploration it may replay.
+//
+// Fails rather than degrading when there is nothing to replay. The API
+// refuses a resume with no checkpoints, but the retention TTL can expire
+// between that check and this one — and silently re-exploring a run the
+// operator was told would resume is the one outcome that spends their money
+// without telling them.
+func loadResumeState(
+	ctx context.Context,
+	runID string,
+	runRepo *database.RunRepository,
+	cpRepo *database.DiscoveryCheckpointRepository,
+) (*discovery.ResumeState, error) {
+	if runID == "" {
+		return nil, fmt.Errorf("--resume requires --run-id: there is no run to resume")
+	}
+
+	set, err := cpRepo.LoadPrefix(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("load checkpoints for run %s: %w", runID, err)
+	}
+	if set.Len() == 0 && !set.ExplorationComplete() {
+		return nil, fmt.Errorf(
+			"run %s has no exploration checkpoint to resume from — it expired (see %s) or was never written; start a new run instead",
+			runID, "DISCOVERY_CHECKPOINT_RETENTION",
+		)
+	}
+
+	st := &discovery.ResumeState{Attempt: set.Attempt + 1, Checkpoints: set}
+
+	// The run document carries the attempt counter the API incremented and
+	// the compute already booked. Both are advisory: a missing run document
+	// is not a reason to refuse work the checkpoints can clearly support.
+	run, err := runRepo.GetByID(ctx, runID)
+	if err != nil || run == nil {
+		applog.WithFields(applog.Fields{
+			"run_id": runID,
+			"error":  errString(err),
+		}).Warn("could not read the run document on resume; attempt number and cumulative duration will be approximate")
+		return st, nil
+	}
+	if run.Attempt > 0 {
+		st.Attempt = run.Attempt
+	}
+	st.PriorActiveMs = run.ActiveMs
+	return st, nil
+}
+
+// errString renders an error for a log field, tolerating nil.
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // discoveryMaxDurationEnv is the env var that controls the outer

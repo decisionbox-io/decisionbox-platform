@@ -40,6 +40,11 @@ type discoveryLogPersister interface {
 	SaveAnalysisSteps(ctx context.Context, projectID, discoveryID, runID string, steps []models.AnalysisStep) error
 	SaveValidationResults(ctx context.Context, projectID, discoveryID, runID string, results []models.ValidationResult) error
 	SaveRecommendationLog(ctx context.Context, projectID, discoveryID, runID string, step *models.RecommendationStep) error
+	// DeleteByDiscovery removes every split-log row of one discovery.
+	// Used by the retire step of a resumed run, which has to drop the
+	// partial result a previous attempt left behind once the new one has
+	// landed.
+	DeleteByDiscovery(ctx context.Context, discoveryID string) (int64, error)
 }
 
 // AnalysisArea defines an analysis area resolved from project prompts.
@@ -172,6 +177,24 @@ type Orchestrator struct {
 	// orchestrator surfaces a clear error when it isn't.
 	runStepIndex RunStepIndex
 	runID        string
+
+	// checkpointRepo durably records each exploration step so a crashed run
+	// can be resumed. Held as an interface so a unit test injects a fake
+	// without MongoDB; nil disables checkpointing (and therefore resume)
+	// without changing anything else about the run.
+	checkpointRepo explorationCheckpointStore
+
+	// resume is the previous attempts' state when this run is a resume, nil
+	// otherwise. Every read goes through the nil-safe helpers in
+	// orchestrator_resume.go, so a normal run takes exactly today's path.
+	resume *ResumeState
+
+	// keepStepIndex is set as soon as the first checkpoint lands and cleared
+	// once the checkpoints are discarded. It is what makes the deferred Drop
+	// of the per-run vector collection conditional: a run that ends
+	// resumable keeps its index so the resume reuses it instead of paying to
+	// re-embed every step.
+	keepStepIndex bool
 
 	debugLogger    *debug.Logger
 	statusReporter *StatusReporter
@@ -362,6 +385,10 @@ type OrchestratorOptions struct {
 	// EmbedIndexStore is needed for Phase 8 to write to insights/recommendations collections
 	EmbedIndexStore EmbedIndexStore
 
+	// DiscoveryCheckpointRepo persists one row per exploration step so a run
+	// killed mid-flight can be resumed from it. Nil disables checkpointing.
+	DiscoveryCheckpointRepo *database.DiscoveryCheckpointRepository
+
 	// SchemaRetriever is the Qdrant-backed top-K schema retriever.
 	// Required — discovery is gated on schema_index_status == "ready",
 	// so the indexer has built the per-project Qdrant collection before
@@ -448,6 +475,15 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		discoveryLogRepo = opts.DiscoveryLogRepo
 	}
 
+	// Same normalization for the checkpoint store: a nil
+	// *DiscoveryCheckpointRepository boxed into the interface would make the
+	// `o.checkpointRepo == nil` guard false and the checkpoint path
+	// dereference it on the first step.
+	var checkpointRepo explorationCheckpointStore
+	if opts.DiscoveryCheckpointRepo != nil {
+		checkpointRepo = opts.DiscoveryCheckpointRepo
+	}
+
 	// Same typed-nil → untyped-nil normalization as discoveryLogRepo so the
 	// `o.questionRepo == nil` guard in runPhaseQuestions is not fooled by a nil
 	// concrete pointer boxed into a non-nil interface.
@@ -510,6 +546,7 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		vectorStore:           opts.VectorStore,
 		embeddingProvider:     opts.EmbeddingProvider,
 		embedIndexStore:       opts.EmbedIndexStore,
+		checkpointRepo:        checkpointRepo,
 		embedder:              opts.EmbeddingProvider, // same interface, named differently to avoid ambiguity
 		schemaRetriever:       opts.SchemaRetriever,
 		schemaCache:           opts.SchemaCache,
@@ -574,6 +611,11 @@ type DiscoveryOptions struct {
 	// default-on). The deployment-availability flag (DISCOVERY_REFLECTION_ENABLED,
 	// also default-on) is the other gate — both must be on.
 	ReflectionEnabled bool
+
+	// Resume carries the previous attempts' checkpointed state when this run
+	// re-enters an existing runID. Nil for every ordinary run, which then
+	// behaves exactly as it did before resume existed.
+	Resume *ResumeState
 }
 
 // RunDiscovery executes the complete discovery process.
@@ -636,11 +678,25 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		o.statusReporter.maxSteps = 100
 	}
 
+	// Resume state, if any. Read through the nil-safe helpers from here on,
+	// so every branch below reads the same on a normal run as it did before
+	// resume existed.
+	o.resume = opts.Resume
+
 	applog.WithFields(applog.Fields{
-		"project_id": o.projectID,
-		"domain":     o.domain,
-		"category":   o.category,
+		"project_id":           o.projectID,
+		"domain":               o.domain,
+		"category":             o.category,
+		"attempt":              o.resume.attemptNumber(),
+		"replayable_steps":     o.resume.prefixLen(),
+		"exploration_complete": o.resume.explorationComplete(),
 	}).Info("Starting discovery run")
+
+	if detail := o.resumePhaseDetail(); detail != "" {
+		// Say what is happening, so the live panel explains a run that
+		// starts at step 42 instead of appearing to stall at step 1.
+		o.statusReporter.SetPhase(ctx, models.PhaseExploration, detail, 10)
+	}
 
 	startTime := time.Now()
 
@@ -958,6 +1014,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int, warehouseID string) {
 			o.statusReporter.AddExplorationStep(ctx, stepNum, action, thinking, query, rowCount, queryTimeMs, queryFixed, errMsg, inputTokens, outputTokens, warehouseID)
 		},
+		// Durability for the one phase whose cost is irrecoverable. A
+		// separate seam from OnStep: that one is the live UI feed and takes
+		// a flattened summary, this one takes the whole step plus the
+		// action arguments replay needs.
+		PersistStep: o.checkpointStep,
+		// The already-executed prefix to replay instead of re-query. Nil on
+		// an ordinary run.
+		Resume: o.resume.engineResume(),
 	})
 
 	// Defer dropping the per-run Qdrant collection — runs that
@@ -966,6 +1030,20 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	if o.runStepIndex != nil {
 		applog.WithField("run_id", o.runID).Debug("orchestrator: per-run step index wired; deferring Drop")
 		defer func() {
+			// Skipped when the run is ending RESUMABLE — it has live
+			// checkpoints, so a resume would otherwise have to pay to
+			// re-embed every step it replays. The flag is cleared the
+			// moment the checkpoints are discarded, so a successful run
+			// still drops its collection here exactly as before.
+			//
+			// Resume does not DEPEND on the collection surviving: replay
+			// re-indexes the prefix idempotently, which is what keeps it
+			// working after a hard kill (where this defer never ran) or
+			// after the boot sweep already fired.
+			if o.keepStepIndex {
+				applog.WithField("run_id", o.runID).Info("orchestrator: run is resumable; keeping the per-run step index so a resume reuses it")
+				return
+			}
 			applog.WithField("run_id", o.runID).Debug("orchestrator: dropping per-run step index on exit")
 			if err := o.runStepIndex.Drop(ctx); err != nil {
 				applog.WithError(err).Warn("Failed to drop per-run step index; orphan sweep will retry on next agent boot")
@@ -975,15 +1053,38 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		applog.WithField("run_id", o.runID).Warn("orchestrator: runStepIndex is nil — analysis will use empty vector hits")
 	}
 
-	explorationResult, err := o.explorationEngine.Explore(ctx, ai.ExplorationContext{
-		ProjectID:     o.projectID,
-		Dataset:       datasetsStr,
-		InitialPrompt: explorationPrompt,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("exploration failed: %w", err)
+	var explorationResult *ai.ExplorationResult
+	if o.resume.explorationComplete() {
+		// A previous attempt finished exploration, so there is nothing left
+		// to explore: rebuild the result from the checkpoints and go
+		// straight to analysis. Zero exploration LLM calls, zero warehouse
+		// queries — the acceptance criterion this branch exists for.
+		//
+		// The engine never runs here, so nothing indexes the steps; the
+		// re-index below is what keeps the analysis picker from ranking
+		// against an empty collection for the whole run.
+		explorationResult = o.explorationFromCheckpoints()
+		o.reindexReplayedSteps(ctx, explorationResult.Steps)
+		applog.WithFields(applog.Fields{
+			"run_id": o.runID,
+			"steps":  explorationResult.TotalSteps,
+		}).Info("Exploration already complete from a previous attempt — skipping Phase 3 entirely")
+	} else {
+		var err error
+		explorationResult, err = o.explorationEngine.Explore(ctx, ai.ExplorationContext{
+			ProjectID:     o.projectID,
+			Dataset:       datasetsStr,
+			InitialPrompt: explorationPrompt,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("exploration failed: %w", err)
+		}
+		// Record that exploration is done BEFORE analysis starts. A run
+		// that dies in analysis then resumes straight back into analysis
+		// rather than re-exploring, which is the expensive mistake.
+		o.checkpointExplorationSummary(ctx, explorationResult)
+		applog.WithField("steps", explorationResult.TotalSteps).Info("Exploration completed")
 	}
-	applog.WithField("steps", explorationResult.TotalSteps).Info("Exploration completed")
 
 	// Wire the exploration log into the verifier before the analysis loop
 	// runs. The verifier renders the SQL of cited source_steps into its
@@ -1389,15 +1490,23 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// Create final result object that will be saved and returned
 	// Contains all insights, recommendations, and execution metadata
 	result := &models.DiscoveryResult{
-		ProjectID:       o.projectID,
-		WarehouseID:     o.warehouseID,
-		Domain:          o.domain,
-		Category:        o.category,
-		RunType:         runType,
-		AreasRequested:  opts.SelectedAreas,
-		DiscoveryDate:   time.Now(),
-		TotalSteps:      explorationResult.TotalSteps,
-		Duration:        time.Since(startTime),
+		ProjectID:   o.projectID,
+		WarehouseID: o.warehouseID,
+		// The back-reference that lets this run find the results it
+		// produced — needed to retire a superseded attempt's partial
+		// result, and to keep that result out of this run's own
+		// previously-discovered context.
+		RunID:          o.runID,
+		Domain:         o.domain,
+		Category:       o.category,
+		RunType:        runType,
+		AreasRequested: opts.SelectedAreas,
+		DiscoveryDate:  time.Now(),
+		TotalSteps:     explorationResult.TotalSteps,
+		// Cumulative ACTIVE time across attempts, not this process's
+		// elapsed: a run resumed the next morning must not report the hours
+		// it spent waiting for someone to notice it had failed.
+		Duration:        o.cumulativeDuration(time.Since(startTime)),
 		Schemas:         schemas,
 		Insights:        allInsights,
 		Recommendations: recommendations,
@@ -1440,7 +1549,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		return nil, err
 	}
 
-	// Store detailed execution logs (exploration, analysis, validation) for debugging
+	// Store detailed execution logs (exploration, analysis, validation) for debugging.
+	// A clean insert under a freshly minted discovery_id, which is what makes
+	// the unique index on discovery_recommendation_log.discovery_id
+	// unviolatable on a resumed run rather than merely unviolated.
 	o.persistSplitLogs(persistCtx, result.ID, explorationResult.Steps, analysisLog, allValidation, recStep)
 
 	// Phase 8: Embed & Index (non-fatal — errors logged, discovery still completes).
@@ -1459,10 +1571,30 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		o.runPhaseEmbedIndex(persistCtx, result)
 	}
 
+	// Record this attempt's own compute time and the transition, before the
+	// status flip. A resumed run needs both: the cumulative total so elapsed
+	// time means something across attempts, and the per-attempt event so
+	// "which model ran which attempt" is answerable.
+	o.recordAttemptOutcome(persistCtx, time.Since(startTime), computeErr)
+
+	// Retire the results of this run's earlier attempts, now that this
+	// attempt's result is fully written. A no-op on every run that was not
+	// resumed, and on a resumed run whose previous attempt died before it
+	// saved anything — which is the common case.
+	o.retireSupersededAttempts(persistCtx, result.ID)
+
 	// Final step: update run status (success or failure) based on execution result
 	if err := finalizeStatus(ctx, o.statusReporter, computeErr, result, len(allInsights)); err != nil {
+		// The run is ending resumable. Keep the checkpoints (and the per-run
+		// vector index) so an operator can resume it rather than paying for
+		// exploration again.
 		return result, err
 	}
+
+	// The run reached a terminal success, so there is nothing left to resume
+	// from. Discarding the checkpoints also re-arms the deferred Drop of the
+	// per-run vector collection.
+	o.discardCheckpoints(persistCtx, "run completed")
 
 	// The clarifying-questions hop (RunPhaseQuestions) is deliberately NOT invoked
 	// here: agentserver calls it AFTER RunDiscovery returns and the completion
@@ -2516,6 +2648,32 @@ func (o *Orchestrator) loadPreviousDiscoveryContext(ctx context.Context) (
 	if err != nil {
 		applog.WithError(err).Warn("Failed to load recent discoveries for context")
 		return nil, nil, nil
+	}
+
+	// Drop this run's OWN results. The list feeds the exploration and
+	// analysis prompts as "previously discovered — do not re-tread these",
+	// and on a resumed run the partial result its previous attempt saved is
+	// in it. Left alone, the run would be instructed not to repeat its own
+	// findings: it would skip the very ground it was resumed to finish, and
+	// the operator would get a resumed run that found less than the attempt
+	// that crashed.
+	//
+	// Filtered here rather than in the repository because this is the only
+	// caller for which the run's own result is not legitimate history.
+	// Historical documents carry no run_id and so are never matched.
+	if o.runID != "" {
+		kept := recentDiscoveries[:0]
+		for _, disc := range recentDiscoveries {
+			if disc.RunID == o.runID {
+				applog.WithFields(applog.Fields{
+					"run_id":       o.runID,
+					"discovery_id": disc.ID,
+				}).Info("excluding this run's own earlier result from previous-discovery context")
+				continue
+			}
+			kept = append(kept, disc)
+		}
+		recentDiscoveries = kept
 	}
 
 	if len(recentDiscoveries) == 0 {

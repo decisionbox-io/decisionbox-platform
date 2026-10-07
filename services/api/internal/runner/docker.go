@@ -526,6 +526,9 @@ func (r *DockerRunner) Run(ctx context.Context, opts RunOptions) error {
 	if opts.MinSteps > 0 {
 		args = append(args, "--min-steps", strconv.Itoa(opts.MinSteps))
 	}
+	if opts.Resume {
+		args = append(args, "--resume")
+	}
 
 	id, err := r.createAndStart(ctx, containerSpec{
 		cmd: args,

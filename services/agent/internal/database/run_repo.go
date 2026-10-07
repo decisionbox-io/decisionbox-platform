@@ -186,6 +186,12 @@ func (r *RunRepository) Complete(ctx context.Context, runID, discoveryID string,
 			"updated_at":     now,
 			"insights_found": insightsFound,
 			"discovery_id":   discoveryID,
+			// A completed run has nothing left to resume, so the
+			// dashboard's Resume affordance must not survive it. Zeroed
+			// here rather than relying on the checkpoint rows being gone:
+			// their deletion is best-effort, and an offered-but-impossible
+			// Resume is worse than none.
+			"last_checkpoint_step": 0,
 		},
 	}
 
@@ -243,6 +249,66 @@ func (r *RunRepository) Fail(ctx context.Context, runID, discoveryID, errMsg str
 		}},
 	}
 	_, err = r.col.UpdateOne(ctx, filter, bson.M{"$set": set})
+	return err
+}
+
+// MarkExplorationCheckpoint records that a checkpoint now exists for this
+// step, which is what the dashboard reads to offer Resume on a failed run.
+//
+// $max rather than $set: a resumed run re-checkpoints the prefix it replayed,
+// so a plain write would walk the value back down to 1 and climb again,
+// making the field briefly claim less progress than the run actually has.
+func (r *RunRepository) MarkExplorationCheckpoint(ctx context.Context, runID string, step int) error {
+	if step <= 0 {
+		return nil
+	}
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		return fmt.Errorf("invalid run ID: %w", err)
+	}
+	_, err = r.col.UpdateByID(ctx, oid, bson.M{
+		"$max": bson.M{"last_checkpoint_step": step},
+		"$set": bson.M{"updated_at": time.Now()},
+	})
+	return err
+}
+
+// AddActiveTime adds this attempt's elapsed compute time to the run's
+// cumulative total.
+//
+// Called once at the terminal write, which is also its limitation: an
+// attempt hard-killed before it gets here contributes nothing. See
+// DiscoveryRun.ActiveMs.
+func (r *RunRepository) AddActiveTime(ctx context.Context, runID string, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		return fmt.Errorf("invalid run ID: %w", err)
+	}
+	_, err = r.col.UpdateByID(ctx, oid, bson.M{
+		"$inc": bson.M{"active_ms": d.Milliseconds()},
+		"$set": bson.M{"updated_at": time.Now()},
+	})
+	return err
+}
+
+// AppendLifecycle pushes one transition onto the run's append-only lifecycle
+// log. See models.RunLifecycleEvent for why a single mutable status stops
+// being enough once a run can be resumed.
+func (r *RunRepository) AppendLifecycle(ctx context.Context, runID string, ev models.RunLifecycleEvent) error {
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		return fmt.Errorf("invalid run ID: %w", err)
+	}
+	if ev.At.IsZero() {
+		ev.At = time.Now()
+	}
+	_, err = r.col.UpdateByID(ctx, oid, bson.M{
+		"$push": bson.M{"lifecycle": ev},
+		"$set":  bson.M{"updated_at": time.Now()},
+	})
 	return err
 }
 

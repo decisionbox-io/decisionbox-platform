@@ -230,8 +230,26 @@ func sanitizeK8sLabelSegment(id string, maxLen int) string {
 	return id
 }
 
+// discoveryJobName is the Job name for one attempt of a discovery run.
+//
+// Attempt 1 keeps the historical, un-suffixed name byte for byte. Later
+// attempts get a suffix because resume re-enters the SAME runID: the
+// previous attempt's Job lingers for its TTL (an hour), so a resume inside
+// that window would fail with AlreadyExists — i.e. resume would be broken on
+// the production runner, and only there.
+//
+// 20 chars of run id plus "discovery-" and "-a<n>" stays well inside the
+// 63-character DNS-1123 label limit.
+func discoveryJobName(runID string, attempt int) string {
+	base := fmt.Sprintf("discovery-%s", runID[:min(len(runID), 20)])
+	if attempt <= 1 {
+		return base
+	}
+	return fmt.Sprintf("%s-a%d", base, attempt)
+}
+
 func (r *KubernetesRunner) Run(ctx context.Context, opts RunOptions) error {
-	jobName := fmt.Sprintf("discovery-%s", opts.RunID[:min(len(opts.RunID), 20)])
+	jobName := discoveryJobName(opts.RunID, opts.Attempt)
 
 	args := []string{
 		"--project-id", opts.ProjectID,
@@ -245,6 +263,9 @@ func (r *KubernetesRunner) Run(ctx context.Context, opts RunOptions) error {
 	}
 	if opts.MinSteps > 0 {
 		args = append(args, "--min-steps", strconv.Itoa(opts.MinSteps))
+	}
+	if opts.Resume {
+		args = append(args, "--resume")
 	}
 
 	// Cap the discovery Job's wall-clock budget via
@@ -699,22 +720,50 @@ func newTicker(interval time.Duration, maxTicks int) <-chan struct{} {
 	return ch
 }
 
+// Cancel deletes the run's Job(s) by LABEL rather than by deriving a name.
+//
+// Deriving the name stopped being safe the moment a resumed attempt got a
+// suffixed one: Cancel would compute the attempt-1 name, 404, and report
+// failure — so "Cancel remains a terminal hard-kill" would have quietly
+// stopped being true for exactly the runs this feature creates. The run-id
+// label is already on every Job and is attempt-agnostic, which is also what
+// the Docker runner's Cancel does.
+//
+// A non-resumed run has exactly one matching Job, so behaviour there is
+// unchanged — including the "no such Job" error, which callers rely on to
+// tell a cancelled-while-running run from one that had already exited.
 func (r *KubernetesRunner) Cancel(ctx context.Context, runID string) error {
-	jobName := fmt.Sprintf("discovery-%s", runID[:min(len(runID), 20)])
-
-	propagation := metav1.DeletePropagationForeground
-	err := r.client.BatchV1().Jobs(r.config.Namespace).Delete(ctx, jobName, metav1.DeleteOptions{
-		PropagationPolicy: &propagation,
+	selector := "run-id=" + runID
+	jobs, err := r.client.BatchV1().Jobs(r.config.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: selector,
 	})
 	if err != nil {
 		apilog.WithFields(apilog.Fields{
-			"job": jobName, "error": err.Error(),
-		}).Warn("Failed to delete K8s Job")
-		return fmt.Errorf("failed to delete K8s Job: %w", err)
+			"selector": selector, "error": err.Error(),
+		}).Warn("Failed to list K8s Jobs for cancel")
+		return fmt.Errorf("failed to list K8s Jobs for run %s: %w", runID, err)
+	}
+	if len(jobs.Items) == 0 {
+		return fmt.Errorf("no K8s Job found for run %s", runID)
 	}
 
-	apilog.WithFields(apilog.Fields{
-		"job": jobName, "run_id": runID,
-	}).Info("K8s Job deleted (discovery cancelled)")
-	return nil
+	propagation := metav1.DeletePropagationForeground
+	var firstErr error
+	for _, job := range jobs.Items {
+		if err := r.client.BatchV1().Jobs(r.config.Namespace).Delete(ctx, job.Name, metav1.DeleteOptions{
+			PropagationPolicy: &propagation,
+		}); err != nil {
+			apilog.WithFields(apilog.Fields{
+				"job": job.Name, "error": err.Error(),
+			}).Warn("Failed to delete K8s Job")
+			if firstErr == nil {
+				firstErr = fmt.Errorf("failed to delete K8s Job %s: %w", job.Name, err)
+			}
+			continue
+		}
+		apilog.WithFields(apilog.Fields{
+			"job": job.Name, "run_id": runID,
+		}).Info("K8s Job deleted (discovery cancelled)")
+	}
+	return firstErr
 }

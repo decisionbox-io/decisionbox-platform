@@ -34,6 +34,16 @@ type fakeDiscoveryLogPersister struct {
 	saveAnalysisErr       error
 	saveValidationErr     error
 	saveRecommendationErr error
+
+	// deletedDiscoveryIDs records the discoveries whose split-log rows the
+	// retire step removed.
+	deletedDiscoveryIDs []string
+	deleteErr           error
+}
+
+func (f *fakeDiscoveryLogPersister) DeleteByDiscovery(_ context.Context, discoveryID string) (int64, error) {
+	f.deletedDiscoveryIDs = append(f.deletedDiscoveryIDs, discoveryID)
+	return 0, f.deleteErr
 }
 
 func (f *fakeDiscoveryLogPersister) recordIDs(projectID, discoveryID, runID string) {

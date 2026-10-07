@@ -175,18 +175,41 @@ func (e *DefaultExecutor) ReadStepRows(ctx context.Context, req StepRowsRequest)
 	if req.Offset < 0 {
 		req.Offset = 0
 	}
-	total := len(s.QueryResult)
-	if req.Offset >= total {
+	// Two different numbers, and conflating them is a panic.
+	//
+	// total is what the step RETURNED — the authoritative count, reported to
+	// the agent so it reasons about the real population. have is what we
+	// still HOLD, and it is the only thing that may bound a slice: a step
+	// whose rows came from a checkpoint keeps a bounded sample, so total can
+	// be 50 000 while the slice has 50 elements. Bounding `end` by total
+	// there would index s.QueryResult[0:200] on a 50-element slice and take
+	// the validation phase down with it.
+	//
+	// They are equal on the live path (queryexec sets RowCount =
+	// len(Data)), so this is byte-identical for every non-resumed run.
+	total := s.RowCount
+	have := len(s.QueryResult)
+	if total < have {
+		total = have
+	}
+	if req.Offset >= have {
+		// Nothing retained at this offset. Either the offset is genuinely
+		// past the end of the result, or the rows beyond our sample died
+		// with the previous attempt. Both answer the same way: empty +
+		// truncated, which the agent is instructed to turn into
+		// `unverifiable` rather than a refutation. rows_retained
+		// distinguishes the two for an operator reading the trace.
 		return map[string]any{
-			"step_id":   req.StepID,
-			"row_count": total,
-			"rows":      []map[string]any{},
-			"truncated": true,
+			"step_id":       req.StepID,
+			"row_count":     total,
+			"rows":          []map[string]any{},
+			"truncated":     true,
+			"rows_retained": have >= total,
 		}, nil
 	}
 	end := req.Offset + req.Limit
-	if end > total {
-		end = total
+	if end > have {
+		end = have
 	}
 	slice := s.QueryResult[req.Offset:end]
 	out := make([]map[string]any, 0, len(slice))
@@ -194,9 +217,10 @@ func (e *DefaultExecutor) ReadStepRows(ctx context.Context, req StepRowsRequest)
 		out = append(out, normaliseRow(r, e.Cfg.CellCharCap))
 	}
 	return map[string]any{
-		"step_id":   req.StepID,
-		"row_count": total,
-		"rows":      out,
-		"truncated": end < total,
+		"step_id":       req.StepID,
+		"row_count":     total,
+		"rows":          out,
+		"truncated":     end < total,
+		"rows_retained": have >= total,
 	}, nil
 }

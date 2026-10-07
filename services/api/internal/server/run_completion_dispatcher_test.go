@@ -68,7 +68,10 @@ func (m *mockRunRepo) MarkCompletionHooksFired(_ context.Context, runID string) 
 
 // The rest of the RunRepo interface — unused by the dispatcher; the
 // dispatcher tests should never hit these. A panic surfaces wiring bugs.
-func (m *mockRunRepo) Create(context.Context, string) (string, error) {
+func (m *mockRunRepo) Create(context.Context, string, models.RunParams) (string, error) {
+	panic("not implemented")
+}
+func (m *mockRunRepo) BeginResume(context.Context, string) (*models.DiscoveryRun, error) {
 	panic("not implemented")
 }
 func (m *mockRunRepo) GetByID(context.Context, string) (*models.DiscoveryRun, error) {

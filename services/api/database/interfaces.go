@@ -45,7 +45,11 @@ type DiscoveryRepo interface {
 
 // RunRepo abstracts discovery run operations for handler unit testing.
 type RunRepo interface {
-	Create(ctx context.Context, projectID string) (string, error)
+	Create(ctx context.Context, projectID string, params models.RunParams) (string, error)
+	// BeginResume atomically flips a failed run back to running for a new
+	// attempt. Returns ErrNoResumableRun when the run was not in `failed`
+	// — which is what the losing side of a double-clicked Resume sees.
+	BeginResume(ctx context.Context, runID string) (*models.DiscoveryRun, error)
 	GetByID(ctx context.Context, runID string) (*models.DiscoveryRun, error)
 	GetLatestByProject(ctx context.Context, projectID string) (*models.DiscoveryRun, error)
 	GetRunningByProject(ctx context.Context, projectID string) (*models.DiscoveryRun, error)
@@ -56,6 +60,17 @@ type RunRepo interface {
 	ClearPolicyReservationID(ctx context.Context, runID string) error
 	ListTerminalWithoutCompletionHook(ctx context.Context, limit int) ([]*models.DiscoveryRun, error)
 	MarkCompletionHooksFired(ctx context.Context, runID string) error
+}
+
+// CheckpointRepo abstracts the exploration-checkpoint read / purge paths the
+// discovery handlers use: whether a failed run has something to resume from,
+// and discarding the rows when a run is cancelled. Backed by
+// DiscoveryCheckpointRepository. Nil disables the resume endpoint (it then
+// refuses with "no checkpoint"), which is what a build without the agent's
+// checkpoint collection wants.
+type CheckpointRepo interface {
+	ResumeState(ctx context.Context, runID string) (prefixLen int, explorationComplete bool, err error)
+	DeleteByRun(ctx context.Context, runID string) (int64, error)
 }
 
 // DebugLogRepo abstracts debug log read operations for handler unit testing.

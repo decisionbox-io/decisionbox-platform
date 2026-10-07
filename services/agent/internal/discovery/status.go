@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	logger "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
@@ -344,6 +345,40 @@ func (s *StatusReporter) Complete(ctx context.Context, discoveryID string, insig
 	}
 	if err := s.repo.Complete(ctx, s.runID, discoveryID, insightsFound); err != nil {
 		logger.WithError(err).Warn("failed to complete run")
+	}
+}
+
+// MarkExplorationCheckpoint records that this run now has a checkpoint for
+// the given exploration step — what the dashboard reads to offer Resume on a
+// failed run.
+func (s *StatusReporter) MarkExplorationCheckpoint(ctx context.Context, step int) {
+	if !s.enabled() {
+		return
+	}
+	if err := s.repo.MarkExplorationCheckpoint(ctx, s.runID, step); err != nil {
+		logger.WithError(err).Warn("failed to stamp the exploration checkpoint marker; the dashboard may not offer Resume for this run")
+	}
+}
+
+// AddActiveTime adds one attempt's elapsed compute time to the run's
+// cumulative total, so elapsed time still means something after a resume.
+func (s *StatusReporter) AddActiveTime(ctx context.Context, d time.Duration) {
+	if !s.enabled() {
+		return
+	}
+	if err := s.repo.AddActiveTime(ctx, s.runID, d); err != nil {
+		logger.WithError(err).Warn("failed to add this attempt's active time to the run")
+	}
+}
+
+// AppendLifecycle records one transition on the run's append-only lifecycle
+// log. See models.RunLifecycleEvent.
+func (s *StatusReporter) AppendLifecycle(ctx context.Context, ev models.RunLifecycleEvent) {
+	if !s.enabled() {
+		return
+	}
+	if err := s.repo.AppendLifecycle(ctx, s.runID, ev); err != nil {
+		logger.WithError(err).Warn("failed to append a run lifecycle event")
 	}
 }
 

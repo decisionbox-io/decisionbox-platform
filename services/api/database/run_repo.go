@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -11,6 +12,11 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
+
+// ErrNoResumableRun means the run was not in a resumable state when the
+// atomic flip was attempted: it is gone, or something else already moved it
+// out of `failed` — which is exactly what a second, racing Resume looks like.
+var ErrNoResumableRun = errors.New("run is not resumable")
 
 // RunRepository manages DiscoveryRun documents.
 type RunRepository struct {
@@ -24,14 +30,33 @@ func NewRunRepository(db *DB) *RunRepository {
 // Create creates a new discovery run record. Per-step rows live in the
 // discovery_run_steps collection (RunStepRepository) — no embedded
 // `steps` slice initialisation here.
-func (r *RunRepository) Create(ctx context.Context, projectID string) (string, error) {
+//
+// params records the run's own shape (step budget, areas, effort). It is
+// persisted because nothing recorded it before: a resumed run spawned from
+// the run document alone would get the agent's defaults instead of the
+// budget the operator chose, silently changing the run's shape halfway
+// through.
+func (r *RunRepository) Create(ctx context.Context, projectID string, params models.RunParams) (string, error) {
+	now := time.Now()
 	run := models.DiscoveryRun{
 		ProjectID: projectID,
 		Status:    "pending",
 		Phase:     "init",
 		Progress:  0,
-		StartedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		StartedAt: now,
+		UpdatedAt: now,
+
+		Attempt:  1,
+		MaxSteps: params.MaxSteps,
+		MinSteps: params.MinSteps,
+		Areas:    params.Areas,
+		Effort:   params.Effort,
+		Lifecycle: []models.RunLifecycleEvent{{
+			Status:  "pending",
+			At:      now,
+			Reason:  params.Source,
+			Attempt: 1,
+		}},
 	}
 
 	result, err := r.col.InsertOne(ctx, run)
@@ -43,6 +68,86 @@ func (r *RunRepository) Create(ctx context.Context, projectID string) (string, e
 		return oid.Hex(), nil
 	}
 	return "", nil
+}
+
+// BeginResume flips a failed run back to running for a fresh attempt and
+// returns the updated document.
+//
+// The filter is the race guard, and it is the reason this is one
+// FindOneAndUpdate rather than a read followed by a write: a double-clicked
+// Resume (or two operators at once) would otherwise both see `failed`, both
+// pass, and both spawn an agent onto the same runID — two processes writing
+// one run's checkpoints and results. Here the second caller matches nothing
+// and gets ErrNoResumableRun, which the handler renders as a 409.
+//
+// Status, not a lock: `failed` is the only status a run may be resumed from.
+// `cancelled` is a deliberate hard kill and stays terminal; `completed` has
+// nothing to resume; `running` and `pending` already have an agent.
+func (r *RunRepository) BeginResume(ctx context.Context, runID string) (*models.DiscoveryRun, error) {
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid run ID: %w", err)
+	}
+	now := time.Now()
+
+	// Read the attempt we are about to become, so the lifecycle event we
+	// push carries the right number. $inc and $push cannot reference each
+	// other inside one update, and the pushed event is read by humans
+	// reconstructing what happened — an off-by-one there is worse than an
+	// extra read.
+	var current models.DiscoveryRun
+	if err := r.col.FindOne(ctx, bson.M{"_id": oid}).Decode(&current); err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, ErrNoResumableRun
+		}
+		return nil, fmt.Errorf("read run before resume: %w", err)
+	}
+	nextAttempt := current.Attempt + 1
+	if nextAttempt < 2 {
+		// A run created before the attempt counter existed reads as 0.
+		// Its first resume is attempt 2.
+		nextAttempt = 2
+	}
+
+	update := bson.M{
+		"$set": bson.M{
+			"status":          "running",
+			"phase":           "init",
+			"phase_detail":    "Resuming from the last exploration checkpoint",
+			"last_resumed_at": now,
+			"updated_at":      now,
+		},
+		"$inc": bson.M{"attempt": 1},
+		"$unset": bson.M{
+			// The previous attempt's failure is history now; the lifecycle
+			// log keeps it. Leaving them set would show a running run with
+			// an error and a completion time.
+			"error":        "",
+			"completed_at": "",
+		},
+		"$push": bson.M{"lifecycle": models.RunLifecycleEvent{
+			Status:  "running",
+			At:      now,
+			Reason:  "resumed from the last exploration checkpoint",
+			Attempt: nextAttempt,
+		}},
+	}
+	filter := bson.M{"_id": oid, "status": "failed"}
+	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
+
+	var run models.DiscoveryRun
+	if err := r.col.FindOneAndUpdate(ctx, filter, update, opts).Decode(&run); err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, ErrNoResumableRun
+		}
+		return nil, fmt.Errorf("begin resume of run %s: %w", runID, err)
+	}
+	if run.Attempt < 2 {
+		// A legacy run's $inc took it from 0 to 1; report the attempt the
+		// lifecycle event recorded so the caller and the log agree.
+		run.Attempt = nextAttempt
+	}
+	return &run, nil
 }
 
 // GetByID returns a discovery run by ID.

@@ -202,6 +202,19 @@ type mockEmbedIndexStore struct {
 	embedUpdates     []embedUpdate
 	dupUpdates       []dupUpdate
 	insertError      error
+
+	// deletedDiscoveries records the discoveries the retire step purged;
+	// deleteInsightIDs / deleteRecIDs are the ids it hands back as the
+	// Qdrant point ids to remove.
+	deletedDiscoveries []string
+	deleteInsightIDs   []string
+	deleteRecIDs       []string
+	deleteError        error
+}
+
+func (m *mockEmbedIndexStore) DeleteByDiscovery(_ context.Context, discoveryID string) ([]string, []string, error) {
+	m.deletedDiscoveries = append(m.deletedDiscoveries, discoveryID)
+	return m.deleteInsightIDs, m.deleteRecIDs, m.deleteError
 }
 
 type embedUpdate struct {

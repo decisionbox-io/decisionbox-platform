@@ -343,6 +343,13 @@ type mockRunRepo struct {
 	getRunningErr error
 	failErr       error
 	cancelErr     error
+
+	// Resume-path state. createdParams records what Create was handed, so a
+	// test can assert the run's own parameters were persisted; beginResume*
+	// control the atomic flip the resume handler depends on.
+	createdParams   []models.RunParams
+	beginResumeErr  error
+	beginResumeRuns []string
 }
 
 func newMockRunRepo() *mockRunRepo {
@@ -351,12 +358,13 @@ func newMockRunRepo() *mockRunRepo {
 	}
 }
 
-func (m *mockRunRepo) Create(_ context.Context, projectID string) (string, error) {
+func (m *mockRunRepo) Create(_ context.Context, projectID string, params models.RunParams) (string, error) {
 	if m.createErr != nil {
 		return "", m.createErr
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.createdParams = append(m.createdParams, params)
 	m.nextID++
 	id := fmt.Sprintf("run-%d", m.nextID)
 	m.runs[id] = &models.DiscoveryRun{
@@ -366,8 +374,40 @@ func (m *mockRunRepo) Create(_ context.Context, projectID string) (string, error
 		Phase:     "starting",
 		StartedAt: time.Now(),
 		UpdatedAt: time.Now(),
+		Attempt:   1,
+		MaxSteps:  params.MaxSteps,
+		MinSteps:  params.MinSteps,
+		Areas:     params.Areas,
+		Effort:    params.Effort,
 	}
 	return id, nil
+}
+
+// BeginResume mirrors the repository's atomic semantics: only a `failed` run
+// flips, so a second concurrent call sees a running run and is refused —
+// which is the behaviour the double-click test exercises.
+func (m *mockRunRepo) BeginResume(_ context.Context, runID string) (*models.DiscoveryRun, error) {
+	if m.beginResumeErr != nil {
+		return nil, m.beginResumeErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	run, ok := m.runs[runID]
+	if !ok || run.Status != "failed" {
+		return nil, database.ErrNoResumableRun
+	}
+	m.beginResumeRuns = append(m.beginResumeRuns, runID)
+	run.Status = "running"
+	run.Attempt++
+	if run.Attempt < 2 {
+		run.Attempt = 2
+	}
+	now := time.Now()
+	run.LastResumedAt = &now
+	run.Error = ""
+	run.UpdatedAt = now
+	copied := *run
+	return &copied, nil
 }
 
 func (m *mockRunRepo) GetByID(_ context.Context, runID string) (*models.DiscoveryRun, error) {

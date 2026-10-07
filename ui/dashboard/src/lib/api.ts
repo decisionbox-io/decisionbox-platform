@@ -1026,6 +1026,18 @@ export interface DiscoveryRunStatus {
   analysis_step_index_upserts?: number;
   analysis_step_index_search_calls?: number;
   analysis_steps_dropped?: number;
+
+  // Resume (issue #438). All optional: a run that predates checkpointing
+  // reads back without them, which is correct — it has nothing to resume.
+  //
+  // attempt counts how many times the run has been started.
+  // last_checkpoint_step is the highest exploration step with a checkpoint,
+  // and is what makes Resume offerable on a failed run (zeroed on success).
+  // active_ms is cumulative ACTIVE compute across attempts, so elapsed time
+  // does not include the hours a failed run sat waiting to be noticed.
+  attempt?: number;
+  last_checkpoint_step?: number;
+  active_ms?: number;
 }
 
 // RunStep is one row in the live run-step stream. `id` is the opaque
@@ -1741,6 +1753,18 @@ export const api = {
     request<DiscoveryRunStatus>(`/api/v1/runs/${runId}`),
   cancelRun: (runId: string) =>
     request<{ status: string; message: string }>(`/api/v1/runs/${runId}`, { method: 'DELETE' }),
+  // resumeRun restarts a FAILED run from its last exploration checkpoint,
+  // re-entering the same run id: the agent replays the steps already
+  // executed instead of re-querying them, and a run that died after
+  // exploration finished goes straight to analysis.
+  //
+  // 409 is a real answer here, not a bug — the checkpoint expired, the run
+  // is not in a resumable status, or another request got there first. The
+  // caller should surface the server's message verbatim.
+  resumeRun: (runId: string) =>
+    request<{ status: string; run_id: string; attempt: number }>(`/api/v1/runs/${runId}/resume`, {
+      method: 'POST',
+    }),
   // getDebugLogs returns the lean projection of `discovery_debug_logs` the
   // agent writes for a run. The "since" arg is the ISO timestamp of the
   // newest entry already rendered — the UI passes it on each poll so the

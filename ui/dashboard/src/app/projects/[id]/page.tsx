@@ -443,6 +443,25 @@ export default function ProjectPage() {
           } catch (e: unknown) {
             notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
           }
+        }} onResume={async () => {
+          try {
+            const res = await api.resumeRun(run.id);
+            // Optimistically flip to running so the 2s poll re-arms
+            // immediately — it is gated on the run being live, and waiting
+            // for the next status response would leave the panel looking
+            // dead for a beat after the click.
+            setRun({ ...run, status: 'running', error: '', attempt: res.attempt });
+            notifications.show({
+              title: 'Resuming',
+              message: `Attempt ${res.attempt} — replaying the steps already executed`,
+              color: 'blue',
+            });
+          } catch (e: unknown) {
+            // A 409 here is a real answer (the checkpoint expired, or
+            // another request got there first), so show what the server
+            // said rather than a generic failure.
+            notifications.show({ title: 'Cannot resume', message: (e as Error).message, color: 'red' });
+          }
         }} />
       )}
 
@@ -599,7 +618,7 @@ function DiscoveryRunCard({ discovery: d, projectId }: { discovery: DiscoveryRes
 
 /* ========== Live Run Panel ========== */
 
-function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: () => void }) {
+function LiveRunPanel({ run, onCancel, onResume }: { run: DiscoveryRunStatus; onCancel: () => void; onResume: () => void }) {
   // Per-step rows are no longer embedded in the run doc — they live in
   // discovery_run_steps and are streamed via api.listRunSteps with an
   // opaque ObjectID cursor (the last `id` we have). We poll while the
@@ -664,9 +683,21 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
     saving: 'saving', complete: 'complete',
   };
 
-  const elapsed = run.started_at
-    ? Math.round((new Date(run.updated_at || run.started_at).getTime() - new Date(run.started_at).getTime()) / 1000)
-    : 0;
+  // Prefer the run's own cumulative ACTIVE time when it has one. Wall-clock
+  // between started_at and updated_at is the right answer for a single
+  // attempt, but on a run resumed the next morning it counts the hours the
+  // failed run spent waiting to be noticed as work.
+  const elapsed = run.active_ms && run.active_ms > 0
+    ? Math.round(run.active_ms / 1000)
+    : run.started_at
+      ? Math.round((new Date(run.updated_at || run.started_at).getTime() - new Date(run.started_at).getTime()) / 1000)
+      : 0;
+
+  // Resume is offered only for a FAILED run that actually has a checkpoint
+  // to resume from. A cancelled run is a deliberate hard kill and stays
+  // terminal; a completed one has nothing left; a failed run that died
+  // before its first checkpoint can only be started over.
+  const canResume = run.status === 'failed' && (run.last_checkpoint_step ?? 0) > 0;
 
   return (
     <div style={{
@@ -716,6 +747,11 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>{run.progress}%</span>
             {!isDone && <GhostButton onClick={onCancel} small>Cancel</GhostButton>}
+            {canResume && (
+              <GhostButton onClick={onResume} small>
+                Resume from step {run.last_checkpoint_step}
+              </GhostButton>
+            )}
             {isDone && <GhostButton onClick={onCancel} small>Dismiss</GhostButton>}
           </div>
         </div>
@@ -743,6 +779,7 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
           <span>{run.total_queries} queries</span>
           <span>{run.insights_found} insights</span>
           <span>{formatElapsed(elapsed)}</span>
+          {(run.attempt ?? 0) > 1 && <span>attempt {run.attempt}</span>}
           <span style={{ color: 'var(--db-text-tertiary)' }}>
             Started: {new Date(run.started_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' })}
           </span>
