@@ -80,12 +80,27 @@ The issue states "Analysis needs only the digest" — true for Phase 4 (`render_
 
 A replayed step has no raw rows. Left alone, the verifier would be told a 50 000-row result had **0 rows** and would refute or mark unverifiable insights that are in fact sound — and validation gates recommendation generation (`filterEligibleInsights`, `orchestrator.go:1287`). That is a correctness regression introduced *by* resume, so it is in scope.
 
-Fix, with no schema change: both sites already have `step.RowCount`, which the executor sets to `len(qr.Rows)` (`queryexec/query_executor.go:262`) — so on the live path `RowCount == len(QueryResult)` always and the change is a no-op there. Where they disagree (`len(QueryResult) == 0 && RowCount > 0`) the honest statement is "this step returned N rows; they were not retained":
+**Fix — v1 persists the sample, it does NOT re-verify.** §2.4 keeps a **bounded ≤50-row sample** of `QueryResult` in the checkpoint (`cfg.SampleRows`, default 50, cell-char-normalised) rather than stripping rows entirely. The verifier's evidence bundle is *already* a ≤50-row sample on the live path (`digestStep` caps at `cfg.SampleRows`), so on resume `digestStep` rebuilds a **byte-identical bundle** from the persisted sample — no re-query, no regression, for the whole bundle path (Phase 4.5 and 5.5).
 
-- `digestStep` reports `FullRowCount: s.RowCount`, `Truncated: true`, and a new `RowsRetained: false` on `SourceStepDigest` so the prompt says so explicitly.
-- `ReadStepRows` returns `row_count: s.RowCount`, `rows: []`, `truncated: true`, `rows_retained: false`.
+**One line makes "byte-identical" literally true, and it is not optional.** `digestStep` derives the full count from the slice it holds — `fullCount := len(s.QueryResult)` (`bundle.go:282`) — and `ReadStepRows` does the same with `total := len(s.QueryResult)` (`tools.go:178`). Fed a 50-row sample of a 50 000-row step, both report **`full_row_count: 50`** and **`truncated: false`**: the verifier is told the step returned exactly fifty rows and that it holds all of them. That is a *confident* falsehood, strictly worse than the "0 rows" it replaces, because nothing in the bundle flags it. Both sites therefore read the authoritative count instead:
 
-The verifier's job is to re-run verification SQL against the warehouse; it has the SQL and an executor. Telling it the rows are gone makes it verify. Telling it there were none makes it lie.
+```go
+fullCount := s.RowCount                                   // == len(QueryResult) on the live path
+if fullCount < len(s.QueryResult) { fullCount = len(s.QueryResult) }  // defensive: odd historical rows
+rows := s.QueryResult
+if len(rows) > sampleCap { rows = rows[:sampleCap] }
+truncated := len(rows) < fullCount
+```
+
+Live path: identical output for every case (`RowCount == len(QueryResult)`, `queryexec/query_executor.go:262`). Resumed step: `full_row_count: 50000`, `truncated: true`, fifty sample rows — byte-identical to live. This also protects the **manual re-validation** path, which reads `discovery_exploration_steps` (`validate_doc.go:175`) and will find the ≤50-row sample there for a resumed run's pre-crash slice.
+
+The only residual is `read_step_rows` paging **past** the sample (it reads the full in-memory `QueryResult`, ≤200/call). On a replayed step a page past the retained sample returns `rows: [], truncated: true`, which the verifier is already told to turn into `unverifiable` — **not** a false `rejected` (`tools.go:148-156`, `bundle.go:80`). So deep paging degrades gracefully; it does **not** re-run SQL. `RowsRetained: false` on `SourceStepDigest` marks the out-of-sample case; `ReadStepRows` returns `rows_retained: false` for pages past the sample.
+
+Re-query is explicitly **rejected as the default**: it spends warehouse money on the common path and re-runs the SQL against **drifted** data (the warehouse may have changed since the insight was computed), so it can confirm/refute against different rows than the insight was built on — a correctness risk, not a clean fallback. The drift risk is reduced, not abolished: `query_warehouse` stays in the verifier's tool set and `SourceStepDigest`'s own doc comment (`bundle.go:78-81`) tells the agent an out-of-snapshot offset means "run query_warehouse **or** mark unverifiable". So the model may still re-query on its own initiative — what changes is that nothing in the design *pushes* it there.
+
+**Instrument so the full-row question stays an evidence decision, not a guess** (see epic follow-up): record per verdict the max `read_step_rows` offset reached, whether a call hit the 200 clamp, and whether a truncated read forced a claim to `unverifiable`. Today nothing records paging depth — `verdict.go:23-25` keeps only the `step_reads_used` count.
+
+**Audit-fidelity facts (accepted, documented):** a normal run, and the *live* portion of a resumed run, keep full rows at the tail (`discovery_exploration_steps`) unchanged. Only the **pre-crash slice of a resumed run** carries the ≤50-row sample there instead of full rows (its rows died with the crashed process). That is strictly better than a digest-only checkpoint — a sample, not nothing — and it affects only replay/fine-tuning over that slice, never the run's insights/recommendations.
 
 ### 2.6 Gap found: the resumed run would re-read its own partial result as "previous context"
 
@@ -122,7 +137,7 @@ type ExplorationCheckpointDoc struct {
     Kind       string    `bson:"kind"`          // "step" | "exploration_summary"
     CreatedAt  time.Time `bson:"created_at"`    // TTL anchor
 
-    models.ExplorationStep `bson:",inline"`     // minus rows + fix history, see below
+    models.ExplorationStep `bson:",inline"`     // full rows truncated to a ≤50-row sample; fix history dropped — see below
 
     // Replay args the step struct does not carry — the action the model
     // emitted, so the turn can be reconstructed.
@@ -144,7 +159,7 @@ type ExplorationCheckpointDoc struct {
 
 **What is deliberately stripped** before writing, in a pure helper `checkpointPayload(models.ExplorationStep) models.ExplorationStep` so it is unit-testable without Mongo:
 
-- `QueryResult` (raw rows) — replaced by `CompactResult`. This is what keeps the document small, and it is the digest `RenderCompactedSteps` already prefers.
+- `QueryResult` (raw rows) — **truncated to a bounded ≤50-row sample** (`cfg.SampleRows`, cell-char-normalised); the full set is dropped and the digest (`CompactResult`) rides alongside. The cap and the per-cell char cap are **parameters** of `checkpointPayload`, not constants in it: `verifier`'s `normaliseRow` is unexported and `database` must not import `verifier`, so the orchestrator — which already holds `o.validationCfg.Bundle` — passes `SampleRows` and `CellCharCap` down. One pure, testable function owns the invariant; the numbers come from the verifier's own config so the two cannot drift. The digest is what `RenderCompactedSteps` prefers for analysis; the sample is what the verifier's bundle consumes on resume (§2.5). Both are O(1) in result size, so the document stays small no matter how many rows the step returned.
 - `FixHistory` — each entry carries a full SQL-fix prompt and response; it is audit data, written once at the tail, not checkpoint data.
 - `LLMRequest` / `LLMResponse` — unpopulated by `Explore` today; stripped so they stay that way here.
 
@@ -179,6 +194,7 @@ Added to both `services/agent/internal/models/run.go` and `services/api/models/r
 Two same-`runID` gotchas the issue names, resolved:
 
 - **Duration must be cumulative active time.** `result.Duration` today is `time.Since(startTime)` for the current process. On resume the orchestrator reads the run's prior `active_ms` and reports `prior + this attempt`, and `$inc`s its own elapsed on the terminal write. The dashboard's `elapsed` (which computes `updated_at - started_at`, `page.tsx:667`) uses `active_ms` when present, so a run resumed the next morning no longer reports 14 hours of "work".
+  - *Caveat — best-effort on hard crashes.* The `$inc` lands at the terminal write, so an attempt killed before it reaches `Fail` (OOM / pod kill → marked failed out-of-process by the sweeper) never records its slice; a proxy-504 usually leaves the agent alive enough to write it. So `active_ms` is the active time of attempts that ended cleanly enough to record it — a slight undercount on hard crashes, which we accept (a dead attempt's compute is not worth counting).
 - **Stamp the model version per attempt.** Nothing on `main` stamps a run-level LLM model at all (`DiscoveryRun` has no LLM fields; provenance lives on debug-log rows). Rather than inventing a run-level field that only resume reads, the per-attempt `lifecycle` event carries `llm_provider` + `llm_model` — which is exactly the question the gotcha asks ("which model ran which attempt").
 
 ### 3.4 Retention
@@ -256,7 +272,7 @@ Two changes, and they are complementary rather than redundant:
 
 ### 4.5 Agent — verifier (`services/agent/internal/validation/verifier/`)
 
-`bundle.go` and `tools.go` per §2.5, plus `RowsRetained bool` on `SourceStepDigest` and the prompt line that renders it. Behaviour on the live path is unchanged because `RowCount == len(QueryResult)` there.
+`bundle.go` and `tools.go` per §2.5: both switch to `s.RowCount` as the authoritative full count (the change that makes the bundle byte-identical rather than merely similar), and the bundle is served from the persisted ≤50-row sample; `read_step_rows` past the sample returns `truncated: true` → the verifier marks the claim `unverifiable` (no re-query fallback); `RowsRetained bool` on `SourceStepDigest` marks the out-of-sample case. Plus the paging instrumentation (max offset, 200-clamp hits, truncation→`unverifiable`) so the full-row follow-up is decided on data. Live path unchanged (`RowCount == len(QueryResult)`, and the sample *is* the bundle).
 
 ### 4.6 Agent — entrypoint (`services/agent/agentserver/agentserver.go`)
 
@@ -347,7 +363,7 @@ Rule 9: failure and edge cases, not the happy path; integration tests use the re
 - A nil `checkpointRepo` disables checkpointing without changing the run (typed-nil normalisation).
 - `Drop` is skipped when ending resumable and fires when ending successfully.
 
-`verifier/bundle_test.go`, `verifier/tools_test.go`: rows-retained vs rows-absent for both sites; `RowCount == len(QueryResult)` is byte-identical to today.
+`verifier/bundle_test.go`, `verifier/tools_test.go`: **a 50-row sample of a 50 000-row step produces `full_row_count: 50000` + `truncated: true`, byte-identical to what the live 50 000-row step produces** — the regression the §2.5 one-liner exists to prevent, and the one that would otherwise pass every other test; `RowCount == len(QueryResult)` (live) is byte-identical to today for a short result, a sampled result and a failed step; a page past the retained sample returns empty + `truncated: true` + `rows_retained: false` and never a tool error.
 
 `discovery/status_test.go`: `last_checkpoint_step` stamped; lifecycle pushed.
 
