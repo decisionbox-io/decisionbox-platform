@@ -87,16 +87,6 @@ type SourceStepDigest struct {
 	SampleRows   []map[string]any `json:"sample_rows"`
 	FullRowCount int              `json:"full_row_count"`
 	Truncated    bool             `json:"truncated"`
-
-	// RowsRetained reports whether the rows behind this digest are still
-	// available to read_step_rows beyond the sample shown here.
-	//
-	// True on every live step and on a checkpointed step whose result fitted
-	// inside the sample. False only when the step's rows came from a
-	// checkpoint that kept a bounded sample of a larger result: paging past
-	// that sample returns no rows, so the agent should treat an offset beyond
-	// it as unverifiable rather than as an empty answer.
-	RowsRetained bool `json:"rows_retained"`
 }
 
 type ColumnInfo struct {
@@ -297,6 +287,14 @@ func sampleCapOf(cfg BundleConfig) int {
 	return cfg.SampleRows
 }
 
+// Nothing in the digest says whether rows BEYOND the sample are still
+// readable, and that is deliberate. The digest is rendered into the prompt
+// for every run, so a field here would change what every live run's verifier
+// reads in order to describe a case only a resumed run can be in. Truncated
+// already tells the agent the sample is partial, and the one place the
+// distinction is actionable — a read that comes back short — reports it
+// itself (see ReadStepRows' rows_retained).
+//
 // CheckpointSample returns the bounded, normalised row sample a resumed run's
 // evidence bundle is rebuilt from.
 //
@@ -364,12 +362,6 @@ func digestStep(s *agentmodels.ExplorationStep, cfg BundleConfig) SourceStepDige
 		SampleRows:   sampled,
 		FullRowCount: fullCount,
 		Truncated:    len(sampled) < fullCount,
-		// Whether paging past the sample has anything to return is a
-		// question about the SLICE we hold, not about the sample we cut
-		// from it: a live 50 000-row step samples 50 into the bundle and
-		// still holds all 50 000 for read_step_rows, while a checkpointed
-		// one holds only the 50.
-		RowsRetained: len(s.QueryResult) >= fullCount,
 	}
 }
 

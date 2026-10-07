@@ -940,3 +940,40 @@ func newFakeDockerListErr() *fakeDockerListErr { return &fakeDockerListErr{newFa
 func (f *fakeDockerListErr) ContainerList(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
 	return nil, errors.New("daemon unreachable")
 }
+
+// TestDockerRunner_Run_ForwardsResumeFlag pins the docker mode's half of the
+// resume contract. A runner that dropped --resume would start the run OVER,
+// re-querying the warehouse for every step the operator resumed to skip.
+func TestDockerRunner_Run_ForwardsResumeFlag(t *testing.T) {
+	f := newFakeDocker()
+	f.exitCode = 0
+	r := newDockerRunner(f, Config{})
+
+	if err := r.Run(context.Background(), RunOptions{
+		ProjectID: "proj-1", RunID: "run-123", Resume: true, Attempt: 2,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	cfg := f.lastCreate(t)
+	if !hasArg(cfg.Cmd, "--resume") {
+		t.Errorf("cmd missing --resume: %v", cfg.Cmd)
+	}
+}
+
+// TestDockerRunner_Run_OmitsResumeOnAFreshRun is the regression guard: every
+// non-resumed run must be spawned exactly as it was before.
+func TestDockerRunner_Run_OmitsResumeOnAFreshRun(t *testing.T) {
+	f := newFakeDocker()
+	f.exitCode = 0
+	r := newDockerRunner(f, Config{})
+
+	if err := r.Run(context.Background(), RunOptions{ProjectID: "proj-1", RunID: "run-123"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	cfg := f.lastCreate(t)
+	if hasArg(cfg.Cmd, "--resume") {
+		t.Errorf("a fresh run must not be told to resume: %v", cfg.Cmd)
+	}
+}

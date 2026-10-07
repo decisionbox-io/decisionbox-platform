@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -30,25 +29,7 @@ func NewSubprocessRunner() *SubprocessRunner {
 }
 
 func (r *SubprocessRunner) Run(ctx context.Context, opts RunOptions) error {
-	args := []string{
-		"--project-id", opts.ProjectID,
-		"--run-id", opts.RunID,
-	}
-	if len(opts.Areas) > 0 {
-		args = append(args, "--areas", strings.Join(opts.Areas, ","))
-	}
-	if opts.MaxSteps > 0 {
-		args = append(args, "--max-steps", strconv.Itoa(opts.MaxSteps))
-	}
-	// MinSteps forwards as-is: zero means "no floor, disabled" (either the
-	// caller explicitly set it to 0 or the handler defaulted an old client
-	// request with max_steps<=0). The agent CLI also clamps defensively.
-	if opts.MinSteps > 0 {
-		args = append(args, "--min-steps", strconv.Itoa(opts.MinSteps))
-	}
-	if opts.Resume {
-		args = append(args, "--resume")
-	}
+	args := discoveryArgs(opts)
 
 	cmd := exec.Command("decisionbox-agent", args...) //nolint:gosec // controlled binary name
 	cmd.Env = append(os.Environ(),

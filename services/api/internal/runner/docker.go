@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -511,24 +510,7 @@ func (r *DockerRunner) streamLogs(ctx context.Context, id string, h logHandlers,
 
 // Run spawns a discovery agent container and watches it in the background.
 func (r *DockerRunner) Run(ctx context.Context, opts RunOptions) error {
-	args := []string{
-		"--project-id", opts.ProjectID,
-		"--run-id", opts.RunID,
-	}
-	if len(opts.Areas) > 0 {
-		args = append(args, "--areas", strings.Join(opts.Areas, ","))
-	}
-	if opts.MaxSteps > 0 {
-		args = append(args, "--max-steps", strconv.Itoa(opts.MaxSteps))
-	}
-	// MinSteps forwards as-is: zero means "no floor, disabled". Mirrors the
-	// subprocess / Kubernetes runners.
-	if opts.MinSteps > 0 {
-		args = append(args, "--min-steps", strconv.Itoa(opts.MinSteps))
-	}
-	if opts.Resume {
-		args = append(args, "--resume")
-	}
+	args := discoveryArgs(opts)
 
 	id, err := r.createAndStart(ctx, containerSpec{
 		cmd: args,

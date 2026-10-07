@@ -1215,3 +1215,33 @@ describe('api.listSchemaEdits', () => {
     expect(res.edits).toHaveLength(1);
   });
 });
+
+// --- Resume (#438) ---
+
+describe('api.resumeRun', () => {
+  it('POSTs to the run-scoped resume endpoint and returns the attempt', async () => {
+    mockSuccess({ status: 'resumed', run_id: 'run-1', attempt: 2 });
+
+    const result = await api.resumeRun('run-1');
+
+    expect(result.status).toBe('resumed');
+    expect(result.attempt).toBe(2);
+
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toContain('/api/v1/runs/run-1/resume');
+    expect(opts.method).toBe('POST');
+  });
+
+  it('surfaces a 409 as an ApiError carrying the server message', async () => {
+    // The refusals are real answers — the checkpoint expired, the run is not
+    // resumable, another request got there first — so the UI must be able to
+    // show what the server said rather than a generic failure.
+    mockError(409, 'no checkpoint to resume from — it expired or was never written');
+
+    // One mocked response, so assert both facts about the same rejection.
+    const err = await api.resumeRun('run-1').catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(409);
+    expect(err.message).toBe('no checkpoint to resume from — it expired or was never written');
+  });
+});

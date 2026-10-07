@@ -1187,3 +1187,238 @@ func containsStr(s, substr string) bool {
 	}
 	return false
 }
+
+// --- Resume: --resume forwarding and per-attempt Job naming ---------------
+
+// TestRunners_ForwardResumeFlag pins that every runner mode passes --resume
+// through. A runner that silently dropped it would start the run OVER —
+// re-querying the warehouse for every step the operator resumed to skip.
+func TestRunners_ForwardResumeFlag(t *testing.T) {
+	t.Run("kubernetes", func(t *testing.T) {
+		r := newFakeK8sRunner()
+		ctx := context.Background()
+		if err := r.Run(ctx, RunOptions{ProjectID: "p", RunID: "run-resume-1", Resume: true, Attempt: 2}); err != nil {
+			t.Fatal(err)
+		}
+		jobs, _ := r.client.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+		if len(jobs.Items) != 1 {
+			t.Fatalf("jobs = %d, want 1", len(jobs.Items))
+		}
+		args := jobs.Items[0].Spec.Template.Spec.Containers[0].Args
+		if !hasArg(args, "--resume") {
+			t.Errorf("args = %v, want --resume", args)
+		}
+	})
+	t.Run("kubernetes omits it on a fresh run", func(t *testing.T) {
+		r := newFakeK8sRunner()
+		ctx := context.Background()
+		if err := r.Run(ctx, RunOptions{ProjectID: "p", RunID: "run-fresh-1"}); err != nil {
+			t.Fatal(err)
+		}
+		jobs, _ := r.client.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+		args := jobs.Items[0].Spec.Template.Spec.Containers[0].Args
+		if hasArg(args, "--resume") {
+			t.Errorf("a fresh run must not be told to resume: %v", args)
+		}
+	})
+}
+
+
+// TestDiscoveryJobName_Attempt1IsUnchanged is the compatibility guard. Resume
+// re-enters the SAME run id, so later attempts need a distinct Job name — but
+// attempt 1 must keep the historical name byte for byte, or every existing
+// deployment's naming changes for a feature it is not using.
+func TestDiscoveryJobName_Attempt1IsUnchanged(t *testing.T) {
+	const runID = "68e4f1a2b3c4d5e6f7a8b9c0"
+	want := "discovery-" + runID[:20]
+	for _, attempt := range []int{0, 1} {
+		if got := discoveryJobName(runID, attempt); got != want {
+			t.Errorf("discoveryJobName(attempt %d) = %q, want the unchanged %q", attempt, got, want)
+		}
+	}
+}
+
+// TestDiscoveryJobName_LaterAttemptsAreDistinctAndValid pins the fix for the
+// collision that made resume broken on the production runner: the previous
+// attempt's Job lingers for its TTL (an hour), so re-creating the same name
+// inside that window fails with AlreadyExists.
+func TestDiscoveryJobName_LaterAttemptsAreDistinctAndValid(t *testing.T) {
+	const runID = "68e4f1a2b3c4d5e6f7a8b9c0"
+	seen := map[string]bool{}
+	for attempt := 1; attempt <= 12; attempt++ {
+		name := discoveryJobName(runID, attempt)
+		if seen[name] {
+			t.Errorf("attempt %d reused the Job name %q", attempt, name)
+		}
+		seen[name] = true
+		// DNS-1123 label: <= 63 chars, lowercase alphanumeric or '-',
+		// starting and ending alphanumeric.
+		if len(name) > 63 {
+			t.Errorf("attempt %d name %q is %d chars, over the 63-char DNS-1123 limit", attempt, name, len(name))
+		}
+		for i := 0; i < len(name); i++ {
+			c := name[i]
+			ok := (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'
+			if !ok {
+				t.Errorf("attempt %d name %q has an invalid DNS-1123 character %q", attempt, name, string(c))
+				break
+			}
+		}
+		if name[len(name)-1] == '-' {
+			t.Errorf("attempt %d name %q ends with a dash", attempt, name)
+		}
+	}
+	if got := discoveryJobName(runID, 2); got != "discovery-"+runID[:20]+"-a2" {
+		t.Errorf("attempt 2 name = %q", got)
+	}
+}
+
+// TestKubernetesRunner_Cancel_DeletesAResumedAttemptsJob is the regression
+// the label-based Cancel exists to prevent.
+//
+// Cancel used to re-derive the Job name from the run id. The moment a resumed
+// attempt got a suffixed name, that derivation would compute the attempt-1
+// name, 404, and report failure — so "Cancel remains a terminal hard-kill"
+// would have quietly stopped being true for exactly the runs this feature
+// creates.
+func TestKubernetesRunner_Cancel_DeletesAResumedAttemptsJob(t *testing.T) {
+	r := newFakeK8sRunner()
+	ctx := context.Background()
+	const runID = "cancel-resumed-run-1234"
+
+	if err := r.Run(ctx, RunOptions{ProjectID: "p", RunID: runID, Resume: true, Attempt: 2}); err != nil {
+		t.Fatal(err)
+	}
+	jobs, _ := r.client.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	if len(jobs.Items) != 1 {
+		t.Fatalf("jobs before cancel = %d, want 1", len(jobs.Items))
+	}
+	if name := jobs.Items[0].Name; name == discoveryJobName(runID, 1) {
+		t.Fatalf("attempt 2's Job is named like attempt 1 (%q) — the test is not exercising the suffix", name)
+	}
+
+	if err := r.Cancel(ctx, runID); err != nil {
+		t.Fatalf("Cancel of a resumed attempt failed: %v", err)
+	}
+	jobs, _ = r.client.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	if len(jobs.Items) != 0 {
+		t.Errorf("jobs after cancel = %d, want 0", len(jobs.Items))
+	}
+}
+
+// TestKubernetesRunner_Cancel_DeletesEveryAttemptsJob covers the case the
+// label selector handles for free and a derived name could not: an earlier
+// attempt's Job still inside its TTL when the run is cancelled.
+func TestKubernetesRunner_Cancel_DeletesEveryAttemptsJob(t *testing.T) {
+	r := newFakeK8sRunner()
+	ctx := context.Background()
+	const runID = "cancel-multi-attempt-1"
+
+	for attempt := 1; attempt <= 3; attempt++ {
+		if err := r.Run(ctx, RunOptions{ProjectID: "p", RunID: runID, Attempt: attempt}); err != nil {
+			t.Fatalf("attempt %d: %v", attempt, err)
+		}
+	}
+	jobs, _ := r.client.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	if len(jobs.Items) != 3 {
+		t.Fatalf("jobs before cancel = %d, want 3", len(jobs.Items))
+	}
+
+	if err := r.Cancel(ctx, runID); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	jobs, _ = r.client.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	if len(jobs.Items) != 0 {
+		t.Errorf("jobs after cancel = %d, want 0 — every attempt's Job must go", len(jobs.Items))
+	}
+}
+
+// TestKubernetesRunner_Cancel_LeavesOtherRunsAlone pins that the label
+// selector is scoped to the run. Deleting by a shared label is only safe if
+// it cannot reach another run's Job.
+func TestKubernetesRunner_Cancel_LeavesOtherRunsAlone(t *testing.T) {
+	r := newFakeK8sRunner()
+	ctx := context.Background()
+	if err := r.Run(ctx, RunOptions{ProjectID: "p", RunID: "run-aaa"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Run(ctx, RunOptions{ProjectID: "p", RunID: "run-bbb"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.Cancel(ctx, "run-aaa"); err != nil {
+		t.Fatal(err)
+	}
+
+	jobs, _ := r.client.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	if len(jobs.Items) != 1 {
+		t.Fatalf("jobs after cancel = %d, want 1", len(jobs.Items))
+	}
+	if jobs.Items[0].Labels["run-id"] != "run-bbb" {
+		t.Errorf("the surviving job belongs to %q, want run-bbb", jobs.Items[0].Labels["run-id"])
+	}
+}
+
+// TestDiscoveryArgs covers the argv every runner mode now shares, so
+// "--resume is forwarded by all three" is one assertion rather than three
+// that can drift apart.
+func TestDiscoveryArgs(t *testing.T) {
+	cases := []struct {
+		name string
+		opts RunOptions
+		want []string
+	}{
+		{
+			name: "fresh run with everything set",
+			opts: RunOptions{
+				ProjectID: "p1", RunID: "r1",
+				Areas: []string{"churn", "monetization"}, MaxSteps: 50, MinSteps: 30,
+			},
+			want: []string{
+				"--project-id", "p1", "--run-id", "r1",
+				"--areas", "churn,monetization", "--max-steps", "50", "--min-steps", "30",
+			},
+		},
+		{
+			name: "resumed run",
+			opts: RunOptions{ProjectID: "p1", RunID: "r1", MaxSteps: 50, MinSteps: 30, Resume: true, Attempt: 2},
+			want: []string{
+				"--project-id", "p1", "--run-id", "r1",
+				"--max-steps", "50", "--min-steps", "30", "--resume",
+			},
+		},
+		{
+			// Zero means "no floor, explicitly disabled" — forwarding
+			// --min-steps 0 would be indistinguishable from not setting it,
+			// so the flag is omitted and the agent's own default applies.
+			name: "no floor and no areas",
+			opts: RunOptions{ProjectID: "p1", RunID: "r1", MaxSteps: 10},
+			want: []string{"--project-id", "p1", "--run-id", "r1", "--max-steps", "10"},
+		},
+		{
+			name: "nothing but identity",
+			opts: RunOptions{ProjectID: "p1", RunID: "r1"},
+			want: []string{"--project-id", "p1", "--run-id", "r1"},
+		},
+		{
+			// Attempt drives the K8s Job NAME, not the argv — the agent
+			// reads the attempt number off the run document.
+			name: "attempt is not an argument",
+			opts: RunOptions{ProjectID: "p1", RunID: "r1", Attempt: 7},
+			want: []string{"--project-id", "p1", "--run-id", "r1"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := discoveryArgs(tc.opts)
+			if len(got) != len(tc.want) {
+				t.Fatalf("args = %v, want %v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("args[%d] = %q, want %q (full: %v)", i, got[i], tc.want[i], got)
+				}
+			}
+		})
+	}
+}

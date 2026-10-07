@@ -31,6 +31,7 @@ const listDiscoveries = jest.fn();
 const getProjectStatus = jest.fn();
 const listProjectQuestions = jest.fn();
 const listRunSteps = jest.fn();
+const resumeRun = jest.fn();
 
 jest.mock('@/lib/api', () => ({
   __esModule: true,
@@ -55,6 +56,7 @@ jest.mock('@/lib/api', () => ({
     getRun: jest.fn(),
     estimateCost: jest.fn(),
     cancelRun: jest.fn(),
+    resumeRun: (...a: unknown[]) => resumeRun(...a),
   },
 }));
 
@@ -198,5 +200,97 @@ describe('ProjectPage status polling (#405)', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+});
+
+describe('Resume affordance on a failed run (#438)', () => {
+  // Exploration is where a discovery run's cost sits, and a crashed run used
+  // to lose all of it. The button is the whole user-facing surface of the
+  // recovery path, so what it is offered FOR — and what it is withheld for —
+  // is the thing worth pinning.
+
+  it('offers Resume, with the step it would pick up from, for a failed run that has a checkpoint', async () => {
+    getProjectStatus.mockResolvedValue(
+      status(makeRun({ status: 'failed', progress: 35, last_checkpoint_step: 42, attempt: 1 })),
+    );
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText(/Resume from step 42/)).toBeInTheDocument());
+  });
+
+  it.each([
+    ['a failed run that never checkpointed', { status: 'failed', last_checkpoint_step: 0 }],
+    ['a failed run from before checkpointing existed', { status: 'failed' }],
+    ['a cancelled run — cancel is a deliberate hard kill and stays terminal', { status: 'cancelled', last_checkpoint_step: 42 }],
+    ['a completed run — there is nothing left to resume', { status: 'completed', last_checkpoint_step: 42 }],
+    ['a run still in flight', { status: 'running', last_checkpoint_step: 42 }],
+  ])('withholds Resume for %s', async (_name, partial) => {
+    getProjectStatus.mockResolvedValue(status(makeRun(partial as Partial<DiscoveryRunStatus>)));
+
+    renderPage();
+    await waitFor(() => expect(getProjectStatus).toHaveBeenCalled());
+    await flush();
+
+    expect(screen.queryByText(/Resume from step/)).not.toBeInTheDocument();
+  });
+
+  it('calls resumeRun and flips the panel to running so polling re-arms', async () => {
+    getProjectStatus.mockResolvedValue(
+      status(makeRun({ status: 'failed', progress: 35, last_checkpoint_step: 42, attempt: 1 })),
+    );
+    resumeRun.mockResolvedValue({ status: 'resumed', run_id: 'r1', attempt: 2 });
+
+    renderPage();
+    const btn = await waitFor(() => screen.getByText(/Resume from step 42/));
+
+    await act(async () => { btn.click(); });
+
+    expect(resumeRun).toHaveBeenCalledWith('r1');
+    // The 2s poll is gated on the run being live, so the optimistic flip is
+    // what stops the panel looking dead for a beat after the click.
+    await waitFor(() => expect(screen.getByText('Discovery running')).toBeInTheDocument());
+  });
+
+  it('surfaces the server message when a resume is refused', async () => {
+    const { notifications } = jest.requireMock('@mantine/notifications');
+    getProjectStatus.mockResolvedValue(
+      status(makeRun({ status: 'failed', last_checkpoint_step: 42 })),
+    );
+    // A 409 here is a real answer — the checkpoint expired, or another
+    // request got there first — so the user must see what the server said.
+    resumeRun.mockRejectedValue(new Error('no checkpoint to resume from — it expired or was never written'));
+
+    renderPage();
+    const btn = await waitFor(() => screen.getByText(/Resume from step 42/));
+
+    await act(async () => { btn.click(); });
+
+    await waitFor(() => expect(notifications.show).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Cannot resume',
+        message: 'no checkpoint to resume from — it expired or was never written',
+      }),
+    ));
+    // And the run stays failed, so the operator can try again.
+    expect(screen.getByText('Discovery failed')).toBeInTheDocument();
+  });
+
+  it('reports cumulative active time rather than wall-clock across attempts', async () => {
+    // Wall-clock from started_at would count the hours a failed run sat
+    // waiting to be noticed as work. 185s = 3m 5s.
+    getProjectStatus.mockResolvedValue(status(makeRun({
+      status: 'failed',
+      last_checkpoint_step: 42,
+      attempt: 2,
+      active_ms: 185_000,
+      started_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-02T00:00:00Z',
+    })));
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('3m 5s elapsed')).toBeInTheDocument());
+    expect(screen.getByText('attempt 2')).toBeInTheDocument();
   });
 });

@@ -114,6 +114,37 @@ type RunOptions struct {
 	OnFailure func(runID string, errMsg string)
 }
 
+// discoveryArgs builds the agent's argv for one discovery run.
+//
+// One definition for all three runner modes. They used to construct it
+// separately, which meant every new flag had to be added in three places and
+// a mode that missed one would differ from the others in a way only a
+// production run would reveal — the kind of divergence --resume is least
+// survivable: a runner that dropped it would silently start the run OVER,
+// re-querying the warehouse for every step the operator resumed to skip.
+func discoveryArgs(opts RunOptions) []string {
+	args := []string{
+		"--project-id", opts.ProjectID,
+		"--run-id", opts.RunID,
+	}
+	if len(opts.Areas) > 0 {
+		args = append(args, "--areas", strings.Join(opts.Areas, ","))
+	}
+	if opts.MaxSteps > 0 {
+		args = append(args, "--max-steps", strconv.Itoa(opts.MaxSteps))
+	}
+	// MinSteps forwards as-is: zero means "no floor, disabled" (either the
+	// caller explicitly set it to 0 or the handler defaulted an old client
+	// request with max_steps<=0). The agent CLI also clamps defensively.
+	if opts.MinSteps > 0 {
+		args = append(args, "--min-steps", strconv.Itoa(opts.MinSteps))
+	}
+	if opts.Resume {
+		args = append(args, "--resume")
+	}
+	return args
+}
+
 // Config holds runner configuration from environment variables.
 type Config struct {
 	Mode string // "subprocess", "docker", or "kubernetes"

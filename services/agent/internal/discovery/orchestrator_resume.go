@@ -282,14 +282,49 @@ func (o *Orchestrator) recordAttemptOutcome(ctx context.Context, elapsed time.Du
 // Every failure is logged and swallowed: the run's result is already durable,
 // and a leftover superseded document is a tidiness problem, not a correctness
 // one. Retrying the retire step is harmless.
+// discoveryRetirer is the slice of *database.DiscoveryRepository the retire
+// step calls. An interface so the retire logic — the one part of resume that
+// DELETES things — can be exercised against fakes rather than only against a
+// live MongoDB.
+type discoveryRetirer interface {
+	ListIDsByRun(ctx context.Context, runID string) ([]string, error)
+	DeleteByID(ctx context.Context, idHex string) error
+}
+
+// retireDeps is everything retireSuperseded touches. Passed in rather than
+// read off the Orchestrator so the whole deletion path is unit-testable; the
+// method below is the one-line adapter that supplies the run's real stores.
+type retireDeps struct {
+	discoveries discoveryRetirer
+	logs        discoveryLogPersister
+	embed       EmbedIndexStore
+	vectors     vectorDeleter
+}
+
+// vectorDeleter is the one method of vectorstore.Provider the retire step
+// uses. Narrowed rather than taking the whole provider so a test does not
+// have to stub a dozen search methods to assert which points were deleted.
+type vectorDeleter interface {
+	Delete(ctx context.Context, ids []string) error
+}
+
 func (o *Orchestrator) retireSupersededAttempts(ctx context.Context, keepDiscoveryID string) {
-	if o.runID == "" || keepDiscoveryID == "" {
+	retireSuperseded(ctx, o.runID, keepDiscoveryID, retireDeps{
+		discoveries: o.discoveryRepo,
+		logs:        o.discoveryLogRepo,
+		embed:       o.embedIndexStore,
+		vectors:     o.vectorStore,
+	})
+}
+
+func retireSuperseded(ctx context.Context, runID, keepDiscoveryID string, deps retireDeps) {
+	if runID == "" || keepDiscoveryID == "" || deps.discoveries == nil {
 		return
 	}
-	ids, err := o.discoveryRepo.ListIDsByRun(ctx, o.runID)
+	ids, err := deps.discoveries.ListIDsByRun(ctx, runID)
 	if err != nil {
 		applog.WithFields(applog.Fields{
-			"run_id": o.runID,
+			"run_id": runID,
 			"error":  err.Error(),
 		}).Warn("could not list this run's discoveries; a superseded partial result may remain visible")
 		return
@@ -299,7 +334,7 @@ func (o *Orchestrator) retireSupersededAttempts(ctx context.Context, keepDiscove
 		if id == keepDiscoveryID {
 			continue
 		}
-		o.retireDiscovery(ctx, id)
+		retireDiscovery(ctx, runID, id, deps)
 	}
 }
 
@@ -310,29 +345,29 @@ func (o *Orchestrator) retireSupersededAttempts(ctx context.Context, keepDiscove
 // Vectors go first among the derived data, because a point whose Mongo row is
 // gone is an orphan that search can still return — while a row whose point is
 // gone merely ranks lower.
-func (o *Orchestrator) retireDiscovery(ctx context.Context, discoveryID string) {
-	logf := applog.WithFields(applog.Fields{"run_id": o.runID, "discovery_id": discoveryID})
+func retireDiscovery(ctx context.Context, runID, discoveryID string, deps retireDeps) {
+	logf := applog.WithFields(applog.Fields{"run_id": runID, "discovery_id": discoveryID})
 
-	if o.embedIndexStore != nil {
-		insightIDs, recIDs, err := o.embedIndexStore.DeleteByDiscovery(ctx, discoveryID)
+	if deps.embed != nil {
+		insightIDs, recIDs, err := deps.embed.DeleteByDiscovery(ctx, discoveryID)
 		if err != nil {
 			logf.WithError(err).Warn("failed to delete a superseded attempt's standalone insight / recommendation rows")
 		}
 		pointIDs := append(append(make([]string, 0, len(insightIDs)+len(recIDs)), insightIDs...), recIDs...)
-		if len(pointIDs) > 0 && o.vectorStore != nil {
-			if err := o.vectorStore.Delete(ctx, pointIDs); err != nil {
+		if len(pointIDs) > 0 && deps.vectors != nil {
+			if err := deps.vectors.Delete(ctx, pointIDs); err != nil {
 				logf.WithError(err).Warn("failed to delete a superseded attempt's vectors; project search may return orphaned points until the next run")
 			}
 		}
 	}
 
-	if o.discoveryLogRepo != nil {
-		if _, err := o.discoveryLogRepo.DeleteByDiscovery(ctx, discoveryID); err != nil {
+	if deps.logs != nil {
+		if _, err := deps.logs.DeleteByDiscovery(ctx, discoveryID); err != nil {
 			logf.WithError(err).Warn("failed to delete a superseded attempt's split-log rows")
 		}
 	}
 
-	if err := o.discoveryRepo.DeleteByID(ctx, discoveryID); err != nil {
+	if err := deps.discoveries.DeleteByID(ctx, discoveryID); err != nil {
 		logf.WithError(err).Warn("failed to delete a superseded attempt's discovery document; the project may show two results for one run")
 		return
 	}

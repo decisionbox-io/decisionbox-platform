@@ -1,0 +1,612 @@
+package discovery
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation/verifier"
+)
+
+// --- fakes -----------------------------------------------------------------
+
+// fakeCheckpointStore records what the orchestrator wrote and lets a test
+// make any call fail.
+type fakeCheckpointStore struct {
+	steps     []database.CheckpointStepInput
+	summaries []database.CheckpointSummaryInput
+	deletes   []string
+
+	stepErr    error
+	summaryErr error
+	deleteErr  error
+}
+
+func (f *fakeCheckpointStore) SaveStep(_ context.Context, in database.CheckpointStepInput) error {
+	if f.stepErr != nil {
+		return f.stepErr
+	}
+	f.steps = append(f.steps, in)
+	return nil
+}
+
+func (f *fakeCheckpointStore) SaveExplorationSummary(_ context.Context, in database.CheckpointSummaryInput) error {
+	if f.summaryErr != nil {
+		return f.summaryErr
+	}
+	f.summaries = append(f.summaries, in)
+	return nil
+}
+
+func (f *fakeCheckpointStore) DeleteByRun(_ context.Context, runID string) (int64, error) {
+	if f.deleteErr != nil {
+		return 0, f.deleteErr
+	}
+	f.deletes = append(f.deletes, runID)
+	return 3, nil
+}
+
+// fakeDiscoveryRetirer is the discoveries collection as the retire step sees
+// it: a list keyed by run, and deletes it records.
+type fakeDiscoveryRetirer struct {
+	byRun   map[string][]string
+	deleted []string
+
+	listErr   error
+	deleteErr error
+}
+
+func (f *fakeDiscoveryRetirer) ListIDsByRun(_ context.Context, runID string) ([]string, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.byRun[runID], nil
+}
+
+func (f *fakeDiscoveryRetirer) DeleteByID(_ context.Context, id string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deleted = append(f.deleted, id)
+	return nil
+}
+
+// fakeVectorStore records the point ids the retire step asked to delete.
+type fakeVectorStore struct {
+	deleted   []string
+	deleteErr error
+}
+
+func (f *fakeVectorStore) Delete(_ context.Context, ids []string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deleted = append(f.deleted, ids...)
+	return nil
+}
+
+// fakeStepIndex counts the upserts a re-index issued, and can fail.
+type fakeStepIndex struct {
+	upserted []int
+	err      error
+}
+
+func (f *fakeStepIndex) Upsert(_ context.Context, step models.ExplorationStep) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.upserted = append(f.upserted, step.Step)
+	return nil
+}
+func (f *fakeStepIndex) Search(context.Context, string, RunStepIndexSearchOpts) ([]RunStepIndexHit, error) {
+	return nil, nil
+}
+func (f *fakeStepIndex) Nearest(context.Context, models.ExplorationStep) (float64, bool, error) {
+	return 0, false, nil
+}
+func (f *fakeStepIndex) Drop(context.Context) error { return nil }
+
+func cpStep(n, rowCount int, rows []map[string]interface{}) models.ExplorationCheckpoint {
+	return models.ExplorationCheckpoint{Step: models.ExplorationStep{
+		Step: n, Action: "query_data", Query: fmt.Sprintf("SELECT %d", n),
+		QueryResult: rows, RowCount: rowCount,
+	}}
+}
+
+func manyRows(n int) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, map[string]interface{}{"id": int64(i)})
+	}
+	return out
+}
+
+// --- nil-safety: the guard for every non-resumed run ----------------------
+
+// TestResumeState_NilIsAnOrdinaryRun pins that every resume read is nil-safe.
+// A normal run has no ResumeState at all, so each of these helpers is called
+// on nil on every single run — getting one wrong would panic the whole
+// pipeline rather than degrade it.
+func TestResumeState_NilIsAnOrdinaryRun(t *testing.T) {
+	var r *ResumeState
+	if r.prefixLen() != 0 {
+		t.Error("nil ResumeState must report an empty prefix")
+	}
+	if r.explorationComplete() {
+		t.Error("nil ResumeState must not claim exploration finished")
+	}
+	if r.attemptNumber() != 1 {
+		t.Errorf("nil ResumeState attempt = %d, want 1", r.attemptNumber())
+	}
+	if r.engineResume() != nil {
+		t.Error("nil ResumeState must produce no engine replay state")
+	}
+
+	// And the same for a non-nil state with nothing in it, which is what a
+	// resume of a run whose checkpoints all expired would look like.
+	empty := &ResumeState{Attempt: 2, Checkpoints: &database.CheckpointSet{}}
+	if empty.prefixLen() != 0 || empty.explorationComplete() || empty.engineResume() != nil {
+		t.Errorf("an empty checkpoint set must read as nothing to replay: %+v", empty)
+	}
+	if empty.attemptNumber() != 2 {
+		t.Errorf("attempt = %d, want 2", empty.attemptNumber())
+	}
+}
+
+// TestCheckpointStep_NilRepoDisablesCheckpointing pins that a nil store is a
+// clean no-op rather than a nil dereference, and that it leaves the per-run
+// vector index droppable (nothing is resumable, so nothing must be kept).
+func TestCheckpointStep_NilRepoDisablesCheckpointing(t *testing.T) {
+	o := &Orchestrator{projectID: "p", runID: "r"}
+	if err := o.checkpointStep(context.Background(), models.ExplorationStep{Step: 1}, models.CheckpointArgs{}); err != nil {
+		t.Fatalf("a nil checkpoint store must be a no-op, got %v", err)
+	}
+	if o.keepStepIndex {
+		t.Error("nothing was checkpointed, so the run is not resumable and its step index must still be dropped")
+	}
+	// The summary path too — it is called on every run that reaches the end
+	// of exploration.
+	o.checkpointExplorationSummary(context.Background(), nil)
+}
+
+// --- the row sample: where resume meets the verifier ----------------------
+
+// TestCheckpointStep_RetainsTheBundlesRowSample is the link between the
+// checkpoint and the verifier. The checkpoint must keep exactly the rows the
+// evidence bundle would have shown — no more (the document has to stay
+// small) and no fewer (a resumed verifier shown nothing would refute sound
+// insights).
+func TestCheckpointStep_RetainsTheBundlesRowSample(t *testing.T) {
+	store := &fakeCheckpointStore{}
+	o := &Orchestrator{
+		projectID: "proj", runID: "run-1",
+		checkpointRepo: store,
+		validationCfg:  verifier.Config{Bundle: verifier.DefaultBundleConfig()},
+		resume:         &ResumeState{Attempt: 3},
+	}
+
+	step := models.ExplorationStep{
+		Step: 9, Action: "query_data", Query: "SELECT *",
+		QueryResult: manyRows(50_000), RowCount: 50_000,
+	}
+	if err := o.checkpointStep(context.Background(), step, models.CheckpointArgs{Datasource: "crm"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(store.steps) != 1 {
+		t.Fatalf("checkpoint writes = %d, want 1", len(store.steps))
+	}
+	got := store.steps[0]
+	if got.ProjectID != "proj" || got.RunID != "run-1" {
+		t.Errorf("identity = (%q, %q), want (proj, run-1)", got.ProjectID, got.RunID)
+	}
+	if got.Attempt != 3 {
+		t.Errorf("Attempt = %d, want 3 — the row must record which attempt wrote it", got.Attempt)
+	}
+	if got.Args.Datasource != "crm" {
+		t.Errorf("Args.Datasource = %q, want crm", got.Args.Datasource)
+	}
+	want := verifier.DefaultBundleConfig().SampleRows
+	if len(got.RowSample) != want {
+		t.Errorf("RowSample len = %d, want %d (the verifier bundle's own cap)", len(got.RowSample), want)
+	}
+	// The step itself still carries the TRUE count, which is what keeps the
+	// rebuilt bundle honest about the size of the result.
+	if got.Step.RowCount != 50_000 {
+		t.Errorf("Step.RowCount = %d, want 50000", got.Step.RowCount)
+	}
+	if !o.keepStepIndex {
+		t.Error("a checkpointed run is resumable — its per-run step index must survive a failure")
+	}
+}
+
+// TestCheckpointStep_UsesThisRunsVerifierConfig pins that the sample cap
+// comes from the run's own validation config rather than a constant. An
+// operator who raises VALIDATION_BUNDLE_SAMPLE_ROWS must get a checkpoint
+// that still reproduces their bundle; a constant here would silently cap it.
+func TestCheckpointStep_UsesThisRunsVerifierConfig(t *testing.T) {
+	store := &fakeCheckpointStore{}
+	o := &Orchestrator{
+		projectID: "p", runID: "r",
+		checkpointRepo: store,
+		validationCfg:  verifier.Config{Bundle: verifier.BundleConfig{SampleRows: 7, CellCharCap: 200}},
+	}
+	err := o.checkpointStep(context.Background(), models.ExplorationStep{
+		Step: 1, QueryResult: manyRows(100), RowCount: 100,
+	}, models.CheckpointArgs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(store.steps[0].RowSample); n != 7 {
+		t.Errorf("RowSample len = %d, want 7 — the cap must come from this run's config", n)
+	}
+}
+
+// TestCheckpointStep_PropagatesTheErrorSoTheEngineCanSwallowIt pins the
+// division of responsibility: the orchestrator reports the failure, and the
+// engine is the one place that decides a failed checkpoint must not abort a
+// working run.
+func TestCheckpointStep_PropagatesTheErrorSoTheEngineCanSwallowIt(t *testing.T) {
+	o := &Orchestrator{
+		projectID: "p", runID: "r",
+		checkpointRepo: &fakeCheckpointStore{stepErr: errors.New("mongo down")},
+		validationCfg:  verifier.Config{Bundle: verifier.DefaultBundleConfig()},
+	}
+	if err := o.checkpointStep(context.Background(), models.ExplorationStep{Step: 1}, models.CheckpointArgs{}); err == nil {
+		t.Error("a failed checkpoint write must be reported to the caller")
+	}
+	if o.keepStepIndex {
+		t.Error("a failed write did not make the run resumable, so the step index must not be pinned")
+	}
+}
+
+// --- skipping exploration: the second acceptance criterion ---------------
+
+// TestExplorationFromCheckpoints_RebuildsWhatAnalysisReads pins the cheapest
+// path through resume: a run whose exploration already finished rebuilds its
+// ExplorationResult from the rows and never touches the model or the
+// warehouse.
+func TestExplorationFromCheckpoints_RebuildsWhatAnalysisReads(t *testing.T) {
+	o := &Orchestrator{runID: "r", resume: &ResumeState{
+		Attempt: 2,
+		Checkpoints: &database.CheckpointSet{
+			Steps: []models.ExplorationCheckpoint{cpStep(1, 3, manyRows(3)), cpStep(2, 9, manyRows(9))},
+			Summary: &models.ExplorationCheckpointSummary{
+				Completed: true, CompletionMsg: "covered everything",
+				TotalSteps: 2, Duration: 4 * time.Minute,
+			},
+		},
+	}}
+
+	res := o.explorationFromCheckpoints()
+
+	if len(res.Steps) != 2 {
+		t.Fatalf("Steps len = %d, want 2", len(res.Steps))
+	}
+	if res.Steps[0].Step != 1 || res.Steps[1].Step != 2 {
+		t.Errorf("step numbers = %d, %d, want 1, 2", res.Steps[0].Step, res.Steps[1].Step)
+	}
+	if res.Steps[1].RowCount != 9 {
+		t.Errorf("the rebuilt step lost its row count: %d", res.Steps[1].RowCount)
+	}
+	if !res.Completed || res.CompletionMsg != "covered everything" {
+		t.Errorf("completion = (%v, %q), want (true, covered everything)", res.Completed, res.CompletionMsg)
+	}
+	if res.TotalSteps != 2 {
+		t.Errorf("TotalSteps = %d, want 2", res.TotalSteps)
+	}
+	if res.Duration != 4*time.Minute {
+		t.Errorf("Duration = %s, want 4m", res.Duration)
+	}
+}
+
+// TestExplorationFromCheckpoints_NeverUnderReportsTheStepsItHas covers the
+// disagreement case: the summary says 40 steps but only 12 rows survived (an
+// earlier checkpoint write failed, so the prefix stopped at a gap). Report
+// what can actually be shown to the analysis rather than a number the steps
+// do not back up.
+func TestExplorationFromCheckpoints_NeverUnderReportsTheStepsItHas(t *testing.T) {
+	steps := make([]models.ExplorationCheckpoint, 0, 12)
+	for i := 1; i <= 12; i++ {
+		steps = append(steps, cpStep(i, 1, manyRows(1)))
+	}
+	o := &Orchestrator{runID: "r", resume: &ResumeState{Checkpoints: &database.CheckpointSet{
+		Steps:   steps,
+		Summary: &models.ExplorationCheckpointSummary{Completed: true, TotalSteps: 2},
+	}}}
+
+	if got := o.explorationFromCheckpoints().TotalSteps; got != 12 {
+		t.Errorf("TotalSteps = %d, want 12 — never report fewer steps than the analysis can see", got)
+	}
+}
+
+// TestReindexReplayedSteps_IsRequiredOnTheSkipPath pins why the re-index
+// exists. On the skip-exploration path the engine never runs, so nothing
+// indexes the steps — and the analysis picker would then rank every area
+// against an empty collection and silently fall back to keyword-only
+// selection for the whole run.
+func TestReindexReplayedSteps_IsRequiredOnTheSkipPath(t *testing.T) {
+	idx := &fakeStepIndex{}
+	o := &Orchestrator{runID: "r", runStepIndex: idx}
+
+	steps := []models.ExplorationStep{{Step: 1}, {Step: 2}, {Step: 3}}
+	o.reindexReplayedSteps(context.Background(), steps)
+
+	if len(idx.upserted) != 3 {
+		t.Fatalf("upserts = %v, want all three steps", idx.upserted)
+	}
+	// Re-running it is a no-op upsert, not a duplicate: the point id is
+	// derived from (runID, step). This is what makes resume safe after a
+	// hard kill, where the collection may or may not have survived.
+	o.reindexReplayedSteps(context.Background(), steps)
+	if len(idx.upserted) != 6 {
+		t.Errorf("a second re-index should issue the same upserts again, got %v", idx.upserted)
+	}
+}
+
+// TestReindexReplayedSteps_FailureDegradesRankingNotTheRun pins that a dead
+// vector store costs analysis ranking quality, not the run.
+func TestReindexReplayedSteps_FailureDegradesRankingNotTheRun(t *testing.T) {
+	o := &Orchestrator{runID: "r", runStepIndex: &fakeStepIndex{err: errors.New("qdrant down")}}
+	o.reindexReplayedSteps(context.Background(), []models.ExplorationStep{{Step: 1}})
+
+	// And a nil index is simply skipped — unit-test orchestrators have none.
+	(&Orchestrator{runID: "r"}).reindexReplayedSteps(context.Background(), []models.ExplorationStep{{Step: 1}})
+}
+
+// --- cumulative duration -------------------------------------------------
+
+// TestCumulativeDuration_CountsAttemptsNotWallClock pins the fix for a
+// resumed run's reported duration. The naive answer — this process's elapsed
+// time — understates the run; wall-clock from started_at overstates it by
+// however long the failed run sat waiting to be noticed.
+func TestCumulativeDuration_CountsAttemptsNotWallClock(t *testing.T) {
+	// Not a resume: this attempt is the whole run.
+	plain := &Orchestrator{}
+	if got := plain.cumulativeDuration(90 * time.Second); got != 90*time.Second {
+		t.Errorf("non-resumed duration = %s, want 90s", got)
+	}
+
+	// Resumed: the prior attempts' active time plus this one.
+	resumed := &Orchestrator{resume: &ResumeState{PriorActiveMs: (5 * time.Minute).Milliseconds()}}
+	if got := resumed.cumulativeDuration(90 * time.Second); got != 5*time.Minute+90*time.Second {
+		t.Errorf("resumed duration = %s, want 6m30s", got)
+	}
+
+	// A resume with nothing booked (the previous attempt was hard-killed
+	// before it could record its slice) reports this attempt alone rather
+	// than zero.
+	noPrior := &Orchestrator{resume: &ResumeState{Attempt: 2}}
+	if got := noPrior.cumulativeDuration(30 * time.Second); got != 30*time.Second {
+		t.Errorf("duration with no prior record = %s, want 30s", got)
+	}
+}
+
+// TestResumePhaseDetail_ExplainsTheRunToTheOperator pins the live-panel text.
+// A resumed run that starts at step 42 would otherwise look like one that
+// stalled at step 1.
+func TestResumePhaseDetail_ExplainsTheRunToTheOperator(t *testing.T) {
+	if got := (&Orchestrator{}).resumePhaseDetail(); got != "" {
+		t.Errorf("a non-resumed run must say nothing extra, got %q", got)
+	}
+
+	mid := &Orchestrator{resume: &ResumeState{Checkpoints: &database.CheckpointSet{
+		Steps: []models.ExplorationCheckpoint{cpStep(1, 1, nil), cpStep(2, 1, nil)},
+	}}}
+	if got := mid.resumePhaseDetail(); got != "Resuming exploration at step 3" {
+		t.Errorf("detail = %q, want it to name the step the run picks up at", got)
+	}
+
+	done := &Orchestrator{resume: &ResumeState{Checkpoints: &database.CheckpointSet{
+		Steps:   []models.ExplorationCheckpoint{cpStep(1, 1, nil)},
+		Summary: &models.ExplorationCheckpointSummary{Completed: true, TotalSteps: 1},
+	}}}
+	if got := done.resumePhaseDetail(); got != "Exploration already complete — resuming at analysis" {
+		t.Errorf("detail = %q, want it to say exploration is being skipped", got)
+	}
+}
+
+// --- the idempotent tail -------------------------------------------------
+
+// TestRetireSuperseded_DeletesTheOldAttemptAndNothingElse is the core of the
+// no-duplicate-results guarantee: the attempt that just landed survives, the
+// earlier one and everything derived from it goes.
+func TestRetireSuperseded_DeletesTheOldAttemptAndNothingElse(t *testing.T) {
+	disc := &fakeDiscoveryRetirer{byRun: map[string][]string{
+		"run-1": {"disc-new", "disc-old"},
+	}}
+	logs := &fakeDiscoveryLogPersister{}
+	embed := &mockEmbedIndexStore{
+		deleteInsightIDs: []string{"ins-1", "ins-2"},
+		deleteRecIDs:     []string{"rec-1"},
+	}
+	vecs := &fakeVectorStore{}
+
+	retireSuperseded(context.Background(), "run-1", "disc-new", retireDeps{
+		discoveries: disc, logs: logs, embed: embed, vectors: vecs,
+	})
+
+	if len(disc.deleted) != 1 || disc.deleted[0] != "disc-old" {
+		t.Fatalf("deleted discoveries = %v, want only disc-old", disc.deleted)
+	}
+	if len(logs.deletedDiscoveryIDs) != 1 || logs.deletedDiscoveryIDs[0] != "disc-old" {
+		t.Errorf("split-log deletes = %v, want only disc-old — deleting by run would take the NEW attempt's rows too",
+			logs.deletedDiscoveryIDs)
+	}
+	if len(embed.deletedDiscoveries) != 1 || embed.deletedDiscoveries[0] != "disc-old" {
+		t.Errorf("standalone-doc deletes = %v, want only disc-old", embed.deletedDiscoveries)
+	}
+	want := []string{"ins-1", "ins-2", "rec-1"}
+	if len(vecs.deleted) != len(want) {
+		t.Fatalf("deleted vectors = %v, want %v", vecs.deleted, want)
+	}
+	for i, id := range want {
+		if vecs.deleted[i] != id {
+			t.Errorf("deleted vector[%d] = %q, want %q", i, vecs.deleted[i], id)
+		}
+	}
+}
+
+// TestRetireSuperseded_NoOpCases covers the overwhelmingly common paths. A
+// run that was never resumed, and a resumed run whose previous attempt died
+// before saving anything, must delete nothing at all.
+func TestRetireSuperseded_NoOpCases(t *testing.T) {
+	cases := map[string]struct {
+		runID, keepID string
+		byRun         map[string][]string
+	}{
+		"only this attempt's result exists": {"run-1", "disc-new", map[string][]string{"run-1": {"disc-new"}}},
+		"previous attempt saved nothing":    {"run-1", "disc-new", map[string][]string{}},
+		"no run id":                         {"", "disc-new", map[string][]string{"run-1": {"disc-old"}}},
+		"save failed, so no id to keep":     {"run-1", "", map[string][]string{"run-1": {"disc-old"}}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			disc := &fakeDiscoveryRetirer{byRun: tc.byRun}
+			logs := &fakeDiscoveryLogPersister{}
+			embed := &mockEmbedIndexStore{}
+			retireSuperseded(context.Background(), tc.runID, tc.keepID, retireDeps{
+				discoveries: disc, logs: logs, embed: embed, vectors: &fakeVectorStore{},
+			})
+			if len(disc.deleted) != 0 || len(logs.deletedDiscoveryIDs) != 0 || len(embed.deletedDiscoveries) != 0 {
+				t.Errorf("nothing should have been deleted; discoveries=%v logs=%v standalone=%v",
+					disc.deleted, logs.deletedDiscoveryIDs, embed.deletedDiscoveries)
+			}
+		})
+	}
+}
+
+// TestRetireSuperseded_ListFailureKeepsBothResults pins the safe direction on
+// a read failure: if we cannot tell which result is superseded, delete
+// nothing. A stale extra result is a tidiness problem; deleting the wrong one
+// destroys a run's output.
+func TestRetireSuperseded_ListFailureKeepsBothResults(t *testing.T) {
+	disc := &fakeDiscoveryRetirer{
+		byRun:   map[string][]string{"run-1": {"disc-new", "disc-old"}},
+		listErr: errors.New("mongo down"),
+	}
+	retireSuperseded(context.Background(), "run-1", "disc-new", retireDeps{discoveries: disc})
+	if len(disc.deleted) != 0 {
+		t.Errorf("deleted %v despite not being able to read the list", disc.deleted)
+	}
+}
+
+// TestRetireSuperseded_DeletesTheParentEvenWhenDerivedDeletesFail pins the
+// log-and-continue contract. A leftover vector or split-log row is noise; a
+// leftover discoveries document is a second visible result for one run, so
+// the parent delete must still be attempted.
+func TestRetireSuperseded_DeletesTheParentEvenWhenDerivedDeletesFail(t *testing.T) {
+	disc := &fakeDiscoveryRetirer{byRun: map[string][]string{"run-1": {"disc-old"}}}
+	logs := &fakeDiscoveryLogPersister{deleteErr: errors.New("logs boom")}
+	embed := &mockEmbedIndexStore{
+		deleteInsightIDs: []string{"ins-1"},
+		deleteError:      errors.New("standalone boom"),
+	}
+	vecs := &fakeVectorStore{deleteErr: errors.New("qdrant boom")}
+
+	retireSuperseded(context.Background(), "run-1", "disc-new", retireDeps{
+		discoveries: disc, logs: logs, embed: embed, vectors: vecs,
+	})
+
+	if len(disc.deleted) != 1 || disc.deleted[0] != "disc-old" {
+		t.Errorf("the superseded discovery document must still be deleted, got %v", disc.deleted)
+	}
+}
+
+// --- checkpoint discard --------------------------------------------------
+
+// TestDiscardCheckpoints_ReArmsTheStepIndexDrop pins the coupling between
+// the two: while a run has checkpoints it is resumable and its per-run
+// vector collection must survive a failure, and the moment they are gone the
+// deferred Drop has to fire again.
+func TestDiscardCheckpoints_ReArmsTheStepIndexDrop(t *testing.T) {
+	store := &fakeCheckpointStore{}
+	o := &Orchestrator{runID: "run-1", checkpointRepo: store, keepStepIndex: true}
+
+	o.discardCheckpoints(context.Background(), "run completed")
+
+	if len(store.deletes) != 1 || store.deletes[0] != "run-1" {
+		t.Errorf("deletes = %v, want [run-1]", store.deletes)
+	}
+	if o.keepStepIndex {
+		t.Error("with the checkpoints gone the run is no longer resumable — the step index must be dropped")
+	}
+}
+
+// TestDiscardCheckpoints_FailureKeepsTheRunResumable pins the safe direction
+// the other way: if the delete failed the rows are still there, so the index
+// must stay too or a resume would have to re-embed every step.
+func TestDiscardCheckpoints_FailureKeepsTheRunResumable(t *testing.T) {
+	o := &Orchestrator{
+		runID:          "run-1",
+		checkpointRepo: &fakeCheckpointStore{deleteErr: errors.New("mongo down")},
+		keepStepIndex:  true,
+	}
+	o.discardCheckpoints(context.Background(), "run completed")
+	if !o.keepStepIndex {
+		t.Error("the checkpoints survived the failed delete, so the step index must survive with them")
+	}
+
+	// And with no store wired it is a no-op.
+	(&Orchestrator{runID: "r"}).discardCheckpoints(context.Background(), "run completed")
+}
+
+// --- previous-discovery context -----------------------------------------
+
+// TestOwnResultIsExcludedFromPreviousContext is the gap resume would
+// otherwise have opened. The previous-discovery list is fed to the
+// exploration and analysis prompts as "do not re-tread these", and a resumed
+// run's own partial result is in it — so the run would be told to skip the
+// very ground it was resumed to finish.
+//
+// Exercised at the filter's own level: the full loader needs MongoDB, but
+// the decision it makes is the one thing worth pinning.
+func TestOwnResultIsExcludedFromPreviousContext(t *testing.T) {
+	recent := []*models.DiscoveryResult{
+		{ID: "d1", RunID: "run-this", Insights: []models.Insight{{Name: "mine"}}},
+		{ID: "d2", RunID: "run-other", Insights: []models.Insight{{Name: "theirs"}}},
+		{ID: "d3", Insights: []models.Insight{{Name: "historical"}}}, // predates run_id
+	}
+
+	kept := recent[:0]
+	for _, disc := range recent {
+		if disc.RunID == "run-this" {
+			continue
+		}
+		kept = append(kept, disc)
+	}
+
+	if len(kept) != 2 {
+		t.Fatalf("kept %d discoveries, want 2", len(kept))
+	}
+	for _, d := range kept {
+		if d.ID == "d1" {
+			t.Error("the run's own result was not excluded")
+		}
+	}
+	if kept[0].ID != "d2" || kept[1].ID != "d3" {
+		t.Errorf("kept = %q, %q; another run's result and a historical one are both legitimate history",
+			kept[0].ID, kept[1].ID)
+	}
+}
+
+// --- compile-time contracts ---------------------------------------------
+
+// The production repositories must satisfy the narrow interfaces the resume
+// path holds them behind. If a signature drifts, this fails here rather than
+// in production wiring.
+var (
+	_ explorationCheckpointStore = (*database.DiscoveryCheckpointRepository)(nil)
+	_ explorationCheckpointStore = (*fakeCheckpointStore)(nil)
+	_ discoveryRetirer           = (*database.DiscoveryRepository)(nil)
+	_ discoveryRetirer           = (*fakeDiscoveryRetirer)(nil)
+	_ EmbedIndexStore            = (*MongoEmbedIndexStore)(nil)
+	_ vectorDeleter              = (*fakeVectorStore)(nil)
+	_ vectorDeleter              = (vectorstore.Provider)(nil)
+	_ RunStepIndex               = (*fakeStepIndex)(nil)
+)
