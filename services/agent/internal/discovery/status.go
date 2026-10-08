@@ -11,11 +11,21 @@ import (
 )
 
 // terminalOutcome is what a terminal run-status write tells the caller about
-// ownership. Three states, because a boolean conflated two of them and the
-// conflation destroyed data: a write that MATCHED NOTHING and a write that
-// ERRORED both report "not claimed", and the only correct response to the
-// first is to delete this attempt's output while the only correct response to
-// the second is to delete nothing at all.
+// ownership, and the one thing it governs is whether this attempt may delete
+// a result — its own, or another attempt's.
+//
+// Three states, because a boolean could not carry that. "Not claimed" has
+// several causes with opposite correct responses, and only ONE of them
+// licenses deleting this attempt's own output: positive evidence that a
+// newer attempt owns the run. A write that errored does not establish that.
+// Neither does a write that simply matched nothing — the filter is fenced on
+// the attempt AND a non-terminal status, so an already-terminal run owned by
+// this very attempt matches nothing too.
+//
+// Both of those mistakes have been made here, and each one destroyed a
+// complete discovery that nobody had superseded. Hence the rule the three
+// states encode: never delete your own output without being told who else
+// owns the run.
 type terminalOutcome int
 
 const (
@@ -23,16 +33,23 @@ const (
 	// retire the other attempts' results.
 	terminalClaimed terminalOutcome = iota
 
-	// terminalSuperseded: the write matched nothing because the run has moved
-	// to a newer attempt. This attempt must delete its OWN output and exit
-	// quietly — the run is alive and owned by someone else.
+	// terminalSuperseded: the run has moved to a newer attempt, established
+	// by a positive ownership read and not merely by the write failing to
+	// match. This attempt must delete its OWN output and exit quietly — the
+	// run is alive and owned by someone else.
 	terminalSuperseded
 
-	// terminalUnknown: the write errored, so ownership is undetermined.
-	// Delete nothing, claim nothing, and report the failure honestly. The
-	// run document stays non-terminal and the API's sweeper will mark it;
-	// the result stays on disk, reachable by run_id. Guessing either way
-	// here is how a Mongo blip turns into a destroyed result.
+	// terminalUnknown: this attempt could not be shown to have lost the run,
+	// but did not claim it either. Delete nothing, claim nothing, and report
+	// the failure honestly; the result stays on disk, reachable by run_id.
+	//
+	// Two things land here, and they share every consequence: the write
+	// errored, so ownership is undetermined; or the write matched nothing
+	// while this attempt still owns the run, which means the run document
+	// was already terminal — the API's startup sweep marking in-flight runs
+	// `failed` without reaping their agents. Guessing supersession in
+	// either case is how a Mongo blip or an API restart turns into a
+	// destroyed result.
 	terminalUnknown
 )
 
@@ -410,12 +427,48 @@ func (s *StatusReporter) Complete(ctx context.Context, discoveryID string, insig
 		return terminalUnknown
 	}
 	if !applied {
-		logger.WithFields(logger.Fields{
-			"run_id": s.runID, "attempt": s.attempt,
-		}).Warn("this attempt no longer owns the run; its completion was not recorded")
-		return terminalSuperseded
+		return s.classifyUnappliedTerminal(ctx, "completion")
 	}
 	return terminalClaimed
+}
+
+// classifyUnappliedTerminal decides what a terminal write that matched
+// nothing actually proved.
+//
+// It is NOT proof of supersession on its own, and treating it as such
+// destroys data. The write is fenced on two things — this attempt AND a
+// non-terminal status — so it also matches nothing when this attempt still
+// owns a run that has already been marked terminal by somebody else. The
+// API's startup sweep does exactly that, routinely: it marks in-flight runs
+// `failed` after a restart WITHOUT reaping their agents, so a perfectly
+// healthy agent finishes, saves its discovery, finds its own terminal write
+// unmatched, and — before this — concluded it had been superseded and
+// deleted the result it had just written. Nobody had resumed anything.
+//
+// So supersession now needs positive evidence: the run must no longer be on
+// this attempt. One indexed read, once per run, and only when the write did
+// not land. The ownership read deliberately does not filter on status, which
+// is what lets it tell the two cases apart.
+func (s *StatusReporter) classifyUnappliedTerminal(ctx context.Context, what string) terminalOutcome {
+	owns, err := s.repo.OwnsRun(ctx, s.runID, s.attempt)
+	if err != nil {
+		logger.WithError(err).WithField("run_id", s.runID).Warn("could not establish whether this attempt still owns the run; nothing will be cleaned up")
+		return terminalUnknown
+	}
+	if owns {
+		// Still ours, so there is no newer attempt to defer to and nothing
+		// to retire. The run document is already terminal — our own outcome
+		// is the one that did not get recorded, which is worth saying
+		// loudly, but the result stays on disk reachable by run_id.
+		logger.WithFields(logger.Fields{
+			"run_id": s.runID, "attempt": s.attempt,
+		}).Warn("the run was already terminal when this attempt tried to record its " + what + "; the outcome was not recorded, but this attempt still owns the run so its result is kept")
+		return terminalUnknown
+	}
+	logger.WithFields(logger.Fields{
+		"run_id": s.runID, "attempt": s.attempt,
+	}).Warn("this attempt no longer owns the run; its " + what + " was not recorded")
+	return terminalSuperseded
 }
 
 // MarkExplorationCheckpoint records that this run now has a checkpoint for
@@ -532,10 +585,7 @@ func (s *StatusReporter) Fail(ctx context.Context, discoveryID, errMsg string) t
 		return terminalUnknown
 	}
 	if !applied {
-		logger.WithFields(logger.Fields{
-			"run_id": s.runID, "attempt": s.attempt,
-		}).Warn("this attempt no longer owns the run; its failure was not recorded")
-		return terminalSuperseded
+		return s.classifyUnappliedTerminal(ctx, "failure")
 	}
 	return terminalClaimed
 }

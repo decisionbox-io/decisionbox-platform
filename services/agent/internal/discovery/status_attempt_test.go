@@ -369,3 +369,68 @@ func TestStatusReporter_AWriteFailureNeverTakesTheRunDown(t *testing.T) {
 		t.Errorf("a failed Fail = %v, want terminalUnknown", got)
 	}
 }
+
+// TestStatusReporter_AnUnmatchedTerminalWriteIsNotProofOfSupersession is the
+// rule that keeps a finished discovery on disk.
+//
+// A terminal write is fenced on this attempt AND a non-terminal status, so it
+// matches nothing in two quite different situations. Only one of them —
+// another attempt owns the run — licenses deleting this attempt's own output.
+// The other is the API's startup sweep, which marks in-flight runs `failed`
+// after a restart WITHOUT reaping their agents: the agent runs on, finishes,
+// saves its discovery, and finds its own terminal write unmatched. Reading
+// that as supersession had it delete a complete result nobody superseded.
+func TestStatusReporter_AnUnmatchedTerminalWriteIsNotProofOfSupersession(t *testing.T) {
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		// owns/ownsErr are what the ownership read says once the terminal
+		// write has already failed to match.
+		owns    bool
+		ownsErr error
+		want    terminalOutcome
+		why     string
+	}{
+		{
+			name: "already terminal, still ours",
+			owns: true,
+			want: terminalUnknown,
+			why:  "the sweep marked the run failed while this attempt was still working; its result must be kept",
+		},
+		{
+			name: "a newer attempt owns the run",
+			owns: false,
+			want: terminalSuperseded,
+			why:  "positive evidence of supersession is the one case that licenses retiring this attempt's own output",
+		},
+		{
+			name:    "ownership unreadable",
+			ownsErr: errors.New("mongo is having a moment"),
+			want:    terminalUnknown,
+			why:     "guessing either way turns a read blip into a destroyed result",
+		},
+	}
+
+	for _, tc := range cases {
+		for _, write := range []string{"Complete", "Fail"} {
+			t.Run(tc.name+"/"+write, func(t *testing.T) {
+				doc := newFakeRunDoc()
+				doc.applied = false // the terminal write matched nothing
+				doc.owns = tc.owns
+				doc.ownsErr = tc.ownsErr
+				r := reporterFor(doc, 2)
+
+				var got terminalOutcome
+				if write == "Complete" {
+					got = r.Complete(ctx, "disc-1", 3)
+				} else {
+					got = r.Fail(ctx, "disc-1", "boom")
+				}
+				if got != tc.want {
+					t.Errorf("%s returned %v, want %v — %s", write, got, tc.want, tc.why)
+				}
+			})
+		}
+	}
+}
