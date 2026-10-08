@@ -276,6 +276,20 @@ func (e *ExplorationEngine) replayPrefix(ctx context.Context, conversation *Conv
 			out.CompletionMsg = cp.Args.CompletionReason
 		}
 
+		// Checkpoint first, for the reason the live loop checkpoints first:
+		// the ownership probe rides on a write this attempt makes anyway,
+		// and the re-index below is keyed on run_id alone. A superseded
+		// attempt that re-indexed before asking would write into the live
+		// attempt's per-run collection. The content it writes is the same
+		// content — both attempts replay from the same fenced checkpoint row
+		// — so the damage is one redundant upsert rather than a corrupted
+		// point, but the asymmetry with the live path is not worth keeping,
+		// and the next shared write added here would not be so forgiving.
+		if e.checkpoint(ctx, step, cp.Args) {
+			out.Superseded = true
+			return out
+		}
+
 		// Re-indexing a replayed step is exact and idempotent: the embedded
 		// text is the step's purpose plus its query, both checkpointed, and
 		// the point id is derived from (runID, step). So this is a no-op
@@ -297,10 +311,24 @@ func (e *ExplorationEngine) replayPrefix(ctx context.Context, conversation *Conv
 			// nothing.
 			e.recordIndexOutcome(err == nil)
 		}
-		if e.checkpoint(ctx, step, cp.Args) {
-			out.Superseded = true
-			return out
-		}
+		// Index HEALTH is restored above; the novelty OBSERVATIONS
+		// deliberately are not, so a resumed run re-establishes its judged
+		// steps from scratch.
+		//
+		// They cannot be restored honestly. A novelty judgement is a
+		// neighbour search against the index as it stood at that step, and
+		// Nearest excludes only the step itself — not the steps that came
+		// after it. When the per-run collection survived the crash it
+		// already holds the whole previous prefix, so judging replayed step
+		// 3 would score it against steps 4..N and call it a repeat of work
+		// that, in the run being replayed, had not happened yet. The
+		// stopping rule acting on that is exactly the failure the comment
+		// above exists to prevent, with the sign flipped.
+		//
+		// The cost of resetting is bounded and in the safe direction: the
+		// rule can only ever LENGTHEN a run, so a resumed run may spend a
+		// few extra steps re-proving it has run out of new ground, and can
+		// never end early on evidence it does not have.
 	}
 
 	out.Steps = steps
