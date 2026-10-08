@@ -25,11 +25,15 @@ func TestReservationOutcomeFor_DoesNotCreditAResumeToTheAttemptItSuperseded(t *t
 	completedAt := resumedAt.Add(2 * time.Hour)
 
 	got := reservationOutcomeFor(&models.DiscoveryRun{
-		ID:            "run-1",
-		Status:        "completed", // the RESUMED attempt succeeded
-		Attempt:       2,
-		LastResumedAt: &resumedAt,
-		CompletedAt:   &completedAt,
+		ID:     "run-1",
+		Status: "completed", // the RESUMED attempt succeeded
+		// The reservation the FIRST attempt opened, still on the run
+		// because the resume's confirm of it failed. Always present here:
+		// ListTerminalWithReservation is what selects these runs.
+		PolicyReservationID: "res-attempt-1",
+		Attempt:             2,
+		LastResumedAt:       &resumedAt,
+		CompletedAt:         &completedAt,
 	})
 
 	if got.Status == "success" {
@@ -73,7 +77,8 @@ func TestReservationOutcomeFor_FirstAttemptKeepsItsOwnOutcome(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got := reservationOutcomeFor(&models.DiscoveryRun{
 				ID: "run-1", Status: tc.status, Attempt: tc.attempt,
-				Error: tc.runErr, CompletedAt: &completedAt,
+				PolicyReservationID: "res-run-1",
+				Error:               tc.runErr, CompletedAt: &completedAt,
 			})
 			if got.Status != tc.wantStatus {
 				t.Errorf("status = %q, want %q", got.Status, tc.wantStatus)
@@ -95,7 +100,8 @@ func TestReservationOutcomeFor_SupersededWithNoResumeTimeStillEnds(t *testing.T)
 	completedAt := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 
 	got := reservationOutcomeFor(&models.DiscoveryRun{
-		ID: "run-1", Status: "failed", Attempt: 3, CompletedAt: &completedAt,
+		ID: "run-1", Status: "failed", Attempt: 3,
+		PolicyReservationID: "res-attempt-1", CompletedAt: &completedAt,
 	})
 	if got.Status != "failure" {
 		t.Errorf("status = %q, want failure", got.Status)

@@ -128,6 +128,25 @@ type DiscoveryRun struct {
 	CompletionHooksFiredAt *time.Time `bson:"completion_hooks_fired_at,omitempty" json:"-"`
 }
 
+// SupersededByResumeReason is the outcome recorded against a plan reservation
+// opened by an attempt that a resume has since superseded. One definition so
+// the resume path, the background confirmer and the cancel path cannot drift
+// into reporting the same thing three ways.
+const SupersededByResumeReason = "attempt superseded by a resume"
+
+// ReservationBelongsToASupersededAttempt reports whether the reservation
+// still recorded on this run was opened by an attempt a resume replaced.
+//
+// Knowable without storing anything extra because a resume opens NO
+// reservation of its own: one still present on a run past its first attempt
+// can only have been opened by an earlier attempt. The resume path confirms
+// and clears it, so finding one here means that confirm failed — and
+// whatever closes it afterwards must report the SUPERSEDED attempt's
+// outcome, not the outcome of whatever the run went on to do.
+func (r *DiscoveryRun) ReservationBelongsToASupersededAttempt() bool {
+	return r.PolicyReservationID != "" && r.Attempt > 1
+}
+
 // RunParams is the shape of one discovery run: the budget and scope the
 // caller asked for.
 //

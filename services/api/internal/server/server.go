@@ -493,10 +493,10 @@ func policyStatusFromDB(dbStatus string) string {
 // the retry — and a retry that reported the wrong outcome would be worse
 // than the failure it is recovering from.
 func reservationOutcomeFor(run *models.DiscoveryRun) policy.RunOutcome {
-	if run.Attempt > 1 {
+	if run.ReservationBelongsToASupersededAttempt() {
 		outcome := policy.RunOutcome{
 			Status: "failure",
-			Error:  "attempt superseded by a resume",
+			Error:  models.SupersededByResumeReason,
 		}
 		// The moment the attempt was superseded is the closest thing to its
 		// end time; it never wrote one of its own.

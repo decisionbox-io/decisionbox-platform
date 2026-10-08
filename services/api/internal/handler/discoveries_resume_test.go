@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
@@ -1003,4 +1004,147 @@ func TestResumeRun_ACancelledRequestCannotStrandTheRun(t *testing.T) {
 			t.Errorf("run error = %q, want the lost-race reason", run.Error)
 		}
 	})
+}
+
+// slowRunRepo wraps the mock so one named operation takes long enough to
+// exhaust a cleanup budget, which is how the shared-deadline hazard is
+// reproduced without sleeping for thirty seconds.
+type slowRunRepo struct {
+	*mockRunRepo
+	// blockRecheck makes the POST-FLIP GetOtherRunningByProject burn its
+	// context rather than answer — a slow Mongo read in the one check that
+	// bounds concurrency for a resume.
+	//
+	// The second call, specifically. The pre-flip check runs on the bare
+	// request context, which httptest never cancels, so blocking that one
+	// just hangs and tests nothing: the hazard being reproduced lives
+	// entirely after the flip.
+	blockRecheck bool
+	calls        int
+}
+
+func (s *slowRunRepo) GetOtherRunningByProject(ctx context.Context, projectID, excludeRunID string) (*models.DiscoveryRun, error) {
+	s.calls++
+	if s.blockRecheck && s.calls >= 2 {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return s.mockRunRepo.GetOtherRunningByProject(ctx, projectID, excludeRunID)
+}
+
+// TestResumeRun_ASlowRecheckDoesNotStarveTheStandDown is the hazard a single
+// shared cleanup budget creates.
+//
+// The post-flip recheck and the stand-down that recovers from its failure ran
+// on one context with one deadline. So the recheck timing out — a slow Mongo
+// read is exactly the case it was added for — handed the stand-down an
+// already-expired context, FailAttempt could not write, and the run was left
+// `running` with no agent: the very outcome the detachment exists to prevent,
+// reachable through the detachment itself.
+func TestResumeRun_ASlowRecheckDoesNotStarveTheStandDown(t *testing.T) {
+	// Shrink the budget so the starvation happens in milliseconds; the bug
+	// is about one operation consuming another's allowance, not about 30s.
+	orig := cleanupTimeout
+	cleanupTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { cleanupTimeout = orig })
+
+	f := newResumeFixture(t)
+	slow := &slowRunRepo{mockRunRepo: f.runs, blockRecheck: true}
+	// Rebuild the handler over the wrapper, keeping the same underlying runs.
+	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), f.projs, slow, nil, nil, nil, f.runner).
+		WithCheckpoints(f.cps)
+
+	req := httptest.NewRequest("POST", "/api/v1/runs/run-1/resume", nil)
+	req.SetPathValue("runId", "run-1")
+	w := httptest.NewRecorder()
+	h.ResumeRun(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (the recheck could not be completed); body = %s", w.Code, w.Body.String())
+	}
+	if n := len(f.runner.calls()); n != 0 {
+		t.Errorf("spawned %d agents without a completed concurrency check", n)
+	}
+	// The whole point: the stand-down still landed, on its own budget.
+	run := f.runs.runs["run-1"]
+	if run.Status == "running" {
+		t.Fatal("the run is stranded `running` with no agent — the stand-down inherited the recheck's exhausted deadline")
+	}
+	if run.Status != "failed" {
+		t.Errorf("run status = %q, want failed so the run stays resumable", run.Status)
+	}
+}
+
+// TestCancelRun_DoesNotRecordACancelAgainstASupersededAttempt is the other
+// half of a fix I previously applied in only one place.
+//
+// The resume path confirms the superseded attempt's reservation and clears
+// it; a reservation still present means that confirm failed. The background
+// confirmer was taught to close such a reservation as the superseded
+// attempt's failure rather than deriving the outcome from the run document —
+// but CancelRun derives its own, and closed it as `cancelled`. So which
+// outcome cloud accounting recorded for the dead attempt depended on whether
+// an operator cancelled before the confirmer next ticked.
+func TestCancelRun_DoesNotRecordACancelAgainstASupersededAttempt(t *testing.T) {
+	ck := &meteringChecker{}
+	swapChecker(t, ck)
+
+	projs := newMockProjectRepo()
+	projs.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
+	runs := newMockRunRepo()
+	// A resumed run still carrying the previous attempt's reservation.
+	runs.runs["run-1"] = &models.DiscoveryRun{
+		ID: "run-1", ProjectID: "p1", Status: "running",
+		Attempt: 2, PolicyReservationID: "res-attempt-1",
+	}
+	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projs, runs, nil, nil, nil, &recordingRunner{})
+
+	req := httptest.NewRequest("POST", "/api/v1/runs/run-1/cancel", nil)
+	req.SetPathValue("runId", "run-1")
+	w := httptest.NewRecorder()
+	h.CancelRun(w, req)
+
+	ck.mu.Lock()
+	confirms := append([]policy.RunOutcome(nil), ck.confirms...)
+	ck.mu.Unlock()
+
+	if len(confirms) != 1 {
+		t.Fatalf("confirmed %d reservations, want 1", len(confirms))
+	}
+	if confirms[0].Status == "cancelled" {
+		t.Error("this cancellation was recorded against the reservation of an attempt a resume had already superseded")
+	}
+	if confirms[0].Status != "failure" || confirms[0].Error != models.SupersededByResumeReason {
+		t.Errorf("outcome = %+v, want the superseded-attempt failure", confirms[0])
+	}
+}
+
+// TestCancelRun_RecordsACancelForTheRunsOwnReservation is the ordinary case,
+// which must be untouched: a first-attempt run's reservation is its own, so
+// cancelling it is exactly what happened.
+func TestCancelRun_RecordsACancelForTheRunsOwnReservation(t *testing.T) {
+	ck := &meteringChecker{}
+	swapChecker(t, ck)
+
+	projs := newMockProjectRepo()
+	projs.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
+	runs := newMockRunRepo()
+	runs.runs["run-1"] = &models.DiscoveryRun{
+		ID: "run-1", ProjectID: "p1", Status: "running",
+		Attempt: 1, PolicyReservationID: "res-run-1",
+	}
+	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projs, runs, nil, nil, nil, &recordingRunner{})
+
+	req := httptest.NewRequest("POST", "/api/v1/runs/run-1/cancel", nil)
+	req.SetPathValue("runId", "run-1")
+	w := httptest.NewRecorder()
+	h.CancelRun(w, req)
+
+	ck.mu.Lock()
+	confirms := append([]policy.RunOutcome(nil), ck.confirms...)
+	ck.mu.Unlock()
+
+	if len(confirms) != 1 || confirms[0].Status != "cancelled" {
+		t.Errorf("confirms = %+v, want a single cancelled outcome", confirms)
+	}
 }
