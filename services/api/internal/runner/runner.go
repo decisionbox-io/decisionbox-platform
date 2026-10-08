@@ -104,9 +104,16 @@ type RunOptions struct {
 	// is an ordinary run.
 	Resume bool
 
-	// Attempt is this attempt's 1-based number. Only the Kubernetes runner
-	// reads it, to keep the Job name unique across attempts of the same
-	// run — see KubernetesRunner.Run. 0 and 1 both mean "first attempt".
+	// Attempt is this attempt's 1-based number. 0 and 1 both mean "first
+	// attempt".
+	//
+	// Read by the runners that have to tell one attempt of a run from
+	// another, because a resume re-enters the SAME run id while the previous
+	// attempt's workload can still be alive: Kubernetes, to keep the Job
+	// name unique (see KubernetesRunner.Run), and subprocess, to key its
+	// process table so Cancel kills every live attempt. The Docker runner
+	// needs it for neither — it selects containers by the run-id label, so
+	// it already addresses all of them at once.
 	Attempt int
 
 	// OnFailure is called when the agent process exits with an error.

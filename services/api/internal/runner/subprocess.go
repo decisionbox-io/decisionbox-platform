@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,15 +18,34 @@ import (
 // SubprocessRunner spawns the agent as a local subprocess.
 // Default mode for local development — agent binary must be in PATH.
 type SubprocessRunner struct {
-	mu        sync.Mutex
-	processes map[string]*os.Process // runID → process
+	mu sync.Mutex
+	// processes is keyed by run id and then by ATTEMPT, because a resume
+	// re-enters the same run id while the previous attempt's process can
+	// still be alive — the agent writes its own `failed` status before it
+	// exits, and an operator resuming inside that window leaves two agents
+	// up for one run.
+	//
+	// Keyed by run id alone, the newer attempt overwrote the older entry and
+	// whichever wait goroutine finished first deleted the survivor, so
+	// Cancel could report success with an agent still running. Cancel is
+	// documented as a terminal hard-kill, which it then was not.
+	processes map[string]map[int]*os.Process
 }
 
 func NewSubprocessRunner() *SubprocessRunner {
 	apilog.Info("Runner mode: subprocess (local dev)")
 	return &SubprocessRunner{
-		processes: make(map[string]*os.Process),
+		processes: make(map[string]map[int]*os.Process),
 	}
+}
+
+// attemptKey normalises the attempt an entry is filed under. 0 and 1 both
+// mean "first attempt", matching RunOptions.Attempt and discoveryJobName.
+func attemptKey(attempt int) int {
+	if attempt < 1 {
+		return 1
+	}
+	return attempt
 }
 
 func (r *SubprocessRunner) Run(ctx context.Context, opts RunOptions) error {
@@ -61,8 +81,12 @@ func (r *SubprocessRunner) Run(ctx context.Context, opts RunOptions) error {
 		"max_steps":  opts.MaxSteps,
 	}).Info("Agent subprocess started")
 
+	attempt := attemptKey(opts.Attempt)
 	r.mu.Lock()
-	r.processes[opts.RunID] = cmd.Process
+	if r.processes[opts.RunID] == nil {
+		r.processes[opts.RunID] = make(map[int]*os.Process)
+	}
+	r.processes[opts.RunID][attempt] = cmd.Process
 	r.mu.Unlock()
 
 	// Rolling tail buffer — capped so a runaway log volume can't blow
@@ -96,8 +120,15 @@ func (r *SubprocessRunner) Run(ctx context.Context, opts RunOptions) error {
 	go func() {
 		err := cmd.Wait()
 		<-pumpDone
+		// Only THIS attempt's entry. Deleting by run id would drop a
+		// newer attempt's live process along with it.
 		r.mu.Lock()
-		delete(r.processes, opts.RunID)
+		if byAttempt := r.processes[opts.RunID]; byAttempt != nil {
+			delete(byAttempt, attempt)
+			if len(byAttempt) == 0 {
+				delete(r.processes, opts.RunID)
+			}
+		}
 		r.mu.Unlock()
 
 		if err != nil {
@@ -331,17 +362,39 @@ func (r *SubprocessRunner) RunValidateDoc(ctx context.Context, opts ValidateDocO
 	return nil
 }
 
+// Cancel kills EVERY live attempt of the run, which is what the Docker and
+// Kubernetes runners do (both select on the run-id label rather than
+// deriving one workload's name). A cancel is a deliberate hard-kill of the
+// run, not of one of its attempts — and leaving a superseded attempt alive
+// would leave it writing checkpoints for a run the operator just stopped.
 func (r *SubprocessRunner) Cancel(ctx context.Context, runID string) error {
 	r.mu.Lock()
-	proc, ok := r.processes[runID]
+	byAttempt := r.processes[runID]
+	live := make(map[int]*os.Process, len(byAttempt))
+	for attempt, proc := range byAttempt {
+		live[attempt] = proc
+	}
 	r.mu.Unlock()
 
-	if !ok {
+	if len(live) == 0 {
 		return nil // not running (already finished or never started)
 	}
 
-	apilog.WithField("run_id", runID).Info("Killing agent subprocess")
-	return proc.Kill()
+	// Every attempt is killed even if one fails, so a single error cannot
+	// leave a later attempt running.
+	var errs []error
+	for attempt, proc := range live {
+		apilog.WithFields(apilog.Fields{
+			"run_id": runID, "attempt": attempt, "pid": proc.Pid,
+		}).Info("Killing agent subprocess")
+		if err := proc.Kill(); err != nil {
+			errs = append(errs, fmt.Errorf("attempt %d (pid %d): %w", attempt, proc.Pid, err))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("kill agent subprocess(es) for run %s: %w", runID, errors.Join(errs...))
+	}
+	return nil
 }
 
 // extractErrorMessage gets a user-friendly error message from agent stderr output.
