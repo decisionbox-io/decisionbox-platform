@@ -44,6 +44,11 @@ type ResumeState struct {
 	Checkpoints *database.CheckpointSet
 }
 
+// active reports whether this run is a resume at all. Safe on nil — an
+// ordinary run is handed no ResumeState, which is what keeps every
+// resume-only behaviour off the path it always took.
+func (r *ResumeState) active() bool { return r != nil }
+
 // prefixLen reports how many steps will be replayed. Safe on nil.
 func (r *ResumeState) prefixLen() int {
 	if r == nil {
@@ -527,4 +532,32 @@ func (o *Orchestrator) discardCheckpoints(ctx context.Context, why string) {
 		"reason":  why,
 		"deleted": deleted,
 	}).Debug("deleted this run's exploration checkpoints")
+}
+
+// rebuildStepIndexForResume drops the per-run step index so a resumed run
+// rebuilds it from the prefix it actually replays.
+//
+// See the call site in RunDiscovery for why reuse is unsafe: the surviving
+// collection can hold points for steps the replayable prefix no longer
+// includes. No-op on an ordinary run, and on a resume with nothing to replay
+// — there would be nothing to rebuild from, and an empty collection is what
+// an ordinary run starts with anyway.
+//
+// A failed drop is logged and swallowed, like every other index operation
+// here: the run works without the index, and refusing to resume over a
+// Qdrant hiccup would be the wrong trade. It does mean the stale points can
+// survive a failed drop, which noveltyMeasurable and the ranking degrade
+// around rather than break on.
+func (o *Orchestrator) rebuildStepIndexForResume(ctx context.Context) {
+	if o.runStepIndex == nil || !o.resume.active() {
+		return
+	}
+	if err := o.runStepIndex.Drop(ctx); err != nil {
+		applog.WithFields(applog.Fields{
+			"run_id": o.runID,
+			"error":  err.Error(),
+		}).Warn("resume: dropping the per-run step index before replay failed; it may still hold steps the replay discarded")
+		return
+	}
+	applog.WithField("run_id", o.runID).Info("resume: dropped the per-run step index; replay will rebuild it from the replayable prefix")
 }

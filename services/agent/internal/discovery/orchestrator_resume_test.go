@@ -106,6 +106,11 @@ func (f *fakeVectorStore) Delete(_ context.Context, ids []string) error {
 type fakeStepIndex struct {
 	upserted []int
 	err      error
+	// drops counts Drop calls, and dropErr fails them — a resume rebuilds
+	// the collection rather than reusing one that may hold steps its
+	// replayable prefix no longer includes.
+	drops   int
+	dropErr error
 }
 
 func (f *fakeStepIndex) Upsert(_ context.Context, step models.ExplorationStep) error {
@@ -121,7 +126,10 @@ func (f *fakeStepIndex) Search(context.Context, string, RunStepIndexSearchOpts) 
 func (f *fakeStepIndex) Nearest(context.Context, models.ExplorationStep) (float64, bool, error) {
 	return 0, false, nil
 }
-func (f *fakeStepIndex) Drop(context.Context) error { return nil }
+func (f *fakeStepIndex) Drop(context.Context) error {
+	f.drops++
+	return f.dropErr
+}
 
 func cpStep(n, rowCount int, rows []map[string]interface{}) models.ExplorationCheckpoint {
 	return models.ExplorationCheckpoint{Step: models.ExplorationStep{
@@ -764,3 +772,61 @@ var (
 	_ vectorDeleter              = (vectorstore.Provider)(nil)
 	_ RunStepIndex               = (*fakeStepIndex)(nil)
 )
+
+// TestRebuildStepIndexForResume_DropsOnlyForAResume pins the staleness this
+// closes, and the blast radius it must not exceed.
+//
+// The per-run Qdrant collection survives a failed run so a resume can reuse
+// it — but it is indexed up to the step the PREVIOUS attempt reached, and
+// the replayable prefix can be shorter than that whenever a gap or a stale
+// tail ends it early. Reusing the collection then leaves points for steps
+// the run has discarded, and the resumed run compares its fresh steps
+// against work from a branch it threw away: Nearest scores a new step as a
+// repeat of a "future" point, so the novelty rule can accept completion
+// early, and the analysis picker's top-K fills with hits for steps that are
+// not in the result at all.
+func TestRebuildStepIndexForResume_DropsOnlyForAResume(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("an ordinary run keeps its index", func(t *testing.T) {
+		idx := &fakeStepIndex{}
+		o := &Orchestrator{runID: "r", runStepIndex: idx} // resume is nil
+		o.rebuildStepIndexForResume(ctx)
+		if idx.drops != 0 {
+			t.Errorf("drops = %d, want 0 — a fresh run's index is already empty and dropping it is pure risk", idx.drops)
+		}
+	})
+
+	t.Run("a resume rebuilds", func(t *testing.T) {
+		idx := &fakeStepIndex{}
+		o := &Orchestrator{runID: "r", runStepIndex: idx, resume: &ResumeState{Attempt: 2}}
+		o.rebuildStepIndexForResume(ctx)
+		if idx.drops != 1 {
+			t.Errorf("drops = %d, want 1", idx.drops)
+		}
+	})
+
+	t.Run("a resume with nothing replayable still drops", func(t *testing.T) {
+		// The checkpoints expired or the gap is at step 1, so there is no
+		// prefix — but the previous attempt may well have indexed forty
+		// steps, and every one of them is now stale.
+		idx := &fakeStepIndex{}
+		o := &Orchestrator{runID: "r", runStepIndex: idx, resume: &ResumeState{
+			Attempt: 3, Checkpoints: &database.CheckpointSet{},
+		}}
+		o.rebuildStepIndexForResume(ctx)
+		if idx.drops != 1 {
+			t.Errorf("drops = %d, want 1 — stale points outlive an unusable prefix", idx.drops)
+		}
+	})
+
+	t.Run("a failed drop does not take the run down", func(t *testing.T) {
+		idx := &fakeStepIndex{dropErr: errors.New("qdrant down")}
+		o := &Orchestrator{runID: "r", runStepIndex: idx, resume: &ResumeState{Attempt: 2}}
+		o.rebuildStepIndexForResume(ctx) // must not panic or block
+	})
+
+	t.Run("no index wired is skipped", func(t *testing.T) {
+		(&Orchestrator{runID: "r", resume: &ResumeState{Attempt: 2}}).rebuildStepIndexForResume(ctx)
+	})
+}

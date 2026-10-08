@@ -1078,6 +1078,26 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		applog.WithField("run_id", o.runID).Warn("orchestrator: runStepIndex is nil — analysis will use empty vector hits")
 	}
 
+	// A resumed run rebuilds its per-run step index from scratch, rather
+	// than reusing whatever the previous attempt left in Qdrant.
+	//
+	// The surviving collection is indexed up to the step the PREVIOUS
+	// attempt reached, and the replayable prefix can be shorter than that:
+	// a gap or a stale tail in the checkpoints ends the prefix early, and
+	// the steps after it were discarded. Reusing the collection leaves their
+	// points in place, so the resumed run would be comparing its new steps
+	// against work from a branch it has thrown away — Nearest would score a
+	// fresh step as a repeat of a "future" point and the novelty rule could
+	// accept completion early, while the analysis picker's top-K would be
+	// crowded by hits for steps that are not in the result at all.
+	//
+	// Rebuilding costs nothing that resume was not already paying. Both
+	// resume paths re-upsert every step they replay — replayPrefix per step,
+	// reindexReplayedSteps in one go on the skip-exploration path — so the
+	// prefix's points are rewritten either way. The only thing the drop
+	// removes is the part that should not be there.
+	o.rebuildStepIndexForResume(ctx)
+
 	var explorationResult *ai.ExplorationResult
 	if o.resume.explorationComplete() {
 		// A previous attempt finished exploration, so there is nothing left
