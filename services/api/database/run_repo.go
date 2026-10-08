@@ -213,12 +213,40 @@ func (r *RunRepository) GetByID(ctx context.Context, runID string) (*models.Disc
 	return &run, nil
 }
 
-// GetLatestByProject returns the most recent run for a project.
+// GetLatestByProject returns the run that represents the project's current
+// state: its ACTIVE run if it has one, and otherwise the most recently
+// started.
+//
+// "Most recently started" alone stopped being right the moment a run could
+// be resumed. A resume re-enters the run it resumes, and started_at keeps
+// the original start — that is what started_at means, and active_ms is what
+// carries compute across attempts — so resuming a failed run after a NEWER
+// run has since finished leaves the live run holding the OLDER started_at.
+// Sorting on started_at then answers with the finished run, and the one
+// that is actually spending budget becomes invisible: no progress, and no
+// way to cancel it.
+//
+// Two queries rather than a computed sort key, so each still runs off the
+// existing (project_id, started_at) index.
 func (r *RunRepository) GetLatestByProject(ctx context.Context, projectID string) (*models.DiscoveryRun, error) {
 	opts := options.FindOne().SetSort(bson.D{{Key: "started_at", Value: -1}})
 
+	// An active run wins outright. There is normally at most one — both the
+	// trigger path and the resume path refuse to start a second — so the
+	// sort here only ever breaks a tie this code should not see.
 	var run models.DiscoveryRun
-	err := r.col.FindOne(ctx, bson.M{"project_id": projectID}, opts).Decode(&run)
+	err := r.col.FindOne(ctx, bson.M{
+		"project_id": projectID,
+		"status":     bson.M{"$in": []string{"pending", "running"}},
+	}, opts).Decode(&run)
+	if err == nil {
+		return &run, nil
+	}
+	if err != mongo.ErrNoDocuments {
+		return nil, err
+	}
+
+	err = r.col.FindOne(ctx, bson.M{"project_id": projectID}, opts).Decode(&run)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, nil
@@ -228,27 +256,52 @@ func (r *RunRepository) GetLatestByProject(ctx context.Context, projectID string
 	return &run, nil
 }
 
-// LatestByProjects returns the most recent discovery run for each of
-// the given project IDs, keyed by project ID. Projects with no runs
-// are simply absent from the returned map.
+// LatestByProjects returns the run that represents each project's current
+// state, keyed by project ID — the rule GetLatestByProject applies, for a
+// page of projects at once. Projects with no runs are simply absent.
 //
-// It runs as a single aggregation (match → sort → group $first) so
-// enriching a page of N projects costs one Mongo round-trip rather than
+// Each pass is one aggregation (match → sort → group $first) so enriching a
+// page of N projects costs a fixed number of Mongo round-trips rather than
 // N. The sort key is `{project_id: 1, started_at: -1}` — exactly the
 // existing compound index on discovery_runs — so Mongo streams the sort
 // off the index instead of doing a blocking in-memory sort (which would
 // risk the aggregation sort-memory limit on projects with long run
 // histories). Within each project_id group the docs arrive newest-first,
-// so `$first` yields that project's latest run. An empty input returns
+// so `$first` yields that group's newest run. An empty input returns
 // an empty map without touching Mongo.
+//
+// Two passes, for the reason GetLatestByProject uses two queries: an active
+// run has to win even when a newer run has since finished, and folding that
+// into the sort key would cost the index-backed sort the paragraph above
+// depends on. The active pass matches at most one row per project, so it is
+// the cheap half.
 func (r *RunRepository) LatestByProjects(ctx context.Context, projectIDs []string) (map[string]*models.DiscoveryRun, error) {
-	out := make(map[string]*models.DiscoveryRun, len(projectIDs))
 	if len(projectIDs) == 0 {
-		return out, nil
+		return map[string]*models.DiscoveryRun{}, nil
 	}
 
+	out, err := r.newestPerProject(ctx, bson.M{"project_id": bson.M{"$in": projectIDs}})
+	if err != nil {
+		return nil, err
+	}
+	active, err := r.newestPerProject(ctx, bson.M{
+		"project_id": bson.M{"$in": projectIDs},
+		"status":     bson.M{"$in": []string{"pending", "running"}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	for projectID, run := range active {
+		out[projectID] = run
+	}
+	return out, nil
+}
+
+// newestPerProject groups the matching runs by project and returns the one
+// with the newest started_at in each group.
+func (r *RunRepository) newestPerProject(ctx context.Context, match bson.M) (map[string]*models.DiscoveryRun, error) {
 	pipeline := mongo.Pipeline{
-		{{Key: "$match", Value: bson.M{"project_id": bson.M{"$in": projectIDs}}}},
+		{{Key: "$match", Value: match}},
 		{{Key: "$sort", Value: bson.D{
 			{Key: "project_id", Value: 1},
 			{Key: "started_at", Value: -1},
@@ -273,6 +326,7 @@ func (r *RunRepository) LatestByProjects(ctx context.Context, projectIDs []strin
 		return nil, fmt.Errorf("decode latest runs by project: %w", err)
 	}
 
+	out := make(map[string]*models.DiscoveryRun, len(rows))
 	for i := range rows {
 		run := rows[i].Run
 		out[rows[i].ProjectID] = &run

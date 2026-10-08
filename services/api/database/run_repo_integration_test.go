@@ -448,3 +448,93 @@ func TestInteg_RunRepo_Fail_UpdatesRunningRuns(t *testing.T) {
 		t.Errorf("Status = %q, want failed — guard must allow running → failed", got.Status)
 	}
 }
+
+// TestInteg_RunRepo_LatestPrefersTheActiveRun is what keeps a resumed run
+// reachable.
+//
+// Resume re-enters the run it resumes and leaves started_at alone — that is
+// what started_at means, and active_ms is what carries compute across
+// attempts. So resuming a failed run after a NEWER run has since finished
+// leaves the live run holding the OLDER started_at. Answering "latest" with
+// started_at alone then hands back the finished run, and the project's status
+// endpoint shows a completed run while a resumed one burns budget behind it:
+// no progress, and no way to cancel it.
+//
+// Both readers are checked together, because the only reason the API is
+// allowed two of them is that they agree.
+func TestInteg_RunRepo_LatestPrefersTheActiveRun(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	newerCompletedAt := base.Add(3 * time.Hour)
+
+	// The run that failed first and was then resumed, so it is active again
+	// with the older started_at.
+	resumed := seedRunForProject(t, ctx, "proj-r", "failed", base, nil)
+	// A whole run came and went in the meantime.
+	_ = seedRunForProject(t, ctx, "proj-r", "completed", base.Add(2*time.Hour), &newerCompletedAt)
+
+	if _, err := repo.BeginResume(ctx, resumed); err != nil {
+		t.Fatalf("BeginResume: %v", err)
+	}
+
+	one, err := repo.GetLatestByProject(ctx, "proj-r")
+	if err != nil {
+		t.Fatalf("GetLatestByProject: %v", err)
+	}
+	if one == nil {
+		t.Fatal("GetLatestByProject returned nothing")
+	}
+	if one.ID != resumed {
+		t.Errorf("GetLatestByProject = %q (status %q), want the resumed run %q", one.ID, one.Status, resumed)
+	}
+
+	many, err := repo.LatestByProjects(ctx, []string{"proj-r"})
+	if err != nil {
+		t.Fatalf("LatestByProjects: %v", err)
+	}
+	if got := many["proj-r"]; got == nil {
+		t.Fatal("proj-r missing from LatestByProjects")
+	} else if got.ID != resumed {
+		t.Errorf("LatestByProjects = %q (status %q), want the resumed run %q", got.ID, got.Status, resumed)
+	}
+}
+
+// TestInteg_RunRepo_LatestFallsBackToStartedAtWithNoActiveRun is the other
+// half: preferring an active run must not change the answer for a project
+// whose runs have all finished, which is the ordinary case.
+func TestInteg_RunRepo_LatestFallsBackToStartedAtWithNoActiveRun(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	oldCompletedAt := base.Add(10 * time.Minute)
+	newCompletedAt := base.Add(2 * time.Hour)
+
+	_ = seedRunForProject(t, ctx, "proj-q", "completed", base, &oldCompletedAt)
+	newest := seedRunForProject(t, ctx, "proj-q", "failed", base.Add(90*time.Minute), &newCompletedAt)
+
+	one, err := repo.GetLatestByProject(ctx, "proj-q")
+	if err != nil {
+		t.Fatalf("GetLatestByProject: %v", err)
+	}
+	if one == nil || one.ID != newest {
+		t.Errorf("GetLatestByProject = %v, want the newest-started run %q", one, newest)
+	}
+
+	many, err := repo.LatestByProjects(ctx, []string{"proj-q"})
+	if err != nil {
+		t.Fatalf("LatestByProjects: %v", err)
+	}
+	if got := many["proj-q"]; got == nil || got.ID != newest {
+		t.Errorf("LatestByProjects = %v, want the newest-started run %q", got, newest)
+	}
+
+	// And a project with no runs at all is still nothing, not an error.
+	if one, err := repo.GetLatestByProject(ctx, "proj-none"); err != nil || one != nil {
+		t.Errorf("GetLatestByProject for a project with no runs = (%v, %v), want (nil, nil)", one, err)
+	}
+}
