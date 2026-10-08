@@ -68,7 +68,11 @@ type RunRepo interface {
 	ListTerminalWithReservation(ctx context.Context, limit int) ([]*models.DiscoveryRun, error)
 	ClearPolicyReservationID(ctx context.Context, runID string) error
 	ListTerminalWithoutCompletionHook(ctx context.Context, limit int) ([]*models.DiscoveryRun, error)
-	MarkCompletionHooksFired(ctx context.Context, runID string) error
+	// MarkCompletionHooksFired stamps the hook marker, fenced on the
+	// terminal status AND the attempt the caller selected — a resume between
+	// the dispatcher's read and its mark would otherwise stamp an attempt
+	// whose hooks never fired.
+	MarkCompletionHooksFired(ctx context.Context, runID string, attempt int) error
 }
 
 // CheckpointRepo abstracts the exploration-checkpoint read / purge paths the

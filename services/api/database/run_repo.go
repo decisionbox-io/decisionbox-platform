@@ -323,26 +323,48 @@ func (r *RunRepository) ListTerminalWithoutCompletionHook(ctx context.Context, l
 // MarkCompletionHooksFired stamps completion_hooks_fired_at on the run
 // so the dispatcher's next scan skips it. Called by the dispatcher
 // after every registered hook returned without error.
-func (r *RunRepository) MarkCompletionHooksFired(ctx context.Context, runID string) error {
+//
+// attempt is the attempt the dispatcher read off the run it selected; the
+// mark lands only if the run is still terminal AND still on that attempt.
+func (r *RunRepository) MarkCompletionHooksFired(ctx context.Context, runID string, attempt int) error {
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {
 		return fmt.Errorf("invalid run ID: %w", err)
 	}
 	now := time.Now()
-	// Only while the run is still TERMINAL. The dispatcher selects a batch
-	// and marks each row afterwards, so a resume can land in between: it
-	// clears this field to re-arm dispatch, and an unfenced mark would then
-	// stamp it right back onto the now-running resumed attempt. When that
-	// attempt finished, ListTerminalWithoutCompletionHook would filter it
-	// out and the hooks for the final discovery would never fire — the exact
-	// bug clearing the field on resume exists to prevent, reintroduced by a
-	// race.
+	// Fenced on BOTH the terminal status and the attempt the dispatcher
+	// actually selected. The dispatcher reads a batch and marks each row
+	// afterwards, so a resume can land in between — and the status alone is
+	// not enough to catch it.
 	//
-	// A no-op here is correct: the run has a new terminal outcome coming, and
-	// the dispatcher will pick it up on a later scan.
+	// Status catches the easy half: the resume has flipped the run back to
+	// `running`, so a stale mark matches nothing. But if the RESUMED attempt
+	// then reaches a terminal state before the stale mark arrives, a
+	// status-only filter matches again and stamps the marker for an attempt
+	// whose hooks were never dispatched — so
+	// ListTerminalWithoutCompletionHook skips it for ever. That is the exact
+	// bug clearing the field on resume exists to prevent, reintroduced one
+	// step further along.
+	//
+	// The attempt pins it to the row that was selected. A no-op is correct in
+	// both cases: the run has an outcome the dispatcher has not seen yet, and
+	// a later scan picks it up.
+	//
+	// Unlike FailAttempt there is no "unknown attempt" caller to accommodate
+	// here: the only caller reads the run document first, so a zero attempt
+	// means the field was absent, which means the run is on its first — not
+	// that the attempt is unknown. Leaving the filter off for a zero would
+	// reopen the hole above for every run created before the counter existed.
 	filter := bson.M{
 		"_id":    oid,
 		"status": bson.M{"$in": []string{"completed", "failed", "cancelled"}},
+	}
+	if attempt <= 1 {
+		// A run created before the counter existed carries no attempt.
+		filter["attempt"] = bson.M{"$in": []any{1, nil}}
+	} else {
+		// Resumed attempts always have the field — BeginResume writes it.
+		filter["attempt"] = attempt
 	}
 	_, err = r.col.UpdateOne(ctx, filter, bson.M{
 		"$set": bson.M{

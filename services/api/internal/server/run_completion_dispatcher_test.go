@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/decisionbox-io/decisionbox/services/api/models"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/runhooks"
+	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
 // mockRunRepo is a minimal RunRepo implementation for dispatcher tests.
@@ -17,12 +17,15 @@ import (
 // behaviour; the rest panic so any accidental usage shows up loudly in
 // the test report.
 type mockRunRepo struct {
-	mu               sync.Mutex
-	queue            []*models.DiscoveryRun
-	listErr          error
-	listCalls        int32
-	markCalls        []string
-	markErrByRunID   map[string]error
+	mu        sync.Mutex
+	queue     []*models.DiscoveryRun
+	listErr   error
+	listCalls int32
+	markCalls []string
+	// markAttempts records the attempt each mark was fenced on, so a test
+	// can assert the dispatcher passes the attempt it actually selected.
+	markAttempts   []int
+	markErrByRunID map[string]error
 }
 
 func newMockRunRepo(runs ...*models.DiscoveryRun) *mockRunRepo {
@@ -46,7 +49,8 @@ func (m *mockRunRepo) ListTerminalWithoutCompletionHook(_ context.Context, limit
 	return out, nil
 }
 
-func (m *mockRunRepo) MarkCompletionHooksFired(_ context.Context, runID string) error {
+func (m *mockRunRepo) MarkCompletionHooksFired(_ context.Context, runID string, attempt int) error {
+	m.markAttempts = append(m.markAttempts, attempt)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err, ok := m.markErrByRunID[runID]; ok {
@@ -90,7 +94,7 @@ func (m *mockRunRepo) GetRunningByProject(context.Context, string) (*models.Disc
 	panic("not implemented")
 }
 func (m *mockRunRepo) Fail(context.Context, string, string) error { panic("not implemented") }
-func (m *mockRunRepo) Cancel(context.Context, string) error        { panic("not implemented") }
+func (m *mockRunRepo) Cancel(context.Context, string) error       { panic("not implemented") }
 func (m *mockRunRepo) SetPolicyReservationID(context.Context, string, string) error {
 	panic("not implemented")
 }

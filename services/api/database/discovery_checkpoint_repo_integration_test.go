@@ -486,6 +486,77 @@ func TestInteg_RunRepo_BeginResumeDropsTheStaleResultPointer(t *testing.T) {
 	}
 }
 
+// TestInteg_RunRepo_HookMarkIsFencedOnTheSelectedAttempt closes the second
+// half of the hook-marker race, which a status fence alone does not reach.
+//
+// The dispatcher reads a batch of terminal runs and marks each one after. A
+// resume landing in between clears the marker — and if the RESUMED attempt
+// then reaches a terminal state before the stale mark arrives, a status-only
+// filter matches again and stamps the marker for an attempt whose hooks were
+// never dispatched. ListTerminalWithoutCompletionHook then skips it for ever.
+func TestInteg_RunRepo_HookMarkIsFencedOnTheSelectedAttempt(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	runID := seedRun(t, ctx, "failed", nil, nil, time.Now())
+	if _, err := testDB.Collection("discovery_runs").UpdateByID(ctx, mustOID(t, runID), bson.M{
+		"$set": bson.M{"attempt": 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The dispatcher selects attempt 1...
+	pending, err := repo.ListTerminalWithoutCompletionHook(ctx, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].Attempt != 1 {
+		t.Fatalf("selected %d runs (attempt %v), want one on attempt 1", len(pending), pending)
+	}
+
+	// ...a resume advances it, and attempt 2 finishes before the stale mark.
+	if _, err := repo.BeginResume(ctx, runID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testDB.Collection("discovery_runs").UpdateByID(ctx, mustOID(t, runID), bson.M{
+		"$set": bson.M{"status": "completed", "completed_at": time.Now()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The stale mark names attempt 1 and must not land.
+	if err := repo.MarkCompletionHooksFired(ctx, runID, 1); err != nil {
+		t.Fatalf("a no-op mark must not be an error: %v", err)
+	}
+	run, _ := repo.GetByID(ctx, runID)
+	if run.CompletionHooksFiredAt != nil {
+		t.Error("a mark for attempt 1 landed on attempt 2; its hooks would never fire")
+	}
+
+	// Attempt 2 is still dispatch-pending, and ITS mark sticks.
+	pending, _ = repo.ListTerminalWithoutCompletionHook(ctx, 50)
+	found := false
+	for _, r := range pending {
+		if r.ID == runID {
+			found = true
+			if r.Attempt != 2 {
+				t.Errorf("selected attempt %d, want 2", r.Attempt)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("the completed resumed attempt is not dispatch-pending")
+	}
+	if err := repo.MarkCompletionHooksFired(ctx, runID, 2); err != nil {
+		t.Fatal(err)
+	}
+	run, _ = repo.GetByID(ctx, runID)
+	if run.CompletionHooksFiredAt == nil {
+		t.Error("the mark for the attempt that was actually dispatched must land")
+	}
+}
+
 // TestInteg_RunRepo_FailAttemptIgnoresASupersededAttempt is the P1 race.
 //
 // A previous attempt's background watcher outlives the attempt itself — the
@@ -626,8 +697,9 @@ func TestInteg_RunRepo_HookMarkDoesNotLandOnAResumedRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The late mark must not land on the running attempt.
-	if err := repo.MarkCompletionHooksFired(ctx, runID); err != nil {
+	// The late mark carries the attempt the dispatcher read off the run it
+	// selected, and must not land on the running attempt.
+	if err := repo.MarkCompletionHooksFired(ctx, runID, pending[0].Attempt); err != nil {
 		t.Fatalf("a no-op mark must not be an error: %v", err)
 	}
 	run, err := repo.GetByID(ctx, runID)
@@ -645,11 +717,33 @@ func TestInteg_RunRepo_HookMarkDoesNotLandOnAResumedRun(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.MarkCompletionHooksFired(ctx, runID); err != nil {
+	rescanned, err := repo.ListTerminalWithoutCompletionHook(ctx, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rescanned) != 1 {
+		t.Fatalf("re-scanned runs = %d, want 1 (the resumed attempt must be dispatchable)", len(rescanned))
+	}
+	if err := repo.MarkCompletionHooksFired(ctx, runID, rescanned[0].Attempt); err != nil {
 		t.Fatal(err)
 	}
 	run, _ = repo.GetByID(ctx, runID)
 	if run.CompletionHooksFiredAt == nil {
 		t.Error("the mark must land once the run is terminal again")
+	}
+
+	// And the stale mark still cannot land, even now that the run is
+	// terminal again — that is the whole point of the attempt fence.
+	if _, err := testDB.Collection("discovery_runs").UpdateByID(ctx, mustOID(t, runID), bson.M{
+		"$unset": bson.M{"completion_hooks_fired_at": ""},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.MarkCompletionHooksFired(ctx, runID, pending[0].Attempt); err != nil {
+		t.Fatalf("a no-op mark must not be an error: %v", err)
+	}
+	run, _ = repo.GetByID(ctx, runID)
+	if run.CompletionHooksFiredAt != nil {
+		t.Error("a stale mark landed on a later attempt; its hooks would never fire")
 	}
 }

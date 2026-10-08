@@ -624,7 +624,7 @@ func (m *mockRunRepo) ListTerminalWithoutCompletionHook(_ context.Context, limit
 	return out, nil
 }
 
-func (m *mockRunRepo) MarkCompletionHooksFired(_ context.Context, runID string) error {
+func (m *mockRunRepo) MarkCompletionHooksFired(_ context.Context, runID string, _ int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	r, ok := m.runs[runID]

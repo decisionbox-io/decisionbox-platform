@@ -296,7 +296,7 @@ func TestInteg_RunRepo_MarkCompletionHooksFired_SetsField(t *testing.T) {
 	// (e.g. 10:15:27.056117 → stored as 10:15:27.056 which is technically
 	// before the captured nanosecond timestamp).
 	before := time.Now().Truncate(time.Millisecond)
-	if err := repo.MarkCompletionHooksFired(ctx, runID); err != nil {
+	if err := repo.MarkCompletionHooksFired(ctx, runID, 1); err != nil {
 		t.Fatalf("mark: %v", err)
 	}
 	after := time.Now()
@@ -323,7 +323,7 @@ func TestInteg_RunRepo_MarkCompletionHooksFired_RemovesFromListResult(t *testing
 	a := seedRun(t, ctx, "completed", nil, &now, time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC))
 	b := seedRun(t, ctx, "completed", nil, &now, time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC))
 
-	if err := repo.MarkCompletionHooksFired(ctx, a); err != nil {
+	if err := repo.MarkCompletionHooksFired(ctx, a, 1); err != nil {
 		t.Fatalf("mark: %v", err)
 	}
 	got, err := repo.ListTerminalWithoutCompletionHook(ctx, 10)
@@ -342,7 +342,7 @@ func TestInteg_RunRepo_MarkCompletionHooksFired_RemovesFromListResult(t *testing
 func TestInteg_RunRepo_MarkCompletionHooksFired_InvalidRunIDErrors(t *testing.T) {
 	ctx := context.Background()
 	repo := NewRunRepository(testDB)
-	if err := repo.MarkCompletionHooksFired(ctx, "not-a-hex-objectid"); err == nil {
+	if err := repo.MarkCompletionHooksFired(ctx, "not-a-hex-objectid", 1); err == nil {
 		t.Fatal("expected error for invalid run ID, got nil")
 	}
 }
@@ -364,7 +364,7 @@ func TestInteg_RunRepo_MarkCompletionHooksFired_AlsoUpdatesUpdatedAt(t *testing.
 	// flake the comparison.
 	time.Sleep(10 * time.Millisecond)
 
-	if err := repo.MarkCompletionHooksFired(ctx, runID); err != nil {
+	if err := repo.MarkCompletionHooksFired(ctx, runID, 1); err != nil {
 		t.Fatalf("mark: %v", err)
 	}
 	updated, err := repo.GetByID(ctx, runID)
