@@ -60,21 +60,28 @@ func seedCheckpointStepAt(t *testing.T, ctx context.Context, runID string, step,
 	}
 }
 
-// seedCheckpointSummary writes the exploration-summary row (step_number 0).
+// seedCheckpointSummary writes the exploration-summary row (step_number 0)
+// for a run on its first attempt.
 func seedCheckpointSummary(t *testing.T, ctx context.Context, runID string, totalSteps int) {
+	t.Helper()
+	seedCheckpointSummaryAt(t, ctx, runID, totalSteps, 1)
+}
+
+// seedCheckpointSummaryAt is seedCheckpointSummary for a named attempt.
+func seedCheckpointSummaryAt(t *testing.T, ctx context.Context, runID string, totalSteps, attempt int) {
 	t.Helper()
 	_, err := testDB.Collection(gomongo.CollectionDiscoveryCheckpoints).InsertOne(ctx, bson.M{
 		"run_id":      runID,
 		"project_id":  "proj-integ",
 		"step_number": 0,
-		"attempt":     1,
+		"attempt":     attempt,
 		"kind":        "exploration_summary",
 		"completed":   true,
 		"total_steps": totalSteps,
 		"created_at":  time.Now(),
 	})
 	if err != nil {
-		t.Fatalf("seed checkpoint summary: %v", err)
+		t.Fatalf("seed checkpoint summary (attempt %d): %v", attempt, err)
 	}
 }
 
@@ -787,10 +794,13 @@ func TestInteg_CheckpointRepo_ResumeStateStopsAtAStaleTail(t *testing.T) {
 		// The summary belongs to the attempt whose tail was just discarded,
 		// so it must not send the run to analysis.
 		{"summary over a stale tail", []row{{1, 2}, {2, 1}, {3, 1}}, 3, 1, false},
-		// ...but a summary that the surviving prefix fully covers still
-		// counts: this is the crashed-after-exploration case the feature
-		// exists for.
-		{"summary covered by the replayed prefix", []row{{1, 2}, {2, 2}}, 2, 2, true},
+		// A summary whose count the prefix covers exactly, but which a
+		// LATER attempt has since overtaken — the rows are attempt 2's and
+		// the summary is attempt 1's. Not trustworthy either, and the
+		// attempt is the only thing that says so; see
+		// TestInteg_CheckpointRepo_ResumeStateRejectsAnOlderSummary for
+		// that rule and for the trustworthy shapes.
+		{"summary overtaken by a later attempt", []row{{1, 2}, {2, 2}}, 2, 2, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -801,6 +811,59 @@ func TestInteg_CheckpointRepo_ResumeStateStopsAtAStaleTail(t *testing.T) {
 			if tc.summaryTotalSteps > 0 {
 				seedCheckpointSummary(t, ctx, "run-1", tc.summaryTotalSteps)
 			}
+
+			prefix, done, err := repo.ResumeState(ctx, "run-1")
+			if err != nil {
+				t.Fatalf("ResumeState: %v", err)
+			}
+			if prefix != tc.wantPrefix {
+				t.Errorf("prefix len = %d, want %d", prefix, tc.wantPrefix)
+			}
+			if done != tc.wantDone {
+				t.Errorf("explorationComplete = %v, want %v", done, tc.wantDone)
+			}
+		})
+	}
+}
+
+// TestInteg_CheckpointRepo_ResumeStateRejectsAnOlderSummary mirrors the
+// agent's rule for the corner a count comparison cannot see: the counts line
+// up over a prefix the summary knows nothing about, because a later attempt
+// filled the gap that broke it and then died before writing its own summary.
+//
+// The API has to agree, or it would promise "exploration already finished"
+// for a resume that is about to carry on exploring.
+func TestInteg_CheckpointRepo_ResumeStateRejectsAnOlderSummary(t *testing.T) {
+	ctx := context.Background()
+	repo := NewDiscoveryCheckpointRepository(testDB)
+
+	type row struct{ step, attempt int }
+	cases := []struct {
+		name           string
+		rows           []row
+		summaryTotal   int
+		summaryAttempt int
+		wantPrefix     int
+		wantDone       bool
+	}{
+		// Attempt 1 claimed 3 steps; attempt 2 refilled 1..3 with its own
+		// step 3 and never wrote a summary.
+		{"a summary older than the prefix", []row{{1, 2}, {2, 2}, {3, 2}}, 3, 1, 3, false},
+		// The feature's own case: the summary covers its own attempt's prefix.
+		{"a summary on the prefix's attempt", []row{{1, 1}, {2, 1}}, 2, 1, 2, true},
+		// ...and after a resume replayed that prefix and re-wrote the summary.
+		{"a summary re-written with the replayed prefix", []row{{1, 2}, {2, 2}}, 2, 2, 2, true},
+		// The step rows aged out; the summary alone is still resumable,
+		// because an empty prefix has no attempt to be older than.
+		{"a summary with its rows pruned", nil, 0, 1, 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dropCheckpoints(t, ctx)
+			for _, r := range tc.rows {
+				seedCheckpointStepAt(t, ctx, "run-1", r.step, r.attempt)
+			}
+			seedCheckpointSummaryAt(t, ctx, "run-1", tc.summaryTotal, tc.summaryAttempt)
 
 			prefix, done, err := repo.ResumeState(ctx, "run-1")
 			if err != nil {

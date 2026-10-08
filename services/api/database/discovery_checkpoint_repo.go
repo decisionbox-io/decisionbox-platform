@@ -59,8 +59,10 @@ func (r *DiscoveryCheckpointRepository) ResumeState(ctx context.Context, runID s
 
 	expected := 1
 	summaryTotalSteps := 0
-	// The newest attempt that has contributed to the prefix so far.
+	// The newest attempt that has contributed to the prefix so far, and the
+	// attempt that wrote the summary.
 	prefixAttempt := 0
+	summaryAttempt := 0
 	ended := false
 	for cur.Next(ctx) {
 		var doc struct {
@@ -76,6 +78,7 @@ func (r *DiscoveryCheckpointRepository) ResumeState(ctx context.Context, runID s
 		if doc.StepNumber == 0 {
 			explorationComplete = true
 			summaryTotalSteps = doc.TotalSteps
+			summaryAttempt = doc.Attempt
 			continue
 		}
 		if ended {
@@ -103,6 +106,15 @@ func (r *DiscoveryCheckpointRepository) ResumeState(ctx context.Context, runID s
 	// leaves a prefix that looks clean but is one short of the claim; a stale
 	// tail leaves one cut off at the splice.
 	if explorationComplete && summaryTotalSteps > prefixLen {
+		explorationComplete = false
+	}
+	// And it must come from an attempt no older than the prefix. The counts
+	// can line up over a prefix the summary knows nothing about — a later
+	// attempt filling the gap that broke it, then dying before writing a
+	// summary of its own. An empty prefix keeps the summary, which is the
+	// "rows pruned, summary survived" state that is resumable on the summary
+	// alone.
+	if explorationComplete && summaryAttempt < prefixAttempt {
 		explorationComplete = false
 	}
 	return prefixLen, explorationComplete, nil

@@ -349,6 +349,10 @@ func (r *DiscoveryCheckpointRepository) SaveExplorationSummary(ctx context.Conte
 // just a later attempt continuing where an earlier one stopped, which is the
 // whole point — but the first row that steps backwards ends the prefix, and
 // the run re-explores from there.
+//
+// The summary is held to the same standard twice over: it is dropped unless
+// the surviving prefix covers every step it claims AND it was written by an
+// attempt no older than that prefix. See the two checks at the end.
 func (r *DiscoveryCheckpointRepository) LoadPrefix(ctx context.Context, runID string) (*CheckpointSet, error) {
 	if runID == "" {
 		return nil, errors.New("load checkpoints: run_id is required")
@@ -366,8 +370,11 @@ func (r *DiscoveryCheckpointRepository) LoadPrefix(ctx context.Context, runID st
 	expected := 1
 	gapAt := 0
 	staleTailAt := 0
-	// The newest attempt that has contributed to the prefix so far.
+	// The newest attempt that has contributed to the prefix so far, and the
+	// attempt that wrote the summary. The summary row sorts first, so the
+	// comparison between them can only be made after the loop.
 	prefixAttempt := 0
+	summaryAttempt := 0
 	for cur.Next(ctx) {
 		var doc ExplorationCheckpointDoc
 		if err := cur.Decode(&doc); err != nil {
@@ -383,6 +390,7 @@ func (r *DiscoveryCheckpointRepository) LoadPrefix(ctx context.Context, runID st
 				TotalSteps:    doc.TotalSteps,
 				Duration:      time.Duration(doc.DurationMs) * time.Millisecond,
 			}
+			summaryAttempt = doc.Attempt
 			continue
 		}
 		if gapAt > 0 || staleTailAt > 0 {
@@ -448,6 +456,34 @@ func (r *DiscoveryCheckpointRepository) LoadPrefix(ctx context.Context, runID st
 			"replayable":          len(set.Steps),
 			"summary_total_steps": set.Summary.TotalSteps,
 		}).Warn("exploration summary claims more steps than the replayable prefix holds; resume will continue exploring rather than skip to analysis")
+		set.Summary = nil
+	}
+
+	// A count that matches is still not enough: the summary must also come
+	// from an attempt no older than the prefix it is claiming to cover.
+	//
+	// The counts can line up over a prefix the summary knows nothing about.
+	// Attempt 1 finishes exploring at step 3 and writes a summary claiming 3,
+	// but step 3's write fails. A resume replays 1..2, explores its OWN step
+	// 3, checkpoints it, and dies before writing a summary of its own. The
+	// rows are now a clean 1..3 under attempt 2, three steps against a claim
+	// of three — and the only summary on file says "finished", from an
+	// attempt whose step 3 no longer exists. Trusting it sends the next
+	// resume straight to analysis over an exploration that was still
+	// running, and attributes attempt 1's completion message to attempt 2's
+	// step.
+	//
+	// An empty prefix leaves prefixAttempt at 0 and so keeps the summary,
+	// which is deliberate: "the summary landed and the step rows have since
+	// been pruned" is a resumable state, and the one case where a summary
+	// with nothing under it is the whole answer.
+	if set.Summary != nil && summaryAttempt < prefixAttempt {
+		applog.WithFields(applog.Fields{
+			"run_id":          runID,
+			"replayable":      len(set.Steps),
+			"summary_attempt": summaryAttempt,
+			"prefix_attempt":  prefixAttempt,
+		}).Warn("exploration summary is older than the prefix it would cover; resume will continue exploring rather than skip to analysis")
 		set.Summary = nil
 	}
 	return set, nil

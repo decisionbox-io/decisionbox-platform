@@ -875,3 +875,153 @@ func TestInteg_Checkpoint_SummaryIsDroppedOverAStaleTail(t *testing.T) {
 		t.Error("a summary over a prefix cut short by a stale tail must not claim exploration finished")
 	}
 }
+
+// TestInteg_Checkpoint_SummaryFromAnOlderAttemptIsDropped is the corner a
+// count comparison alone cannot see: the counts line up over a prefix the
+// summary knows nothing about.
+//
+// Attempt 1 finishes exploring at step 3 and writes a summary claiming 3 —
+// but step 3's write fails. A resume replays 1..2, explores its OWN step 3,
+// checkpoints it, and dies before writing a summary of its own. The rows are
+// now a clean 1..3 under attempt 2: three steps against a claim of three,
+// with no gap and no stale tail. The only summary on file says "finished",
+// from an attempt whose step 3 no longer exists.
+func TestInteg_Checkpoint_SummaryFromAnOlderAttemptIsDropped(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	repo := NewDiscoveryCheckpointRepository(db)
+	if err := repo.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("EnsureIndexes: %v", err)
+	}
+
+	for _, n := range []int{1, 2} {
+		if err := repo.SaveStep(ctx, checkpointStepInput("run-1", n, 10)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := repo.SaveExplorationSummary(ctx, CheckpointSummaryInput{
+		ProjectID: "proj-1", RunID: "run-1", Attempt: 1,
+		Summary: models.ExplorationCheckpointSummary{Completed: true, TotalSteps: 3, Duration: time.Minute},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Attempt 2 replays 1..2 and explores its own step 3.
+	for _, n := range []int{1, 2, 3} {
+		in := checkpointStepInput("run-1", n, 20)
+		in.Attempt = 2
+		if err := repo.SaveStep(ctx, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	set, err := repo.LoadPrefix(ctx, "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The count check cannot fire here, which is the point of the test.
+	if set.Len() != 3 {
+		t.Fatalf("prefix len = %d, want 3 — the rows are clean, so only the attempt can disqualify the summary", set.Len())
+	}
+	if set.ExplorationComplete() {
+		t.Error("a summary from an older attempt than the prefix must not claim exploration finished")
+	}
+}
+
+// TestInteg_Checkpoint_SummaryFromTheSameAttemptSurvives is the case the
+// feature is for, and the one the check above must not break: a run that
+// finished exploring and died before analysis skips straight to analysis on
+// its next attempt.
+func TestInteg_Checkpoint_SummaryFromTheSameAttemptSurvives(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	repo := NewDiscoveryCheckpointRepository(db)
+	if err := repo.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("EnsureIndexes: %v", err)
+	}
+
+	for _, n := range []int{1, 2} {
+		if err := repo.SaveStep(ctx, checkpointStepInput("run-1", n, 10)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := repo.SaveExplorationSummary(ctx, CheckpointSummaryInput{
+		ProjectID: "proj-1", RunID: "run-1", Attempt: 1,
+		Summary: models.ExplorationCheckpointSummary{Completed: true, TotalSteps: 2, Duration: time.Minute},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	set, err := repo.LoadPrefix(ctx, "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !set.ExplorationComplete() {
+		t.Error("a summary covering its own attempt's whole prefix must still skip exploration")
+	}
+
+	// And it keeps surviving once a resume has replayed that prefix under a
+	// NEWER attempt — the summary is then equal to, not older than, nothing
+	// it does not cover. Replay rewrites the rows it replays, so the summary
+	// has to be re-written with them.
+	for _, n := range []int{1, 2} {
+		in := checkpointStepInput("run-1", n, 10)
+		in.Attempt = 2
+		if err := repo.SaveStep(ctx, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err = repo.SaveExplorationSummary(ctx, CheckpointSummaryInput{
+		ProjectID: "proj-1", RunID: "run-1", Attempt: 2,
+		Summary: models.ExplorationCheckpointSummary{Completed: true, TotalSteps: 2, Duration: time.Minute},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err = repo.LoadPrefix(ctx, "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !set.ExplorationComplete() {
+		t.Error("a re-written summary over a replayed prefix must still skip exploration")
+	}
+}
+
+// TestInteg_Checkpoint_SummaryAloneStillResumes guards the one state where a
+// summary with nothing under it IS the whole answer: the step rows aged out
+// of their TTL and the summary has not. The prefix is empty, so there is no
+// prefix attempt for the summary to be older than.
+func TestInteg_Checkpoint_SummaryAloneStillResumes(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	repo := NewDiscoveryCheckpointRepository(db)
+	if err := repo.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("EnsureIndexes: %v", err)
+	}
+
+	err := repo.SaveExplorationSummary(ctx, CheckpointSummaryInput{
+		ProjectID: "proj-1", RunID: "run-1", Attempt: 1,
+		Summary: models.ExplorationCheckpointSummary{Completed: true, TotalSteps: 0, Duration: time.Minute},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	set, err := repo.LoadPrefix(ctx, "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set.Len() != 0 {
+		t.Fatalf("prefix len = %d, want 0", set.Len())
+	}
+	if !set.ExplorationComplete() {
+		t.Error("a surviving summary over pruned step rows must still skip exploration")
+	}
+}
