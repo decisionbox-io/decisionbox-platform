@@ -611,11 +611,14 @@ func (h *DiscoveriesHandler) GetRun(w http.ResponseWriter, r *http.Request) {
 // see.
 //
 // Closing it needs a CheckResumeDiscoveryRun on the policy checker that
-// reserves concurrency WITHOUT consuming a runs-per-period slot. That is a
-// new seam in a shared interface and a pricing decision, so it is flagged for
-// sign-off rather than taken here. `attempt` is persisted so a future
-// per-attempt price can key on runID:attempt rather than silently no-op'ing
-// against the original charge.
+// reserves concurrency WITHOUT consuming a runs-per-period slot — a new seam
+// in a shared interface, and a pricing decision, because it would make a
+// resume refusable on plan grounds for a run that is already paid for.
+//
+// Reviewed and deliberately left as it stands, to be revisited with the v4
+// (operator Pause) increment. `attempt` is persisted so a future per-attempt
+// price can key on runID:attempt rather than silently no-op'ing against the
+// original charge, and the seam above is where it goes.
 func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("runId")
 	ctx := r.Context()
