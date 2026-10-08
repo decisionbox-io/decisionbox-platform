@@ -644,8 +644,9 @@ func (r *KubernetesRunner) watchJob(jobName, runID string, onFailure func(string
 					errMsg = fmt.Sprintf("K8s Job failed (%s): %s", cond.Reason, cond.Message)
 				}
 
-				// Try to get pod logs for more detail
-				if podErr := r.getPodErrorMessage(ctx, runID); podErr != "" {
+				// This attempt's Job, not the run — a resumed run's previous
+				// Job lingers for its TTL under the same run-id.
+				if podErr := r.getPodErrorMessage(ctx, jobName); podErr != "" {
 					errMsg = podErr
 				}
 
@@ -663,7 +664,7 @@ func (r *KubernetesRunner) watchJob(jobName, runID string, onFailure func(string
 		// Also check if the Job has been running too long (safety net)
 		if job.Status.Failed > 0 {
 			errMsg := "K8s Job failed (container exited with error)"
-			if podErr := r.getPodErrorMessage(ctx, runID); podErr != "" {
+			if podErr := r.getPodErrorMessage(ctx, jobName); podErr != "" {
 				errMsg = podErr
 			}
 			onFailure(runID, errMsg)
@@ -685,10 +686,25 @@ func (r *KubernetesRunner) watchJob(jobName, runID string, onFailure func(string
 	}).Warn("K8s Job watcher exhausted without observing a terminal condition; leaving terminal-status decision to the agent")
 }
 
-// getPodErrorMessage tries to extract error message from the failed pod's termination message.
-func (r *KubernetesRunner) getPodErrorMessage(ctx context.Context, runID string) string {
+// getPodErrorMessage extracts the error message from the failed pod's
+// termination message, for ONE Job.
+//
+// Selected by `job-name`, not by `run-id`, for two reasons:
+//
+//   - A resumed run's previous Job deliberately survives for its TTL and
+//     carries the SAME run-id label as the live attempt, so a run-id
+//     selector can return the earlier attempt's pod and record its error
+//     against this attempt's failure.
+//   - Three of this function's call sites already passed a Job name into
+//     what was a run-id selector, so they matched nothing and silently
+//     returned "" — the diagnostic they exist to produce never appeared.
+//     Taking the Job name makes those correct by construction.
+//
+// The Job name carries the attempt suffix, so it is attempt-specific, and it
+// is the same selector the log-streaming path already uses.
+func (r *KubernetesRunner) getPodErrorMessage(ctx context.Context, jobName string) string {
 	pods, err := r.client.CoreV1().Pods(r.config.Namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("run-id=%s", runID),
+		LabelSelector: fmt.Sprintf("job-name=%s", jobName),
 	})
 	if err != nil || len(pods.Items) == 0 {
 		return ""

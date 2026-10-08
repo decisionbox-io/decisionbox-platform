@@ -1422,3 +1422,109 @@ func TestDiscoveryArgs(t *testing.T) {
 		})
 	}
 }
+
+// TestKubernetesRunner_PodErrorMessage_IsScopedToTheAttemptsJob pins the
+// selector getPodErrorMessage uses.
+//
+// A resumed run re-enters the same runID, and the previous attempt's Job is
+// left to expire on its own TTL — so for up to an hour two Jobs carry the
+// identical `run-id` label and only the `job-name` label tells them apart. A
+// run-id selector here would hand the live attempt's failure the DEAD
+// attempt's pod error, which is worse than no diagnostic: it is a plausible,
+// wrong one.
+func TestKubernetesRunner_PodErrorMessage_IsScopedToTheAttemptsJob(t *testing.T) {
+	const runID = "run-abc-def-123456"
+	attempt1 := discoveryJobName(runID, 1)
+	attempt2 := discoveryJobName(runID, 2)
+
+	// Both pods belong to the same run; they differ only by Job.
+	failedPod := func(name, jobName, message string) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "test-ns",
+				Labels:    map[string]string{"run-id": runID, "job-name": jobName},
+			},
+			Status: corev1.PodStatus{
+				ContainerStatuses: []corev1.ContainerStatus{{
+					State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+						ExitCode: 1,
+						Reason:   "Error",
+						Message:  message,
+					}},
+				}},
+			},
+		}
+	}
+
+	r := newFakeK8sRunner()
+	r.client = fake.NewClientset(
+		failedPod("pod-attempt-1", attempt1, "the first attempt died"),
+		failedPod("pod-attempt-2", attempt2, "the second attempt died"),
+	)
+	ctx := context.Background()
+
+	if got := r.getPodErrorMessage(ctx, attempt2); got != "the second attempt died" {
+		t.Errorf("attempt 2's error = %q, want the second attempt's own message", got)
+	}
+	if got := r.getPodErrorMessage(ctx, attempt1); got != "the first attempt died" {
+		t.Errorf("attempt 1's error = %q, want the first attempt's own message", got)
+	}
+	// A Job with no pod left yields no diagnostic rather than a neighbour's.
+	if got := r.getPodErrorMessage(ctx, discoveryJobName(runID, 3)); got != "" {
+		t.Errorf("attempt 3 has no pod, so its error must be empty; got %q", got)
+	}
+}
+
+// TestKubernetesRunner_PodErrorMessage_FallsBackToExitCode covers the pod
+// that terminated without writing a termination message — the common case,
+// since nothing writes /dev/termination-log unless asked to.
+func TestKubernetesRunner_PodErrorMessage_FallsBackToExitCode(t *testing.T) {
+	r := newFakeK8sRunner()
+	r.client = fake.NewClientset(&corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod-oom",
+			Namespace: "test-ns",
+			Labels:    map[string]string{"job-name": "discovery-run-xyz"},
+		},
+		Status: corev1.PodStatus{
+			ContainerStatuses: []corev1.ContainerStatus{{
+				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+					ExitCode: 137,
+					Reason:   "OOMKilled",
+				}},
+			}},
+		},
+	})
+
+	got := r.getPodErrorMessage(context.Background(), "discovery-run-xyz")
+	if got != "Container exited with code 137: OOMKilled" {
+		t.Errorf("error = %q, want the exit-code fallback", got)
+	}
+}
+
+// TestKubernetesRunner_PodErrorMessage_IgnoresASuccessfulContainer keeps the
+// watcher from reporting an error for a pod whose container exited 0 — a
+// sidecar or an init container that finished cleanly is not the failure.
+func TestKubernetesRunner_PodErrorMessage_IgnoresASuccessfulContainer(t *testing.T) {
+	r := newFakeK8sRunner()
+	r.client = fake.NewClientset(&corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod-ok",
+			Namespace: "test-ns",
+			Labels:    map[string]string{"job-name": "discovery-run-ok"},
+		},
+		Status: corev1.PodStatus{
+			ContainerStatuses: []corev1.ContainerStatus{{
+				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+					ExitCode: 0,
+					Message:  "clean exit",
+				}},
+			}},
+		},
+	})
+
+	if got := r.getPodErrorMessage(context.Background(), "discovery-run-ok"); got != "" {
+		t.Errorf("a clean exit must produce no error message; got %q", got)
+	}
+}
