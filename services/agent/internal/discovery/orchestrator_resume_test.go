@@ -914,3 +914,55 @@ func TestOwnershipGates_CoverEverySpendAndSideEffectAfterExploration(t *testing.
 		}
 	}
 }
+
+// TestRetireDiscovery_DeletesVectorsBeforeTheRowsThatAddressThem pins the
+// ordering, which the code previously got backwards while a comment above it
+// asserted the correct rule.
+//
+// The standalone row ids ARE the Qdrant point ids. Delete the rows first and
+// a failed vector delete is unrecoverable: the points are orphaned, project
+// search can still return them, and nothing is left that names them. Delete
+// the points first and a failure leaves rows for a discovery that no longer
+// exists — inert, because nothing reaches them without the discovery, and
+// they keep the points addressable.
+func TestRetireDiscovery_DeletesVectorsBeforeTheRowsThatAddressThem(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("happy path lists, deletes points, then deletes rows", func(t *testing.T) {
+		embed := &mockEmbedIndexStore{deleteInsightIDs: []string{"i1"}, deleteRecIDs: []string{"r1"}}
+		vecs := &fakeVectorStore{}
+		deps := retireDeps{
+			embed: embed, vectors: vecs,
+			discoveries: &fakeDiscoveryRetirer{}, logs: &fakeDiscoveryLogPersister{},
+		}
+		retireDiscovery(ctx, "run-1", "disc-1", deps)
+
+		if len(embed.listedDiscoveries) != 1 {
+			t.Errorf("listed %v, want one list call", embed.listedDiscoveries)
+		}
+		if len(vecs.deleted) != 2 {
+			t.Errorf("deleted points %v, want both i1 and r1", vecs.deleted)
+		}
+		if len(embed.deletedDiscoveries) != 1 {
+			t.Errorf("deleted rows %v, want the rows removed once their points were gone", embed.deletedDiscoveries)
+		}
+	})
+
+	t.Run("a failed vector delete keeps the rows", func(t *testing.T) {
+		embed := &mockEmbedIndexStore{deleteInsightIDs: []string{"i1"}, deleteRecIDs: []string{"r1"}}
+		vecs := &fakeVectorStore{deleteErr: errors.New("qdrant down")}
+		deps := retireDeps{
+			embed: embed, vectors: vecs,
+			discoveries: &fakeDiscoveryRetirer{}, logs: &fakeDiscoveryLogPersister{},
+		}
+		retireDiscovery(ctx, "run-1", "disc-1", deps)
+
+		if len(embed.deletedDiscoveries) != 0 {
+			t.Errorf("rows were deleted (%v) after the vector delete failed; the points are now unaddressable orphans", embed.deletedDiscoveries)
+		}
+		// And it still listed, so the ids were known before anything was removed.
+		if len(embed.listedDiscoveries) != 1 {
+			t.Errorf("listed %v, want one list call", embed.listedDiscoveries)
+		}
+	})
+}

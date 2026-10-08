@@ -199,7 +199,29 @@ func (r *RunRepository) Complete(ctx context.Context, runID, discoveryID string,
 		},
 	}
 
-	res, err := r.col.UpdateOne(ctx, attemptFilter(oid, attempt), update)
+	// Attempt-fenced, and additionally barred from overriding a
+	// cancellation.
+	//
+	// Cancel is a deliberate hard kill that stays terminal: the API writes
+	// `cancelled` and deletes the checkpoints. An agent still finishing its
+	// save would otherwise match on (_id, attempt) — the cancel does not
+	// change the attempt — and flip the run to `completed`, erasing the
+	// cancellation. Worse since this write began reporting whether it
+	// claimed the run: a claim licenses retireSupersededAttempts and
+	// discardCheckpoints, so a late Complete after a cancel would not just
+	// mislabel the run but start deleting on the strength of it.
+	//
+	// Deliberately NOT the pending/running predicate Fail uses. `failed` has
+	// to stay matchable here, because the API's startup sweep marks
+	// in-flight runs failed WITHOUT reaping their agents: an agent that then
+	// finishes genuinely has a discovery to record, and refusing it would
+	// leave a complete result saved but unreachable behind a `failed` run,
+	// inviting a resume that re-runs analysis for nothing. A resumed run is
+	// already excluded by the attempt fence, not by the status.
+	filter := attemptFilter(oid, attempt)
+	filter["status"] = bson.M{"$ne": models.RunStatusCancelled}
+
+	res, err := r.col.UpdateOne(ctx, filter, update)
 	if err != nil {
 		return false, err
 	}

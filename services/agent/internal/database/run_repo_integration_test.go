@@ -445,3 +445,128 @@ func seedRunDocWithoutAttempt(t *testing.T, ctx context.Context, db *DB) string 
 	}
 	return res.InsertedID.(primitive.ObjectID).Hex()
 }
+
+// seedRunDoc inserts a run document with the given fields merged over the
+// defaults, so a test can pin the exact status/attempt it needs.
+func seedRunDoc(t *testing.T, ctx context.Context, db *DB, fields bson.M) string {
+	t.Helper()
+	doc := bson.M{
+		"project_id": "proj-1",
+		"status":     models.RunStatusRunning,
+		"started_at": time.Now(),
+	}
+	for k, v := range fields {
+		doc[k] = v
+	}
+	res, err := db.Collection(CollectionDiscoveryRuns).InsertOne(ctx, doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res.InsertedID.(primitive.ObjectID).Hex()
+}
+
+// readRunDoc reads a run document back as a raw map, so a test can assert on
+// fields the typed model may not carry.
+func readRunDoc(t *testing.T, ctx context.Context, db *DB, runID string) bson.M {
+	t.Helper()
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bson.M
+	if err := db.Collection(CollectionDiscoveryRuns).FindOne(ctx, bson.M{"_id": oid}).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// TestInteg_RunRepo_CompleteCannotOverrideACancellation is the guard that
+// keeps a hard kill terminal.
+//
+// Cancel is deliberate: the API writes `cancelled` and deletes the run's
+// checkpoints. It does NOT change the attempt, so an agent still finishing
+// its save matched on (_id, attempt) and flipped the run to `completed`.
+// That was already wrong, and became destructive once this write started
+// reporting whether it claimed the run — a claim licenses
+// retireSupersededAttempts and discardCheckpoints, so a late Complete after
+// a cancel would begin deleting on the strength of it.
+func TestInteg_RunRepo_CompleteCannotOverrideACancellation(t *testing.T) {
+	ctx := context.Background()
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	repo := NewRunRepository(db)
+
+	runID := seedRunDoc(t, ctx, db, bson.M{"status": models.RunStatusCancelled, "attempt": 1})
+
+	applied, err := repo.Complete(ctx, runID, "disc-1", 3, 1)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if applied {
+		t.Error("a late Complete claimed a cancelled run; it would then retire results and discard checkpoints")
+	}
+	run := readRunDoc(t, ctx, db, runID)
+	if run["status"] != models.RunStatusCancelled {
+		t.Errorf("status = %v, want it to stay cancelled", run["status"])
+	}
+	if _, ok := run["discovery_id"]; ok {
+		t.Error("a cancelled run was given a discovery_id by a late Complete")
+	}
+}
+
+// TestInteg_RunRepo_CompleteStillRecoversASweptRun is the other half, and the
+// reason this guard is NOT the pending/running predicate Fail uses.
+//
+// The API's startup sweep marks in-flight runs `failed` WITHOUT reaping their
+// agents — the premise the whole resume feature is built on. An agent that
+// then finishes genuinely has a discovery to record. Refusing it would leave
+// a complete result saved but unreachable behind a failed run, and invite a
+// resume that re-runs analysis for nothing.
+func TestInteg_RunRepo_CompleteStillRecoversASweptRun(t *testing.T) {
+	ctx := context.Background()
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	repo := NewRunRepository(db)
+
+	runID := seedRunDoc(t, ctx, db, bson.M{"status": models.RunStatusFailed, "attempt": 1})
+
+	applied, err := repo.Complete(ctx, runID, "disc-1", 3, 1)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if !applied {
+		t.Fatal("an agent that finished after the sweep could not record its discovery")
+	}
+	run := readRunDoc(t, ctx, db, runID)
+	if run["status"] != models.RunStatusCompleted {
+		t.Errorf("status = %v, want completed", run["status"])
+	}
+	if run["discovery_id"] != "disc-1" {
+		t.Errorf("discovery_id = %v, want disc-1", run["discovery_id"])
+	}
+}
+
+// TestInteg_RunRepo_CompleteIsStillAttemptFenced keeps the fence this guard
+// sits beside: a superseded attempt is excluded by its ATTEMPT, not by the
+// run's status, which is why `failed` had to stay matchable above.
+func TestInteg_RunRepo_CompleteIsStillAttemptFenced(t *testing.T) {
+	ctx := context.Background()
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	repo := NewRunRepository(db)
+
+	// The run has been resumed: it is running again, on attempt 2.
+	runID := seedRunDoc(t, ctx, db, bson.M{"status": "running", "attempt": 2})
+
+	applied, err := repo.Complete(ctx, runID, "disc-old", 1, 1)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if applied {
+		t.Error("attempt 1's late Complete claimed a run that has moved to attempt 2")
+	}
+	run := readRunDoc(t, ctx, db, runID)
+	if run["status"] != "running" {
+		t.Errorf("status = %v, want the live attempt untouched", run["status"])
+	}
+}

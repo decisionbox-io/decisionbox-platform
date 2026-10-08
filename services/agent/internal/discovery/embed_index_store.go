@@ -50,29 +50,43 @@ func (s *MongoEmbedIndexStore) InsertRecommendations(ctx context.Context, recs [
 	return nil
 }
 
-// DeleteByDiscovery implements EmbedIndexStore.
-func (s *MongoEmbedIndexStore) DeleteByDiscovery(ctx context.Context, discoveryID string) ([]string, []string, error) {
+// PointIDsByDiscovery implements EmbedIndexStore.
+func (s *MongoEmbedIndexStore) PointIDsByDiscovery(ctx context.Context, discoveryID string) ([]string, []string, error) {
 	if discoveryID == "" {
-		return nil, nil, fmt.Errorf("delete standalone docs: discovery_id is required")
+		return nil, nil, fmt.Errorf("list standalone docs: discovery_id is required")
 	}
-	insightIDs, err := s.deleteByDiscovery(ctx, "insights", discoveryID)
+	insightIDs, err := s.pointIDsByDiscovery(ctx, "insights", discoveryID)
 	if err != nil {
 		return nil, nil, err
 	}
-	recIDs, err := s.deleteByDiscovery(ctx, "recommendations", discoveryID)
+	recIDs, err := s.pointIDsByDiscovery(ctx, "recommendations", discoveryID)
 	if err != nil {
-		// The insight rows are already gone. Return their ids anyway so the
-		// caller can still delete the matching vectors — leaving points
-		// behind for rows that no longer exist is the worse outcome.
+		// Return what was listed: deleting the vectors we DID find is
+		// strictly better than deleting none, and nothing has been removed
+		// from Mongo yet, so the rest stays addressable for a retry.
 		return insightIDs, nil, err
 	}
 	return insightIDs, recIDs, nil
 }
 
-// deleteByDiscovery reads the ids of one collection's rows for a discovery,
-// then deletes them. Read-then-delete rather than the reverse because the ids
-// are the Qdrant point ids and are unrecoverable once the rows are gone.
-func (s *MongoEmbedIndexStore) deleteByDiscovery(ctx context.Context, collection, discoveryID string) ([]string, error) {
+// DeleteByDiscovery implements EmbedIndexStore.
+func (s *MongoEmbedIndexStore) DeleteByDiscovery(ctx context.Context, discoveryID string) error {
+	if discoveryID == "" {
+		return fmt.Errorf("delete standalone docs: discovery_id is required")
+	}
+	filter := bson.M{"discovery_id": discoveryID}
+	for _, collection := range []string{"insights", "recommendations"} {
+		if _, err := s.db.Collection(collection).DeleteMany(ctx, filter); err != nil {
+			return fmt.Errorf("delete %s for discovery %s: %w", collection, discoveryID, err)
+		}
+	}
+	return nil
+}
+
+// pointIDsByDiscovery reads the ids of one collection's rows for a discovery.
+// Read-only: the ids are the Qdrant point ids and are unrecoverable once the
+// rows are gone, so the vectors are deleted before the rows are.
+func (s *MongoEmbedIndexStore) pointIDsByDiscovery(ctx context.Context, collection, discoveryID string) ([]string, error) {
 	filter := bson.M{"discovery_id": discoveryID}
 	cursor, err := s.db.Collection(collection).Find(ctx, filter, options.Find().SetProjection(bson.M{"_id": 1}))
 	if err != nil {
@@ -94,12 +108,6 @@ func (s *MongoEmbedIndexStore) deleteByDiscovery(ctx context.Context, collection
 	}
 	if err := cursor.Err(); err != nil {
 		return nil, fmt.Errorf("cursor %s for discovery %s: %w", collection, discoveryID, err)
-	}
-	if len(ids) == 0 {
-		return nil, nil
-	}
-	if _, err := s.db.Collection(collection).DeleteMany(ctx, filter); err != nil {
-		return ids, fmt.Errorf("delete %s for discovery %s: %w", collection, discoveryID, err)
 	}
 	return ids, nil
 }

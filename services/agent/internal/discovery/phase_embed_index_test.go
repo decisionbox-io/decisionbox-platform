@@ -210,11 +210,24 @@ type mockEmbedIndexStore struct {
 	deleteInsightIDs   []string
 	deleteRecIDs       []string
 	deleteError        error
+	// listedDiscoveries records the LIST calls separately from the deletes,
+	// so a test can assert the ordering: points are addressable only until
+	// the rows go, so listing must happen first and deleting last.
+	listedDiscoveries []string
+	listError         error
 }
 
-func (m *mockEmbedIndexStore) DeleteByDiscovery(_ context.Context, discoveryID string) ([]string, []string, error) {
+func (m *mockEmbedIndexStore) PointIDsByDiscovery(_ context.Context, discoveryID string) ([]string, []string, error) {
+	m.listedDiscoveries = append(m.listedDiscoveries, discoveryID)
+	if m.listError != nil {
+		return nil, nil, m.listError
+	}
+	return m.deleteInsightIDs, m.deleteRecIDs, nil
+}
+
+func (m *mockEmbedIndexStore) DeleteByDiscovery(_ context.Context, discoveryID string) error {
 	m.deletedDiscoveries = append(m.deletedDiscoveries, discoveryID)
-	return m.deleteInsightIDs, m.deleteRecIDs, m.deleteError
+	return m.deleteError
 }
 
 type embedUpdate struct {

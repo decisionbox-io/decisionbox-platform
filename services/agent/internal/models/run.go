@@ -221,4 +221,8 @@ const (
 	RunStatusRunning   = "running"
 	RunStatusCompleted = "completed"
 	RunStatusFailed    = "failed"
+	// RunStatusCancelled is written by the API, never by the agent — but
+	// the agent has to recognise it, because a cancellation outranks
+	// anything the agent goes on to conclude.
+	RunStatusCancelled = "cancelled"
 )

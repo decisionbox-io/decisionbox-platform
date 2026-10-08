@@ -481,14 +481,34 @@ func retireDiscovery(ctx context.Context, runID, discoveryID string, deps retire
 	logf := applog.WithFields(applog.Fields{"run_id": runID, "discovery_id": discoveryID})
 
 	if deps.embed != nil {
-		insightIDs, recIDs, err := deps.embed.DeleteByDiscovery(ctx, discoveryID)
+		// List, delete the points, THEN delete the rows. The row ids ARE the
+		// point ids, so deleting the rows first makes a failed vector delete
+		// unrecoverable — which is exactly the orphan this ordering exists
+		// to avoid, and what this code used to do despite the comment above
+		// saying otherwise.
+		insightIDs, recIDs, err := deps.embed.PointIDsByDiscovery(ctx, discoveryID)
 		if err != nil {
-			logf.WithError(err).Warn("failed to delete a superseded attempt's standalone insight / recommendation rows")
+			logf.WithError(err).Warn("failed to list a superseded attempt's standalone insight / recommendation ids")
 		}
 		pointIDs := append(append(make([]string, 0, len(insightIDs)+len(recIDs)), insightIDs...), recIDs...)
+
+		pointsGone := true
 		if len(pointIDs) > 0 && deps.vectors != nil {
-			if err := deps.vectors.Delete(ctx, pointIDs); err != nil {
-				logf.WithError(err).Warn("failed to delete a superseded attempt's vectors; project search may return orphaned points until the next run")
+			if vecErr := deps.vectors.Delete(ctx, pointIDs); vecErr != nil {
+				pointsGone = false
+				logf.WithError(vecErr).Warn("failed to delete a superseded attempt's vectors; keeping its Mongo rows so the points stay addressable")
+			}
+		}
+
+		// Rows only once their points are gone. Keeping them on a failed
+		// vector delete leaves rows for a discovery that no longer exists —
+		// inert, since nothing reaches them without the discovery — whereas
+		// the reverse leaves points that project search can still return
+		// with nothing behind them. Nothing retries automatically; the
+		// rows are what make a manual or future cleanup possible at all.
+		if pointsGone {
+			if delErr := deps.embed.DeleteByDiscovery(ctx, discoveryID); delErr != nil {
+				logf.WithError(delErr).Warn("failed to delete a superseded attempt's standalone insight / recommendation rows")
 			}
 		}
 	}
