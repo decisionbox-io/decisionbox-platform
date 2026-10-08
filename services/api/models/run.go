@@ -143,6 +143,21 @@ const SupersededByResumeReason = "attempt superseded by a resume"
 // and clears it, so finding one here means that confirm failed — and
 // whatever closes it afterwards must report the SUPERSEDED attempt's
 // outcome, not the outcome of whatever the run went on to do.
+// LatestAttemptAt is when this run was most recently STARTED — its original
+// start, or the moment of its last resume if it has been resumed.
+//
+// started_at is when the run was created and never moves, which is right for
+// history and wrong for "which run is the operator looking at". Resuming an
+// older failed run makes it the live one while keeping the older timestamp,
+// so ordering by started_at hides it behind any newer run the moment it is
+// no longer active.
+func (r *DiscoveryRun) LatestAttemptAt() time.Time {
+	if r.LastResumedAt != nil && r.LastResumedAt.After(r.StartedAt) {
+		return *r.LastResumedAt
+	}
+	return r.StartedAt
+}
+
 func (r *DiscoveryRun) ReservationBelongsToASupersededAttempt() bool {
 	return r.PolicyReservationID != "" && r.Attempt > 1
 }

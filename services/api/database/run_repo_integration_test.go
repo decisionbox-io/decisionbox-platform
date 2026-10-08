@@ -538,3 +538,93 @@ func TestInteg_RunRepo_LatestFallsBackToStartedAtWithNoActiveRun(t *testing.T) {
 		t.Errorf("GetLatestByProject for a project with no runs = (%v, %v), want (nil, nil)", one, err)
 	}
 }
+
+// seedResumedRun inserts a run that has been resumed: original started_at,
+// a later last_resumed_at, and a terminal status.
+func seedResumedRun(t *testing.T, ctx context.Context, projectID, status string, startedAt, resumedAt time.Time) string {
+	t.Helper()
+	res, err := testDB.Collection("discovery_runs").InsertOne(ctx, bson.M{
+		"project_id":      projectID,
+		"status":          status,
+		"started_at":      startedAt,
+		"last_resumed_at": resumedAt,
+		"attempt":         2,
+		"updated_at":      time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("seed resumed run: %v", err)
+	}
+	return res.InsertedID.(primitive.ObjectID).Hex()
+}
+
+// TestInteg_RunRepo_LatestKeepsAResumedRunVisibleAfterItFailsAgain closes the
+// half of the active-run rule that only held while the run was RUNNING.
+//
+// A resumed run keeps its original started_at. While it is active it wins
+// outright, but the moment it fails again the fallback ordered by started_at
+// handed back any newer run instead — so the project panel showed an
+// unrelated completed run and offered no Resume for the attempt that had just
+// failed. The resume affordance is the feature; it has to survive the second
+// failure as much as the first.
+func TestInteg_RunRepo_LatestKeepsAResumedRunVisibleAfterItFailsAgain(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	base := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	newerDone := base.Add(90 * time.Minute)
+
+	// Failed at 10:00, resumed at 12:00, failed again.
+	resumed := seedResumedRun(t, ctx, "proj-r", "failed", base, base.Add(2*time.Hour))
+	// A whole newer run came and went in between.
+	_ = seedRunForProject(t, ctx, "proj-r", "completed", base.Add(1*time.Hour), &newerDone)
+
+	one, err := repo.GetLatestByProject(ctx, "proj-r")
+	if err != nil {
+		t.Fatalf("GetLatestByProject: %v", err)
+	}
+	if one == nil || one.ID != resumed {
+		t.Errorf("GetLatestByProject = %v, want the resumed run %q that failed most recently", one, resumed)
+	}
+
+	many, err := repo.LatestByProjects(ctx, []string{"proj-r"})
+	if err != nil {
+		t.Fatalf("LatestByProjects: %v", err)
+	}
+	if got := many["proj-r"]; got == nil || got.ID != resumed {
+		t.Errorf("LatestByProjects = %v, want the resumed run %q", got, resumed)
+	}
+}
+
+// TestInteg_RunRepo_LatestPicksTheMostRecentlyResumedRun is why the resumed
+// pass orders by last_resumed_at and not by started_at: a project can hold
+// two resumed runs where the one that STARTED earlier was resumed later, and
+// each pass only ever surfaces one row, so the wrong sort key here cannot be
+// repaired by comparing afterwards.
+func TestInteg_RunRepo_LatestPicksTheMostRecentlyResumedRun(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	base := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	// Started first, resumed LAST — this is the one the operator just touched.
+	older := seedResumedRun(t, ctx, "proj-r", "failed", base, base.Add(5*time.Hour))
+	// Started later, resumed earlier.
+	_ = seedResumedRun(t, ctx, "proj-r", "failed", base.Add(1*time.Hour), base.Add(2*time.Hour))
+
+	one, err := repo.GetLatestByProject(ctx, "proj-r")
+	if err != nil {
+		t.Fatalf("GetLatestByProject: %v", err)
+	}
+	if one == nil || one.ID != older {
+		t.Errorf("GetLatestByProject = %v, want %q — the most recently RESUMED run", one, older)
+	}
+
+	many, err := repo.LatestByProjects(ctx, []string{"proj-r"})
+	if err != nil {
+		t.Fatalf("LatestByProjects: %v", err)
+	}
+	if got := many["proj-r"]; got == nil || got.ID != older {
+		t.Errorf("LatestByProjects = %v, want %q", got, older)
+	}
+}

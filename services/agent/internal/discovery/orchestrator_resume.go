@@ -487,13 +487,22 @@ func retireDiscovery(ctx context.Context, runID, discoveryID string, deps retire
 		// to avoid, and what this code used to do despite the comment above
 		// saying otherwise.
 		insightIDs, recIDs, err := deps.embed.PointIDsByDiscovery(ctx, discoveryID)
-		if err != nil {
-			logf.WithError(err).Warn("failed to list a superseded attempt's standalone insight / recommendation ids")
-		}
-		pointIDs := append(append(make([]string, 0, len(insightIDs)+len(recIDs)), insightIDs...), recIDs...)
 
-		pointsGone := true
+		// A failed LIST is as disqualifying as a failed delete, and for the
+		// same reason. The store returns what it managed to read — insights
+		// listed, recommendations failed, say — so the ids in hand are a
+		// SUBSET of the points that exist. Deleting the rows on the strength
+		// of a partial list would orphan exactly the points it could not
+		// name, which is the failure this ordering exists to prevent.
+		pointsGone := err == nil
+		if err != nil {
+			logf.WithError(err).Warn("failed to list a superseded attempt's standalone insight / recommendation ids; keeping its Mongo rows so the points stay addressable")
+		}
+
+		pointIDs := append(append(make([]string, 0, len(insightIDs)+len(recIDs)), insightIDs...), recIDs...)
 		if len(pointIDs) > 0 && deps.vectors != nil {
+			// Still delete what WAS listed: fewer orphans is strictly
+			// better, and the rows stay behind to name the rest.
 			if vecErr := deps.vectors.Delete(ctx, pointIDs); vecErr != nil {
 				pointsGone = false
 				logf.WithError(vecErr).Warn("failed to delete a superseded attempt's vectors; keeping its Mongo rows so the points stay addressable")

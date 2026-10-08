@@ -966,3 +966,26 @@ func TestRetireDiscovery_DeletesVectorsBeforeTheRowsThatAddressThem(t *testing.T
 		}
 	})
 }
+
+// TestRetireDiscovery_AFailedListAlsoKeepsTheRows closes the other half of
+// the ordering rule.
+//
+// A failed LIST is as disqualifying as a failed delete: the store returns
+// what it managed to read, so the ids in hand are a SUBSET of the points that
+// exist. Deleting the rows on a partial list orphans exactly the points it
+// could not name — the failure the ordering exists to prevent, reached
+// through the fix for it.
+func TestRetireDiscovery_AFailedListAlsoKeepsTheRows(t *testing.T) {
+	embed := &mockEmbedIndexStore{listError: errors.New("cursor died")}
+	vecs := &fakeVectorStore{}
+	deps := retireDeps{
+		embed: embed, vectors: vecs,
+		discoveries: &fakeDiscoveryRetirer{}, logs: &fakeDiscoveryLogPersister{},
+	}
+
+	retireDiscovery(context.Background(), "run-1", "disc-1", deps)
+
+	if len(embed.deletedDiscoveries) != 0 {
+		t.Errorf("rows were deleted (%v) after the id listing failed; any point it could not name is now an unaddressable orphan", embed.deletedDiscoveries)
+	}
+}

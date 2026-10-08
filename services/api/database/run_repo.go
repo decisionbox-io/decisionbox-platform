@@ -246,7 +246,48 @@ func (r *RunRepository) GetLatestByProject(ctx context.Context, projectID string
 		return nil, err
 	}
 
-	err = r.col.FindOne(ctx, bson.M{"project_id": projectID}, opts).Decode(&run)
+	// Nothing active. The newest by started_at is the answer for every run
+	// that was never resumed — but a resumed run keeps its ORIGINAL
+	// started_at, so one that has failed again would hide behind any newer
+	// run, and the panel would show an unrelated completed run with no
+	// Resume for the attempt that just failed. The resume affordance is the
+	// whole feature, so it has to survive the second failure as well as the
+	// first.
+	//
+	// Two queries and pick the later: newest by started_at, and newest among
+	// the runs that have ever been resumed. The second set is sparse — the
+	// field exists only on resumed runs — and both sorts stay index-friendly,
+	// which a computed sort key over the whole history would not.
+	byStart, err := r.newestMatching(ctx, bson.M{"project_id": projectID}, "started_at")
+	if err != nil {
+		return nil, err
+	}
+	byResume, err := r.newestMatching(ctx, bson.M{
+		"project_id":      projectID,
+		"last_resumed_at": bson.M{"$ne": nil},
+	}, "last_resumed_at")
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case byStart == nil:
+		return byResume, nil
+	case byResume == nil:
+		return byStart, nil
+	case byResume.LatestAttemptAt().After(byStart.LatestAttemptAt()):
+		return byResume, nil
+	default:
+		return byStart, nil
+	}
+}
+
+// newestMatching returns the newest run matching filter by the given field,
+// or nil when nothing matches.
+func (r *RunRepository) newestMatching(ctx context.Context, filter bson.M, sortField string) (*models.DiscoveryRun, error) {
+	var run models.DiscoveryRun
+	err := r.col.FindOne(ctx, filter,
+		options.FindOne().SetSort(bson.D{{Key: sortField, Value: -1}}),
+	).Decode(&run)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, nil
@@ -280,31 +321,59 @@ func (r *RunRepository) LatestByProjects(ctx context.Context, projectIDs []strin
 		return map[string]*models.DiscoveryRun{}, nil
 	}
 
-	out, err := r.newestPerProject(ctx, bson.M{"project_id": bson.M{"$in": projectIDs}})
+	out, err := r.newestPerProject(ctx, bson.M{"project_id": bson.M{"$in": projectIDs}}, "started_at")
 	if err != nil {
 		return nil, err
+	}
+	// A run that has been resumed keeps its original started_at, so the pass
+	// above hides it behind any newer run once it is no longer active. Same
+	// rule as GetLatestByProject, because the two readers giving different
+	// answers is the only thing that could justify having both.
+	resumed, err := r.newestPerProject(ctx, bson.M{
+		"project_id":      bson.M{"$in": projectIDs},
+		"last_resumed_at": bson.M{"$ne": nil},
+	}, "last_resumed_at")
+	if err != nil {
+		return nil, err
+	}
+	for projectID, run := range resumed {
+		if cur, ok := out[projectID]; !ok || run.LatestAttemptAt().After(cur.LatestAttemptAt()) {
+			out[projectID] = run
+		}
 	}
 	active, err := r.newestPerProject(ctx, bson.M{
 		"project_id": bson.M{"$in": projectIDs},
 		"status":     bson.M{"$in": []string{"pending", "running"}},
-	})
+	}, "started_at")
 	if err != nil {
 		return nil, err
 	}
+	// Active still wins outright, whatever the timestamps say.
 	for projectID, run := range active {
 		out[projectID] = run
 	}
 	return out, nil
 }
 
-// newestPerProject groups the matching runs by project and returns the one
-// with the newest started_at in each group.
-func (r *RunRepository) newestPerProject(ctx context.Context, match bson.M) (map[string]*models.DiscoveryRun, error) {
+// newestPerProject groups the matching runs by project and returns the newest
+// in each group by sortField.
+//
+// sortField matters and is not cosmetic. The resumed pass must order by
+// last_resumed_at: a project can hold two resumed runs where the one that
+// STARTED earlier was resumed more recently, and ordering that pass by
+// started_at would return the wrong one — which the caller's LatestAttemptAt
+// comparison cannot repair, because it only ever sees one row per pass.
+//
+// Only the started_at sort rides the existing (project_id, started_at)
+// index. The resumed pass sorts in memory, which is affordable precisely
+// because it is sparse: last_resumed_at exists only on runs that have
+// actually been resumed.
+func (r *RunRepository) newestPerProject(ctx context.Context, match bson.M, sortField string) (map[string]*models.DiscoveryRun, error) {
 	pipeline := mongo.Pipeline{
 		{{Key: "$match", Value: match}},
 		{{Key: "$sort", Value: bson.D{
 			{Key: "project_id", Value: 1},
-			{Key: "started_at", Value: -1},
+			{Key: sortField, Value: -1},
 		}}},
 		{{Key: "$group", Value: bson.M{
 			"_id": "$project_id",
