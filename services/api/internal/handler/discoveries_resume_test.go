@@ -932,3 +932,75 @@ func TestStartRun_FailureCallbackConfirmsTheReservationEvenWhenTheStatusWriteNoO
 		t.Errorf("confirmed %d reservations, want 1 — the run is over, so its slot must be released", confirms)
 	}
 }
+
+// postWithCtx is post() with a caller-supplied request context, so a test can
+// cancel the request mid-handler the way a closing browser tab does.
+func (f *resumeFixture) postWithCtx(ctx context.Context, runID string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("POST", "/api/v1/runs/"+runID+"/resume", nil).WithContext(ctx)
+	req.SetPathValue("runId", runID)
+	w := httptest.NewRecorder()
+	f.h.ResumeRun(w, req)
+	return w
+}
+
+// TestResumeRun_ACancelledRequestCannotStrandTheRun is why the post-flip
+// writes are detached from the request context.
+//
+// net/http cancels the request context the instant a client disconnects. Past
+// BeginResume the run is `running`, and the writes that can put it back were
+// running on that same context — so a browser tab closing at the wrong
+// moment decided whether the run stayed recoverable. The stand-down would not
+// land, and the run would sit `running` with no agent behind it: not
+// terminal, so not resumable, and visible to the concurrency check, which
+// then refuses every new run for the project until the API restarts and its
+// startup sweep clears it.
+func TestResumeRun_ACancelledRequestCannotStrandTheRun(t *testing.T) {
+	t.Run("a spawn failure still makes the run resumable", func(t *testing.T) {
+		f := newResumeFixture(t)
+		f.runner.err = errors.New("no agent binary")
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		// The client disconnects exactly in the window the flip opens.
+		f.runs.onBeginResume = cancel
+
+		_ = f.postWithCtx(ctx, "run-1")
+
+		run := f.runs.runs["run-1"]
+		if run.Status == "running" {
+			t.Fatal("the run is stranded `running` with no agent; nothing can resume or cancel it")
+		}
+		if run.Status != "failed" {
+			t.Errorf("run status = %q, want failed so the run stays resumable", run.Status)
+		}
+		if run.Attempt != 2 {
+			t.Errorf("attempt = %d, want 2 — this attempt happened and did not start", run.Attempt)
+		}
+	})
+
+	t.Run("the concurrency recheck still runs", func(t *testing.T) {
+		f := newResumeFixture(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		// A rival appears and the client disconnects, both in that window.
+		f.runs.onBeginResume = func() {
+			f.runs.runs["run-rival"] = &models.DiscoveryRun{ID: "run-rival", ProjectID: "p1", Status: "running"}
+			cancel()
+		}
+
+		_ = f.postWithCtx(ctx, "run-1")
+
+		// The recheck is the only thing bounding concurrency for a resume, so
+		// a cancelled request must not be able to skip it OR to leave the
+		// attempt it refuses still marked running.
+		if n := len(f.runner.calls()); n != 0 {
+			t.Errorf("spawned %d agents despite a competing run", n)
+		}
+		run := f.runs.runs["run-1"]
+		if run.Status != "failed" {
+			t.Errorf("run status = %q, want failed", run.Status)
+		}
+		if !strings.Contains(run.Error, "another discovery run") {
+			t.Errorf("run error = %q, want the lost-race reason", run.Error)
+		}
+	})
+}

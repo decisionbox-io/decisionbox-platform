@@ -348,8 +348,8 @@ type mockRunRepo struct {
 	// attempt to stand down.
 	getRunningErrAfter int
 	getRunningCalls    int
-	failErr       error
-	cancelErr     error
+	failErr            error
+	cancelErr          error
 
 	// Resume-path state. createdParams records what Create was handed, so a
 	// test can assert the run's own parameters were persisted; beginResume*
@@ -459,7 +459,10 @@ func (m *mockRunRepo) GetLatestByProject(_ context.Context, projectID string) (*
 	return &cp, nil
 }
 
-func (m *mockRunRepo) GetOtherRunningByProject(_ context.Context, projectID, excludeRunID string) (*models.DiscoveryRun, error) {
+func (m *mockRunRepo) GetOtherRunningByProject(ctx context.Context, projectID, excludeRunID string) (*models.DiscoveryRun, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	m.getRunningCalls++
 	failNow := m.getRunningErr != nil && m.getRunningCalls > m.getRunningErrAfter
@@ -514,7 +517,12 @@ func (m *mockRunRepo) GetRunningByProject(_ context.Context, projectID string) (
 // FailAttempt mirrors the repository's semantics: it applies only while the
 // run is non-terminal AND still on the attempt the caller names, so a stale
 // callback from a superseded attempt is a no-op.
-func (m *mockRunRepo) FailAttempt(_ context.Context, runID string, attempt int, errMsg string) (bool, error) {
+func (m *mockRunRepo) FailAttempt(ctx context.Context, runID string, attempt int, errMsg string) (bool, error) {
+	// A real driver refuses a write on a dead context; the handler's
+	// post-flip cleanup depends on not being handed one.
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	if m.failErr != nil {
 		return false, m.failErr
 	}
@@ -546,7 +554,10 @@ func (m *mockRunRepo) FailAttempt(_ context.Context, runID string, attempt int, 
 	return true, nil
 }
 
-func (m *mockRunRepo) Fail(_ context.Context, runID string, errMsg string) error {
+func (m *mockRunRepo) Fail(ctx context.Context, runID string, errMsg string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if m.failErr != nil {
 		return m.failErr
 	}
@@ -607,7 +618,10 @@ func (m *mockRunRepo) ListTerminalWithReservation(_ context.Context, limit int) 
 	return out, nil
 }
 
-func (m *mockRunRepo) ClearPolicyReservationID(_ context.Context, runID string) error {
+func (m *mockRunRepo) ClearPolicyReservationID(ctx context.Context, runID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	r, ok := m.runs[runID]

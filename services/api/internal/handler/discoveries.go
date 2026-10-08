@@ -520,17 +520,31 @@ func (h *DiscoveriesHandler) StartRun(ctx context.Context, opts discoverytrigger
 		},
 	})
 	if runErr != nil {
-		if err := h.runRepo.Fail(ctx, runID, "failed to start: "+runErr.Error()); err != nil {
+		// Detached from the request for the reason the resume path detaches
+		// its post-flip writes: the run document already exists, so a
+		// client that disconnected while the spawn was failing would
+		// otherwise leave it `pending` for ever — not terminal, so not
+		// resumable, and blocking the project's concurrency until the API
+		// restarts. The refund and the reservation release are on the same
+		// context because they are the same kind of write: owed to the
+		// operator whether or not anyone is still holding the connection.
+		//
+		// Pre-existing rather than introduced here, and fixed alongside the
+		// resume path because it is the identical hole one function over.
+		cleanupCtx, cancelCleanup := cleanupContext(ctx)
+		defer cancelCleanup()
+
+		if err := h.runRepo.Fail(cleanupCtx, runID, "failed to start: "+runErr.Error()); err != nil {
 			apilog.WithError(err).Error("failed to mark run as failed")
 		}
 		// The agent never launched — a defined SYSTEM failure, so refund the
 		// run's metered charge (no-op on self-hosted / when nothing was
 		// charged; idempotent on cloud).
-		policy.RefundIfMetered(ctx, "", runID)
+		policy.RefundIfMetered(cleanupCtx, "", runID)
 		if reservationID != "" {
-			if relErr := ck.Release(ctx, reservationID); relErr != nil {
+			if relErr := ck.Release(cleanupCtx, reservationID); relErr != nil {
 				apilog.WithError(relErr).Warn("failed to release discovery-run reservation after agent spawn failed")
-			} else if err := h.runRepo.ClearPolicyReservationID(ctx, runID); err != nil {
+			} else if err := h.runRepo.ClearPolicyReservationID(cleanupCtx, runID); err != nil {
 				apilog.WithError(err).Warn("released discovery-run reservation after agent spawn failed, but failed to clear persisted reservation id on run (post-completion confirmer will retry Confirm on an already-Released reservation until the doc TTLs)")
 			}
 		}
@@ -591,6 +605,33 @@ func (h *DiscoveriesHandler) GetRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, run)
+}
+
+// cleanupTimeout bounds a detached tail-end write. Generous enough for a
+// Mongo round-trip under load, short enough that a wedged control plane
+// cannot pin a goroutine indefinitely.
+const cleanupTimeout = 30 * time.Second
+
+// cleanupContext detaches a request's tail-end writes from the request's own
+// cancellation, the way the orchestrator's persistContext does for the
+// agent's.
+//
+// net/http cancels the request context the moment a client disconnects, and
+// some of this handler's writes are what put a run back into a state anyone
+// can act on. Running those on the request context means a browser tab
+// closing at the wrong moment decides whether a run is recoverable: the
+// stand-down never lands, and the run sits `running` with no agent behind
+// it — not terminal, so not resumable, and visible to the concurrency check
+// that then blocks every new run for the project until the API restarts and
+// its startup sweep clears it.
+//
+// Deliberately NOT used for the spawn itself. A client that disconnected is
+// not waiting for a 202, so standing the attempt down is the least
+// surprising outcome and leaves the run resumable; detaching the spawn would
+// instead launch a run nobody is listening for, which is a behaviour change
+// rather than a fix.
+func cleanupContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), cleanupTimeout)
 }
 
 // standDownResume puts a resumed attempt back to `failed` after the flip has
@@ -740,6 +781,13 @@ func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Past the flip the run is `running`, so every write that can put it
+	// back runs detached from the request — see cleanupContext. Before the
+	// flip nothing had been mutated and a cancelled request simply left the
+	// run alone, which is why this starts here and not at the top.
+	cleanupCtx, cancelCleanup := cleanupContext(ctx)
+	defer cancelCleanup()
+
 	// Re-check for a competing run now that this one is visibly `running`.
 	//
 	// The check above the flip is a pre-check, and two requests can both pass
@@ -757,15 +805,15 @@ func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 	// thing bounding concurrency for a resume — no reservation is opened, so
 	// nothing sits behind it — which makes "I could not tell" equivalent to
 	// "do not start". Both stand-downs are mild: see standDownResume.
-	running, err = h.runRepo.GetOtherRunningByProject(ctx, run.ProjectID, runID)
+	running, err = h.runRepo.GetOtherRunningByProject(cleanupCtx, run.ProjectID, runID)
 	if err != nil {
-		h.standDownResume(ctx, runID, resumed.Attempt,
+		h.standDownResume(cleanupCtx, runID, resumed.Attempt,
 			"resume aborted: could not verify that no other discovery run is active for this project")
 		writeError(w, http.StatusInternalServerError, "failed to check for a competing run: "+err.Error())
 		return
 	}
 	if running != nil {
-		h.standDownResume(ctx, runID, resumed.Attempt,
+		h.standDownResume(cleanupCtx, runID, resumed.Attempt,
 			"resume aborted: another discovery run for this project started at the same time")
 		writeError(w, http.StatusConflict,
 			"a discovery run is already in progress for this project (run "+running.ID+")")
@@ -798,13 +846,13 @@ func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 	// run over it would be the wrong trade. Leaving the id in place on
 	// failure is deliberate — the background confirmer retries from it.
 	if run.PolicyReservationID != "" {
-		if err := policy.GetChecker().ConfirmDiscoveryRunEnded(ctx, run.PolicyReservationID, policy.RunOutcome{
+		if err := policy.GetChecker().ConfirmDiscoveryRunEnded(cleanupCtx, run.PolicyReservationID, policy.RunOutcome{
 			Status:  "failure",
 			EndedAt: time.Now().UTC(),
 			Error:   "attempt superseded by a resume",
 		}); err != nil {
 			apilog.WithError(err).Warn("failed to confirm the superseded attempt's reservation; leaving its id on the run so the confirmer can retry")
-		} else if err := h.runRepo.ClearPolicyReservationID(ctx, runID); err != nil {
+		} else if err := h.runRepo.ClearPolicyReservationID(cleanupCtx, runID); err != nil {
 			apilog.WithError(err).Warn("confirmed the superseded attempt's reservation but failed to clear its id; the confirmer will retry an already-confirmed reservation until the run ages out")
 		}
 	}
@@ -844,7 +892,7 @@ func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 		// Back to `failed`, which leaves the run resumable again — the
 		// checkpoints are untouched, so a spawn failure costs nothing but
 		// the attempt counter.
-		if err := h.runRepo.Fail(ctx, runID, "failed to start resume: "+runErr.Error()); err != nil {
+		if err := h.runRepo.Fail(cleanupCtx, runID, "failed to start resume: "+runErr.Error()); err != nil {
 			apilog.WithError(err).Error("failed to mark run as failed after a resume spawn failure")
 		}
 		writeError(w, http.StatusInternalServerError, "failed to start agent: "+runErr.Error())
