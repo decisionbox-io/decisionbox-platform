@@ -561,3 +561,36 @@ func (o *Orchestrator) rebuildStepIndexForResume(ctx context.Context) {
 	}
 	applog.WithField("run_id", o.runID).Info("resume: dropped the per-run step index; replay will rebuild it from the replayable prefix")
 }
+
+// ownershipLost gates an expensive phase on this attempt still owning the run.
+//
+// The exploration loop finds out it has been superseded for free, on the
+// attempt-fenced marker it writes every step, and checkpointExplorationSummary
+// is the gate between exploration and everything after it. Past that point
+// nothing asked again until the terminal write — so a resume landing during
+// analysis left the old attempt to spend the whole post-exploration pipeline
+// (analysis per area, validation per insight, recommendations) on a result
+// its own Complete would then miss and delete. Correct in the end, and
+// entirely wasted.
+//
+// The writes it makes along the way are all attempt-fenced, so they no-op
+// silently; none of them reports back. Hence an explicit read, at the phase
+// boundaries where the money is about to be spent: once per phase and once
+// per analysis area, each an indexed read on _id next to multi-second LLM
+// calls.
+//
+// OwnsRun fails OPEN — a read it could not complete answers "still ours" —
+// so a Mongo blip degrades to the old behaviour of spending the phase rather
+// than aborting a run that is working. That asymmetry is deliberate: the
+// cost of a wasted phase is money, and the cost of a wrong abort is a
+// discovery the operator has to pay for twice.
+func (o *Orchestrator) ownershipLost(ctx context.Context, what string) bool {
+	if o.statusReporter == nil || o.statusReporter.OwnsRun(ctx) {
+		return false
+	}
+	applog.WithFields(applog.Fields{
+		"run_id": o.runID,
+		"before": what,
+	}).Warn("another attempt of this run has taken over; stopping rather than spending this phase on a result that will be discarded")
+	return true
+}

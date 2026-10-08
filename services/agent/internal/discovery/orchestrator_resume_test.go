@@ -830,3 +830,50 @@ func TestRebuildStepIndexForResume_DropsOnlyForAResume(t *testing.T) {
 		(&Orchestrator{runID: "r", resume: &ResumeState{Attempt: 2}}).rebuildStepIndexForResume(ctx)
 	})
 }
+
+// TestOwnershipLost_GatesSpendOnPositiveEvidence pins the gate that keeps a
+// superseded attempt out of the post-exploration pipeline.
+//
+// Between the exploration summary and the terminal write, nothing used to ask
+// again — so a resume landing during analysis left the old attempt to spend
+// analysis per area, validation per insight and recommendations on a result
+// its own Complete would then miss and delete. The end state was correct and
+// the money was gone.
+//
+// The asymmetry on a failed read is the important half: it answers "still
+// ours", because the cost of a wasted phase is money and the cost of a wrong
+// abort is a discovery the operator pays for twice.
+func TestOwnershipLost_GatesSpendOnPositiveEvidence(t *testing.T) {
+	ctx := context.Background()
+
+	cases := []struct {
+		name     string
+		owns     bool
+		ownsErr  error
+		wantLost bool
+		why      string
+	}{
+		{"still ours", true, nil, false, "a healthy attempt must proceed"},
+		{"superseded", false, nil, true, "positive evidence of supersession must stop the spend"},
+		{"ownership unreadable", false, errors.New("mongo blip"), false,
+			"a failed read must not abort a run that is working"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := newFakeRunDoc()
+			doc.owns = tc.owns
+			doc.ownsErr = tc.ownsErr
+			o := &Orchestrator{runID: "run-1", statusReporter: reporterFor(doc, 2)}
+
+			if got := o.ownershipLost(ctx, "analysis"); got != tc.wantLost {
+				t.Errorf("ownershipLost = %v, want %v — %s", got, tc.wantLost, tc.why)
+			}
+		})
+	}
+
+	// A run with no status reporting has no run document and no competing
+	// attempt, so it must never be gated — that is every single-binary run.
+	if (&Orchestrator{runID: "run-1"}).ownershipLost(ctx, "analysis") {
+		t.Error("an unreported run was gated; single-binary runs would stop before analysis")
+	}
+}

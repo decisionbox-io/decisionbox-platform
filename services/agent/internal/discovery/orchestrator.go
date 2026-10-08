@@ -1185,6 +1185,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	}
 
 	applog.Info("Phase 4: Running analysis by area")
+	if o.ownershipLost(ctx, "analysis") {
+		return nil, ai.ErrAttemptSuperseded
+	}
 	o.statusReporter.SetPhase(ctx, models.PhaseAnalysis, "Analyzing discoveries by category...", 65)
 	allInsights := make([]models.Insight, 0)
 	analysisLog := make([]models.AnalysisStep, 0)
@@ -1239,6 +1242,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	picker.SmartOverflowEnabled = opts.SmartOverflowEnabled
 
 	for _, area := range runAreas {
+		// Per area, not just per phase: analysis is the long one, and a
+		// resume landing inside it would otherwise go unnoticed until
+		// Phase 5.
+		if o.ownershipLost(ctx, "analysis area "+area.ID) {
+			return nil, ai.ErrAttemptSuperseded
+		}
 		areaPrompt, ok := prompts.AnalysisAreas[area.ID]
 		if !ok {
 			applog.WithField("area", area.ID).Warn("No prompt for analysis area, skipping")
@@ -1448,6 +1457,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// is in the per-project eligibility set (o.recommendationVerdicts; default
 	// {confirmed, supported}) flow to the recommender.
 	applog.Info("Phase 5: Generating recommendations")
+	if o.ownershipLost(ctx, "recommendations") {
+		return nil, ai.ErrAttemptSuperseded
+	}
 	o.statusReporter.SetPhase(ctx, models.PhaseRecommendations, "Generating actionable recommendations...", 85)
 	recommenderInput := filterEligibleInsights(allInsights, o.recommendationVerdicts)
 	applog.WithFields(applog.Fields{
