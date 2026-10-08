@@ -903,6 +903,7 @@ func TestOwnershipGates_CoverEverySpendAndSideEffectAfterExploration(t *testing.
 		t.Fatalf("read orchestrator.go: %v", err)
 	}
 	for _, want := range []string{
+		`o.ownershipLost(ctx, "rebuilding the step index")`,
 		`o.ownershipLost(ctx, "analysis")`,
 		`o.ownershipLost(ctx, "analysis area "+area.ID)`,
 		`o.ownershipLost(ctx, "validating area "+area.ID)`,

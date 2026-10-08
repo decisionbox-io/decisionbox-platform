@@ -1096,6 +1096,20 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// reindexReplayedSteps in one go on the skip-exploration path — so the
 	// prefix's points are rewritten either way. The only thing the drop
 	// removes is the part that should not be there.
+	//
+	// Gated on ownership, because the drop is DESTRUCTIVE and the collection
+	// is keyed on run_id alone: a superseded attempt reaching here would
+	// delete the index the live attempt has already rebuilt, and the live
+	// attempt would not notice — it re-indexes on replay, which it has
+	// already done by then, so its novelty checks and analysis picking would
+	// silently degrade to keyword-only for the rest of the run.
+	//
+	// Unlike the per-write gates declined above, one check fully covers this
+	// one: the drop happens once, at a known point, so there is no window
+	// left behind it.
+	if o.ownershipLost(ctx, "rebuilding the step index") {
+		return nil, ai.ErrAttemptSuperseded
+	}
 	o.rebuildStepIndexForResume(ctx)
 
 	var explorationResult *ai.ExplorationResult

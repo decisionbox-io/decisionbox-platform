@@ -628,3 +628,49 @@ func TestInteg_RunRepo_LatestPicksTheMostRecentlyResumedRun(t *testing.T) {
 		t.Errorf("LatestByProjects = %v, want %q", got, older)
 	}
 }
+
+// TestInteg_RunRepo_ResumedPassExcludesNeverResumedRuns pins the predicate
+// the resumed pass uses, because the Mongo semantics read backwards and a
+// reviewer has already proposed replacing it with the wrong thing.
+//
+// Mongo treats a MISSING field as null, so `$ne: nil` excludes both the
+// missing field and an explicit null — exactly "has actually been resumed".
+// `$exists: true` would be weaker: it lets an explicit null through.
+func TestInteg_RunRepo_ResumedPassExcludesNeverResumedRuns(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	base := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	done := base.Add(30 * time.Minute)
+
+	// Never resumed: no last_resumed_at field at all.
+	newest := seedRunForProject(t, ctx, "proj-n", "completed", base.Add(2*time.Hour), &done)
+	_ = seedRunForProject(t, ctx, "proj-n", "completed", base, &done)
+	// And one carrying an EXPLICIT null, which $exists would wrongly admit.
+	if _, err := testDB.Collection("discovery_runs").InsertOne(ctx, bson.M{
+		"project_id": "proj-n", "status": "completed",
+		"started_at": base.Add(1 * time.Hour), "completed_at": done,
+		"last_resumed_at": nil,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// With no genuinely-resumed run, the answer must be the newest by
+	// started_at — the explicit-null row must not win on a null timestamp.
+	one, err := repo.GetLatestByProject(ctx, "proj-n")
+	if err != nil {
+		t.Fatalf("GetLatestByProject: %v", err)
+	}
+	if one == nil || one.ID != newest {
+		t.Errorf("GetLatestByProject = %v, want the newest-started run %q", one, newest)
+	}
+
+	many, err := repo.LatestByProjects(ctx, []string{"proj-n"})
+	if err != nil {
+		t.Fatalf("LatestByProjects: %v", err)
+	}
+	if got := many["proj-n"]; got == nil || got.ID != newest {
+		t.Errorf("LatestByProjects = %v, want %q", got, newest)
+	}
+}

@@ -258,6 +258,13 @@ func (r *RunRepository) GetLatestByProject(ctx context.Context, projectID string
 	// the runs that have ever been resumed. The second set is sparse — the
 	// field exists only on resumed runs — and both sorts stay index-friendly,
 	// which a computed sort key over the whole history would not.
+	//
+	// `$ne: nil` is the predicate that means "has actually been resumed",
+	// and it is not interchangeable with `$exists`. Mongo treats a missing
+	// field as null, so $ne:nil excludes BOTH the missing field and an
+	// explicit null — while `$exists: true` alone would let an explicit null
+	// through and widen this pass. Verified against Mongo 7, because the
+	// semantics read the wrong way round.
 	byStart, err := r.newestMatching(ctx, bson.M{"project_id": projectID}, "started_at")
 	if err != nil {
 		return nil, err
