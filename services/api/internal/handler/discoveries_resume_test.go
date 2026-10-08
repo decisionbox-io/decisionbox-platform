@@ -816,3 +816,69 @@ func TestStartRun_PersistsTheComputedMinStepsFloor(t *testing.T) {
 		t.Errorf("persisted MinSteps = %d, want the computed floor of 60", got)
 	}
 }
+
+// TestResumeRun_FailsClosedWhenTheConcurrencyCheckErrors is why that check
+// may not swallow its error.
+//
+// It is the ONLY thing bounding concurrency for a resume — a resume opens no
+// policy reservation, so nothing sits behind it — which makes "I could not
+// tell" equivalent to "do not start". Treating a transient read error as
+// "no competing run" would start a second agent on a project that already
+// has one, and the symptom would be two runs quietly fighting over one
+// project's warehouse budget.
+func TestResumeRun_FailsClosedWhenTheConcurrencyCheckErrors(t *testing.T) {
+	t.Run("before the flip", func(t *testing.T) {
+		f := newResumeFixture(t)
+		f.runs.getRunningErr = errors.New("mongo is having a moment")
+
+		w := f.post("run-1")
+
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500; body = %s", w.Code, w.Body.String())
+		}
+		if n := len(f.runner.calls()); n != 0 {
+			t.Errorf("spawned %d agents without being able to check for a competitor", n)
+		}
+		// Nothing was mutated: the flip never happened, so the run is
+		// exactly where it was and a retry is the whole recovery.
+		run := f.runs.runs["run-1"]
+		if run.Status != "failed" {
+			t.Errorf("run status = %q, want failed", run.Status)
+		}
+		if run.Attempt != 1 {
+			t.Errorf("attempt = %d, want 1 — the flip must not have happened", run.Attempt)
+		}
+	})
+
+	t.Run("after the flip", func(t *testing.T) {
+		f := newResumeFixture(t)
+		// Let the pre-check through and fail the post-flip re-check, which
+		// is the half with a half-started attempt to stand down.
+		f.runs.getRunningErr = errors.New("mongo is having a moment")
+		f.runs.getRunningErrAfter = 1
+
+		w := f.post("run-1")
+
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500; body = %s", w.Code, w.Body.String())
+		}
+		if n := len(f.runner.calls()); n != 0 {
+			t.Errorf("spawned %d agents without being able to check for a competitor", n)
+		}
+		// Stood down the same way a lost race stands down: a recorded
+		// failure that says what happened, checkpoints intact, resumable.
+		run := f.runs.runs["run-1"]
+		if run.Status != "failed" {
+			t.Errorf("run status = %q, want failed so it stays resumable", run.Status)
+		}
+		if !strings.Contains(run.Error, "could not verify") {
+			t.Errorf("run error = %q, want it to say the check could not be made", run.Error)
+		}
+		if run.Attempt != 2 {
+			t.Errorf("attempt = %d, want 2 — this attempt happened and did not start", run.Attempt)
+		}
+		if len(f.cps.deleted) != 0 {
+			t.Errorf("checkpoints were deleted (%v); a stood-down resume must leave them", f.cps.deleted)
+		}
+	})
+}

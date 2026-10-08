@@ -341,6 +341,13 @@ type mockRunRepo struct {
 	getErr        error
 	getLatestErr  error
 	getRunningErr error
+	// getRunningErrAfter, when > 0, makes GetOtherRunningByProject succeed
+	// for that many calls and then fail with getRunningErr. The resume path
+	// asks twice — once before its atomic flip and once after — and the two
+	// have to be told apart, because only the second has a half-started
+	// attempt to stand down.
+	getRunningErrAfter int
+	getRunningCalls    int
 	failErr       error
 	cancelErr     error
 
@@ -453,7 +460,11 @@ func (m *mockRunRepo) GetLatestByProject(_ context.Context, projectID string) (*
 }
 
 func (m *mockRunRepo) GetOtherRunningByProject(_ context.Context, projectID, excludeRunID string) (*models.DiscoveryRun, error) {
-	if m.getRunningErr != nil {
+	m.mu.Lock()
+	m.getRunningCalls++
+	failNow := m.getRunningErr != nil && m.getRunningCalls > m.getRunningErrAfter
+	m.mu.Unlock()
+	if failNow {
 		return nil, m.getRunningErr
 	}
 	m.mu.Lock()

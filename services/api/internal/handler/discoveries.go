@@ -578,6 +578,23 @@ func (h *DiscoveriesHandler) GetRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, run)
 }
 
+// standDownResume puts a resumed attempt back to `failed` after the flip has
+// landed but before any agent was spawned for it.
+//
+// Recorded as a real failure rather than rolled back silently: the run gets
+// an accurate reason, its checkpoints are untouched so it stays resumable,
+// and the attempt counter keeps its increment — which is correct, because
+// this attempt happened and it did not start. A failure to write that is
+// logged and nothing more; the caller is already returning an error, and
+// the run is no worse off than before the flip.
+func (h *DiscoveriesHandler) standDownResume(ctx context.Context, runID string, attempt int, reason string) {
+	if _, err := h.runRepo.FailAttempt(ctx, runID, attempt, reason); err != nil {
+		apilog.WithFields(apilog.Fields{
+			"run_id": runID, "attempt": attempt, "error": err.Error(),
+		}).Error("failed to stand down a resume that did not start")
+	}
+}
+
 // ResumeRun restarts a failed discovery run from its last exploration
 // checkpoint, re-entering the SAME run id.
 // POST /api/v1/runs/{runId}/resume
@@ -678,7 +695,14 @@ func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 	// only under the self-hosted no-op checker as the start path does,
 	// because resume opens no policy reservation — so this is the only thing
 	// bounding concurrency for the project.
-	if running, _ := h.runRepo.GetOtherRunningByProject(ctx, run.ProjectID, runID); running != nil {
+	running, err := h.runRepo.GetOtherRunningByProject(ctx, run.ProjectID, runID)
+	if err != nil {
+		// Fail closed. Nothing has been mutated yet, so refusing costs the
+		// operator a retry; proceeding would spend a whole run to find out.
+		writeError(w, http.StatusInternalServerError, "failed to check for a competing run: "+err.Error())
+		return
+	}
+	if running != nil {
 		// writeError, not writeJSON: the dashboard's request helper reads
 		// only the top-level `error` on a non-2xx, so a body under `data`
 		// would surface as a bare "API error: 409" and lose the one detail
@@ -710,18 +734,24 @@ func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 	// Re-checking after the flip means at least one of the two sees the
 	// other, which is what the one-active-run-per-project invariant needs.
 	//
-	// Losing the race is recorded as a real failure rather than rolled back
-	// silently: the run goes back to `failed` with an accurate reason, its
-	// checkpoints are untouched, and it stays resumable. The attempt counter
-	// keeps its increment, which is correct — this attempt happened, and it
-	// did not start.
 	// Excluding this run explicitly: it is `running` now, so a query that did
 	// not exclude it could hand it back and report no competitor.
-	if running, _ := h.runRepo.GetOtherRunningByProject(ctx, run.ProjectID, runID); running != nil {
-		const reason = "resume aborted: another discovery run for this project started at the same time"
-		if _, err := h.runRepo.FailAttempt(ctx, runID, resumed.Attempt, reason); err != nil {
-			apilog.WithError(err).Error("failed to stand down a resume that lost the concurrency race")
-		}
+	//
+	// An ERROR stands the attempt down just as losing the race does, rather
+	// than being swallowed into "no competitor". This check is the ONLY
+	// thing bounding concurrency for a resume — no reservation is opened, so
+	// nothing sits behind it — which makes "I could not tell" equivalent to
+	// "do not start". Both stand-downs are mild: see standDownResume.
+	running, err = h.runRepo.GetOtherRunningByProject(ctx, run.ProjectID, runID)
+	if err != nil {
+		h.standDownResume(ctx, runID, resumed.Attempt,
+			"resume aborted: could not verify that no other discovery run is active for this project")
+		writeError(w, http.StatusInternalServerError, "failed to check for a competing run: "+err.Error())
+		return
+	}
+	if running != nil {
+		h.standDownResume(ctx, runID, resumed.Attempt,
+			"resume aborted: another discovery run for this project started at the same time")
 		writeError(w, http.StatusConflict,
 			"a discovery run is already in progress for this project (run "+running.ID+")")
 		return
