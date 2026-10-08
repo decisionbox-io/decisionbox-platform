@@ -729,3 +729,149 @@ func TestInteg_Checkpoint_TouchByRunReAnchorsRetention(t *testing.T) {
 		t.Errorf("after the touch: prefix %d / complete %v, want 3 / true", set.Len(), set.ExplorationComplete())
 	}
 }
+
+// TestInteg_Checkpoint_PrefixStopsAtAStaleTail is the hole a gap check alone
+// leaves open, and the damage it does is worse than a misnumbered step: a
+// transcript spliced from two different explorations.
+//
+// It needs a gap to have been FILLED. Attempt 1 reaches step 5 but step 3's
+// write fails. A resume replays 1..2, explores its own step 3 — which need
+// not resemble attempt 1's — and dies before it overwrites 4 and 5. The rows
+// now read 1..5 with no hole in them at all, and steps 4 and 5 are attempt
+// 1's answers to a step 3 that no longer exists.
+func TestInteg_Checkpoint_PrefixStopsAtAStaleTail(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	repo := NewDiscoveryCheckpointRepository(db)
+	if err := repo.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("EnsureIndexes: %v", err)
+	}
+
+	// Attempt 1: step 3's write "failed", so it reached 5 leaving a hole.
+	for _, n := range []int{1, 2, 4, 5} {
+		if err := repo.SaveStep(ctx, checkpointStepInput("run-1", n, 10)); err != nil {
+			t.Fatalf("attempt 1 SaveStep %d: %v", n, err)
+		}
+	}
+	// Attempt 2 replays 1..2 (re-checkpointing them, as replayPrefix does)
+	// and explores its own step 3 before dying.
+	for _, n := range []int{1, 2, 3} {
+		in := checkpointStepInput("run-1", n, 20)
+		in.Attempt = 2
+		if err := repo.SaveStep(ctx, in); err != nil {
+			t.Fatalf("attempt 2 SaveStep %d: %v", n, err)
+		}
+	}
+
+	// Every step number 1..5 now has a row, so a gap check sees nothing.
+	n, err := db.Collection(CollectionDiscoveryCheckpoints).CountDocuments(ctx, bson.M{"run_id": "run-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 5 {
+		t.Fatalf("documents = %d, want 5 — the fixture must leave no hole", n)
+	}
+
+	set, err := repo.LoadPrefix(ctx, "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set.Len() != 3 {
+		t.Fatalf("prefix len = %d, want 3 — the prefix ends where attempt 1's stale tail begins", set.Len())
+	}
+	for i, cp := range set.Steps {
+		if cp.Step.Step != i+1 {
+			t.Errorf("prefix[%d] is step %d, want %d", i, cp.Step.Step, i+1)
+		}
+		if cp.Step.RowCount != 20 {
+			t.Errorf("prefix[%d] RowCount = %d, want 20 — every replayed step must be attempt 2's", i, cp.Step.RowCount)
+		}
+	}
+	if set.Attempt != 2 {
+		t.Errorf("set attempt = %d, want 2", set.Attempt)
+	}
+}
+
+// TestInteg_Checkpoint_PrefixSpansAttemptsThatOnlyRise is the other half of
+// the rule, and the one that matters for the feature working at all. A rising
+// attempt is not a splice — it is a later attempt continuing where an earlier
+// one stopped, which is the entire point of checkpointing.
+func TestInteg_Checkpoint_PrefixSpansAttemptsThatOnlyRise(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	repo := NewDiscoveryCheckpointRepository(db)
+	if err := repo.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("EnsureIndexes: %v", err)
+	}
+
+	// Attempt 1 stopped at 2; attempt 2 carried on to 4 without replaying
+	// (the shape a crash before replayPrefix's first re-checkpoint leaves).
+	for _, n := range []int{1, 2} {
+		if err := repo.SaveStep(ctx, checkpointStepInput("run-1", n, 10)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, n := range []int{3, 4} {
+		in := checkpointStepInput("run-1", n, 20)
+		in.Attempt = 2
+		if err := repo.SaveStep(ctx, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	set, err := repo.LoadPrefix(ctx, "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set.Len() != 4 {
+		t.Fatalf("prefix len = %d, want 4 — a rising attempt must not end the prefix", set.Len())
+	}
+}
+
+// TestInteg_Checkpoint_SummaryIsDroppedOverAStaleTail keeps the stronger fact
+// stronger. A summary from the attempt whose tail was just discarded would
+// send the resumed run straight to analysis over a step set it cannot replay.
+func TestInteg_Checkpoint_SummaryIsDroppedOverAStaleTail(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	repo := NewDiscoveryCheckpointRepository(db)
+	if err := repo.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("EnsureIndexes: %v", err)
+	}
+
+	for _, n := range []int{1, 2, 3} {
+		if err := repo.SaveStep(ctx, checkpointStepInput("run-1", n, 10)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := repo.SaveExplorationSummary(ctx, CheckpointSummaryInput{
+		ProjectID: "proj-1", RunID: "run-1", Attempt: 1,
+		Summary: models.ExplorationCheckpointSummary{Completed: true, TotalSteps: 3, Duration: time.Minute},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A later attempt rewrote only step 1, so steps 2 and 3 are a stale tail.
+	in := checkpointStepInput("run-1", 1, 20)
+	in.Attempt = 2
+	if err := repo.SaveStep(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+
+	set, err := repo.LoadPrefix(ctx, "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set.Len() != 1 {
+		t.Fatalf("prefix len = %d, want 1", set.Len())
+	}
+	if set.ExplorationComplete() {
+		t.Error("a summary over a prefix cut short by a stale tail must not claim exploration finished")
+	}
+}

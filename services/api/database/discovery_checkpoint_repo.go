@@ -31,10 +31,13 @@ func NewDiscoveryCheckpointRepository(db *DB) *DiscoveryCheckpointRepository {
 // ResumeState reports how many exploration steps a run can replay and
 // whether its exploration already finished.
 //
-// prefixLen is the length of the CONTIGUOUS prefix 1..K, not the row count:
-// a hole means an earlier checkpoint write failed, and the steps after it
-// cannot be replayed without misnumbering every one of them. Counting them
-// would let the API promise a resume it cannot deliver.
+// prefixLen is the length of the REPLAYABLE prefix 1..K, not the row count,
+// and it stops for the same two reasons the agent's loader stops. A hole
+// means an earlier checkpoint write failed, and the steps after it cannot be
+// replayed without misnumbering every one of them. A step written by an
+// OLDER attempt than the one before it is a stale tail left when a filled
+// gap stranded a previous attempt's answers. Counting either would let the
+// API promise a resume it cannot deliver.
 //
 // explorationComplete true means the resumed run will skip Phase 3 outright,
 // so it is resumable even when prefixLen is 0 — which is possible when the
@@ -47,7 +50,7 @@ func (r *DiscoveryCheckpointRepository) ResumeState(ctx context.Context, runID s
 		bson.M{"run_id": runID},
 		options.Find().
 			SetSort(bson.D{{Key: "step_number", Value: 1}}).
-			SetProjection(bson.M{"step_number": 1, "kind": 1, "total_steps": 1}),
+			SetProjection(bson.M{"step_number": 1, "kind": 1, "total_steps": 1, "attempt": 1}),
 	)
 	if findErr != nil {
 		return 0, false, fmt.Errorf("read checkpoints for run %s: %w", runID, findErr)
@@ -56,11 +59,15 @@ func (r *DiscoveryCheckpointRepository) ResumeState(ctx context.Context, runID s
 
 	expected := 1
 	summaryTotalSteps := 0
+	// The newest attempt that has contributed to the prefix so far.
+	prefixAttempt := 0
+	ended := false
 	for cur.Next(ctx) {
 		var doc struct {
 			StepNumber int    `bson:"step_number"`
 			Kind       string `bson:"kind"`
 			TotalSteps int    `bson:"total_steps"`
+			Attempt    int    `bson:"attempt"`
 		}
 		if decodeErr := cur.Decode(&doc); decodeErr != nil {
 			return 0, false, fmt.Errorf("decode checkpoint for run %s: %w", runID, decodeErr)
@@ -71,11 +78,17 @@ func (r *DiscoveryCheckpointRepository) ResumeState(ctx context.Context, runID s
 			summaryTotalSteps = doc.TotalSteps
 			continue
 		}
-		if doc.StepNumber != expected {
-			// Past the contiguous prefix. Keep reading only so the summary
-			// row (which sorts first) is not the reason we stop.
+		if ended {
+			// Past the end of the prefix. Keep reading only so the summary
+			// row is still observed — it sorts first today, but relying on
+			// that would make this answer depend on the sort order.
 			continue
 		}
+		if doc.StepNumber != expected || doc.Attempt < prefixAttempt {
+			ended = true
+			continue
+		}
+		prefixAttempt = doc.Attempt
 		prefixLen++
 		expected++
 	}
@@ -87,7 +100,8 @@ func (r *DiscoveryCheckpointRepository) ResumeState(ctx context.Context, runID s
 	// the API would promise a resume that behaves differently: the summary is
 	// only trustworthy when the replayable prefix covers every step it
 	// claims. A hole leaves a short prefix; a failed write on the LAST step
-	// leaves a prefix that looks clean but is one short of the claim.
+	// leaves a prefix that looks clean but is one short of the claim; a stale
+	// tail leaves one cut off at the splice.
 	if explorationComplete && summaryTotalSteps > prefixLen {
 		explorationComplete = false
 	}

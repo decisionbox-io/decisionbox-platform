@@ -36,19 +36,27 @@ func dropCheckpoints(t *testing.T, ctx context.Context) {
 	}
 }
 
-// seedCheckpointStep writes one checkpoint row the way the agent would.
+// seedCheckpointStep writes one checkpoint row the way the agent would, for
+// a run on its first attempt.
 func seedCheckpointStep(t *testing.T, ctx context.Context, runID string, step int) {
+	t.Helper()
+	seedCheckpointStepAt(t, ctx, runID, step, 1)
+}
+
+// seedCheckpointStepAt is seedCheckpointStep for a named attempt, which is
+// what the stale-tail shapes need.
+func seedCheckpointStepAt(t *testing.T, ctx context.Context, runID string, step, attempt int) {
 	t.Helper()
 	_, err := testDB.Collection(gomongo.CollectionDiscoveryCheckpoints).InsertOne(ctx, bson.M{
 		"run_id":      runID,
 		"project_id":  "proj-integ",
 		"step_number": step,
-		"attempt":     1,
+		"attempt":     attempt,
 		"kind":        "step",
 		"created_at":  time.Now(),
 	})
 	if err != nil {
-		t.Fatalf("seed checkpoint step %d: %v", step, err)
+		t.Fatalf("seed checkpoint step %d (attempt %d): %v", step, attempt, err)
 	}
 }
 
@@ -745,5 +753,65 @@ func TestInteg_RunRepo_HookMarkDoesNotLandOnAResumedRun(t *testing.T) {
 	run, _ = repo.GetByID(ctx, runID)
 	if run.CompletionHooksFiredAt != nil {
 		t.Error("a stale mark landed on a later attempt; its hooks would never fire")
+	}
+}
+
+// TestInteg_CheckpointRepo_ResumeStateStopsAtAStaleTail keeps this answer
+// equal to the agent's loader, which is the only reason the API is allowed to
+// have its own reader at all. The agent stops the replayable prefix at a step
+// written by an OLDER attempt than the one before it — the stale tail a
+// filled gap strands — so counting past one here would have the dashboard
+// promise a 10-step resume that replays 3.
+func TestInteg_CheckpointRepo_ResumeStateStopsAtAStaleTail(t *testing.T) {
+	ctx := context.Background()
+	repo := NewDiscoveryCheckpointRepository(testDB)
+
+	type row struct{ step, attempt int }
+	cases := []struct {
+		name string
+		rows []row
+		// summaryTotalSteps > 0 writes the exploration-summary row.
+		summaryTotalSteps int
+		wantPrefix        int
+		wantDone          bool
+	}{
+		// Attempt 1 reached 5 with a hole at 3; attempt 2 replayed 1..2,
+		// explored its own 3, and died before overwriting 4 and 5.
+		{"a stale tail after a filled gap", []row{{1, 2}, {2, 2}, {3, 2}, {4, 1}, {5, 1}}, 0, 3, false},
+		// A rising attempt is a continuation, not a splice.
+		{"attempts that only rise", []row{{1, 1}, {2, 1}, {3, 2}, {4, 2}}, 0, 4, false},
+		// A single attempt is the ordinary case and must be untouched.
+		{"one attempt throughout", []row{{1, 1}, {2, 1}, {3, 1}}, 0, 3, false},
+		// The stale tail begins at the very first step.
+		{"stale from step 2", []row{{1, 3}, {2, 1}}, 0, 1, false},
+		// The summary belongs to the attempt whose tail was just discarded,
+		// so it must not send the run to analysis.
+		{"summary over a stale tail", []row{{1, 2}, {2, 1}, {3, 1}}, 3, 1, false},
+		// ...but a summary that the surviving prefix fully covers still
+		// counts: this is the crashed-after-exploration case the feature
+		// exists for.
+		{"summary covered by the replayed prefix", []row{{1, 2}, {2, 2}}, 2, 2, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dropCheckpoints(t, ctx)
+			for _, r := range tc.rows {
+				seedCheckpointStepAt(t, ctx, "run-1", r.step, r.attempt)
+			}
+			if tc.summaryTotalSteps > 0 {
+				seedCheckpointSummary(t, ctx, "run-1", tc.summaryTotalSteps)
+			}
+
+			prefix, done, err := repo.ResumeState(ctx, "run-1")
+			if err != nil {
+				t.Fatalf("ResumeState: %v", err)
+			}
+			if prefix != tc.wantPrefix {
+				t.Errorf("prefix len = %d, want %d", prefix, tc.wantPrefix)
+			}
+			if done != tc.wantDone {
+				t.Errorf("explorationComplete = %v, want %v", done, tc.wantDone)
+			}
+		})
 	}
 }

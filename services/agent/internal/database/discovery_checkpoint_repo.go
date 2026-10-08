@@ -321,16 +321,34 @@ func (r *DiscoveryCheckpointRepository) SaveExplorationSummary(ctx context.Conte
 	return fmt.Errorf("checkpoint exploration summary of run %s: %w", in.RunID, err)
 }
 
-// LoadPrefix returns the CONTIGUOUS prefix 1..K of a run's checkpointed
-// steps, stopping at the first gap, plus the summary when one was written.
+// LoadPrefix returns the REPLAYABLE prefix 1..K of a run's checkpointed
+// steps, plus the summary when one was written.
 //
-// Stopping at a gap is the honest answer, not a convenience. A hole means an
-// earlier write failed (checkpoint failures are logged and swallowed so they
-// can never abort a run). Replaying a conversation with a hole in it would
-// misnumber every later step relative to what the model was told, and the
-// insights cite step numbers — so the run would attribute evidence to the
-// wrong queries. Resuming at the hole costs the steps after it and keeps
-// every citation true.
+// The prefix stops at whichever comes first of two things.
+//
+// A gap. A hole means an earlier write failed (checkpoint failures are logged
+// and swallowed so they can never abort a run). Replaying a conversation with
+// a hole in it would misnumber every later step relative to what the model was
+// told, and the insights cite step numbers — so the run would attribute
+// evidence to the wrong queries. Resuming at the hole costs the steps after it
+// and keeps every citation true.
+//
+// A break in the attempt chain — a step written by an OLDER attempt than the
+// step before it. A gap check alone misses this, and the result is worse than
+// a misnumbered step: a transcript spliced from two different explorations.
+//
+// It happens when a gap gets filled. Say attempt 1 reached step 10 but step
+// 5's write failed. A resume replays 1..4, explores its own step 5 — which
+// need not resemble attempt 1's — and writes it. If that attempt dies before
+// it overwrites steps 6..10, the rows now read 1..10 with no hole at all, and
+// steps 6..10 are attempt 1's responses to a step 5 that no longer exists.
+// Replaying them would hand the model a conversation that never happened and
+// skip the warehouse work that would have corrected it.
+//
+// Attempts therefore never decrease along the prefix. They may rise — that is
+// just a later attempt continuing where an earlier one stopped, which is the
+// whole point — but the first row that steps backwards ends the prefix, and
+// the run re-explores from there.
 func (r *DiscoveryCheckpointRepository) LoadPrefix(ctx context.Context, runID string) (*CheckpointSet, error) {
 	if runID == "" {
 		return nil, errors.New("load checkpoints: run_id is required")
@@ -347,6 +365,9 @@ func (r *DiscoveryCheckpointRepository) LoadPrefix(ctx context.Context, runID st
 	set := &CheckpointSet{}
 	expected := 1
 	gapAt := 0
+	staleTailAt := 0
+	// The newest attempt that has contributed to the prefix so far.
+	prefixAttempt := 0
 	for cur.Next(ctx) {
 		var doc ExplorationCheckpointDoc
 		if err := cur.Decode(&doc); err != nil {
@@ -364,15 +385,23 @@ func (r *DiscoveryCheckpointRepository) LoadPrefix(ctx context.Context, runID st
 			}
 			continue
 		}
-		if gapAt > 0 {
-			// Past a gap: this row is unreachable for replay. Keep reading
-			// only so Attempt and the summary are still observed.
+		if gapAt > 0 || staleTailAt > 0 {
+			// Past the end of the prefix: this row is unreachable for
+			// replay. Keep reading only so Attempt and the summary are
+			// still observed.
 			continue
 		}
 		if doc.StepNumber != expected {
 			gapAt = expected
 			continue
 		}
+		if doc.Attempt < prefixAttempt {
+			// An older attempt's step sitting on top of a newer one's. It
+			// answered a question the prefix no longer asks.
+			staleTailAt = doc.StepNumber
+			continue
+		}
+		prefixAttempt = doc.Attempt
 		set.Steps = append(set.Steps, models.ExplorationCheckpoint{
 			Step: doc.ExplorationStep,
 			Args: doc.CheckpointArgs,
@@ -391,6 +420,15 @@ func (r *DiscoveryCheckpointRepository) LoadPrefix(ctx context.Context, runID st
 			"summary_present": set.Summary != nil,
 		}).Warn("checkpoint prefix has a gap; resume will re-explore from the first missing step")
 	}
+	if staleTailAt > 0 {
+		applog.WithFields(applog.Fields{
+			"run_id":          runID,
+			"replayable":      len(set.Steps),
+			"stale_tail_from": staleTailAt,
+			"prefix_attempt":  prefixAttempt,
+			"summary_present": set.Summary != nil,
+		}).Warn("checkpoint prefix ends at a stale tail from an earlier attempt; resume will re-explore from there")
+	}
 
 	// The summary may only be trusted when the replayable prefix covers every
 	// step it claims. Otherwise it promises "exploration finished" over a step
@@ -401,8 +439,9 @@ func (r *DiscoveryCheckpointRepository) LoadPrefix(ctx context.Context, runID st
 	// This covers BOTH shapes a failed checkpoint write takes, and the second
 	// is the one a gap check alone misses: if the write that failed was for
 	// the LAST step, there is no later row to leave a hole, so the prefix
-	// looks clean at 39 steps while the summary says 40. The prefix is the
-	// stronger fact either way — it is what replay can actually produce.
+	// looks clean at 39 steps while the summary says 40. It covers a prefix
+	// cut short by a stale tail the same way. The prefix is the stronger fact
+	// in every case — it is what replay can actually produce.
 	if set.Summary != nil && set.Summary.TotalSteps > len(set.Steps) {
 		applog.WithFields(applog.Fields{
 			"run_id":              runID,
