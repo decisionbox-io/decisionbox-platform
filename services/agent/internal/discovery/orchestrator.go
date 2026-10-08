@@ -1666,22 +1666,29 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		return result, ai.ErrAttemptSuperseded
 
 	case terminalUnknown:
-		// The status write ERRORED, so whether this attempt still owns the
-		// run is unknown. Delete nothing — the alternative is that a
-		// transient Mongo failure destroys a result that is perfectly good,
-		// which is strictly worse than any state we can leave behind here.
+		// This attempt's terminal outcome was not recorded, and it has NOT
+		// been shown to have lost the run. Delete nothing — see
+		// terminalOutcome for why guessing here destroys results.
 		//
-		// Report it honestly rather than exiting quietly: the run document
-		// is still non-terminal and the API's startup sweep will mark it, so
-		// the operator needs to know the status write is what failed. The
-		// result stays on disk and is reachable by run_id, and the
-		// checkpoints stay too, so the run remains resumable.
+		// Deliberately does not say WHY, because two causes land here and
+		// this branch cannot tell them apart: the write errored, or the
+		// write was declined because the run document was already terminal
+		// (the API's startup sweep marking in-flight runs `failed` without
+		// reaping their agents). StatusReporter has already logged which,
+		// one line further up; claiming "the write failed" here would send
+		// an operator hunting a Mongo failure that never happened in the
+		// commoner of the two cases.
+		//
+		// Reported rather than exited quietly either way: the result is on
+		// disk and reachable by run_id, the checkpoints are kept, so the
+		// run is resumable — but nothing has recorded what this attempt
+		// actually did, and that is the operator's problem to see.
 		applog.WithFields(applog.Fields{
 			"run_id":       o.runID,
 			"discovery_id": result.ID,
-		}).Error("the terminal run-status write failed; the result is saved but the run document was not updated")
+		}).Error("this attempt's terminal run-status write did not land; the result is saved but the run document does not reflect this attempt's outcome")
 		if err == nil {
-			return result, fmt.Errorf("run %s: discovery completed but its terminal status write failed", o.runID)
+			return result, fmt.Errorf("run %s: discovery completed but its terminal status write did not land", o.runID)
 		}
 		return result, err
 	}

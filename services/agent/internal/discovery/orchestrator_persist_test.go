@@ -368,10 +368,10 @@ func TestFinalizeStatus_ReportsWhatTheWriteEstablished(t *testing.T) {
 	}{
 		{"completed and owns the run", nil, terminalClaimed},
 		{"completed but superseded", nil, terminalSuperseded},
-		{"completed but the write errored", nil, terminalUnknown},
+		{"completed but the outcome was not recorded", nil, terminalUnknown},
 		{"failed and owns the run", context.DeadlineExceeded, terminalClaimed},
 		{"failed and superseded", context.DeadlineExceeded, terminalSuperseded},
-		{"failed and the write errored", context.DeadlineExceeded, terminalUnknown},
+		{"failed and the outcome was not recorded", context.DeadlineExceeded, terminalUnknown},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -394,11 +394,14 @@ func TestFinalizeStatus_ReportsWhatTheWriteEstablished(t *testing.T) {
 // TestFinalizeStatus_AWriteErrorIsNotASupersession is the distinction that
 // matters, and the one a boolean could not express.
 //
-// Both a write that MATCHED NOTHING and a write that ERRORED report "not
-// claimed". The first means another attempt owns the run, and this one must
-// delete its own output. The second means we do not know — and deleting on
-// that would have a transient Mongo failure destroy a result that is
-// perfectly good, which is worse than any state leaving it alone can produce.
+// A terminal write that does not land reports "not claimed", and that alone
+// says nothing about who owns the run: it also happens when the write
+// errored, and when the run document was already terminal while this attempt
+// still owned it. Only a positive ownership read establishes supersession —
+// see StatusReporter.classifyUnappliedTerminal, which is where that is
+// decided; this test pins that the two answers stay distinguishable by the
+// time the orchestrator acts on them, because only one of them licenses
+// deleting this attempt's own result.
 func TestFinalizeStatus_AWriteErrorIsNotASupersession(t *testing.T) {
 	superseded, _ := finalizeStatus(context.Background(), &fakeRunFinalizer{outcome: terminalSuperseded},
 		nil, &models.DiscoveryResult{ID: "disc-1"}, 1)
@@ -406,7 +409,7 @@ func TestFinalizeStatus_AWriteErrorIsNotASupersession(t *testing.T) {
 		nil, &models.DiscoveryResult{ID: "disc-1"}, 1)
 
 	if superseded == unknown {
-		t.Fatal("a lost attempt and a failed write must not report the same outcome — " +
+		t.Fatal("a lost attempt and an unrecorded outcome must not report the same thing — " +
 			"the first licenses deleting this attempt's result, the second licenses nothing")
 	}
 	if superseded != terminalSuperseded || unknown != terminalUnknown {
