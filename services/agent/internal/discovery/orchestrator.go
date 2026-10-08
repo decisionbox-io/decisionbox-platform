@@ -1369,6 +1369,17 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// fires only when it yields zero parseable insights from a response that
 		// wasn't a legitimately empty area (see analyzeAreaInsights).
 		outcome := o.analyzeAreaInsights(ctx, area.ID, prompt, maxTokens)
+
+		// Again, now that the call has returned. The guard at the top of the
+		// loop was true when the area started, and an analysis call is long
+		// enough for a resume to land inside it — after which this attempt
+		// would validate the insights it just got (more LLM calls) and
+		// append analysis, insight and validation run-step rows. Those rows
+		// are keyed on run_id ALONE, not on attempt, so they would show up
+		// in the resumed run's live log as its own work.
+		if o.ownershipLost(ctx, "validating area "+area.ID) {
+			return nil, ai.ErrAttemptSuperseded
+		}
 		step.Response = outcome.response
 		step.TokensIn = outcome.tokensIn
 		step.TokensOut = outcome.tokensOut
@@ -1529,6 +1540,17 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// This phase persists learning from the current run so future discoveries
 	// can use historical context (e.g., recurring patterns, trends, and signals).
 	applog.Info("Phase 6: Updating project context")
+
+	// The last gate, and the one that matters most: everything a superseded
+	// attempt has written so far is either attempt-fenced or retired by
+	// retireOwnResult at the tail — but the project context is NEITHER. It
+	// is long-term pattern memory keyed on the project, so patterns merged
+	// from an attempt whose discovery is about to be deleted would outlive
+	// it and steer every future run on this project. A resume landing during
+	// recommendation generation or its validation gets caught here.
+	if o.ownershipLost(ctx, "updating project context") {
+		return nil, ai.ErrAttemptSuperseded
+	}
 
 	// Mark that a successful discovery run occurred for this project
 	projectCtx.RecordDiscovery(true)

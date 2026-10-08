@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -875,5 +877,40 @@ func TestOwnershipLost_GatesSpendOnPositiveEvidence(t *testing.T) {
 	// attempt, so it must never be gated — that is every single-binary run.
 	if (&Orchestrator{runID: "run-1"}).ownershipLost(ctx, "analysis") {
 		t.Error("an unreported run was gated; single-binary runs would stop before analysis")
+	}
+}
+
+// TestOwnershipGates_CoverEverySpendAndSideEffectAfterExploration pins WHERE
+// the gates are, because a gate in the wrong place reads as protection and
+// gives none.
+//
+// The post-exploration phases are long LLM calls. A guard before a call is
+// true when the call starts and says nothing about when it returns, so each
+// expensive call needs a gate on BOTH sides: before, so a superseded attempt
+// does not start it, and after, so one that was superseded mid-call does not
+// act on the result.
+//
+// The two "after" gates exist for different reasons. The analysis one stops
+// validation calls and, more importantly, run-step rows — which are keyed on
+// run_id alone, so a dead attempt's rows surface in the resumed run's live
+// log. The project-context one is the last line of defence for the only
+// write retireOwnResult cannot undo: long-term pattern memory, keyed on the
+// project, which would otherwise steer every future run from a discovery
+// that was deleted.
+func TestOwnershipGates_CoverEverySpendAndSideEffectAfterExploration(t *testing.T) {
+	src, err := os.ReadFile("orchestrator.go")
+	if err != nil {
+		t.Fatalf("read orchestrator.go: %v", err)
+	}
+	for _, want := range []string{
+		`o.ownershipLost(ctx, "analysis")`,
+		`o.ownershipLost(ctx, "analysis area "+area.ID)`,
+		`o.ownershipLost(ctx, "validating area "+area.ID)`,
+		`o.ownershipLost(ctx, "recommendations")`,
+		`o.ownershipLost(ctx, "updating project context")`,
+	} {
+		if !strings.Contains(string(src), want) {
+			t.Errorf("missing ownership gate: %s", want)
+		}
 	}
 }
