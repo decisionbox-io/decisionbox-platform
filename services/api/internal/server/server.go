@@ -18,6 +18,7 @@ import (
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/runhooks"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
+	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
 // New creates an HTTP server with all routes registered.
@@ -476,6 +477,47 @@ func policyStatusFromDB(dbStatus string) string {
 	}
 }
 
+// reservationOutcomeFor is the outcome to close a run's lingering plan
+// reservation with.
+//
+// Normally that is the run's own terminal outcome. It is NOT when the run has
+// been resumed, and the invariant that makes this knowable is that a resume
+// opens no reservation of its own — so a reservation still sitting on a run
+// past its first attempt can only belong to an EARLIER attempt, the one the
+// resume superseded.
+//
+// Deriving the outcome from the run document in that case misattributes it:
+// the resumed attempt succeeds, and the dead attempt's reservation is closed
+// as a success it had nothing to do with. The resume path confirms this
+// itself and only leaves the id behind when that confirm failed, so this is
+// the retry — and a retry that reported the wrong outcome would be worse
+// than the failure it is recovering from.
+func reservationOutcomeFor(run *models.DiscoveryRun) policy.RunOutcome {
+	if run.Attempt > 1 {
+		outcome := policy.RunOutcome{
+			Status: "failure",
+			Error:  "attempt superseded by a resume",
+		}
+		// The moment the attempt was superseded is the closest thing to its
+		// end time; it never wrote one of its own.
+		if run.LastResumedAt != nil {
+			outcome.EndedAt = *run.LastResumedAt
+		} else if run.CompletedAt != nil {
+			outcome.EndedAt = *run.CompletedAt
+		}
+		return outcome
+	}
+
+	outcome := policy.RunOutcome{Status: policyStatusFromDB(run.Status)}
+	if run.CompletedAt != nil {
+		outcome.EndedAt = *run.CompletedAt
+	}
+	if run.Error != "" {
+		outcome.Error = run.Error
+	}
+	return outcome
+}
+
 func confirmTerminalRuns(ctx context.Context, runRepo database.RunRepo) {
 	runs, err := runRepo.ListTerminalWithReservation(ctx, 50)
 	if err != nil {
@@ -487,13 +529,7 @@ func confirmTerminalRuns(ctx context.Context, runRepo database.RunRepo) {
 	}
 	checker := policy.GetChecker()
 	for _, run := range runs {
-		outcome := policy.RunOutcome{Status: policyStatusFromDB(run.Status)}
-		if run.CompletedAt != nil {
-			outcome.EndedAt = *run.CompletedAt
-		}
-		if run.Error != "" {
-			outcome.Error = run.Error
-		}
+		outcome := reservationOutcomeFor(run)
 		if err := checker.ConfirmDiscoveryRunEnded(ctx, run.PolicyReservationID, outcome); err != nil {
 			apilog.WithFields(apilog.Fields{"run_id": run.ID, "error": err.Error()}).
 				Warn("run confirmer: policy confirm failed; will retry on next tick")
