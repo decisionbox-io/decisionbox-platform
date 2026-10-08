@@ -485,13 +485,28 @@ func (h *DiscoveriesHandler) StartRun(ctx context.Context, opts discoverytrigger
 			// behind it outlives its attempt, so once a run can be resumed
 			// an unguarded Fail here could mark a LIVE resumed attempt
 			// failed on behalf of the dead one. A fresh run is attempt 1.
+			//
+			// The guard governs the STATUS WRITE only; the reservation is
+			// confirmed either way. A write that does not apply says
+			// nothing about whether the run is over — the ordinary case is
+			// that the agent wrote its own `failed` before the watcher
+			// noticed the dead workload, so `applied` is false and the run
+			// is very much finished. Returning here would hold the
+			// concurrent-run slot until the periodic confirmer repaired it,
+			// which on cloud means an ordinary in-agent failure temporarily
+			// blocking the project's next run.
+			//
+			// In the one case where the attempt really has moved on, the
+			// resume that moved it already confirmed this same reservation,
+			// so confirming again is a duplicate the control plane already
+			// tolerates — the background confirmer does exactly that — and
+			// both outcomes are a failure, so the aggregate does not change.
 			if applied, err := h.runRepo.FailAttempt(context.Background(), failedRunID, 1, errMsg); err != nil {
 				apilog.WithError(err).Error("failed to mark run as failed")
 			} else if !applied {
 				apilog.WithFields(apilog.Fields{
 					"run_id": failedRunID, "attempt": 1,
-				}).Info("ignored a failure callback for an attempt that is no longer the live one")
-				return
+				}).Info("failure callback did not change the run status; it is already terminal or on a later attempt")
 			}
 			if reservationID != "" {
 				if err := policy.GetChecker().ConfirmDiscoveryRunEnded(context.Background(), reservationID, policy.RunOutcome{

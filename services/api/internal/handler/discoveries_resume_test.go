@@ -882,3 +882,53 @@ func TestResumeRun_FailsClosedWhenTheConcurrencyCheckErrors(t *testing.T) {
 		}
 	})
 }
+
+// TestStartRun_FailureCallbackConfirmsTheReservationEvenWhenTheStatusWriteNoOps
+// is the other half of the attempt fence on that callback: the fence governs
+// the status write, not the reservation.
+//
+// The ordinary shape of an agent failure is that the agent writes its own
+// `failed` status and the runner's watcher notices the dead workload
+// afterwards. By then the attempt-fenced write no-ops, because the run is
+// already terminal — which says nothing about whether the run is over. It
+// very much is. Skipping the confirm there holds the project's
+// concurrent-run slot until the periodic confirmer repairs it, so an
+// ordinary failure temporarily blocks the next run.
+func TestStartRun_FailureCallbackConfirmsTheReservationEvenWhenTheStatusWriteNoOps(t *testing.T) {
+	ck := &meteringChecker{}
+	swapChecker(t, ck)
+
+	projs := newMockProjectRepo()
+	projs.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
+	runs := newMockRunRepo()
+	rr := &recordingRunner{}
+	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projs, runs, nil, nil, nil, rr)
+
+	res, err := h.StartRun(context.Background(), discoveryTriggerOptions("p1", 50, nil, nil))
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	onFailure := rr.calls()[0].OnFailure
+	if onFailure == nil {
+		t.Fatal("StartRun registered no failure callback")
+	}
+
+	// The agent wrote its own terminal status first, as it normally does.
+	runs.runs[res.RunID].Status = "failed"
+	runs.runs[res.RunID].Error = "the agent said why"
+
+	onFailure(res.RunID, "K8s Job failed (observed after the agent exited)")
+
+	// The status write correctly did nothing — the agent's own reason stands.
+	if got := runs.runs[res.RunID].Error; got != "the agent said why" {
+		t.Errorf("run error = %q, want the agent's own reason to survive", got)
+	}
+	// ...and the reservation was still confirmed, so the slot is freed now
+	// rather than whenever the periodic confirmer next sweeps.
+	ck.mu.Lock()
+	confirms := len(ck.confirms)
+	ck.mu.Unlock()
+	if confirms != 1 {
+		t.Errorf("confirmed %d reservations, want 1 — the run is over, so its slot must be released", confirms)
+	}
+}
