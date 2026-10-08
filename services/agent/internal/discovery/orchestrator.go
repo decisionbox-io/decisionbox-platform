@@ -79,11 +79,12 @@ const completeTimeout = 30 * time.Second
 // that records which terminal method was called without bringing up
 // MongoDB.
 type runFinalizer interface {
-	// Both report whether the terminal write landed — this attempt's claim
-	// on the run. False means another attempt owns it, and the caller must
-	// not go on to delete that attempt's results.
-	Complete(ctx context.Context, discoveryID string, insightsFound int) bool
-	Fail(ctx context.Context, discoveryID, errMsg string) bool
+	// Both report what the terminal write established about ownership. Three
+	// states, not two: see terminalOutcome. A write that matched nothing and
+	// a write that errored are different answers, and treating them alike
+	// means a transient Mongo failure deletes a result that is fine.
+	Complete(ctx context.Context, discoveryID string, insightsFound int) terminalOutcome
+	Fail(ctx context.Context, discoveryID, errMsg string) terminalOutcome
 }
 
 // finalizeStatus stamps the terminal status on the run document. On
@@ -100,11 +101,11 @@ type runFinalizer interface {
 // near-expiry persistCtx never prevents the final status write from
 // landing — the run-completion UpdateOne (and the discovery_id
 // back-reference Hook 5 in plugin-hooks.md depends on) always lands.
-// Returns whether the terminal write CLAIMED the run, alongside the error the
-// caller propagates. The claim is what licenses the destructive cleanup that
-// follows (retiring a superseded attempt's results): an attempt that no longer
-// owns the run must not delete the owner's data.
-func finalizeStatus(parent context.Context, reporter runFinalizer, computeErr error, result *models.DiscoveryResult, insightCount int) (bool, error) {
+// Returns what the terminal write established about ownership, alongside the
+// error the caller propagates. Ownership is what licenses the destructive
+// cleanup that follows — retiring the other attempts' results, or this
+// attempt's own — so an undetermined answer must license neither.
+func finalizeStatus(parent context.Context, reporter runFinalizer, computeErr error, result *models.DiscoveryResult, insightCount int) (terminalOutcome, error) {
 	completeCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), completeTimeout)
 	defer cancel()
 
@@ -113,8 +114,8 @@ func finalizeStatus(parent context.Context, reporter runFinalizer, computeErr er
 		// APIs can find the partial result the same way they would
 		// for a completed run. Empty when Save itself failed and we
 		// never got an ID — Fail then records the error only.
-		claimed := reporter.Fail(completeCtx, result.ID, fmt.Sprintf("discovery cancelled: %v", computeErr))
-		return claimed, fmt.Errorf("discovery cancelled mid-compute: %w", computeErr)
+		outcome := reporter.Fail(completeCtx, result.ID, fmt.Sprintf("discovery cancelled: %v", computeErr))
+		return outcome, fmt.Errorf("discovery cancelled mid-compute: %w", computeErr)
 	}
 
 	return reporter.Complete(completeCtx, result.ID, insightCount), nil
@@ -1624,7 +1625,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// result. It runs BEFORE the cleanup below, and that order is load-bearing:
 	// the terminal write is attempt-fenced, so whether it landed is this
 	// attempt's claim on the run — and the cleanup deletes data.
-	claimed, err := finalizeStatus(ctx, o.statusReporter, computeErr, result, len(allInsights))
+	outcome, err := finalizeStatus(ctx, o.statusReporter, computeErr, result, len(allInsights))
 
 	// Retire the results of this run's earlier attempts, now that this
 	// attempt's result is fully written AND this attempt is provably the one
@@ -1639,9 +1640,11 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// to the dead attempt's cleanup is far worse than leaving a stale one
 	// behind — so a superseded attempt cleans up after ITSELF instead, which
 	// is the branch below.
-	if claimed {
+	switch outcome {
+	case terminalClaimed:
 		o.retireSupersededAttempts(persistCtx, result.ID)
-	} else {
+
+	case terminalSuperseded:
 		// This attempt lost the run — but it has already written its own
 		// discovery, split logs, standalone docs and vectors above, because
 		// all of that happens before the terminal write that establishes
@@ -1661,6 +1664,26 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// (clarifying questions, reflection) against a discovery id that no
 		// longer exists, for a run another attempt owns.
 		return result, ai.ErrAttemptSuperseded
+
+	case terminalUnknown:
+		// The status write ERRORED, so whether this attempt still owns the
+		// run is unknown. Delete nothing — the alternative is that a
+		// transient Mongo failure destroys a result that is perfectly good,
+		// which is strictly worse than any state we can leave behind here.
+		//
+		// Report it honestly rather than exiting quietly: the run document
+		// is still non-terminal and the API's startup sweep will mark it, so
+		// the operator needs to know the status write is what failed. The
+		// result stays on disk and is reachable by run_id, and the
+		// checkpoints stay too, so the run remains resumable.
+		applog.WithFields(applog.Fields{
+			"run_id":       o.runID,
+			"discovery_id": result.ID,
+		}).Error("the terminal run-status write failed; the result is saved but the run document was not updated")
+		if err == nil {
+			return result, fmt.Errorf("run %s: discovery completed but its terminal status write failed", o.runID)
+		}
+		return result, err
 	}
 
 	if err != nil {
@@ -1673,8 +1696,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// The run reached a terminal success, so there is nothing left to resume
 	// from. Discarding the checkpoints also re-arms the deferred Drop of the
 	// per-run vector collection. Gated on the claim for the same reason: a
-	// superseded attempt must not delete the live one's checkpoints.
-	if claimed {
+	// superseded attempt must not delete the live one's checkpoints, and an
+	// attempt that could not determine ownership must not either.
+	if outcome == terminalClaimed {
 		o.discardCheckpoints(persistCtx, "run completed")
 	}
 

@@ -10,6 +10,32 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
+// terminalOutcome is what a terminal run-status write tells the caller about
+// ownership. Three states, because a boolean conflated two of them and the
+// conflation destroyed data: a write that MATCHED NOTHING and a write that
+// ERRORED both report "not claimed", and the only correct response to the
+// first is to delete this attempt's output while the only correct response to
+// the second is to delete nothing at all.
+type terminalOutcome int
+
+const (
+	// terminalClaimed: the write landed. This attempt owns the run, and may
+	// retire the other attempts' results.
+	terminalClaimed terminalOutcome = iota
+
+	// terminalSuperseded: the write matched nothing because the run has moved
+	// to a newer attempt. This attempt must delete its OWN output and exit
+	// quietly — the run is alive and owned by someone else.
+	terminalSuperseded
+
+	// terminalUnknown: the write errored, so ownership is undetermined.
+	// Delete nothing, claim nothing, and report the failure honestly. The
+	// run document stays non-terminal and the API's sweeper will mark it;
+	// the result stays on disk, reachable by run_id. Guessing either way
+	// here is how a Mongo blip turns into a destroyed result.
+	terminalUnknown
+)
+
 // runDocWriter is the slice of *database.RunRepository that StatusReporter
 // calls. Held as an interface for the same reason runStepWriter below is: so
 // the reporter's behaviour — which is now where the attempt fence lives, and
@@ -370,26 +396,26 @@ func (s *StatusReporter) AddValidationStep(ctx context.Context, insightName, sta
 // the run produced. discoveryID must be the `_id` of the
 // `discoveries` document the orchestrator just saved — see
 // RunRepository.Complete for why the back-reference matters.
-// Returns whether the write landed — this attempt's claim on the run. False
-// means another attempt owns it now, and the caller must not go on to delete
-// that attempt's results. See database.attemptFilter.
-func (s *StatusReporter) Complete(ctx context.Context, discoveryID string, insightsFound int) bool {
+// Reports what the write established about ownership. See terminalOutcome —
+// an error and an unmatched attempt are NOT the same answer.
+func (s *StatusReporter) Complete(ctx context.Context, discoveryID string, insightsFound int) terminalOutcome {
 	if !s.enabled() {
 		// Nothing to claim and nothing to protect: a run without status
 		// reporting has no run document and no competing attempt.
-		return true
+		return terminalClaimed
 	}
 	applied, err := s.repo.Complete(ctx, s.runID, discoveryID, insightsFound, s.attempt)
 	if err != nil {
-		logger.WithError(err).Warn("failed to complete run")
-		return false
+		logger.WithError(err).Warn("failed to complete run; ownership undetermined, so nothing will be cleaned up")
+		return terminalUnknown
 	}
 	if !applied {
 		logger.WithFields(logger.Fields{
 			"run_id": s.runID, "attempt": s.attempt,
 		}).Warn("this attempt no longer owns the run; its completion was not recorded")
+		return terminalSuperseded
 	}
-	return applied
+	return terminalClaimed
 }
 
 // MarkExplorationCheckpoint records that this run now has a checkpoint for
@@ -495,20 +521,21 @@ func (s *StatusReporter) IncrementAnalysisCounter(ctx context.Context, metric st
 // the underlying repo stamps it on the run doc so plugin-hooks Hook
 // 5 and the discovery-log APIs can navigate to the partial result
 // the same way they would for a completed run.
-// Returns whether the write landed — see Complete.
-func (s *StatusReporter) Fail(ctx context.Context, discoveryID, errMsg string) bool {
+// Reports what the write established about ownership — see Complete.
+func (s *StatusReporter) Fail(ctx context.Context, discoveryID, errMsg string) terminalOutcome {
 	if !s.enabled() {
-		return true
+		return terminalClaimed
 	}
 	applied, err := s.repo.Fail(ctx, s.runID, discoveryID, errMsg, s.attempt)
 	if err != nil {
-		logger.WithError(err).Warn("failed to mark run as failed")
-		return false
+		logger.WithError(err).Warn("failed to mark run as failed; ownership undetermined, so nothing will be cleaned up")
+		return terminalUnknown
 	}
 	if !applied {
 		logger.WithFields(logger.Fields{
 			"run_id": s.runID, "attempt": s.attempt,
 		}).Warn("this attempt no longer owns the run; its failure was not recorded")
+		return terminalSuperseded
 	}
-	return applied
+	return terminalClaimed
 }

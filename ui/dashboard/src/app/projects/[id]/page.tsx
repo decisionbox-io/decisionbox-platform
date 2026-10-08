@@ -461,6 +461,22 @@ export default function ProjectPage() {
             // another request got there first), so show what the server
             // said rather than a generic failure.
             notifications.show({ title: 'Cannot resume', message: (e as Error).message, color: 'red' });
+            // Then re-read the run, because every refusal means the server
+            // knows something this tab does not — most sharply when another
+            // tab or user won the race and the run is ALREADY running. A
+            // terminal run does not poll, so without this the panel would go
+            // on offering Resume for an active run until someone reloaded.
+            try {
+              // Only when the read actually returned a run: replacing state
+              // with an empty response would blank the panel, which is a
+              // worse outcome than the stale view this refresh exists to
+              // fix.
+              const fresh = await api.getRun(run.id);
+              if (fresh) setRun(fresh);
+            } catch {
+              // The real error is already on screen; a failed refresh adds
+              // nothing to it.
+            }
           }
         }} />
       )}

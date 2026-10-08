@@ -32,6 +32,7 @@ const getProjectStatus = jest.fn();
 const listProjectQuestions = jest.fn();
 const listRunSteps = jest.fn();
 const resumeRun = jest.fn();
+const getRun = jest.fn();
 
 jest.mock('@/lib/api', () => ({
   __esModule: true,
@@ -53,7 +54,7 @@ jest.mock('@/lib/api', () => ({
     listRunSteps: (...a: unknown[]) => listRunSteps(...a),
     getDebugLogs: jest.fn().mockResolvedValue([]),
     triggerDiscovery: jest.fn(),
-    getRun: jest.fn(),
+    getRun: (...a: unknown[]) => getRun(...a),
     estimateCost: jest.fn(),
     cancelRun: jest.fn(),
     resumeRun: (...a: unknown[]) => resumeRun(...a),
@@ -327,6 +328,57 @@ describe('Resume affordance on a failed run (#438)', () => {
     renderPage();
 
     await waitFor(() => expect(screen.getByText('12s elapsed')).toBeInTheDocument());
+  });
+
+  it('re-reads the run when a resume is refused, so a lost race does not leave a stale panel', async () => {
+    const { notifications } = jest.requireMock('@mantine/notifications');
+    getProjectStatus.mockResolvedValue(status(makeRun({
+      status: 'failed', last_checkpoint_step: 42,
+    })));
+    // Another tab won the race: the POST is refused, and by then the run is
+    // already running.
+    resumeRun.mockRejectedValue(new Error('run is no longer resumable — another request got there first'));
+    getRun.mockResolvedValue(makeRun({ status: 'running', attempt: 2, last_checkpoint_step: 42 }));
+
+    renderPage();
+    const btn = await waitFor(() => screen.getByText(/Resume from step 42/));
+
+    await act(async () => { btn.click(); });
+
+    // The refusal is still surfaced verbatim...
+    await waitFor(() => expect(notifications.show).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Cannot resume' }),
+    ));
+    // ...and the panel converges on what the server actually has. A terminal
+    // run does not poll, so without the re-read this tab would offer Resume
+    // for an active run until someone reloaded.
+    expect(getRun).toHaveBeenCalledWith('r1');
+    await waitFor(() => expect(screen.getByText('Discovery running')).toBeInTheDocument());
+    expect(screen.queryByText(/Resume from step/)).not.toBeInTheDocument();
+  });
+
+  it('keeps the panel usable when the refusal refresh itself fails', async () => {
+    const { notifications } = jest.requireMock('@mantine/notifications');
+    getProjectStatus.mockResolvedValue(status(makeRun({
+      status: 'failed', last_checkpoint_step: 42,
+    })));
+    resumeRun.mockRejectedValue(new Error('no checkpoint to resume from — it expired'));
+    getRun.mockRejectedValue(new Error('network down'));
+
+    renderPage();
+    const btn = await waitFor(() => screen.getByText(/Resume from step 42/));
+
+    await act(async () => { btn.click(); });
+
+    // The real error is what the user sees; a failed refresh must not
+    // replace it or throw.
+    await waitFor(() => expect(notifications.show).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Cannot resume',
+        message: 'no checkpoint to resume from — it expired',
+      }),
+    ));
+    expect(screen.getByText('Discovery failed')).toBeInTheDocument();
   });
 
   it('reports cumulative active time rather than wall-clock across attempts', async () => {

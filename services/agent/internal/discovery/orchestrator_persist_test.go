@@ -211,23 +211,24 @@ type fakeRunFinalizer struct {
 	failedMsg       string
 	failedCalled    bool
 
-	// notClaimed makes the terminal write report that it did NOT land —
-	// what a superseded attempt sees, and what must suppress the cleanup.
-	notClaimed bool
+	// outcome is what the terminal write reports about ownership. The zero
+	// value is terminalClaimed, so existing tests read as "this attempt owns
+	// the run" without saying so.
+	outcome terminalOutcome
 }
 
-func (f *fakeRunFinalizer) Complete(_ context.Context, discoveryID string, insightsFound int) bool {
+func (f *fakeRunFinalizer) Complete(_ context.Context, discoveryID string, insightsFound int) terminalOutcome {
 	f.completedCalled = true
 	f.completedID = discoveryID
 	f.completedCount = insightsFound
-	return !f.notClaimed
+	return f.outcome
 }
 
-func (f *fakeRunFinalizer) Fail(_ context.Context, discoveryID, errMsg string) bool {
+func (f *fakeRunFinalizer) Fail(_ context.Context, discoveryID, errMsg string) terminalOutcome {
 	f.failedCalled = true
 	f.failedID = discoveryID
 	f.failedMsg = errMsg
-	return !f.notClaimed
+	return f.outcome
 }
 
 func TestFinalizeStatus_HappyPathCompletes(t *testing.T) {
@@ -342,13 +343,13 @@ type runFinalizerFunc struct {
 	fail     func(ctx context.Context, discoveryID, errMsg string)
 }
 
-func (f runFinalizerFunc) Complete(ctx context.Context, discoveryID string, insightsFound int) bool {
+func (f runFinalizerFunc) Complete(ctx context.Context, discoveryID string, insightsFound int) terminalOutcome {
 	f.complete(ctx, discoveryID, insightsFound)
-	return true
+	return terminalClaimed
 }
-func (f runFinalizerFunc) Fail(ctx context.Context, discoveryID, errMsg string) bool {
+func (f runFinalizerFunc) Fail(ctx context.Context, discoveryID, errMsg string) terminalOutcome {
 	f.fail(ctx, discoveryID, errMsg)
-	return true
+	return terminalClaimed
 }
 
 // TestFinalizeStatus_ReportsWhetherItClaimedTheRun pins the signal the
@@ -359,33 +360,57 @@ func (f runFinalizerFunc) Fail(ctx context.Context, discoveryID, errMsg string) 
 // the OTHER attempt's results — which it deletes by run_id, so a superseded
 // attempt acting on a false claim would delete the live attempt's discovery,
 // split logs, standalone docs and vectors and keep its own.
-func TestFinalizeStatus_ReportsWhetherItClaimedTheRun(t *testing.T) {
+func TestFinalizeStatus_ReportsWhatTheWriteEstablished(t *testing.T) {
 	cases := []struct {
-		name        string
-		computeErr  error
-		notClaimed  bool
-		wantClaimed bool
+		name       string
+		computeErr error
+		outcome    terminalOutcome
 	}{
-		{"completed and owns the run", nil, false, true},
-		{"completed but superseded", nil, true, false},
-		{"failed and owns the run", context.DeadlineExceeded, false, true},
-		{"failed and superseded", context.DeadlineExceeded, true, false},
+		{"completed and owns the run", nil, terminalClaimed},
+		{"completed but superseded", nil, terminalSuperseded},
+		{"completed but the write errored", nil, terminalUnknown},
+		{"failed and owns the run", context.DeadlineExceeded, terminalClaimed},
+		{"failed and superseded", context.DeadlineExceeded, terminalSuperseded},
+		{"failed and the write errored", context.DeadlineExceeded, terminalUnknown},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rep := &fakeRunFinalizer{notClaimed: tc.notClaimed}
-			claimed, err := finalizeStatus(context.Background(), rep, tc.computeErr,
+			rep := &fakeRunFinalizer{outcome: tc.outcome}
+			got, err := finalizeStatus(context.Background(), rep, tc.computeErr,
 				&models.DiscoveryResult{ID: "disc-1"}, 3)
 
-			if claimed != tc.wantClaimed {
-				t.Errorf("claimed = %v, want %v", claimed, tc.wantClaimed)
+			if got != tc.outcome {
+				t.Errorf("outcome = %v, want %v", got, tc.outcome)
 			}
 			// The error contract is unchanged: it tracks the compute outcome,
-			// not the claim.
+			// not what the write established about ownership.
 			if (err != nil) != (tc.computeErr != nil) {
 				t.Errorf("err = %v, want it to track computeErr (%v)", err, tc.computeErr)
 			}
 		})
+	}
+}
+
+// TestFinalizeStatus_AWriteErrorIsNotASupersession is the distinction that
+// matters, and the one a boolean could not express.
+//
+// Both a write that MATCHED NOTHING and a write that ERRORED report "not
+// claimed". The first means another attempt owns the run, and this one must
+// delete its own output. The second means we do not know — and deleting on
+// that would have a transient Mongo failure destroy a result that is
+// perfectly good, which is worse than any state leaving it alone can produce.
+func TestFinalizeStatus_AWriteErrorIsNotASupersession(t *testing.T) {
+	superseded, _ := finalizeStatus(context.Background(), &fakeRunFinalizer{outcome: terminalSuperseded},
+		nil, &models.DiscoveryResult{ID: "disc-1"}, 1)
+	unknown, _ := finalizeStatus(context.Background(), &fakeRunFinalizer{outcome: terminalUnknown},
+		nil, &models.DiscoveryResult{ID: "disc-1"}, 1)
+
+	if superseded == unknown {
+		t.Fatal("a lost attempt and a failed write must not report the same outcome — " +
+			"the first licenses deleting this attempt's result, the second licenses nothing")
+	}
+	if superseded != terminalSuperseded || unknown != terminalUnknown {
+		t.Errorf("outcomes = %v / %v, want superseded / unknown", superseded, unknown)
 	}
 }
 
@@ -395,10 +420,10 @@ func TestFinalizeStatus_ReportsWhetherItClaimedTheRun(t *testing.T) {
 func TestFinalizeStatus_UnreportedRunAlwaysClaims(t *testing.T) {
 	// A reporter with no runID is disabled — enabled() is false.
 	rep := newStatusReporter(nil, nil, "proj", "", 10)
-	if !rep.Complete(context.Background(), "disc-1", 1) {
+	if rep.Complete(context.Background(), "disc-1", 1) != terminalClaimed {
 		t.Error("a disabled reporter must report a claim; otherwise cleanup is skipped on every single-binary run")
 	}
-	if !rep.Fail(context.Background(), "disc-1", "boom") {
+	if rep.Fail(context.Background(), "disc-1", "boom") != terminalClaimed {
 		t.Error("a disabled reporter must report a claim on the failure path too")
 	}
 }

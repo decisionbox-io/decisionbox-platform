@@ -165,11 +165,11 @@ func TestStatusReporter_OwnershipAnswers(t *testing.T) {
 		if r.MarkExplorationCheckpoint(ctx, 5) {
 			t.Error("the marker must report the loss")
 		}
-		if r.Complete(ctx, "disc-1", 1) {
-			t.Error("Complete must report that it did not claim the run")
+		if got := r.Complete(ctx, "disc-1", 1); got != terminalSuperseded {
+			t.Errorf("Complete = %v, want terminalSuperseded", got)
 		}
-		if r.Fail(ctx, "disc-1", "boom") {
-			t.Error("Fail must report that it did not claim the run")
+		if got := r.Fail(ctx, "disc-1", "boom"); got != terminalSuperseded {
+			t.Errorf("Fail = %v, want terminalSuperseded", got)
 		}
 	})
 
@@ -189,7 +189,7 @@ func TestStatusReporter_OwnershipAnswers(t *testing.T) {
 		// so treating them as superseded would break every one of them.
 		r := newStatusReporter(nil, nil, "proj", "", 100)
 		if !r.OwnsRun(ctx) || !r.MarkExplorationCheckpoint(ctx, 1) ||
-			!r.Complete(ctx, "d", 1) || !r.Fail(ctx, "d", "e") {
+			r.Complete(ctx, "d", 1) != terminalClaimed || r.Fail(ctx, "d", "e") != terminalClaimed {
 			t.Error("a disabled reporter must report ownership on every path")
 		}
 	})
@@ -355,13 +355,17 @@ func TestStatusReporter_AWriteFailureNeverTakesTheRunDown(t *testing.T) {
 		t.Error("a failed marker write must not be read as a lost run")
 	}
 
-	// A failed TERMINAL write reports no claim, which is the safe direction:
-	// the attempt cannot prove it owns the run, so it must not go on to
-	// delete another attempt's results.
-	if r.Complete(ctx, "disc-1", 1) {
-		t.Error("a failed Complete must not claim the run")
+	// A failed TERMINAL write reports UNKNOWN — not "superseded".
+	//
+	// This is the distinction a boolean could not carry. "Not claimed" was
+	// true for both a lost attempt and a failed write, and the caller then
+	// deleted this attempt's own result either way — so a Mongo blip at the
+	// terminal write destroyed a result that was perfectly good and reported
+	// nothing. Unknown licenses no cleanup at all.
+	if got := r.Complete(ctx, "disc-1", 1); got != terminalUnknown {
+		t.Errorf("a failed Complete = %v, want terminalUnknown — a write error is not a lost run", got)
 	}
-	if r.Fail(ctx, "disc-1", "boom") {
-		t.Error("a failed Fail must not claim the run")
+	if got := r.Fail(ctx, "disc-1", "boom"); got != terminalUnknown {
+		t.Errorf("a failed Fail = %v, want terminalUnknown", got)
 	}
 }
