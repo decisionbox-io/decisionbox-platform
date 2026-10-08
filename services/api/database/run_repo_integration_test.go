@@ -656,8 +656,31 @@ func TestInteg_RunRepo_ResumedPassExcludesNeverResumedRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// With no genuinely-resumed run, the answer must be the newest by
-	// started_at — the explicit-null row must not win on a null timestamp.
+	// Asserted on the resumed PASS directly, not through the public result.
+	//
+	// A leak cannot be observed from GetLatestByProject: LatestAttemptAt
+	// falls back to started_at for a row with no resume timestamp, and the
+	// started_at pass already maximises started_at — so a leaked row can
+	// never beat it, whatever the predicate. The public answer is therefore
+	// identical either way, which is exactly why the earlier version of this
+	// test passed against `$exists: true` and pinned nothing.
+	//
+	// What the predicate actually governs is how WIDE that pass is: with
+	// $exists it would sort every run carrying an explicit null, in memory,
+	// on a field that is null for nearly all of them. So the thing to assert
+	// is emptiness of the pass itself.
+	resumedPass, err := repo.newestPerProject(ctx, bson.M{
+		"project_id":      bson.M{"$in": []string{"proj-n"}},
+		"last_resumed_at": bson.M{"$ne": nil},
+	}, "last_resumed_at")
+	if err != nil {
+		t.Fatalf("resumed pass: %v", err)
+	}
+	if len(resumedPass) != 0 {
+		t.Errorf("the resumed pass matched %d project(s) with no genuinely resumed run; a missing or explicit-null last_resumed_at must not enter it", len(resumedPass))
+	}
+
+	// And the public answer is the newest by started_at, as it must be.
 	one, err := repo.GetLatestByProject(ctx, "proj-n")
 	if err != nil {
 		t.Fatalf("GetLatestByProject: %v", err)
