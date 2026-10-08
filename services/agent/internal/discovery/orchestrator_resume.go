@@ -584,6 +584,32 @@ func (o *Orchestrator) rebuildStepIndexForResume(ctx context.Context) {
 // than aborting a run that is working. That asymmetry is deliberate: the
 // cost of a wasted phase is money, and the cost of a wrong abort is a
 // discovery the operator has to pay for twice.
+// What these gates do NOT fix, and why they are not multiplied further:
+//
+// The live-log rows are the hole. StatusReporter.AddStep inserts into
+// discovery_run_steps keyed on run_id and project_id with NO attempt, so a
+// superseded attempt's rows are indistinguishable from the live attempt's and
+// show up in the resumed run's feed. A gate cannot close that: it narrows the
+// window to the length of one LLM call, and there is always a window between
+// the last gate and the write. Three successive review rounds have reported
+// the same thing and each time asked for one more gate — after the analysis
+// call, then after validation, then after recommendation generation. That
+// ladder has no top.
+//
+// The fix is to stamp the attempt on the row and have the dashboard's read
+// filter on the run's current attempt — one change, and the whole family goes
+// away. It is deliberately NOT done here: it adds a field to the live-feed
+// document and an attempt-aware read path in the API, which is a change to
+// the dashboard's streaming contract rather than to crash recovery, and
+// #438's scope is crash recovery. See discovery-lifecycle.md; it needs an
+// operator decision, not a reviewer's.
+//
+// What the gates DO buy is the money: five of them bound a superseded
+// attempt's waste to a single in-flight call instead of the whole
+// post-exploration pipeline, and they protect the one write that nothing
+// else can undo — the project context. Everything that decides a run's
+// OUTCOME is already fenced by attempt or retired at the tail: checkpoints,
+// the exploration summary, the terminal status, the discovery itself.
 func (o *Orchestrator) ownershipLost(ctx context.Context, what string) bool {
 	if o.statusReporter == nil || o.statusReporter.OwnsRun(ctx) {
 		return false
