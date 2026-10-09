@@ -426,11 +426,15 @@ export default function ProjectPage() {
         </div>
       )}
 
-      {/* Live Run Panel — keyed on run.id so a new run cleanly remounts
-          the panel (fresh steps state + cursor) instead of needing an
-          in-component reset effect. */}
+      {/* Live Run Panel — keyed on run.id AND run.attempt so a new run, or a
+          new attempt of the same run, cleanly remounts the panel (fresh steps
+          state + cursor) instead of needing an in-component reset effect. A
+          resume re-enters the same run id, and the feed is attempt-scoped
+          server-side, so the attempt belongs in the key. onResume sets it
+          optimistically, which is what makes the remount happen on the click
+          rather than on the next status poll. */}
       {showRunPanel && run && (
-        <LiveRunPanel key={run.id} run={run} onCancel={async () => {
+        <LiveRunPanel key={`${run.id}:${run.attempt ?? 1}`} run={run} onCancel={async () => {
           if (justFinished) {
             dismissedRunId.current = run.id;
             setRun(null);
@@ -648,11 +652,20 @@ function LiveRunPanel({ run, onCancel, onResume }: { run: DiscoveryRunStatus; on
   const userScrolledUp = useRef(false);
   const prevStepCount = useRef(0);
 
-  // The parent renders <LiveRunPanel key={run.id}> so a new run
-  // remounts this component with fresh `steps` / `lastIDRef` state
-  // automatically — no in-component reset effect needed (which the
-  // react-hooks/set-state-in-effect lint rule rightly flags as a
-  // cascading-render anti-pattern).
+  // The parent renders <LiveRunPanel key={`${run.id}:${run.attempt}`}> so a
+  // new run — and a new ATTEMPT of the same run — remounts this component
+  // with fresh `steps` / `lastIDRef` state automatically. No in-component
+  // reset effect needed (which the react-hooks/set-state-in-effect lint rule
+  // rightly flags as a cascading-render anti-pattern).
+  //
+  // The attempt has to be in that key. A resume re-enters the SAME run id,
+  // so keying on the id alone kept this component mounted across it: the
+  // rendered rows and the `since` cursor both survived. The feed is scoped
+  // to the run's current attempt server-side, and the resume re-emits the
+  // replayed prefix under the new attempt — appended to rows this component
+  // was still showing from the old one, the operator would see the prefix
+  // twice. Remounting rebuilds the list from the head of the new attempt's
+  // stream, which is exactly one copy.
 
   useEffect(() => {
     let cancelled = false;

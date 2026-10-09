@@ -236,6 +236,40 @@ describe('Resume affordance on a failed run (#438)', () => {
     expect(screen.queryByText(/Resume from step/)).not.toBeInTheDocument();
   });
 
+  it('rebuilds the live step feed from the head of the new attempt rather than appending to the old one', async () => {
+    // The live feed is attempt-scoped server-side, and a resume re-emits the
+    // replayed prefix under the new attempt. The panel used to be keyed on
+    // run.id alone — and a resume re-enters the SAME run id, so it stayed
+    // mounted across the resume with its rendered rows and its `since` cursor
+    // intact. The re-emitted prefix then arrived as an append to rows already
+    // on screen from the previous attempt, showing the operator every
+    // replayed step twice. Remounting on the attempt is what makes it once.
+    getProjectStatus.mockResolvedValue(
+      status(makeRun({ status: 'failed', progress: 35, last_checkpoint_step: 42, attempt: 1 })),
+    );
+    listRunSteps.mockResolvedValue([
+      { id: 'a1-row-1', step_num: 1, type: 'query', message: 'attempt 1 step 1' },
+    ]);
+    resumeRun.mockResolvedValue({ status: 'resumed', run_id: 'r1', attempt: 2 });
+
+    renderPage();
+    const btn = await waitFor(() => screen.getByText(/Resume from step 42/));
+    // The first attempt's poll has already returned, so the panel is holding
+    // 'a1-row-1' as its cursor. It does not poll again on its own — the run is
+    // terminal, so the panel stops scheduling — but the cursor is live in the
+    // ref and is what the next request would carry.
+    await waitFor(() => expect(listRunSteps).toHaveBeenCalledWith('r1', undefined));
+
+    listRunSteps.mockClear();
+    await act(async () => { btn.click(); });
+    await flush();
+
+    // Remounted: the very first request of the new attempt must start from
+    // the head of the stream, not from the previous attempt's cursor.
+    expect(listRunSteps).toHaveBeenCalled();
+    expect(listRunSteps.mock.calls[0]).toEqual(['r1', undefined]);
+  });
+
   it('calls resumeRun and flips the panel to running so polling re-arms', async () => {
     getProjectStatus.mockResolvedValue(
       status(makeRun({ status: 'failed', progress: 35, last_checkpoint_step: 42, attempt: 1 })),
