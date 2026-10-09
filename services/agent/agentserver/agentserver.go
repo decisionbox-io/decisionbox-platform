@@ -1446,32 +1446,46 @@ func loadResumeState(
 		)
 	}
 
-	st := &discovery.ResumeState{Attempt: set.Attempt + 1, Checkpoints: set}
-
-	// The run document carries the attempt counter the API incremented and
-	// the compute already booked. Both are advisory: a missing run document
-	// is not a reason to refuse work the checkpoints can clearly support.
+	// The run document carries two things, and only one of them is advisory.
+	//
+	// ActiveMs is: it moves a displayed elapsed figure and nothing else.
+	// Attempt is NOT. It is the fence every write this process makes is
+	// filtered on — the run document, the checkpoints, the live feed, the
+	// terminal claim. Getting it wrong does not degrade the run, it unmakes
+	// it: every write silently matches nothing, the agent reads that as
+	// "another attempt owns this run" and exits deliberately WITHOUT
+	// reporting a failure, and the run is left `running` with no agent
+	// behind it until the sweep or the duration cap notices.
+	//
+	// So the attempt is read, never derived. `set.Attempt + 1` looks like a
+	// safe approximation and is not: checkpoints are only restamped as the
+	// replay re-persists them, so an attempt that died before its first
+	// checkpoint write leaves them on the attempt before it. Resume twice
+	// with the middle attempt dying early and the derivation is a full
+	// attempt behind the counter the API has already moved.
+	//
+	// A read we cannot complete therefore fails the resume. That costs a
+	// recoverable error the operator can retry; the alternative costs a run
+	// that looks alive and is not.
 	run, err := runRepo.GetByID(ctx, runID)
-	if err != nil || run == nil {
-		applog.WithFields(applog.Fields{
-			"run_id": runID,
-			"error":  errString(err),
-		}).Warn("could not read the run document on resume; attempt number and cumulative duration will be approximate")
-		return st, nil
+	if err != nil {
+		return nil, fmt.Errorf("read run %s before resuming it: %w", runID, err)
 	}
-	if run.Attempt > 0 {
-		st.Attempt = run.Attempt
+	if run == nil {
+		return nil, fmt.Errorf("run %s no longer exists, so there is no attempt to resume as", runID)
 	}
-	st.PriorActiveMs = run.ActiveMs
-	return st, nil
-}
+	if run.Attempt <= 0 {
+		// BeginResume always writes a computed attempt of at least 2, so a
+		// run being resumed cannot legitimately lack one. Refusing beats
+		// guessing the number every subsequent write is fenced on.
+		return nil, fmt.Errorf("run %s carries no attempt number; refusing to guess which attempt this resume is", runID)
+	}
 
-// errString renders an error for a log field, tolerating nil.
-func errString(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
+	return &discovery.ResumeState{
+		Attempt:       run.Attempt,
+		PriorActiveMs: run.ActiveMs,
+		Checkpoints:   set,
+	}, nil
 }
 
 // discoveryMaxDurationEnv is the env var that controls the outer
