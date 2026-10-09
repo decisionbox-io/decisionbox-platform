@@ -1568,26 +1568,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// can use historical context (e.g., recurring patterns, trends, and signals).
 	applog.Info("Phase 6: Updating project context")
 
-	// The last gate, and the one that matters most: everything a superseded
-	// attempt has written so far is either attempt-fenced or retired by
-	// retireOwnResult at the tail — but the project context is NEITHER. It
-	// is long-term pattern memory keyed on the project, so patterns merged
-	// from an attempt whose discovery is about to be deleted would outlive
-	// it and steer every future run on this project. A resume landing during
-	// recommendation generation or its validation gets caught here.
-	if o.ownershipLost(ctx, "updating project context") {
+	// A gate here no longer protects the project context — that write has
+	// moved to the terminal section, where ownership is DECIDED rather than
+	// sampled. This one just stops a superseded attempt from paying for the
+	// save and the embedding pass it is about to have deleted.
+	if o.ownershipLost(ctx, "saving the result") {
 		return nil, ai.ErrAttemptSuperseded
-	}
-
-	// Mark that a successful discovery run occurred for this project
-	projectCtx.RecordDiscovery(true)
-
-	// Merge newly discovered insights into long-term pattern memory
-	projectCtx.UpdatePatterns(allInsights)
-
-	// Persist updated context (best-effort; failures are non-fatal)
-	if err := o.saveProjectContext(ctx, projectCtx); err != nil {
-		applog.WithError(err).Warn("Failed to save project context")
 	}
 
 	// Phase 7: Save discovery result
@@ -1723,6 +1709,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// is the branch below.
 	switch outcome {
 	case terminalClaimed:
+		o.recordProjectLearning(persistCtx, projectCtx, allInsights)
 		o.retireSupersededAttempts(persistCtx, result.ID)
 
 	case terminalSuperseded:
@@ -1768,6 +1755,16 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			"run_id":       o.runID,
 			"discovery_id": result.ID,
 		}).Error("this attempt's terminal run-status write did not land; the result is saved but the run document does not reflect this attempt's outcome")
+
+		// The result is kept on this path, so the learning drawn from it is
+		// kept too. The rule is not "only the claimant writes context" but
+		// "nobody writes context for a result that is about to be deleted",
+		// and the deletion only happens under terminalSuperseded. Dropping
+		// it here would quietly cost the project every lesson from a run the
+		// startup sweep marked failed while its agent was still working —
+		// the commoner of the two causes that land on this branch.
+		o.recordProjectLearning(persistCtx, projectCtx, allInsights)
+
 		if err == nil {
 			return result, fmt.Errorf("run %s: discovery completed but its terminal status write did not land", o.runID)
 		}
@@ -1806,6 +1803,36 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 	// Return final discovery result to caller
 	return result, nil
+}
+
+// recordProjectLearning merges this run's findings into the project's
+// long-term pattern memory and persists it.
+//
+// Called from the terminal section, after ownership has been DECIDED, and
+// that placement is the point. Project context is the one write a superseded
+// attempt could not take back: everything else it produces is either
+// attempt-fenced or deleted by retireOwnResult at the tail, but this is
+// keyed on the PROJECT, so patterns merged from a discovery that is about to
+// be deleted outlive it and steer every future run.
+//
+// A gate before the write could only narrow that window, never close it —
+// there is always a gap between reading ownership and writing. Deciding
+// first removes the gap: this runs when the attempt claimed the run, and
+// when the claim was undetermined but the result is being KEPT, and never
+// when the result is about to go.
+//
+// Best-effort, as it was before: a project that cannot record its learning
+// still produced a discovery, and failing the run over it would be the wrong
+// trade.
+func (o *Orchestrator) recordProjectLearning(ctx context.Context, projectCtx *models.ProjectContext, insights []models.Insight) {
+	if projectCtx == nil || o.contextRepo == nil {
+		return
+	}
+	projectCtx.RecordDiscovery(true)
+	projectCtx.UpdatePatterns(insights)
+	if err := o.saveProjectContext(ctx, projectCtx); err != nil {
+		applog.WithError(err).Warn("Failed to save project context")
+	}
 }
 
 // persistSplitLogs writes the per-step / per-area / per-result rows into

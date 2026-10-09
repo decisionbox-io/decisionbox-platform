@@ -719,6 +719,13 @@ func (o *Orchestrator) rebuildStepIndexForResume(ctx context.Context) {
 // prefix the resume has to re-emit because of it). One change, and the whole
 // family went away.
 //
+// The project context is no longer among them, and that is a correction
+// rather than a removal. A gate there was "the last line of defence for the
+// only write retireOwnResult cannot undo" — but a gate can only shorten the
+// window between reading ownership and writing, and for a write that cannot
+// be taken back, shorter is not closed. It now happens in the terminal
+// section, where ownership is decided instead of sampled.
+//
 // What the gates DO buy is the money: five of them bound a superseded
 // attempt's waste to a single in-flight call instead of the whole
 // post-exploration pipeline, and they protect the one write that nothing

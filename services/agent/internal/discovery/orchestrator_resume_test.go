@@ -941,10 +941,15 @@ func TestOwnershipLost_GatesSpendOnPositiveEvidence(t *testing.T) {
 // The two "after" gates exist for different reasons. The analysis one stops
 // validation calls and, more importantly, run-step rows — which are keyed on
 // run_id alone, so a dead attempt's rows surface in the resumed run's live
-// log. The project-context one is the last line of defence for the only
-// write retireOwnResult cannot undo: long-term pattern memory, keyed on the
-// project, which would otherwise steer every future run from a discovery
-// that was deleted.
+// log. The last one stops a superseded attempt paying for the save and the
+// embedding pass it is about to have deleted.
+//
+// It used to guard the project context as well, and that is no longer what a
+// gate is for: a gate can only narrow the window between reading ownership
+// and writing, never close it, and project context is the one write
+// retireOwnResult cannot undo. That write now happens in the terminal
+// section where ownership is DECIDED — see
+// TestProjectLearning_OnlyRecordedWhenTheResultSurvives.
 func TestOwnershipGates_CoverEverySpendAndSideEffectAfterExploration(t *testing.T) {
 	src, err := os.ReadFile("orchestrator.go")
 	if err != nil {
@@ -956,7 +961,7 @@ func TestOwnershipGates_CoverEverySpendAndSideEffectAfterExploration(t *testing.
 		`o.ownershipLost(ctx, "analysis area "+area.ID)`,
 		`o.ownershipLost(ctx, "validating area "+area.ID)`,
 		`o.ownershipLost(ctx, "recommendations")`,
-		`o.ownershipLost(ctx, "updating project context")`,
+		`o.ownershipLost(ctx, "saving the result")`,
 	} {
 		if !strings.Contains(string(src), want) {
 			t.Errorf("missing ownership gate: %s", want)
@@ -970,10 +975,12 @@ func TestOwnershipGates_CoverEverySpendAndSideEffectAfterExploration(t *testing.
 //
 // The standalone row ids ARE the Qdrant point ids. Delete the rows first and
 // a failed vector delete is unrecoverable: the points are orphaned, project
-// search can still return them, and nothing is left that names them. Delete
-// the points first and a failure leaves rows for a discovery that no longer
-// exists — inert, because nothing reaches them without the discovery, and
-// they keep the points addressable.
+// search renders them as blank hits, and nothing is left that names them.
+// Delete the points first and a failure leaves rows that keep the points
+// addressable — which is why, when that happens, the whole retirement is
+// abandoned rather than continuing to the parent. Those rows are NOT inert:
+// they are read by project id, as this comment used to claim otherwise. See
+// TestRetireSuperseded_AFailedVectorCleanupRetiresNothing.
 func TestRetireDiscovery_DeletesVectorsBeforeTheRowsThatAddressThem(t *testing.T) {
 	ctx := context.Background()
 
@@ -1037,4 +1044,71 @@ func TestRetireDiscovery_AFailedListAlsoKeepsTheRows(t *testing.T) {
 	if len(embed.deletedDiscoveries) != 0 {
 		t.Errorf("rows were deleted (%v) after the id listing failed; any point it could not name is now an unaddressable orphan", embed.deletedDiscoveries)
 	}
+}
+
+// TestProjectLearning_OnlyRecordedWhenTheResultSurvives pins where the one
+// unretractable write is allowed to happen.
+//
+// Project context is long-term pattern memory keyed on the PROJECT, so
+// patterns merged from a discovery that is then deleted outlive it and steer
+// every future run — and retireOwnResult cannot take them back. It used to be
+// written in Phase 6 behind an ownership GATE, which can only narrow the
+// window between reading ownership and writing, never close it.
+//
+// The rule is not "only the claimant writes context" either. It is "nobody
+// writes context for a result that is about to be deleted", and that deletion
+// happens on exactly one branch: terminalSuperseded. terminalUnknown KEEPS the
+// result — most often because the startup sweep marked the run failed while
+// its agent was still working — so it keeps the learning too.
+//
+// Asserted against the source because driving RunDiscovery's terminal section
+// end-to-end needs a live warehouse, an LLM and Mongo; the same approach as
+// TestOwnershipGates above.
+func TestProjectLearning_OnlyRecordedWhenTheResultSurvives(t *testing.T) {
+	src, err := os.ReadFile("orchestrator.go")
+	if err != nil {
+		t.Fatalf("read orchestrator.go: %v", err)
+	}
+	text := string(src)
+
+	// The mutations live in exactly one place now. Phase 6 must not touch
+	// them, or the gate-shaped hole is back.
+	for _, call := range []string{"projectCtx.RecordDiscovery(", "projectCtx.UpdatePatterns("} {
+		if n := strings.Count(text, call); n != 1 {
+			t.Errorf("%s appears %d times, want 1 — it belongs only to recordProjectLearning", call, n)
+		}
+	}
+	if !strings.Contains(text, "func (o *Orchestrator) recordProjectLearning(") {
+		t.Fatal("recordProjectLearning is gone; the project-context write has moved somewhere unasserted")
+	}
+
+	// Two call sites: the claim, and the undetermined-but-kept branch.
+	if n := strings.Count(text, "o.recordProjectLearning(persistCtx, projectCtx, allInsights)"); n != 2 {
+		t.Errorf("recordProjectLearning has %d call sites, want 2 (terminalClaimed and terminalUnknown)", n)
+	}
+
+	// And neither of them may sit before the terminal section: the whole
+	// point is that ownership is decided by then.
+	firstCall := strings.Index(text, "o.recordProjectLearning(persistCtx")
+	terminal := strings.Index(text, "switch outcome {")
+	if firstCall < 0 || terminal < 0 {
+		t.Fatal("could not locate the terminal section or the learning call")
+	}
+	if firstCall < terminal {
+		t.Error("project learning is recorded before ownership is decided; a gate there can only narrow the window, not close it")
+	}
+}
+
+// TestRecordProjectLearning_SafeWithoutItsDependencies — it runs on the
+// terminal path of every successful run, so a missing context repository or a
+// run that never loaded a context must be a no-op rather than a panic that
+// loses an otherwise-finished discovery.
+func TestRecordProjectLearning_SafeWithoutItsDependencies(t *testing.T) {
+	o := &Orchestrator{projectID: "p1", runID: "run-1"}
+
+	// No context repository wired, and a context to merge.
+	o.recordProjectLearning(context.Background(), models.NewProjectContext("p1"), nil)
+
+	// A context that was never loaded.
+	o.recordProjectLearning(context.Background(), nil, nil)
 }
