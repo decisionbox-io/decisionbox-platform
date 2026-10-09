@@ -966,3 +966,68 @@ func TestReplay_PrefixAtMaxStepsEndsWithoutAnLLMCall(t *testing.T) {
 		t.Errorf("Steps len = %d, want the 3 replayed steps", len(res.Steps))
 	}
 }
+
+// TestReplay_ReExecutedStepDropsThePreviousAttemptsError — a transient
+// provider failure on one attempt must not follow the step into the next.
+//
+// The execute* methods only assign step.Error on a failure path, which is
+// enough on a live run because the step starts zero-valued. Replay seeds the
+// step from the checkpoint, so without clearing it a step that failed before
+// and succeeds now keeps an error describing neither execution: persisted
+// again, indexed, rendered as a failure — and, because the novelty rule
+// treats an errored step as unjudgeable, quietly dropped from the stopping
+// evidence for the rest of the run.
+func TestReplay_ReExecutedStepDropsThePreviousAttemptsError(t *testing.T) {
+	prefix := []models.ExplorationCheckpoint{
+		{
+			Step: models.ExplorationStep{
+				Step:     1,
+				Action:   "lookup_schema",
+				Thinking: "need the orders table",
+				Error:    "schema provider temporarily unavailable",
+			},
+			Args: models.CheckpointArgs{LookupSchema: []string{"orders"}},
+		},
+	}
+	h := newResumeHarness(t, ExplorationEngineOptions{MaxSteps: 20})
+
+	conv := NewConversation(ConversationOptions{SystemPrompt: "sys", MaxMessages: 50})
+	conv.AddUserMessage("initial")
+	out := h.engine.replayPrefix(context.Background(), conv, &ResumeState{Steps: prefix})
+
+	if len(out.Steps) != 1 {
+		t.Fatalf("replayed %d steps, want 1", len(out.Steps))
+	}
+	if got := out.Steps[0].Error; got != "" {
+		t.Errorf("replayed step kept Error = %q; the re-execution succeeded, so this error describes neither attempt", got)
+	}
+}
+
+// TestReplay_QueryDataKeepsItsRecordedError is the other side of the line.
+// A query_data step is NOT re-executed — its rows are replayed from the
+// checkpoint — so its recorded error is still the true account of what
+// happened and must survive.
+func TestReplay_QueryDataKeepsItsRecordedError(t *testing.T) {
+	prefix := []models.ExplorationCheckpoint{
+		{
+			Step: models.ExplorationStep{
+				Step:   1,
+				Action: "query_data",
+				Query:  "SELECT * FROM missing_table",
+				Error:  "relation \"missing_table\" does not exist",
+			},
+		},
+	}
+	h := newResumeHarness(t, ExplorationEngineOptions{MaxSteps: 20})
+
+	conv := NewConversation(ConversationOptions{SystemPrompt: "sys", MaxMessages: 50})
+	conv.AddUserMessage("initial")
+	out := h.engine.replayPrefix(context.Background(), conv, &ResumeState{Steps: prefix})
+
+	if len(out.Steps) != 1 {
+		t.Fatalf("replayed %d steps, want 1", len(out.Steps))
+	}
+	if out.Steps[0].Error == "" {
+		t.Error("a replayed query_data step lost its recorded error; nothing re-ran it, so that error is the only account of what happened")
+	}
+}

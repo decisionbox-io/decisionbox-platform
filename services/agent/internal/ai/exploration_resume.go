@@ -174,6 +174,24 @@ func (e *ExplorationEngine) replayStep(ctx context.Context, conversation *Conver
 	conversation.AddAssistantMessage(replayedActionJSON(cp))
 
 	step = cp.Step
+
+	// An action that is about to RUN AGAIN must not carry the previous
+	// attempt's error into this attempt's result. The execute* methods only
+	// ever assign step.Error on a failure path — on a live run that is
+	// enough, because the step starts zero-valued — so a step that failed
+	// before and succeeds now would keep an error describing neither
+	// execution. It would then be re-checkpointed, indexed and rendered as
+	// an errored step, and the novelty rule treats any errored step as
+	// unjudgeable, so it would also drop out of the stopping evidence for
+	// the rest of the run.
+	//
+	// query_data is deliberately NOT in that set: it is not re-executed,
+	// its rows come back from the checkpoint, so its recorded error is still
+	// the true account of what happened.
+	if reExecutedOnReplay(step.Action) {
+		step.Error = ""
+	}
+
 	var resultMsg string
 	switch step.Action {
 	case "complete":
@@ -237,6 +255,21 @@ func (e *ExplorationEngine) replayStep(ctx context.Context, conversation *Conver
 	}
 	conversation.AddUserMessage(resultMsg)
 	return step, false
+}
+
+// reExecutedOnReplay reports whether replaying this action runs it again
+// rather than restoring what it returned.
+//
+// The cheap actions are re-run: they cost no warehouse query and re-running
+// them is what restores their per-run budgets and shows the model what the
+// schema cache says now. query_data is replayed from its persisted rows.
+func reExecutedOnReplay(action string) bool {
+	switch action {
+	case "lookup_schema", "search_tables", "get_correlations":
+		return true
+	default:
+		return false
+	}
 }
 
 // replayOutcome is what a replayed prefix tells the loop.
