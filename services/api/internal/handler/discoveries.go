@@ -828,6 +828,36 @@ func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 	// them: a shared deadline makes the first slow call eat the allowance of
 	// the write that is supposed to recover from it.
 
+	// Preserve when the attempt holding any lingering reservation stopped,
+	// BEFORE anything below can return.
+	//
+	// `run` is still the pre-flip document, so its timestamps are that
+	// attempt's. The moment the flip landed they stopped being recoverable
+	// from the stored run: BeginResume moved last_resumed_at to now, and a
+	// stand-down below moves completed_at to now as well — so both of the
+	// fields ReservationOwnerEndedAt falls back to end up describing THIS
+	// request rather than the attempt whose reservation is still open.
+	//
+	// 1447806 stamped this inside the reservation block further down, which
+	// every stand-down path returns before reaching. A resume that aborted
+	// on the concurrency re-check therefore left the run failed, on a bumped
+	// attempt, with an unstamped reservation — and the background confirmer
+	// later closed attempt 1's reservation at the aborted resume's time,
+	// inflating its duration by however long the run had been sitting
+	// failed.
+	//
+	// Best-effort and write-once: a failure costs precision on an edge case,
+	// and a later resume cannot overwrite what this one recorded.
+	var ownerEndedAt time.Time
+	if run.PolicyReservationID != "" {
+		ownerEndedAt = run.ReservationOwnerEndedAt()
+		stampCtx, cancelStamp := cleanupContext(ctx)
+		if err := h.runRepo.StampReservationOwnerEndedAt(stampCtx, runID, ownerEndedAt); err != nil {
+			apilog.WithError(err).Warn("could not preserve the superseded attempt's end time; a later close of its reservation may report a less precise one")
+		}
+		cancelStamp()
+	}
+
 	// Re-check for a competing run now that this one is visibly `running`.
 	//
 	// The check above the flip is a pre-check, and two requests can both pass
@@ -891,19 +921,10 @@ func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 		resCtx, cancelRes := cleanupContext(ctx)
 		defer cancelRes()
 
-		// Preserve the owner's end time BEFORE trying to close it. If this
-		// confirm fails the id stays, and by the time anything retries it a
-		// further resume may have rewritten last_resumed_at and a further
-		// attempt completed_at — so the answer has to be recorded now, while
-		// the pre-flip document still has it. Written once, so this is the
-		// first resume's answer even on the third resume. Best-effort: a
-		// failure here costs precision on an edge case, and refusing to
-		// resume over it would be the wrong trade.
-		ownerEndedAt := run.ReservationOwnerEndedAt()
-		if err := h.runRepo.StampReservationOwnerEndedAt(resCtx, runID, ownerEndedAt); err != nil {
-			apilog.WithError(err).Warn("could not preserve the superseded attempt's end time; a later retry of this confirm may report a less precise one")
-		}
-
+		// ownerEndedAt was computed and preserved right after the flip, above
+		// — before any stand-down path could return without it. Reused here
+		// rather than re-derived, because by now the stored document's own
+		// timestamps may have moved on.
 		if err := policy.GetChecker().ConfirmDiscoveryRunEnded(resCtx, run.PolicyReservationID, policy.RunOutcome{
 			Status: "failure",
 			// Not `now`. This reservation's attempt stopped before this

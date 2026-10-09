@@ -1277,3 +1277,45 @@ func TestResumeRun_ASuccessfulResumeKeepsItsMarker(t *testing.T) {
 		t.Errorf("last_checkpoint_step = %d, want it kept at 42", got)
 	}
 }
+
+// TestResumeRun_AStoodDownResumePreservesTheReservationOwnersEndTime covers
+// the path 1447806's fix returned before reaching.
+//
+// A resume that aborts on the post-flip concurrency re-check leaves the run
+// failed on a BUMPED attempt with the previous attempt's reservation still
+// open. Both fields ReservationOwnerEndedAt falls back to now describe this
+// aborted request rather than the attempt that owns the reservation:
+// BeginResume moved last_resumed_at to now, and the stand-down's FailAttempt
+// moves completed_at to now. So unless the answer was preserved before the
+// stand-down, the background confirmer closes attempt 1's reservation at the
+// aborted resume's time and bills it for every idle hour before that.
+func TestResumeRun_AStoodDownResumePreservesTheReservationOwnersEndTime(t *testing.T) {
+	ck := &meteringChecker{}
+	swapChecker(t, ck)
+
+	f := newResumeFixture(t)
+	run := f.runs.runs["run-1"]
+	run.PolicyReservationID = "res-attempt-1"
+	attempt1EndedAt := time.Now().UTC().Add(-4 * time.Hour)
+	run.CompletedAt = &attempt1EndedAt
+
+	// A competing run appears in the window the pre-check cannot see, so the
+	// post-flip re-check stands this resume down.
+	f.runs.onBeginResume = func() {
+		f.runs.runs["other-run"] = &models.DiscoveryRun{
+			ID: "other-run", ProjectID: "p1", Status: "running",
+		}
+	}
+
+	if w := f.post("run-1"); w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 — the resume should have stood down; body = %s", w.Code, w.Body.String())
+	}
+
+	got := f.runs.runs["run-1"].PolicyReservationOwnerEndedAt
+	if got == nil {
+		t.Fatal("the owner's end time was not preserved before the stand-down; nothing on the run still records when attempt 1 stopped")
+	}
+	if !got.Equal(attempt1EndedAt) {
+		t.Errorf("preserved %s, want attempt 1's own end %s — not this aborted resume's clock", got, attempt1EndedAt)
+	}
+}
