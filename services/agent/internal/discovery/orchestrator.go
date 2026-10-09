@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -196,6 +197,12 @@ type Orchestrator struct {
 	// otherwise. Every read goes through the nil-safe helpers in
 	// orchestrator_resume.go, so a normal run takes exactly today's path.
 	resume *ResumeState
+
+	// stepIndexUnusable disables the per-run vector index for this attempt.
+	// Set when a resume could not drop the previous attempt's collection, so
+	// the points the replay discarded are still in it — evidence this
+	// attempt must not reason over. See rebuildStepIndexForResume.
+	stepIndexUnusable atomic.Bool
 
 	// keepStepIndex is set as soon as the first checkpoint lands and cleared
 	// once the checkpoints are discarded. It is what makes the deferred Drop
@@ -982,6 +989,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			inner:    o.runStepIndex,
 			reporter: o.statusReporter,
 			ctx:      ctx,
+			unusable: &o.stepIndexUnusable,
 		}
 	}
 
@@ -3104,12 +3112,45 @@ type countingStepIndexer struct {
 	inner    RunStepIndex
 	reporter *StatusReporter
 	ctx      context.Context
+	// unusable, once set, makes this decorator refuse both operations.
+	//
+	// A pointer because the decorator is held by value: the engine captures
+	// a copy at construction, and the orchestrator can only reach that copy
+	// through shared state. Set when a resume could not drop the previous
+	// attempt's collection — see rebuildStepIndexForResume.
+	unusable *atomic.Bool
 }
+
+// errStepIndexUnusable is what both methods answer with once the index has
+// been declared unusable for this attempt.
+//
+// An error rather than a silent no-op, because the engine already knows what
+// to do with an index that errors, and both answers are the ones wanted here.
+// A failing Nearest makes the step neither new nor repeated — unjudgeable —
+// so the novelty rule cannot fire on evidence this attempt should not see. A
+// failing Upsert feeds recordIndexOutcome, and an index that never keeps
+// anything makes noveltyMeasurable false, which stands the rule down at the
+// point the decision is made. Both roads lead to the same place: the run can
+// only get longer, never shorter.
+//
+// Search is deliberately NOT stood down with them, and it is not an
+// oversight. The analysis picker reaches the index directly, and a Search
+// error makes it SKIP THE AREA — every area, which is a discovery with no
+// insights at all. Far worse than what the stale points can do to it: hits
+// are filtered against the run's own step list, so a phantom is dropped and
+// the worst surviving case is a score computed from an older step that
+// happened to carry the same number. Content always comes from the live step
+// list, the keyword boost backs the ranking up, and a mis-ranked area still
+// gets analysed.
+var errStepIndexUnusable = errors.New("the per-run step index is unusable for this attempt: a previous attempt's points could not be dropped")
 
 // Upsert delegates to the wrapped index; on success bumps the
 // per-run upsert counter. Errors from the inner Upsert propagate
 // untouched so the engine logs them.
 func (c countingStepIndexer) Upsert(ctx context.Context, step models.ExplorationStep) error {
+	if c.unusable != nil && c.unusable.Load() {
+		return errStepIndexUnusable
+	}
 	if err := c.inner.Upsert(ctx, step); err != nil {
 		return err
 	}
@@ -3125,6 +3166,9 @@ func (c countingStepIndexer) Upsert(ctx context.Context, step models.Exploration
 // cube stopping decision reads, which would silently fall back to the step
 // floor with nothing to notice it.
 func (c countingStepIndexer) Nearest(ctx context.Context, step models.ExplorationStep) (float64, bool, error) {
+	if c.unusable != nil && c.unusable.Load() {
+		return 0, false, errStepIndexUnusable
+	}
 	return c.inner.Nearest(ctx, step)
 }
 

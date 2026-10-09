@@ -581,11 +581,10 @@ func (o *Orchestrator) discardCheckpoints(ctx context.Context, why string) {
 // — there would be nothing to rebuild from, and an empty collection is what
 // an ordinary run starts with anyway.
 //
-// A failed drop is logged and swallowed, like every other index operation
-// here: the run works without the index, and refusing to resume over a
-// Qdrant hiccup would be the wrong trade. It does mean the stale points can
-// survive a failed drop, which noveltyMeasurable and the ranking degrade
-// around rather than break on.
+// A failed drop does not refuse the resume — that would throw away a working
+// replay over a Qdrant hiccup — but it does stand the index down for this
+// attempt, because the stale points that survive it are steps the replay
+// discarded and the novelty rule would read them as earlier work.
 // replayLiveFeedForResume re-emits the replayable prefix into this attempt's
 // live feed.
 //
@@ -628,10 +627,26 @@ func (o *Orchestrator) rebuildStepIndexForResume(ctx context.Context) {
 		return
 	}
 	if err := o.runStepIndex.Drop(ctx); err != nil {
+		// The collection still holds the previous attempt's points, and when
+		// this attempt's replayable prefix is SHORTER than what was indexed
+		// — a gap, or a stale tail — some of those points are steps the
+		// replay deliberately discarded. Leaving the index live would let
+		// the novelty rule compare new work against that discarded future
+		// and judge it a repeat, ending the run early on evidence this
+		// attempt is not entitled to. The lifecycle doc promises the
+		// opposite: resume can only ever lengthen a run.
+		//
+		// So the index is stood down for this attempt rather than the resume
+		// being refused. Refusing would throw away a replay that is
+		// otherwise fine over a Qdrant hiccup; standing down costs the
+		// novelty rule and the analysis ranking, both of which already have
+		// a defined no-index behaviour because a deployment without Qdrant
+		// takes it.
+		o.stepIndexUnusable.Store(true)
 		applog.WithFields(applog.Fields{
 			"run_id": o.runID,
 			"error":  err.Error(),
-		}).Warn("resume: dropping the per-run step index before replay failed; it may still hold steps the replay discarded")
+		}).Warn("resume: could not drop the per-run step index, so it still holds steps the replay discarded; standing the index down for this attempt rather than reasoning over them")
 		return
 	}
 	applog.WithField("run_id", o.runID).Info("resume: dropped the per-run step index; replay will rebuild it from the replayable prefix")

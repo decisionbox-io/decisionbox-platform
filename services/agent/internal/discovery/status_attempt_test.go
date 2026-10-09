@@ -616,3 +616,111 @@ func TestOrchestrator_ReplayLiveFeedForResume(t *testing.T) {
 		o.replayLiveFeedForResume(ctx)
 	})
 }
+
+// failingDropIndex is a RunStepIndex whose Drop fails while search and write
+// keep working — the partial failure that makes a stale index dangerous
+// rather than merely absent.
+type failingDropIndex struct {
+	nearestCalls int
+	upsertCalls  int
+}
+
+func (f *failingDropIndex) Drop(context.Context) error {
+	return errors.New("qdrant refused the delete")
+}
+func (f *failingDropIndex) Upsert(context.Context, models.ExplorationStep) error {
+	f.upsertCalls++
+	return nil
+}
+func (f *failingDropIndex) Search(context.Context, string, RunStepIndexSearchOpts) ([]RunStepIndexHit, error) {
+	return nil, nil
+}
+func (f *failingDropIndex) Nearest(context.Context, models.ExplorationStep) (float64, bool, error) {
+	f.nearestCalls++
+	// A near-identical neighbour: exactly what a discarded future step would
+	// look like to a new step that is actually breaking new ground.
+	return 0.99, true, nil
+}
+
+// TestOrchestrator_AFailedIndexDropStandsTheIndexDown is the guarantee the
+// lifecycle doc makes about resume: it can only ever lengthen a run.
+//
+// When a resumed run's replayable prefix is shorter than what the previous
+// attempt indexed — a checkpoint gap, or a stale tail — the surviving points
+// are steps the replay deliberately discarded. If the drop fails and the
+// index stays live, the novelty rule compares new work against that discarded
+// future, calls it a repeat, and can end the run early on evidence this
+// attempt is not entitled to.
+func TestOrchestrator_AFailedIndexDropStandsTheIndexDown(t *testing.T) {
+	ctx := context.Background()
+	idx := &failingDropIndex{}
+	o := &Orchestrator{
+		runID:        "run-1",
+		projectID:    "proj",
+		runStepIndex: idx,
+		resume: &ResumeState{
+			Attempt:     2,
+			Checkpoints: &database.CheckpointSet{Steps: []models.ExplorationCheckpoint{{Step: models.ExplorationStep{Step: 1}}}},
+		},
+	}
+
+	if o.stepIndexUnusable.Load() {
+		t.Fatal("the index should start usable")
+	}
+	o.rebuildStepIndexForResume(ctx)
+	if !o.stepIndexUnusable.Load() {
+		t.Fatal("a failed drop left the index live; the novelty rule can then judge new work against steps the replay discarded")
+	}
+
+	// And the decorator the engine holds must actually refuse, since that is
+	// the only thing the engine ever sees.
+	dec := countingStepIndexer{inner: idx, ctx: ctx, unusable: &o.stepIndexUnusable}
+
+	if _, found, err := dec.Nearest(ctx, models.ExplorationStep{Step: 7}); err == nil {
+		t.Errorf("Nearest returned no error (found=%v); the engine needs an error to treat the step as unjudgeable", found)
+	}
+	if err := dec.Upsert(ctx, models.ExplorationStep{Step: 7}); err == nil {
+		t.Error("Upsert succeeded; an index that keeps nothing is what makes noveltyMeasurable stand the rule down")
+	}
+	if idx.nearestCalls != 0 || idx.upsertCalls != 0 {
+		t.Errorf("reached the stale collection %d time(s) searching and %d writing", idx.nearestCalls, idx.upsertCalls)
+	}
+}
+
+// TestOrchestrator_ASuccessfulDropKeepsTheIndexUsable is the counter-test, so
+// the stand-down cannot be silently permanent.
+func TestOrchestrator_ASuccessfulDropKeepsTheIndexUsable(t *testing.T) {
+	ctx := context.Background()
+	idx := &okDropIndex{}
+	o := &Orchestrator{
+		runID: "run-1", projectID: "proj", runStepIndex: idx,
+		resume: &ResumeState{Attempt: 2, Checkpoints: &database.CheckpointSet{}},
+	}
+
+	o.rebuildStepIndexForResume(ctx)
+
+	if o.stepIndexUnusable.Load() {
+		t.Error("a successful drop must leave the index usable; the replay re-indexes the prefix into it")
+	}
+	dec := countingStepIndexer{inner: idx, ctx: ctx, unusable: &o.stepIndexUnusable}
+	if err := dec.Upsert(ctx, models.ExplorationStep{Step: 1}); err != nil {
+		t.Errorf("Upsert = %v, want the write to reach the index", err)
+	}
+	if idx.upsertCalls != 1 {
+		t.Errorf("index saw %d upserts, want 1", idx.upsertCalls)
+	}
+}
+
+type okDropIndex struct{ upsertCalls int }
+
+func (o *okDropIndex) Drop(context.Context) error { return nil }
+func (o *okDropIndex) Upsert(context.Context, models.ExplorationStep) error {
+	o.upsertCalls++
+	return nil
+}
+func (o *okDropIndex) Search(context.Context, string, RunStepIndexSearchOpts) ([]RunStepIndexHit, error) {
+	return nil, nil
+}
+func (o *okDropIndex) Nearest(context.Context, models.ExplorationStep) (float64, bool, error) {
+	return 0, false, nil
+}
