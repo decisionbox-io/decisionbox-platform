@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation/verifier"
 )
@@ -542,4 +543,76 @@ func TestStatusReporter_ReplayExplorationStepKeepsTheOriginalTimestamp(t *testin
 	if !w.steps[0].Timestamp.Equal(ran) {
 		t.Errorf("row timestamp = %s, want the step's own %s", w.steps[0].Timestamp, ran)
 	}
+}
+
+// TestOrchestrator_ReplayLiveFeedForResume covers the resume-side loop that
+// puts the replayed prefix into this attempt's feed.
+//
+// The nil cases matter as much as the happy one: this runs on every resumed
+// run, and a nil reporter (an agent run with no API) or a resume that found
+// nothing replayable must be a no-op rather than a panic.
+func TestOrchestrator_ReplayLiveFeedForResume(t *testing.T) {
+	ctx := context.Background()
+
+	prefix := []models.ExplorationCheckpoint{
+		{Step: models.ExplorationStep{Step: 1, Action: "lookup_schema"}},
+		{Step: models.ExplorationStep{Step: 2, Action: "query_data", Query: "SELECT 1", RowCount: 3}},
+		{Step: models.ExplorationStep{Step: 3, Action: "query_data", Query: "SELECT 2"}},
+	}
+
+	t.Run("emits one row per replayed step, on this attempt", func(t *testing.T) {
+		doc := newFakeRunDoc()
+		r, feed := reporterAndFeed(doc, 2)
+		o := &Orchestrator{
+			runID:          "run-1",
+			projectID:      "proj",
+			statusReporter: r,
+			resume: &ResumeState{
+				Attempt:     2,
+				Checkpoints: &database.CheckpointSet{Steps: prefix, Attempt: 1},
+			},
+		}
+
+		o.replayLiveFeedForResume(ctx)
+
+		if feed.steps != len(prefix) {
+			t.Fatalf("emitted %d rows, want %d — a resumed run's log would start partway through", feed.steps, len(prefix))
+		}
+		for i, got := range feed.attempts {
+			if got != 2 {
+				t.Errorf("row %d on attempt %d, want 2 — a row on the old attempt is invisible to the feed it was emitted for", i, got)
+			}
+		}
+		if len(doc.attempts) != 0 {
+			t.Errorf("the replay wrote to the run document %d time(s); those counters already carry across attempts", len(doc.attempts))
+		}
+	})
+
+	t.Run("no-ops when there is nothing to replay", func(t *testing.T) {
+		for name, resume := range map[string]*ResumeState{
+			"not a resume at all":   nil,
+			"resume with no prefix": {Attempt: 2, Checkpoints: &database.CheckpointSet{}},
+			"resume with no set":    {Attempt: 2},
+		} {
+			t.Run(name, func(t *testing.T) {
+				r, feed := reporterAndFeed(newFakeRunDoc(), 2)
+				o := &Orchestrator{runID: "run-1", projectID: "proj", statusReporter: r, resume: resume}
+				o.replayLiveFeedForResume(ctx)
+				if feed.steps != 0 {
+					t.Errorf("emitted %d rows, want 0", feed.steps)
+				}
+			})
+		}
+	})
+
+	t.Run("no reporter is not a panic", func(t *testing.T) {
+		o := &Orchestrator{
+			runID: "run-1",
+			resume: &ResumeState{
+				Attempt:     2,
+				Checkpoints: &database.CheckpointSet{Steps: prefix},
+			},
+		}
+		o.replayLiveFeedForResume(ctx)
+	})
 }
