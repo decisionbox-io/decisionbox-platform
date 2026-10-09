@@ -644,6 +644,26 @@ func (m *mockRunRepo) ClearPolicyReservationID(ctx context.Context, runID string
 	return nil
 }
 
+// ClearExplorationCheckpointMarker mirrors the repository's `failed`-only
+// filter, because the handler tests care that a run which has since been
+// resumed keeps its marker.
+func (m *mockRunRepo) ClearExplorationCheckpointMarker(ctx context.Context, runID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.runs[runID]
+	if !ok {
+		return fmt.Errorf("run not found: %s", runID)
+	}
+	if r.Status != "failed" {
+		return nil
+	}
+	r.LastCheckpointStep = 0
+	return nil
+}
+
 // StampReservationOwnerEndedAt mirrors the repository's write-once semantics,
 // because that is the behaviour the resume path depends on: the FIRST resume
 // to find a lingering reservation records the answer and a later one must not

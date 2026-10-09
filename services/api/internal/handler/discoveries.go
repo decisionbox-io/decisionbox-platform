@@ -771,6 +771,16 @@ func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if prefixLen == 0 && !explorationComplete {
+		// Take the button away on the way out. The marker the dashboard
+		// gates Resume on outlives the rows it describes — checkpoints are
+		// bounded by DISCOVERY_CHECKPOINT_RETENTION — so leaving it would
+		// keep offering a resume that can only ever return this same 409.
+		// Best-effort: the refusal is the answer the operator needs, and
+		// failing to tidy up must not turn it into a 500.
+		if err := h.runRepo.ClearExplorationCheckpointMarker(ctx, runID); err != nil {
+			apilog.WithFields(apilog.Fields{"run_id": runID, "error": err.Error()}).
+				Warn("refused a resume with no checkpoints but could not clear the run's checkpoint marker; the dashboard will keep offering Resume until the run is replaced")
+		}
 		writeError(w, http.StatusConflict, "no checkpoint to resume from — it expired or was never written; start a new run instead")
 		return
 	}

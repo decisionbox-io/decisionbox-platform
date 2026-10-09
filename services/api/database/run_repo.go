@@ -556,6 +556,39 @@ func (r *RunRepository) ClearPolicyReservationID(ctx context.Context, runID stri
 	return err
 }
 
+// ClearExplorationCheckpointMarker zeroes the field the dashboard reads to
+// offer Resume, for a run that has just been proven unresumable.
+//
+// The marker is what makes the button appear (`status === 'failed' &&
+// last_checkpoint_step > 0`), and it outlives the rows it describes:
+// checkpoints are bounded by DISCOVERY_CHECKPOINT_RETENTION, so a run whose
+// rows expired still advertises a step it can no longer replay. Without this,
+// refusing the resume leaves the button exactly where it was and every click
+// earns the same 409 until the operator starts a new run.
+//
+// Same reasoning as the zeroing in the agent's Complete: an offered-but-
+// impossible Resume is worse than none.
+//
+// Filtered on `failed` so this can never strip the marker from a run that has
+// since been resumed — a replay re-persists the prefix and re-stamps the
+// field as it goes.
+func (r *RunRepository) ClearExplorationCheckpointMarker(ctx context.Context, runID string) error {
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		return fmt.Errorf("invalid run ID: %w", err)
+	}
+	_, err = r.col.UpdateOne(ctx, bson.M{
+		"_id": oid,
+		// Literal, like BeginResume's own precondition above — this package
+		// has no status constants.
+		"status": "failed",
+	}, bson.M{
+		"$unset": bson.M{"last_checkpoint_step": ""},
+		"$set":   bson.M{"updated_at": time.Now()},
+	})
+	return err
+}
+
 // StampReservationOwnerEndedAt preserves when the attempt holding this run's
 // reservation stopped running, so a later close reports it rather than
 // re-deriving it from fields that have moved on.

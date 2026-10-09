@@ -420,7 +420,24 @@ func (r *RunRepository) AppendLifecycle(ctx context.Context, runID string, ev mo
 	if ev.At.IsZero() {
 		ev.At = time.Now()
 	}
-	_, err = r.col.UpdateOne(ctx, attemptFilter(oid, attempt), bson.M{
+	// Barred from a cancelled run, like the status writes.
+	//
+	// This one asserts an OUTCOME — recordAttemptOutcome appends
+	// `completed` or `failed` just before the terminal write — and the
+	// terminal write is already refused on a cancelled run. Without the
+	// same guard here the pair disagree: the run reads `cancelled` while
+	// its lifecycle log, which is the human-readable record of what
+	// happened, claims it completed.
+	//
+	// Note what is deliberately NOT guarded this way: AddActiveTime and the
+	// query / schema / analysis counters. Those tally work that really
+	// happened, and a cancel does not refund it, so losing them would
+	// understate what the operator was charged for. The line is whether a
+	// write asserts an outcome or records effort spent.
+	filter := attemptFilter(oid, attempt)
+	filter["status"] = bson.M{"$ne": models.RunStatusCancelled}
+
+	_, err = r.col.UpdateOne(ctx, filter, bson.M{
 		"$push": bson.M{"lifecycle": ev},
 		"$set":  bson.M{"updated_at": time.Now()},
 	})

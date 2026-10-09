@@ -783,3 +783,86 @@ func TestRunRepository_ResumableOrActiveIDs(t *testing.T) {
 		t.Errorf("ResumableOrActiveIDs(garbage) = %v, %v; want empty and no error — a malformed id cannot name a run", out, err)
 	}
 }
+
+// TestRunRepository_AppendLifecycleRefusesACancelledRun keeps the lifecycle
+// log from contradicting the run it describes.
+//
+// recordAttemptOutcome appends `completed` or `failed` just before the
+// terminal write, and that write is already refused on a cancelled run. With
+// the append unfenced the two disagreed: the run read `cancelled` while its
+// lifecycle log — the human-readable record of what happened — claimed it
+// completed.
+func TestRunRepository_AppendLifecycleRefusesACancelledRun(t *testing.T) {
+	ctx := context.Background()
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+
+	repo := NewRunRepository(db)
+
+	runID, err := repo.Create(ctx, &models.DiscoveryRun{ProjectID: "proj-1"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	oid, _ := primitive.ObjectIDFromHex(runID)
+
+	// While live, events land.
+	if err := repo.AppendLifecycle(ctx, runID, models.RunLifecycleEvent{Status: models.RunStatusRunning, Attempt: 1}, 1); err != nil {
+		t.Fatalf("AppendLifecycle on a live run: %v", err)
+	}
+
+	if _, err := db.Collection("discovery_runs").UpdateByID(ctx, oid, bson.M{"$set": bson.M{"status": "cancelled"}}); err != nil {
+		t.Fatalf("seed cancelled: %v", err)
+	}
+
+	// The killed attempt reaches its persistence tail and reports success.
+	if err := repo.AppendLifecycle(ctx, runID, models.RunLifecycleEvent{Status: models.RunStatusCompleted, Attempt: 1}, 1); err != nil {
+		t.Fatalf("AppendLifecycle after cancel: %v", err)
+	}
+
+	var got models.DiscoveryRun
+	if err := db.Collection("discovery_runs").FindOne(ctx, bson.M{"_id": oid}).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Lifecycle) != 1 {
+		t.Fatalf("lifecycle has %d events, want 1 — the cancelled run recorded an outcome from the attempt it killed: %+v", len(got.Lifecycle), got.Lifecycle)
+	}
+	if got.Lifecycle[0].Status != models.RunStatusRunning {
+		t.Errorf("surviving event = %q, want the pre-cancel one", got.Lifecycle[0].Status)
+	}
+}
+
+// TestRunRepository_AddActiveTimeStillCountsOnACancelledRun is the line the
+// cancellation guards are drawn along, asserted so a future sweep does not
+// blanket-guard everything that is attempt-fenced.
+//
+// A lifecycle event asserts an OUTCOME, so a cancel must override it. Active
+// compute is effort that really was spent and a cancel does not refund it —
+// losing it would understate what the operator was charged for.
+func TestRunRepository_AddActiveTimeStillCountsOnACancelledRun(t *testing.T) {
+	ctx := context.Background()
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+
+	repo := NewRunRepository(db)
+
+	runID, err := repo.Create(ctx, &models.DiscoveryRun{ProjectID: "proj-1"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	oid, _ := primitive.ObjectIDFromHex(runID)
+	if _, err := db.Collection("discovery_runs").UpdateByID(ctx, oid, bson.M{"$set": bson.M{"status": "cancelled"}}); err != nil {
+		t.Fatalf("seed cancelled: %v", err)
+	}
+
+	if err := repo.AddActiveTime(ctx, runID, 90*time.Second, 1); err != nil {
+		t.Fatalf("AddActiveTime: %v", err)
+	}
+
+	var got models.DiscoveryRun
+	if err := db.Collection("discovery_runs").FindOne(ctx, bson.M{"_id": oid}).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.ActiveMs != 90_000 {
+		t.Errorf("active_ms = %d, want 90000 — the work happened and a cancel does not refund it", got.ActiveMs)
+	}
+}

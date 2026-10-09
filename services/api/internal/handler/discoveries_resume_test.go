@@ -1239,3 +1239,41 @@ func TestResumeRun_PreservesTheReservationOwnersEndTimeAcrossResumes(t *testing.
 		t.Errorf("preserved end time = %s, want it cleared with the reservation id", got)
 	}
 }
+
+// TestResumeRun_RefusingForExpiredCheckpointsTakesTheButtonAway closes a dead
+// end the operator cannot get out of.
+//
+// The dashboard offers Resume on `status === 'failed' && last_checkpoint_step
+// > 0`, and that marker outlives the rows it describes — checkpoints are
+// bounded by DISCOVERY_CHECKPOINT_RETENTION. So a run whose rows expired went
+// on advertising a step it could no longer replay, and every click earned the
+// same 409 until the operator gave up and started a new run.
+func TestResumeRun_RefusingForExpiredCheckpointsTakesTheButtonAway(t *testing.T) {
+	f := newResumeFixture(t)
+	// The rows are gone; only the marker survives.
+	f.cps.prefixLen = 0
+	f.cps.explorationComplete = false
+
+	w := f.post("run-1")
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body = %s", w.Code, w.Body.String())
+	}
+
+	if got := f.runs.runs["run-1"].LastCheckpointStep; got != 0 {
+		t.Errorf("last_checkpoint_step = %d, want 0 — the dashboard keeps offering a resume that can only return this same 409", got)
+	}
+}
+
+// TestResumeRun_ASuccessfulResumeKeepsItsMarker is the counter-test: the
+// clearing must not fire on the path where there IS something to replay, or
+// the resumed run loses the field its own replay re-stamps.
+func TestResumeRun_ASuccessfulResumeKeepsItsMarker(t *testing.T) {
+	f := newResumeFixture(t)
+
+	if w := f.post("run-1"); w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body = %s", w.Code, w.Body.String())
+	}
+	if got := f.runs.runs["run-1"].LastCheckpointStep; got != 42 {
+		t.Errorf("last_checkpoint_step = %d, want it kept at 42", got)
+	}
+}

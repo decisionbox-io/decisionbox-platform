@@ -109,6 +109,10 @@ func (m *mockRunRepo) StampReservationOwnerEndedAt(context.Context, string, time
 	panic("not implemented")
 }
 
+func (m *mockRunRepo) ClearExplorationCheckpointMarker(context.Context, string) error {
+	panic("not implemented")
+}
+
 func resetHooks(t *testing.T) {
 	t.Helper()
 	runhooks.ResetForTest()
