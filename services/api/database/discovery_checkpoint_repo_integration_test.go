@@ -109,11 +109,20 @@ func TestInteg_CheckpointRepo_ResumeStateCountsTheReplayablePrefix(t *testing.T)
 		{"a hole at 3", []int{1, 2, 4, 5}, 0, 2, false},
 		{"a hole at 1", []int{2, 3}, 0, 0, false},
 		{"exploration finished", []int{1, 2, 3}, 3, 3, true},
-		// Resumable with no replayable steps at all: the summary landed and
-		// the step rows have since been pruned, so the run goes straight to
-		// analysis.
-		{"summary only", nil, 0, 0, false},
-		{"summary only, claiming nothing", nil, -1, 0, true},
+		// NOT resumable with no replayable steps at all, in either shape.
+		// This pair used to assert the opposite, with a comment saying the
+		// run "goes straight to analysis" — it would, and analyse nothing.
+		// The picker finds no steps for any area, so the operator pays for
+		// the analysis phase and gets an empty discovery.
+		//
+		// `0` here means no summary is seeded at all; `-1` seeds one
+		// claiming zero steps, which is the degenerate shape the
+		// summary-claims-more-than-the-prefix comparison admitted.
+		{"no summary and no steps", nil, 0, 0, false},
+		{"a summary claiming nothing, with no steps", nil, -1, 0, false},
+		// And the realistic pruned-rows shape: the summary claims the steps
+		// that were explored and every row has since aged out.
+		{"a summary whose rows were pruned", nil, 40, 0, false},
 		// The gap is the stronger fact — a summary over a broken prefix must
 		// not send the run to analysis over an incomplete step set.
 		{"summary over a hole", []int{1, 3}, 3, 1, false},
@@ -853,9 +862,21 @@ func TestInteg_CheckpointRepo_ResumeStateRejectsAnOlderSummary(t *testing.T) {
 		{"a summary on the prefix's attempt", []row{{1, 1}, {2, 1}}, 2, 1, 2, true},
 		// ...and after a resume replayed that prefix and re-wrote the summary.
 		{"a summary re-written with the replayed prefix", []row{{1, 2}, {2, 2}}, 2, 2, 2, true},
-		// The step rows aged out; the summary alone is still resumable,
-		// because an empty prefix has no attempt to be older than.
-		{"a summary with its rows pruned", nil, 0, 1, 0, true},
+		// The step rows aged out. NOT resumable, and this case used to claim
+		// the opposite while quietly not testing it: it seeded a summary of
+		// ZERO total steps, so the `summaryTotalSteps > prefixLen`
+		// comparison never fired and the assertion passed without ever
+		// exercising the state it names. A real pruned-rows summary claims
+		// the steps that were explored.
+		//
+		// Skipping to analysis means analysing the replayed steps, and there
+		// are none — the picker finds nothing for every area, so the
+		// operator pays for the analysis phase and gets an empty discovery.
+		{"a summary whose rows were pruned", nil, 40, 1, 0, false},
+		// And the degenerate shape the old comparison DID admit: a summary
+		// claiming no steps at all, with none. Same outcome for the same
+		// reason — there is nothing to analyse.
+		{"a summary claiming no steps, with none", nil, 0, 1, 0, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

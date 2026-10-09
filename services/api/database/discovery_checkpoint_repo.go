@@ -101,19 +101,28 @@ func (r *DiscoveryCheckpointRepository) ResumeState(ctx context.Context, runID s
 
 	// The same rule the agent's loader applies, and it has to be the same or
 	// the API would promise a resume that behaves differently: the summary is
-	// only trustworthy when the replayable prefix covers every step it
-	// claims. A hole leaves a short prefix; a failed write on the LAST step
-	// leaves a prefix that looks clean but is one short of the claim; a stale
-	// tail leaves one cut off at the splice.
-	if explorationComplete && summaryTotalSteps > prefixLen {
+	// only trustworthy when the replayable prefix is non-empty AND covers
+	// every step it claims. A hole leaves a short prefix; a failed write on
+	// the LAST step leaves a prefix that looks clean but is one short of the
+	// claim; a stale tail leaves one cut off at the splice.
+	//
+	// The empty prefix is the case this used to get wrong, in both
+	// directions. A comment here claimed it was "the 'rows pruned, summary
+	// survived' state that is resumable on the summary alone" — it is not.
+	// Skipping to analysis means analysing the replayed steps, and there are
+	// none: the picker finds nothing for every area, so the operator pays
+	// for the analysis phase and gets an empty discovery. The `>` comparison
+	// happened to reject the realistic shape of it (a summary claiming 40
+	// steps with no rows) while admitting the degenerate one (a summary
+	// claiming 0), so the stated intent and the behaviour disagreed and
+	// neither was right.
+	if explorationComplete && (prefixLen == 0 || summaryTotalSteps > prefixLen) {
 		explorationComplete = false
 	}
 	// And it must come from an attempt no older than the prefix. The counts
 	// can line up over a prefix the summary knows nothing about — a later
 	// attempt filling the gap that broke it, then dying before writing a
-	// summary of its own. An empty prefix keeps the summary, which is the
-	// "rows pruned, summary survived" state that is resumable on the summary
-	// alone.
+	// summary of its own.
 	if explorationComplete && summaryAttempt < prefixAttempt {
 		explorationComplete = false
 	}

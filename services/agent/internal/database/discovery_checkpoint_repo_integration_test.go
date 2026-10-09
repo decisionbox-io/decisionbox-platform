@@ -5,6 +5,7 @@ package database
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -992,11 +993,27 @@ func TestInteg_Checkpoint_SummaryFromTheSameAttemptSurvives(t *testing.T) {
 	}
 }
 
-// TestInteg_Checkpoint_SummaryAloneStillResumes guards the one state where a
-// summary with nothing under it IS the whole answer: the step rows aged out
-// of their TTL and the summary has not. The prefix is empty, so there is no
-// prefix attempt for the summary to be older than.
-func TestInteg_Checkpoint_SummaryAloneStillResumes(t *testing.T) {
+// TestInteg_Checkpoint_SummaryAloneIsNotResumable reverses what this file used
+// to assert, and the reversal is the point.
+//
+// It was called SummaryAloneStillResumes and guarded "the one state where a
+// summary with nothing under it IS the whole answer". It is not an answer at
+// all. Skipping to analysis means analysing the REPLAYED STEPS, and an empty
+// prefix has none: the picker resolves every vector hit against a step list
+// that is empty, finds nothing for any area, and the run costs the whole
+// analysis phase to produce a discovery with no insights.
+//
+// Note what the old assertion actually covered — a summary claiming ZERO
+// total steps. The realistic pruned-rows shape, a summary claiming the 40
+// steps that were explored, was already rejected by the
+// claims-more-than-the-prefix rule. So the contract was only ever exercised
+// in a shape that cannot arise from a real exploration, which is how it
+// survived.
+//
+// Dropping the summary here is what makes loadResumeState refuse the resume
+// outright rather than silently re-exploring a run the operator was told
+// would resume.
+func TestInteg_Checkpoint_SummaryAloneIsNotResumable(t *testing.T) {
 	db, cleanup := setupMongoDB(t)
 	defer cleanup()
 	ctx := context.Background()
@@ -1006,22 +1023,31 @@ func TestInteg_Checkpoint_SummaryAloneStillResumes(t *testing.T) {
 		t.Fatalf("EnsureIndexes: %v", err)
 	}
 
-	err := repo.SaveExplorationSummary(ctx, CheckpointSummaryInput{
-		ProjectID: "proj-1", RunID: "run-1", Attempt: 1,
-		Summary: models.ExplorationCheckpointSummary{Completed: true, TotalSteps: 0, Duration: time.Minute},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Both shapes of "summary with nothing under it": the realistic one that
+	// claims the steps it explored, and the degenerate one that claims none.
+	for _, totalSteps := range []int{40, 0} {
+		t.Run(fmt.Sprintf("summary claiming %d steps with no rows", totalSteps), func(t *testing.T) {
+			if _, err := db.Collection(CollectionDiscoveryCheckpoints).DeleteMany(ctx, bson.M{"run_id": "run-1"}); err != nil {
+				t.Fatalf("clear checkpoints: %v", err)
+			}
+			err := repo.SaveExplorationSummary(ctx, CheckpointSummaryInput{
+				ProjectID: "proj-1", RunID: "run-1", Attempt: 1,
+				Summary: models.ExplorationCheckpointSummary{Completed: true, TotalSteps: totalSteps, Duration: time.Minute},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	set, err := repo.LoadPrefix(ctx, "run-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if set.Len() != 0 {
-		t.Fatalf("prefix len = %d, want 0", set.Len())
-	}
-	if !set.ExplorationComplete() {
-		t.Error("a surviving summary over pruned step rows must still skip exploration")
+			set, err := repo.LoadPrefix(ctx, "run-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if set.Len() != 0 {
+				t.Fatalf("prefix len = %d, want 0", set.Len())
+			}
+			if set.ExplorationComplete() {
+				t.Error("an empty prefix must not skip exploration; there would be no steps to analyse and the run would cost the analysis phase to produce nothing")
+			}
+		})
 	}
 }

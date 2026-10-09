@@ -450,7 +450,15 @@ func (r *DiscoveryCheckpointRepository) LoadPrefix(ctx context.Context, runID st
 	// looks clean at 39 steps while the summary says 40. It covers a prefix
 	// cut short by a stale tail the same way. The prefix is the stronger fact
 	// in every case — it is what replay can actually produce.
-	if set.Summary != nil && set.Summary.TotalSteps > len(set.Steps) {
+	// An empty prefix is included, and it is the case the `>` comparison
+	// alone missed. Skipping to analysis means analysing the replayed steps;
+	// with none there is nothing to analyse, the picker finds nothing for
+	// every area, and the run costs the analysis phase to produce an empty
+	// discovery. Dropping the summary here makes loadResumeState refuse the
+	// resume outright — `set.Len() == 0 && !set.ExplorationComplete()` —
+	// rather than silently re-exploring a run the operator was told would
+	// resume.
+	if set.Summary != nil && (len(set.Steps) == 0 || set.Summary.TotalSteps > len(set.Steps)) {
 		applog.WithFields(applog.Fields{
 			"run_id":              runID,
 			"replayable":          len(set.Steps),
