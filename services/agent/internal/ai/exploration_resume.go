@@ -256,12 +256,19 @@ type replayOutcome struct {
 // replayPrefix rebuilds the conversation for an already-executed prefix and
 // returns the steps to seed result.Steps with.
 //
-// onStep is deliberately NOT called for these steps. The previous attempt
-// already emitted their live run-step rows and already incremented the run
-// document's query / schema-action counters; re-emitting would duplicate the
-// dashboard's step feed and double-count the run's totals. The persist hook
-// IS called, so a replayed prefix is re-checkpointed under this attempt and a
-// run that dies twice still resumes from the same place.
+// onStep is deliberately NOT called for these steps. It is the live hook: it
+// writes a feed row AND moves the progress field AND bumps the run's query /
+// schema-action counters, and the attempt that executed these steps already
+// did all three. Firing it again would double-count the run's totals.
+//
+// The feed row itself does have to be re-emitted, because the feed is scoped
+// to the run's current attempt and these rows belong to an earlier one — the
+// orchestrator does that separately and writes the row only
+// (discovery.Orchestrator.replayLiveFeedForResume). That separation is the
+// point: rows are per-attempt, the counters are per-run.
+//
+// The persist hook IS called, so a replayed prefix is re-checkpointed under
+// this attempt and a run that dies twice still resumes from the same place.
 func (e *ExplorationEngine) replayPrefix(ctx context.Context, conversation *Conversation, resume *ResumeState) replayOutcome {
 	out := replayOutcome{}
 	if resume.Len() == 0 {
