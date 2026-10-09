@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"strconv"
-	"strings"
 	"time"
 
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
@@ -251,22 +249,15 @@ func discoveryJobName(runID string, attempt int) string {
 func (r *KubernetesRunner) Run(ctx context.Context, opts RunOptions) error {
 	jobName := discoveryJobName(opts.RunID, opts.Attempt)
 
-	args := []string{
-		"--project-id", opts.ProjectID,
-		"--run-id", opts.RunID,
-	}
-	if len(opts.Areas) > 0 {
-		args = append(args, "--areas", strings.Join(opts.Areas, ","))
-	}
-	if opts.MaxSteps > 0 {
-		args = append(args, "--max-steps", strconv.Itoa(opts.MaxSteps))
-	}
-	if opts.MinSteps > 0 {
-		args = append(args, "--min-steps", strconv.Itoa(opts.MinSteps))
-	}
-	if opts.Resume {
-		args = append(args, "--resume")
-	}
+	// The SHARED builder, not a copy of it. This block used to duplicate
+	// the flag list, and discoveryArgs exists precisely because that
+	// duplication meant every new flag had to be added in three places —
+	// "a mode that missed one would differ from the others in a way only a
+	// production run would reveal". That is not hypothetical: --attempt was
+	// added for the resume fence and landed in Docker and subprocess, which
+	// call discoveryArgs, while this path kept building its own list and
+	// left the fence defeatable in exactly the mode production uses.
+	args := discoveryArgs(opts)
 
 	// Cap the discovery Job's wall-clock budget via
 	// ActiveDeadlineSeconds. Without this the K8s control plane

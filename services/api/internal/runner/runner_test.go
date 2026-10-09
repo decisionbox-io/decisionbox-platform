@@ -1208,6 +1208,12 @@ func TestRunners_ForwardResumeFlag(t *testing.T) {
 		if !hasArg(args, "--resume") {
 			t.Errorf("args = %v, want --resume", args)
 		}
+		// The fence needs the attempt too, and this test passed Attempt: 2
+		// while asserting only --resume — which is how the Kubernetes path
+		// came to be the one mode missing it.
+		if !hasArg(args, "--attempt") {
+			t.Errorf("args = %v, want --attempt so the agent is not left reading a mutable field", args)
+		}
 	})
 	t.Run("kubernetes omits it on a fresh run", func(t *testing.T) {
 		r := newFakeK8sRunner()
@@ -1221,6 +1227,45 @@ func TestRunners_ForwardResumeFlag(t *testing.T) {
 			t.Errorf("a fresh run must not be told to resume: %v", args)
 		}
 	})
+}
+
+// TestRunners_ShareOneArgvDefinition is the guard that would have caught the
+// missing --attempt, rather than one more per-flag assertion.
+//
+// discoveryArgs exists because the three runner modes used to build the flag
+// list separately, and its own comment names the consequence: "a mode that
+// missed one would differ from the others in a way only a production run
+// would reveal". The Kubernetes path then kept a copy of that list, so
+// --attempt reached Docker and subprocess and not the mode production uses.
+// Asserting the whole argv, not a flag, is what makes the next divergence
+// fail here instead of in production.
+func TestRunners_ShareOneArgvDefinition(t *testing.T) {
+	opts := RunOptions{
+		ProjectID: "p1", RunID: "run-1",
+		Areas: []string{"churn"}, MaxSteps: 40, MinSteps: 24,
+		Resume: true, Attempt: 3,
+	}
+	want := discoveryArgs(opts)
+
+	r := newFakeK8sRunner()
+	ctx := context.Background()
+	if err := r.Run(ctx, opts); err != nil {
+		t.Fatal(err)
+	}
+	jobs, _ := r.client.BatchV1().Jobs("test-ns").List(ctx, metav1.ListOptions{})
+	if len(jobs.Items) != 1 {
+		t.Fatalf("jobs = %d, want 1", len(jobs.Items))
+	}
+	got := jobs.Items[0].Spec.Template.Spec.Containers[0].Args
+
+	if len(got) != len(want) {
+		t.Fatalf("kubernetes argv = %v, want the shared definition %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("kubernetes argv = %v, want the shared definition %v (first difference at %d)", got, want, i)
+		}
+	}
 }
 
 // TestDiscoveryJobName_Attempt1IsUnchanged is the compatibility guard. Resume
