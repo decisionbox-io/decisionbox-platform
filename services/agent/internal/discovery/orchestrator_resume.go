@@ -484,8 +484,13 @@ func retireSuperseded(ctx context.Context, runID, keepDiscoveryID string, deps r
 // split-log rows, and the parent document.
 //
 // Vectors go first among the derived data, because a point whose Mongo row is
-// gone is an orphan that search can still return — while a row whose point is
-// gone merely ranks lower.
+// gone is an orphan that search can still return — as a blank result, since
+// enrichResults appends a hit it cannot load rather than skipping it.
+//
+// And it is all or nothing: if the vectors cannot be cleaned up, this retires
+// NOTHING. A half-retired result is the worst of the three states, because
+// the standalone insight and recommendation rows are reachable by project id
+// without the discovery, so they go on being shown as current findings.
 func retireDiscovery(ctx context.Context, runID, discoveryID string, deps retireDeps) {
 	logf := applog.WithFields(applog.Fields{"run_id": runID, "discovery_id": discoveryID})
 
@@ -518,16 +523,35 @@ func retireDiscovery(ctx context.Context, runID, discoveryID string, deps retire
 			}
 		}
 
-		// Rows only once their points are gone. Keeping them on a failed
-		// vector delete leaves rows for a discovery that no longer exists —
-		// inert, since nothing reaches them without the discovery — whereas
-		// the reverse leaves points that project search can still return
-		// with nothing behind them. Nothing retries automatically; the
-		// rows are what make a manual or future cleanup possible at all.
-		if pointsGone {
-			if delErr := deps.embed.DeleteByDiscovery(ctx, discoveryID); delErr != nil {
-				logf.WithError(delErr).Warn("failed to delete a superseded attempt's standalone insight / recommendation rows")
-			}
+		// Rows only once their points are gone, and if the points are NOT
+		// gone, retire nothing at all.
+		//
+		// The previous version deleted the rows only when the vectors went,
+		// which is right, but carried on to delete the parent discovery
+		// either way — on the reasoning that leftover rows are "inert, since
+		// nothing reaches them without the discovery". That was wrong.
+		// GET /api/v1/projects/{id}/insights and its recommendations
+		// counterpart read these collections directly by project_id, so the
+		// superseded attempt's findings stayed on display indefinitely,
+		// alongside the live attempt's, with no parent left to explain them.
+		//
+		// Deleting the rows anyway is not the answer either: the row ids ARE
+		// the point ids, so a surviving point becomes unaddressable, and
+		// project search appends a hit whose row it cannot load as a blank
+		// result rather than skipping it (see SearchHandler.enrichResults).
+		//
+		// So the failure is taken whole. Nothing is retired, the result stays
+		// coherent and addressable, and the operator sees two results for one
+		// run — which is loud, and the same degraded state a failed discovery
+		// delete already produces — instead of orphaned findings presented as
+		// current.
+		if !pointsGone {
+			logf.Warn("retiring nothing for this superseded attempt: its vectors could not be cleaned up, and removing the rest would leave its findings on display with no result behind them")
+			return
+		}
+		if delErr := deps.embed.DeleteByDiscovery(ctx, discoveryID); delErr != nil {
+			logf.WithError(delErr).Warn("failed to delete a superseded attempt's standalone insight / recommendation rows; keeping its result rather than retiring it halfway")
+			return
 		}
 	}
 

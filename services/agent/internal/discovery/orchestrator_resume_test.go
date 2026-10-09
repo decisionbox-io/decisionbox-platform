@@ -562,18 +562,17 @@ func TestRetireSuperseded_ListFailureKeepsBothResults(t *testing.T) {
 	}
 }
 
-// TestRetireSuperseded_DeletesTheParentEvenWhenDerivedDeletesFail pins the
-// log-and-continue contract. A leftover vector or split-log row is noise; a
-// leftover discoveries document is a second visible result for one run, so
-// the parent delete must still be attempted.
-func TestRetireSuperseded_DeletesTheParentEvenWhenDerivedDeletesFail(t *testing.T) {
+// TestRetireSuperseded_DeletesTheParentWhenOnlyTheLogsFail pins the
+// log-and-continue half of the contract, and it holds only because split-log
+// rows are genuinely unreachable without their discovery: DiscoveryLogRepo
+// reads them by discovery id alone and every route for them is
+// /discoveries/{id}/... So a leftover log row is noise, while a leftover
+// discoveries document is a second visible result for one run.
+func TestRetireSuperseded_DeletesTheParentWhenOnlyTheLogsFail(t *testing.T) {
 	disc := &fakeDiscoveryRetirer{byRun: map[string][]string{"run-1": {"disc-old"}}}
 	logs := &fakeDiscoveryLogPersister{deleteErr: errors.New("logs boom")}
-	embed := &mockEmbedIndexStore{
-		deleteInsightIDs: []string{"ins-1"},
-		deleteError:      errors.New("standalone boom"),
-	}
-	vecs := &fakeVectorStore{deleteErr: errors.New("qdrant boom")}
+	embed := &mockEmbedIndexStore{deleteInsightIDs: []string{"ins-1"}}
+	vecs := &fakeVectorStore{}
 
 	retireSuperseded(context.Background(), "run-1", "disc-new", retireDeps{
 		discoveries: disc, logs: logs, embed: embed, vectors: vecs,
@@ -581,6 +580,55 @@ func TestRetireSuperseded_DeletesTheParentEvenWhenDerivedDeletesFail(t *testing.
 
 	if len(disc.deleted) != 1 || disc.deleted[0] != "disc-old" {
 		t.Errorf("the superseded discovery document must still be deleted, got %v", disc.deleted)
+	}
+}
+
+// TestRetireSuperseded_AFailedVectorCleanupRetiresNothing is the correction to
+// the contract above, which used to say "a leftover vector or split-log row is
+// noise" and delete the parent regardless.
+//
+// A leftover standalone insight / recommendation row is NOT noise. Unlike the
+// split logs, those collections are read by project id —
+// GET /api/v1/projects/{id}/insights and its recommendations counterpart — so
+// deleting the parent while keeping the rows left the superseded attempt's
+// findings on display as current, next to the live attempt's, with nothing
+// behind them to explain where they came from.
+//
+// Deleting the rows anyway is not available: their ids ARE the point ids, so a
+// surviving point becomes unaddressable, and project search renders a hit it
+// cannot load as a blank result rather than skipping it. So the whole
+// retirement is abandoned and the operator gets two coherent results for one
+// run, which is loud and retryable.
+func TestRetireSuperseded_AFailedVectorCleanupRetiresNothing(t *testing.T) {
+	for name, deps := range map[string]func() (*fakeDiscoveryRetirer, retireDeps){
+		"the point delete fails": func() (*fakeDiscoveryRetirer, retireDeps) {
+			disc := &fakeDiscoveryRetirer{byRun: map[string][]string{"run-1": {"disc-old"}}}
+			embed := &mockEmbedIndexStore{deleteInsightIDs: []string{"ins-1"}}
+			return disc, retireDeps{
+				discoveries: disc,
+				logs:        &fakeDiscoveryLogPersister{},
+				embed:       embed,
+				vectors:     &fakeVectorStore{deleteErr: errors.New("qdrant boom")},
+			}
+		},
+		"the id list fails, so the surviving points cannot even be named": func() (*fakeDiscoveryRetirer, retireDeps) {
+			disc := &fakeDiscoveryRetirer{byRun: map[string][]string{"run-1": {"disc-old"}}}
+			embed := &mockEmbedIndexStore{listError: errors.New("mongo down")}
+			return disc, retireDeps{
+				discoveries: disc,
+				logs:        &fakeDiscoveryLogPersister{},
+				embed:       embed,
+				vectors:     &fakeVectorStore{},
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			disc, d := deps()
+			retireSuperseded(context.Background(), "run-1", "disc-new", d)
+			if len(disc.deleted) != 0 {
+				t.Errorf("deleted %v; retiring the parent while its findings survive leaves them on display with no result behind them", disc.deleted)
+			}
+		})
 	}
 }
 
