@@ -76,6 +76,7 @@ func Run() {
 		areasFlag       = flag.String("areas", "", "Comma-separated analysis areas to run (empty = all)")
 		maxSteps        = flag.Int("max-steps", 100, "Maximum exploration steps")
 		minSteps        = flag.Int("min-steps", 0, "Minimum exploration steps before accepting a done signal (0 = no floor). If the LLM says 'done' before this count, it is rejected and exploration continues. Guards against reasoning models that terminate too early.")
+		attempt         = flag.Int("attempt", 0, "Which attempt of --run-id this process is, as decided by the API that spawned it. Only meaningful with --resume. 0 means the spawner did not say, in which case the attempt is read from the run document — correct only while that document has not moved on.")
 		resume          = flag.Bool("resume", false, "Resume the run named by --run-id from its last exploration checkpoint instead of starting fresh. Replays the steps already executed (no warehouse re-queries, no exploration LLM calls for them) and continues from the next one; a run whose exploration already finished goes straight to analysis. Requires --run-id.")
 		includeLog      = flag.Bool("include-log", false, "Include full exploration log")
 		testMode        = flag.Bool("test", false, "Test mode - limit analyses for faster testing")
@@ -240,7 +241,7 @@ func Run() {
 		}
 	}
 
-	if err := runDiscovery(cfg, *projectID, *runID, selectedAreas, *maxSteps, *minSteps, *includeLog, *testMode, *enableDebugLogs, *estimateOnly, *resume); err != nil {
+	if err := runDiscovery(cfg, *projectID, *runID, selectedAreas, *maxSteps, *minSteps, *includeLog, *testMode, *enableDebugLogs, *estimateOnly, *resume, *attempt); err != nil {
 		applog.WithError(err).Fatal("Discovery failed")
 	}
 
@@ -797,7 +798,7 @@ func runTestConnection(cfg *config.Config, projectID, target, warehouseID string
 
 // --- Discovery ---
 
-func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAreas []string, maxSteps, minSteps int, includeLog, testMode, enableDebugLogs, estimateOnly, resume bool) error {
+func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAreas []string, maxSteps, minSteps int, includeLog, testMode, enableDebugLogs, estimateOnly, resume bool, spawnAttempt int) error {
 	ctx := context.Background()
 
 	// Set project ID in context for warehouse middleware (e.g. governance)
@@ -1144,7 +1145,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	// resume.
 	var resumeState *discovery.ResumeState
 	if resume {
-		resumeState, err = loadResumeState(ctx, runID, runRepo, discoveryCheckpointRepo)
+		resumeState, err = loadResumeState(ctx, runID, spawnAttempt, runRepo, discoveryCheckpointRepo)
 		if err != nil {
 			return err
 		}
@@ -1451,6 +1452,7 @@ func loadActiveRunIDs(ctx context.Context, db *database.DB) map[string]struct{} 
 func loadResumeState(
 	ctx context.Context,
 	runID string,
+	spawnAttempt int,
 	runRepo *database.RunRepository,
 	cpRepo *database.DiscoveryCheckpointRepository,
 ) (*discovery.ResumeState, error) {
@@ -1502,6 +1504,38 @@ func loadResumeState(
 		// run being resumed cannot legitimately lack one. Refusing beats
 		// guessing the number every subsequent write is fenced on.
 		return nil, fmt.Errorf("run %s carries no attempt number; refusing to guess which attempt this resume is", runID)
+	}
+
+	// The attempt this process IS, versus the attempt the run is on now.
+	//
+	// They differ when this workload started slowly: the API can restart in
+	// the meantime, its startup sweep marks in-flight runs `failed` without
+	// reaping them, and an operator can resume again — so by the time this
+	// process reaches here the run may be two attempts ahead. Adopting the
+	// current number then is the worst possible answer: every fence in the
+	// system compares against it, so this process would become
+	// indistinguishable from the live attempt and could overwrite its
+	// checkpoints and its result rather than being turned away.
+	//
+	// The spawner is the only one that knows which attempt it launched, so
+	// it says so on the command line. If the run has moved on, this process
+	// has nothing to do: stop before spending anything. The API's failure
+	// callback is fenced to the attempt it spawned, so this exit cannot
+	// disturb the attempt that now owns the run.
+	if spawnAttempt > 0 && run.Attempt != spawnAttempt {
+		return nil, fmt.Errorf(
+			"run %s has moved on to attempt %d while this process was starting as attempt %d; stopping rather than writing as an attempt it is not",
+			runID, run.Attempt, spawnAttempt,
+		)
+	}
+	if spawnAttempt <= 0 {
+		// An older API does not pass --attempt. Fall back to the document,
+		// which is what this did before the flag existed, and say so: the
+		// race above is open on this path.
+		applog.WithFields(applog.Fields{
+			"run_id":  runID,
+			"attempt": run.Attempt,
+		}).Warn("resuming without a spawn attempt; taking the run document's current attempt, which is only correct while the run has not moved on")
 	}
 
 	return &discovery.ResumeState{

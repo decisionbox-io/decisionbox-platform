@@ -130,7 +130,7 @@ func TestLoadResumeState_TakesTheAttemptFromTheRunDocument(t *testing.T) {
 	seedCheckpoint(t, cpRepo, runID, 1, 1)
 	seedCheckpoint(t, cpRepo, runID, 1, 2)
 
-	st, err := loadResumeState(ctx, runID, runRepo, cpRepo)
+	st, err := loadResumeState(ctx, runID, 0, runRepo, cpRepo)
 	if err != nil {
 		t.Fatalf("loadResumeState: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestLoadResumeState_RefusesWithoutAnAuthoritativeAttempt(t *testing.T) {
 		runID := primitive.NewObjectID().Hex()
 		seedCheckpoint(t, cpRepo, runID, 1, 1)
 
-		_, err := loadResumeState(ctx, runID, runRepo, cpRepo)
+		_, err := loadResumeState(ctx, runID, 0, runRepo, cpRepo)
 		if err == nil {
 			t.Fatal("expected a refusal: there is no run document to take an attempt from")
 		}
@@ -177,7 +177,7 @@ func TestLoadResumeState_RefusesWithoutAnAuthoritativeAttempt(t *testing.T) {
 		runID := seedRun(t, db, -1, 0)
 		seedCheckpoint(t, cpRepo, runID, 1, 1)
 
-		_, err := loadResumeState(ctx, runID, runRepo, cpRepo)
+		_, err := loadResumeState(ctx, runID, 0, runRepo, cpRepo)
 		if err == nil {
 			t.Fatal("expected a refusal rather than a guessed attempt")
 		}
@@ -198,7 +198,7 @@ func TestLoadResumeState_RefusesWithoutAnAuthoritativeAttempt(t *testing.T) {
 
 		deadRunRepo := database.NewRunRepository(disconnectedDB(t, uri))
 
-		_, err := loadResumeState(ctx, runID, deadRunRepo, cpRepo)
+		_, err := loadResumeState(ctx, runID, 0, deadRunRepo, cpRepo)
 		if err == nil {
 			t.Fatal("expected a refusal when the run document cannot be read; proceeding on a derived attempt is what strands the run")
 		}
@@ -206,4 +206,44 @@ func TestLoadResumeState_RefusesWithoutAnAuthoritativeAttempt(t *testing.T) {
 			t.Errorf("error = %v, want the run-read failure, not some earlier step", err)
 		}
 	})
+}
+
+// TestLoadResumeState_RefusesWhenTheRunHasMovedOn is the fence's last hole.
+//
+// Every fence in the system compares against the run's current attempt. A
+// workload that starts slowly can come up after the API restarted — its
+// startup sweep marks in-flight runs `failed` without reaping them — and
+// after an operator resumed again. Reading the attempt from the document
+// then makes this process adopt the LIVE attempt's number, which does not
+// turn it away: it makes it indistinguishable from the attempt that now owns
+// the run, free to overwrite that attempt's checkpoints and its result.
+//
+// So the spawner states which attempt it launched, and a mismatch stops the
+// process before it spends anything.
+func TestLoadResumeState_RefusesWhenTheRunHasMovedOn(t *testing.T) {
+	ctx := context.Background()
+	db, _ := resumeTestDB(t)
+	runRepo := database.NewRunRepository(db)
+	cpRepo := database.NewDiscoveryCheckpointRepository(db)
+
+	// The run is on attempt 3; this process was spawned as attempt 2.
+	runID := seedRun(t, db, 3, 0)
+	seedCheckpoint(t, cpRepo, runID, 1, 1)
+
+	_, err := loadResumeState(ctx, runID, 2, runRepo, cpRepo)
+	if err == nil {
+		t.Fatal("expected a refusal: adopting attempt 3 would make this process indistinguishable from the attempt that owns the run")
+	}
+	if !strings.Contains(err.Error(), "has moved on to attempt 3") {
+		t.Errorf("error = %v, want it to name both attempts", err)
+	}
+
+	// The matching case proceeds, so the pin cannot be silently fatal.
+	st, err := loadResumeState(ctx, runID, 3, runRepo, cpRepo)
+	if err != nil {
+		t.Fatalf("the spawning attempt must be allowed to run: %v", err)
+	}
+	if st.Attempt != 3 {
+		t.Errorf("Attempt = %d, want 3", st.Attempt)
+	}
 }

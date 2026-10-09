@@ -1223,7 +1223,6 @@ func TestRunners_ForwardResumeFlag(t *testing.T) {
 	})
 }
 
-
 // TestDiscoveryJobName_Attempt1IsUnchanged is the compatibility guard. Resume
 // re-enters the SAME run id, so later attempts need a distinct Job name — but
 // attempt 1 must keep the historical name byte for byte, or every existing
@@ -1380,12 +1379,26 @@ func TestDiscoveryArgs(t *testing.T) {
 			},
 		},
 		{
-			name: "resumed run",
+			// The attempt is an ARGUMENT on a resume, not something the
+			// agent looks up. The run document's attempt is mutable: a
+			// workload that starts slowly can come up after its run was
+			// swept to `failed` and resumed again, read the now-current
+			// attempt and adopt it — which stops every fence in the system
+			// telling it apart from the attempt that owns the run.
+			name: "resumed run carries the attempt that spawned it",
 			opts: RunOptions{ProjectID: "p1", RunID: "r1", MaxSteps: 50, MinSteps: 30, Resume: true, Attempt: 2},
 			want: []string{
 				"--project-id", "p1", "--run-id", "r1",
-				"--max-steps", "50", "--min-steps", "30", "--resume",
+				"--max-steps", "50", "--min-steps", "30", "--resume", "--attempt", "2",
 			},
+		},
+		{
+			// Nothing to pin: the spawner did not say which attempt this is,
+			// so the flag is omitted and the agent falls back to the
+			// document (and says so in its log).
+			name: "resume with an unknown attempt omits the flag",
+			opts: RunOptions{ProjectID: "p1", RunID: "r1", Resume: true},
+			want: []string{"--project-id", "p1", "--run-id", "r1", "--resume"},
 		},
 		{
 			// Zero means "no floor, explicitly disabled" — forwarding
@@ -1401,9 +1414,10 @@ func TestDiscoveryArgs(t *testing.T) {
 			want: []string{"--project-id", "p1", "--run-id", "r1"},
 		},
 		{
-			// Attempt drives the K8s Job NAME, not the argv — the agent
-			// reads the attempt number off the run document.
-			name: "attempt is not an argument",
+			// Without a resume there is no earlier attempt to be confused
+			// with, so Attempt drives only the K8s Job NAME and stays out
+			// of the argv.
+			name: "attempt is not an argument without a resume",
 			opts: RunOptions{ProjectID: "p1", RunID: "r1", Attempt: 7},
 			want: []string{"--project-id", "p1", "--run-id", "r1"},
 		},

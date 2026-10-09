@@ -153,6 +153,16 @@ func discoveryArgs(opts RunOptions) []string {
 	}
 	if opts.Resume {
 		args = append(args, "--resume")
+		// Tell the agent WHICH attempt it is, rather than letting it read
+		// the run document and find out. That field is mutable: a workload
+		// that starts slowly can come up after its run was swept to `failed`
+		// and resumed again, read the now-current attempt, and adopt it —
+		// which makes it indistinguishable from the live attempt to every
+		// fence that exists. The spawning attempt is the only correct answer
+		// and only the spawner knows it.
+		if opts.Attempt > 0 {
+			args = append(args, "--attempt", strconv.Itoa(opts.Attempt))
+		}
 	}
 	return args
 }
