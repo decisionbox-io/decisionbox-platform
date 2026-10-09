@@ -33,10 +33,16 @@ const (
 	// retire the other attempts' results.
 	terminalClaimed terminalOutcome = iota
 
-	// terminalSuperseded: the run has moved to a newer attempt, established
-	// by a positive ownership read and not merely by the write failing to
-	// match. This attempt must delete its OWN output and exit quietly — the
-	// run is alive and owned by someone else.
+	// terminalSuperseded: this attempt's output must go, established by a
+	// positive ownership read and not merely by the write failing to match.
+	// It deletes its OWN output and exits quietly.
+	//
+	// Two things land here, and they share every consequence — the same
+	// shape as terminalUnknown below. Either the run has moved to a newer
+	// attempt, so it is alive and owned by someone else; or the run was
+	// CANCELLED, so the operator has killed it and its result must go with
+	// it. The classifier logs which, because "another attempt owns this run"
+	// would send an operator looking for an attempt that does not exist.
 	terminalSuperseded
 
 	// terminalUnknown: this attempt could not be shown to have lost the run,
@@ -62,7 +68,7 @@ type runDocWriter interface {
 	UpdateStatus(ctx context.Context, runID string, status, phase, detail string, progress int, attempt int) error
 	Complete(ctx context.Context, runID, discoveryID string, insightsFound int, attempt int) (bool, error)
 	Fail(ctx context.Context, runID, discoveryID, errMsg string, attempt int) (bool, error)
-	OwnsRun(ctx context.Context, runID string, attempt int) (bool, error)
+	Ownership(ctx context.Context, runID string, attempt int) (database.RunOwnership, error)
 	MarkExplorationCheckpoint(ctx context.Context, runID string, step int, attempt int) (bool, error)
 	AddActiveTime(ctx context.Context, runID string, d time.Duration, attempt int) error
 	AppendLifecycle(ctx context.Context, runID string, ev models.RunLifecycleEvent, attempt int) error
@@ -495,12 +501,13 @@ func (s *StatusReporter) Complete(ctx context.Context, discoveryID string, insig
 // not land. The ownership read deliberately does not filter on status, which
 // is what lets it tell the two cases apart.
 func (s *StatusReporter) classifyUnappliedTerminal(ctx context.Context, what string) terminalOutcome {
-	owns, err := s.repo.OwnsRun(ctx, s.runID, s.attempt)
+	standing, err := s.repo.Ownership(ctx, s.runID, s.attempt)
 	if err != nil {
 		logger.WithError(err).WithField("run_id", s.runID).Warn("could not establish whether this attempt still owns the run; nothing will be cleaned up")
 		return terminalUnknown
 	}
-	if owns {
+	switch standing {
+	case database.RunOwnedByThisAttempt:
 		// Still ours, so there is no newer attempt to defer to and nothing
 		// to retire. The run document is already terminal — our own outcome
 		// is the one that did not get recorded, which is worth saying
@@ -509,11 +516,28 @@ func (s *StatusReporter) classifyUnappliedTerminal(ctx context.Context, what str
 			"run_id": s.runID, "attempt": s.attempt,
 		}).Warn("the run was already terminal when this attempt tried to record its " + what + "; the outcome was not recorded, but this attempt still owns the run so its result is kept")
 		return terminalUnknown
+
+	case database.RunCancelled:
+		// The operator killed the run. Its result must go with it: cancel
+		// deletes the checkpoints and refuses the terminal write, so keeping
+		// the discovery would leave a cancelled run with a result on display
+		// that nothing can explain.
+		//
+		// Logged as a cancellation rather than as supersession even though
+		// both return the same value, because "another attempt owns this
+		// run" would send an operator looking for an attempt that does not
+		// exist.
+		logger.WithFields(logger.Fields{
+			"run_id": s.runID, "attempt": s.attempt,
+		}).Warn("the run was cancelled while this attempt was still working; its " + what + " was not recorded and its result will be deleted")
+		return terminalSuperseded
+
+	default:
+		logger.WithFields(logger.Fields{
+			"run_id": s.runID, "attempt": s.attempt,
+		}).Warn("this attempt no longer owns the run; its " + what + " was not recorded")
+		return terminalSuperseded
 	}
-	logger.WithFields(logger.Fields{
-		"run_id": s.runID, "attempt": s.attempt,
-	}).Warn("this attempt no longer owns the run; its " + what + " was not recorded")
-	return terminalSuperseded
 }
 
 // MarkExplorationCheckpoint records that this run now has a checkpoint for
@@ -538,19 +562,25 @@ func (s *StatusReporter) MarkExplorationCheckpoint(ctx context.Context, step int
 	return applied
 }
 
-// OwnsRun reports whether this attempt still owns the run.
+// OwnsRun reports whether this attempt may still do work on the run.
+//
+// False for a run that was CANCELLED as well as one taken over by a newer
+// attempt. The gates built on this only ever ask "may I spend the next
+// phase", and the answer for a cancelled run is no — the attempt number is
+// untouched by a cancel, so an attempt-only comparison used to say yes and
+// let a killed run's agent spend its whole remaining budget.
 func (s *StatusReporter) OwnsRun(ctx context.Context) bool {
 	if !s.enabled() {
 		return true
 	}
-	owns, err := s.repo.OwnsRun(ctx, s.runID, s.attempt)
+	standing, err := s.repo.Ownership(ctx, s.runID, s.attempt)
 	if err != nil {
 		// Same reasoning as above: a failed read is not evidence of being
 		// superseded.
 		logger.WithError(err).Warn("could not confirm this attempt still owns the run")
 		return true
 	}
-	return owns
+	return standing == database.RunOwnedByThisAttempt
 }
 
 // AddActiveTime adds one attempt's elapsed compute time to the run's

@@ -693,6 +693,10 @@ func (o *Orchestrator) rebuildStepIndexForResume(ctx context.Context) {
 // per analysis area, each an indexed read on _id next to multi-second LLM
 // calls.
 //
+// It also answers no for a CANCELLED run, which an attempt comparison alone
+// cannot see: a cancel leaves the attempt untouched, so a killed run used to
+// read as "still ours" and its agent spent the whole remaining pipeline.
+//
 // OwnsRun fails OPEN — a read it could not complete answers "still ours" —
 // so a Mongo blip degrades to the old behaviour of spending the phase rather
 // than aborting a run that is working. That asymmetry is deliberate: the

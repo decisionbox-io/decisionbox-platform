@@ -21,9 +21,13 @@ import (
 // fakeRunDoc records what the reporter wrote and can report that this attempt
 // no longer owns the run — which is what an orphaned agent sees.
 type fakeRunDoc struct {
-	owns    bool
-	ownsErr error
-	applied bool
+	owns bool
+	// cancelled is the run having been killed by the operator while this
+	// attempt is still alive — the attempt number is untouched, so only a
+	// status-aware probe can see it.
+	cancelled bool
+	ownsErr   error
+	applied   bool
 	// writeErr fails every write, which is how a Mongo hiccup reaches the
 	// reporter. None of them may take the run down with them.
 	writeErr error
@@ -55,12 +59,23 @@ func (f *fakeRunDoc) Fail(_ context.Context, _, _, _ string, attempt int) (bool,
 	}
 	return f.applied, nil
 }
-func (f *fakeRunDoc) OwnsRun(_ context.Context, _ string, attempt int) (bool, error) {
+
+// Ownership answers the three-way standing question. `owns` keeps meaning
+// "this attempt still owns it"; `cancelled` is the state a cancel leaves
+// behind, which an attempt-only comparison cannot see because a cancel does
+// not change the attempt.
+func (f *fakeRunDoc) Ownership(_ context.Context, _ string, attempt int) (database.RunOwnership, error) {
 	f.attempts = append(f.attempts, attempt)
 	if f.ownsErr != nil {
-		return false, f.ownsErr
+		return database.RunOwnedByThisAttempt, f.ownsErr
 	}
-	return f.owns, nil
+	if f.cancelled {
+		return database.RunCancelled, nil
+	}
+	if !f.owns {
+		return database.RunTakenOverByAnotherAttempt, nil
+	}
+	return database.RunOwnedByThisAttempt, nil
 }
 func (f *fakeRunDoc) MarkExplorationCheckpoint(_ context.Context, _ string, step int, attempt int) (bool, error) {
 	f.markers = append(f.markers, step)
@@ -723,4 +738,76 @@ func (o *okDropIndex) Search(context.Context, string, RunStepIndexSearchOpts) ([
 }
 func (o *okDropIndex) Nearest(context.Context, models.ExplorationStep) (float64, bool, error) {
 	return 0, false, nil
+}
+
+// TestStatusReporter_ACancelledRunIsNotOwned closes the last cancellation
+// gap, and it is the one I argued against closing.
+//
+// A cancel is a hard kill that leaves the attempt number untouched, so an
+// attempt-only comparison answers "still yours" for a run the operator has
+// already killed — and the workload can still be alive, because the runners
+// can return before it is gone. The agent therefore walked through every
+// ownership gate and spent its whole remaining budget, and when its terminal
+// write was refused (Complete is barred on a cancelled run) the classifier
+// read "still owns the run" and KEPT the discovery. A cancelled run ended up
+// with a result on display that nothing can explain.
+func TestStatusReporter_ACancelledRunIsNotOwned(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("the gates stop", func(t *testing.T) {
+		doc := newFakeRunDoc()
+		doc.cancelled = true
+		r := reporterFor(doc, 2)
+		if r.OwnsRun(ctx) {
+			t.Error("a cancelled run reads as owned; its agent spends the rest of its budget on a run the operator killed")
+		}
+	})
+
+	t.Run("the result is deleted, and for the right reason", func(t *testing.T) {
+		doc := newFakeRunDoc()
+		doc.cancelled = true
+		// applied=false is what a refused terminal write looks like: Complete
+		// is barred on a cancelled run.
+		doc.applied = false
+		r := reporterFor(doc, 2)
+
+		if got := r.Complete(ctx, "disc-1", 3); got != terminalSuperseded {
+			t.Errorf("Complete = %v, want terminalSuperseded so the cancelled run's result is retired", got)
+		}
+		if got := r.Fail(ctx, "disc-1", "boom"); got != terminalSuperseded {
+			t.Errorf("Fail = %v, want terminalSuperseded", got)
+		}
+	})
+
+	t.Run("a live run is still owned", func(t *testing.T) {
+		r := reporterFor(newFakeRunDoc(), 2)
+		if !r.OwnsRun(ctx) {
+			t.Error("a live run on this attempt must read as owned")
+		}
+	})
+
+	t.Run("a swept failed run keeps its result", func(t *testing.T) {
+		// The counter-case that makes this safe. The API's startup sweep
+		// marks in-flight runs `failed` without reaping their agents, so a
+		// refused terminal write on a run this attempt still owns must NOT
+		// delete anything — that is terminalUnknown, and it is why a
+		// cancellation had to be told apart from "already terminal" rather
+		// than lumped in with it.
+		doc := newFakeRunDoc()
+		doc.applied = false
+		r := reporterFor(doc, 2)
+		if got := r.Complete(ctx, "disc-1", 3); got != terminalUnknown {
+			t.Errorf("Complete = %v, want terminalUnknown — a swept run's result must survive", got)
+		}
+	})
+
+	t.Run("an unreadable run deletes nothing", func(t *testing.T) {
+		doc := newFakeRunDoc()
+		doc.applied = false
+		doc.ownsErr = errors.New("mongo down")
+		r := reporterFor(doc, 2)
+		if got := r.Complete(ctx, "disc-1", 3); got != terminalUnknown {
+			t.Errorf("Complete = %v, want terminalUnknown — a failed read is not evidence of anything", got)
+		}
+	})
 }

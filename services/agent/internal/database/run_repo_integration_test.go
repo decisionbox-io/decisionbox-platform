@@ -383,12 +383,17 @@ func TestRunRepository_MarkExplorationCheckpointIsTheOwnershipProbe(t *testing.T
 	}
 }
 
-// TestRunRepository_OwnsRun pins the dedicated probe, used where there is no
-// write to piggyback the question on: the end-of-exploration summary, whose
-// loss to a superseded attempt is the worst case of all — a later resume
-// reads it, believes exploration finished, and skips Phase 3 over work
+// TestRunRepository_Ownership pins the dedicated probe, used where there is
+// no write to piggyback the question on: the end-of-exploration summary,
+// whose loss to a superseded attempt is the worst case of all — a later
+// resume reads it, believes exploration finished, and skips Phase 3 over work
 // another attempt did.
-func TestRunRepository_OwnsRun(t *testing.T) {
+//
+// Three answers rather than two, and the third is the one that was missing.
+// A cancel is a hard kill that leaves the attempt number untouched, so an
+// attempt-only comparison called a cancelled run "still yours": its agent
+// walked through every gate and kept its result.
+func TestRunRepository_Ownership(t *testing.T) {
 	db, cleanup := setupMongoDB(t)
 	defer cleanup()
 	ctx := context.Background()
@@ -400,34 +405,62 @@ func TestRunRepository_OwnsRun(t *testing.T) {
 	}
 	oid, _ := primitive.ObjectIDFromHex(runID)
 	if _, err := db.Collection(CollectionDiscoveryRuns).UpdateByID(ctx, oid, bson.M{
-		"$set": bson.M{"attempt": 3},
+		"$set": bson.M{"attempt": 3, "status": "running"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	cases := map[int]bool{
-		3: true,  // the live attempt
-		2: false, // superseded
-		1: false, // superseded
-		0: true,  // "unknown" owns everything — the behaviour before attempts
+	cases := map[int]RunOwnership{
+		3: RunOwnedByThisAttempt,        // the live attempt
+		2: RunTakenOverByAnotherAttempt, // superseded
+		1: RunTakenOverByAnotherAttempt, // superseded
+		0: RunOwnedByThisAttempt,        // "unknown" owns everything — the behaviour before attempts
 	}
 	for attempt, want := range cases {
-		owns, err := repo.OwnsRun(ctx, runID, attempt)
+		got, err := repo.Ownership(ctx, runID, attempt)
 		if err != nil {
 			t.Fatalf("attempt %d: %v", attempt, err)
 		}
-		if owns != want {
-			t.Errorf("OwnsRun(attempt %d) = %v, want %v", attempt, owns, want)
+		if got != want {
+			t.Errorf("Ownership(attempt %d) = %v, want %v", attempt, got, want)
 		}
 	}
 
 	// A run with no attempt recorded is on its first.
 	legacy := seedRunDocWithoutAttempt(t, ctx, db)
-	if owns, _ := repo.OwnsRun(ctx, legacy, 1); !owns {
-		t.Error("attempt 1 must own a run that predates the counter")
+	if got, _ := repo.Ownership(ctx, legacy, 1); got != RunOwnedByThisAttempt {
+		t.Errorf("Ownership(legacy, 1) = %v, want owned — attempt 1 owns a run that predates the counter", got)
 	}
-	if owns, _ := repo.OwnsRun(ctx, legacy, 2); owns {
-		t.Error("attempt 2 must not own a run that never advanced past its first")
+	if got, _ := repo.Ownership(ctx, legacy, 2); got != RunTakenOverByAnotherAttempt {
+		t.Errorf("Ownership(legacy, 2) = %v, want taken over — the run never advanced past its first attempt", got)
+	}
+
+	// Cancelled beats the attempt comparison, at every attempt including the
+	// live one and including "unknown". Anything else lets a killed run's
+	// agent carry on.
+	if _, err := db.Collection(CollectionDiscoveryRuns).UpdateByID(ctx, oid, bson.M{
+		"$set": bson.M{"status": "cancelled"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, attempt := range []int{0, 1, 2, 3} {
+		got, err := repo.Ownership(ctx, runID, attempt)
+		if err != nil {
+			t.Fatalf("cancelled, attempt %d: %v", attempt, err)
+		}
+		if got != RunCancelled {
+			t.Errorf("Ownership(cancelled, attempt %d) = %v, want RunCancelled", attempt, got)
+		}
+	}
+
+	// A run that no longer exists is positively nothing to own, rather than
+	// an error the caller has to guess about.
+	gone, err := repo.Ownership(ctx, primitive.NewObjectID().Hex(), 1)
+	if err != nil {
+		t.Fatalf("missing run returned an error: %v", err)
+	}
+	if gone != RunTakenOverByAnotherAttempt {
+		t.Errorf("Ownership(missing) = %v, want taken over", gone)
 	}
 }
 

@@ -363,29 +363,85 @@ func (r *RunRepository) MarkExplorationCheckpoint(ctx context.Context, runID str
 	return res.MatchedCount > 0, nil
 }
 
-// OwnsRun reports whether the run is still on the given attempt.
+// RunOwnership is what a run document says about one attempt's standing.
+//
+// Three answers rather than a bool, because the two ways of NOT owning a run
+// need different words even where they take the same action. Callers that
+// only gate work treat anything but RunOwnedByThisAttempt as "stop"; the
+// caller deciding whether to delete a result has to be able to say WHY it is
+// deleting one.
+type RunOwnership int
+
+const (
+	// RunOwnedByThisAttempt: the run is still on this attempt and is not
+	// cancelled. Carry on.
+	RunOwnedByThisAttempt RunOwnership = iota
+
+	// RunTakenOverByAnotherAttempt: the run has moved to a newer attempt.
+	// It is alive, and someone else owns it.
+	RunTakenOverByAnotherAttempt
+
+	// RunCancelled: the run was cancelled. The attempt number is unchanged
+	// — a cancel does not bump it — so this is invisible to an
+	// attempt-only comparison, which is exactly how a cancelled run's agent
+	// used to walk through every ownership gate and keep its result.
+	RunCancelled
+)
+
+// Ownership reports where this attempt stands with the run.
 //
 // A dedicated read, used where there is no write to piggyback the question on
-// — the end-of-exploration summary, which is written once per run and whose
-// loss to a superseded attempt is the worst case of all: a later resume would
-// read it, believe exploration finished, and skip Phase 3 over another
-// attempt's work.
+// — the end-of-exploration summary, written once per run, whose loss to a
+// superseded attempt is the worst case of all: a later resume would read it,
+// believe exploration finished, and skip Phase 3 over another attempt's work.
 //
-// attempt <= 0 means "unknown", which owns everything — the behaviour before
-// attempts existed.
-func (r *RunRepository) OwnsRun(ctx context.Context, runID string, attempt int) (bool, error) {
-	if attempt <= 0 {
-		return true, nil
-	}
+// Cancellation is checked FIRST and regardless of the attempt. A cancel is a
+// hard kill that leaves the attempt untouched, so comparing attempts alone
+// answers "still yours" for a run the operator has already killed — and the
+// workload can still be alive, because the runners can return before it is
+// actually gone.
+//
+// attempt <= 0 means "unknown", which owns everything that is not cancelled —
+// the behaviour before attempts existed.
+func (r *RunRepository) Ownership(ctx context.Context, runID string, attempt int) (RunOwnership, error) {
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {
-		return false, fmt.Errorf("invalid run ID: %w", err)
+		return RunOwnedByThisAttempt, fmt.Errorf("invalid run ID: %w", err)
 	}
-	n, err := r.col.CountDocuments(ctx, attemptFilter(oid, attempt))
+
+	var doc struct {
+		Status  string `bson:"status"`
+		Attempt int    `bson:"attempt"`
+	}
+	err = r.col.FindOne(ctx, bson.M{"_id": oid}, options.FindOne().SetProjection(bson.M{
+		"status":  1,
+		"attempt": 1,
+	})).Decode(&doc)
 	if err != nil {
-		return false, err
+		if err == mongo.ErrNoDocuments {
+			// No run to own. Treated as taken over rather than as an error:
+			// there is positively nothing here for this attempt to write to.
+			return RunTakenOverByAnotherAttempt, nil
+		}
+		return RunOwnedByThisAttempt, err
 	}
-	return n > 0, nil
+
+	if doc.Status == models.RunStatusCancelled {
+		return RunCancelled, nil
+	}
+	if attempt <= 0 {
+		return RunOwnedByThisAttempt, nil
+	}
+	// A run created before the counter existed reads as 0 and can only be
+	// its first attempt — the same equivalence attemptFilter encodes.
+	current := doc.Attempt
+	if current == 0 {
+		current = 1
+	}
+	if current != attempt {
+		return RunTakenOverByAnotherAttempt, nil
+	}
+	return RunOwnedByThisAttempt, nil
 }
 
 // AddActiveTime adds this attempt's elapsed compute time to the run's
