@@ -119,6 +119,23 @@ type DiscoveryRun struct {
 	// can resolve it back to the control plane.
 	PolicyReservationID string `bson:"policy_reservation_id,omitempty" json:"-"`
 
+	// PolicyReservationOwnerEndedAt is when the attempt that OPENED the
+	// above reservation stopped running.
+	//
+	// Persisted because it cannot be derived once a run has more than one
+	// attempt behind it. Only the first attempt ever opens a reservation —
+	// a resume opens none — so a lingering id always belongs to that first
+	// attempt, and it ended when it failed. But `completed_at` is rewritten
+	// by every later attempt's terminal write, and `last_resumed_at` by
+	// every resume, so both have moved on by the time anything retries the
+	// close. Reading either then charges the dead attempt for hours it was
+	// not running.
+	//
+	// Stamped once, by the resume that first finds the reservation still
+	// present, and cleared with the id. Nil for a run whose reservation was
+	// confirmed normally, which is almost all of them.
+	PolicyReservationOwnerEndedAt *time.Time `bson:"policy_reservation_owner_ended_at,omitempty" json:"-"`
+
 	// CompletionHooksFiredAt records the moment the API's run-completion
 	// dispatcher fired the registered completion hooks for this run
 	// (plugin-hooks.md, Hook 5). Nil until every hook has returned nil.
@@ -182,6 +199,14 @@ func (r *DiscoveryRun) ReservationBelongsToASupersededAttempt() bool {
 // and the background confirmer retrying a failed confirm — and what gets
 // recorded must not depend on which one arrives first.
 func (r *DiscoveryRun) ReservationOwnerEndedAt() time.Time {
+	// The preserved stamp first, because it is the only field that still
+	// means what it meant when it was written. See
+	// PolicyReservationOwnerEndedAt: the other two are rewritten by later
+	// attempts, so after a second resume they describe an attempt that is
+	// not the one holding this reservation.
+	if r.PolicyReservationOwnerEndedAt != nil {
+		return *r.PolicyReservationOwnerEndedAt
+	}
 	if r.LastResumedAt != nil {
 		return *r.LastResumedAt
 	}

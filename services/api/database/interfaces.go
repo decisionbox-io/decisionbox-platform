@@ -67,6 +67,10 @@ type RunRepo interface {
 	SetPolicyReservationID(ctx context.Context, runID, reservationID string) error
 	ListTerminalWithReservation(ctx context.Context, limit int) ([]*models.DiscoveryRun, error)
 	ClearPolicyReservationID(ctx context.Context, runID string) error
+	// StampReservationOwnerEndedAt preserves when the attempt holding the
+	// run's reservation stopped, written once so later resumes cannot
+	// overwrite it with their own time.
+	StampReservationOwnerEndedAt(ctx context.Context, runID string, endedAt time.Time) error
 	ListTerminalWithoutCompletionHook(ctx context.Context, limit int) ([]*models.DiscoveryRun, error)
 	// MarkCompletionHooksFired stamps the hook marker, fenced on the
 	// terminal status AND the attempt the caller selected — a resume between

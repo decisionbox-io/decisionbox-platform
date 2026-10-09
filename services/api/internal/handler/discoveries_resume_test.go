@@ -1169,3 +1169,73 @@ func TestCancelRun_RecordsACancelForTheRunsOwnReservation(t *testing.T) {
 		t.Errorf("confirms = %+v, want a single cancelled outcome", confirms)
 	}
 }
+
+// TestResumeRun_PreservesTheReservationOwnersEndTimeAcrossResumes is the
+// general case behind three separate findings about reservation timing.
+//
+// Only the first attempt ever opens a reservation — a resume opens none — so a
+// lingering id always belongs to that first attempt, and the right close time
+// is when IT stopped. Neither field on the run document still says that once
+// the run has more attempts behind it: `completed_at` is rewritten by every
+// later attempt's terminal write and `last_resumed_at` by every resume. So the
+// answer is preserved the first time a resume finds the reservation still
+// present, and a later resume must not overwrite it with its own, later time.
+//
+// Without that, a confirm failure surviving two resumes charges the dead
+// attempt for every idle hour between them.
+func TestResumeRun_PreservesTheReservationOwnersEndTimeAcrossResumes(t *testing.T) {
+	ck := &meteringChecker{}
+	swapChecker(t, ck)
+
+	f := newResumeFixture(t)
+	run := f.runs.runs["run-1"]
+	run.PolicyReservationID = "res-attempt-1"
+	// Attempt 1 failed three hours ago. That is when its reservation's work
+	// stopped, and the only moment that is ever the right answer for it.
+	attempt1EndedAt := time.Now().UTC().Add(-3 * time.Hour)
+	run.CompletedAt = &attempt1EndedAt
+
+	// First resume: the confirm fails, so the id stays for a later retry.
+	ck.confirmErr = errBoom("control plane unreachable")
+	if w := f.post("run-1"); w.Code != http.StatusAccepted {
+		t.Fatalf("first resume: status = %d, want 202; body = %s", w.Code, w.Body.String())
+	}
+	if got := f.runs.runs["run-1"].PolicyReservationID; got != "res-attempt-1" {
+		t.Fatalf("reservation id = %q, want it kept after a failed confirm", got)
+	}
+	stamped := f.runs.runs["run-1"].PolicyReservationOwnerEndedAt
+	if stamped == nil {
+		t.Fatal("the owner's end time was not preserved; after the next resume there is nothing left that still means it")
+	}
+	if !stamped.Equal(attempt1EndedAt) {
+		t.Errorf("preserved %s, want attempt 1's own end %s", stamped, attempt1EndedAt)
+	}
+
+	// The run fails again and is resumed a second time. Both of the fields
+	// the answer used to be derived from have now moved on.
+	secondFailure := time.Now().UTC().Add(-30 * time.Minute)
+	f.runs.runs["run-1"].Status = "failed"
+	f.runs.runs["run-1"].CompletedAt = &secondFailure
+	ck.confirmErr = nil
+	ck.mu.Lock()
+	ck.confirms = nil
+	ck.mu.Unlock()
+
+	if w := f.post("run-1"); w.Code != http.StatusAccepted {
+		t.Fatalf("second resume: status = %d, want 202; body = %s", w.Code, w.Body.String())
+	}
+
+	ck.mu.Lock()
+	confirms := append([]policy.RunOutcome(nil), ck.confirms...)
+	ck.mu.Unlock()
+	if len(confirms) != 1 {
+		t.Fatalf("confirmed %d reservations on the second resume, want 1", len(confirms))
+	}
+	if !confirms[0].EndedAt.Equal(attempt1EndedAt) {
+		t.Errorf("closed attempt 1's reservation at %s, want %s — the hours between the two resumes were not run time for it", confirms[0].EndedAt, attempt1EndedAt)
+	}
+	// And the preserved stamp goes with the id it describes.
+	if got := f.runs.runs["run-1"].PolicyReservationOwnerEndedAt; got != nil {
+		t.Errorf("preserved end time = %s, want it cleared with the reservation id", got)
+	}
+}

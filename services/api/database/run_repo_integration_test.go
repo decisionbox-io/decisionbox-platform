@@ -697,3 +697,101 @@ func TestInteg_RunRepo_ResumedPassExcludesNeverResumedRuns(t *testing.T) {
 		t.Errorf("LatestByProjects = %v, want %q", got, newest)
 	}
 }
+
+// TestInteg_RunRepo_StampReservationOwnerEndedAt_IsWriteOnce is the half of
+// the preserved-end-time fix that a handler test cannot reach.
+//
+// The point of the field is that the FIRST resume to find a lingering
+// reservation records when its owning attempt stopped, and a later resume
+// cannot overwrite it with its own, later time. That write-once behaviour
+// lives in the query's $exists guard, so a mock implementing it proves
+// nothing about the repository — this asserts it against Mongo.
+func TestInteg_RunRepo_StampReservationOwnerEndedAt_IsWriteOnce(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	started := time.Now().UTC().Add(-6 * time.Hour)
+	runID := seedRun(t, ctx, "failed", nil, nil, started)
+
+	first := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Millisecond)
+	if err := repo.StampReservationOwnerEndedAt(ctx, runID, first); err != nil {
+		t.Fatalf("first stamp: %v", err)
+	}
+	got, err := repo.GetByID(ctx, runID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.PolicyReservationOwnerEndedAt == nil || !got.PolicyReservationOwnerEndedAt.Equal(first) {
+		t.Fatalf("preserved = %v, want %s", got.PolicyReservationOwnerEndedAt, first)
+	}
+
+	// A second resume tries to record its own time. It must not win.
+	second := time.Now().UTC().Truncate(time.Millisecond)
+	if err := repo.StampReservationOwnerEndedAt(ctx, runID, second); err != nil {
+		t.Fatalf("second stamp: %v", err)
+	}
+	got, err = repo.GetByID(ctx, runID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if !got.PolicyReservationOwnerEndedAt.Equal(first) {
+		t.Errorf("preserved = %s, want it still %s — a later resume overwrote the owning attempt's end time", got.PolicyReservationOwnerEndedAt, first)
+	}
+}
+
+// TestInteg_RunRepo_StampReservationOwnerEndedAt_IgnoresAZeroTime — a zero
+// time means "unknown", and persisting it would make a later close report the
+// epoch instead of falling back to whatever the document still knows.
+func TestInteg_RunRepo_StampReservationOwnerEndedAt_IgnoresAZeroTime(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	runID := seedRun(t, ctx, "failed", nil, nil, time.Now().UTC().Add(-time.Hour))
+	if err := repo.StampReservationOwnerEndedAt(ctx, runID, time.Time{}); err != nil {
+		t.Fatalf("zero stamp: %v", err)
+	}
+	got, err := repo.GetByID(ctx, runID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.PolicyReservationOwnerEndedAt != nil {
+		t.Errorf("preserved = %s, want nothing written for an unknown end time", got.PolicyReservationOwnerEndedAt)
+	}
+}
+
+// TestInteg_RunRepo_ClearPolicyReservationID_AlsoClearsThePreservedEndTime —
+// the preserved time describes one specific reservation. Left behind, it would
+// hand a future reservation on this run an answer belonging to a dead attempt.
+func TestInteg_RunRepo_ClearPolicyReservationID_AlsoClearsThePreservedEndTime(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	runID := seedRun(t, ctx, "failed", nil, nil, time.Now().UTC().Add(-time.Hour))
+	oid := mustOID(t, runID)
+	if _, err := testDB.Collection("discovery_runs").UpdateByID(ctx, oid, bson.M{
+		"$set": bson.M{"policy_reservation_id": "res-attempt-1"},
+	}); err != nil {
+		t.Fatalf("seed reservation: %v", err)
+	}
+	if err := repo.StampReservationOwnerEndedAt(ctx, runID, time.Now().UTC().Add(-2*time.Hour)); err != nil {
+		t.Fatalf("stamp: %v", err)
+	}
+
+	if err := repo.ClearPolicyReservationID(ctx, runID); err != nil {
+		t.Fatalf("ClearPolicyReservationID: %v", err)
+	}
+
+	got, err := repo.GetByID(ctx, runID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.PolicyReservationID != "" {
+		t.Errorf("reservation id = %q, want cleared", got.PolicyReservationID)
+	}
+	if got.PolicyReservationOwnerEndedAt != nil {
+		t.Errorf("preserved end time = %s, want it cleared with the id it describes", got.PolicyReservationOwnerEndedAt)
+	}
+}

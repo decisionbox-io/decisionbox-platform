@@ -640,6 +640,32 @@ func (m *mockRunRepo) ClearPolicyReservationID(ctx context.Context, runID string
 		return fmt.Errorf("run not found: %s", runID)
 	}
 	r.PolicyReservationID = ""
+	r.PolicyReservationOwnerEndedAt = nil
+	return nil
+}
+
+// StampReservationOwnerEndedAt mirrors the repository's write-once semantics,
+// because that is the behaviour the resume path depends on: the FIRST resume
+// to find a lingering reservation records the answer and a later one must not
+// overwrite it.
+func (m *mockRunRepo) StampReservationOwnerEndedAt(ctx context.Context, runID string, endedAt time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if endedAt.IsZero() {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.runs[runID]
+	if !ok {
+		return fmt.Errorf("run not found: %s", runID)
+	}
+	if r.PolicyReservationOwnerEndedAt != nil {
+		return nil
+	}
+	at := endedAt
+	r.PolicyReservationOwnerEndedAt = &at
 	return nil
 }
 

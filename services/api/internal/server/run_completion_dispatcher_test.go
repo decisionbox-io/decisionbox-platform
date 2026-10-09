@@ -105,6 +105,10 @@ func (m *mockRunRepo) ClearPolicyReservationID(context.Context, string) error {
 	panic("not implemented")
 }
 
+func (m *mockRunRepo) StampReservationOwnerEndedAt(context.Context, string, time.Time) error {
+	panic("not implemented")
+}
+
 func resetHooks(t *testing.T) {
 	t.Helper()
 	runhooks.ResetForTest()

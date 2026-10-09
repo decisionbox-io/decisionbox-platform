@@ -544,8 +544,45 @@ func (r *RunRepository) ClearPolicyReservationID(ctx context.Context, runID stri
 		return fmt.Errorf("invalid run ID: %w", err)
 	}
 	_, err = r.col.UpdateByID(ctx, oid, bson.M{
-		"$unset": bson.M{"policy_reservation_id": ""},
-		"$set":   bson.M{"updated_at": time.Now()},
+		// The preserved end time goes with the id it describes. Leaving it
+		// behind would hand a future reservation on this run an answer that
+		// belongs to a different attempt.
+		"$unset": bson.M{
+			"policy_reservation_id":             "",
+			"policy_reservation_owner_ended_at": "",
+		},
+		"$set": bson.M{"updated_at": time.Now()},
+	})
+	return err
+}
+
+// StampReservationOwnerEndedAt preserves when the attempt holding this run's
+// reservation stopped running, so a later close reports it rather than
+// re-deriving it from fields that have moved on.
+//
+// Written once and never overwritten: the $exists guard means the FIRST
+// resume to find the reservation still present is the one that records the
+// answer, and a second resume cannot overwrite it with its own, later time.
+// That ordering is the whole point of the field — see
+// models.DiscoveryRun.PolicyReservationOwnerEndedAt.
+func (r *RunRepository) StampReservationOwnerEndedAt(ctx context.Context, runID string, endedAt time.Time) error {
+	if endedAt.IsZero() {
+		// Nothing worth preserving, and writing a zero time would make the
+		// close report the epoch instead of "unknown".
+		return nil
+	}
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		return fmt.Errorf("invalid run ID: %w", err)
+	}
+	_, err = r.col.UpdateOne(ctx, bson.M{
+		"_id":                               oid,
+		"policy_reservation_owner_ended_at": bson.M{"$exists": false},
+	}, bson.M{
+		"$set": bson.M{
+			"policy_reservation_owner_ended_at": endedAt,
+			"updated_at":                        time.Now(),
+		},
 	})
 	return err
 }

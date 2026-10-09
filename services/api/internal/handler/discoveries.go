@@ -880,6 +880,20 @@ func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 	if run.PolicyReservationID != "" {
 		resCtx, cancelRes := cleanupContext(ctx)
 		defer cancelRes()
+
+		// Preserve the owner's end time BEFORE trying to close it. If this
+		// confirm fails the id stays, and by the time anything retries it a
+		// further resume may have rewritten last_resumed_at and a further
+		// attempt completed_at — so the answer has to be recorded now, while
+		// the pre-flip document still has it. Written once, so this is the
+		// first resume's answer even on the third resume. Best-effort: a
+		// failure here costs precision on an edge case, and refusing to
+		// resume over it would be the wrong trade.
+		ownerEndedAt := run.ReservationOwnerEndedAt()
+		if err := h.runRepo.StampReservationOwnerEndedAt(resCtx, runID, ownerEndedAt); err != nil {
+			apilog.WithError(err).Warn("could not preserve the superseded attempt's end time; a later retry of this confirm may report a less precise one")
+		}
+
 		if err := policy.GetChecker().ConfirmDiscoveryRunEnded(resCtx, run.PolicyReservationID, policy.RunOutcome{
 			Status: "failure",
 			// Not `now`. This reservation's attempt stopped before this
@@ -890,7 +904,7 @@ func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 			// running. `run` is the pre-flip document, so its timestamps are
 			// that attempt's, and this is the same source the cancel handler
 			// and the background confirmer read.
-			EndedAt: run.ReservationOwnerEndedAt(),
+			EndedAt: ownerEndedAt,
 			Error:   models.SupersededByResumeReason,
 		}); err != nil {
 			apilog.WithError(err).Warn("failed to confirm the superseded attempt's reservation; leaving its id on the run so the confirmer can retry")
