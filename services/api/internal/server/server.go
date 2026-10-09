@@ -500,7 +500,7 @@ func reservationOutcomeFor(run *models.DiscoveryRun) policy.RunOutcome {
 			// The moment the attempt was superseded is the closest thing to
 			// its end time; it never wrote one of its own. Shared with the
 			// cancel handler, which closes the same kind of reservation.
-			EndedAt: run.SupersededAttemptEndedAt(),
+			EndedAt: run.ReservationOwnerEndedAt(),
 		}
 	}
 

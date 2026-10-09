@@ -718,11 +718,18 @@ func TestRunRepository_MarkExplorationCheckpointRefusesACancelledRun(t *testing.
 	}
 }
 
-// TestRunRepository_ResumableIDs is what makes a row that still slips through
-// harmless: the orphan sweep keeps a checkpointed run's vector collection, and
-// a row is not by itself proof of resumability. `failed` is the only status a
-// resume accepts.
-func TestRunRepository_ResumableIDs(t *testing.T) {
+// TestRunRepository_ResumableOrActiveIDs guards both directions of the orphan
+// sweep's keep-set, and the second direction is a regression this narrowing
+// already caused once.
+//
+// Too wide, and a cancelled run's stray checkpoint row holds a Qdrant
+// collection open until the TTL reclaims the row. Narrowed to `failed` — the
+// only resumable status, which is what the first version asked for — and a
+// RESUMED ATTEMPT THAT IS RUNNING gets dropped: those carry checkpoint rows
+// too, and the sweep's active query can miss them because a resume keeps the
+// run's original started_at. Another agent's boot sweep would then delete a
+// live run's index under it, mid-flight.
+func TestRunRepository_ResumableOrActiveIDs(t *testing.T) {
 	ctx := context.Background()
 	db, cleanup := setupMongoDB(t)
 	defer cleanup()
@@ -730,7 +737,7 @@ func TestRunRepository_ResumableIDs(t *testing.T) {
 	repo := NewRunRepository(db)
 
 	ids := map[string]string{}
-	for _, status := range []string{"failed", "cancelled", "completed", "running"} {
+	for _, status := range []string{"failed", "cancelled", "completed", "running", "pending"} {
 		id, err := repo.Create(ctx, &models.DiscoveryRun{ProjectID: "proj-1"})
 		if err != nil {
 			t.Fatalf("Create %s: %v", status, err)
@@ -742,20 +749,37 @@ func TestRunRepository_ResumableIDs(t *testing.T) {
 		ids[status] = id
 	}
 
-	all := []string{ids["failed"], ids["cancelled"], ids["completed"], ids["running"], "not-an-objectid", primitive.NewObjectID().Hex()}
-	got, err := repo.ResumableIDs(ctx, all)
+	all := []string{
+		ids["failed"], ids["cancelled"], ids["completed"], ids["running"], ids["pending"],
+		"not-an-objectid", primitive.NewObjectID().Hex(),
+	}
+	got, err := repo.ResumableOrActiveIDs(ctx, all)
 	if err != nil {
-		t.Fatalf("ResumableIDs: %v", err)
+		t.Fatalf("ResumableOrActiveIDs: %v", err)
 	}
 
-	if len(got) != 1 || got[0] != ids["failed"] {
-		t.Fatalf("ResumableIDs = %v, want only the failed run %s", got, ids["failed"])
+	kept := map[string]bool{}
+	for _, id := range got {
+		kept[id] = true
+	}
+	for _, want := range []string{"failed", "running", "pending"} {
+		if !kept[ids[want]] {
+			t.Errorf("a %s run was dropped from the keep-set; the sweep would delete the index of a run that still needs it", want)
+		}
+	}
+	for _, unwanted := range []string{"cancelled", "completed"} {
+		if kept[ids[unwanted]] {
+			t.Errorf("a %s run was kept; nothing can ever want its index again", unwanted)
+		}
+	}
+	if len(got) != 3 {
+		t.Errorf("kept %d runs, want exactly 3 (failed, running, pending): %v", len(got), got)
 	}
 
-	if out, err := repo.ResumableIDs(ctx, nil); err != nil || len(out) != 0 {
-		t.Errorf("ResumableIDs(nil) = %v, %v; want empty and no error", out, err)
+	if out, err := repo.ResumableOrActiveIDs(ctx, nil); err != nil || len(out) != 0 {
+		t.Errorf("ResumableOrActiveIDs(nil) = %v, %v; want empty and no error", out, err)
 	}
-	if out, err := repo.ResumableIDs(ctx, []string{"garbage"}); err != nil || len(out) != 0 {
-		t.Errorf("ResumableIDs(garbage) = %v, %v; want empty and no error — a malformed id cannot name a run", out, err)
+	if out, err := repo.ResumableOrActiveIDs(ctx, []string{"garbage"}); err != nil || len(out) != 0 {
+		t.Errorf("ResumableOrActiveIDs(garbage) = %v, %v; want empty and no error — a malformed id cannot name a run", out, err)
 	}
 }

@@ -482,20 +482,32 @@ func (r *RunRepository) GetLatestByProject(ctx context.Context, projectID string
 	return &run, nil
 }
 
-// ResumableIDs narrows a set of run ids to the ones a resume could actually
-// pick up — status `failed`, which is the only resumable status.
+// ResumableOrActiveIDs narrows a set of run ids to those whose per-run vector
+// collection is still worth something: a run a resume could pick up, or one
+// that is live right now.
 //
-// The orphan sweep needs this because it keeps the per-run vector collection
-// of every run that still has checkpoint rows, and a row is not by itself
-// proof of resumability. A cancelled run's dying agent can re-create one
-// after the API purged them: cancel leaves the attempt unchanged and the
-// runners can return before the workload is gone. Keeping a collection open
-// on the strength of that row costs Qdrant storage until the checkpoint TTL
-// reclaims the row, for a run that can never be resumed.
+// The orphan sweep needs the narrowing because it keeps the collection of
+// every run that still has checkpoint rows, and a row is not by itself proof
+// of anything. A cancelled run's dying agent can re-create one after the API
+// purged them — cancel leaves the attempt unchanged and the runners can
+// return before the workload is gone — and keeping a collection open on the
+// strength of that row costs Qdrant storage until the checkpoint TTL reclaims
+// it, for a run nothing can ever resume.
+//
+// Stated as what to EXCLUDE rather than what to include, and that polarity is
+// the point. The first version of this asked for `failed`, the only resumable
+// status, and so dropped the collection of a resumed attempt that was RUNNING
+// — those have checkpoint rows too, and ListActiveRecent can miss them
+// because a resume keeps the run's original started_at, which may be older
+// than the sweep's lookback. Another agent booting mid-run would then delete
+// a live run's index under it. The decision here is destructive, so the
+// certain-to-exclude set is the one to enumerate: `cancelled` and `completed`
+// are the two states that can never want an index again, and anything the
+// sweep does not recognise keeps its index rather than losing it.
 //
 // Unknown ids are simply absent from the result, which is the answer the
 // sweep wants: no run, nothing to keep.
-func (r *RunRepository) ResumableIDs(ctx context.Context, ids []string) ([]string, error) {
+func (r *RunRepository) ResumableOrActiveIDs(ctx context.Context, ids []string) ([]string, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -513,11 +525,14 @@ func (r *RunRepository) ResumableIDs(ctx context.Context, ids []string) ([]strin
 	}
 
 	cur, err := r.col.Find(ctx, bson.M{
-		"_id":    bson.M{"$in": oids},
-		"status": models.RunStatusFailed,
+		"_id": bson.M{"$in": oids},
+		"status": bson.M{"$nin": []string{
+			models.RunStatusCancelled,
+			models.RunStatusCompleted,
+		}},
 	}, options.Find().SetProjection(bson.M{"_id": 1}))
 	if err != nil {
-		return nil, fmt.Errorf("list resumable runs: %w", err)
+		return nil, fmt.Errorf("list resumable or active runs: %w", err)
 	}
 	defer cur.Close(ctx)
 
@@ -527,12 +542,12 @@ func (r *RunRepository) ResumableIDs(ctx context.Context, ids []string) ([]strin
 			ID primitive.ObjectID `bson:"_id"`
 		}
 		if err := cur.Decode(&doc); err != nil {
-			return nil, fmt.Errorf("decode resumable run: %w", err)
+			return nil, fmt.Errorf("decode resumable or active run: %w", err)
 		}
 		out = append(out, doc.ID.Hex())
 	}
 	if err := cur.Err(); err != nil {
-		return nil, fmt.Errorf("iterate resumable runs: %w", err)
+		return nil, fmt.Errorf("iterate resumable or active runs: %w", err)
 	}
 	return out, nil
 }

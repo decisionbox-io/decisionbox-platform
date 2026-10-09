@@ -1402,18 +1402,24 @@ func loadActiveRunIDs(ctx context.Context, db *database.DB) map[string]struct{} 
 		applog.WithError(err).Warn("Could not list runs with checkpoints for orphan sweep; a resumable run's step index may be dropped")
 		return out
 	}
-	// A checkpoint row is not by itself proof that a run is resumable. A
-	// cancelled run's dying agent can re-create one after CancelRun purged
-	// them — cancel leaves the attempt unchanged and the runners can return
-	// before the workload is gone — and `failed` is the only status a resume
-	// will accept. Keeping a collection open on the strength of a row like
-	// that holds Qdrant storage for a run nothing can ever resume, until the
-	// checkpoint TTL reclaims the row.
+	// A checkpoint row is not by itself proof that a run still wants an
+	// index. A cancelled run's dying agent can re-create one after CancelRun
+	// purged them — cancel leaves the attempt unchanged and the runners can
+	// return before the workload is gone — and holding a collection open on
+	// the strength of that row costs Qdrant storage for a run nothing can
+	// ever resume.
+	//
+	// The narrowing keeps live runs as well as resumable ones. A resumed
+	// attempt that is RUNNING has checkpoint rows too, and the active query
+	// above can miss it: resume keeps the run's original started_at, which
+	// may be older than the sweep lookback. Narrowing to resumable-only
+	// would let one agent's boot sweep delete another's live index.
 	//
 	// Best-effort like everything else here: if the narrowing read fails,
 	// keep all of them. Over-keeping costs storage until the next boot;
-	// under-keeping makes a legitimate resume re-embed every replayed step.
-	resumable, err := repo.ResumableIDs(ctx, checkpointed)
+	// under-keeping either makes a legitimate resume re-embed every replayed
+	// step or degrades a running one mid-flight.
+	resumable, err := repo.ResumableOrActiveIDs(ctx, checkpointed)
 	if err != nil {
 		applog.WithError(err).Warn("Could not confirm which checkpointed runs are resumable; keeping them all for this sweep")
 		resumable = checkpointed

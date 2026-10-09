@@ -162,20 +162,26 @@ func (r *DiscoveryRun) ReservationBelongsToASupersededAttempt() bool {
 	return r.PolicyReservationID != "" && r.Attempt > 1
 }
 
-// SupersededAttemptEndedAt is when the attempt that owns a lingering
-// reservation stopped being the live one.
+// ReservationOwnerEndedAt is when the attempt that owns a lingering plan
+// reservation stopped running.
 //
-// A superseded attempt never writes an end time of its own — it is replaced
-// mid-flight, not finished — so the moment of the resume is the closest thing
-// there is. Zero when even that is unknown, which callers pass through as
-// "unknown" rather than substituting a later clock reading: the reservation's
-// recorded duration is accounting, and the gap between being superseded and
-// whatever closes it later can be hours.
+// Two shapes, one answer. An attempt a resume superseded never writes an end
+// time of its own — it is replaced mid-flight, not finished — so the moment
+// of that resume is the closest thing there is. An attempt that failed did
+// write one, and it is the moment it failed, not the moment someone later
+// noticed. Both are "when did this reservation's work stop", so the resume
+// timestamp is preferred and the completion timestamp is the fallback.
 //
-// Shared deliberately. Two places close such a reservation — the cancel
-// handler and the background confirmer that retries a failed confirm — and
-// the outcome must not depend on which arrives first.
-func (r *DiscoveryRun) SupersededAttemptEndedAt() time.Time {
+// Zero when neither exists, and callers pass that through as "unknown"
+// rather than substituting a later clock reading. The reservation's recorded
+// duration is accounting, and the gap between an attempt stopping and
+// whatever closes its reservation later can be hours.
+//
+// Shared deliberately, because THREE paths close one of these — the resume
+// handler superseding an attempt, the cancel handler finding a lingering id,
+// and the background confirmer retrying a failed confirm — and what gets
+// recorded must not depend on which one arrives first.
+func (r *DiscoveryRun) ReservationOwnerEndedAt() time.Time {
 	if r.LastResumedAt != nil {
 		return *r.LastResumedAt
 	}

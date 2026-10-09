@@ -881,8 +881,16 @@ func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 		resCtx, cancelRes := cleanupContext(ctx)
 		defer cancelRes()
 		if err := policy.GetChecker().ConfirmDiscoveryRunEnded(resCtx, run.PolicyReservationID, policy.RunOutcome{
-			Status:  "failure",
-			EndedAt: time.Now().UTC(),
+			Status: "failure",
+			// Not `now`. This reservation's attempt stopped before this
+			// request: the failed attempt stopped when it failed, and on a
+			// second resume whose earlier confirm failed, the lingering id
+			// belongs to an attempt the EARLIER resume superseded. Either
+			// way the gap can be hours of accounting for work that was not
+			// running. `run` is the pre-flip document, so its timestamps are
+			// that attempt's, and this is the same source the cancel handler
+			// and the background confirmer read.
+			EndedAt: run.ReservationOwnerEndedAt(),
 			Error:   models.SupersededByResumeReason,
 		}); err != nil {
 			apilog.WithError(err).Warn("failed to confirm the superseded attempt's reservation; leaving its id on the run so the confirmer can retry")
@@ -1009,7 +1017,7 @@ func (h *DiscoveriesHandler) CancelRun(w http.ResponseWriter, r *http.Request) {
 			// later would bill its reservation for those hours. Same source
 			// as the background confirmer, so whichever gets there first
 			// records the same thing.
-			cancelOutcome.EndedAt = run.SupersededAttemptEndedAt()
+			cancelOutcome.EndedAt = run.ReservationOwnerEndedAt()
 		}
 		if err := policy.GetChecker().ConfirmDiscoveryRunEnded(r.Context(), run.PolicyReservationID, cancelOutcome); err != nil {
 			apilog.WithError(err).Warn("failed to confirm cancelled run to policy checker")

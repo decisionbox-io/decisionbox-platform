@@ -631,6 +631,9 @@ func TestResumeRun_EndsTheSupersededAttemptsReservation(t *testing.T) {
 
 	f := newResumeFixture(t)
 	f.runs.runs["run-1"].PolicyReservationID = "res-attempt-1"
+	// The attempt failed three hours ago and has been sitting there since.
+	failedAt := time.Now().UTC().Add(-3 * time.Hour)
+	f.runs.runs["run-1"].CompletedAt = &failedAt
 
 	if w := f.post("run-1"); w.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body = %s", w.Code, w.Body.String())
@@ -641,6 +644,14 @@ func TestResumeRun_EndsTheSupersededAttemptsReservation(t *testing.T) {
 	}
 	if got := ck.confirms[0].Status; got != "failure" {
 		t.Errorf("confirmed outcome = %q, want failure — the attempt did fail", got)
+	}
+	// And closed at the moment that attempt STOPPED, not at the moment
+	// someone clicked Resume. A failed run can sit unnoticed for hours, and
+	// `now` would bill the reservation for all of them. Same source the
+	// cancel handler and the background confirmer read, so whichever closes
+	// this reservation records the same thing.
+	if !ck.confirms[0].EndedAt.Equal(failedAt) {
+		t.Errorf("EndedAt = %s, want the attempt's own end %s — the idle hours before the resume are not run time", ck.confirms[0].EndedAt, failedAt)
 	}
 	// Still no NEW reservation, which is the whole point.
 	if n := ck.reservationCount(); n != 0 {
