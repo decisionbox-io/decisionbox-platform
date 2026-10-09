@@ -42,6 +42,19 @@ func (r *RunRepository) Create(ctx context.Context, run *models.DiscoveryRun) (s
 }
 
 // UpdateStatus updates the run's status, phase, and detail.
+//
+// Attempt-fenced, and additionally barred from overriding a cancellation —
+// for the same reasons as Complete below, including why `failed` has to stay
+// matchable. The hazard here is sharper than it looks: this write sets
+// `status` to `running`, so one late phase update after a cancel does not
+// merely mislabel the run, it clears the `cancelled` that Complete's own
+// guard tests for. Cancel would then be fully undone by the pair of them,
+// and the resulting Complete reports a CLAIM, which is what licenses
+// retireSupersededAttempts and discardCheckpoints to start deleting.
+//
+// Reachable because a cancel does not change the attempt and does not stop
+// the agent instantly: the API writes `cancelled` and kills the workload,
+// and the process can emit one more SetPhase on its way out.
 func (r *RunRepository) UpdateStatus(ctx context.Context, runID string, status, phase, detail string, progress int, attempt int) error {
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {
@@ -58,7 +71,10 @@ func (r *RunRepository) UpdateStatus(ctx context.Context, runID string, status, 
 		},
 	}
 
-	_, err = r.col.UpdateOne(ctx, attemptFilter(oid, attempt), update)
+	filter := attemptFilter(oid, attempt)
+	filter["status"] = bson.M{"$ne": models.RunStatusCancelled}
+
+	_, err = r.col.UpdateOne(ctx, filter, update)
 	return err
 }
 

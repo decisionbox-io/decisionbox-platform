@@ -570,3 +570,98 @@ func TestInteg_RunRepo_CompleteIsStillAttemptFenced(t *testing.T) {
 		t.Errorf("status = %v, want the live attempt untouched", run["status"])
 	}
 }
+
+// TestRunRepository_UpdateStatus_CannotReviveACancelledRun closes the last
+// hole in "cancel stays terminal".
+//
+// A cancel does not change the attempt and does not stop the agent instantly:
+// the API writes `cancelled` and kills the workload, and the process can emit
+// one more SetPhase on the way out. That write sets status to `running`, which
+// does not merely mislabel the run — it clears the `cancelled` that Complete's
+// own guard tests for, so the pair of them undoes the cancellation entirely.
+// And the resulting Complete reports a CLAIM, which is what licenses retiring
+// other attempts' results and discarding the checkpoints.
+func TestRunRepository_UpdateStatus_CannotReviveACancelledRun(t *testing.T) {
+	ctx := context.Background()
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+
+	repo := NewRunRepository(db)
+
+	runID, err := repo.Create(ctx, &models.DiscoveryRun{ProjectID: "proj-1"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	oid, _ := primitive.ObjectIDFromHex(runID)
+	if _, err := db.Collection("discovery_runs").UpdateByID(ctx, oid, bson.M{"$set": bson.M{"status": "cancelled"}}); err != nil {
+		t.Fatalf("seed cancelled: %v", err)
+	}
+
+	// The late phase update from an agent that has not died yet. Same
+	// attempt, so the attempt fence alone lets it through.
+	if err := repo.UpdateStatus(ctx, runID, models.RunStatusRunning, models.PhaseAnalysis, "analysing", 70, 1); err != nil {
+		t.Fatalf("UpdateStatus returned error: %v", err)
+	}
+
+	var got models.DiscoveryRun
+	if err := db.Collection("discovery_runs").FindOne(ctx, bson.M{"_id": oid}).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Status != "cancelled" {
+		t.Errorf("Status = %q after a late phase update, want cancelled — reviving the run also re-opens Complete, which then claims it", got.Status)
+	}
+	if got.Phase == models.PhaseAnalysis {
+		t.Errorf("Phase = %q: the update was applied despite the cancellation", got.Phase)
+	}
+
+	// And a cancelled run must stay uncompletable, which is the half of the
+	// invariant that was already guarded — asserted here because it is what
+	// the revival was defeating.
+	applied, err := repo.Complete(ctx, runID, "disc-1", 3, 1)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if applied {
+		t.Error("Complete claimed a cancelled run")
+	}
+}
+
+// TestRunRepository_UpdateStatus_StillUpdatesLiveAndSweptRuns is the
+// counter-test, so the guard cannot be silently too restrictive.
+//
+// `running` is the ordinary case. `failed` has to keep working for the same
+// reason Complete allows it: the API's startup sweep marks in-flight runs
+// failed WITHOUT reaping their agents, and an agent that is still working has
+// progress worth showing.
+func TestRunRepository_UpdateStatus_StillUpdatesLiveAndSweptRuns(t *testing.T) {
+	ctx := context.Background()
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+
+	repo := NewRunRepository(db)
+
+	for _, seeded := range []string{"running", "failed"} {
+		t.Run("from "+seeded, func(t *testing.T) {
+			runID, err := repo.Create(ctx, &models.DiscoveryRun{ProjectID: "proj-1"})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			oid, _ := primitive.ObjectIDFromHex(runID)
+			if _, err := db.Collection("discovery_runs").UpdateByID(ctx, oid, bson.M{"$set": bson.M{"status": seeded}}); err != nil {
+				t.Fatalf("seed %s: %v", seeded, err)
+			}
+
+			if err := repo.UpdateStatus(ctx, runID, models.RunStatusRunning, models.PhaseAnalysis, "analysing", 70, 1); err != nil {
+				t.Fatalf("UpdateStatus: %v", err)
+			}
+
+			var got models.DiscoveryRun
+			if err := db.Collection("discovery_runs").FindOne(ctx, bson.M{"_id": oid}).Decode(&got); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if got.Phase != models.PhaseAnalysis || got.Progress != 70 {
+				t.Errorf("phase=%q progress=%d, want the update applied to a %s run", got.Phase, got.Progress, seeded)
+			}
+		})
+	}
+}
