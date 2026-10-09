@@ -1003,6 +1003,13 @@ func (h *DiscoveriesHandler) CancelRun(w http.ResponseWriter, r *http.Request) {
 		if run.ReservationBelongsToASupersededAttempt() {
 			cancelOutcome.Status = "failure"
 			cancelOutcome.Error = models.SupersededByResumeReason
+			// The END TIME is misattributed by exactly the same argument as
+			// the status, and leaving it at `now` was the half-fix: the dead
+			// attempt stopped when the resume replaced it, so a cancel hours
+			// later would bill its reservation for those hours. Same source
+			// as the background confirmer, so whichever gets there first
+			// records the same thing.
+			cancelOutcome.EndedAt = run.SupersededAttemptEndedAt()
 		}
 		if err := policy.GetChecker().ConfirmDiscoveryRunEnded(r.Context(), run.PolicyReservationID, cancelOutcome); err != nil {
 			apilog.WithError(err).Warn("failed to confirm cancelled run to policy checker")

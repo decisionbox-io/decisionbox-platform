@@ -1093,9 +1093,11 @@ func TestCancelRun_DoesNotRecordACancelAgainstASupersededAttempt(t *testing.T) {
 	projs.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
 	runs := newMockRunRepo()
 	// A resumed run still carrying the previous attempt's reservation.
+	resumedAt := time.Now().UTC().Add(-3 * time.Hour)
 	runs.runs["run-1"] = &models.DiscoveryRun{
 		ID: "run-1", ProjectID: "p1", Status: "running",
 		Attempt: 2, PolicyReservationID: "res-attempt-1",
+		LastResumedAt: &resumedAt,
 	}
 	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projs, runs, nil, nil, nil, &recordingRunner{})
 
@@ -1116,6 +1118,14 @@ func TestCancelRun_DoesNotRecordACancelAgainstASupersededAttempt(t *testing.T) {
 	}
 	if confirms[0].Status != "failure" || confirms[0].Error != models.SupersededByResumeReason {
 		t.Errorf("outcome = %+v, want the superseded-attempt failure", confirms[0])
+	}
+	// The end time is misattributed by exactly the same argument as the
+	// status. The dead attempt stopped when the resume replaced it, three
+	// hours before this cancel — closing it at `now` bills its reservation
+	// for hours it did not run, and disagrees with the background confirmer
+	// that retries the same close.
+	if !confirms[0].EndedAt.Equal(resumedAt) {
+		t.Errorf("EndedAt = %s, want the resume time %s — the superseded attempt's reservation must not be charged to the cancel", confirms[0].EndedAt, resumedAt)
 	}
 }
 

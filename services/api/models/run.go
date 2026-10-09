@@ -162,6 +162,29 @@ func (r *DiscoveryRun) ReservationBelongsToASupersededAttempt() bool {
 	return r.PolicyReservationID != "" && r.Attempt > 1
 }
 
+// SupersededAttemptEndedAt is when the attempt that owns a lingering
+// reservation stopped being the live one.
+//
+// A superseded attempt never writes an end time of its own — it is replaced
+// mid-flight, not finished — so the moment of the resume is the closest thing
+// there is. Zero when even that is unknown, which callers pass through as
+// "unknown" rather than substituting a later clock reading: the reservation's
+// recorded duration is accounting, and the gap between being superseded and
+// whatever closes it later can be hours.
+//
+// Shared deliberately. Two places close such a reservation — the cancel
+// handler and the background confirmer that retries a failed confirm — and
+// the outcome must not depend on which arrives first.
+func (r *DiscoveryRun) SupersededAttemptEndedAt() time.Time {
+	if r.LastResumedAt != nil {
+		return *r.LastResumedAt
+	}
+	if r.CompletedAt != nil {
+		return *r.CompletedAt
+	}
+	return time.Time{}
+}
+
 // RunParams is the shape of one discovery run: the budget and scope the
 // caller asked for.
 //

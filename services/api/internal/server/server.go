@@ -494,18 +494,14 @@ func policyStatusFromDB(dbStatus string) string {
 // than the failure it is recovering from.
 func reservationOutcomeFor(run *models.DiscoveryRun) policy.RunOutcome {
 	if run.ReservationBelongsToASupersededAttempt() {
-		outcome := policy.RunOutcome{
+		return policy.RunOutcome{
 			Status: "failure",
 			Error:  models.SupersededByResumeReason,
+			// The moment the attempt was superseded is the closest thing to
+			// its end time; it never wrote one of its own. Shared with the
+			// cancel handler, which closes the same kind of reservation.
+			EndedAt: run.SupersededAttemptEndedAt(),
 		}
-		// The moment the attempt was superseded is the closest thing to its
-		// end time; it never wrote one of its own.
-		if run.LastResumedAt != nil {
-			outcome.EndedAt = *run.LastResumedAt
-		} else if run.CompletedAt != nil {
-			outcome.EndedAt = *run.CompletedAt
-		}
-		return outcome
 	}
 
 	outcome := policy.RunOutcome{Status: policyStatusFromDB(run.Status)}
