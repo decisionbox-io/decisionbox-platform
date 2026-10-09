@@ -1206,7 +1206,29 @@ func (h *DiscoveriesHandler) ListRunSteps(w http.ResponseWriter, r *http.Request
 	if limit <= 0 || limit > maxRunStepsPerRequest {
 		limit = maxRunStepsPerRequest
 	}
-	steps, err := h.runStepRepo.ListByRun(r.Context(), runID, sinceID, limit)
+
+	// Which attempt's feed to serve. A superseded agent can still be writing
+	// rows for this run — it finds out it was replaced only at its next
+	// ownership gate — so the rows have to be scoped to the attempt the run
+	// is on now, or a resumed run's log interleaves two attempts. See
+	// database.RunStepRepository.ListByRun for what that costs when it is
+	// not done.
+	//
+	// An unknown run keeps returning an empty list rather than becoming a
+	// 404: the dashboard polls this endpoint on a timer and only ever has
+	// run IDs it was given, so turning a stale poll into an error would be a
+	// contract change this endpoint does not need.
+	run, err := h.runRepo.GetByID(r.Context(), runID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get run: "+err.Error())
+		return
+	}
+	if run == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+
+	steps, err := h.runStepRepo.ListByRun(r.Context(), runID, sinceID, limit, run.Attempt)
 	if err != nil {
 		if errors.Is(err, database.ErrInvalidCursor) {
 			writeError(w, http.StatusBadRequest, "invalid 'since' cursor (expected an opaque id from a prior response)")

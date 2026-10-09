@@ -104,7 +104,7 @@ type DiscoveryLogRepo interface {
 // testing. Backed by RunStepRepository. The cursor (sinceID) is the
 // last RunStepDoc.IDHex the caller has — empty for the first poll.
 type RunStepRepo interface {
-	ListByRun(ctx context.Context, runID, sinceID string, limit int) ([]RunStepDoc, error)
+	ListByRun(ctx context.Context, runID, sinceID string, limit, attempt int) ([]RunStepDoc, error)
 }
 
 // FeedbackRepo abstracts feedback operations for handler unit testing.

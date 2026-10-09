@@ -76,7 +76,7 @@ type runDocWriter interface {
 // StatusReporter actually calls. Held as an interface so unit tests can
 // inject a fake without bringing up MongoDB.
 type runStepWriter interface {
-	AddStep(ctx context.Context, runID, projectID string, step models.RunStep) error
+	AddStep(ctx context.Context, runID, projectID string, attempt int, step models.RunStep) error
 }
 
 // StatusReporter writes live status updates to MongoDB during a discovery run.
@@ -154,11 +154,17 @@ func (s *StatusReporter) SetPhase(ctx context.Context, phase, detail string, pro
 // AddStep appends a step to the live log via the discovery_run_steps
 // collection. Each call is one InsertOne — no $push, no embedded array
 // growth on the run doc.
+//
+// Every row carries this reporter's attempt. A resume can start a new
+// attempt while this one is still inside an LLM call, and the rows it
+// writes in that window would otherwise be indistinguishable from the live
+// attempt's — see the API's RunStepRepository.ListByRun, which filters on
+// the run's current attempt.
 func (s *StatusReporter) AddStep(ctx context.Context, step models.RunStep) {
 	if !s.enabled() {
 		return
 	}
-	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, step); err != nil {
+	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, s.attempt, step); err != nil {
 		logger.WithError(err).Warn("failed to add run step")
 	}
 }
@@ -198,31 +204,9 @@ func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, ac
 		return
 	}
 
-	stepType, msg := classifyExplorationStep(action, stepNum, thinking, errStr)
+	step := explorationRunStep(stepNum, action, thinking, query, rowCount, queryTimeMs, queryFixed, errStr, inputTokens, outputTokens, warehouseID)
 
-	resultSummary := ""
-	if rowCount > 0 {
-		resultSummary = fmt.Sprintf("%d rows returned", rowCount)
-	}
-
-	step := models.RunStep{
-		Phase:        models.PhaseExploration,
-		StepNum:      stepNum,
-		Type:         stepType,
-		Message:      msg,
-		LLMThinking:  thinking,
-		Query:        query,
-		QueryResult:  resultSummary,
-		RowCount:     rowCount,
-		QueryTimeMs:  queryTimeMs,
-		QueryFixed:   queryFixed,
-		WarehouseID:  warehouseID,
-		Error:        errStr,
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
-	}
-
-	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, step); err != nil {
+	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, s.attempt, step); err != nil {
 		logger.WithError(err).Warn("failed to add exploration step")
 	}
 
@@ -247,6 +231,67 @@ func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, ac
 		if err := s.repo.IncrementSchemaActionCalls(ctx, s.runID, action, 1, s.attempt); err != nil {
 			logger.WithError(err).Warn("failed to increment schema-action count")
 		}
+	}
+}
+
+// explorationRunStep builds the live-feed row for one exploration step.
+// Shared by the live hook and by ReplayExplorationStep so the two renderings
+// of the same step cannot drift.
+func explorationRunStep(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errStr string, inputTokens, outputTokens int, warehouseID string) models.RunStep {
+	stepType, msg := classifyExplorationStep(action, stepNum, thinking, errStr)
+
+	resultSummary := ""
+	if rowCount > 0 {
+		resultSummary = fmt.Sprintf("%d rows returned", rowCount)
+	}
+
+	return models.RunStep{
+		Phase:        models.PhaseExploration,
+		StepNum:      stepNum,
+		Type:         stepType,
+		Message:      msg,
+		LLMThinking:  thinking,
+		Query:        query,
+		QueryResult:  resultSummary,
+		RowCount:     rowCount,
+		QueryTimeMs:  queryTimeMs,
+		QueryFixed:   queryFixed,
+		WarehouseID:  warehouseID,
+		Error:        errStr,
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
+	}
+}
+
+// ReplayExplorationStep re-emits one already-executed step into this
+// attempt's live feed.
+//
+// A resume needs this because the feed is attempt-scoped. The replayed
+// prefix's rows exist, but they belong to the attempt that ran them, so
+// without re-emitting them the resumed run's log would start partway through
+// — the operator would see analysis of exploration they cannot see. The
+// engine deliberately does not fire its OnStep hook for replayed steps
+// (see ai.replayPrefix), and this is not that hook: it writes the ROW ONLY.
+//
+// No progress update and no counter bumps, which is the whole reason it is a
+// separate method. Those already happened on the attempt that executed the
+// step, and the run document carries them forward across attempts; running
+// them again would double-count every replayed query and schema lookup.
+//
+// The original step's timestamp is preserved, so the feed shows when the work
+// actually happened rather than when it was replayed.
+func (s *StatusReporter) ReplayExplorationStep(ctx context.Context, step models.ExplorationStep) {
+	if !s.enabled() {
+		return
+	}
+	row := explorationRunStep(
+		step.Step, step.Action, step.Thinking, step.Query, step.RowCount,
+		step.ExecutionTimeMs, step.Fixed, step.Error, step.TokensIn, step.TokensOut,
+		step.WarehouseID,
+	)
+	row.Timestamp = step.Timestamp
+	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, s.attempt, row); err != nil {
+		logger.WithError(err).Warn("failed to re-emit a replayed exploration step into the live feed")
 	}
 }
 
@@ -315,7 +360,7 @@ func (s *StatusReporter) AddAnalysisStep(ctx context.Context, areaID, areaName s
 		OutputTokens: outputTokens,
 	}
 
-	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, step); err != nil {
+	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, s.attempt, step); err != nil {
 		logger.WithError(err).Warn("failed to add analysis step")
 	}
 }
@@ -334,7 +379,7 @@ func (s *StatusReporter) AddInsightStep(ctx context.Context, name, severity, are
 		InsightSeverity: severity,
 	}
 
-	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, step); err != nil {
+	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, s.attempt, step); err != nil {
 		logger.WithError(err).Warn("failed to add insight step")
 	}
 }
@@ -375,7 +420,7 @@ func (s *StatusReporter) AddRecommendationStep(ctx context.Context, recommendati
 		OutputTokens: outputTokens,
 	}
 
-	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, step); err != nil {
+	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, s.attempt, step); err != nil {
 		logger.WithError(err).Warn("failed to add recommendation step")
 	}
 }
@@ -404,7 +449,7 @@ func (s *StatusReporter) AddValidationStep(ctx context.Context, insightName, sta
 		OutputTokens: outputTokens,
 	}
 
-	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, step); err != nil {
+	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, s.attempt, step); err != nil {
 		logger.WithError(err).Warn("failed to add validation step")
 	}
 }

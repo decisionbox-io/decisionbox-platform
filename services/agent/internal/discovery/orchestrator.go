@@ -1112,6 +1112,11 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	}
 	o.rebuildStepIndexForResume(ctx)
 
+	// The feed is attempt-scoped, so this attempt has to own a copy of the
+	// prefix's rows or its log starts partway through. Same gate as the
+	// index rebuild above covers it: one emission, at a known point.
+	o.replayLiveFeedForResume(ctx)
+
 	var explorationResult *ai.ExplorationResult
 	if o.resume.explorationComplete() {
 		// A previous attempt finished exploration, so there is nothing left

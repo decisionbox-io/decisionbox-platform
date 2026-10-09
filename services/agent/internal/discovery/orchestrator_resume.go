@@ -71,6 +71,15 @@ func (r *ResumeState) attemptNumber() int {
 	return r.Attempt
 }
 
+// replayableSteps is the already-executed prefix, for the callers that need
+// the steps themselves rather than the engine's view of them. Safe on nil.
+func (r *ResumeState) replayableSteps() []models.ExplorationCheckpoint {
+	if r == nil || r.Checkpoints == nil {
+		return nil
+	}
+	return r.Checkpoints.Steps
+}
+
 // engineResume converts the loaded checkpoints into what the exploration
 // engine replays. Nil when there is nothing to replay, which is what makes a
 // non-resumed run take exactly the path it always did.
@@ -577,6 +586,43 @@ func (o *Orchestrator) discardCheckpoints(ctx context.Context, why string) {
 // Qdrant hiccup would be the wrong trade. It does mean the stale points can
 // survive a failed drop, which noveltyMeasurable and the ranking degrade
 // around rather than break on.
+// replayLiveFeedForResume re-emits the replayable prefix into this attempt's
+// live feed.
+//
+// The feed is attempt-scoped — the API's reader filters on the run's current
+// attempt, because otherwise a superseded agent's rows interleave with the
+// live attempt's and the dashboard's `_id > since_id` cursor can drop the
+// live attempt's own rows (see api/database/run_step_repo.go). Scoping has a
+// price here: the prefix's rows belong to the attempt that executed them, so
+// a resumed run would show a log that begins partway through, with analysis
+// of exploration steps the operator cannot see.
+//
+// So the prefix is re-emitted under this attempt. Rows only: the progress
+// field and the per-action counters live on the run document, which carries
+// across attempts, and bumping them again would double-count every replayed
+// query. One insert per replayed step, bounded by the checkpoint count.
+//
+// Failures are logged and swallowed, like every other live-feed write. The
+// feed is a display; refusing to resume because a row did not land would be
+// the wrong trade.
+func (o *Orchestrator) replayLiveFeedForResume(ctx context.Context) {
+	if o.statusReporter == nil || !o.resume.active() {
+		return
+	}
+	steps := o.resume.replayableSteps()
+	if len(steps) == 0 {
+		return
+	}
+	for _, cp := range steps {
+		o.statusReporter.ReplayExplorationStep(ctx, cp.Step)
+	}
+	applog.WithFields(applog.Fields{
+		"run_id":  o.runID,
+		"attempt": o.resume.attemptNumber(),
+		"steps":   len(steps),
+	}).Info("resume: re-emitted the replayable prefix into this attempt's live feed")
+}
+
 func (o *Orchestrator) rebuildStepIndexForResume(ctx context.Context) {
 	if o.runStepIndex == nil || !o.resume.active() {
 		return

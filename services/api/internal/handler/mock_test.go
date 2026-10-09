@@ -361,6 +361,13 @@ type mockRunRepo struct {
 	// test uses to make a competing run appear in the window the pre-check
 	// cannot see.
 	onBeginResume func()
+
+	// defaultRun, when set, is what GetByID answers for a run ID that was
+	// never seeded. Nil keeps the strict behaviour every 404 test wants —
+	// an unknown run is nil, nil. The live-feed tests set it because every
+	// one of them invents its own run ID and only cares about the attempt
+	// the handler reads off the run.
+	defaultRun *models.DiscoveryRun
 }
 
 func newMockRunRepo() *mockRunRepo {
@@ -432,7 +439,11 @@ func (m *mockRunRepo) GetByID(_ context.Context, runID string) (*models.Discover
 	defer m.mu.Unlock()
 	r, ok := m.runs[runID]
 	if !ok {
-		return nil, nil
+		if m.defaultRun == nil {
+			return nil, nil
+		}
+		cp := *m.defaultRun
+		return &cp, nil
 	}
 	cp := *r
 	return &cp, nil

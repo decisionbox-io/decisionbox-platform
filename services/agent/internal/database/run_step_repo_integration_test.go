@@ -28,7 +28,7 @@ func TestRunStepRepository_StreamsAcrossSinceCursor(t *testing.T) {
 	t0 := time.Now().UTC().Truncate(time.Millisecond)
 
 	for i, ts := range []time.Time{t0, t0.Add(50 * time.Millisecond), t0.Add(100 * time.Millisecond)} {
-		err := repo.AddStep(ctx, runID, "proj-1", models.RunStep{
+		err := repo.AddStep(ctx, runID, "proj-1", 1, models.RunStep{
 			Phase:     models.PhaseExploration,
 			StepNum:   i + 1,
 			Type:      "query",
@@ -98,7 +98,7 @@ func TestRunStepRepository_SameMillisecondCollisionIsNotDropped(t *testing.T) {
 	ts := time.Now().UTC().Truncate(time.Millisecond)
 
 	for i := 1; i <= 3; i++ {
-		err := repo.AddStep(ctx, runID, "p", models.RunStep{
+		err := repo.AddStep(ctx, runID, "p", 1, models.RunStep{
 			Phase:     models.PhaseExploration,
 			StepNum:   i,
 			Type:      "query",
@@ -145,7 +145,7 @@ func TestRunStepRepository_RunIsolation(t *testing.T) {
 
 	repo := NewRunStepRepository(db)
 	for _, run := range []string{"run-A", "run-B"} {
-		_ = repo.AddStep(ctx, run, "proj", models.RunStep{StepNum: 1, Type: "info", Message: run})
+		_ = repo.AddStep(ctx, run, "proj", 1, models.RunStep{StepNum: 1, Type: "info", Message: run})
 	}
 	a, _ := repo.ListByRun(ctx, "run-A", "", 0)
 	b, _ := repo.ListByRun(ctx, "run-B", "", 0)
@@ -168,7 +168,7 @@ func TestRunStepRepository_TimestampDefaulted(t *testing.T) {
 
 	repo := NewRunStepRepository(db)
 	before := time.Now().UTC()
-	if err := repo.AddStep(ctx, "run-z", "proj", models.RunStep{Type: "info", Message: "no-ts"}); err != nil {
+	if err := repo.AddStep(ctx, "run-z", "proj", 1, models.RunStep{Type: "info", Message: "no-ts"}); err != nil {
 		t.Fatalf("AddStep: %v", err)
 	}
 	got, _ := repo.ListByRun(ctx, "run-z", "", 0)

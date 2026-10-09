@@ -96,18 +96,31 @@ func (f *fakeRunDoc) RecordSchemaContextTelemetry(_ context.Context, _ string, _
 	return f.writeErr
 }
 
-// fakeStepWriter satisfies the other half of enabled().
-type fakeStepWriter struct{ steps int }
+// fakeStepWriter satisfies the other half of enabled() and records which
+// attempt each live-feed row was stamped with.
+type fakeStepWriter struct {
+	steps    int
+	attempts []int
+}
 
-func (f *fakeStepWriter) AddStep(context.Context, string, string, models.RunStep) error {
+func (f *fakeStepWriter) AddStep(_ context.Context, _, _ string, attempt int, _ models.RunStep) error {
 	f.steps++
+	f.attempts = append(f.attempts, attempt)
 	return nil
 }
 
 func reporterFor(doc *fakeRunDoc, attempt int) *StatusReporter {
-	r := newStatusReporter(doc, &fakeStepWriter{}, "proj", "run-1", 100)
-	r.attempt = attempt
+	r, _ := reporterAndFeed(doc, attempt)
 	return r
+}
+
+// reporterAndFeed also hands back the step writer, for the tests that care
+// what landed in the live feed rather than on the run document.
+func reporterAndFeed(doc *fakeRunDoc, attempt int) (*StatusReporter, *fakeStepWriter) {
+	feed := &fakeStepWriter{}
+	r := newStatusReporter(doc, feed, "proj", "run-1", 100)
+	r.attempt = attempt
+	return r, feed
 }
 
 // TestStatusReporter_StampsItsAttemptOnEveryRunDocumentWrite is the fence's
@@ -136,6 +149,41 @@ func TestStatusReporter_StampsItsAttemptOnEveryRunDocumentWrite(t *testing.T) {
 	for i, got := range doc.attempts {
 		if got != 3 {
 			t.Errorf("write %d carried attempt %d, want 3 — an unfenced write lands on the live attempt's run", i, got)
+		}
+	}
+}
+
+// TestStatusReporter_StampsItsAttemptOnEveryLiveFeedRow is the step-row half
+// of the fence, and it is the one that was missing in v1.
+//
+// The run document was fenced from the start, but discovery_run_steps rows —
+// the dashboard's live log — were written with no attempt at all. A resume
+// starts a new attempt while the superseded agent may still be inside an LLM
+// call, so its rows landed in the resumed run's feed, indistinguishable from
+// the live attempt's and never cleaned up. Worse, two writer processes break
+// the `_id > since_id` cursor's single-writer assumption and the live
+// attempt's own rows can be dropped from the stream for good.
+//
+// So: every reporter method that writes a row must stamp the attempt. This
+// drives all six, and fails if a new one is added without it.
+func TestStatusReporter_StampsItsAttemptOnEveryLiveFeedRow(t *testing.T) {
+	r, feed := reporterAndFeed(newFakeRunDoc(), 4)
+	ctx := context.Background()
+
+	r.AddStep(ctx, models.RunStep{Type: "info", Message: "plain"})
+	r.AddExplorationStep(ctx, 4, "query_data", "thinking", "SELECT 1", 10, 5, false, "", 1, 2, "")
+	r.AddAnalysisStep(ctx, "area-1", "Revenue", 2, "", 1, 2)
+	r.AddInsightStep(ctx, "insight", "high", "Revenue")
+	r.AddRecommendationStep(ctx, 3, 1, "", 1, 2)
+	r.AddValidationStep(ctx, "insight", "verified", 2, 2, 1, 2)
+
+	const wantRows = 6
+	if feed.steps != wantRows {
+		t.Fatalf("wrote %d live-feed rows, want %d — a step-writing method stopped writing", feed.steps, wantRows)
+	}
+	for i, got := range feed.attempts {
+		if got != 4 {
+			t.Errorf("row %d carried attempt %d, want 4 — an unstamped row shows up in the resumed run's feed", i, got)
 		}
 	}
 }
@@ -432,5 +480,66 @@ func TestStatusReporter_AnUnmatchedTerminalWriteIsNotProofOfSupersession(t *test
 				}
 			})
 		}
+	}
+}
+
+// TestStatusReporter_ReplayExplorationStepWritesTheRowOnly pins the contract
+// the resume path depends on.
+//
+// Scoping the live feed to the current attempt means a resumed run must
+// re-emit the replayed prefix, or its log starts partway through. But the
+// progress field and the per-action counters live on the run document, which
+// already carries them across attempts — the attempt that executed the step
+// bumped them. Re-emitting a row must therefore touch the feed and nothing
+// else, or every replayed query gets counted twice.
+func TestStatusReporter_ReplayExplorationStepWritesTheRowOnly(t *testing.T) {
+	doc := newFakeRunDoc()
+	r, feed := reporterAndFeed(doc, 2)
+	ran := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+
+	r.ReplayExplorationStep(context.Background(), models.ExplorationStep{
+		Step:      3,
+		Action:    "query_data",
+		Thinking:  "checking revenue",
+		Query:     "SELECT 1",
+		RowCount:  7,
+		Timestamp: ran,
+		TokensIn:  11,
+		TokensOut: 22,
+	})
+
+	if feed.steps != 1 {
+		t.Fatalf("wrote %d live-feed rows, want 1", feed.steps)
+	}
+	if len(feed.attempts) != 1 || feed.attempts[0] != 2 {
+		t.Errorf("row carried attempts %v, want [2] — a replayed row on the wrong attempt is invisible to the feed it was emitted for", feed.attempts)
+	}
+	// The run document must be untouched: no progress write, no query
+	// counter, nothing. doc.attempts records every write that reached it.
+	if len(doc.attempts) != 0 {
+		t.Errorf("the replay wrote to the run document %d time(s); the executing attempt already counted this step, so this double-counts it", len(doc.attempts))
+	}
+}
+
+// TestStatusReporter_ReplayExplorationStepKeepsTheOriginalTimestamp — the
+// feed renders per-step timestamps, so a replayed row has to say when the
+// step ran, not when it was replayed. AddStep only defaults a zero
+// timestamp, so this is really asserting the reporter passes the original
+// through rather than letting it default.
+func TestStatusReporter_ReplayExplorationStepKeepsTheOriginalTimestamp(t *testing.T) {
+	w := &fakeRunStepWriter{}
+	r := newStatusReporter(newFakeRunDoc(), w, "proj", "run-1", 100)
+	r.attempt = 2
+	ran := time.Now().UTC().Add(-90 * time.Minute).Truncate(time.Millisecond)
+
+	r.ReplayExplorationStep(context.Background(), models.ExplorationStep{
+		Step: 1, Action: "lookup_schema", Timestamp: ran,
+	})
+
+	if len(w.steps) != 1 {
+		t.Fatalf("got %d rows, want 1", len(w.steps))
+	}
+	if !w.steps[0].Timestamp.Equal(ran) {
+		t.Errorf("row timestamp = %s, want the step's own %s", w.steps[0].Timestamp, ran)
 	}
 }
