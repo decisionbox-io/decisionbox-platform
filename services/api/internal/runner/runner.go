@@ -111,9 +111,14 @@ type RunOptions struct {
 	// another, because a resume re-enters the SAME run id while the previous
 	// attempt's workload can still be alive: Kubernetes, to keep the Job
 	// name unique (see KubernetesRunner.Run), and subprocess, to key its
-	// process table so Cancel kills every live attempt. The Docker runner
-	// needs it for neither — it selects containers by the run-id label, so
-	// it already addresses all of them at once.
+	// process table so Cancel kills every live attempt.
+	//
+	// The Docker runner does not need it, but "it addresses them all at
+	// once" was only half the reason, and the missing half was a bug: it
+	// selects containers by the run-id label, so Cancel stops every
+	// attempt's — and its cancellation MARK then has to outlive every one
+	// of those watchers rather than being consumed by the first to exit.
+	// See DockerRunner.wasCancelled.
 	Attempt int
 
 	// OnFailure is called when the agent process exits with an error.

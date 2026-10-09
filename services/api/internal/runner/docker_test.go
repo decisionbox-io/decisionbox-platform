@@ -695,7 +695,7 @@ func TestDockerRunner_Cancel_StopsMatchingContainer(t *testing.T) {
 	}
 	// Cancel must mark the run cancelled so the watcher suppresses OnFailure
 	// (set synchronously before returning).
-	if !r.consumeCancelled("run-cancel") {
+	if !r.wasCancelled("run-cancel") {
 		t.Error("Cancel must mark the run cancelled")
 	}
 	// Stop + remove run in the background (so the grace can't block the
@@ -782,7 +782,7 @@ func TestDockerRunner_Cancel_NoContainerIsNoop(t *testing.T) {
 	// Even with no running container to stop, the run must be marked
 	// cancelled so a watcher still consuming an exit suppresses OnFailure
 	// (guards the exit-vs-cancel race).
-	if !r.consumeCancelled("run-gone") {
+	if !r.wasCancelled("run-gone") {
 		t.Error("Cancel must mark the run cancelled even when no container is running")
 	}
 }
@@ -975,5 +975,67 @@ func TestDockerRunner_Run_OmitsResumeOnAFreshRun(t *testing.T) {
 	cfg := f.lastCreate(t)
 	if hasArg(cfg.Cmd, "--resume") {
 		t.Errorf("a fresh run must not be told to resume: %v", cfg.Cmd)
+	}
+}
+
+// TestDockerRunner_CancelMarkSurvivesEveryWatcher is the resume case for the
+// Docker runner.
+//
+// A resume re-enters the same run id, so the previous attempt's container can
+// still be alive alongside the resumed one, and Cancel stops them all by
+// label. The mark used to be consumed by the first watcher to exit, which
+// left the second falling through to OnFailure — recording a failure, and its
+// failure side-effects, for a run the operator had cancelled.
+func TestDockerRunner_CancelMarkSurvivesEveryWatcher(t *testing.T) {
+	f := newFakeDocker()
+	// Two live containers for one run: the superseded attempt and the
+	// resumed one.
+	f.listResult = []container.Summary{{ID: "cid-attempt-1"}, {ID: "cid-attempt-2"}}
+	r := newDockerRunner(f, Config{})
+
+	if err := r.Cancel(context.Background(), "run-resumed"); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	// Every watcher for the run must reach the same answer, however many
+	// times it is asked.
+	for i := 1; i <= 3; i++ {
+		if !r.wasCancelled("run-resumed") {
+			t.Fatalf("watcher %d saw no cancellation mark; it would report the cancelled run as failed", i)
+		}
+	}
+	// An unrelated run is unaffected.
+	if r.wasCancelled("run-other") {
+		t.Error("an unrelated run reads as cancelled")
+	}
+}
+
+// TestDockerRunner_CancelMarksArePrunedByAge keeps the map bounded. Nothing
+// consumes a mark now, so age is the only thing that removes one.
+func TestDockerRunner_CancelMarksArePrunedByAge(t *testing.T) {
+	f := newFakeDocker()
+	r := newDockerRunner(f, Config{})
+
+	r.markCancelled("run-old")
+	// Backdate it past the retention window.
+	r.mu.Lock()
+	r.cancelled["run-old"] = time.Now().Add(-2 * dockerCancelMarkRetention)
+	r.mu.Unlock()
+
+	if r.wasCancelled("run-old") {
+		t.Error("a mark past its retention still suppresses failures")
+	}
+
+	// The next mark prunes it rather than letting the map grow for the
+	// lifetime of the process.
+	r.markCancelled("run-new")
+	r.mu.Lock()
+	_, stillThere := r.cancelled["run-old"]
+	r.mu.Unlock()
+	if stillThere {
+		t.Error("the stale mark was not pruned")
+	}
+	if !r.wasCancelled("run-new") {
+		t.Error("the fresh mark should be honoured")
 	}
 }
