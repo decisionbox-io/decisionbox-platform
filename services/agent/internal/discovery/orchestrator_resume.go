@@ -575,20 +575,30 @@ func retireDiscovery(ctx context.Context, runID, discoveryID string, deps retire
 // load-bearing half: it is what lets the deferred Drop take the per-run
 // vector collection with it on a successful exit, instead of leaving it for
 // the boot sweep.
+//
+// Which is why it is cleared FIRST, and not conditionally on the delete. The
+// flag tracks whether the run can be resumed, and that is settled by the
+// OUTCOME before this function is called — the only caller is the terminal
+// claim on a completed run, which the resume endpoint refuses, whose
+// last_checkpoint_step Complete has already zeroed, and which the boot
+// sweep's keep-set excludes. A failed delete leaves rows nothing can act on;
+// keeping the whole vector collection alive for them leaked it until some
+// later agent boot.
 func (o *Orchestrator) discardCheckpoints(ctx context.Context, why string) {
 	if o.checkpointRepo == nil || o.runID == "" {
 		return
 	}
+	o.keepStepIndex = false
+
 	deleted, err := o.checkpointRepo.DeleteByRun(ctx, o.runID)
 	if err != nil {
 		applog.WithFields(applog.Fields{
 			"run_id": o.runID,
 			"reason": why,
 			"error":  err.Error(),
-		}).Warn("failed to delete checkpoints; the retention TTL will reclaim them")
+		}).Warn("failed to delete checkpoints; the retention TTL will reclaim them, and the per-run step index is dropped either way because this run cannot be resumed")
 		return
 	}
-	o.keepStepIndex = false
 	applog.WithFields(applog.Fields{
 		"run_id":  o.runID,
 		"reason":  why,

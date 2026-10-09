@@ -750,22 +750,37 @@ func TestDiscardCheckpoints_ReArmsTheStepIndexDrop(t *testing.T) {
 	}
 }
 
-// TestDiscardCheckpoints_FailureKeepsTheRunResumable pins the safe direction
-// the other way: if the delete failed the rows are still there, so the index
-// must stay too or a resume would have to re-embed every step.
-func TestDiscardCheckpoints_FailureKeepsTheRunResumable(t *testing.T) {
+// TestDiscardCheckpoints_FailureStillDropsTheIndex corrects the direction this
+// test used to assert.
+//
+// It said a failed delete must keep the index, "or a resume would have to
+// re-embed every step" — reasoning about a resume that cannot happen. The
+// only caller is the terminal claim on a COMPLETED run: the resume endpoint
+// refuses anything but `failed`, Complete has already zeroed
+// last_checkpoint_step, and the boot sweep's keep-set excludes completed
+// runs. So the surviving rows are inert and the vector collection they were
+// holding open was leaked until some later agent boot.
+//
+// The flag tracks whether the run can be resumed, which the outcome settles
+// before this is called — not whether one delete happened to succeed.
+func TestDiscardCheckpoints_FailureStillDropsTheIndex(t *testing.T) {
 	o := &Orchestrator{
 		runID:          "run-1",
 		checkpointRepo: &fakeCheckpointStore{deleteErr: errors.New("mongo down")},
 		keepStepIndex:  true,
 	}
 	o.discardCheckpoints(context.Background(), "run completed")
-	if !o.keepStepIndex {
-		t.Error("the checkpoints survived the failed delete, so the step index must survive with them")
+	if o.keepStepIndex {
+		t.Error("the run completed, so it can never be resumed; holding its per-run vector collection open leaks it until a future boot sweep")
 	}
 
-	// And with no store wired it is a no-op.
-	(&Orchestrator{runID: "r"}).discardCheckpoints(context.Background(), "run completed")
+	// And with no store wired it is a no-op — including on the flag, since
+	// there were never any checkpoints to make the run resumable.
+	noStore := &Orchestrator{runID: "r", keepStepIndex: true}
+	noStore.discardCheckpoints(context.Background(), "run completed")
+	if !noStore.keepStepIndex {
+		t.Error("with no checkpoint store this must not touch anything")
+	}
 }
 
 // --- previous-discovery context -----------------------------------------
