@@ -426,11 +426,15 @@ export default function ProjectPage() {
         </div>
       )}
 
-      {/* Live Run Panel — keyed on run.id so a new run cleanly remounts
-          the panel (fresh steps state + cursor) instead of needing an
-          in-component reset effect. */}
+      {/* Live Run Panel — keyed on run.id AND run.attempt so a new run, or a
+          new attempt of the same run, cleanly remounts the panel (fresh steps
+          state + cursor) instead of needing an in-component reset effect. A
+          resume re-enters the same run id, and the feed is attempt-scoped
+          server-side, so the attempt belongs in the key. onResume sets it
+          optimistically, which is what makes the remount happen on the click
+          rather than on the next status poll. */}
       {showRunPanel && run && (
-        <LiveRunPanel key={run.id} run={run} onCancel={async () => {
+        <LiveRunPanel key={`${run.id}:${run.attempt ?? 1}`} run={run} onCancel={async () => {
           if (justFinished) {
             dismissedRunId.current = run.id;
             setRun(null);
@@ -442,6 +446,41 @@ export default function ProjectPage() {
             notifications.show({ title: 'Cancelled', message: 'Discovery cancelled', color: 'orange' });
           } catch (e: unknown) {
             notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+          }
+        }} onResume={async () => {
+          try {
+            const res = await api.resumeRun(run.id);
+            // Optimistically flip to running so the 2s poll re-arms
+            // immediately — it is gated on the run being live, and waiting
+            // for the next status response would leave the panel looking
+            // dead for a beat after the click.
+            setRun({ ...run, status: 'running', error: '', attempt: res.attempt });
+            notifications.show({
+              title: 'Resuming',
+              message: `Attempt ${res.attempt} — replaying the steps already executed`,
+              color: 'blue',
+            });
+          } catch (e: unknown) {
+            // A 409 here is a real answer (the checkpoint expired, or
+            // another request got there first), so show what the server
+            // said rather than a generic failure.
+            notifications.show({ title: 'Cannot resume', message: (e as Error).message, color: 'red' });
+            // Then re-read the run, because every refusal means the server
+            // knows something this tab does not — most sharply when another
+            // tab or user won the race and the run is ALREADY running. A
+            // terminal run does not poll, so without this the panel would go
+            // on offering Resume for an active run until someone reloaded.
+            try {
+              // Only when the read actually returned a run: replacing state
+              // with an empty response would blank the panel, which is a
+              // worse outcome than the stale view this refresh exists to
+              // fix.
+              const fresh = await api.getRun(run.id);
+              if (fresh) setRun(fresh);
+            } catch {
+              // The real error is already on screen; a failed refresh adds
+              // nothing to it.
+            }
           }
         }} />
       )}
@@ -599,7 +638,7 @@ function DiscoveryRunCard({ discovery: d, projectId }: { discovery: DiscoveryRes
 
 /* ========== Live Run Panel ========== */
 
-function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: () => void }) {
+function LiveRunPanel({ run, onCancel, onResume }: { run: DiscoveryRunStatus; onCancel: () => void; onResume: () => void }) {
   // Per-step rows are no longer embedded in the run doc — they live in
   // discovery_run_steps and are streamed via api.listRunSteps with an
   // opaque ObjectID cursor (the last `id` we have). We poll while the
@@ -613,11 +652,20 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
   const userScrolledUp = useRef(false);
   const prevStepCount = useRef(0);
 
-  // The parent renders <LiveRunPanel key={run.id}> so a new run
-  // remounts this component with fresh `steps` / `lastIDRef` state
-  // automatically — no in-component reset effect needed (which the
-  // react-hooks/set-state-in-effect lint rule rightly flags as a
-  // cascading-render anti-pattern).
+  // The parent renders <LiveRunPanel key={`${run.id}:${run.attempt}`}> so a
+  // new run — and a new ATTEMPT of the same run — remounts this component
+  // with fresh `steps` / `lastIDRef` state automatically. No in-component
+  // reset effect needed (which the react-hooks/set-state-in-effect lint rule
+  // rightly flags as a cascading-render anti-pattern).
+  //
+  // The attempt has to be in that key. A resume re-enters the SAME run id,
+  // so keying on the id alone kept this component mounted across it: the
+  // rendered rows and the `since` cursor both survived. The feed is scoped
+  // to the run's current attempt server-side, and the resume re-emits the
+  // replayed prefix under the new attempt — appended to rows this component
+  // was still showing from the old one, the operator would see the prefix
+  // twice. Remounting rebuilds the list from the head of the new attempt's
+  // stream, which is exactly one copy.
 
   useEffect(() => {
     let cancelled = false;
@@ -664,9 +712,57 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
     saving: 'saving', complete: 'complete',
   };
 
-  const elapsed = run.started_at
-    ? Math.round((new Date(run.updated_at || run.started_at).getTime() - new Date(run.started_at).getTime()) / 1000)
-    : 0;
+  // Elapsed time has three cases once a run can be resumed, and the naive
+  // answer is wrong for two of them.
+  //
+  // `active_ms` is cumulative ACTIVE compute, booked by each attempt at its
+  // terminal write. So for a run that has FINISHED it is the whole answer, and
+  // using wall-clock instead would count the hours a failed run sat waiting to
+  // be noticed as work.
+  //
+  // But for an attempt still RUNNING, its own time is not in there yet — so
+  // `active_ms` alone would freeze the label at the previous attempts' total
+  // while the run visibly progresses. For those, add the time since this
+  // attempt started: prior attempts plus this one, excluding the downtime
+  // between them.
+  const elapsed = (() => {
+    const priorActive = run.active_ms && run.active_ms > 0 ? Math.round(run.active_ms / 1000) : 0;
+    const isTerminal = run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled';
+    const since = (from: string) =>
+      Math.max(0, Math.round((new Date(run.updated_at || from).getTime() - new Date(from).getTime()) / 1000));
+
+    // A finished run that booked its time: active_ms is the whole answer.
+    //
+    // It undercounts one case, deliberately: a resumed attempt that was hard
+    // killed before its terminal write books nothing, so a run whose EARLIER
+    // attempt did book shows only that earlier time. Adding the wall-clock
+    // since last_resumed_at here would fix it — and would double-count every
+    // resumed attempt that finished normally, because active_ms already
+    // includes those. Nothing on the document distinguishes the two without
+    // inferring it from the lifecycle log, which is a coupling the display
+    // layer should not carry for a bounded, one-attempt discrepancy. The
+    // run document says as much (DiscoveryRun.ActiveMs): a dead attempt's
+    // compute is not worth counting.
+    if (isTerminal && priorActive > 0) return priorActive;
+
+    // Anything else about a resumed run measures from THIS attempt, never
+    // from started_at. That holds for a live attempt (whose own time is not
+    // booked yet) and for one that reached a terminal state without booking
+    // any — an OOM, a pod eviction, a startup failure right after the
+    // resume. Falling back to started_at there would report all the downtime
+    // before the resume as work, which is the overcount this whole branch
+    // exists to avoid.
+    if (run.last_resumed_at) return priorActive + since(run.last_resumed_at);
+
+    if (priorActive > 0) return priorActive;
+    return run.started_at ? since(run.started_at) : 0;
+  })();
+
+  // Resume is offered only for a FAILED run that actually has a checkpoint
+  // to resume from. A cancelled run is a deliberate hard kill and stays
+  // terminal; a completed one has nothing left; a failed run that died
+  // before its first checkpoint can only be started over.
+  const canResume = run.status === 'failed' && (run.last_checkpoint_step ?? 0) > 0;
 
   return (
     <div style={{
@@ -716,6 +812,11 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>{run.progress}%</span>
             {!isDone && <GhostButton onClick={onCancel} small>Cancel</GhostButton>}
+            {canResume && (
+              <GhostButton onClick={onResume} small>
+                Resume from step {run.last_checkpoint_step}
+              </GhostButton>
+            )}
             {isDone && <GhostButton onClick={onCancel} small>Dismiss</GhostButton>}
           </div>
         </div>
@@ -743,6 +844,7 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
           <span>{run.total_queries} queries</span>
           <span>{run.insights_found} insights</span>
           <span>{formatElapsed(elapsed)}</span>
+          {(run.attempt ?? 0) > 1 && <span>attempt {run.attempt}</span>}
           <span style={{ color: 'var(--db-text-tertiary)' }}>
             Started: {new Date(run.started_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' })}
           </span>

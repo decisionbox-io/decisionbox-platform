@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,38 +36,74 @@ type DockerRunner struct {
 	client dockerAPI
 	config Config
 
-	// cancelled records run IDs the operator explicitly cancelled, so the
-	// background watchRun reports the resulting container exit as a
+	// cancelled records when the operator explicitly cancelled each run, so
+	// the background watchRun reports the resulting container exit as a
 	// cancellation (silent) rather than a failure — mirroring the K8s
 	// watcher staying quiet after a Job delete. Without it, Cancel's
 	// SIGTERM/remove would surface through OnFailure and trigger the
 	// handler's failure side-effects (e.g. policy "failure" confirmation)
 	// for a user-cancelled run.
+	//
+	// A timestamp, read without consuming, because resume made one run id
+	// mean several containers: the previous attempt's can still be alive
+	// alongside the resumed one, Cancel stops them all, and a mark consumed
+	// by the FIRST watcher to exit left the second reporting the cancelled
+	// run as failed. Every watcher for the run has to see it.
+	//
+	// Not keyed by container id instead, which would also distinguish them:
+	// Cancel marks before it lists, deliberately, so that a container which
+	// has already exited but whose watcher has not yet reported is covered
+	// too — and that container is absent from the list, so its id is not
+	// available to mark.
+	//
+	// Nothing clears an entry, so they are pruned by age on each mark. A
+	// cancel is terminal — the run can never be resumed or restarted — so
+	// there is no later legitimate failure for that id to suppress, and the
+	// retention only has to outlive the stop grace period plus the
+	// watcher's own cleanup.
 	mu        sync.Mutex
-	cancelled map[string]struct{}
+	cancelled map[string]time.Time
 }
 
+// dockerCancelMarkRetention is how long a cancellation mark is honoured.
+//
+// It bounds the map rather than the behaviour: it only has to outlive the
+// SIGTERM grace period and the watcher's stop-and-remove that follows, which
+// is what separates Cancel from the exit it is suppressing.
+var dockerCancelMarkRetention = time.Duration(dockerStopGraceSeconds)*time.Second + 10*time.Minute
+
 // markCancelled records that runID was explicitly cancelled (lazily
-// initialising the set so a hand-built DockerRunner is safe).
+// initialising the map so a hand-built DockerRunner is safe), and prunes
+// marks older than dockerCancelMarkRetention while it holds the lock.
 func (r *DockerRunner) markCancelled(runID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.cancelled == nil {
-		r.cancelled = make(map[string]struct{})
+		r.cancelled = make(map[string]time.Time)
 	}
-	r.cancelled[runID] = struct{}{}
+	now := time.Now()
+	for id, at := range r.cancelled {
+		if now.Sub(at) > dockerCancelMarkRetention {
+			delete(r.cancelled, id)
+		}
+	}
+	r.cancelled[runID] = now
 }
 
-// consumeCancelled reports whether runID was explicitly cancelled, clearing
-// the record so it does not leak.
-func (r *DockerRunner) consumeCancelled(runID string) bool {
+// wasCancelled reports whether runID was explicitly cancelled recently.
+//
+// Deliberately does NOT clear the mark: a resumed run can have more than one
+// container alive, Cancel stops all of them, and each watcher has to reach
+// the same answer. Consuming it here made the second watcher report a
+// cancelled run as a failure.
+func (r *DockerRunner) wasCancelled(runID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.cancelled[runID]; ok {
-		delete(r.cancelled, runID)
-		return true
+	at, ok := r.cancelled[runID]
+	if !ok {
+		return false
 	}
-	return false
+	return time.Since(at) <= dockerCancelMarkRetention
 }
 
 // dockerAPI is the subset of the Docker SDK client the runner uses. It is
@@ -126,7 +161,7 @@ func NewDockerRunner(cfg Config) (*DockerRunner, error) {
 		"network": cfg.AgentDockerNetwork,
 	}).Info("Runner mode: docker")
 
-	r := &DockerRunner{client: cli, config: cfg, cancelled: make(map[string]struct{})}
+	r := &DockerRunner{client: cli, config: cfg, cancelled: make(map[string]time.Time)}
 	// Reap agent containers orphaned by a prior API lifecycle (crash /
 	// restart) before serving any run — Docker has no daemon-side Job TTL
 	// like K8s, so otherwise they linger.
@@ -511,21 +546,7 @@ func (r *DockerRunner) streamLogs(ctx context.Context, id string, h logHandlers,
 
 // Run spawns a discovery agent container and watches it in the background.
 func (r *DockerRunner) Run(ctx context.Context, opts RunOptions) error {
-	args := []string{
-		"--project-id", opts.ProjectID,
-		"--run-id", opts.RunID,
-	}
-	if len(opts.Areas) > 0 {
-		args = append(args, "--areas", strings.Join(opts.Areas, ","))
-	}
-	if opts.MaxSteps > 0 {
-		args = append(args, "--max-steps", strconv.Itoa(opts.MaxSteps))
-	}
-	// MinSteps forwards as-is: zero means "no floor, disabled". Mirrors the
-	// subprocess / Kubernetes runners.
-	if opts.MinSteps > 0 {
-		args = append(args, "--min-steps", strconv.Itoa(opts.MinSteps))
-	}
+	args := discoveryArgs(opts)
 
 	id, err := r.createAndStart(ctx, containerSpec{
 		cmd: args,
@@ -598,7 +619,7 @@ func (r *DockerRunner) watchRun(id string, opts RunOptions) {
 	// (the handler's cancel path owns the terminal status). Mirrors the K8s
 	// watcher going quiet after a Job delete. Checked first so it wins over
 	// both the exit-error and wall-clock paths.
-	if r.consumeCancelled(opts.RunID) {
+	if r.wasCancelled(opts.RunID) {
 		apilog.WithField("run_id", opts.RunID).Info("Agent container cancelled; not reporting as a failure")
 		return
 	}

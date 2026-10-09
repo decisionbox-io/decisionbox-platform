@@ -296,7 +296,7 @@ func TestInteg_RunRepo_MarkCompletionHooksFired_SetsField(t *testing.T) {
 	// (e.g. 10:15:27.056117 → stored as 10:15:27.056 which is technically
 	// before the captured nanosecond timestamp).
 	before := time.Now().Truncate(time.Millisecond)
-	if err := repo.MarkCompletionHooksFired(ctx, runID); err != nil {
+	if err := repo.MarkCompletionHooksFired(ctx, runID, 1); err != nil {
 		t.Fatalf("mark: %v", err)
 	}
 	after := time.Now()
@@ -323,7 +323,7 @@ func TestInteg_RunRepo_MarkCompletionHooksFired_RemovesFromListResult(t *testing
 	a := seedRun(t, ctx, "completed", nil, &now, time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC))
 	b := seedRun(t, ctx, "completed", nil, &now, time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC))
 
-	if err := repo.MarkCompletionHooksFired(ctx, a); err != nil {
+	if err := repo.MarkCompletionHooksFired(ctx, a, 1); err != nil {
 		t.Fatalf("mark: %v", err)
 	}
 	got, err := repo.ListTerminalWithoutCompletionHook(ctx, 10)
@@ -342,7 +342,7 @@ func TestInteg_RunRepo_MarkCompletionHooksFired_RemovesFromListResult(t *testing
 func TestInteg_RunRepo_MarkCompletionHooksFired_InvalidRunIDErrors(t *testing.T) {
 	ctx := context.Background()
 	repo := NewRunRepository(testDB)
-	if err := repo.MarkCompletionHooksFired(ctx, "not-a-hex-objectid"); err == nil {
+	if err := repo.MarkCompletionHooksFired(ctx, "not-a-hex-objectid", 1); err == nil {
 		t.Fatal("expected error for invalid run ID, got nil")
 	}
 }
@@ -364,7 +364,7 @@ func TestInteg_RunRepo_MarkCompletionHooksFired_AlsoUpdatesUpdatedAt(t *testing.
 	// flake the comparison.
 	time.Sleep(10 * time.Millisecond)
 
-	if err := repo.MarkCompletionHooksFired(ctx, runID); err != nil {
+	if err := repo.MarkCompletionHooksFired(ctx, runID, 1); err != nil {
 		t.Fatalf("mark: %v", err)
 	}
 	updated, err := repo.GetByID(ctx, runID)
@@ -446,5 +446,352 @@ func TestInteg_RunRepo_Fail_UpdatesRunningRuns(t *testing.T) {
 	}
 	if got.Status != "failed" {
 		t.Errorf("Status = %q, want failed — guard must allow running → failed", got.Status)
+	}
+}
+
+// TestInteg_RunRepo_LatestPrefersTheActiveRun is what keeps a resumed run
+// reachable.
+//
+// Resume re-enters the run it resumes and leaves started_at alone — that is
+// what started_at means, and active_ms is what carries compute across
+// attempts. So resuming a failed run after a NEWER run has since finished
+// leaves the live run holding the OLDER started_at. Answering "latest" with
+// started_at alone then hands back the finished run, and the project's status
+// endpoint shows a completed run while a resumed one burns budget behind it:
+// no progress, and no way to cancel it.
+//
+// Both readers are checked together, because the only reason the API is
+// allowed two of them is that they agree.
+func TestInteg_RunRepo_LatestPrefersTheActiveRun(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	newerCompletedAt := base.Add(3 * time.Hour)
+
+	// The run that failed first and was then resumed, so it is active again
+	// with the older started_at.
+	resumed := seedRunForProject(t, ctx, "proj-r", "failed", base, nil)
+	// A whole run came and went in the meantime.
+	_ = seedRunForProject(t, ctx, "proj-r", "completed", base.Add(2*time.Hour), &newerCompletedAt)
+
+	if _, err := repo.BeginResume(ctx, resumed); err != nil {
+		t.Fatalf("BeginResume: %v", err)
+	}
+
+	one, err := repo.GetLatestByProject(ctx, "proj-r")
+	if err != nil {
+		t.Fatalf("GetLatestByProject: %v", err)
+	}
+	if one == nil {
+		t.Fatal("GetLatestByProject returned nothing")
+	}
+	if one.ID != resumed {
+		t.Errorf("GetLatestByProject = %q (status %q), want the resumed run %q", one.ID, one.Status, resumed)
+	}
+
+	many, err := repo.LatestByProjects(ctx, []string{"proj-r"})
+	if err != nil {
+		t.Fatalf("LatestByProjects: %v", err)
+	}
+	if got := many["proj-r"]; got == nil {
+		t.Fatal("proj-r missing from LatestByProjects")
+	} else if got.ID != resumed {
+		t.Errorf("LatestByProjects = %q (status %q), want the resumed run %q", got.ID, got.Status, resumed)
+	}
+}
+
+// TestInteg_RunRepo_LatestFallsBackToStartedAtWithNoActiveRun is the other
+// half: preferring an active run must not change the answer for a project
+// whose runs have all finished, which is the ordinary case.
+func TestInteg_RunRepo_LatestFallsBackToStartedAtWithNoActiveRun(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	oldCompletedAt := base.Add(10 * time.Minute)
+	newCompletedAt := base.Add(2 * time.Hour)
+
+	_ = seedRunForProject(t, ctx, "proj-q", "completed", base, &oldCompletedAt)
+	newest := seedRunForProject(t, ctx, "proj-q", "failed", base.Add(90*time.Minute), &newCompletedAt)
+
+	one, err := repo.GetLatestByProject(ctx, "proj-q")
+	if err != nil {
+		t.Fatalf("GetLatestByProject: %v", err)
+	}
+	if one == nil || one.ID != newest {
+		t.Errorf("GetLatestByProject = %v, want the newest-started run %q", one, newest)
+	}
+
+	many, err := repo.LatestByProjects(ctx, []string{"proj-q"})
+	if err != nil {
+		t.Fatalf("LatestByProjects: %v", err)
+	}
+	if got := many["proj-q"]; got == nil || got.ID != newest {
+		t.Errorf("LatestByProjects = %v, want the newest-started run %q", got, newest)
+	}
+
+	// And a project with no runs at all is still nothing, not an error.
+	if one, err := repo.GetLatestByProject(ctx, "proj-none"); err != nil || one != nil {
+		t.Errorf("GetLatestByProject for a project with no runs = (%v, %v), want (nil, nil)", one, err)
+	}
+}
+
+// seedResumedRun inserts a run that has been resumed: original started_at,
+// a later last_resumed_at, and a terminal status.
+func seedResumedRun(t *testing.T, ctx context.Context, projectID, status string, startedAt, resumedAt time.Time) string {
+	t.Helper()
+	res, err := testDB.Collection("discovery_runs").InsertOne(ctx, bson.M{
+		"project_id":      projectID,
+		"status":          status,
+		"started_at":      startedAt,
+		"last_resumed_at": resumedAt,
+		"attempt":         2,
+		"updated_at":      time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("seed resumed run: %v", err)
+	}
+	return res.InsertedID.(primitive.ObjectID).Hex()
+}
+
+// TestInteg_RunRepo_LatestKeepsAResumedRunVisibleAfterItFailsAgain closes the
+// half of the active-run rule that only held while the run was RUNNING.
+//
+// A resumed run keeps its original started_at. While it is active it wins
+// outright, but the moment it fails again the fallback ordered by started_at
+// handed back any newer run instead — so the project panel showed an
+// unrelated completed run and offered no Resume for the attempt that had just
+// failed. The resume affordance is the feature; it has to survive the second
+// failure as much as the first.
+func TestInteg_RunRepo_LatestKeepsAResumedRunVisibleAfterItFailsAgain(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	base := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	newerDone := base.Add(90 * time.Minute)
+
+	// Failed at 10:00, resumed at 12:00, failed again.
+	resumed := seedResumedRun(t, ctx, "proj-r", "failed", base, base.Add(2*time.Hour))
+	// A whole newer run came and went in between.
+	_ = seedRunForProject(t, ctx, "proj-r", "completed", base.Add(1*time.Hour), &newerDone)
+
+	one, err := repo.GetLatestByProject(ctx, "proj-r")
+	if err != nil {
+		t.Fatalf("GetLatestByProject: %v", err)
+	}
+	if one == nil || one.ID != resumed {
+		t.Errorf("GetLatestByProject = %v, want the resumed run %q that failed most recently", one, resumed)
+	}
+
+	many, err := repo.LatestByProjects(ctx, []string{"proj-r"})
+	if err != nil {
+		t.Fatalf("LatestByProjects: %v", err)
+	}
+	if got := many["proj-r"]; got == nil || got.ID != resumed {
+		t.Errorf("LatestByProjects = %v, want the resumed run %q", got, resumed)
+	}
+}
+
+// TestInteg_RunRepo_LatestPicksTheMostRecentlyResumedRun is why the resumed
+// pass orders by last_resumed_at and not by started_at: a project can hold
+// two resumed runs where the one that STARTED earlier was resumed later, and
+// each pass only ever surfaces one row, so the wrong sort key here cannot be
+// repaired by comparing afterwards.
+func TestInteg_RunRepo_LatestPicksTheMostRecentlyResumedRun(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	base := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	// Started first, resumed LAST — this is the one the operator just touched.
+	older := seedResumedRun(t, ctx, "proj-r", "failed", base, base.Add(5*time.Hour))
+	// Started later, resumed earlier.
+	_ = seedResumedRun(t, ctx, "proj-r", "failed", base.Add(1*time.Hour), base.Add(2*time.Hour))
+
+	one, err := repo.GetLatestByProject(ctx, "proj-r")
+	if err != nil {
+		t.Fatalf("GetLatestByProject: %v", err)
+	}
+	if one == nil || one.ID != older {
+		t.Errorf("GetLatestByProject = %v, want %q — the most recently RESUMED run", one, older)
+	}
+
+	many, err := repo.LatestByProjects(ctx, []string{"proj-r"})
+	if err != nil {
+		t.Fatalf("LatestByProjects: %v", err)
+	}
+	if got := many["proj-r"]; got == nil || got.ID != older {
+		t.Errorf("LatestByProjects = %v, want %q", got, older)
+	}
+}
+
+// TestInteg_RunRepo_ResumedPassExcludesNeverResumedRuns pins the predicate
+// the resumed pass uses, because the Mongo semantics read backwards and a
+// reviewer has already proposed replacing it with the wrong thing.
+//
+// Mongo treats a MISSING field as null, so `$ne: nil` excludes both the
+// missing field and an explicit null — exactly "has actually been resumed".
+// `$exists: true` would be weaker: it lets an explicit null through.
+func TestInteg_RunRepo_ResumedPassExcludesNeverResumedRuns(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	base := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	done := base.Add(30 * time.Minute)
+
+	// Never resumed: no last_resumed_at field at all.
+	newest := seedRunForProject(t, ctx, "proj-n", "completed", base.Add(2*time.Hour), &done)
+	_ = seedRunForProject(t, ctx, "proj-n", "completed", base, &done)
+	// And one carrying an EXPLICIT null, which $exists would wrongly admit.
+	if _, err := testDB.Collection("discovery_runs").InsertOne(ctx, bson.M{
+		"project_id": "proj-n", "status": "completed",
+		"started_at": base.Add(1 * time.Hour), "completed_at": done,
+		"last_resumed_at": nil,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Asserted on the resumed PASS directly, not through the public result.
+	//
+	// A leak cannot be observed from GetLatestByProject: LatestAttemptAt
+	// falls back to started_at for a row with no resume timestamp, and the
+	// started_at pass already maximises started_at — so a leaked row can
+	// never beat it, whatever the predicate. The public answer is therefore
+	// identical either way, which is exactly why the earlier version of this
+	// test passed against `$exists: true` and pinned nothing.
+	//
+	// What the predicate actually governs is how WIDE that pass is: with
+	// $exists it would sort every run carrying an explicit null, in memory,
+	// on a field that is null for nearly all of them. So the thing to assert
+	// is emptiness of the pass itself.
+	resumedPass, err := repo.newestPerProject(ctx, bson.M{
+		"project_id":      bson.M{"$in": []string{"proj-n"}},
+		"last_resumed_at": bson.M{"$ne": nil},
+	}, "last_resumed_at")
+	if err != nil {
+		t.Fatalf("resumed pass: %v", err)
+	}
+	if len(resumedPass) != 0 {
+		t.Errorf("the resumed pass matched %d project(s) with no genuinely resumed run; a missing or explicit-null last_resumed_at must not enter it", len(resumedPass))
+	}
+
+	// And the public answer is the newest by started_at, as it must be.
+	one, err := repo.GetLatestByProject(ctx, "proj-n")
+	if err != nil {
+		t.Fatalf("GetLatestByProject: %v", err)
+	}
+	if one == nil || one.ID != newest {
+		t.Errorf("GetLatestByProject = %v, want the newest-started run %q", one, newest)
+	}
+
+	many, err := repo.LatestByProjects(ctx, []string{"proj-n"})
+	if err != nil {
+		t.Fatalf("LatestByProjects: %v", err)
+	}
+	if got := many["proj-n"]; got == nil || got.ID != newest {
+		t.Errorf("LatestByProjects = %v, want %q", got, newest)
+	}
+}
+
+// TestInteg_RunRepo_StampReservationOwnerEndedAt_IsWriteOnce is the half of
+// the preserved-end-time fix that a handler test cannot reach.
+//
+// The point of the field is that the FIRST resume to find a lingering
+// reservation records when its owning attempt stopped, and a later resume
+// cannot overwrite it with its own, later time. That write-once behaviour
+// lives in the query's $exists guard, so a mock implementing it proves
+// nothing about the repository — this asserts it against Mongo.
+func TestInteg_RunRepo_StampReservationOwnerEndedAt_IsWriteOnce(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	started := time.Now().UTC().Add(-6 * time.Hour)
+	runID := seedRun(t, ctx, "failed", nil, nil, started)
+
+	first := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Millisecond)
+	if err := repo.StampReservationOwnerEndedAt(ctx, runID, first); err != nil {
+		t.Fatalf("first stamp: %v", err)
+	}
+	got, err := repo.GetByID(ctx, runID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.PolicyReservationOwnerEndedAt == nil || !got.PolicyReservationOwnerEndedAt.Equal(first) {
+		t.Fatalf("preserved = %v, want %s", got.PolicyReservationOwnerEndedAt, first)
+	}
+
+	// A second resume tries to record its own time. It must not win.
+	second := time.Now().UTC().Truncate(time.Millisecond)
+	if err := repo.StampReservationOwnerEndedAt(ctx, runID, second); err != nil {
+		t.Fatalf("second stamp: %v", err)
+	}
+	got, err = repo.GetByID(ctx, runID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if !got.PolicyReservationOwnerEndedAt.Equal(first) {
+		t.Errorf("preserved = %s, want it still %s — a later resume overwrote the owning attempt's end time", got.PolicyReservationOwnerEndedAt, first)
+	}
+}
+
+// TestInteg_RunRepo_StampReservationOwnerEndedAt_IgnoresAZeroTime — a zero
+// time means "unknown", and persisting it would make a later close report the
+// epoch instead of falling back to whatever the document still knows.
+func TestInteg_RunRepo_StampReservationOwnerEndedAt_IgnoresAZeroTime(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	runID := seedRun(t, ctx, "failed", nil, nil, time.Now().UTC().Add(-time.Hour))
+	if err := repo.StampReservationOwnerEndedAt(ctx, runID, time.Time{}); err != nil {
+		t.Fatalf("zero stamp: %v", err)
+	}
+	got, err := repo.GetByID(ctx, runID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.PolicyReservationOwnerEndedAt != nil {
+		t.Errorf("preserved = %s, want nothing written for an unknown end time", got.PolicyReservationOwnerEndedAt)
+	}
+}
+
+// TestInteg_RunRepo_ClearPolicyReservationID_AlsoClearsThePreservedEndTime —
+// the preserved time describes one specific reservation. Left behind, it would
+// hand a future reservation on this run an answer belonging to a dead attempt.
+func TestInteg_RunRepo_ClearPolicyReservationID_AlsoClearsThePreservedEndTime(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	runID := seedRun(t, ctx, "failed", nil, nil, time.Now().UTC().Add(-time.Hour))
+	oid := mustOID(t, runID)
+	if _, err := testDB.Collection("discovery_runs").UpdateByID(ctx, oid, bson.M{
+		"$set": bson.M{"policy_reservation_id": "res-attempt-1"},
+	}); err != nil {
+		t.Fatalf("seed reservation: %v", err)
+	}
+	if err := repo.StampReservationOwnerEndedAt(ctx, runID, time.Now().UTC().Add(-2*time.Hour)); err != nil {
+		t.Fatalf("stamp: %v", err)
+	}
+
+	if err := repo.ClearPolicyReservationID(ctx, runID); err != nil {
+		t.Fatalf("ClearPolicyReservationID: %v", err)
+	}
+
+	got, err := repo.GetByID(ctx, runID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.PolicyReservationID != "" {
+		t.Errorf("reservation id = %q, want cleared", got.PolicyReservationID)
+	}
+	if got.PolicyReservationOwnerEndedAt != nil {
+		t.Errorf("preserved end time = %s, want it cleared with the id it describes", got.PolicyReservationOwnerEndedAt)
 	}
 }

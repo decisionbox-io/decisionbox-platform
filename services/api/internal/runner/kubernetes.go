@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"strconv"
-	"strings"
 	"time"
 
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
@@ -230,22 +228,36 @@ func sanitizeK8sLabelSegment(id string, maxLen int) string {
 	return id
 }
 
-func (r *KubernetesRunner) Run(ctx context.Context, opts RunOptions) error {
-	jobName := fmt.Sprintf("discovery-%s", opts.RunID[:min(len(opts.RunID), 20)])
+// discoveryJobName is the Job name for one attempt of a discovery run.
+//
+// Attempt 1 keeps the historical, un-suffixed name byte for byte. Later
+// attempts get a suffix because resume re-enters the SAME runID: the
+// previous attempt's Job lingers for its TTL (an hour), so a resume inside
+// that window would fail with AlreadyExists — i.e. resume would be broken on
+// the production runner, and only there.
+//
+// 20 chars of run id plus "discovery-" and "-a<n>" stays well inside the
+// 63-character DNS-1123 label limit.
+func discoveryJobName(runID string, attempt int) string {
+	base := fmt.Sprintf("discovery-%s", runID[:min(len(runID), 20)])
+	if attempt <= 1 {
+		return base
+	}
+	return fmt.Sprintf("%s-a%d", base, attempt)
+}
 
-	args := []string{
-		"--project-id", opts.ProjectID,
-		"--run-id", opts.RunID,
-	}
-	if len(opts.Areas) > 0 {
-		args = append(args, "--areas", strings.Join(opts.Areas, ","))
-	}
-	if opts.MaxSteps > 0 {
-		args = append(args, "--max-steps", strconv.Itoa(opts.MaxSteps))
-	}
-	if opts.MinSteps > 0 {
-		args = append(args, "--min-steps", strconv.Itoa(opts.MinSteps))
-	}
+func (r *KubernetesRunner) Run(ctx context.Context, opts RunOptions) error {
+	jobName := discoveryJobName(opts.RunID, opts.Attempt)
+
+	// The SHARED builder, not a copy of it. This block used to duplicate
+	// the flag list, and discoveryArgs exists precisely because that
+	// duplication meant every new flag had to be added in three places —
+	// "a mode that missed one would differ from the others in a way only a
+	// production run would reveal". That is not hypothetical: --attempt was
+	// added for the resume fence and landed in Docker and subprocess, which
+	// call discoveryArgs, while this path kept building its own list and
+	// left the fence defeatable in exactly the mode production uses.
+	args := discoveryArgs(opts)
 
 	// Cap the discovery Job's wall-clock budget via
 	// ActiveDeadlineSeconds. Without this the K8s control plane
@@ -623,8 +635,9 @@ func (r *KubernetesRunner) watchJob(jobName, runID string, onFailure func(string
 					errMsg = fmt.Sprintf("K8s Job failed (%s): %s", cond.Reason, cond.Message)
 				}
 
-				// Try to get pod logs for more detail
-				if podErr := r.getPodErrorMessage(ctx, runID); podErr != "" {
+				// This attempt's Job, not the run — a resumed run's previous
+				// Job lingers for its TTL under the same run-id.
+				if podErr := r.getPodErrorMessage(ctx, jobName); podErr != "" {
 					errMsg = podErr
 				}
 
@@ -642,7 +655,7 @@ func (r *KubernetesRunner) watchJob(jobName, runID string, onFailure func(string
 		// Also check if the Job has been running too long (safety net)
 		if job.Status.Failed > 0 {
 			errMsg := "K8s Job failed (container exited with error)"
-			if podErr := r.getPodErrorMessage(ctx, runID); podErr != "" {
+			if podErr := r.getPodErrorMessage(ctx, jobName); podErr != "" {
 				errMsg = podErr
 			}
 			onFailure(runID, errMsg)
@@ -664,10 +677,25 @@ func (r *KubernetesRunner) watchJob(jobName, runID string, onFailure func(string
 	}).Warn("K8s Job watcher exhausted without observing a terminal condition; leaving terminal-status decision to the agent")
 }
 
-// getPodErrorMessage tries to extract error message from the failed pod's termination message.
-func (r *KubernetesRunner) getPodErrorMessage(ctx context.Context, runID string) string {
+// getPodErrorMessage extracts the error message from the failed pod's
+// termination message, for ONE Job.
+//
+// Selected by `job-name`, not by `run-id`, for two reasons:
+//
+//   - A resumed run's previous Job deliberately survives for its TTL and
+//     carries the SAME run-id label as the live attempt, so a run-id
+//     selector can return the earlier attempt's pod and record its error
+//     against this attempt's failure.
+//   - Three of this function's call sites already passed a Job name into
+//     what was a run-id selector, so they matched nothing and silently
+//     returned "" — the diagnostic they exist to produce never appeared.
+//     Taking the Job name makes those correct by construction.
+//
+// The Job name carries the attempt suffix, so it is attempt-specific, and it
+// is the same selector the log-streaming path already uses.
+func (r *KubernetesRunner) getPodErrorMessage(ctx context.Context, jobName string) string {
 	pods, err := r.client.CoreV1().Pods(r.config.Namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("run-id=%s", runID),
+		LabelSelector: fmt.Sprintf("job-name=%s", jobName),
 	})
 	if err != nil || len(pods.Items) == 0 {
 		return ""
@@ -699,22 +727,50 @@ func newTicker(interval time.Duration, maxTicks int) <-chan struct{} {
 	return ch
 }
 
+// Cancel deletes the run's Job(s) by LABEL rather than by deriving a name.
+//
+// Deriving the name stopped being safe the moment a resumed attempt got a
+// suffixed one: Cancel would compute the attempt-1 name, 404, and report
+// failure — so "Cancel remains a terminal hard-kill" would have quietly
+// stopped being true for exactly the runs this feature creates. The run-id
+// label is already on every Job and is attempt-agnostic, which is also what
+// the Docker runner's Cancel does.
+//
+// A non-resumed run has exactly one matching Job, so behaviour there is
+// unchanged — including the "no such Job" error, which callers rely on to
+// tell a cancelled-while-running run from one that had already exited.
 func (r *KubernetesRunner) Cancel(ctx context.Context, runID string) error {
-	jobName := fmt.Sprintf("discovery-%s", runID[:min(len(runID), 20)])
-
-	propagation := metav1.DeletePropagationForeground
-	err := r.client.BatchV1().Jobs(r.config.Namespace).Delete(ctx, jobName, metav1.DeleteOptions{
-		PropagationPolicy: &propagation,
+	selector := "run-id=" + runID
+	jobs, err := r.client.BatchV1().Jobs(r.config.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: selector,
 	})
 	if err != nil {
 		apilog.WithFields(apilog.Fields{
-			"job": jobName, "error": err.Error(),
-		}).Warn("Failed to delete K8s Job")
-		return fmt.Errorf("failed to delete K8s Job: %w", err)
+			"selector": selector, "error": err.Error(),
+		}).Warn("Failed to list K8s Jobs for cancel")
+		return fmt.Errorf("failed to list K8s Jobs for run %s: %w", runID, err)
+	}
+	if len(jobs.Items) == 0 {
+		return fmt.Errorf("no K8s Job found for run %s", runID)
 	}
 
-	apilog.WithFields(apilog.Fields{
-		"job": jobName, "run_id": runID,
-	}).Info("K8s Job deleted (discovery cancelled)")
-	return nil
+	propagation := metav1.DeletePropagationForeground
+	var firstErr error
+	for _, job := range jobs.Items {
+		if err := r.client.BatchV1().Jobs(r.config.Namespace).Delete(ctx, job.Name, metav1.DeleteOptions{
+			PropagationPolicy: &propagation,
+		}); err != nil {
+			apilog.WithFields(apilog.Fields{
+				"job": job.Name, "error": err.Error(),
+			}).Warn("Failed to delete K8s Job")
+			if firstErr == nil {
+				firstErr = fmt.Errorf("failed to delete K8s Job %s: %w", job.Name, err)
+			}
+			continue
+		}
+		apilog.WithFields(apilog.Fields{
+			"job": job.Name, "run_id": runID,
+		}).Info("K8s Job deleted (discovery cancelled)")
+	}
+	return firstErr
 }

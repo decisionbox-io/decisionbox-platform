@@ -76,6 +76,8 @@ func Run() {
 		areasFlag       = flag.String("areas", "", "Comma-separated analysis areas to run (empty = all)")
 		maxSteps        = flag.Int("max-steps", 100, "Maximum exploration steps")
 		minSteps        = flag.Int("min-steps", 0, "Minimum exploration steps before accepting a done signal (0 = no floor). If the LLM says 'done' before this count, it is rejected and exploration continues. Guards against reasoning models that terminate too early.")
+		attempt         = flag.Int("attempt", 0, "Which attempt of --run-id this process is, as decided by the API that spawned it. Only meaningful with --resume. 0 means the spawner did not say, in which case the attempt is read from the run document — correct only while that document has not moved on.")
+		resume          = flag.Bool("resume", false, "Resume the run named by --run-id from its last exploration checkpoint instead of starting fresh. Replays the steps already executed (no warehouse re-queries, no exploration LLM calls for them) and continues from the next one; a run whose exploration already finished goes straight to analysis. Requires --run-id.")
 		includeLog      = flag.Bool("include-log", false, "Include full exploration log")
 		testMode        = flag.Bool("test", false, "Test mode - limit analyses for faster testing")
 		enableDebugLogs = flag.Bool("enable-debug-logs", true, "Enable detailed debug logging to MongoDB")
@@ -239,7 +241,7 @@ func Run() {
 		}
 	}
 
-	if err := runDiscovery(cfg, *projectID, *runID, selectedAreas, *maxSteps, *minSteps, *includeLog, *testMode, *enableDebugLogs, *estimateOnly); err != nil {
+	if err := runDiscovery(cfg, *projectID, *runID, selectedAreas, *maxSteps, *minSteps, *includeLog, *testMode, *enableDebugLogs, *estimateOnly, *resume, *attempt); err != nil {
 		applog.WithError(err).Fatal("Discovery failed")
 	}
 
@@ -796,7 +798,7 @@ func runTestConnection(cfg *config.Config, projectID, target, warehouseID string
 
 // --- Discovery ---
 
-func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAreas []string, maxSteps, minSteps int, includeLog, testMode, enableDebugLogs, estimateOnly bool) error {
+func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAreas []string, maxSteps, minSteps int, includeLog, testMode, enableDebugLogs, estimateOnly, resume bool, spawnAttempt int) error {
 	ctx := context.Background()
 
 	// Set project ID in context for warehouse middleware (e.g. governance)
@@ -931,6 +933,10 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	// hit the 16MB BSON limit on long runs.
 	discoveryLogRepo := database.NewDiscoveryLogRepository(db)
 	discoveryQuestionRepo := database.NewDiscoveryQuestionRepository(db)
+	// One row per exploration step while the run is in flight, so a run
+	// killed mid-flight can be resumed instead of paying for the whole
+	// phase again.
+	discoveryCheckpointRepo := database.NewDiscoveryCheckpointRepository(db)
 
 	// Discovery Ledger repositories (compounding discovery, enterprise#261).
 	ledgerRepo := database.NewLedgerRepository(db)
@@ -949,6 +955,13 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	}
 	if err := discoveryQuestionRepo.EnsureIndexes(ctx); err != nil {
 		applog.WithError(err).Warn("Failed to ensure discovery question indexes")
+	}
+	if err := discoveryCheckpointRepo.EnsureIndexes(ctx); err != nil {
+		// A warning, not fatal: without the indexes the checkpoint writes
+		// still work (they just lose the uniqueness guarantee and the TTL),
+		// and refusing to run discovery over it would trade a working run
+		// for a retention problem.
+		applog.WithError(err).Warn("Failed to ensure discovery checkpoint indexes")
 	}
 	for _, li := range []interface{ EnsureIndexes(context.Context) error }{
 		ledgerRepo, ledgerFindingRepo, ledgerTaskRepo, ledgerProposalRepo,
@@ -1060,48 +1073,49 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 
 	// Create orchestrator
 	orchestrator := discovery.NewOrchestrator(discovery.OrchestratorOptions{
-		AIClient:              aiClient,
-		Warehouse:             warehouseProvider,
-		ContextRepo:           contextRepo,
-		DiscoveryRepo:         discoveryRepo,
-		DiscoveryLogRepo:      discoveryLogRepo,
-		DiscoveryQuestionRepo: discoveryQuestionRepo,
-		LedgerRepo:            ledgerRepo,
-		LedgerFindingRepo:     ledgerFindingRepo,
-		LedgerTaskRepo:        ledgerTaskRepo,
-		LedgerProposalRepo:    ledgerProposalRepo,
-		FeedbackRepo:          database.NewFeedbackRepository(db),
-		DebugLogRepo:          debugLogRepo,
-		RunRepo:               runRepo,
-		RunStepRepo:           runStepRepo,
-		RunID:                 runID,
-		ProjectID:             projectID,
-		Domain:                warehouseDomainOr(primaryWH, project.Domain),
-		Category:              project.Category,
-		Language:              project.Language,
-		Profile:               project.Profile,
-		ProjectPrompts:        project.Prompts,
-		Datasets:              datasets,
-		FilterField:           primaryWH.FilterField,
-		FilterValue:           primaryWH.FilterValue,
-		LLMProvider:           project.LLM.Provider,
-		LLMModel:              project.LLM.Model,
-		LLMConfig:             project.LLM.Config,
-		LLMInputWindow:        resolvedWindow,
-		LLMOutputCap:          resolvedOutputCap,
-		ModelWindowRepo:       projectModelWindowStore{repo: modelWindowRepo, projectID: projectID},
-		WarehouseProvider:     primaryWH.Provider,
-		EnableDebugLogs:       enableDebugLogs,
-		VectorStore:           qdrantProvider,
-		EmbeddingProvider:     embeddingProvider,
-		EmbedIndexStore:       discovery.NewMongoEmbedIndexStore(db),
-		SchemaRetriever:       schemaRetriever,
-		SchemaCache:           schemaCache,
-		WarehouseHash:         warehouseHash,
-		WarehouseID:           warehouseIDOrDefault(primaryWH),
-		WarehouseProviders:    warehouseProviders,
-		Warehouses:            effectiveWarehouses,
-		RunStepIndex:          runStepIndex,
+		AIClient:                aiClient,
+		Warehouse:               warehouseProvider,
+		ContextRepo:             contextRepo,
+		DiscoveryRepo:           discoveryRepo,
+		DiscoveryLogRepo:        discoveryLogRepo,
+		DiscoveryQuestionRepo:   discoveryQuestionRepo,
+		LedgerRepo:              ledgerRepo,
+		LedgerFindingRepo:       ledgerFindingRepo,
+		LedgerTaskRepo:          ledgerTaskRepo,
+		LedgerProposalRepo:      ledgerProposalRepo,
+		FeedbackRepo:            database.NewFeedbackRepository(db),
+		DebugLogRepo:            debugLogRepo,
+		RunRepo:                 runRepo,
+		RunStepRepo:             runStepRepo,
+		RunID:                   runID,
+		ProjectID:               projectID,
+		Domain:                  warehouseDomainOr(primaryWH, project.Domain),
+		Category:                project.Category,
+		Language:                project.Language,
+		Profile:                 project.Profile,
+		ProjectPrompts:          project.Prompts,
+		Datasets:                datasets,
+		FilterField:             primaryWH.FilterField,
+		FilterValue:             primaryWH.FilterValue,
+		LLMProvider:             project.LLM.Provider,
+		LLMModel:                project.LLM.Model,
+		LLMConfig:               project.LLM.Config,
+		LLMInputWindow:          resolvedWindow,
+		LLMOutputCap:            resolvedOutputCap,
+		ModelWindowRepo:         projectModelWindowStore{repo: modelWindowRepo, projectID: projectID},
+		WarehouseProvider:       primaryWH.Provider,
+		EnableDebugLogs:         enableDebugLogs,
+		VectorStore:             qdrantProvider,
+		EmbeddingProvider:       embeddingProvider,
+		EmbedIndexStore:         discovery.NewMongoEmbedIndexStore(db),
+		DiscoveryCheckpointRepo: discoveryCheckpointRepo,
+		SchemaRetriever:         schemaRetriever,
+		SchemaCache:             schemaCache,
+		WarehouseHash:           warehouseHash,
+		WarehouseID:             warehouseIDOrDefault(primaryWH),
+		WarehouseProviders:      warehouseProviders,
+		Warehouses:              effectiveWarehouses,
+		RunStepIndex:            runStepIndex,
 	})
 
 	// Estimate mode: calculate costs without running discovery
@@ -1122,6 +1136,26 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		estimateJSON, _ := json.MarshalIndent(estimate, "", "  ")
 		fmt.Println(string(estimateJSON))
 		return nil
+	}
+
+	// Load the resume state before entering the run. The API checks that a
+	// checkpoint exists before it spawns us, but a TTL expiry can race that
+	// check, so this fails fast with a message that says what happened
+	// rather than quietly re-exploring a run the operator was told would
+	// resume.
+	var resumeState *discovery.ResumeState
+	if resume {
+		resumeState, err = loadResumeState(ctx, runID, spawnAttempt, runRepo, discoveryCheckpointRepo)
+		if err != nil {
+			return err
+		}
+		applog.WithFields(applog.Fields{
+			"run_id":               runID,
+			"attempt":              resumeState.Attempt,
+			"replayable_steps":     resumeState.Checkpoints.Len(),
+			"exploration_complete": resumeState.Checkpoints.ExplorationComplete(),
+			"prior_active_ms":      resumeState.PriorActiveMs,
+		}).Info("Resuming discovery run from its exploration checkpoints")
 	}
 
 	// Run discovery. The outer cap is intentionally generous —
@@ -1148,8 +1182,25 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		RecommendationVerdicts:     project.EffectiveRecommendationVerdicts(),
 		ClarifyingQuestionsEnabled: project.EffectiveClarifyingQuestionsEnabled(),
 		ReflectionEnabled:          project.EffectiveReflectionEnabled(),
+		Resume:                     resumeState,
 	})
 	if err != nil {
+		// Losing the run to a newer attempt is not a discovery failure, and
+		// must not be reported as one: the run is alive and another agent
+		// owns it. Announcing a failure here would notify the operator that
+		// a run failed while it was still working, and bank a failure in
+		// telemetry for an outcome that has not happened yet.
+		//
+		// This process has already stopped writing to the run (every write
+		// it makes is attempt-fenced), so there is nothing to undo — it just
+		// exits. The run's real outcome comes from whichever attempt owns it.
+		if errors.Is(err, ai.ErrAttemptSuperseded) {
+			applog.WithFields(applog.Fields{
+				"project_id": projectID,
+				"run_id":     runID,
+			}).Warn("another attempt of this run has taken over; exiting without reporting a failure")
+			return nil
+		}
 		notify.NotifyAll(ctx, notify.Event{
 			Type:        notify.EventDiscoveryFailed,
 			ProjectID:   projectID,
@@ -1337,7 +1388,161 @@ func loadActiveRunIDs(ctx context.Context, db *database.DB) map[string]struct{} 
 			out[r.ID] = struct{}{}
 		}
 	}
+
+	// A run with live checkpoints is resumable, so its per-run step
+	// collection must survive the sweep: dropping it would make the
+	// resume pay to re-embed every step it replays.
+	//
+	// Not covered by the active-runs query above, and that is the whole
+	// point — a crashed run's status is `failed`, which is terminal, and
+	// terminal is exactly the state a resumable run sits in. Bounded by
+	// DISCOVERY_CHECKPOINT_RETENTION, which reclaims the rows.
+	cpRepo := database.NewDiscoveryCheckpointRepository(db)
+	checkpointed, err := cpRepo.ListRunIDsWithCheckpoints(ctx)
+	if err != nil {
+		applog.WithError(err).Warn("Could not list runs with checkpoints for orphan sweep; a resumable run's step index may be dropped")
+		return out
+	}
+	// A checkpoint row is not by itself proof that a run still wants an
+	// index. A cancelled run's dying agent can re-create one after CancelRun
+	// purged them — cancel leaves the attempt unchanged and the runners can
+	// return before the workload is gone — and holding a collection open on
+	// the strength of that row costs Qdrant storage for a run nothing can
+	// ever resume.
+	//
+	// The narrowing keeps live runs as well as resumable ones. A resumed
+	// attempt that is RUNNING has checkpoint rows too, and the active query
+	// above can miss it: resume keeps the run's original started_at, which
+	// may be older than the sweep lookback. Narrowing to resumable-only
+	// would let one agent's boot sweep delete another's live index.
+	//
+	// Best-effort like everything else here: if the narrowing read fails,
+	// keep all of them. Over-keeping costs storage until the next boot;
+	// under-keeping either makes a legitimate resume re-embed every replayed
+	// step or degrades a running one mid-flight.
+	resumable, err := repo.ResumableOrActiveIDs(ctx, checkpointed)
+	if err != nil {
+		applog.WithError(err).Warn("Could not confirm which checkpointed runs are resumable; keeping them all for this sweep")
+		resumable = checkpointed
+	}
+
+	kept := 0
+	for _, id := range resumable {
+		if _, already := out[id]; already {
+			continue
+		}
+		out[id] = struct{}{}
+		kept++
+	}
+	if kept > 0 {
+		applog.WithField("resumable_runs", kept).Info("orphan sweep: keeping the step index of runs that still have checkpoints")
+	}
 	return out
+}
+
+// loadResumeState assembles what a resumed run needs: which attempt this is,
+// how much compute the earlier attempts already spent, and the contiguous
+// prefix of exploration it may replay.
+//
+// Fails rather than degrading when there is nothing to replay. The API
+// refuses a resume with no checkpoints, but the retention TTL can expire
+// between that check and this one — and silently re-exploring a run the
+// operator was told would resume is the one outcome that spends their money
+// without telling them.
+func loadResumeState(
+	ctx context.Context,
+	runID string,
+	spawnAttempt int,
+	runRepo *database.RunRepository,
+	cpRepo *database.DiscoveryCheckpointRepository,
+) (*discovery.ResumeState, error) {
+	if runID == "" {
+		return nil, fmt.Errorf("--resume requires --run-id: there is no run to resume")
+	}
+
+	set, err := cpRepo.LoadPrefix(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("load checkpoints for run %s: %w", runID, err)
+	}
+	if set.Len() == 0 && !set.ExplorationComplete() {
+		return nil, fmt.Errorf(
+			"run %s has no exploration checkpoint to resume from — it expired (see %s) or was never written; start a new run instead",
+			runID, "DISCOVERY_CHECKPOINT_RETENTION",
+		)
+	}
+
+	// The run document carries two things, and only one of them is advisory.
+	//
+	// ActiveMs is: it moves a displayed elapsed figure and nothing else.
+	// Attempt is NOT. It is the fence every write this process makes is
+	// filtered on — the run document, the checkpoints, the live feed, the
+	// terminal claim. Getting it wrong does not degrade the run, it unmakes
+	// it: every write silently matches nothing, the agent reads that as
+	// "another attempt owns this run" and exits deliberately WITHOUT
+	// reporting a failure, and the run is left `running` with no agent
+	// behind it until the sweep or the duration cap notices.
+	//
+	// So the attempt is read, never derived. `set.Attempt + 1` looks like a
+	// safe approximation and is not: checkpoints are only restamped as the
+	// replay re-persists them, so an attempt that died before its first
+	// checkpoint write leaves them on the attempt before it. Resume twice
+	// with the middle attempt dying early and the derivation is a full
+	// attempt behind the counter the API has already moved.
+	//
+	// A read we cannot complete therefore fails the resume. That costs a
+	// recoverable error the operator can retry; the alternative costs a run
+	// that looks alive and is not.
+	run, err := runRepo.GetByID(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("read run %s before resuming it: %w", runID, err)
+	}
+	if run == nil {
+		return nil, fmt.Errorf("run %s no longer exists, so there is no attempt to resume as", runID)
+	}
+	if run.Attempt <= 0 {
+		// BeginResume always writes a computed attempt of at least 2, so a
+		// run being resumed cannot legitimately lack one. Refusing beats
+		// guessing the number every subsequent write is fenced on.
+		return nil, fmt.Errorf("run %s carries no attempt number; refusing to guess which attempt this resume is", runID)
+	}
+
+	// The attempt this process IS, versus the attempt the run is on now.
+	//
+	// They differ when this workload started slowly: the API can restart in
+	// the meantime, its startup sweep marks in-flight runs `failed` without
+	// reaping them, and an operator can resume again — so by the time this
+	// process reaches here the run may be two attempts ahead. Adopting the
+	// current number then is the worst possible answer: every fence in the
+	// system compares against it, so this process would become
+	// indistinguishable from the live attempt and could overwrite its
+	// checkpoints and its result rather than being turned away.
+	//
+	// The spawner is the only one that knows which attempt it launched, so
+	// it says so on the command line. If the run has moved on, this process
+	// has nothing to do: stop before spending anything. The API's failure
+	// callback is fenced to the attempt it spawned, so this exit cannot
+	// disturb the attempt that now owns the run.
+	if spawnAttempt > 0 && run.Attempt != spawnAttempt {
+		return nil, fmt.Errorf(
+			"run %s has moved on to attempt %d while this process was starting as attempt %d; stopping rather than writing as an attempt it is not",
+			runID, run.Attempt, spawnAttempt,
+		)
+	}
+	if spawnAttempt <= 0 {
+		// An older API does not pass --attempt. Fall back to the document,
+		// which is what this did before the flag existed, and say so: the
+		// race above is open on this path.
+		applog.WithFields(applog.Fields{
+			"run_id":  runID,
+			"attempt": run.Attempt,
+		}).Warn("resuming without a spawn attempt; taking the run document's current attempt, which is only correct while the run has not moved on")
+	}
+
+	return &discovery.ResumeState{
+		Attempt:       run.Attempt,
+		PriorActiveMs: run.ActiveMs,
+		Checkpoints:   set,
+	}, nil
 }
 
 // discoveryMaxDurationEnv is the env var that controls the outer

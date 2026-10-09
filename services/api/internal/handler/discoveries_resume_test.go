@@ -1,0 +1,1321 @@
+package handler
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
+	"github.com/decisionbox-io/decisionbox/services/api/database"
+	"github.com/decisionbox-io/decisionbox/services/api/internal/discoverytrigger"
+	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
+	"github.com/decisionbox-io/decisionbox/services/api/models"
+)
+
+// --- fakes -----------------------------------------------------------------
+
+// mockCheckpointRepo answers "is there anything to resume from" and records
+// the purges the cancel path issues.
+type mockCheckpointRepo struct {
+	mu sync.Mutex
+
+	prefixLen           int
+	explorationComplete bool
+	stateErr            error
+
+	deleted   []string
+	deleteErr error
+}
+
+func (m *mockCheckpointRepo) ResumeState(_ context.Context, _ string) (int, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.stateErr != nil {
+		return 0, false, m.stateErr
+	}
+	return m.prefixLen, m.explorationComplete, nil
+}
+
+func (m *mockCheckpointRepo) DeleteByRun(_ context.Context, runID string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.deleteErr != nil {
+		return 0, m.deleteErr
+	}
+	m.deleted = append(m.deleted, runID)
+	return 2, nil
+}
+
+// recordingRunner captures the RunOptions the handler built, which is how the
+// test asserts the resumed agent was given the run's OWN parameters rather
+// than the current defaults.
+type recordingRunner struct {
+	mu   sync.Mutex
+	opts []runner.RunOptions
+	err  error
+}
+
+func (r *recordingRunner) Run(_ context.Context, o runner.RunOptions) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.opts = append(r.opts, o)
+	return r.err
+}
+func (r *recordingRunner) RunSync(context.Context, runner.RunSyncOptions) (*runner.RunSyncResult, error) {
+	return &runner.RunSyncResult{}, nil
+}
+func (r *recordingRunner) Cancel(context.Context, string) error { return nil }
+func (r *recordingRunner) RunIndexSchema(context.Context, runner.IndexSchemaOptions) error {
+	return nil
+}
+func (r *recordingRunner) RunValidateDoc(context.Context, runner.ValidateDocOptions) error {
+	return nil
+}
+
+func (r *recordingRunner) calls() []runner.RunOptions {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]runner.RunOptions, len(r.opts))
+	copy(out, r.opts)
+	return out
+}
+
+// meteringChecker is a stubChecker that ALSO implements OperationCharger, so
+// a test can prove the resume path never meters. Without the extension the
+// ChargeIfMetered / RefundIfMetered helpers no-op and the assertion would
+// pass for the wrong reason.
+type meteringChecker struct {
+	stubChecker
+
+	cmu          sync.Mutex
+	charges      []policy.Operation
+	refunds      []string
+	reservations int
+	// confirmErr makes ConfirmDiscoveryRunEnded fail, which is what a
+	// control plane that cannot be reached looks like.
+	confirmErr error
+}
+
+func (m *meteringChecker) ConfirmDiscoveryRunEnded(ctx context.Context, id string, outcome policy.RunOutcome) error {
+	if m.confirmErr != nil {
+		return m.confirmErr
+	}
+	return m.stubChecker.ConfirmDiscoveryRunEnded(ctx, id, outcome)
+}
+
+// CheckStartDiscoveryRun counts reservations so the test can assert resume
+// opens none — one would consume another runs-per-period slot.
+func (m *meteringChecker) CheckStartDiscoveryRun(ctx context.Context, dep, proj, run string) (*policy.Reservation, error) {
+	m.cmu.Lock()
+	m.reservations++
+	m.cmu.Unlock()
+	return m.stubChecker.CheckStartDiscoveryRun(ctx, dep, proj, run)
+}
+
+func (m *meteringChecker) reservationCount() int {
+	m.cmu.Lock()
+	defer m.cmu.Unlock()
+	return m.reservations
+}
+
+func (m *meteringChecker) ChargeOperation(_ context.Context, _ string, op policy.Operation) (*policy.OperationCharge, error) {
+	m.cmu.Lock()
+	defer m.cmu.Unlock()
+	m.charges = append(m.charges, op)
+	return &policy.OperationCharge{Charged: 1}, nil
+}
+
+func (m *meteringChecker) RefundOperation(_ context.Context, _, reference string) error {
+	m.cmu.Lock()
+	defer m.cmu.Unlock()
+	m.refunds = append(m.refunds, reference)
+	return nil
+}
+
+// --- harness ---------------------------------------------------------------
+
+type resumeFixture struct {
+	h      *DiscoveriesHandler
+	runs   *mockRunRepo
+	projs  *mockProjectRepo
+	cps    *mockCheckpointRepo
+	runner *recordingRunner
+}
+
+// newResumeFixture wires a project that passes every gate and one failed run
+// with a resumable checkpoint — the happy path each test then perturbs.
+func newResumeFixture(t *testing.T) *resumeFixture {
+	t.Helper()
+	projs := newMockProjectRepo()
+	projs.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
+
+	runs := newMockRunRepo()
+	runs.runs["run-1"] = &models.DiscoveryRun{
+		ID: "run-1", ProjectID: "p1", Status: "failed",
+		Attempt: 1, LastCheckpointStep: 42,
+		MaxSteps: 80, MinSteps: 48, Areas: []string{"churn", "monetization"}, Effort: "high",
+	}
+
+	cps := &mockCheckpointRepo{prefixLen: 42}
+	rr := &recordingRunner{}
+	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projs, runs, nil, nil, nil, rr).
+		WithCheckpoints(cps)
+	return &resumeFixture{h: h, runs: runs, projs: projs, cps: cps, runner: rr}
+}
+
+func (f *resumeFixture) post(runID string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("POST", "/api/v1/runs/"+runID+"/resume", nil)
+	req.SetPathValue("runId", runID)
+	w := httptest.NewRecorder()
+	f.h.ResumeRun(w, req)
+	return w
+}
+
+// --- happy path ------------------------------------------------------------
+
+// TestResumeRun_ReplaysTheRunsOwnParameters is the §2.8 fix in action. A
+// resumed run spawned with the agent's defaults would silently change its own
+// step budget halfway through, and nothing recorded those parameters before.
+func TestResumeRun_ReplaysTheRunsOwnParameters(t *testing.T) {
+	f := newResumeFixture(t)
+
+	w := f.post("run-1")
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body = %s", w.Code, w.Body.String())
+	}
+	// Responses ride in the API's standard {"data": ...} envelope.
+	var envelope struct {
+		Data struct {
+			Status  string `json:"status"`
+			RunID   string `json:"run_id"`
+			Attempt int    `json:"attempt"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	body := envelope.Data
+	if body.Status != "resumed" || body.RunID != "run-1" {
+		t.Errorf("body = %+v, want status=resumed run_id=run-1", body)
+	}
+	if body.Attempt != 2 {
+		t.Errorf("attempt = %d, want 2", body.Attempt)
+	}
+
+	calls := f.runner.calls()
+	if len(calls) != 1 {
+		t.Fatalf("runner calls = %d, want 1", len(calls))
+	}
+	got := calls[0]
+	if !got.Resume {
+		t.Error("the agent must be told to resume, not to start fresh")
+	}
+	if got.Attempt != 2 {
+		t.Errorf("Attempt = %d, want 2 — the K8s Job name depends on it", got.Attempt)
+	}
+	if got.RunID != "run-1" || got.ProjectID != "p1" {
+		t.Errorf("identity = (%q, %q), want (run-1, p1)", got.RunID, got.ProjectID)
+	}
+	if got.MaxSteps != 80 || got.MinSteps != 48 {
+		t.Errorf("step budget = (%d, %d), want the run's own (80, 48), not the defaults",
+			got.MaxSteps, got.MinSteps)
+	}
+	if len(got.Areas) != 2 || got.Areas[0] != "churn" || got.Areas[1] != "monetization" {
+		t.Errorf("Areas = %v, want the run's own selection", got.Areas)
+	}
+}
+
+// TestResumeRun_WorksWithOnlyTheExplorationSummary covers the second
+// acceptance criterion's precondition: a run that died AFTER exploration
+// finished is resumable even with no replayable step prefix, because it is
+// going straight to analysis.
+func TestResumeRun_WorksWithOnlyTheExplorationSummary(t *testing.T) {
+	f := newResumeFixture(t)
+	f.cps.prefixLen = 0
+	f.cps.explorationComplete = true
+
+	if w := f.post("run-1"); w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body = %s", w.Code, w.Body.String())
+	}
+}
+
+// --- the refusals ----------------------------------------------------------
+
+func TestResumeRun_UnknownRunIs404(t *testing.T) {
+	f := newResumeFixture(t)
+	if w := f.post("nope"); w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+	if n := len(f.runner.calls()); n != 0 {
+		t.Errorf("spawned %d agents for an unknown run", n)
+	}
+}
+
+// TestResumeRun_OnlyFailedRunsAreResumable pins the status gate for every
+// other state, and that the refusal names the actual status rather than
+// leaving a stale dashboard's user guessing. `cancelled` is in here
+// deliberately: cancel is a hard kill and stays terminal.
+func TestResumeRun_OnlyFailedRunsAreResumable(t *testing.T) {
+	for _, status := range []string{"pending", "running", "completed", "cancelled"} {
+		t.Run(status, func(t *testing.T) {
+			f := newResumeFixture(t)
+			f.runs.runs["run-1"].Status = status
+
+			w := f.post("run-1")
+
+			if w.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want 409", w.Code)
+			}
+			if !strings.Contains(w.Body.String(), status) {
+				t.Errorf("the refusal must name the run's actual status; body = %s", w.Body.String())
+			}
+			if n := len(f.runner.calls()); n != 0 {
+				t.Errorf("spawned %d agents for a %s run", n, status)
+			}
+		})
+	}
+}
+
+// TestResumeRun_NoCheckpointIs409 pins that "nothing to resume from" is a
+// real answer rather than a server error: checkpoints are bounded by their
+// retention, and a run that died before its first step never wrote one.
+func TestResumeRun_NoCheckpointIs409(t *testing.T) {
+	f := newResumeFixture(t)
+	f.cps.prefixLen = 0
+	f.cps.explorationComplete = false
+
+	w := f.post("run-1")
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body = %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "expired") {
+		t.Errorf("the refusal should explain WHY there is nothing to resume; body = %s", w.Body.String())
+	}
+	if n := len(f.runner.calls()); n != 0 {
+		t.Errorf("spawned %d agents with no checkpoint", n)
+	}
+}
+
+// TestResumeRun_NoCheckpointRepoIs409 covers a deployment built without the
+// checkpoint collection. Refuse clearly rather than panicking on a nil repo.
+func TestResumeRun_NoCheckpointRepoIs409(t *testing.T) {
+	f := newResumeFixture(t)
+	f.h = NewDiscoveriesHandler(newMockDiscoveryRepo(), f.projs, f.runs, nil, nil, nil, f.runner)
+
+	if w := f.post("run-1"); w.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409", w.Code)
+	}
+}
+
+// TestResumeRun_AppliesTheSameProjectGatesAsAFreshRun is the gate that
+// matters most. A resume re-enters exploration — it queries the warehouse and
+// reads the schema index exactly as a fresh run does — so a resume path that
+// skipped these checks would be a way to run discovery against a project the
+// normal route refuses.
+func TestResumeRun_AppliesTheSameProjectGatesAsAFreshRun(t *testing.T) {
+	cases := map[string]func(p *models.Project){
+		"schema index not ready": func(p *models.Project) {
+			p.SchemaIndexStatus = models.SchemaIndexStatusPendingIndexing
+		},
+		"schema index failed": func(p *models.Project) {
+			p.SchemaIndexStatus = models.SchemaIndexStatusFailed
+		},
+		"schema cache cleared": func(p *models.Project) {
+			p.SchemaIndexStatus = models.SchemaIndexStatusNeedsReindex
+		},
+		"never indexed": func(p *models.Project) {
+			p.SchemaIndexStatus = ""
+		},
+		"project state owned by a plugin": func(p *models.Project) {
+			p.State = "provisioning"
+		},
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newResumeFixture(t)
+			mutate(f.projs.projects["p1"])
+
+			w := f.post("run-1")
+
+			if w.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want 409; body = %s", w.Code, w.Body.String())
+			}
+			if n := len(f.runner.calls()); n != 0 {
+				t.Errorf("spawned %d agents past a project gate", n)
+			}
+			// And the run must be left resumable — a refused resume costs
+			// nothing.
+			if got := f.runs.runs["run-1"].Status; got != "failed" {
+				t.Errorf("run status = %q, want it left failed and resumable", got)
+			}
+		})
+	}
+}
+
+// TestResumeRun_AnotherActiveRunIs409 pins the concurrency bound. This is the
+// ONLY thing bounding per-project concurrency on the resume path, because
+// resume deliberately opens no policy reservation — so it is applied
+// unconditionally rather than only under the self-hosted checker.
+func TestResumeRun_AnotherActiveRunIs409(t *testing.T) {
+	f := newResumeFixture(t)
+	f.runs.runs["run-2"] = &models.DiscoveryRun{ID: "run-2", ProjectID: "p1", Status: "running"}
+
+	w := f.post("run-1")
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body = %s", w.Code, w.Body.String())
+	}
+	// In the standard error envelope, not under `data`: the dashboard's
+	// request helper reads only the top-level `error` on a non-2xx, so a body
+	// under `data` would surface as a bare "API error: 409".
+	var envelope struct {
+		Error string `json:"error"`
+		Data  any    `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Error == "" {
+		t.Errorf("the refusal must ride in the top-level error field; body = %s", w.Body.String())
+	}
+	if !strings.Contains(envelope.Error, "run-2") {
+		t.Errorf("the refusal should name the run that is in the way; got %q", envelope.Error)
+	}
+	if n := len(f.runner.calls()); n != 0 {
+		t.Errorf("spawned %d agents alongside a running one", n)
+	}
+}
+
+// TestResumeRun_StandsDownWhenItLosesTheConcurrencyRace pins the recheck
+// after the flip.
+//
+// The pre-check and a fresh trigger's own check can both pass before either
+// write is visible, and they do not serialise against each other — a fresh
+// trigger's plan reservation does not see a resume, because resume opens
+// none. Re-checking after the flip means at least one of the two sees the
+// other.
+func TestResumeRun_StandsDownWhenItLosesTheConcurrencyRace(t *testing.T) {
+	f := newResumeFixture(t)
+	// A competing run becomes visible only AFTER BeginResume — which is
+	// exactly the window the pre-check cannot see.
+	f.runs.onBeginResume = func() {
+		f.runs.runs["run-rival"] = &models.DiscoveryRun{ID: "run-rival", ProjectID: "p1", Status: "running"}
+	}
+
+	w := f.post("run-1")
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body = %s", w.Code, w.Body.String())
+	}
+	if n := len(f.runner.calls()); n != 0 {
+		t.Errorf("spawned %d agents after losing the race", n)
+	}
+	// Stood down as a recorded failure, not silently: the run is resumable
+	// again, with a reason that says what happened.
+	run := f.runs.runs["run-1"]
+	if run.Status != "failed" {
+		t.Errorf("run status = %q, want failed so it stays resumable", run.Status)
+	}
+	if !strings.Contains(run.Error, "another discovery run") {
+		t.Errorf("run error = %q, want it to say why the resume stood down", run.Error)
+	}
+	// The attempt keeps its increment — this attempt happened, and it did
+	// not start.
+	if run.Attempt != 2 {
+		t.Errorf("attempt = %d, want 2", run.Attempt)
+	}
+	if len(f.cps.deleted) != 0 {
+		t.Errorf("checkpoints were deleted (%v); a stood-down resume must leave them", f.cps.deleted)
+	}
+}
+
+// TestResumeRun_DoubleClickSpawnsExactlyOneAgent is the race this endpoint's
+// atomic flip exists for. Two requests, two agents on one run id would mean
+// two processes writing one run's checkpoints and results.
+func TestResumeRun_DoubleClickSpawnsExactlyOneAgent(t *testing.T) {
+	f := newResumeFixture(t)
+
+	var wg sync.WaitGroup
+	codes := make([]int, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			codes[i] = f.post("run-1").Code
+		}(i)
+	}
+	wg.Wait()
+
+	accepted, conflicted := 0, 0
+	for _, c := range codes {
+		switch c {
+		case http.StatusAccepted:
+			accepted++
+		case http.StatusConflict:
+			conflicted++
+		default:
+			t.Errorf("unexpected status %d", c)
+		}
+	}
+	if accepted != 1 || conflicted != 1 {
+		t.Errorf("got %d accepted and %d conflicted, want exactly one of each", accepted, conflicted)
+	}
+	if n := len(f.runner.calls()); n != 1 {
+		t.Errorf("spawned %d agents, want exactly 1", n)
+	}
+}
+
+// TestResumeRun_LostFlipIs409 is the same guarantee at the repository
+// boundary: BeginResume matching nothing is a conflict, not a 500.
+func TestResumeRun_LostFlipIs409(t *testing.T) {
+	f := newResumeFixture(t)
+	f.runs.beginResumeErr = database.ErrNoResumableRun
+
+	if w := f.post("run-1"); w.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409", w.Code)
+	}
+}
+
+// TestResumeRun_SpawnFailureLeavesTheRunResumable pins that a failed spawn
+// costs nothing but the attempt counter. The checkpoints are untouched, so
+// the operator can simply try again.
+func TestResumeRun_SpawnFailureLeavesTheRunResumable(t *testing.T) {
+	f := newResumeFixture(t)
+	f.runner.err = errors.New("no capacity")
+
+	w := f.post("run-1")
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body = %s", w.Code, w.Body.String())
+	}
+	if got := f.runs.runs["run-1"].Status; got != "failed" {
+		t.Errorf("run status = %q, want failed so it is resumable again", got)
+	}
+	if len(f.cps.deleted) != 0 {
+		t.Errorf("a failed spawn must NOT discard the checkpoints, got %v", f.cps.deleted)
+	}
+}
+
+// TestResumeRun_FailureCallbackIsScopedToItsOwnAttempt pins the P1 race at the
+// handler boundary: the callback the resumed run registers must name THIS
+// attempt, so that when it fires late — after another resume has superseded it
+// — it cannot mark the live attempt failed.
+func TestResumeRun_FailureCallbackIsScopedToItsOwnAttempt(t *testing.T) {
+	f := newResumeFixture(t)
+
+	if w := f.post("run-1"); w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body = %s", w.Code, w.Body.String())
+	}
+	calls := f.runner.calls()
+	if len(calls) != 1 || calls[0].OnFailure == nil {
+		t.Fatal("the resumed run registered no failure callback")
+	}
+	onFailure := calls[0].OnFailure
+
+	// Another resume supersedes attempt 2. (Marking it failed first is what
+	// an operator would be reacting to.)
+	f.runs.runs["run-1"].Status = "failed"
+	if w := f.post("run-1"); w.Code != http.StatusAccepted {
+		t.Fatalf("second resume: status = %d; body = %s", w.Code, w.Body.String())
+	}
+	if got := f.runs.runs["run-1"].Attempt; got != 3 {
+		t.Fatalf("attempt = %d, want 3", got)
+	}
+
+	// Attempt 2's watcher finally fires.
+	onFailure("run-1", "job failed (observed late)")
+
+	if got := f.runs.runs["run-1"].Status; got != "running" {
+		t.Errorf("run status = %q, want running — attempt 2's stale callback killed the live attempt 3", got)
+	}
+	if got := f.runs.runs["run-1"].Error; got != "" {
+		t.Errorf("run error = %q, want it untouched by the stale callback", got)
+	}
+
+	// And the LIVE attempt's own callback still works.
+	live := f.runner.calls()[1].OnFailure
+	live("run-1", "attempt 3 died")
+	if got := f.runs.runs["run-1"].Status; got != "failed" {
+		t.Errorf("run status = %q, want failed — the live attempt's callback must apply", got)
+	}
+}
+
+// TestStartRun_FailureCallbackIsScopedToAttemptOne is the same guarantee for a
+// fresh run: its watcher must not be able to kill the first resume.
+func TestStartRun_FailureCallbackIsScopedToAttemptOne(t *testing.T) {
+	projs := newMockProjectRepo()
+	projs.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
+	runs := newMockRunRepo()
+	rr := &recordingRunner{}
+	cps := &mockCheckpointRepo{prefixLen: 12}
+	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projs, runs, nil, nil, nil, rr).WithCheckpoints(cps)
+
+	res, err := h.StartRun(context.Background(), discoveryTriggerOptions("p1", 50, nil, nil))
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	onFailure := rr.calls()[0].OnFailure
+	if onFailure == nil {
+		t.Fatal("StartRun registered no failure callback")
+	}
+
+	// It fails, then is resumed.
+	runs.runs[res.RunID].Status = "failed"
+	req := httptest.NewRequest("POST", "/api/v1/runs/"+res.RunID+"/resume", nil)
+	req.SetPathValue("runId", res.RunID)
+	w := httptest.NewRecorder()
+	h.ResumeRun(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("resume: status = %d; body = %s", w.Code, w.Body.String())
+	}
+
+	// Attempt 1's watcher fires late.
+	onFailure(res.RunID, "job failed (observed late)")
+
+	if got := runs.runs[res.RunID].Status; got != "running" {
+		t.Errorf("run status = %q, want running — attempt 1's stale callback killed the resumed attempt", got)
+	}
+}
+
+// --- the money question ----------------------------------------------------
+
+// TestResumeRun_NeverMetersOrReserves is the "no double-charge, no
+// refund-then-free-resume leak" acceptance criterion, asserted against a
+// checker that actually implements metering — so the absence of a charge is
+// a real absence rather than a no-op helper.
+//
+// The run's charge is keyed on its run id and resume re-enters the same id,
+// so resume is free by construction. A new CheckStartDiscoveryRun reservation
+// would consume another runs-per-period slot, which is a hidden charge for
+// work already paid for.
+func TestResumeRun_NeverMetersOrReserves(t *testing.T) {
+	ck := &meteringChecker{}
+	swapChecker(t, ck)
+
+	f := newResumeFixture(t)
+
+	if w := f.post("run-1"); w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body = %s", w.Code, w.Body.String())
+	}
+
+	if n := len(ck.charges); n != 0 {
+		t.Errorf("resume metered %d operations (%+v), want 0 — the run's charge is keyed on its run id", n, ck.charges)
+	}
+	if n := len(ck.refunds); n != 0 {
+		t.Errorf("resume issued %d refunds (%v), want 0 — a refund here would be the leak that makes the next resume free", n, ck.refunds)
+	}
+	if n := ck.reservationCount(); n != 0 {
+		t.Errorf("resume opened %d policy reservations, want 0 — one would consume another runs-per-period slot", n)
+	}
+}
+
+// TestResumeRun_EndsTheSupersededAttemptsReservation pins the bookkeeping that
+// makes "resume opens no reservation" coherent.
+//
+// The previous attempt's reservation is still on the document. Resume opens
+// none of its own, so leaving it would have the post-completion confirmer
+// report the RESUMED attempt's outcome against a reservation that attempt
+// never made. It is confirmed (not released — the period counter stays
+// consumed; the concurrent-runs counter is what must come down) and cleared.
+func TestResumeRun_EndsTheSupersededAttemptsReservation(t *testing.T) {
+	ck := &meteringChecker{}
+	swapChecker(t, ck)
+
+	f := newResumeFixture(t)
+	f.runs.runs["run-1"].PolicyReservationID = "res-attempt-1"
+	// The attempt failed three hours ago and has been sitting there since.
+	failedAt := time.Now().UTC().Add(-3 * time.Hour)
+	f.runs.runs["run-1"].CompletedAt = &failedAt
+
+	if w := f.post("run-1"); w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body = %s", w.Code, w.Body.String())
+	}
+
+	if len(ck.confirms) != 1 {
+		t.Fatalf("confirms = %d, want 1 — the superseded attempt's reservation must be ended", len(ck.confirms))
+	}
+	if got := ck.confirms[0].Status; got != "failure" {
+		t.Errorf("confirmed outcome = %q, want failure — the attempt did fail", got)
+	}
+	// And closed at the moment that attempt STOPPED, not at the moment
+	// someone clicked Resume. A failed run can sit unnoticed for hours, and
+	// `now` would bill the reservation for all of them. Same source the
+	// cancel handler and the background confirmer read, so whichever closes
+	// this reservation records the same thing.
+	if !ck.confirms[0].EndedAt.Equal(failedAt) {
+		t.Errorf("EndedAt = %s, want the attempt's own end %s — the idle hours before the resume are not run time", ck.confirms[0].EndedAt, failedAt)
+	}
+	// Still no NEW reservation, which is the whole point.
+	if n := ck.reservationCount(); n != 0 {
+		t.Errorf("resume opened %d reservations, want 0", n)
+	}
+	if n := len(ck.charges); n != 0 {
+		t.Errorf("resume metered %d operations, want 0", n)
+	}
+	// Cleared only AFTER the confirm landed.
+	if got := f.runs.runs["run-1"].PolicyReservationID; got != "" {
+		t.Errorf("reservation id = %q, want cleared once confirmed", got)
+	}
+}
+
+// TestResumeRun_KeepsTheReservationIdWhenTheConfirmFails pins the ordering
+// that matters more than the happy path: the id is the only handle anyone has
+// on the reservation, so it must survive a failed confirm. Clearing first
+// would turn any crash in between into a leaked concurrent-run slot with
+// nothing left to reconcile from.
+func TestResumeRun_KeepsTheReservationIdWhenTheConfirmFails(t *testing.T) {
+	ck := &meteringChecker{}
+	ck.confirmErr = errors.New("control plane unreachable")
+	swapChecker(t, ck)
+
+	f := newResumeFixture(t)
+	f.runs.runs["run-1"].PolicyReservationID = "res-attempt-1"
+
+	// The resume still goes ahead — refusing it over an accounting problem
+	// would be the wrong trade.
+	if w := f.post("run-1"); w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body = %s", w.Code, w.Body.String())
+	}
+	if got := f.runs.runs["run-1"].PolicyReservationID; got != "res-attempt-1" {
+		t.Errorf("reservation id = %q, want it kept so the background confirmer can retry", got)
+	}
+}
+
+// TestResumeRun_NoReservationToEndIsSilent covers the self-hosted path and a
+// run whose reservation was already released: nothing to confirm, and the
+// resume must not invent one.
+func TestResumeRun_NoReservationToEndIsSilent(t *testing.T) {
+	ck := &meteringChecker{}
+	swapChecker(t, ck)
+
+	f := newResumeFixture(t) // no PolicyReservationID
+
+	if w := f.post("run-1"); w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", w.Code)
+	}
+	if len(ck.confirms) != 0 {
+		t.Errorf("confirms = %d, want 0 — there was no reservation to end", len(ck.confirms))
+	}
+}
+
+// TestResumeRun_SpawnFailureStillDoesNotRefund is the other half of the leak.
+// The start path refunds on a spawn failure because nothing ran; here the
+// run's earlier attempt DID run and was paid for, so a refund would hand back
+// money for work that was done and leave the next resume free.
+func TestResumeRun_SpawnFailureStillDoesNotRefund(t *testing.T) {
+	ck := &meteringChecker{}
+	swapChecker(t, ck)
+
+	f := newResumeFixture(t)
+	f.runner.err = errors.New("no capacity")
+
+	f.post("run-1")
+
+	if n := len(ck.refunds); n != 0 {
+		t.Errorf("a failed resume refunded %v, want nothing — the work the run already did was real", ck.refunds)
+	}
+}
+
+// --- cancel purges checkpoints --------------------------------------------
+
+// TestCancelRun_DiscardsCheckpoints pins that cancellation stays terminal.
+// Dropped eagerly rather than left to the retention TTL, both to reclaim the
+// rows and so the agent's boot-time sweep stops treating the run as live and
+// keeping its per-run vector collection alive.
+func TestCancelRun_DiscardsCheckpoints(t *testing.T) {
+	f := newResumeFixture(t)
+	f.runs.runs["run-1"].Status = "running"
+
+	req := httptest.NewRequest("DELETE", "/api/v1/runs/run-1", nil)
+	req.SetPathValue("runId", "run-1")
+	w := httptest.NewRecorder()
+	f.h.CancelRun(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
+	}
+	if len(f.cps.deleted) != 1 || f.cps.deleted[0] != "run-1" {
+		t.Errorf("cancel deleted %v, want [run-1] — cancelled is terminal and not resumable", f.cps.deleted)
+	}
+}
+
+// TestCancelRun_SurvivesACheckpointPurgeFailure pins that the purge is
+// best-effort: the retention TTL is the backstop, and failing the cancel over
+// it would leave a run the operator asked to kill still running.
+func TestCancelRun_SurvivesACheckpointPurgeFailure(t *testing.T) {
+	f := newResumeFixture(t)
+	f.runs.runs["run-1"].Status = "running"
+	f.cps.deleteErr = errors.New("mongo down")
+
+	req := httptest.NewRequest("DELETE", "/api/v1/runs/run-1", nil)
+	req.SetPathValue("runId", "run-1")
+	w := httptest.NewRecorder()
+	f.h.CancelRun(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 — a failed checkpoint purge must not fail the cancel", w.Code)
+	}
+	if got := f.runs.runs["run-1"].Status; got != "cancelled" {
+		t.Errorf("run status = %q, want cancelled", got)
+	}
+}
+
+// --- run creation records its own shape -----------------------------------
+
+// discoveryTriggerOptions builds the trigger options a StartRun test needs.
+func discoveryTriggerOptions(projectID string, maxSteps int, minSteps *int, areas []string) discoverytrigger.Options {
+	return discoverytrigger.Options{
+		ProjectID: projectID,
+		MaxSteps:  maxSteps,
+		MinSteps:  minSteps,
+		Areas:     areas,
+		Source:    "manual",
+	}
+}
+
+// TestStartRun_PersistsTheRunsParameters is the prerequisite for everything
+// above: without it there is nothing for a resume to replay.
+func TestStartRun_PersistsTheRunsParameters(t *testing.T) {
+	projs := newMockProjectRepo()
+	projs.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
+	runs := newMockRunRepo()
+	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projs, runs, nil, nil, nil, quietRunner{})
+
+	min := 30
+	_, err := h.StartRun(context.Background(), discoveryTriggerOptions("p1", 50, &min, []string{"churn"}))
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	if len(runs.createdParams) != 1 {
+		t.Fatalf("Create calls = %d, want 1", len(runs.createdParams))
+	}
+	got := runs.createdParams[0]
+	if got.MaxSteps != 50 || got.MinSteps != 30 {
+		t.Errorf("persisted budget = (%d, %d), want (50, 30)", got.MaxSteps, got.MinSteps)
+	}
+	if len(got.Areas) != 1 || got.Areas[0] != "churn" {
+		t.Errorf("persisted areas = %v, want [churn]", got.Areas)
+	}
+	if got.Source == "" {
+		t.Error("the trigger source must be recorded on the first lifecycle event")
+	}
+}
+
+// TestStartRun_PersistsTheComputedMinStepsFloor pins that the resume replays
+// the floor the run ACTUALLY used. The handler computes 60% of max_steps when
+// the caller omits min_steps, and persisting the request's zero instead would
+// silently drop the floor on every resumed run.
+func TestStartRun_PersistsTheComputedMinStepsFloor(t *testing.T) {
+	projs := newMockProjectRepo()
+	projs.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
+	runs := newMockRunRepo()
+	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projs, runs, nil, nil, nil, quietRunner{})
+
+	if _, err := h.StartRun(context.Background(), discoveryTriggerOptions("p1", 100, nil, nil)); err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	if got := runs.createdParams[0].MinSteps; got != 60 {
+		t.Errorf("persisted MinSteps = %d, want the computed floor of 60", got)
+	}
+}
+
+// TestResumeRun_FailsClosedWhenTheConcurrencyCheckErrors is why that check
+// may not swallow its error.
+//
+// It is the ONLY thing bounding concurrency for a resume — a resume opens no
+// policy reservation, so nothing sits behind it — which makes "I could not
+// tell" equivalent to "do not start". Treating a transient read error as
+// "no competing run" would start a second agent on a project that already
+// has one, and the symptom would be two runs quietly fighting over one
+// project's warehouse budget.
+func TestResumeRun_FailsClosedWhenTheConcurrencyCheckErrors(t *testing.T) {
+	t.Run("before the flip", func(t *testing.T) {
+		f := newResumeFixture(t)
+		f.runs.getRunningErr = errors.New("mongo is having a moment")
+
+		w := f.post("run-1")
+
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500; body = %s", w.Code, w.Body.String())
+		}
+		if n := len(f.runner.calls()); n != 0 {
+			t.Errorf("spawned %d agents without being able to check for a competitor", n)
+		}
+		// Nothing was mutated: the flip never happened, so the run is
+		// exactly where it was and a retry is the whole recovery.
+		run := f.runs.runs["run-1"]
+		if run.Status != "failed" {
+			t.Errorf("run status = %q, want failed", run.Status)
+		}
+		if run.Attempt != 1 {
+			t.Errorf("attempt = %d, want 1 — the flip must not have happened", run.Attempt)
+		}
+	})
+
+	t.Run("after the flip", func(t *testing.T) {
+		f := newResumeFixture(t)
+		// Let the pre-check through and fail the post-flip re-check, which
+		// is the half with a half-started attempt to stand down.
+		f.runs.getRunningErr = errors.New("mongo is having a moment")
+		f.runs.getRunningErrAfter = 1
+
+		w := f.post("run-1")
+
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500; body = %s", w.Code, w.Body.String())
+		}
+		if n := len(f.runner.calls()); n != 0 {
+			t.Errorf("spawned %d agents without being able to check for a competitor", n)
+		}
+		// Stood down the same way a lost race stands down: a recorded
+		// failure that says what happened, checkpoints intact, resumable.
+		run := f.runs.runs["run-1"]
+		if run.Status != "failed" {
+			t.Errorf("run status = %q, want failed so it stays resumable", run.Status)
+		}
+		if !strings.Contains(run.Error, "could not verify") {
+			t.Errorf("run error = %q, want it to say the check could not be made", run.Error)
+		}
+		if run.Attempt != 2 {
+			t.Errorf("attempt = %d, want 2 — this attempt happened and did not start", run.Attempt)
+		}
+		if len(f.cps.deleted) != 0 {
+			t.Errorf("checkpoints were deleted (%v); a stood-down resume must leave them", f.cps.deleted)
+		}
+	})
+}
+
+// TestStartRun_FailureCallbackConfirmsTheReservationEvenWhenTheStatusWriteNoOps
+// is the other half of the attempt fence on that callback: the fence governs
+// the status write, not the reservation.
+//
+// The ordinary shape of an agent failure is that the agent writes its own
+// `failed` status and the runner's watcher notices the dead workload
+// afterwards. By then the attempt-fenced write no-ops, because the run is
+// already terminal — which says nothing about whether the run is over. It
+// very much is. Skipping the confirm there holds the project's
+// concurrent-run slot until the periodic confirmer repairs it, so an
+// ordinary failure temporarily blocks the next run.
+func TestStartRun_FailureCallbackConfirmsTheReservationEvenWhenTheStatusWriteNoOps(t *testing.T) {
+	ck := &meteringChecker{}
+	swapChecker(t, ck)
+
+	projs := newMockProjectRepo()
+	projs.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
+	runs := newMockRunRepo()
+	rr := &recordingRunner{}
+	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projs, runs, nil, nil, nil, rr)
+
+	res, err := h.StartRun(context.Background(), discoveryTriggerOptions("p1", 50, nil, nil))
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	onFailure := rr.calls()[0].OnFailure
+	if onFailure == nil {
+		t.Fatal("StartRun registered no failure callback")
+	}
+
+	// The agent wrote its own terminal status first, as it normally does.
+	runs.runs[res.RunID].Status = "failed"
+	runs.runs[res.RunID].Error = "the agent said why"
+
+	onFailure(res.RunID, "K8s Job failed (observed after the agent exited)")
+
+	// The status write correctly did nothing — the agent's own reason stands.
+	if got := runs.runs[res.RunID].Error; got != "the agent said why" {
+		t.Errorf("run error = %q, want the agent's own reason to survive", got)
+	}
+	// ...and the reservation was still confirmed, so the slot is freed now
+	// rather than whenever the periodic confirmer next sweeps.
+	ck.mu.Lock()
+	confirms := len(ck.confirms)
+	ck.mu.Unlock()
+	if confirms != 1 {
+		t.Errorf("confirmed %d reservations, want 1 — the run is over, so its slot must be released", confirms)
+	}
+}
+
+// postWithCtx is post() with a caller-supplied request context, so a test can
+// cancel the request mid-handler the way a closing browser tab does.
+func (f *resumeFixture) postWithCtx(ctx context.Context, runID string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("POST", "/api/v1/runs/"+runID+"/resume", nil).WithContext(ctx)
+	req.SetPathValue("runId", runID)
+	w := httptest.NewRecorder()
+	f.h.ResumeRun(w, req)
+	return w
+}
+
+// TestResumeRun_ACancelledRequestCannotStrandTheRun is why the post-flip
+// writes are detached from the request context.
+//
+// net/http cancels the request context the instant a client disconnects. Past
+// BeginResume the run is `running`, and the writes that can put it back were
+// running on that same context — so a browser tab closing at the wrong
+// moment decided whether the run stayed recoverable. The stand-down would not
+// land, and the run would sit `running` with no agent behind it: not
+// terminal, so not resumable, and visible to the concurrency check, which
+// then refuses every new run for the project until the API restarts and its
+// startup sweep clears it.
+func TestResumeRun_ACancelledRequestCannotStrandTheRun(t *testing.T) {
+	t.Run("a spawn failure still makes the run resumable", func(t *testing.T) {
+		f := newResumeFixture(t)
+		f.runner.err = errors.New("no agent binary")
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		// The client disconnects exactly in the window the flip opens.
+		f.runs.onBeginResume = cancel
+
+		_ = f.postWithCtx(ctx, "run-1")
+
+		run := f.runs.runs["run-1"]
+		if run.Status == "running" {
+			t.Fatal("the run is stranded `running` with no agent; nothing can resume or cancel it")
+		}
+		if run.Status != "failed" {
+			t.Errorf("run status = %q, want failed so the run stays resumable", run.Status)
+		}
+		if run.Attempt != 2 {
+			t.Errorf("attempt = %d, want 2 — this attempt happened and did not start", run.Attempt)
+		}
+	})
+
+	t.Run("the concurrency recheck still runs", func(t *testing.T) {
+		f := newResumeFixture(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		// A rival appears and the client disconnects, both in that window.
+		f.runs.onBeginResume = func() {
+			f.runs.runs["run-rival"] = &models.DiscoveryRun{ID: "run-rival", ProjectID: "p1", Status: "running"}
+			cancel()
+		}
+
+		_ = f.postWithCtx(ctx, "run-1")
+
+		// The recheck is the only thing bounding concurrency for a resume, so
+		// a cancelled request must not be able to skip it OR to leave the
+		// attempt it refuses still marked running.
+		if n := len(f.runner.calls()); n != 0 {
+			t.Errorf("spawned %d agents despite a competing run", n)
+		}
+		run := f.runs.runs["run-1"]
+		if run.Status != "failed" {
+			t.Errorf("run status = %q, want failed", run.Status)
+		}
+		if !strings.Contains(run.Error, "another discovery run") {
+			t.Errorf("run error = %q, want the lost-race reason", run.Error)
+		}
+	})
+}
+
+// slowRunRepo wraps the mock so one named operation takes long enough to
+// exhaust a cleanup budget, which is how the shared-deadline hazard is
+// reproduced without sleeping for thirty seconds.
+type slowRunRepo struct {
+	*mockRunRepo
+	// blockRecheck makes the POST-FLIP GetOtherRunningByProject burn its
+	// context rather than answer — a slow Mongo read in the one check that
+	// bounds concurrency for a resume.
+	//
+	// The second call, specifically. The pre-flip check runs on the bare
+	// request context, which httptest never cancels, so blocking that one
+	// just hangs and tests nothing: the hazard being reproduced lives
+	// entirely after the flip.
+	blockRecheck bool
+	calls        int
+}
+
+func (s *slowRunRepo) GetOtherRunningByProject(ctx context.Context, projectID, excludeRunID string) (*models.DiscoveryRun, error) {
+	s.calls++
+	if s.blockRecheck && s.calls >= 2 {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return s.mockRunRepo.GetOtherRunningByProject(ctx, projectID, excludeRunID)
+}
+
+// TestResumeRun_ASlowRecheckDoesNotStarveTheStandDown is the hazard a single
+// shared cleanup budget creates.
+//
+// The post-flip recheck and the stand-down that recovers from its failure ran
+// on one context with one deadline. So the recheck timing out — a slow Mongo
+// read is exactly the case it was added for — handed the stand-down an
+// already-expired context, FailAttempt could not write, and the run was left
+// `running` with no agent: the very outcome the detachment exists to prevent,
+// reachable through the detachment itself.
+func TestResumeRun_ASlowRecheckDoesNotStarveTheStandDown(t *testing.T) {
+	// Shrink the budget so the starvation happens in milliseconds; the bug
+	// is about one operation consuming another's allowance, not about 30s.
+	orig := cleanupTimeout
+	cleanupTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { cleanupTimeout = orig })
+
+	f := newResumeFixture(t)
+	slow := &slowRunRepo{mockRunRepo: f.runs, blockRecheck: true}
+	// Rebuild the handler over the wrapper, keeping the same underlying runs.
+	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), f.projs, slow, nil, nil, nil, f.runner).
+		WithCheckpoints(f.cps)
+
+	req := httptest.NewRequest("POST", "/api/v1/runs/run-1/resume", nil)
+	req.SetPathValue("runId", "run-1")
+	w := httptest.NewRecorder()
+	h.ResumeRun(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (the recheck could not be completed); body = %s", w.Code, w.Body.String())
+	}
+	if n := len(f.runner.calls()); n != 0 {
+		t.Errorf("spawned %d agents without a completed concurrency check", n)
+	}
+	// The whole point: the stand-down still landed, on its own budget.
+	run := f.runs.runs["run-1"]
+	if run.Status == "running" {
+		t.Fatal("the run is stranded `running` with no agent — the stand-down inherited the recheck's exhausted deadline")
+	}
+	if run.Status != "failed" {
+		t.Errorf("run status = %q, want failed so the run stays resumable", run.Status)
+	}
+}
+
+// TestCancelRun_DoesNotRecordACancelAgainstASupersededAttempt is the other
+// half of a fix I previously applied in only one place.
+//
+// The resume path confirms the superseded attempt's reservation and clears
+// it; a reservation still present means that confirm failed. The background
+// confirmer was taught to close such a reservation as the superseded
+// attempt's failure rather than deriving the outcome from the run document —
+// but CancelRun derives its own, and closed it as `cancelled`. So which
+// outcome cloud accounting recorded for the dead attempt depended on whether
+// an operator cancelled before the confirmer next ticked.
+func TestCancelRun_DoesNotRecordACancelAgainstASupersededAttempt(t *testing.T) {
+	ck := &meteringChecker{}
+	swapChecker(t, ck)
+
+	projs := newMockProjectRepo()
+	projs.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
+	runs := newMockRunRepo()
+	// A resumed run still carrying the previous attempt's reservation.
+	resumedAt := time.Now().UTC().Add(-3 * time.Hour)
+	runs.runs["run-1"] = &models.DiscoveryRun{
+		ID: "run-1", ProjectID: "p1", Status: "running",
+		Attempt: 2, PolicyReservationID: "res-attempt-1",
+		LastResumedAt: &resumedAt,
+	}
+	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projs, runs, nil, nil, nil, &recordingRunner{})
+
+	req := httptest.NewRequest("POST", "/api/v1/runs/run-1/cancel", nil)
+	req.SetPathValue("runId", "run-1")
+	w := httptest.NewRecorder()
+	h.CancelRun(w, req)
+
+	ck.mu.Lock()
+	confirms := append([]policy.RunOutcome(nil), ck.confirms...)
+	ck.mu.Unlock()
+
+	if len(confirms) != 1 {
+		t.Fatalf("confirmed %d reservations, want 1", len(confirms))
+	}
+	if confirms[0].Status == "cancelled" {
+		t.Error("this cancellation was recorded against the reservation of an attempt a resume had already superseded")
+	}
+	if confirms[0].Status != "failure" || confirms[0].Error != models.SupersededByResumeReason {
+		t.Errorf("outcome = %+v, want the superseded-attempt failure", confirms[0])
+	}
+	// The end time is misattributed by exactly the same argument as the
+	// status. The dead attempt stopped when the resume replaced it, three
+	// hours before this cancel — closing it at `now` bills its reservation
+	// for hours it did not run, and disagrees with the background confirmer
+	// that retries the same close.
+	if !confirms[0].EndedAt.Equal(resumedAt) {
+		t.Errorf("EndedAt = %s, want the resume time %s — the superseded attempt's reservation must not be charged to the cancel", confirms[0].EndedAt, resumedAt)
+	}
+}
+
+// TestCancelRun_RecordsACancelForTheRunsOwnReservation is the ordinary case,
+// which must be untouched: a first-attempt run's reservation is its own, so
+// cancelling it is exactly what happened.
+func TestCancelRun_RecordsACancelForTheRunsOwnReservation(t *testing.T) {
+	ck := &meteringChecker{}
+	swapChecker(t, ck)
+
+	projs := newMockProjectRepo()
+	projs.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
+	runs := newMockRunRepo()
+	runs.runs["run-1"] = &models.DiscoveryRun{
+		ID: "run-1", ProjectID: "p1", Status: "running",
+		Attempt: 1, PolicyReservationID: "res-run-1",
+	}
+	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projs, runs, nil, nil, nil, &recordingRunner{})
+
+	req := httptest.NewRequest("POST", "/api/v1/runs/run-1/cancel", nil)
+	req.SetPathValue("runId", "run-1")
+	w := httptest.NewRecorder()
+	h.CancelRun(w, req)
+
+	ck.mu.Lock()
+	confirms := append([]policy.RunOutcome(nil), ck.confirms...)
+	ck.mu.Unlock()
+
+	if len(confirms) != 1 || confirms[0].Status != "cancelled" {
+		t.Errorf("confirms = %+v, want a single cancelled outcome", confirms)
+	}
+}
+
+// TestResumeRun_PreservesTheReservationOwnersEndTimeAcrossResumes is the
+// general case behind three separate findings about reservation timing.
+//
+// Only the first attempt ever opens a reservation — a resume opens none — so a
+// lingering id always belongs to that first attempt, and the right close time
+// is when IT stopped. Neither field on the run document still says that once
+// the run has more attempts behind it: `completed_at` is rewritten by every
+// later attempt's terminal write and `last_resumed_at` by every resume. So the
+// answer is preserved the first time a resume finds the reservation still
+// present, and a later resume must not overwrite it with its own, later time.
+//
+// Without that, a confirm failure surviving two resumes charges the dead
+// attempt for every idle hour between them.
+func TestResumeRun_PreservesTheReservationOwnersEndTimeAcrossResumes(t *testing.T) {
+	ck := &meteringChecker{}
+	swapChecker(t, ck)
+
+	f := newResumeFixture(t)
+	run := f.runs.runs["run-1"]
+	run.PolicyReservationID = "res-attempt-1"
+	// Attempt 1 failed three hours ago. That is when its reservation's work
+	// stopped, and the only moment that is ever the right answer for it.
+	attempt1EndedAt := time.Now().UTC().Add(-3 * time.Hour)
+	run.CompletedAt = &attempt1EndedAt
+
+	// First resume: the confirm fails, so the id stays for a later retry.
+	ck.confirmErr = errBoom("control plane unreachable")
+	if w := f.post("run-1"); w.Code != http.StatusAccepted {
+		t.Fatalf("first resume: status = %d, want 202; body = %s", w.Code, w.Body.String())
+	}
+	if got := f.runs.runs["run-1"].PolicyReservationID; got != "res-attempt-1" {
+		t.Fatalf("reservation id = %q, want it kept after a failed confirm", got)
+	}
+	stamped := f.runs.runs["run-1"].PolicyReservationOwnerEndedAt
+	if stamped == nil {
+		t.Fatal("the owner's end time was not preserved; after the next resume there is nothing left that still means it")
+	}
+	if !stamped.Equal(attempt1EndedAt) {
+		t.Errorf("preserved %s, want attempt 1's own end %s", stamped, attempt1EndedAt)
+	}
+
+	// The run fails again and is resumed a second time. Both of the fields
+	// the answer used to be derived from have now moved on.
+	secondFailure := time.Now().UTC().Add(-30 * time.Minute)
+	f.runs.runs["run-1"].Status = "failed"
+	f.runs.runs["run-1"].CompletedAt = &secondFailure
+	ck.confirmErr = nil
+	ck.mu.Lock()
+	ck.confirms = nil
+	ck.mu.Unlock()
+
+	if w := f.post("run-1"); w.Code != http.StatusAccepted {
+		t.Fatalf("second resume: status = %d, want 202; body = %s", w.Code, w.Body.String())
+	}
+
+	ck.mu.Lock()
+	confirms := append([]policy.RunOutcome(nil), ck.confirms...)
+	ck.mu.Unlock()
+	if len(confirms) != 1 {
+		t.Fatalf("confirmed %d reservations on the second resume, want 1", len(confirms))
+	}
+	if !confirms[0].EndedAt.Equal(attempt1EndedAt) {
+		t.Errorf("closed attempt 1's reservation at %s, want %s — the hours between the two resumes were not run time for it", confirms[0].EndedAt, attempt1EndedAt)
+	}
+	// And the preserved stamp goes with the id it describes.
+	if got := f.runs.runs["run-1"].PolicyReservationOwnerEndedAt; got != nil {
+		t.Errorf("preserved end time = %s, want it cleared with the reservation id", got)
+	}
+}
+
+// TestResumeRun_RefusingForExpiredCheckpointsTakesTheButtonAway closes a dead
+// end the operator cannot get out of.
+//
+// The dashboard offers Resume on `status === 'failed' && last_checkpoint_step
+// > 0`, and that marker outlives the rows it describes — checkpoints are
+// bounded by DISCOVERY_CHECKPOINT_RETENTION. So a run whose rows expired went
+// on advertising a step it could no longer replay, and every click earned the
+// same 409 until the operator gave up and started a new run.
+func TestResumeRun_RefusingForExpiredCheckpointsTakesTheButtonAway(t *testing.T) {
+	f := newResumeFixture(t)
+	// The rows are gone; only the marker survives.
+	f.cps.prefixLen = 0
+	f.cps.explorationComplete = false
+
+	w := f.post("run-1")
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body = %s", w.Code, w.Body.String())
+	}
+
+	if got := f.runs.runs["run-1"].LastCheckpointStep; got != 0 {
+		t.Errorf("last_checkpoint_step = %d, want 0 — the dashboard keeps offering a resume that can only return this same 409", got)
+	}
+}
+
+// TestResumeRun_ASuccessfulResumeKeepsItsMarker is the counter-test: the
+// clearing must not fire on the path where there IS something to replay, or
+// the resumed run loses the field its own replay re-stamps.
+func TestResumeRun_ASuccessfulResumeKeepsItsMarker(t *testing.T) {
+	f := newResumeFixture(t)
+
+	if w := f.post("run-1"); w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body = %s", w.Code, w.Body.String())
+	}
+	if got := f.runs.runs["run-1"].LastCheckpointStep; got != 42 {
+		t.Errorf("last_checkpoint_step = %d, want it kept at 42", got)
+	}
+}
+
+// TestResumeRun_AStoodDownResumePreservesTheReservationOwnersEndTime covers
+// the path 1447806's fix returned before reaching.
+//
+// A resume that aborts on the post-flip concurrency re-check leaves the run
+// failed on a BUMPED attempt with the previous attempt's reservation still
+// open. Both fields ReservationOwnerEndedAt falls back to now describe this
+// aborted request rather than the attempt that owns the reservation:
+// BeginResume moved last_resumed_at to now, and the stand-down's FailAttempt
+// moves completed_at to now. So unless the answer was preserved before the
+// stand-down, the background confirmer closes attempt 1's reservation at the
+// aborted resume's time and bills it for every idle hour before that.
+func TestResumeRun_AStoodDownResumePreservesTheReservationOwnersEndTime(t *testing.T) {
+	ck := &meteringChecker{}
+	swapChecker(t, ck)
+
+	f := newResumeFixture(t)
+	run := f.runs.runs["run-1"]
+	run.PolicyReservationID = "res-attempt-1"
+	attempt1EndedAt := time.Now().UTC().Add(-4 * time.Hour)
+	run.CompletedAt = &attempt1EndedAt
+
+	// A competing run appears in the window the pre-check cannot see, so the
+	// post-flip re-check stands this resume down.
+	f.runs.onBeginResume = func() {
+		f.runs.runs["other-run"] = &models.DiscoveryRun{
+			ID: "other-run", ProjectID: "p1", Status: "running",
+		}
+	}
+
+	if w := f.post("run-1"); w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 — the resume should have stood down; body = %s", w.Code, w.Body.String())
+	}
+
+	got := f.runs.runs["run-1"].PolicyReservationOwnerEndedAt
+	if got == nil {
+		t.Fatal("the owner's end time was not preserved before the stand-down; nothing on the run still records when attempt 1 stopped")
+	}
+	if !got.Equal(attempt1EndedAt) {
+		t.Errorf("preserved %s, want attempt 1's own end %s — not this aborted resume's clock", got, attempt1EndedAt)
+	}
+}

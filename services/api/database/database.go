@@ -228,7 +228,13 @@ var projectChildCollections = []string{
 	"project_schema_index_runs", // durable per-datasource index-run history, keyed by project_id
 	"project_schema_edits",      // durable manual schema-edit audit trail, keyed by project_id
 	"llm_model_windows",         // agent-written self-calibrated context windows, keyed by project_id
-	"discovery_questions", // agent-written clarifying questions + analyst answers, keyed by project_id
+	"discovery_questions",       // agent-written clarifying questions + analyst answers, keyed by project_id
+	// Exploration checkpoints. The TTL would reclaim them eventually, but
+	// leaving them until then keeps the agent's boot-time orphan sweep
+	// treating the deleted project's run as resumable — so it holds that
+	// run's per-run Qdrant collection open too, for a project that no
+	// longer exists.
+	"discovery_checkpoints",
 }
 
 // DeleteCascade removes every Mongo row owned by a project, then the

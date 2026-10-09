@@ -3,17 +3,86 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	logger "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
+// terminalOutcome is what a terminal run-status write tells the caller about
+// ownership, and the one thing it governs is whether this attempt may delete
+// a result — its own, or another attempt's.
+//
+// Three states, because a boolean could not carry that. "Not claimed" has
+// several causes with opposite correct responses, and only ONE of them
+// licenses deleting this attempt's own output: positive evidence that a
+// newer attempt owns the run. A write that errored does not establish that.
+// Neither does a write that simply matched nothing — the filter is fenced on
+// the attempt AND a non-terminal status, so an already-terminal run owned by
+// this very attempt matches nothing too.
+//
+// Both of those mistakes have been made here, and each one destroyed a
+// complete discovery that nobody had superseded. Hence the rule the three
+// states encode: never delete your own output without being told who else
+// owns the run.
+type terminalOutcome int
+
+const (
+	// terminalClaimed: the write landed. This attempt owns the run, and may
+	// retire the other attempts' results.
+	terminalClaimed terminalOutcome = iota
+
+	// terminalSuperseded: this attempt's output must go, established by a
+	// positive ownership read and not merely by the write failing to match.
+	// It deletes its OWN output and exits quietly.
+	//
+	// Two things land here, and they share every consequence — the same
+	// shape as terminalUnknown below. Either the run has moved to a newer
+	// attempt, so it is alive and owned by someone else; or the run was
+	// CANCELLED, so the operator has killed it and its result must go with
+	// it. The classifier logs which, because "another attempt owns this run"
+	// would send an operator looking for an attempt that does not exist.
+	terminalSuperseded
+
+	// terminalUnknown: this attempt could not be shown to have lost the run,
+	// but did not claim it either. Delete nothing, claim nothing, and report
+	// the failure honestly; the result stays on disk, reachable by run_id.
+	//
+	// Two things land here, and they share every consequence: the write
+	// errored, so ownership is undetermined; or the write matched nothing
+	// while this attempt still owns the run, which means the run document
+	// was already terminal — the API's startup sweep marking in-flight runs
+	// `failed` without reaping their agents. Guessing supersession in
+	// either case is how a Mongo blip or an API restart turns into a
+	// destroyed result.
+	terminalUnknown
+)
+
+// runDocWriter is the slice of *database.RunRepository that StatusReporter
+// calls. Held as an interface for the same reason runStepWriter below is: so
+// the reporter's behaviour — which is now where the attempt fence lives, and
+// so where "this attempt no longer owns the run" is decided — can be
+// exercised by a unit test instead of only through a MongoDB container.
+type runDocWriter interface {
+	UpdateStatus(ctx context.Context, runID string, status, phase, detail string, progress int, attempt int) error
+	Complete(ctx context.Context, runID, discoveryID string, insightsFound int, attempt int) (bool, error)
+	Fail(ctx context.Context, runID, discoveryID, errMsg string, attempt int) (bool, error)
+	Ownership(ctx context.Context, runID string, attempt int) (database.RunOwnership, error)
+	MarkExplorationCheckpoint(ctx context.Context, runID string, step int, attempt int) (bool, error)
+	AddActiveTime(ctx context.Context, runID string, d time.Duration, attempt int) error
+	AppendLifecycle(ctx context.Context, runID string, ev models.RunLifecycleEvent, attempt int) error
+	IncrementQueryCount(ctx context.Context, runID string, success bool, attempt int) error
+	IncrementSchemaActionCalls(ctx context.Context, runID, action string, delta int, attempt int) error
+	IncrementAnalysisCounter(ctx context.Context, runID, metric string, delta int, attempt int) error
+	RecordSchemaContextTelemetry(ctx context.Context, runID string, tokens, tableCount int, attempt int) error
+}
+
 // runStepWriter is the slice of *database.RunStepRepository that
 // StatusReporter actually calls. Held as an interface so unit tests can
 // inject a fake without bringing up MongoDB.
 type runStepWriter interface {
-	AddStep(ctx context.Context, runID, projectID string, step models.RunStep) error
+	AddStep(ctx context.Context, runID, projectID string, attempt int, step models.RunStep) error
 }
 
 // StatusReporter writes live status updates to MongoDB during a discovery run.
@@ -26,11 +95,17 @@ type runStepWriter interface {
 // grew unbounded under streaming and ran into the same 16MB BSON limit
 // that killed discovery saves.
 type StatusReporter struct {
-	repo        *database.RunRepository
+	repo        runDocWriter
 	runStepRepo runStepWriter
 	projectID   string
 	runID       string
 	maxSteps    int
+	// attempt is which attempt of the run this process is. It fences the
+	// terminal status write against a previous attempt's agent that is still
+	// alive — see database.attemptFilter. Zero means "unknown", which
+	// matches any attempt and is the behaviour every caller had before
+	// resume existed.
+	attempt int
 }
 
 // NewStatusReporter creates a status reporter. Pass empty runID to disable.
@@ -49,9 +124,15 @@ func NewStatusReporter(repo *database.RunRepository, runStepRepo *database.RunSt
 // a typed-nil concrete pointer back to an untyped-nil interface so the
 // `s.runStepRepo != nil` check in enabled() does not get fooled by Go's
 // interface-conversion semantics.
-func newStatusReporter(repo *database.RunRepository, runStepRepo runStepWriter, projectID, runID string, maxSteps int) *StatusReporter {
+func newStatusReporter(repo runDocWriter, runStepRepo runStepWriter, projectID, runID string, maxSteps int) *StatusReporter {
 	if rs, ok := runStepRepo.(*database.RunStepRepository); ok && rs == nil {
 		runStepRepo = nil
+	}
+	// Same typed-nil → untyped-nil normalisation: a nil *RunRepository boxed
+	// into the interface would make the enabled() guard false-negative and
+	// every write below dereference it.
+	if r, ok := repo.(*database.RunRepository); ok && r == nil {
+		repo = nil
 	}
 	return &StatusReporter{
 		repo:        repo,
@@ -71,7 +152,7 @@ func (s *StatusReporter) SetPhase(ctx context.Context, phase, detail string, pro
 	if !s.enabled() {
 		return
 	}
-	if err := s.repo.UpdateStatus(ctx, s.runID, models.RunStatusRunning, phase, detail, progress); err != nil {
+	if err := s.repo.UpdateStatus(ctx, s.runID, models.RunStatusRunning, phase, detail, progress, s.attempt); err != nil {
 		logger.WithError(err).Warn("failed to update run status")
 	}
 }
@@ -79,11 +160,17 @@ func (s *StatusReporter) SetPhase(ctx context.Context, phase, detail string, pro
 // AddStep appends a step to the live log via the discovery_run_steps
 // collection. Each call is one InsertOne — no $push, no embedded array
 // growth on the run doc.
+//
+// Every row carries this reporter's attempt. A resume can start a new
+// attempt while this one is still inside an LLM call, and the rows it
+// writes in that window would otherwise be indistinguishable from the live
+// attempt's — see the API's RunStepRepository.ListByRun, which filters on
+// the run's current attempt.
 func (s *StatusReporter) AddStep(ctx context.Context, step models.RunStep) {
 	if !s.enabled() {
 		return
 	}
-	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, step); err != nil {
+	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, s.attempt, step); err != nil {
 		logger.WithError(err).Warn("failed to add run step")
 	}
 }
@@ -123,6 +210,40 @@ func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, ac
 		return
 	}
 
+	step := explorationRunStep(stepNum, action, thinking, query, rowCount, queryTimeMs, queryFixed, errStr, inputTokens, outputTokens, warehouseID)
+
+	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, s.attempt, step); err != nil {
+		logger.WithError(err).Warn("failed to add exploration step")
+	}
+
+	// Update progress: exploration is 10-60% of total
+	progress := 10 + (stepNum * 50 / s.maxSteps)
+	if progress > 60 {
+		progress = 60
+	}
+	detail := fmt.Sprintf("Step %d/%d: exploring data...", stepNum, s.maxSteps)
+	if err := s.repo.UpdateStatus(ctx, s.runID, models.RunStatusRunning, models.PhaseExploration, detail, progress, s.attempt); err != nil {
+		logger.WithError(err).Warn("failed to update exploration status")
+	}
+
+	// Per-action counter bumps — kept in one place so a future action
+	// type lands in the right bucket.
+	switch action {
+	case "query_data":
+		if err := s.repo.IncrementQueryCount(ctx, s.runID, errStr == "", s.attempt); err != nil {
+			logger.WithError(err).Warn("failed to increment query count")
+		}
+	case "lookup_schema", "search_tables", "get_correlations":
+		if err := s.repo.IncrementSchemaActionCalls(ctx, s.runID, action, 1, s.attempt); err != nil {
+			logger.WithError(err).Warn("failed to increment schema-action count")
+		}
+	}
+}
+
+// explorationRunStep builds the live-feed row for one exploration step.
+// Shared by the live hook and by ReplayExplorationStep so the two renderings
+// of the same step cannot drift.
+func explorationRunStep(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errStr string, inputTokens, outputTokens int, warehouseID string) models.RunStep {
 	stepType, msg := classifyExplorationStep(action, stepNum, thinking, errStr)
 
 	resultSummary := ""
@@ -130,7 +251,7 @@ func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, ac
 		resultSummary = fmt.Sprintf("%d rows returned", rowCount)
 	}
 
-	step := models.RunStep{
+	return models.RunStep{
 		Phase:        models.PhaseExploration,
 		StepNum:      stepNum,
 		Type:         stepType,
@@ -146,32 +267,37 @@ func (s *StatusReporter) AddExplorationStep(ctx context.Context, stepNum int, ac
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,
 	}
+}
 
-	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, step); err != nil {
-		logger.WithError(err).Warn("failed to add exploration step")
+// ReplayExplorationStep re-emits one already-executed step into this
+// attempt's live feed.
+//
+// A resume needs this because the feed is attempt-scoped. The replayed
+// prefix's rows exist, but they belong to the attempt that ran them, so
+// without re-emitting them the resumed run's log would start partway through
+// — the operator would see analysis of exploration they cannot see. The
+// engine deliberately does not fire its OnStep hook for replayed steps
+// (see ai.replayPrefix), and this is not that hook: it writes the ROW ONLY.
+//
+// No progress update and no counter bumps, which is the whole reason it is a
+// separate method. Those already happened on the attempt that executed the
+// step, and the run document carries them forward across attempts; running
+// them again would double-count every replayed query and schema lookup.
+//
+// The original step's timestamp is preserved, so the feed shows when the work
+// actually happened rather than when it was replayed.
+func (s *StatusReporter) ReplayExplorationStep(ctx context.Context, step models.ExplorationStep) {
+	if !s.enabled() {
+		return
 	}
-
-	// Update progress: exploration is 10-60% of total
-	progress := 10 + (stepNum * 50 / s.maxSteps)
-	if progress > 60 {
-		progress = 60
-	}
-	detail := fmt.Sprintf("Step %d/%d: exploring data...", stepNum, s.maxSteps)
-	if err := s.repo.UpdateStatus(ctx, s.runID, models.RunStatusRunning, models.PhaseExploration, detail, progress); err != nil {
-		logger.WithError(err).Warn("failed to update exploration status")
-	}
-
-	// Per-action counter bumps — kept in one place so a future action
-	// type lands in the right bucket.
-	switch action {
-	case "query_data":
-		if err := s.repo.IncrementQueryCount(ctx, s.runID, errStr == ""); err != nil {
-			logger.WithError(err).Warn("failed to increment query count")
-		}
-	case "lookup_schema", "search_tables", "get_correlations":
-		if err := s.repo.IncrementSchemaActionCalls(ctx, s.runID, action, 1); err != nil {
-			logger.WithError(err).Warn("failed to increment schema-action count")
-		}
+	row := explorationRunStep(
+		step.Step, step.Action, step.Thinking, step.Query, step.RowCount,
+		step.ExecutionTimeMs, step.Fixed, step.Error, step.TokensIn, step.TokensOut,
+		step.WarehouseID,
+	)
+	row.Timestamp = step.Timestamp
+	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, s.attempt, row); err != nil {
+		logger.WithError(err).Warn("failed to re-emit a replayed exploration step into the live feed")
 	}
 }
 
@@ -240,7 +366,7 @@ func (s *StatusReporter) AddAnalysisStep(ctx context.Context, areaID, areaName s
 		OutputTokens: outputTokens,
 	}
 
-	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, step); err != nil {
+	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, s.attempt, step); err != nil {
 		logger.WithError(err).Warn("failed to add analysis step")
 	}
 }
@@ -259,7 +385,7 @@ func (s *StatusReporter) AddInsightStep(ctx context.Context, name, severity, are
 		InsightSeverity: severity,
 	}
 
-	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, step); err != nil {
+	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, s.attempt, step); err != nil {
 		logger.WithError(err).Warn("failed to add insight step")
 	}
 }
@@ -300,7 +426,7 @@ func (s *StatusReporter) AddRecommendationStep(ctx context.Context, recommendati
 		OutputTokens: outputTokens,
 	}
 
-	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, step); err != nil {
+	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, s.attempt, step); err != nil {
 		logger.WithError(err).Warn("failed to add recommendation step")
 	}
 }
@@ -329,7 +455,7 @@ func (s *StatusReporter) AddValidationStep(ctx context.Context, insightName, sta
 		OutputTokens: outputTokens,
 	}
 
-	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, step); err != nil {
+	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, s.attempt, step); err != nil {
 		logger.WithError(err).Warn("failed to add validation step")
 	}
 }
@@ -338,12 +464,144 @@ func (s *StatusReporter) AddValidationStep(ctx context.Context, insightName, sta
 // the run produced. discoveryID must be the `_id` of the
 // `discoveries` document the orchestrator just saved — see
 // RunRepository.Complete for why the back-reference matters.
-func (s *StatusReporter) Complete(ctx context.Context, discoveryID string, insightsFound int) {
+// Reports what the write established about ownership. See terminalOutcome —
+// an error and an unmatched attempt are NOT the same answer.
+func (s *StatusReporter) Complete(ctx context.Context, discoveryID string, insightsFound int) terminalOutcome {
+	if !s.enabled() {
+		// Nothing to claim and nothing to protect: a run without status
+		// reporting has no run document and no competing attempt.
+		return terminalClaimed
+	}
+	applied, err := s.repo.Complete(ctx, s.runID, discoveryID, insightsFound, s.attempt)
+	if err != nil {
+		logger.WithError(err).Warn("failed to complete run; ownership undetermined, so nothing will be cleaned up")
+		return terminalUnknown
+	}
+	if !applied {
+		return s.classifyUnappliedTerminal(ctx, "completion")
+	}
+	return terminalClaimed
+}
+
+// classifyUnappliedTerminal decides what a terminal write that matched
+// nothing actually proved.
+//
+// It is NOT proof of supersession on its own, and treating it as such
+// destroys data. The write is fenced on two things — this attempt AND a
+// non-terminal status — so it also matches nothing when this attempt still
+// owns a run that has already been marked terminal by somebody else. The
+// API's startup sweep does exactly that, routinely: it marks in-flight runs
+// `failed` after a restart WITHOUT reaping their agents, so a perfectly
+// healthy agent finishes, saves its discovery, finds its own terminal write
+// unmatched, and — before this — concluded it had been superseded and
+// deleted the result it had just written. Nobody had resumed anything.
+//
+// So supersession now needs positive evidence: the run must no longer be on
+// this attempt. One indexed read, once per run, and only when the write did
+// not land. The ownership read deliberately does not filter on status, which
+// is what lets it tell the two cases apart.
+func (s *StatusReporter) classifyUnappliedTerminal(ctx context.Context, what string) terminalOutcome {
+	standing, err := s.repo.Ownership(ctx, s.runID, s.attempt)
+	if err != nil {
+		logger.WithError(err).WithField("run_id", s.runID).Warn("could not establish whether this attempt still owns the run; nothing will be cleaned up")
+		return terminalUnknown
+	}
+	switch standing {
+	case database.RunOwnedByThisAttempt:
+		// Still ours, so there is no newer attempt to defer to and nothing
+		// to retire. The run document is already terminal — our own outcome
+		// is the one that did not get recorded, which is worth saying
+		// loudly, but the result stays on disk reachable by run_id.
+		logger.WithFields(logger.Fields{
+			"run_id": s.runID, "attempt": s.attempt,
+		}).Warn("the run was already terminal when this attempt tried to record its " + what + "; the outcome was not recorded, but this attempt still owns the run so its result is kept")
+		return terminalUnknown
+
+	case database.RunCancelled:
+		// The operator killed the run. Its result must go with it: cancel
+		// deletes the checkpoints and refuses the terminal write, so keeping
+		// the discovery would leave a cancelled run with a result on display
+		// that nothing can explain.
+		//
+		// Logged as a cancellation rather than as supersession even though
+		// both return the same value, because "another attempt owns this
+		// run" would send an operator looking for an attempt that does not
+		// exist.
+		logger.WithFields(logger.Fields{
+			"run_id": s.runID, "attempt": s.attempt,
+		}).Warn("the run was cancelled while this attempt was still working; its " + what + " was not recorded and its result will be deleted")
+		return terminalSuperseded
+
+	default:
+		logger.WithFields(logger.Fields{
+			"run_id": s.runID, "attempt": s.attempt,
+		}).Warn("this attempt no longer owns the run; its " + what + " was not recorded")
+		return terminalSuperseded
+	}
+}
+
+// MarkExplorationCheckpoint records that this run now has a checkpoint for
+// the given exploration step — what the dashboard reads to offer Resume on a
+// failed run.
+// Returns whether this attempt still owns the run. The write is
+// attempt-fenced, so its applied-ness answers that for free — no extra read on
+// a path that runs once per step.
+func (s *StatusReporter) MarkExplorationCheckpoint(ctx context.Context, step int) bool {
+	if !s.enabled() {
+		// No run document, so no competing attempt to lose to.
+		return true
+	}
+	applied, err := s.repo.MarkExplorationCheckpoint(ctx, s.runID, step, s.attempt)
+	if err != nil {
+		// A transient failure is not evidence of being superseded. Say we
+		// still own the run so the step is checkpointed anyway — losing the
+		// marker costs the dashboard's Resume affordance, not the run.
+		logger.WithError(err).Warn("failed to stamp the exploration checkpoint marker; the dashboard may not offer Resume for this run")
+		return true
+	}
+	return applied
+}
+
+// OwnsRun reports whether this attempt may still do work on the run.
+//
+// False for a run that was CANCELLED as well as one taken over by a newer
+// attempt. The gates built on this only ever ask "may I spend the next
+// phase", and the answer for a cancelled run is no — the attempt number is
+// untouched by a cancel, so an attempt-only comparison used to say yes and
+// let a killed run's agent spend its whole remaining budget.
+func (s *StatusReporter) OwnsRun(ctx context.Context) bool {
+	if !s.enabled() {
+		return true
+	}
+	standing, err := s.repo.Ownership(ctx, s.runID, s.attempt)
+	if err != nil {
+		// Same reasoning as above: a failed read is not evidence of being
+		// superseded.
+		logger.WithError(err).Warn("could not confirm this attempt still owns the run")
+		return true
+	}
+	return standing == database.RunOwnedByThisAttempt
+}
+
+// AddActiveTime adds one attempt's elapsed compute time to the run's
+// cumulative total, so elapsed time still means something after a resume.
+func (s *StatusReporter) AddActiveTime(ctx context.Context, d time.Duration) {
 	if !s.enabled() {
 		return
 	}
-	if err := s.repo.Complete(ctx, s.runID, discoveryID, insightsFound); err != nil {
-		logger.WithError(err).Warn("failed to complete run")
+	if err := s.repo.AddActiveTime(ctx, s.runID, d, s.attempt); err != nil {
+		logger.WithError(err).Warn("failed to add this attempt's active time to the run")
+	}
+}
+
+// AppendLifecycle records one transition on the run's append-only lifecycle
+// log. See models.RunLifecycleEvent.
+func (s *StatusReporter) AppendLifecycle(ctx context.Context, ev models.RunLifecycleEvent) {
+	if !s.enabled() {
+		return
+	}
+	if err := s.repo.AppendLifecycle(ctx, s.runID, ev, s.attempt); err != nil {
+		logger.WithError(err).Warn("failed to append a run lifecycle event")
 	}
 }
 
@@ -354,7 +612,7 @@ func (s *StatusReporter) RecordSchemaTelemetry(ctx context.Context, tokens, tabl
 	if !s.enabled() {
 		return
 	}
-	if err := s.repo.RecordSchemaContextTelemetry(ctx, s.runID, tokens, tableCount); err != nil {
+	if err := s.repo.RecordSchemaContextTelemetry(ctx, s.runID, tokens, tableCount, s.attempt); err != nil {
 		logger.WithError(err).Warn("failed to record schema-context telemetry")
 	}
 }
@@ -367,7 +625,7 @@ func (s *StatusReporter) IncrementSchemaActionCalls(ctx context.Context, action 
 	if !s.enabled() {
 		return
 	}
-	if err := s.repo.IncrementSchemaActionCalls(ctx, s.runID, action, delta); err != nil {
+	if err := s.repo.IncrementSchemaActionCalls(ctx, s.runID, action, delta, s.attempt); err != nil {
 		logger.WithError(err).Warn("failed to increment schema-action calls")
 	}
 }
@@ -380,7 +638,7 @@ func (s *StatusReporter) IncrementAnalysisCounter(ctx context.Context, metric st
 	if !s.enabled() {
 		return
 	}
-	if err := s.repo.IncrementAnalysisCounter(ctx, s.runID, metric, delta); err != nil {
+	if err := s.repo.IncrementAnalysisCounter(ctx, s.runID, metric, delta, s.attempt); err != nil {
 		logger.WithError(err).Warn("failed to increment analysis counter")
 	}
 }
@@ -391,11 +649,18 @@ func (s *StatusReporter) IncrementAnalysisCounter(ctx context.Context, metric st
 // the underlying repo stamps it on the run doc so plugin-hooks Hook
 // 5 and the discovery-log APIs can navigate to the partial result
 // the same way they would for a completed run.
-func (s *StatusReporter) Fail(ctx context.Context, discoveryID, errMsg string) {
+// Reports what the write established about ownership — see Complete.
+func (s *StatusReporter) Fail(ctx context.Context, discoveryID, errMsg string) terminalOutcome {
 	if !s.enabled() {
-		return
+		return terminalClaimed
 	}
-	if err := s.repo.Fail(ctx, s.runID, discoveryID, errMsg); err != nil {
-		logger.WithError(err).Warn("failed to mark run as failed")
+	applied, err := s.repo.Fail(ctx, s.runID, discoveryID, errMsg, s.attempt)
+	if err != nil {
+		logger.WithError(err).Warn("failed to mark run as failed; ownership undetermined, so nothing will be cleaned up")
+		return terminalUnknown
 	}
+	if !applied {
+		return s.classifyUnappliedTerminal(ctx, "failure")
+	}
+	return terminalClaimed
 }

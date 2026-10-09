@@ -99,9 +99,72 @@ type RunOptions struct {
 	// "no floor" (explicitly disabled by the caller).
 	MinSteps int
 
+	// Resume tells the agent to continue the run named by RunID from its
+	// last exploration checkpoint instead of starting fresh. Default false
+	// is an ordinary run.
+	Resume bool
+
+	// Attempt is this attempt's 1-based number. 0 and 1 both mean "first
+	// attempt".
+	//
+	// Read by the runners that have to tell one attempt of a run from
+	// another, because a resume re-enters the SAME run id while the previous
+	// attempt's workload can still be alive: Kubernetes, to keep the Job
+	// name unique (see KubernetesRunner.Run), and subprocess, to key its
+	// process table so Cancel kills every live attempt.
+	//
+	// The Docker runner does not need it, but "it addresses them all at
+	// once" was only half the reason, and the missing half was a bug: it
+	// selects containers by the run-id label, so Cancel stops every
+	// attempt's — and its cancellation MARK then has to outlive every one
+	// of those watchers rather than being consumed by the first to exit.
+	// See DockerRunner.wasCancelled.
+	Attempt int
+
 	// OnFailure is called when the agent process exits with an error.
 	// The runner passes the error message so the caller can update the run status.
 	OnFailure func(runID string, errMsg string)
+}
+
+// discoveryArgs builds the agent's argv for one discovery run.
+//
+// One definition for all three runner modes. They used to construct it
+// separately, which meant every new flag had to be added in three places and
+// a mode that missed one would differ from the others in a way only a
+// production run would reveal — the kind of divergence --resume is least
+// survivable: a runner that dropped it would silently start the run OVER,
+// re-querying the warehouse for every step the operator resumed to skip.
+func discoveryArgs(opts RunOptions) []string {
+	args := []string{
+		"--project-id", opts.ProjectID,
+		"--run-id", opts.RunID,
+	}
+	if len(opts.Areas) > 0 {
+		args = append(args, "--areas", strings.Join(opts.Areas, ","))
+	}
+	if opts.MaxSteps > 0 {
+		args = append(args, "--max-steps", strconv.Itoa(opts.MaxSteps))
+	}
+	// MinSteps forwards as-is: zero means "no floor, disabled" (either the
+	// caller explicitly set it to 0 or the handler defaulted an old client
+	// request with max_steps<=0). The agent CLI also clamps defensively.
+	if opts.MinSteps > 0 {
+		args = append(args, "--min-steps", strconv.Itoa(opts.MinSteps))
+	}
+	if opts.Resume {
+		args = append(args, "--resume")
+		// Tell the agent WHICH attempt it is, rather than letting it read
+		// the run document and find out. That field is mutable: a workload
+		// that starts slowly can come up after its run was swept to `failed`
+		// and resumed again, read the now-current attempt, and adopt it —
+		// which makes it indistinguishable from the live attempt to every
+		// fence that exists. The spawning attempt is the only correct answer
+		// and only the spawner knows it.
+		if opts.Attempt > 0 {
+			args = append(args, "--attempt", strconv.Itoa(opts.Attempt))
+		}
+	}
+	return args
 }
 
 // Config holds runner configuration from environment variables.

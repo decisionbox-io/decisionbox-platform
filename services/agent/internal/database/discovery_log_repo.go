@@ -309,6 +309,47 @@ func (r *DiscoveryLogRepository) GetRecommendationLogByDiscovery(ctx context.Con
 // EnsureIndexes creates the (discovery_id, ...) indexes on each split
 // collection. Called once at agent / api startup. Idempotent — Mongo
 // silently no-ops when an index already exists.
+// DeleteByDiscovery removes every split-log row belonging to one discovery,
+// across all four collections, and reports the total deleted.
+//
+// Keyed on discovery_id, NOT run_id, and that distinction is load-bearing: a
+// resumed run writes its new attempt's rows under the SAME run_id, so
+// deleting by run would take the rows that were just written along with the
+// superseded ones. The caller retires one superseded discovery at a time.
+//
+// Partial failure is reported but does not stop the remaining collections —
+// leaving three collections' rows behind because the fourth errored serves
+// nobody.
+func (r *DiscoveryLogRepository) DeleteByDiscovery(ctx context.Context, discoveryID string) (int64, error) {
+	if discoveryID == "" {
+		return 0, fmt.Errorf("delete split logs: discovery_id is required")
+	}
+	collections := []string{
+		CollectionDiscoveryExplorationSteps,
+		CollectionDiscoveryAnalysisSteps,
+		CollectionDiscoveryValidationResults,
+		CollectionDiscoveryRecommendationLog,
+	}
+	var total int64
+	var firstErr error
+	for _, coll := range collections {
+		res, err := r.db.Collection(coll).DeleteMany(ctx, bson.M{"discovery_id": discoveryID})
+		if err != nil {
+			applog.WithFields(applog.Fields{
+				"collection":   coll,
+				"discovery_id": discoveryID,
+				"error":        err.Error(),
+			}).Warn("failed to delete split-log rows for a superseded discovery")
+			if firstErr == nil {
+				firstErr = fmt.Errorf("delete %s rows for discovery %s: %w", coll, discoveryID, err)
+			}
+			continue
+		}
+		total += res.DeletedCount
+	}
+	return total, firstErr
+}
+
 func (r *DiscoveryLogRepository) EnsureIndexes(ctx context.Context) error {
 	jobs := []struct {
 		coll  string

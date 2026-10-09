@@ -70,6 +70,21 @@ env:
   # in-agent cap fires first and the agent fails gracefully rather than
   # being killed mid-write.
   # DISCOVERY_MAX_DURATION: "24h"
+  # DISCOVERY_CHECKPOINT_RETENTION — how long a run's exploration
+  # checkpoints survive, as a TTL on the discovery_checkpoints
+  # collection. Go duration format. These are what make a crashed run
+  # resumable (POST /api/v1/runs/{runId}/resume), so this MUST exceed
+  # DISCOVERY_MAX_DURATION above — otherwise a long run's early
+  # checkpoints expire while it is still running and a resume would
+  # re-explore the steps they covered. Raise the two together:
+  #   DISCOVERY_MAX_DURATION: "168h" + DISCOVERY_CHECKPOINT_RETENTION: "192h"
+  # With DISCOVERY_MAX_DURATION: "0" (in-agent cap disabled), pick a
+  # value above the longest run you expect. Default when unset: 48h,
+  # which leaves roughly a day after a 24h run for an operator to
+  # notice the failure and resume it. Checkpoints are also deleted
+  # eagerly when a run completes or is cancelled, so the TTL only
+  # reclaims the rows of runs nobody came back to.
+  # DISCOVERY_CHECKPOINT_RETENTION: "48h"
   # LLM_TIMEOUT — HTTP timeout per LLM API call. Go duration format (e.g. "5m", "15m").
   # Set this when long-form generations (executive summary on Opus, large ask responses)
   # need more than the provider default of 5 minutes. Per-project timeout_seconds

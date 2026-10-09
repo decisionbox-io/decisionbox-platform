@@ -137,3 +137,44 @@ func TestForwardedEnv_LLMBehaviourKnobs(t *testing.T) {
 		}
 	}
 }
+
+// TestForwardedEnv_DiscoveryRunBudget pins that both halves of the discovery
+// run budget reach agent containers.
+//
+// The agent is what applies DISCOVERY_MAX_DURATION and what creates the
+// checkpoint TTL index, so neither value means anything if it stops at the
+// API. And the two are constrained to each other — retention must exceed the
+// run cap, or a long run's checkpoints expire while it is still running — so
+// an operator raising one and not seeing the other take effect gets exactly
+// the configuration the constraint exists to prevent.
+func TestForwardedEnv_DiscoveryRunBudget(t *testing.T) {
+	t.Setenv("DISCOVERY_MAX_DURATION", "168h")
+	t.Setenv("DISCOVERY_CHECKPOINT_RETENTION", "192h")
+
+	found := map[string]string{}
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys) {
+		found[kv.Key] = kv.Value
+	}
+
+	if found["DISCOVERY_MAX_DURATION"] != "168h" {
+		t.Errorf("DISCOVERY_MAX_DURATION not forwarded: %q", found["DISCOVERY_MAX_DURATION"])
+	}
+	if found["DISCOVERY_CHECKPOINT_RETENTION"] != "192h" {
+		t.Errorf("DISCOVERY_CHECKPOINT_RETENTION not forwarded: %q — a resumable long run's checkpoints would expire mid-run", found["DISCOVERY_CHECKPOINT_RETENTION"])
+	}
+}
+
+// TestForwardedEnv_DiscoveryRunBudgetAbsentWhenUnset keeps the
+// forward-only-when-set contract: an unset knob must not be injected as an
+// empty string, which the agent would have to parse and fall back from.
+func TestForwardedEnv_DiscoveryRunBudgetAbsentWhenUnset(t *testing.T) {
+	found := map[string]bool{}
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys) {
+		found[kv.Key] = true
+	}
+	for _, k := range []string{"DISCOVERY_MAX_DURATION", "DISCOVERY_CHECKPOINT_RETENTION"} {
+		if found[k] {
+			t.Errorf("%s should not be forwarded when unset", k)
+		}
+	}
+}

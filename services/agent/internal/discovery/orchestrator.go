@@ -3,10 +3,12 @@ package discovery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -40,6 +42,11 @@ type discoveryLogPersister interface {
 	SaveAnalysisSteps(ctx context.Context, projectID, discoveryID, runID string, steps []models.AnalysisStep) error
 	SaveValidationResults(ctx context.Context, projectID, discoveryID, runID string, results []models.ValidationResult) error
 	SaveRecommendationLog(ctx context.Context, projectID, discoveryID, runID string, step *models.RecommendationStep) error
+	// DeleteByDiscovery removes every split-log row of one discovery.
+	// Used by the retire step of a resumed run, which has to drop the
+	// partial result a previous attempt left behind once the new one has
+	// landed.
+	DeleteByDiscovery(ctx context.Context, discoveryID string) (int64, error)
 }
 
 // AnalysisArea defines an analysis area resolved from project prompts.
@@ -73,8 +80,12 @@ const completeTimeout = 30 * time.Second
 // that records which terminal method was called without bringing up
 // MongoDB.
 type runFinalizer interface {
-	Complete(ctx context.Context, discoveryID string, insightsFound int)
-	Fail(ctx context.Context, discoveryID, errMsg string)
+	// Both report what the terminal write established about ownership. Three
+	// states, not two: see terminalOutcome. A write that matched nothing and
+	// a write that errored are different answers, and treating them alike
+	// means a transient Mongo failure deletes a result that is fine.
+	Complete(ctx context.Context, discoveryID string, insightsFound int) terminalOutcome
+	Fail(ctx context.Context, discoveryID, errMsg string) terminalOutcome
 }
 
 // finalizeStatus stamps the terminal status on the run document. On
@@ -91,7 +102,11 @@ type runFinalizer interface {
 // near-expiry persistCtx never prevents the final status write from
 // landing — the run-completion UpdateOne (and the discovery_id
 // back-reference Hook 5 in plugin-hooks.md depends on) always lands.
-func finalizeStatus(parent context.Context, reporter runFinalizer, computeErr error, result *models.DiscoveryResult, insightCount int) error {
+// Returns what the terminal write established about ownership, alongside the
+// error the caller propagates. Ownership is what licenses the destructive
+// cleanup that follows — retiring the other attempts' results, or this
+// attempt's own — so an undetermined answer must license neither.
+func finalizeStatus(parent context.Context, reporter runFinalizer, computeErr error, result *models.DiscoveryResult, insightCount int) (terminalOutcome, error) {
 	completeCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), completeTimeout)
 	defer cancel()
 
@@ -100,12 +115,11 @@ func finalizeStatus(parent context.Context, reporter runFinalizer, computeErr er
 		// APIs can find the partial result the same way they would
 		// for a completed run. Empty when Save itself failed and we
 		// never got an ID — Fail then records the error only.
-		reporter.Fail(completeCtx, result.ID, fmt.Sprintf("discovery cancelled: %v", computeErr))
-		return fmt.Errorf("discovery cancelled mid-compute: %w", computeErr)
+		outcome := reporter.Fail(completeCtx, result.ID, fmt.Sprintf("discovery cancelled: %v", computeErr))
+		return outcome, fmt.Errorf("discovery cancelled mid-compute: %w", computeErr)
 	}
 
-	reporter.Complete(completeCtx, result.ID, insightCount)
-	return nil
+	return reporter.Complete(completeCtx, result.ID, insightCount), nil
 }
 
 // persistContext derives the durable-write ctx from the run ctx.
@@ -172,6 +186,30 @@ type Orchestrator struct {
 	// orchestrator surfaces a clear error when it isn't.
 	runStepIndex RunStepIndex
 	runID        string
+
+	// checkpointRepo durably records each exploration step so a crashed run
+	// can be resumed. Held as an interface so a unit test injects a fake
+	// without MongoDB; nil disables checkpointing (and therefore resume)
+	// without changing anything else about the run.
+	checkpointRepo explorationCheckpointStore
+
+	// resume is the previous attempts' state when this run is a resume, nil
+	// otherwise. Every read goes through the nil-safe helpers in
+	// orchestrator_resume.go, so a normal run takes exactly today's path.
+	resume *ResumeState
+
+	// stepIndexUnusable disables the per-run vector index for this attempt.
+	// Set when a resume could not drop the previous attempt's collection, so
+	// the points the replay discarded are still in it — evidence this
+	// attempt must not reason over. See rebuildStepIndexForResume.
+	stepIndexUnusable atomic.Bool
+
+	// keepStepIndex is set as soon as the first checkpoint lands and cleared
+	// once the checkpoints are discarded. It is what makes the deferred Drop
+	// of the per-run vector collection conditional: a run that ends
+	// resumable keeps its index so the resume reuses it instead of paying to
+	// re-embed every step.
+	keepStepIndex bool
 
 	debugLogger    *debug.Logger
 	statusReporter *StatusReporter
@@ -362,6 +400,10 @@ type OrchestratorOptions struct {
 	// EmbedIndexStore is needed for Phase 8 to write to insights/recommendations collections
 	EmbedIndexStore EmbedIndexStore
 
+	// DiscoveryCheckpointRepo persists one row per exploration step so a run
+	// killed mid-flight can be resumed from it. Nil disables checkpointing.
+	DiscoveryCheckpointRepo *database.DiscoveryCheckpointRepository
+
 	// SchemaRetriever is the Qdrant-backed top-K schema retriever.
 	// Required — discovery is gated on schema_index_status == "ready",
 	// so the indexer has built the per-project Qdrant collection before
@@ -448,6 +490,15 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		discoveryLogRepo = opts.DiscoveryLogRepo
 	}
 
+	// Same normalization for the checkpoint store: a nil
+	// *DiscoveryCheckpointRepository boxed into the interface would make the
+	// `o.checkpointRepo == nil` guard false and the checkpoint path
+	// dereference it on the first step.
+	var checkpointRepo explorationCheckpointStore
+	if opts.DiscoveryCheckpointRepo != nil {
+		checkpointRepo = opts.DiscoveryCheckpointRepo
+	}
+
 	// Same typed-nil → untyped-nil normalization as discoveryLogRepo so the
 	// `o.questionRepo == nil` guard in runPhaseQuestions is not fooled by a nil
 	// concrete pointer boxed into a non-nil interface.
@@ -510,6 +561,7 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		vectorStore:           opts.VectorStore,
 		embeddingProvider:     opts.EmbeddingProvider,
 		embedIndexStore:       opts.EmbedIndexStore,
+		checkpointRepo:        checkpointRepo,
 		embedder:              opts.EmbeddingProvider, // same interface, named differently to avoid ambiguity
 		schemaRetriever:       opts.SchemaRetriever,
 		schemaCache:           opts.SchemaCache,
@@ -574,6 +626,11 @@ type DiscoveryOptions struct {
 	// default-on). The deployment-availability flag (DISCOVERY_REFLECTION_ENABLED,
 	// also default-on) is the other gate — both must be on.
 	ReflectionEnabled bool
+
+	// Resume carries the previous attempts' checkpointed state when this run
+	// re-enters an existing runID. Nil for every ordinary run, which then
+	// behaves exactly as it did before resume existed.
+	Resume *ResumeState
 }
 
 // RunDiscovery executes the complete discovery process.
@@ -636,11 +693,42 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		o.statusReporter.maxSteps = 100
 	}
 
+	// Resume state, if any. Read through the nil-safe helpers from here on,
+	// so every branch below reads the same on a normal run as it did before
+	// resume existed.
+	o.resume = opts.Resume
+
+	// Which attempt this process is, so the terminal status write cannot be
+	// overwritten by a previous attempt's agent that is somehow still alive
+	// (see database.attemptFilter). Must come after o.resume is assigned —
+	// read before it, this would be 1 on every attempt and fence nothing.
+	o.statusReporter.attempt = o.resume.attemptNumber()
+
+	// A resumed run HAS checkpoints — that is what it was resumed from — so
+	// it is resumable before it writes a single new one. Set here rather than
+	// only when a checkpoint lands, because the skip-exploration path never
+	// writes one: the engine does not run. Without this, a resumed run that
+	// then failed in analysis would drop its per-run vector index on the way
+	// out even though its checkpoints survive, and the next resume would pay
+	// to re-embed every step it replays.
+	if o.resume.prefixLen() > 0 || o.resume.explorationComplete() {
+		o.keepStepIndex = true
+	}
+
 	applog.WithFields(applog.Fields{
-		"project_id": o.projectID,
-		"domain":     o.domain,
-		"category":   o.category,
+		"project_id":           o.projectID,
+		"domain":               o.domain,
+		"category":             o.category,
+		"attempt":              o.resume.attemptNumber(),
+		"replayable_steps":     o.resume.prefixLen(),
+		"exploration_complete": o.resume.explorationComplete(),
 	}).Info("Starting discovery run")
+
+	if detail := o.resumePhaseDetail(); detail != "" {
+		// Say what is happening, so the live panel explains a run that
+		// starts at step 42 instead of appearing to stall at step 1.
+		o.statusReporter.SetPhase(ctx, models.PhaseExploration, detail, 10)
+	}
 
 	startTime := time.Now()
 
@@ -901,6 +989,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			inner:    o.runStepIndex,
 			reporter: o.statusReporter,
 			ctx:      ctx,
+			unusable: &o.stepIndexUnusable,
 		}
 	}
 
@@ -958,6 +1047,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		OnStep: func(stepNum int, action, thinking, query string, rowCount int, queryTimeMs int64, queryFixed bool, errMsg string, inputTokens, outputTokens int, warehouseID string) {
 			o.statusReporter.AddExplorationStep(ctx, stepNum, action, thinking, query, rowCount, queryTimeMs, queryFixed, errMsg, inputTokens, outputTokens, warehouseID)
 		},
+		// Durability for the one phase whose cost is irrecoverable. A
+		// separate seam from OnStep: that one is the live UI feed and takes
+		// a flattened summary, this one takes the whole step plus the
+		// action arguments replay needs.
+		PersistStep: o.checkpointStep,
+		// The already-executed prefix to replay instead of re-query. Nil on
+		// an ordinary run.
+		Resume: o.resume.engineResume(),
 	})
 
 	// Defer dropping the per-run Qdrant collection — runs that
@@ -966,6 +1063,20 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	if o.runStepIndex != nil {
 		applog.WithField("run_id", o.runID).Debug("orchestrator: per-run step index wired; deferring Drop")
 		defer func() {
+			// Skipped when the run is ending RESUMABLE — it has live
+			// checkpoints, so a resume would otherwise have to pay to
+			// re-embed every step it replays. The flag is cleared the
+			// moment the checkpoints are discarded, so a successful run
+			// still drops its collection here exactly as before.
+			//
+			// Resume does not DEPEND on the collection surviving: replay
+			// re-indexes the prefix idempotently, which is what keeps it
+			// working after a hard kill (where this defer never ran) or
+			// after the boot sweep already fired.
+			if o.keepStepIndex {
+				applog.WithField("run_id", o.runID).Info("orchestrator: run is resumable; keeping the per-run step index so a resume reuses it")
+				return
+			}
 			applog.WithField("run_id", o.runID).Debug("orchestrator: dropping per-run step index on exit")
 			if err := o.runStepIndex.Drop(ctx); err != nil {
 				applog.WithError(err).Warn("Failed to drop per-run step index; orphan sweep will retry on next agent boot")
@@ -975,15 +1086,96 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		applog.WithField("run_id", o.runID).Warn("orchestrator: runStepIndex is nil — analysis will use empty vector hits")
 	}
 
-	explorationResult, err := o.explorationEngine.Explore(ctx, ai.ExplorationContext{
-		ProjectID:     o.projectID,
-		Dataset:       datasetsStr,
-		InitialPrompt: explorationPrompt,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("exploration failed: %w", err)
+	// A resumed run rebuilds its per-run step index from scratch, rather
+	// than reusing whatever the previous attempt left in Qdrant.
+	//
+	// The surviving collection is indexed up to the step the PREVIOUS
+	// attempt reached, and the replayable prefix can be shorter than that:
+	// a gap or a stale tail in the checkpoints ends the prefix early, and
+	// the steps after it were discarded. Reusing the collection leaves their
+	// points in place, so the resumed run would be comparing its new steps
+	// against work from a branch it has thrown away — Nearest would score a
+	// fresh step as a repeat of a "future" point and the novelty rule could
+	// accept completion early, while the analysis picker's top-K would be
+	// crowded by hits for steps that are not in the result at all.
+	//
+	// Rebuilding costs nothing that resume was not already paying. Both
+	// resume paths re-upsert every step they replay — replayPrefix per step,
+	// reindexReplayedSteps in one go on the skip-exploration path — so the
+	// prefix's points are rewritten either way. The only thing the drop
+	// removes is the part that should not be there.
+	//
+	// Gated on ownership, because the drop is DESTRUCTIVE and the collection
+	// is keyed on run_id alone: a superseded attempt reaching here would
+	// delete the index the live attempt has already rebuilt, and the live
+	// attempt would not notice — it re-indexes on replay, which it has
+	// already done by then, so its novelty checks and analysis picking would
+	// silently degrade to keyword-only for the rest of the run.
+	//
+	// Unlike the per-write gates declined above, one check fully covers this
+	// one: the drop happens once, at a known point, so there is no window
+	// left behind it.
+	if o.ownershipLost(ctx, "rebuilding the step index") {
+		return nil, ai.ErrAttemptSuperseded
 	}
-	applog.WithField("steps", explorationResult.TotalSteps).Info("Exploration completed")
+	o.rebuildStepIndexForResume(ctx)
+
+	// The feed is attempt-scoped, so this attempt has to own a copy of the
+	// prefix's rows or its log starts partway through. Same gate as the
+	// index rebuild above covers it: one emission, at a known point.
+	o.replayLiveFeedForResume(ctx)
+
+	var explorationResult *ai.ExplorationResult
+	if o.resume.explorationComplete() {
+		// A previous attempt finished exploration, so there is nothing left
+		// to explore: rebuild the result from the checkpoints and go
+		// straight to analysis. Zero exploration LLM calls, zero warehouse
+		// queries — the acceptance criterion this branch exists for.
+		//
+		// The engine never runs here, so nothing indexes the steps; the
+		// re-index below is what keeps the analysis picker from ranking
+		// against an empty collection for the whole run.
+		explorationResult = o.explorationFromCheckpoints()
+		o.reindexReplayedSteps(ctx, explorationResult.Steps)
+		// This path reads the checkpoints without rewriting them, so their
+		// retention clock would still be running from the previous attempt.
+		// Re-anchor it, or an operator resuming near the retention horizon
+		// watches the rows expire mid-run and cannot resume a second time.
+		o.refreshCheckpointTTL(ctx)
+		applog.WithFields(applog.Fields{
+			"run_id": o.runID,
+			"steps":  explorationResult.TotalSteps,
+		}).Info("Exploration already complete from a previous attempt — skipping Phase 3 entirely")
+	} else {
+		var err error
+		explorationResult, err = o.explorationEngine.Explore(ctx, ai.ExplorationContext{
+			ProjectID:     o.projectID,
+			Dataset:       datasetsStr,
+			InitialPrompt: explorationPrompt,
+		})
+		if err != nil {
+			// Losing the run to a newer attempt is not a discovery failure.
+			// Returned unwrapped so the caller can tell the two apart and
+			// exit quietly instead of announcing a failed run that another
+			// attempt is still working on.
+			if errors.Is(err, ai.ErrAttemptSuperseded) {
+				return nil, err
+			}
+			return nil, fmt.Errorf("exploration failed: %w", err)
+		}
+		// Record that exploration is done BEFORE analysis starts. A run
+		// that dies in analysis then resumes straight back into analysis
+		// rather than re-exploring, which is the expensive mistake.
+		//
+		// It is also the last ownership gate before the expensive half of
+		// the pipeline: everything after this — analysis, recommendations,
+		// validation — would otherwise be spent by a superseded attempt on
+		// a result it deletes at the tail.
+		if err := o.checkpointExplorationSummary(ctx, explorationResult); err != nil {
+			return nil, err
+		}
+		applog.WithField("steps", explorationResult.TotalSteps).Info("Exploration completed")
+	}
 
 	// Wire the exploration log into the verifier before the analysis loop
 	// runs. The verifier renders the SQL of cited source_steps into its
@@ -1020,6 +1212,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	}
 
 	applog.Info("Phase 4: Running analysis by area")
+	if o.ownershipLost(ctx, "analysis") {
+		return nil, ai.ErrAttemptSuperseded
+	}
 	o.statusReporter.SetPhase(ctx, models.PhaseAnalysis, "Analyzing discoveries by category...", 65)
 	allInsights := make([]models.Insight, 0)
 	analysisLog := make([]models.AnalysisStep, 0)
@@ -1074,6 +1269,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	picker.SmartOverflowEnabled = opts.SmartOverflowEnabled
 
 	for _, area := range runAreas {
+		// Per area, not just per phase: analysis is the long one, and a
+		// resume landing inside it would otherwise go unnoticed until
+		// Phase 5.
+		if o.ownershipLost(ctx, "analysis area "+area.ID) {
+			return nil, ai.ErrAttemptSuperseded
+		}
 		areaPrompt, ok := prompts.AnalysisAreas[area.ID]
 		if !ok {
 			applog.WithField("area", area.ID).Warn("No prompt for analysis area, skipping")
@@ -1195,6 +1396,17 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// fires only when it yields zero parseable insights from a response that
 		// wasn't a legitimately empty area (see analyzeAreaInsights).
 		outcome := o.analyzeAreaInsights(ctx, area.ID, prompt, maxTokens)
+
+		// Again, now that the call has returned. The guard at the top of the
+		// loop was true when the area started, and an analysis call is long
+		// enough for a resume to land inside it — after which this attempt
+		// would validate the insights it just got (more LLM calls) and
+		// append analysis, insight and validation run-step rows. Those rows
+		// are keyed on run_id ALONE, not on attempt, so they would show up
+		// in the resumed run's live log as its own work.
+		if o.ownershipLost(ctx, "validating area "+area.ID) {
+			return nil, ai.ErrAttemptSuperseded
+		}
 		step.Response = outcome.response
 		step.TokensIn = outcome.tokensIn
 		step.TokensOut = outcome.tokensOut
@@ -1283,6 +1495,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// is in the per-project eligibility set (o.recommendationVerdicts; default
 	// {confirmed, supported}) flow to the recommender.
 	applog.Info("Phase 5: Generating recommendations")
+	if o.ownershipLost(ctx, "recommendations") {
+		return nil, ai.ErrAttemptSuperseded
+	}
 	o.statusReporter.SetPhase(ctx, models.PhaseRecommendations, "Generating actionable recommendations...", 85)
 	recommenderInput := filterEligibleInsights(allInsights, o.recommendationVerdicts)
 	applog.WithFields(applog.Fields{
@@ -1353,15 +1568,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// can use historical context (e.g., recurring patterns, trends, and signals).
 	applog.Info("Phase 6: Updating project context")
 
-	// Mark that a successful discovery run occurred for this project
-	projectCtx.RecordDiscovery(true)
-
-	// Merge newly discovered insights into long-term pattern memory
-	projectCtx.UpdatePatterns(allInsights)
-
-	// Persist updated context (best-effort; failures are non-fatal)
-	if err := o.saveProjectContext(ctx, projectCtx); err != nil {
-		applog.WithError(err).Warn("Failed to save project context")
+	// A gate here no longer protects the project context — that write has
+	// moved to the terminal section, where ownership is DECIDED rather than
+	// sampled. This one just stops a superseded attempt from paying for the
+	// save and the embedding pass it is about to have deleted.
+	if o.ownershipLost(ctx, "saving the result") {
+		return nil, ai.ErrAttemptSuperseded
 	}
 
 	// Phase 7: Save discovery result
@@ -1389,15 +1601,23 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// Create final result object that will be saved and returned
 	// Contains all insights, recommendations, and execution metadata
 	result := &models.DiscoveryResult{
-		ProjectID:       o.projectID,
-		WarehouseID:     o.warehouseID,
-		Domain:          o.domain,
-		Category:        o.category,
-		RunType:         runType,
-		AreasRequested:  opts.SelectedAreas,
-		DiscoveryDate:   time.Now(),
-		TotalSteps:      explorationResult.TotalSteps,
-		Duration:        time.Since(startTime),
+		ProjectID:   o.projectID,
+		WarehouseID: o.warehouseID,
+		// The back-reference that lets this run find the results it
+		// produced — needed to retire a superseded attempt's partial
+		// result, and to keep that result out of this run's own
+		// previously-discovered context.
+		RunID:          o.runID,
+		Domain:         o.domain,
+		Category:       o.category,
+		RunType:        runType,
+		AreasRequested: opts.SelectedAreas,
+		DiscoveryDate:  time.Now(),
+		TotalSteps:     explorationResult.TotalSteps,
+		// Cumulative ACTIVE time across attempts, not this process's
+		// elapsed: a run resumed the next morning must not report the hours
+		// it spent waiting for someone to notice it had failed.
+		Duration:        o.cumulativeDuration(time.Since(startTime)),
 		Schemas:         schemas,
 		Insights:        allInsights,
 		Recommendations: recommendations,
@@ -1440,7 +1660,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		return nil, err
 	}
 
-	// Store detailed execution logs (exploration, analysis, validation) for debugging
+	// Store detailed execution logs (exploration, analysis, validation) for debugging.
+	// A clean insert under a freshly minted discovery_id, which is what makes
+	// the unique index on discovery_recommendation_log.discovery_id
+	// unviolatable on a resumed run rather than merely unviolated.
 	o.persistSplitLogs(persistCtx, result.ID, explorationResult.Steps, analysisLog, allValidation, recStep)
 
 	// Phase 8: Embed & Index (non-fatal — errors logged, discovery still completes).
@@ -1459,9 +1682,109 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		o.runPhaseEmbedIndex(persistCtx, result)
 	}
 
-	// Final step: update run status (success or failure) based on execution result
-	if err := finalizeStatus(ctx, o.statusReporter, computeErr, result, len(allInsights)); err != nil {
+	// Record this attempt's own compute time and the transition, before the
+	// status flip. A resumed run needs both: the cumulative total so elapsed
+	// time means something across attempts, and the per-attempt event so
+	// "which model ran which attempt" is answerable.
+	o.recordAttemptOutcome(persistCtx, time.Since(startTime), computeErr)
+
+	// Final step: update run status (success or failure) based on execution
+	// result. It runs BEFORE the cleanup below, and that order is load-bearing:
+	// the terminal write is attempt-fenced, so whether it landed is this
+	// attempt's claim on the run — and the cleanup deletes data.
+	outcome, err := finalizeStatus(ctx, o.statusReporter, computeErr, result, len(allInsights))
+
+	// Retire the results of this run's earlier attempts, now that this
+	// attempt's result is fully written AND this attempt is provably the one
+	// that owns the run. A no-op on every run that was not resumed, and on a
+	// resumed run whose previous attempt died before it saved anything —
+	// which is the common case.
+	//
+	// Gated on the claim because retire deletes by run_id: an orphaned
+	// previous attempt reaching here after the live one had already saved
+	// would otherwise delete the LIVE attempt's discovery, split logs,
+	// standalone docs and vectors, and keep its own. Losing the good result
+	// to the dead attempt's cleanup is far worse than leaving a stale one
+	// behind — so a superseded attempt cleans up after ITSELF instead, which
+	// is the branch below.
+	switch outcome {
+	case terminalClaimed:
+		o.recordProjectLearning(persistCtx, projectCtx, allInsights)
+		o.retireSupersededAttempts(persistCtx, result.ID)
+
+	case terminalSuperseded:
+		// This attempt lost the run — but it has already written its own
+		// discovery, split logs, standalone docs and vectors above, because
+		// all of that happens before the terminal write that establishes
+		// ownership. Leaving them is worse than the problem the claim gate
+		// solves: the orphan's discovery_date is typically LATER than the
+		// owner's, so its result becomes the project's latest and the dead
+		// attempt wins the display.
+		//
+		// So it deletes its OWN output and nothing else. The owner's result
+		// is untouched either way.
+		o.retireOwnResult(persistCtx, result.ID)
+
+		// And it must NOT fall through to the success path. Compute may have
+		// gone perfectly — err is nil here — but the result it produced has
+		// just been deleted, so reporting success would have the entrypoint
+		// send a completed notification and run the post-completion phases
+		// (clarifying questions, reflection) against a discovery id that no
+		// longer exists, for a run another attempt owns.
+		return result, ai.ErrAttemptSuperseded
+
+	case terminalUnknown:
+		// This attempt's terminal outcome was not recorded, and it has NOT
+		// been shown to have lost the run. Delete nothing — see
+		// terminalOutcome for why guessing here destroys results.
+		//
+		// Deliberately does not say WHY, because two causes land here and
+		// this branch cannot tell them apart: the write errored, or the
+		// write was declined because the run document was already terminal
+		// (the API's startup sweep marking in-flight runs `failed` without
+		// reaping their agents). StatusReporter has already logged which,
+		// one line further up; claiming "the write failed" here would send
+		// an operator hunting a Mongo failure that never happened in the
+		// commoner of the two cases.
+		//
+		// Reported rather than exited quietly either way: the result is on
+		// disk and reachable by run_id, the checkpoints are kept, so the
+		// run is resumable — but nothing has recorded what this attempt
+		// actually did, and that is the operator's problem to see.
+		applog.WithFields(applog.Fields{
+			"run_id":       o.runID,
+			"discovery_id": result.ID,
+		}).Error("this attempt's terminal run-status write did not land; the result is saved but the run document does not reflect this attempt's outcome")
+
+		// The result is kept on this path, so the learning drawn from it is
+		// kept too. The rule is not "only the claimant writes context" but
+		// "nobody writes context for a result that is about to be deleted",
+		// and the deletion only happens under terminalSuperseded. Dropping
+		// it here would quietly cost the project every lesson from a run the
+		// startup sweep marked failed while its agent was still working —
+		// the commoner of the two causes that land on this branch.
+		o.recordProjectLearning(persistCtx, projectCtx, allInsights)
+
+		if err == nil {
+			return result, fmt.Errorf("run %s: discovery completed but its terminal status write did not land", o.runID)
+		}
 		return result, err
+	}
+
+	if err != nil {
+		// The run is ending resumable. Keep the checkpoints (and the per-run
+		// vector index) so an operator can resume it rather than paying for
+		// exploration again.
+		return result, err
+	}
+
+	// The run reached a terminal success, so there is nothing left to resume
+	// from. Discarding the checkpoints also re-arms the deferred Drop of the
+	// per-run vector collection. Gated on the claim for the same reason: a
+	// superseded attempt must not delete the live one's checkpoints, and an
+	// attempt that could not determine ownership must not either.
+	if outcome == terminalClaimed {
+		o.discardCheckpoints(persistCtx, "run completed")
 	}
 
 	// The clarifying-questions hop (RunPhaseQuestions) is deliberately NOT invoked
@@ -1480,6 +1803,36 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 	// Return final discovery result to caller
 	return result, nil
+}
+
+// recordProjectLearning merges this run's findings into the project's
+// long-term pattern memory and persists it.
+//
+// Called from the terminal section, after ownership has been DECIDED, and
+// that placement is the point. Project context is the one write a superseded
+// attempt could not take back: everything else it produces is either
+// attempt-fenced or deleted by retireOwnResult at the tail, but this is
+// keyed on the PROJECT, so patterns merged from a discovery that is about to
+// be deleted outlive it and steer every future run.
+//
+// A gate before the write could only narrow that window, never close it —
+// there is always a gap between reading ownership and writing. Deciding
+// first removes the gap: this runs when the attempt claimed the run, and
+// when the claim was undetermined but the result is being KEPT, and never
+// when the result is about to go.
+//
+// Best-effort, as it was before: a project that cannot record its learning
+// still produced a discovery, and failing the run over it would be the wrong
+// trade.
+func (o *Orchestrator) recordProjectLearning(ctx context.Context, projectCtx *models.ProjectContext, insights []models.Insight) {
+	if projectCtx == nil || o.contextRepo == nil {
+		return
+	}
+	projectCtx.RecordDiscovery(true)
+	projectCtx.UpdatePatterns(insights)
+	if err := o.saveProjectContext(ctx, projectCtx); err != nil {
+		applog.WithError(err).Warn("Failed to save project context")
+	}
 }
 
 // persistSplitLogs writes the per-step / per-area / per-result rows into
@@ -2518,6 +2871,32 @@ func (o *Orchestrator) loadPreviousDiscoveryContext(ctx context.Context) (
 		return nil, nil, nil
 	}
 
+	// Drop this run's OWN results. The list feeds the exploration and
+	// analysis prompts as "previously discovered — do not re-tread these",
+	// and on a resumed run the partial result its previous attempt saved is
+	// in it. Left alone, the run would be instructed not to repeat its own
+	// findings: it would skip the very ground it was resumed to finish, and
+	// the operator would get a resumed run that found less than the attempt
+	// that crashed.
+	//
+	// Filtered here rather than in the repository because this is the only
+	// caller for which the run's own result is not legitimate history.
+	// Historical documents carry no run_id and so are never matched.
+	if o.runID != "" {
+		kept := recentDiscoveries[:0]
+		for _, disc := range recentDiscoveries {
+			if disc.RunID == o.runID {
+				applog.WithFields(applog.Fields{
+					"run_id":       o.runID,
+					"discovery_id": disc.ID,
+				}).Info("excluding this run's own earlier result from previous-discovery context")
+				continue
+			}
+			kept = append(kept, disc)
+		}
+		recentDiscoveries = kept
+	}
+
 	if len(recentDiscoveries) == 0 {
 		return nil, nil, nil
 	}
@@ -2760,12 +3139,45 @@ type countingStepIndexer struct {
 	inner    RunStepIndex
 	reporter *StatusReporter
 	ctx      context.Context
+	// unusable, once set, makes this decorator refuse both operations.
+	//
+	// A pointer because the decorator is held by value: the engine captures
+	// a copy at construction, and the orchestrator can only reach that copy
+	// through shared state. Set when a resume could not drop the previous
+	// attempt's collection — see rebuildStepIndexForResume.
+	unusable *atomic.Bool
 }
+
+// errStepIndexUnusable is what both methods answer with once the index has
+// been declared unusable for this attempt.
+//
+// An error rather than a silent no-op, because the engine already knows what
+// to do with an index that errors, and both answers are the ones wanted here.
+// A failing Nearest makes the step neither new nor repeated — unjudgeable —
+// so the novelty rule cannot fire on evidence this attempt should not see. A
+// failing Upsert feeds recordIndexOutcome, and an index that never keeps
+// anything makes noveltyMeasurable false, which stands the rule down at the
+// point the decision is made. Both roads lead to the same place: the run can
+// only get longer, never shorter.
+//
+// Search is deliberately NOT stood down with them, and it is not an
+// oversight. The analysis picker reaches the index directly, and a Search
+// error makes it SKIP THE AREA — every area, which is a discovery with no
+// insights at all. Far worse than what the stale points can do to it: hits
+// are filtered against the run's own step list, so a phantom is dropped and
+// the worst surviving case is a score computed from an older step that
+// happened to carry the same number. Content always comes from the live step
+// list, the keyword boost backs the ranking up, and a mis-ranked area still
+// gets analysed.
+var errStepIndexUnusable = errors.New("the per-run step index is unusable for this attempt: a previous attempt's points could not be dropped")
 
 // Upsert delegates to the wrapped index; on success bumps the
 // per-run upsert counter. Errors from the inner Upsert propagate
 // untouched so the engine logs them.
 func (c countingStepIndexer) Upsert(ctx context.Context, step models.ExplorationStep) error {
+	if c.unusable != nil && c.unusable.Load() {
+		return errStepIndexUnusable
+	}
 	if err := c.inner.Upsert(ctx, step); err != nil {
 		return err
 	}
@@ -2781,6 +3193,9 @@ func (c countingStepIndexer) Upsert(ctx context.Context, step models.Exploration
 // cube stopping decision reads, which would silently fall back to the step
 // floor with nothing to notice it.
 func (c countingStepIndexer) Nearest(ctx context.Context, step models.ExplorationStep) (float64, bool, error) {
+	if c.unusable != nil && c.unusable.Load() {
+		return 0, false, errStepIndexUnusable
+	}
 	return c.inner.Nearest(ctx, step)
 }
 
