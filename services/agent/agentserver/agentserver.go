@@ -1402,8 +1402,25 @@ func loadActiveRunIDs(ctx context.Context, db *database.DB) map[string]struct{} 
 		applog.WithError(err).Warn("Could not list runs with checkpoints for orphan sweep; a resumable run's step index may be dropped")
 		return out
 	}
+	// A checkpoint row is not by itself proof that a run is resumable. A
+	// cancelled run's dying agent can re-create one after CancelRun purged
+	// them — cancel leaves the attempt unchanged and the runners can return
+	// before the workload is gone — and `failed` is the only status a resume
+	// will accept. Keeping a collection open on the strength of a row like
+	// that holds Qdrant storage for a run nothing can ever resume, until the
+	// checkpoint TTL reclaims the row.
+	//
+	// Best-effort like everything else here: if the narrowing read fails,
+	// keep all of them. Over-keeping costs storage until the next boot;
+	// under-keeping makes a legitimate resume re-embed every replayed step.
+	resumable, err := repo.ResumableIDs(ctx, checkpointed)
+	if err != nil {
+		applog.WithError(err).Warn("Could not confirm which checkpointed runs are resumable; keeping them all for this sweep")
+		resumable = checkpointed
+	}
+
 	kept := 0
-	for _, id := range checkpointed {
+	for _, id := range resumable {
 		if _, already := out[id]; already {
 			continue
 		}

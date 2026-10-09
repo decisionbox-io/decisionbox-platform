@@ -665,3 +665,97 @@ func TestRunRepository_UpdateStatus_StillUpdatesLiveAndSweptRuns(t *testing.T) {
 		})
 	}
 }
+
+// TestRunRepository_MarkExplorationCheckpointRefusesACancelledRun closes the
+// write half of the cancelled-run checkpoint race.
+//
+// Cancel is a hard kill that purges the checkpoints, but it leaves the attempt
+// unchanged and the runners can return before the workload is actually gone.
+// So a dying agent passes an attempt-only probe and re-creates a checkpoint
+// row for a run that can never be resumed — and that row reads as "resumable"
+// to the boot-time orphan sweep, which then holds the run's whole per-run
+// vector collection open until the checkpoint TTL reclaims it.
+func TestRunRepository_MarkExplorationCheckpointRefusesACancelledRun(t *testing.T) {
+	ctx := context.Background()
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+
+	repo := NewRunRepository(db)
+
+	runID, err := repo.Create(ctx, &models.DiscoveryRun{ProjectID: "proj-1"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	oid, _ := primitive.ObjectIDFromHex(runID)
+
+	// Still live: the marker lands and reports ownership.
+	applied, err := repo.MarkExplorationCheckpoint(ctx, runID, 4, 1)
+	if err != nil {
+		t.Fatalf("MarkExplorationCheckpoint: %v", err)
+	}
+	if !applied {
+		t.Fatal("a live run's marker must land")
+	}
+
+	if _, err := db.Collection("discovery_runs").UpdateByID(ctx, oid, bson.M{"$set": bson.M{"status": "cancelled"}}); err != nil {
+		t.Fatalf("seed cancelled: %v", err)
+	}
+
+	applied, err = repo.MarkExplorationCheckpoint(ctx, runID, 5, 1)
+	if err != nil {
+		t.Fatalf("MarkExplorationCheckpoint after cancel: %v", err)
+	}
+	if applied {
+		t.Error("the marker landed on a cancelled run; the agent carries on checkpointing a run that can never be resumed")
+	}
+
+	var got models.DiscoveryRun
+	if err := db.Collection("discovery_runs").FindOne(ctx, bson.M{"_id": oid}).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.LastCheckpointStep != 4 {
+		t.Errorf("last_checkpoint_step = %d, want it frozen at 4", got.LastCheckpointStep)
+	}
+}
+
+// TestRunRepository_ResumableIDs is what makes a row that still slips through
+// harmless: the orphan sweep keeps a checkpointed run's vector collection, and
+// a row is not by itself proof of resumability. `failed` is the only status a
+// resume accepts.
+func TestRunRepository_ResumableIDs(t *testing.T) {
+	ctx := context.Background()
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+
+	repo := NewRunRepository(db)
+
+	ids := map[string]string{}
+	for _, status := range []string{"failed", "cancelled", "completed", "running"} {
+		id, err := repo.Create(ctx, &models.DiscoveryRun{ProjectID: "proj-1"})
+		if err != nil {
+			t.Fatalf("Create %s: %v", status, err)
+		}
+		oid, _ := primitive.ObjectIDFromHex(id)
+		if _, err := db.Collection("discovery_runs").UpdateByID(ctx, oid, bson.M{"$set": bson.M{"status": status}}); err != nil {
+			t.Fatalf("seed %s: %v", status, err)
+		}
+		ids[status] = id
+	}
+
+	all := []string{ids["failed"], ids["cancelled"], ids["completed"], ids["running"], "not-an-objectid", primitive.NewObjectID().Hex()}
+	got, err := repo.ResumableIDs(ctx, all)
+	if err != nil {
+		t.Fatalf("ResumableIDs: %v", err)
+	}
+
+	if len(got) != 1 || got[0] != ids["failed"] {
+		t.Fatalf("ResumableIDs = %v, want only the failed run %s", got, ids["failed"])
+	}
+
+	if out, err := repo.ResumableIDs(ctx, nil); err != nil || len(out) != 0 {
+		t.Errorf("ResumableIDs(nil) = %v, %v; want empty and no error", out, err)
+	}
+	if out, err := repo.ResumableIDs(ctx, []string{"garbage"}); err != nil || len(out) != 0 {
+		t.Errorf("ResumableIDs(garbage) = %v, %v; want empty and no error — a malformed id cannot name a run", out, err)
+	}
+}

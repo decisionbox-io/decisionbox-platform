@@ -330,9 +330,19 @@ func (r *RunRepository) Fail(ctx context.Context, runID, discoveryID, errMsg str
 // so a plain write would walk the value back down to 1 and climb again,
 // making the field briefly claim less progress than the run actually has.
 // Returns whether the write landed. Because the filter is attempt-fenced,
-// that doubles as a free ownership probe: a `false` means this attempt no
-// longer owns the run, on a write the agent was making anyway. The checkpoint
-// path uses it to stop a superseded agent before it writes anything further.
+// that doubles as a free ownership probe: a `false` means this attempt may no
+// longer write to the run, on a write the agent was making anyway. The
+// checkpoint path uses it to stop before it writes anything further.
+//
+// Barred from a cancelled run too, and not only to keep the field honest.
+// Cancel is a hard kill that purges the checkpoints, but it leaves the
+// attempt unchanged and the runners can return before the workload is
+// actually gone — so a dying agent passes an attempt-only probe and
+// re-creates a checkpoint row for a run that can never be resumed. That row
+// then reads as "resumable" to the boot-time orphan sweep, which holds the
+// run's whole per-run vector collection open until the checkpoint TTL
+// reclaims it. Refusing here bounds the damage to the single row already
+// written before this marker, which loadActiveRunIDs ignores on status.
 func (r *RunRepository) MarkExplorationCheckpoint(ctx context.Context, runID string, step int, attempt int) (bool, error) {
 	if step <= 0 {
 		return true, nil
@@ -341,7 +351,9 @@ func (r *RunRepository) MarkExplorationCheckpoint(ctx context.Context, runID str
 	if err != nil {
 		return false, fmt.Errorf("invalid run ID: %w", err)
 	}
-	res, err := r.col.UpdateOne(ctx, attemptFilter(oid, attempt), bson.M{
+	filter := attemptFilter(oid, attempt)
+	filter["status"] = bson.M{"$ne": models.RunStatusCancelled}
+	res, err := r.col.UpdateOne(ctx, filter, bson.M{
 		"$max": bson.M{"last_checkpoint_step": step},
 		"$set": bson.M{"updated_at": time.Now()},
 	})
@@ -468,6 +480,61 @@ func (r *RunRepository) GetLatestByProject(ctx context.Context, projectID string
 		return nil, err
 	}
 	return &run, nil
+}
+
+// ResumableIDs narrows a set of run ids to the ones a resume could actually
+// pick up — status `failed`, which is the only resumable status.
+//
+// The orphan sweep needs this because it keeps the per-run vector collection
+// of every run that still has checkpoint rows, and a row is not by itself
+// proof of resumability. A cancelled run's dying agent can re-create one
+// after the API purged them: cancel leaves the attempt unchanged and the
+// runners can return before the workload is gone. Keeping a collection open
+// on the strength of that row costs Qdrant storage until the checkpoint TTL
+// reclaims the row, for a run that can never be resumed.
+//
+// Unknown ids are simply absent from the result, which is the answer the
+// sweep wants: no run, nothing to keep.
+func (r *RunRepository) ResumableIDs(ctx context.Context, ids []string) ([]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	oids := make([]primitive.ObjectID, 0, len(ids))
+	for _, id := range ids {
+		oid, err := primitive.ObjectIDFromHex(id)
+		if err != nil {
+			// A malformed id cannot name a run, so it cannot be resumable.
+			continue
+		}
+		oids = append(oids, oid)
+	}
+	if len(oids) == 0 {
+		return nil, nil
+	}
+
+	cur, err := r.col.Find(ctx, bson.M{
+		"_id":    bson.M{"$in": oids},
+		"status": models.RunStatusFailed,
+	}, options.Find().SetProjection(bson.M{"_id": 1}))
+	if err != nil {
+		return nil, fmt.Errorf("list resumable runs: %w", err)
+	}
+	defer cur.Close(ctx)
+
+	out := make([]string, 0, len(oids))
+	for cur.Next(ctx) {
+		var doc struct {
+			ID primitive.ObjectID `bson:"_id"`
+		}
+		if err := cur.Decode(&doc); err != nil {
+			return nil, fmt.Errorf("decode resumable run: %w", err)
+		}
+		out = append(out, doc.ID.Hex())
+	}
+	if err := cur.Err(); err != nil {
+		return nil, fmt.Errorf("iterate resumable runs: %w", err)
+	}
+	return out, nil
 }
 
 // ListActiveRecent returns ids of runs that are currently in a non-
