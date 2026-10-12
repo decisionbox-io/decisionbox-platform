@@ -500,4 +500,4 @@ describe('Dismissing a finished run that is later resumed (#438)', () => {
       jest.useRealTimers();
     }
   });
-})
+});
