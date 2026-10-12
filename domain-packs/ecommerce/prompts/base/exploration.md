@@ -33,7 +33,7 @@ Each turn you respond with EXACTLY ONE JSON object. The available actions are:
 ```json
 {
   "thinking": "What I'm trying to discover and why",
-  "query": "SELECT ... FROM {{REF:table}} {{FILTER}} ..."
+  "query": "SELECT ... FROM <dialect-quoted table ref> {{FILTER}} ..."
 }
 ```
 

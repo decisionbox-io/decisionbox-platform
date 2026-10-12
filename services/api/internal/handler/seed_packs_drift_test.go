@@ -115,3 +115,33 @@ func TestSeedPacks_DoNotHardcodeDialectQuoting(t *testing.T) {
 		})
 	}
 }
+
+// {{REF:table}} renders with the provider's quoting, and for Postgres /
+// Redshift / Snowflake that quoting is the double quote — the same character
+// that delimits a JSON string. Inside a ```json example the rendered line
+// becomes
+//
+//	"query": "SELECT ... FROM "shop"."table" ..."
+//
+// which does not parse. The exploration loop requires exactly one JSON object
+// per turn, so a malformed example sits in the worst possible place: the
+// template the model copies. Teach dialect quoting in prose and in SQL fences
+// (where it renders fine) and keep it out of the JSON envelope examples.
+func TestSeedPacks_DialectRefsStayOutOfJSONExamples(t *testing.T) {
+	for _, slug := range seedSlugs(t) {
+		t.Run(slug, func(t *testing.T) {
+			inJSON := false
+			for i, line := range strings.Split(readSeed(t, slug).Pack.Prompts.Base.Exploration, "\n") {
+				if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "```") {
+					inJSON = strings.HasPrefix(trimmed, "```json")
+					continue
+				}
+				if inJSON && strings.Contains(line, "{{REF:") {
+					t.Errorf("exploration prompt line %d puts {{REF:}} inside a JSON example, "+
+						"which renders as unparseable JSON on a double-quote dialect:\n\t%s",
+						i+1, strings.TrimSpace(line))
+				}
+			}
+		})
+	}
+}
