@@ -859,11 +859,18 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// engine services each on-demand schema action.
 	o.statusReporter.RecordSchemaTelemetry(ctx, rendered.CatalogTokens, len(schemas))
 
-	// SQL fixer + insight validator still consume a single "context"
-	// string. Feed them the Level-0 catalog — they don't need the
-	// full retrieved block (sample rows aren't useful when the goal is
-	// to map an error back to a table name).
+	// The Level-0 catalog is the fixer's backdrop: it names every table
+	// without their columns, which is the right shape for mapping an error
+	// back to a table and for seeing what else exists. Sample rows would add
+	// nothing here.
 	sqlFixer.SetSchemaContext(rendered.Catalog)
+
+	// But the catalog renders column COUNTS ("shop.events | 6c"), and the fix
+	// prompt tells the model to use only columns listed in its schema
+	// section. On a `column X does not exist` error the backdrop alone is
+	// therefore unusable, so the fixer also gets the real columns and expands
+	// whichever tables the failed statement referenced.
+	sqlFixer.SetTableColumnResolver(schemaColumnResolver(schemas))
 
 	profileStr := "No project profile configured. Analyze the data without game-specific context."
 	if len(o.profile) > 0 {

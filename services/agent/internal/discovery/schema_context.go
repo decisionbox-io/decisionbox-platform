@@ -112,3 +112,45 @@ func (b *SchemaContextBuilder) sortedTableNames() []string {
 	sort.Strings(names)
 	return names
 }
+
+// schemaColumnResolver builds the per-table column lookup the SQL fixer needs
+// from the run's schema cache — the same map BuildCatalog reduces to column
+// COUNTS for the boot catalog.
+//
+// Name matching is forgiving on purpose. The catalog advertises qualified
+// names ("shop.events"), but a failed statement may reference the table
+// unqualified, differently cased, or under a different dataset prefix, and
+// this runs on SQL the warehouse has already rejected. So: exact key, then
+// case-insensitive, then an unambiguous match on the bare table name. An
+// ambiguous bare name resolves to nothing rather than to a guess — handing
+// the model another table's columns is worse than handing it none.
+func schemaColumnResolver(schemas map[string]models.TableSchema) func(string) []models.ColumnInfo {
+	lower := make(map[string]string, len(schemas))
+	byBare := make(map[string][]string, len(schemas))
+	for key := range schemas {
+		lc := strings.ToLower(key)
+		lower[lc] = key
+		bare := lc
+		if i := strings.LastIndex(bare, "."); i >= 0 {
+			bare = bare[i+1:]
+		}
+		byBare[bare] = append(byBare[bare], key)
+	}
+	return func(table string) []models.ColumnInfo {
+		if s, ok := schemas[table]; ok {
+			return s.Columns
+		}
+		lc := strings.ToLower(table)
+		if key, ok := lower[lc]; ok {
+			return schemas[key].Columns
+		}
+		bare := lc
+		if i := strings.LastIndex(bare, "."); i >= 0 {
+			bare = bare[i+1:]
+		}
+		if keys := byBare[bare]; len(keys) == 1 {
+			return schemas[keys[0]].Columns
+		}
+		return nil
+	}
+}
