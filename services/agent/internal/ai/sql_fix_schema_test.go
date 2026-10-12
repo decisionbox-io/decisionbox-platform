@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -162,5 +163,67 @@ func TestFixSQL_RenderedPromptNamesTheRealColumns(t *testing.T) {
 	}
 	if !strings.Contains(fix.Prompt, "event_ts") {
 		t.Fatalf("the prompt sent to the model never named the real column:\n%s", fix.Prompt)
+	}
+}
+
+// A wide audit / event table runs to 200+ columns, and six of them would
+// swamp the error context the fix prompt exists to act on. Cap the columns
+// per table the way discovery's lookup path caps its own — but say so, since
+// a model that reads a truncated list as exhaustive draws the opposite
+// conclusion to the one this change was made to enable.
+func TestSchemaInfoFor_CapsColumnsPerTable(t *testing.T) {
+	wide := make([]string, 0, maxFixSchemaColumns+37)
+	for i := 0; i < maxFixSchemaColumns+37; i++ {
+		wide = append(wide, "c"+strconv.Itoa(i))
+	}
+	f := &SQLFixer{}
+	f.SetTableColumnResolver(func(string) []models.ColumnInfo { return cols(wide...) })
+
+	got := f.schemaInfoFor("SELECT 1 FROM shop.events")
+
+	if n := strings.Count(got, "text"); n != maxFixSchemaColumns {
+		t.Errorf("rendered %d columns, cap is %d", n, maxFixSchemaColumns)
+	}
+	if !strings.Contains(got, "(+37 more columns not shown)") {
+		t.Errorf("truncation not stated, so the list reads as exhaustive:\n%s", got)
+	}
+	// The last column inside the cap is present and the first one past it is
+	// not — the cap takes a prefix rather than an arbitrary subset.
+	if !strings.Contains(got, "c"+strconv.Itoa(maxFixSchemaColumns-1)+" text") {
+		t.Error("the last column inside the cap is missing")
+	}
+	if strings.Contains(got, "c"+strconv.Itoa(maxFixSchemaColumns)+" text") {
+		t.Error("a column past the cap was rendered")
+	}
+}
+
+// Exactly at the cap is not truncation. The note is a claim about the data,
+// so emitting it when nothing was dropped would be a (small) lie to the model.
+func TestSchemaInfoFor_NoTruncationNoteAtExactlyTheCap(t *testing.T) {
+	exact := make([]string, 0, maxFixSchemaColumns)
+	for i := 0; i < maxFixSchemaColumns; i++ {
+		exact = append(exact, "c"+strconv.Itoa(i))
+	}
+	f := &SQLFixer{}
+	f.SetTableColumnResolver(func(string) []models.ColumnInfo { return cols(exact...) })
+
+	if got := f.schemaInfoFor("SELECT 1 FROM shop.events"); strings.Contains(got, "more columns") {
+		t.Errorf("claimed truncation with nothing dropped:\n%s", got)
+	}
+}
+
+// Unnamed columns are skipped, and a skipped column is not a dropped one —
+// the note must count only what the cap actually withheld.
+func TestSchemaInfoFor_TruncationNoteIgnoresUnnamedColumns(t *testing.T) {
+	withBlanks := make([]models.ColumnInfo, 0, maxFixSchemaColumns+5)
+	for i := 0; i < maxFixSchemaColumns+2; i++ {
+		withBlanks = append(withBlanks, models.ColumnInfo{Name: "c" + strconv.Itoa(i), Type: "text"})
+	}
+	withBlanks = append(withBlanks, models.ColumnInfo{Type: "text"}, models.ColumnInfo{Type: "text"})
+	f := &SQLFixer{}
+	f.SetTableColumnResolver(func(string) []models.ColumnInfo { return withBlanks })
+
+	if got := f.schemaInfoFor("SELECT 1 FROM shop.events"); !strings.Contains(got, "(+2 more columns not shown)") {
+		t.Errorf("want the 2 capped columns counted and the 2 unnamed ones ignored:\n%s", got)
 	}
 }

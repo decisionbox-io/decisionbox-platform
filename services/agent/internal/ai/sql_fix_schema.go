@@ -13,6 +13,18 @@ import (
 // UNION chain) must not undo the token discipline the lean catalog exists for.
 const maxFixSchemaTables = 6
 
+// maxFixSchemaColumns bounds how many columns of one table get expanded, for
+// the same reason discovery's lookup path caps its own at
+// defaultLookupColumnLimit: wide audit / event tables run to 200+ columns, and
+// six of those would swamp the error context this prompt exists to act on.
+// Deliberately the same number as that cap — a column the fixer can see and
+// lookup_schema cannot (or the reverse) would be its own kind of confusing.
+// Truncation is stated in the prompt rather than silent, because a model that
+// reads a short list as exhaustive concludes a real column does not exist. The
+// note names no remedy: FixSQL is one tool-less completion, so the model
+// cannot look the rest up — it can only avoid asserting the column is absent.
+const maxFixSchemaColumns = 50
+
 // tableRefPattern finds the table names a statement reads from: the
 // identifier following FROM or JOIN. The bare JOIN token also matches the
 // tail of "LEFT JOIN" / "CROSS JOIN" / etc., so no flavour alternation is
@@ -76,8 +88,9 @@ func (f *SQLFixer) SetTableColumnResolver(resolve func(table string) []models.Co
 }
 
 // schemaInfoFor renders the {{SCHEMA_INFO}} value for one failed statement:
-// the full column list of the tables it actually references, followed by the
-// lean catalog so the model can still see what else exists.
+// the columns of the tables it actually references, followed by the lean
+// catalog so the model can still see what else exists. Both the table count
+// and each table's column count are capped, and a truncated list says so.
 //
 // Falls back to the catalog alone when there is no resolver, nothing parsed
 // out of the statement, or none of the names are known — the resolver is an
@@ -87,14 +100,20 @@ func (f *SQLFixer) schemaInfoFor(query string) string {
 		return f.schemaCtx
 	}
 	var b strings.Builder
+	tables := 0
 	for _, table := range referencedTables(query) {
 		cols := f.tableColumns(table)
 		if len(cols) == 0 {
 			continue
 		}
-		rendered := make([]string, 0, len(cols))
+		rendered := make([]string, 0, min(len(cols), maxFixSchemaColumns))
+		named := 0
 		for _, c := range cols {
 			if c.Name == "" {
+				continue
+			}
+			named++
+			if len(rendered) >= maxFixSchemaColumns {
 				continue
 			}
 			if c.Type != "" {
@@ -106,8 +125,13 @@ func (f *SQLFixer) schemaInfoFor(query string) string {
 		if len(rendered) == 0 {
 			continue
 		}
-		fmt.Fprintf(&b, "%s: %s\n", table, strings.Join(rendered, ", "))
-		if strings.Count(b.String(), "\n") >= maxFixSchemaTables {
+		more := ""
+		if named > len(rendered) {
+			more = fmt.Sprintf(" (+%d more columns not shown)", named-len(rendered))
+		}
+		fmt.Fprintf(&b, "%s: %s%s\n", table, strings.Join(rendered, ", "), more)
+		tables++
+		if tables >= maxFixSchemaTables {
 			break
 		}
 	}
