@@ -82,7 +82,12 @@ export default function ProjectPage() {
   const [estimating, setEstimating] = useState(false);
   const [pendingAreas, setPendingAreas] = useState<string[] | undefined>(undefined);
   const [estimateFirst, setEstimateFirst] = useState(false);
-  const dismissedRunId = useRef<string | null>(null);
+  // Dismissing a finished run hides its panel. State rather than a ref
+  // because visibility is now a render decision: the run itself is KEPT so
+  // polling can carry on, and a dismissal that stopped the poll was the bug —
+  // a resume re-enters the same run id, so dismiss a failed run, have someone
+  // resume it, and this page showed nothing live until a reload.
+  const [dismissedRunId, setDismissedRunId] = useState<string | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -110,7 +115,13 @@ export default function ProjectPage() {
       const status = await api.getProjectStatus(id);
       if (status?.run) {
         const newRun = status.run as unknown as DiscoveryRunStatus;
-        if (dismissedRunId.current === newRun.id) return;
+        // A dismissed run that is live again is news, not noise: drop the
+        // dismissal so the panel comes back and so a LATER finish is shown
+        // rather than silently re-hidden. Dismiss means "hide this finished
+        // run", not "hide this run id for ever".
+        if (newRun.status === 'running' || newRun.status === 'pending') {
+          setDismissedRunId((prev) => (prev === newRun.id ? null : prev));
+        }
         const wasRunning = run && (run.status === 'running' || run.status === 'pending');
         const nowDone = newRun.status === 'completed' || newRun.status === 'failed';
         // Only replace `run` when something we render actually changed. The
@@ -141,13 +152,24 @@ export default function ProjectPage() {
     } catch { /* ignore */ }
   }, [id, run]);
 
-  // The 2s poll is correctly gated on an in-flight run and stays as-is.
+  // The 2s poll is gated on an in-flight run, plus one case that is not in
+  // flight: a run this page has DISMISSED. A resume re-enters the same run id,
+  // so a dismissed failed run can come back to life from another tab, another
+  // user, or the API — and nothing here would notice, because a terminal run
+  // does not poll. Watched at a much slower cadence: the panel is hidden, the
+  // tab may sit open for hours, and all this is waiting for is a status flip.
+  //
+  // The status checks stay inline. isRunning / justFinished are declared
+  // further down, so naming them in the dependency array below would evaluate
+  // them during render before their initialisers have run.
   useEffect(() => {
     if (!run) return;
-    if (run.status !== 'running' && run.status !== 'pending') return;
-    const interval = setInterval(pollStatus, 2000);
+    const live = run.status === 'running' || run.status === 'pending';
+    const watchingDismissed = dismissedRunId === run.id && !live;
+    if (!live && !watchingDismissed) return;
+    const interval = setInterval(pollStatus, live ? 2000 : 15000);
     return () => clearInterval(interval);
-  }, [run, pollStatus]);
+  }, [run, pollStatus, dismissedRunId]);
 
   // Fetch the current run once per project on load. Keying this on `id` (not
   // pollStatus's identity) is what makes it fire once per project: pollStatus
@@ -241,7 +263,12 @@ export default function ProjectPage() {
     : (project.schema_index_status === 'ready' || project.schema_index_status === undefined);
   const triggerDisabled = !!isRunning || !schemaReady;
   const justFinished = run && (run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled');
-  const showRunPanel = isRunning || justFinished;
+  // Hidden while dismissed AND still finished. The moment the run is live
+  // again — a resume re-enters the same id — justFinished goes false and the
+  // panel returns on its own, which is the whole point of keeping the run in
+  // state instead of nulling it.
+  const hiddenByDismissal = !!run && dismissedRunId === run.id && !!justFinished;
+  const showRunPanel = (isRunning || justFinished) && !hiddenByDismissal;
 
   // Aggregate stats
   const totalRuns = discoveries.length;
@@ -436,8 +463,9 @@ export default function ProjectPage() {
       {showRunPanel && run && (
         <LiveRunPanel key={`${run.id}:${run.attempt ?? 1}`} run={run} onCancel={async () => {
           if (justFinished) {
-            dismissedRunId.current = run.id;
-            setRun(null);
+            // The run stays in state so the poll below can keep watching it;
+            // hiddenByDismissal is what takes the panel off screen.
+            setDismissedRunId(run.id);
             return;
           }
           try {

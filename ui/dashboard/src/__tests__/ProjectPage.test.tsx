@@ -433,3 +433,71 @@ describe('Resume affordance on a failed run (#438)', () => {
     expect(screen.getByText('attempt 2')).toBeInTheDocument();
   });
 });
+
+describe('Dismissing a finished run that is later resumed (#438)', () => {
+  // Dismiss hides a finished run's panel, and `failed` is exactly the state a
+  // run is resumable from. The dismissal used to call setRun(null), which also
+  // stopped the status poll — so if anyone resumed that run, from another tab,
+  // another user, or the API, this page showed nothing live until a reload.
+  //
+  // The run is now kept in state and only the panel is hidden, so the poll can
+  // keep watching it and bring the panel back when it goes live again.
+
+  it('hides the panel on dismiss but keeps watching the run', async () => {
+    jest.useFakeTimers();
+    try {
+      getProjectStatus.mockResolvedValue(
+        status(makeRun({ status: 'failed', progress: 35, last_checkpoint_step: 42, attempt: 1 })),
+      );
+
+      renderPage();
+      await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+
+      const dismiss = await waitFor(() => screen.getByText('Dismiss'));
+      await act(async () => { dismiss.click(); });
+
+      expect(screen.queryByText('Dismiss')).not.toBeInTheDocument();
+      expect(screen.queryByText(/Resume from step 42/)).not.toBeInTheDocument();
+
+      // Someone resumes it elsewhere: same run id, now running.
+      getProjectStatus.mockResolvedValue(
+        status(makeRun({ status: 'running', progress: 40, attempt: 2, updated_at: 'later' })),
+      );
+
+      // The slow watch poll picks it up without a reload. Nothing happens on
+      // the live cadence — this run is terminal, so it is only watched at the
+      // 15s one.
+      await act(async () => { await jest.advanceTimersByTimeAsync(2000); });
+      expect(screen.queryByText(/attempt 2/)).not.toBeInTheDocument();
+
+      await act(async () => { await jest.advanceTimersByTimeAsync(15000); });
+      await waitFor(() => expect(screen.getByText(/attempt 2/)).toBeInTheDocument());
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps a dismissed run hidden while it is still finished', async () => {
+    // The flip side: the status endpoint keeps answering with the same
+    // finished run, and none of those answers may un-hide it — otherwise
+    // Dismiss would do nothing at all.
+    jest.useFakeTimers();
+    try {
+      getProjectStatus.mockResolvedValue(
+        status(makeRun({ status: 'failed', progress: 35, last_checkpoint_step: 42, attempt: 1 })),
+      );
+
+      renderPage();
+      await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+
+      const dismiss = await waitFor(() => screen.getByText('Dismiss'));
+      await act(async () => { dismiss.click(); });
+      await act(async () => { await jest.advanceTimersByTimeAsync(60000); });
+
+      expect(screen.queryByText('Dismiss')).not.toBeInTheDocument();
+      expect(screen.queryByText(/Resume from step 42/)).not.toBeInTheDocument();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+})
