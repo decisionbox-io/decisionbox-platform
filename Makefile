@@ -1,4 +1,4 @@
-.PHONY: help up down build test lint lint-docs dev agent-run clean
+.PHONY: help up down build test lint lint-docs dev agent-run clean regen-pack-seeds
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -168,6 +168,11 @@ test-llm: ## Run LLM provider integration tests (set INTEGRATION_TEST_* env vars
 
 test-ui: ## Run dashboard tests
 	cd ui/dashboard && npm test
+
+# --- Domain packs ---
+
+regen-pack-seeds: ## Regenerate the embedded domain-pack seeds from domain-packs/ (run after editing any pack prompt)
+	python3 scripts/regen-domain-pack-seeds.py
 
 # --- Lint ---
 
