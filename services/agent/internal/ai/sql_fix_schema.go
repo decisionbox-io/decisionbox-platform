@@ -14,17 +14,25 @@ import (
 const maxFixSchemaTables = 6
 
 // tableRefPattern finds the table names a statement reads from: the
-// identifier following FROM or any flavour of JOIN. It accepts every quoting
-// style the six shipped providers emit (backticks, double quotes, brackets)
-// plus unquoted refs, and allows a dotted schema/dataset prefix.
+// identifier following FROM or JOIN. The bare JOIN token also matches the
+// tail of "LEFT JOIN" / "CROSS JOIN" / etc., so no flavour alternation is
+// needed.
 //
 // Deliberately a regex rather than a SQL parser: this runs on a statement the
 // warehouse has ALREADY rejected, so it may not parse. A parser would return
 // nothing for exactly the inputs this has to serve. Over-matching is harmless
 // (an unknown name resolves to no columns and is skipped) and the cost of
-// under-matching is only the status quo.
+// under-matching is only the status quo. The repo vendors no SQL parser and
+// takes the same approach in discovery.queryTableRefRe.
+//
+// It is NOT the same pattern as that one, and the difference is deliberate:
+// queryTableSignature wants a stable dedup key, so it stops at the first
+// quote character and treats `"shop"."events"` as `shop`. Resolving columns
+// needs the whole multipart name, so this captures through the quoting and
+// strips it afterwards. Unifying them would change that signature, and with
+// it the step-dedup behaviour of a path this fix has no business touching.
 var tableRefPattern = regexp.MustCompile(
-	`(?i)\b(?:FROM|(?:INNER|LEFT|RIGHT|FULL|CROSS|OUTER)\s+JOIN|JOIN)\s+([` + "`" + `"\[\]\w.]+)`,
+	`(?i)\b(?:FROM|JOIN)\s+([` + "`" + `"\[\]\w.$-]+)`,
 )
 
 // referencedTables returns the distinct table names a statement reads from,

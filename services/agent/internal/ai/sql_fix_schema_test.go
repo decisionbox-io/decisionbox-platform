@@ -102,6 +102,16 @@ func TestReferencedTables(t *testing.T) {
 		{"deduped case-insensitively", "SELECT 1 FROM shop.events JOIN SHOP.EVENTS ON 1=1", []string{"shop.events"}},
 		{"subquery open paren is not a table", "SELECT 1 FROM ( SELECT 1 FROM shop.orders ) x", []string{"shop.orders"}},
 		{"no tables", "SELECT 1", nil},
+		// BigQuery project ids carry hyphens; some warehouses allow $ in
+		// identifiers. Both are in the char class the existing
+		// discovery.queryTableRefRe accepts, so this one accepts them too.
+		{"hyphenated project ref", "SELECT 1 FROM `my-proj.ds.events`", []string{"my-proj.ds.events"}},
+		{"dollar in identifier", "SELECT 1 FROM shop.events$raw", []string{"shop.events$raw"}},
+		// A non-SQL source's query has no FROM/JOIN, so nothing is extracted
+		// and schemaInfoFor falls back to the catalog. The fixer serves
+		// non-SQL datasources too (warehouse.QueryRunner), so this path is
+		// real, not hypothetical.
+		{"non-SQL request format", "{\"metric\":\"sessions\",\"breakdown\":\"country\"}", nil},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
