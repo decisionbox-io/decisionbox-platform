@@ -1074,3 +1074,51 @@ func TestInteg_RunRepo_ADiscardedRunStaysHiddenEvenIfItGoesActiveAgain(t *testin
 		t.Errorf("LatestByProjects = %v, want the same answer — its active pass needs the predicate too", got)
 	}
 }
+
+// A discarded run must not count as the project's active run. It can look
+// active: an agent that survived the startup sweep — including one running a
+// build older than the discard fences, which is the upgrade case — can write
+// `running` back onto a run the operator threw away. The latest-run readers
+// hide that document, but the CONCURRENCY readers are a different question
+// with a different consequence: a zombie nobody can resume would block every
+// future run for the project.
+func TestInteg_RunRepo_ADiscardedRunDoesNotBlockNewRuns(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	zombie := seedRunForProject(t, ctx, "proj-block", "failed", time.Now(), nil)
+	if err := repo.Discard(ctx, zombie); err != nil {
+		t.Fatalf("discard: %v", err)
+	}
+	// The surviving agent writing itself back to life.
+	if _, err := testDB.Collection("discovery_runs").UpdateByID(ctx, mustOID(t, zombie),
+		bson.M{"$set": bson.M{"status": "running"}}); err != nil {
+		t.Fatalf("resurrect: %v", err)
+	}
+
+	running, err := repo.GetRunningByProject(ctx, "proj-block")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if running != nil {
+		t.Errorf("GetRunningByProject = %s, want nil — a discarded run is not active, so it must not gate a new run", running.ID)
+	}
+
+	// A valid ObjectId: GetOtherRunningByProject parses the exclusion, so a
+	// placeholder string fails before the filter is ever applied.
+	other, err := repo.GetOtherRunningByProject(ctx, "proj-block", primitive.NewObjectID().Hex())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other != nil {
+		t.Errorf("GetOtherRunningByProject = %s, want nil — the two readers answer the same question and must agree", other.ID)
+	}
+
+	// A genuinely running run is still found, which is what these gates exist
+	// for and what the predicate must not have broken.
+	live := seedRunForProject(t, ctx, "proj-block", "running", time.Now(), nil)
+	if got, err := repo.GetRunningByProject(ctx, "proj-block"); err != nil || got == nil || got.ID != live {
+		t.Errorf("GetRunningByProject = %v (err %v), want the live run", got, err)
+	}
+}

@@ -882,6 +882,14 @@ func (r *RunRepository) GetOtherRunningByProject(ctx context.Context, projectID,
 	filter := bson.M{
 		"project_id": projectID,
 		"status":     bson.M{"$in": []string{"pending", "running"}},
+		// A discarded run does not count as active, however it got there.
+		// It can: an agent that survived the startup sweep — or one running
+		// a build that predates the discard fences — can write `running`
+		// back onto a run the operator threw away. The latest-run readers
+		// already hide such a document, but without this the project's
+		// concurrency gate still counts it, and a zombie nobody can resume
+		// blocks every future run for that project.
+		"discarded_at": nil,
 	}
 	if excludeRunID != "" {
 		oid, err := primitive.ObjectIDFromHex(excludeRunID)
@@ -907,6 +915,9 @@ func (r *RunRepository) GetRunningByProject(ctx context.Context, projectID strin
 	filter := bson.M{
 		"project_id": projectID,
 		"status":     bson.M{"$in": []string{"pending", "running"}},
+		// Same rule as GetOtherRunningByProject: these two answer the same
+		// question for different callers, so they have to answer it alike.
+		"discarded_at": nil,
 	}
 
 	var run models.DiscoveryRun

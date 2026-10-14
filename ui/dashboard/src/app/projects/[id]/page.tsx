@@ -61,15 +61,21 @@ export default function ProjectPage() {
   const [project, setProject] = useState<Project | null>(null);
   const [discoveries, setDiscoveries] = useState<DiscoveryResult[]>([]);
   const [run, setRun] = useState<DiscoveryRunStatus | null>(null);
-  // runEpoch counts EVERY change to `run`. A poll captures it before its
-  // request and ignores the answer if it moved, because such a response
-  // describes the world as it was before that change.
+  // Two counters, because "is this response stale?" has two different
+  // answers and one counter kept getting them confused.
   //
-  // Every change, not only the out-of-band ones. Counting just triggers,
-  // cancels, resumes and discards left two POLLS unfenced against each
-  // other: at a 2s interval they can overlap, and an older empty answer
-  // arriving after a newer poll installed a live run erased it — with
-  // polling gated on a live run, until a reload.
+  // actionEpoch counts the out-of-band changes to `run` — trigger, cancel,
+  // resume, discard. A poll captures it before its request and drops the
+  // answer if it moved, because such a response describes the world as it
+  // was before the operator acted.
+  //
+  // pollSeq orders the polls against each other. At a 2s interval they
+  // overlap, and the two failures are mirror images: an OLDER answer landing
+  // last used to erase a newer run, and then fencing on "anything changed"
+  // made a NEWER answer get dropped because the older one had already
+  // applied. Neither is fixable by one number. Each poll takes a ticket, and
+  // an answer is applied only if no later-issued poll has already applied —
+  // last request wins, regardless of arrival order.
   //
   // This exists because a status response is not only stale, it can be
   // actively wrong: an answer computed before the operator started a run says
@@ -77,11 +83,13 @@ export default function ProjectPage() {
   // the first attempt and is not enough — a newly triggered run that fails
   // fast is terminal by the time the stale answer lands, so a status test
   // cannot tell it from the run the answer was about. The generation can.
-  const runEpoch = useRef(0);
-  // installRun is the only way `run` should be written: it sets and bumps
-  // together, so no call site can do one without the other.
+  const actionEpoch = useRef(0);
+  const pollTicket = useRef(0);
+  const appliedPoll = useRef(0);
+  // installRun is how an ACTION writes `run`: it sets and bumps together, so
+  // no call site can do one without the other.
   const installRun = useCallback((next: DiscoveryRunStatus | null) => {
-    runEpoch.current += 1;
+    actionEpoch.current += 1;
     setRun(next);
   }, []);
   const [loading, setLoading] = useState(true);
@@ -135,12 +143,21 @@ export default function ProjectPage() {
 
   const pollStatus = useCallback(async () => {
     try {
-      const epoch = runEpoch.current;
+      const epoch = actionEpoch.current;
+      pollTicket.current += 1;
+      const ticket = pollTicket.current;
       const status = await api.getProjectStatus(id);
-      // Something changed `run` while this was in flight, so this answer is
+      // An ACTION changed `run` while this was in flight, so this answer is
       // about the previous state. Drop it whole rather than reasoning about
       // which parts still apply; the next poll is 2s away.
-      if (runEpoch.current !== epoch) return;
+      if (actionEpoch.current !== epoch) return;
+      // A later-issued poll already answered, so this one is behind.
+      if (ticket < appliedPoll.current) return;
+      appliedPoll.current = ticket;
+      // applyPoll writes a poll's result WITHOUT bumping actionEpoch: a poll
+      // is not an action, and treating it as one is what let an older answer
+      // invalidate a newer request.
+      const applyPoll = (next: DiscoveryRunStatus | null) => setRun(next);
       // A successful read with no run means the project has none to show —
       // every run discarded, or the last one deleted with its project data.
       // Clearing is the only way the panel goes away: a terminal run is not
@@ -164,7 +181,7 @@ export default function ProjectPage() {
         const cached = run;
         const cachedIsLive = !!cached && (cached.status === 'running' || cached.status === 'pending');
         if (!cachedIsLive) {
-          installRun(null);
+          applyPoll(null);
           return;
         }
         // We believe a run is live and the project reports none. Keeping it
@@ -176,11 +193,11 @@ export default function ProjectPage() {
         // rather than guessing from the project-level answer.
         try {
           const fresh = await api.getRun(cached.id);
-          if (runEpoch.current !== epoch) return;
+          if (actionEpoch.current !== epoch || ticket < appliedPoll.current) return;
           // Gone, or discarded elsewhere: the panel goes. Otherwise adopt
           // what the server says, terminal or not — that is the truth, and a
           // terminal panel is a normal thing to show.
-          installRun(!fresh || fresh.discarded_at ? null : fresh);
+          applyPoll(!fresh || fresh.discarded_at ? null : fresh);
         } catch {
           // No information, so no decision: keep what is on screen. The next
           // poll asks again.
@@ -212,7 +229,7 @@ export default function ProjectPage() {
           || run.id !== newRun.id
           || run.status !== newRun.status
           || run.updated_at !== newRun.updated_at;
-        if (runChanged) installRun(newRun);
+        if (runChanged) applyPoll(newRun);
         if (wasRunning && nowDone) {
           api.listDiscoveries(id).then((d) => setDiscoveries(d || [])).catch(() => {});
           // Nudge the analyst if the run left clarifying questions to answer.
@@ -224,7 +241,7 @@ export default function ProjectPage() {
         }
       }
     } catch { /* ignore */ }
-  }, [id, run, installRun]);
+  }, [id, run]);
 
   // The 2s poll is gated on an in-flight run, plus one case that is not in
   // flight: a run this page has DISMISSED. A resume re-enters the same run id,
@@ -601,7 +618,7 @@ export default function ProjectPage() {
             // request was in flight, and clearing that one would hide a live
             // run's progress and Cancel with nothing to bring them back.
             const discarded = run.id;
-            runEpoch.current += 1;
+            actionEpoch.current += 1;
             setRun((prev) => (prev && prev.id === discarded ? null : prev));
             void pollStatus();
           } catch (e: unknown) {
