@@ -2,7 +2,7 @@
  * @jest-environment jsdom
  */
 import '@testing-library/jest-dom';
-import { render, screen, waitFor, act } from '@testing-library/react';
+import { render, screen, waitFor, act, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import ProjectPage from '@/app/projects/[id]/page';
 import type { DiscoveryRunStatus, ProjectStatus } from '@/lib/api';
@@ -535,8 +535,10 @@ describe('Discarding a terminal run (#438)', () => {
   });
 
   // Unlike Dismiss, Discard cannot be undone — it throws away the checkpoints
-  // the run could have been resumed from. One stray click must not do that.
-  it('needs a second click to confirm, and does not call the API on the first', async () => {
+  // the run could have been resumed from. The dashboard's destructive tier is
+  // red plus a confirm modal (Delete project, Delete list, Remove column), so
+  // one stray click must not reach the API.
+  it('opens a confirm modal rather than calling the API, and fires on confirm', async () => {
     getProjectStatus.mockResolvedValue(
       status(makeRun({ status: 'failed', last_checkpoint_step: 4 })),
     );
@@ -548,12 +550,38 @@ describe('Discarding a terminal run (#438)', () => {
     await act(async () => { btn.click(); });
     await flush();
     expect(discardRun).not.toHaveBeenCalled();
-    expect(screen.getByText('Confirm discard')).toBeInTheDocument();
+    // The modal says what is lost and what survives — the distinction people
+    // hesitate over, because Discard reads as Delete.
+    await waitFor(() => expect(screen.getByText('Discard this run?')).toBeInTheDocument());
+    expect(screen.getByText(/can no longer be resumed from step 4/)).toBeInTheDocument();
+    expect(screen.getByText(/step history stay readable/)).toBeInTheDocument();
 
-    const confirm = screen.getByText('Confirm discard');
+    // Two "Discard" nodes exist now (trigger + modal action); the modal's is
+    // the one inside the dialog.
+    const dialog = await waitFor(() => screen.getByRole('dialog'));
+    const confirm = within(dialog).getByRole('button', { name: 'Discard' });
     await act(async () => { confirm.click(); });
     await flush();
     expect(discardRun).toHaveBeenCalledWith('r1');
+  });
+
+  // Backing out of the modal is the whole point of having one.
+  it('does not call the API when the confirm modal is cancelled', async () => {
+    getProjectStatus.mockResolvedValue(
+      status(makeRun({ status: 'failed', last_checkpoint_step: 4 })),
+    );
+
+    renderPage();
+    const btn = await waitFor(() => screen.getByText('Discard'));
+    await act(async () => { btn.click(); });
+    await flush();
+
+    const dialog = await waitFor(() => screen.getByRole('dialog'));
+    const cancel = within(dialog).getByRole('button', { name: 'Cancel' });
+    await act(async () => { cancel.click(); });
+    await flush();
+
+    expect(discardRun).not.toHaveBeenCalled();
   });
 
   // A refusal is a real answer — the run went active again, or another tab
@@ -568,7 +596,8 @@ describe('Discarding a terminal run (#438)', () => {
     const btn = await waitFor(() => screen.getByText('Discard'));
     await act(async () => { btn.click(); });
     await flush();
-    const confirm = screen.getByText('Confirm discard');
+    const dialog = await waitFor(() => screen.getByRole('dialog'));
+    const confirm = within(dialog).getByRole('button', { name: 'Discard' });
     await act(async () => { confirm.click(); });
     await flush();
 

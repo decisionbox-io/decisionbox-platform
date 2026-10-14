@@ -3,8 +3,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams } from 'next/navigation';
 import {
-  Checkbox, Collapse, Loader, Menu, NumberInput,
-  ScrollArea, Text,
+  Button, Checkbox, Collapse, Group, Loader, Menu, Modal, NumberInput,
+  ScrollArea, Stack, Text,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
@@ -820,14 +820,18 @@ function LiveRunPanel({ run, onCancel, onResume, onDiscard }: { run: DiscoveryRu
   // server refuses that too, and offering a button that 409s is worse than
   // offering none.
   //
-  // Two clicks rather than one: unlike Dismiss, which is local to this tab,
-  // Discard throws away the checkpoints the run could have been resumed from
-  // and nothing undoes it. There is no confirm-dialog pattern in this
-  // dashboard, so the button carries its own.
+  // Red and modal-confirmed, which is this dashboard's destructive tier
+  // (Delete project, Delete list, Remove column). The ghost tier its
+  // neighbours use is for the reversible actions, and Dismiss — sitting right
+  // beside it, looking identical — is a per-tab no-op, which is exactly the
+  // confusion colour is there to prevent. Weight matched to consequence: a
+  // plain Cancel/Discard confirm, not Delete project's type-the-name, because
+  // discard destroys resumability rather than data.
   const canDiscard = isDone && (run.status === 'failed' || run.status === 'cancelled');
-  const [discardArmed, setDiscardArmed] = useState(false);
+  const [discardOpen, { open: openDiscard, close: closeDiscard }] = useDisclosure(false);
 
   return (
+    <>
     <div style={{
       background: 'var(--db-bg-white)',
       border: '1px solid var(--db-border-default)',
@@ -882,19 +886,7 @@ function LiveRunPanel({ run, onCancel, onResume, onDiscard }: { run: DiscoveryRu
             )}
             {isDone && <GhostButton onClick={onCancel} small>Dismiss</GhostButton>}
             {canDiscard && (
-              <GhostButton
-                small
-                onClick={() => {
-                  if (!discardArmed) {
-                    setDiscardArmed(true);
-                    return;
-                  }
-                  setDiscardArmed(false);
-                  onDiscard();
-                }}
-              >
-                {discardArmed ? 'Confirm discard' : 'Discard'}
-              </GhostButton>
+              <GhostButton small danger onClick={openDiscard}>Discard</GhostButton>
             )}
           </div>
         </div>
@@ -963,6 +955,30 @@ function LiveRunPanel({ run, onCancel, onResume, onDiscard }: { run: DiscoveryRu
           tails every LLM call and SQL execution in near-real time. */}
       <DebugLogsPanel projectId={run.project_id} runId={run.id} isDone={isDone} />
     </div>
+
+    {/* Says what discard actually costs, which a button label cannot. The
+        distinction that matters to the operator is that the run's history
+        survives — people hesitate over Discard because they read it as
+        Delete. */}
+    <Modal
+      opened={discardOpen}
+      onClose={closeDiscard}
+      title={<Text fw={600} c="red">Discard this run?</Text>}
+      centered
+    >
+      <Stack gap="sm">
+        <Text size="sm">
+          This run will stop representing the project and can no longer be resumed
+          {canResume ? ` from step ${run.last_checkpoint_step}` : ''}. Its status, error and
+          step history stay readable.
+        </Text>
+        <Group justify="flex-end" gap="sm">
+          <Button variant="default" onClick={closeDiscard}>Cancel</Button>
+          <Button color="red" onClick={() => { closeDiscard(); onDiscard(); }}>Discard</Button>
+        </Group>
+      </Stack>
+    </Modal>
+    </>
   );
 }
 
@@ -1490,23 +1506,29 @@ function PrimaryButton({ onClick, children, disabled }: { onClick: () => void; c
   );
 }
 
-function GhostButton({ onClick, children, small }: { onClick: () => void; children: React.ReactNode; small?: boolean }) {
+// danger is the destructive variant: same geometry as its neighbours, so a
+// compact toolbar of ghost buttons stays coherent, but carrying the red the
+// rest of the dashboard reserves for actions that cannot be undone. The
+// tokens are the ones this panel already uses for a failed run.
+function GhostButton({ onClick, children, small, danger }: { onClick: () => void; children: React.ReactNode; small?: boolean; danger?: boolean }) {
   return (
     <button onClick={onClick} style={{
       display: 'inline-flex', alignItems: 'center', gap: 6,
-      background: 'transparent', color: 'var(--db-text-secondary)',
-      border: '1px solid var(--db-border-strong)', borderRadius: 6,
+      background: 'transparent', color: danger ? 'var(--db-red-text)' : 'var(--db-text-secondary)',
+      border: `1px solid ${danger ? 'var(--db-red-text)' : 'var(--db-border-strong)'}`, borderRadius: 6,
       padding: small ? '4px 10px' : '6px 14px',
       fontSize: small ? 12 : 13, fontWeight: 500, cursor: 'pointer',
       fontFamily: 'inherit', transition: 'all 120ms ease',
     }}
     onMouseEnter={e => {
-      e.currentTarget.style.background = 'var(--db-bg-muted)';
-      e.currentTarget.style.color = 'var(--db-text-primary)';
+      e.currentTarget.style.background = danger ? 'var(--db-red-bg)' : 'var(--db-bg-muted)';
+      e.currentTarget.style.color = danger ? 'var(--db-red-text)' : 'var(--db-text-primary)';
     }}
     onMouseLeave={e => {
       e.currentTarget.style.background = 'transparent';
-      e.currentTarget.style.color = 'var(--db-text-secondary)';
+      // Back to the variant's own colour, not the neutral one: a danger
+      // button that lost its red after the first hover would read as safe.
+      e.currentTarget.style.color = danger ? 'var(--db-red-text)' : 'var(--db-text-secondary)';
     }}
     >
       {children}
