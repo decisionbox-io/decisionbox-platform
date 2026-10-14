@@ -4,6 +4,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -793,5 +794,195 @@ func TestInteg_RunRepo_ClearPolicyReservationID_AlsoClearsThePreservedEndTime(t 
 	}
 	if got.PolicyReservationOwnerEndedAt != nil {
 		t.Errorf("preserved end time = %s, want it cleared with the id it describes", got.PolicyReservationOwnerEndedAt)
+	}
+}
+
+// --- Discard ---------------------------------------------------------------
+
+// Discard's filter is the whole guarantee: terminal, resultless, not already
+// discarded. Against real Mongo because the `discarded_at: nil` predicate is
+// the kind of thing that reads the wrong way round — a missing field compares
+// equal to null, which is what makes "not discarded" expressible at all.
+func TestInteg_RunRepo_Discard(t *testing.T) {
+	ctx := context.Background()
+	base := time.Date(2026, 6, 1, 9, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name    string
+		status  string
+		wantErr bool
+	}{
+		{"a failed run is discardable", "failed", false},
+		{"a cancelled run is discardable", "cancelled", false},
+		{"a completed run is NOT — its discovery is the project's history", "completed", true},
+		{"a running run is NOT — cancel is the verb for that", "running", true},
+		{"a pending run is NOT", "pending", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dropRuns(t, ctx)
+			repo := NewRunRepository(testDB)
+			id := seedRunForProject(t, ctx, "proj-discard", tc.status, base, nil)
+			// Give it a checkpoint marker, so clearing it is observable.
+			if _, err := testDB.Collection("discovery_runs").UpdateByID(ctx,
+				mustOID(t, id), bson.M{"$set": bson.M{"last_checkpoint_step": 7}}); err != nil {
+				t.Fatalf("seed marker: %v", err)
+			}
+
+			err := repo.Discard(ctx, id)
+			if tc.wantErr {
+				if !errors.Is(err, ErrNotDiscardable) {
+					t.Fatalf("want ErrNotDiscardable, got %v", err)
+				}
+				run, _ := repo.GetByID(ctx, id)
+				if run.DiscardedAt != nil {
+					t.Error("a refused discard must not have written discarded_at")
+				}
+				if run.LastCheckpointStep != 7 {
+					t.Errorf("a refused discard must not clear the marker, got %d", run.LastCheckpointStep)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("discard: %v", err)
+			}
+			run, err := repo.GetByID(ctx, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if run.DiscardedAt == nil {
+				t.Error("discarded_at was not set")
+			}
+			if run.Status != tc.status {
+				t.Errorf("status changed to %q — a discarded run keeps its outcome, and its error, as the record", run.Status)
+			}
+			if run.LastCheckpointStep != 0 {
+				t.Errorf("last_checkpoint_step = %d, want cleared so Resume cannot be offered", run.LastCheckpointStep)
+			}
+		})
+	}
+}
+
+// Idempotent by refusal rather than by silently rewriting: a second discard,
+// or one racing a resume, must match nothing.
+func TestInteg_RunRepo_Discard_IsNotRepeatable(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+	id := seedRunForProject(t, ctx, "proj-discard", "failed", time.Now(), nil)
+
+	if err := repo.Discard(ctx, id); err != nil {
+		t.Fatalf("first discard: %v", err)
+	}
+	first, _ := repo.GetByID(ctx, id)
+	if err := repo.Discard(ctx, id); !errors.Is(err, ErrNotDiscardable) {
+		t.Fatalf("second discard: want ErrNotDiscardable, got %v", err)
+	}
+	second, _ := repo.GetByID(ctx, id)
+	if !first.DiscardedAt.Equal(*second.DiscardedAt) {
+		t.Error("the refused second discard moved discarded_at")
+	}
+}
+
+// The reason the endpoint exists. GetStatus answers with GetLatestByProject,
+// which is the newest run whatever its status — so a failed run an operator
+// is done with stayed pinned to the project page. Both readers have to agree,
+// which is the only thing that justifies having two of them.
+func TestInteg_RunRepo_DiscardedRunStopsRepresentingTheProject(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	base := time.Date(2026, 6, 2, 9, 0, 0, 0, time.UTC)
+	completedAt := base.Add(20 * time.Minute)
+	older := seedRunForProject(t, ctx, "proj-latest", "completed", base, &completedAt)
+	newer := seedRunForProject(t, ctx, "proj-latest", "failed", base.Add(1*time.Hour), nil)
+
+	latest, err := repo.GetLatestByProject(ctx, "proj-latest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest == nil || latest.ID != newer {
+		t.Fatalf("precondition: latest = %v, want the newer failed run", latest)
+	}
+
+	if err := repo.Discard(ctx, newer); err != nil {
+		t.Fatalf("discard: %v", err)
+	}
+
+	latest, err = repo.GetLatestByProject(ctx, "proj-latest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest == nil || latest.ID != older {
+		t.Errorf("GetLatestByProject = %v, want it to fall back to the older completed run", latest)
+	}
+
+	byProjects, err := repo.LatestByProjects(ctx, []string{"proj-latest"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := byProjects["proj-latest"]; got == nil || got.ID != older {
+		t.Errorf("LatestByProjects = %v, want the same answer as GetLatestByProject", got)
+	}
+}
+
+// A discarded run that was resumed still has last_resumed_at, so it would come
+// back through the SECOND pass of the latest-run rule even once the first pass
+// skipped it. Both passes need the predicate, and only a resumed run proves it.
+func TestInteg_RunRepo_DiscardedResumedRunDoesNotReturnViaTheResumePass(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	base := time.Date(2026, 6, 3, 9, 0, 0, 0, time.UTC)
+	completedAt := base.Add(2 * time.Hour)
+	// The resumed run started FIRST but was resumed last, which is exactly
+	// the case the second pass exists for.
+	resumed := seedRunForProject(t, ctx, "proj-resumed", "failed", base, nil)
+	completed := seedRunForProject(t, ctx, "proj-resumed", "completed", base.Add(1*time.Hour), &completedAt)
+	if _, err := testDB.Collection("discovery_runs").UpdateByID(ctx, mustOID(t, resumed),
+		bson.M{"$set": bson.M{"last_resumed_at": base.Add(3 * time.Hour), "attempt": 2}}); err != nil {
+		t.Fatalf("seed resume: %v", err)
+	}
+
+	latest, _ := repo.GetLatestByProject(ctx, "proj-resumed")
+	if latest == nil || latest.ID != resumed {
+		t.Fatalf("precondition: want the resumed run to win on last_resumed_at, got %v", latest)
+	}
+
+	if err := repo.Discard(ctx, resumed); err != nil {
+		t.Fatalf("discard: %v", err)
+	}
+	latest, _ = repo.GetLatestByProject(ctx, "proj-resumed")
+	if latest == nil || latest.ID != completed {
+		t.Errorf("GetLatestByProject = %v, want the completed run — the resume pass must skip discarded runs too", latest)
+	}
+}
+
+// Discard unsets the marker so the dashboard hides Resume, but the button is
+// not the guard. A direct POST must not resurrect a run the operator threw
+// away, and BeginResume's filter is the only place that can be enforced
+// without a race.
+func TestInteg_RunRepo_BeginResumeRefusesADiscardedRun(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+	id := seedRunForProject(t, ctx, "proj-resume-guard", "failed", time.Now(), nil)
+
+	// Sanity: resumable before the discard, so the refusal after it is
+	// attributable to the discard and not to some other precondition.
+	if _, err := repo.BeginResume(ctx, id); err != nil {
+		t.Fatalf("precondition: want a resumable run, got %v", err)
+	}
+	if _, err := testDB.Collection("discovery_runs").UpdateByID(ctx, mustOID(t, id),
+		bson.M{"$set": bson.M{"status": "failed"}}); err != nil {
+		t.Fatalf("reset to failed: %v", err)
+	}
+	if err := repo.Discard(ctx, id); err != nil {
+		t.Fatalf("discard: %v", err)
+	}
+	if _, err := repo.BeginResume(ctx, id); !errors.Is(err, ErrNoResumableRun) {
+		t.Errorf("BeginResume on a discarded run: want ErrNoResumableRun, got %v", err)
 	}
 }

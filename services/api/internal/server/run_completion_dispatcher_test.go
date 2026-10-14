@@ -78,6 +78,9 @@ func (m *mockRunRepo) Create(context.Context, string, models.RunParams) (string,
 func (m *mockRunRepo) BeginResume(context.Context, string) (*models.DiscoveryRun, error) {
 	panic("not implemented")
 }
+func (m *mockRunRepo) Discard(context.Context, string) error {
+	panic("not implemented")
+}
 func (m *mockRunRepo) FailAttempt(context.Context, string, int, string) (bool, error) {
 	panic("not implemented")
 }

@@ -62,6 +62,14 @@ type DiscoveryRun struct {
 	// over-estimate of the work a resume would skip.
 	LastCheckpointStep int `bson:"last_checkpoint_step,omitempty" json:"last_checkpoint_step,omitempty"`
 
+	// DiscardedAt marks a terminal run the operator has thrown away. It is
+	// not a status: the run stays `failed` or `cancelled`, because what
+	// happened to it is still true and the error message is still the
+	// record. What changes is that it stops representing the project —
+	// GetLatestByProject and LatestByProjects skip it — and it can no
+	// longer be resumed.
+	DiscardedAt *time.Time `bson:"discarded_at,omitempty" json:"discarded_at,omitempty"`
+
 	// ActiveMs is cumulative ACTIVE compute time across attempts, so a run
 	// resumed the next morning does not report fourteen hours of work.
 	// Without it, elapsed time is updated_at - started_at, which counts the

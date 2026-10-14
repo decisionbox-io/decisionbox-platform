@@ -288,6 +288,9 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	// destroying it. Cancel stays admin.
 	mux.HandleFunc("POST /api/v1/runs/{runId}/resume", withRole(member, discoveries.ResumeRun))
 	mux.HandleFunc("DELETE /api/v1/runs/{runId}", withRole(admin, discoveries.CancelRun))
+	// admin, matching cancel: discard throws away the checkpoints an operator
+	// could still have resumed from, and nothing undoes it.
+	mux.HandleFunc("POST /api/v1/runs/{runId}/discard", withRole(admin, discoveries.DiscardRun))
 
 	// Manual validation — enqueue / cancel / list.
 	// member role for enqueue + cancel (write-side); viewer for list.

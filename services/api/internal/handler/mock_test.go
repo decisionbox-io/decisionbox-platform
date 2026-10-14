@@ -350,6 +350,7 @@ type mockRunRepo struct {
 	getRunningCalls    int
 	failErr            error
 	cancelErr          error
+	discardErr  error
 
 	// Resume-path state. createdParams records what Create was handed, so a
 	// test can assert the run's own parameters were persisted; beginResume*
@@ -598,6 +599,26 @@ func (m *mockRunRepo) Cancel(_ context.Context, runID string) error {
 	r.Status = "cancelled"
 	now := time.Now()
 	r.CompletedAt = &now
+	return nil
+}
+
+func (m *mockRunRepo) Discard(_ context.Context, runID string) error {
+	if m.discardErr != nil {
+		return m.discardErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.runs[runID]
+	if !ok {
+		return fmt.Errorf("run not found: %s", runID)
+	}
+	// Mirror the repo's filter: terminal, resultless, not already discarded.
+	if (r.Status != "failed" && r.Status != "cancelled") || r.DiscardedAt != nil {
+		return database.ErrNotDiscardable
+	}
+	now := time.Now()
+	r.DiscardedAt = &now
+	r.LastCheckpointStep = 0
 	return nil
 }
 

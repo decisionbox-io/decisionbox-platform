@@ -178,7 +178,11 @@ func (r *RunRepository) BeginResume(ctx context.Context, runID string) (*models.
 	//
 	// A run that predates the counter reads as 0, and a missing field has to
 	// match that, or its first resume could never be fenced at all.
-	filter := bson.M{"_id": oid, "status": "failed"}
+	// discarded_at nil: a discarded run is not resumable, and this is the
+	// only place that can be enforced without a race. The dashboard already
+	// hides the button (Discard unsets last_checkpoint_step), but a direct
+	// POST would otherwise resurrect a run the operator threw away.
+	filter := bson.M{"_id": oid, "status": "failed", "discarded_at": nil}
 	if current.Attempt == 0 {
 		filter["attempt"] = bson.M{"$in": []any{0, nil}}
 	} else {
@@ -265,13 +269,22 @@ func (r *RunRepository) GetLatestByProject(ctx context.Context, projectID string
 	// explicit null — while `$exists: true` alone would let an explicit null
 	// through and widen this pass. Verified against Mongo 7, because the
 	// semantics read the wrong way round.
-	byStart, err := r.newestMatching(ctx, bson.M{"project_id": projectID}, "started_at")
+	// `discarded_at: nil` is "not discarded", and it is the same idiom as the
+	// $ne:nil above: a missing field compares equal to null, so this matches
+	// both the never-discarded run and an explicit null. Applied to the
+	// inactive passes only — the active query cannot return a discarded run,
+	// because Discard refuses anything that is not already terminal.
+	byStart, err := r.newestMatching(ctx, bson.M{
+		"project_id":   projectID,
+		"discarded_at": nil,
+	}, "started_at")
 	if err != nil {
 		return nil, err
 	}
 	byResume, err := r.newestMatching(ctx, bson.M{
 		"project_id":      projectID,
 		"last_resumed_at": bson.M{"$ne": nil},
+		"discarded_at":    nil,
 	}, "last_resumed_at")
 	if err != nil {
 		return nil, err
@@ -328,7 +341,10 @@ func (r *RunRepository) LatestByProjects(ctx context.Context, projectIDs []strin
 		return map[string]*models.DiscoveryRun{}, nil
 	}
 
-	out, err := r.newestPerProject(ctx, bson.M{"project_id": bson.M{"$in": projectIDs}}, "started_at")
+	out, err := r.newestPerProject(ctx, bson.M{
+		"project_id":   bson.M{"$in": projectIDs},
+		"discarded_at": nil,
+	}, "started_at")
 	if err != nil {
 		return nil, err
 	}
@@ -339,6 +355,7 @@ func (r *RunRepository) LatestByProjects(ctx context.Context, projectIDs []strin
 	resumed, err := r.newestPerProject(ctx, bson.M{
 		"project_id":      bson.M{"$in": projectIDs},
 		"last_resumed_at": bson.M{"$ne": nil},
+		"discarded_at":    nil,
 	}, "last_resumed_at")
 	if err != nil {
 		return nil, err
@@ -776,6 +793,59 @@ func (r *RunRepository) CleanupStaleRuns(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	return int(result.ModifiedCount), nil
+}
+
+// ErrNotDiscardable is returned when a run cannot be discarded: it is still
+// active, it produced a discovery, or someone discarded it already.
+var ErrNotDiscardable = errors.New("run is not discardable")
+
+// Discard marks a terminal, resultless run as thrown away. The status is left
+// alone — a run that failed still failed, and its error is still the record —
+// but the run stops representing the project and can no longer be resumed.
+//
+// Why this is not just Cancel with a wider gate: cancel does five things, and
+// four of them are meaningless here. There is no agent to kill, the policy
+// reservation closed when the run ended, the run is already terminal, and
+// setting status to `cancelled` would overwrite `failed` and destroy the error
+// an operator needs in order to know what happened. Only the fifth — dropping
+// the checkpoints — applies, and doing it under a status change that lies
+// about the outcome is the wrong trade.
+//
+// `completed` is excluded deliberately: that run's discovery IS the project's
+// history, and discarding the run would orphan it. Delete the discovery
+// instead. `pending`/`running` are excluded because cancel is the verb for a
+// run that is still working.
+//
+// Atomic and idempotent-by-refusal: the filter carries the status and the
+// not-yet-discarded predicate, so a second discard, or one racing a resume,
+// matches nothing and returns ErrNotDiscardable rather than writing twice.
+func (r *RunRepository) Discard(ctx context.Context, runID string) error {
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		return fmt.Errorf("invalid run ID: %w", err)
+	}
+	now := time.Now()
+	res, err := r.col.UpdateOne(ctx,
+		bson.M{
+			"_id":          oid,
+			"status":       bson.M{"$in": []string{"failed", "cancelled"}},
+			"discarded_at": nil,
+		},
+		bson.M{
+			"$set": bson.M{"discarded_at": now, "updated_at": now},
+			// The dashboard gates Resume on last_checkpoint_step > 0, and the
+			// resume endpoint clears this field itself when it refuses for
+			// having nothing to resume from. Same gesture, same reason: an
+			// offered-but-impossible Resume is worse than none.
+			"$unset": bson.M{"last_checkpoint_step": ""},
+		})
+	if err != nil {
+		return fmt.Errorf("discard run %s: %w", runID, err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotDiscardable
+	}
+	return nil
 }
 
 // GetOtherRunningByProject returns an active run for the project that is NOT

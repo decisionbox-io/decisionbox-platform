@@ -995,6 +995,76 @@ func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// DiscardRun throws away a terminal, resultless run.
+// POST /api/v1/runs/{runId}/discard
+//
+// The gap this fills: a failed run is resumable, and until its checkpoints
+// expire it is also what the project page shows — GetLatestByProject answers
+// with the newest run whatever its status. An operator who is not going to
+// resume it had no way to say so. Cancel refuses anything that is not active,
+// correctly (see RunRepository.Discard), and the dashboard's dismiss is local
+// to one browser tab by design, so neither served it.
+//
+// Deliberately not a delete. The run, its error and its step history stay
+// readable; what goes away is its claim on the project and its resumability.
+func (h *DiscoveriesHandler) DiscardRun(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runId")
+	ctx := r.Context()
+
+	run, err := h.runRepo.GetByID(ctx, runID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get run: "+err.Error())
+		return
+	}
+	if run == nil {
+		writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+
+	// Named refusals before the atomic one, so the operator is told which of
+	// the three reasons applies rather than a bare "not discardable".
+	switch {
+	case run.Status == "pending" || run.Status == "running":
+		writeError(w, http.StatusConflict,
+			"run is still active (status: "+run.Status+") — cancel it first, then discard it")
+		return
+	case run.Status == "completed":
+		writeError(w, http.StatusConflict,
+			"a completed run produced a discovery, which is the project's history — delete that discovery instead of discarding the run")
+		return
+	case run.DiscardedAt != nil:
+		writeError(w, http.StatusConflict, "run was already discarded")
+		return
+	}
+
+	if err := h.runRepo.Discard(ctx, runID); err != nil {
+		if errors.Is(err, database.ErrNotDiscardable) {
+			// The checks above passed, so the run changed under us — a resume
+			// or a concurrent discard got there first.
+			writeError(w, http.StatusConflict, "run is no longer discardable — it changed while this request was in flight")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to discard run: "+err.Error())
+		return
+	}
+
+	// The checkpoints are what made it resumable, and the agent's boot sweep
+	// keeps a per-run vector collection alive for as long as they exist.
+	// Best-effort with the retention TTL as the backstop, matching cancel.
+	if h.checkpointRepo != nil {
+		if deleted, err := h.checkpointRepo.DeleteByRun(ctx, runID); err != nil {
+			apilog.WithError(err).Warn("failed to delete the checkpoints of a discarded run; the retention TTL will reclaim them")
+		} else if deleted > 0 {
+			apilog.WithFields(apilog.Fields{"run_id": runID, "deleted": deleted}).Info("deleted the checkpoints of a discarded run")
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status": "discarded",
+		"run_id": runID,
+	})
+}
+
 // CancelRun cancels a running discovery.
 // DELETE /api/v1/runs/{runId}
 func (h *DiscoveriesHandler) CancelRun(w http.ResponseWriter, r *http.Request) {

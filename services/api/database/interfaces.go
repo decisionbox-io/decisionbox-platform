@@ -52,6 +52,7 @@ type RunRepo interface {
 	BeginResume(ctx context.Context, runID string) (*models.DiscoveryRun, error)
 	GetByID(ctx context.Context, runID string) (*models.DiscoveryRun, error)
 	GetLatestByProject(ctx context.Context, projectID string) (*models.DiscoveryRun, error)
+	Discard(ctx context.Context, runID string) error
 	GetRunningByProject(ctx context.Context, projectID string) (*models.DiscoveryRun, error)
 	// GetOtherRunningByProject answers "is another run active for this
 	// project", excluding one. The resume path needs the exclusion: by the

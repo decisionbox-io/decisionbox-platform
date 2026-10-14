@@ -1319,3 +1319,130 @@ func TestResumeRun_AStoodDownResumePreservesTheReservationOwnersEndTime(t *testi
 		t.Errorf("preserved %s, want attempt 1's own end %s — not this aborted resume's clock", got, attempt1EndedAt)
 	}
 }
+
+// --- Discard ---------------------------------------------------------------
+
+// A failed run is resumable, and until its checkpoints expire it is also what
+// the project page shows. An operator who is not going to resume it had no way
+// to say so: cancel refuses anything inactive, and the dashboard's dismiss is
+// local to one browser tab by design.
+func TestDiscardRun_ClearsResumabilityAndKeepsTheOutcome(t *testing.T) {
+	f := newResumeFixture(t)
+	f.runs.runs["run-1"].Status = "failed"
+	f.runs.runs["run-1"].Error = "agent was killed by SIGKILL (exit status 137)"
+	f.runs.runs["run-1"].LastCheckpointStep = 4
+
+	req := httptest.NewRequest("POST", "/api/v1/runs/run-1/discard", nil)
+	req.SetPathValue("runId", "run-1")
+	w := httptest.NewRecorder()
+	f.h.DiscardRun(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
+	}
+	run := f.runs.runs["run-1"]
+	if run.DiscardedAt == nil {
+		t.Error("discarded_at was not set")
+	}
+	if run.Status != "failed" {
+		t.Errorf("status = %q, want it left as failed — what happened is still true", run.Status)
+	}
+	if run.Error == "" {
+		t.Error("the error was cleared; it is the record of why the run failed and why discarding it was the right call")
+	}
+	if run.LastCheckpointStep != 0 {
+		t.Errorf("last_checkpoint_step = %d, want cleared so the dashboard stops offering Resume", run.LastCheckpointStep)
+	}
+	if len(f.cps.deleted) != 1 || f.cps.deleted[0] != "run-1" {
+		t.Errorf("deleted %v, want [run-1] — the checkpoints are what made it resumable", f.cps.deleted)
+	}
+}
+
+// Each refusal names its own reason. "Not discardable" alone would leave an
+// operator guessing which of three different situations they are in.
+func TestDiscardRun_Refusals(t *testing.T) {
+	tests := []struct {
+		name      string
+		setup     func(*resumeFixture)
+		wantCode  int
+		wantInMsg string
+	}{
+		{
+			name:      "a running run — cancel is the verb for that",
+			setup:     func(f *resumeFixture) { f.runs.runs["run-1"].Status = "running" },
+			wantCode:  http.StatusConflict,
+			wantInMsg: "cancel it first",
+		},
+		{
+			name:      "a pending run",
+			setup:     func(f *resumeFixture) { f.runs.runs["run-1"].Status = "pending" },
+			wantCode:  http.StatusConflict,
+			wantInMsg: "cancel it first",
+		},
+		{
+			name:      "a completed run — its discovery is the project's history",
+			setup:     func(f *resumeFixture) { f.runs.runs["run-1"].Status = "completed" },
+			wantCode:  http.StatusConflict,
+			wantInMsg: "delete that discovery instead",
+		},
+		{
+			name: "already discarded",
+			setup: func(f *resumeFixture) {
+				f.runs.runs["run-1"].Status = "failed"
+				now := time.Now()
+				f.runs.runs["run-1"].DiscardedAt = &now
+			},
+			wantCode:  http.StatusConflict,
+			wantInMsg: "already discarded",
+		},
+		{
+			name:      "a run that does not exist",
+			setup:     func(f *resumeFixture) { delete(f.runs.runs, "run-1") },
+			wantCode:  http.StatusNotFound,
+			wantInMsg: "run not found",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newResumeFixture(t)
+			tc.setup(f)
+
+			req := httptest.NewRequest("POST", "/api/v1/runs/run-1/discard", nil)
+			req.SetPathValue("runId", "run-1")
+			w := httptest.NewRecorder()
+			f.h.DiscardRun(w, req)
+
+			if w.Code != tc.wantCode {
+				t.Fatalf("status = %d, want %d; body = %s", w.Code, tc.wantCode, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), tc.wantInMsg) {
+				t.Errorf("body = %s, want it to mention %q", w.Body.String(), tc.wantInMsg)
+			}
+			// A refusal must not have touched the checkpoints.
+			if len(f.cps.deleted) != 0 {
+				t.Errorf("a refused discard deleted checkpoints: %v", f.cps.deleted)
+			}
+		})
+	}
+}
+
+// The purge is best-effort with the retention TTL as the backstop, matching
+// cancel: failing the discard over it would leave the run offering a Resume
+// the operator just asked to take away.
+func TestDiscardRun_SurvivesACheckpointPurgeFailure(t *testing.T) {
+	f := newResumeFixture(t)
+	f.runs.runs["run-1"].Status = "failed"
+	f.cps.deleteErr = errors.New("mongo down")
+
+	req := httptest.NewRequest("POST", "/api/v1/runs/run-1/discard", nil)
+	req.SetPathValue("runId", "run-1")
+	w := httptest.NewRecorder()
+	f.h.DiscardRun(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
+	}
+	if f.runs.runs["run-1"].DiscardedAt == nil {
+		t.Error("the run was not discarded despite the purge failing")
+	}
+}
