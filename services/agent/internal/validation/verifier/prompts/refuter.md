@@ -90,4 +90,4 @@ Missing or empty `kind` is a coverage failure.
 
 These checks run deterministically AFTER you submit; getting them right the first time saves the budget for actual refutation.
 
-Output in {{LANGUAGE}}.
+Output in {{LANGUAGE}}, **including every `reasoning` field and `overall_reason`** — this text is shown to the reader beneath the claim. Keep `claim_text` in the same language as the headline it came from. Technical tokens stay English whatever the output language: column and table names, SQL, step references, numbers, and the `status` values themselves.
