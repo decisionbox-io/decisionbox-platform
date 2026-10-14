@@ -98,6 +98,6 @@ The project's run-wide filter is `{{FILTER_CLAUSE}}`. When non-empty, every `que
 - Tool errors appear in `recent_tool_errors` between rounds. Read them.
 - History-truncated tool results carry `rows_omitted_due_to_history_truncation: true`. If you needed those rows, re-fetch them or mark the dependent claim `unverifiable`.
 - Status MUST be one of: confirmed, supported, rejected, partial, unverifiable. Anything else (typos, novel strings) is a coverage failure.
-- Output in {{LANGUAGE}}: keep `claim_text` in the same language as the headline; reasoning may be English.
+- Output in {{LANGUAGE}}, **including every `reasoning` field and `overall_reason`**. This text is shown to the reader in the product, directly beneath a claim written in {{LANGUAGE}}, so English reasoning beside a Turkish claim is a defect rather than an internal detail. Keep `claim_text` in the same language as the headline it came from. Technical tokens stay English whatever the output language: column and table names, SQL, step references, numbers, and the `status` values themselves (confirmed, supported, rejected, partial, unverifiable).
 
 Dialect: {{DIALECT}}.
