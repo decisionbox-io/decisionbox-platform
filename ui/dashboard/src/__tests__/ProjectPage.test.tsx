@@ -35,6 +35,7 @@ const resumeRun = jest.fn();
 const discardRun = jest.fn();
 const getRun = jest.fn();
 const triggerDiscovery = jest.fn();
+const cancelRun = jest.fn();
 
 jest.mock('@/lib/api', () => ({
   __esModule: true,
@@ -58,7 +59,7 @@ jest.mock('@/lib/api', () => ({
     triggerDiscovery: (...a: unknown[]) => triggerDiscovery(...a),
     getRun: (...a: unknown[]) => getRun(...a),
     estimateCost: jest.fn(),
-    cancelRun: jest.fn(),
+    cancelRun: (...a: unknown[]) => cancelRun(...a),
     resumeRun: (...a: unknown[]) => resumeRun(...a),
     discardRun: (...a: unknown[]) => discardRun(...a),
   },
@@ -663,7 +664,8 @@ describe('Discard: runs with a result, and a project with none (#438)', () => {
 // live run, so nothing brought it back short of a reload.
 //
 // Asserted as the invariant rather than by driving the trigger menu: an empty
-// response must never clear a running run, whatever produced the ordering.
+// response must never clear a run installed after it went out, whatever
+// produced the ordering.
 it('does not clear a live run when an empty status response arrives', async () => {
   jest.useFakeTimers();
   try {
@@ -682,6 +684,44 @@ it('does not clear a live run when an empty status response arrives', async () =
     const polls = getProjectStatus.mock.calls.length;
     await act(async () => { await jest.advanceTimersByTimeAsync(2000); });
     expect(getProjectStatus.mock.calls.length).toBeGreaterThan(polls);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+// The status fence was not enough, and this is the ordering that shows it: a
+// status request in flight when `run` changes out of band, whose answer — true
+// when it was issued — lands afterwards. A status test cannot save the newer
+// run, because a run that has just been cancelled (or that failed fast) is
+// terminal by then and indistinguishable from the run the answer was about.
+// Only the generation can.
+it('ignores a status response that was issued before run state changed', async () => {
+  jest.useFakeTimers();
+  try {
+    getProjectStatus.mockResolvedValueOnce(status(makeRun({ status: 'running', progress: 30 })));
+    renderPage();
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    await waitFor(() => expect(screen.getByText('Cancel')).toBeInTheDocument());
+
+    // The next poll hangs; its answer will be "no run".
+    let release: () => void = () => {};
+    const inFlight = new Promise<void>((r) => { release = r; });
+    getProjectStatus.mockImplementation(async () => {
+      await inFlight;
+      return { project_id: 'p1', run: null, last_discovery: null };
+    });
+    await act(async () => { await jest.advanceTimersByTimeAsync(2000); });
+
+    // While it is in flight, the operator cancels — an out-of-band change.
+    cancelRun.mockResolvedValue({ status: 'cancelled', message: 'ok' });
+    const cancelBtn = screen.getByText('Cancel');
+    await act(async () => { cancelBtn.click(); await jest.advanceTimersByTimeAsync(0); });
+    await waitFor(() => expect(screen.getByText('Discovery cancelled')).toBeInTheDocument());
+
+    // Now the stale answer lands. It must not take the cancelled run away.
+    await act(async () => { release(); await jest.advanceTimersByTimeAsync(0); });
+
+    expect(screen.getByText('Discovery cancelled')).toBeInTheDocument();
   } finally {
     jest.useRealTimers();
   }

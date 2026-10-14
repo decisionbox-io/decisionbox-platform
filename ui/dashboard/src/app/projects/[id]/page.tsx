@@ -61,6 +61,24 @@ export default function ProjectPage() {
   const [project, setProject] = useState<Project | null>(null);
   const [discoveries, setDiscoveries] = useState<DiscoveryResult[]>([]);
   const [run, setRun] = useState<DiscoveryRunStatus | null>(null);
+  // runEpoch counts the times `run` was changed by something OTHER than a
+  // status poll — a trigger, a cancel, a resume, a discard. A poll captures
+  // it before its request and ignores the answer if it moved, because such a
+  // response describes the world as it was before that change.
+  //
+  // This exists because a status response is not only stale, it can be
+  // actively wrong: an answer computed before the operator started a run says
+  // "no run", and applying it hid a live one. Fencing on the run's STATUS was
+  // the first attempt and is not enough — a newly triggered run that fails
+  // fast is terminal by the time the stale answer lands, so a status test
+  // cannot tell it from the run the answer was about. The generation can.
+  const runEpoch = useRef(0);
+  // installRun is every out-of-band change to `run`: it sets and bumps
+  // together, so no call site can do one without the other.
+  const installRun = useCallback((next: DiscoveryRunStatus | null) => {
+    runEpoch.current += 1;
+    setRun(next);
+  }, []);
   const [loading, setLoading] = useState(true);
   const [triggering, setTriggering] = useState(false);
   const [analysisAreas, setAnalysisAreas] = useState<{ id: string; name: string }[]>([]);
@@ -112,7 +130,12 @@ export default function ProjectPage() {
 
   const pollStatus = useCallback(async () => {
     try {
+      const epoch = runEpoch.current;
       const status = await api.getProjectStatus(id);
+      // Something changed `run` while this was in flight, so this answer is
+      // about the previous state. Drop it whole rather than reasoning about
+      // which parts still apply; the next poll is 2s away.
+      if (runEpoch.current !== epoch) return;
       // A successful read with no run means the project has none to show —
       // every run discarded, or the last one deleted with its project data.
       // Clearing is the only way the panel goes away: a terminal run is not
@@ -120,14 +143,18 @@ export default function ProjectPage() {
       // for ever. Only on a SUCCESSFUL read; a failed one is handled by the
       // catch below, which deliberately keeps what is on screen.
       //
-      // A LIVE run is never cleared this way, and the functional update is
-      // what makes that safe against the response that prompted this rule:
-      // the first status request can still be in flight when the operator
-      // starts their first run, and its pre-trigger "no run" answer then
-      // arrives AFTER handleTrigger installed the live one. Clearing it there
-      // hid an active run and stopped the poll, which is gated on a live run
-      // — invisible until a reload. Reading the current value instead of the
-      // one this callback closed over is the only way to see that.
+      // Two fences, because there are two different ways an empty answer can
+      // be wrong, and each catches what the other cannot:
+      //
+      //   - the epoch check above: the answer describes an older world,
+      //     because `run` changed while the request was in flight. It covers
+      //     a run of ANY status, which a status test cannot — one that failed
+      //     fast is terminal by the time the stale answer lands.
+      //   - this one: the answer contradicts a run we believe is LIVE. That
+      //     should not happen (a running run has a document), and the cost of
+      //     believing it is high: clearing stops the poll, which is gated on a
+      //     live run, so a wrong clear does not heal. A terminal run is
+      //     cleared, which is the discarded-panel case this branch exists for.
       if (status && !status.run) {
         setRun((prev) => (prev && (prev.status === 'running' || prev.status === 'pending') ? prev : null));
         return;
@@ -236,7 +263,7 @@ export default function ProjectPage() {
       const result = await api.triggerDiscovery(id, Object.keys(opts).length > 0 ? opts : undefined);
       if (result.run_id) {
         const newRun = await api.getRun(result.run_id);
-        setRun(newRun);
+        installRun(newRun);
       }
       const floor = minStepsTouched ? minSteps : Math.floor(maxSteps * 0.6);
       notifications.show({
@@ -489,7 +516,7 @@ export default function ProjectPage() {
           }
           try {
             await api.cancelRun(run.id);
-            setRun({ ...run, status: 'cancelled' });
+            installRun({ ...run, status: 'cancelled' });
             notifications.show({ title: 'Cancelled', message: 'Discovery cancelled', color: 'orange' });
           } catch (e: unknown) {
             notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
@@ -501,7 +528,7 @@ export default function ProjectPage() {
             // immediately — it is gated on the run being live, and waiting
             // for the next status response would leave the panel looking
             // dead for a beat after the click.
-            setRun({ ...run, status: 'running', error: '', attempt: res.attempt });
+            installRun({ ...run, status: 'running', error: '', attempt: res.attempt });
             notifications.show({
               title: 'Resuming',
               message: `Attempt ${res.attempt} — replaying the steps already executed`,
@@ -523,7 +550,7 @@ export default function ProjectPage() {
               // worse outcome than the stale view this refresh exists to
               // fix.
               const fresh = await api.getRun(run.id);
-              if (fresh) setRun(fresh);
+              if (fresh) installRun(fresh);
             } catch {
               // The real error is already on screen; a failed refresh adds
               // nothing to it.
@@ -542,7 +569,12 @@ export default function ProjectPage() {
             // project now, and it is no longer this one. Clearing the
             // dismissal too, so the replacement is not hidden by a stale one.
             setDismissedRunId(null);
-            setRun(null);
+            // Only this run. Another discovery can have started while the
+            // request was in flight, and clearing that one would hide a live
+            // run's progress and Cancel with nothing to bring them back.
+            const discarded = run.id;
+            runEpoch.current += 1;
+            setRun((prev) => (prev && prev.id === discarded ? null : prev));
             void pollStatus();
           } catch (e: unknown) {
             // 409 is a real answer here — the run went active again, or
