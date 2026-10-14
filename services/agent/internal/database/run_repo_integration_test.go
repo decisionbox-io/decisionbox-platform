@@ -1048,3 +1048,38 @@ func TestRunRepository_ResumableOrActiveIDs_ExcludesDiscarded(t *testing.T) {
 		t.Error("a DISCARDED run was kept; it can never be resumed, so its index can never be wanted again")
 	}
 }
+
+// ListActiveRecent feeds the orphan sweep's keep set, and an id that enters
+// through it stays in — excluding discarded runs from the checkpoint-derived
+// half was not enough. An agent that survived the startup sweep can write
+// `running` back onto a discarded run (including one on a build older than
+// the discard fences), and that held the run's per-run vector collection open
+// for the whole lookback window.
+func TestRunRepository_ListActiveRecent_ExcludesDiscarded(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewRunRepository(db)
+
+	now := time.Now()
+	live := seedRunDoc(t, ctx, db, bson.M{"status": models.RunStatusRunning, "started_at": now})
+	pending := seedRunDoc(t, ctx, db, bson.M{"status": models.RunStatusPending, "started_at": now})
+	zombie := seedRunDoc(t, ctx, db, bson.M{
+		"status": models.RunStatusRunning, "started_at": now, "discarded_at": now,
+	})
+
+	got, err := repo.ListActiveRecent(ctx, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := map[string]bool{}
+	for _, r := range got {
+		in[r.ID] = true
+	}
+	if !in[live] || !in[pending] {
+		t.Error("a genuinely active run must be listed — this list is what stops the sweep dropping a live run's index")
+	}
+	if in[zombie] {
+		t.Error("a discarded run was listed as active, which keeps its vector collection alive for the lookback window")
+	}
+}

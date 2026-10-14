@@ -682,6 +682,14 @@ func (r *RunRepository) ListActiveRecent(ctx context.Context, lookback time.Dura
 			models.RunStatusPending,
 			models.RunStatusRunning,
 		}},
+		// A discarded run is not active, whatever its status says. An agent
+		// that survived the startup sweep can write `running` back onto one —
+		// including an agent on a build older than the discard fences — and
+		// this list feeds the orphan sweep's keep set. Excluding it only from
+		// the checkpoint-derived half of that set was not enough: an id added
+		// here stays in, so the discarded run's per-run vector collection was
+		// held open for the whole lookback window.
+		"discarded_at": nil,
 	}
 	cur, err := r.col.Find(ctx, filter, options.Find().SetProjection(bson.M{
 		"_id":        1,

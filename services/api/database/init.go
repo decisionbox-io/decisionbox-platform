@@ -91,6 +91,26 @@ var schema = []struct {
 		Name: "discovery_runs",
 		Indexes: []mongo.IndexModel{
 			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "started_at", Value: -1}}},
+			// Same keys, restricted to runs that have not been discarded.
+			//
+			// The latest-run readers filter on `discarded_at: nil`, and that
+			// predicate is enough to lose the DISTINCT_SCAN the plain index
+			// gives their $group-$first aggregation: measured on Mongo 7 with
+			// three projects of 1,000 runs, examined documents went from 3 to
+			// 3,000 — a full-history fetch on every project-list request,
+			// which the review rules reject on a hot path. The partial index
+			// restores the scan (3 documents, DISTINCT_SCAN, and the
+			// discarded runs still correctly excluded).
+			//
+			// `discarded_at: nil` in a partialFilterExpression covers the
+			// missing field as well as an explicit null, which is what makes
+			// it match every run that was never discarded.
+			{
+				Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "started_at", Value: -1}},
+				Options: options.Index().
+					SetName("project_started_not_discarded").
+					SetPartialFilterExpression(bson.M{"discarded_at": nil}),
+			},
 			{Keys: bson.D{{Key: "status", Value: 1}}},
 			// Supports the run-completion dispatcher's FIFO scan
 			// (status terminal, completion_hooks_fired_at unset,
