@@ -26,7 +26,7 @@ func templatedInsight() models.Insight {
 // so nothing downstream has to know this format exists.
 func TestTemplate_RendersEveryReference(t *testing.T) {
 	ins := []models.Insight{templatedInsight()}
-	tally := renderInsightFigures(ins, usNotation)
+	tally := usWriter.renderInsightFigures(ins)
 
 	if tally.unresolved != 0 || tally.inlined != 0 {
 		t.Fatalf("unresolved=%d inlined=%d, want 0 and 0", tally.unresolved, tally.inlined)
@@ -57,7 +57,7 @@ func TestTemplate_RendersEveryReference(t *testing.T) {
 func TestTemplate_KeepsTheAuthoredProse(t *testing.T) {
 	ins := []models.Insight{templatedInsight()}
 	before := ins[0].Description
-	renderInsightFigures(ins, usNotation)
+	usWriter.renderInsightFigures(ins)
 
 	if ins[0].FigureTemplate == nil {
 		t.Fatal("the template was not kept")
@@ -82,7 +82,7 @@ func TestTemplate_InlinedNumberIsReported(t *testing.T) {
 	ins := []models.Insight{templatedInsight()}
 	ins[0].Description = "The top decile contributed 24.66% of revenue, and {{f2}} in absolute terms."
 
-	tally := renderInsightFigures(ins, usNotation)
+	tally := usWriter.renderInsightFigures(ins)
 	if tally.inlined == 0 {
 		t.Fatal("a number typed directly into the prose was not reported")
 	}
@@ -125,7 +125,7 @@ func TestTemplate_UnresolvedReferenceShipsAsWritten(t *testing.T) {
 	ins := []models.Insight{templatedInsight()}
 	ins[0].Description = "The top decile contributed {{f1}} and {{f9}} besides."
 
-	tally := renderInsightFigures(ins, usNotation)
+	tally := usWriter.renderInsightFigures(ins)
 	if tally.unresolved != 1 {
 		t.Fatalf("unresolved = %d, want 1", tally.unresolved)
 	}
@@ -145,7 +145,7 @@ func TestTemplate_UnusedFigureIsCountedNotAnError(t *testing.T) {
 	ins[0].Figures = append(ins[0].Figures, models.Figure{
 		ID: "f9", Value: 17, Unit: models.UnitCount, Step: 48, Kind: models.FigureCell, Column: "customers", Row: "decile = 9",
 	})
-	tally := renderInsightFigures(ins, usNotation)
+	tally := usWriter.renderInsightFigures(ins)
 	if tally.unused != 1 {
 		t.Fatalf("unused = %d, want 1", tally.unused)
 	}
@@ -162,7 +162,7 @@ func TestTemplate_UntouchedWhenThereIsNothingToRender(t *testing.T) {
 		Description: "Prose only.",
 	}}
 	before := ins[0]
-	tally := renderInsightFigures(ins, usNotation)
+	tally := usWriter.renderInsightFigures(ins)
 	if tally != (figureRenderTally{}) {
 		t.Fatalf("tally = %+v, want zero", tally)
 	}
@@ -180,7 +180,7 @@ func TestTemplate_UntouchedWhenThereIsNothingToRender(t *testing.T) {
 func TestTemplate_MarkdownCopyIsRenderedToo(t *testing.T) {
 	ins := []models.Insight{templatedInsight()}
 	ins[0].DescriptionMd = "**{{f1}}** of 1997 revenue"
-	renderInsightFigures(ins, usNotation)
+	usWriter.renderInsightFigures(ins)
 	if strings.Contains(ins[0].DescriptionMd, "{{") {
 		t.Fatalf("the markdown copy kept its references: %q", ins[0].DescriptionMd)
 	}
@@ -218,7 +218,7 @@ func TestTemplate_DoesNotDoubleAUnitSuffix(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ins := []models.Insight{{Name: tc.template, SourceSteps: []int{1}, Figures: []models.Figure{tc.fig}}}
-			renderInsightFigures(ins, usNotation)
+			usWriter.renderInsightFigures(ins)
 			if ins[0].Name != tc.want {
 				t.Fatalf("rendered %q, want %q", ins[0].Name, tc.want)
 			}
@@ -263,7 +263,7 @@ func TestTemplate_DoesNotDoubleAnApproxMarker(t *testing.T) {
 			ins := []models.Insight{{Name: tc.template, SourceSteps: []int{1}, Figures: []models.Figure{{
 				ID: "f1", Value: 151416.87, Unit: models.UnitCurrency, Decimals: 0, Approx: true,
 			}}}}
-			renderInsightFigures(ins, usNotation)
+			usWriter.renderInsightFigures(ins)
 			if ins[0].Name != tc.want {
 				t.Fatalf("rendered %q, want %q", ins[0].Name, tc.want)
 			}
@@ -275,7 +275,7 @@ func TestTemplate_DoesNotDoubleAnApproxMarker(t *testing.T) {
 		ins := []models.Insight{{Name: "Share is ~{{f1}}% of revenue", SourceSteps: []int{1}, Figures: []models.Figure{{
 			ID: "f1", Value: 24.66, Unit: models.UnitPercent, Decimals: 2, Approx: true,
 		}}}}
-		renderInsightFigures(ins, usNotation)
+		usWriter.renderInsightFigures(ins)
 		if ins[0].Name != "Share is ~24.66% of revenue" {
 			t.Fatalf("rendered %q", ins[0].Name)
 		}
@@ -351,7 +351,7 @@ func TestTemplate_DoesNotDoubleACurrencySymbol(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ins := []models.Insight{{Name: tc.template, SourceSteps: []int{1}, Figures: []models.Figure{tc.fig}}}
-			renderInsightFigures(ins, usNotation)
+			usWriter.renderInsightFigures(ins)
 			if ins[0].Name != tc.want {
 				t.Fatalf("rendered %q, want %q", ins[0].Name, tc.want)
 			}
@@ -370,7 +370,7 @@ func TestTemplate_DoesNotDoubleACurrencySymbol(t *testing.T) {
 				{ID: "f2", Value: 218_100_000_000, Unit: models.UnitCurrency, Scale: models.ScaleBillions, Decimals: 2},
 			},
 		}}
-		renderInsightFigures(ins, usNotation)
+		usWriter.renderInsightFigures(ins)
 		if want := "Returns cost $53.74B of a $218.10B book."; ins[0].Description != want {
 			t.Fatalf("rendered %q, want %q", ins[0].Description, want)
 		}
@@ -385,7 +385,7 @@ func TestTemplate_DoesNotDoubleACurrencySymbol(t *testing.T) {
 			SourceSteps: []int{1},
 			Figures:     []models.Figure{{ID: "f1", Value: 4491.13, Unit: models.UnitCurrency, Decimals: 2}},
 		}}
-		renderInsightFigures(ins, usNotation)
+		usWriter.renderInsightFigures(ins)
 		if want := "Against a $1B plan the segment spends $4,491.13."; ins[0].Description != want {
 			t.Fatalf("rendered %q, want %q", ins[0].Description, want)
 		}

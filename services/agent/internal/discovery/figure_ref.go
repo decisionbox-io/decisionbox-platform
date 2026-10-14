@@ -78,7 +78,7 @@ type refValue struct {
 // reference to an insight that never reached the prompt resolves to nothing and is
 // reported, instead of silently picking up a figure from a document the model could not
 // have read.
-func buildFigureRefIndex(insights []models.Insight, loc numberLocale) figureRefIndex {
+func (w figureWriter) buildFigureRefIndex(insights []models.Insight) figureRefIndex {
 	ix := make(figureRefIndex, len(insights))
 	for _, ins := range insights {
 		if ins.ID == "" || len(ins.Figures) == 0 {
@@ -97,7 +97,7 @@ func buildFigureRefIndex(insights []models.Insight, loc numberLocale) figureRefI
 		// figuresBrokenByRepair says which figures that is, by re-rendering the template
 		// and asking which fields no longer match -- see the file comment there, and the
 		// falsehood the earlier all-or-nothing rule cost.
-		broken := figuresBrokenByRepair(ins, loc)
+		broken := w.figuresBrokenByRepair(ins)
 		status := make(map[string]string, len(ins.FigureVerdicts))
 		for _, v := range ins.FigureVerdicts {
 			status[v.ID] = v.Status
@@ -201,17 +201,17 @@ func (ix figureRefIndex) resolve(r models.FigureRef) (value float64, unit string
 
 // EvaluateRecommendationFigures settles every figure a recommendation declares against
 // the insights it was given, in declared order.
-func EvaluateRecommendationFigures(figures []models.Figure, ix figureRefIndex, loc numberLocale) []models.FigureVerdict {
+func (w figureWriter) EvaluateRecommendationFigures(figures []models.Figure, ix figureRefIndex) []models.FigureVerdict {
 	out := make([]models.FigureVerdict, 0, len(figures))
 	for _, f := range figures {
-		out = append(out, evaluateRecommendationFigure(f, ix, loc))
+		out = append(out, w.evaluateRecommendationFigure(f, ix))
 	}
 	return out
 }
 
-func evaluateRecommendationFigure(f models.Figure, ix figureRefIndex, loc numberLocale) models.FigureVerdict {
+func (w figureWriter) evaluateRecommendationFigure(f models.Figure, ix figureRefIndex) models.FigureVerdict {
 	v := models.FigureVerdict{
-		ID: f.ID, Display: renderFigure(f, loc), Kind: f.Kind, Claimed: f.Value,
+		ID: f.ID, Display: w.renderFigure(f), Kind: f.Kind, Claimed: f.Value,
 	}
 	undecidable := func(format string, args ...any) models.FigureVerdict {
 		v.Status = models.FigureUndecidable
@@ -361,7 +361,7 @@ func declineAdoption(v *models.FigureVerdict, reason string) {
 	}
 }
 
-func adoptResolvedFigureValues(rec *models.Recommendation, ix figureRefIndex, loc numberLocale) int {
+func (w figureWriter) adoptResolvedFigureValues(rec *models.Recommendation, ix figureRefIndex) int {
 	// Guarded, which it was not: a duplicated id here let one verdict's resolved value into
 	// a different declaration, and renderableFigures then dropped the zero-valued one so the
 	// duplication never reached the renderer that would have refused it.
@@ -433,9 +433,9 @@ func adoptResolvedFigureValues(rec *models.Recommendation, ix figureRefIndex, lo
 		// reference to a checked count of 100 could declare 101, land inside 0.5 + 0.5, be
 		// marked `holds`, and ship 101. The tolerance's job is to decide whether the
 		// disagreement is worth RECORDING; it was never meant to decide the number.
-		before := renderFigure(*f, loc)
+		before := w.renderFigure(*f)
 		f.Value = v.Evaluated
-		after := renderFigure(*f, loc)
+		after := w.renderFigure(*f)
 		if before == after {
 			// The resolved value renders identically at the precision the figure is
 			// written to, so the reader sees no change and nothing is claimed. A
@@ -454,7 +454,7 @@ func adoptResolvedFigureValues(rec *models.Recommendation, ix figureRefIndex, lo
 	// figure whose claimed and evaluated values were both 52134 -- every contract-
 	// compliant figure, since the contract is what tells the model to omit the value.
 	if filled || len(corrections) > 0 {
-		rec.FigureVerdicts = EvaluateRecommendationFigures(rec.Figures, ix, loc)
+		rec.FigureVerdicts = w.EvaluateRecommendationFigures(rec.Figures, ix)
 	}
 	return len(corrections)
 }
@@ -465,8 +465,8 @@ func adoptResolvedFigureValues(rec *models.Recommendation, ix figureRefIndex, lo
 //
 // Records rather than rejects, for the reason the insight pass does: a gate with no
 // correction path behind it turns one wrong number into a discarded document.
-func attachRecommendationFigureVerdicts(recs []models.Recommendation, insights []models.Insight, loc numberLocale) (settled, adopted int) {
-	ix := buildFigureRefIndex(insights, loc)
+func (w figureWriter) attachRecommendationFigureVerdicts(recs []models.Recommendation, insights []models.Insight) (settled, adopted int) {
+	ix := w.buildFigureRefIndex(insights)
 	for i := range recs {
 		rec := &recs[i]
 
@@ -481,9 +481,9 @@ func attachRecommendationFigureVerdicts(recs []models.Recommendation, insights [
 		if len(rec.Figures) == 0 {
 			continue
 		}
-		rec.FigureVerdicts = EvaluateRecommendationFigures(rec.Figures, ix, loc)
+		rec.FigureVerdicts = w.EvaluateRecommendationFigures(rec.Figures, ix)
 		settled += len(rec.FigureVerdicts)
-		adopted += adoptResolvedFigureValues(rec, ix, loc)
+		adopted += w.adoptResolvedFigureValues(rec, ix)
 		citeResolvedInsights(rec)
 
 		for _, v := range rec.FigureVerdicts {

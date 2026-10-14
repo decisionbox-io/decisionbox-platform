@@ -52,8 +52,8 @@ func TestRecommendationFigures_FabricatedTotalIsReplacedByTheReferences(t *testi
 		}},
 	}}
 
-	attachRecommendationFigureVerdicts(recs, []models.Insight{ins}, usNotation)
-	renderRecommendationFigures(recs, usNotation)
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.renderRecommendationFigures(recs)
 
 	if got := recs[0].Figures[0].Value; got != 96031 {
 		t.Fatalf("figure value = %v, want the references' total 96031", got)
@@ -96,8 +96,8 @@ func TestRecommendationFigures_TitleAndBodyCannotDisagree(t *testing.T) {
 		}},
 	}}
 
-	attachRecommendationFigureVerdicts(recs, []models.Insight{ins}, usNotation)
-	renderRecommendationFigures(recs, usNotation)
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.renderRecommendationFigures(recs)
 
 	rec := recs[0]
 	fields := []string{rec.Title, rec.Description, rec.Actions[0], rec.ExpectedImpact.Reasoning}
@@ -121,8 +121,8 @@ func TestRecommendationFigures_RefTakesTheInsightsCheckedValue(t *testing.T) {
 		}},
 	}}
 
-	attachRecommendationFigureVerdicts(recs, []models.Insight{ins}, usNotation)
-	renderRecommendationFigures(recs, usNotation)
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.renderRecommendationFigures(recs)
 
 	if !strings.Contains(recs[0].Description, "52,134") {
 		t.Errorf("description = %q, want the insight's checked value 52,134", recs[0].Description)
@@ -147,8 +147,8 @@ func TestRecommendationFigures_RefRewritesNotationWithoutRetypingTheNumber(t *te
 		}},
 	}}
 
-	attachRecommendationFigureVerdicts(recs, []models.Insight{ins}, usNotation)
-	renderRecommendationFigures(recs, usNotation)
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.renderRecommendationFigures(recs)
 
 	if !strings.Contains(recs[0].Description, "$8.5B") {
 		t.Errorf("description = %q, want $8.5B -- the insight's value in the recommendation's notation", recs[0].Description)
@@ -189,7 +189,7 @@ func TestRecommendationFigures_UnusableOperandIsUndecidableNotRefuted(t *testing
 					Refs: []models.FigureRef{ref(tc.ins.ID, "f1")},
 				}},
 			}}
-			attachRecommendationFigureVerdicts(recs, []models.Insight{tc.ins}, usNotation)
+			usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{tc.ins})
 			v := recs[0].FigureVerdicts[0]
 			if v.Status != models.FigureUndecidable {
 				t.Fatalf("status = %q, want undecidable -- a reference Go cannot stand behind says nothing about the number", v.Status)
@@ -231,8 +231,8 @@ func TestRecommendationFigures_UnresolvableReferenceStillRendersSomething(t *tes
 					Kind: models.FigureRefKind, Refs: tc.refs,
 				}},
 			}}
-			attachRecommendationFigureVerdicts(recs, []models.Insight{ins}, usNotation)
-			renderRecommendationFigures(recs, usNotation)
+			usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+			usWriter.renderRecommendationFigures(recs)
 
 			v := recs[0].FigureVerdicts[0]
 			if v.Status != models.FigureUndecidable {
@@ -264,7 +264,7 @@ func TestRecommendationFigures_KindOutsideTheClosedSetIsUndecidable(t *testing.T
 				Refs: []models.FigureRef{ref(ins.ID, "f1")},
 			}},
 		}}
-		attachRecommendationFigureVerdicts(recs, []models.Insight{ins}, usNotation)
+		usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
 		v := recs[0].FigureVerdicts[0]
 		if v.Status != models.FigureUndecidable {
 			t.Errorf("kind %q: status = %q, want undecidable", kind, v.Status)
@@ -287,7 +287,7 @@ func TestRecommendationFigures_RefNamingSeveralFiguresIsUndecidable(t *testing.T
 			Refs: []models.FigureRef{ref(ins.ID, "f1"), ref(ins.ID, "f2")},
 		}},
 	}}
-	attachRecommendationFigureVerdicts(recs, []models.Insight{ins}, usNotation)
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
 	if s := recs[0].FigureVerdicts[0].Status; s != models.FigureUndecidable {
 		t.Errorf("status = %q, want undecidable", s)
 	}
@@ -304,7 +304,7 @@ func TestRecommendationFigures_DerivedRecordsAreClearedBeforeUse(t *testing.T) {
 		FigureCorrections: []models.FigureCorrection{{ID: "f1", From: 1, To: 2}},
 		FigureTemplate:    &models.RecommendationFigureTemplate{Title: "authored by the model"},
 	}}
-	attachRecommendationFigureVerdicts(recs, nil, usNotation)
+	usWriter.attachRecommendationFigureVerdicts(recs, nil)
 	if recs[0].FigureVerdicts != nil || recs[0].FigureCorrections != nil || recs[0].FigureTemplate != nil {
 		t.Errorf("a model-authored figure record survived: verdicts=%v corrections=%v template=%v",
 			recs[0].FigureVerdicts, recs[0].FigureCorrections, recs[0].FigureTemplate)
@@ -330,8 +330,8 @@ func TestRecommendationFigures_NotationIsNotDoubledAtEitherEnd(t *testing.T) {
 		},
 	}}
 
-	attachRecommendationFigureVerdicts(recs, []models.Insight{ins}, usNotation)
-	renderRecommendationFigures(recs, usNotation)
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.renderRecommendationFigures(recs)
 
 	if strings.Contains(recs[0].Title, "%%") {
 		t.Errorf("title doubled the percent sign: %q", recs[0].Title)
@@ -415,7 +415,7 @@ func TestInsightsForRecommenderPrompt_KeepsFiguresAndDropsTheirAuditTrail(t *tes
 		FigureTemplate:    &models.FigureTemplate{Name: "All {{f1}} buyers are spread across five tiers"},
 	}}
 
-	out := insightsForRecommenderPrompt(in, usNotation)
+	out := usWriter.insightsForRecommenderPrompt(in)
 
 	if len(out[0].Figures) != 1 || out[0].Figures[0].ID != "f1" {
 		t.Fatalf("figures did not survive: %+v -- the recommender cannot reference what it cannot see", out[0].Figures)
@@ -563,8 +563,8 @@ func TestRecommendationFigures_NoStatedValueIsComplianceNotACorrection(t *testin
 		}},
 	}}
 
-	_, adopted := attachRecommendationFigureVerdicts(recs, []models.Insight{ins}, usNotation)
-	renderRecommendationFigures(recs, usNotation)
+	_, adopted := usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.renderRecommendationFigures(recs)
 
 	if v := recs[0].FigureVerdicts[0]; v.Status != models.FigureHolds {
 		t.Errorf("status = %q (%s), want holds -- an unstated value is the contract being followed", v.Status, v.Reason)
@@ -609,8 +609,8 @@ func TestRecommendationFigures_UnvouchedOperandCarriesItsNumberNotAZero(t *testi
 		}},
 	}}
 
-	attachRecommendationFigureVerdicts(recs, []models.Insight{ins}, usNotation)
-	renderRecommendationFigures(recs, usNotation)
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.renderRecommendationFigures(recs)
 
 	if strings.Contains(recs[0].Description, "0.00%") {
 		t.Fatalf("a fabricated zero shipped into the prose: %q", recs[0].Description)
@@ -641,8 +641,8 @@ func TestRecommendationFigures_UnresolvableAndUnstatedKeepsItsMarker(t *testing.
 		}},
 	}}
 
-	attachRecommendationFigureVerdicts(recs, []models.Insight{ins}, usNotation)
-	tally := renderRecommendationFigures(recs, usNotation)
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	tally := usWriter.renderRecommendationFigures(recs)
 
 	if strings.Contains(recs[0].Description, " 0 ") || strings.Contains(recs[0].Description, "the 0 buyers") {
 		t.Fatalf("a fabricated zero shipped into the prose: %q", recs[0].Description)

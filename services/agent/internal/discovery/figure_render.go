@@ -39,13 +39,13 @@ var figureScales = map[string]struct {
 // An unknown unit or scale renders plainly rather than failing: a figure whose
 // presentation Go does not recognise is still a figure whose arithmetic can be
 // checked, and refusing to render it would lose the finding over a formatting word.
-func renderFigure(f models.Figure, loc numberLocale) string {
+func (w figureWriter) renderFigure(f models.Figure) string {
 	sc, ok := figureScales[f.Scale]
 	if !ok {
 		sc = figureScales[models.ScaleNone]
 	}
 	scaled := f.Value / sc.div
-	digits := strconv.FormatFloat(scaled, 'f', f.Places(), 64)
+	digits := w.digits(scaled, f.Places())
 
 	var b strings.Builder
 	if f.Approx {
@@ -59,11 +59,10 @@ func renderFigure(f models.Figure, loc numberLocale) string {
 		}
 		b.WriteString(f.Symbol())
 	}
-	// Thousands separators on anything unscaled, because an unscaled count or amount
-	// is where they matter and a scaled one has at most four digits. A scaled figure
-	// still carries a decimal mark, so it goes through the locale either way --
-	// otherwise "30.63M" keeps a US point inside Turkish prose.
-	digits = applyNotation(digits, loc, f.Scale == models.ScaleNone)
+	// Grouping and the decimal mark come from the language, including for a scaled
+	// figure -- otherwise "30.63M" keeps a US point inside Turkish prose. x/text
+	// groups by the locale's own rule, so Hindi gets 12,34,567 rather than the
+	// three-digit grouping a hand-written version produced.
 	b.WriteString(digits)
 	b.WriteString(sc.suffix)
 
@@ -99,30 +98,6 @@ func figureSlack(f models.Figure) float64 {
 		place /= 10
 	}
 	return place / 2
-}
-
-// applyNotation writes Go's fixed-point string in the locale's notation, optionally
-// grouping the integer part. The input always uses "." for the decimal, because
-// strconv.FormatFloat wrote it a few lines earlier -- so the split is on a byte this
-// function put there itself, not on whatever a reader might have typed.
-func applyNotation(s string, loc numberLocale, group bool) string {
-	neg := strings.HasPrefix(s, "-")
-	s = strings.TrimPrefix(s, "-")
-	intPart, frac := s, ""
-	if i := strings.IndexByte(s, '.'); i >= 0 {
-		intPart, frac = s[:i], loc.decimal+s[i+1:]
-	}
-	var b strings.Builder
-	if neg {
-		b.WriteString("-")
-	}
-	for i := 0; i < len(intPart); i++ {
-		if group && i > 0 && (len(intPart)-i)%3 == 0 {
-			b.WriteString(loc.group)
-		}
-		b.WriteByte(intPart[i])
-	}
-	return b.String() + frac
 }
 
 // renderedValue is the number the prose actually carries, as a number.

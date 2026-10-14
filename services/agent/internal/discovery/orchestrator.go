@@ -1249,12 +1249,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		//
 		// Settling first costs nothing, because a figure is checked against the step's
 		// rows rather than against the prose. Nothing here needs the text.
-		attachFigureVerdicts(insights, stepByID, o.numberLocale())
+		o.figureWriter().attachFigureVerdicts(insights, stepByID)
 
 		// A refuted figure needs no model to fix: the arithmetic that refuted it already
 		// produced the right number, and the prose holds a reference rather than the
 		// number, so correcting it is assigning a field.
-		if corrected := correctRefutedFigures(area.ID, insights, stepByID, o.numberLocale()); corrected > 0 {
+		if corrected := o.figureWriter().correctRefutedFigures(area.ID, insights, stepByID); corrected > 0 {
 			step.FiguresCorrected = corrected
 		}
 
@@ -1264,7 +1264,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// Unresolved counts too. Gating on resolved-or-inlined discarded the tally in the
 		// one case it mattered most -- an area where every reference failed to resolve
 		// reported FigureRefsUnresolved as zero, which reads as nothing went wrong.
-		if rendered := renderInsightFigures(insights, o.numberLocale()); rendered.resolved > 0 || rendered.inlined > 0 || rendered.unresolved > 0 {
+		if rendered := o.figureWriter().renderInsightFigures(insights); rendered.resolved > 0 || rendered.inlined > 0 || rendered.unresolved > 0 {
 			step.FiguresInlined = rendered.inlined
 			step.FigureRefsUnresolved = rendered.unresolved
 		}
@@ -1416,8 +1416,8 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		//
 		// After the id validation rather than before, so a recommendation dropped for
 		// citing an insight that does not exist is not first given rendered numbers.
-		figSettled, figAdopted := attachRecommendationFigureVerdicts(recommendations, recommenderInput, o.numberLocale())
-		figTally := renderRecommendationFigures(recommendations, o.numberLocale())
+		figSettled, figAdopted := o.figureWriter().attachRecommendationFigureVerdicts(recommendations, recommenderInput)
+		figTally := o.figureWriter().renderRecommendationFigures(recommendations)
 		if recStep != nil {
 			recStep.FiguresSettled = figSettled
 			recStep.FiguresAdopted = figAdopted
@@ -1700,7 +1700,7 @@ type recommenderInsight struct {
 // Metrics, Indicators and Quality are carried by reference, as the previous
 // slice copy also did. Nothing between here and json.Marshal writes them.
 // Figures is a fresh slice, because it is filtered.
-func insightsForRecommenderPrompt(insights []models.Insight, loc numberLocale) []recommenderInsight {
+func (w figureWriter) insightsForRecommenderPrompt(insights []models.Insight) []recommenderInsight {
 	out := make([]recommenderInsight, 0, len(insights))
 	for i := range insights {
 		in := &insights[i]
@@ -1717,7 +1717,7 @@ func insightsForRecommenderPrompt(insights []models.Insight, loc numberLocale) [
 			Indicators:    in.Indicators,
 			TargetSegment: in.TargetSegment,
 			Quality:       in.Quality,
-			Figures:       figuresForRecommenderPrompt(*in, loc),
+			Figures:       w.figuresForRecommenderPrompt(*in),
 		})
 	}
 	return out
@@ -1748,9 +1748,9 @@ func insightsForRecommenderPrompt(insights []models.Insight, loc numberLocale) [
 // with it, after which the model borrowed a wrong id and shipped an empty
 // reference. The number still being in the prose is not the fallback it reads
 // like; a model denied an id does not go back to typing, it finds another id.
-func figuresForRecommenderPrompt(ins models.Insight, loc numberLocale) []models.Figure {
+func (w figureWriter) figuresForRecommenderPrompt(ins models.Insight) []models.Figure {
 	usable := usableFigures(ins.Figures)
-	broken := figuresBrokenByRepair(ins, loc)
+	broken := w.figuresBrokenByRepair(ins)
 	if len(broken) == 0 {
 		return usable
 	}
@@ -2123,7 +2123,7 @@ func (o *Orchestrator) generateRecommendations(
 		return make([]models.Recommendation, 0), step
 	}
 
-	insightsJSON, _ := json.MarshalIndent(insightsForRecommenderPrompt(insights, o.numberLocale()), "", "  ")
+	insightsJSON, _ := json.MarshalIndent(o.figureWriter().insightsForRecommenderPrompt(insights), "", "  ")
 
 	// Build insights summary
 	areaCounts := make(map[string]int)
@@ -3391,8 +3391,9 @@ func (o *Orchestrator) recommendationsKnowledgeQuery(insights []models.Insight) 
 	return q
 }
 
-// numberLocale is how this project's output language writes a number. Resolved from the
-// same field as {{LANGUAGE}}, so prose and figures cannot disagree about it.
-func (o *Orchestrator) numberLocale() numberLocale {
-	return localeFor(o.language)
+// figureWriter writes this run's numbers the way its output language does. Resolved from
+// the same field as {{LANGUAGE}}, so the prose and the figure table cannot disagree about
+// notation -- there is one writer and everything that prints a number goes through it.
+func (o *Orchestrator) figureWriter() figureWriter {
+	return newFigureWriter(o.language)
 }

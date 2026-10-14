@@ -70,7 +70,7 @@ func notRefutedAndNotRewritten(t *testing.T, f models.Figure, rows []map[string]
 		Name: "boundary", Figures: []models.Figure{f}, SourceSteps: []int{1},
 		FigureVerdicts: []models.FigureVerdict{v},
 	}}
-	if n := correctRefutedFigures("area", insights, stepIndex(1, rows), usNotation); n != 0 {
+	if n := usWriter.correctRefutedFigures("area", insights, stepIndex(1, rows)); n != 0 {
 		t.Errorf("%d corrections rewrote a correct figure: %+v", n, insights[0].FigureCorrections)
 	}
 	return v
@@ -128,12 +128,12 @@ func repairedQuartileInsight() models.Insight {
 func TestFigures_RepairLendsTheFiguresItsEditDidNotReach(t *testing.T) {
 	ins := repairedQuartileInsight()
 
-	if broken := figuresBrokenByRepair(ins, usNotation); len(broken) != 0 {
+	if broken := usWriter.figuresBrokenByRepair(ins); len(broken) != 0 {
 		t.Fatalf("figures withheld = %v, want none -- the dropped indicator carried no reference", broken)
 	}
 
 	// Advertised to the recommender, because withheld at both ends or neither.
-	out := insightsForRecommenderPrompt([]models.Insight{ins}, usNotation)
+	out := usWriter.insightsForRecommenderPrompt([]models.Insight{ins})
 	if len(out[0].Figures) != 2 {
 		t.Errorf("the prompt advertises %d of 2 figures", len(out[0].Figures))
 	}
@@ -146,8 +146,8 @@ func TestFigures_RepairLendsTheFiguresItsEditDidNotReach(t *testing.T) {
 			Refs: []models.FigureRef{ref(ins.ID, "f6")},
 		}},
 	}}
-	attachRecommendationFigureVerdicts(recs, []models.Insight{ins}, usNotation)
-	renderRecommendationFigures(recs, usNotation)
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.renderRecommendationFigures(recs)
 
 	if v := recs[0].FigureVerdicts[0]; v.Status != models.FigureHolds {
 		t.Errorf("status = %q (%s), want holds -- f6 held and its sentence is untouched", v.Status, v.Reason)
@@ -169,7 +169,7 @@ func TestFigures_RepairStillWithholdsTheFigureWhoseSentenceItRewrote(t *testing.
 	// numeral replaced, the template left as authored.
 	ins.Description = "The bulk of value sits in the 302 customers with 6-15 orders."
 
-	broken := figuresBrokenByRepair(ins, usNotation)
+	broken := usWriter.figuresBrokenByRepair(ins)
 	if !broken["f6"] {
 		t.Error("f6 is lent although the sentence carrying it was rewritten")
 	}
@@ -177,7 +177,7 @@ func TestFigures_RepairStillWithholdsTheFigureWhoseSentenceItRewrote(t *testing.
 		t.Error("f2 was withheld although no field referencing it changed")
 	}
 
-	out := insightsForRecommenderPrompt([]models.Insight{ins}, usNotation)
+	out := usWriter.insightsForRecommenderPrompt([]models.Insight{ins})
 	if len(out[0].Figures) != 1 || out[0].Figures[0].ID != "f2" {
 		t.Errorf("the prompt advertises %+v, want f2 alone", out[0].Figures)
 	}
@@ -189,8 +189,8 @@ func TestFigures_RepairStillWithholdsTheFigureWhoseSentenceItRewrote(t *testing.
 			Refs: []models.FigureRef{ref(ins.ID, "f6")},
 		}},
 	}}
-	attachRecommendationFigureVerdicts(recs, []models.Insight{ins}, usNotation)
-	renderRecommendationFigures(recs, usNotation)
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.renderRecommendationFigures(recs)
 
 	if strings.Contains(recs[0].Description, "52,134") {
 		t.Fatalf("the repaired-away number reached a second document: %q", recs[0].Description)
@@ -212,7 +212,7 @@ func TestFigures_RepairIndicatorRemovalIsNoticed(t *testing.T) {
 	// The surviving indicator -- the one carrying {{f2}} -- removed as well.
 	ins.Indicators = nil
 
-	broken := figuresBrokenByRepair(ins, usNotation)
+	broken := usWriter.figuresBrokenByRepair(ins)
 	if !broken["f2"] {
 		t.Error("f2 is lent although the only sentence carrying it was removed")
 	}
@@ -230,7 +230,7 @@ func TestFigures_RepairNoticesAnIndicatorRewrittenInPlace(t *testing.T) {
 	ins := repairedQuartileInsight()
 	ins.Indicators = []string{"Single-order customers number only 302 of the whole base"}
 
-	if broken := figuresBrokenByRepair(ins, usNotation); !broken["f2"] {
+	if broken := usWriter.figuresBrokenByRepair(ins); !broken["f2"] {
 		t.Errorf("withheld = %v, want f2 -- its sentence now states a different number", broken)
 	}
 }
@@ -248,7 +248,7 @@ func TestFigures_RepairLendsAFigureCarriedOnlyByASurvivingIndicator(t *testing.T
 	ins.FigureTemplate.Name = "Order frequency is concentrated in the middle bands"
 	ins.Name = ins.FigureTemplate.Name
 
-	if broken := figuresBrokenByRepair(ins, usNotation); broken["f2"] {
+	if broken := usWriter.figuresBrokenByRepair(ins); broken["f2"] {
 		t.Errorf("withheld = %v, want f2 lent -- the indicator carrying it is untouched", broken)
 	}
 }
@@ -263,11 +263,11 @@ func TestFigures_RepairWithNoTemplateLendsNothing(t *testing.T) {
 	ins := repairedQuartileInsight()
 	ins.FigureTemplate = nil
 
-	broken := figuresBrokenByRepair(ins, usNotation)
+	broken := usWriter.figuresBrokenByRepair(ins)
 	if !broken["f2"] || !broken["f6"] {
 		t.Errorf("withheld = %v, want every figure -- there is no audit trail to ask", broken)
 	}
-	if out := insightsForRecommenderPrompt([]models.Insight{ins}, usNotation); len(out[0].Figures) != 0 {
+	if out := usWriter.insightsForRecommenderPrompt([]models.Insight{ins}); len(out[0].Figures) != 0 {
 		t.Errorf("the prompt advertises %+v, want nothing", out[0].Figures)
 	}
 }
@@ -297,11 +297,11 @@ func TestFigures_RepairWithholdsAFigureTheProseNeverReferenced(t *testing.T) {
 		Repair: &models.InsightRepair{Rounds: 1, Outcome: models.RepairRepaired},
 	}
 
-	if broken := figuresBrokenByRepair(ins, usNotation); !broken["f1"] {
+	if broken := usWriter.figuresBrokenByRepair(ins); !broken["f1"] {
 		t.Errorf("withheld = %v, want f1 -- nothing in the prose references it, so nothing "+
 			"establishes the value survived the repair", broken)
 	}
-	if out := insightsForRecommenderPrompt([]models.Insight{ins}, usNotation); len(out[0].Figures) != 0 {
+	if out := usWriter.insightsForRecommenderPrompt([]models.Insight{ins}); len(out[0].Figures) != 0 {
 		t.Errorf("the prompt advertises %+v, want nothing", out[0].Figures)
 	}
 
@@ -312,8 +312,8 @@ func TestFigures_RepairWithholdsAFigureTheProseNeverReferenced(t *testing.T) {
 			Refs: []models.FigureRef{ref(ins.ID, "f1")},
 		}},
 	}}
-	attachRecommendationFigureVerdicts(recs, []models.Insight{ins}, usNotation)
-	renderRecommendationFigures(recs, usNotation)
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.renderRecommendationFigures(recs)
 	if strings.Contains(recs[0].Description, "12") {
 		t.Errorf("the repaired-away number reached a second document: %q", recs[0].Description)
 	}
@@ -340,10 +340,10 @@ func TestFigures_RepairWithholdsAFigureThatNeverRendered(t *testing.T) {
 		},
 		Repair: &models.InsightRepair{Rounds: 1, Outcome: models.RepairRepaired},
 	}
-	if broken := figuresBrokenByRepair(dup, usNotation); !broken["f1"] {
+	if broken := usWriter.figuresBrokenByRepair(dup); !broken["f1"] {
 		t.Errorf("withheld = %v, want f1 -- its id is ambiguous, so the prose never rendered it", broken)
 	}
-	if out := insightsForRecommenderPrompt([]models.Insight{dup}, usNotation); len(out[0].Figures) != 0 {
+	if out := usWriter.insightsForRecommenderPrompt([]models.Insight{dup}); len(out[0].Figures) != 0 {
 		t.Errorf("the prompt advertises %+v, which the reference index rejects", out[0].Figures)
 	}
 
@@ -351,10 +351,10 @@ func TestFigures_RepairWithholdsAFigureThatNeverRendered(t *testing.T) {
 	// the prompt as `value: 0`.
 	missing := dup
 	missing.Figures = []models.Figure{{ID: "f1", Unit: models.UnitCount, ValueMissing: true}}
-	if broken := figuresBrokenByRepair(missing, usNotation); !broken["f1"] {
+	if broken := usWriter.figuresBrokenByRepair(missing); !broken["f1"] {
 		t.Errorf("withheld = %v, want f1 -- it declares no value to lend", broken)
 	}
-	if out := insightsForRecommenderPrompt([]models.Insight{missing}, usNotation); len(out[0].Figures) != 0 {
+	if out := usWriter.insightsForRecommenderPrompt([]models.Insight{missing}); len(out[0].Figures) != 0 {
 		t.Errorf("the prompt advertises %+v with no value behind it", out[0].Figures)
 	}
 }
@@ -375,15 +375,15 @@ func TestFigures_RepairKeysWithheldFiguresByTheirDeclaredIDs(t *testing.T) {
 			FigureTemplate: &models.FigureTemplate{Description: "12 sub-categories are loss-making."},
 			Repair:         &models.InsightRepair{Rounds: 1, Outcome: models.RepairRepaired},
 		}
-		if broken := figuresBrokenByRepair(ins, usNotation); !broken[id] {
+		if broken := usWriter.figuresBrokenByRepair(ins); !broken[id] {
 			t.Errorf("id %q: withheld = %v, want it keyed by the id as declared", id, broken)
 		}
-		if out := insightsForRecommenderPrompt([]models.Insight{ins}, usNotation); len(out[0].Figures) != 0 {
+		if out := usWriter.insightsForRecommenderPrompt([]models.Insight{ins}); len(out[0].Figures) != 0 {
 			t.Errorf("id %q: the prompt advertises %+v, which nothing can resolve", id, out[0].Figures)
 		}
 		// Same for the branch with no audit trail to consult.
 		ins.FigureTemplate = nil
-		if broken := figuresBrokenByRepair(ins, usNotation); !broken[id] {
+		if broken := usWriter.figuresBrokenByRepair(ins); !broken[id] {
 			t.Errorf("id %q with no template: withheld = %v, want every figure", id, broken)
 		}
 	}

@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -47,14 +48,14 @@ func TestFigureRender_NotationFollowsTheLanguage(t *testing.T) {
 			"1,234,567.5",
 		},
 		{
-			"a percentage follows the language too",
+			"a percentage uses the language's decimal mark, and keeps the sign behind",
 			"Turkish",
 			models.Figure{Value: 64.41, Unit: models.UnitPercent, Decimals: 2},
 			"64,41%",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := renderFigure(tc.fig, localeFor(tc.language)); got != tc.want {
+			if got := newFigureWriter(tc.language).renderFigure(tc.fig); got != tc.want {
 				t.Fatalf("renderFigure = %q, want %q", got, tc.want)
 			}
 		})
@@ -76,14 +77,44 @@ func TestFigureRender_NotationDoesNotMoveTheInterval(t *testing.T) {
 // The prose and the figure table are rendered by the same code, so a Turkish insight
 // cannot carry one notation in its heading and another in its body.
 func TestFigureRender_ProseAndVerdictAgreeOnNotation(t *testing.T) {
-	loc := localeFor("Turkish")
+	w := newFigureWriter("Turkish")
 	fig := models.Figure{ID: "f1", Value: -746779.37, Unit: models.UnitCurrency, Currency: "₺", Decimals: 0, Step: 1}
 	ins := []models.Insight{{Name: "En düşük ay {{f1}}", SourceSteps: []int{1}, Figures: []models.Figure{fig}}}
-	renderInsightFigures(ins, loc)
+	w.renderInsightFigures(ins)
 	if ins[0].Name != "En düşük ay -₺746.779" {
 		t.Fatalf("prose rendered %q", ins[0].Name)
 	}
-	if got := renderFigure(fig, loc); got != "-₺746.779" {
+	if got := w.renderFigure(fig); got != "-₺746.779" {
 		t.Fatalf("verdict display rendered %q, which disagrees with the prose", got)
+	}
+}
+
+// CLDR grouping is not always three digits, which is the thing a hand-written rule gets
+// wrong. Hindi groups the lakh; the old implementation wrote 1,234,567 for it.
+func TestFigureRender_GroupingIsNotAlwaysThreeDigits(t *testing.T) {
+	for _, tc := range []struct{ language, want string }{
+		{"English", "1,234,567"},
+		{"Turkish", "1.234.567"},
+		{"Hindi", "12,34,567"},
+	} {
+		t.Run(tc.language, func(t *testing.T) {
+			f := models.Figure{Value: 1234567, Unit: models.UnitCount, Decimals: 0}
+			if got := newFigureWriter(tc.language).renderFigure(f); got != tc.want {
+				t.Fatalf("%s rendered %q, want %q", tc.language, got, tc.want)
+			}
+		})
+	}
+}
+
+// The sign has to stay an ASCII hyphen, because the currency branch strips it with
+// TrimPrefix before writing the symbol. A locale whose minus is U+2212 would leave
+// "$-1.2M" turned into "$−1.2M" with the sign still inside the symbol.
+func TestFigureRender_SignStaysStrippable(t *testing.T) {
+	for _, lang := range []string{"English", "Turkish", "German", "Hindi", "Arabic", "Hebrew", "Thai"} {
+		f := models.Figure{Value: -1_200_000, Unit: models.UnitCurrency, Currency: "$", Scale: models.ScaleMillions, Decimals: 1}
+		got := newFigureWriter(lang).renderFigure(f)
+		if !strings.HasPrefix(got, "-$") {
+			t.Errorf("%s rendered %q; the sign must stay outside the symbol and be an ASCII hyphen", lang, got)
+		}
 	}
 }

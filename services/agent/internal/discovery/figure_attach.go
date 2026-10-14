@@ -18,7 +18,7 @@ import (
 // as the declared ones. With the figure as data and the prose referencing it, a number
 // that is not declared cannot appear in a rendered sentence at all, so there is nothing
 // to count. What replaces it is a compliance check on the template, in figure_template.go.
-func attachFigureVerdicts(insights []models.Insight, stepByID map[int]*models.ExplorationStep, loc numberLocale) {
+func (w figureWriter) attachFigureVerdicts(insights []models.Insight, stepByID map[int]*models.ExplorationStep) {
 	for i := range insights {
 		ins := &insights[i]
 
@@ -40,7 +40,7 @@ func attachFigureVerdicts(insights []models.Insight, stepByID map[int]*models.Ex
 		if len(ins.Figures) == 0 {
 			continue
 		}
-		verdicts := EvaluateFigures(ins.Figures, quantifierEvidence(*ins, stepByID), loc)
+		verdicts := w.EvaluateFigures(ins.Figures, quantifierEvidence(*ins, stepByID))
 		ins.FigureVerdicts = verdicts
 		for _, v := range verdicts {
 			if v.Status != models.FigureFails {

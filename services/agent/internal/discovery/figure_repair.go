@@ -61,7 +61,7 @@ import (
 // catch of the previous run -- and declines all seven where they do not.
 const correctionGap = 0.01
 
-func correctRefutedFigures(areaID string, insights []models.Insight, stepByID map[int]*models.ExplorationStep, loc numberLocale) int {
+func (w figureWriter) correctRefutedFigures(areaID string, insights []models.Insight, stepByID map[int]*models.ExplorationStep) int {
 	total := 0
 	for i := range insights {
 		ins := &insights[i]
@@ -130,9 +130,9 @@ func correctRefutedFigures(areaID string, insights []models.Insight, stepByID ma
 				}).Warn("Not correcting this figure: its declared arithmetic answers a different question, so the declaration is what is wrong")
 				continue
 			}
-			before := renderFigure(*f, loc)
+			before := w.renderFigure(*f)
 			f.Value = v.Evaluated
-			after := renderFigure(*f, loc)
+			after := w.renderFigure(*f)
 			if before == after {
 				// The corrected value renders identically at the precision the figure is
 				// written to, so the reader sees no change and nothing is claimed.
@@ -151,7 +151,7 @@ func correctRefutedFigures(areaID string, insights []models.Insight, stepByID ma
 		reconcileClaimCounts(ins, corrections)
 		// Re-settle against the same evidence, so the verdicts describe the values that
 		// will be rendered rather than the ones that were refuted.
-		ins.FigureVerdicts = EvaluateFigures(ins.Figures, quantifierEvidence(*ins, stepByID), loc)
+		ins.FigureVerdicts = w.EvaluateFigures(ins.Figures, quantifierEvidence(*ins, stepByID))
 		total += len(corrections)
 
 		texts := make([]string, 0, len(corrections))
