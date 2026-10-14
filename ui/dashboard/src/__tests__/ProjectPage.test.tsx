@@ -775,6 +775,49 @@ it('keeps a cached live run when the confirming lookup fails', async () => {
   }
 });
 
+// Two POLLS overlapping, which the out-of-band-only epoch did not fence. At a
+// 2s interval they can, and an older empty answer arriving after a newer poll
+// installed a live run erased it — with polling gated on a live run, until a
+// reload. Reachable when another tab discards a dismissed run and starts a
+// replacement.
+it('drops an older poll answer that lands after a newer poll installed a run', async () => {
+  jest.useFakeTimers();
+  try {
+    // First read: a live run, so the 2s interval is armed.
+    getProjectStatus.mockResolvedValueOnce(status(makeRun({ status: 'running', progress: 10 })));
+    renderPage();
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    await waitFor(() => expect(screen.getByText('Cancel')).toBeInTheDocument());
+
+    // Poll A hangs and will answer "no run".
+    let releaseA: () => void = () => {};
+    const a = new Promise<void>((r) => { releaseA = r; });
+    getProjectStatus.mockImplementationOnce(async () => {
+      await a;
+      return { project_id: 'p1', run: null, last_discovery: null };
+    });
+    await act(async () => { await jest.advanceTimersByTimeAsync(2000); });
+
+    // Poll B answers first, with a newer live run.
+    getProjectStatus.mockResolvedValue(status(makeRun({ status: 'running', progress: 55, updated_at: 'later' })));
+    await act(async () => { await jest.advanceTimersByTimeAsync(2000); });
+    await waitFor(() => expect(screen.getByText('55%')).toBeInTheDocument());
+
+    // Now A's stale empty answer arrives. It must be dropped.
+    // Several awaits deep (the deferred promise, then the response, then the
+    // reconcile), so give the microtask chain room to drain.
+    await act(async () => {
+      releaseA();
+      for (let i = 0; i < 6; i++) await jest.advanceTimersByTimeAsync(0);
+    });
+
+    expect(screen.getByText('55%')).toBeInTheDocument();
+    expect(screen.getByText('Cancel')).toBeInTheDocument();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 // After another tab discards the run, this tab's resume-refusal path
 // refreshes through getRun and gets the ARCHIVED document back: still
 // `failed`, still without a discovery, so the only thing distinguishing it is

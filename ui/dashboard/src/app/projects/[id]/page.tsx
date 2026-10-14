@@ -61,10 +61,15 @@ export default function ProjectPage() {
   const [project, setProject] = useState<Project | null>(null);
   const [discoveries, setDiscoveries] = useState<DiscoveryResult[]>([]);
   const [run, setRun] = useState<DiscoveryRunStatus | null>(null);
-  // runEpoch counts the times `run` was changed by something OTHER than a
-  // status poll — a trigger, a cancel, a resume, a discard. A poll captures
-  // it before its request and ignores the answer if it moved, because such a
-  // response describes the world as it was before that change.
+  // runEpoch counts EVERY change to `run`. A poll captures it before its
+  // request and ignores the answer if it moved, because such a response
+  // describes the world as it was before that change.
+  //
+  // Every change, not only the out-of-band ones. Counting just triggers,
+  // cancels, resumes and discards left two POLLS unfenced against each
+  // other: at a 2s interval they can overlap, and an older empty answer
+  // arriving after a newer poll installed a live run erased it — with
+  // polling gated on a live run, until a reload.
   //
   // This exists because a status response is not only stale, it can be
   // actively wrong: an answer computed before the operator started a run says
@@ -73,7 +78,7 @@ export default function ProjectPage() {
   // fast is terminal by the time the stale answer lands, so a status test
   // cannot tell it from the run the answer was about. The generation can.
   const runEpoch = useRef(0);
-  // installRun is every out-of-band change to `run`: it sets and bumps
+  // installRun is the only way `run` should be written: it sets and bumps
   // together, so no call site can do one without the other.
   const installRun = useCallback((next: DiscoveryRunStatus | null) => {
     runEpoch.current += 1;
@@ -159,7 +164,7 @@ export default function ProjectPage() {
         const cached = run;
         const cachedIsLive = !!cached && (cached.status === 'running' || cached.status === 'pending');
         if (!cachedIsLive) {
-          setRun(null);
+          installRun(null);
           return;
         }
         // We believe a run is live and the project reports none. Keeping it
@@ -175,7 +180,7 @@ export default function ProjectPage() {
           // Gone, or discarded elsewhere: the panel goes. Otherwise adopt
           // what the server says, terminal or not — that is the truth, and a
           // terminal panel is a normal thing to show.
-          setRun(!fresh || fresh.discarded_at ? null : fresh);
+          installRun(!fresh || fresh.discarded_at ? null : fresh);
         } catch {
           // No information, so no decision: keep what is on screen. The next
           // poll asks again.
@@ -207,7 +212,7 @@ export default function ProjectPage() {
           || run.id !== newRun.id
           || run.status !== newRun.status
           || run.updated_at !== newRun.updated_at;
-        if (runChanged) setRun(newRun);
+        if (runChanged) installRun(newRun);
         if (wasRunning && nowDone) {
           api.listDiscoveries(id).then((d) => setDiscoveries(d || [])).catch(() => {});
           // Nudge the analyst if the run left clarifying questions to answer.
@@ -219,7 +224,7 @@ export default function ProjectPage() {
         }
       }
     } catch { /* ignore */ }
-  }, [id, run]);
+  }, [id, run, installRun]);
 
   // The 2s poll is gated on an in-flight run, plus one case that is not in
   // flight: a run this page has DISMISSED. A resume re-enters the same run id,
