@@ -151,13 +151,24 @@ export default function ProjectPage() {
       // about the previous state. Drop it whole rather than reasoning about
       // which parts still apply; the next poll is 2s away.
       if (actionEpoch.current !== epoch) return;
-      // A later-issued poll already answered, so this one is behind.
+      // A later-issued poll already APPLIED, so this one is behind.
       if (ticket < appliedPoll.current) return;
-      appliedPoll.current = ticket;
       // applyPoll writes a poll's result WITHOUT bumping actionEpoch: a poll
       // is not an action, and treating it as one is what let an older answer
       // invalidate a newer request.
-      const applyPoll = (next: DiscoveryRunStatus | null) => setRun(next);
+      //
+      // The watermark moves HERE, at the write, not when the request was
+      // issued. Claiming it up front starved the reconcile below: an empty
+      // status answer writes nothing until its getRun returns, so if that
+      // lookup outlives the 2s interval, each newer poll claimed the
+      // watermark and cancelled the reconcile before it could finish —
+      // for ever, leaving the stale panel and a disabled trigger. A poll
+      // that has not written anything has no claim.
+      const applyPoll = (next: DiscoveryRunStatus | null) => {
+        if (ticket < appliedPoll.current) return;
+        appliedPoll.current = ticket;
+        setRun(next);
+      };
       // A successful read with no run means the project has none to show —
       // every run discarded, or the last one deleted with its project data.
       // Clearing is the only way the panel goes away: a terminal run is not
@@ -193,7 +204,9 @@ export default function ProjectPage() {
         // rather than guessing from the project-level answer.
         try {
           const fresh = await api.getRun(cached.id);
-          if (actionEpoch.current !== epoch || ticket < appliedPoll.current) return;
+          // Only the action fence here; applyPoll re-checks the watermark
+          // at the moment of the write.
+          if (actionEpoch.current !== epoch) return;
           // Gone, or discarded elsewhere: the panel goes. Otherwise adopt
           // what the server says, terminal or not — that is the truth, and a
           // terminal panel is a normal thing to show.

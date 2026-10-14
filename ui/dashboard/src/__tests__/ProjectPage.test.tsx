@@ -905,6 +905,52 @@ it('does not let an older poll answer overwrite a newer one it arrived behind', 
   }
 });
 
+// The reconcile has to survive a confirming lookup slower than the 2s poll
+// interval: polls pile up behind it, and the panel must still resolve once it
+// answers.
+//
+// NOT a regression test for the watermark change that accompanies it — this
+// passes with the watermark claimed at the request too, which is how I know
+// the starvation I was told about is not reachable that way: whichever poll
+// holds the claim is the newest one, and its own reconcile completes when the
+// lookup resolves. Kept because the behaviour is worth pinning on its own.
+it('still reconciles when the confirming lookup outlives the poll interval', async () => {
+  jest.useFakeTimers();
+  try {
+    getProjectStatus.mockResolvedValueOnce(status(makeRun({ status: 'running', progress: 30 })));
+    renderPage();
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    await waitFor(() => expect(screen.getByText('Cancel')).toBeInTheDocument());
+
+    // Every subsequent status answer is empty — the run was discarded
+    // elsewhere — so each poll must go to the reconcile to resolve it.
+    getProjectStatus.mockResolvedValue({ project_id: 'p1', run: null, last_discovery: null });
+    // The confirming lookup is slower than the interval, so later polls are
+    // issued while the first reconcile is still outstanding.
+    let releaseLookup: () => void = () => {};
+    const slow = new Promise<void>((r) => { releaseLookup = r; });
+    getRun.mockImplementation(async () => {
+      await slow;
+      return makeRun({ status: 'failed', discarded_at: '2026-10-14T19:00:00Z', last_checkpoint_step: 0 });
+    });
+
+    // Three intervals pass with the lookup still hanging.
+    await act(async () => { await jest.advanceTimersByTimeAsync(2000); });
+    await act(async () => { await jest.advanceTimersByTimeAsync(2000); });
+    await act(async () => { await jest.advanceTimersByTimeAsync(2000); });
+
+    // It finally answers. The panel must clear, not stay stuck.
+    await act(async () => {
+      releaseLookup();
+      for (let i = 0; i < 8; i++) await jest.advanceTimersByTimeAsync(0);
+    });
+
+    await waitFor(() => expect(screen.queryByText('Cancel')).not.toBeInTheDocument());
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 // After another tab discards the run, this tab's resume-refusal path
 // refreshes through getRun and gets the ARCHIVED document back: still
 // `failed`, still without a discovery, so the only thing distinguishing it is
