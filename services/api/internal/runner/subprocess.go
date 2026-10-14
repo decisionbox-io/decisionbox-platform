@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -397,10 +398,34 @@ func (r *SubprocessRunner) Cancel(ctx context.Context, runID string) error {
 	return nil
 }
 
+// ansiSGRPattern matches the SGR colour escapes the agent's console logger
+// wraps its level tags in ("\x1b[34mINFO\x1b[0m"). The runner captures the
+// agent's own formatted output, so they arrive here, and storing them put raw
+// escapes in the run's error field and mojibake in the dashboard.
+var ansiSGRPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// nonErrorLevelPattern matches a routine log level. A line carrying one is
+// progress, not a reason a run failed, so it must not become one — see
+// extractErrorMessage's fallback.
+var nonErrorLevelPattern = regexp.MustCompile(`\b(?:DEBUG|INFO|WARN)\b`)
+
 // extractErrorMessage gets a user-friendly error message from agent stderr output.
 // The agent logs structured JSON to stderr — we look for the last FATAL or ERROR line.
+//
+// Failing that it takes the last line, which is what makes a panic or a bare
+// stderr write readable. But that fallback must skip routine log lines: a
+// SIGKILLed agent writes no error line at all, so the last line is whatever it
+// happened to be logging, and the run's recorded reason became
+//
+//	INFO  Indexes created successfully
+//	DEBUG Sending LLM request
+//
+// — observed twice while testing resume, with the escapes intact. For a
+// crashed run that text is what an operator reads next to the Resume button to
+// decide whether to press it, and it was reassuring nonsense. When nothing in
+// the tail is an error, the exit status is the honest answer.
 func extractErrorMessage(stderr string, exitErr error) string {
-	lines := strings.Split(strings.TrimSpace(stderr), "\n")
+	lines := strings.Split(strings.TrimSpace(ansiSGRPattern.ReplaceAllString(stderr, "")), "\n")
 
 	// Walk backwards to find the most relevant error
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -423,10 +448,13 @@ func extractErrorMessage(stderr string, exitErr error) string {
 		}
 	}
 
-	// Fallback: last non-empty line of stderr
+	// Fallback: last non-empty line of stderr that is not routine progress.
 	for i := len(lines) - 1; i >= 0; i-- {
 		if strings.TrimSpace(lines[i]) != "" {
 			line := lines[i]
+			if nonErrorLevelPattern.MatchString(line) {
+				continue
+			}
 			// Truncate if too long
 			if len(line) > 200 {
 				line = line[:200] + "..."
