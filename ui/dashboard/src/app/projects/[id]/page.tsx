@@ -119,8 +119,17 @@ export default function ProjectPage() {
       // polled, so a stale one would sit there offering Resume and Discard
       // for ever. Only on a SUCCESSFUL read; a failed one is handled by the
       // catch below, which deliberately keeps what is on screen.
+      //
+      // A LIVE run is never cleared this way, and the functional update is
+      // what makes that safe against the response that prompted this rule:
+      // the first status request can still be in flight when the operator
+      // starts their first run, and its pre-trigger "no run" answer then
+      // arrives AFTER handleTrigger installed the live one. Clearing it there
+      // hid an active run and stopped the poll, which is gated on a live run
+      // — invisible until a reload. Reading the current value instead of the
+      // one this callback closed over is the only way to see that.
       if (status && !status.run) {
-        setRun(null);
+        setRun((prev) => (prev && (prev.status === 'running' || prev.status === 'pending') ? prev : null));
         return;
       }
       if (status?.run) {

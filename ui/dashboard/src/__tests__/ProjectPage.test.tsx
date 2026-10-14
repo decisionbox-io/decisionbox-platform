@@ -34,6 +34,7 @@ const listRunSteps = jest.fn();
 const resumeRun = jest.fn();
 const discardRun = jest.fn();
 const getRun = jest.fn();
+const triggerDiscovery = jest.fn();
 
 jest.mock('@/lib/api', () => ({
   __esModule: true,
@@ -54,7 +55,7 @@ jest.mock('@/lib/api', () => ({
     listProjectQuestions: (...a: unknown[]) => listProjectQuestions(...a),
     listRunSteps: (...a: unknown[]) => listRunSteps(...a),
     getDebugLogs: jest.fn().mockResolvedValue([]),
-    triggerDiscovery: jest.fn(),
+    triggerDiscovery: (...a: unknown[]) => triggerDiscovery(...a),
     getRun: (...a: unknown[]) => getRun(...a),
     estimateCost: jest.fn(),
     cancelRun: jest.fn(),
@@ -653,6 +654,38 @@ describe('Discard: runs with a result, and a project with none (#438)', () => {
     await waitFor(() => expect(screen.queryByText(/Resume from step 4/)).not.toBeInTheDocument());
     expect(screen.queryByText('Discard')).not.toBeInTheDocument();
   });
+
+// The race the clear-on-empty rule had to be fenced against: an empty status
+// response arriving while a LIVE run is on screen. It happens because the
+// first status request can still be in flight when the operator starts their
+// first run, so its PRE-trigger "no run" answer lands after the live run is
+// installed. Clearing on that hid an active run — and the poll is gated on a
+// live run, so nothing brought it back short of a reload.
+//
+// Asserted as the invariant rather than by driving the trigger menu: an empty
+// response must never clear a running run, whatever produced the ordering.
+it('does not clear a live run when an empty status response arrives', async () => {
+  jest.useFakeTimers();
+  try {
+    getProjectStatus.mockResolvedValueOnce(status(makeRun({ status: 'running', progress: 25 })));
+    renderPage();
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    await waitFor(() => expect(screen.getByText('25%')).toBeInTheDocument());
+
+    // The stale, pre-trigger answer.
+    getProjectStatus.mockResolvedValue({ project_id: 'p1', run: null, last_discovery: null });
+    await act(async () => { await jest.advanceTimersByTimeAsync(2000); });
+
+    // Still there, still cancellable, and still polling.
+    expect(screen.getByText('25%')).toBeInTheDocument();
+    expect(screen.getByText('Cancel')).toBeInTheDocument();
+    const polls = getProjectStatus.mock.calls.length;
+    await act(async () => { await jest.advanceTimersByTimeAsync(2000); });
+    expect(getProjectStatus.mock.calls.length).toBeGreaterThan(polls);
+  } finally {
+    jest.useRealTimers();
+  }
+});
 
 // After another tab discards the run, this tab's resume-refusal path
 // refreshes through getRun and gets the ARCHIVED document back: still
