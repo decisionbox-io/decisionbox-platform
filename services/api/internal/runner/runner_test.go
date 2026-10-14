@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -1186,4 +1187,95 @@ func containsStr(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// The two reasons actually recorded against crashed runs on a live stack,
+// verbatim including the ANSI escapes the agent's console logger emits. A
+// SIGKILL and a `docker stop` both leave no error line at all, so the old
+// fallback took whatever the agent was logging when it died — and the text
+// sitting next to the dashboard's Resume button said the run had succeeded.
+func TestExtractErrorMessage_RoutineLogLineIsNotAFailureReason(t *testing.T) {
+	tests := []struct {
+		name   string
+		stderr string
+		exit   error
+		want   string
+	}{
+		{
+			name:   "INFO line after a SIGKILL (observed)",
+			stderr: "2026-10-13T16:36:55.720Z\t\x1b[34mINFO\x1b[0m\tlog/compat.go:82\tIndexes created successfully\t{\"service\": \"decisionbox-agent\"}",
+			exit:   fmt.Errorf("agent was killed by SIGKILL (exit status 137)"),
+			want:   "agent was killed by SIGKILL (exit status 137)",
+		},
+		{
+			name:   "DEBUG line after a docker stop (observed)",
+			stderr: "2026-10-13T18:17:50.238Z\t\x1b[35mDEBUG\x1b[0m\tlog/compat.go:74\tSending LLM request\t{\"model\": \"us.anthropic.claude-sonnet-4-6\"}",
+			exit:   fmt.Errorf("exit status 2"),
+			want:   "exit status 2",
+		},
+		{
+			name:   "WARN is progress too, not a reason",
+			stderr: "2026-10-13T18:17:50.238Z\tWARN\tQuery failed, retrying",
+			exit:   fmt.Errorf("exit status 137"),
+			want:   "exit status 137",
+		},
+		{
+			name: "a real ERROR still wins over the routine lines above it",
+			stderr: "2026-10-13T18:17:49.000Z\t\x1b[34mINFO\x1b[0m\tStarting exploration\n" +
+				"2026-10-13T18:17:50.000Z\t\x1b[31mERROR\x1b[0m\tLLM call failed\t{\"error\": \"claude: API error: rate_limited\"}\n" +
+				"2026-10-13T18:17:51.000Z\t\x1b[35mDEBUG\x1b[0m\tSending LLM request",
+			exit: fmt.Errorf("exit status 1"),
+			want: "claude: API error: rate_limited",
+		},
+		{
+			name:   "a panic is not a log line, so the fallback must keep it",
+			stderr: "2026-10-13T18:17:49.000Z\t\x1b[34mINFO\x1b[0m\tStarting exploration\npanic: runtime error: index out of range [5] with length 3",
+			exit:   fmt.Errorf("exit status 2"),
+			want:   "panic: runtime error: index out of range [5] with length 3",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractErrorMessage(tc.stderr, tc.exit); got != tc.want {
+				t.Errorf("got  %q\nwant %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Whatever is returned is stored on the run and rendered by the dashboard, so
+// it must not carry terminal escapes.
+func TestExtractErrorMessage_StripsANSIEscapes(t *testing.T) {
+	stderr := "2026-10-13T18:17:50.000Z\t\x1b[31mERROR\x1b[0m\tDiscovery failed\t{\"error\": \"\x1b[1mbigquery\x1b[0m: dataset not found\"}"
+	got := extractErrorMessage(stderr, fmt.Errorf("exit status 1"))
+	if strings.Contains(got, "\x1b") {
+		t.Errorf("ANSI escape survived into the stored reason: %q", got)
+	}
+	if got != "bigquery: dataset not found" {
+		t.Errorf("got %q", got)
+	}
+}
+
+// 128+N is how a signal death is reported. "exit status 137" does not tell an
+// operator the agent was killed rather than broken, which is the distinction
+// that decides whether resuming the run makes sense.
+func TestExitStatusError(t *testing.T) {
+	tests := []struct {
+		code int64
+		want string
+	}{
+		{137, "agent was killed by SIGKILL (exit status 137)"},
+		{143, "agent was killed by SIGTERM (exit status 143)"},
+		{139, "agent was killed by SIGSEGV (exit status 139)"},
+		{134, "agent was killed by SIGABRT (exit status 134)"},
+		{1, "exit status 1"},   // an ordinary failure, not a signal
+		{2, "exit status 2"},   // what `docker stop` actually produced
+		{0, "exit status 0"},   // not a failure at all; must not be mislabelled
+		{255, "exit status 255"},
+	}
+	for _, tc := range tests {
+		if got := exitStatusError(tc.code).Error(); got != tc.want {
+			t.Errorf("code %d: got %q, want %q", tc.code, got, tc.want)
+		}
+	}
 }

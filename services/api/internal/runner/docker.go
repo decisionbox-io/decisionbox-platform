@@ -458,11 +458,33 @@ func (r *DockerRunner) streamWaitRemove(ctx context.Context, id string, h logHan
 		<-logsDone // let the log stream flush to EOF (container stopped)
 		r.removeContainerBestEffort(id)
 		if status.StatusCode != 0 {
-			msg := extractErrorMessage(tail.String(), fmt.Errorf("exit status %d", status.StatusCode))
+			msg := extractErrorMessage(tail.String(), exitStatusError(status.StatusCode))
 			return status.StatusCode, fmt.Errorf("%s", msg)
 		}
 		return 0, nil
 	}
+}
+
+// exitStatusError describes a container exit code. A process killed by a
+// signal exits as 128+N, and a bare "exit status 137" tells an operator
+// nothing — least of all that the agent was killed rather than broken, which
+// is the distinction that decides whether resuming the run makes sense.
+func exitStatusError(code int64) error {
+	if name, ok := signalNames[code-128]; ok {
+		return fmt.Errorf("agent was killed by %s (exit status %d)", name, code)
+	}
+	return fmt.Errorf("exit status %d", code)
+}
+
+// signalNames covers the signals that actually end an agent: an operator or
+// orchestrator stop, an OOM kill, and the crashes that leave no log line.
+var signalNames = map[int64]string{
+	1:  "SIGHUP",
+	2:  "SIGINT",
+	6:  "SIGABRT",
+	9:  "SIGKILL",
+	11: "SIGSEGV",
+	15: "SIGTERM",
 }
 
 // streamLogs follows the container logs, demultiplexes stdout/stderr, and
