@@ -51,7 +51,7 @@ import (
 // Empty for an insight repair never touched. Every figure for a repaired insight with no
 // template: without the authored prose there is no way to ask the question, and the answer
 // that withholds is the one that cannot ship a stale number.
-func figuresBrokenByRepair(ins models.Insight) map[string]bool {
+func figuresBrokenByRepair(ins models.Insight, loc numberLocale) map[string]bool {
 	if ins.Repair == nil || len(ins.Figures) == 0 {
 		return nil
 	}
@@ -69,7 +69,7 @@ func figuresBrokenByRepair(ins models.Insight) map[string]bool {
 	// went through, and re-rendering without it would resolve references the shipped
 	// prose left visible.
 	var tally figureRenderTally
-	r := newFigureRenderer(usableFigures(ins.Figures), &tally)
+	r := newFigureRenderer(usableFigures(ins.Figures), &tally, loc)
 
 	// Two sets, and a figure needs to be in the first and out of the second.
 	//

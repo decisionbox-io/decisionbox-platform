@@ -28,17 +28,17 @@ import (
 // discarded document.
 
 // EvaluateFigures settles every figure against the steps it cites, in declared order.
-func EvaluateFigures(figures []models.Figure, steps map[int]StepRows) []models.FigureVerdict {
+func EvaluateFigures(figures []models.Figure, steps map[int]StepRows, loc numberLocale) []models.FigureVerdict {
 	out := make([]models.FigureVerdict, 0, len(figures))
 	for _, f := range figures {
-		out = append(out, evaluateFigure(f, steps))
+		out = append(out, evaluateFigure(f, steps, loc))
 	}
 	return out
 }
 
-func evaluateFigure(f models.Figure, steps map[int]StepRows) models.FigureVerdict {
+func evaluateFigure(f models.Figure, steps map[int]StepRows, loc numberLocale) models.FigureVerdict {
 	v := models.FigureVerdict{
-		ID: f.ID, Display: renderFigure(f), Step: f.Step, Kind: f.Kind, Claimed: f.Value,
+		ID: f.ID, Display: renderFigure(f, loc), Step: f.Step, Kind: f.Kind, Claimed: f.Value,
 	}
 	undecidable := func(format string, args ...any) models.FigureVerdict {
 		v.Status = models.FigureUndecidable

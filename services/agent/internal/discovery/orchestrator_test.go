@@ -482,7 +482,7 @@ func TestInsightsForRecommenderPrompt_ClearsMarkdownCopy(t *testing.T) {
 		{Name: "b", Description: "plain b"},
 	}
 
-	got := insightsForRecommenderPrompt(insights)
+	got := insightsForRecommenderPrompt(insights, usNotation)
 
 	if got[0].Description != "plain a" {
 		t.Errorf("plain Description should be preserved, got %q", got[0].Description)

@@ -68,7 +68,7 @@ var reDateish = regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}\b|\b\d{4}-\d{2}\b|\b(19|
 // Unresolved references are left as written rather than blanked. A reader seeing
 // "{{f7}}" in a shipped sentence knows something went wrong; a reader seeing a sentence
 // with a hole in it does not, and neither does any downstream consumer.
-func renderInsightFigures(insights []models.Insight) figureRenderTally {
+func renderInsightFigures(insights []models.Insight, loc numberLocale) figureRenderTally {
 	var tally figureRenderTally
 	for i := range insights {
 		ins := &insights[i]
@@ -91,7 +91,7 @@ func renderInsightFigures(insights []models.Insight) figureRenderTally {
 		// Through the one gate: an ambiguous id and a value the model never supplied both
 		// render nothing, and the reference ships visible rather than printing the zero the
 		// decode fell back to.
-		r := newFigureRenderer(usableFigures(ins.Figures), &tally)
+		r := newFigureRenderer(usableFigures(ins.Figures), &tally, loc)
 		ins.Name = r.render(ins.Name)
 		ins.Description = r.render(ins.Description)
 		for j := range ins.Indicators {
@@ -148,7 +148,7 @@ func renderInsightFigures(insights []models.Insight) figureRenderTally {
 // the text is the value the insight's own figure was checked at -- which is the whole
 // point of the layer. A headline and a body that reference the same figure cannot
 // disagree, because there is only one number and Go writes it twice.
-func renderRecommendationFigures(recs []models.Recommendation) figureRenderTally {
+func renderRecommendationFigures(recs []models.Recommendation, loc numberLocale) figureRenderTally {
 	var tally figureRenderTally
 	for i := range recs {
 		rec := &recs[i]
@@ -173,7 +173,7 @@ func renderRecommendationFigures(recs []models.Recommendation) figureRenderTally
 		// way. Leaving the reference visible is the honest failure: a reader seeing
 		// "{{f2}}" knows something went wrong, and 0.00% reads like a finding.
 		renderable := renderableFigures(rec.Figures, rec.FigureVerdicts)
-		r := newFigureRenderer(renderable, &tally)
+		r := newFigureRenderer(renderable, &tally, loc)
 		rec.Title = r.render(rec.Title)
 		rec.Description = r.render(rec.Description)
 		for j := range rec.Actions {
@@ -270,11 +270,15 @@ type figureRenderer struct {
 	// rendering rather than by a second scan of the template.
 	used       map[string]struct{}
 	unresolved []string
+	// loc is the number notation the project's output language writes in. Held on the
+	// renderer so the prose and the figure table cannot disagree: both go through
+	// renderFigure with this same value.
+	loc numberLocale
 }
 
-func newFigureRenderer(figures []models.Figure, tally *figureRenderTally) *figureRenderer {
+func newFigureRenderer(figures []models.Figure, tally *figureRenderTally, loc numberLocale) *figureRenderer {
 	byID := figuresByID(figures)
-	return &figureRenderer{byID: byID, tally: tally, used: map[string]struct{}{}}
+	return &figureRenderer{byID: byID, tally: tally, used: map[string]struct{}{}, loc: loc}
 }
 
 // render replaces every reference in s with its figure's rendered text.
@@ -300,7 +304,7 @@ func (r *figureRenderer) render(s string) string {
 		}
 		r.used[id] = struct{}{}
 		r.tally.resolved++
-		text := renderFigure(f)
+		text := renderFigure(f, r.loc)
 		// A marker the template already writes is dropped from the render, at both
 		// ends. Whatever notation the surrounding text already carries, the render does
 		// not repeat.

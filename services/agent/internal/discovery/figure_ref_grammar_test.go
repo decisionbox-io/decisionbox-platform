@@ -31,8 +31,8 @@ func TestRecommendationFigures_AnEmptyReferenceIsTheRecommendationsFault(t *test
 			Refs: []models.FigureRef{ref(ins.ID, "")},
 		}},
 	}}
-	attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
-	renderRecommendationFigures(recs)
+	attachRecommendationFigureVerdicts(recs, []models.Insight{ins}, usNotation)
+	renderRecommendationFigures(recs, usNotation)
 
 	v := recs[0].FigureVerdicts[0]
 	if v.Status != models.FigureUndecidable {
@@ -63,7 +63,7 @@ func TestRecommendationFigures_AReferenceNamingNoInsightSaysSo(t *testing.T) {
 			Refs: []models.FigureRef{ref("", "f1")},
 		}},
 	}}
-	attachRecommendationFigureVerdicts(recs, []models.Insight{bandInsight()})
+	attachRecommendationFigureVerdicts(recs, []models.Insight{bandInsight()}, usNotation)
 
 	v := recs[0].FigureVerdicts[0]
 	if v.Status != models.FigureUndecidable {
@@ -90,7 +90,7 @@ func TestRecommendationFigures_AnIdOutsideTheGrammarIsRefused(t *testing.T) {
 				Refs: []models.FigureRef{ref(ins.ID, bad)},
 			}},
 		}}
-		attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+		attachRecommendationFigureVerdicts(recs, []models.Insight{ins}, usNotation)
 		v := recs[0].FigureVerdicts[0]
 		if v.Status != models.FigureUndecidable || !strings.Contains(v.Reason, "figure id") {
 			t.Errorf("reference to %q gave %q (%s), want undecidable naming the id grammar", bad, v.Status, v.Reason)

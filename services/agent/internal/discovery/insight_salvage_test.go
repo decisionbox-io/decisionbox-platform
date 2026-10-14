@@ -182,7 +182,7 @@ func TestInsightsForRecommenderPrompt_DropsTheAuditTrail(t *testing.T) {
 		Repair:             &models.InsightRepair{Rounds: 1, Outcome: "claim_dropped", Dropped: []string{refuted}},
 		Quality:            []gowarehouse.QualityCaveat{gowarehouse.RowCapCaveat(15)},
 	}}
-	out := insightsForRecommenderPrompt(in)
+	out := insightsForRecommenderPrompt(in, usNotation)
 
 	if len(out) != 1 {
 		t.Fatalf("got %d insights, want 1", len(out))

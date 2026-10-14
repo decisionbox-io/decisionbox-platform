@@ -71,7 +71,7 @@ func oneVerdict(t *testing.T, f models.Figure, steps map[int]StepRows) models.Fi
 	if f.ID == "" {
 		f.ID = "f1"
 	}
-	v := EvaluateFigures([]models.Figure{f}, steps)
+	v := EvaluateFigures([]models.Figure{f}, steps, usNotation)
 	if len(v) != 1 {
 		t.Fatalf("got %d verdicts, want 1", len(v))
 	}
@@ -101,7 +101,7 @@ func TestFigure_RenderedFormIsWhatTheReaderSees(t *testing.T) {
 		{"plain", models.Figure{Value: 25.52, Unit: models.UnitPlain, Decimals: 2}, "25.52"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := renderFigure(tc.fig); got != tc.want {
+			if got := renderFigure(tc.fig, usNotation); got != tc.want {
 				t.Fatalf("rendered %q, want %q", got, tc.want)
 			}
 		})
@@ -381,12 +381,12 @@ func TestFigure_CorrectionIsAFieldAssignment(t *testing.T) {
 	}}
 	steps := stepIndex(7, step7Rows())
 
-	attachFigureVerdicts(ins, steps)
+	attachFigureVerdicts(ins, steps, usNotation)
 	if countRefutedFigures(ins[0].FigureVerdicts) != 1 {
 		t.Fatalf("expected one refutation, got %+v", ins[0].FigureVerdicts)
 	}
 
-	if n := correctRefutedFigures("retention", ins, steps); n != 1 {
+	if n := correctRefutedFigures("retention", ins, steps, usNotation); n != 1 {
 		t.Fatalf("corrections = %d, want 1", n)
 	}
 	if ins[0].Figures[0].Value != 99996 {
@@ -400,7 +400,7 @@ func TestFigure_CorrectionIsAFieldAssignment(t *testing.T) {
 	}
 
 	// And the correction reaches every sentence, because they all reference one figure.
-	renderInsightFigures(ins)
+	renderInsightFigures(ins, usNotation)
 	for _, field := range []string{ins[0].Name, ins[0].Description, ins[0].Indicators[0]} {
 		if strings.Contains(field, "100,000") {
 			t.Errorf("a field still says 100,000: %q", field)
@@ -460,12 +460,12 @@ func TestFigure_CorrectionDeclinesWhenTheDeclarationIsWhatIsWrong(t *testing.T) 
 				}},
 			}}
 			steps := stepIndex(1, rows)
-			attachFigureVerdicts(ins, steps)
+			attachFigureVerdicts(ins, steps, usNotation)
 			if ins[0].FigureVerdicts[0].Status != models.FigureFails {
 				t.Fatalf("expected a refutation, got %q", ins[0].FigureVerdicts[0].Status)
 			}
 
-			n := correctRefutedFigures("probe", ins, steps)
+			n := correctRefutedFigures("probe", ins, steps, usNotation)
 			if tc.wantFixed && n != 1 {
 				t.Fatalf("correction declined, want it applied (claimed %v, evaluated %v)", tc.claimed, tc.evaluated)
 			}

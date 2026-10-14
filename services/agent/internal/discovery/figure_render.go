@@ -39,7 +39,7 @@ var figureScales = map[string]struct {
 // An unknown unit or scale renders plainly rather than failing: a figure whose
 // presentation Go does not recognise is still a figure whose arithmetic can be
 // checked, and refusing to render it would lose the finding over a formatting word.
-func renderFigure(f models.Figure) string {
+func renderFigure(f models.Figure, loc numberLocale) string {
 	sc, ok := figureScales[f.Scale]
 	if !ok {
 		sc = figureScales[models.ScaleNone]
@@ -60,10 +60,10 @@ func renderFigure(f models.Figure) string {
 		b.WriteString(f.Symbol())
 	}
 	// Thousands separators on anything unscaled, because an unscaled count or amount
-	// is where they matter and a scaled one has at most four digits.
-	if f.Scale == models.ScaleNone {
-		digits = groupThousands(digits)
-	}
+	// is where they matter and a scaled one has at most four digits. A scaled figure
+	// still carries a decimal mark, so it goes through the locale either way --
+	// otherwise "30.63M" keeps a US point inside Turkish prose.
+	digits = applyNotation(digits, loc, f.Scale == models.ScaleNone)
 	b.WriteString(digits)
 	b.WriteString(sc.suffix)
 
@@ -101,21 +101,24 @@ func figureSlack(f models.Figure) float64 {
 	return place / 2
 }
 
-// groupThousands inserts comma separators into an already-rendered decimal string.
-func groupThousands(s string) string {
+// applyNotation writes Go's fixed-point string in the locale's notation, optionally
+// grouping the integer part. The input always uses "." for the decimal, because
+// strconv.FormatFloat wrote it a few lines earlier -- so the split is on a byte this
+// function put there itself, not on whatever a reader might have typed.
+func applyNotation(s string, loc numberLocale, group bool) string {
 	neg := strings.HasPrefix(s, "-")
 	s = strings.TrimPrefix(s, "-")
 	intPart, frac := s, ""
 	if i := strings.IndexByte(s, '.'); i >= 0 {
-		intPart, frac = s[:i], s[i:]
+		intPart, frac = s[:i], loc.decimal+s[i+1:]
 	}
 	var b strings.Builder
 	if neg {
 		b.WriteString("-")
 	}
 	for i := 0; i < len(intPart); i++ {
-		if i > 0 && (len(intPart)-i)%3 == 0 {
-			b.WriteByte(',')
+		if group && i > 0 && (len(intPart)-i)%3 == 0 {
+			b.WriteString(loc.group)
 		}
 		b.WriteByte(intPart[i])
 	}
