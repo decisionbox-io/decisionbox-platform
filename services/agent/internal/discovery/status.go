@@ -532,6 +532,18 @@ func (s *StatusReporter) classifyUnappliedTerminal(ctx context.Context, what str
 		}).Warn("the run was cancelled while this attempt was still working; its " + what + " was not recorded and its result will be deleted")
 		return terminalSuperseded
 
+	case database.RunDiscarded:
+		// The operator threw the run away after it had ended. Same action as
+		// a cancellation — the result goes with it, because a discarded run
+		// is one nobody wants and a discovery left behind would be reachable
+		// with nothing to explain it — but said in its own words, for the
+		// reason the cancel branch gives: reporting a cancel nobody
+		// performed sends an operator looking for the wrong event.
+		logger.WithFields(logger.Fields{
+			"run_id": s.runID, "attempt": s.attempt,
+		}).Warn("the run was discarded before this attempt could record its " + what + "; its result is being retired")
+		return terminalSuperseded
+
 	default:
 		logger.WithFields(logger.Fields{
 			"run_id": s.runID, "attempt": s.attempt,

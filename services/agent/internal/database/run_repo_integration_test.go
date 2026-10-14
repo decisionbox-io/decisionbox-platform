@@ -899,3 +899,111 @@ func TestRunRepository_AddActiveTimeStillCountsOnACancelledRun(t *testing.T) {
 		t.Errorf("active_ms = %d, want 90000 — the work happened and a cancel does not refund it", got.ActiveMs)
 	}
 }
+
+// A discard can land while an agent is still alive: the API's startup sweep
+// marks in-flight runs failed WITHOUT reaping their agents, which is the
+// whole reason the attempt fences exist. A discard does not bump the attempt,
+// so an attempt-only comparison calls a discarded run "still yours" — the
+// same blind spot a cancel had, and with a worse consequence, because the
+// agent could write the run back to `running` or complete it and so
+// un-discard itself.
+func TestRunRepository_OwnershipAnswersDiscarded(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewRunRepository(db)
+
+	now := time.Now()
+	runID := seedRunDoc(t, ctx, db, bson.M{
+		"attempt": 2, "status": models.RunStatusFailed, "discarded_at": now,
+	})
+
+	// The live attempt, a superseded one, and "unknown" all have to hear
+	// "discarded" — it is a property of the run, not of who is asking.
+	for _, attempt := range []int{2, 1, 0} {
+		got, err := repo.Ownership(ctx, runID, attempt)
+		if err != nil {
+			t.Fatalf("attempt %d: %v", attempt, err)
+		}
+		if got != RunDiscarded {
+			t.Errorf("Ownership(attempt %d) = %v, want RunDiscarded", attempt, got)
+		}
+	}
+
+	// A cancel still outranks: it is checked first, and a run can be both.
+	cancelled := seedRunDoc(t, ctx, db, bson.M{
+		"attempt": 2, "status": models.RunStatusCancelled, "discarded_at": now,
+	})
+	if got, err := repo.Ownership(ctx, cancelled, 2); err != nil || got != RunCancelled {
+		t.Errorf("Ownership on a cancelled+discarded run = %v (err %v), want RunCancelled", got, err)
+	}
+}
+
+// The writes a surviving agent could use to un-discard a run. Each is fenced
+// the way a cancel already was, so the refusal is atomic rather than
+// depending on the agent noticing at its next ownership gate.
+//
+// Complete is the one that matters most, and it is also the one whose fence
+// deliberately ADMITS a `failed` run: the sweep's `failed` is the API
+// guessing a run died, and an agent that proves otherwise should get to
+// record what it found. A discard is different in kind — the operator saying
+// they do not want the run — so it must not be completable.
+func TestRunRepository_DiscardedRunRefusesEveryResurrectingWrite(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewRunRepository(db)
+
+	newDiscarded := func(t *testing.T) string {
+		t.Helper()
+		return seedRunDoc(t, ctx, db, bson.M{
+			"attempt": 1, "status": models.RunStatusFailed, "discarded_at": time.Now(),
+		})
+	}
+
+	t.Run("UpdateStatus cannot write it back to running", func(t *testing.T) {
+		id := newDiscarded(t)
+		// Returns only error, and a filter that matches nothing is not an
+		// error — so the document is the assertion.
+		if err := repo.UpdateStatus(ctx, id, models.RunStatusRunning, models.PhaseExploration, "resumed working", 40, 1); err != nil {
+			t.Fatal(err)
+		}
+		var doc bson.M
+		oid, _ := primitive.ObjectIDFromHex(id)
+		if err := db.Collection(CollectionDiscoveryRuns).FindOne(ctx, bson.M{"_id": oid}).Decode(&doc); err != nil {
+			t.Fatal(err)
+		}
+		if doc["status"] != models.RunStatusFailed {
+			t.Errorf("status = %v, want it left failed", doc["status"])
+		}
+	})
+
+	t.Run("MarkExplorationCheckpoint cannot re-arm Resume", func(t *testing.T) {
+		id := newDiscarded(t)
+		if applied, err := repo.MarkExplorationCheckpoint(ctx, id, 7, 1); err != nil {
+			t.Fatal(err)
+		} else if applied {
+			t.Error("MarkExplorationCheckpoint applied to a discarded run")
+		}
+	})
+
+	t.Run("Complete cannot resurrect it with a discovery", func(t *testing.T) {
+		id := newDiscarded(t)
+		if applied, err := repo.Complete(ctx, id, "disc-1", 3, 1); err != nil {
+			t.Fatal(err)
+		} else if applied {
+			t.Error("Complete applied to a discarded run — it would reappear as the project's state, with a result")
+		}
+	})
+
+	// The same writes must still work on a run the SWEEP failed, which is the
+	// behaviour the discard fence must not have broken.
+	t.Run("a swept-failed run is still completable", func(t *testing.T) {
+		id := seedRunDoc(t, ctx, db, bson.M{"attempt": 1, "status": models.RunStatusFailed})
+		if applied, err := repo.Complete(ctx, id, "disc-2", 3, 1); err != nil {
+			t.Fatal(err)
+		} else if !applied {
+			t.Error("Complete was refused on a merely failed run; an agent that finishes after the sweep must still record its result")
+		}
+	})
+}

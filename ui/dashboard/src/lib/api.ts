@@ -1003,6 +1003,11 @@ export interface DiscoveryRunStatus {
   id: string;
   project_id: string;
   status: string; // pending, running, completed, failed
+  // Set once the run has saved a result. Present on a COMPLETED run, and
+  // also on a failed one that saved a partial discovery before dying — which
+  // is why "can this be discarded" cannot be answered from status alone.
+  // Omitted by the API (omitempty) until there is a result.
+  discovery_id?: string;
   phase: string;
   phase_detail: string;
   progress: number; // 0-100

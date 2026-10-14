@@ -986,3 +986,91 @@ func TestInteg_RunRepo_BeginResumeRefusesADiscardedRun(t *testing.T) {
 		t.Errorf("BeginResume on a discarded run: want ErrNoResumableRun, got %v", err)
 	}
 }
+
+// A `failed` run is not necessarily resultless: the agent's Fail stamps
+// discovery_id on a run that saved a partial result before dying (an analysis
+// failure, or the outer duration cap) precisely so the result stays
+// reachable. Discarding such a run would orphan that discovery exactly as
+// discarding a completed one would — the status is not the test, the presence
+// of a result is.
+func TestInteg_RunRepo_Discard_RefusesARunThatSavedADiscovery(t *testing.T) {
+	ctx := context.Background()
+	for _, status := range []string{"failed", "cancelled"} {
+		t.Run(status+" with a discovery", func(t *testing.T) {
+			dropRuns(t, ctx)
+			repo := NewRunRepository(testDB)
+			id := seedRunForProject(t, ctx, "proj-result", status, time.Now(), nil)
+			if _, err := testDB.Collection("discovery_runs").UpdateByID(ctx, mustOID(t, id),
+				bson.M{"$set": bson.M{"discovery_id": "disc-partial-1"}}); err != nil {
+				t.Fatalf("seed discovery_id: %v", err)
+			}
+
+			if err := repo.Discard(ctx, id); !errors.Is(err, ErrNotDiscardable) {
+				t.Fatalf("want ErrNotDiscardable, got %v", err)
+			}
+			run, _ := repo.GetByID(ctx, id)
+			if run.DiscardedAt != nil {
+				t.Error("a run with a saved discovery was discarded")
+			}
+		})
+	}
+	// An empty discovery_id is "no result", not "a result called nothing":
+	// BeginResume clears the field by writing "", so a resumed-then-failed
+	// run carries an empty one and must stay discardable.
+	t.Run("an empty discovery_id is still discardable", func(t *testing.T) {
+		dropRuns(t, ctx)
+		repo := NewRunRepository(testDB)
+		id := seedRunForProject(t, ctx, "proj-result", "failed", time.Now(), nil)
+		if _, err := testDB.Collection("discovery_runs").UpdateByID(ctx, mustOID(t, id),
+			bson.M{"$set": bson.M{"discovery_id": ""}}); err != nil {
+			t.Fatalf("seed empty discovery_id: %v", err)
+		}
+		if err := repo.Discard(ctx, id); err != nil {
+			t.Fatalf("discard: %v", err)
+		}
+	})
+}
+
+// The hazard this PR exists for, applied to discard: the startup sweep marks
+// in-flight runs failed WITHOUT reaping their agents, so a discard can land
+// while an agent is still alive. If that agent can write the run back to
+// `running`, it un-discards itself and reappears as the project's state.
+//
+// Two lines of defence, both asserted: the agent's writes are fenced (tested
+// in the agent package, which owns those filters), and the readers skip a
+// discarded run whatever its status — so a reader is correct even if a writer
+// is not.
+func TestInteg_RunRepo_ADiscardedRunStaysHiddenEvenIfItGoesActiveAgain(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+
+	base := time.Date(2026, 6, 4, 9, 0, 0, 0, time.UTC)
+	completedAt := base.Add(10 * time.Minute)
+	older := seedRunForProject(t, ctx, "proj-zombie", "completed", base, &completedAt)
+	zombie := seedRunForProject(t, ctx, "proj-zombie", "failed", base.Add(1*time.Hour), nil)
+
+	if err := repo.Discard(ctx, zombie); err != nil {
+		t.Fatalf("discard: %v", err)
+	}
+	// A surviving agent writing itself back to life, bypassing its own fences.
+	if _, err := testDB.Collection("discovery_runs").UpdateByID(ctx, mustOID(t, zombie),
+		bson.M{"$set": bson.M{"status": "running"}}); err != nil {
+		t.Fatalf("resurrect: %v", err)
+	}
+
+	latest, err := repo.GetLatestByProject(ctx, "proj-zombie")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest == nil || latest.ID != older {
+		t.Errorf("GetLatestByProject = %v, want the older completed run — a discarded run must not win the ACTIVE query either", latest)
+	}
+	byProjects, err := repo.LatestByProjects(ctx, []string{"proj-zombie"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := byProjects["proj-zombie"]; got == nil || got.ID != older {
+		t.Errorf("LatestByProjects = %v, want the same answer — its active pass needs the predicate too", got)
+	}
+}

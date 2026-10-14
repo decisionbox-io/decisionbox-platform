@@ -73,6 +73,7 @@ func (r *RunRepository) UpdateStatus(ctx context.Context, runID string, status, 
 
 	filter := attemptFilter(oid, attempt)
 	filter["status"] = bson.M{"$ne": models.RunStatusCancelled}
+	filter["discarded_at"] = nil
 
 	_, err = r.col.UpdateOne(ctx, filter, update)
 	return err
@@ -234,8 +235,17 @@ func (r *RunRepository) Complete(ctx context.Context, runID, discoveryID string,
 	// leave a complete result saved but unreachable behind a `failed` run,
 	// inviting a resume that re-runs analysis for nothing. A resumed run is
 	// already excluded by the attempt fence, not by the status.
+	//
+	// A DISCARD is the exception to that, which is why discarded_at is
+	// fenced here even though `failed` is not: the sweep's `failed` is the
+	// API guessing that a run died, and an agent that proves otherwise
+	// should be allowed to record what it found. A discard is the operator
+	// saying they do not want this run. Completing it would resurrect a run
+	// they threw away — with a discovery attached, and visible again as the
+	// project's state, since a completed run is terminal-but-present.
 	filter := attemptFilter(oid, attempt)
 	filter["status"] = bson.M{"$ne": models.RunStatusCancelled}
+	filter["discarded_at"] = nil
 
 	res, err := r.col.UpdateOne(ctx, filter, update)
 	if err != nil {
@@ -353,6 +363,7 @@ func (r *RunRepository) MarkExplorationCheckpoint(ctx context.Context, runID str
 	}
 	filter := attemptFilter(oid, attempt)
 	filter["status"] = bson.M{"$ne": models.RunStatusCancelled}
+	filter["discarded_at"] = nil
 	res, err := r.col.UpdateOne(ctx, filter, bson.M{
 		"$max": bson.M{"last_checkpoint_step": step},
 		"$set": bson.M{"updated_at": time.Now()},
@@ -386,6 +397,20 @@ const (
 	// attempt-only comparison, which is exactly how a cancelled run's agent
 	// used to walk through every ownership gate and keep its result.
 	RunCancelled
+
+	// RunDiscarded: the operator threw the run away after it had ended. Like
+	// a cancel, this leaves the attempt number alone, so it is invisible to
+	// an attempt-only comparison — and unlike a cancel it can land while an
+	// agent is still alive, because the API's startup sweep marks in-flight
+	// runs failed without reaping them. Discard is the operator saying they
+	// do not want the run; an agent that survived it must not write the run
+	// back to life.
+	//
+	// Distinct from RunCancelled rather than folded into it because the two
+	// need different words for the same action, the reason this type exists:
+	// telling an operator their run was cancelled when they discarded it
+	// sends them looking for a cancel nobody performed.
+	RunDiscarded
 )
 
 // Ownership reports where this attempt stands with the run.
@@ -410,12 +435,14 @@ func (r *RunRepository) Ownership(ctx context.Context, runID string, attempt int
 	}
 
 	var doc struct {
-		Status  string `bson:"status"`
-		Attempt int    `bson:"attempt"`
+		Status      string     `bson:"status"`
+		Attempt     int        `bson:"attempt"`
+		DiscardedAt *time.Time `bson:"discarded_at"`
 	}
 	err = r.col.FindOne(ctx, bson.M{"_id": oid}, options.FindOne().SetProjection(bson.M{
-		"status":  1,
-		"attempt": 1,
+		"status":       1,
+		"attempt":      1,
+		"discarded_at": 1,
 	})).Decode(&doc)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
@@ -428,6 +455,12 @@ func (r *RunRepository) Ownership(ctx context.Context, runID string, attempt int
 
 	if doc.Status == models.RunStatusCancelled {
 		return RunCancelled, nil
+	}
+	// Checked alongside the cancel, and before the attempt comparison, for
+	// the same reason: a discard does not bump the attempt, so an
+	// attempt-only answer would call a discarded run "still yours".
+	if doc.DiscardedAt != nil {
+		return RunDiscarded, nil
 	}
 	if attempt <= 0 {
 		return RunOwnedByThisAttempt, nil
@@ -492,6 +525,7 @@ func (r *RunRepository) AppendLifecycle(ctx context.Context, runID string, ev mo
 	// write asserts an outcome or records effort spent.
 	filter := attemptFilter(oid, attempt)
 	filter["status"] = bson.M{"$ne": models.RunStatusCancelled}
+	filter["discarded_at"] = nil
 
 	_, err = r.col.UpdateOne(ctx, filter, bson.M{
 		"$push": bson.M{"lifecycle": ev},

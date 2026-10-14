@@ -605,3 +605,52 @@ describe('Discarding a terminal run (#438)', () => {
     await waitFor(() => expect(screen.getByText('Discard')).toBeInTheDocument());
   });
 });
+
+// Two cases Codex found on the discard work, both about state the panel can
+// be left holding.
+describe('Discard: runs with a result, and a project with none (#438)', () => {
+  // "Not completed" is not the same as "produced nothing": the agent stamps
+  // a discovery on a run that saved a partial result before failing, and
+  // discarding that would orphan it. The server refuses either way; the
+  // button must not offer a guaranteed 409.
+  it('withholds Discard from a failed run that saved a discovery', async () => {
+    getProjectStatus.mockResolvedValue(
+      status(makeRun({ status: 'failed', last_checkpoint_step: 4, discovery_id: 'disc-partial-1' })),
+    );
+
+    renderPage();
+    await waitFor(() => expect(getProjectStatus).toHaveBeenCalled());
+    await flush();
+
+    expect(screen.queryByText('Discard')).not.toBeInTheDocument();
+    // Resume is still right: a partial result does not make the run
+    // unresumable, it makes it undiscardable.
+    expect(screen.getByText(/Resume from step 4/)).toBeInTheDocument();
+  });
+
+  // A terminal run is not polled, so if the project stops having a run to
+  // show — every run discarded, perhaps from another tab — nothing would ever
+  // take the stale panel off screen.
+  it('clears the panel when a status read returns no run at all', async () => {
+    getProjectStatus.mockResolvedValueOnce(
+      status(makeRun({ status: 'failed', last_checkpoint_step: 4 })),
+    );
+    renderPage();
+    await waitFor(() => expect(screen.getByText(/Resume from step 4/)).toBeInTheDocument());
+
+    // Someone else discarded it; the project now has nothing to represent it.
+    getProjectStatus.mockResolvedValue({ project_id: 'p1', run: null, last_discovery: null });
+    discardRun.mockRejectedValue(new Error('run was already discarded'));
+
+    const btn = screen.getByText('Discard');
+    await act(async () => { btn.click(); });
+    await flush();
+    const dialog = await waitFor(() => screen.getByRole('dialog'));
+    const confirm = within(dialog).getByRole('button', { name: 'Discard' });
+    await act(async () => { confirm.click(); });
+    await flush();
+
+    await waitFor(() => expect(screen.queryByText(/Resume from step 4/)).not.toBeInTheDocument());
+    expect(screen.queryByText('Discard')).not.toBeInTheDocument();
+  });
+});

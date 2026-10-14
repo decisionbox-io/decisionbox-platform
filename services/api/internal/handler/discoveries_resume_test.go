@@ -1386,6 +1386,15 @@ func TestDiscardRun_Refusals(t *testing.T) {
 			wantInMsg: "delete that discovery instead",
 		},
 		{
+			name: "a failed run that saved a partial discovery — it would be orphaned",
+			setup: func(f *resumeFixture) {
+				f.runs.runs["run-1"].Status = "failed"
+				f.runs.runs["run-1"].DiscoveryID = "disc-partial-1"
+			},
+			wantCode:  http.StatusConflict,
+			wantInMsg: "saved a discovery before it failed",
+		},
+		{
 			name: "already discarded",
 			setup: func(f *resumeFixture) {
 				f.runs.runs["run-1"].Status = "failed"

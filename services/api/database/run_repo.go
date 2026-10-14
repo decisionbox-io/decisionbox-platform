@@ -238,10 +238,20 @@ func (r *RunRepository) GetLatestByProject(ctx context.Context, projectID string
 	// An active run wins outright. There is normally at most one — both the
 	// trigger path and the resume path refuse to start a second — so the
 	// sort here only ever breaks a tie this code should not see.
+	//
+	// discarded_at is checked here too. An earlier version did not, on the
+	// reasoning that Discard refuses anything not already terminal, so an
+	// active run can never be discarded. That holds only at the instant of
+	// the discard: the startup sweep marks in-flight runs failed without
+	// reaping their agents, so a surviving agent can be discarded and then
+	// write itself back to `running`. The agent's own fences now refuse that
+	// write, and this is the second line — a reader should not depend on the
+	// writer having been fixed.
 	var run models.DiscoveryRun
 	err := r.col.FindOne(ctx, bson.M{
-		"project_id": projectID,
-		"status":     bson.M{"$in": []string{"pending", "running"}},
+		"project_id":   projectID,
+		"status":       bson.M{"$in": []string{"pending", "running"}},
+		"discarded_at": nil,
 	}, opts).Decode(&run)
 	if err == nil {
 		return &run, nil
@@ -366,8 +376,9 @@ func (r *RunRepository) LatestByProjects(ctx context.Context, projectIDs []strin
 		}
 	}
 	active, err := r.newestPerProject(ctx, bson.M{
-		"project_id": bson.M{"$in": projectIDs},
-		"status":     bson.M{"$in": []string{"pending", "running"}},
+		"project_id":   bson.M{"$in": projectIDs},
+		"status":       bson.M{"$in": []string{"pending", "running"}},
+		"discarded_at": nil,
 	}, "started_at")
 	if err != nil {
 		return nil, err
@@ -799,7 +810,7 @@ func (r *RunRepository) CleanupStaleRuns(ctx context.Context) (int, error) {
 // active, it produced a discovery, or someone discarded it already.
 var ErrNotDiscardable = errors.New("run is not discardable")
 
-// Discard marks a terminal, resultless run as thrown away. The status is left
+// Discard marks a terminal run that produced nothing as thrown away. The status is left
 // alone — a run that failed still failed, and its error is still the record —
 // but the run stops representing the project and can no longer be resumed.
 //
@@ -816,6 +827,14 @@ var ErrNotDiscardable = errors.New("run is not discardable")
 // instead. `pending`/`running` are excluded because cancel is the verb for a
 // run that is still working.
 //
+// And so is any run that already carries a discovery_id, which excluding
+// `completed` does NOT imply: the agent's Fail stamps discovery_id on a run
+// that saved a partial result before dying — an analysis failure, or the
+// outer duration cap — precisely so the result stays reachable. Such a run is
+// `failed` WITH a discovery, and discarding it would orphan that discovery
+// exactly as discarding a completed run would. The status is not the test;
+// the presence of a result is.
+//
 // Atomic and idempotent-by-refusal: the filter carries the status and the
 // not-yet-discarded predicate, so a second discard, or one racing a resume,
 // matches nothing and returns ErrNotDiscardable rather than writing twice.
@@ -827,8 +846,11 @@ func (r *RunRepository) Discard(ctx context.Context, runID string) error {
 	now := time.Now()
 	res, err := r.col.UpdateOne(ctx,
 		bson.M{
-			"_id":          oid,
-			"status":       bson.M{"$in": []string{"failed", "cancelled"}},
+			"_id":    oid,
+			"status": bson.M{"$in": []string{"failed", "cancelled"}},
+			// Missing, null and empty all mean "no result": the field is
+			// omitempty, and BeginResume clears it by writing "".
+			"discovery_id": bson.M{"$in": []any{nil, ""}},
 			"discarded_at": nil,
 		},
 		bson.M{

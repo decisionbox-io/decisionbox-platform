@@ -995,7 +995,7 @@ func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// DiscardRun throws away a terminal, resultless run.
+// DiscardRun throws away a terminal run that produced nothing.
 // POST /api/v1/runs/{runId}/discard
 //
 // The gap this fills: a failed run is resumable, and until its checkpoints
@@ -1031,6 +1031,14 @@ func (h *DiscoveriesHandler) DiscardRun(w http.ResponseWriter, r *http.Request) 
 	case run.Status == "completed":
 		writeError(w, http.StatusConflict,
 			"a completed run produced a discovery, which is the project's history — delete that discovery instead of discarding the run")
+		return
+	case run.DiscoveryID != "":
+		// Not implied by the case above. The agent's Fail stamps discovery_id
+		// on a run that saved a partial result before dying, so a `failed`
+		// run can carry one — and discarding it would orphan that discovery
+		// just as discarding a completed run would.
+		writeError(w, http.StatusConflict,
+			"this run saved a discovery before it failed, which would be orphaned — delete that discovery instead of discarding the run")
 		return
 	case run.DiscardedAt != nil:
 		writeError(w, http.StatusConflict, "run was already discarded")

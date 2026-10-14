@@ -113,6 +113,16 @@ export default function ProjectPage() {
   const pollStatus = useCallback(async () => {
     try {
       const status = await api.getProjectStatus(id);
+      // A successful read with no run means the project has none to show —
+      // every run discarded, or the last one deleted with its project data.
+      // Clearing is the only way the panel goes away: a terminal run is not
+      // polled, so a stale one would sit there offering Resume and Discard
+      // for ever. Only on a SUCCESSFUL read; a failed one is handled by the
+      // catch below, which deliberately keeps what is on screen.
+      if (status && !status.run) {
+        setRun(null);
+        return;
+      }
       if (status?.run) {
         const newRun = status.run as unknown as DiscoveryRunStatus;
         // A dismissed run that is live again is news, not noise: drop the
@@ -827,7 +837,12 @@ function LiveRunPanel({ run, onCancel, onResume, onDiscard }: { run: DiscoveryRu
   // confusion colour is there to prevent. Weight matched to consequence: a
   // plain Cancel/Discard confirm, not Delete project's type-the-name, because
   // discard destroys resumability rather than data.
-  const canDiscard = isDone && (run.status === 'failed' || run.status === 'cancelled');
+  // !run.discovery_id, not just "not completed": the agent stamps a
+  // discovery on a run that saved a partial result before failing, and
+  // discarding that would orphan it. The server refuses it either way; this
+  // keeps the button from offering a guaranteed 409.
+  const canDiscard = isDone && !run.discovery_id
+    && (run.status === 'failed' || run.status === 'cancelled');
   const [discardOpen, { open: openDiscard, close: closeDiscard }] = useDisclosure(false);
 
   return (
