@@ -1122,3 +1122,41 @@ func TestInteg_RunRepo_ADiscardedRunDoesNotBlockNewRuns(t *testing.T) {
 		t.Errorf("GetRunningByProject = %v (err %v), want the live run", got, err)
 	}
 }
+
+// HasResultForRun against real Mongo, because the whole point of it is that
+// the run document's pointer and the stored discovery can disagree:
+// BeginResume clears discovery_id, so the only reliable answer lives in the
+// discoveries collection.
+func TestInteg_DiscoveryRepo_HasResultForRun(t *testing.T) {
+	ctx := context.Background()
+	if _, err := testDB.Collection("discoveries").DeleteMany(ctx, bson.M{}); err != nil {
+		t.Fatalf("drop discoveries: %v", err)
+	}
+	repo := NewDiscoveryRepository(testDB)
+
+	if _, err := testDB.Collection("discoveries").InsertOne(ctx, bson.M{
+		"project_id": "proj-res", "run_id": "run-with-result",
+	}); err != nil {
+		t.Fatalf("seed discovery: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		runID string
+		want  bool
+	}{
+		{"a run whose discovery is stored", "run-with-result", true},
+		{"a run with none", "run-without", false},
+		{"an empty id is not a run", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := repo.HasResultForRun(ctx, tc.runID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("HasResultForRun(%q) = %v, want %v", tc.runID, got, tc.want)
+			}
+		})
+	}
+}

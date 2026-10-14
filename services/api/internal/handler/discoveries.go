@@ -1088,6 +1088,33 @@ func (h *DiscoveriesHandler) DiscardRun(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// And the pointer is not the whole answer. BeginResume CLEARS discovery_id,
+	// so a run that saved a partial result and was then resumed carries an
+	// empty one while the earlier discovery is still stored against its
+	// run_id — and a resume that fails before saving a replacement (a spawn
+	// failure, an early crash) leaves it exactly there. Discarding then
+	// orphans that result: the run vanishes from the project's status while
+	// its partial discovery can still be the project's latest.
+	//
+	// Asked of the discoveries collection, because only it knows. Not atomic
+	// with the discard, and it does not need to be: a discovery can only
+	// appear while the run is active, and an active run is already refused
+	// above.
+	if h.repo != nil {
+		hasResult, err := h.repo.HasResultForRun(ctx, runID)
+		if err != nil {
+			// Fail closed. Discarding is irreversible, so an unknown answer
+			// must not be read as "no result".
+			writeError(w, http.StatusInternalServerError, "failed to check whether this run saved a discovery: "+err.Error())
+			return
+		}
+		if hasResult {
+			writeError(w, http.StatusConflict,
+				"a discovery saved by this run is still stored and would be orphaned — delete that discovery instead of discarding the run")
+			return
+		}
+	}
+
 	if err := h.runRepo.Discard(ctx, runID); err != nil {
 		if errors.Is(err, database.ErrNotDiscardable) {
 			// The checks above passed, so the run changed under us — a resume

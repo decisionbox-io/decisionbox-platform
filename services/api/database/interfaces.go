@@ -41,6 +41,13 @@ type DiscoveryRepo interface {
 	GetLatest(ctx context.Context, projectID string) (*models.DiscoveryResult, error)
 	GetByDate(ctx context.Context, projectID string, date time.Time) (*models.DiscoveryResult, error)
 	List(ctx context.Context, projectID string, limit int) ([]*models.DiscoveryResult, error)
+	// HasResultForRun reports whether a discovery is stored for this run.
+	//
+	// Needed because a run's own discovery_id is not a reliable answer:
+	// BeginResume clears it, so a run that saved a partial result and was
+	// then resumed carries an empty pointer while the earlier discovery is
+	// still stored against its run_id.
+	HasResultForRun(ctx context.Context, runID string) (bool, error)
 }
 
 // RunRepo abstracts discovery run operations for handler unit testing.

@@ -616,6 +616,25 @@ func NewDiscoveryRepository(db *DB) *DiscoveryRepository {
 	return &DiscoveryRepository{col: db.Collection("discoveries")}
 }
 
+// HasResultForRun reports whether a discovery is stored against this run.
+//
+// The run document's own discovery_id cannot answer this. BeginResume clears
+// it, so a run that saved a partial result (an analysis failure, the outer
+// duration cap) and was then resumed has an empty pointer while the earlier
+// discovery is still here under its run_id — and a resume that fails before
+// saving a replacement leaves it that way. Asking the discoveries collection
+// is the only way to know whether discarding the run would orphan a result.
+func (r *DiscoveryRepository) HasResultForRun(ctx context.Context, runID string) (bool, error) {
+	if runID == "" {
+		return false, nil
+	}
+	n, err := r.col.CountDocuments(ctx, bson.M{"run_id": runID}, options.Count().SetLimit(1))
+	if err != nil {
+		return false, fmt.Errorf("count discoveries for run %s: %w", runID, err)
+	}
+	return n > 0, nil
+}
+
 func (r *DiscoveryRepository) GetByID(ctx context.Context, id string) (*models.DiscoveryResult, error) {
 	oid, err := primitive.ObjectIDFromHex(id)
 	if err != nil {

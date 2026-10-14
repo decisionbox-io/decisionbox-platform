@@ -244,10 +244,27 @@ type mockDiscoveryRepo struct {
 	mu          sync.Mutex
 	discoveries []*models.DiscoveryResult
 
-	getErr     error
-	getLatErr  error
-	getDateErr error
-	listErr    error
+	getErr       error
+	getLatErr    error
+	getDateErr   error
+	listErr      error
+	hasResultErr error
+}
+
+// HasResultForRun mirrors the real repo: it asks the stored discoveries, not
+// the run's own pointer, because BeginResume clears that pointer.
+func (m *mockDiscoveryRepo) HasResultForRun(_ context.Context, runID string) (bool, error) {
+	if m.hasResultErr != nil {
+		return false, m.hasResultErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, d := range m.discoveries {
+		if d.RunID == runID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func newMockDiscoveryRepo() *mockDiscoveryRepo {

@@ -145,6 +145,7 @@ type resumeFixture struct {
 	h      *DiscoveriesHandler
 	runs   *mockRunRepo
 	projs  *mockProjectRepo
+	discs  *mockDiscoveryRepo
 	cps    *mockCheckpointRepo
 	runner *recordingRunner
 }
@@ -165,9 +166,10 @@ func newResumeFixture(t *testing.T) *resumeFixture {
 
 	cps := &mockCheckpointRepo{prefixLen: 42}
 	rr := &recordingRunner{}
-	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projs, runs, nil, nil, nil, rr).
+	discs := newMockDiscoveryRepo()
+	h := NewDiscoveriesHandler(discs, projs, runs, nil, nil, nil, rr).
 		WithCheckpoints(cps)
-	return &resumeFixture{h: h, runs: runs, projs: projs, cps: cps, runner: rr}
+	return &resumeFixture{h: h, runs: runs, projs: projs, discs: discs, cps: cps, runner: rr}
 }
 
 func (f *resumeFixture) post(runID string) *httptest.ResponseRecorder {
@@ -1508,5 +1510,54 @@ func TestDiscardRun_RefusesWithNoPrincipal(t *testing.T) {
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403; body = %s", w.Code, w.Body.String())
+	}
+}
+
+// The run's own discovery_id is not proof there is no result. BeginResume
+// CLEARS it, so a run that saved a partial discovery and was then resumed
+// carries an empty pointer while the earlier discovery is still stored under
+// its run_id — and a resume that fails before saving a replacement leaves it
+// there. Discarding then orphans that result: the run vanishes from the
+// project's status while its partial discovery can still be the latest one.
+func TestDiscardRun_RefusesWhenAStoredDiscoveryWouldBeOrphaned(t *testing.T) {
+	f := newResumeFixture(t)
+	f.runs.runs["run-1"].Status = "failed"
+	// The pointer is empty, exactly as BeginResume left it...
+	f.runs.runs["run-1"].DiscoveryID = ""
+	// ...while the discovery it saved is still stored.
+	f.discs.add(&models.DiscoveryResult{ID: "disc-1", ProjectID: "p1", RunID: "run-1"})
+
+	w := httptest.NewRecorder()
+	f.h.DiscardRun(w, discardReq("run-1"))
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body = %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "would be orphaned") {
+		t.Errorf("body = %s, want it to say the discovery would be orphaned", w.Body.String())
+	}
+	if f.runs.runs["run-1"].DiscardedAt != nil {
+		t.Error("the run was discarded despite a stored discovery")
+	}
+	if len(f.cps.deleted) != 0 {
+		t.Errorf("a refused discard deleted checkpoints: %v", f.cps.deleted)
+	}
+}
+
+// Fail closed: discarding cannot be undone, so an unknown answer must not be
+// read as "no result".
+func TestDiscardRun_RefusesWhenTheResultCheckFails(t *testing.T) {
+	f := newResumeFixture(t)
+	f.runs.runs["run-1"].Status = "failed"
+	f.discs.hasResultErr = errors.New("mongo down")
+
+	w := httptest.NewRecorder()
+	f.h.DiscardRun(w, discardReq("run-1"))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body = %s", w.Code, w.Body.String())
+	}
+	if f.runs.runs["run-1"].DiscardedAt != nil {
+		t.Error("the run was discarded despite an unknown result state")
 	}
 }
