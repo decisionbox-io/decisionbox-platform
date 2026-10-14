@@ -1770,6 +1770,19 @@ export const api = {
     request<{ status: string; run_id: string; attempt: number }>(`/api/v1/runs/${runId}/resume`, {
       method: 'POST',
     }),
+  // discardRun throws away a terminal run an operator is done with: it stops
+  // representing the project (the status endpoint answers with the newest run
+  // whatever its status, so a failed one stayed pinned there) and can no
+  // longer be resumed. The run, its error and its step history remain
+  // readable — this is not a delete.
+  //
+  // 409 is a real answer: the run is still active (cancel it first), it
+  // produced a discovery, or someone discarded it already. Surface the
+  // server's message verbatim.
+  discardRun: (runId: string) =>
+    request<{ status: string; run_id: string }>(`/api/v1/runs/${runId}/discard`, {
+      method: 'POST',
+    }),
   // getDebugLogs returns the lean projection of `discovery_debug_logs` the
   // agent writes for a run. The "since" arg is the ISO timestamp of the
   // newest entry already rendered — the UI passes it on each poll so the

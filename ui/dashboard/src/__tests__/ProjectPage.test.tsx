@@ -32,6 +32,7 @@ const getProjectStatus = jest.fn();
 const listProjectQuestions = jest.fn();
 const listRunSteps = jest.fn();
 const resumeRun = jest.fn();
+const discardRun = jest.fn();
 const getRun = jest.fn();
 
 jest.mock('@/lib/api', () => ({
@@ -58,6 +59,7 @@ jest.mock('@/lib/api', () => ({
     estimateCost: jest.fn(),
     cancelRun: jest.fn(),
     resumeRun: (...a: unknown[]) => resumeRun(...a),
+    discardRun: (...a: unknown[]) => discardRun(...a),
   },
 }));
 
@@ -499,5 +501,78 @@ describe('Dismissing a finished run that is later resumed (#438)', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+});
+
+// Discard is the control an operator had no way to exercise: a failed run is
+// resumable AND is what the project page shows, so one they were done with
+// stayed pinned there. Cancel refuses anything inactive and Dismiss is local
+// to one tab, so neither served it.
+describe('Discarding a terminal run (#438)', () => {
+  it.each([
+    ['a failed run', { status: 'failed', last_checkpoint_step: 4 }],
+    ['a failed run that never checkpointed', { status: 'failed', last_checkpoint_step: 0 }],
+    ['a cancelled run', { status: 'cancelled' }],
+  ])('offers Discard for %s', async (_name, partial) => {
+    getProjectStatus.mockResolvedValue(status(makeRun(partial as Partial<DiscoveryRunStatus>)));
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('Discard')).toBeInTheDocument());
+  });
+
+  it.each([
+    ['a completed run — its discovery is the project history, and the server refuses it', { status: 'completed' }],
+    ['a run still in flight — cancel is the verb for that', { status: 'running' }],
+  ])('withholds Discard for %s', async (_name, partial) => {
+    getProjectStatus.mockResolvedValue(status(makeRun(partial as Partial<DiscoveryRunStatus>)));
+
+    renderPage();
+    await waitFor(() => expect(getProjectStatus).toHaveBeenCalled());
+    await flush();
+
+    expect(screen.queryByText('Discard')).not.toBeInTheDocument();
+  });
+
+  // Unlike Dismiss, Discard cannot be undone — it throws away the checkpoints
+  // the run could have been resumed from. One stray click must not do that.
+  it('needs a second click to confirm, and does not call the API on the first', async () => {
+    getProjectStatus.mockResolvedValue(
+      status(makeRun({ status: 'failed', last_checkpoint_step: 4 })),
+    );
+    discardRun.mockResolvedValue({ status: 'discarded', run_id: 'r1' });
+
+    renderPage();
+    const btn = await waitFor(() => screen.getByText('Discard'));
+
+    await act(async () => { btn.click(); });
+    await flush();
+    expect(discardRun).not.toHaveBeenCalled();
+    expect(screen.getByText('Confirm discard')).toBeInTheDocument();
+
+    const confirm = screen.getByText('Confirm discard');
+    await act(async () => { confirm.click(); });
+    await flush();
+    expect(discardRun).toHaveBeenCalledWith('r1');
+  });
+
+  // A refusal is a real answer — the run went active again, or another tab
+  // got there first — so the panel must not be torn down on one.
+  it('keeps the run on screen when the server refuses', async () => {
+    getProjectStatus.mockResolvedValue(
+      status(makeRun({ status: 'failed', last_checkpoint_step: 4 })),
+    );
+    discardRun.mockRejectedValue(new Error('run is still active (status: running) — cancel it first, then discard it'));
+
+    renderPage();
+    const btn = await waitFor(() => screen.getByText('Discard'));
+    await act(async () => { btn.click(); });
+    await flush();
+    const confirm = screen.getByText('Confirm discard');
+    await act(async () => { confirm.click(); });
+    await flush();
+
+    expect(discardRun).toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByText('Discard')).toBeInTheDocument());
   });
 });

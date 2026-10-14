@@ -510,6 +510,29 @@ export default function ProjectPage() {
               // nothing to it.
             }
           }
+        }} onDiscard={async () => {
+          try {
+            await api.discardRun(run.id);
+            notifications.show({
+              title: 'Discarded',
+              message: 'This run no longer represents the project and cannot be resumed. Its history stays readable.',
+              color: 'gray',
+            });
+            // Drop the local run and re-read rather than guessing what takes
+            // its place: the server decides which run (if any) represents the
+            // project now, and it is no longer this one. Clearing the
+            // dismissal too, so the replacement is not hidden by a stale one.
+            setDismissedRunId(null);
+            setRun(null);
+            void pollStatus();
+          } catch (e: unknown) {
+            // 409 is a real answer here — the run went active again, or
+            // another tab discarded it first — so show what the server said
+            // and re-read, because the refusal means it knows something this
+            // tab does not.
+            notifications.show({ title: 'Cannot discard', message: (e as Error).message, color: 'red' });
+            void pollStatus();
+          }
         }} />
       )}
 
@@ -666,7 +689,7 @@ function DiscoveryRunCard({ discovery: d, projectId }: { discovery: DiscoveryRes
 
 /* ========== Live Run Panel ========== */
 
-function LiveRunPanel({ run, onCancel, onResume }: { run: DiscoveryRunStatus; onCancel: () => void; onResume: () => void }) {
+function LiveRunPanel({ run, onCancel, onResume, onDiscard }: { run: DiscoveryRunStatus; onCancel: () => void; onResume: () => void; onDiscard: () => void }) {
   // Per-step rows are no longer embedded in the run doc — they live in
   // discovery_run_steps and are streamed via api.listRunSteps with an
   // opaque ObjectID cursor (the last `id` we have). We poll while the
@@ -792,6 +815,18 @@ function LiveRunPanel({ run, onCancel, onResume }: { run: DiscoveryRunStatus; on
   // before its first checkpoint can only be started over.
   const canResume = run.status === 'failed' && (run.last_checkpoint_step ?? 0) > 0;
 
+  // Discard is offered for a terminal run that produced nothing. A completed
+  // run is excluded because its discovery is the project's history — the
+  // server refuses that too, and offering a button that 409s is worse than
+  // offering none.
+  //
+  // Two clicks rather than one: unlike Dismiss, which is local to this tab,
+  // Discard throws away the checkpoints the run could have been resumed from
+  // and nothing undoes it. There is no confirm-dialog pattern in this
+  // dashboard, so the button carries its own.
+  const canDiscard = isDone && (run.status === 'failed' || run.status === 'cancelled');
+  const [discardArmed, setDiscardArmed] = useState(false);
+
   return (
     <div style={{
       background: 'var(--db-bg-white)',
@@ -846,6 +881,21 @@ function LiveRunPanel({ run, onCancel, onResume }: { run: DiscoveryRunStatus; on
               </GhostButton>
             )}
             {isDone && <GhostButton onClick={onCancel} small>Dismiss</GhostButton>}
+            {canDiscard && (
+              <GhostButton
+                small
+                onClick={() => {
+                  if (!discardArmed) {
+                    setDiscardArmed(true);
+                    return;
+                  }
+                  setDiscardArmed(false);
+                  onDiscard();
+                }}
+              >
+                {discardArmed ? 'Confirm discard' : 'Discard'}
+              </GhostButton>
+            )}
           </div>
         </div>
 
