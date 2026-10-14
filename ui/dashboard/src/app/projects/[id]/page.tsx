@@ -156,7 +156,30 @@ export default function ProjectPage() {
       //     live run, so a wrong clear does not heal. A terminal run is
       //     cleared, which is the discarded-panel case this branch exists for.
       if (status && !status.run) {
-        setRun((prev) => (prev && (prev.status === 'running' || prev.status === 'pending') ? prev : null));
+        const cached = run;
+        const cachedIsLive = !!cached && (cached.status === 'running' || cached.status === 'pending');
+        if (!cachedIsLive) {
+          setRun(null);
+          return;
+        }
+        // We believe a run is live and the project reports none. Keeping it
+        // unconditionally was the safe half of the trade, but it strands the
+        // panel: a run the startup sweep failed and another tab then
+        // discarded is legitimately absent here, while this tab's cache still
+        // says `running` — so progress and Cancel stay on screen for ever and
+        // `isRunning` keeps the trigger disabled. Ask about that run directly
+        // rather than guessing from the project-level answer.
+        try {
+          const fresh = await api.getRun(cached.id);
+          if (runEpoch.current !== epoch) return;
+          // Gone, or discarded elsewhere: the panel goes. Otherwise adopt
+          // what the server says, terminal or not — that is the truth, and a
+          // terminal panel is a normal thing to show.
+          setRun(!fresh || fresh.discarded_at ? null : fresh);
+        } catch {
+          // No information, so no decision: keep what is on screen. The next
+          // poll asks again.
+        }
         return;
       }
       if (status?.run) {

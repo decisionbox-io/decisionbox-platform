@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1322,6 +1323,18 @@ func TestResumeRun_AStoodDownResumePreservesTheReservationOwnersEndTime(t *testi
 
 // --- Discard ---------------------------------------------------------------
 
+// discardReq builds a discard request carrying an authorised principal.
+// DiscardRun checks the project ACL itself — no /api/v1/runs/ route passes
+// through ProjectACLMiddleware, which is mounted on the /api/v1/projects/
+// prefix — so without a principal every call is a 403.
+func discardReq(runID string) *http.Request {
+	req := httptest.NewRequest("POST", "/api/v1/runs/"+runID+"/discard", nil)
+	req.SetPathValue("runId", runID)
+	return req.WithContext(auth.WithUser(req.Context(), &auth.UserPrincipal{
+		Sub: "tester", OrgID: "default", Roles: []string{"admin"},
+	}))
+}
+
 // A failed run is resumable, and until its checkpoints expire it is also what
 // the project page shows. An operator who is not going to resume it had no way
 // to say so: cancel refuses anything inactive, and the dashboard's dismiss is
@@ -1332,8 +1345,7 @@ func TestDiscardRun_ClearsResumabilityAndKeepsTheOutcome(t *testing.T) {
 	f.runs.runs["run-1"].Error = "agent was killed by SIGKILL (exit status 137)"
 	f.runs.runs["run-1"].LastCheckpointStep = 4
 
-	req := httptest.NewRequest("POST", "/api/v1/runs/run-1/discard", nil)
-	req.SetPathValue("runId", "run-1")
+	req := discardReq("run-1")
 	w := httptest.NewRecorder()
 	f.h.DiscardRun(w, req)
 
@@ -1416,8 +1428,7 @@ func TestDiscardRun_Refusals(t *testing.T) {
 			f := newResumeFixture(t)
 			tc.setup(f)
 
-			req := httptest.NewRequest("POST", "/api/v1/runs/run-1/discard", nil)
-			req.SetPathValue("runId", "run-1")
+			req := discardReq("run-1")
 			w := httptest.NewRecorder()
 			f.h.DiscardRun(w, req)
 
@@ -1443,8 +1454,7 @@ func TestDiscardRun_SurvivesACheckpointPurgeFailure(t *testing.T) {
 	f.runs.runs["run-1"].Status = "failed"
 	f.cps.deleteErr = errors.New("mongo down")
 
-	req := httptest.NewRequest("POST", "/api/v1/runs/run-1/discard", nil)
-	req.SetPathValue("runId", "run-1")
+	req := discardReq("run-1")
 	w := httptest.NewRecorder()
 	f.h.DiscardRun(w, req)
 
@@ -1453,5 +1463,50 @@ func TestDiscardRun_SurvivesACheckpointPurgeFailure(t *testing.T) {
 	}
 	if f.runs.runs["run-1"].DiscardedAt == nil {
 		t.Error("the run was not discarded despite the purge failing")
+	}
+}
+
+// The gap this check exists for: a custom role that resolves to the admin
+// TIER clears withRole(admin), but a project's AllowedRoles can still exclude
+// it — and no /api/v1/runs/ route passes through ProjectACLMiddleware, which
+// is mounted on the /api/v1/projects/ prefix. Without this, posting a known
+// run id irreversibly discarded a run in a project the caller cannot open.
+func TestDiscardRun_RefusesAPrincipalTheProjectExcludes(t *testing.T) {
+	f := newResumeFixture(t)
+	f.runs.runs["run-1"].Status = "failed"
+	f.projs.projects["p1"].AllowedRoles = []string{"analyst"}
+
+	req := httptest.NewRequest("POST", "/api/v1/runs/run-1/discard", nil)
+	req.SetPathValue("runId", "run-1")
+	req = req.WithContext(auth.WithUser(req.Context(), &auth.UserPrincipal{
+		Sub: "outsider", OrgID: "default", Roles: []string{"auditor"},
+	}))
+	w := httptest.NewRecorder()
+	f.h.DiscardRun(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body = %s", w.Code, w.Body.String())
+	}
+	if f.runs.runs["run-1"].DiscardedAt != nil {
+		t.Error("the run was discarded despite the project excluding the caller")
+	}
+	if len(f.cps.deleted) != 0 {
+		t.Errorf("a refused discard deleted checkpoints: %v", f.cps.deleted)
+	}
+}
+
+// And with no principal at all, which is what a route mounted outside the
+// auth chain would look like.
+func TestDiscardRun_RefusesWithNoPrincipal(t *testing.T) {
+	f := newResumeFixture(t)
+	f.runs.runs["run-1"].Status = "failed"
+
+	req := httptest.NewRequest("POST", "/api/v1/runs/run-1/discard", nil)
+	req.SetPathValue("runId", "run-1")
+	w := httptest.NewRecorder()
+	f.h.DiscardRun(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body = %s", w.Code, w.Body.String())
 	}
 }

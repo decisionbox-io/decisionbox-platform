@@ -674,8 +674,10 @@ it('does not clear a live run when an empty status response arrives', async () =
     await act(async () => { await jest.advanceTimersByTimeAsync(0); });
     await waitFor(() => expect(screen.getByText('25%')).toBeInTheDocument());
 
-    // The stale, pre-trigger answer.
+    // The project reports no run. The run itself is still live, which is
+    // what the reconcile asks about — so the panel stays.
     getProjectStatus.mockResolvedValue({ project_id: 'p1', run: null, last_discovery: null });
+    getRun.mockResolvedValue(makeRun({ status: 'running', progress: 25 }));
     await act(async () => { await jest.advanceTimersByTimeAsync(2000); });
 
     // Still there, still cancellable, and still polling.
@@ -722,6 +724,52 @@ it('ignores a status response that was issued before run state changed', async (
     await act(async () => { release(); await jest.advanceTimersByTimeAsync(0); });
 
     expect(screen.getByText('Discovery cancelled')).toBeInTheDocument();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+// The cost of never clearing a live run, now paid off. A run the startup
+// sweep failed and another tab then discarded is legitimately absent from the
+// project-level answer, while this tab's cache still says `running` — so the
+// panel used to sit there for ever with progress and Cancel, and isRunning
+// kept the trigger disabled. The reconcile asks about that run directly.
+it('clears a cached live run once the server says it was discarded', async () => {
+  jest.useFakeTimers();
+  try {
+    getProjectStatus.mockResolvedValueOnce(status(makeRun({ status: 'running', progress: 30 })));
+    renderPage();
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    await waitFor(() => expect(screen.getByText('Cancel')).toBeInTheDocument());
+
+    // The project reports none, and the run itself turns out to be discarded.
+    getProjectStatus.mockResolvedValue({ project_id: 'p1', run: null, last_discovery: null });
+    getRun.mockResolvedValue(makeRun({
+      status: 'failed', discarded_at: '2026-10-14T18:00:00Z', last_checkpoint_step: 0,
+    }));
+    await act(async () => { await jest.advanceTimersByTimeAsync(2000); });
+
+    await waitFor(() => expect(screen.queryByText('Cancel')).not.toBeInTheDocument());
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+// A failed lookup is not evidence. Keep the panel and ask again next poll —
+// clearing on a network blip is the regression this whole area keeps circling.
+it('keeps a cached live run when the confirming lookup fails', async () => {
+  jest.useFakeTimers();
+  try {
+    getProjectStatus.mockResolvedValueOnce(status(makeRun({ status: 'running', progress: 30 })));
+    renderPage();
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    await waitFor(() => expect(screen.getByText('Cancel')).toBeInTheDocument());
+
+    getProjectStatus.mockResolvedValue({ project_id: 'p1', run: null, last_discovery: null });
+    getRun.mockRejectedValue(new Error('network'));
+    await act(async () => { await jest.advanceTimersByTimeAsync(2000); });
+
+    expect(screen.getByText('Cancel')).toBeInTheDocument();
   } finally {
     jest.useRealTimers();
   }

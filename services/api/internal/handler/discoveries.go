@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	"context"
 	"errors"
 	"fmt"
@@ -1030,6 +1031,36 @@ func (h *DiscoveriesHandler) DiscardRun(w http.ResponseWriter, r *http.Request) 
 	}
 	if run == nil {
 		writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+
+	// The project ACL, checked here because nothing else checks it for this
+	// route. ProjectACLMiddleware is mounted on the "/api/v1/projects/"
+	// prefix, so no /api/v1/runs/{runId} route passes through it — a custom
+	// role that resolves to the admin TIER but is excluded by a project's
+	// AllowedRoles clears withRole(admin) and would otherwise reach this.
+	//
+	// Scoped to this handler on purpose. The same gap covers the run routes
+	// that already existed, including cancel, and closing it for all of them
+	// is a security change that belongs outside a feature PR — flagged
+	// separately. What this does is avoid adding one more destructive route
+	// to the list.
+	//
+	// Safe where auth is disabled: NoAuthProvider injects an admin principal,
+	// and CanAccessProject admits admin outright.
+	proj, err := h.projectRepo.GetByID(ctx, run.ProjectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to look up the run's project: "+err.Error())
+		return
+	}
+	if proj == nil {
+		// The run names a project that is gone. Nothing to authorise against,
+		// and nothing an operator can do about it here.
+		writeError(w, http.StatusNotFound, "the run's project no longer exists")
+		return
+	}
+	if principal, ok := auth.FromContext(ctx); !ok || !auth.CanAccessProject(principal, proj.OrgID, proj.AllowedRoles) {
+		writeError(w, http.StatusForbidden, "you do not have access to this run's project")
 		return
 	}
 
