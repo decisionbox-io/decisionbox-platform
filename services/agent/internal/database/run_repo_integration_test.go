@@ -1007,3 +1007,44 @@ func TestRunRepository_DiscardedRunRefusesEveryResurrectingWrite(t *testing.T) {
 		}
 	})
 }
+
+// The orphan sweep's keep set. Discard purges the checkpoints, but a
+// surviving agent's SaveStep can land a row afterwards — the marker is
+// fenced, the row is not — and this reader enumerates what to EXCLUDE, by
+// status, where a discarded run's status is `failed`: the one resumable
+// state. One residual row was therefore enough to keep a discarded run's
+// per-run Qdrant collection alive until the checkpoint TTL expired it.
+func TestRunRepository_ResumableOrActiveIDs_ExcludesDiscarded(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewRunRepository(db)
+
+	keep := seedRunDoc(t, ctx, db, bson.M{"status": models.RunStatusFailed})
+	discarded := seedRunDoc(t, ctx, db, bson.M{
+		"status": models.RunStatusFailed, "discarded_at": time.Now(),
+	})
+	running := seedRunDoc(t, ctx, db, bson.M{"status": models.RunStatusRunning})
+	cancelled := seedRunDoc(t, ctx, db, bson.M{"status": models.RunStatusCancelled})
+
+	got, err := repo.ResumableOrActiveIDs(ctx, []string{keep, discarded, running, cancelled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := map[string]bool{}
+	for _, id := range got {
+		in[id] = true
+	}
+	if !in[keep] {
+		t.Error("a failed run that can still be resumed must keep its index")
+	}
+	if !in[running] {
+		t.Error("a running run must keep its index — dropping a live run's index under it is the failure this polarity exists to avoid")
+	}
+	if in[cancelled] {
+		t.Error("a cancelled run was kept")
+	}
+	if in[discarded] {
+		t.Error("a DISCARDED run was kept; it can never be resumed, so its index can never be wanted again")
+	}
+}

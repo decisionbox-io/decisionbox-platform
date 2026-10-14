@@ -567,8 +567,20 @@ func (h *DiscoveriesHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get the latest run (for live status)
-	latestRun, _ := h.runRepo.GetLatestByProject(r.Context(), projectID)
+	// Get the latest run (for live status).
+	//
+	// The error is NOT swallowed. It used to be, and a 200 with no `run` then
+	// meant two different things: this project has no run, or the run query
+	// failed. The dashboard now clears its panel on the first — it has to, or
+	// a discarded run's panel never goes away — so conflating them let a
+	// transient Mongo error wipe a LIVE run off the page, and a terminal
+	// panel is not polled, so Progress and Cancel would not come back when
+	// the database did.
+	latestRun, err := h.runRepo.GetLatestByProject(r.Context(), projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read the project's current run: "+err.Error())
+		return
+	}
 
 	status := map[string]interface{}{
 		"project_id": projectID,

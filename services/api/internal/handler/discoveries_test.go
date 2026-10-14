@@ -1068,3 +1068,52 @@ func TestDiscoveriesHandler_CancelRun_PendingStatus_MockRepo(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (pending runs are active)", w.Code)
 	}
 }
+
+// A 200 with no `run` used to mean two different things: this project has no
+// run, or the run query failed — the error was discarded. That was survivable
+// while the dashboard ignored the empty case, and stopped being survivable
+// the moment it started clearing its panel on it (it has to, or a discarded
+// run's panel never goes away). A transient Mongo error would then wipe a
+// LIVE run off the page, and a terminal panel is not polled, so Progress and
+// Cancel would not come back when the database did.
+func TestDiscoveriesHandler_GetStatus_RunQueryFailureIsNotReportedAsNoRun(t *testing.T) {
+	projRepo := newMockProjectRepo()
+	runRepo := newMockRunRepo()
+	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projRepo, runRepo, nil, nil, nil, newMockRunner())
+
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	if err := projRepo.Create(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
+	runRepo.getLatestErr = errors.New("mongo: connection refused")
+
+	req := httptest.NewRequest("GET", "/api/v1/projects/"+p.ID+"/status", nil)
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+	h.GetStatus(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 — a failed run query must not read as an absent run; body = %s", w.Code, w.Body.String())
+	}
+}
+
+// The other half: a project that genuinely has no run must still answer 200
+// with no run, because that is the response the dashboard clears on.
+func TestDiscoveriesHandler_GetStatus_NoRunsIsStillTwoHundred(t *testing.T) {
+	projRepo := newMockProjectRepo()
+	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projRepo, newMockRunRepo(), nil, nil, nil, newMockRunner())
+
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	if err := projRepo.Create(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/projects/"+p.ID+"/status", nil)
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+	h.GetStatus(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
+	}
+}

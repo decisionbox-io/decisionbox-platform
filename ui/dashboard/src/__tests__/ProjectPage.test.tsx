@@ -653,4 +653,28 @@ describe('Discard: runs with a result, and a project with none (#438)', () => {
     await waitFor(() => expect(screen.queryByText(/Resume from step 4/)).not.toBeInTheDocument());
     expect(screen.queryByText('Discard')).not.toBeInTheDocument();
   });
+
+// After another tab discards the run, this tab's resume-refusal path
+// refreshes through getRun and gets the ARCHIVED document back: still
+// `failed`, still without a discovery, so the only thing distinguishing it is
+// discarded_at. Without checking it, the button reappears offering a
+// guaranteed 409.
+it('withholds Discard from a run that is already discarded', async () => {
+  getProjectStatus.mockResolvedValue(
+    status(makeRun({
+      status: 'failed',
+      last_checkpoint_step: 0,
+      discarded_at: '2026-10-14T15:33:45Z',
+    })),
+  );
+
+  renderPage();
+  await waitFor(() => expect(getProjectStatus).toHaveBeenCalled());
+  await flush();
+
+  expect(screen.queryByText('Discard')).not.toBeInTheDocument();
+  // Nor Resume: discard unsets the checkpoint marker, so there is nothing to
+  // resume from either.
+  expect(screen.queryByText(/Resume from step/)).not.toBeInTheDocument();
+});
 });

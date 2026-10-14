@@ -1008,6 +1008,11 @@ export interface DiscoveryRunStatus {
   // is why "can this be discarded" cannot be answered from status alone.
   // Omitted by the API (omitempty) until there is a result.
   discovery_id?: string;
+  // Set once an operator has discarded the run. The status stays `failed` or
+  // `cancelled`, so this is the only way to tell an archived run apart — and
+  // a getRun refresh can still return one, which is how a tab came to keep
+  // offering Discard on a run another tab had already discarded.
+  discarded_at?: string;
   phase: string;
   phase_detail: string;
   progress: number; // 0-100

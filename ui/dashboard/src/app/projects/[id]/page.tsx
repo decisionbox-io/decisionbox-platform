@@ -841,7 +841,11 @@ function LiveRunPanel({ run, onCancel, onResume, onDiscard }: { run: DiscoveryRu
   // discovery on a run that saved a partial result before failing, and
   // discarding that would orphan it. The server refuses it either way; this
   // keeps the button from offering a guaranteed 409.
-  const canDiscard = isDone && !run.discovery_id
+  // !run.discarded_at as well: after another tab discards this run, the
+  // resume-refusal path refreshes through getRun and gets the archived
+  // document back — still `failed`, still without a discovery — so without
+  // this the button reappears offering a guaranteed 409.
+  const canDiscard = isDone && !run.discovery_id && !run.discarded_at
     && (run.status === 'failed' || run.status === 'cancelled');
   const [discardOpen, { open: openDiscard, close: closeDiscard }] = useDisclosure(false);
 

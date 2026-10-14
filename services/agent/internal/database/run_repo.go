@@ -637,6 +637,14 @@ func (r *RunRepository) ResumableOrActiveIDs(ctx context.Context, ids []string) 
 			models.RunStatusCancelled,
 			models.RunStatusCompleted,
 		}},
+		// A discarded run meets the same certain-to-exclude test as those two
+		// — it can never want an index again, because it can never be
+		// resumed. It needs saying separately because its STATUS is `failed`,
+		// the one resumable state. Discard purges the checkpoints, but a
+		// surviving agent's SaveStep can land a row afterwards: the marker is
+		// fenced, the row is not, and one residual row was enough to keep a
+		// discarded run's collection alive until the checkpoint TTL.
+		"discarded_at": nil,
 	}, options.Find().SetProjection(bson.M{"_id": 1}))
 	if err != nil {
 		return nil, fmt.Errorf("list resumable or active runs: %w", err)
