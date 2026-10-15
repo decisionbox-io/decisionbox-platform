@@ -744,20 +744,34 @@ func (r *RunRepository) FailAttempt(ctx context.Context, runID string, attempt i
 		"_id":    oid,
 		"status": bson.M{"$in": []string{"pending", "running"}},
 	}
-	switch {
-	case attempt == 1:
-		// A legacy run carries no attempt field; it can only be its first.
-		filter["attempt"] = bson.M{"$in": []any{1, nil}}
-	case attempt > 1:
-		// Resumed attempts always have the field — BeginResume writes it.
-		filter["attempt"] = attempt
-	}
+	attemptFence(filter, attempt)
 
 	res, err := r.col.UpdateOne(ctx, filter, update)
 	if err != nil {
 		return false, err
 	}
 	return res.MatchedCount > 0, nil
+}
+
+// attemptFence narrows a run filter to ONE attempt, so a write decided on the
+// strength of what was read stops applying once the run has moved on.
+//
+// Shared rather than copied because the legacy case is the subtle half and
+// two copies of it would drift: a run created before the attempt counter
+// existed carries no attempt field at all, so "the first attempt" has to mean
+// the field being 1, 0 or absent. BeginResume stamps a real number from then
+// on — and stamps 2 for such a run's first resume — so any fence written here
+// excludes every resumed attempt, which is the point.
+func attemptFence(filter bson.M, attempt int) {
+	switch {
+	case attempt > 1:
+		// Resumed attempts always have the field — BeginResume writes it.
+		filter["attempt"] = attempt
+	default:
+		// 1, 0 and "not read at all" are the same run: the one nobody has
+		// resumed. Written as a set so the absent field matches too.
+		filter["attempt"] = bson.M{"$in": []any{0, 1, nil}}
+	}
 }
 
 // Cancel marks a run as cancelled.
@@ -835,24 +849,33 @@ var ErrNotDiscardable = errors.New("run is not discardable")
 // exactly as discarding a completed run would. The status is not the test;
 // the presence of a result is.
 //
-// Atomic and idempotent-by-refusal: the filter carries the status and the
-// not-yet-discarded predicate, so a second discard, or one racing a resume,
-// matches nothing and returns ErrNotDiscardable rather than writing twice.
-func (r *RunRepository) Discard(ctx context.Context, runID string) error {
+// Atomic and idempotent-by-refusal: the filter carries the status, the
+// not-yet-discarded predicate and the attempt, so a second discard, or one
+// racing a resume, matches nothing and returns ErrNotDiscardable rather than
+// writing twice.
+//
+// attempt is the one the CALLER read and made its decision about, and the
+// status predicate alone is not a substitute for it. A run that is resumed
+// after the caller's read and fails again is `failed` once more, with empty
+// checkpoints belonging to an attempt nobody evaluated — and discarding it
+// then purges those, permanently, on the strength of a decision about an
+// earlier attempt. BeginResume fences the same way for the same reason.
+func (r *RunRepository) Discard(ctx context.Context, runID string, attempt int) error {
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {
 		return fmt.Errorf("invalid run ID: %w", err)
 	}
 	now := time.Now()
-	res, err := r.col.UpdateOne(ctx,
-		bson.M{
-			"_id":    oid,
-			"status": bson.M{"$in": []string{"failed", "cancelled"}},
-			// Missing, null and empty all mean "no result": the field is
-			// omitempty, and BeginResume clears it by writing "".
-			"discovery_id": bson.M{"$in": []any{nil, ""}},
-			"discarded_at": nil,
-		},
+	filter := bson.M{
+		"_id":    oid,
+		"status": bson.M{"$in": []string{"failed", "cancelled"}},
+		// Missing, null and empty all mean "no result": the field is
+		// omitempty, and BeginResume clears it by writing "".
+		"discovery_id": bson.M{"$in": []any{nil, ""}},
+		"discarded_at": nil,
+	}
+	attemptFence(filter, attempt)
+	res, err := r.col.UpdateOne(ctx, filter,
 		bson.M{
 			"$set": bson.M{"discarded_at": now, "updated_at": now},
 			// The dashboard gates Resume on last_checkpoint_step > 0, and the

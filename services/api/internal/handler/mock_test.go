@@ -249,11 +249,19 @@ type mockDiscoveryRepo struct {
 	getDateErr   error
 	listErr      error
 	hasResultErr error
+	// onHasResultForRun fires inside HasResultForRun — see there.
+	onHasResultForRun func()
 }
 
 // HasResultForRun mirrors the real repo: it asks the stored discoveries, not
 // the run's own pointer, because BeginResume clears that pointer.
 func (m *mockDiscoveryRepo) HasResultForRun(_ context.Context, runID string) (bool, error) {
+	// Fires where the real call sits: after the handler has read the run and
+	// before it writes. The seam a test uses to move the run under a decision
+	// that has already been made.
+	if m.onHasResultForRun != nil {
+		m.onHasResultForRun()
+	}
 	if m.hasResultErr != nil {
 		return false, m.hasResultErr
 	}
@@ -619,7 +627,7 @@ func (m *mockRunRepo) Cancel(_ context.Context, runID string) error {
 	return nil
 }
 
-func (m *mockRunRepo) Discard(_ context.Context, runID string) error {
+func (m *mockRunRepo) Discard(_ context.Context, runID string, attempt int) error {
 	if m.discardErr != nil {
 		return m.discardErr
 	}
@@ -629,8 +637,11 @@ func (m *mockRunRepo) Discard(_ context.Context, runID string) error {
 	if !ok {
 		return fmt.Errorf("run not found: %s", runID)
 	}
-	// Mirror the repo's filter: terminal, resultless, not already discarded.
-	if (r.Status != "failed" && r.Status != "cancelled") || r.DiscardedAt != nil {
+	// Mirror the repo's filter: terminal, resultless, not already discarded,
+	// and still on the attempt the caller read. attemptFence treats 0, 1 and
+	// an absent field as the same unresumed run, so this does too.
+	sameAttempt := r.Attempt == attempt || (attempt <= 1 && r.Attempt <= 1)
+	if (r.Status != "failed" && r.Status != "cancelled") || r.DiscardedAt != nil || !sameAttempt {
 		return database.ErrNotDiscardable
 	}
 	now := time.Now()

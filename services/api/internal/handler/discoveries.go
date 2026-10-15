@@ -1146,7 +1146,10 @@ func (h *DiscoveriesHandler) DiscardRun(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	if err := h.runRepo.Discard(ctx, runID); err != nil {
+	// run.Attempt, so every gate above applies to the attempt it was read
+	// from. A resume between that read and this write produces a NEW attempt
+	// with its own checkpoints, and this discard evaluated none of it.
+	if err := h.runRepo.Discard(ctx, runID, run.Attempt); err != nil {
 		if errors.Is(err, database.ErrNotDiscardable) {
 			// The checks above passed, so the run changed under us — a resume
 			// or a concurrent discard got there first.

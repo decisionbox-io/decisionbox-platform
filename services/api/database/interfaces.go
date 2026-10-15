@@ -59,7 +59,10 @@ type RunRepo interface {
 	BeginResume(ctx context.Context, runID string) (*models.DiscoveryRun, error)
 	GetByID(ctx context.Context, runID string) (*models.DiscoveryRun, error)
 	GetLatestByProject(ctx context.Context, projectID string) (*models.DiscoveryRun, error)
-	Discard(ctx context.Context, runID string) error
+	// Discard takes the attempt the caller read, so a resume racing the
+	// decision makes the write match nothing rather than apply to an
+	// attempt nobody evaluated.
+	Discard(ctx context.Context, runID string, attempt int) error
 	GetRunningByProject(ctx context.Context, projectID string) (*models.DiscoveryRun, error)
 	// GetOtherRunningByProject answers "is another run active for this
 	// project", excluding one. The resume path needs the exclusion: by the

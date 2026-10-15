@@ -829,7 +829,7 @@ func TestInteg_RunRepo_Discard(t *testing.T) {
 				t.Fatalf("seed marker: %v", err)
 			}
 
-			err := repo.Discard(ctx, id)
+			err := repo.Discard(ctx, id, 1)
 			if tc.wantErr {
 				if !errors.Is(err, ErrNotDiscardable) {
 					t.Fatalf("want ErrNotDiscardable, got %v", err)
@@ -863,6 +863,71 @@ func TestInteg_RunRepo_Discard(t *testing.T) {
 	}
 }
 
+// The attempt fence, against real Mongo, because the legacy half of it is
+// expressed as a set membership over a field that may not exist — the kind of
+// predicate a unit test with a map cannot get wrong and a query can.
+//
+// What it protects: the caller reads a failed run, decides to discard it, and
+// in the meantime someone resumes it. The new attempt fails too, so the
+// status predicate matches again — and the discard purges exploration
+// checkpoints belonging to an attempt nobody evaluated. Permanently: the
+// checkpoints are what made the run resumable.
+func TestInteg_RunRepo_Discard_IsFencedOnTheAttemptItWasDecidedOn(t *testing.T) {
+	ctx := context.Background()
+	repo := NewRunRepository(testDB)
+
+	t.Run("a stale attempt matches nothing", func(t *testing.T) {
+		dropRuns(t, ctx)
+		id := seedRunForProject(t, ctx, "proj-attempt", "failed", time.Now(), nil)
+		// Resumed and failed again, after the caller's read.
+		if _, err := testDB.Collection("discovery_runs").UpdateByID(ctx, mustOID(t, id),
+			bson.M{"$set": bson.M{"attempt": 2, "status": "failed", "last_checkpoint_step": 11}}); err != nil {
+			t.Fatalf("seed resume: %v", err)
+		}
+
+		if err := repo.Discard(ctx, id, 1); !errors.Is(err, ErrNotDiscardable) {
+			t.Fatalf("discard on attempt 1: want ErrNotDiscardable, got %v", err)
+		}
+		run, _ := repo.GetByID(ctx, id)
+		if run.DiscardedAt != nil {
+			t.Error("discarded an attempt the caller never evaluated")
+		}
+		if run.LastCheckpointStep != 11 {
+			t.Errorf("last_checkpoint_step = %d, want 11 — the newer attempt is still resumable", run.LastCheckpointStep)
+		}
+
+		// And the right attempt still works, so the fence is a fence and not
+		// a wall.
+		if err := repo.Discard(ctx, id, 2); err != nil {
+			t.Errorf("discard on attempt 2: %v", err)
+		}
+	})
+
+	t.Run("a run that predates the attempt counter is discardable", func(t *testing.T) {
+		dropRuns(t, ctx)
+		id := seedRunForProject(t, ctx, "proj-legacy", "failed", time.Now(), nil)
+		// No attempt field at all, which is what such a run looks like.
+		if _, err := testDB.Collection("discovery_runs").UpdateByID(ctx, mustOID(t, id),
+			bson.M{"$unset": bson.M{"attempt": ""}}); err != nil {
+			t.Fatalf("strip attempt: %v", err)
+		}
+		var raw bson.M
+		if err := testDB.Collection("discovery_runs").FindOne(ctx, bson.M{"_id": mustOID(t, id)}).Decode(&raw); err != nil {
+			t.Fatal(err)
+		}
+		if _, present := raw["attempt"]; present {
+			t.Fatal("precondition: the attempt field should be absent")
+		}
+
+		// 0 is what GetByID reports for such a run, and it has to mean the
+		// same unresumed run as 1 — otherwise the fence makes every
+		// pre-upgrade failed run permanently undiscardable.
+		if err := repo.Discard(ctx, id, 0); err != nil {
+			t.Errorf("discard with no attempt field: %v", err)
+		}
+	})
+}
+
 // Idempotent by refusal rather than by silently rewriting: a second discard,
 // or one racing a resume, must match nothing.
 func TestInteg_RunRepo_Discard_IsNotRepeatable(t *testing.T) {
@@ -871,11 +936,11 @@ func TestInteg_RunRepo_Discard_IsNotRepeatable(t *testing.T) {
 	repo := NewRunRepository(testDB)
 	id := seedRunForProject(t, ctx, "proj-discard", "failed", time.Now(), nil)
 
-	if err := repo.Discard(ctx, id); err != nil {
+	if err := repo.Discard(ctx, id, 1); err != nil {
 		t.Fatalf("first discard: %v", err)
 	}
 	first, _ := repo.GetByID(ctx, id)
-	if err := repo.Discard(ctx, id); !errors.Is(err, ErrNotDiscardable) {
+	if err := repo.Discard(ctx, id, 1); !errors.Is(err, ErrNotDiscardable) {
 		t.Fatalf("second discard: want ErrNotDiscardable, got %v", err)
 	}
 	second, _ := repo.GetByID(ctx, id)
@@ -906,7 +971,7 @@ func TestInteg_RunRepo_DiscardedRunStopsRepresentingTheProject(t *testing.T) {
 		t.Fatalf("precondition: latest = %v, want the newer failed run", latest)
 	}
 
-	if err := repo.Discard(ctx, newer); err != nil {
+	if err := repo.Discard(ctx, newer, 1); err != nil {
 		t.Fatalf("discard: %v", err)
 	}
 
@@ -951,7 +1016,7 @@ func TestInteg_RunRepo_DiscardedResumedRunDoesNotReturnViaTheResumePass(t *testi
 		t.Fatalf("precondition: want the resumed run to win on last_resumed_at, got %v", latest)
 	}
 
-	if err := repo.Discard(ctx, resumed); err != nil {
+	if err := repo.Discard(ctx, resumed, 2); err != nil {
 		t.Fatalf("discard: %v", err)
 	}
 	latest, _ = repo.GetLatestByProject(ctx, "proj-resumed")
@@ -979,7 +1044,7 @@ func TestInteg_RunRepo_BeginResumeRefusesADiscardedRun(t *testing.T) {
 		bson.M{"$set": bson.M{"status": "failed"}}); err != nil {
 		t.Fatalf("reset to failed: %v", err)
 	}
-	if err := repo.Discard(ctx, id); err != nil {
+	if err := repo.Discard(ctx, id, 2); err != nil {
 		t.Fatalf("discard: %v", err)
 	}
 	if _, err := repo.BeginResume(ctx, id); !errors.Is(err, ErrNoResumableRun) {
@@ -1005,7 +1070,7 @@ func TestInteg_RunRepo_Discard_RefusesARunThatSavedADiscovery(t *testing.T) {
 				t.Fatalf("seed discovery_id: %v", err)
 			}
 
-			if err := repo.Discard(ctx, id); !errors.Is(err, ErrNotDiscardable) {
+			if err := repo.Discard(ctx, id, 1); !errors.Is(err, ErrNotDiscardable) {
 				t.Fatalf("want ErrNotDiscardable, got %v", err)
 			}
 			run, _ := repo.GetByID(ctx, id)
@@ -1025,7 +1090,7 @@ func TestInteg_RunRepo_Discard_RefusesARunThatSavedADiscovery(t *testing.T) {
 			bson.M{"$set": bson.M{"discovery_id": ""}}); err != nil {
 			t.Fatalf("seed empty discovery_id: %v", err)
 		}
-		if err := repo.Discard(ctx, id); err != nil {
+		if err := repo.Discard(ctx, id, 1); err != nil {
 			t.Fatalf("discard: %v", err)
 		}
 	})
@@ -1050,7 +1115,7 @@ func TestInteg_RunRepo_ADiscardedRunStaysHiddenEvenIfItGoesActiveAgain(t *testin
 	older := seedRunForProject(t, ctx, "proj-zombie", "completed", base, &completedAt)
 	zombie := seedRunForProject(t, ctx, "proj-zombie", "failed", base.Add(1*time.Hour), nil)
 
-	if err := repo.Discard(ctx, zombie); err != nil {
+	if err := repo.Discard(ctx, zombie, 1); err != nil {
 		t.Fatalf("discard: %v", err)
 	}
 	// A surviving agent writing itself back to life, bypassing its own fences.
@@ -1088,7 +1153,7 @@ func TestInteg_RunRepo_ADiscardedRunDoesNotBlockNewRuns(t *testing.T) {
 	repo := NewRunRepository(testDB)
 
 	zombie := seedRunForProject(t, ctx, "proj-block", "failed", time.Now(), nil)
-	if err := repo.Discard(ctx, zombie); err != nil {
+	if err := repo.Discard(ctx, zombie, 1); err != nil {
 		t.Fatalf("discard: %v", err)
 	}
 	// The surviving agent writing itself back to life.

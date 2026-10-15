@@ -1544,6 +1544,47 @@ func TestDiscardRun_RefusesWhenAStoredDiscoveryWouldBeOrphaned(t *testing.T) {
 	}
 }
 
+// Every gate in DiscardRun is evaluated against the run as READ, and the
+// status predicate in the write is not a substitute for the attempt.
+//
+// A resume between the read and the write produces a new attempt with its
+// own exploration checkpoints. If that attempt then fails — a spawn failure,
+// an early crash — the run is `failed` again, so an unfenced discard matches
+// and purges checkpoints belonging to an attempt it never evaluated. The
+// operator who pressed Discard was looking at the previous attempt's failure,
+// and the loss is permanent: the checkpoints are what made the run resumable.
+func TestDiscardRun_RefusesWhenTheRunWasResumedUnderIt(t *testing.T) {
+	f := newResumeFixture(t)
+	f.runs.runs["run-1"].Status = "failed"
+	f.runs.runs["run-1"].Attempt = 1
+	f.runs.runs["run-1"].LastCheckpointStep = 4
+
+	// Resumed and failed again, in the window between the read and the write.
+	f.discs.onHasResultForRun = func() {
+		r := f.runs.runs["run-1"]
+		r.Attempt = 2
+		r.Status = "failed"
+		r.LastCheckpointStep = 11
+	}
+
+	w := httptest.NewRecorder()
+	f.h.DiscardRun(w, discardReq("run-1"))
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body = %s", w.Code, w.Body.String())
+	}
+	run := f.runs.runs["run-1"]
+	if run.DiscardedAt != nil {
+		t.Error("discarded an attempt the request never evaluated")
+	}
+	if run.LastCheckpointStep != 11 {
+		t.Errorf("last_checkpoint_step = %d, want 11 — the new attempt is still resumable", run.LastCheckpointStep)
+	}
+	if len(f.cps.deleted) != 0 {
+		t.Errorf("purged the checkpoints of a newer attempt: %v", f.cps.deleted)
+	}
+}
+
 // Fail closed: discarding cannot be undone, so an unknown answer must not be
 // read as "no result".
 func TestDiscardRun_RefusesWhenTheResultCheckFails(t *testing.T) {
