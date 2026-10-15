@@ -42,7 +42,7 @@ func TestFigures_QuantifierClaimTextIsRenderedToo(t *testing.T) {
 		},
 	}}
 
-	renderInsightFigures(ins)
+	usWriter.renderInsightFigures(ins)
 
 	got := ins[0].QuantifierClaims[0].Claim
 	if strings.Contains(got, "{{") {
@@ -87,8 +87,8 @@ func TestFigures_RepairedInsightCannotLendItsFigures(t *testing.T) {
 		}},
 	}}
 
-	attachRecommendationFigureVerdicts(recs, []models.Insight{stale})
-	renderRecommendationFigures(recs)
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{stale})
+	usWriter.renderRecommendationFigures(recs)
 
 	v := recs[0].FigureVerdicts[0]
 	if v.Status != models.FigureUndecidable {
@@ -125,8 +125,8 @@ func TestFigures_ReferenceCannotClaimFinerPrecisionThanItsSource(t *testing.T) {
 			Refs: []models.FigureRef{ref(source.ID, "f1")},
 		}},
 	}}
-	attachRecommendationFigureVerdicts(fine, []models.Insight{source})
-	renderRecommendationFigures(fine)
+	usWriter.attachRecommendationFigureVerdicts(fine, []models.Insight{source})
+	usWriter.renderRecommendationFigures(fine)
 	if v := fine[0].FigureVerdicts[0]; v.Status != models.FigureUndecidable {
 		t.Errorf("status = %q, want undecidable: this restates to ±0.5 a figure checked to ±500", v.Status)
 	}
@@ -143,7 +143,7 @@ func TestFigures_ReferenceCannotClaimFinerPrecisionThanItsSource(t *testing.T) {
 			Kind: models.FigureRefKind, Refs: []models.FigureRef{ref(source.ID, "f1")},
 		}},
 	}}
-	attachRecommendationFigureVerdicts(same, []models.Insight{source})
+	usWriter.attachRecommendationFigureVerdicts(same, []models.Insight{source})
 	if v := same[0].FigureVerdicts[0]; v.Status != models.FigureHolds {
 		t.Errorf("status = %q (%s), want holds at the source's own precision", v.Status, v.Reason)
 	}
@@ -161,7 +161,7 @@ func TestFigures_PercentEvaluationIsRecordedInTheFiguresOwnTerms(t *testing.T) {
 		Step: 3, Kind: models.FigureCell, Column: "share", Row: "band = A",
 	}
 	rows := []map[string]any{{"band": "A", "share": 0.1414}}
-	v := evaluateFigure(f, map[int]StepRows{3: {Rows: rows}})
+	v := usWriter.evaluateFigure(f, map[int]StepRows{3: {Rows: rows}})
 
 	if v.Status != models.FigureFails {
 		t.Fatalf("status = %q, want fails -- 14.15 is outside the ±0.005 it claims", v.Status)
@@ -192,8 +192,8 @@ func TestFigures_FilledInValueRefreshesTheVerdictDisplay(t *testing.T) {
 		}},
 	}}
 
-	attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
-	renderRecommendationFigures(recs)
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.renderRecommendationFigures(recs)
 
 	v := recs[0].FigureVerdicts[0]
 	if v.Display == "0" || v.Display == "" {
@@ -237,8 +237,8 @@ func TestFigures_RepairedInsightLendsNoNumberAtAll(t *testing.T) {
 		}},
 	}}
 
-	attachRecommendationFigureVerdicts(recs, []models.Insight{stale})
-	renderRecommendationFigures(recs)
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{stale})
+	usWriter.renderRecommendationFigures(recs)
 
 	if strings.Contains(recs[0].Description, "12") {
 		t.Fatalf("the repaired-away number reached a second document: %q", recs[0].Description)
@@ -268,16 +268,16 @@ func TestFigures_ToleranceIsCentredOnWhatWasPrinted(t *testing.T) {
 		ID: "f1", Value: 100490000, Unit: models.UnitCurrency, Scale: models.ScaleMillions, Decimals: 0,
 		Step: 1, Kind: models.FigureCell, Column: "net", Row: "region = A",
 	}
-	if got := renderFigure(f); got != "$100M" {
+	if got := usWriter.renderFigure(f); got != "$100M" {
 		t.Fatalf("renderFigure = %q, want $100M -- this test's premise is stale", got)
 	}
-	v := evaluateFigure(f, map[int]StepRows{1: {Rows: []map[string]any{{"region": "A", "net": 100510000.0}}}})
+	v := usWriter.evaluateFigure(f, map[int]StepRows{1: {Rows: []map[string]any{{"region": "A", "net": 100510000.0}}}})
 	if v.Status != models.FigureFails {
 		t.Errorf("status = %q, want fails: the prose says $100M and the evidence rounds to $101M", v.Status)
 	}
 
 	// And the honest case still holds: evidence inside the printed interval.
-	v = evaluateFigure(f, map[int]StepRows{1: {Rows: []map[string]any{{"region": "A", "net": 100010000.0}}}})
+	v = usWriter.evaluateFigure(f, map[int]StepRows{1: {Rows: []map[string]any{{"region": "A", "net": 100010000.0}}}})
 	if v.Status != models.FigureHolds {
 		t.Errorf("status = %q (%s), want holds: $100M covers 100,010,000", v.Status, v.Reason)
 	}
@@ -302,8 +302,8 @@ func TestFigures_SumOfEquallyCoarseOperandsIsStatableAtTheirPrecision(t *testing
 			Refs: []models.FigureRef{ref(ins.ID, "f1"), ref(ins.ID, "f2")},
 		}},
 	}}
-	attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
-	renderRecommendationFigures(recs)
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.renderRecommendationFigures(recs)
 
 	if v := recs[0].FigureVerdicts[0]; v.Status != models.FigureHolds {
 		t.Errorf("status = %q (%s), want holds -- summing two counts must not make their total unstatable", v.Status, v.Reason)
@@ -325,7 +325,7 @@ func TestFigures_SumOfEquallyCoarseOperandsIsStatableAtTheirPrecision(t *testing
 			Refs: []models.FigureRef{ref(coarse.ID, "f1")},
 		}},
 	}}
-	attachRecommendationFigureVerdicts(fine, []models.Insight{coarse})
+	usWriter.attachRecommendationFigureVerdicts(fine, []models.Insight{coarse})
 	if v := fine[0].FigureVerdicts[0]; v.Status != models.FigureUndecidable {
 		t.Errorf("status = %q, want undecidable for a finer restatement of a coarser source", v.Status)
 	}
@@ -344,7 +344,7 @@ func TestFigures_ModelAuthoredInsightTemplateIsCleared(t *testing.T) {
 		FigureTemplate: &models.FigureTemplate{Name: "Revenue grew {{f1}} last year"},
 		FigureVerdicts: []models.FigureVerdict{{ID: "f1", Status: models.FigureHolds}},
 	}}
-	attachFigureVerdicts(ins, map[int]*models.ExplorationStep{})
+	usWriter.attachFigureVerdicts(ins, map[int]*models.ExplorationStep{})
 	if ins[0].FigureTemplate != nil {
 		t.Errorf("a model-authored provenance record survived: %+v", ins[0].FigureTemplate)
 	}
@@ -363,7 +363,7 @@ func TestFigures_TallyCountsAnInsightWhoseEveryReferenceFailed(t *testing.T) {
 		Name:        "Revenue reached {{f1}}",
 		Description: "No figures were declared at all.",
 	}}
-	tally := renderInsightFigures(ins)
+	tally := usWriter.renderInsightFigures(ins)
 	if tally.unresolved != 1 {
 		t.Errorf("tally.unresolved = %d, want 1", tally.unresolved)
 	}
@@ -396,14 +396,14 @@ func TestFigures_AggregateOverIncompleteEvidenceIsUndecidable(t *testing.T) {
 
 	// The model declared the true total of 1000, which no longer matches the 900 visible.
 	sum := models.Figure{ID: "f1", Value: 1000, Unit: models.UnitCurrency, Step: 7, Kind: models.FigureSum, Column: "net"}
-	v := evaluateFigure(sum, truncated)
+	v := usWriter.evaluateFigure(sum, truncated)
 	if v.Status != models.FigureUndecidable {
 		t.Fatalf("status = %q, want undecidable -- a capped result cannot settle a total", v.Status)
 	}
 
 	// And nothing corrects it, so the true number survives.
 	ins := []models.Insight{{Name: "n", Figures: []models.Figure{sum}, FigureVerdicts: []models.FigureVerdict{v}}}
-	correctRefutedFigures("area", ins, map[int]*models.ExplorationStep{})
+	usWriter.correctRefutedFigures("area", ins, map[int]*models.ExplorationStep{})
 	if got := ins[0].Figures[0].Value; got != 1000 {
 		t.Errorf("figure value = %v, want the declared 1000 left alone; a partial sum must never overwrite a total", got)
 	}
@@ -411,7 +411,7 @@ func TestFigures_AggregateOverIncompleteEvidenceIsUndecidable(t *testing.T) {
 	// A row-specific kind is unaffected: the row it names is either present or it is not.
 	cell := models.Figure{ID: "f2", Value: 100, Unit: models.UnitCurrency, Step: 7,
 		Kind: models.FigureCell, Column: "net", Row: "region = 3"}
-	if got := evaluateFigure(cell, truncated); got.Status != models.FigureHolds {
+	if got := usWriter.evaluateFigure(cell, truncated); got.Status != models.FigureHolds {
 		t.Errorf("cell status = %q (%s), want holds -- a named row does not need the whole result", got.Status, got.Reason)
 	}
 }
@@ -438,8 +438,8 @@ func TestFigures_CorrectionCarriesItsCardinalityDeclaration(t *testing.T) {
 	}}
 	byID := map[int]*models.ExplorationStep{4: step}
 
-	attachFigureVerdicts(ins, byID)
-	if n := correctRefutedFigures("area", ins, byID); n != 1 {
+	usWriter.attachFigureVerdicts(ins, byID)
+	if n := usWriter.correctRefutedFigures("area", ins, byID); n != 1 {
 		t.Fatalf("corrections = %d, want 1 (101 -> 100); premise stale", n)
 	}
 	if got := ins[0].QuantifierClaims[0].Count; got != 100 {
@@ -465,7 +465,7 @@ func TestFigures_RepairedInsightAdvertisesNoFiguresToTheRecommender(t *testing.T
 			Figures: []models.Figure{{ID: "f1", Value: 50004, Unit: models.UnitCount}},
 		},
 	}
-	out := insightsForRecommenderPrompt(in)
+	out := usWriter.insightsForRecommenderPrompt(in)
 
 	if len(out[0].Figures) != 0 {
 		t.Errorf("a repaired insight still advertises figures the index will reject: %+v", out[0].Figures)
@@ -535,8 +535,8 @@ func TestFigures_ReferenceIndexesWhatWasPrinted(t *testing.T) {
 		}},
 	}}
 
-	attachRecommendationFigureVerdicts(recs, []models.Insight{coarse})
-	renderRecommendationFigures(recs)
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{coarse})
+	usWriter.renderRecommendationFigures(recs)
 
 	// 1000 + 1000, the two printed values, not 1490 + 1490.
 	if got := recs[0].Figures[0].Value; got != 2000 {
@@ -566,11 +566,11 @@ func TestFigures_CorrectionDeclinesWhenAffectedCountWouldDesync(t *testing.T) {
 		AffectedCount: 100000,
 		Figures:       []models.Figure{{ID: "f1", Value: 100000, Unit: models.UnitCount, Step: 4, Kind: models.FigureCount}},
 	}}
-	attachFigureVerdicts(ins, byID)
+	usWriter.attachFigureVerdicts(ins, byID)
 	if ins[0].FigureVerdicts[0].Status != models.FigureFails {
 		t.Fatalf("premise stale: verdict = %q, want fails", ins[0].FigureVerdicts[0].Status)
 	}
-	if n := correctRefutedFigures("area", ins, byID); n != 0 {
+	if n := usWriter.correctRefutedFigures("area", ins, byID); n != 0 {
 		t.Errorf("corrections = %d, want 0 -- correcting here desyncs affected_count", n)
 	}
 	if ins[0].Figures[0].Value != 100000 || ins[0].AffectedCount != 100000 {
@@ -600,8 +600,8 @@ func TestFigures_ClaimReconciliationAcceptsASpacedReference(t *testing.T) {
 			{Claim: "There are {{ f1 }} distinct parts", Kind: QuantifierCardinality, Step: 4, Count: 101},
 		},
 	}}
-	attachFigureVerdicts(ins, byID)
-	if n := correctRefutedFigures("area", ins, byID); n != 1 {
+	usWriter.attachFigureVerdicts(ins, byID)
+	if n := usWriter.correctRefutedFigures("area", ins, byID); n != 1 {
 		t.Fatalf("corrections = %d, want 1; premise stale", n)
 	}
 	if got := ins[0].QuantifierClaims[0].Count; got != 100 {
@@ -647,7 +647,7 @@ func TestFigures_DecimalPrecisionIsBounded(t *testing.T) {
 		t.Fatalf("Places() = %d, want %d", got, models.MaxFigureDecimals)
 	}
 	// Both of these would hang or exhaust memory on the raw value.
-	if got := renderFigure(huge); len(got) > 32 {
+	if got := usWriter.renderFigure(huge); len(got) > 32 {
 		t.Errorf("renderFigure produced %d characters", len(got))
 	}
 	if s := figureSlack(huge); s <= 0 {
@@ -680,15 +680,15 @@ func TestFigures_DuplicateIDActsOnNothing(t *testing.T) {
 			{ID: "f1", Value: 200, Unit: models.UnitCount, Step: 4, Kind: models.FigureCount},
 		},
 	}}
-	attachFigureVerdicts(ins, byID)
-	if n := correctRefutedFigures("area", ins, byID); n != 0 {
+	usWriter.attachFigureVerdicts(ins, byID)
+	if n := usWriter.correctRefutedFigures("area", ins, byID); n != 0 {
 		t.Errorf("corrections = %d, want 0 on an ambiguous id", n)
 	}
 	if ins[0].Figures[0].Value != 100 || ins[0].Figures[1].Value != 200 {
 		t.Errorf("figures were crossed: %v and %v", ins[0].Figures[0].Value, ins[0].Figures[1].Value)
 	}
 	// Nor is it rendered: the reference ships visible rather than resolving to a guess.
-	renderInsightFigures(ins)
+	usWriter.renderInsightFigures(ins)
 	if !strings.Contains(ins[0].Name, "{{f1}}") {
 		t.Errorf("name = %q, want the ambiguous reference left visible", ins[0].Name)
 	}
@@ -709,7 +709,7 @@ func TestFigures_DuplicateIDActsOnNothing(t *testing.T) {
 			Refs: []models.FigureRef{ref(dupIns.ID, "f1")},
 		}},
 	}}
-	attachRecommendationFigureVerdicts(recs, []models.Insight{dupIns})
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{dupIns})
 	if v := recs[0].FigureVerdicts[0]; v.Status != models.FigureUndecidable || !strings.Contains(v.Reason, "more than once") {
 		t.Errorf("verdict = %q / %q, want undecidable naming the duplication", v.Status, v.Reason)
 	}
@@ -737,8 +737,8 @@ func TestFigures_DuplicateIDIsRefusedInRecommendationAdoptionToo(t *testing.T) {
 		},
 	}}
 
-	attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
-	renderRecommendationFigures(recs)
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.renderRecommendationFigures(recs)
 
 	for i, f := range recs[0].Figures {
 		if f.Value != 0 {
@@ -792,7 +792,7 @@ func TestFigures_NonFiniteArithmeticIsUndecidable(t *testing.T) {
 		ID: "f1", Value: 50, Unit: models.UnitCurrency,
 		Step: 2, Kind: models.FigureSum, Column: "net",
 	}
-	v := evaluateFigure(f, map[int]StepRows{2: {Rows: rows}})
+	v := usWriter.evaluateFigure(f, map[int]StepRows{2: {Rows: rows}})
 	if v.Status == models.FigureFails {
 		t.Errorf("status = fails, want undecidable: the arithmetic has no finite answer")
 	}
@@ -811,7 +811,7 @@ func TestFigures_NonFiniteArithmeticIsUndecidable(t *testing.T) {
 		{"band": "A", "net": math.MaxFloat64},
 		{"band": "B", "net": math.MaxFloat64},
 	}
-	over := evaluateFigure(
+	over := usWriter.evaluateFigure(
 		models.Figure{ID: "f1", Value: 1, Unit: models.UnitCurrency, Step: 2, Kind: models.FigureSum, Column: "net"},
 		map[int]StepRows{2: {Rows: huge}})
 	if over.Status != models.FigureUndecidable {
@@ -865,7 +865,7 @@ func TestFigures_AdoptionDeclinesWhenSegmentSizeWouldDesync(t *testing.T) {
 		}},
 	}}
 
-	attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
 	if len(recs[0].FigureCorrections) != 0 {
 		t.Errorf("adopted despite the segment_size desync: %v", recs[0].FigureCorrections)
 	}
@@ -897,13 +897,13 @@ func TestFigures_MissingValueIsNotAClaimOfZero(t *testing.T) {
 		}
 
 		list := []models.Insight{ins}
-		attachFigureVerdicts(list, map[int]*models.ExplorationStep{
+		usWriter.attachFigureVerdicts(list, map[int]*models.ExplorationStep{
 			1: {Step: 1, QueryResult: []map[string]any{{"net": 500.0}}},
 		})
 		if got := list[0].FigureVerdicts[0].Status; got != models.FigureUndecidable {
 			t.Errorf("%s: status = %q, want undecidable", bad, got)
 		}
-		renderInsightFigures(list)
+		usWriter.renderInsightFigures(list)
 		if strings.Contains(list[0].Name, "$0") || strings.Contains(list[0].Name, " 0") {
 			t.Errorf("%s: a fabricated zero shipped: %q", bad, list[0].Name)
 		}
@@ -923,7 +923,7 @@ func TestFigures_MissingValueIsNotAClaimOfZero(t *testing.T) {
 		t.Fatal(err)
 	}
 	list := []models.Insight{only}
-	attachFigureVerdicts(list, map[int]*models.ExplorationStep{
+	usWriter.attachFigureVerdicts(list, map[int]*models.ExplorationStep{
 		1: {Step: 1, QueryResult: []map[string]any{{"net": 500.0}}},
 	})
 	v := list[0].FigureVerdicts[0]
@@ -966,8 +966,8 @@ func TestFigures_VouchedReferenceAlwaysTakesTheResolvedValue(t *testing.T) {
 		}},
 	}}
 
-	attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
-	renderRecommendationFigures(recs)
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.renderRecommendationFigures(recs)
 
 	if got := recs[0].Figures[0].Value; got != 100 {
 		t.Errorf("figure value = %v, want the reference's 100", got)
@@ -995,8 +995,8 @@ func TestFigures_AFilterCannotManufactureUniqueness(t *testing.T) {
 		},
 	}}
 
-	attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
-	renderRecommendationFigures(recs)
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.renderRecommendationFigures(recs)
 
 	if strings.Contains(recs[0].Description, "52,134") {
 		t.Errorf("an ambiguous reference rendered anyway: %q", recs[0].Description)
@@ -1035,7 +1035,7 @@ func TestFigures_OneGateHoldsBothPropertiesForBothSides(t *testing.T) {
 		Description: "d",
 		Figures:     figures,
 	}}
-	renderInsightFigures(ins)
+	usWriter.renderInsightFigures(ins)
 	if strings.Contains(ins[0].Name, "52,134") {
 		t.Errorf("an ambiguous id rendered after the valueless twin was filtered away: %q", ins[0].Name)
 	}
@@ -1076,8 +1076,8 @@ func TestFigures_ReferenceToAValuelessFigureResolvesToNothing(t *testing.T) {
 			Refs: []models.FigureRef{ref(ins.ID, "f1")},
 		}},
 	}}
-	attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
-	renderRecommendationFigures(recs)
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.renderRecommendationFigures(recs)
 	v := recs[0].FigureVerdicts[0]
 	if v.Resolved {
 		t.Error("resolved = true for a figure that has no value")
@@ -1095,8 +1095,8 @@ func TestFigures_ReferenceToAValuelessFigureResolvesToNothing(t *testing.T) {
 			Refs: []models.FigureRef{ref(ins.ID, "f1"), ref(ins.ID, "f2")},
 		}},
 	}}
-	attachRecommendationFigureVerdicts(sums, []models.Insight{ins})
-	renderRecommendationFigures(sums)
+	usWriter.attachRecommendationFigureVerdicts(sums, []models.Insight{ins})
+	usWriter.renderRecommendationFigures(sums)
 	if strings.Contains(sums[0].Description, "43,897") {
 		t.Errorf("the sum shipped one term as if it were the total: %q", sums[0].Description)
 	}
@@ -1129,7 +1129,7 @@ func TestFigures_ContractDoesNotAdvertiseAnExcessRatio(t *testing.T) {
 		Step: 1, Kind: models.FigureRatio, Column: "v", Row: "band = hi", Other: "band = lo",
 	}
 	rows := []map[string]any{{"band": "hi", "v": 103.5}, {"band": "lo", "v": 100.0}}
-	if v := evaluateFigure(f, map[int]StepRows{1: {Rows: rows}}); v.Status != models.FigureHolds {
+	if v := usWriter.evaluateFigure(f, map[int]StepRows{1: {Rows: rows}}); v.Status != models.FigureHolds {
 		t.Errorf("status = %q (%s), want holds: 103.5 over 100 is 103.5%%", v.Status, v.Reason)
 	}
 }
@@ -1145,10 +1145,10 @@ func TestFigures_BoundaryComparisonToleratesItsOwnArithmetic(t *testing.T) {
 		ID: "f1", Value: 12.375, Unit: models.UnitPlain, Decimals: 2,
 		Step: 1, Kind: models.FigureCell, Column: "v", Row: "k = a",
 	}
-	if got := renderFigure(f); got != "12.38" {
+	if got := usWriter.renderFigure(f); got != "12.38" {
 		t.Fatalf("renderFigure = %q, want 12.38; premise stale", got)
 	}
-	v := evaluateFigure(f, map[int]StepRows{1: {Rows: []map[string]any{{"k": "a", "v": 12.375}}}})
+	v := usWriter.evaluateFigure(f, map[int]StepRows{1: {Rows: []map[string]any{{"k": "a", "v": 12.375}}}})
 	if v.Status != models.FigureHolds {
 		t.Errorf("status = %q (%s), want holds: the value IS the evidence", v.Status, v.Reason)
 	}
@@ -1156,7 +1156,7 @@ func TestFigures_BoundaryComparisonToleratesItsOwnArithmetic(t *testing.T) {
 	// The tolerance must not swallow a real miss: one whole last place out is still refuted.
 	off := f
 	off.Value = 12.395
-	if got := evaluateFigure(off, map[int]StepRows{1: {Rows: []map[string]any{{"k": "a", "v": 12.375}}}}); got.Status != models.FigureFails {
+	if got := usWriter.evaluateFigure(off, map[int]StepRows{1: {Rows: []map[string]any{{"k": "a", "v": 12.375}}}}); got.Status != models.FigureFails {
 		t.Errorf("status = %q, want fails: 12.40 against 12.375 is outside the printed interval", got.Status)
 	}
 }
@@ -1174,7 +1174,7 @@ func TestFigures_AnUnresolvableIDIsRefusedAndStillCounted(t *testing.T) {
 		Description: "d",
 		Figures:     []models.Figure{{ID: "revenue-total", Value: 500, Unit: models.UnitCurrency}},
 	}}
-	tally := renderInsightFigures(ins)
+	tally := usWriter.renderInsightFigures(ins)
 
 	if strings.Contains(ins[0].Name, "$500") {
 		t.Errorf("an id outside the reference grammar rendered anyway: %q", ins[0].Name)
@@ -1193,7 +1193,7 @@ func TestFigures_AnUnresolvableIDIsRefusedAndStillCounted(t *testing.T) {
 		SourceSteps: []int{1},
 		Figures:     []models.Figure{{ID: "revenue-total", Value: 500, Unit: models.UnitCurrency, Step: 1, Kind: models.FigureSum, Column: "net"}},
 	}}
-	attachFigureVerdicts(list, map[int]*models.ExplorationStep{
+	usWriter.attachFigureVerdicts(list, map[int]*models.ExplorationStep{
 		1: {Step: 1, QueryResult: []map[string]any{{"net": 500.0}}},
 	})
 	if v := list[0].FigureVerdicts[0]; v.Status != models.FigureUndecidable {
@@ -1219,11 +1219,11 @@ func TestFigures_CorrectionDeclinesWhenAMetricWouldDesync(t *testing.T) {
 		Metrics:     map[string]interface{}{"revenue": 1000.0},
 		Figures:     []models.Figure{{ID: "f1", Value: 1000, Unit: models.UnitCurrency, Step: 4, Kind: models.FigureSum, Column: "net"}},
 	}}
-	attachFigureVerdicts(ins, byID)
+	usWriter.attachFigureVerdicts(ins, byID)
 	if ins[0].FigureVerdicts[0].Status != models.FigureFails {
 		t.Fatalf("premise stale: verdict = %q", ins[0].FigureVerdicts[0].Status)
 	}
-	if n := correctRefutedFigures("area", ins, byID); n != 0 {
+	if n := usWriter.correctRefutedFigures("area", ins, byID); n != 0 {
 		t.Errorf("corrections = %d, want 0 -- correcting here desyncs metrics.revenue", n)
 	}
 	if ins[0].Figures[0].Value != 1000 {
@@ -1251,8 +1251,8 @@ func TestFigures_ARestatementCannotChangeTheUnit(t *testing.T) {
 			Refs: []models.FigureRef{ref(ins.ID, "f1")},
 		}},
 	}}
-	attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
-	renderRecommendationFigures(recs)
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.renderRecommendationFigures(recs)
 
 	if v := recs[0].FigureVerdicts[0]; v.Status != models.FigureUndecidable {
 		t.Errorf("status = %q, want undecidable for a unit change", v.Status)
@@ -1269,7 +1269,7 @@ func TestFigures_ARestatementCannotChangeTheUnit(t *testing.T) {
 			Refs: []models.FigureRef{ref(ins.ID, "f1")},
 		}},
 	}}
-	attachRecommendationFigureVerdicts(same, []models.Insight{ins})
+	usWriter.attachRecommendationFigureVerdicts(same, []models.Insight{ins})
 	if v := same[0].FigureVerdicts[0]; v.Status != models.FigureHolds {
 		t.Errorf("status = %q (%s), want holds for the same unit", v.Status, v.Reason)
 	}
@@ -1309,8 +1309,8 @@ func TestFigures_AmbiguousClaimLinkLeavesTheCountAlone(t *testing.T) {
 			{Claim: "{{n}} categories contribute {{revenue}}", Kind: QuantifierCardinality, Step: 4, Count: 100},
 		},
 	}}
-	attachFigureVerdicts(ins, byID)
-	if n := correctRefutedFigures("area", ins, byID); n != 1 {
+	usWriter.attachFigureVerdicts(ins, byID)
+	if n := usWriter.correctRefutedFigures("area", ins, byID); n != 1 {
 		t.Fatalf("corrections = %d, want 1 (revenue 100 -> 99.5); the premise of this test is stale", n)
 	}
 	if got := ins[0].QuantifierClaims[0].Count; got != 100 {
@@ -1332,8 +1332,8 @@ func TestFigures_AmbiguousClaimLinkLeavesTheCountAlone(t *testing.T) {
 			{Claim: "{{revenue}} was contributed", Kind: QuantifierCardinality, Step: 5, Count: 100},
 		},
 	}}
-	attachFigureVerdicts(solo, byID)
-	if n := correctRefutedFigures("area", solo, byID); n != 1 {
+	usWriter.attachFigureVerdicts(solo, byID)
+	if n := usWriter.correctRefutedFigures("area", solo, byID); n != 1 {
 		t.Fatalf("solo corrections = %d, want 1", n)
 	}
 	if got := solo[0].QuantifierClaims[0].Count; got != 100 {
@@ -1361,7 +1361,7 @@ func TestFigures_DecliningAnAdoptionDoesNotCertifyTheNumber(t *testing.T) {
 			Refs: []models.FigureRef{ref(ins.ID, "f1")},
 		}},
 	}}
-	attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
 
 	if recs[0].Figures[0].Value != 101 || recs[0].SegmentSize != 101 {
 		t.Errorf("the two were left disagreeing: figure %v / segment_size %d",
@@ -1388,7 +1388,7 @@ func TestFigures_AResolvedReferenceBecomesACitation(t *testing.T) {
 			Refs: []models.FigureRef{ref(b.ID, "f1")},
 		}},
 	}}
-	attachRecommendationFigureVerdicts(recs, []models.Insight{a, b})
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{a, b})
 
 	got := recs[0].RelatedInsightIDs
 	if len(got) != 2 || got[0] != a.ID || got[1] != b.ID {
@@ -1404,7 +1404,7 @@ func TestFigures_AResolvedReferenceBecomesACitation(t *testing.T) {
 			Refs: []models.FigureRef{ref("no-such-insight", "f1")},
 		}},
 	}}
-	attachRecommendationFigureVerdicts(bad, []models.Insight{a, b})
+	usWriter.attachRecommendationFigureVerdicts(bad, []models.Insight{a, b})
 	if len(bad[0].RelatedInsightIDs) != 1 {
 		t.Errorf("related_insight_ids = %v, want the unresolved reference not cited", bad[0].RelatedInsightIDs)
 	}
@@ -1418,19 +1418,19 @@ func TestFigures_AResolvedReferenceBecomesACitation(t *testing.T) {
 // amount became dollars regardless of the data.
 func TestFigures_CurrencySymbolComesFromTheData(t *testing.T) {
 	euro := models.Figure{Value: 8476238553, Unit: models.UnitCurrency, Currency: "€", Scale: models.ScaleBillions, Decimals: 2}
-	if got := renderFigure(euro); got != "€8.48B" {
+	if got := usWriter.renderFigure(euro); got != "€8.48B" {
 		t.Errorf("renderFigure = %q, want €8.48B", got)
 	}
 	// Omitted still means dollars, so the common case is unchanged.
 	usd := euro
 	usd.Currency = ""
-	if got := renderFigure(usd); got != "$8.48B" {
+	if got := usWriter.renderFigure(usd); got != "$8.48B" {
 		t.Errorf("renderFigure = %q, want $8.48B when the symbol is omitted", got)
 	}
 	// And the negative sign stays outside the symbol, whichever symbol it is.
 	neg := euro
 	neg.Value = -8476238553
-	if got := renderFigure(neg); got != "-€8.48B" {
+	if got := usWriter.renderFigure(neg); got != "-€8.48B" {
 		t.Errorf("renderFigure = %q, want -€8.48B", got)
 	}
 	if !strings.Contains(figureContract, "currency") {

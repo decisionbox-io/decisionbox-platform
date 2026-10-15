@@ -39,31 +39,36 @@ var figureScales = map[string]struct {
 // An unknown unit or scale renders plainly rather than failing: a figure whose
 // presentation Go does not recognise is still a figure whose arithmetic can be
 // checked, and refusing to render it would lose the finding over a formatting word.
-func renderFigure(f models.Figure) string {
+func (w figureWriter) renderFigure(f models.Figure) string {
 	sc, ok := figureScales[f.Scale]
 	if !ok {
 		sc = figureScales[models.ScaleNone]
 	}
 	scaled := f.Value / sc.div
-	digits := strconv.FormatFloat(scaled, 'f', f.Places(), 64)
 
 	var b strings.Builder
 	if f.Approx {
 		b.WriteString("~")
 	}
+	if f.Unit == models.UnitCurrency && scaled < 0 {
+		// The sign belongs outside the currency symbol: -$1.2M, not $-1.2M.
+		//
+		// Done by negating before formatting rather than by trimming a "-" off the
+		// formatted string. CLDR does not always write a bare hyphen: Arabic prefixes
+		// its minus with U+061C and Hebrew with U+200E, so a TrimPrefix matched
+		// nothing and both languages shipped "-$<marker>-1.2M" with the sign twice.
+		// Formatting the magnitude leaves no sign to strip and no marker to know about.
+		b.WriteString("-")
+		scaled = -scaled
+	}
 	if f.Unit == models.UnitCurrency {
-		if scaled < 0 {
-			// The sign belongs outside the currency symbol: -$1.2M, not $-1.2M.
-			b.WriteString("-")
-			digits = strings.TrimPrefix(digits, "-")
-		}
 		b.WriteString(f.Symbol())
 	}
-	// Thousands separators on anything unscaled, because an unscaled count or amount
-	// is where they matter and a scaled one has at most four digits.
-	if f.Scale == models.ScaleNone {
-		digits = groupThousands(digits)
-	}
+	digits := w.digits(scaled, f.Places())
+	// Grouping and the decimal mark come from the language, including for a scaled
+	// figure -- otherwise "30.63M" keeps a US point inside Turkish prose. x/text
+	// groups by the locale's own rule, so Hindi gets 12,34,567 rather than the
+	// three-digit grouping a hand-written version produced.
 	b.WriteString(digits)
 	b.WriteString(sc.suffix)
 
@@ -99,27 +104,6 @@ func figureSlack(f models.Figure) float64 {
 		place /= 10
 	}
 	return place / 2
-}
-
-// groupThousands inserts comma separators into an already-rendered decimal string.
-func groupThousands(s string) string {
-	neg := strings.HasPrefix(s, "-")
-	s = strings.TrimPrefix(s, "-")
-	intPart, frac := s, ""
-	if i := strings.IndexByte(s, '.'); i >= 0 {
-		intPart, frac = s[:i], s[i:]
-	}
-	var b strings.Builder
-	if neg {
-		b.WriteString("-")
-	}
-	for i := 0; i < len(intPart); i++ {
-		if i > 0 && (len(intPart)-i)%3 == 0 {
-			b.WriteByte(',')
-		}
-		b.WriteByte(intPart[i])
-	}
-	return b.String() + frac
 }
 
 // renderedValue is the number the prose actually carries, as a number.

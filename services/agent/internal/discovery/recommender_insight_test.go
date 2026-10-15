@@ -119,7 +119,7 @@ func droppedJSONKeys() []string {
 
 func mustMarshalProjection(t *testing.T, insights []models.Insight) string {
 	t.Helper()
-	b, err := json.MarshalIndent(insightsForRecommenderPrompt(insights), "", "  ")
+	b, err := json.MarshalIndent(usWriter.insightsForRecommenderPrompt(insights), "", "  ")
 	if err != nil {
 		t.Fatalf("marshalling the recommender projection: %v", err)
 	}
@@ -346,7 +346,7 @@ func TestInsightsForRecommenderPrompt_DoesNotMutateInput(t *testing.T) {
 	insights := []models.Insight{fullyPopulatedInsight("i-1"), fullyPopulatedInsight("i-2")}
 	want := []models.Insight{fullyPopulatedInsight("i-1"), fullyPopulatedInsight("i-2")}
 
-	_ = insightsForRecommenderPrompt(insights)
+	_ = usWriter.insightsForRecommenderPrompt(insights)
 
 	if !reflect.DeepEqual(insights, want) {
 		t.Error("insightsForRecommenderPrompt mutated its input")

@@ -31,7 +31,7 @@ func TestFigures_UnrepairedInsightIsNotReRendered(t *testing.T) {
 	ins.Repair = nil
 	ins.Description = "Nothing like the template at all."
 
-	if broken := figuresBrokenByRepair(ins); len(broken) != 0 {
+	if broken := usWriter.figuresBrokenByRepair(ins); len(broken) != 0 {
 		t.Errorf("withheld = %v on an insight that never entered repair", broken)
 	}
 }
@@ -278,7 +278,7 @@ func TestFigures_AWideErrorBoundCertifiesNothing(t *testing.T) {
 			Refs: []models.FigureRef{ref(ins.ID, "f1")},
 		}},
 	}}
-	attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
 	if rv := recs[0].FigureVerdicts[0]; rv.Status == models.FigureHolds {
 		t.Errorf("a recommendation certified a reference to an unvouched figure: %+v", rv)
 	}
@@ -390,7 +390,7 @@ func TestFigures_TheRecommenderIsOnlyShownFiguresItCanReference(t *testing.T) {
 			{ID: "f1", Value: 50004, Unit: models.UnitCount}, // the only referenceable one
 		},
 	}}
-	out := insightsForRecommenderPrompt(in)
+	out := usWriter.insightsForRecommenderPrompt(in)
 	if len(out[0].Figures) != 1 || out[0].Figures[0].ID != "f1" {
 		ids := make([]string, 0, len(out[0].Figures))
 		for _, f := range out[0].Figures {
@@ -449,7 +449,7 @@ func TestFigures_SubnormalOperandsStillCarryRoundingError(t *testing.T) {
 		Name: "subnormal", Figures: []models.Figure{f}, SourceSteps: []int{1},
 		FigureVerdicts: []models.FigureVerdict{v},
 	}}
-	if n := correctRefutedFigures("area", insights, stepIndex(1, rows)); n != 0 {
+	if n := usWriter.correctRefutedFigures("area", insights, stepIndex(1, rows)); n != 0 {
 		t.Errorf("%d corrections rewrote a correct figure: %+v", n, insights[0].FigureCorrections)
 	}
 }
@@ -485,7 +485,7 @@ func TestFigures_AnOperandThatUnderflowedToZero(t *testing.T) {
 		Name: "underflow", Figures: []models.Figure{f}, SourceSteps: []int{1},
 		FigureVerdicts: []models.FigureVerdict{v},
 	}}
-	if n := correctRefutedFigures("area", insights, stepIndex(1, rows)); n != 0 {
+	if n := usWriter.correctRefutedFigures("area", insights, stepIndex(1, rows)); n != 0 {
 		t.Errorf("%d corrections rewrote a correct figure: %+v", n, insights[0].FigureCorrections)
 	}
 
