@@ -822,6 +822,11 @@ var ErrNotDiscardable = errors.New("run is not discardable")
 // the checkpoints — applies, and doing it under a status change that lies
 // about the outcome is the wrong trade.
 //
+// This places the marker and nothing else. What the marker licenses —
+// clearing the checkpoint marker, dropping the checkpoint rows — happens in
+// FinalizeDiscard, after the caller has made the one check that cannot be
+// folded into this filter. See ReleaseDiscard for why the claim comes first.
+//
 // `completed` is excluded deliberately: that run's discovery IS the project's
 // history, and discarding the run would orphan it. Delete the discovery
 // instead. `pending`/`running` are excluded because cancel is the verb for a
@@ -853,19 +858,77 @@ func (r *RunRepository) Discard(ctx context.Context, runID string) error {
 			"discovery_id": bson.M{"$in": []any{nil, ""}},
 			"discarded_at": nil,
 		},
-		bson.M{
-			"$set": bson.M{"discarded_at": now, "updated_at": now},
-			// The dashboard gates Resume on last_checkpoint_step > 0, and the
-			// resume endpoint clears this field itself when it refuses for
-			// having nothing to resume from. Same gesture, same reason: an
-			// offered-but-impossible Resume is worse than none.
-			"$unset": bson.M{"last_checkpoint_step": ""},
-		})
+		bson.M{"$set": bson.M{"discarded_at": now, "updated_at": now}})
 	if err != nil {
 		return fmt.Errorf("discard run %s: %w", runID, err)
 	}
 	if res.MatchedCount == 0 {
 		return ErrNotDiscardable
+	}
+	return nil
+}
+
+// ReleaseDiscard removes the discard marker this request just placed, putting
+// the run back exactly as it was.
+//
+// It exists so the caller can claim the discard BEFORE its last check rather
+// than after it. The check that cannot be made atomic is the cross-collection
+// one — "did this run save a discovery" — and asking it after the claim is
+// what makes the answer trustworthy: the agent protocol retires a result whose
+// run it finds discarded, so once the marker is down, any result that still
+// appears was written before it and is visible to the re-read. A result found
+// that way is a refusal, and a refusal has to leave no trace.
+//
+// The fence is "some discard marker is present" rather than a particular one,
+// because only one request can ever be between its claim and its release: the
+// claim in Discard matches `discarded_at: nil`, so a second claimant is
+// refused outright and never reaches here. The marker this clears is therefore
+// always the caller's own.
+//
+// Should be called on a context that cannot be cancelled — a client
+// disconnect between the claim and the release would otherwise leave the run
+// discarded on the strength of a check that said not to.
+func (r *RunRepository) ReleaseDiscard(ctx context.Context, runID string) error {
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		return fmt.Errorf("invalid run ID: %w", err)
+	}
+	// A filter that matches nothing is not a failure here: it means the run
+	// is already in the state this was trying to restore.
+	if _, err := r.col.UpdateOne(ctx,
+		bson.M{"_id": oid, "discarded_at": bson.M{"$ne": nil}},
+		bson.M{
+			"$unset": bson.M{"discarded_at": ""},
+			"$set":   bson.M{"updated_at": time.Now()},
+		}); err != nil {
+		return fmt.Errorf("release the discard claim on run %s: %w", runID, err)
+	}
+	return nil
+}
+
+// FinalizeDiscard drops what made the run resumable, once the discard is
+// settled. Separate from Discard so that a claim which is released again
+// restores the run intact: a resume offered on a run whose marker had been
+// cleared would fail at the point of no return instead of being refused.
+//
+// The dashboard gates Resume on last_checkpoint_step > 0, and the resume
+// endpoint clears this field itself when it refuses for having nothing to
+// resume from. Same gesture, same reason: an offered-but-impossible Resume is
+// worse than none. Belt and braces either way — every resume path also
+// filters on `discarded_at: nil` — which is why this is best-effort and why
+// the field it clears is the one a pre-upgrade reader would go by.
+func (r *RunRepository) FinalizeDiscard(ctx context.Context, runID string) error {
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		return fmt.Errorf("invalid run ID: %w", err)
+	}
+	// Fenced on the run being discarded, so this can never strip the
+	// checkpoint marker off a run that is still resumable.
+	_, err = r.col.UpdateOne(ctx,
+		bson.M{"_id": oid, "discarded_at": bson.M{"$ne": nil}},
+		bson.M{"$unset": bson.M{"last_checkpoint_step": ""}})
+	if err != nil {
+		return fmt.Errorf("clear the checkpoint marker of discarded run %s: %w", runID, err)
 	}
 	return nil
 }

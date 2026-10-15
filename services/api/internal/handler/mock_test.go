@@ -367,7 +367,14 @@ type mockRunRepo struct {
 	getRunningCalls    int
 	failErr            error
 	cancelErr          error
-	discardErr  error
+	discardErr        error
+	releaseDiscardErr error
+	// onDiscardClaim fires inside Discard, after the marker is down and the
+	// lock is released — the hook a test uses to make a discovery appear in
+	// the window between the claim and the re-read that follows it.
+	onDiscardClaim   func()
+	discardReleased  int
+	discardFinalized int
 
 	// Resume-path state. createdParams records what Create was handed, so a
 	// test can assert the run's own parameters were persisted; beginResume*
@@ -624,18 +631,54 @@ func (m *mockRunRepo) Discard(_ context.Context, runID string) error {
 		return m.discardErr
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	r, ok := m.runs[runID]
 	if !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("run not found: %s", runID)
 	}
 	// Mirror the repo's filter: terminal, resultless, not already discarded.
-	if (r.Status != "failed" && r.Status != "cancelled") || r.DiscardedAt != nil {
+	if (r.Status != "failed" && r.Status != "cancelled") || r.DiscoveryID != "" || r.DiscardedAt != nil {
+		m.mu.Unlock()
 		return database.ErrNotDiscardable
 	}
 	now := time.Now()
 	r.DiscardedAt = &now
-	r.LastCheckpointStep = 0
+	// NOT LastCheckpointStep: the real Discard places the marker and nothing
+	// else, so that a released claim leaves the run resumable. The marker is
+	// cleared in FinalizeDiscard.
+	m.mu.Unlock()
+
+	// Fired with the claim down and the lock released, which is where a
+	// concurrent agent write actually lands. Lets a test stage the one
+	// interleaving the ordering exists for: a discovery saved after the
+	// claim, found by the re-read that follows it.
+	if m.onDiscardClaim != nil {
+		m.onDiscardClaim()
+	}
+	return nil
+}
+
+func (m *mockRunRepo) ReleaseDiscard(_ context.Context, runID string) error {
+	if m.releaseDiscardErr != nil {
+		return m.releaseDiscardErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if r, ok := m.runs[runID]; ok && r.DiscardedAt != nil {
+		r.DiscardedAt = nil
+		m.discardReleased++
+	}
+	return nil
+}
+
+func (m *mockRunRepo) FinalizeDiscard(_ context.Context, runID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Fenced on the run being discarded, as the real one is.
+	if r, ok := m.runs[runID]; ok && r.DiscardedAt != nil {
+		r.LastCheckpointStep = 0
+		m.discardFinalized++
+	}
 	return nil
 }
 

@@ -1544,6 +1544,66 @@ func TestDiscardRun_RefusesWhenAStoredDiscoveryWouldBeOrphaned(t *testing.T) {
 	}
 }
 
+// The interleaving the claim-first ordering exists for, and the one the
+// original check-first ordering could not see.
+//
+// The API's startup sweep marks in-flight runs `failed` WITHOUT reaping their
+// agents, so a live agent can be working on a run this handler reads as
+// terminal. That agent saves its discovery BEFORE its terminal write. Check
+// first and the result lands in the window between the check and the claim:
+// the agent then reads its ownership back, finds the run merely `failed` and
+// still on its own attempt, correctly concludes it has not been superseded,
+// and keeps the result — which is now attached to a discarded run.
+//
+// Claim first and the same arrival is caught by the re-read, because the
+// claim is already down when the discovery appears. The refusal then has to
+// put the run back exactly as it was, which is what the rest of this asserts:
+// a released claim that left the run unresumable would have turned a refusal
+// into a quiet mutation.
+func TestDiscardRun_RefusesAResultSavedAfterTheClaim(t *testing.T) {
+	f := newResumeFixture(t)
+	f.runs.runs["run-1"].Status = "failed"
+	f.runs.runs["run-1"].DiscoveryID = ""
+	f.runs.runs["run-1"].LastCheckpointStep = 4
+
+	// The agent's save, landing after the marker is down. Nothing is stored
+	// when the handler starts, so a check made before the claim sees none.
+	f.runs.onDiscardClaim = func() {
+		f.discs.add(&models.DiscoveryResult{ID: "disc-1", ProjectID: "p1", RunID: "run-1"})
+	}
+
+	w := httptest.NewRecorder()
+	f.h.DiscardRun(w, discardReq("run-1"))
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body = %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "would be orphaned") {
+		t.Errorf("body = %s, want it to say the discovery would be orphaned", w.Body.String())
+	}
+	run := f.runs.runs["run-1"]
+	if run.DiscardedAt != nil {
+		t.Error("the run is still marked discarded after the discard was refused")
+	}
+	// The distinction a DiscardedAt check alone cannot make: this must be a
+	// claim that was placed and then released, not a claim that was never
+	// placed. Revert the handler to checking before claiming and the
+	// assertions above still pass — this one does not.
+	if f.runs.discardReleased != 1 {
+		t.Errorf("released the claim %d time(s), want exactly 1 — the result was only visible because the claim went down first",
+			f.runs.discardReleased)
+	}
+	if run.LastCheckpointStep != 4 {
+		t.Errorf("last_checkpoint_step = %d, want 4 kept — a refused discard must leave the run as resumable as it found it", run.LastCheckpointStep)
+	}
+	if f.runs.discardFinalized != 0 {
+		t.Error("finalized a discard that was refused")
+	}
+	if len(f.cps.deleted) != 0 {
+		t.Errorf("a refused discard deleted checkpoints: %v", f.cps.deleted)
+	}
+}
+
 // Fail closed: discarding cannot be undone, so an unknown answer must not be
 // read as "no result".
 func TestDiscardRun_RefusesWhenTheResultCheckFails(t *testing.T) {
