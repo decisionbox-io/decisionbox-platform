@@ -186,18 +186,12 @@ func standaloneNumber(text, tok string) []int {
 		if text[i:i+len(tok)] != tok {
 			continue
 		}
-		if i > 0 {
-			r, _ := utf8.DecodeLastRuneInString(text[:i])
-			if numAdjacent(r) {
-				continue
-			}
+		if i > 0 && joinsDigitsBefore(text[:i]) {
+			continue
 		}
 		end := i + len(tok)
-		if end < len(text) {
-			r, _ := utf8.DecodeRuneInString(text[end:])
-			if numAdjacent(r) {
-				continue
-			}
+		if end < len(text) && joinsDigitsAfter(text[end:]) {
+			continue
 		}
 		out = append(out, i)
 		i = end - 1
@@ -205,28 +199,62 @@ func standaloneNumber(text, tok string) []int {
 	return out
 }
 
-// numAdjacent reports whether a rune makes the digits beside it part of a larger
-// number rather than a standalone one.
+// joinsDigitsBefore and joinsDigitsAfter report whether what sits on one side of a match
+// makes it part of a larger number rather than a standalone one.
 //
-// It takes a rune, not a byte, because a grouping separator is not always ASCII.
-// French, Russian and Polish group with U+00A0, so "1<NBSP>123 clients" put a bare
-// "123" next to the word "clients" as far as a byte-wise check could tell -- and
-// repairing a refuted "123 clients" elsewhere would have rewritten the 1,123 too,
-// silently turning it into 1,302. A comma or a point had always blocked that; the
-// space-class separators had not, because until numbers were localised none of them
-// could appear inside one.
+// Runes, not bytes, because a grouping separator is not always ASCII: French, Russian and
+// Polish group with U+00A0. A byte-wise check read "1<NBSP>123 clients" as a standalone
+// "123" next to the word "clients", so repairing a refuted "123 clients" elsewhere would
+// have rewritten this one too and turned 1,123 into 1,302 with nothing to show for it.
 //
-// An ordinary space stays a boundary: "123 clients" must still match.
-func numAdjacent(r rune) bool {
+// A space counts as grouping only when it JOINS TWO RUNS OF DIGITS. That distinction is
+// the whole of it: "1<NBSP>123" is one number, while "123<NBSP>clients" is a number and a
+// word -- French typography puts a no-break space there too. Treating every such space as
+// grouping fixed the first problem and created a worse one, because the match was then
+// skipped in that field alone: repair would rewrite the other fields, report success, and
+// leave the insight contradicting itself.
+//
+// An ordinary space is never grouping, in either direction.
+func joinsDigitsBefore(before string) bool {
+	r, sz := utf8.DecodeLastRuneInString(before)
+	if numPart(r) {
+		return true
+	}
+	if !groupingSpace(r) {
+		return false
+	}
+	prev, _ := utf8.DecodeLastRuneInString(before[:len(before)-sz])
+	return prev >= '0' && prev <= '9'
+}
+
+func joinsDigitsAfter(after string) bool {
+	r, sz := utf8.DecodeRuneInString(after)
+	if numPart(r) {
+		return true
+	}
+	if !groupingSpace(r) {
+		return false
+	}
+	next, _ := utf8.DecodeRuneInString(after[sz:])
+	return next >= '0' && next <= '9'
+}
+
+// numPart is a rune that is unambiguously inside a number wherever it appears.
+func numPart(r rune) bool {
+	return (r >= '0' && r <= '9') || r == '.' || r == ',' || r == '_'
+}
+
+// groupingSpace is a space CLDR uses to group thousands. Ambiguous on its own, which is
+// why the callers look at what is on the far side of it.
+func groupingSpace(r rune) bool {
 	switch r {
-	case '.', ',', '_',
-		'\u00a0', // no-break space -- fr, ru, pl
+	case '\u00a0', // no-break space -- fr, ru, pl
 		'\u202f', // narrow no-break space -- fr-CH and newer CLDR
 		'\u2009', // thin space
 		'\u2007': // figure space
 		return true
 	}
-	return r >= '0' && r <= '9'
+	return false
 }
 
 // unitAfter returns what the first standalone occurrence of tok in text is

@@ -243,7 +243,15 @@ func TestStandaloneNumber_LocalisedGroupingIsNotABoundary(t *testing.T) {
 		{"narrow no-break space hides it", "1 123 clients", "123", false},
 		{"thin space hides it", "1 123 clients", "123", false},
 		{"an ordinary space is still a boundary", "about 123 clients", "123", true},
-		{"a trailing separator also hides it", "123 456", "123", false},
+		{"a trailing separator between digits also hides it", "123 456", "123", false},
+
+		// The separator is grouping only when it joins digits. A no-break space between a
+		// number and a word is French typography, not a thousands mark -- and skipping the
+		// match there is worse than the bug it prevents, because repair then rewrites the
+		// other fields, reports success, and leaves the insight contradicting itself.
+		{"no-break space before a word is a boundary", "123 clients", "123", true},
+		{"narrow no-break space before a word is a boundary", "123 clients", "123", true},
+		{"no-break space after a word is a boundary", "clients 123", "123", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			at := standaloneNumber(tc.text, tc.tok)
