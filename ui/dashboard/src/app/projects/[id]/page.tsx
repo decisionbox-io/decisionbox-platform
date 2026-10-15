@@ -86,6 +86,19 @@ export default function ProjectPage() {
   const actionEpoch = useRef(0);
   const pollTicket = useRef(0);
   const appliedPoll = useRef(0);
+  // runRef mirrors `run` for the async paths that have to act on the run as
+  // it is NOW rather than as it was when their closure was made. A poll's
+  // ticket orders it by when it was ISSUED, which is not the same as how
+  // fresh its view of `run` is: a poll issued before an earlier one answered
+  // carries the higher ticket and the older closure. Acting on that closure
+  // means asking the server about a run that is no longer the installed one.
+  // Synced in an effect rather than at each setRun because one of the three
+  // writers uses a functional update, and a mirror that a call site can
+  // forget is worse than none.
+  const runRef = useRef<DiscoveryRunStatus | null>(null);
+  useEffect(() => {
+    runRef.current = run;
+  }, [run]);
   // installRun is how an ACTION writes `run`: it sets and bumps together, so
   // no call site can do one without the other.
   const installRun = useCallback((next: DiscoveryRunStatus | null) => {
@@ -174,6 +187,16 @@ export default function ProjectPage() {
         appliedPoll.current = ticket;
         setRun(next);
       };
+      // claimPoll holds the watermark for an answer that was ACTED ON but
+      // needed no write — one that confirms what is already installed.
+      // Confirming is incorporating: the alternative left the watermark
+      // behind a poll whose answer had been accepted, so an older poll's
+      // still-pending answer could pass the fence afterwards and act on a
+      // view of `run` that the confirmed one had already superseded.
+      const claimPoll = () => {
+        if (ticket < appliedPoll.current) return;
+        appliedPoll.current = ticket;
+      };
       // A successful read with no run means the project has none to show —
       // every run discarded, or the last one deleted with its project data.
       // Clearing is the only way the panel goes away: a terminal run is not
@@ -194,7 +217,13 @@ export default function ProjectPage() {
       //     live run, so a wrong clear does not heal. A terminal run is
       //     cleared, which is the discarded-panel case this branch exists for.
       if (status && !status.run) {
-        const cached = run;
+        // runRef, not the closure's `run`: this branch asks the server about
+        // one specific run and then acts on the answer, so it has to name the
+        // run that is actually installed. With a closure snapshot it could
+        // ask about a run two polls out of date and then install THAT over a
+        // live one — a worse outcome than the stranded panel the lookup is
+        // here to fix.
+        const cached = runRef.current;
         const cachedIsLive = !!cached && (cached.status === 'running' || cached.status === 'pending');
         if (!cachedIsLive) {
           applyPoll(null);
@@ -248,6 +277,7 @@ export default function ProjectPage() {
           || run.status !== newRun.status
           || run.updated_at !== newRun.updated_at;
         if (runChanged) applyPoll(newRun);
+        else claimPoll();
         if (wasRunning && nowDone) {
           api.listDiscoveries(id).then((d) => setDiscoveries(d || [])).catch(() => {});
           // Nudge the analyst if the run left clarifying questions to answer.

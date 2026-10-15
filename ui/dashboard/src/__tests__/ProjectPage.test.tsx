@@ -951,6 +951,125 @@ it('still reconciles when the confirming lookup outlives the poll interval', asy
   }
 });
 
+// A poll's ticket orders it by when it was ISSUED, and the watermark only
+// moved when a poll WROTE. So an answer that confirmed what was already on
+// screen left the watermark behind it — and an older poll's still-pending
+// answer could then pass the fence and act on a view of `run` that the
+// confirmed answer had already superseded.
+//
+// Reachable from the dismissed-run case, where polling continues with the
+// panel hidden: another tab discards the run and starts a replacement, this
+// tab installs the replacement from one poll, confirms it with the next, and
+// an empty answer issued in between then erases it. Polling is gated on a
+// live run, so the panel and Cancel do not come back without a reload.
+it('holds the poll watermark for an answer that confirmed the current run', async () => {
+  jest.useFakeTimers();
+  try {
+    getProjectStatus.mockResolvedValueOnce(
+      status(makeRun({ status: 'failed', last_checkpoint_step: 7 })),
+    );
+    renderPage();
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    // Dismissed, so the panel is hidden but the poll keeps running.
+    await act(async () => { screen.getByText('Dismiss').click(); });
+
+    // Poll A and then poll B are issued, both hanging. B carries the HIGHER
+    // ticket and the older view of `run`.
+    let releaseA: (v: ProjectStatus) => void = () => {};
+    let releaseB: (v: ProjectStatus) => void = () => {};
+    // 15s, not 2s: a dismissed run is watched at the slow cadence.
+    getProjectStatus.mockImplementationOnce(() => new Promise((r) => { releaseA = r; }));
+    await act(async () => { await jest.advanceTimersByTimeAsync(15000); });
+    getProjectStatus.mockImplementationOnce(() => new Promise((r) => { releaseB = r; }));
+    await act(async () => { await jest.advanceTimersByTimeAsync(15000); });
+
+    // A answers with the replacement run, which the panel adopts.
+    const live = status(makeRun({ id: 'r2', status: 'running', progress: 55, updated_at: 'newer' }));
+    await act(async () => {
+      releaseA(live);
+      for (let i = 0; i < 8; i++) await jest.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText('55%')).toBeInTheDocument();
+
+    // The next poll returns the same run: nothing to write, but the answer is
+    // accepted — and it is NEWER than B.
+    getProjectStatus.mockResolvedValue(live);
+    await act(async () => { await jest.advanceTimersByTimeAsync(2000); });
+
+    // Now B answers "no run". Its ticket is behind the confirming poll's, so
+    // it must be dropped rather than clear a run that was just confirmed.
+    await act(async () => {
+      releaseB({ project_id: 'p1', run: null, last_discovery: null });
+      for (let i = 0; i < 8; i++) await jest.advanceTimersByTimeAsync(0);
+    });
+
+    expect(screen.getByText('55%')).toBeInTheDocument();
+    expect(screen.getByText('Cancel')).toBeInTheDocument();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+// The same ordering with the confirming poll removed, which the watermark
+// cannot fence: B's ticket is genuinely the newest, so its empty answer is
+// accepted — and then the reconcile has to decide WHICH run to ask about.
+//
+// From the closure it names the run that was installed when B was issued,
+// which is now two polls out of date. And because that run is TERMINAL, the
+// branch does not reach the lookup at all: a non-live cached run is taken as
+// confirmation that the empty answer is right, and the panel is cleared with
+// no server check — erasing a live run that a later poll had installed, with
+// polling gated on a live run, so it does not come back without a reload.
+// The lookup exists precisely to avoid deciding that blind; naming the wrong
+// run is how it gets skipped.
+it('reconciles an empty answer against the run that is installed now', async () => {
+  jest.useFakeTimers();
+  try {
+    getProjectStatus.mockResolvedValueOnce(
+      status(makeRun({ id: 'r1', status: 'failed', last_checkpoint_step: 7 })),
+    );
+    renderPage();
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    await act(async () => { screen.getByText('Dismiss').click(); });
+
+    // C is issued first and will install the replacement; B is issued while C
+    // is still outstanding, so B carries the HIGHER ticket — the watermark
+    // cannot fence it — and the OLDER view of `run`, which is r1.
+    let releaseC: (v: ProjectStatus) => void = () => {};
+    let releaseB: (v: ProjectStatus) => void = () => {};
+    getProjectStatus.mockImplementationOnce(() => new Promise((r) => { releaseC = r; }));
+    await act(async () => { await jest.advanceTimersByTimeAsync(15000); });
+    getProjectStatus.mockImplementationOnce(() => new Promise((r) => { releaseB = r; }));
+    await act(async () => { await jest.advanceTimersByTimeAsync(15000); });
+
+    await act(async () => {
+      releaseC(status(makeRun({ id: 'r2', status: 'running', progress: 55, updated_at: 'newer' })));
+      for (let i = 0; i < 8; i++) await jest.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText('55%')).toBeInTheDocument();
+
+    // r2 is alive and well; r1 is the archived run B's closure remembers.
+    getRun.mockImplementation(async (runID: string) =>
+      runID === 'r2'
+        ? makeRun({ id: 'r2', status: 'running', progress: 55, updated_at: 'newer' })
+        : makeRun({ id: 'r1', status: 'failed', discarded_at: '2026-10-15T09:00:00Z' }));
+
+    await act(async () => {
+      releaseB({ project_id: 'p1', run: null, last_discovery: null });
+      for (let i = 0; i < 8; i++) await jest.advanceTimersByTimeAsync(0);
+    });
+
+    // The subject of the lookup is the assertion: ask about r1 and whatever
+    // comes back is about the wrong run.
+    expect(getRun).toHaveBeenCalledWith('r2');
+    expect(getRun).not.toHaveBeenCalledWith('r1');
+    expect(screen.getByText('55%')).toBeInTheDocument();
+    expect(screen.getByText('Cancel')).toBeInTheDocument();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 // After another tab discards the run, this tab's resume-refusal path
 // refreshes through getRun and gets the ARCHIVED document back: still
 // `failed`, still without a discovery, so the only thing distinguishing it is
