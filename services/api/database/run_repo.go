@@ -885,9 +885,11 @@ func (r *RunRepository) Discard(ctx context.Context, runID string) error {
 // refused outright and never reaches here. The marker this clears is therefore
 // always the caller's own.
 //
-// Should be called on a context that cannot be cancelled — a client
-// disconnect between the claim and the release would otherwise leave the run
-// discarded on the strength of a check that said not to.
+// Should be called on a context that cannot be cancelled, and on its own
+// deadline — a client disconnect between the claim and the release, or a
+// deadline already spent by the check that failed, would otherwise leave the
+// run discarded on the strength of a check that said not to. The API handler
+// uses withCleanup for this.
 func (r *RunRepository) ReleaseDiscard(ctx context.Context, runID string) error {
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {

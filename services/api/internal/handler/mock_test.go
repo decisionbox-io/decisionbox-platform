@@ -658,7 +658,14 @@ func (m *mockRunRepo) Discard(_ context.Context, runID string) error {
 	return nil
 }
 
-func (m *mockRunRepo) ReleaseDiscard(_ context.Context, runID string) error {
+func (m *mockRunRepo) ReleaseDiscard(ctx context.Context, runID string) error {
+	// A real driver refuses a write on a dead context, and this is the write
+	// that takes back a claim the operator was told did not happen — so the
+	// handler depends on not being handed one. Same reason FailAttempt
+	// checks.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if m.releaseDiscardErr != nil {
 		return m.releaseDiscardErr
 	}

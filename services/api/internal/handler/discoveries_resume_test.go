@@ -1604,6 +1604,43 @@ func TestDiscardRun_RefusesAResultSavedAfterTheClaim(t *testing.T) {
 	}
 }
 
+// Claiming first puts a window between the marker going down and the check
+// that decides whether it stays — and net/http cancels the request context
+// the instant the client disconnects. Run the release on that context and a
+// browser tab closing in the window decides whether the run is discarded,
+// against the answer the check gave. Worse than the bug the ordering fixed:
+// that one needed an agent racing it, this one needs only a closed tab.
+func TestDiscardRun_ACancelledRequestCannotLeaveTheClaimDown(t *testing.T) {
+	f := newResumeFixture(t)
+	f.runs.runs["run-1"].Status = "failed"
+	f.runs.runs["run-1"].LastCheckpointStep = 4
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// A result appears and the client disconnects, both inside the window.
+	f.runs.onDiscardClaim = func() {
+		f.discs.add(&models.DiscoveryResult{ID: "disc-1", ProjectID: "p1", RunID: "run-1"})
+		cancel()
+	}
+
+	req := discardReq("run-1")
+	w := httptest.NewRecorder()
+	f.h.DiscardRun(w, req.WithContext(auth.WithUser(ctx, &auth.UserPrincipal{
+		Sub: "tester", OrgID: "default", Roles: []string{"admin"},
+	})))
+
+	run := f.runs.runs["run-1"]
+	if run.DiscardedAt != nil {
+		t.Error("the run is marked discarded although the discard was refused and the request was cancelled")
+	}
+	if run.LastCheckpointStep != 4 {
+		t.Errorf("last_checkpoint_step = %d, want 4 — the run must come out of this as resumable as it went in", run.LastCheckpointStep)
+	}
+	if f.runs.discardFinalized != 0 {
+		t.Error("finalized a discard that was refused")
+	}
+}
+
 // Fail closed: discarding cannot be undone, so an unknown answer must not be
 // read as "no result".
 func TestDiscardRun_RefusesWhenTheResultCheckFails(t *testing.T) {

@@ -1119,12 +1119,6 @@ func (h *DiscoveriesHandler) DiscardRun(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Released on a context the client cannot cancel. A disconnect between
-	// the claim and its release would otherwise leave the run discarded on
-	// the strength of a check that said not to — the exact outcome the
-	// re-ordering exists to prevent.
-	settle := context.WithoutCancel(ctx)
-
 	// BeginResume CLEARS discovery_id, so the pointer checked above is not
 	// the whole answer: a run that saved a partial result and was then
 	// resumed carries an empty one while the earlier discovery is still
@@ -1136,13 +1130,23 @@ func (h *DiscoveriesHandler) DiscardRun(w http.ResponseWriter, r *http.Request) 
 	if h.repo != nil {
 		hasResult, err := h.repo.HasResultForRun(ctx, runID)
 		if err != nil || hasResult {
-			if rerr := h.runRepo.ReleaseDiscard(settle, runID); rerr != nil {
-				// The claim is down and will not come up. Said loudly,
-				// because the run now reads as discarded while this request
-				// reported a refusal.
-				apilog.WithFields(apilog.Fields{"run_id": runID, "error": rerr.Error()}).
-					Error("could not release the discard claim after refusing the discard; the run is marked discarded but the operator was told otherwise")
-			}
+			// withCleanup, because this write is the one that must land:
+			// net/http cancels the request context the instant the client
+			// disconnects, and the commonest reason to be here is that the
+			// check above just failed — often by timing out on the very
+			// context this would otherwise share. A release that does not
+			// land leaves the run discarded on the strength of a check that
+			// said not to, which is the exact outcome the re-ordering
+			// exists to prevent.
+			withCleanup(ctx, func(cctx context.Context) {
+				if rerr := h.runRepo.ReleaseDiscard(cctx, runID); rerr != nil {
+					// The claim is down and will not come up. Said loudly,
+					// because the run now reads as discarded while this
+					// request reported a refusal.
+					apilog.WithFields(apilog.Fields{"run_id": runID, "error": rerr.Error()}).
+						Error("could not release the discard claim after refusing the discard; the run is marked discarded but the operator was told otherwise")
+				}
+			})
 			if err != nil {
 				// Fail closed. Discarding is irreversible, so an unknown
 				// answer must not be read as "no result".
@@ -1155,23 +1159,26 @@ func (h *DiscoveriesHandler) DiscardRun(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// Settled. Only now does the run give up what made it resumable.
-	if err := h.runRepo.FinalizeDiscard(settle, runID); err != nil {
-		apilog.WithFields(apilog.Fields{"run_id": runID, "error": err.Error()}).
-			Warn("discarded the run but could not clear its checkpoint marker; every resume path also filters on the discard marker")
-	}
+	// Settled. Only now does the run give up what made it resumable, and on
+	// its own budget for the reason every other tail-end write here has one.
+	withCleanup(ctx, func(cctx context.Context) {
+		if err := h.runRepo.FinalizeDiscard(cctx, runID); err != nil {
+			apilog.WithFields(apilog.Fields{"run_id": runID, "error": err.Error()}).
+				Warn("discarded the run but could not clear its checkpoint marker; every resume path also filters on the discard marker")
+		}
+	})
 
 	// The checkpoints are what made it resumable, and the agent's boot sweep
 	// keeps a per-run vector collection alive for as long as they exist.
 	// Best-effort with the retention TTL as the backstop, matching cancel.
 	if h.checkpointRepo != nil {
-		// settle, not ctx: past the point of no return, a client disconnect
-		// should not leave the rows behind for the TTL to find.
-		if deleted, err := h.checkpointRepo.DeleteByRun(settle, runID); err != nil {
-			apilog.WithError(err).Warn("failed to delete the checkpoints of a discarded run; the retention TTL will reclaim them")
-		} else if deleted > 0 {
-			apilog.WithFields(apilog.Fields{"run_id": runID, "deleted": deleted}).Info("deleted the checkpoints of a discarded run")
-		}
+		withCleanup(ctx, func(cctx context.Context) {
+			if deleted, err := h.checkpointRepo.DeleteByRun(cctx, runID); err != nil {
+				apilog.WithError(err).Warn("failed to delete the checkpoints of a discarded run; the retention TTL will reclaim them")
+			} else if deleted > 0 {
+				apilog.WithFields(apilog.Fields{"run_id": runID, "deleted": deleted}).Info("deleted the checkpoints of a discarded run")
+			}
+		})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
