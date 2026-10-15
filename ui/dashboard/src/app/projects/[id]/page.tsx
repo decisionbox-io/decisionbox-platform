@@ -158,12 +158,17 @@ export default function ProjectPage() {
       // invalidate a newer request.
       //
       // The watermark moves HERE, at the write, not when the request was
-      // issued. Claiming it up front starved the reconcile below: an empty
-      // status answer writes nothing until its getRun returns, so if that
-      // lookup outlives the 2s interval, each newer poll claimed the
-      // watermark and cancelled the reconcile before it could finish —
-      // for ever, leaving the stale panel and a disabled trigger. A poll
-      // that has not written anything has no claim.
+      // issued, because a poll that has written nothing has no claim on
+      // being the latest applied. Claimed up front, an empty status answer
+      // held the claim while its getRun reconcile was still outstanding, so
+      // a newer poll arriving first cancelled that reconcile — and with a
+      // lookup slower than the 2s interval, every one of them.
+      //
+      // Whether that can starve the panel indefinitely I could not
+      // demonstrate: the poll holding the claim is always the newest one,
+      // and its own reconcile completes when its lookup resolves. So this
+      // is the more honest reading of what the watermark means, not a fix
+      // for a reproduced hang.
       const applyPoll = (next: DiscoveryRunStatus | null) => {
         if (ticket < appliedPoll.current) return;
         appliedPoll.current = ticket;
