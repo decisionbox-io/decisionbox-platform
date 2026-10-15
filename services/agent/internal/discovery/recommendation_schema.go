@@ -70,6 +70,43 @@ func recommendationResponseSchema() map[string]interface{} {
 			"items":       strItems("An insight UUID from the input"),
 		},
 		"confidence": map[string]interface{}{"type": "number", "description": "Confidence from 0.0 to 1.0"},
+		// Described here for the reason the insight schema describes its own
+		// figures array: a contract the prompt asks for and the schema does not
+		// mention is one a decode-constrained provider will not emit, and the
+		// failure is silent -- the prose keeps its references and nothing
+		// resolves them.
+		//
+		// No `value` property, deliberately. The platform takes the number from
+		// the figure the refs name, so a value here is one the model would be
+		// inventing where the whole point is that it does not have to.
+		"figures": map[string]interface{}{
+			"type":        "array",
+			"description": "Numbers this recommendation reports, each naming a figure an insight already declared. The prose carries {{id}} references and the platform renders the checked value into it.",
+			"items": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"id":       str(`What the prose references, "f1". Unique within this recommendation.`),
+					"kind":     str("`ref` to restate one insight figure, `sum` to total several"),
+					"unit":     str("count, currency, percent, multiple or plain — notation only, never a word like days"),
+					"scale":    str("thousands, millions or billions to abbreviate; omit to write in full"),
+					"decimals": map[string]interface{}{"type": "integer", "description": "Decimal places to print. This is the precision being claimed."},
+					"approx":   map[string]interface{}{"type": "boolean", "description": "Print a leading tilde to mark the number as rounded"},
+					"refs": map[string]interface{}{
+						"type":        "array",
+						"description": "The insight figures this number comes from: one for `ref`, several for `sum`",
+						"items": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"insight": str("The insight's id, copied verbatim from the input"),
+								"figure":  str(`The figure's id inside that insight's figures array, "f2"`),
+							},
+							"required": []interface{}{"insight", "figure"},
+						},
+					},
+				},
+				"required": []interface{}{"id", "kind", "refs"},
+			},
+		},
 	}
 
 	return map[string]interface{}{
