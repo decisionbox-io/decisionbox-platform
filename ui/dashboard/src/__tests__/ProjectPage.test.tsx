@@ -1070,6 +1070,58 @@ it('reconciles an empty answer against the run that is installed now', async () 
   }
 });
 
+// runChanged decides whether to WRITE, and comparing it against the closure
+// asks the wrong question: "is this different from what I last saw" rather
+// than "is this different from what is on screen". The two diverge exactly
+// when an overlapping poll has installed something in between.
+//
+// Two dismissed-run polls both capture A. The first installs a newer failed
+// run B. The second answers A — unchanged against its own closure, so it
+// writes nothing — while B, which another tab has since discarded, stays on
+// screen. B is terminal and is not the dismissed run, so polling stops: its
+// Resume and Discard sit there indefinitely, both guaranteed to 409.
+it('applies a poll answer that differs from the run on screen, not from its own closure', async () => {
+  jest.useFakeTimers();
+  try {
+    getProjectStatus.mockResolvedValueOnce(
+      status(makeRun({ id: 'r1', status: 'failed', last_checkpoint_step: 7 })),
+    );
+    renderPage();
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    await act(async () => { screen.getByText('Dismiss').click(); });
+    expect(screen.queryByText(/Resume from step/)).not.toBeInTheDocument();
+
+    // Both polls are issued while A is installed, so both capture A.
+    let release1: (v: ProjectStatus) => void = () => {};
+    let release2: (v: ProjectStatus) => void = () => {};
+    getProjectStatus.mockImplementationOnce(() => new Promise((r) => { release1 = r; }));
+    await act(async () => { await jest.advanceTimersByTimeAsync(15000); });
+    getProjectStatus.mockImplementationOnce(() => new Promise((r) => { release2 = r; }));
+    await act(async () => { await jest.advanceTimersByTimeAsync(15000); });
+
+    // The first answers with a newer failed run, which is installed and
+    // offers Resume because it has checkpoints.
+    await act(async () => {
+      release1(status(makeRun({ id: 'r2', status: 'failed', last_checkpoint_step: 9, updated_at: 'b' })));
+      for (let i = 0; i < 8; i++) await jest.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText(/Resume from step 9/)).toBeInTheDocument();
+
+    // The second answers A: unchanged against its own closure, different
+    // from what is actually on screen. B has been discarded elsewhere, so
+    // leaving it up offers two buttons that cannot work.
+    await act(async () => {
+      release2(status(makeRun({ id: 'r1', status: 'failed', last_checkpoint_step: 7 })));
+      for (let i = 0; i < 8; i++) await jest.advanceTimersByTimeAsync(0);
+    });
+
+    // A is the dismissed run, so adopting it hides the panel.
+    expect(screen.queryByText(/Resume from step/)).not.toBeInTheDocument();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 // After another tab discards the run, this tab's resume-refusal path
 // refreshes through getRun and gets the ARCHIVED document back: still
 // `failed`, still without a discovery, so the only thing distinguishing it is

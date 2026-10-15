@@ -260,22 +260,44 @@ export default function ProjectPage() {
         if (newRun.status === 'running' || newRun.status === 'pending') {
           setDismissedRunId((prev) => (prev === newRun.id ? null : prev));
         }
-        const wasRunning = run && (run.status === 'running' || run.status === 'pending');
+        // Both of the comparisons below are against the run that is
+        // INSTALLED, not the one this closure captured. The two diverge
+        // exactly when an overlapping poll installed something in between,
+        // and then the closure answers the wrong question: "is this
+        // different from what I last saw" rather than "is this different
+        // from what is on screen".
+        //
+        // Staleness is not this check's job. The watermark above is the
+        // staleness fence — every accepted answer claims it, so a poll that
+        // gets this far is the newest one that has been acted on, and its
+        // answer is the freshest information available.
+        const installed = runRef.current;
+        const wasRunning = installed && (installed.status === 'running' || installed.status === 'pending');
         const nowDone = newRun.status === 'completed' || newRun.status === 'failed';
         // Only replace `run` when something we render actually changed. The
         // status endpoint answers as fast as we ask and `newRun` is freshly
-        // parsed JSON — never reference-equal to `run` — so an unconditional
-        // setRun would flip `run`'s identity on every response. Because
-        // pollStatus lists `run` as a dependency and an effect below calls
-        // pollStatus, that turned every response into re-render → new
-        // pollStatus → fetch → setRun → …, an unbounded request loop (#405).
+        // parsed JSON — never reference-equal — so an unconditional setRun
+        // would flip `run`'s identity on every response, which used to feed
+        // the unbounded request loop in #405 (re-render → new pollStatus →
+        // fetch → setRun → …). pollStatus no longer depends on `run`, so
+        // that loop cannot form either way; this stays because re-rendering
+        // the panel on every no-op response is still waste.
         // `updated_at` is bumped server-side on every write to the run doc,
         // so comparing it (with id/status) keeps the live progress header
         // ticking during a run while skipping the no-op responses.
-        const runChanged = !run
-          || run.id !== newRun.id
-          || run.status !== newRun.status
-          || run.updated_at !== newRun.updated_at;
+        //
+        // Compared against the installed run, this is also what stops a
+        // superseded run staying on screen: two dismissed-run polls both
+        // capture A, the first installs a newer failed B, and the second
+        // answers A — unchanged against its own closure, so it wrote
+        // nothing and left B up. B is terminal and is not the dismissed
+        // run, so polling stops and B's Resume and Discard sit there
+        // indefinitely, both of them certain to 409 once another tab has
+        // discarded it.
+        const runChanged = !installed
+          || installed.id !== newRun.id
+          || installed.status !== newRun.status
+          || installed.updated_at !== newRun.updated_at;
         if (runChanged) applyPoll(newRun);
         else claimPoll();
         if (wasRunning && nowDone) {
@@ -289,7 +311,13 @@ export default function ProjectPage() {
         }
       }
     } catch { /* ignore */ }
-  }, [id, run]);
+    // No `run` dependency: every read of it in here now goes through runRef,
+    // so this callback is stable. That closes #405 at the root rather than
+    // by comparison — the loop was re-render → new pollStatus → fetch →
+    // setRun → re-render, and a pollStatus that does not change identity
+    // when `run` does cannot enter it. The interval effect below still
+    // re-arms on `run`, because the cadence depends on its status.
+  }, [id]);
 
   // The 2s poll is gated on an in-flight run, plus one case that is not in
   // flight: a run this page has DISMISSED. A resume re-enters the same run id,
