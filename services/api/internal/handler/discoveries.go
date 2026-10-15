@@ -1064,6 +1064,16 @@ func (h *DiscoveriesHandler) DiscardRun(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Canonical from here on, because this route mixes two kinds of key.
+	// ObjectIDFromHex accepts uppercase hex, so GetByID and Discard resolve
+	// "6AD0…" perfectly well — while the collections keyed by run_id as a
+	// STRING hold the lowercase form oid.Hex() produces. Left as the path
+	// gave it, HasResultForRun would compare an uppercase id against a
+	// lowercase run_id, find nothing, and let the discard orphan the very
+	// discovery that check exists to protect; DeleteByRun would likewise
+	// purge nothing. run.ID is what the document says its id is.
+	runID = run.ID
+
 	// Named refusals before the atomic one, so the operator is told which of
 	// the three reasons applies rather than a bare "not discardable".
 	switch {

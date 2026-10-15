@@ -92,19 +92,27 @@ export default function ProjectPage() {
   // fresh its view of `run` is: a poll issued before an earlier one answered
   // carries the higher ticket and the older closure. Acting on that closure
   // means asking the server about a run that is no longer the installed one.
-  // Synced in an effect rather than at each setRun because one of the three
-  // writers uses a functional update, and a mirror that a call site can
-  // forget is worse than none.
   const runRef = useRef<DiscoveryRunStatus | null>(null);
-  useEffect(() => {
-    runRef.current = run;
-  }, [run]);
+  // writeRun is the ONLY way `run` is written, which is what lets the mirror
+  // be exact instead of eventual.
+  //
+  // It was an effect on [run] first, and that is a beat too late: two poll
+  // replies can resolve in one microtask drain, so the first queues its
+  // setRun while the second reads a mirror that no commit has reached yet.
+  // The second then decides against the run BEFORE the replacement — which
+  // is the whole class of bug the mirror was added to close, reintroduced
+  // one step further along. Assigned here, every reader after a write sees
+  // the write.
+  const writeRun = useCallback((next: DiscoveryRunStatus | null) => {
+    runRef.current = next;
+    setRun(next);
+  }, []);
   // installRun is how an ACTION writes `run`: it sets and bumps together, so
   // no call site can do one without the other.
   const installRun = useCallback((next: DiscoveryRunStatus | null) => {
     actionEpoch.current += 1;
-    setRun(next);
-  }, []);
+    writeRun(next);
+  }, [writeRun]);
   const [loading, setLoading] = useState(true);
   const [triggering, setTriggering] = useState(false);
   const [analysisAreas, setAnalysisAreas] = useState<{ id: string; name: string }[]>([]);
@@ -185,7 +193,7 @@ export default function ProjectPage() {
       const applyPoll = (next: DiscoveryRunStatus | null) => {
         if (ticket < appliedPoll.current) return;
         appliedPoll.current = ticket;
-        setRun(next);
+        writeRun(next);
       };
       // claimPoll holds the watermark for an answer that was ACTED ON but
       // needed no write — one that confirms what is already installed.
@@ -312,12 +320,13 @@ export default function ProjectPage() {
       }
     } catch { /* ignore */ }
     // No `run` dependency: every read of it in here now goes through runRef,
-    // so this callback is stable. That closes #405 at the root rather than
-    // by comparison — the loop was re-render → new pollStatus → fetch →
-    // setRun → re-render, and a pollStatus that does not change identity
-    // when `run` does cannot enter it. The interval effect below still
-    // re-arms on `run`, because the cadence depends on its status.
-  }, [id]);
+    // so this callback is stable — writeRun is itself a useCallback with no
+    // dependencies. That closes #405 at the root rather than by comparison:
+    // the loop was re-render → new pollStatus → fetch → setRun →
+    // re-render, and a pollStatus that does not change identity when `run`
+    // does cannot enter it. The interval effect below still re-arms on
+    // `run`, because the cadence depends on its status.
+  }, [id, writeRun]);
 
   // The 2s poll is gated on an in-flight run, plus one case that is not in
   // flight: a run this page has DISMISSED. A resume re-enters the same run id,
@@ -693,9 +702,15 @@ export default function ProjectPage() {
             // Only this run. Another discovery can have started while the
             // request was in flight, and clearing that one would hide a live
             // run's progress and Cancel with nothing to bring them back.
-            const discarded = run.id;
+            // The mirror is written synchronously with every setRun, so it
+            // already holds what a functional update would have been handed
+            // — and reading it keeps `run` to a single writer. The epoch
+            // bumps either way: the discard landed, so an in-flight poll's
+            // answer describes a world that no longer exists whether or not
+            // this tab's panel is the run that went.
+            const current = runRef.current;
             actionEpoch.current += 1;
-            setRun((prev) => (prev && prev.id === discarded ? null : prev));
+            if (current && current.id === run.id) writeRun(null);
             void pollStatus();
           } catch (e: unknown) {
             // 409 is a real answer here — the run went active again, or

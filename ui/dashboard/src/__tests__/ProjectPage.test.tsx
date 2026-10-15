@@ -1122,6 +1122,55 @@ it('applies a poll answer that differs from the run on screen, not from its own 
   }
 });
 
+// The mirror has to be exact, not eventual. Two poll replies can resolve in
+// ONE microtask drain: the first queues its state update, and the second runs
+// before any commit — so a mirror synced by an effect on [run] still holds
+// the run from before the first reply.
+//
+// The second reply then decides against that older run. Here it is an empty
+// status answer and the older run is terminal, so the branch takes the
+// "nothing to reconcile" path and clears the panel outright, erasing the
+// live replacement the first reply had just installed. Polling is gated on a
+// live run, so progress and Cancel do not come back without a reload.
+it('sees the run a reply installed when both replies land in one batch', async () => {
+  jest.useFakeTimers();
+  try {
+    getProjectStatus.mockResolvedValueOnce(
+      status(makeRun({ id: 'r1', status: 'failed', last_checkpoint_step: 7 })),
+    );
+    renderPage();
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    await act(async () => { screen.getByText('Dismiss').click(); });
+
+    let release1: (v: ProjectStatus) => void = () => {};
+    let release2: (v: ProjectStatus) => void = () => {};
+    getProjectStatus.mockImplementationOnce(() => new Promise((r) => { release1 = r; }));
+    await act(async () => { await jest.advanceTimersByTimeAsync(15000); });
+    getProjectStatus.mockImplementationOnce(() => new Promise((r) => { release2 = r; }));
+    await act(async () => { await jest.advanceTimersByTimeAsync(15000); });
+
+    // The live replacement, and the run the reconcile should ask about.
+    const live = makeRun({ id: 'r2', status: 'running', progress: 55, updated_at: 'newer' });
+    getRun.mockResolvedValue(live);
+
+    // Both released without yielding in between, so the second handler runs
+    // before React commits the first.
+    await act(async () => {
+      release1(status(live));
+      release2({ project_id: 'p1', run: null, last_discovery: null });
+      for (let i = 0; i < 10; i++) await jest.advanceTimersByTimeAsync(0);
+    });
+
+    // The empty answer must be reconciled against r2 — which is live, so the
+    // panel stays — rather than resolved against the run from before r2.
+    expect(getRun).toHaveBeenCalledWith('r2');
+    expect(screen.getByText('55%')).toBeInTheDocument();
+    expect(screen.getByText('Cancel')).toBeInTheDocument();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 // After another tab discards the run, this tab's resume-refusal path
 // refreshes through getRun and gets the ARCHIVED document back: still
 // `failed`, still without a discovery, so the only thing distinguishing it is
