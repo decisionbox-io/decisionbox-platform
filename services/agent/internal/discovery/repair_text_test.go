@@ -219,3 +219,37 @@ func TestSubstituteRefutedCounts_LeavesNonCardinalityAlone(t *testing.T) {
 		t.Errorf("description changed: %q", ins.Description)
 	}
 }
+
+// A localised grouping separator must not expose the digits inside a number to count
+// repair.
+//
+// Found by adversarial review of the number-localisation change. French, Russian and
+// Polish group with U+00A0, so "1<NBSP>123 clients" looked to a byte-wise boundary check
+// like a standalone "123" followed by "clients" -- and repairing a refuted "123 clients"
+// elsewhere in the insight would have rewritten this one too, turning 1,123 into 1,302
+// without anything noticing. A comma or a point had always blocked it; before numbers were
+// localised, no separator could be a space.
+func TestStandaloneNumber_LocalisedGroupingIsNotABoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		text  string
+		tok   string
+		found bool
+	}{
+		{"plain count is standalone", "123 clients", "123", true},
+		{"us grouping hides it", "1,123 clients", "123", false},
+		{"turkish grouping hides it", "1.123 clients", "123", false},
+		{"french no-break space hides it", "1 123 clients", "123", false},
+		{"narrow no-break space hides it", "1 123 clients", "123", false},
+		{"thin space hides it", "1 123 clients", "123", false},
+		{"an ordinary space is still a boundary", "about 123 clients", "123", true},
+		{"a trailing separator also hides it", "123 456", "123", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			at := standaloneNumber(tc.text, tc.tok)
+			if got := len(at) > 0; got != tc.found {
+				t.Fatalf("standaloneNumber(%q, %q) = %v, want found=%v", tc.text, tc.tok, at, tc.found)
+			}
+		})
+	}
+}

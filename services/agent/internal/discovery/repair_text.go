@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
@@ -185,12 +186,18 @@ func standaloneNumber(text, tok string) []int {
 		if text[i:i+len(tok)] != tok {
 			continue
 		}
-		if i > 0 && numAdjacent(text[i-1]) {
-			continue
+		if i > 0 {
+			r, _ := utf8.DecodeLastRuneInString(text[:i])
+			if numAdjacent(r) {
+				continue
+			}
 		}
 		end := i + len(tok)
-		if end < len(text) && numAdjacent(text[end]) {
-			continue
+		if end < len(text) {
+			r, _ := utf8.DecodeRuneInString(text[end:])
+			if numAdjacent(r) {
+				continue
+			}
 		}
 		out = append(out, i)
 		i = end - 1
@@ -198,8 +205,28 @@ func standaloneNumber(text, tok string) []int {
 	return out
 }
 
-func numAdjacent(c byte) bool {
-	return (c >= '0' && c <= '9') || c == '.' || c == ',' || c == '_'
+// numAdjacent reports whether a rune makes the digits beside it part of a larger
+// number rather than a standalone one.
+//
+// It takes a rune, not a byte, because a grouping separator is not always ASCII.
+// French, Russian and Polish group with U+00A0, so "1<NBSP>123 clients" put a bare
+// "123" next to the word "clients" as far as a byte-wise check could tell -- and
+// repairing a refuted "123 clients" elsewhere would have rewritten the 1,123 too,
+// silently turning it into 1,302. A comma or a point had always blocked that; the
+// space-class separators had not, because until numbers were localised none of them
+// could appear inside one.
+//
+// An ordinary space stays a boundary: "123 clients" must still match.
+func numAdjacent(r rune) bool {
+	switch r {
+	case '.', ',', '_',
+		'\u00a0', // no-break space -- fr, ru, pl
+		'\u202f', // narrow no-break space -- fr-CH and newer CLDR
+		'\u2009', // thin space
+		'\u2007': // figure space
+		return true
+	}
+	return r >= '0' && r <= '9'
 }
 
 // unitAfter returns what the first standalone occurrence of tok in text is
