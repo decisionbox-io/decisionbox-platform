@@ -45,20 +45,26 @@ func (w figureWriter) renderFigure(f models.Figure) string {
 		sc = figureScales[models.ScaleNone]
 	}
 	scaled := f.Value / sc.div
-	digits := w.digits(scaled, f.Places())
 
 	var b strings.Builder
 	if f.Approx {
 		b.WriteString("~")
 	}
+	if f.Unit == models.UnitCurrency && scaled < 0 {
+		// The sign belongs outside the currency symbol: -$1.2M, not $-1.2M.
+		//
+		// Done by negating before formatting rather than by trimming a "-" off the
+		// formatted string. CLDR does not always write a bare hyphen: Arabic prefixes
+		// its minus with U+061C and Hebrew with U+200E, so a TrimPrefix matched
+		// nothing and both languages shipped "-$<marker>-1.2M" with the sign twice.
+		// Formatting the magnitude leaves no sign to strip and no marker to know about.
+		b.WriteString("-")
+		scaled = -scaled
+	}
 	if f.Unit == models.UnitCurrency {
-		if scaled < 0 {
-			// The sign belongs outside the currency symbol: -$1.2M, not $-1.2M.
-			b.WriteString("-")
-			digits = strings.TrimPrefix(digits, "-")
-		}
 		b.WriteString(f.Symbol())
 	}
+	digits := w.digits(scaled, f.Places())
 	// Grouping and the decimal mark come from the language, including for a scaled
 	// figure -- otherwise "30.63M" keeps a US point inside Turkish prose. x/text
 	// groups by the locale's own rule, so Hindi gets 12,34,567 rather than the

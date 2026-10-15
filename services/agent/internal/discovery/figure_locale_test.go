@@ -106,15 +106,30 @@ func TestFigureRender_GroupingIsNotAlwaysThreeDigits(t *testing.T) {
 	}
 }
 
-// The sign has to stay an ASCII hyphen, because the currency branch strips it with
-// TrimPrefix before writing the symbol. A locale whose minus is U+2212 would leave
-// "$-1.2M" turned into "$−1.2M" with the sign still inside the symbol.
-func TestFigureRender_SignStaysStrippable(t *testing.T) {
-	for _, lang := range []string{"English", "Turkish", "German", "Hindi", "Arabic", "Hebrew", "Thai"} {
-		f := models.Figure{Value: -1_200_000, Unit: models.UnitCurrency, Currency: "$", Scale: models.ScaleMillions, Decimals: 1}
-		got := newFigureWriter(lang).renderFigure(f)
-		if !strings.HasPrefix(got, "-$") {
-			t.Errorf("%s rendered %q; the sign must stay outside the symbol and be an ASCII hyphen", lang, got)
-		}
+// A negative amount carries exactly one sign, outside the currency symbol, in every
+// language.
+//
+// The first version of this test asserted only HasPrefix(got, "-$"), which is true of
+// "-$\u200e-1.2M" -- so it passed while Arabic and Hebrew shipped the sign twice. CLDR
+// prefixes their minus with a bidi marker (U+061C, U+200E), and the trim that was supposed
+// to remove the inner sign matched nothing. Counting is the property; a prefix check is
+// the hole.
+func TestFigureRender_NegativeCarriesExactlyOneSign(t *testing.T) {
+	for _, lang := range []string{"English", "Turkish", "German", "Hindi", "Arabic", "Hebrew", "Thai", "Russian"} {
+		t.Run(lang, func(t *testing.T) {
+			f := models.Figure{Value: -1_200_000, Unit: models.UnitCurrency, Currency: "$", Scale: models.ScaleMillions, Decimals: 1}
+			got := newFigureWriter(lang).renderFigure(f)
+			if n := strings.Count(got, "-"); n != 1 {
+				t.Errorf("rendered %q with %d hyphens, want exactly 1", got, n)
+			}
+			for _, marker := range []string{"\u061c", "\u200e", "\u200f", "\u2212"} {
+				if strings.Contains(got, marker) {
+					t.Errorf("rendered %q, which carries a bidi or non-ASCII sign marker %q", got, marker)
+				}
+			}
+			if !strings.HasPrefix(got, "-$") {
+				t.Errorf("rendered %q; the sign belongs outside the symbol", got)
+			}
+		})
 	}
 }
