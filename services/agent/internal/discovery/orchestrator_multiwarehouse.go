@@ -143,6 +143,7 @@ func (o *Orchestrator) buildDatasourceContext(ctx context.Context) (*datasourceC
 		datasetsStr := strings.Join(wh.GetDatasets(), ", ")
 		fixer := o.newQueryFixer(provider, datasetsStr, filterClause(wh.FilterField, wh.FilterValue))
 		fixer.SetSchemaContext((&SchemaContextBuilder{Schemas: schemas}).BuildCatalog(nil).Catalog)
+		fixer.SetTableColumnResolver(schemaColumnResolver(schemas))
 		dc.executors[id] = queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
 			Warehouse:    provider,
 			ProviderSlug: wh.Provider,

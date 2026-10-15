@@ -160,6 +160,69 @@ Whether a run takes this path is decided from the registered shape of its dataso
 - `validation` — Insight validation result
 - `error` — Something went wrong (with error message)
 
+## Checkpointing and resume
+
+Exploration is where a run's cost sits: one agentic LLM call and one warehouse query per step, dozens of steps. Until checkpointing existed, none of that was written anywhere replayable until Phase 7, so a process that died anywhere earlier lost all of it — and the run was marked `failed`, which is terminal.
+
+Each completed exploration step now lands in its own `discovery_checkpoints` document as it finishes, plus one summary document when exploration ends. A failed run with a checkpoint can be **resumed**: it re-enters the **same run id**, replays the steps already executed instead of re-querying them, and continues from the next one. A run that died *after* exploration finished goes straight to analysis, making zero exploration LLM calls and zero warehouse queries.
+
+Resume is operator-initiated — the dashboard shows a **Resume from step N** button on a failed run that has a checkpoint, and the same thing is available as `POST /api/v1/runs/{runId}/resume`. Nothing retries automatically.
+
+### What a checkpoint keeps
+
+| Kept | Why |
+|---|---|
+| The action, its reasoning, the SQL and its purpose | Replay rebuilds the model's own prior turn from them |
+| `row_count`, timing, token counts, self-heal summary | The result message and the run's accounting |
+| The compact result digest | What the analysis phase renders |
+| Up to 50 rows of the result, normalised | The insight validation phases read raw rows; their evidence bundle is already a 50-row sample on the live path, so a resumed run's verifier sees the same evidence |
+| Quality caveats | Every insight's evidence label derives from them, and they are knowable nowhere else — a resumed run without them would relabel findings computed over withheld rows as sound |
+
+Deliberately **not** kept: the full result set (what makes a step unbounded in size), the per-attempt SQL-fix log (audit data, written once at Phase 7), and the raw LLM dialog.
+
+A resumed run's audit log therefore carries the 50-row sample for its pre-crash steps rather than their full results — those rows died with the crashed process. A normal run, and the steps a resumed run executes itself, are unchanged.
+
+### What replay re-executes
+
+Split by cost, so the expensive thing is never paid for twice:
+
+| Action | On replay |
+|---|---|
+| `query_data` | **Never re-executed.** The result message is rebuilt from the retained rows and the step's metadata. |
+| `lookup_schema` | Re-executed against the schema cache — a map lookup plus a Mongo read, no warehouse traffic and no LLM call. |
+| `search_tables` | Re-executed — one embedding call and one vector query. |
+| `get_correlations` | Re-executed — an in-process lookup. |
+| `complete_rejected` | The nudge is re-derived from the persisted reason. |
+
+Re-executing the cheap actions through their real code paths is what restores the per-run `lookup_schema` / `search_tables` / `get_correlations` budgets and the already-fetched-table dedupe as a side effect, so a resumed run cannot be handed a fresh schema budget.
+
+No synthetic "you were resumed" message is injected. The replayed transcript *is* the signal: the model sees its own prior actions and the last result, and answers with the next step.
+
+### Limits worth knowing
+
+- **Checkpoints expire.** `DISCOVERY_CHECKPOINT_RETENTION` (default 48h) must exceed `DISCOVERY_MAX_DURATION`, or a long run's early checkpoints expire while it is still running. Raise them together. A resume with nothing left to replay is refused with an explanation rather than silently re-exploring. A surviving exploration summary is **not** resumable on its own once the step rows have gone: skipping to analysis means analysing the replayed steps, and with none the picker finds nothing for any area, so the run would cost the whole analysis phase to produce a discovery with no insights. Resume refuses it instead, the same way it refuses a run that never checkpointed.
+- **A gap stops the replay.** Checkpoint writes are best-effort so they can never abort a working run. If one fails, replay stops at that step and re-explores from there — replaying across a hole would misnumber every later step, and insights cite step numbers.
+- **So does a stale tail.** Once a gap has been filled, the rows no longer have a hole in them, but the steps after the filled one are the *previous* attempt's answers to a step that no longer exists. The replay therefore also stops at the first step written by an older attempt than the step before it, and re-explores from there — otherwise the model would be handed a conversation spliced from two different explorations. Attempts may rise along the replayed prefix (that is just a later attempt continuing where an earlier one stopped); they never go backwards.
+- **Cancel stays terminal.** Cancelling is a deliberate hard kill; its checkpoints are deleted and the run cannot be resumed. A cancel leaves the attempt unchanged and the runners can return before the workload is gone, so a dying agent can write one more checkpoint row after the purge. It is bounded to one — the marker write that follows it refuses a cancelled run, which stops the agent — and inert, because the orphan sweep only keeps the vector collection of runs that are genuinely resumable rather than any run that has rows.
+- **A cancelled run is not owned by anybody.** The ownership probe answers three ways, not two: owned by this attempt, taken over by a newer one, or cancelled. Cancellation is checked before the attempt comparison and regardless of it, because a cancel does not change the attempt — so an attempt-only check told a killed run's agent it still owned the run, and the workload can still be alive since the runners can return before it is gone. Two consequences. The ownership gates stop the agent instead of letting it spend its whole remaining budget, and a refused terminal write on a cancelled run retires that attempt's result rather than keeping it. The second is the one that matters: the result used to survive the cancel, on display with nothing to explain it. A run the startup sweep merely marked `failed` is deliberately NOT treated this way — its agent may still be working and its result must survive.
+- **Retiring a superseded result is all or nothing.** When a resume supersedes an attempt that already saved a result, that result and everything derived from it are removed: its standalone insight and recommendation rows, their vectors, its split logs, and the discovery itself. If the vectors cannot be cleaned up, **nothing** is removed. The rows cannot go first — their ids *are* the point ids, so a surviving point becomes unaddressable, and project search renders a hit it cannot load as a blank result rather than skipping it. And the parent cannot go while the rows stay: those collections are read by project id, so the superseded attempt's findings would go on being shown as current with no result behind them. The degraded state is therefore two coherent results for one run, which is visible and retryable.
+- **A resumed run holds no plan reservation.** The run's charge is keyed on its run id and a resume re-enters that id, so resume is free rather than re-priced. The consequence is that a resumed run is invisible to anything enforcing concurrency through reservations: resume-versus-resume is serialised, and so is a competing run that is already visible, but a deployment whose per-project concurrency is governed by the reservation can still start a fresh run alongside a resumed one. That is accepted for now and revisited with the operator-Pause increment.
+- **Analysis restarts.** A resumed run re-runs the whole analysis phase; only exploration is checkpointed today.
+- **The novelty counters reset.** A cube-reaching resumed run has to re-establish its judged steps. Since that rule can only ever lengthen a run, resume can never end one early. They are not restored from the checkpoints because they cannot be: a novelty judgement is a neighbour search against the index *as it stood at that step*, so re-judging a replayed step against an index that already holds the whole prefix would score it against steps that had not run yet. If a resume cannot drop the previous attempt's vector collection, the index is stood down for that attempt rather than reasoned over: the points that survive the failed drop are steps the replay discarded, and the novelty rule would read them as earlier work and could end the run early — the one thing this rule must never do. Analysis ranking still uses the collection, deliberately: a search error there skips the area entirely, while a stale point can at worst skew a score, because hits are filtered against the run's own step list and the content always comes from it.
+- **A resumed run is the project's current run, even if it is not the newest.** Resume keeps the run's original `started_at` — `active_ms` is what carries compute across attempts — so resuming a failed run after a newer one has since finished leaves the live run with the older start time. The project's status therefore reports its *active* run when it has one, and falls back to the most recently started otherwise. Without that the dashboard would show the finished run and offer no progress or cancel for the one actually spending budget.
+- **A previous attempt's agent may still be alive, and cannot corrupt the new one.** The API's startup sweep marks in-flight runs `failed` after a restart without reaping their workloads, so resuming such a run can leave two agents on one run id. Every write either agent makes is fenced by attempt: a superseded attempt cannot overwrite a newer one's checkpoints, declare exploration finished on its behalf, stamp its terminal status, or delete its results. It also finds out on its next step — the run-document marker it writes per step answers the question for free — and stops there rather than spending the rest of its budget on results that will be discarded. The residual is one checkpoint row: a resume landing between that marker write and the step write can let a single row through, which the row-level fence then catches whenever the live attempt has already written that step.
+- **Long-term project memory is written after ownership is decided, not before.** A run's patterns are merged into the project's context at the end, and that write is keyed on the PROJECT — so patterns from a discovery that is later deleted would outlive it and steer every future run, and nothing retracts them. An ownership check before the write can only shorten the gap between asking and writing; for a write that cannot be taken back, shorter is not closed. So it happens on the terminal path instead: when the attempt claimed the run, and when the claim was undetermined but the result is being kept, and never when the result is about to be deleted.
+- **The live step feed is scoped to the run's current attempt.** Every write that decides a run's outcome is fenced by attempt or retired at the tail — checkpoints, the exploration summary, the terminal status, the discovery itself — and ownership gates stop a superseded attempt before each expensive phase, before each analysis area, and before the project-context update (the one write nothing can undo). The `discovery_run_steps` rows behind the dashboard's live log are fenced too, but by filtering rather than by gating: the agent stamps its attempt on every row and the API serves only the attempt the run is on now. Gating could not have closed this one — it narrows the window to a single in-flight LLM call, and a window always remains between the last gate and the write. Filtering also repairs something subtler. The feed's `_id > since_id` cursor assumes one writer process per run; an ObjectID is 4 bytes of seconds then 5 bytes random *per process*, so with two attempts alive the ordering within a second is decided by that random prefix, and a cursor that advances onto a superseded row can permanently skip the live attempt's rows from that same second. One writer in the stream restores the assumption. Two consequences worth knowing. Rows written before the field existed carry no attempt and are served to an attempt-1 read, so historical runs keep their logs. And because a replayed prefix belongs to the attempt that executed it, a resume re-emits that prefix under its own attempt — rows only, since the progress field and the per-action counters live on the run document and already carry across attempts.
+- **A re-executed `lookup_schema` can answer differently** if the schema cache was re-indexed between attempts. That is visible rather than hidden: the replayed turn shows what the cache says now, which is also what the resumed run will query against.
+
+### Across attempts
+
+The run document records `attempt`, `last_resumed_at`, `last_checkpoint_step`, `active_ms` and an append-only `lifecycle` log, plus the run's own `max_steps` / `min_steps` / `areas` / `effort` so a resume replays the budget the operator chose rather than the defaults.
+
+`active_ms` is cumulative **active** compute across attempts, which is what the dashboard shows as elapsed — otherwise a run resumed the next morning would report the hours it spent waiting to be noticed as work. It is recorded at each attempt's terminal write, so an attempt killed hard enough never to reach that point contributes nothing: a slight undercount, accepted because a dead attempt's compute is not worth counting.
+
+Each attempt's `lifecycle` event carries the LLM provider and model that served it, which is how "which model ran which attempt" stays answerable.
+
 ## Phase 4: Analysis
 
 For each analysis area defined by the domain pack (e.g., churn, engagement, monetization for gaming; growth, engagement, retention for social), the agent:
@@ -310,6 +373,9 @@ The agent writes the complete `DiscoveryResult` to MongoDB:
 ```
 DiscoveryResult:
   - project_id, domain, category
+  - run_id (the run that produced it — lets a resumed run retire the partial
+    result its previous attempt left behind, and keep that result out of its
+    own "previously discovered" context)
   - run_type: "full" | "partial" | "failed"
   - areas_requested (if selective run)
   - total_steps, duration
@@ -324,6 +390,8 @@ DiscoveryResult:
 
 The run status is updated to `completed` (or `failed` if critical errors occurred).
 
+A **resumed** run writes its new result first and retires the superseded one afterwards, rather than clearing the old rows before writing the new ones. There is no window in which the project shows no result at all, and because the new rows go in under a freshly minted `discovery_id`, the unique index on `discovery_recommendation_log.discovery_id` cannot be violated by a second pass. Once the result is durable the run's checkpoints are deleted; on a failure they are kept, which is what leaves the run resumable.
+
 ## Error Handling
 
 | Error | What happens |
@@ -333,8 +401,11 @@ The run status is updated to `completed` (or `failed` if critical errors occurre
 | All areas timeout | Run marked "failed". Error banner shown in dashboard. |
 | SQL query error | Agent asks LLM to fix the SQL. If still fails, step is skipped. |
 | Warehouse unreachable | Agent fails during schema discovery. Run marked "failed". |
-| Agent process crash | Subprocess runner detects exit code, updates run to "failed" with error from stderr. |
-| K8s Job failure | K8s runner polls Job status, detects failure, updates run. |
+| Agent process crash | Subprocess runner detects exit code, updates run to "failed" with error from stderr. **Resumable** from the last exploration checkpoint. |
+| K8s Job failure | K8s runner polls Job status, detects failure, updates run. **Resumable** from the last exploration checkpoint. |
+| API restarted mid-run | Startup sweep marks the run "failed". **Resumable** — the checkpoints outlive the process that wrote them. |
+| Run exceeded `DISCOVERY_MAX_DURATION` | Partial result is saved and the run is marked "failed". **Resumable**: exploration is replayed, not re-run. |
+| Resume with no checkpoint | Refused with 409 and an explanation (it expired, or the run died before its first step). Start a new run. |
 
 ## Cost
 

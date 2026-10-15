@@ -96,6 +96,11 @@ type ExplorationEngine struct {
 	outputCap          int
 	reasoningEffective bool
 
+	// persistStep checkpoints each completed step; resume is the prefix to
+	// replay before entering the loop. Both nil on an ordinary run.
+	persistStep StepPersister
+	resume      *ResumeState
+
 	// schemaProvider serves the on-demand schema actions (lookup_schema,
 	// search_tables). Optional — when nil the engine still parses those
 	// actions and reports a graceful "schema service unavailable" reply
@@ -364,6 +369,48 @@ type ExplorationEngineOptions struct {
 	// ceiling get window-budgeted headroom; a non-reasoning model (Opus, GPT,
 	// ...) keeps exactly today's fixed 4096 ceiling.
 	ReasoningEffective bool
+
+	// PersistStep durably records one completed step so a run killed
+	// mid-exploration can be resumed from it rather than paying for the
+	// whole phase again. Optional; nil disables checkpointing.
+	//
+	// Deliberately a SECOND seam rather than more parameters on OnStep: the
+	// two differ in both payload and failure semantics. OnStep is the live
+	// UI feed and takes a flattened summary; this takes the whole step plus
+	// the action arguments needed to rebuild the turn. See StepPersister.
+	PersistStep StepPersister
+
+	// Resume is the already-executed prefix to replay instead of
+	// re-executing. Nil or empty is an ordinary run, byte-identical to one
+	// with no resume wiring at all.
+	Resume *ResumeState
+}
+
+// StepPersister durably records one completed exploration step together with
+// the arguments of the action that produced it.
+//
+// Failure is logged and swallowed by the caller, exactly like a step-index
+// failure: a checkpoint write must never abort a run that is otherwise
+// working. A missing row is handled on the read side, which replays only the
+// contiguous prefix and re-explores from the first gap.
+type StepPersister func(ctx context.Context, step models.ExplorationStep, args models.CheckpointArgs) error
+
+// ResumeState is the prefix of a previous attempt that this run replays
+// rather than re-executing.
+//
+// Steps must be the CONTIGUOUS prefix 1..N in order — the repository that
+// loads them guarantees it, because replaying a prefix with a hole in it
+// would misnumber every later step and the insights cite step numbers.
+type ResumeState struct {
+	Steps []models.ExplorationCheckpoint
+}
+
+// Len reports how many steps will be replayed. Safe on nil.
+func (r *ResumeState) Len() int {
+	if r == nil {
+		return 0
+	}
+	return len(r.Steps)
 }
 
 // NewExplorationEngine creates a new exploration engine.
@@ -451,6 +498,9 @@ func NewExplorationEngine(opts ExplorationEngineOptions) *ExplorationEngine {
 		window:             opts.Window,
 		outputCap:          opts.OutputCap,
 		reasoningEffective: opts.ReasoningEffective,
+
+		persistStep: opts.PersistStep,
+		resume:      opts.Resume,
 	}
 }
 
@@ -577,8 +627,9 @@ func (e *ExplorationEngine) Explore(
 	explorationCtx ExplorationContext,
 ) (*ExplorationResult, error) {
 	logger.WithFields(logger.Fields{
-		"app_id":    explorationCtx.ProjectID,
-		"max_steps": e.maxSteps,
+		"app_id":         explorationCtx.ProjectID,
+		"max_steps":      e.maxSteps,
+		"replayed_steps": e.resume.Len(),
 	}).Info("Starting autonomous exploration")
 
 	startTime := time.Now()
@@ -599,8 +650,40 @@ func (e *ExplorationEngine) Explore(
 		Completed:  false,
 	}
 
+	// Replay an already-executed prefix, if this is a resumed run. The
+	// conversation ends up exactly as it was when the previous attempt's
+	// last step finished, so the loop below picks up at the next step
+	// number with nothing else to special-case. An empty or absent prefix
+	// leaves everything here untouched.
+	replayed := e.replayPrefix(ctx, conversation, e.resume)
+	if len(replayed.Steps) > 0 {
+		result.Steps = append(result.Steps, replayed.Steps...)
+		result.TotalSteps = replayed.Steps[len(replayed.Steps)-1].Step
+	}
+	firstStep := result.TotalSteps + 1
+	if replayed.Superseded {
+		result.Error = ErrAttemptSuperseded
+		result.Duration = time.Since(startTime)
+		return result, ErrAttemptSuperseded
+	}
+	if replayed.Completed {
+		// The replayed prefix ends with a completion the engine already
+		// accepted, so there is nothing left to explore. Reachable when the
+		// process died between that step's checkpoint and the exploration
+		// summary's; carrying on would re-explore past a completion the run
+		// had already earned.
+		result.Completed = true
+		result.CompletionMsg = replayed.CompletionMsg
+		result.Duration = time.Since(startTime)
+		logger.WithFields(logger.Fields{
+			"total_steps": result.TotalSteps,
+			"completed":   true,
+		}).Info("Exploration was already complete in the replayed prefix; nothing left to explore")
+		return result, nil
+	}
+
 	// Exploration loop
-	for step := 1; step <= e.maxSteps; step++ {
+	for step := firstStep; step <= e.maxSteps; step++ {
 		logger.WithFields(logger.Fields{
 			"step":     step,
 			"max":      e.maxSteps,
@@ -648,6 +731,19 @@ func (e *ExplorationEngine) Explore(
 				})
 				result.TotalSteps = step
 
+				// Checkpointed like any other step, with the reason class so
+				// the nudge can be re-derived. Skipping it would renumber
+				// every later step on a resumed run.
+				//
+				// Before the live feed, for the same reason as the executed
+				// step above: the row it writes is keyed on run_id alone, so
+				// a superseded attempt must not add one.
+				if e.checkpoint(ctx, result.Steps[len(result.Steps)-1], models.CheckpointArgs{RejectReason: reason}) {
+					result.Error = ErrAttemptSuperseded
+					result.Duration = time.Since(startTime)
+					return result, ErrAttemptSuperseded
+				}
+
 				if e.onStep != nil {
 					e.onStep(step, "complete_rejected", action.Thinking, "", 0, 0, false, why, inputTokens, outputTokens, "")
 				}
@@ -674,6 +770,25 @@ func (e *ExplorationEngine) Explore(
 		}).Info("Executing exploration action")
 
 		actionResult := e.executeAction(ctx, action, &explorationStep)
+
+		// Durably record the step, BEFORE anything shared is written.
+		//
+		// This is also where the process learns it has been superseded (the
+		// hook's ownership probe rides on a write it makes anyway), and the
+		// ordering is the point: the two writes below — the per-run vector
+		// index and the dashboard's step row — are keyed on run_id alone, so
+		// a superseded attempt reaching them would add a point for a step
+		// the live attempt never executed (skewing the novelty rule and the
+		// analysis picker) and a row the live feed never earned.
+		//
+		// Nothing is lost by checkpointing first: executeAction has
+		// returned, so the step is complete, and the checkpoint is the
+		// durable record the other two are derived from.
+		if e.checkpoint(ctx, explorationStep, checkpointArgsFor(action)) {
+			result.Error = ErrAttemptSuperseded
+			result.Duration = time.Since(startTime)
+			return result, ErrAttemptSuperseded
+		}
 
 		// Index the completed step into the per-run vector index so
 		// the analysis phase can semantically rank steps against
@@ -1532,6 +1647,19 @@ func (e *ExplorationEngine) formatQuerySuccess(result *queryexec.ExecuteResult) 
 
 	resultMsg += "\n**Results**:\n"
 
+	// The total is the result's own RowCount, not the length of the slice we
+	// are holding. They are equal on the live path (queryexec sets RowCount
+	// = len(Data)) so this renders identically there.
+	//
+	// They diverge when a step's rows came from a checkpoint, which keeps a
+	// bounded sample: taking the total from the slice would tell the model a
+	// 50 000-row result returned 50 rows, which is the kind of mistake it
+	// would then reason confidently from.
+	total := result.RowCount
+	if total < len(result.Data) {
+		total = len(result.Data)
+	}
+
 	// Show first 10 rows
 	maxRows := 10
 	if len(result.Data) < maxRows {
@@ -1540,8 +1668,8 @@ func (e *ExplorationEngine) formatQuerySuccess(result *queryexec.ExecuteResult) 
 
 	resultMsg += fmt.Sprintf("```json\n%s\n```\n", e.formatResults(result.Data[:maxRows]))
 
-	if len(result.Data) > maxRows {
-		resultMsg += fmt.Sprintf("\n(Showing %d of %d rows)\n", maxRows, len(result.Data))
+	if total > maxRows {
+		resultMsg += fmt.Sprintf("\n(Showing %d of %d rows)\n", maxRows, total)
 	}
 
 	return resultMsg

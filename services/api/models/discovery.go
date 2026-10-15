@@ -19,7 +19,13 @@ type DiscoveryResult struct {
 	// WarehouseID is the datasource this discovery ran against (multi-warehouse).
 	// Empty for legacy / single-warehouse runs. Mirrors the agent model so the
 	// discovery endpoints don't drop the attribution on decode.
-	WarehouseID    string    `bson:"warehouse_id,omitempty" json:"warehouse_id,omitempty"`
+	WarehouseID string `bson:"warehouse_id,omitempty" json:"warehouse_id,omitempty"`
+
+	// RunID is the discovery run that produced this result — the back-
+	// reference to DiscoveryRun.DiscoveryID. Mirrors the agent model (the
+	// agent writes it); empty on documents written before resume shipped.
+	RunID string `bson:"run_id,omitempty" json:"run_id,omitempty"`
+
 	Domain         string    `bson:"domain" json:"domain"`
 	Category       string    `bson:"category" json:"category"`
 	RunType        string    `bson:"run_type" json:"run_type"`

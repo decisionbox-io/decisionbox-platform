@@ -158,13 +158,18 @@ func (r *DiscoveryRepository) ListRecent(ctx context.Context, projectID string, 
 		SetSort(bson.D{{Key: "discovery_date", Value: -1}}).
 		SetLimit(int64(limit)).
 		SetProjection(bson.M{
-			"project_id":     1,
-			"discovery_date": 1,
-			"run_type":       1,
+			"project_id":      1,
+			"discovery_date":  1,
+			"run_type":        1,
 			"areas_requested": 1,
-			"insights":       1,
+			"insights":        1,
 			"recommendations": 1,
-			"summary":        1,
+			"summary":         1,
+			// Projected because the caller filters this list by it: a
+			// resumed run must not be told not to re-tread its OWN partial
+			// result. Omitting it here would silently make that filter
+			// match nothing.
+			"run_id": 1,
 		})
 
 	cursor, err := r.collection.Find(ctx, filter, opts)
@@ -180,6 +185,60 @@ func (r *DiscoveryRepository) ListRecent(ctx context.Context, projectID string, 
 	return results, nil
 }
 
+// ListIDsByRun returns the _ids of every discovery produced by one run,
+// newest first.
+//
+// A run produces exactly one result on the happy path. It produces more only
+// when it was resumed after a previous attempt had already saved a partial
+// result — which is precisely the case the caller needs to find, so it can
+// retire the superseded documents once the new attempt has landed.
+//
+// Documents written before run_id existed carry none, so they never match —
+// the right answer for a historical result.
+func (r *DiscoveryRepository) ListIDsByRun(ctx context.Context, runID string) ([]string, error) {
+	if runID == "" {
+		return nil, nil
+	}
+	cursor, err := r.collection.Find(ctx,
+		bson.M{"run_id": runID},
+		options.Find().
+			SetProjection(bson.M{"_id": 1}).
+			SetSort(bson.D{{Key: "discovery_date", Value: -1}}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list discoveries for run %s: %w", runID, err)
+	}
+	defer cursor.Close(ctx) //nolint:errcheck
+
+	ids := make([]string, 0, 2)
+	for cursor.Next(ctx) {
+		var doc struct {
+			ID primitive.ObjectID `bson:"_id"`
+		}
+		if err := cursor.Decode(&doc); err != nil {
+			return nil, fmt.Errorf("decode discovery id for run %s: %w", runID, err)
+		}
+		ids = append(ids, doc.ID.Hex())
+	}
+	if err := cursor.Err(); err != nil {
+		return nil, fmt.Errorf("cursor discoveries for run %s: %w", runID, err)
+	}
+	return ids, nil
+}
+
+// DeleteByID removes one discovery document. Used to retire the partial
+// result a superseded attempt of a resumed run left behind.
+func (r *DiscoveryRepository) DeleteByID(ctx context.Context, idHex string) error {
+	oid, err := primitive.ObjectIDFromHex(idHex)
+	if err != nil {
+		return fmt.Errorf("invalid discovery ID %q: %w", idHex, err)
+	}
+	if _, err := r.collection.DeleteOne(ctx, bson.M{"_id": oid}); err != nil {
+		return fmt.Errorf("delete discovery %s: %w", idHex, err)
+	}
+	return nil
+}
+
 // EnsureIndexes creates necessary indexes.
 func (r *DiscoveryRepository) EnsureIndexes(ctx context.Context) error {
 	indexes := []mongo.IndexModel{
@@ -192,6 +251,14 @@ func (r *DiscoveryRepository) EnsureIndexes(ctx context.Context) error {
 		{
 			Keys: bson.D{
 				{Key: "created_at", Value: -1},
+			},
+		},
+		// Resolves "which discoveries did this run produce" — the retire
+		// step of a resumed run, and the filter that keeps a run's own
+		// partial result out of its previous-discovery context.
+		{
+			Keys: bson.D{
+				{Key: "run_id", Value: 1},
 			},
 		},
 	}

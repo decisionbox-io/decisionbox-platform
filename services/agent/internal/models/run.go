@@ -41,6 +41,64 @@ type DiscoveryRun struct {
 	FailedQueries     int `bson:"failed_queries" json:"failed_queries"`
 	InsightsFound     int `bson:"insights_found" json:"insights_found"`
 
+	// --- Resume lifecycle (issue #438) -------------------------------------
+	//
+	// All omitempty and all additive: a run that predates resume reads back
+	// as attempt 0 with no checkpoint, which is exactly right — it offers no
+	// Resume affordance because it has nothing to resume from.
+
+	// Attempt counts how many times this run has been started. 1 on create,
+	// incremented by each resume. It is also the handle a future per-attempt
+	// charge would key on (runID:attempt) instead of silently no-op'ing
+	// against the original run-keyed charge.
+	Attempt int `bson:"attempt,omitempty" json:"attempt,omitempty"`
+
+	// LastResumedAt is when the latest attempt was requested.
+	LastResumedAt *time.Time `bson:"last_resumed_at,omitempty" json:"last_resumed_at,omitempty"`
+
+	// LastCheckpointStep is the highest exploration step this run has a
+	// checkpoint for. It drives the dashboard's Resume affordance and is
+	// zeroed on completion (a completed run is not resumable).
+	//
+	// Stamped only AFTER the checkpoint row is durably written, so it never
+	// advertises a checkpoint that does not exist — otherwise the dashboard
+	// would offer a Resume that the API then refuses for want of a prefix.
+	//
+	// It can still exceed the REPLAYABLE prefix: if an earlier write failed
+	// (writes are best-effort so they can never abort a run) and a later one
+	// succeeded, replay stops at the gap while this reflects the later step.
+	// A resume with nothing left to replay is refused rather than silently
+	// re-exploring.
+	LastCheckpointStep int `bson:"last_checkpoint_step,omitempty" json:"last_checkpoint_step,omitempty"`
+
+	// ActiveMs is cumulative ACTIVE compute time across attempts, so a run
+	// resumed the next morning does not report fourteen hours of work.
+	// Without it, elapsed time is updated_at - started_at, which counts the
+	// hours a failed run sat waiting for someone to notice.
+	//
+	// Best-effort on hard crashes: the increment lands at the terminal write,
+	// so an attempt killed before it reaches that point (OOM, pod eviction,
+	// marked failed out-of-process by the sweeper) never records its slice.
+	// So this is the active time of attempts that ended cleanly enough to
+	// record it — a slight undercount we accept, since a dead attempt's
+	// compute is not worth counting.
+	ActiveMs int64 `bson:"active_ms,omitempty" json:"active_ms,omitempty"`
+
+	// Lifecycle is the append-only transition log. See RunLifecycleEvent.
+	Lifecycle []RunLifecycleEvent `bson:"lifecycle,omitempty" json:"lifecycle,omitempty"`
+
+	// --- The run's own parameters ------------------------------------------
+	//
+	// Persisted because nothing recorded them before: the run document knew
+	// nothing about max_steps, min_steps, areas or effort, so a resumed run
+	// would be spawned with the agent's defaults rather than the budget the
+	// operator chose — silently changing the run's own shape halfway
+	// through. Resume replays them verbatim.
+	MaxSteps int      `bson:"max_steps,omitempty" json:"max_steps,omitempty"`
+	MinSteps int      `bson:"min_steps,omitempty" json:"min_steps,omitempty"`
+	Areas    []string `bson:"areas,omitempty" json:"areas,omitempty"`
+	Effort   string   `bson:"effort,omitempty" json:"effort,omitempty"`
+
 	// Schema-retrieval telemetry. Mirrors the API-side model.
 	//
 	// SchemaTokens / SchemaTableCount describe the boot context size.
@@ -69,6 +127,37 @@ type DiscoveryRun struct {
 	// shape stays consistent and a hand-edited document with the field
 	// set survives an agent rewrite.
 	CompletionHooksFiredAt *time.Time `bson:"completion_hooks_fired_at,omitempty" json:"-"`
+}
+
+// RunLifecycleEvent is one append-only entry in a run's lifecycle log.
+//
+// A run used to be a single mutable status, which is enough while a run has
+// exactly one attempt. Once a run can be resumed, "what happened to this run"
+// stops being answerable from a status field: the document shows the LATEST
+// attempt and silently overwrites every earlier one.
+//
+// It also answers the question resume raises about provenance — which model
+// ran which attempt. Nothing on the run document records a run-level LLM
+// model today (provenance lives on debug-log rows), so rather than inventing
+// a run-level field that only resume would read, the per-attempt event
+// carries it: that is exactly the granularity the question has.
+//
+// Bounded by the attempt count, which is operator-driven — v1 never resumes
+// a run automatically.
+type RunLifecycleEvent struct {
+	// Status is the status the run entered: pending, running, completed,
+	// failed or cancelled.
+	Status string    `bson:"status" json:"status"`
+	At     time.Time `bson:"at" json:"at"`
+	// Reason is free text explaining the transition (the failure message, or
+	// what triggered a resume). Empty for uneventful transitions.
+	Reason string `bson:"reason,omitempty" json:"reason,omitempty"`
+	// Attempt is the attempt this event belongs to, 1-based.
+	Attempt int `bson:"attempt,omitempty" json:"attempt,omitempty"`
+	// LLMProvider / LLMModel are the models that served this attempt. Set on
+	// the terminal event the agent writes, where they are known.
+	LLMProvider string `bson:"llm_provider,omitempty" json:"llm_provider,omitempty"`
+	LLMModel    string `bson:"llm_model,omitempty" json:"llm_model,omitempty"`
 }
 
 // RunStep is a single step in the discovery run log.
@@ -132,4 +221,8 @@ const (
 	RunStatusRunning   = "running"
 	RunStatusCompleted = "completed"
 	RunStatusFailed    = "failed"
+	// RunStatusCancelled is written by the API, never by the agent — but
+	// the agent has to recognise it, because a cancellation outranks
+	// anything the agent goes on to conclude.
+	RunStatusCancelled = "cancelled"
 )
