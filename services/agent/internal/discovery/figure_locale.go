@@ -30,7 +30,32 @@ type figureWriter struct {
 // language gets English, because a wrong guess about an unfamiliar language is worse than
 // the notation everyone has had until now.
 func newFigureWriter(outputLanguage string) figureWriter {
-	return figureWriter{p: message.NewPrinter(tagFor(outputLanguage))}
+	return figureWriter{p: message.NewPrinter(latinDigits(tagFor(outputLanguage)))}
+}
+
+// latinDigits pins the numbering system to "latn" so every figure is written with ASCII
+// digits, whatever the language.
+//
+// CLDR would write Arabic as ١٬٢٣٤٬٥٦٧ and Persian as ۱٬۲۳۴٬۵۶۷. Correct, and unusable
+// here: everything downstream of the renderer assumes a numeral is ASCII. Count repair
+// searches the prose with strconv.Itoa, so an Arabic headline rendered from a figure would
+// never match a repair aimed at the same count -- the other fields would be rewritten, the
+// claim updated, success reported, and the headline left contradicting all of them.
+//
+// Teaching each consumer about Eastern Arabic numerals would be a wide change with a long
+// tail. Pinning the numbering system at the one place numbers are written is narrow and
+// total, and it leaves the part that mattered untouched: grouping and the decimal mark are
+// unchanged in every language, including Arabic's own separators, which the "latn" system
+// supplies in the Western form that the rest of the pipeline can read.
+//
+// Whether an Arabic deployment should see Eastern digits is a product question. It cannot
+// be answered by rendering them while nothing else can read them.
+func latinDigits(tag language.Tag) language.Tag {
+	withLatn, err := language.Parse(tag.String() + "-u-nu-latn")
+	if err != nil {
+		return tag
+	}
+	return withLatn
 }
 
 // usWriter is the notation every figure was written in before this existed. Tests that

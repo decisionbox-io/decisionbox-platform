@@ -3,6 +3,7 @@ package discovery
 import (
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
@@ -129,6 +130,54 @@ func TestFigureRender_NegativeCarriesExactlyOneSign(t *testing.T) {
 			}
 			if !strings.HasPrefix(got, "-$") {
 				t.Errorf("rendered %q; the sign belongs outside the symbol", got)
+			}
+		})
+	}
+}
+
+// Every figure is written with ASCII digits, whatever the language.
+//
+// Found by adversarial review. CLDR writes Arabic as ١٬٢٣٤٬٥٦٧, which is correct and
+// unreadable to everything downstream: count repair searches the prose with
+// strconv.Itoa, so a rendered Arabic headline would never match a repair aimed at the
+// same count -- the other fields would be rewritten, success reported, and the headline
+// left contradicting them. The separators stay localised; only the digits are pinned.
+func TestFigureRender_DigitsAreAlwaysAscii(t *testing.T) {
+	langs := []string{"English", "Turkish", "German", "French", "Spanish", "Italian",
+		"Portuguese", "Dutch", "Polish", "Russian", "Indonesian", "Vietnamese", "Japanese",
+		"Korean", "Simplified Chinese", "Traditional Chinese", "Hindi", "Arabic", "Hebrew",
+		"Thai", "Klingon", ""}
+	for _, lang := range langs {
+		name := lang
+		if name == "" {
+			name = "(empty)"
+		}
+		t.Run(name, func(t *testing.T) {
+			got := newFigureWriter(lang).renderFigure(models.Figure{Value: 1234567.89, Unit: models.UnitCount, Decimals: 2})
+			for _, r := range got {
+				if unicode.IsDigit(r) && (r < '0' || r > '9') {
+					t.Fatalf("rendered %q, which carries a non-ASCII digit %q", got, r)
+				}
+			}
+			if !strings.ContainsAny(got, "0123456789") {
+				t.Fatalf("rendered %q with no ASCII digits at all", got)
+			}
+		})
+	}
+}
+
+// Pinning the digits must not move the separators, which are the point of the change.
+func TestFigureRender_PinningDigitsLeavesSeparatorsAlone(t *testing.T) {
+	for _, tc := range []struct{ language, want string }{
+		{"English", "1,234,567.89"},
+		{"Turkish", "1.234.567,89"},
+		{"Hindi", "12,34,567.89"},
+		{"German", "1.234.567,89"},
+	} {
+		t.Run(tc.language, func(t *testing.T) {
+			got := newFigureWriter(tc.language).renderFigure(models.Figure{Value: 1234567.89, Unit: models.UnitCount, Decimals: 2})
+			if got != tc.want {
+				t.Fatalf("rendered %q, want %q", got, tc.want)
 			}
 		})
 	}
