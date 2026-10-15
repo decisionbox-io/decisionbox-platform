@@ -1088,26 +1088,64 @@ func (h *DiscoveriesHandler) DiscardRun(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// The claim goes down BEFORE the last check, and the last check decides
-	// whether it stays. The remaining question — "is a discovery still
-	// stored against this run" — lives in another collection, so no filter
-	// on this one can answer it and nothing makes the pair atomic.
+	// And the pointer is not the whole answer. BeginResume CLEARS discovery_id,
+	// so a run that saved a partial result and was then resumed carries an
+	// empty one while the earlier discovery is still stored against its
+	// run_id — and a resume that fails before saving a replacement (a spawn
+	// failure, an early crash) leaves it exactly there. Discarding then
+	// orphans that result: the run vanishes from the project's status while
+	// its partial discovery can still be the project's latest.
 	//
-	// Ordering is what makes it safe instead. The agent saves its discovery
-	// BEFORE its terminal write, and when that write matches nothing it reads
-	// its ownership back and retires its own result on finding the run
-	// discarded (status.go, classifyUnappliedTerminal). So the agent is a
-	// write-then-verify. Claiming first makes this a claim-then-verify, and
-	// the two compose: a result that lands before the re-read is seen here
-	// and refuses the discard, and one that lands after it is retired by the
-	// agent, because the marker was already down when the agent looked.
+	// Asked of the discoveries collection, because only it knows — and NOT
+	// atomic with the discard below, which is a real limitation and not a
+	// safe one. The window and why the obvious fix is worse:
 	//
-	// Checking first and claiming second — which is what this did — composed
-	// with nothing. The agent could save its result, read ownership while the
-	// run was still merely `failed`, correctly conclude it had not been
-	// superseded and keep the result, all in between. That window needed no
-	// crash and no unusual timing, only the API's startup sweep marking a
-	// live run `failed` without reaping its agent, which it does by design.
+	// The startup sweep marks in-flight runs `failed` WITHOUT reaping their
+	// agents, by design, so a live agent can be working on a run this
+	// handler reads as terminal. That agent saves its discovery BEFORE its
+	// terminal write, and because the run is already terminal that write
+	// matches nothing — so discovery_id never gets stamped and the run
+	// document does not record the result that now exists. If the save lands
+	// between this check and the discard below, the discard succeeds and
+	// leaves a stored discovery attached to a discarded run: it stops
+	// representing the project while its partial result can still be read
+	// by run_id.
+	//
+	// Claiming the discard BEFORE this check closes that window and opens a
+	// worse one, which is why it is not done. `discarded_at` is what tells
+	// the agent the operator threw the run away, and the agent's answer to
+	// that is to delete its own result (status.go, classifyUnappliedTerminal
+	// → terminalSuperseded). A claim placed before this check is provisional
+	// — this check may still refuse it — but the agent cannot tell a
+	// provisional marker from a settled one, so it can retire a discovery
+	// that this request then goes on to refuse to discard. Destroying a
+	// result is worse than orphaning one, and the agent's rule is explicit
+	// about why: never delete your own output without being told who else
+	// owns the run. A provisional marker tells it exactly that, falsely.
+	//
+	// Closing both needs the run document to stop lying about having no
+	// result — the agent recording its back-reference even when its terminal
+	// write is lost, so this check can move into Discard's own atomic filter
+	// — or a claim field that fences writes without authorizing cleanup.
+	// Both are protocol changes across two services, in the code that has
+	// destroyed data twice before; flagged for review rather than guessed at
+	// here. Until then the residual is an orphaned partial result in a race
+	// no operator can trigger deliberately.
+	if h.repo != nil {
+		hasResult, err := h.repo.HasResultForRun(ctx, runID)
+		if err != nil {
+			// Fail closed. Discarding is irreversible, so an unknown answer
+			// must not be read as "no result".
+			writeError(w, http.StatusInternalServerError, "failed to check whether this run saved a discovery: "+err.Error())
+			return
+		}
+		if hasResult {
+			writeError(w, http.StatusConflict,
+				"a discovery saved by this run is still stored and would be orphaned — delete that discovery instead of discarding the run")
+			return
+		}
+	}
+
 	if err := h.runRepo.Discard(ctx, runID); err != nil {
 		if errors.Is(err, database.ErrNotDiscardable) {
 			// The checks above passed, so the run changed under us — a resume
@@ -1119,66 +1157,15 @@ func (h *DiscoveriesHandler) DiscardRun(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// BeginResume CLEARS discovery_id, so the pointer checked above is not
-	// the whole answer: a run that saved a partial result and was then
-	// resumed carries an empty one while the earlier discovery is still
-	// stored against its run_id — and a resume that fails before saving a
-	// replacement (a spawn failure, an early crash) leaves it exactly there.
-	// Discarding then orphans that result: the run vanishes from the
-	// project's status while its partial discovery can still be the
-	// project's latest.
-	if h.repo != nil {
-		hasResult, err := h.repo.HasResultForRun(ctx, runID)
-		if err != nil || hasResult {
-			// withCleanup, because this write is the one that must land:
-			// net/http cancels the request context the instant the client
-			// disconnects, and the commonest reason to be here is that the
-			// check above just failed — often by timing out on the very
-			// context this would otherwise share. A release that does not
-			// land leaves the run discarded on the strength of a check that
-			// said not to, which is the exact outcome the re-ordering
-			// exists to prevent.
-			withCleanup(ctx, func(cctx context.Context) {
-				if rerr := h.runRepo.ReleaseDiscard(cctx, runID); rerr != nil {
-					// The claim is down and will not come up. Said loudly,
-					// because the run now reads as discarded while this
-					// request reported a refusal.
-					apilog.WithFields(apilog.Fields{"run_id": runID, "error": rerr.Error()}).
-						Error("could not release the discard claim after refusing the discard; the run is marked discarded but the operator was told otherwise")
-				}
-			})
-			if err != nil {
-				// Fail closed. Discarding is irreversible, so an unknown
-				// answer must not be read as "no result".
-				writeError(w, http.StatusInternalServerError, "failed to check whether this run saved a discovery: "+err.Error())
-				return
-			}
-			writeError(w, http.StatusConflict,
-				"a discovery saved by this run is still stored and would be orphaned — delete that discovery instead of discarding the run")
-			return
-		}
-	}
-
-	// Settled. Only now does the run give up what made it resumable, and on
-	// its own budget for the reason every other tail-end write here has one.
-	withCleanup(ctx, func(cctx context.Context) {
-		if err := h.runRepo.FinalizeDiscard(cctx, runID); err != nil {
-			apilog.WithFields(apilog.Fields{"run_id": runID, "error": err.Error()}).
-				Warn("discarded the run but could not clear its checkpoint marker; every resume path also filters on the discard marker")
-		}
-	})
-
 	// The checkpoints are what made it resumable, and the agent's boot sweep
 	// keeps a per-run vector collection alive for as long as they exist.
 	// Best-effort with the retention TTL as the backstop, matching cancel.
 	if h.checkpointRepo != nil {
-		withCleanup(ctx, func(cctx context.Context) {
-			if deleted, err := h.checkpointRepo.DeleteByRun(cctx, runID); err != nil {
-				apilog.WithError(err).Warn("failed to delete the checkpoints of a discarded run; the retention TTL will reclaim them")
-			} else if deleted > 0 {
-				apilog.WithFields(apilog.Fields{"run_id": runID, "deleted": deleted}).Info("deleted the checkpoints of a discarded run")
-			}
-		})
+		if deleted, err := h.checkpointRepo.DeleteByRun(ctx, runID); err != nil {
+			apilog.WithError(err).Warn("failed to delete the checkpoints of a discarded run; the retention TTL will reclaim them")
+		} else if deleted > 0 {
+			apilog.WithFields(apilog.Fields{"run_id": runID, "deleted": deleted}).Info("deleted the checkpoints of a discarded run")
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{

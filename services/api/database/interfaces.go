@@ -59,13 +59,7 @@ type RunRepo interface {
 	BeginResume(ctx context.Context, runID string) (*models.DiscoveryRun, error)
 	GetByID(ctx context.Context, runID string) (*models.DiscoveryRun, error)
 	GetLatestByProject(ctx context.Context, projectID string) (*models.DiscoveryRun, error)
-	// Discard places the discard marker and nothing else; the caller then
-	// makes the cross-collection check that no filter can cover and either
-	// finalizes or releases. See RunRepository.ReleaseDiscard for why the
-	// claim has to come first.
 	Discard(ctx context.Context, runID string) error
-	ReleaseDiscard(ctx context.Context, runID string) error
-	FinalizeDiscard(ctx context.Context, runID string) error
 	GetRunningByProject(ctx context.Context, projectID string) (*models.DiscoveryRun, error)
 	// GetOtherRunningByProject answers "is another run active for this
 	// project", excluding one. The resume path needs the exclusion: by the

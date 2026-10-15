@@ -856,98 +856,10 @@ func TestInteg_RunRepo_Discard(t *testing.T) {
 			if run.Status != tc.status {
 				t.Errorf("status changed to %q — a discarded run keeps its outcome, and its error, as the record", run.Status)
 			}
-			// The claim and nothing else. The marker survives it on purpose:
-			// the caller still has one check to make, and a refusal has to be
-			// able to put the run back exactly as it was.
-			if run.LastCheckpointStep != 7 {
-				t.Errorf("last_checkpoint_step = %d, want 7 still — the claim must not spend what a release would have to restore", run.LastCheckpointStep)
-			}
-
-			// And the settled discard does clear it, which is what stops the
-			// dashboard offering Resume on a run nobody wants.
-			if err := repo.FinalizeDiscard(ctx, id); err != nil {
-				t.Fatalf("finalize: %v", err)
-			}
-			run, _ = repo.GetByID(ctx, id)
 			if run.LastCheckpointStep != 0 {
 				t.Errorf("last_checkpoint_step = %d, want cleared so Resume cannot be offered", run.LastCheckpointStep)
 			}
 		})
-	}
-}
-
-// ReleaseDiscard is the compensating half of claiming first. The claim goes
-// down before the cross-collection result check — the only way that check's
-// answer can be trusted, since the agent retires a result whose run it finds
-// discarded — so a refusal has to leave NO trace. Against real Mongo because
-// both halves turn on $unset and on `discarded_at: nil` matching a missing
-// field, which is the part that reads the wrong way round.
-func TestInteg_RunRepo_ReleaseDiscard_RestoresTheRunExactly(t *testing.T) {
-	ctx := context.Background()
-	dropRuns(t, ctx)
-	repo := NewRunRepository(testDB)
-	id := seedRunForProject(t, ctx, "proj-release", "failed", time.Now(), nil)
-	if _, err := testDB.Collection("discovery_runs").UpdateByID(ctx,
-		mustOID(t, id), bson.M{"$set": bson.M{"last_checkpoint_step": 4}}); err != nil {
-		t.Fatalf("seed marker: %v", err)
-	}
-
-	if err := repo.Discard(ctx, id); err != nil {
-		t.Fatalf("claim: %v", err)
-	}
-	if err := repo.ReleaseDiscard(ctx, id); err != nil {
-		t.Fatalf("release: %v", err)
-	}
-
-	run, err := repo.GetByID(ctx, id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if run.DiscardedAt != nil {
-		t.Error("discarded_at survived the release, so a refused discard still took effect")
-	}
-	if run.LastCheckpointStep != 4 {
-		t.Errorf("last_checkpoint_step = %d, want 4 — a refused discard that leaves a run unresumable is a quiet mutation", run.LastCheckpointStep)
-	}
-	// $unset, not `$set: null`: every reader expresses "not discarded" as
-	// `discarded_at: nil`, which matches both, but the resumable readers also
-	// have a partial index keyed on it. Asked of the raw document because
-	// the typed read above cannot tell the two apart.
-	var raw bson.M
-	if err := testDB.Collection("discovery_runs").FindOne(ctx, bson.M{"_id": mustOID(t, id)}).Decode(&raw); err != nil {
-		t.Fatal(err)
-	}
-	if _, present := raw["discarded_at"]; present {
-		t.Error("discarded_at is still present as an explicit null; the release must remove the field")
-	}
-
-	// The whole point: the run is discardable again, so an operator who was
-	// told "no" can act on what they were told and try again.
-	if err := repo.Discard(ctx, id); err != nil {
-		t.Errorf("re-discard after a release: %v", err)
-	}
-}
-
-// The two writes a settled discard licenses are fenced on the discard itself.
-// Without that fence, a stray finalize would strip the checkpoint marker off
-// a live, resumable run — losing the operator's resume for a reason nothing
-// in the document would explain.
-func TestInteg_RunRepo_FinalizeDiscard_RefusesARunThatIsNotDiscarded(t *testing.T) {
-	ctx := context.Background()
-	dropRuns(t, ctx)
-	repo := NewRunRepository(testDB)
-	id := seedRunForProject(t, ctx, "proj-finalize-guard", "failed", time.Now(), nil)
-	if _, err := testDB.Collection("discovery_runs").UpdateByID(ctx,
-		mustOID(t, id), bson.M{"$set": bson.M{"last_checkpoint_step": 6}}); err != nil {
-		t.Fatalf("seed marker: %v", err)
-	}
-
-	if err := repo.FinalizeDiscard(ctx, id); err != nil {
-		t.Fatalf("finalize on a live run should be a no-op, not an error: %v", err)
-	}
-	run, _ := repo.GetByID(ctx, id)
-	if run.LastCheckpointStep != 6 {
-		t.Errorf("last_checkpoint_step = %d, want 6 kept — a run nobody discarded is still resumable", run.LastCheckpointStep)
 	}
 }
 
