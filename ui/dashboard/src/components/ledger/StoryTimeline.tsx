@@ -49,9 +49,9 @@ function SeverityDot({ severity }: { severity?: string }) {
  *  Severity and the link both come from the run's own sighting where it has
  *  one: a finding carries its CURRENT state, so reading either off the finding
  *  would make an old run report today's. */
-function FindingChip({ projectId, seen }: { projectId: string; seen: RunSighting }) {
+function FindingChip({ projectId, seen, index }: { projectId: string; seen: RunSighting; index: GraphIndex }) {
   const { finding } = seen;
-  const href = sightingEvidenceLink(projectId, seen);
+  const href = sightingEvidenceLink(projectId, seen, index);
   const name = finding.name || finding.id;
   const label = (
     <Group gap={5} wrap="nowrap" style={{ maxWidth: 420, minWidth: 0 }}>
@@ -199,7 +199,7 @@ export default function StoryTimeline({
                     extra={Math.max(0, story.newFindings.length - MAX_NAMED)}
                   >
                     {story.newFindings.slice(0, MAX_NAMED).map((seen) => (
-                      <FindingChip key={seen.finding.node_id} projectId={projectId} seen={seen} />
+                      <FindingChip key={seen.finding.node_id} projectId={projectId} seen={seen} index={index} />
                     ))}
                   </ChipRow>
                 )}

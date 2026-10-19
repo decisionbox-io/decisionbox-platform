@@ -289,9 +289,14 @@ func appendFindingSighting(f *commonmodels.LedgerFinding, s commonmodels.Finding
 // verdict from the same run and the same source is skipped, so a re-judgement
 // that changes nothing does not grow the document.
 func appendFindingStatusChange(f *commonmodels.LedgerFinding, c commonmodels.FindingStatusChange) {
-	for i := range f.StatusHistory {
-		h := f.StatusHistory[i]
-		if h.Status == c.Status && h.RunID == c.RunID && h.Source == c.Source {
+	// Only the LAST entry suppresses a repeat. One run can legitimately move a
+	// status away and back — consolidation marks a trend `changed` and the
+	// model then confirms the finding — and matching any earlier entry would
+	// swallow that final verdict, leaving the trail ending on a status the
+	// finding no longer has and losing the model's reason with it.
+	if n := len(f.StatusHistory); n > 0 {
+		last := f.StatusHistory[n-1]
+		if last.Status == c.Status && last.RunID == c.RunID && last.Source == c.Source {
 			return
 		}
 	}

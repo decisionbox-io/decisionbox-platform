@@ -228,7 +228,17 @@ var projectChildCollections = []string{
 	"project_schema_index_runs", // durable per-datasource index-run history, keyed by project_id
 	"project_schema_edits",      // durable manual schema-edit audit trail, keyed by project_id
 	"llm_model_windows",         // agent-written self-calibrated context windows, keyed by project_id
-	"discovery_questions", // agent-written clarifying questions + analyst answers, keyed by project_id
+	"discovery_questions",       // agent-written clarifying questions + analyst answers, keyed by project_id
+	// The Discovery Ledger. All of these are keyed by project_id and none of
+	// them were in this list, so deleting a project left its whole
+	// investigation behind — the coverage map, every durable finding, every
+	// open thread and every pack proposal. The learnings collection is new;
+	// the other four have leaked since the ledger shipped.
+	"discovery_ledger",
+	"discovery_ledger_findings",
+	"discovery_ledger_tasks",
+	"discovery_ledger_learnings",
+	"discovery_pack_proposals",
 }
 
 // DeleteCascade removes every Mongo row owned by a project, then the

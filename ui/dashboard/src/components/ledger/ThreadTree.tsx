@@ -85,7 +85,7 @@ function NodeRow({
   if (finding) {
     label = finding.name || finding.id;
     dimmed = Boolean(finding.archived) || Boolean(finding.missing);
-    href = findingEvidenceLink(projectId, finding);
+    href = findingEvidenceLink(projectId, finding, index);
     const runs = (finding.sightings ?? [])
       .map((s) => index.runOrdinal.get(`run:${s.run_id}`))
       .filter((n): n is number => Boolean(n));

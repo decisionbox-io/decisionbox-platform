@@ -325,18 +325,53 @@ describe('filters', () => {
 });
 
 describe('links', () => {
-  it('a finding links to the newest sighting that has a discovery and an insight', () => {
+  it('a finding links to the newest sighting whose evidence the response carries', () => {
     const idx = indexGraph(chainGraph());
     const f1 = idx.findings.get('finding:f1')!;
-    expect(findingEvidenceLink('p1', f1)).toBe('/projects/p1/discoveries/d2/insights/ins3');
+    expect(findingEvidenceLink('p1', f1, idx)).toBe('/projects/p1/discoveries/d2/insights/ins3');
   });
 
   it('a finding with no usable sighting has no link rather than a broken one', () => {
-    expect(findingEvidenceLink('p1', { node_id: 'finding:x', id: 'x', seen_count: 0 })).toBeNull();
+    const idx = indexGraph(chainGraph());
+    expect(findingEvidenceLink('p1', { node_id: 'finding:x', id: 'x', seen_count: 0 }, idx)).toBeNull();
     expect(findingEvidenceLink('p1', {
       node_id: 'finding:x', id: 'x', seen_count: 1,
       sightings: [{ run_id: 'r1', discovery_id: '', date: '2026-05-01T09:00:00Z' }],
-    })).toBeNull();
+    }, idx)).toBeNull();
+  });
+
+  it('a finding whose evidence has been deleted has no link', () => {
+    // The graph keeps the sighting and marks the insight stub missing. A URL
+    // built from the retained ids opens a not-found page.
+    const graph = chainGraph();
+    graph.insights = graph.insights.map((i) => (
+      i.id === 'ins3' ? { ...i, missing: true, discovery_id: undefined } : i));
+    const idx = indexGraph(graph);
+    const f1 = idx.findings.get('finding:f1')!;
+    // It falls back to the older sighting, whose evidence is still there.
+    expect(findingEvidenceLink('p1', f1, idx)).toBe('/projects/p1/discoveries/d1/insights/ins1');
+    // And with none of it left, no link at all.
+    const none = indexGraph({ ...graph, insights: [] });
+    expect(findingEvidenceLink('p1', none.findings.get('finding:f1')!, none)).toBeNull();
+  });
+
+  it('"changed in the last run" matches a run identified only by its discovery', () => {
+    // A run whose document has aged out is drawn as a disc: node and has no
+    // run id, so matching only on that would reject every finding while the
+    // filter still looked available.
+    const graph: LedgerGraph = {
+      runs: [{ node_id: 'disc:d9', discovery_id: 'd9', date: '2026-05-09T09:00:00Z', new_findings: 1, total_findings: 1, marginal_ratio: 1 }],
+      findings: [{
+        node_id: 'finding:f9', id: 'f9', name: 'Seen by that run', severity: 'high',
+        status: 'confirmed', seen_count: 1,
+        sightings: [{ run_id: '', discovery_id: 'd9', date: '2026-05-09T09:00:00Z' }],
+      }],
+      tasks: [], insights: [], recommendations: [], learnings: [], proposals: [],
+      edges: [], truncated: noTruncation,
+    };
+    const idx = indexGraph(graph);
+    expect(findingChangedInRun(idx.findings.get('finding:f9')!, undefined, 'd9')).toBe(true);
+    expect(buildTree(idx, { changedSinceLastRun: true }).map((r) => r.nodeId)).toContain('finding:f9');
   });
 
   it('an insight or recommendation that is gone has no link', () => {
@@ -402,14 +437,20 @@ describe('buildStories', () => {
     ];
     const stories = buildStories(indexGraph(graph));
     const r1 = stories.find((s) => s.run.run_id === 'r1')!;
+    const idx = indexGraph(graph);
     const asFound = r1.newFindings.find((s) => s.finding.id === 'f1')!;
     expect(asFound.severity).toBe('low');
-    expect(sightingEvidenceLink('p1', asFound)).toBe('/projects/p1/discoveries/d1/insights/ins1');
+    expect(sightingEvidenceLink('p1', asFound, idx)).toBe('/projects/p1/discoveries/d1/insights/ins1');
     // And the later run reports what IT saw.
     const r2 = stories.find((s) => s.run.run_id === 'r2')!;
     const asSeen = r2.seenAgain.find((s) => s.finding.id === 'f1')!;
     expect(asSeen.severity).toBe('high');
-    expect(sightingEvidenceLink('p1', asSeen)).toBe('/projects/p1/discoveries/d2/insights/ins3');
+    expect(sightingEvidenceLink('p1', asSeen, idx)).toBe('/projects/p1/discoveries/d2/insights/ins3');
+
+    // A historical run with no evidence of its own borrows none: a card that
+    // linked to a later run's SQL would present it as what this run found.
+    const noEvidence = { ...asFound, sighting: { ...asFound.sighting!, insight_id: undefined } };
+    expect(sightingEvidenceLink('p1', noEvidence, idx)).toBeNull();
   });
 
   it('leaves out run stubs for discoveries that no longer exist', () => {

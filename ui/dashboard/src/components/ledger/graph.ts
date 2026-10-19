@@ -152,13 +152,25 @@ export function nodeRawId(nodeId: string): string {
   return i > 0 ? nodeId.slice(i + 1) : nodeId;
 }
 
+/** Whether an insight id leads anywhere: present in the response, and not a
+ *  stub standing in for something that has been deleted. A link to a deleted
+ *  insight opens a not-found page, which is worse than no link. */
+function evidenceResolves(idx: GraphIndex, insightId: string | undefined): boolean {
+  if (!insightId) return false;
+  const stub = idx.insights.get(`insight:${insightId}`);
+  return Boolean(stub) && !stub!.missing;
+}
+
 /** The discovery id a finding's evidence page lives under: the newest sighting
- *  that has one, which is the run whose SQL a reader most likely wants. */
-export function findingEvidenceLink(projectId: string, finding: GraphFinding): string | null {
+ *  that names evidence the response carries, which is the run whose SQL a
+ *  reader most likely wants. */
+export function findingEvidenceLink(
+  projectId: string, finding: GraphFinding, idx: GraphIndex,
+): string | null {
   const sightings = finding.sightings ?? [];
   for (let i = sightings.length - 1; i >= 0; i -= 1) {
     const s = sightings[i];
-    if (s.discovery_id && s.insight_id) {
+    if (s.discovery_id && evidenceResolves(idx, s.insight_id)) {
       return `/projects/${projectId}/discoveries/${s.discovery_id}/insights/${s.insight_id}`;
     }
   }
@@ -168,12 +180,17 @@ export function findingEvidenceLink(projectId: string, finding: GraphFinding): s
 /** The evidence page for a finding AS ONE RUN SAW IT: that run's own sighting
  *  names its own insight, so the link opens the SQL that run wrote rather than
  *  whatever the latest run happened to produce. */
-export function sightingEvidenceLink(projectId: string, seen: RunSighting): string | null {
+export function sightingEvidenceLink(
+  projectId: string, seen: RunSighting, idx: GraphIndex,
+): string | null {
   const s = seen.sighting;
-  if (s?.discovery_id && s.insight_id) {
+  if (s?.discovery_id && evidenceResolves(idx, s.insight_id)) {
     return `/projects/${projectId}/discoveries/${s.discovery_id}/insights/${s.insight_id}`;
   }
-  return findingEvidenceLink(projectId, seen.finding);
+  // No fallback to the finding's newest evidence. A historical card that
+  // borrowed it would present SQL that run never wrote as the thing it found.
+  // A card with no link is honest; a card with the wrong link is not.
+  return seen.sighting ? null : findingEvidenceLink(projectId, seen.finding, idx);
 }
 
 /** The evidence page for one insight stub. */
@@ -202,10 +219,17 @@ export interface TreeFilters {
 
 /** findingChangedInRun reports whether the run moved this finding: it was seen
  *  in it, or its status changed in it. */
-export function findingChangedInRun(finding: GraphFinding, runId: string | undefined): boolean {
-  if (!runId) return false;
-  if ((finding.sightings ?? []).some((s) => s.run_id === runId)) return true;
-  return (finding.status_history ?? []).some((h) => h.run_id === runId);
+export function findingChangedInRun(
+  finding: GraphFinding, runId: string | undefined, discoveryId?: string,
+): boolean {
+  // Either id. A run whose document has aged out is drawn as a `disc:` node
+  // and has no run id at all, and matching only on that would reject every
+  // finding while the filter still looked available.
+  const matches = (run?: string, discovery?: string) =>
+    (Boolean(runId) && run === runId) || (Boolean(discoveryId) && discovery === discoveryId);
+  if (!runId && !discoveryId) return false;
+  if ((finding.sightings ?? []).some((s) => matches(s.run_id, s.discovery_id))) return true;
+  return (finding.status_history ?? []).some((h) => matches(h.run_id, h.discovery_id));
 }
 
 function withinDates(iso: string | undefined, filters: TreeFilters): boolean {
@@ -222,13 +246,15 @@ function withinDates(iso: string | undefined, filters: TreeFilters): boolean {
  *  finding that a visible thread points at would break the chain the view
  *  exists to show. */
 export function matchesFilters(
-  finding: GraphFinding, filters: TreeFilters, latestRunId: string | undefined,
+  finding: GraphFinding, filters: TreeFilters,
+  latestRunId: string | undefined, latestDiscoveryId?: string,
 ): boolean {
   if (filters.area && finding.area !== filters.area) return false;
   if (filters.severity && finding.severity !== filters.severity) return false;
   if (filters.status && finding.status !== filters.status) return false;
   if (!withinDates(finding.last_seen, filters)) return false;
-  if (filters.changedSinceLastRun && !findingChangedInRun(finding, latestRunId)) return false;
+  if (filters.changedSinceLastRun
+    && !findingChangedInRun(finding, latestRunId, latestDiscoveryId)) return false;
   return true;
 }
 
@@ -297,6 +323,7 @@ export function buildTree(
   idx: GraphIndex, filters: TreeFilters = {},
 ): TreeNode[] {
   const latestRunId = idx.latestRun?.run_id;
+  const latestDiscoveryId = idx.latestRun?.discovery_id;
 
   const claimedAsChild = new Set<string>();
   idx.findings.forEach((_f, nodeId) => {
@@ -316,7 +343,7 @@ export function buildTree(
   const rootIds: Array<{ nodeId: string; kind: TreeNodeKind }> = [];
   idx.findings.forEach((f, nodeId) => {
     if (claimedAsChild.has(nodeId)) return;
-    if (!matchesFilters(f, filters, latestRunId)) return;
+    if (!matchesFilters(f, filters, latestRunId, latestDiscoveryId)) return;
     rootIds.push({ nodeId, kind: 'finding' });
   });
   idx.tasks.forEach((_t, nodeId) => {
@@ -405,7 +432,7 @@ export function buildTree(
   // here would quietly undo the filter.
   idx.findings.forEach((f, nodeId) => {
     if (budget <= 0) return;
-    if (!expanded.has(nodeId) && claimedAsChild.has(nodeId) && matchesFilters(f, filters, latestRunId)) {
+    if (!expanded.has(nodeId) && claimedAsChild.has(nodeId) && matchesFilters(f, filters, latestRunId, latestDiscoveryId)) {
       roots.push(walk(nodeId, 'finding', 0, nodeId, new Set()));
     }
   });
