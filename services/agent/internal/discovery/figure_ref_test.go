@@ -824,3 +824,77 @@ func TestRecommendationFigures_AdoptedCurrencyReachesTheVerdictDisplay(t *testin
 		t.Errorf("verdict display = %q, want ₺100 -- the audit trail must say what the prose says", got)
 	}
 }
+
+// TestRecommendationFigures_ADeclinedAdoptionSurvivesTheReSettle holds a decline against
+// the pass that refreshes displays. A decline means the figure KEPT the model's number, so
+// re-evaluating it produces a verdict about a disagreement nothing resolved -- and on the
+// segment_size path that verdict reads holds, because the agreement tolerance is wider
+// than the difference the decline would not touch. Certifying it there would put "checked"
+// against a number this layer explicitly declined to stand behind.
+//
+// Both triggers are covered because only one of them is new. `filled` is the ordinary
+// contract path -- the contract is what tells the model to omit a value -- so a sibling
+// figure with no value of its own has always been enough to wipe a decline. The symbol
+// adoption added a third trigger to a defect that was already reachable.
+func TestRecommendationFigures_ADeclinedAdoptionSurvivesTheReSettle(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		second models.Figure
+	}{
+		{
+			// The reviewer's case: a correct currency amount with its symbol omitted, so
+			// only the symbol moves.
+			name: "a sibling adopting only a symbol",
+			second: models.Figure{
+				ID: "f2", Unit: models.UnitCurrency, Value: 100,
+				Kind: models.FigureRefKind, Refs: []models.FigureRef{ref("33333333-4444-5555-6666-777777777777", "f1")},
+			},
+		},
+		{
+			// The path that predates it: a sibling stating no value at all.
+			name: "a sibling having its value filled in",
+			second: models.Figure{
+				ID: "f2", Unit: models.UnitCount,
+				Kind: models.FigureRefKind, Refs: []models.FigureRef{ref("11111111-2222-3333-4444-555555555555", "f2")},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lira := models.Insight{
+				ID:             "33333333-4444-5555-6666-777777777777",
+				Figures:        []models.Figure{{ID: "f1", Value: 100, Unit: models.UnitCurrency, Currency: "₺"}},
+				FigureVerdicts: []models.FigureVerdict{{ID: "f1", Status: models.FigureHolds, Claimed: 100, Evaluated: 100}},
+			}
+			bands := bandInsight()
+			recs := []models.Recommendation{{
+				Description: "Bands hold {{f1}}, and {{f2}} besides.",
+				SegmentSize: 52135,
+				Figures: []models.Figure{
+					// Declared 52,135 against a checked 52,134, with segment_size stating
+					// the same 52,135: adoption is declined and the disagreement recorded.
+					{ID: "f1", Unit: models.UnitCount, Value: 52135,
+						Kind: models.FigureRefKind, Refs: []models.FigureRef{ref(bands.ID, "f1")}},
+					tc.second,
+				},
+			}}
+
+			usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{bands, lira})
+
+			var v models.FigureVerdict
+			for _, got := range recs[0].FigureVerdicts {
+				if got.ID == "f1" {
+					v = got
+				}
+			}
+			if v.Status != models.FigureUndecidable {
+				t.Errorf("status = %q, want %q -- the decline was overwritten by the re-settle", v.Status, models.FigureUndecidable)
+			}
+			if !strings.Contains(v.Reason, "segment_size") {
+				t.Errorf("reason = %q, want the decline's own reason", v.Reason)
+			}
+			if got := recs[0].Figures[0].Value; got != 52135 {
+				t.Errorf("value = %v, want 52135 left in place -- a decline does not adopt", got)
+			}
+		})
+	}
+}

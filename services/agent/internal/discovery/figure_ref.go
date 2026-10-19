@@ -415,11 +415,13 @@ func (w figureWriter) evaluateRecommendationFigure(f models.Figure, ix figureRef
 // segment_size 101 against a checked count of 100 sat inside the combined tolerance, reported
 // `holds`, and kept 101 in the sentence with that verdict attached. The disagreement is real
 // and unresolved, so the verdict says undecidable.
-func declineAdoption(v *models.FigureVerdict, reason string) {
+func declineAdoption(v *models.FigureVerdict, reason string) bool {
 	if v.Claimed != v.Evaluated {
 		v.Status = models.FigureUndecidable
 		v.Reason = reason
+		return true
 	}
+	return false
 }
 
 func (w figureWriter) adoptResolvedFigureValues(rec *models.Recommendation, ix figureRefIndex) int {
@@ -429,6 +431,19 @@ func (w figureWriter) adoptResolvedFigureValues(rec *models.Recommendation, ix f
 	byID := figureIndexByID(rec.Figures)
 
 	var corrections []models.FigureCorrection
+	// declined holds the verdicts this pass deliberately left undecidable, so the
+	// re-settle below cannot quietly certify them. A decline means the figure KEPT the
+	// model's number: re-evaluating it produces a verdict about a disagreement nothing
+	// resolved, and on the segment_size path that verdict reads holds, because the
+	// agreement tolerance is wider than the difference it declined to touch.
+	//
+	// This is not new with the symbol adoption -- `filled` is the ordinary contract path,
+	// since the contract is what tells the model to omit a value, so one sibling figure
+	// with no value of its own has always been enough to wipe a decline recorded on
+	// another. Verified by probe before fixing: with no currency figure present at all, a
+	// declined 52,135 against a checked 52,134 came back `holds` with an empty reason and
+	// its un-adopted value still in place.
+	var declined map[string]models.FigureVerdict
 	filled := false
 	// symbolled tracks an adoption that changed what renders without changing the number.
 	// It feeds the same re-settle as filled: a figure whose value was already right is
@@ -500,8 +515,13 @@ func (w figureWriter) adoptResolvedFigureValues(rec *models.Recommendation, ix f
 				"segment_size":   rec.SegmentSize,
 				"resolved":       v.Evaluated,
 			}).Warn("Not adopting this figure: segment_size states the same number and nothing here can establish they are the same quantity")
-			declineAdoption(&rec.FigureVerdicts[vi],
-				"segment_size states the declared value, so replacing it here would leave the two disagreeing; the difference is unresolved")
+			if declineAdoption(&rec.FigureVerdicts[vi],
+				"segment_size states the declared value, so replacing it here would leave the two disagreeing; the difference is unresolved") {
+				if declined == nil {
+					declined = make(map[string]models.FigureVerdict, 1)
+				}
+				declined[v.ID] = rec.FigureVerdicts[vi]
+			}
 			continue
 		}
 
@@ -543,6 +563,17 @@ func (w figureWriter) adoptResolvedFigureValues(rec *models.Recommendation, ix f
 	// compliant figure, since the contract is what tells the model to omit the value.
 	if filled || symbolled || len(corrections) > 0 {
 		rec.FigureVerdicts = w.EvaluateRecommendationFigures(rec.Figures, ix)
+		// The refreshed display is kept -- it is rendered from the figure as it now
+		// stands, which is what a reader sees -- and the decline's own status and reason
+		// are put back over it.
+		for i := range rec.FigureVerdicts {
+			d, ok := declined[rec.FigureVerdicts[i].ID]
+			if !ok {
+				continue
+			}
+			d.Display = rec.FigureVerdicts[i].Display
+			rec.FigureVerdicts[i] = d
+		}
 	}
 	return len(corrections)
 }
