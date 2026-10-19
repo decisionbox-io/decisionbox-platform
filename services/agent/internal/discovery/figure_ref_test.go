@@ -654,3 +654,247 @@ func TestRecommendationFigures_UnresolvableAndUnstatedKeepsItsMarker(t *testing.
 		t.Errorf("tally.unresolved = %d, want 1", tally.unresolved)
 	}
 }
+
+// liraInsight is the shape every figure in a non-dollar project has: the unit says
+// currency and the model named the symbol, which is the only place the symbol is stated.
+func liraInsight() models.Insight {
+	return models.Insight{
+		ID:   "22222222-3333-4444-5555-666666666666",
+		Name: "Open receivables are concentrated in three accounts",
+		Figures: []models.Figure{
+			{ID: "f1", Value: 21129081.03, Unit: models.UnitCurrency, Currency: "₺", Decimals: 2,
+				Step: 3, Kind: models.FigureSum, Column: "open_ar"},
+			{ID: "f2", Value: 4612004.10, Unit: models.UnitCurrency, Currency: "₺", Decimals: 2,
+				Step: 3, Kind: models.FigureCell, Column: "open_ar", Row: "card = M0529"},
+		},
+		FigureVerdicts: []models.FigureVerdict{
+			{ID: "f1", Status: models.FigureHolds, Claimed: 21129081.03, Evaluated: 21129081.03},
+			{ID: "f2", Status: models.FigureHolds, Claimed: 4612004.10, Evaluated: 4612004.10},
+		},
+	}
+}
+
+// TestRecommendationFigures_RefKeepsTheInsightsCurrency is the defect a Turkish run
+// shipped to a customer: all 29 insights wrote ₺ and 7 of 8 recommendations wrote $, for
+// the same amounts, because the recommendation schema has no currency field and the
+// reference carried the value and the unit across without the symbol.
+//
+// The amount is the same one in both documents, so a reader seeing two symbols for it has
+// no rule that tells them which is the money they hold.
+func TestRecommendationFigures_RefKeepsTheInsightsCurrency(t *testing.T) {
+	ins := liraInsight()
+	recs := []models.Recommendation{{
+		Description: "Chase the {{f1}} sitting past ninety days.",
+		Figures: []models.Figure{{
+			ID: "f1", Unit: models.UnitCurrency, Scale: models.ScaleMillions, Decimals: 1,
+			Kind: models.FigureRefKind, Refs: []models.FigureRef{ref(ins.ID, "f1")},
+		}},
+	}}
+
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.renderRecommendationFigures(recs)
+
+	if strings.Contains(recs[0].Description, "$") {
+		t.Errorf("description = %q, want no dollar sign -- the insight it cites is in lira", recs[0].Description)
+	}
+	if !strings.Contains(recs[0].Description, "₺21.1M") {
+		t.Errorf("description = %q, want ₺21.1M -- the cited figure's own symbol", recs[0].Description)
+	}
+}
+
+// TestRecommendationFigures_SumKeepsTheCurrencyItsOperandsAgreeOn covers the other kind a
+// recommendation may declare: a total has no symbol of its own either, and the operands
+// are the only statement of one.
+func TestRecommendationFigures_SumKeepsTheCurrencyItsOperandsAgreeOn(t *testing.T) {
+	ins := liraInsight()
+	recs := []models.Recommendation{{
+		Description: "Together they hold {{f1}}.",
+		Figures: []models.Figure{{
+			ID: "f1", Unit: models.UnitCurrency, Decimals: 2,
+			Kind: models.FigureSum, Refs: []models.FigureRef{ref(ins.ID, "f1"), ref(ins.ID, "f2")},
+		}},
+	}}
+
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.renderRecommendationFigures(recs)
+
+	if !strings.Contains(recs[0].Description, "₺") {
+		t.Errorf("description = %q, want the lira symbol both operands carry", recs[0].Description)
+	}
+}
+
+// TestRecommendationFigures_SumAcrossCurrenciesIsUndecidable is the failure the symbol
+// fix would otherwise introduce. A multi-currency book declares figures in several
+// currencies -- the run this came from had 90 in lira and 6 in euro -- and nothing stopped
+// a total from being built across them, because sameNotation compares the unit and both
+// are "currency". Adopting either operand's symbol for that total would put a confident
+// symbol on a number that is the sum of two different kinds of money.
+func TestRecommendationFigures_SumAcrossCurrenciesIsUndecidable(t *testing.T) {
+	ins := liraInsight()
+	ins.Figures[1].Currency = "€"
+	recs := []models.Recommendation{{
+		Description: "Together they hold {{f1}}.",
+		Figures: []models.Figure{{
+			ID: "f1", Unit: models.UnitCurrency, Decimals: 2,
+			Kind: models.FigureSum, Refs: []models.FigureRef{ref(ins.ID, "f1"), ref(ins.ID, "f2")},
+		}},
+	}}
+
+	_, adopted := usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	if adopted != 0 {
+		t.Errorf("adopted = %d, want 0 -- nothing may be taken from operands that disagree", adopted)
+	}
+	if got := recs[0].Figures[0].Currency; got != "" {
+		t.Errorf("currency = %q, want it left unset -- neither operand's symbol describes the total", got)
+	}
+	if got := recs[0].FigureVerdicts[0].Status; got != models.FigureUndecidable {
+		t.Errorf("status = %q, want %q", got, models.FigureUndecidable)
+	}
+	if !strings.Contains(recs[0].FigureVerdicts[0].Reason, "currency") {
+		t.Errorf("reason = %q, want it to name the currency disagreement", recs[0].FigureVerdicts[0].Reason)
+	}
+}
+
+// TestRecommendationFigures_DollarOperandsAgreeHoweverTheyAreSpelled is the regression the
+// first symbol fix introduced: comparing the declared strings made an omitted currency and
+// an explicit "$" two different currencies, although Figure.Symbol renders both as $. The
+// schema says "omit for dollars", so a model doing both across two figures is ordinary --
+// and the total it refused had been settling correctly until then. Whitespace is the same
+// bug with a different spelling.
+func TestRecommendationFigures_DollarOperandsAgreeHoweverTheyAreSpelled(t *testing.T) {
+	for _, tc := range []struct{ name, a, b string }{
+		{"omitted and explicit dollars", "", "$"},
+		{"padded and bare lira", " ₺", "₺"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ins := liraInsight()
+			ins.Figures[0].Currency, ins.Figures[1].Currency = tc.a, tc.b
+			recs := []models.Recommendation{{
+				Description: "Together they hold {{f1}}.",
+				Figures: []models.Figure{{
+					ID: "f1", Unit: models.UnitCurrency, Decimals: 2,
+					Kind: models.FigureSum, Refs: []models.FigureRef{ref(ins.ID, "f1"), ref(ins.ID, "f2")},
+				}},
+			}}
+
+			usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+			usWriter.renderRecommendationFigures(recs)
+
+			if got := recs[0].FigureVerdicts[0].Status; got != models.FigureHolds {
+				t.Errorf("status = %q, want %q -- both operands print the same symbol", got, models.FigureHolds)
+			}
+			if strings.Contains(recs[0].Description, "{{f1}}") {
+				t.Errorf("description = %q, still carries its placeholder -- the total was refused", recs[0].Description)
+			}
+			if !strings.Contains(recs[0].Description, "25,741,085.13") {
+				t.Errorf("description = %q, want the total of both operands", recs[0].Description)
+			}
+		})
+	}
+}
+
+// TestRecommendationFigures_AdoptedCurrencyReachesTheVerdictDisplay covers the audit trail
+// the value-fill path already learned to refresh: a figure whose number does not move is
+// not re-settled, so adopting only a symbol left FigureVerdict.Display showing the dollar
+// amount the prose no longer says. Two symbols for one amount in two places a reader looks
+// is the defect this layer is here to remove, not to relocate.
+func TestRecommendationFigures_AdoptedCurrencyReachesTheVerdictDisplay(t *testing.T) {
+	ins := models.Insight{
+		ID:             "33333333-4444-5555-6666-777777777777",
+		Figures:        []models.Figure{{ID: "f1", Value: 100, Unit: models.UnitCurrency, Currency: "₺"}},
+		FigureVerdicts: []models.FigureVerdict{{ID: "f1", Status: models.FigureHolds, Claimed: 100, Evaluated: 100}},
+	}
+	// Value stated and already right, so nothing is corrected and nothing is filled --
+	// the only path left that changes what renders is the symbol.
+	recs := []models.Recommendation{{
+		Description: "That is {{f1}} still outstanding.",
+		Figures: []models.Figure{{
+			ID: "f1", Value: 100, Unit: models.UnitCurrency,
+			Kind: models.FigureRefKind, Refs: []models.FigureRef{ref(ins.ID, "f1")},
+		}},
+	}}
+
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.renderRecommendationFigures(recs)
+
+	if !strings.Contains(recs[0].Description, "₺100") {
+		t.Errorf("description = %q, want ₺100", recs[0].Description)
+	}
+	if got := recs[0].FigureVerdicts[0].Display; !strings.Contains(got, "₺100") {
+		t.Errorf("verdict display = %q, want ₺100 -- the audit trail must say what the prose says", got)
+	}
+}
+
+// TestRecommendationFigures_ADeclinedAdoptionSurvivesTheReSettle holds a decline against
+// the pass that refreshes displays. A decline means the figure KEPT the model's number, so
+// re-evaluating it produces a verdict about a disagreement nothing resolved -- and on the
+// segment_size path that verdict reads holds, because the agreement tolerance is wider
+// than the difference the decline would not touch. Certifying it there would put "checked"
+// against a number this layer explicitly declined to stand behind.
+//
+// Both triggers are covered because only one of them is new. `filled` is the ordinary
+// contract path -- the contract is what tells the model to omit a value -- so a sibling
+// figure with no value of its own has always been enough to wipe a decline. The symbol
+// adoption added a third trigger to a defect that was already reachable.
+func TestRecommendationFigures_ADeclinedAdoptionSurvivesTheReSettle(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		second models.Figure
+	}{
+		{
+			// The reviewer's case: a correct currency amount with its symbol omitted, so
+			// only the symbol moves.
+			name: "a sibling adopting only a symbol",
+			second: models.Figure{
+				ID: "f2", Unit: models.UnitCurrency, Value: 100,
+				Kind: models.FigureRefKind, Refs: []models.FigureRef{ref("33333333-4444-5555-6666-777777777777", "f1")},
+			},
+		},
+		{
+			// The path that predates it: a sibling stating no value at all.
+			name: "a sibling having its value filled in",
+			second: models.Figure{
+				ID: "f2", Unit: models.UnitCount,
+				Kind: models.FigureRefKind, Refs: []models.FigureRef{ref("11111111-2222-3333-4444-555555555555", "f2")},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lira := models.Insight{
+				ID:             "33333333-4444-5555-6666-777777777777",
+				Figures:        []models.Figure{{ID: "f1", Value: 100, Unit: models.UnitCurrency, Currency: "₺"}},
+				FigureVerdicts: []models.FigureVerdict{{ID: "f1", Status: models.FigureHolds, Claimed: 100, Evaluated: 100}},
+			}
+			bands := bandInsight()
+			recs := []models.Recommendation{{
+				Description: "Bands hold {{f1}}, and {{f2}} besides.",
+				SegmentSize: 52135,
+				Figures: []models.Figure{
+					// Declared 52,135 against a checked 52,134, with segment_size stating
+					// the same 52,135: adoption is declined and the disagreement recorded.
+					{ID: "f1", Unit: models.UnitCount, Value: 52135,
+						Kind: models.FigureRefKind, Refs: []models.FigureRef{ref(bands.ID, "f1")}},
+					tc.second,
+				},
+			}}
+
+			usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{bands, lira})
+
+			var v models.FigureVerdict
+			for _, got := range recs[0].FigureVerdicts {
+				if got.ID == "f1" {
+					v = got
+				}
+			}
+			if v.Status != models.FigureUndecidable {
+				t.Errorf("status = %q, want %q -- the decline was overwritten by the re-settle", v.Status, models.FigureUndecidable)
+			}
+			if !strings.Contains(v.Reason, "segment_size") {
+				t.Errorf("reason = %q, want the decline's own reason", v.Reason)
+			}
+			if got := recs[0].Figures[0].Value; got != 52135 {
+				t.Errorf("value = %v, want 52135 left in place -- a decline does not adopt", got)
+			}
+		})
+	}
+}

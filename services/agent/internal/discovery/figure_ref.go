@@ -58,6 +58,19 @@ type refValue struct {
 	// would mean inventing an operation the contract never described, so the mismatch is
 	// refused instead.
 	unit string
+	// currency is the symbol the source figure PRINTS -- Figure.Symbol's answer, not the
+	// raw field. The insight is the only place a symbol is ever stated: a recommendation
+	// figure has no currency field, by the same reasoning that gives it no value field.
+	// Carrying the value and the unit without it meant Symbol fell through to its dollar
+	// default, so a Turkish run wrote ₺ in all 29 insights and $ in 7 of 8
+	// recommendations -- for the same amounts.
+	//
+	// The printed symbol rather than the declared string, because the schema says "omit
+	// for dollars" and a model may do that on one figure and write "$" on the next.
+	// Comparing what was declared made those two different currencies and refused a total
+	// that had been settling correctly; padding did the same. What renders is the only
+	// definition under which two operands agree when a reader cannot tell them apart.
+	currency string
 	// slack is the half-interval it was verified at, which is the precision that print
 	// chose. "~911K" vouches to within 500, so a recommendation restating it unscaled as
 	// "911,000" would assert ±0.5 on a number checked to ±500.
@@ -143,12 +156,15 @@ func (w figureWriter) buildFigureRefIndex(insights []models.Insight) figureRefIn
 			// declined to fix still reads fails.
 			switch st := status[f.ID]; st {
 			case models.FigureHolds:
-				byID[f.ID] = refValue{value: renderedValue(f), unit: f.Unit, slack: figureSlack(f), found: true, vouched: true}
+				byID[f.ID] = refValue{value: renderedValue(f), unit: f.Unit, currency: f.Symbol(),
+					slack: figureSlack(f), found: true, vouched: true}
 			case "":
-				byID[f.ID] = refValue{value: renderedValue(f), unit: f.Unit, slack: figureSlack(f), found: true,
+				byID[f.ID] = refValue{value: renderedValue(f), unit: f.Unit, currency: f.Symbol(),
+					slack: figureSlack(f), found: true,
 					why: "it was never checked"}
 			default:
-				byID[f.ID] = refValue{value: renderedValue(f), unit: f.Unit, slack: figureSlack(f), found: true,
+				byID[f.ID] = refValue{value: renderedValue(f), unit: f.Unit, currency: f.Symbol(),
+					slack: figureSlack(f), found: true,
 					why: fmt.Sprintf("its own check came back %s, so the insight carries it unvouched too", st)}
 			}
 		}
@@ -197,6 +213,36 @@ func (ix figureRefIndex) resolve(r models.FigureRef) (value float64, unit string
 		return rv.value, rv.unit, rv.slack, false, fmt.Sprintf("figure %s of insight %s is not vouched for: %s", r.Figure, shortID(r.Insight), rv.why), nil
 	}
 	return rv.value, rv.unit, rv.slack, true, "", nil
+}
+
+// agreedCurrency returns the symbol every referenced figure prints, and -- when they do
+// not all print the same one -- the two that disagree.
+//
+// The insight is the only place a currency is ever stated: a recommendation figure has no
+// currency field, for the same reason it has no value field. So this is where both the
+// symbol a restatement adopts and the refusal of a total across two currencies come from,
+// and they come from one place so they cannot drift apart.
+//
+// A reference that resolves to nothing is skipped rather than compared. Its zero refValue
+// carries no symbol, and treating that as a disagreement replaced resolve's precise
+// account of what is missing -- "insight 8ac98428 declares no figure f3" -- with a report
+// of a currency conflict that is not the thing wrong with the figure.
+func (ix figureRefIndex) agreedCurrency(refs []models.FigureRef) (agreed, conflicting string, ok bool) {
+	have := false
+	for _, r := range refs {
+		rv, found := ix[r.Insight][r.Figure]
+		if !found || !rv.found {
+			continue
+		}
+		if !have {
+			agreed, have = rv.currency, true
+			continue
+		}
+		if rv.currency != agreed {
+			return agreed, rv.currency, false
+		}
+	}
+	return agreed, "", true
 }
 
 // EvaluateRecommendationFigures settles every figure a recommendation declares against
@@ -252,6 +298,21 @@ func (w figureWriter) evaluateRecommendationFigure(f models.Figure, ix figureRef
 	// the half-unit interval every unscaled whole number carries, summed to a full unit
 	// and made their own total unstatable at the precision both operands already had.
 	coarsest, drift := 0.0, 0.0
+	// A sum's operands have to be the same kind of money before they can be added, and
+	// until now nothing asked: sameNotation compares the unit, and lira and euro are both
+	// "currency". A live run declared 90 figures in lira and 6 in euro, so a total across
+	// them was reachable, would have been rendered under one symbol, and would have read
+	// as holds -- a checked number that is the sum of two different currencies. Refused
+	// rather than converted, for the reason a unit mismatch is: a rate is an operation
+	// this contract never described.
+	// Asked only of a figure written as currency: the symbol is what that unit prints and
+	// nothing else reads it, so a stray currency on a count would otherwise refuse a
+	// total this layer has always settled.
+	if agreed, conflicting, ok := ix.agreedCurrency(f.Refs); f.Unit == models.UnitCurrency && !ok {
+		return undecidable(
+			"the figures this totals are in different currencies (%s and %s), so there is no single currency the total is in",
+			agreed, conflicting)
+	}
 	for _, r := range f.Refs {
 		got, srcUnit, slack, vouched, why, err := ix.resolve(r)
 		if err != nil {
@@ -354,11 +415,13 @@ func (w figureWriter) evaluateRecommendationFigure(f models.Figure, ix figureRef
 // segment_size 101 against a checked count of 100 sat inside the combined tolerance, reported
 // `holds`, and kept 101 in the sentence with that verdict attached. The disagreement is real
 // and unresolved, so the verdict says undecidable.
-func declineAdoption(v *models.FigureVerdict, reason string) {
+func declineAdoption(v *models.FigureVerdict, reason string) bool {
 	if v.Claimed != v.Evaluated {
 		v.Status = models.FigureUndecidable
 		v.Reason = reason
+		return true
 	}
+	return false
 }
 
 func (w figureWriter) adoptResolvedFigureValues(rec *models.Recommendation, ix figureRefIndex) int {
@@ -368,7 +431,27 @@ func (w figureWriter) adoptResolvedFigureValues(rec *models.Recommendation, ix f
 	byID := figureIndexByID(rec.Figures)
 
 	var corrections []models.FigureCorrection
+	// declined holds the verdicts this pass deliberately left undecidable, so the
+	// re-settle below cannot quietly certify them. A decline means the figure KEPT the
+	// model's number: re-evaluating it produces a verdict about a disagreement nothing
+	// resolved, and on the segment_size path that verdict reads holds, because the
+	// agreement tolerance is wider than the difference it declined to touch.
+	//
+	// This is not new with the symbol adoption -- `filled` is the ordinary contract path,
+	// since the contract is what tells the model to omit a value, so one sibling figure
+	// with no value of its own has always been enough to wipe a decline recorded on
+	// another. Verified by probe before fixing: with no currency figure present at all, a
+	// declined 52,135 against a checked 52,134 came back `holds` with an empty reason and
+	// its un-adopted value still in place.
+	var declined map[string]models.FigureVerdict
 	filled := false
+	// symbolled tracks an adoption that changed what renders without changing the number.
+	// It feeds the same re-settle as filled: a figure whose value was already right is
+	// never corrected and never filled, so without it the verdict kept the display it was
+	// built with -- "$100" recorded against prose that now reads "₺100". That is the
+	// audit trail disagreeing with the page, which is the defect this adoption exists to
+	// remove rather than to move somewhere a reader also looks.
+	symbolled := false
 	for vi := range rec.FigureVerdicts {
 		v := rec.FigureVerdicts[vi]
 		if !v.Resolved {
@@ -379,6 +462,26 @@ func (w figureWriter) adoptResolvedFigureValues(rec *models.Recommendation, ix f
 			continue
 		}
 		f := &rec.Figures[j]
+
+		// The symbol comes across with the number, because a restatement of an amount in
+		// lira is not an amount in dollars. It is adopted before the value branches
+		// below, so it reaches a figure whether or not the model also stated a value --
+		// the symbol was never the model's to state here, and Figure.Symbol's dollar
+		// default is what every unset one printed.
+		//
+		// Only ever filled, never overwritten: a currency the model did put on a
+		// recommendation figure is its own claim, and the mismatch belongs in a verdict
+		// rather than under a silent correction.
+		//
+		// Asked only of a currency figure. Symbol answers "$" for any figure with no
+		// symbol of its own, including a count, so an ungated adoption would stamp "$"
+		// onto counts and percents where nothing reads it and it describes nothing.
+		if f.Unit == models.UnitCurrency && strings.TrimSpace(f.Currency) == "" {
+			if agreed, _, ok := ix.agreedCurrency(f.Refs); ok && agreed != "" {
+				f.Currency = agreed
+				symbolled = true
+			}
+		}
 
 		// An absent number is filled in from the best source there is, vouched or not.
 		// The contract tells the model not to write a value, so absence is the normal
@@ -412,8 +515,13 @@ func (w figureWriter) adoptResolvedFigureValues(rec *models.Recommendation, ix f
 				"segment_size":   rec.SegmentSize,
 				"resolved":       v.Evaluated,
 			}).Warn("Not adopting this figure: segment_size states the same number and nothing here can establish they are the same quantity")
-			declineAdoption(&rec.FigureVerdicts[vi],
-				"segment_size states the declared value, so replacing it here would leave the two disagreeing; the difference is unresolved")
+			if declineAdoption(&rec.FigureVerdicts[vi],
+				"segment_size states the declared value, so replacing it here would leave the two disagreeing; the difference is unresolved") {
+				if declined == nil {
+					declined = make(map[string]models.FigureVerdict, 1)
+				}
+				declined[v.ID] = rec.FigureVerdicts[vi]
+			}
 			continue
 		}
 
@@ -453,8 +561,19 @@ func (w figureWriter) adoptResolvedFigureValues(rec *models.Recommendation, ix f
 	// corrected one. Skipping it there left the audit trail saying `display: "0"` on a
 	// figure whose claimed and evaluated values were both 52134 -- every contract-
 	// compliant figure, since the contract is what tells the model to omit the value.
-	if filled || len(corrections) > 0 {
+	if filled || symbolled || len(corrections) > 0 {
 		rec.FigureVerdicts = w.EvaluateRecommendationFigures(rec.Figures, ix)
+		// The refreshed display is kept -- it is rendered from the figure as it now
+		// stands, which is what a reader sees -- and the decline's own status and reason
+		// are put back over it.
+		for i := range rec.FigureVerdicts {
+			d, ok := declined[rec.FigureVerdicts[i].ID]
+			if !ok {
+				continue
+			}
+			d.Display = rec.FigureVerdicts[i].Display
+			rec.FigureVerdicts[i] = d
+		}
 	}
 	return len(corrections)
 }
