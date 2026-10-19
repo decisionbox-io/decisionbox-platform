@@ -116,9 +116,9 @@ func TestBackfillLedgerGraph_LinksWhatItCanAndReportsWhatItCannot(t *testing.T) 
 	// A single run, well away from any task timestamp.
 	completed := time.Date(2026, 1, 13, 9, 5, 0, 0, time.UTC)
 	if _, err := client.Collection(gomongo.CollectionDiscoveryRuns).InsertMany(ctx, []any{
-		bson.M{"_id": "run-1", "project_id": projectID, "discovery_id": "disc-1",
+		bson.M{"_id": "run-1", "project_id": projectID, "discovery_id": "disc-1", "status": runStatusCompleted,
 			"started_at": completed.Add(-72 * time.Hour), "completed_at": completed.Add(-71 * time.Hour)},
-		bson.M{"_id": "run-2", "project_id": projectID, "discovery_id": "disc-2",
+		bson.M{"_id": "run-2", "project_id": projectID, "discovery_id": "disc-2", "status": runStatusCompleted,
 			"started_at": completed.Add(-time.Hour), "completed_at": completed},
 	}); err != nil {
 		t.Fatalf("seed runs: %v", err)
@@ -172,6 +172,12 @@ func TestBackfillLedgerGraph_LinksWhatItCanAndReportsWhatItCannot(t *testing.T) 
 		churn.StatusHistory[0].Source != commonmodels.FindingStatusSourceBackfill ||
 		churn.StatusHistory[0].Status != commonmodels.LedgerFindingStatusConfirmed {
 		t.Errorf("status trail should hold one derived entry: %+v", churn.StatusHistory)
+	}
+	// And unattributed: source_discovery_id names the run that last SAW the
+	// finding, while a status is moved by whichever run re-judged it — which
+	// can do so on other evidence, without seeing it again.
+	if churn.StatusHistory[0].RunID != "" || churn.StatusHistory[0].DiscoveryID != "" {
+		t.Errorf("a derived status entry must not guess the run that moved it: %+v", churn.StatusHistory[0])
 	}
 	// A derived entry carries no reason. Nothing stored says why the status
 	// moved, and a made-up reason would read exactly like a real one.
@@ -334,9 +340,9 @@ func TestBackfillLedgerGraph_RecoversAClosingRunOnALaterPass(t *testing.T) {
 	}
 	// Two runs an hour either side: ambiguous at six hours, decisive at one.
 	if _, err := client.Collection(gomongo.CollectionDiscoveryRuns).InsertMany(ctx, []any{
-		bson.M{"_id": "run-near", "project_id": projectID, "discovery_id": "disc-near",
+		bson.M{"_id": "run-near", "project_id": projectID, "discovery_id": "disc-near", "status": runStatusCompleted,
 			"started_at": closedAt.Add(-time.Hour), "completed_at": closedAt.Add(-30 * time.Minute)},
-		bson.M{"_id": "run-far", "project_id": projectID, "discovery_id": "disc-far",
+		bson.M{"_id": "run-far", "project_id": projectID, "discovery_id": "disc-far", "status": runStatusCompleted,
 			"started_at": closedAt.Add(4 * time.Hour), "completed_at": closedAt.Add(5 * time.Hour)},
 	}); err != nil {
 		t.Fatalf("seed runs: %v", err)
@@ -398,13 +404,19 @@ func TestBackfillLedgerGraph_ClosingRunOnlyWhenUnambiguous(t *testing.T) {
 		t.Fatalf("seed tasks: %v", err)
 	}
 	if _, err := client.Collection(gomongo.CollectionDiscoveryRuns).InsertMany(ctx, []any{
-		bson.M{"_id": "run-clear", "project_id": projectID, "discovery_id": "disc-clear",
+		bson.M{"_id": "run-clear", "project_id": projectID, "discovery_id": "disc-clear", "status": runStatusCompleted,
 			"started_at": closedAt.Add(-2 * time.Hour), "completed_at": closedAt.Add(-time.Hour)},
 		// Two runs within the window of t-ambiguous's updated_at.
-		bson.M{"_id": "run-a", "project_id": projectID, "discovery_id": "disc-a",
+		bson.M{"_id": "run-a", "project_id": projectID, "discovery_id": "disc-a", "status": runStatusCompleted,
 			"started_at": closedAt.Add(238 * time.Hour), "completed_at": closedAt.Add(239 * time.Hour)},
-		bson.M{"_id": "run-b", "project_id": projectID, "discovery_id": "disc-b",
+		bson.M{"_id": "run-b", "project_id": projectID, "discovery_id": "disc-b", "status": runStatusCompleted,
 			"started_at": closedAt.Add(240 * time.Hour), "completed_at": closedAt.Add(241 * time.Hour)},
+		// A FAILED run right next to the clear close. The reflection phase
+		// runs only after a successful discovery, so it never closed
+		// anything — and leaving it in the candidate set would make the real
+		// closing run look ambiguous.
+		bson.M{"_id": "run-failed", "project_id": projectID, "discovery_id": "disc-failed", "status": "failed",
+			"started_at": closedAt.Add(-90 * time.Minute), "completed_at": closedAt.Add(-80 * time.Minute)},
 	}); err != nil {
 		t.Fatalf("seed runs: %v", err)
 	}

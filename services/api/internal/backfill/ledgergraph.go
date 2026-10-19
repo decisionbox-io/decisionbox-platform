@@ -46,6 +46,12 @@ const (
 	defaultCloseWindow = 6 * time.Hour
 	// defaultLedgerBatchSize bounds each bulk write.
 	defaultLedgerBatchSize = 200
+	// runStatusCompleted is the only run status that can have closed a thread:
+	// the reflection phase runs after a SUCCESSFUL discovery, so a failed,
+	// cancelled or still-running row is never the closing run. Leaving them in
+	// the candidate set made a real closing run look ambiguous, and could
+	// stamp a failed run as the one that closed a thread.
+	runStatusCompleted = "completed"
 )
 
 // ledgerGraphCounts is what the run reports. The unlinked counts are the point:
@@ -305,12 +311,17 @@ func backfillLedgerGraphProject(ctx context.Context, client *gomongo.Client, pro
 			if at.IsZero() {
 				at = f.LastSeen
 			}
+			// Deliberately unattributed. source_discovery_id names the run
+			// that last SAW the finding, and a status is moved by a run that
+			// re-judges it — which can do so on other evidence, without
+			// seeing it again, touching only the status and updated_at. The
+			// two are the same run often enough to look right and not often
+			// enough to be true, and a wrong run on a verdict is worse than
+			// none: it would place the verdict in the wrong window.
 			addWrite(f.ID, "status_history", []commonmodels.FindingStatusChange{{
-				Status:      f.Status,
-				RunID:       runsByDiscovery[f.SourceDiscoveryID],
-				DiscoveryID: f.SourceDiscoveryID,
-				At:          at,
-				Source:      commonmodels.FindingStatusSourceBackfill,
+				Status: f.Status,
+				At:     at,
+				Source: commonmodels.FindingStatusSourceBackfill,
 			}})
 			pending++
 			counts.StatusTrailsWritten++
@@ -468,7 +479,7 @@ type runRef struct {
 // order for the closing-run inference.
 func loadRunIndex(ctx context.Context, client *gomongo.Client, projectID string) (map[string]string, []runRef, error) {
 	cur, err := client.Collection(gomongo.CollectionDiscoveryRuns).Find(ctx,
-		bson.M{"project_id": projectID},
+		bson.M{"project_id": projectID, "status": runStatusCompleted},
 		options.Find().
 			SetProjection(bson.M{"_id": 1, "discovery_id": 1, "completed_at": 1, "updated_at": 1, "started_at": 1}).
 			SetSort(bson.D{{Key: "started_at", Value: 1}}))

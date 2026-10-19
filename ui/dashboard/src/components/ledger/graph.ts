@@ -356,17 +356,31 @@ export function buildTree(
     expanded.add(nodeId);
     const nextAncestors = new Set(ancestors);
     nextAncestors.add(nodeId);
-    childrenOf(idx, nodeId).forEach((child, i) => {
+    const children = childrenOf(idx, nodeId);
+    for (let i = 0; i < children.length; i += 1) {
+      // Checked BEFORE each child is scheduled, not only before descending
+      // into one. A single node with thousands of children would otherwise
+      // materialise all of them — the budget would stop their subtrees and
+      // nothing else, which is not a bound on anything that matters.
+      if (budget <= 0) {
+        node.budgetReached = true;
+        break;
+      }
+      const child = children[i];
       const built = walk(
         child.nodeId, child.kind, depth + 1, `${path}/${i}:${child.nodeId}`, nextAncestors,
       );
       built.via = child.via;
       node.children.push(built);
-    });
+    }
     return node;
   };
 
-  const roots = rootIds.map((root) => walk(root.nodeId, root.kind, 0, root.nodeId, new Set()));
+  const roots: TreeNode[] = [];
+  rootIds.forEach((root) => {
+    if (budget <= 0) return;
+    roots.push(walk(root.nodeId, root.kind, 0, root.nodeId, new Set()));
+  });
 
   // A component every one of whose nodes is somebody's child — a thread that
   // re-checks a finding and is answered by that same finding is a legitimate
@@ -378,11 +392,13 @@ export function buildTree(
   // removed is absent because the reader asked for that, and promoting it
   // here would quietly undo the filter.
   idx.findings.forEach((f, nodeId) => {
+    if (budget <= 0) return;
     if (!expanded.has(nodeId) && claimedAsChild.has(nodeId) && matchesFilters(f, filters, latestRunId)) {
       roots.push(walk(nodeId, 'finding', 0, nodeId, new Set()));
     }
   });
   idx.tasks.forEach((_t, nodeId) => {
+    if (budget <= 0) return;
     if (!expanded.has(nodeId) && claimedAsChild.has(nodeId)) {
       roots.push(walk(nodeId, 'task', 0, nodeId, new Set()));
     }

@@ -66,6 +66,13 @@ function NodeRow({
   const task = index.tasks.get(node.nodeId);
   const rec = index.recommendations.get(node.nodeId);
 
+  const trail = finding ? statusTrail(index, finding) : [];
+  const insights = finding
+    ? (finding.source_insight_ids ?? [])
+      .map((id) => index.insights.get(`insight:${id}`))
+      .filter((i): i is NonNullable<typeof i> => Boolean(i))
+    : [];
+
   const hasChildren = node.children.length > 0;
   const below = hasChildren ? countNodes(node) - 1 : 0;
 
@@ -146,17 +153,20 @@ function NodeRow({
     );
   }
 
-  const trail = finding ? statusTrail(index, finding) : [];
-  const insights = finding
-    ? (finding.source_insight_ids ?? [])
-      .map((id) => index.insights.get(`insight:${id}`))
-      .filter((i): i is NonNullable<typeof i> => Boolean(i))
-    : [];
+  // A node with no children can still have something to show: its status
+  // trail, its evidence links, the runs that pursued it. Without a control
+  // those were unreachable — and on a backfilled answer, whose own sighting
+  // carries no insight link, the evidence chips were the only way through to
+  // the SQL.
+  const hasDetail = trail.length > 0 || insights.length > 0 ||
+    (finding?.answered_task_ids ?? []).length > 0 ||
+    (task?.pursued_in_run_ids ?? []).length > 0;
+  const expandable = hasChildren || hasDetail;
 
   return (
     <div style={{ opacity: dimmed ? 0.55 : 1 }}>
       <Group gap={6} wrap="nowrap" align="flex-start">
-        {hasChildren ? (
+        {expandable ? (
           <UnstyledButton
             onClick={onToggle}
             aria-expanded={open}

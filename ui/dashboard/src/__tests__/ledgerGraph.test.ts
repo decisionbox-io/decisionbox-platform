@@ -466,6 +466,24 @@ describe('tree expansion is bounded', () => {
     expect(repeated.every((n) => n.children.length === 0)).toBe(true);
   });
 
+  it('stops scheduling siblings once the budget is spent', () => {
+    // One node with thousands of children: a budget that only stopped
+    // descending would still materialise every one of them.
+    const graph: LedgerGraph = {
+      runs: [], findings: [
+        { node_id: 'finding:f1', id: 'f1', name: 'One root', severity: 'high', status: 'confirmed', seen_count: 1 },
+      ],
+      tasks: [], insights: [], recommendations: [], learnings: [], proposals: [],
+      edges: [], truncated: noTruncation,
+    };
+    for (let i = 0; i < 6000; i += 1) {
+      graph.tasks.push({ node_id: `task:t${i}`, id: `t${i}`, text: `t${i}`, kind: 'next_task', status: 'open' });
+      graph.edges.push({ from: `task:t${i}`, to: 'finding:f1', kind: 'grew_from' });
+    }
+    const built = flatten(buildTree(indexGraph(graph))).length;
+    expect(built).toBeLessThanOrEqual(MAX_TREE_NODES);
+  });
+
   it('keeps a component whose nodes all claim each other', () => {
     // A thread that re-checks a finding and is answered by that same finding
     // is a valid two-node cycle: both are somebody's child, so neither is a
