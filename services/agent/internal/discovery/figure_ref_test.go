@@ -657,27 +657,30 @@ func TestRecommendationFigures_UnresolvableAndUnstatedKeepsItsMarker(t *testing.
 
 // liraInsight is the shape every figure in a non-dollar project has: the unit says
 // currency and the model named the symbol, which is the only place the symbol is stated.
+//
+// The amounts are round and invented. A fixture is read by anyone who can read the repo,
+// so it may not carry a number lifted from a real book, however incidental it looks.
 func liraInsight() models.Insight {
 	return models.Insight{
 		ID:   "22222222-3333-4444-5555-666666666666",
 		Name: "Open receivables are concentrated in three accounts",
 		Figures: []models.Figure{
-			{ID: "f1", Value: 21129081.03, Unit: models.UnitCurrency, Currency: "₺", Decimals: 2,
+			{ID: "f1", Value: 9000000.00, Unit: models.UnitCurrency, Currency: "₺", Decimals: 2,
 				Step: 3, Kind: models.FigureSum, Column: "open_ar"},
-			{ID: "f2", Value: 4612004.10, Unit: models.UnitCurrency, Currency: "₺", Decimals: 2,
+			{ID: "f2", Value: 1500000.00, Unit: models.UnitCurrency, Currency: "₺", Decimals: 2,
 				Step: 3, Kind: models.FigureCell, Column: "open_ar", Row: "card = M0529"},
 		},
 		FigureVerdicts: []models.FigureVerdict{
-			{ID: "f1", Status: models.FigureHolds, Claimed: 21129081.03, Evaluated: 21129081.03},
-			{ID: "f2", Status: models.FigureHolds, Claimed: 4612004.10, Evaluated: 4612004.10},
+			{ID: "f1", Status: models.FigureHolds, Claimed: 9000000.00, Evaluated: 9000000.00},
+			{ID: "f2", Status: models.FigureHolds, Claimed: 1500000.00, Evaluated: 1500000.00},
 		},
 	}
 }
 
-// TestRecommendationFigures_RefKeepsTheInsightsCurrency is the defect a Turkish run
-// shipped to a customer: all 29 insights wrote ₺ and 7 of 8 recommendations wrote $, for
-// the same amounts, because the recommendation schema has no currency field and the
-// reference carried the value and the unit across without the symbol.
+// TestRecommendationFigures_RefKeepsTheInsightsCurrency is a defect a live run shipped:
+// on a book that is not in dollars its insights wrote the right symbol and its
+// recommendations wrote $, for the same amounts, because the recommendation schema has no
+// currency field and the reference carried the value and the unit across without it.
 //
 // The amount is the same one in both documents, so a reader seeing two symbols for it has
 // no rule that tells them which is the money they hold.
@@ -697,8 +700,8 @@ func TestRecommendationFigures_RefKeepsTheInsightsCurrency(t *testing.T) {
 	if strings.Contains(recs[0].Description, "$") {
 		t.Errorf("description = %q, want no dollar sign -- the insight it cites is in lira", recs[0].Description)
 	}
-	if !strings.Contains(recs[0].Description, "₺21.1M") {
-		t.Errorf("description = %q, want ₺21.1M -- the cited figure's own symbol", recs[0].Description)
+	if !strings.Contains(recs[0].Description, "₺9.0M") {
+		t.Errorf("description = %q, want ₺9.0M -- the cited figure's own symbol", recs[0].Description)
 	}
 }
 
@@ -724,10 +727,9 @@ func TestRecommendationFigures_SumKeepsTheCurrencyItsOperandsAgreeOn(t *testing.
 }
 
 // TestRecommendationFigures_SumAcrossCurrenciesIsUndecidable is the failure the symbol
-// fix would otherwise introduce. A multi-currency book declares figures in several
-// currencies -- the run this came from had 90 in lira and 6 in euro -- and nothing stopped
-// a total from being built across them, because sameNotation compares the unit and both
-// are "currency". Adopting either operand's symbol for that total would put a confident
+// fix would otherwise introduce. A multi-currency book declares figures in more than one
+// currency, and nothing stopped a total from being built across them, because
+// sameNotation compares the unit and both are "currency". Adopting either operand's symbol for that total would put a confident
 // symbol on a number that is the sum of two different kinds of money.
 func TestRecommendationFigures_SumAcrossCurrenciesIsUndecidable(t *testing.T) {
 	ins := liraInsight()
@@ -786,7 +788,7 @@ func TestRecommendationFigures_DollarOperandsAgreeHoweverTheyAreSpelled(t *testi
 			if strings.Contains(recs[0].Description, "{{f1}}") {
 				t.Errorf("description = %q, still carries its placeholder -- the total was refused", recs[0].Description)
 			}
-			if !strings.Contains(recs[0].Description, "25,741,085.13") {
+			if !strings.Contains(recs[0].Description, "10,500,000.00") {
 				t.Errorf("description = %q, want the total of both operands", recs[0].Description)
 			}
 		})
