@@ -2,22 +2,37 @@
 
 import { ReactNode, useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { Loader, Select, Button, Group, Stack, Text, Card, Badge, Progress, Tooltip, Collapse, UnstyledButton, ThemeIcon } from '@mantine/core';
+import { Loader, Select, Button, Group, Stack, Text, Card, Badge, Progress, Tooltip, Collapse, UnstyledButton, ThemeIcon, SegmentedControl } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import {
   IconBook2, IconChevronRight, IconTrendingUp, IconRoute, IconGitPullRequest,
-  IconMap2, IconHistory, IconAdjustments, IconListDetails,
+  IconMap2, IconHistory, IconAdjustments, IconListDetails, IconSitemap,
 } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
 import { SectionHeader, EmptyState, StatCard, SeverityBadge, AreaBadge, Th } from '@/components/common/UIComponents';
+import StoryTimeline from '@/components/ledger/StoryTimeline';
+import ThreadTree from '@/components/ledger/ThreadTree';
+import { indexGraph } from '@/components/ledger/graph';
 import {
-  api, ApiError, LedgerView, LedgerTask, EvolutionSettings, PackProposal, Project,
+  api, ApiError, LedgerView, LedgerTask, LedgerGraph, EvolutionSettings, PackProposal, Project,
   EvolutionMode, FrontierPolicy,
 } from '@/lib/api';
 
 // Cap the "Next up" list so the ledger never renders an unbounded wall of
 // tasks; the rest are summarised as "+N more".
 const MAX_NEXT_UP = 12;
+
+// The three levels of the investigation view. Story is the default: plain
+// language and no graph answers "where did this come from" for most readers.
+// Threads is the tree. The third level is not a view — every node in the first
+// two links through to the insight page that already renders the narrative, the
+// SQL, the rows, the quality caveats and the validation verdict.
+type LedgerLevel = 'story' | 'threads';
+
+const LEVELS: { value: LedgerLevel; label: string }[] = [
+  { value: 'story', label: 'Story' },
+  { value: 'threads', label: 'Threads' },
+];
 
 const EVOLUTION_MODES: { value: EvolutionMode; label: string }[] = [
   { value: 'off', label: 'Off — record only' },
@@ -143,6 +158,12 @@ export default function LedgerPage() {
   const [savingMode, setSavingMode] = useState(false);
   const [deciding, setDeciding] = useState<string>(''); // proposal id currently being decided
   const [showFindings, setShowFindings] = useState(false); // advanced detail, collapsed by default
+  const [level, setLevel] = useState<LedgerLevel>('story');
+  const [graph, setGraph] = useState<LedgerGraph | null>(null);
+  const [graphLoading, setGraphLoading] = useState(false);
+  // The graph route is additive: an API that predates it 404s, and an older
+  // deployment must still get the page it has always had.
+  const [graphUnavailable, setGraphUnavailable] = useState(false);
   const [showFrontierHelp, setShowFrontierHelp] = useState(false); // frontier explainer, hidden by default
   const [openThreads, setOpenThreads] = useState<Set<string>>(new Set()); // expanded follow-up ancestry
 
@@ -157,6 +178,23 @@ export default function LedgerPage() {
       .then((p) => setProposals(p || []))
       .catch(() => setProposals([]));
   };
+
+  // Fetched once, after the ledger itself has loaded. Deliberately not on
+  // first paint: the graph carries a project's whole history and neither the
+  // stat cards nor the open-thread queue need it. And never on a deployment
+  // where the ledger routes 404 — the page already says the feature is not
+  // available, and a second request to the same absent API tells nobody
+  // anything.
+  useEffect(() => {
+    if (loading || unsupported || !ledger) return;
+    if (graph || graphLoading || graphUnavailable) return;
+    setGraphLoading(true);
+    api.getLedgerGraph(id)
+      .then(setGraph)
+      .catch(() => setGraphUnavailable(true))
+      .finally(() => setGraphLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, loading, unsupported, ledger]);
 
   useEffect(() => {
     api.getProject(id).then(setProject).catch(() => {});
@@ -226,6 +264,9 @@ export default function LedgerPage() {
     );
   }
 
+  // Indexed once per payload: the tree walk and the story build both read it.
+  const graphIndex = indexGraph(graph);
+
   const explored = ledger.coverage.explored_tables?.length ?? 0;
   const total = ledger.coverage.total_tables ?? 0;
   const frontier = Math.max(0, total - explored);
@@ -289,8 +330,54 @@ export default function LedgerPage() {
           />
         </Group>
 
-        {/* 2. Momentum — is discovery still surfacing new things? */}
-        {ledger.convergence.length > 0 && (
+        {/* The level picker. Story is the default; Threads is the tree. */}
+        <Group justify="space-between" align="center" wrap="wrap">
+          <SegmentedControl
+            value={level}
+            onChange={(v) => setLevel(v as LedgerLevel)}
+            data={LEVELS}
+            size="sm"
+          />
+          <Text size="xs" c="dimmed">
+            {level === 'story'
+              ? 'What each run found, in plain language. Every name links to its evidence.'
+              : 'The investigation as a tree: a finding opens a thread, a later run answers it.'}
+          </Text>
+        </Group>
+
+        {/* Levels 1 and 2. Level 3 is not a view: every node here links through
+            to the insight page that already renders the narrative, the SQL, the
+            rows, the quality caveats and the validation verdict. */}
+        <Section
+          icon={<IconSitemap size={16} />}
+          title={level === 'story' ? 'What happened' : 'Investigation threads'}
+          description={level === 'story'
+            ? 'One card per run, newest first — what it found, which threads it closed and why.'
+            : 'Findings and the threads that grew out of them. Collapsed below the second level; archived findings are dimmed, not hidden.'}
+        >
+          {/* A labelled region: the same finding can legitimately appear here
+              and in the findings table below, and this is what tells a screen
+              reader (and a test) which one it is looking at. */}
+          <div role="region" aria-label="Investigation view">
+            {graphLoading && <Group justify="center" p="md"><Loader size="sm" /></Group>}
+            {!graphLoading && graphUnavailable && (
+              <Text size="sm" c="dimmed">
+                This deployment&apos;s API does not serve the investigation graph yet. The
+                sections below are unaffected.
+              </Text>
+            )}
+            {!graphLoading && !graphUnavailable && graph && (
+              level === 'story'
+                ? <StoryTimeline projectId={id} graph={graph} index={graphIndex} />
+                : <ThreadTree projectId={id} graph={graph} index={graphIndex} />
+            )}
+          </div>
+        </Section>
+
+        {/* 2. Momentum — is discovery still surfacing new things? The Story
+            timeline folds the same signal into each run's card, so this stays
+            for the Threads view and for a project whose graph is unavailable. */}
+        {ledger.convergence.length > 0 && (level !== 'story' || graphUnavailable) && (
           <Section
             icon={<IconTrendingUp size={16} />}
             title="Momentum"
