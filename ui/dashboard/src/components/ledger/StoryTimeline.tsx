@@ -3,9 +3,9 @@
 import Link from 'next/link';
 import { Badge, Card, Group, Progress, Stack, Text, Tooltip } from '@mantine/core';
 import { IconFlag, IconRoute, IconBulb, IconGitPullRequest } from '@tabler/icons-react';
-import { GraphFinding, GraphTask, LedgerGraph } from '@/lib/api';
+import { GraphTask, LedgerGraph } from '@/lib/api';
 import {
-  GraphIndex, RunStory, buildStories, findingEvidenceLink,
+  GraphIndex, RunSighting, RunStory, buildStories, sightingEvidenceLink,
 } from './graph';
 
 // Level 1 — Story.
@@ -44,13 +44,18 @@ function SeverityDot({ severity }: { severity?: string }) {
   );
 }
 
-/** A finding, linked to its evidence page when it has one. */
-function FindingChip({ projectId, finding }: { projectId: string; finding: GraphFinding }) {
-  const href = findingEvidenceLink(projectId, finding);
+/** A finding as this run saw it, linked to the SQL that run wrote.
+ *
+ *  Severity and the link both come from the run's own sighting where it has
+ *  one: a finding carries its CURRENT state, so reading either off the finding
+ *  would make an old run report today's. */
+function FindingChip({ projectId, seen }: { projectId: string; seen: RunSighting }) {
+  const { finding } = seen;
+  const href = sightingEvidenceLink(projectId, seen);
   const name = finding.name || finding.id;
   const label = (
     <Group gap={5} wrap="nowrap" style={{ maxWidth: 420, minWidth: 0 }}>
-      <SeverityDot severity={finding.severity} />
+      <SeverityDot severity={seen.severity} />
       <Text size="xs" lineClamp={1} td={href ? 'underline' : undefined}>{name}</Text>
     </Group>
   );
@@ -193,8 +198,8 @@ export default function StoryTimeline({
                     label="found"
                     extra={Math.max(0, story.newFindings.length - MAX_NAMED)}
                   >
-                    {story.newFindings.slice(0, MAX_NAMED).map((f) => (
-                      <FindingChip key={f.node_id} projectId={projectId} finding={f} />
+                    {story.newFindings.slice(0, MAX_NAMED).map((seen) => (
+                      <FindingChip key={seen.finding.node_id} projectId={projectId} seen={seen} />
                     ))}
                   </ChipRow>
                 )}

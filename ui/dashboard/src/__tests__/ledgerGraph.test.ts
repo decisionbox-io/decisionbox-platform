@@ -2,7 +2,7 @@ import {
   DEFAULT_OPEN_DEPTH, MAX_TREE_DEPTH, TreeNode, areasOf, buildStories, buildTree,
   countNodes, findingChangedInRun, findingEvidenceLink, indexGraph, insightLink,
   MAX_TREE_NODES, matchesFilters, nodeKind, nodeRawId, recommendationLink, runLabel,
-  runRefForDiscovery, severitiesOf, statusTrail, statusesOf,
+  runRefForDiscovery, severitiesOf, sightingEvidenceLink, statusTrail, statusesOf,
 } from '@/components/ledger/graph';
 import type { LedgerGraph } from '@/lib/api';
 
@@ -376,8 +376,8 @@ describe('buildStories', () => {
     expect(stories.map((s) => s.run.run_id)).toEqual(['r2', 'r1']);
 
     const r2 = stories[0];
-    expect(r2.newFindings.map((f) => f.id)).toEqual(['f2']);
-    expect(r2.seenAgain.map((f) => f.id)).toEqual(['f1']);
+    expect(r2.newFindings.map((s) => s.finding.id)).toEqual(['f2']);
+    expect(r2.seenAgain.map((s) => s.finding.id)).toEqual(['f1']);
     expect(r2.closedTasks.map((t) => t.id)).toEqual(['t1']);
     expect(r2.openedTasks.map((t) => t.id)).toEqual(['t2']);
     expect(r2.learnings.map((l) => l.id)).toEqual(['l1']);
@@ -385,8 +385,31 @@ describe('buildStories', () => {
     expect(r2.highCount).toBe(1); // the critical finding
 
     const r1 = stories[1];
-    expect(r1.newFindings.map((f) => f.id).sort()).toEqual(['f1', 'f3']);
+    expect(r1.newFindings.map((s) => s.finding.id).sort()).toEqual(['f1', 'f3']);
     expect(r1.openedTasks.map((t) => t.id)).toEqual(['t1']);
+  });
+
+  it("reads each run by its own sighting, not the finding's current state", () => {
+    // A finding first seen as low and later raised to high must not be
+    // reported as high in the run that found it, nor link to SQL that run
+    // never wrote.
+    const graph = chainGraph();
+    const f1 = graph.findings.find((f) => f.id === 'f1')!;
+    f1.severity = 'high'; // today's state
+    f1.sightings = [
+      { run_id: 'r1', discovery_id: 'd1', date: '2026-05-01T09:00:00Z', severity: 'low', insight_id: 'ins1' },
+      { run_id: 'r2', discovery_id: 'd2', date: '2026-05-03T09:00:00Z', severity: 'high', insight_id: 'ins3' },
+    ];
+    const stories = buildStories(indexGraph(graph));
+    const r1 = stories.find((s) => s.run.run_id === 'r1')!;
+    const asFound = r1.newFindings.find((s) => s.finding.id === 'f1')!;
+    expect(asFound.severity).toBe('low');
+    expect(sightingEvidenceLink('p1', asFound)).toBe('/projects/p1/discoveries/d1/insights/ins1');
+    // And the later run reports what IT saw.
+    const r2 = stories.find((s) => s.run.run_id === 'r2')!;
+    const asSeen = r2.seenAgain.find((s) => s.finding.id === 'f1')!;
+    expect(asSeen.severity).toBe('high');
+    expect(sightingEvidenceLink('p1', asSeen)).toBe('/projects/p1/discoveries/d2/insights/ins3');
   });
 
   it('leaves out run stubs for discoveries that no longer exist', () => {

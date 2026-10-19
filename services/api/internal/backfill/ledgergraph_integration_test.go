@@ -67,9 +67,27 @@ func seedLegacyLedger(t *testing.T, client *gomongo.Client, projectID string) {
 		// Another project's insight with the same name — must never be linked.
 		bson.M{"_id": "ins-other", "project_id": "other-project", "discovery_id": "disc-x",
 			"analysis_area": "churn", "name": "High EU churn"},
+		// A standalone insight whose id exists nowhere in its discovery: the
+		// UUID `backfill-embeddings` minted for an insight that had none. It
+		// matches a finding's key perfectly and still cannot be linked to.
+		bson.M{"_id": "ins-orphan-uuid", "project_id": projectID, "discovery_id": "disc-1",
+			"analysis_area": "pricing", "name": "Legacy insight with a minted id"},
 	}
 	if _, err := client.Collection("insights").InsertMany(ctx, insights); err != nil {
 		t.Fatalf("seed insights: %v", err)
+	}
+
+	// The discovery documents the insight page resolves an id against. An id
+	// that is not in here cannot be linked to, however good it looks in the
+	// standalone collection — `backfill-embeddings` mints a fresh UUID for an
+	// insight whose embedded id was empty, and that UUID resolves nowhere.
+	if _, err := client.Collection(gomongo.CollectionDiscoveries).InsertMany(ctx, []any{
+		bson.M{"_id": "disc-1", "project_id": projectID, "discovery_date": firstSeen,
+			"insights": []bson.M{{"id": "ins-1"}, {"id": "ins-2"}}},
+		bson.M{"_id": "disc-2", "project_id": projectID, "discovery_date": firstSeen.Add(72 * time.Hour),
+			"insights": []bson.M{{"id": "ins-1b"}}},
+	}); err != nil {
+		t.Fatalf("seed discoveries: %v", err)
 	}
 
 	findings := []any{
@@ -86,6 +104,16 @@ func seedLegacyLedger(t *testing.T, client *gomongo.Client, projectID string) {
 			"name":           "Dead stock concentrated in a few sellers",
 			"normalized_key": commonmodels.NormalizedFindingKey("inventory", "Dead stock concentrated in a few sellers"),
 			"severity":       "medium", "status": commonmodels.LedgerFindingStatusMonitoring,
+			"seen_count": 1, "first_seen": firstSeen, "last_seen": firstSeen,
+			"source_discovery_id": "disc-1", "updated_at": firstSeen,
+		},
+		bson.M{
+			// Its only candidate insight carries an id the discovery document
+			// does not: linkable-looking, and not actually clickable.
+			"_id": "f-legacy-id", "project_id": projectID, "area": "pricing",
+			"name":           "Legacy insight with a minted id",
+			"normalized_key": commonmodels.NormalizedFindingKey("pricing", "Legacy insight with a minted id"),
+			"severity":       "low", "status": commonmodels.LedgerFindingStatusConfirmed,
 			"seen_count": 1, "first_seen": firstSeen, "last_seen": firstSeen,
 			"source_discovery_id": "disc-1", "updated_at": firstSeen,
 		},
@@ -129,16 +157,16 @@ func TestBackfillLedgerGraph_LinksWhatItCanAndReportsWhatItCannot(t *testing.T) 
 		t.Fatalf("backfill: %v", err)
 	}
 
-	if counts.FindingsScanned != 3 {
-		t.Errorf("scanned = %d, want 3", counts.FindingsScanned)
+	if counts.FindingsScanned != 4 {
+		t.Errorf("scanned = %d, want 4", counts.FindingsScanned)
 	}
 	if counts.FindingsLinked != 1 {
 		t.Errorf("linked = %d, want 1 (only the exact key match)", counts.FindingsLinked)
 	}
-	// The reworded one is the honest gap, and the count is how an operator
-	// learns it exists.
-	if counts.FindingsUnlinkable != 1 {
-		t.Errorf("unlinkable = %d, want 1 (the reworded insight)", counts.FindingsUnlinkable)
+	// Two honest gaps — a reworded insight, and one whose id resolves nowhere
+	// — and the count is how an operator learns they exist.
+	if counts.FindingsUnlinkable != 2 {
+		t.Errorf("unlinkable = %d, want 2", counts.FindingsUnlinkable)
 	}
 	if counts.FindingsAlreadyLinked != 1 {
 		t.Errorf("already linked = %d, want 1", counts.FindingsAlreadyLinked)
@@ -189,6 +217,11 @@ func TestBackfillLedgerGraph_LinksWhatItCanAndReportsWhatItCannot(t *testing.T) 
 	if len(stock.SourceInsightIDs) != 0 {
 		t.Errorf("a reworded insight must be left unlinked, not guessed: %v", stock.SourceInsightIDs)
 	}
+	// And the one whose only candidate id the discovery document does not
+	// carry: a link there would look right and 404 for the reader.
+	if ids := stored["f-legacy-id"].SourceInsightIDs; len(ids) != 0 {
+		t.Errorf("an insight id that resolves nowhere must not be linked: %v", ids)
+	}
 	// It still gets its sighting and status trail — those are derivable even
 	// when the provenance is not.
 	if len(stock.Sightings) != 1 || len(stock.StatusHistory) != 1 {
@@ -216,7 +249,7 @@ func TestBackfillLedgerGraph_DryRunWritesNothing(t *testing.T) {
 		t.Fatalf("dry run: %v", err)
 	}
 	// It still reports exactly what it would do — that is the point of the mode.
-	if counts.FindingsLinked != 1 || counts.FindingsUnlinkable != 1 {
+	if counts.FindingsLinked != 1 || counts.FindingsUnlinkable != 2 {
 		t.Errorf("a dry run must still report its plan: %+v", counts)
 	}
 	stored := readFindings(t, client, projectID)

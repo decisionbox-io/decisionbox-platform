@@ -5,8 +5,9 @@
 // means — are unit-testable without rendering anything.
 
 import type {
-  GraphEdge, GraphEdgeKind, GraphFinding, GraphInsight, GraphLearning,
-  GraphProposal, GraphRecommendation, GraphRun, GraphTask, LedgerGraph,
+  FindingSighting, GraphEdge, GraphEdgeKind, GraphFinding, GraphInsight,
+  GraphLearning, GraphProposal, GraphRecommendation, GraphRun, GraphTask,
+  LedgerGraph,
 } from '@/lib/api';
 
 /** How deep the tree expands by default. Below this, nodes are collapsed. */
@@ -162,6 +163,17 @@ export function findingEvidenceLink(projectId: string, finding: GraphFinding): s
     }
   }
   return null;
+}
+
+/** The evidence page for a finding AS ONE RUN SAW IT: that run's own sighting
+ *  names its own insight, so the link opens the SQL that run wrote rather than
+ *  whatever the latest run happened to produce. */
+export function sightingEvidenceLink(projectId: string, seen: RunSighting): string | null {
+  const s = seen.sighting;
+  if (s?.discovery_id && s.insight_id) {
+    return `/projects/${projectId}/discoveries/${s.discovery_id}/insights/${s.insight_id}`;
+  }
+  return findingEvidenceLink(projectId, seen.finding);
 }
 
 /** The evidence page for one insight stub. */
@@ -433,12 +445,28 @@ export function severitiesOf(idx: GraphIndex): string[] {
   return order.filter((s) => set.has(s));
 }
 
+/** A finding as one particular run saw it.
+ *
+ *  A finding carries its CURRENT severity, metric and evidence — consolidation
+ *  overwrites them on every merge — so reading a run's story off the finding
+ *  itself makes an old run report today's state: a finding first seen as low
+ *  and later raised to high would be reported as high in the run that found
+ *  it, linking to SQL that had not been written yet. The sighting is what that
+ *  run actually recorded. */
+export interface RunSighting {
+  finding: GraphFinding;
+  /** The sighting from this run, when the finding carries one. */
+  sighting?: FindingSighting;
+  /** Severity as of that run, falling back to the finding's current one. */
+  severity?: string;
+}
+
 /** One run's story, as the Story timeline reads it out. */
 export interface RunStory {
   run: GraphRun;
   ordinal: number;
-  newFindings: GraphFinding[];
-  seenAgain: GraphFinding[];
+  newFindings: RunSighting[];
+  seenAgain: RunSighting[];
   openedTasks: GraphTask[];
   closedTasks: GraphTask[];
   pursuedTasks: GraphTask[];
@@ -453,6 +481,14 @@ export function buildStories(idx: GraphIndex): RunStory[] {
   const stories: RunStory[] = [];
   idx.runs.forEach((run, nodeId) => {
     if (run.missing) return;
+    const asSeenBy = (finding: GraphFinding): RunSighting => {
+      const sighting = (finding.sightings ?? []).find(
+        (s) => (s.run_id && `run:${s.run_id}` === nodeId)
+          || (s.discovery_id && `disc:${s.discovery_id}` === nodeId)
+          || (s.discovery_id && s.discovery_id === run.discovery_id),
+      );
+      return { finding, sighting, severity: sighting?.severity || finding.severity };
+    };
     const story: RunStory = {
       run,
       ordinal: idx.runOrdinal.get(nodeId) ?? 0,
@@ -463,12 +499,12 @@ export function buildStories(idx: GraphIndex): RunStory[] {
       switch (e.kind) {
         case 'found': {
           const f = idx.findings.get(e.to);
-          if (f) story.newFindings.push(f);
+          if (f) story.newFindings.push(asSeenBy(f));
           break;
         }
         case 'seen_in': {
           const f = idx.findings.get(e.to);
-          if (f) story.seenAgain.push(f);
+          if (f) story.seenAgain.push(asSeenBy(f));
           break;
         }
         case 'opened': {

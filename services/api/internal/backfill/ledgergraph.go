@@ -217,7 +217,11 @@ func backfillLedgerGraphProject(ctx context.Context, client *gomongo.Client, pro
 	// exact match is a real equality and not a similarity score. A finding that
 	// absorbed a REWORDED insight through the semantic-dedup path will not
 	// match, and is counted rather than guessed at.
-	insightsByKey, err := loadInsightKeyIndex(ctx, client, projectID)
+	resolvable, err := loadEmbeddedInsightIDs(ctx, client, projectID)
+	if err != nil {
+		return counts, err
+	}
+	insightsByKey, err := loadInsightKeyIndex(ctx, client, projectID, resolvable)
 	if err != nil {
 		return counts, err
 	}
@@ -433,10 +437,53 @@ func loadBackfillTasks(ctx context.Context, client *gomongo.Client, projectID st
 	return out, nil
 }
 
+// loadEmbeddedInsightIDs is the set of insight ids that appear INSIDE the
+// project's discovery documents.
+//
+// A standalone insight's `_id` is normally the same UUID the agent assigned to
+// the embedded one, which is what makes a finding's provenance clickable. It
+// is not always: `backfill-embeddings` mints a fresh UUID for an insight whose
+// embedded id was empty — the shape of discoveries old enough to predate that
+// id — and the insight page resolves an id against the discovery document. A
+// link built from such an id reports success here and 404s for the reader.
+//
+// So the backfill links only ids that exist in both places, and counts the
+// rest as unlinkable. A missing link says "not linked"; a broken one looks
+// right until someone clicks it.
+func loadEmbeddedInsightIDs(ctx context.Context, client *gomongo.Client, projectID string) (map[string]struct{}, error) {
+	cur, err := client.Collection(gomongo.CollectionDiscoveries).Find(ctx,
+		bson.M{"project_id": projectID},
+		options.Find().SetProjection(bson.M{"insights.id": 1}))
+	if err != nil {
+		return nil, fmt.Errorf("list discovery insight ids: %w", err)
+	}
+	defer cur.Close(ctx)
+	var rows []struct {
+		Insights []struct {
+			ID string `bson:"id"`
+		} `bson:"insights"`
+	}
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("decode discovery insight ids: %w", err)
+	}
+	out := map[string]struct{}{}
+	for _, r := range rows {
+		for _, in := range r.Insights {
+			if in.ID != "" {
+				out[in.ID] = struct{}{}
+			}
+		}
+	}
+	return out, nil
+}
+
 // loadInsightKeyIndex maps NormalizedFindingKey(area, name) to the insight ids
 // that produce it. A key with several insights behind it (the same finding
 // surfaced by several runs) links them all: each one really is a source.
-func loadInsightKeyIndex(ctx context.Context, client *gomongo.Client, projectID string) (map[string][]string, error) {
+//
+// Only ids the discovery documents also carry are included — see
+// loadEmbeddedInsightIDs.
+func loadInsightKeyIndex(ctx context.Context, client *gomongo.Client, projectID string, resolvable map[string]struct{}) (map[string][]string, error) {
 	cur, err := client.Collection(collectionInsights).Find(ctx,
 		bson.M{"project_id": projectID},
 		options.Find().SetProjection(bson.M{"_id": 1, "analysis_area": 1, "name": 1}))
@@ -455,6 +502,9 @@ func loadInsightKeyIndex(ctx context.Context, client *gomongo.Client, projectID 
 	idx := make(map[string][]string, len(rows))
 	for _, r := range rows {
 		if r.ID == "" || r.Name == "" {
+			continue
+		}
+		if _, clickable := resolvable[r.ID]; !clickable {
 			continue
 		}
 		key := commonmodels.NormalizedFindingKey(r.AnalysisArea, r.Name)

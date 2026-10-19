@@ -171,23 +171,25 @@ func (o *Orchestrator) RunPhaseReflection(ctx context.Context, result *models.Di
 	// that failed reports none, which reads as "no evidence": the safe
 	// direction, since the alternative is a fabricated verdict on a real
 	// finding, and a `resolved` moves it to the front of the prune queue.
+	// 2a. Record which threads this run had in front of it. Deliberately
+	//     outside the LLM-output path, and BEFORE the call rather than after:
+	//     the record is true whether or not the model closed anything, and a
+	//     call that exhausts DISCOVERY_REFLECTION_TIMEOUT leaves rctx expired,
+	//     so a write placed after it would fail on a deadline every time the
+	//     reflection was slow — losing the record exactly on the runs that
+	//     worked hardest.
+	o.markThreadsPursued(rctx, pol)
+
 	ref, err := o.generateReflection(rctx, result, pol, cons)
 	if err != nil {
 		applog.WithError(err).Warn("Reflection: consolidation LLM call failed; ledger findings still captured")
 		ref = nil
 	}
 
-	// 3. Record which threads this run had in front of it. Deliberately
-	//    outside the LLM-output path below: the record is true whether or not
-	//    the model closed anything, and whether or not the call succeeded at
-	//    all, so making it depend on either would leave it written only on the
-	//    runs that happened to close a thread.
-	o.markThreadsPursued(rctx, pol)
-
-	// 4. Apply the LLM outputs, each independently guarded.
+	// 3. Apply the LLM outputs, each independently guarded.
 	o.applyReflection(rctx, result, pol, ref, cons)
 
-	// 5. Update coverage + convergence on the ledger and prune findings.
+	// 4. Update coverage + convergence on the ledger and prune findings.
 	o.updateLedgerMeta(rctx, result, ref, cons.NewCount, cons.TotalCount)
 	if err := o.findingRepo.Prune(rctx, o.projectID,
 		goconfig.GetEnvAsInt(discoveryLedgerMaxFindingsEnv, defaultDiscoveryLedgerMaxFindings)); err != nil {
@@ -951,8 +953,11 @@ func (o *Orchestrator) markThreadsPursued(ctx context.Context, pol agentplugin.D
 	if o.taskRepo == nil || o.runID == "" || pol.EvolutionMode == agentplugin.EvolutionModeOff {
 		return
 	}
-	open, err := o.taskRepo.List(ctx, o.projectID,
-		commonmodels.LedgerTaskStatusOpen, commonmodels.LedgerTaskStatusInProgress)
+	// Open tasks only — the same selection both prompts make
+	// (loadLedgerReadContext and generateReflection). Including in-progress
+	// ones here would record threads the run was never shown, and could push
+	// an open thread that WAS shown past the cap below.
+	open, err := o.taskRepo.List(ctx, o.projectID, commonmodels.LedgerTaskStatusOpen)
 	if err != nil {
 		applog.WithError(err).Warn("Reflection: list tasks to mark pursued failed")
 		return
