@@ -1,8 +1,8 @@
 import {
   DEFAULT_OPEN_DEPTH, MAX_TREE_DEPTH, TreeNode, areasOf, buildStories, buildTree,
   countNodes, findingChangedInRun, findingEvidenceLink, indexGraph, insightLink,
-  matchesFilters, nodeKind, nodeRawId, recommendationLink, runLabel, runRefForDiscovery,
-  severitiesOf, statusTrail, statusesOf,
+  MAX_TREE_NODES, matchesFilters, nodeKind, nodeRawId, recommendationLink, runLabel,
+  runRefForDiscovery, severitiesOf, statusTrail, statusesOf,
 } from '@/components/ledger/graph';
 import type { LedgerGraph } from '@/lib/api';
 
@@ -398,5 +398,126 @@ describe('buildStories', () => {
 
   it('is empty on a project that has never reflected', () => {
     expect(buildStories(indexGraph(null))).toEqual([]);
+  });
+});
+
+// --- Scale and reachability (first platform review round) ---
+
+describe('tree expansion is bounded', () => {
+  /** A graph where every finding leads into every thread of the next stage —
+   *  67 nodes, and the shape whose paths multiply. */
+  function fanOutGraph(stages: number, perStage: number): LedgerGraph {
+    const g: LedgerGraph = {
+      runs: [], findings: [], tasks: [], insights: [], recommendations: [],
+      learnings: [], proposals: [], edges: [], truncated: noTruncation,
+    };
+    for (let i = 0; i < 7; i += 1) {
+      g.findings.push({
+        node_id: `finding:f${i}`, id: `f${i}`, name: `finding ${i}`,
+        severity: 'high', status: 'confirmed', seen_count: 1,
+      });
+    }
+    let previous = g.findings.map((f) => f.node_id);
+    for (let stage = 0; stage < stages; stage += 1) {
+      const current: string[] = [];
+      for (let i = 0; i < perStage; i += 1) {
+        const id = `t${stage}_${i}`;
+        g.tasks.push({ node_id: `task:${id}`, id, text: id, kind: 'next_task', status: 'open' });
+        current.push(`task:${id}`);
+        previous.forEach((parent) => {
+          g.edges.push({ from: `task:${id}`, to: parent, kind: 'grew_from' });
+        });
+      }
+      previous = current;
+    }
+    return g;
+  }
+
+  it('does not multiply a subtree once per path', () => {
+    const graph = fanOutGraph(6, 10);
+    const payloadNodes = graph.findings.length + graph.tasks.length;
+    const started = Date.now();
+    const roots = buildTree(indexGraph(graph));
+    const built = flatten(roots).length;
+
+    // Without repeat-suppression this shape materialises millions of nodes.
+    expect(built).toBeLessThanOrEqual(MAX_TREE_NODES);
+    expect(built).toBeLessThan(payloadNodes * 20);
+    expect(Date.now() - started).toBeLessThan(5000);
+  });
+
+  it('flags a node whose subtree was already drawn', () => {
+    // One finding answering two threads: genuinely reachable by two paths.
+    const graph = chainGraph();
+    graph.tasks.push({
+      node_id: 'task:t3', id: 't3', title: 'Another thread f2 answered',
+      text: 'another', kind: 'next_task', status: 'done',
+      resolved_by_finding_ids: ['f2'],
+    });
+    graph.edges.push({ from: 'task:t3', to: 'finding:f2', kind: 'answered_by' });
+    const roots = buildTree(indexGraph(graph));
+    const repeated: TreeNode[] = [];
+    const visit = (nodes: TreeNode[]) => nodes.forEach((n) => {
+      if (n.repeated) repeated.push(n);
+      visit(n.children);
+    });
+    visit(roots);
+    expect(repeated.length).toBeGreaterThan(0);
+    expect(repeated.every((n) => n.children.length === 0)).toBe(true);
+  });
+
+  it('keeps a component whose nodes all claim each other', () => {
+    // A thread that re-checks a finding and is answered by that same finding
+    // is a valid two-node cycle: both are somebody's child, so neither is a
+    // root, and the whole history would otherwise disappear.
+    const graph: LedgerGraph = {
+      runs: [], findings: [
+        { node_id: 'finding:f1', id: 'f1', name: 'Recurring', severity: 'high', status: 'confirmed', seen_count: 2 },
+      ],
+      tasks: [
+        { node_id: 'task:t1', id: 't1', title: 'Re-check it', text: 'recheck', kind: 'next_task', status: 'done',
+          origin_finding_ids: ['f1'], resolved_by_finding_ids: ['f1'] },
+      ],
+      insights: [], recommendations: [], learnings: [], proposals: [],
+      edges: [
+        { from: 'task:t1', to: 'finding:f1', kind: 'grew_from' },
+        { from: 'task:t1', to: 'finding:f1', kind: 'answered_by' },
+      ],
+      truncated: noTruncation,
+    };
+    const flat = flatten(buildTree(indexGraph(graph)));
+    expect(flat.length).toBeGreaterThan(0);
+    expect(flat.some((line) => line.includes('finding:f1') || line.includes('task:t1'))).toBe(true);
+  });
+
+  it('does not promote a filtered-out finding to a root when rescuing', () => {
+    // The documented rule: a finding the filters exclude is not shown as a
+    // ROOT, but may still appear beneath a thread that points at it — hiding
+    // it there would break the chain the view exists to show. The rescue must
+    // not quietly turn it back into a root.
+    const graph: LedgerGraph = {
+      runs: [], findings: [
+        { node_id: 'finding:f1', id: 'f1', name: 'Low', area: 'misc', severity: 'low', status: 'confirmed', seen_count: 1 },
+      ],
+      tasks: [
+        { node_id: 'task:t1', id: 't1', text: 'recheck', kind: 'next_task', status: 'done',
+          origin_finding_ids: ['f1'], resolved_by_finding_ids: ['f1'] },
+      ],
+      insights: [], recommendations: [], learnings: [], proposals: [],
+      edges: [
+        { from: 'task:t1', to: 'finding:f1', kind: 'grew_from' },
+        { from: 'task:t1', to: 'finding:f1', kind: 'answered_by' },
+      ],
+      truncated: noTruncation,
+    };
+    const roots = buildTree(indexGraph(graph), { severity: 'critical' });
+    expect(roots.map((r) => r.nodeId)).not.toContain('finding:f1');
+    // The thread is still rescued, and the finding is reachable through it.
+    expect(roots.map((r) => r.nodeId)).toContain('task:t1');
+    expect(flatten(roots).join(' ')).toContain('finding:f1');
+
+    // And with no thread to rescue, a filtered-out finding is simply absent.
+    const lone: LedgerGraph = { ...graph, tasks: [], edges: [] };
+    expect(flatten(buildTree(indexGraph(lone), { severity: 'critical' }))).toEqual([]);
   });
 });

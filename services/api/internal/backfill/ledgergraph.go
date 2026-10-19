@@ -237,13 +237,35 @@ func backfillLedgerGraphProject(ctx context.Context, client *gomongo.Client, pro
 		return nil
 	}
 
+	// Each field is written under its own filter, re-asserting in MongoDB that
+	// it is still absent. The snapshot above was read at the start of the run;
+	// a discovery that reflects while this is working populates real
+	// sightings, insight ids and status history, and a $set guarded only by
+	// the document id would overwrite that live provenance with values derived
+	// from the snapshot. One update per field is a few more writes on a
+	// one-shot, and it is the only way the guard actually holds.
+	addWrite := func(id, field string, value interface{}) {
+		writes = append(writes, mongo.NewUpdateOneModel().
+			SetFilter(bson.M{
+				"_id":        id,
+				"project_id": projectID,
+				"$or": []bson.M{
+					{field: bson.M{"$exists": false}},
+					{field: nil},
+					{field: bson.M{"$size": 0}},
+				},
+			}).
+			SetUpdate(bson.M{"$set": bson.M{field: value}}))
+	}
+
 	for _, f := range findings {
-		set := bson.M{}
+		pending := 0
 
 		if len(f.SourceInsightIDs) > 0 {
 			counts.FindingsAlreadyLinked++
 		} else if ids := insightsByKey[f.NormalizedKey]; len(ids) > 0 {
-			set["source_insight_ids"] = ids
+			addWrite(f.ID, "source_insight_ids", ids)
+			pending++
 			counts.FindingsLinked++
 		} else {
 			counts.FindingsUnlinkable++
@@ -254,19 +276,24 @@ func backfillLedgerGraphProject(ctx context.Context, client *gomongo.Client, pro
 		// seen_count is a bare counter and nothing recorded when each sighting
 		// happened — so they are not invented. SeenCount stays the honest total
 		// and the trail says it holds one entry.
+		// LastSeen, not FirstSeen. source_discovery_id and the magnitude
+		// fields are overwritten on every merge, so they all describe the
+		// LATEST observation — dating that observation from the first would
+		// place the run's own metrics before the run existed.
 		if len(f.Sightings) == 0 && f.SourceDiscoveryID != "" {
-			date := f.FirstSeen
+			date := f.LastSeen
 			if date.IsZero() {
-				date = f.LastSeen
+				date = f.FirstSeen
 			}
-			set["sightings"] = []commonmodels.FindingSighting{{
+			addWrite(f.ID, "sightings", []commonmodels.FindingSighting{{
 				RunID:         runsByDiscovery[f.SourceDiscoveryID],
 				DiscoveryID:   f.SourceDiscoveryID,
 				Date:          date,
 				KeyMetric:     f.KeyMetric,
 				AffectedCount: f.AffectedCount,
 				Severity:      f.Severity,
-			}}
+			}})
+			pending++
 			counts.SightingsWritten++
 		}
 
@@ -278,22 +305,20 @@ func backfillLedgerGraphProject(ctx context.Context, client *gomongo.Client, pro
 			if at.IsZero() {
 				at = f.LastSeen
 			}
-			set["status_history"] = []commonmodels.FindingStatusChange{{
+			addWrite(f.ID, "status_history", []commonmodels.FindingStatusChange{{
 				Status:      f.Status,
 				RunID:       runsByDiscovery[f.SourceDiscoveryID],
 				DiscoveryID: f.SourceDiscoveryID,
 				At:          at,
 				Source:      commonmodels.FindingStatusSourceBackfill,
-			}}
+			}})
+			pending++
 			counts.StatusTrailsWritten++
 		}
 
-		if len(set) == 0 {
+		if pending == 0 {
 			continue
 		}
-		writes = append(writes, mongo.NewUpdateOneModel().
-			SetFilter(bson.M{"_id": f.ID, "project_id": projectID}).
-			SetUpdate(bson.M{"$set": set}))
 		if len(writes) >= batchSize {
 			if err := flush(gomongo.CollectionDiscoveryLedgerFindings); err != nil {
 				return counts, err
@@ -315,30 +340,43 @@ func backfillLedgerGraphProject(ctx context.Context, client *gomongo.Client, pro
 	}
 	counts.TasksScanned = len(tasks)
 	for _, task := range tasks {
-		if !task.ClosedAt.IsZero() || task.UpdatedAt.IsZero() {
+		if task.UpdatedAt.IsZero() {
 			continue
 		}
-		set := bson.M{"closed_at": task.UpdatedAt}
-		counts.TasksClosedStamped++
-		runID, discoveryID, candidates := soleRunNear(runTimes, task.UpdatedAt, closeWindow)
-		switch candidates {
-		case 1:
-			set["closed_run_id"] = runID
-			if discoveryID != "" {
-				set["closed_discovery_id"] = discoveryID
+		// The close date and the closing run are recovered independently. An
+		// earlier pass may have stamped the date and left the run unresolved
+		// because two runs were near it; a later pass with a tighter
+		// --close-window should be able to finish the job rather than skip the
+		// task because one of its fields is already there.
+		pending := 0
+		if task.ClosedAt.IsZero() {
+			addWrite(task.ID, "closed_at", task.UpdatedAt)
+			pending++
+			counts.TasksClosedStamped++
+		}
+		if task.ClosedRunID == "" {
+			runID, discoveryID, candidates := soleRunNear(runTimes, task.UpdatedAt, closeWindow)
+			switch candidates {
+			case 1:
+				addWrite(task.ID, "closed_run_id", runID)
+				pending++
+				if discoveryID != "" {
+					addWrite(task.ID, "closed_discovery_id", discoveryID)
+					pending++
+				}
+				counts.TasksCloseRunResolved++
+			case 0:
+				counts.TasksCloseRunNoRun++
+			default:
+				counts.TasksCloseRunAmbiguous++
 			}
-			counts.TasksCloseRunResolved++
-		case 0:
-			counts.TasksCloseRunNoRun++
-		default:
-			counts.TasksCloseRunAmbiguous++
 		}
 		// resolved_by_finding_ids is never derived. Nothing stored says which
 		// finding answered a task, and a plausible-looking guess here would be
 		// indistinguishable from a real answer on the page.
-		writes = append(writes, mongo.NewUpdateOneModel().
-			SetFilter(bson.M{"_id": task.ID, "project_id": projectID}).
-			SetUpdate(bson.M{"$set": set}))
+		if pending == 0 {
+			continue
+		}
 		if len(writes) >= batchSize {
 			if err := flush(gomongo.CollectionDiscoveryLedgerTasks); err != nil {
 				return counts, err

@@ -190,6 +190,16 @@ function NodeRow({
                 <Badge size="xs" variant="outline" color="orange">loops back</Badge>
               </Tooltip>
             )}
+            {node.repeated && (
+              <Tooltip label="This node is reachable by more than one path; its branch is drawn where it first appears." openDelay={200}>
+                <Badge size="xs" variant="outline" color="gray">shown above</Badge>
+              </Tooltip>
+            )}
+            {node.budgetReached && (
+              <Tooltip label="This investigation is larger than one tree can show; narrow the view with the filters." openDelay={200}>
+                <Badge size="xs" variant="outline" color="gray">more below</Badge>
+              </Tooltip>
+            )}
           </Group>
           {detail && <Text size="xs" c="dimmed" mt={2}>{detail}</Text>}
           {task?.close_reason && (

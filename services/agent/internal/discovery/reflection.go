@@ -960,6 +960,14 @@ func (o *Orchestrator) markThreadsPursued(ctx context.Context, pol agentplugin.D
 	if len(open) == 0 {
 		return
 	}
+	// Only the threads the run was actually SHOWN. Both prompt renderers cap
+	// the queue at maxLedgerTasksInPrompt, so beyond that the run never saw
+	// them — and recording a thread as pursued by a run that was never told
+	// about it is the kind of fabricated edge this whole record exists to
+	// avoid. The same cap, over the same list, in the same order.
+	if len(open) > maxLedgerTasksInPrompt {
+		open = open[:maxLedgerTasksInPrompt]
+	}
 	ids := make([]string, 0, len(open))
 	for i := range open {
 		ids = append(ids, open[i].ID)

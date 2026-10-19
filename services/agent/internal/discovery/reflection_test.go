@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -880,6 +881,30 @@ func TestMarkThreadsPursued(t *testing.T) {
 			agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeOff})
 		if len(tr.pursued) != 0 {
 			t.Errorf("off mode never showed the run these threads: %+v", tr.pursued)
+		}
+	})
+
+	t.Run("records only the threads the prompt could show", func(t *testing.T) {
+		// Both prompt renderers cap the open queue, so beyond the cap the run
+		// was never told about the thread and must not be recorded as having
+		// pursued it.
+		many := make([]commonmodels.LedgerTask, maxLedgerTasksInPrompt+5)
+		for i := range many {
+			many[i] = commonmodels.LedgerTask{ID: "t-" + strconv.Itoa(i)}
+		}
+		tr := &fakeTaskRepo{existing: many}
+		o := &Orchestrator{projectID: "p1", runID: "r1", taskRepo: tr}
+		o.markThreadsPursued(context.Background(),
+			agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeAuto})
+		if len(tr.pursued) != 1 {
+			t.Fatalf("want 1 call, got %d", len(tr.pursued))
+		}
+		if len(tr.pursued[0].ids) != maxLedgerTasksInPrompt {
+			t.Errorf("want the prompt's cap (%d) stamped, got %d",
+				maxLedgerTasksInPrompt, len(tr.pursued[0].ids))
+		}
+		if tr.pursued[0].ids[0] != "t-0" {
+			t.Errorf("the same slice the renderer takes, in the same order, got %q", tr.pursued[0].ids[0])
 		}
 	})
 

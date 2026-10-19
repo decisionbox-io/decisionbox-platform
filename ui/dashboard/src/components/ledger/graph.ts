@@ -15,6 +15,15 @@ export const DEFAULT_OPEN_DEPTH = 2;
 export const ROOTS_PAGE_SIZE = 25;
 /** Hard ceiling on the walk, so a malformed payload cannot build forever. */
 export const MAX_TREE_DEPTH = 12;
+/** Hard ceiling on how many nodes the whole tree may materialise.
+ *
+ *  Depth alone does not bound it. A node with several parents is reachable by
+ *  several paths, and expanding it under each one multiplies: a perfectly
+ *  valid graph of 67 nodes — seven findings linked through six stages of ten
+ *  threads — expands to over two million, which is hundreds of megabytes and a
+ *  frozen tab. The repeat-suppression below is what normally prevents that;
+ *  this is the backstop for a shape it does not. */
+export const MAX_TREE_NODES = 5000;
 
 export type TreeNodeKind = 'finding' | 'task' | 'recommendation' | 'learning';
 
@@ -24,6 +33,11 @@ export interface TreeNode {
    *  parents (a finding that answered two threads), so this is not unique in
    *  the tree — `path` is. */
   nodeId: string;
+  /** This node's subtree was already drawn elsewhere, so it renders as a leaf
+   *  rather than repeating it. */
+  repeated?: boolean;
+  /** The walk stopped here because the whole tree hit its node budget. */
+  budgetReached?: boolean;
   path: string;
   kind: TreeNodeKind;
   depth: number;
@@ -260,7 +274,13 @@ function childrenOf(idx: GraphIndex, nodeId: string): Array<{ nodeId: string; ki
  *
  *  The walk guards against a cycle by tracking the ancestors on the current
  *  path, and stops at MAX_TREE_DEPTH regardless, so a payload that somehow
- *  describes an infinite structure renders finite. */
+ *  describes an infinite structure renders finite.
+ *
+ *  It also expands each node ONCE. A finding that answered two threads, or a
+ *  recommendation reached through two findings, is genuinely reachable by
+ *  several paths; drawing its whole subtree under each one multiplies the tree
+ *  without adding anything a reader has not already seen. Later appearances
+ *  render as a leaf flagged `repeated`, and the client says where to look. */
 export function buildTree(
   idx: GraphIndex, filters: TreeFilters = {},
 ): TreeNode[] {
@@ -311,15 +331,29 @@ export function buildTree(
     return a.nodeId.localeCompare(b.nodeId);
   });
 
+  // Expanded once each, across the whole tree — see the doc comment.
+  const expanded = new Set<string>();
+  let budget = MAX_TREE_NODES;
+
   const walk = (
     nodeId: string, kind: TreeNodeKind, depth: number, path: string, ancestors: Set<string>,
   ): TreeNode => {
     const node: TreeNode = { nodeId, path, kind, depth, children: [] };
+    budget -= 1;
     if (ancestors.has(nodeId)) {
       node.cyclic = true;
       return node;
     }
+    if (expanded.has(nodeId)) {
+      node.repeated = true;
+      return node;
+    }
     if (depth >= MAX_TREE_DEPTH) return node;
+    if (budget <= 0) {
+      node.budgetReached = true;
+      return node;
+    }
+    expanded.add(nodeId);
     const nextAncestors = new Set(ancestors);
     nextAncestors.add(nodeId);
     childrenOf(idx, nodeId).forEach((child, i) => {
@@ -332,7 +366,29 @@ export function buildTree(
     return node;
   };
 
-  return rootIds.map((root) => walk(root.nodeId, root.kind, 0, root.nodeId, new Set()));
+  const roots = rootIds.map((root) => walk(root.nodeId, root.kind, 0, root.nodeId, new Set()));
+
+  // A component every one of whose nodes is somebody's child — a thread that
+  // re-checks a finding and is answered by that same finding is a legitimate
+  // two-node cycle — has no root at all, and would vanish entirely before the
+  // walk's cycle guard ever ran. One representative is promoted so the history
+  // stays visible.
+  //
+  // Only for nodes that were never root CANDIDATES. A node the filters
+  // removed is absent because the reader asked for that, and promoting it
+  // here would quietly undo the filter.
+  idx.findings.forEach((f, nodeId) => {
+    if (!expanded.has(nodeId) && claimedAsChild.has(nodeId) && matchesFilters(f, filters, latestRunId)) {
+      roots.push(walk(nodeId, 'finding', 0, nodeId, new Set()));
+    }
+  });
+  idx.tasks.forEach((_t, nodeId) => {
+    if (!expanded.has(nodeId) && claimedAsChild.has(nodeId)) {
+      roots.push(walk(nodeId, 'task', 0, nodeId, new Set()));
+    }
+  });
+
+  return roots;
 }
 
 /** countNodes totals a subtree, for the "N below" badge on a collapsed node. */

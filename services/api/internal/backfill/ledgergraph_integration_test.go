@@ -252,6 +252,120 @@ func TestBackfillLedgerGraph_IsIdempotent(t *testing.T) {
 	}
 }
 
+// TestBackfillLedgerGraph_DoesNotOverwriteLiveProvenance is the race this
+// backfill can actually lose. It reads a snapshot of the project's findings
+// and then writes; a discovery that reflects in between records real sightings,
+// real insight ids and a real status history on the same documents. A write
+// guarded only by the document id would replace all of that with values
+// derived from a snapshot taken before any of it existed.
+func TestBackfillLedgerGraph_DoesNotOverwriteLiveProvenance(t *testing.T) {
+	client, cleanup := backfillMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	const projectID = "p-race"
+	seedLegacyLedger(t, client, projectID)
+
+	// What the backfill would write if nothing changed under it.
+	planned, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, true)
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if planned.FindingsLinked == 0 || planned.SightingsWritten == 0 {
+		t.Fatalf("the fixture must have something to write: %+v", planned)
+	}
+
+	// A run reflects between the read and the write: f-churn gains the real
+	// thing, recorded by the agent.
+	live := bson.M{
+		"source_insight_ids": []string{"ins-written-by-a-real-run"},
+		"sightings": []bson.M{
+			{"run_id": "run-live", "discovery_id": "disc-live", "affected_count": 999},
+		},
+		"status_history": []bson.M{
+			{"status": "changed", "run_id": "run-live", "source": "trend", "reason": "a real reason"},
+		},
+	}
+	if _, err := client.Collection(gomongo.CollectionDiscoveryLedgerFindings).
+		UpdateOne(ctx, bson.M{"_id": "f-churn"}, bson.M{"$set": live}); err != nil {
+		t.Fatalf("simulate a concurrent reflection: %v", err)
+	}
+
+	// The same snapshot is then written — as it would be by a run already in
+	// flight when the reflection landed.
+	if _, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	stored := readFindings(t, client, projectID)
+	churn := stored["f-churn"]
+	if len(churn.SourceInsightIDs) != 1 || churn.SourceInsightIDs[0] != "ins-written-by-a-real-run" {
+		t.Errorf("a real run's provenance was overwritten: %v", churn.SourceInsightIDs)
+	}
+	if len(churn.Sightings) != 1 || churn.Sightings[0].RunID != "run-live" || churn.Sightings[0].AffectedCount != 999 {
+		t.Errorf("a real run's sighting was overwritten: %+v", churn.Sightings)
+	}
+	if len(churn.StatusHistory) != 1 || churn.StatusHistory[0].Reason != "a real reason" {
+		t.Errorf("a real run's status history was overwritten: %+v", churn.StatusHistory)
+	}
+	// And the finding that did NOT change still got its backfill.
+	stock := stored["f-stock"]
+	if len(stock.Sightings) != 1 {
+		t.Errorf("the untouched finding should still have been backfilled: %+v", stock)
+	}
+}
+
+// TestBackfillLedgerGraph_RecoversAClosingRunOnALaterPass: an ambiguous first
+// pass stamps the close date and leaves the closing run unset. A later pass
+// with a tighter window must be able to finish the job rather than skip the
+// task because one of its fields is already there.
+func TestBackfillLedgerGraph_RecoversAClosingRunOnALaterPass(t *testing.T) {
+	client, cleanup := backfillMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	const projectID = "p-retry"
+
+	closedAt := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := client.Collection(gomongo.CollectionDiscoveryLedgerTasks).InsertOne(ctx, bson.M{
+		"_id": "t1", "project_id": projectID, "text": "a", "kind": "next_task",
+		"status": commonmodels.LedgerTaskStatusDone, "normalized_key": "k1",
+		"created_at": closedAt.Add(-48 * time.Hour), "updated_at": closedAt,
+	}); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	// Two runs an hour either side: ambiguous at six hours, decisive at one.
+	if _, err := client.Collection(gomongo.CollectionDiscoveryRuns).InsertMany(ctx, []any{
+		bson.M{"_id": "run-near", "project_id": projectID, "discovery_id": "disc-near",
+			"started_at": closedAt.Add(-time.Hour), "completed_at": closedAt.Add(-30 * time.Minute)},
+		bson.M{"_id": "run-far", "project_id": projectID, "discovery_id": "disc-far",
+			"started_at": closedAt.Add(4 * time.Hour), "completed_at": closedAt.Add(5 * time.Hour)},
+	}); err != nil {
+		t.Fatalf("seed runs: %v", err)
+	}
+
+	first, err := backfillLedgerGraphProject(ctx, client, projectID, 10, 6*time.Hour, false)
+	if err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	if first.TasksCloseRunAmbiguous != 1 {
+		t.Fatalf("the first pass should find it ambiguous: %+v", first)
+	}
+	if tasks := readTasks(t, client, projectID); tasks["t1"].ClosedAt.IsZero() || tasks["t1"].ClosedRunID != "" {
+		t.Fatalf("after the first pass: date stamped, run unset — got %+v", tasks["t1"])
+	}
+
+	second, err := backfillLedgerGraphProject(ctx, client, projectID, 10, time.Hour, false)
+	if err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	if second.TasksCloseRunResolved != 1 {
+		t.Errorf("a tighter window should resolve it: %+v", second)
+	}
+	tasks := readTasks(t, client, projectID)
+	if tasks["t1"].ClosedRunID != "run-near" || tasks["t1"].ClosedDiscoveryID != "disc-near" {
+		t.Errorf("the closing run was not recovered: %+v", tasks["t1"])
+	}
+}
+
 // TestBackfillLedgerGraph_ClosingRunOnlyWhenUnambiguous is the inference this
 // backfill is most likely to get wrong, so it is the one that refuses hardest:
 // closed_at is simply the task's last write, but the RUN that closed it is
