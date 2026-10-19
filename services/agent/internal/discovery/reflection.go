@@ -16,6 +16,7 @@ import (
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
@@ -53,6 +54,13 @@ const (
 	maxConvergenceHistory                = 50
 	maxPriorFindingsInPrompt             = 60
 	maxLedgerTasksInPrompt               = 40
+	// defaultLearningRelevance is the importance a learning is stored with when
+	// the model gave none or gave one outside 0..1. Shared by the
+	// project-context note and the ledger's own copy so the two cannot drift.
+	defaultLearningRelevance = 0.6
+	// maxReasonLength bounds the free-text reasons the model supplies for a
+	// status move or a task close, like every other model string on this path.
+	maxReasonLength = 400
 )
 
 // ledgerStore / findingStore / taskStore / proposalStore are the persistence
@@ -65,7 +73,14 @@ type ledgerStore interface {
 }
 
 type findingStore interface {
+	// List is the ACTIVE set — archived findings excluded. Both prompt paths
+	// read it, which is what keeps prompt size and content unchanged by the
+	// retention cap having become a soft archive.
 	List(ctx context.Context, projectID string) ([]commonmodels.LedgerFinding, error)
+	// ListIncludingArchived is for the dedup pass only: a finding the cap
+	// archived and this run saw again must merge into the existing document
+	// (and be un-archived), not be written a second time under the same key.
+	ListIncludingArchived(ctx context.Context, projectID string) ([]commonmodels.LedgerFinding, error)
 	Upsert(ctx context.Context, f *commonmodels.LedgerFinding) error
 	Prune(ctx context.Context, projectID string, max int) error
 }
@@ -73,7 +88,12 @@ type findingStore interface {
 type taskStore interface {
 	List(ctx context.Context, projectID string, statuses ...string) ([]commonmodels.LedgerTask, error)
 	Insert(ctx context.Context, tasks []commonmodels.LedgerTask) error
-	UpdateStatus(ctx context.Context, projectID, id, status string) error
+	Close(ctx context.Context, projectID, id string, u database.TaskClose) error
+	MarkPursued(ctx context.Context, projectID string, ids []string, runID string) error
+}
+
+type learningStore interface {
+	Upsert(ctx context.Context, l *commonmodels.LedgerLearning) error
 }
 
 type proposalStore interface {
@@ -134,7 +154,7 @@ func (o *Orchestrator) RunPhaseReflection(ctx context.Context, result *models.Di
 
 	// 1. Capture this run's insights as durable ledger findings WITH substance,
 	//    deduped/trended against prior findings. Always runs (low-risk).
-	newCount, totalCount, reSeen, err := o.consolidateFindings(rctx, result)
+	cons, err := o.consolidateFindings(rctx, result)
 	if err != nil {
 		applog.WithError(err).Warn("Reflection: finding consolidation failed")
 	}
@@ -151,17 +171,24 @@ func (o *Orchestrator) RunPhaseReflection(ctx context.Context, result *models.Di
 	// that failed reports none, which reads as "no evidence": the safe
 	// direction, since the alternative is a fabricated verdict on a real
 	// finding, and a `resolved` moves it to the front of the prune queue.
-	ref, err := o.generateReflection(rctx, result, pol, reSeen)
+	ref, err := o.generateReflection(rctx, result, pol, cons)
 	if err != nil {
 		applog.WithError(err).Warn("Reflection: consolidation LLM call failed; ledger findings still captured")
 		ref = nil
 	}
 
-	// 3. Apply the LLM outputs, each independently guarded.
-	o.applyReflection(rctx, result, pol, ref)
+	// 3. Record which threads this run had in front of it. Deliberately
+	//    outside the LLM-output path below: the record is true whether or not
+	//    the model closed anything, and whether or not the call succeeded at
+	//    all, so making it depend on either would leave it written only on the
+	//    runs that happened to close a thread.
+	o.markThreadsPursued(rctx, pol)
 
-	// 4. Update coverage + convergence on the ledger and prune findings.
-	o.updateLedgerMeta(rctx, result, ref, newCount, totalCount)
+	// 4. Apply the LLM outputs, each independently guarded.
+	o.applyReflection(rctx, result, pol, ref, cons)
+
+	// 5. Update coverage + convergence on the ledger and prune findings.
+	o.updateLedgerMeta(rctx, result, ref, cons.NewCount, cons.TotalCount)
 	if err := o.findingRepo.Prune(rctx, o.projectID,
 		goconfig.GetEnvAsInt(discoveryLedgerMaxFindingsEnv, defaultDiscoveryLedgerMaxFindings)); err != nil {
 		applog.WithError(err).Warn("Reflection: ledger prune failed")
@@ -170,31 +197,140 @@ func (o *Orchestrator) RunPhaseReflection(ctx context.Context, result *models.Di
 	applog.WithFields(applog.Fields{
 		"project_id":     o.projectID,
 		"run_id":         o.runID,
-		"new_findings":   newCount,
-		"total_findings": totalCount,
+		"new_findings":   cons.NewCount,
+		"total_findings": cons.TotalCount,
 		"evolution_mode": string(pol.EvolutionMode),
 	}).Info("Reflection phase complete")
 }
 
+// consolidationResult is what the consolidation pass knows and the rest of the
+// reflection phase needs. It is a struct rather than a growing return list
+// because three of its four members only make sense together: they are all
+// statements about which ledger finding this run's insights landed on.
+type consolidationResult struct {
+	// NewCount is the number of genuinely-new findings; TotalCount the
+	// project's active total afterward. They drive the convergence point.
+	NewCount   int
+	TotalCount int
+
+	// ReSeen are the findings the ledger CARRIED IN that this run surfaced
+	// again — the reflection phase's only grounded evidence about the
+	// project's history. A carried finding this run saw again can honestly be
+	// re-judged; one it did not see cannot, because absence is not proof.
+	//
+	// It is collected during consolidation because only that pass can tell the
+	// two apart afterwards: a merge stamps SourceDiscoveryID with this run
+	// either way, so a carried finding re-seen now and one created a moment
+	// ago by an earlier candidate in the same loop are indistinguishable in
+	// the stored document.
+	ReSeen map[string]struct{}
+
+	// FindingIDByInsightID maps each of this run's insight ids to the ledger
+	// finding it landed on — a new one, or a prior one it merged into.
+	//
+	// This is what lets the model point at a finding from THIS run. The
+	// reflection prompt lists prior findings by their ledger id and this run's
+	// findings by their insight id (a run's findings have no ledger id the
+	// model could have seen), so an answer naming either is resolved through
+	// here to one real ledger finding, and anything else is dropped.
+	FindingIDByInsightID map[string]string
+}
+
+// resolveFindingIDs maps model-supplied finding ids onto real ledger finding
+// ids, dropping anything the prompt did not carry. An id is accepted when it is
+// a ledger finding id in known (the prior-findings page) or one of this run's
+// insight ids (resolved to the finding it landed on). The result is deduped and
+// order-stable.
+//
+// Dropping silently is the established behaviour for an id a reflection
+// response invented — applyTaskStatusUpdates already does it for task ids — and
+// it is the right one: a fabricated provenance edge is worse than a missing one.
+func (c consolidationResult) resolveFindingIDs(raw []string, known map[string]struct{}) []string {
+	var out []string
+	seen := make(map[string]struct{}, len(raw))
+	for _, id := range raw {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		resolved := ""
+		if _, ok := known[id]; ok {
+			resolved = id
+		} else if mapped, ok := c.FindingIDByInsightID[id]; ok {
+			resolved = mapped
+		}
+		if resolved == "" {
+			continue
+		}
+		if _, dup := seen[resolved]; dup {
+			continue
+		}
+		seen[resolved] = struct{}{}
+		out = append(out, resolved)
+	}
+	return out
+}
+
+// appendFindingSighting records one run's observation of a finding. Deduped on
+// (run, insight) so re-running the phase cannot double-count, while a run whose
+// two insights both landed on this finding legitimately records both.
+func appendFindingSighting(f *commonmodels.LedgerFinding, s commonmodels.FindingSighting) {
+	for i := range f.Sightings {
+		if f.Sightings[i].RunID == s.RunID && f.Sightings[i].InsightID == s.InsightID {
+			return
+		}
+	}
+	f.Sightings = commonmodels.TrimFindingTrail(append(f.Sightings, s))
+}
+
+// appendFindingStatusChange records why a status moved. A repeat of the same
+// verdict from the same run and the same source is skipped, so a re-judgement
+// that changes nothing does not grow the document.
+func appendFindingStatusChange(f *commonmodels.LedgerFinding, c commonmodels.FindingStatusChange) {
+	for i := range f.StatusHistory {
+		h := f.StatusHistory[i]
+		if h.Status == c.Status && h.RunID == c.RunID && h.Source == c.Source {
+			return
+		}
+	}
+	f.StatusHistory = commonmodels.TrimFindingTrail(append(f.StatusHistory, c))
+}
+
+// appendUnique appends the ids not already present, order-stable.
+func appendUnique(dst, add []string) []string {
+	have := make(map[string]struct{}, len(dst))
+	for _, id := range dst {
+		have[id] = struct{}{}
+	}
+	for _, id := range add {
+		if id == "" {
+			continue
+		}
+		if _, dup := have[id]; dup {
+			continue
+		}
+		have[id] = struct{}{}
+		dst = append(dst, id)
+	}
+	return dst
+}
+
 // consolidateFindings turns this run's insights into durable ledger findings,
 // deduping (exact + semantic) and trend-marking against prior findings, and
-// indexes new/updated findings into Qdrant when the embedder is wired. Returns
-// the count of genuinely-new findings, the project's total afterward, and the
-// ids of the findings the ledger CARRIED IN that this run surfaced again.
-//
-// That last set is the reflection phase's only grounded evidence about the
-// project's history: a carried finding this run saw again can honestly be
-// re-judged, and one it did not see cannot — absence is not proof. It is
-// collected here because only this function can tell the two apart
-// afterwards: a merge stamps SourceDiscoveryID with this run either way, so a
-// carried finding re-seen now and one created a moment ago by an earlier
-// candidate in the same loop are indistinguishable in the stored document.
-func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.DiscoveryResult) (newCount, totalCount int, reSeen map[string]struct{}, err error) {
+// indexes new/updated findings into Qdrant when the embedder is wired.
+func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.DiscoveryResult) (consolidationResult, error) {
 	candidates := buildFindingCandidates(result)
-	reSeen = make(map[string]struct{})
-	prior, lerr := o.findingRepo.List(ctx, o.projectID)
+	out := consolidationResult{
+		ReSeen:               make(map[string]struct{}),
+		FindingIDByInsightID: make(map[string]string, len(candidates)),
+	}
+	// The dedup pass reads the ARCHIVED findings too. A finding the retention
+	// cap archived and this run has seen again must merge into the existing
+	// document — which un-archives it, with its sightings and edges intact —
+	// rather than being written a second time under the same normalized_key.
+	prior, lerr := o.findingRepo.ListIncludingArchived(ctx, o.projectID)
 	if lerr != nil {
-		return 0, 0, reSeen, fmt.Errorf("list prior findings: %w", lerr)
+		return out, fmt.Errorf("list prior findings: %w", lerr)
 	}
 
 	// Embed candidates once (used for both semantic dedup and indexing). Best
@@ -242,6 +378,13 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 			vec = vectors[i]
 		}
 
+		// The insight this candidate was built from — the id that reaches the
+		// narrative, the SQL, the quality caveats and the validation verdict.
+		var insightID string
+		if len(cand.SourceInsightIDs) > 0 {
+			insightID = cand.SourceInsightIDs[0]
+		}
+
 		match := priorByKey[cand.NormalizedKey]
 		if match == nil && vec != nil {
 			if id := o.searchLedgerNeighbour(ctx, vec, dedupMinScore); id != "" {
@@ -251,10 +394,14 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 
 		if match != nil {
 			if _, ownWork := insertedThisRun[match.ID]; !ownWork {
-				reSeen[match.ID] = struct{}{}
+				out.ReSeen[match.ID] = struct{}{}
 			}
-			// Merge / trend-mark the existing finding in place.
+			// Merge / trend-mark the existing finding in place. The magnitude
+			// as it stood BEFORE the merge is captured first, because the
+			// reason a trend is reported with has to name the values that
+			// moved and the merge below overwrites them.
 			changed := findingMagnitudeChanged(match, &cand, trendDelta)
+			priorSeverity, priorAffected := match.Severity, match.AffectedCount
 			match.Description = cand.Description
 			match.KeyMetric = cand.KeyMetric
 			match.Evidence = cand.Evidence
@@ -265,14 +412,45 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 			match.LastSeen = now
 			match.SourceDiscoveryID = result.ID
 			match.UpdatedAt = now
+			match.SourceInsightIDs = appendUnique(match.SourceInsightIDs, cand.SourceInsightIDs)
+			appendFindingSighting(match, commonmodels.FindingSighting{
+				RunID:         o.runID,
+				DiscoveryID:   result.ID,
+				Date:          now,
+				KeyMetric:     cand.KeyMetric,
+				AffectedCount: cand.AffectedCount,
+				Severity:      cand.Severity,
+				InsightID:     insightID,
+			})
+			// A run that sees an archived finding again brings it back into the
+			// active set: it is current again, and its edges and sightings are
+			// still attached.
+			if match.Archived {
+				match.Archived = false
+				match.ArchivedAt = time.Time{}
+			}
 			if changed {
 				match.Status = commonmodels.LedgerFindingStatusChanged
+				// The trend is detected here, not judged by the model, so it
+				// carries its own reason — otherwise the page shows a status
+				// that moved with nothing to explain it.
+				appendFindingStatusChange(match, commonmodels.FindingStatusChange{
+					Status:      commonmodels.LedgerFindingStatusChanged,
+					Reason:      trendReason(priorSeverity, priorAffected, cand.Severity, cand.AffectedCount),
+					RunID:       o.runID,
+					DiscoveryID: result.ID,
+					At:          now,
+					Source:      commonmodels.FindingStatusSourceTrend,
+				})
 			} else if match.Status == "" {
 				match.Status = commonmodels.LedgerFindingStatusConfirmed
 			}
 			if err := o.findingRepo.Upsert(ctx, match); err != nil {
 				applog.WithError(err).Warn("Reflection: upsert merged finding failed")
 				continue
+			}
+			if insightID != "" {
+				out.FindingIDByInsightID[insightID] = match.ID
 			}
 			if vec != nil {
 				toIndex = append(toIndex, indexItem{finding: *match, vector: vec})
@@ -289,11 +467,31 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 		cand.SourceDiscoveryID = result.ID
 		cand.CreatedAt = now
 		cand.UpdatedAt = now
+		appendFindingSighting(&cand, commonmodels.FindingSighting{
+			RunID:         o.runID,
+			DiscoveryID:   result.ID,
+			Date:          now,
+			KeyMetric:     cand.KeyMetric,
+			AffectedCount: cand.AffectedCount,
+			Severity:      cand.Severity,
+			InsightID:     insightID,
+		})
+		appendFindingStatusChange(&cand, commonmodels.FindingStatusChange{
+			Status:      commonmodels.LedgerFindingStatusConfirmed,
+			Reason:      "first seen in this run",
+			RunID:       o.runID,
+			DiscoveryID: result.ID,
+			At:          now,
+			Source:      commonmodels.FindingStatusSourceReflection,
+		})
 		if err := o.findingRepo.Upsert(ctx, &cand); err != nil {
 			applog.WithError(err).Warn("Reflection: upsert new finding failed")
 			continue
 		}
-		newCount++
+		out.NewCount++
+		if insightID != "" {
+			out.FindingIDByInsightID[insightID] = cand.ID
+		}
 		// Register the just-inserted finding so a LATER candidate in the same run
 		// with the same key merges into it (bumping seen_count) instead of writing
 		// a duplicate doc and inflating newCount / the convergence signal. cand is
@@ -339,8 +537,29 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 		}
 	}
 
-	totalCount = len(prior) + newCount
-	return newCount, totalCount, reSeen, nil
+	// The total is the ACTIVE set after this run: the prior list read above
+	// includes archived rows (the dedup pass needs them), and counting those
+	// would inflate the denominator of the convergence ratio with findings the
+	// ledger no longer carries.
+	active := 0
+	for i := range prior {
+		if !prior[i].Archived {
+			active++
+		}
+	}
+	out.TotalCount = active + out.NewCount
+	return out, nil
+}
+
+// trendReason states what moved, so a `changed` status the server detected
+// arrives with its own evidence rather than as a bare label. Severity is
+// reported when it moved; otherwise the affected-count delta is — the same two
+// signals findingMagnitudeChanged decides on, in the same order.
+func trendReason(priorSeverity string, priorAffected int, curSeverity string, curAffected int) string {
+	if priorSeverity != curSeverity {
+		return fmt.Sprintf("severity moved from %s to %s", priorSeverity, curSeverity)
+	}
+	return fmt.Sprintf("affected count moved from %d to %d", priorAffected, curAffected)
 }
 
 // searchLedgerNeighbour returns the id of the nearest prior ledger finding above
@@ -368,7 +587,7 @@ func buildFindingCandidates(result *models.DiscoveryResult) []commonmodels.Ledge
 		if name == "" {
 			continue
 		}
-		out = append(out, commonmodels.LedgerFinding{
+		cand := commonmodels.LedgerFinding{
 			ProjectID:     result.ProjectID,
 			Area:          ins.AnalysisArea,
 			Name:          name,
@@ -378,7 +597,16 @@ func buildFindingCandidates(result *models.DiscoveryResult) []commonmodels.Ledge
 			Severity:      ins.Severity,
 			AffectedCount: ins.AffectedCount,
 			NormalizedKey: commonmodels.NormalizedFindingKey(ins.AnalysisArea, name),
-		})
+		}
+		// The insight's own id, which is also its id in the `insights`
+		// collection and its Qdrant point id — so this one edge reaches the
+		// narrative, the SQL, the rows, the quality caveats and the validation
+		// verdict with no lookup-by-index anywhere. An empty id is not stored:
+		// an empty string is not a provenance edge.
+		if id := strings.TrimSpace(ins.ID); id != "" {
+			cand.SourceInsightIDs = []string{id}
+		}
+		out = append(out, cand)
 	}
 	return out
 }
@@ -583,7 +811,7 @@ func mergeExplored(carried, reported []string, catalog map[string]string) []stri
 // applyReflection persists the LLM outputs: prior-finding status updates,
 // durable learnings (fixing the dead AddNote channel), next-tasks, and — when
 // the evolution mode allows — proposed domain-pack deltas.
-func (o *Orchestrator) applyReflection(ctx context.Context, result *models.DiscoveryResult, pol agentplugin.DiscoveryPolicy, ref *parsedReflection) {
+func (o *Orchestrator) applyReflection(ctx context.Context, result *models.DiscoveryResult, pol agentplugin.DiscoveryPolicy, ref *parsedReflection, cons consolidationResult) {
 	if ref == nil {
 		return
 	}
@@ -603,14 +831,32 @@ func (o *Orchestrator) applyReflection(ctx context.Context, result *models.Disco
 				if f == nil || !commonmodels.ValidLedgerFindingStatus(su.Status) {
 					continue
 				}
+				now := time.Now()
 				f.Status = su.Status
-				f.UpdatedAt = time.Now()
+				f.UpdatedAt = now
+				// The model already emits a reason per status change and it
+				// used to be dropped on the floor, which left the page showing
+				// a status with no account of why it moved or which run moved
+				// it. Recording it costs nothing — it is already in hand.
+				appendFindingStatusChange(f, commonmodels.FindingStatusChange{
+					Status:      su.Status,
+					Reason:      truncate(strings.TrimSpace(su.Reason), maxReasonLength),
+					RunID:       o.runID,
+					DiscoveryID: result.ID,
+					At:          now,
+					Source:      commonmodels.FindingStatusSourceReflection,
+				})
 				if err := o.findingRepo.Upsert(ctx, f); err != nil {
 					applog.WithError(err).Warn("Reflection: apply finding status update failed")
 				}
 			}
 		}
 	}
+
+	// Durable learnings → the ledger's own attributed collection, so the
+	// investigation view can show what the run learned and which run learned
+	// it. Best-effort and independent of the project-context write below.
+	o.applyLearnings(ctx, result, ref)
 
 	// Durable learnings → agent-observation notes (fixes the dead AddNote channel).
 	if len(ref.Learnings) > 0 && o.contextRepo != nil {
@@ -623,7 +869,7 @@ func (o *Orchestrator) applyReflection(ctx context.Context, result *models.Disco
 				}
 				rel := l.Relevance
 				if rel <= 0 || rel > 1 {
-					rel = 0.6
+					rel = defaultLearningRelevance
 				}
 				pctx.AddNote(strings.TrimSpace(l.Category), note, rel)
 				added = true
@@ -639,7 +885,7 @@ func (o *Orchestrator) applyReflection(ctx context.Context, result *models.Disco
 	// Close open tasks this run resolved. Runs regardless of evolution mode —
 	// keeping the queue honest is hygiene, not self-direction — and returns the
 	// closed tasks' keys so applyNextTasks won't recreate one as "new".
-	closedTaskKeys := o.applyTaskStatusUpdates(ctx, ref)
+	closedTaskKeys := o.applyTaskStatusUpdates(ctx, result, ref, cons)
 
 	// The rest (next-tasks + domain-pack deltas) is the self-directing part the
 	// evolution mode governs. Off records coverage/findings/learnings only.
@@ -647,8 +893,80 @@ func (o *Orchestrator) applyReflection(ctx context.Context, result *models.Disco
 		return
 	}
 
-	o.applyNextTasks(ctx, ref, closedTaskKeys)
+	o.applyNextTasks(ctx, ref, closedTaskKeys, cons)
 	o.applyPackProposals(ctx, result, ref)
+}
+
+// applyLearnings records the run's durable learnings on the ledger, attributed
+// to the run that produced them.
+//
+// They were already being written into the project-context notes — with no run
+// attribution, into a collection the ledger API never reads — so on the
+// investigation view they did not exist. That write stays exactly as it is;
+// this is a second, owned copy, not a migration. Deduped on the normalized
+// key, so a learning a later run repeats bumps the existing row.
+func (o *Orchestrator) applyLearnings(ctx context.Context, result *models.DiscoveryResult, ref *parsedReflection) {
+	if o.learningRepo == nil || len(ref.Learnings) == 0 {
+		return
+	}
+	for _, l := range ref.Learnings {
+		note := strings.TrimSpace(l.Note)
+		if note == "" {
+			continue
+		}
+		category := strings.TrimSpace(l.Category)
+		rel := l.Relevance
+		if rel <= 0 || rel > 1 {
+			rel = defaultLearningRelevance
+		}
+		key := commonmodels.NormalizedLearningKey(category, note)
+		if key == "" {
+			continue
+		}
+		if err := o.learningRepo.Upsert(ctx, &commonmodels.LedgerLearning{
+			ID:            uuid.New().String(),
+			ProjectID:     o.projectID,
+			Category:      category,
+			Note:          truncate(note, 600),
+			Relevance:     rel,
+			RunID:         o.runID,
+			DiscoveryID:   result.ID,
+			NormalizedKey: key,
+		}); err != nil {
+			applog.WithError(err).Warn("Reflection: upsert ledger learning failed")
+		}
+	}
+}
+
+// markThreadsPursued records that this run had the open threads in front of it,
+// whether or not it closed any of them. It is the honest answer to "which
+// threads did this run pursue?", and the only edge from a run to a thread it
+// worked on but did not finish.
+//
+// Gated on the evolution mode for the same reason loadLedgerReadContext is: in
+// `off` mode the open-task queue is never rendered into the exploration prompt,
+// so the run genuinely did not have these threads in front of it and saying
+// otherwise would be a fabricated edge.
+func (o *Orchestrator) markThreadsPursued(ctx context.Context, pol agentplugin.DiscoveryPolicy) {
+	if o.taskRepo == nil || o.runID == "" || pol.EvolutionMode == agentplugin.EvolutionModeOff {
+		return
+	}
+	open, err := o.taskRepo.List(ctx, o.projectID,
+		commonmodels.LedgerTaskStatusOpen, commonmodels.LedgerTaskStatusInProgress)
+	if err != nil {
+		applog.WithError(err).Warn("Reflection: list tasks to mark pursued failed")
+		return
+	}
+	if len(open) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(open))
+	for i := range open {
+		ids = append(ids, open[i].ID)
+	}
+	if err := o.taskRepo.MarkPursued(ctx, o.projectID, ids, o.runID); err != nil {
+		applog.WithError(err).Warn("Reflection: mark tasks pursued failed")
+	}
 }
 
 // applyTaskStatusUpdates closes the open tasks the reflection resolved this run
@@ -656,7 +974,7 @@ func (o *Orchestrator) applyReflection(ctx context.Context, result *models.Disco
 // grounded: the model only closes a task a finding from this run answered, or a
 // proven dead-end. Returns the normalized keys of the tasks it closed so the
 // follow-up generation below does not immediately recreate one.
-func (o *Orchestrator) applyTaskStatusUpdates(ctx context.Context, ref *parsedReflection) map[string]bool {
+func (o *Orchestrator) applyTaskStatusUpdates(ctx context.Context, result *models.DiscoveryResult, ref *parsedReflection, cons consolidationResult) map[string]bool {
 	closed := make(map[string]bool)
 	if o.taskRepo == nil || len(ref.TaskStatusUpdates) == 0 {
 		return closed
@@ -671,6 +989,8 @@ func (o *Orchestrator) applyTaskStatusUpdates(ctx context.Context, ref *parsedRe
 	for i := range open {
 		byID[open[i].ID] = &open[i]
 	}
+	known := o.knownFindingIDs(ctx)
+	now := time.Now()
 	for _, u := range ref.TaskStatusUpdates {
 		status := strings.TrimSpace(u.Status)
 		if status != commonmodels.LedgerTaskStatusDone && status != commonmodels.LedgerTaskStatusDropped {
@@ -680,21 +1000,91 @@ func (o *Orchestrator) applyTaskStatusUpdates(ctx context.Context, ref *parsedRe
 		if t == nil {
 			continue // unknown / already-closed id
 		}
-		if err := o.taskRepo.UpdateStatus(ctx, o.projectID, t.ID, status); err != nil {
+		// The findings that answered the thread. Only on a `done`: a `dropped`
+		// is a proven dead end and has nothing to point at, which is also why
+		// the schema never demands the field alongside one.
+		var resolvedBy []string
+		if status == commonmodels.LedgerTaskStatusDone {
+			resolvedBy = cons.resolveFindingIDs(u.ResolvedByFindingIDs, known)
+		}
+		if err := o.taskRepo.Close(ctx, o.projectID, t.ID, database.TaskClose{
+			Status:               status,
+			RunID:                o.runID,
+			DiscoveryID:          result.ID,
+			At:                   now,
+			Reason:               truncate(strings.TrimSpace(u.Reason), maxReasonLength),
+			ResolvedByFindingIDs: resolvedBy,
+		}); err != nil {
 			applog.WithError(err).Warn("Reflection: close task failed")
 			continue
 		}
 		closed[t.NormalizedKey] = true
+		// Mirror the edge onto the findings, so the investigation tree is
+		// walkable from either end without a second query at read time.
+		o.markFindingsAnsweredTask(ctx, resolvedBy, t.ID)
 	}
 	return closed
 }
 
+// knownFindingIDs is the set of ledger finding ids the reflection prompt could
+// have shown the model: the project's active findings. An id outside it and
+// outside this run's insight ids was invented, and is dropped.
+func (o *Orchestrator) knownFindingIDs(ctx context.Context) map[string]struct{} {
+	known := map[string]struct{}{}
+	if o.findingRepo == nil {
+		return known
+	}
+	all, err := o.findingRepo.List(ctx, o.projectID)
+	if err != nil {
+		applog.WithError(err).Warn("Reflection: list findings to validate ids failed")
+		return known
+	}
+	for i := range all {
+		known[all[i].ID] = struct{}{}
+	}
+	return known
+}
+
+// markFindingsAnsweredTask writes the reverse of a task's
+// resolved_by_finding_ids onto each finding. Best-effort: the forward edge is
+// already stored, so a failure here costs a convenience, not the record.
+func (o *Orchestrator) markFindingsAnsweredTask(ctx context.Context, findingIDs []string, taskID string) {
+	if len(findingIDs) == 0 || o.findingRepo == nil {
+		return
+	}
+	all, err := o.findingRepo.List(ctx, o.projectID)
+	if err != nil {
+		applog.WithError(err).Warn("Reflection: list findings to mirror task edge failed")
+		return
+	}
+	byID := make(map[string]*commonmodels.LedgerFinding, len(all))
+	for i := range all {
+		byID[all[i].ID] = &all[i]
+	}
+	for _, id := range findingIDs {
+		f := byID[id]
+		if f == nil {
+			continue
+		}
+		before := len(f.AnsweredTaskIDs)
+		f.AnsweredTaskIDs = appendUnique(f.AnsweredTaskIDs, []string{taskID})
+		if len(f.AnsweredTaskIDs) == before {
+			continue // already recorded
+		}
+		f.UpdatedAt = time.Now()
+		if err := o.findingRepo.Upsert(ctx, f); err != nil {
+			applog.WithError(err).Warn("Reflection: mirror answered-task edge onto finding failed")
+		}
+	}
+}
+
 // applyNextTasks inserts fresh next-tasks/hypotheses, deduped against the open
 // queue by normalized text key.
-func (o *Orchestrator) applyNextTasks(ctx context.Context, ref *parsedReflection, closedKeys map[string]bool) {
+func (o *Orchestrator) applyNextTasks(ctx context.Context, ref *parsedReflection, closedKeys map[string]bool, cons consolidationResult) {
 	if len(ref.NextTasks) == 0 || o.taskRepo == nil {
 		return
 	}
+	known := o.knownFindingIDs(ctx)
 	existing, err := o.taskRepo.List(ctx, o.projectID,
 		commonmodels.LedgerTaskStatusOpen, commonmodels.LedgerTaskStatusInProgress)
 	if err != nil {
@@ -734,17 +1124,21 @@ func (o *Orchestrator) applyNextTasks(ctx context.Context, ref *parsedReflection
 			title = text
 		}
 		task := commonmodels.LedgerTask{
-			ID:            uuid.New().String(),
-			ProjectID:     o.projectID,
-			Title:         title,
-			Text:          text,
-			Kind:          kind,
-			Status:        commonmodels.LedgerTaskStatusOpen,
-			Supersedes:    strings.TrimSpace(nt.Supersedes),
-			CreatedRunID:  o.runID,
-			NormalizedKey: key,
-			CreatedAt:     now,
-			UpdatedAt:     now,
+			ID:        uuid.New().String(),
+			ProjectID: o.projectID,
+			Title:     title,
+			Text:      text,
+			Kind:      kind,
+			Status:    commonmodels.LedgerTaskStatusOpen,
+			// Supersedes links a follow-up to the TASK it continues;
+			// OriginFindingIDs attributes the thread to the findings it grew
+			// out of, which is what gives the root of a chain a parent at all.
+			Supersedes:       strings.TrimSpace(nt.Supersedes),
+			OriginFindingIDs: cons.resolveFindingIDs(nt.OriginFindingIDs, known),
+			CreatedRunID:     o.runID,
+			NormalizedKey:    key,
+			CreatedAt:        now,
+			UpdatedAt:        now,
 		}
 		if commonmodels.ValidQuestionTargetType(nt.TargetType) && strings.TrimSpace(nt.TargetID) != "" {
 			task.LinkedTarget = commonmodels.QuestionTarget{Type: nt.TargetType, ID: strings.TrimSpace(nt.TargetID)}

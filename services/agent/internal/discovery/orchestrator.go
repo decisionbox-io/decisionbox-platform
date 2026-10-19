@@ -150,6 +150,7 @@ type Orchestrator struct {
 	ledgerRepo   ledgerStore
 	findingRepo  findingStore
 	taskRepo     taskStore
+	learningRepo learningStore
 	proposalRepo proposalStore
 	feedbackRepo *database.FeedbackRepository
 	debugLogRepo *database.DebugLogRepository
@@ -312,6 +313,7 @@ type OrchestratorOptions struct {
 	LedgerRepo         *database.LedgerRepository
 	LedgerFindingRepo  *database.LedgerFindingRepository
 	LedgerTaskRepo     *database.LedgerTaskRepository
+	LedgerLearningRepo *database.LedgerLearningRepository
 	LedgerProposalRepo *database.LedgerProposalRepository
 	FeedbackRepo       *database.FeedbackRepository
 	DebugLogRepo       *database.DebugLogRepository
@@ -471,6 +473,10 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 	if opts.LedgerTaskRepo != nil {
 		taskRepo = opts.LedgerTaskRepo
 	}
+	var learningRepo learningStore
+	if opts.LedgerLearningRepo != nil {
+		learningRepo = opts.LedgerLearningRepo
+	}
 	var proposalRepo proposalStore
 	if opts.LedgerProposalRepo != nil {
 		proposalRepo = opts.LedgerProposalRepo
@@ -486,6 +492,7 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		ledgerRepo:            ledgerRepo,
 		findingRepo:           findingRepo,
 		taskRepo:              taskRepo,
+		learningRepo:          learningRepo,
 		proposalRepo:          proposalRepo,
 		feedbackRepo:          opts.FeedbackRepo,
 		debugLogRepo:          opts.DebugLogRepo,

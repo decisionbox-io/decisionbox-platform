@@ -3,11 +3,15 @@ package discovery
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -45,7 +49,22 @@ type fakeFindingRepo struct {
 	listErr   error
 }
 
+// List is the ACTIVE set, as the real repository's is — archived findings are
+// filtered out here too, so a test that archives one exercises the same
+// exclusion the prompt paths rely on.
 func (f *fakeFindingRepo) List(_ context.Context, _ string) ([]commonmodels.LedgerFinding, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	active := make([]commonmodels.LedgerFinding, 0, len(f.findings))
+	for i := range f.findings {
+		if !f.findings[i].Archived {
+			active = append(active, f.findings[i])
+		}
+	}
+	return active, nil
+}
+func (f *fakeFindingRepo) ListIncludingArchived(_ context.Context, _ string) ([]commonmodels.LedgerFinding, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -67,9 +86,20 @@ type fakeTaskRepo struct {
 	existing []commonmodels.LedgerTask
 	inserted []commonmodels.LedgerTask
 	updates  []taskUpdate
+	// pursued records each MarkPursued call: the run id and the task ids it
+	// was given.
+	pursued []pursuedCall
 }
 
-type taskUpdate struct{ id, status string }
+type taskUpdate struct {
+	id, status string
+	close      database.TaskClose
+}
+
+type pursuedCall struct {
+	runID string
+	ids   []string
+}
 
 func (f *fakeTaskRepo) List(_ context.Context, _ string, _ ...string) ([]commonmodels.LedgerTask, error) {
 	return f.existing, nil
@@ -78,8 +108,25 @@ func (f *fakeTaskRepo) Insert(_ context.Context, ts []commonmodels.LedgerTask) e
 	f.inserted = append(f.inserted, ts...)
 	return nil
 }
-func (f *fakeTaskRepo) UpdateStatus(_ context.Context, _, id, status string) error {
-	f.updates = append(f.updates, taskUpdate{id, status})
+func (f *fakeTaskRepo) Close(_ context.Context, _, id string, u database.TaskClose) error {
+	f.updates = append(f.updates, taskUpdate{id: id, status: u.Status, close: u})
+	return nil
+}
+func (f *fakeTaskRepo) MarkPursued(_ context.Context, _ string, ids []string, runID string) error {
+	f.pursued = append(f.pursued, pursuedCall{runID: runID, ids: ids})
+	return nil
+}
+
+type fakeLearningRepo struct {
+	upserted []commonmodels.LedgerLearning
+	err      error
+}
+
+func (f *fakeLearningRepo) Upsert(_ context.Context, l *commonmodels.LedgerLearning) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.upserted = append(f.upserted, *l)
 	return nil
 }
 
@@ -134,15 +181,17 @@ func TestApplyTaskStatusUpdates(t *testing.T) {
 
 	ref := &parsedReflection{}
 	ref.TaskStatusUpdates = []struct {
-		TaskID string `json:"task_id"`
-		Status string `json:"status"`
+		TaskID               string   `json:"task_id"`
+		Status               string   `json:"status"`
+		Reason               string   `json:"reason"`
+		ResolvedByFindingIDs []string `json:"resolved_by_finding_ids"`
 	}{
 		{TaskID: "t1", Status: "done"},
 		{TaskID: "t2", Status: "dropped"},
 		{TaskID: "ghost", Status: "done"},  // unknown id → skip
 		{TaskID: "t1", Status: "reopened"}, // invalid status → skip
 	}
-	closed := o.applyTaskStatusUpdates(context.Background(), ref)
+	closed := o.applyTaskStatusUpdates(context.Background(), &models.DiscoveryResult{ID: "d1"}, ref, consolidationResult{})
 
 	if len(tr.updates) != 2 {
 		t.Fatalf("want 2 status writes (t1 done, t2 dropped), got %d: %+v", len(tr.updates), tr.updates)
@@ -162,17 +211,18 @@ func TestApplyNextTasks_DedupAndSupersedes(t *testing.T) {
 	repeatKey := commonmodels.NormalizedQuestionKey("re-check the churn spike")
 	ref := &parsedReflection{}
 	ref.NextTasks = []struct {
-		Title      string `json:"title"`
-		Text       string `json:"text"`
-		Kind       string `json:"kind"`
-		TargetType string `json:"target_type"`
-		TargetID   string `json:"target_id"`
-		Supersedes string `json:"supersedes"`
+		Title            string   `json:"title"`
+		Text             string   `json:"text"`
+		Kind             string   `json:"kind"`
+		TargetType       string   `json:"target_type"`
+		TargetID         string   `json:"target_id"`
+		Supersedes       string   `json:"supersedes"`
+		OriginFindingIDs []string `json:"origin_finding_ids"`
 	}{
 		{Title: "Recheck churn", Text: "re-check the churn spike"},                          // matches a closed task → dropped
 		{Title: "Profile power sellers", Text: "profile the top sellers", Supersedes: "t9"}, // fresh → kept, keeps link
 	}
-	o.applyNextTasks(context.Background(), ref, map[string]bool{repeatKey: true})
+	o.applyNextTasks(context.Background(), ref, map[string]bool{repeatKey: true}, consolidationResult{})
 
 	if len(tr.inserted) != 1 {
 		t.Fatalf("want 1 inserted (the closed repeat is skipped), got %d: %+v", len(tr.inserted), tr.inserted)
@@ -233,10 +283,11 @@ func TestConsolidateFindings_NewAndTrend(t *testing.T) {
 			{AnalysisArea: "fraud", Name: "Card testing spike", Severity: "critical", AffectedCount: 12},
 		},
 	}
-	newCount, total, reSeen, err := o.consolidateFindings(context.Background(), result)
+	cons, err := o.consolidateFindings(context.Background(), result)
 	if err != nil {
 		t.Fatalf("consolidate: %v", err)
 	}
+	newCount, total, reSeen := cons.NewCount, cons.TotalCount, cons.ReSeen
 	if newCount != 1 {
 		t.Errorf("want 1 new finding, got %d", newCount)
 	}
@@ -480,10 +531,11 @@ func TestConsolidateFindings_SameRunDuplicateMerges(t *testing.T) {
 			{AnalysisArea: "churn", Name: "High churn", Severity: "high", AffectedCount: 100}, // dup
 		},
 	}
-	newCount, total, reSeen, err := o.consolidateFindings(context.Background(), result)
+	cons, err := o.consolidateFindings(context.Background(), result)
 	if err != nil {
 		t.Fatalf("consolidate: %v", err)
 	}
+	newCount, total, reSeen := cons.NewCount, cons.TotalCount, cons.ReSeen
 	if newCount != 1 {
 		t.Errorf("same-run duplicate should count as 1 new finding, got %d", newCount)
 	}
@@ -495,5 +547,513 @@ func TestConsolidateFindings_SameRunDuplicateMerges(t *testing.T) {
 	// such would order a first run to re-judge its own work.
 	if len(reSeen) != 0 {
 		t.Errorf("a same-run duplicate merge is not a re-seen prior finding, got %d", len(reSeen))
+	}
+}
+
+// --- Investigation-graph provenance (enterprise#389) ---
+
+// TestBuildFindingCandidates_CarriesInsightID is the cheapest and most
+// load-bearing edge in the whole investigation graph: the insight id keys the
+// insight in the discovery document, the standalone collection and the Qdrant
+// point, so carrying it onto the finding is what makes every downstream link
+// (narrative, SQL, quality caveats, validation verdict) resolvable.
+func TestBuildFindingCandidates_CarriesInsightID(t *testing.T) {
+	result := &models.DiscoveryResult{
+		ProjectID: "p1",
+		Insights: []models.Insight{
+			{ID: "ins-1", AnalysisArea: "churn", Name: "High EU churn", Severity: "high"},
+			{ID: "  ", AnalysisArea: "fraud", Name: "Card testing", Severity: "critical"}, // blank id
+		},
+	}
+	got := buildFindingCandidates(result)
+	if len(got) != 2 {
+		t.Fatalf("want 2 candidates, got %d", len(got))
+	}
+	if len(got[0].SourceInsightIDs) != 1 || got[0].SourceInsightIDs[0] != "ins-1" {
+		t.Errorf("first candidate should carry its insight id, got %v", got[0].SourceInsightIDs)
+	}
+	// An empty string is not a provenance edge — storing one would produce a
+	// finding that claims to know where it came from and cannot say.
+	if got[1].SourceInsightIDs != nil {
+		t.Errorf("a blank insight id must not be stored, got %v", got[1].SourceInsightIDs)
+	}
+}
+
+// TestConsolidateFindings_SightingsAndStatusTrail covers the two edges that
+// turn a counter into history: one sighting per run (so a magnitude trend is
+// drawable), and a status move that arrives with the evidence for it.
+func TestConsolidateFindings_SightingsAndStatusTrail(t *testing.T) {
+	prior := commonmodels.LedgerFinding{
+		ID: "f1", ProjectID: "p1", Area: "churn", Name: "High EU churn",
+		NormalizedKey: commonmodels.NormalizedFindingKey("churn", "High EU churn"),
+		Severity:      "high", AffectedCount: 100, Status: commonmodels.LedgerFindingStatusConfirmed,
+		SeenCount: 1,
+		Sightings: []commonmodels.FindingSighting{{RunID: "r0", DiscoveryID: "d0", AffectedCount: 100}},
+	}
+	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{prior}}
+	o := &Orchestrator{projectID: "p1", runID: "r1", findingRepo: fr}
+
+	result := &models.DiscoveryResult{
+		ProjectID: "p1", ID: "d1",
+		Insights: []models.Insight{
+			// Same key, magnitude jumped 100 → 300 → a trend.
+			{ID: "ins-1", AnalysisArea: "churn", Name: "High EU churn", Severity: "high", AffectedCount: 300},
+			// Brand new.
+			{ID: "ins-2", AnalysisArea: "fraud", Name: "Card testing spike", Severity: "critical", AffectedCount: 12},
+		},
+	}
+	cons, err := o.consolidateFindings(context.Background(), result)
+	if err != nil {
+		t.Fatalf("consolidate: %v", err)
+	}
+
+	// Every insight resolves to the finding it landed on. Without this map the
+	// model cannot point at a finding from this run at all.
+	if got := cons.FindingIDByInsightID["ins-1"]; got != "f1" {
+		t.Errorf("ins-1 should resolve to the merged finding f1, got %q", got)
+	}
+	if got := cons.FindingIDByInsightID["ins-2"]; got == "" || got == "f1" {
+		t.Errorf("ins-2 should resolve to the new finding, got %q", got)
+	}
+
+	var merged, fresh *commonmodels.LedgerFinding
+	for i := range fr.upserted {
+		if fr.upserted[i].ID == "f1" {
+			merged = &fr.upserted[i]
+		} else {
+			fresh = &fr.upserted[i]
+		}
+	}
+	if merged == nil || fresh == nil {
+		t.Fatalf("expected a merged and a new finding, got %+v", fr.upserted)
+	}
+
+	// The merge appends this run's sighting and keeps the earlier one, so the
+	// trend is 100 → 300 rather than "300, seen twice".
+	if len(merged.Sightings) != 2 {
+		t.Fatalf("want 2 sightings on the merged finding, got %d: %+v", len(merged.Sightings), merged.Sightings)
+	}
+	last := merged.Sightings[1]
+	if last.RunID != "r1" || last.DiscoveryID != "d1" || last.AffectedCount != 300 || last.InsightID != "ins-1" {
+		t.Errorf("this run's sighting is wrong: %+v", last)
+	}
+	if merged.SeenCount != 2 {
+		t.Errorf("SeenCount should still be the honest total, got %d", merged.SeenCount)
+	}
+	if !slices.Contains(merged.SourceInsightIDs, "ins-1") {
+		t.Errorf("the merge should record the insight it absorbed, got %v", merged.SourceInsightIDs)
+	}
+
+	// A server-detected trend explains itself; a status with no account of why
+	// it moved is the thing the page could not show before.
+	if merged.Status != commonmodels.LedgerFindingStatusChanged {
+		t.Errorf("merged status = %q, want changed", merged.Status)
+	}
+	if len(merged.StatusHistory) != 1 {
+		t.Fatalf("want 1 status change recorded, got %d: %+v", len(merged.StatusHistory), merged.StatusHistory)
+	}
+	sc := merged.StatusHistory[0]
+	if sc.Source != commonmodels.FindingStatusSourceTrend || sc.RunID != "r1" || sc.DiscoveryID != "d1" {
+		t.Errorf("trend status change is mis-attributed: %+v", sc)
+	}
+	if !strings.Contains(sc.Reason, "100") || !strings.Contains(sc.Reason, "300") {
+		t.Errorf("the trend reason must name the values that moved, got %q", sc.Reason)
+	}
+
+	// A new finding opens its own trail with its first sighting.
+	if len(fresh.Sightings) != 1 || fresh.Sightings[0].InsightID != "ins-2" {
+		t.Errorf("new finding sighting wrong: %+v", fresh.Sightings)
+	}
+	if len(fresh.StatusHistory) != 1 || fresh.StatusHistory[0].Status != commonmodels.LedgerFindingStatusConfirmed {
+		t.Errorf("new finding should open a status trail: %+v", fresh.StatusHistory)
+	}
+}
+
+// TestConsolidateFindings_TrendReasonNamesSeverity covers the other half of the
+// trend signal: when severity moved, that is what the reason must say.
+func TestConsolidateFindings_TrendReasonNamesSeverity(t *testing.T) {
+	prior := commonmodels.LedgerFinding{
+		ID: "f1", ProjectID: "p1", Area: "churn", Name: "High EU churn",
+		NormalizedKey: commonmodels.NormalizedFindingKey("churn", "High EU churn"),
+		Severity:      "medium", AffectedCount: 100, Status: commonmodels.LedgerFindingStatusConfirmed, SeenCount: 1,
+	}
+	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{prior}}
+	o := &Orchestrator{projectID: "p1", runID: "r1", findingRepo: fr}
+	_, err := o.consolidateFindings(context.Background(), &models.DiscoveryResult{
+		ProjectID: "p1", ID: "d1",
+		Insights: []models.Insight{
+			{ID: "ins-1", AnalysisArea: "churn", Name: "High EU churn", Severity: "critical", AffectedCount: 100},
+		},
+	})
+	if err != nil {
+		t.Fatalf("consolidate: %v", err)
+	}
+	if len(fr.upserted) != 1 || len(fr.upserted[0].StatusHistory) != 1 {
+		t.Fatalf("expected one status change, got %+v", fr.upserted)
+	}
+	if got := fr.upserted[0].StatusHistory[0].Reason; !strings.Contains(got, "medium") || !strings.Contains(got, "critical") {
+		t.Errorf("reason should name the severity move, got %q", got)
+	}
+}
+
+// TestConsolidateFindings_ReSeenArchivedFindingIsRevived is the half of the
+// soft archive that is easy to get wrong. The dedup pass must see archived
+// findings, or a finding the retention cap archived and this run saw again is
+// written a second time under the same normalized key — two documents for one
+// finding, and the edges pointing at the first one orphaned.
+func TestConsolidateFindings_ReSeenArchivedFindingIsRevived(t *testing.T) {
+	archived := commonmodels.LedgerFinding{
+		ID: "f1", ProjectID: "p1", Area: "churn", Name: "High EU churn",
+		NormalizedKey: commonmodels.NormalizedFindingKey("churn", "High EU churn"),
+		Severity:      "high", AffectedCount: 100, Status: commonmodels.LedgerFindingStatusConfirmed,
+		SeenCount: 1, Archived: true, ArchivedAt: time.Now().Add(-time.Hour),
+	}
+	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{archived}}
+	o := &Orchestrator{projectID: "p1", runID: "r1", findingRepo: fr}
+
+	cons, err := o.consolidateFindings(context.Background(), &models.DiscoveryResult{
+		ProjectID: "p1", ID: "d1",
+		Insights: []models.Insight{
+			{ID: "ins-1", AnalysisArea: "churn", Name: "High EU churn", Severity: "high", AffectedCount: 100},
+		},
+	})
+	if err != nil {
+		t.Fatalf("consolidate: %v", err)
+	}
+	if cons.NewCount != 0 {
+		t.Errorf("re-seeing an archived finding is not a new finding, got NewCount=%d", cons.NewCount)
+	}
+	if len(fr.upserted) != 1 || fr.upserted[0].ID != "f1" {
+		t.Fatalf("expected a merge into f1, got %+v", fr.upserted)
+	}
+	if fr.upserted[0].Archived || !fr.upserted[0].ArchivedAt.IsZero() {
+		t.Errorf("a finding seen again must come back into the active set: %+v", fr.upserted[0])
+	}
+}
+
+// TestConsolidateFindings_TotalExcludesArchived pins the convergence
+// denominator. The dedup list deliberately includes archived rows; counting
+// them as "total findings" would quietly deflate the marginal-new ratio the
+// evolution policy steers on.
+func TestConsolidateFindings_TotalExcludesArchived(t *testing.T) {
+	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{
+		{ID: "f1", NormalizedKey: "k1", Archived: true},
+		{ID: "f2", NormalizedKey: "k2"},
+	}}
+	o := &Orchestrator{projectID: "p1", runID: "r1", findingRepo: fr}
+	cons, err := o.consolidateFindings(context.Background(), &models.DiscoveryResult{
+		ProjectID: "p1", ID: "d1",
+		Insights: []models.Insight{{ID: "ins-1", AnalysisArea: "new", Name: "Fresh thing", Severity: "low"}},
+	})
+	if err != nil {
+		t.Fatalf("consolidate: %v", err)
+	}
+	// One active prior + one new = 2. The archived one is history, not stock.
+	if cons.TotalCount != 2 {
+		t.Errorf("total should count the active set only, got %d", cons.TotalCount)
+	}
+}
+
+// TestResolveFindingIDs covers the id-acceptance rule in one place: a prior
+// ledger id, one of this run's insight ids, an invented id, and duplicates.
+func TestResolveFindingIDs(t *testing.T) {
+	cons := consolidationResult{FindingIDByInsightID: map[string]string{"ins-1": "f9"}}
+	known := map[string]struct{}{"f1": {}}
+
+	got := cons.resolveFindingIDs([]string{"f1", "ins-1", "nope", " ", "f1"}, known)
+	if len(got) != 2 || got[0] != "f1" || got[1] != "f9" {
+		t.Errorf("want [f1 f9] (invented and duplicate dropped), got %v", got)
+	}
+	if out := cons.resolveFindingIDs(nil, known); out != nil {
+		t.Errorf("no ids in → no ids out, got %v", out)
+	}
+	if out := cons.resolveFindingIDs([]string{"ghost"}, known); out != nil {
+		t.Errorf("an invented id alone must resolve to nothing, got %v", out)
+	}
+}
+
+// TestApplyTaskStatusUpdates_CloseMetadataAndMirroredEdge is the answer to "we
+// followed this up — what did we find?". Closing used to write a status and a
+// timestamp; it now records which run closed the thread, why, and the findings
+// that answered it, mirrored onto those findings so the tree is walkable from
+// either end.
+func TestApplyTaskStatusUpdates_CloseMetadataAndMirroredEdge(t *testing.T) {
+	tr := &fakeTaskRepo{existing: []commonmodels.LedgerTask{
+		{ID: "t1", NormalizedKey: "k1", Status: commonmodels.LedgerTaskStatusOpen},
+		{ID: "t2", NormalizedKey: "k2", Status: commonmodels.LedgerTaskStatusOpen},
+	}}
+	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{
+		{ID: "f-prior", ProjectID: "p1"},
+		{ID: "f-new", ProjectID: "p1"},
+	}}
+	o := &Orchestrator{projectID: "p1", runID: "r1", taskRepo: tr, findingRepo: fr}
+
+	ref := &parsedReflection{}
+	ref.TaskStatusUpdates = []struct {
+		TaskID               string   `json:"task_id"`
+		Status               string   `json:"status"`
+		Reason               string   `json:"reason"`
+		ResolvedByFindingIDs []string `json:"resolved_by_finding_ids"`
+	}{
+		// A prior ledger id and one of this run's insight ids, plus an invented one.
+		{TaskID: "t1", Status: "done", Reason: "9 of 12 share the same centre",
+			ResolvedByFindingIDs: []string{"f-prior", "ins-new", "ghost"}},
+		// A dead end: nothing to point at, and nothing must be stored.
+		{TaskID: "t2", Status: "dropped", Reason: "the table was dropped upstream",
+			ResolvedByFindingIDs: []string{"f-prior"}},
+	}
+	cons := consolidationResult{FindingIDByInsightID: map[string]string{"ins-new": "f-new"}}
+
+	closed := o.applyTaskStatusUpdates(context.Background(),
+		&models.DiscoveryResult{ID: "d1"}, ref, cons)
+
+	if len(closed) != 2 {
+		t.Fatalf("both tasks should be closed, got %+v", closed)
+	}
+	if len(tr.updates) != 2 {
+		t.Fatalf("want 2 closes, got %d", len(tr.updates))
+	}
+
+	var done, dropped *database.TaskClose
+	for i := range tr.updates {
+		switch tr.updates[i].id {
+		case "t1":
+			done = &tr.updates[i].close
+		case "t2":
+			dropped = &tr.updates[i].close
+		}
+	}
+	if done == nil || dropped == nil {
+		t.Fatalf("both closes should be recorded: %+v", tr.updates)
+	}
+	if done.RunID != "r1" || done.DiscoveryID != "d1" || done.At.IsZero() {
+		t.Errorf("the closing run must be stamped: %+v", done)
+	}
+	if done.Reason != "9 of 12 share the same centre" {
+		t.Errorf("close reason = %q", done.Reason)
+	}
+	if !slices.Equal(done.ResolvedByFindingIDs, []string{"f-prior", "f-new"}) {
+		t.Errorf("resolved-by should resolve both id spaces and drop the invented id, got %v", done.ResolvedByFindingIDs)
+	}
+	// A `dropped` is a proven dead end. Recording findings that "answered" it
+	// would be recording an answer to a question that has none.
+	if len(dropped.ResolvedByFindingIDs) != 0 {
+		t.Errorf("a dropped task must carry no resolved-by ids, got %v", dropped.ResolvedByFindingIDs)
+	}
+
+	// The reverse edge lands on each answering finding, exactly once.
+	mirrored := map[string][]string{}
+	for i := range fr.upserted {
+		mirrored[fr.upserted[i].ID] = fr.upserted[i].AnsweredTaskIDs
+	}
+	for _, id := range []string{"f-prior", "f-new"} {
+		if !slices.Equal(mirrored[id], []string{"t1"}) {
+			t.Errorf("finding %s should record answering t1, got %v", id, mirrored[id])
+		}
+	}
+}
+
+// TestMarkThreadsPursued holds the honest-record rule. A run that had a thread
+// in front of it pursued it whether or not it closed it — and in `off` mode the
+// queue is never rendered into the exploration prompt, so the run genuinely did
+// not see those threads and claiming otherwise would be a fabricated edge.
+func TestMarkThreadsPursued(t *testing.T) {
+	open := []commonmodels.LedgerTask{{ID: "t1"}, {ID: "t2"}}
+
+	t.Run("stamps every open thread when evolution is on", func(t *testing.T) {
+		tr := &fakeTaskRepo{existing: open}
+		o := &Orchestrator{projectID: "p1", runID: "r1", taskRepo: tr}
+		o.markThreadsPursued(context.Background(),
+			agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeAuto})
+		if len(tr.pursued) != 1 {
+			t.Fatalf("want 1 MarkPursued call, got %d", len(tr.pursued))
+		}
+		if tr.pursued[0].runID != "r1" || !slices.Equal(tr.pursued[0].ids, []string{"t1", "t2"}) {
+			t.Errorf("every open thread should be stamped, got %+v", tr.pursued[0])
+		}
+	})
+
+	t.Run("records nothing in off mode", func(t *testing.T) {
+		tr := &fakeTaskRepo{existing: open}
+		o := &Orchestrator{projectID: "p1", runID: "r1", taskRepo: tr}
+		o.markThreadsPursued(context.Background(),
+			agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeOff})
+		if len(tr.pursued) != 0 {
+			t.Errorf("off mode never showed the run these threads: %+v", tr.pursued)
+		}
+	})
+
+	t.Run("no open threads is a no-op", func(t *testing.T) {
+		tr := &fakeTaskRepo{}
+		o := &Orchestrator{projectID: "p1", runID: "r1", taskRepo: tr}
+		o.markThreadsPursued(context.Background(),
+			agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeAuto})
+		if len(tr.pursued) != 0 {
+			t.Errorf("nothing to stamp should write nothing, got %+v", tr.pursued)
+		}
+	})
+}
+
+// TestApplyNextTasks_OriginFindingIDs covers the edge that gives the ROOT of a
+// follow-up chain a parent. `supersedes` only ever links a task to an earlier
+// task, so without this the first thread in every chain is unattributed.
+func TestApplyNextTasks_OriginFindingIDs(t *testing.T) {
+	tr := &fakeTaskRepo{}
+	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{{ID: "f-prior"}}}
+	o := &Orchestrator{projectID: "p1", runID: "r1", taskRepo: tr, findingRepo: fr}
+
+	ref := &parsedReflection{}
+	ref.NextTasks = []struct {
+		Title            string   `json:"title"`
+		Text             string   `json:"text"`
+		Kind             string   `json:"kind"`
+		TargetType       string   `json:"target_type"`
+		TargetID         string   `json:"target_id"`
+		Supersedes       string   `json:"supersedes"`
+		OriginFindingIDs []string `json:"origin_finding_ids"`
+	}{
+		{Title: "Chase the centre", Text: "check the fulfilment centres",
+			OriginFindingIDs: []string{"f-prior", "ins-new", "invented"}},
+		{Title: "No attribution", Text: "a thread with no origin"},
+	}
+	o.applyNextTasks(context.Background(), ref, nil,
+		consolidationResult{FindingIDByInsightID: map[string]string{"ins-new": "f-new"}})
+
+	if len(tr.inserted) != 2 {
+		t.Fatalf("want 2 tasks inserted, got %d", len(tr.inserted))
+	}
+	if !slices.Equal(tr.inserted[0].OriginFindingIDs, []string{"f-prior", "f-new"}) {
+		t.Errorf("origins should resolve both id spaces and drop the invented id, got %v", tr.inserted[0].OriginFindingIDs)
+	}
+	if tr.inserted[1].OriginFindingIDs != nil {
+		t.Errorf("a thread the model did not attribute must store nothing, got %v", tr.inserted[1].OriginFindingIDs)
+	}
+}
+
+// TestApplyLearnings covers the channel that existed and was invisible: the
+// reflection phase already produced durable learnings and wrote them only into
+// the project-context notes, unattributed, in a collection the ledger never
+// reads.
+func TestApplyLearnings(t *testing.T) {
+	lr := &fakeLearningRepo{}
+	o := &Orchestrator{projectID: "p1", runID: "r1", learningRepo: lr}
+	ref := &parsedReflection{}
+	ref.Learnings = []struct {
+		Category  string  `json:"category"`
+		Note      string  `json:"note"`
+		Relevance float64 `json:"relevance"`
+	}{
+		{Category: "schema", Note: "order_status 'C' means cancelled", Relevance: 0.9},
+		{Category: "schema", Note: "   ", Relevance: 0.5},                         // empty → skipped
+		{Category: "domain", Note: "grain is one row per shipment", Relevance: 7}, // out of range → default
+	}
+	o.applyLearnings(context.Background(), &models.DiscoveryResult{ID: "d1"}, ref)
+
+	if len(lr.upserted) != 2 {
+		t.Fatalf("want 2 learnings stored (the blank one skipped), got %d", len(lr.upserted))
+	}
+	first := lr.upserted[0]
+	if first.RunID != "r1" || first.DiscoveryID != "d1" || first.ProjectID != "p1" {
+		t.Errorf("a learning must be attributed to the run that produced it: %+v", first)
+	}
+	if first.NormalizedKey != commonmodels.NormalizedLearningKey("schema", "order_status 'C' means cancelled") {
+		t.Errorf("dedup key not set as expected: %q", first.NormalizedKey)
+	}
+	if lr.upserted[1].Relevance != defaultLearningRelevance {
+		t.Errorf("an out-of-range relevance should fall back to the default, got %v", lr.upserted[1].Relevance)
+	}
+}
+
+// TestApplyLearnings_NoStoreIsANoOp — the ledger learning collection is only
+// wired by the agent server, so a unit/single-binary build has none. It must
+// cost nothing rather than panic in a best-effort phase.
+func TestApplyLearnings_NoStoreIsANoOp(t *testing.T) {
+	o := &Orchestrator{projectID: "p1", runID: "r1"}
+	ref := &parsedReflection{}
+	ref.Learnings = []struct {
+		Category  string  `json:"category"`
+		Note      string  `json:"note"`
+		Relevance float64 `json:"relevance"`
+	}{{Category: "schema", Note: "something durable"}}
+	o.applyLearnings(context.Background(), &models.DiscoveryResult{ID: "d1"}, ref)
+}
+
+// TestAppendFindingTrails covers the two append helpers' dedup rules directly:
+// re-running the phase must not double-count a sighting, and a re-judgement
+// that changes nothing must not grow the document.
+func TestAppendFindingTrails(t *testing.T) {
+	t.Run("a sighting is deduped on run and insight", func(t *testing.T) {
+		f := &commonmodels.LedgerFinding{}
+		s := commonmodels.FindingSighting{RunID: "r1", InsightID: "ins-1"}
+		appendFindingSighting(f, s)
+		appendFindingSighting(f, s)
+		if len(f.Sightings) != 1 {
+			t.Errorf("want 1 sighting, got %d", len(f.Sightings))
+		}
+		// Two insights from the same run that land on the same finding are two
+		// real observations.
+		appendFindingSighting(f, commonmodels.FindingSighting{RunID: "r1", InsightID: "ins-2"})
+		if len(f.Sightings) != 2 {
+			t.Errorf("want 2 sightings, got %d", len(f.Sightings))
+		}
+	})
+
+	t.Run("an unchanged verdict from the same run is not re-recorded", func(t *testing.T) {
+		f := &commonmodels.LedgerFinding{}
+		c := commonmodels.FindingStatusChange{
+			Status: commonmodels.LedgerFindingStatusConfirmed, RunID: "r1",
+			Source: commonmodels.FindingStatusSourceReflection,
+		}
+		appendFindingStatusChange(f, c)
+		appendFindingStatusChange(f, c)
+		if len(f.StatusHistory) != 1 {
+			t.Errorf("want 1 status entry, got %d", len(f.StatusHistory))
+		}
+		// A trend detected by the server and a verdict from the model are two
+		// different statements about the same run.
+		trend := c
+		trend.Source = commonmodels.FindingStatusSourceTrend
+		appendFindingStatusChange(f, trend)
+		if len(f.StatusHistory) != 2 {
+			t.Errorf("want 2 status entries, got %d", len(f.StatusHistory))
+		}
+	})
+}
+
+// TestApplyReflection_RecordsStatusReason is the #3 edge through applyReflection
+// itself: the model already emits a reason per status change and it was being
+// dropped on the floor.
+func TestApplyReflection_RecordsStatusReason(t *testing.T) {
+	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{
+		{ID: "f1", ProjectID: "p1", Status: commonmodels.LedgerFindingStatusConfirmed},
+	}}
+	o := &Orchestrator{projectID: "p1", runID: "r1", findingRepo: fr}
+	ref := &parsedReflection{}
+	ref.StatusUpdates = []struct {
+		FindingID string `json:"finding_id"`
+		Status    string `json:"status"`
+		Reason    string `json:"reason"`
+	}{
+		{FindingID: "f1", Status: commonmodels.LedgerFindingStatusRefuted, Reason: "the join was wrong"},
+		{FindingID: "ghost", Status: commonmodels.LedgerFindingStatusResolved, Reason: "invented"},
+		{FindingID: "f1", Status: "nonsense", Reason: "invalid status"},
+	}
+	o.applyReflection(context.Background(), &models.DiscoveryResult{ID: "d1"},
+		agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeOff}, ref, consolidationResult{})
+
+	if len(fr.upserted) != 1 {
+		t.Fatalf("only the one valid update should be written, got %d", len(fr.upserted))
+	}
+	f := fr.upserted[0]
+	if f.Status != commonmodels.LedgerFindingStatusRefuted {
+		t.Errorf("status = %q, want refuted", f.Status)
+	}
+	if len(f.StatusHistory) != 1 {
+		t.Fatalf("want 1 status change, got %+v", f.StatusHistory)
+	}
+	sc := f.StatusHistory[0]
+	if sc.Reason != "the join was wrong" || sc.RunID != "r1" || sc.DiscoveryID != "d1" ||
+		sc.Source != commonmodels.FindingStatusSourceReflection {
+		t.Errorf("status change not recorded as emitted: %+v", sc)
 	}
 }

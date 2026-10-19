@@ -84,7 +84,7 @@ func TestReflectionSchema_RequiredFollowsTheRun(t *testing.T) {
 				name += "/first-run"
 			}
 			t.Run(name, func(t *testing.T) {
-				schema := reflectionResponseSchema(mode, hasPrior)
+				schema := reflectionResponseSchema(mode, hasPrior, true)
 				got := requiredSet(t, schema)
 
 				want := map[string]bool{"coverage_summary": true, "learnings": true}
@@ -120,7 +120,7 @@ func TestReflectionSchema_RequiredFollowsTheRun(t *testing.T) {
 // description still reads as optional argues against the constraint next to
 // it, which is how a small model talks itself back into [].
 func TestReflectionSchema_DemandIsAlsoInTheDescription(t *testing.T) {
-	on := reflectionResponseSchema(agentplugin.EvolutionModeSuggestOnly, true)
+	on := reflectionResponseSchema(agentplugin.EvolutionModeSuggestOnly, true, true)
 	for _, name := range []string{"learnings", "prior_status_updates", "next_tasks"} {
 		if desc := descriptionOf(t, on, name); !strings.Contains(desc, "at least one") {
 			t.Errorf("%s description does not demand at least one: %q", name, desc)
@@ -128,7 +128,7 @@ func TestReflectionSchema_DemandIsAlsoInTheDescription(t *testing.T) {
 	}
 
 	// And the demand is not left behind on a run that must not carry it.
-	off := reflectionResponseSchema(agentplugin.EvolutionModeOff, false)
+	off := reflectionResponseSchema(agentplugin.EvolutionModeOff, false, true)
 	for _, name := range []string{"prior_status_updates", "next_tasks"} {
 		if desc := descriptionOf(t, off, name); strings.Contains(desc, "at least one") {
 			t.Errorf("%s must not demand at least one on an off/first run: %q", name, desc)
@@ -226,7 +226,7 @@ func TestRenderPriorStatusField_OnlyDemandsWhatThereIsToJudge(t *testing.T) {
 func TestBuildReflectionPrompt_FirstRunCarriesNoPriorDemand(t *testing.T) {
 	o, result, _, tasks, pol := reflectionPromptFixture()
 
-	got := o.buildReflectionPrompt(result, nil, tasks, pol, nil, false)
+	got := o.buildReflectionPrompt(result, nil, tasks, pol, nil, false, false)
 
 	if !strings.Contains(got, "(no prior findings — this is an early run)") {
 		t.Fatal("fixture no longer renders the empty prior-findings list")
@@ -326,7 +326,7 @@ func TestGenerateReflection_SchemaIsBuiltFromTheRun(t *testing.T) {
 			if _, err := o.generateReflection(context.Background(),
 				&models.DiscoveryResult{Schemas: map[string]models.TableSchema{"ds.orders": {}}},
 				agentplugin.DiscoveryPolicy{EvolutionMode: tc.mode, FrontierPolicy: agentplugin.FrontierBalanced},
-				tc.reSeen,
+				consolidationResult{ReSeen: tc.reSeen},
 			); err != nil {
 				t.Fatalf("generateReflection: %v", err)
 			}
@@ -359,6 +359,16 @@ type statefulFindingRepo struct {
 }
 
 func (r *statefulFindingRepo) List(_ context.Context, _ string) ([]commonmodels.LedgerFinding, error) {
+	out := make([]commonmodels.LedgerFinding, 0, len(r.findings))
+	for i := range r.findings {
+		if !r.findings[i].Archived {
+			out = append(out, r.findings[i])
+		}
+	}
+	return out, nil
+}
+
+func (r *statefulFindingRepo) ListIncludingArchived(_ context.Context, _ string) ([]commonmodels.LedgerFinding, error) {
 	out := make([]commonmodels.LedgerFinding, len(r.findings))
 	copy(out, r.findings)
 	return out, nil
@@ -525,5 +535,202 @@ func TestReSeenPriorIsOnThePage_RespectsTheCap(t *testing.T) {
 	}
 	if reSeenPriorIsOnThePage(nil, reSeen) {
 		t.Error("an empty prior list shows nothing, so nothing can be demanded of it")
+	}
+}
+
+// --- The two provenance fields (enterprise#389) ---
+//
+// Only two of the investigation graph's eight edges ask the model for anything
+// new, and both follow the rule the rest of this file exists to enforce: demand
+// an output only on a run that can honestly produce it. The #434 lesson is that
+// anything optional comes back empty run after run; the other half of it is
+// that anything demanded without grounding comes back invented.
+
+// TestReflectionSchema_OriginFindingIDsDemandedOnlyWithIDsToCopy: a run whose
+// prompt lists no finding id — no priors, and no findings of its own — has
+// nothing to attribute a thread to.
+func TestReflectionSchema_OriginFindingIDsDemandedOnlyWithIDsToCopy(t *testing.T) {
+	cases := []struct {
+		name          string
+		hasFindingIDs bool
+		wantRequired  bool
+		wantMinItems  int
+	}{
+		{"prompt carries finding ids", true, true, 1},
+		{"prompt carries none", false, false, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			schema := reflectionResponseSchema(agentplugin.EvolutionModeAuto, true, tc.hasFindingIDs)
+			props := schema["properties"].(map[string]interface{})
+			item := schemaItemProps(t, props, "next_tasks")
+			if _, ok := item["origin_finding_ids"]; !ok {
+				t.Fatal("origin_finding_ids must always be declared, demanded or not")
+			}
+			required := requiredSetOfItem(t, props, "next_tasks")
+			if got := required["origin_finding_ids"]; got != tc.wantRequired {
+				t.Errorf("required = %v, want %v", got, tc.wantRequired)
+			}
+			min, _ := item["origin_finding_ids"].(map[string]interface{})["minItems"].(int)
+			if min != tc.wantMinItems {
+				t.Errorf("minItems = %d, want %d", min, tc.wantMinItems)
+			}
+		})
+	}
+}
+
+// TestReflectionSchema_ResolvedByOnlyAlongsideDone: a `dropped` is a proven
+// dead end. Demanding the findings that answered it would be demanding an
+// answer to a question that has none — so the requirement is a two-branch
+// condition on the item, not a blanket `required`.
+func TestReflectionSchema_ResolvedByOnlyAlongsideDone(t *testing.T) {
+	props := reflectionResponseSchema(agentplugin.EvolutionModeAuto, true, true)["properties"].(map[string]interface{})
+	prop := props["task_status_updates"].(map[string]interface{})
+	item := prop["items"].(map[string]interface{})
+
+	// Never unconditionally required — that would hit `dropped` too.
+	if required := requiredSetOfItem(t, props, "task_status_updates"); required["resolved_by_finding_ids"] {
+		t.Error("resolved_by_finding_ids must not be unconditionally required: a dropped task has nothing to point at")
+	}
+	// A reason, by contrast, is always answerable: a close always has one.
+	if required := requiredSetOfItem(t, props, "task_status_updates"); !required["reason"] {
+		t.Error("reason should be required on every close")
+	}
+
+	branches, ok := item["oneOf"].([]interface{})
+	if !ok || len(branches) != 2 {
+		t.Fatalf("expected a two-branch condition on the item, got %#v", item["oneOf"])
+	}
+	var sawDoneDemand, sawDroppedExemption bool
+	for _, b := range branches {
+		branch := b.(map[string]interface{})
+		bp := branch["properties"].(map[string]interface{})
+		status := bp["status"].(map[string]interface{})["const"]
+		switch status {
+		case "done":
+			req, _ := branch["required"].([]interface{})
+			for _, r := range req {
+				if r == "resolved_by_finding_ids" {
+					sawDoneDemand = true
+				}
+			}
+			arr, _ := bp["resolved_by_finding_ids"].(map[string]interface{})
+			if arr["minItems"] != 1 {
+				t.Error("the done branch must demand a non-empty array, not just the key")
+			}
+		case "dropped":
+			if _, demanded := branch["required"]; demanded {
+				t.Error("the dropped branch must demand nothing")
+			}
+			sawDroppedExemption = true
+		}
+	}
+	if !sawDoneDemand || !sawDroppedExemption {
+		t.Errorf("both branches must be present: done-demands=%v dropped-exempt=%v", sawDoneDemand, sawDroppedExemption)
+	}
+}
+
+// TestReflectionSchema_NoConditionWithoutIDsToCopy: with no finding ids in the
+// prompt there is nothing to point at on a `done` either, so the branch is left
+// out entirely rather than demanding an id the model would have to invent.
+func TestReflectionSchema_NoConditionWithoutIDsToCopy(t *testing.T) {
+	props := reflectionResponseSchema(agentplugin.EvolutionModeAuto, true, false)["properties"].(map[string]interface{})
+	item := props["task_status_updates"].(map[string]interface{})["items"].(map[string]interface{})
+	if _, ok := item["oneOf"]; ok {
+		t.Error("a run with no finding ids must not carry the done/dropped condition")
+	}
+}
+
+// requiredSetOfItem returns the item-level `required` list of an array property
+// as a set.
+func requiredSetOfItem(t *testing.T, props map[string]interface{}, name string) map[string]bool {
+	t.Helper()
+	prop, ok := props[name].(map[string]interface{})
+	if !ok {
+		t.Fatalf("schema has no property %q", name)
+	}
+	item, ok := prop["items"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("property %q has no items shape", name)
+	}
+	out := map[string]bool{}
+	req, _ := item["required"].([]interface{})
+	for _, r := range req {
+		if s, ok := r.(string); ok {
+			out[s] = true
+		}
+	}
+	return out
+}
+
+// TestReflectionPrompt_ProvenanceBulletsAreConditional is the prompt half of
+// the same rule — the schema is the contract, but the prompt is what teaches.
+func TestReflectionPrompt_ProvenanceBulletsAreConditional(t *testing.T) {
+	withIDs := renderProvenanceFields(true)
+	for _, want := range []string{"origin_finding_ids", "resolved_by_finding_ids", "Never invent an id"} {
+		if !strings.Contains(withIDs, want) {
+			t.Errorf("a run with finding ids must be told about %q: %s", want, withIDs)
+		}
+	}
+	withoutIDs := renderProvenanceFields(false)
+	if !strings.Contains(withoutIDs, "omit both") {
+		t.Errorf("a run with no finding ids must be told to omit both, got: %s", withoutIDs)
+	}
+}
+
+// TestReflectionPrompt_StoredGraphFieldsNeverReachTheModel is acceptance
+// criterion 6. The investigation graph is a write-side and read-side feature:
+// the sightings, the status trail, the archive flag and the edge arrays all
+// exist to be read by the API and the dashboard, and none of them belongs in a
+// prompt. A field that leaked in here would grow every run's context in
+// proportion to the project's history.
+func TestReflectionPrompt_StoredGraphFieldsNeverReachTheModel(t *testing.T) {
+	seen := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	prior := []commonmodels.LedgerFinding{{
+		ID: "f-1", Area: "inventory", Name: "Slow movers", Status: "confirmed", SeenCount: 4,
+		KeyMetric: "units=1200", LastSeen: seen,
+		SourceInsightIDs: []string{"ins-old-1", "ins-old-2"},
+		AnsweredTaskIDs:  []string{"t-old"},
+		Sightings: []commonmodels.FindingSighting{
+			{RunID: "r-old", DiscoveryID: "d-old", AffectedCount: 11, InsightID: "ins-old-1"},
+		},
+		StatusHistory: []commonmodels.FindingStatusChange{
+			{Status: "confirmed", Reason: "SECRET-TRAIL-REASON", RunID: "r-old", Source: "reflection"},
+		},
+	}}
+	tasks := []commonmodels.LedgerTask{{
+		ID: "t-1", Kind: "next_task", Text: "check the fulfilment centres",
+		OriginFindingIDs: []string{"f-origin"}, ResolvedByFindingIDs: []string{"f-answer"},
+		PursuedInRunIDs: []string{"r-old"}, CloseReason: "SECRET-CLOSE-REASON",
+	}}
+	o := &Orchestrator{language: "English", datasets: []string{"ds"}}
+	result := &models.DiscoveryResult{
+		Schemas:  map[string]models.TableSchema{"ds.orders": {}},
+		Insights: []models.Insight{{ID: "ins-1", AnalysisArea: "churn", Name: "Churn up", Severity: "high"}},
+	}
+	pol := agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeAuto, FrontierPolicy: agentplugin.FrontierBalanced}
+
+	// Both prompts the ledger feeds.
+	reflectionPrompt := o.buildReflectionPrompt(result, prior, tasks, pol, nil, true, true)
+	explorationPrompt := renderLedgerFindings(prior) + renderLedgerTasks(tasks)
+
+	leaks := []string{
+		"ins-old-1", "ins-old-2", "t-old", "r-old", "d-old",
+		"SECRET-TRAIL-REASON", "SECRET-CLOSE-REASON", "f-origin", "f-answer",
+		"sightings", "status_history", "answered_task_ids", "pursued_in_run_ids", "archived",
+	}
+	for _, leak := range leaks {
+		if strings.Contains(reflectionPrompt, leak) {
+			t.Errorf("stored graph data %q reached the reflection prompt", leak)
+		}
+		if strings.Contains(explorationPrompt, leak) {
+			t.Errorf("stored graph data %q reached the exploration prompt", leak)
+		}
+	}
+	// What the exploration prompt DOES newly carry is the thread's own id, so
+	// the phase can name a thread it pursued. That is one short id per open
+	// task, and nothing else.
+	if !strings.Contains(explorationPrompt, "[t-1]") {
+		t.Error("the exploration prompt should carry each open thread's id")
 	}
 }

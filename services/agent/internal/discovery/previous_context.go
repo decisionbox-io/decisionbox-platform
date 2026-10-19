@@ -190,8 +190,11 @@ func renderLedgerTasks(tasks []commonmodels.LedgerTask) string {
 	var sb strings.Builder
 	sb.WriteString("### Open investigation threads (pursue these this run)\n")
 	sb.WriteString("Earlier runs flagged these to follow up. Prioritise them alongside exploring the frontier.\n\n")
+	// Each thread carries its id so this phase's own narrative can reference
+	// one — the reflection prompt has always listed them with ids, and without
+	// them here the exploration phase could pursue a thread but not name it.
 	for _, t := range tasks {
-		fmt.Fprintf(&sb, "- %s\n", strings.TrimSpace(t.Text))
+		fmt.Fprintf(&sb, "- [%s] %s\n", t.ID, strings.TrimSpace(t.Text))
 	}
 	sb.WriteString("\n")
 	return sb.String()

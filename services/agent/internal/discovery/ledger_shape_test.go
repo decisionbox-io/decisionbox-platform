@@ -39,8 +39,8 @@ func reflectionPromptFixture() (*Orchestrator, *models.DiscoveryResult, []common
 			"ops.shipments":       {},
 		},
 		Insights: []models.Insight{
-			{AnalysisArea: "inventory", Name: "Dead stock concentrated in two sellers", Severity: "high", AffectedCount: 42, Description: "Two sellers hold 60% of the unsold stock."},
-			{AnalysisArea: "churn", Name: "Churn rises after the second late delivery", Severity: "medium", AffectedCount: 310},
+			{ID: "ins-1", AnalysisArea: "inventory", Name: "Dead stock concentrated in two sellers", Severity: "high", AffectedCount: 42, Description: "Two sellers hold 60% of the unsold stock."},
+			{ID: "ins-2", AnalysisArea: "churn", Name: "Churn rises after the second late delivery", Severity: "medium", AffectedCount: 310},
 		},
 	}
 	prior := []commonmodels.LedgerFinding{
@@ -60,9 +60,12 @@ func reflectionPromptFixture() (*Orchestrator, *models.DiscoveryResult, []common
 // so a drift of even one byte — a heading, a bullet, a stray newline left
 // behind by a token substitution — fails here rather than quietly changing
 // what every SQL-only project's reflection is asked to do. It is re-captured
-// only when a change to the prompt is the point: the cube catalog, and the
+// only when a change to the prompt is the point: the cube catalog, the
 // mandatory-output wording of #434 (this fixture runs with evolution on and
-// prior findings present, so it carries both demands).
+// prior findings present, so it carries both demands), and the provenance
+// fields — this run's findings are now listed with their insight ids, because
+// a thread this run answered is answered by a finding from this run and the
+// model had no id to copy for one.
 func TestReflectionPrompt_TableOnlyRunIsUnchanged(t *testing.T) {
 	want, err := os.ReadFile("testdata/reflection_prompt_table_only.golden")
 	if err != nil {
@@ -70,7 +73,7 @@ func TestReflectionPrompt_TableOnlyRunIsUnchanged(t *testing.T) {
 	}
 	o, result, prior, tasks, pol := reflectionPromptFixture()
 
-	got := o.buildReflectionPrompt(result, prior, tasks, pol, nil, true)
+	got := o.buildReflectionPrompt(result, prior, tasks, pol, nil, true, true)
 
 	if got != string(want) {
 		t.Errorf("table-only reflection prompt drifted from the pre-cube render.\n--- got ---\n%s\n--- want ---\n%s", got, want)
@@ -85,7 +88,7 @@ func TestReflectionPrompt_CubeRunCanReportWhatItSliced(t *testing.T) {
 	o, result, prior, tasks, pol := reflectionPromptFixture()
 	items := []string{"sessions", "activeUsers", "sessionDefaultChannelGroup"}
 
-	got := o.buildReflectionPrompt(result, prior, tasks, pol, items, true)
+	got := o.buildReflectionPrompt(result, prior, tasks, pol, items, true, true)
 
 	// The warehouse catalog is still there — a cube run has a table side too.
 	if !strings.Contains(got, reflectionTableCatalogHeading) {
@@ -498,7 +501,7 @@ func TestRunPhaseReflection_CubeRunSortsCoverageIntoTheRightNamespace(t *testing
 // model that declined to answer.
 func TestReflectionSchema_MatchesStructTags(t *testing.T) {
 	tags := jsonTagSet(reflect.TypeOf(parsedReflection{}))
-	props := reflectionResponseSchema(agentplugin.EvolutionModeAuto, true)["properties"].(map[string]interface{})
+	props := reflectionResponseSchema(agentplugin.EvolutionModeAuto, true, true)["properties"].(map[string]interface{})
 
 	for name := range props {
 		if !tags[name] {
@@ -514,4 +517,56 @@ func TestReflectionSchema_MatchesStructTags(t *testing.T) {
 			t.Errorf("schema must not expose internal field %q to the model", internal)
 		}
 	}
+
+	// The same check one level down. The item shapes are where the provenance
+	// fields live, and a nested property the parser has no field for is
+	// discarded just as silently as a top-level one — it simply has no
+	// top-level name to catch it.
+	for _, nested := range []string{"next_tasks", "task_status_updates", "prior_status_updates", "learnings", "domain_pack_deltas"} {
+		itemTags := itemJSONTagSet(t, nested)
+		itemProps := schemaItemProps(t, props, nested)
+		for name := range itemProps {
+			if !itemTags[name] {
+				t.Errorf("schema property %q.items.%q has no matching json tag on parsedReflection", nested, name)
+			}
+		}
+	}
+}
+
+// itemJSONTagSet returns the json tags of the element struct of the
+// parsedReflection field whose own json tag is name.
+func itemJSONTagSet(t *testing.T, name string) map[string]bool {
+	t.Helper()
+	rt := reflect.TypeOf(parsedReflection{})
+	for i := 0; i < rt.NumField(); i++ {
+		tag := strings.Split(rt.Field(i).Tag.Get("json"), ",")[0]
+		if tag != name {
+			continue
+		}
+		ft := rt.Field(i).Type
+		if ft.Kind() != reflect.Slice || ft.Elem().Kind() != reflect.Struct {
+			t.Fatalf("parsedReflection field %q is not a slice of structs", name)
+		}
+		return jsonTagSet(ft.Elem())
+	}
+	t.Fatalf("parsedReflection has no field tagged %q", name)
+	return nil
+}
+
+// schemaItemProps reaches props[name]["items"]["properties"].
+func schemaItemProps(t *testing.T, props map[string]interface{}, name string) map[string]interface{} {
+	t.Helper()
+	prop, ok := props[name].(map[string]interface{})
+	if !ok {
+		t.Fatalf("schema has no array property %q", name)
+	}
+	item, ok := prop["items"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("schema property %q has no items shape", name)
+	}
+	itemProps, ok := item["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("schema property %q.items has no properties", name)
+	}
+	return itemProps
 }

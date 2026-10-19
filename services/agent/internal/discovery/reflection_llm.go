@@ -44,6 +44,12 @@ type parsedReflection struct {
 	TaskStatusUpdates []struct {
 		TaskID string `json:"task_id"`
 		Status string `json:"status"` // done | dropped
+		Reason string `json:"reason"`
+		// ResolvedByFindingIDs are the findings that answered the task. Ids
+		// come from either id space the prompt prints — a prior ledger finding
+		// or one of this run's insights — and are resolved and validated on
+		// the apply path.
+		ResolvedByFindingIDs []string `json:"resolved_by_finding_ids"`
 	} `json:"task_status_updates"`
 
 	NextTasks []struct {
@@ -53,6 +59,10 @@ type parsedReflection struct {
 		TargetType string `json:"target_type"`
 		TargetID   string `json:"target_id"`
 		Supersedes string `json:"supersedes"`
+		// OriginFindingIDs are the findings the thread grew out of — the edge
+		// that attributes the ROOT of a follow-up chain, which `supersedes`
+		// cannot, because it only links a task to an earlier task.
+		OriginFindingIDs []string `json:"origin_finding_ids"`
 	} `json:"next_tasks"`
 
 	PackDeltas []struct {
@@ -70,12 +80,14 @@ type parsedReflection struct {
 // model window, attach the structured-output format where supported, and
 // self-heal a bounded number of times on an unparseable response.
 //
-// reSeenPriorIDs are the findings the ledger carried IN that this run surfaced
-// again. They gate the demand for a prior-finding re-judgement, and only that:
-// they are the phase's grounded evidence about the past, and the finding list
-// read back here cannot supply them, because consolidation has already merged
-// this run's own findings into that list.
-func (o *Orchestrator) generateReflection(ctx context.Context, result *models.DiscoveryResult, pol agentplugin.DiscoveryPolicy, reSeenPriorIDs map[string]struct{}) (*parsedReflection, error) {
+// cons carries what consolidation knows. Its ReSeen set gates the demand for a
+// prior-finding re-judgement, and only that: it is the phase's grounded
+// evidence about the past, and the finding list read back here cannot supply it,
+// because consolidation has already merged this run's own findings into that
+// list. Its insight→finding map is what makes this run's findings addressable
+// at all — they are listed in the prompt by insight id, since a finding created
+// moments ago has no ledger id the model could have seen.
+func (o *Orchestrator) generateReflection(ctx context.Context, result *models.DiscoveryResult, pol agentplugin.DiscoveryPolicy, cons consolidationResult) (*parsedReflection, error) {
 	prior, err := o.findingRepo.List(ctx, o.projectID)
 	if err != nil {
 		applog.WithError(err).Warn("Reflection: list prior findings for prompt failed")
@@ -86,10 +98,15 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 		tasks, _ = o.taskRepo.List(ctx, o.projectID, commonmodels.LedgerTaskStatusOpen)
 	}
 
-	demandPriorRejudgement := reSeenPriorIsOnThePage(prior, reSeenPriorIDs)
+	demandPriorRejudgement := reSeenPriorIsOnThePage(prior, cons.ReSeen)
+	// Whether the prompt carries any finding id at all. A run with no prior
+	// findings on the page and no findings of its own has nothing for the model
+	// to attribute a thread to, and demanding an attribution anyway leaves it
+	// only the option of inventing one.
+	hasFindingIDs := len(priorFindingsForPrompt(prior)) > 0 || len(result.Insights) > 0
 
 	items := o.runCatalogItems()
-	prompt := o.buildReflectionPrompt(result, prior, tasks, pol, items, demandPriorRejudgement)
+	prompt := o.buildReflectionPrompt(result, prior, tasks, pol, items, demandPriorRejudgement, hasFindingIDs)
 
 	window, modelOutputCap := o.resolveModelBudget()
 	// Default to the model's own cap, mirroring the analysis and recommendation
@@ -102,7 +119,7 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 	outputCap := phaseOutputCap(discoveryReflectionMaxOutputEnv, modelOutputCap, 512, defaultDiscoveryReflectionMaxOutput)
 	maxTokens := budgetedMaxOutputTokens(window, approxTokens(ctx, prompt), outputCap, analysisMinOutputTokens())
 
-	format := reflectionResponseFormat(pol.EvolutionMode, demandPriorRejudgement)
+	format := reflectionResponseFormat(pol.EvolutionMode, demandPriorRejudgement, hasFindingIDs)
 	if o.aiClient.SupportsStructuredOutput() {
 		applog.Info("Reflection generation using schema-constrained output")
 	}
@@ -137,7 +154,7 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 // buildReflectionPrompt renders the embedded template with the run's findings,
 // the prior ledger findings (so the model can re-judge their status), the open
 // task queue, and the mode/frontier policy that governs what it may propose.
-func (o *Orchestrator) buildReflectionPrompt(result *models.DiscoveryResult, prior []commonmodels.LedgerFinding, tasks []commonmodels.LedgerTask, pol agentplugin.DiscoveryPolicy, catalogItems []string, demandPriorRejudgement bool) string {
+func (o *Orchestrator) buildReflectionPrompt(result *models.DiscoveryResult, prior []commonmodels.LedgerFinding, tasks []commonmodels.LedgerTask, pol agentplugin.DiscoveryPolicy, catalogItems []string, demandPriorRejudgement, hasFindingIDs bool) string {
 	lang := o.language
 	if strings.TrimSpace(lang) == "" {
 		lang = "English"
@@ -152,6 +169,7 @@ func (o *Orchestrator) buildReflectionPrompt(result *models.DiscoveryResult, pri
 	p = strings.ReplaceAll(p, "{{RUN_FINDINGS}}", renderRunFindings(result.Insights))
 	p = strings.ReplaceAll(p, "{{PRIOR_FINDINGS}}", renderPriorFindings(prior))
 	p = strings.ReplaceAll(p, "{{PRIOR_STATUS_FIELD}}", renderPriorStatusField(demandPriorRejudgement))
+	p = strings.ReplaceAll(p, "{{PROVENANCE_FIELDS}}", renderProvenanceFields(hasFindingIDs))
 	p = strings.ReplaceAll(p, "{{OPEN_TASKS}}", renderOpenTasks(tasks))
 	p = strings.ReplaceAll(p, "{{CATALOG_SECTION}}", renderCatalogSection(result.Schemas, catalogItems))
 	p = strings.ReplaceAll(p, "{{COVERED_FIELDS}}", renderCoveredFields(len(catalogItems) > 0))
@@ -219,6 +237,15 @@ func renderPriorStatusField(demand bool) string {
 		" This run surfaced at least one of the prior findings above again, which IS grounded evidence about it — so re-judge **at least one**: still there at the same magnitude is `confirmed`, and a magnitude that moved is `changed`."
 }
 
+// renderRunFindings lists what this run found, each with its id.
+//
+// The id is this run's INSIGHT id, not a ledger finding id: by the time this
+// prompt is built, consolidation has already turned each insight into (or
+// merged it into) a ledger finding, but the model has never seen those ids and
+// could not copy one. The apply path resolves an insight id back to the finding
+// it landed on. Without an id here the model has nothing to point at when it
+// closes a thread this run answered — which is almost always answered by a
+// finding from this run, not a prior one.
 func renderRunFindings(insights []models.Insight) string {
 	if len(insights) == 0 {
 		return "(this run produced no insights)"
@@ -226,13 +253,32 @@ func renderRunFindings(insights []models.Insight) string {
 	var b strings.Builder
 	for i := range insights {
 		in := insights[i]
-		fmt.Fprintf(&b, "- [%s] %q (severity %s, affected %d)", in.AnalysisArea, in.Name, in.Severity, in.AffectedCount)
+		if id := strings.TrimSpace(in.ID); id != "" {
+			fmt.Fprintf(&b, "- id=%s [%s] %q (severity %s, affected %d)", id, in.AnalysisArea, in.Name, in.Severity, in.AffectedCount)
+		} else {
+			fmt.Fprintf(&b, "- [%s] %q (severity %s, affected %d)", in.AnalysisArea, in.Name, in.Severity, in.AffectedCount)
+		}
 		if d := truncate(in.Description, 240); d != "" {
 			fmt.Fprintf(&b, " — %s", d)
 		}
 		b.WriteByte('\n')
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// renderProvenanceFields renders the output-contract bullets for the two fields
+// that attribute a thread to the findings around it.
+//
+// Conditional for the same reason renderPriorStatusField is: on a run whose
+// prompt carries no finding id at all, an instruction to copy one has no
+// grounding, and the only way left to comply is to invent an id.
+func renderProvenanceFields(hasFindingIDs bool) string {
+	if !hasFindingIDs {
+		return "- **origin_finding_ids** / **resolved_by_finding_ids**: omit both — this run's prompt lists no finding ids to copy."
+	}
+	return "- **origin_finding_ids** (on each next_task): the `id=` values of the findings this thread grew out of — from THIS RUN'S FINDINGS or from PRIOR FINDINGS above, copied verbatim. This is what records *why* the thread exists; `supersedes` only links it to an earlier task.\n" +
+		"- **resolved_by_finding_ids** (on each task_status_update you mark `done`): the `id=` values of the findings that ANSWERED the task, copied verbatim — usually findings from this run. Omit it on a `dropped`: a dead end has nothing to point at.\n" +
+		"- Never invent an id. Copy only ids printed above; anything else is discarded."
 }
 
 // priorFindingsForPrompt is the subset of the ledger's findings the prompt
