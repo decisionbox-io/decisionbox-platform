@@ -382,6 +382,11 @@ jobs:
           (cd services/agent && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/agent-integ.txt" .)
           (cd services/agent && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/agent-db-integ.txt" ./internal/database/)
           (cd services/agent && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/agent-agentserver-integ.txt" ./agentserver/)
+          # The discovery package's integration suite drives the real
+          # reflection + ledger read path against this job's MongoDB. It was
+          # only ever run by `make test-integration` locally, so a regression
+          # in the compounding loop could land green.
+          (cd services/agent && go test -tags=integration -count=1 -timeout=10m -coverprofile="$COV/agent-discovery-integ.txt" ./internal/discovery/)
 
       - name: API integration tests
         # Run even when an earlier integration step failed, so one flaky
@@ -396,6 +401,7 @@ jobs:
           mkdir -p "$COV"
           (cd services/api && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/api-integ.txt" .)
           (cd services/api && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/api-db-integ.txt" ./database/)
+          (cd services/api && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/api-backfill-integ.txt" ./internal/backfill/)
           (cd services/api && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/api-handler-integ.txt" ./internal/handler/)
           (cd services/api && go test -tags=integration -count=1 -timeout=5m -coverprofile="$COV/api-server-integ.txt" ./internal/server/)
 
