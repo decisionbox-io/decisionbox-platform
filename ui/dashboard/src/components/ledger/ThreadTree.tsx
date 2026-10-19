@@ -83,7 +83,7 @@ function NodeRow({
       .map((s) => index.runOrdinal.get(`run:${s.run_id}`))
       .filter((n): n is number => Boolean(n));
     badges = finding.missing ? (
-      <Badge size="xs" variant="outline" color="gray">no longer available</Badge>
+      <Badge size="xs" variant="outline" color="gray">not in this view</Badge>
     ) : (
       <>
         {finding.severity && (
@@ -115,7 +115,7 @@ function NodeRow({
     const openedIn = index.runOrdinal.get(`run:${task.created_run_id}`);
     const closedIn = index.runOrdinal.get(`run:${task.closed_run_id}`);
     badges = task.missing ? (
-      <Badge size="xs" variant="outline" color="gray">no longer available</Badge>
+      <Badge size="xs" variant="outline" color="gray">not in this view</Badge>
     ) : (
       <>
         <Badge size="xs" variant="light" color={task.kind === 'hypothesis' ? 'grape' : 'blue'}>
@@ -209,7 +209,7 @@ function NodeRow({
                 // which run's SQL the link opens.
                 const runRef = runRefForDiscovery(index, insight.discovery_id);
                 const label = insight.missing
-                  ? 'no longer available'
+                  ? 'not in this view'
                   : (runRef ? runLabel(index, runRef) : 'an earlier run');
                 if (!link) {
                   return <Text key={insight.node_id} size="xs" c="dimmed">{label}</Text>;
