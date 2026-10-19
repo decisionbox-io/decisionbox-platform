@@ -1324,6 +1324,8 @@ export interface GraphTruncation {
   learnings: boolean;
   recommendations: boolean;
   finding_trails: boolean;
+  /** A long-lived thread's pursuit history was clipped to the run window. */
+  task_pursuits: boolean;
 }
 
 export interface LedgerGraph {

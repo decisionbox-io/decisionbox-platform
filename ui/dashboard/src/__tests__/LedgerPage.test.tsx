@@ -112,7 +112,7 @@ const graph: LedgerGraph = {
     { from: 'rec:rec1', to: 'insight:ins2', kind: 'recommends_on' },
     { from: 'run:r2', to: 'learning:l1', kind: 'learned' },
   ],
-  truncated: { runs: false, learnings: false, recommendations: false, finding_trails: false },
+  truncated: { runs: false, learnings: false, recommendations: false, finding_trails: false, task_pursuits: false },
 };
 
 /** The happy path: the ledger, the settings, no proposals, and the graph. */
@@ -126,7 +126,7 @@ function mockAll() {
 const emptyGraph: LedgerGraph = {
   runs: [], findings: [], tasks: [], insights: [], recommendations: [],
   learnings: [], proposals: [], edges: [],
-  truncated: { runs: false, learnings: false, recommendations: false, finding_trails: false },
+  truncated: { runs: false, learnings: false, recommendations: false, finding_trails: false, task_pursuits: false },
 };
 
 beforeEach(() => {
@@ -368,7 +368,7 @@ describe('LedgerPage', () => {
     getLedgerGraph.mockResolvedValue({
       runs: [], findings: [], tasks: [], insights: [], recommendations: [],
       learnings: [], proposals: [], edges: [],
-      truncated: { runs: false, learnings: false, recommendations: false, finding_trails: false },
+      truncated: { runs: false, learnings: false, recommendations: false, finding_trails: false, task_pursuits: false },
     });
     wrap();
     expect(await screen.findByText(/No runs have reflected yet/i)).toBeInTheDocument();

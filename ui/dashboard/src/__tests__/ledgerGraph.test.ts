@@ -11,7 +11,7 @@ import type { LedgerGraph } from '@/lib/api';
 // tolerating a reference to something that is gone — so they are tested without
 // rendering anything.
 
-const noTruncation = { runs: false, learnings: false, recommendations: false, finding_trails: false };
+const noTruncation = { runs: false, learnings: false, recommendations: false, finding_trails: false, task_pursuits: false };
 
 /** The acceptance-criterion chain: a finding opens a hypothesis, a later run
  *  closes it, the close points at the finding that answered it, and a
