@@ -654,3 +654,103 @@ func TestRecommendationFigures_UnresolvableAndUnstatedKeepsItsMarker(t *testing.
 		t.Errorf("tally.unresolved = %d, want 1", tally.unresolved)
 	}
 }
+
+// liraInsight is the shape every figure in a non-dollar project has: the unit says
+// currency and the model named the symbol, which is the only place the symbol is stated.
+func liraInsight() models.Insight {
+	return models.Insight{
+		ID:   "22222222-3333-4444-5555-666666666666",
+		Name: "Open receivables are concentrated in three accounts",
+		Figures: []models.Figure{
+			{ID: "f1", Value: 21129081.03, Unit: models.UnitCurrency, Currency: "₺", Decimals: 2,
+				Step: 3, Kind: models.FigureSum, Column: "open_ar"},
+			{ID: "f2", Value: 4612004.10, Unit: models.UnitCurrency, Currency: "₺", Decimals: 2,
+				Step: 3, Kind: models.FigureCell, Column: "open_ar", Row: "card = M0529"},
+		},
+		FigureVerdicts: []models.FigureVerdict{
+			{ID: "f1", Status: models.FigureHolds, Claimed: 21129081.03, Evaluated: 21129081.03},
+			{ID: "f2", Status: models.FigureHolds, Claimed: 4612004.10, Evaluated: 4612004.10},
+		},
+	}
+}
+
+// TestRecommendationFigures_RefKeepsTheInsightsCurrency is the defect a Turkish run
+// shipped to a customer: all 29 insights wrote ₺ and 7 of 8 recommendations wrote $, for
+// the same amounts, because the recommendation schema has no currency field and the
+// reference carried the value and the unit across without the symbol.
+//
+// The amount is the same one in both documents, so a reader seeing two symbols for it has
+// no rule that tells them which is the money they hold.
+func TestRecommendationFigures_RefKeepsTheInsightsCurrency(t *testing.T) {
+	ins := liraInsight()
+	recs := []models.Recommendation{{
+		Description: "Chase the {{f1}} sitting past ninety days.",
+		Figures: []models.Figure{{
+			ID: "f1", Unit: models.UnitCurrency, Scale: models.ScaleMillions, Decimals: 1,
+			Kind: models.FigureRefKind, Refs: []models.FigureRef{ref(ins.ID, "f1")},
+		}},
+	}}
+
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.renderRecommendationFigures(recs)
+
+	if strings.Contains(recs[0].Description, "$") {
+		t.Errorf("description = %q, want no dollar sign -- the insight it cites is in lira", recs[0].Description)
+	}
+	if !strings.Contains(recs[0].Description, "₺21.1M") {
+		t.Errorf("description = %q, want ₺21.1M -- the cited figure's own symbol", recs[0].Description)
+	}
+}
+
+// TestRecommendationFigures_SumKeepsTheCurrencyItsOperandsAgreeOn covers the other kind a
+// recommendation may declare: a total has no symbol of its own either, and the operands
+// are the only statement of one.
+func TestRecommendationFigures_SumKeepsTheCurrencyItsOperandsAgreeOn(t *testing.T) {
+	ins := liraInsight()
+	recs := []models.Recommendation{{
+		Description: "Together they hold {{f1}}.",
+		Figures: []models.Figure{{
+			ID: "f1", Unit: models.UnitCurrency, Decimals: 2,
+			Kind: models.FigureSum, Refs: []models.FigureRef{ref(ins.ID, "f1"), ref(ins.ID, "f2")},
+		}},
+	}}
+
+	usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	usWriter.renderRecommendationFigures(recs)
+
+	if !strings.Contains(recs[0].Description, "₺") {
+		t.Errorf("description = %q, want the lira symbol both operands carry", recs[0].Description)
+	}
+}
+
+// TestRecommendationFigures_SumAcrossCurrenciesIsUndecidable is the failure the symbol
+// fix would otherwise introduce. A multi-currency book declares figures in several
+// currencies -- the run this came from had 90 in lira and 6 in euro -- and nothing stopped
+// a total from being built across them, because sameNotation compares the unit and both
+// are "currency". Adopting either operand's symbol for that total would put a confident
+// symbol on a number that is the sum of two different kinds of money.
+func TestRecommendationFigures_SumAcrossCurrenciesIsUndecidable(t *testing.T) {
+	ins := liraInsight()
+	ins.Figures[1].Currency = "€"
+	recs := []models.Recommendation{{
+		Description: "Together they hold {{f1}}.",
+		Figures: []models.Figure{{
+			ID: "f1", Unit: models.UnitCurrency, Decimals: 2,
+			Kind: models.FigureSum, Refs: []models.FigureRef{ref(ins.ID, "f1"), ref(ins.ID, "f2")},
+		}},
+	}}
+
+	_, adopted := usWriter.attachRecommendationFigureVerdicts(recs, []models.Insight{ins})
+	if adopted != 0 {
+		t.Errorf("adopted = %d, want 0 -- nothing may be taken from operands that disagree", adopted)
+	}
+	if got := recs[0].Figures[0].Currency; got != "" {
+		t.Errorf("currency = %q, want it left unset -- neither operand's symbol describes the total", got)
+	}
+	if got := recs[0].FigureVerdicts[0].Status; got != models.FigureUndecidable {
+		t.Errorf("status = %q, want %q", got, models.FigureUndecidable)
+	}
+	if !strings.Contains(recs[0].FigureVerdicts[0].Reason, "currency") {
+		t.Errorf("reason = %q, want it to name the currency disagreement", recs[0].FigureVerdicts[0].Reason)
+	}
+}

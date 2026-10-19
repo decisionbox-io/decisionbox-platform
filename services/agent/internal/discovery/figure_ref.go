@@ -58,6 +58,16 @@ type refValue struct {
 	// would mean inventing an operation the contract never described, so the mismatch is
 	// refused instead.
 	unit string
+	// currency is the symbol the source figure prints, and the insight is the only place
+	// it is ever stated: a recommendation figure has no currency field, by the same
+	// reasoning that gives it no value field. Carrying the value and the unit without it
+	// meant Figure.Symbol fell through to its dollar default, so a Turkish run wrote ₺ in
+	// all 29 insights and $ in 7 of 8 recommendations -- for the same amounts.
+	//
+	// Empty is not a missing symbol. An insight that omitted it meant dollars, which is
+	// what the schema asks of it, so an empty currency copies across as faithfully as a
+	// named one.
+	currency string
 	// slack is the half-interval it was verified at, which is the precision that print
 	// chose. "~911K" vouches to within 500, so a recommendation restating it unscaled as
 	// "911,000" would assert ±0.5 on a number checked to ±500.
@@ -143,12 +153,15 @@ func (w figureWriter) buildFigureRefIndex(insights []models.Insight) figureRefIn
 			// declined to fix still reads fails.
 			switch st := status[f.ID]; st {
 			case models.FigureHolds:
-				byID[f.ID] = refValue{value: renderedValue(f), unit: f.Unit, slack: figureSlack(f), found: true, vouched: true}
+				byID[f.ID] = refValue{value: renderedValue(f), unit: f.Unit, currency: f.Currency,
+					slack: figureSlack(f), found: true, vouched: true}
 			case "":
-				byID[f.ID] = refValue{value: renderedValue(f), unit: f.Unit, slack: figureSlack(f), found: true,
+				byID[f.ID] = refValue{value: renderedValue(f), unit: f.Unit, currency: f.Currency,
+					slack: figureSlack(f), found: true,
 					why: "it was never checked"}
 			default:
-				byID[f.ID] = refValue{value: renderedValue(f), unit: f.Unit, slack: figureSlack(f), found: true,
+				byID[f.ID] = refValue{value: renderedValue(f), unit: f.Unit, currency: f.Currency,
+					slack: figureSlack(f), found: true,
 					why: fmt.Sprintf("its own check came back %s, so the insight carries it unvouched too", st)}
 			}
 		}
@@ -197,6 +210,32 @@ func (ix figureRefIndex) resolve(r models.FigureRef) (value float64, unit string
 		return rv.value, rv.unit, rv.slack, false, fmt.Sprintf("figure %s of insight %s is not vouched for: %s", r.Figure, shortID(r.Insight), rv.why), nil
 	}
 	return rv.value, rv.unit, rv.slack, true, "", nil
+}
+
+// agreedCurrency returns the currency every referenced figure prints, and -- when they do
+// not all print the same one -- the two that disagree.
+//
+// The insight is the only place a currency is ever stated: a recommendation figure has no
+// currency field, for the same reason it has no value field. So this is where both the
+// symbol a restatement adopts and the refusal of a total across two currencies come from,
+// and they come from one place so they cannot drift apart.
+//
+// A reference naming nothing resolves to the zero refValue, whose currency is empty. That
+// is not read as dollars by mistake: resolve reports an unresolvable reference as an error
+// before any of this is reached, and adoption only ever runs on a figure every reference
+// of which resolved.
+func (ix figureRefIndex) agreedCurrency(refs []models.FigureRef) (agreed, conflicting string, ok bool) {
+	for i, r := range refs {
+		cur := ix[r.Insight][r.Figure].currency
+		if i == 0 {
+			agreed = cur
+			continue
+		}
+		if cur != agreed {
+			return agreed, cur, false
+		}
+	}
+	return agreed, "", true
 }
 
 // EvaluateRecommendationFigures settles every figure a recommendation declares against
@@ -252,6 +291,21 @@ func (w figureWriter) evaluateRecommendationFigure(f models.Figure, ix figureRef
 	// the half-unit interval every unscaled whole number carries, summed to a full unit
 	// and made their own total unstatable at the precision both operands already had.
 	coarsest, drift := 0.0, 0.0
+	// A sum's operands have to be the same kind of money before they can be added, and
+	// until now nothing asked: sameNotation compares the unit, and lira and euro are both
+	// "currency". A live run declared 90 figures in lira and 6 in euro, so a total across
+	// them was reachable, would have been rendered under one symbol, and would have read
+	// as holds -- a checked number that is the sum of two different currencies. Refused
+	// rather than converted, for the reason a unit mismatch is: a rate is an operation
+	// this contract never described.
+	// Asked only of a figure written as currency: the symbol is what that unit prints and
+	// nothing else reads it, so a stray currency on a count would otherwise refuse a
+	// total this layer has always settled.
+	if agreed, conflicting, ok := ix.agreedCurrency(f.Refs); f.Unit == models.UnitCurrency && !ok {
+		return undecidable(
+			"the figures this totals are in different currencies (%s and %s), so there is no single currency the total is in",
+			currencyName(agreed), currencyName(conflicting))
+	}
 	for _, r := range f.Refs {
 		got, srcUnit, slack, vouched, why, err := ix.resolve(r)
 		if err != nil {
@@ -379,6 +433,21 @@ func (w figureWriter) adoptResolvedFigureValues(rec *models.Recommendation, ix f
 			continue
 		}
 		f := &rec.Figures[j]
+
+		// The symbol comes across with the number, because a restatement of an amount in
+		// lira is not an amount in dollars. It is adopted before the value branches
+		// below, so it reaches a figure whether or not the model also stated a value --
+		// the symbol was never the model's to state here, and Figure.Symbol's dollar
+		// default is what every unset one printed.
+		//
+		// Only ever filled, never overwritten: a currency the model did put on a
+		// recommendation figure is its own claim, and the mismatch belongs in a verdict
+		// rather than under a silent correction.
+		if strings.TrimSpace(f.Currency) == "" {
+			if agreed, _, ok := ix.agreedCurrency(f.Refs); ok && agreed != "" {
+				f.Currency = agreed
+			}
+		}
 
 		// An absent number is filled in from the best source there is, vouched or not.
 		// The contract tells the model not to write a value, so absence is the normal
@@ -529,6 +598,17 @@ func noStatedValue(f models.Figure) bool {
 // omitted unit as `plain`.
 func sameNotation(a, b string) bool {
 	return notationName(a) == notationName(b)
+}
+
+// currencyName names a currency for a verdict a person reads. An empty symbol is the
+// schema's way of saying dollars -- "omit for dollars" -- so it is reported as dollars
+// rather than as a blank, which would read as a missing value and send a reader looking
+// for the field that was not filled in.
+func currencyName(sym string) string {
+	if strings.TrimSpace(sym) == "" {
+		return "dollars"
+	}
+	return sym
 }
 
 func notationName(u string) string {
