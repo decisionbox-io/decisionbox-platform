@@ -44,8 +44,11 @@ const (
 	//   - CollectionDiscoveryLedgerTasks:    the open-thread / next-task queue.
 	//   - CollectionDiscoveryPackProposals:  proposed domain-pack (analysis-area)
 	//     deltas the enterprise approval workflow governs.
-	CollectionDiscoveryLedger         = "discovery_ledger"
-	CollectionDiscoveryLedgerFindings = "discovery_ledger_findings"
-	CollectionDiscoveryLedgerTasks    = "discovery_ledger_tasks"
-	CollectionDiscoveryPackProposals  = "discovery_pack_proposals"
+	//   - CollectionDiscoveryLedgerLearnings: one doc per durable learning
+	//     about the warehouse / domain, attributed to the run that produced it.
+	CollectionDiscoveryLedger          = "discovery_ledger"
+	CollectionDiscoveryLedgerFindings  = "discovery_ledger_findings"
+	CollectionDiscoveryLedgerTasks     = "discovery_ledger_tasks"
+	CollectionDiscoveryLedgerLearnings = "discovery_ledger_learnings"
+	CollectionDiscoveryPackProposals   = "discovery_pack_proposals"
 )

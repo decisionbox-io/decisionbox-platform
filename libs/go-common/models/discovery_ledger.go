@@ -117,9 +117,43 @@ type LedgerFinding struct {
 	SeenCount     int  `bson:"seen_count" json:"seen_count"`
 	Liked         bool `bson:"liked,omitempty" json:"liked,omitempty"`
 
-	FirstSeen         time.Time `bson:"first_seen" json:"first_seen"`
-	LastSeen          time.Time `bson:"last_seen" json:"last_seen"`
-	SourceDiscoveryID string    `bson:"source_discovery_id,omitempty" json:"source_discovery_id,omitempty"`
+	FirstSeen time.Time `bson:"first_seen" json:"first_seen"`
+	LastSeen  time.Time `bson:"last_seen" json:"last_seen"`
+	// SourceDiscoveryID is the MOST RECENT run that saw this finding — it is
+	// overwritten on every merge. Sightings below is the per-run history.
+	SourceDiscoveryID string `bson:"source_discovery_id,omitempty" json:"source_discovery_id,omitempty"`
+
+	// --- Investigation-graph provenance (enterprise#389) ---
+	//
+	// The reflection phase holds all of this at write time and used to discard
+	// it, which left the ledger able to say what is known and not where any of
+	// it came from.
+
+	// SourceInsightIDs are the insight ids this finding was built from. One id
+	// reaches the narrative, the SQL, the quality caveats and the validation
+	// verdict, because the same UUID keys the insight in the discovery
+	// document, the standalone `insights` collection and the Qdrant point.
+	SourceInsightIDs []string `bson:"source_insight_ids,omitempty" json:"source_insight_ids,omitempty"`
+	// AnsweredTaskIDs are the tasks a run closed by pointing at this finding —
+	// the reverse of LedgerTask.ResolvedByFindingIDs, written in the same pass
+	// so the investigation tree is walkable from either end without a join.
+	AnsweredTaskIDs []string `bson:"answered_task_ids,omitempty" json:"answered_task_ids,omitempty"`
+	// Sightings is one row per run that observed this finding, most recent
+	// last. SeenCount stays the honest total; this is what makes a magnitude
+	// trend drawable instead of implied by a counter.
+	Sightings []FindingSighting `bson:"sightings,omitempty" json:"sightings,omitempty"`
+	// StatusHistory records WHY each status moved, and which run moved it.
+	StatusHistory []FindingStatusChange `bson:"status_history,omitempty" json:"status_history,omitempty"`
+
+	// Archived marks a finding the retention cap pushed out of the active set.
+	// It is a soft archive, not a delete: once edges point at findings, a hard
+	// prune silently breaks them, and a graph with dangling refs is worse than
+	// a slightly larger collection. Archived findings are excluded from every
+	// prompt and from the investigation view, and included — dimmed — in the
+	// graph, because they are still real history. A later run that sees the
+	// finding again un-archives it.
+	Archived   bool      `bson:"archived,omitempty" json:"archived,omitempty"`
+	ArchivedAt time.Time `bson:"archived_at,omitempty" json:"archived_at,omitempty"`
 
 	// NormalizedKey is a stable fingerprint of area+name for exact dedup. The
 	// reflection phase's semantic-dedup path catches rewordings this misses.
@@ -132,6 +166,59 @@ type LedgerFinding struct {
 
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
+}
+
+// FindingSighting is one run's observation of a finding — the row that makes a
+// trend drawable instead of implied by a counter. The magnitude fields are
+// copied as they were AT THAT RUN, because the finding document itself only
+// ever carries the latest.
+type FindingSighting struct {
+	RunID         string    `bson:"run_id" json:"run_id"`
+	DiscoveryID   string    `bson:"discovery_id" json:"discovery_id"`
+	Date          time.Time `bson:"date" json:"date"`
+	KeyMetric     string    `bson:"key_metric,omitempty" json:"key_metric,omitempty"`
+	AffectedCount int       `bson:"affected_count,omitempty" json:"affected_count,omitempty"`
+	Severity      string    `bson:"severity,omitempty" json:"severity,omitempty"`
+	// InsightID is this run's insight that produced the sighting, so the
+	// sighting itself drills through to the SQL that proved it.
+	InsightID string `bson:"insight_id,omitempty" json:"insight_id,omitempty"`
+}
+
+// FindingStatusChange records WHY a status moved, with the run that moved it.
+// Source distinguishes a model verdict from a server-detected trend and from a
+// value derived by the one-shot backfill, so a reader can tell a judgement
+// from an inference.
+type FindingStatusChange struct {
+	Status      string    `bson:"status" json:"status"`
+	Reason      string    `bson:"reason,omitempty" json:"reason,omitempty"`
+	RunID       string    `bson:"run_id,omitempty" json:"run_id,omitempty"`
+	DiscoveryID string    `bson:"discovery_id,omitempty" json:"discovery_id,omitempty"`
+	At          time.Time `bson:"at" json:"at"`
+	Source      string    `bson:"source,omitempty" json:"source,omitempty"`
+}
+
+// Sources for FindingStatusChange.Source.
+const (
+	FindingStatusSourceReflection = "reflection" // the reflection model's verdict
+	FindingStatusSourceTrend      = "trend"      // server-detected magnitude change
+	FindingStatusSourceBackfill   = "backfill"   // derived by the one-shot backfill
+)
+
+// MaxFindingTrailEntries caps Sightings and StatusHistory, keeping the most
+// recent entries. Both are appended once per run, so without a cap a
+// long-lived finding grows its document without bound — the same reason the
+// ledger's convergence history is capped. SeenCount keeps the honest total, so
+// trimming the trail loses no count. Intrinsic to the document shape rather
+// than operator config, like the ranking weights below.
+const MaxFindingTrailEntries = 50
+
+// TrimFindingTrail keeps the most recent MaxFindingTrailEntries of a trail.
+// Generic over the two trail types so the two cannot drift apart.
+func TrimFindingTrail[T FindingSighting | FindingStatusChange](trail []T) []T {
+	if len(trail) <= MaxFindingTrailEntries {
+		return trail
+	}
+	return trail[len(trail)-MaxFindingTrailEntries:]
 }
 
 // Ranking weights — intrinsic to the ranking algorithm, not operator config.
@@ -214,13 +301,65 @@ type LedgerTask struct {
 	// Supersedes is the id of the task this one grew out of — set when a run
 	// answers a task and the follow-up question becomes a new task, so the
 	// investigation thread stays connected and the next run doesn't re-tread.
-	Supersedes    string         `bson:"supersedes,omitempty" json:"supersedes,omitempty"`
-	Status        string         `bson:"status" json:"status"`
-	LinkedTarget  QuestionTarget `bson:"linked_target,omitempty" json:"linked_target,omitempty"`
-	CreatedRunID  string         `bson:"created_run_id,omitempty" json:"created_run_id,omitempty"`
-	NormalizedKey string         `bson:"normalized_key" json:"-"`
-	CreatedAt     time.Time      `bson:"created_at" json:"created_at"`
-	UpdatedAt     time.Time      `bson:"updated_at" json:"updated_at"`
+	Supersedes   string         `bson:"supersedes,omitempty" json:"supersedes,omitempty"`
+	Status       string         `bson:"status" json:"status"`
+	LinkedTarget QuestionTarget `bson:"linked_target,omitempty" json:"linked_target,omitempty"`
+	CreatedRunID string         `bson:"created_run_id,omitempty" json:"created_run_id,omitempty"`
+
+	// --- Investigation-graph provenance (enterprise#389) ---
+
+	// OriginFindingIDs are the findings this thread grew out of. Supersedes
+	// links a follow-up to its parent TASK; this is what attributes the ROOT of
+	// a chain, which was previously unattributed. LinkedTarget is not the same
+	// thing: it means "about", and the model usually omits it.
+	OriginFindingIDs []string `bson:"origin_finding_ids,omitempty" json:"origin_finding_ids,omitempty"`
+	// ResolvedByFindingIDs are the findings that answered this task. Set only
+	// alongside a `done` — a dead end (`dropped`) has nothing to point at.
+	ResolvedByFindingIDs []string `bson:"resolved_by_finding_ids,omitempty" json:"resolved_by_finding_ids,omitempty"`
+	// PursuedInRunIDs are the runs that had this thread in front of them,
+	// whether or not they closed it — the honest record of what was pursued.
+	PursuedInRunIDs []string `bson:"pursued_in_run_ids,omitempty" json:"pursued_in_run_ids,omitempty"`
+
+	// Close metadata: when the task closed, which run closed it, and why.
+	ClosedRunID       string    `bson:"closed_run_id,omitempty" json:"closed_run_id,omitempty"`
+	ClosedDiscoveryID string    `bson:"closed_discovery_id,omitempty" json:"closed_discovery_id,omitempty"`
+	ClosedAt          time.Time `bson:"closed_at,omitempty" json:"closed_at,omitempty"`
+	CloseReason       string    `bson:"close_reason,omitempty" json:"close_reason,omitempty"`
+
+	NormalizedKey string    `bson:"normalized_key" json:"-"`
+	CreatedAt     time.Time `bson:"created_at" json:"created_at"`
+	UpdatedAt     time.Time `bson:"updated_at" json:"updated_at"`
+}
+
+// LedgerLearning is one durable, reusable thing a run learned about the
+// warehouse or the domain — an opaque code decoded, a table's grain, a join
+// that works. The reflection phase already produced these and wrote them
+// straight into the project-context notes, with no run attribution, into a
+// collection the ledger API never reads; so they were invisible on the
+// investigation view. This is a second, attributed copy the ledger owns. The
+// project-context write stays as it is — this is not a migration.
+//
+// Deduped on NormalizedKey so a learning repeated across runs bumps SeenCount
+// and refreshes its attribution rather than duplicating.
+type LedgerLearning struct {
+	ID            string    `bson:"_id" json:"id"`
+	ProjectID     string    `bson:"project_id" json:"project_id"`
+	Category      string    `bson:"category,omitempty" json:"category,omitempty"`
+	Note          string    `bson:"note" json:"note"`
+	Relevance     float64   `bson:"relevance,omitempty" json:"relevance,omitempty"`
+	RunID         string    `bson:"run_id,omitempty" json:"run_id,omitempty"`
+	DiscoveryID   string    `bson:"discovery_id,omitempty" json:"discovery_id,omitempty"`
+	SeenCount     int       `bson:"seen_count" json:"seen_count"`
+	NormalizedKey string    `bson:"normalized_key" json:"-"`
+	CreatedAt     time.Time `bson:"created_at" json:"created_at"`
+	UpdatedAt     time.Time `bson:"updated_at" json:"updated_at"`
+}
+
+// NormalizedLearningKey builds the exact-dedup fingerprint for a learning from
+// its category + note, with the same normalizer the finding and question keys
+// use, so trivial rewordings collide.
+func NormalizedLearningKey(category, note string) string {
+	return NormalizedQuestionKey(category + " " + note)
 }
 
 // NormalizedFindingKey builds the exact-dedup fingerprint for a finding from its
