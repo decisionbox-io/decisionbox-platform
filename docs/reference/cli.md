@@ -106,6 +106,65 @@ The agent writes structured logs to **stderr** (not stdout). In `dev` mode, logs
 {"level":"info","ts":"2026-03-14T10:30:00.000Z","msg":"Starting DecisionBox Agent","service":"decisionbox-agent","project_id":"507f..."}
 ```
 
+## API subcommands
+
+The API binary (`decisionbox-api`) also carries one-shot maintenance
+subcommands.
+Invoking one runs it and exits without starting the HTTP server, so they are
+safe to run as a Kubernetes Job against the same image and environment the API
+uses.
+
+| Subcommand | What it does |
+|------------|--------------|
+| `backfill-embeddings` | Denormalizes insights and recommendations into their standalone collections and embeds them into Qdrant. Needed after enabling an embedding provider on a project with existing discoveries. |
+| `backfill-ledger-graph` | Recovers the Discovery Ledger provenance that is derivable for runs that completed before it was recorded. No re-discovery. |
+
+### `backfill-ledger-graph`
+
+Each discovery run records where its findings came from — the insight behind
+each one, a sighting per run that saw it, why a status moved, and what closed a
+thread.
+A project with earlier history has none of that, and re-running discovery would
+not recover it: a new run produces today's findings, not last year's.
+
+This recovers what is derivable and reports what is not.
+
+```bash
+# Every project, reporting what would change without writing
+decisionbox-api backfill-ledger-graph --dry-run
+
+# One project
+decisionbox-api backfill-ledger-graph --project-id 507f1f77bcf86cd799439011
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--project-id` | *(all projects with ledger findings)* | Backfill one project. |
+| `--dry-run` | `false` | Report the counts and write nothing. |
+| `--batch-size` | `200` | Maximum writes per bulk operation. |
+| `--close-window` | `6h` | How close a run must be to a closed thread's last write to be called the run that closed it. A window containing two runs leaves the closing run unset. |
+
+What it derives, and what it deliberately does not:
+
+- **A finding's source insight** is linked when the insight's area and name
+  produce the finding's stored key — an exact match, not a similarity score.
+  A finding that absorbed a reworded insight through the semantic-dedup path
+  does not match; it is counted as unlinkable and left alone.
+  No vector search: a wrong provenance link sends a reader to the SQL for a
+  different finding and looks correct, while a missing one shows as not linked.
+- **One sighting** per finding, from its first-seen date and its source
+  discovery. The intermediate runs behind a recurrence count were never dated
+  and are not invented; the count itself stays as it is.
+- **One status entry** for a finding whose status has no history, carrying no
+  reason, because nothing stored says why it moved.
+- **A closed thread's close date** is its last write. The run that closed it is
+  stamped only when exactly one run falls inside `--close-window`. The findings
+  that answered a thread are never guessed.
+
+It is idempotent: every write is conditional on the field being absent, so a
+re-run changes nothing and an interrupted run can simply be repeated.
+`MONGODB_URI` is required; `MONGODB_DB` defaults to `decisionbox`.
+
 ## Next Steps
 
 - [Configuration Reference](configuration.md) — All environment variables
