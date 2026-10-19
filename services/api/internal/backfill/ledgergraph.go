@@ -52,16 +52,21 @@ const (
 // they are how an operator knows the gap exists rather than assuming the
 // backfill filled it.
 type ledgerGraphCounts struct {
-	FindingsScanned        int
-	FindingsLinked         int
-	FindingsAlreadyLinked  int
-	FindingsUnlinkable     int
-	SightingsWritten       int
-	StatusTrailsWritten    int
-	TasksScanned           int
-	TasksClosedStamped     int
-	TasksCloseRunResolved  int
+	FindingsScanned       int
+	FindingsLinked        int
+	FindingsAlreadyLinked int
+	FindingsUnlinkable    int
+	SightingsWritten      int
+	StatusTrailsWritten   int
+	TasksScanned          int
+	TasksClosedStamped    int
+	TasksCloseRunResolved int
+	// The two reasons a closing run is left unset are different diagnoses and
+	// are counted apart. "Several candidates" says to try a tighter
+	// --close-window; "no candidate" says there are no run documents to match
+	// against at all, and no window will help.
 	TasksCloseRunAmbiguous int
+	TasksCloseRunNoRun     int
 }
 
 // RunBackfillLedgerGraph runs the backfill-ledger-graph subcommand.
@@ -156,6 +161,7 @@ func (c *ledgerGraphCounts) add(o ledgerGraphCounts) {
 	c.TasksClosedStamped += o.TasksClosedStamped
 	c.TasksCloseRunResolved += o.TasksCloseRunResolved
 	c.TasksCloseRunAmbiguous += o.TasksCloseRunAmbiguous
+	c.TasksCloseRunNoRun += o.TasksCloseRunNoRun
 }
 
 func printLedgerGraphCounts(label string, c ledgerGraphCounts) {
@@ -163,8 +169,9 @@ func printLedgerGraphCounts(label string, c ledgerGraphCounts) {
 	fmt.Printf("  findings:  %d scanned, %d linked to an insight, %d already linked, %d not linkable\n",
 		c.FindingsScanned, c.FindingsLinked, c.FindingsAlreadyLinked, c.FindingsUnlinkable)
 	fmt.Printf("  trails:    %d sightings, %d status histories\n", c.SightingsWritten, c.StatusTrailsWritten)
-	fmt.Printf("  tasks:     %d scanned, %d close stamps, %d closing runs resolved, %d left unset (ambiguous)\n",
-		c.TasksScanned, c.TasksClosedStamped, c.TasksCloseRunResolved, c.TasksCloseRunAmbiguous)
+	fmt.Printf("  tasks:     %d scanned, %d close stamps, %d closing runs resolved, %d unset (several candidate runs), %d unset (no candidate run)\n",
+		c.TasksScanned, c.TasksClosedStamped, c.TasksCloseRunResolved,
+		c.TasksCloseRunAmbiguous, c.TasksCloseRunNoRun)
 }
 
 // ledgerProjectIDs returns the project ids to process: the one asked for, or
@@ -313,14 +320,17 @@ func backfillLedgerGraphProject(ctx context.Context, client *gomongo.Client, pro
 		}
 		set := bson.M{"closed_at": task.UpdatedAt}
 		counts.TasksClosedStamped++
-		runID, discoveryID, ok := soleRunNear(runTimes, task.UpdatedAt, closeWindow)
-		if ok {
+		runID, discoveryID, candidates := soleRunNear(runTimes, task.UpdatedAt, closeWindow)
+		switch candidates {
+		case 1:
 			set["closed_run_id"] = runID
 			if discoveryID != "" {
 				set["closed_discovery_id"] = discoveryID
 			}
 			counts.TasksCloseRunResolved++
-		} else {
+		case 0:
+			counts.TasksCloseRunNoRun++
+		default:
 			counts.TasksCloseRunAmbiguous++
 		}
 		// resolved_by_finding_ids is never derived. Nothing stored says which
@@ -461,28 +471,32 @@ func loadRunIndex(ctx context.Context, client *gomongo.Client, projectID string)
 	return byDiscovery, refs, nil
 }
 
-// soleRunNear returns the one run within window of at, and false when none or
-// more than one is. "More than one" is the case this exists for: on a project
-// that runs often, several runs are near any timestamp, and picking the closest
-// would stamp a specific run id on a guess.
-func soleRunNear(runs []runRef, at time.Time, window time.Duration) (runID, discoveryID string, ok bool) {
+// soleRunNear returns the one run within window of at, plus how many runs were
+// in the window at all — capped at 2, since "more than one" is all the caller
+// needs to know.
+//
+// Two candidates is the case this exists for: on a project that runs often,
+// several runs are near any timestamp, and picking the closest would stamp a
+// specific run id on a guess. Zero candidates is a different diagnosis — there
+// are no run documents to match against — and the caller reports the two apart
+// so an operator is not sent looking for a tighter window that cannot help.
+func soleRunNear(runs []runRef, at time.Time, window time.Duration) (runID, discoveryID string, candidates int) {
 	var found runRef
-	matches := 0
 	for _, r := range runs {
 		delta := at.Sub(r.At)
 		if delta < 0 {
 			delta = -delta
 		}
 		if delta <= window {
-			matches++
-			if matches > 1 {
-				return "", "", false
+			candidates++
+			if candidates > 1 {
+				return "", "", 2
 			}
 			found = r
 		}
 	}
-	if matches != 1 {
-		return "", "", false
+	if candidates != 1 {
+		return "", "", 0
 	}
-	return found.RunID, found.DiscoveryID, true
+	return found.RunID, found.DiscoveryID, 1
 }

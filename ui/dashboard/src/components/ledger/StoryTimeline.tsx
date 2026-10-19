@@ -30,24 +30,50 @@ function severityColor(severity?: string): string {
   }
 }
 
+// A finding's name and a thread's text are full sentences — often long ones
+// written by the model. A Badge upper-cases its content and is sized for a
+// word, so these are rendered as clamped text with a small severity dot. The
+// full text is a tooltip away.
+
+function SeverityDot({ severity }: { severity?: string }) {
+  return (
+    <div style={{
+      width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+      background: `var(--mantine-color-${severityColor(severity)}-6)`,
+    }} />
+  );
+}
+
 /** A finding, linked to its evidence page when it has one. */
 function FindingChip({ projectId, finding }: { projectId: string; finding: GraphFinding }) {
   const href = findingEvidenceLink(projectId, finding);
+  const name = finding.name || finding.id;
   const label = (
-    <Badge size="sm" variant="light" color={severityColor(finding.severity)} style={{ maxWidth: 320 }}>
-      {finding.name || finding.id}
-    </Badge>
+    <Group gap={5} wrap="nowrap" style={{ maxWidth: 420, minWidth: 0 }}>
+      <SeverityDot severity={finding.severity} />
+      <Text size="xs" lineClamp={1} td={href ? 'underline' : undefined}>{name}</Text>
+    </Group>
   );
-  if (!href) return label;
-  return <Link href={href} style={{ textDecoration: 'none' }}>{label}</Link>;
+  const wrapped = (
+    <Tooltip label={name} multiline w={360} openDelay={400}>
+      {href ? <Link href={href} style={{ textDecoration: 'none', minWidth: 0 }}>{label}</Link> : label}
+    </Tooltip>
+  );
+  return wrapped;
 }
 
 function TaskChip({ task }: { task: GraphTask }) {
+  // Prefer the short plain-language title; the detailed text is the fallback
+  // for threads opened before titles existed, and it can be a paragraph.
+  const label = task.title || task.text || task.id;
   return (
-    <Tooltip label={task.text || task.title || task.id} multiline w={320} openDelay={300}>
-      <Badge size="sm" variant="outline" color={task.kind === 'hypothesis' ? 'grape' : 'blue'} style={{ maxWidth: 320 }}>
-        {task.title || task.text || task.id}
-      </Badge>
+    <Tooltip label={task.text || label} multiline w={360} openDelay={400}>
+      <Group gap={5} wrap="nowrap" style={{ maxWidth: 420, minWidth: 0 }}>
+        <Text size="xs" c="dimmed" style={{ flexShrink: 0 }}>
+          {task.kind === 'hypothesis' ? '?' : '→'}
+        </Text>
+        <Text size="xs" lineClamp={1}>{label}</Text>
+      </Group>
     </Tooltip>
   );
 }
@@ -60,13 +86,15 @@ function ChipRow({
   icon: React.ReactNode; label: string; children: React.ReactNode; extra: number;
 }) {
   return (
-    <Group gap={6} wrap="wrap" align="center">
-      <Group gap={4} wrap="nowrap">
+    <Group gap={8} wrap="nowrap" align="flex-start">
+      <Group gap={4} wrap="nowrap" style={{ width: 74, flexShrink: 0 }}>
         {icon}
         <Text size="xs" c="dimmed">{label}</Text>
       </Group>
-      {children}
-      {extra > 0 && <Text size="xs" c="dimmed">+{extra} more</Text>}
+      <Stack gap={2} style={{ minWidth: 0, flex: 1 }}>
+        {children}
+        {extra > 0 && <Text size="xs" c="dimmed">+{extra} more</Text>}
+      </Stack>
     </Group>
   );
 }
@@ -208,7 +236,7 @@ export default function StoryTimeline({
               {closed.some((t) => t.close_reason) && (
                 <Stack gap={2} mt={10}>
                   {closed.filter((t) => t.close_reason).slice(0, MAX_NAMED).map((t) => (
-                    <Text key={t.node_id} size="xs" c="dimmed" fs="italic">
+                    <Text key={t.node_id} size="xs" c="dimmed" fs="italic" lineClamp={2}>
                       “{t.close_reason}” — {t.title || t.text}
                     </Text>
                   ))}

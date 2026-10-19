@@ -10,7 +10,7 @@ import { LedgerGraph } from '@/lib/api';
 import {
   DEFAULT_OPEN_DEPTH, GraphIndex, ROOTS_PAGE_SIZE, TreeFilters, TreeNode,
   areasOf, buildTree, countNodes, findingEvidenceLink, insightLink,
-  recommendationLink, runLabel, severitiesOf, statusTrail, statusesOf,
+  recommendationLink, runLabel, runRefForDiscovery, severitiesOf, statusTrail, statusesOf,
 } from './graph';
 
 // Level 2 — Threads: the tree.
@@ -199,18 +199,26 @@ function NodeRow({
             <Text size="xs" c="dimmed" mt={4}>{trail.join(' → ')}</Text>
           )}
           {open && insights.length > 0 && (
-            <Group gap={4} wrap="wrap" mt={4}>
+            <Group gap={8} wrap="wrap" mt={4}>
               <Text size="xs" c="dimmed">evidence:</Text>
               {insights.map((insight) => {
                 const link = insightLink(projectId, insight);
-                const chip = (
-                  <Badge key={insight.node_id} size="xs" variant="outline" color="gray">
-                    {insight.missing ? 'unavailable' : (insight.name || insight.id)}
-                  </Badge>
+                // Labelled by the run it came from, not by the insight's name:
+                // a finding and the insight behind it usually carry the same
+                // sentence, so repeating it says nothing, while "Run 2" says
+                // which run's SQL the link opens.
+                const runRef = runRefForDiscovery(index, insight.discovery_id);
+                const label = insight.missing
+                  ? 'no longer available'
+                  : (runRef ? runLabel(index, runRef) : 'an earlier run');
+                if (!link) {
+                  return <Text key={insight.node_id} size="xs" c="dimmed">{label}</Text>;
+                }
+                return (
+                  <Link key={insight.node_id} href={link} style={{ textDecoration: 'none' }}>
+                    <Text size="xs" td="underline" c="dimmed">{label}</Text>
+                  </Link>
                 );
-                return link
-                  ? <Link key={insight.node_id} href={link} style={{ textDecoration: 'none' }}>{chip}</Link>
-                  : chip;
               })}
             </Group>
           )}

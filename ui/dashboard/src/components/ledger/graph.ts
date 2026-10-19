@@ -50,6 +50,8 @@ export interface GraphIndex {
   in: Map<string, GraphEdge[]>;
   /** Run node_id → 1-based ordinal, oldest run = 1, for "Run 7" labels. */
   runOrdinal: Map<string, number>;
+  /** Discovery id → the node_id of the run that produced it. */
+  runRefByDiscovery: Map<string, string>;
   /** The most recent run, or null on a project with no runs. */
   latestRun: GraphRun | null;
 }
@@ -67,11 +69,15 @@ export function indexGraph(graph: LedgerGraph | null | undefined): GraphIndex {
   const idx: GraphIndex = {
     runs: new Map(), findings: new Map(), tasks: new Map(), insights: new Map(),
     recommendations: new Map(), learnings: new Map(), proposals: new Map(),
-    out: new Map(), in: new Map(), runOrdinal: new Map(), latestRun: null,
+    out: new Map(), in: new Map(), runOrdinal: new Map(),
+    runRefByDiscovery: new Map(), latestRun: null,
   };
   if (!graph) return idx;
 
-  (graph.runs ?? []).forEach((r) => idx.runs.set(r.node_id, r));
+  (graph.runs ?? []).forEach((r) => {
+    idx.runs.set(r.node_id, r);
+    if (r.discovery_id) idx.runRefByDiscovery.set(r.discovery_id, r.node_id);
+  });
   (graph.findings ?? []).forEach((f) => idx.findings.set(f.node_id, f));
   (graph.tasks ?? []).forEach((t) => idx.tasks.set(t.node_id, t));
   (graph.insights ?? []).forEach((i) => idx.insights.set(i.node_id, i));
@@ -104,6 +110,19 @@ export function runLabel(idx: GraphIndex, nodeId: string): string {
   const run = idx.runs.get(nodeId);
   if (run?.run_id) return `Run ${run.run_id.slice(0, 8)}`;
   return 'An earlier run';
+}
+
+/** runRefForDiscovery resolves a discovery id to the run node that covers it.
+ *
+ *  A run is named by its run id where one survives and by its discovery id
+ *  otherwise, and only the server knows which — it holds the pairing. Insights
+ *  and recommendations carry a discovery id alone, so this map is how the
+ *  client gets from one to the run node the tree actually drew. Guessing the
+ *  prefix instead produces a key that matches nothing, which is how every
+ *  evidence link ended up labelled "an earlier run". */
+export function runRefForDiscovery(idx: GraphIndex, discoveryID: string | undefined): string {
+  if (!discoveryID) return '';
+  return idx.runRefByDiscovery.get(discoveryID) ?? '';
 }
 
 /** nodeKind reads the kind out of a node_id prefix. */

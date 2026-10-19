@@ -1,7 +1,7 @@
 import {
   DEFAULT_OPEN_DEPTH, MAX_TREE_DEPTH, TreeNode, areasOf, buildStories, buildTree,
   countNodes, findingChangedInRun, findingEvidenceLink, indexGraph, insightLink,
-  matchesFilters, nodeKind, nodeRawId, recommendationLink, runLabel,
+  matchesFilters, nodeKind, nodeRawId, recommendationLink, runLabel, runRefForDiscovery,
   severitiesOf, statusTrail, statusesOf,
 } from '@/components/ledger/graph';
 import type { LedgerGraph } from '@/lib/api';
@@ -144,6 +144,27 @@ describe('indexGraph', () => {
     expect(idx.runOrdinal.get('run:gone')).toBeUndefined();
     expect(runLabel(idx, 'run:gone')).toBe('Run gone-run');
     expect(runLabel(idx, 'run:never-seen')).toBe('An earlier run');
+  });
+
+  it('resolves a discovery id to the run node the server drew', () => {
+    // Insights and recommendations carry only a discovery id, and a run is
+    // named by its run id where one survives and by its discovery id
+    // otherwise. Only the server knows which, so the client reads the pairing
+    // off the run nodes instead of guessing a prefix.
+    const graph = chainGraph();
+    // A run whose document has aged out: the server drew it as a disc: node.
+    graph.runs.push({
+      node_id: 'disc:d9', discovery_id: 'd9', date: '2026-05-09T09:00:00Z',
+      new_findings: 0, total_findings: 0, marginal_ratio: 0,
+    });
+    const idx = indexGraph(graph);
+    expect(runRefForDiscovery(idx, 'd2')).toBe('run:r2');
+    expect(runLabel(idx, runRefForDiscovery(idx, 'd2'))).toBe('Run 2');
+    expect(runRefForDiscovery(idx, 'd9')).toBe('disc:d9');
+    // It is still a run of this investigation, so it is numbered with the rest.
+    expect(runLabel(idx, runRefForDiscovery(idx, 'd9'))).toBe('Run 3');
+    expect(runRefForDiscovery(idx, 'nope')).toBe('');
+    expect(runRefForDiscovery(idx, undefined)).toBe('');
   });
 });
 

@@ -308,8 +308,13 @@ func TestBackfillLedgerGraph_ClosingRunOnlyWhenUnambiguous(t *testing.T) {
 	if counts.TasksCloseRunResolved != 1 {
 		t.Errorf("only the unambiguous task gets a closing run, got %d", counts.TasksCloseRunResolved)
 	}
-	if counts.TasksCloseRunAmbiguous != 2 {
-		t.Errorf("the ambiguous and orphan tasks must be reported, got %d", counts.TasksCloseRunAmbiguous)
+	// The two reasons a closing run is unset are reported apart, because they
+	// call for different responses: a tighter window, or nothing at all.
+	if counts.TasksCloseRunAmbiguous != 1 {
+		t.Errorf("one task had several candidate runs, got %d", counts.TasksCloseRunAmbiguous)
+	}
+	if counts.TasksCloseRunNoRun != 1 {
+		t.Errorf("one task had no candidate run at all, got %d", counts.TasksCloseRunNoRun)
 	}
 
 	tasks := readTasks(t, client, projectID)
@@ -359,20 +364,22 @@ func TestSoleRunNear(t *testing.T) {
 		{RunID: "r1", DiscoveryID: "d1", At: at.Add(-time.Hour)},
 		{RunID: "r2", DiscoveryID: "d2", At: at.Add(48 * time.Hour)},
 	}
-	if id, disc, ok := soleRunNear(runs, at, 6*time.Hour); !ok || id != "r1" || disc != "d1" {
-		t.Errorf("one run in the window should resolve: %q %q %v", id, disc, ok)
+	if id, disc, n := soleRunNear(runs, at, 6*time.Hour); n != 1 || id != "r1" || disc != "d1" {
+		t.Errorf("one run in the window should resolve: %q %q %d", id, disc, n)
 	}
-	if _, _, ok := soleRunNear(runs, at, 72*time.Hour); ok {
-		t.Error("a window containing both runs must resolve to nothing")
+	// Two candidates and none are reported apart: the first says to try a
+	// tighter window, the second that there is nothing to match against.
+	if _, _, n := soleRunNear(runs, at, 72*time.Hour); n != 2 {
+		t.Errorf("a window containing both runs is ambiguous, got %d", n)
 	}
-	if _, _, ok := soleRunNear(runs, at.Add(500*time.Hour), 6*time.Hour); ok {
-		t.Error("no run in the window must resolve to nothing")
+	if _, _, n := soleRunNear(runs, at.Add(500*time.Hour), 6*time.Hour); n != 0 {
+		t.Errorf("no run in the window should report none, got %d", n)
 	}
-	if _, _, ok := soleRunNear(nil, at, 6*time.Hour); ok {
-		t.Error("no runs at all must resolve to nothing")
+	if _, _, n := soleRunNear(nil, at, 6*time.Hour); n != 0 {
+		t.Errorf("no runs at all should report none, got %d", n)
 	}
 	// Inclusive boundary: a run exactly at the edge counts.
-	if _, _, ok := soleRunNear(runs[:1], at, time.Hour); !ok {
+	if _, _, n := soleRunNear(runs[:1], at, time.Hour); n != 1 {
 		t.Error("a run exactly at the window edge should count")
 	}
 }
