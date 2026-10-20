@@ -150,9 +150,14 @@ function ChipRow({
 
 function sentence(story: RunStory): string {
   const parts: string[] = [];
-  if (story.newFindings.length > 0) {
+  // The run's own count of what it found, which it recorded at the time. The
+  // findings themselves can be gone — the retention cap used to delete rather
+  // than archive — and counting only the ones still here would report a run
+  // that found thirty things as having found nothing.
+  const found = Math.max(story.newFindings.length, story.run.new_findings ?? 0);
+  if (found > 0) {
     const high = story.highCount > 0 ? ` (${story.highCount} high or critical)` : '';
-    parts.push(`found ${story.newFindings.length} new finding${story.newFindings.length === 1 ? '' : 's'}${high}`);
+    parts.push(`found ${found} new finding${found === 1 ? '' : 's'}${high}`);
   }
   if (story.seenAgain.length > 0) {
     parts.push(`saw ${story.seenAgain.length} again`);
@@ -167,6 +172,11 @@ function sentence(story: RunStory): string {
     parts.push(`proposed ${story.proposals.length} playbook change${story.proposals.length === 1 ? '' : 's'}`);
   }
   if (parts.length === 0) return 'Recorded no new findings or threads.';
+  // Said once, rather than leaving a reader to wonder why a run that found
+  // twenty things has three cards under it.
+  if (found > story.newFindings.length) {
+    parts.push(`${story.newFindings.length === 0 ? 'none of them' : 'not all of them'} still carried`);
+  }
   const text = parts.join(', ');
   return `${text.charAt(0).toUpperCase()}${text.slice(1)}.`;
 }

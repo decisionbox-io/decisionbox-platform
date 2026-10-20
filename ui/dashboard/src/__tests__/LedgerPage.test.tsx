@@ -637,6 +637,51 @@ describe('LedgerPage', () => {
       .toHaveAttribute('target', '_blank');
   });
 
+  it('drops a selection the filters have removed', async () => {
+    // Keeping it would dim every card that DID match in favour of one no
+    // longer on the canvas, with no panel open to explain why.
+    const many = {
+      ...graph,
+      findings: [
+        ...graph.findings,
+        // Run 1 only — so "what changed in the last run" filters it out.
+        {
+          node_id: 'finding:old', id: 'old', name: 'An older finding', area: 'churn',
+          severity: 'low', status: 'confirmed', seen_count: 1,
+          first_seen: '2026-01-01T00:00:00Z', last_seen: '2026-01-01T00:00:00Z',
+          sightings: [{ run_id: 'r1', discovery_id: 'd1', date: '2026-01-01T00:00:00Z', severity: 'low' }],
+        },
+      ],
+    };
+    getLedgerGraph.mockResolvedValue(many as unknown as LedgerGraph);
+    getLedger.mockResolvedValue(ledger);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'auto', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    wrap();
+    fireEvent.click(await screen.findByText('Map'));
+    const canvas = await screen.findByTestId('map-canvas');
+
+    fireEvent.click(within(canvas).getByText(/\+1 more from this run/));
+    fireEvent.click(await within(canvas).findByText('An older finding'));
+    // Selected: everything unrelated is dimmed, which is the point of it.
+    await waitFor(() => {
+      const dimmed = within(canvas).getAllByTestId('node-investigation')
+        .filter((c) => (c.firstElementChild as HTMLElement).style.opacity === '0.35');
+      expect(dimmed.length).toBeGreaterThan(0);
+    });
+
+    fireEvent.click(screen.getByLabelText(/Only what changed in the last run/i));
+    await waitFor(() =>
+      expect(within(canvas).queryByText('An older finding')).not.toBeInTheDocument());
+
+    // Nothing that survived the filter is left dimmed for a card that is gone.
+    const cards = within(canvas).getAllByTestId('node-investigation');
+    expect(cards.length).toBeGreaterThan(0);
+    cards.forEach((card) => {
+      expect((card.firstElementChild as HTMLElement).style.opacity).not.toBe('0.35');
+    });
+  });
+
   it('fetches the graph once, not per level switch', async () => {
     mockAll();
     wrap();

@@ -865,16 +865,25 @@ function Canvas({
 
   // What stays lit when a node is selected: itself and everything one link
   // away. More than that and the highlight stops meaning anything.
+  // A selection a filter has since removed is no selection. Keeping it would
+  // leave every card that DID match dimmed in favour of one that is no longer
+  // on the canvas, with no panel open to explain why.
+  const selectedNode = useMemo(
+    () => (selected ? map.nodes.find((n) => n.id === selected) ?? null : null),
+    [selected, map.nodes],
+  );
+  const lit = selectedNode ? selected : null;
+
   const connected = useMemo(() => {
     const set = new Set<string>();
-    if (!selected) return set;
-    set.add(selected);
+    if (!lit) return set;
+    set.add(lit);
     map.edges.forEach((e) => {
-      if (e.source === selected) set.add(e.target);
-      if (e.target === selected) set.add(e.source);
+      if (e.source === lit) set.add(e.target);
+      if (e.target === lit) set.add(e.source);
     });
     return set;
-  }, [selected, map.edges]);
+  }, [lit, map.edges]);
 
   // Where the cards go is decided by the map alone. Selection only changes how
   // they are drawn — so it must not produce new geometry, or the effect below
@@ -882,8 +891,8 @@ function Canvas({
   // to another chain straight back to the first one.
   const geometry = useMemo(() => place(map, expanded), [map, expanded]);
   const laid = useMemo(
-    () => layout(map, index, geometry, selected, connected, earlierRuns),
-    [map, index, geometry, selected, connected, earlierRuns],
+    () => layout(map, index, geometry, lit, connected, earlierRuns),
+    [map, index, geometry, lit, connected, earlierRuns],
   );
   const [nodes, setNodes, onNodesChange] = useNodesState(laid.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(laid.edges);
@@ -916,7 +925,6 @@ function Canvas({
     return () => window.cancelAnimationFrame(frame);
   }, [originKey, setViewport]);
 
-  const selectedNode = selected ? map.nodes.find((n) => n.id === selected) ?? null : null;
 
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
     // A run header is a label, not a card: clicking one would dim the whole
