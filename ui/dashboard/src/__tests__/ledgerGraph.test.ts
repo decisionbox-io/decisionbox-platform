@@ -398,6 +398,28 @@ describe('statusTrail', () => {
     ]);
   });
 
+  it('names a status move by its discovery when the run id does not resolve', () => {
+    // A run whose document has aged out is drawn as a `disc:` node. An entry
+    // carrying only the discovery still names a run the reader can see on the
+    // map, so calling it "an earlier run" throws away attribution that is
+    // right there.
+    const graph = chainGraph();
+    graph.runs = [
+      { node_id: 'disc:d1', discovery_id: 'd1', date: '2026-05-01T09:00:00Z', new_findings: 1, total_findings: 1, marginal_ratio: 1 },
+    ];
+    const f1 = graph.findings.find((f) => f.id === 'f1')!;
+    f1.status_history = [
+      { status: 'confirmed', run_id: 'r-aged-out', discovery_id: 'd1', at: '2026-05-01T09:00:00Z', source: 'reflection', reason: 'first seen' },
+    ];
+    expect(statusTrail(indexGraph(graph), f1)).toEqual(['Confirmed in run 1, “first seen”']);
+
+    // With neither resolvable, it stays honest.
+    f1.status_history = [
+      { status: 'confirmed', run_id: 'gone', at: '2026-05-01T09:00:00Z', source: 'reflection' },
+    ];
+    expect(statusTrail(indexGraph(graph), f1)[0]).toMatch(/^Confirmed in /);
+  });
+
   it('is empty for a finding with no history, and names an unknown run honestly', () => {
     const idx = indexGraph(chainGraph());
     expect(statusTrail(idx, { node_id: 'finding:x', id: 'x', seen_count: 0 })).toEqual([]);

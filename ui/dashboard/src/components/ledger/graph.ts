@@ -827,7 +827,14 @@ export function buildStories(idx: GraphIndex): RunStory[] {
  *  thing the page could not show at all before. */
 export function statusTrail(idx: GraphIndex, finding: GraphFinding): string[] {
   return (finding.status_history ?? []).map((h) => {
-    const where = h.run_id ? runLabel(idx, `run:${h.run_id}`) : 'an earlier run';
+    // Either id. A run whose document has aged out is drawn as a `disc:`
+    // node, so an entry carrying only the discovery still names a run the
+    // reader can see on the map — calling it "an earlier run" would be
+    // throwing away attribution that is right there.
+    const ref = (h.run_id && idx.runOrdinal.has(`run:${h.run_id}`))
+      ? `run:${h.run_id}`
+      : (runRefForDiscovery(idx, h.discovery_id) || (h.run_id ? `run:${h.run_id}` : ''));
+    const where = ref ? runLabel(idx, ref) : 'an earlier run';
     const why = h.reason ? `, “${h.reason}”` : '';
     return `${humanise(h.status)} in ${where.toLowerCase()}${why}`;
   });
