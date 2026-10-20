@@ -926,6 +926,39 @@ func TestConsolidateFindings_ExactKeyMatchSkipsTheVectorSearch(t *testing.T) {
 	}
 }
 
+// TestDedupSearchBudget_LeavesTimeToWrite: the semantic lookups are optional
+// — they only run when the exact key already missed — so they must never be
+// able to spend the phase's whole deadline and leave the writes with none.
+func TestDedupSearchBudget_LeavesTimeToWrite(t *testing.T) {
+	// With plenty of time, the ceiling applies.
+	plenty, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+	if got := dedupSearchBudget(plenty); got != ledgerDedupSearchBudget {
+		t.Errorf("want the ceiling (%s), got %s", ledgerDedupSearchBudget, got)
+	}
+
+	// With little time left, a share of it — so most of what remains is still
+	// there for the writes.
+	tight, cancelTight := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelTight()
+	got := dedupSearchBudget(tight)
+	if got >= 30*time.Second || got <= 0 {
+		t.Errorf("want a share of the 30s left, got %s", got)
+	}
+
+	// Already past the deadline: no budget at all, rather than a negative one.
+	done, cancelDone := context.WithTimeout(context.Background(), 0)
+	defer cancelDone()
+	if got := dedupSearchBudget(done); got != 0 {
+		t.Errorf("an expired phase has no search budget, got %s", got)
+	}
+
+	// No deadline at all (tests, single-binary runs) is the ceiling.
+	if got := dedupSearchBudget(context.Background()); got != ledgerDedupSearchBudget {
+		t.Errorf("want the ceiling with no deadline, got %s", got)
+	}
+}
+
 // TestConsolidateFindings_MatchesARowUnarchivedUnderIt: the dedup pass reads
 // the active set, then the rows matching this run's keys. If the second read
 // were filtered to archived rows, a finding that was archived when the first
@@ -1530,7 +1563,11 @@ func TestApplyReflection_RecordsStatusReason(t *testing.T) {
 	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{
 		{ID: "f1", ProjectID: "p1", Status: commonmodels.LedgerFindingStatusConfirmed},
 	}}
-	o := &Orchestrator{projectID: "p1", runID: "r1", findingRepo: fr}
+	// Verdicts are applied to the findings the prompt showed.
+	o := &Orchestrator{
+		projectID: "p1", runID: "r1", findingRepo: fr,
+		promptFindingIDs: idsOf(fr.findings),
+	}
 	ref := &parsedReflection{}
 	ref.StatusUpdates = []struct {
 		FindingID string `json:"finding_id"`

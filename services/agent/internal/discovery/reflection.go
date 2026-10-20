@@ -54,6 +54,8 @@ const (
 	// a single vector search, and it is optional — the exact-key match has
 	// already been tried.
 	ledgerDedupSearchTimeout = 15 * time.Second
+	// ledgerDedupSearchBudget is the ceiling on all of them together.
+	ledgerDedupSearchBudget = 45 * time.Second
 	defaultDiscoveryReflectionMaxOutput  = 3000
 	defaultDiscoveryReflectionParseRetry = 1
 	defaultDiscoveryLedgerMaxFindings    = 500
@@ -434,12 +436,25 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 	}
 	semanticHit := make([]string, len(candidates))
 	if vectors != nil {
+		// One budget for ALL of them, not one per lookup. A run with a dozen
+		// unmatched candidates could otherwise spend a dozen timeouts and
+		// reach the write with the phase's deadline already gone, losing
+		// every finding it had matched exactly — on a fallback that only
+		// runs when the exact key already missed. When the budget is spent
+		// the rest fall back to exact-key dedup, which is what happens
+		// anyway on a deployment with no vector store.
+		sctx, cancel := context.WithTimeout(ctx, dedupSearchBudget(ctx))
 		for i := range candidates {
 			if _, exact := activeByKey[candidates[i].NormalizedKey]; exact {
 				continue
 			}
-			semanticHit[i] = o.searchLedgerNeighbour(ctx, vectors[i], dedupMinScore)
+			if sctx.Err() != nil {
+				applog.Warn("Reflection: semantic dedup budget spent; the rest fall back to exact-key matching")
+				break
+			}
+			semanticHit[i] = o.searchLedgerNeighbour(sctx, vectors[i], dedupMinScore)
 		}
+		cancel()
 	}
 
 	// A finding the retention cap archived and this run has seen again must
@@ -755,6 +770,22 @@ func trendReason(priorSeverity string, priorAffected int, curSeverity string, cu
 	return fmt.Sprintf("affected count moved from %d to %d", priorAffected, curAffected)
 }
 
+// dedupSearchBudget is how long ALL of this run's semantic lookups may take
+// together: a share of what is left of the phase, never more than the ceiling,
+// so the writes that follow always have time to land.
+func dedupSearchBudget(ctx context.Context) time.Duration {
+	budget := ledgerDedupSearchBudget
+	if deadline, ok := ctx.Deadline(); ok {
+		if share := time.Until(deadline) / 3; share < budget {
+			budget = share
+		}
+	}
+	if budget < 0 {
+		return 0
+	}
+	return budget
+}
+
 // searchLedgerNeighbour returns the id of the nearest prior ledger finding above
 // minScore, or "" when there is none. Best-effort — a search error yields "".
 //
@@ -1021,7 +1052,11 @@ func (o *Orchestrator) applyReflection(ctx context.Context, result *models.Disco
 	// The consolidation pass already set "changed" for trends it detected; here
 	// we honor the model's grounded verdicts on findings it reasoned about.
 	if len(ref.StatusUpdates) > 0 {
-		prior, err := o.findingRepo.List(ctx, o.projectID)
+		// By the ids the prompt SHOWED, not the active set. Another
+		// reflection can archive one of them while the model is deciding,
+		// and re-reading the active set would drop a verdict on a finding
+		// that still exists and that this run put in front of the model.
+		prior, err := o.findingRepo.ListMatching(ctx, o.projectID, nil, o.promptFindingIDs)
 		if err == nil {
 			byID := make(map[string]*commonmodels.LedgerFinding, len(prior))
 			for i := range prior {
