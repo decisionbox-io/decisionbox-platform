@@ -258,7 +258,12 @@ function place(map: InvestigationMap, expanded: Set<string>): {
     band.shown = open ? band.nodes : band.nodes.slice(0, room);
     band.hidden = band.nodes.slice(band.shown.length);
 
-    const cells = band.shown.length + (band.hidden.length > 0 ? 1 : 0);
+    // The "+N more" and the "Show less" are the same cell, and an expanded
+    // band still draws one — so it is counted whenever it will be there, or a
+    // band whose cards fill its last column exactly pushes it into a column
+    // the width never accounted for, on top of the next run.
+    const hasMore = band.hidden.length > 0 || open;
+    const cells = band.shown.length + (hasMore ? 1 : 0);
     const columns = Math.max(1, Math.ceil(cells / BAND_ROWS));
     band.x = x;
     band.width = columns * NODE_WIDTH + (columns - 1) * CARD_GAP_X;
@@ -268,7 +273,7 @@ function place(map: InvestigationMap, expanded: Set<string>): {
       y: top + (i % BAND_ROWS) * (NODE_HEIGHT + CARD_GAP_Y),
     });
     band.shown.forEach((n, i) => at.set(n.id, cellAt(i)));
-    if (band.hidden.length > 0 || open) band.moreAt = cellAt(band.shown.length);
+    if (hasMore) band.moreAt = cellAt(band.shown.length);
 
     x += band.width + BAND_GAP;
   });

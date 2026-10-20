@@ -388,9 +388,18 @@ function runRefFor(idx: GraphIndex, runID?: string, discoveryID?: string): strin
 export function producedIn(idx: GraphIndex, nodeId: string): string {
   const finding = idx.findings.get(nodeId);
   if (finding) {
+    // Only when the trail reaches the beginning. A trail shorter than the
+    // counter has lost its oldest entries — the backfill writes a single
+    // sighting for a finding seen ten times, and the writer caps a trail at
+    // fifty — so its earliest surviving sighting is NOT the run that found
+    // it, and filing the card under that run would credit it with work it did
+    // not do. Unattributed is the honest answer, and there is a column that
+    // says so.
+    const trail = finding.sightings ?? [];
+    if (trail.length < finding.seen_count) return '';
     // Sightings are append-only and oldest-first, so the first one that can
     // be placed is the run that found it.
-    for (const s of finding.sightings ?? []) {
+    for (const s of trail) {
       const ref = runRefFor(idx, s.run_id, s.discovery_id);
       if (ref) return ref;
     }

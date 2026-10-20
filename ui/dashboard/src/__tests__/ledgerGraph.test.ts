@@ -754,6 +754,25 @@ describe('the map stays finite', () => {
     expect(f1?.runOrdinal).toBeUndefined();
   });
 
+  it('will not file a finding under a run that only saw it again', () => {
+    // A trail shorter than the counter has lost its oldest entries: the
+    // backfill writes one sighting for a finding seen ten times, and the
+    // writer caps a trail at fifty. Its earliest surviving sighting is then
+    // NOT the run that found it, and putting the card in that run's column
+    // would credit it with work it did not do.
+    const graph = chainGraph();
+    const f1 = graph.findings.find((f) => f.id === 'f1')!;
+    f1.seen_count = 6;
+    f1.sightings = [
+      { run_id: 'r2', discovery_id: 'd2', date: '2026-05-03T09:00:00Z', severity: 'high' },
+    ];
+    expect(producedIn(indexGraph(graph), 'finding:f1')).toBe('');
+
+    // A complete trail is attributed to its first run, as before.
+    f1.seen_count = 1;
+    expect(producedIn(indexGraph(graph), 'finding:f1')).toBe('run:r2');
+  });
+
   it('excludes a filtered-out finding that nothing else reaches', () => {
     const graph: LedgerGraph = {
       runs: [],
