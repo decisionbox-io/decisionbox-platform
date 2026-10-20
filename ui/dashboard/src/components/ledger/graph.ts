@@ -521,12 +521,17 @@ export function buildMap(idx: GraphIndex, filters: TreeFilters = {}): Investigat
   idx.findings.forEach((f, nodeId) => {
     if (matchesFilters(f, filters, latestRunId, latestDiscoveryId)) wanted.add(nodeId);
   });
-  // A thread is part of the investigation whether or not a finding links to
-  // it, and on any project that predates this provenance none of them do — so
-  // seeding only from findings draws a map with no threads on it at all.
-  // Under a filter the map answers a question about findings, and a thread
-  // nothing matching reaches is not part of that answer.
-  if (!narrowed(filters)) idx.tasks.forEach((_, nodeId) => wanted.add(nodeId));
+  // A thread and a recommendation are part of the investigation whether or
+  // not a finding links to them, and on any project that predates this
+  // provenance none of them do — so seeding only from findings draws a map
+  // with no threads on it at all, and loses a recommendation whose insight
+  // the backfill could not match to a ledger finding. Under a filter the map
+  // answers a question about findings, and what nothing matching reaches is
+  // not part of that answer.
+  if (!narrowed(filters)) {
+    idx.tasks.forEach((_, nodeId) => wanted.add(nodeId));
+    idx.recommendations.forEach((_, nodeId) => wanted.add(nodeId));
+  }
 
   const queue = [...wanted];
   while (queue.length > 0) {

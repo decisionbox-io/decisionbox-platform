@@ -1135,13 +1135,17 @@ func (o *Orchestrator) applyTaskStatusUpdates(ctx context.Context, result *model
 			applog.WithError(err).Warn("Reflection: close task failed")
 			continue
 		}
+		// Closed either way — by this run or by the one that got there first.
+		// The key is recorded before the claim is checked, because what it
+		// stops is the follow-up pass below recreating a thread that is now
+		// closed, and that is just as true when someone else closed it.
+		closed[t.NormalizedKey] = true
 		if !won {
 			// Another reflection closed this thread between the read above and
 			// this write. Its account of the close stands; mirroring an edge
 			// here would point findings at a close they had no part in.
 			continue
 		}
-		closed[t.NormalizedKey] = true
 		// Out of the lookup, so a second update naming the same thread cannot
 		// close it again. A `done` followed by a `dropped` would otherwise
 		// leave the thread dropped while keeping the findings that answered

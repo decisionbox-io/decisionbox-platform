@@ -1137,8 +1137,11 @@ func TestApplyTaskStatusUpdates_LosingTheRaceMirrorsNothing(t *testing.T) {
 	closed := o.applyTaskStatusUpdates(context.Background(), &models.DiscoveryResult{ID: "d1"},
 		ref, consolidationResult{FindingIDByInsightID: map[string]string{}})
 
-	if len(closed) != 0 {
-		t.Errorf("a thread this run did not close must not be reported closed: %+v", closed)
+	// The key still comes back, because what it stops is the follow-up pass
+	// recreating a thread that is now closed — just as true when the close
+	// was someone else's.
+	if len(closed) != 1 {
+		t.Errorf("a thread closed by someone else is still closed: %+v", closed)
 	}
 	for i := range fr.upserted {
 		if len(fr.upserted[i].AnsweredTaskIDs) != 0 {

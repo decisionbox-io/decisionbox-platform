@@ -505,6 +505,51 @@ describe('LedgerPage', () => {
     expect(within(canvas).getByText(/\+9 more from this run/)).toBeInTheDocument();
   });
 
+  it('does not move the viewport when a run is opened', async () => {
+    // Opening "+N more" changes what is drawn, not what the map is. Moving
+    // the view then throws away the reader's pan — and can push the cards
+    // they just asked for off the screen.
+    const many = {
+      ...graph,
+      findings: [
+        ...graph.findings,
+        ...Array.from({ length: 9 }, (_, i) => ({
+          node_id: `finding:x${i}`, id: `x${i}`, name: `Also found ${i}`, area: 'churn',
+          severity: 'low', status: 'confirmed', seen_count: 1,
+          first_seen: '2026-01-01T00:00:00Z', last_seen: '2026-01-01T00:00:00Z',
+          sightings: [{ run_id: 'r1', discovery_id: 'd1', date: '2026-01-01T00:00:00Z', severity: 'low' }],
+        })),
+      ],
+    };
+    getLedgerGraph.mockResolvedValue(many as unknown as LedgerGraph);
+    getLedger.mockResolvedValue(ledger);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'auto', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+
+    const raf = window.requestAnimationFrame;
+    window.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    }) as typeof window.requestAnimationFrame;
+    try {
+      wrap();
+      fireEvent.click(await screen.findByText('Map'));
+      const canvas = await screen.findByTestId('map-canvas');
+      await waitFor(() => expect(setViewportSpy).toHaveBeenCalled());
+      const movesAfterOpening = setViewportSpy.mock.calls.length;
+
+      fireEvent.click(within(canvas).getByText(/\+9 more from this run/));
+      await waitFor(() => expect(within(canvas).getByText('Also found 8')).toBeInTheDocument());
+      fireEvent.click(within(canvas).getByText('Show less'));
+      await waitFor(() =>
+        expect(within(canvas).queryByText('Also found 8')).not.toBeInTheDocument());
+
+      expect(setViewportSpy).toHaveBeenCalledTimes(movesAfterOpening);
+    } finally {
+      window.requestAnimationFrame = raf;
+    }
+  });
+
   it('does not move the viewport when a card is selected', async () => {
     // Selecting a card changes how the map is drawn, not where anything is.
     // Refitting on selection snapped a reader who had panned to another chain
@@ -528,6 +573,7 @@ describe('LedgerPage', () => {
       await screen.findByText(/Changed in run 2/);
       fireEvent.click(within(canvas).getByText('High EU churn'));
       await waitFor(() => expect(screen.queryByText(/Changed in run 2/)).not.toBeInTheDocument());
+
 
       // Nor when a control elsewhere on the page is used: the graph has not
       // changed, so the map has not, so the view must not move. (The stat

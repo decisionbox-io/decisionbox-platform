@@ -900,10 +900,11 @@ function Canvas({
   // middle of whatever is tallest and scroll the run headers off the top,
   // taking the one thing that orients a reader with them.
   //
-  // Keyed on WHAT the map is, not on the object: opening a run's "+N more"
-  // rebuilds the geometry without changing where the map starts, and moving
-  // the view there would throw away the pan of whoever opened it.
-  const originKey = geometry.focus.join('|');
+  // Keyed on the MAP, not on what is currently drawn: opening a run's "+N
+  // more" changes the second and not the first, and moving the view then
+  // would throw away the pan of whoever opened it — and could push the cards
+  // they just asked for off the screen.
+  const originKey = useMemo(() => map.nodes.map((n) => n.id).join('|'), [map]);
   useEffect(() => {
     const frame = window.requestAnimationFrame(
       () => setViewport({ x: 36, y: 20, zoom: OPENING_ZOOM }, { duration: 300 }),
