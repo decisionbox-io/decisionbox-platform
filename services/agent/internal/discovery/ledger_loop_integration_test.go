@@ -298,6 +298,14 @@ func TestLedgerLoop_Integration(t *testing.T) {
 		TaskID: thread.ID, Status: commonmodels.LedgerTaskStatusDone,
 		Reason:               "the events tables explain the drop-off",
 		ResolvedByFindingIDs: []string{"ins-events-2", "fabricated-id"},
+	}, {
+		// The model contradicting itself about the same thread in one
+		// response. The first close stands and this is ignored: applying it
+		// would leave the thread dropped while still naming the findings that
+		// answered it, and leave those findings mirroring a thread that was
+		// never answered.
+		TaskID: thread.ID, Status: commonmodels.LedgerTaskStatusDropped,
+		Reason: "on reflection, a dead end",
 	}}
 	ref2.Learnings = []struct {
 		Category  string  `json:"category"`
@@ -310,6 +318,13 @@ func TestLedgerLoop_Integration(t *testing.T) {
 	closedTasks, err := taskRepo.List(ctx, projectID, commonmodels.LedgerTaskStatusDone)
 	if err != nil || len(closedTasks) != 1 {
 		t.Fatalf("the thread should be closed: n=%d err=%v", len(closedTasks), err)
+	}
+	dropped, err := taskRepo.List(ctx, projectID, commonmodels.LedgerTaskStatusDropped)
+	if err != nil {
+		t.Fatalf("list dropped: %v", err)
+	}
+	if len(dropped) != 0 {
+		t.Errorf("the second update for an already-closed thread must be ignored, got %d dropped", len(dropped))
 	}
 	closedThread := closedTasks[0]
 	if closedThread.ClosedRunID != "run-2" || closedThread.ClosedDiscoveryID != "disc-2" {

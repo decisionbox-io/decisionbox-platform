@@ -1014,7 +1014,8 @@ func (o *Orchestrator) applyTaskStatusUpdates(ctx context.Context, result *model
 		if status != commonmodels.LedgerTaskStatusDone && status != commonmodels.LedgerTaskStatusDropped {
 			continue
 		}
-		t := byID[strings.TrimSpace(u.TaskID)]
+		id := strings.TrimSpace(u.TaskID)
+		t := byID[id]
 		if t == nil {
 			continue // unknown / already-closed id
 		}
@@ -1037,6 +1038,12 @@ func (o *Orchestrator) applyTaskStatusUpdates(ctx context.Context, result *model
 			continue
 		}
 		closed[t.NormalizedKey] = true
+		// Out of the lookup, so a second update naming the same thread cannot
+		// close it again. A `done` followed by a `dropped` would otherwise
+		// leave the thread dropped while keeping the findings that answered
+		// it — and the mirrored edge on those findings — which is a record
+		// that contradicts itself.
+		delete(byID, id)
 		// Mirror the edge onto the findings, so the investigation tree is
 		// walkable from either end without a second query at read time.
 		o.markFindingsAnsweredTask(ctx, resolvedBy, t.ID)

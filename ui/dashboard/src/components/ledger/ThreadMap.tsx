@@ -190,13 +190,17 @@ function chainsOf(map: InvestigationMap): string[][] {
  *  into rows. One dagre pass over the whole map would stack every unlinked
  *  finding into a single column — on a real project that is a 5,000px ribbon
  *  one card wide, which is why the chains are laid out separately. */
-function place(map: InvestigationMap): Map<string, { x: number; y: number }> {
+function place(map: InvestigationMap): {
+  at: Map<string, { x: number; y: number }>;
+  focus: string[];
+} {
   const at = new Map<string, { x: number; y: number }>();
   let rowX = 0;
   let rowY = 0;
   let rowHeight = 0;
 
-  chainsOf(map).forEach((ids) => {
+  const chains = chainsOf(map);
+  chains.forEach((ids) => {
     const member = new Set(ids);
     const g = new dagre.graphlib.Graph();
     g.setDefaultEdgeLabel(() => ({}));
@@ -228,13 +232,18 @@ function place(map: InvestigationMap): Map<string, { x: number; y: number }> {
     rowHeight = Math.max(rowHeight, height);
   });
 
-  return at;
+  // The biggest chain, which chainsOf sorts first. Fitting the whole map
+  // centres the viewport between its rows, and at a zoom floor meant to keep
+  // cards readable that centre can be empty space — a map that opens blank
+  // while holding plenty of data. Opening on the chain worth reading is both
+  // the honest fit and the better one.
+  return { at, focus: chains[0] ?? [] };
 }
 
 /** layout positions the map and dresses the nodes and edges for the canvas.
  *  Left to right, because the thing being drawn is a chain of reasoning. */
 function layout(map: InvestigationMap, selected: string | null, connected: Set<string>) {
-  const at = place(map);
+  const { at, focus } = place(map);
 
   const nodes: Node<MapNodeData>[] = map.nodes.map((n) => {
     return {
@@ -270,7 +279,7 @@ function layout(map: InvestigationMap, selected: string | null, connected: Set<s
     };
   });
 
-  return { nodes, edges };
+  return { nodes, edges, focus };
 }
 
 /** A link out to a detail page, with the affordance to open it in a new tab —
@@ -495,12 +504,16 @@ function Canvas({
   // used to be. Keyed on the map, not on the layout — selecting a card moves
   // nothing, so it must not move the view. The frame lets React Flow measure
   // the new nodes before they are fitted.
+  const focus = laid.focus;
   useEffect(() => {
-    const frame = window.requestAnimationFrame(
-      () => fitView({ duration: 300, minZoom: 0.55, maxZoom: 1 }),
-    );
+    const frame = window.requestAnimationFrame(() => fitView({
+      duration: 300,
+      minZoom: 0.55,
+      maxZoom: 1,
+      nodes: focus.length > 0 ? focus.map((id) => ({ id })) : undefined,
+    }));
     return () => window.cancelAnimationFrame(frame);
-  }, [map, fitView]);
+  }, [map, focus, fitView]);
 
   const selectedNode = selected ? map.nodes.find((n) => n.id === selected) ?? null : null;
 
@@ -518,11 +531,10 @@ function Canvas({
         onNodeClick={onNodeClick}
         onPaneClick={() => setSelected(null)}
         nodeTypes={nodeTypes}
-        fitView
-        // Opening on the whole map means opening on cards too small to read.
-        // The first view lands legible on the biggest chain, which the layout
-        // puts top left; Fit and the minimap are there for the whole picture.
-        fitViewOptions={{ minZoom: 0.55, maxZoom: 1 }}
+        // No `fitView` prop: it fits the whole map, which at a zoom floor
+        // meant to keep cards readable can centre on empty space between the
+        // rows. The effect above opens on the biggest chain instead; Fit and
+        // the minimap are there for the whole picture.
         minZoom={0.1}
         maxZoom={1.6}
         proOptions={{ hideAttribution: false }}
