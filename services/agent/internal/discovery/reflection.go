@@ -217,7 +217,7 @@ func (o *Orchestrator) RunPhaseReflection(ctx context.Context, result *models.Di
 	//     so a write placed after it would fail on a deadline every time the
 	//     reflection was slow — losing the record exactly on the runs that
 	//     worked hardest.
-	o.markThreadsPursued(rctx, pol)
+	o.markThreadsPursued(rctx)
 
 	ref, err := o.generateReflection(rctx, result, pol, cons)
 	if err != nil {
@@ -1120,8 +1120,8 @@ func (o *Orchestrator) applyLearnings(ctx context.Context, result *models.Discov
 // `off` mode the open-task queue is never rendered into the exploration prompt,
 // so the run genuinely did not have these threads in front of it and saying
 // otherwise would be a fabricated edge.
-func (o *Orchestrator) markThreadsPursued(ctx context.Context, pol agentplugin.DiscoveryPolicy) {
-	if o.taskRepo == nil || o.runID == "" || pol.EvolutionMode == agentplugin.EvolutionModeOff {
+func (o *Orchestrator) markThreadsPursued(ctx context.Context) {
+	if o.taskRepo == nil || o.runID == "" {
 		return
 	}
 	// The threads this run was SHOWN, as they were when it was shown them.
@@ -1132,8 +1132,15 @@ func (o *Orchestrator) markThreadsPursued(ctx context.Context, pol agentplugin.D
 	// told about and miss the one it was.
 	ids := o.shownTaskIDs
 	if len(ids) == 0 {
-		// No read context was loaded — the ledger prompt block never ran, so
-		// this run was shown no threads at all.
+		// This run was shown no threads: either no read context was loaded,
+		// or evolution was off when it was. Nothing to record either way.
+		//
+		// Which is also why the evolution mode is NOT re-checked here. It can
+		// be switched off, or fail to resolve and default to off, while a run
+		// is in flight — and discarding what that run was actually shown
+		// would throw away a true record because a setting changed after the
+		// fact. The capture at the start of the run already encodes the
+		// policy that applied to it.
 		return
 	}
 	if err := o.taskRepo.MarkPursued(ctx, o.projectID, ids, o.runID); err != nil {

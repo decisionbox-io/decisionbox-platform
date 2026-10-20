@@ -1215,8 +1215,7 @@ func TestMarkThreadsPursued(t *testing.T) {
 			projectID: "p1", runID: "r1", taskRepo: tr,
 			shownTaskIDs: []string{"t1", "t2"},
 		}
-		o.markThreadsPursued(context.Background(),
-			agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeAuto})
+		o.markThreadsPursued(context.Background())
 		if len(tr.pursued) != 1 {
 			t.Fatalf("want 1 MarkPursued call, got %d", len(tr.pursued))
 		}
@@ -1235,31 +1234,44 @@ func TestMarkThreadsPursued(t *testing.T) {
 			projectID: "p1", runID: "r1", taskRepo: tr,
 			shownTaskIDs: []string{"shown-at-the-start"},
 		}
-		o.markThreadsPursued(context.Background(),
-			agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeAuto})
+		o.markThreadsPursued(context.Background())
 		if len(tr.pursued) != 1 || !slices.Equal(tr.pursued[0].ids, []string{"shown-at-the-start"}) {
 			t.Errorf("the run pursued what it was shown: %+v", tr.pursued)
 		}
 	})
 
 	t.Run("records nothing in off mode", func(t *testing.T) {
+		// Off mode never puts the queue in front of the run, so the read
+		// context captures nothing and there is nothing to record. The gate
+		// is at the capture, not here.
 		tr := &fakeTaskRepo{existing: open}
+		o := &Orchestrator{projectID: "p1", runID: "r1", taskRepo: tr}
+		o.markThreadsPursued(context.Background())
+		if len(tr.pursued) != 0 {
+			t.Errorf("off mode never showed the run these threads: %+v", tr.pursued)
+		}
+	})
+
+	t.Run("keeps what a run was shown when the setting changes under it", func(t *testing.T) {
+		// Evolution can be switched off — or fail to resolve and default to
+		// off — while a run is in flight. The run was still shown these
+		// threads, and discarding a true record because a setting moved
+		// afterwards would be rewriting history to match the present.
+		tr := &fakeTaskRepo{existing: nil}
 		o := &Orchestrator{
 			projectID: "p1", runID: "r1", taskRepo: tr,
 			shownTaskIDs: []string{"t1", "t2"},
 		}
-		o.markThreadsPursued(context.Background(),
-			agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeOff})
-		if len(tr.pursued) != 0 {
-			t.Errorf("off mode never showed the run these threads: %+v", tr.pursued)
+		o.markThreadsPursued(context.Background())
+		if len(tr.pursued) != 1 || !slices.Equal(tr.pursued[0].ids, []string{"t1", "t2"}) {
+			t.Errorf("what the run was shown stands: %+v", tr.pursued)
 		}
 	})
 
 	t.Run("a run shown no threads is a no-op", func(t *testing.T) {
 		tr := &fakeTaskRepo{}
 		o := &Orchestrator{projectID: "p1", runID: "r1", taskRepo: tr}
-		o.markThreadsPursued(context.Background(),
-			agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeAuto})
+		o.markThreadsPursued(context.Background())
 		if len(tr.pursued) != 0 {
 			t.Errorf("nothing to stamp should write nothing, got %+v", tr.pursued)
 		}

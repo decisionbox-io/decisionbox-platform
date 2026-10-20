@@ -275,7 +275,7 @@ func TestLedgerLoop_Integration(t *testing.T) {
 	}
 
 	// Run 2 had that thread in front of it, whether or not it closed it.
-	o.markThreadsPursued(ctx, agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeAuto})
+	o.markThreadsPursued(ctx)
 
 	// Run 2 closes the thread, pointing at the finding from run 2 that
 	// answered it — by its insight id, the only id for it the model ever sees.
