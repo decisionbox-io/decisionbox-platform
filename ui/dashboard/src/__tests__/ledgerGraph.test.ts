@@ -776,6 +776,39 @@ describe('the map stays finite', () => {
     expect(producedIn(indexGraph(graph), 'finding:f1')).toBe('run:r2');
   });
 
+  it('clips a huge chain from the card the filter matched', () => {
+    // A filter whose only match sits at the far end of a chain bigger than
+    // the whole budget. Clipping from the chain's best-ranked card instead
+    // would drop the one thing the reader asked for — and narrowing the
+    // filter further would keep producing the same clipped chain.
+    const graph: LedgerGraph = {
+      runs: [], findings: [], tasks: [], insights: [], recommendations: [],
+      learnings: [], proposals: [], edges: [], truncated: noTruncation,
+    };
+    const links = MAX_MAP_NODES;
+    for (let i = 0; i <= links; i += 1) {
+      graph.findings.push({
+        node_id: `finding:f${i}`, id: `f${i}`, name: `finding ${i}`,
+        // The needle is last and lowest-ranked; everything else outranks it.
+        area: i === links ? 'needle' : 'haystack',
+        severity: i === links ? 'low' : 'critical',
+        status: 'confirmed', seen_count: 1,
+      });
+      if (i < links) {
+        graph.tasks.push({
+          node_id: `task:t${i}`, id: `t${i}`, title: `thread ${i}`, text: `thread ${i}`,
+          kind: 'next_task', status: 'open',
+        });
+        graph.edges.push({ from: `task:t${i}`, to: `finding:f${i}`, kind: 'grew_from' });
+        graph.edges.push({ from: `finding:f${i + 1}`, to: `task:t${i}`, kind: 'answered_by' });
+      }
+    }
+
+    const map = buildMap(indexGraph(graph), { area: 'needle' });
+    expect(map.nodes.length).toBeLessThanOrEqual(MAX_MAP_NODES);
+    expect(mapIds(map)).toContain(`finding:f${links}`);
+  });
+
   it('excludes a filtered-out finding that nothing else reaches', () => {
     const graph: LedgerGraph = {
       runs: [],

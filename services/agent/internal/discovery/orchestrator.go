@@ -226,6 +226,11 @@ type Orchestrator struct {
 	// reflection / Discovery Ledger phase (from DiscoveryOptions.ReflectionEnabled,
 	// default-on). Layer B of the gate; DISCOVERY_REFLECTION_ENABLED is Layer A.
 	reflectionEnabled bool
+	// shownTaskIDs are the open threads this run was actually shown, captured
+	// when the ledger read context was built. The reflection phase records
+	// these as pursued rather than re-reading the queue, which by then may
+	// have moved under it.
+	shownTaskIDs []string
 
 	// recommendationVerdicts is the resolved per-project set of validation
 	// verdicts that make an insight eligible for recommendation generation

@@ -456,6 +456,7 @@ function narrowed(filters: TreeFilters): boolean {
  *  leaving an empty map. */
 function withinBudget(
   idx: GraphIndex, candidates: MapNode[], rank: (n: MapNode) => number,
+  seeds: Set<string>,
 ): MapNode[] {
   if (candidates.length <= MAX_MAP_NODES) return candidates;
 
@@ -498,9 +499,15 @@ function withinBudget(
     if (kept.length === 0 && members.length > MAX_MAP_NODES) {
       // One chain too big for the whole budget. Taking its best-ranked
       // members would take findings only — they outrank everything — and
-      // leave a map with no links in it. Walking out from the best one keeps
-      // what is kept connected.
-      reachableFrom(idx, members[0], new Set(members), MAX_MAP_NODES)
+      // leave a map with no links in it. Walking out keeps what is kept
+      // connected.
+      //
+      // From a card that MATCHED, not from the chain's best-ranked one:
+      // under a filter the match can sit at the far end of a chain, and
+      // starting at the other end would clip away the only thing the reader
+      // asked for and leave narrowing the filter changing nothing.
+      const from = members.find((id) => seeds.has(id)) ?? members[0];
+      reachableFrom(idx, from, new Set(members), MAX_MAP_NODES)
         .forEach((id) => kept.push(byId.get(id) as MapNode));
       return;
     }
@@ -550,6 +557,11 @@ export function buildMap(idx: GraphIndex, filters: TreeFilters = {}): Investigat
     idx.tasks.forEach((_, nodeId) => wanted.add(nodeId));
     idx.recommendations.forEach((_, nodeId) => wanted.add(nodeId));
   }
+
+  // What the filters actually admitted, before the walk below pulls in
+  // everything they reach. The cap needs to know which cards the reader asked
+  // for, as opposed to which came along with them.
+  const seeds = new Set(wanted);
 
   const queue = [...wanted];
   while (queue.length > 0) {
@@ -623,7 +635,7 @@ export function buildMap(idx: GraphIndex, filters: TreeFilters = {}): Investigat
   // finding ahead of every thread and then taking the first N fills the map
   // with findings on a project that has enough of them and leaves not one link
   // standing — and the links are the whole point of drawing it.
-  const nodes = withinBudget(idx, candidates, rank);
+  const nodes = withinBudget(idx, candidates, rank, seeds);
   const truncated = nodes.length < candidates.length;
   const drawn = new Set(nodes.map((n) => n.id));
 

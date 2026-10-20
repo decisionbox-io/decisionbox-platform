@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1211,22 +1210,45 @@ func TestApplyTaskStatusUpdates_LosingTheRaceMirrorsNothing(t *testing.T) {
 func TestMarkThreadsPursued(t *testing.T) {
 	open := []commonmodels.LedgerTask{{ID: "t1"}, {ID: "t2"}}
 
-	t.Run("stamps every open thread when evolution is on", func(t *testing.T) {
+	t.Run("stamps the threads the run was shown", func(t *testing.T) {
 		tr := &fakeTaskRepo{existing: open}
-		o := &Orchestrator{projectID: "p1", runID: "r1", taskRepo: tr}
+		o := &Orchestrator{
+			projectID: "p1", runID: "r1", taskRepo: tr,
+			shownTaskIDs: []string{"t1", "t2"},
+		}
 		o.markThreadsPursued(context.Background(),
 			agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeAuto})
 		if len(tr.pursued) != 1 {
 			t.Fatalf("want 1 MarkPursued call, got %d", len(tr.pursued))
 		}
 		if tr.pursued[0].runID != "r1" || !slices.Equal(tr.pursued[0].ids, []string{"t1", "t2"}) {
-			t.Errorf("every open thread should be stamped, got %+v", tr.pursued[0])
+			t.Errorf("every thread the run was shown should be stamped, got %+v", tr.pursued[0])
+		}
+	})
+
+	t.Run("records what the run saw, not what the queue says now", func(t *testing.T) {
+		// The previous run's reflection can close one of these and open
+		// another while this run is exploring. Reading the queue here would
+		// record a thread this run was never told about and miss the one it
+		// was.
+		tr := &fakeTaskRepo{existing: []commonmodels.LedgerTask{{ID: "opened-later"}}}
+		o := &Orchestrator{
+			projectID: "p1", runID: "r1", taskRepo: tr,
+			shownTaskIDs: []string{"shown-at-the-start"},
+		}
+		o.markThreadsPursued(context.Background(),
+			agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeAuto})
+		if len(tr.pursued) != 1 || !slices.Equal(tr.pursued[0].ids, []string{"shown-at-the-start"}) {
+			t.Errorf("the run pursued what it was shown: %+v", tr.pursued)
 		}
 	})
 
 	t.Run("records nothing in off mode", func(t *testing.T) {
 		tr := &fakeTaskRepo{existing: open}
-		o := &Orchestrator{projectID: "p1", runID: "r1", taskRepo: tr}
+		o := &Orchestrator{
+			projectID: "p1", runID: "r1", taskRepo: tr,
+			shownTaskIDs: []string{"t1", "t2"},
+		}
 		o.markThreadsPursued(context.Background(),
 			agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeOff})
 		if len(tr.pursued) != 0 {
@@ -1234,31 +1256,7 @@ func TestMarkThreadsPursued(t *testing.T) {
 		}
 	})
 
-	t.Run("records only the threads the prompt could show", func(t *testing.T) {
-		// Both prompt renderers cap the open queue, so beyond the cap the run
-		// was never told about the thread and must not be recorded as having
-		// pursued it.
-		many := make([]commonmodels.LedgerTask, maxLedgerTasksInPrompt+5)
-		for i := range many {
-			many[i] = commonmodels.LedgerTask{ID: "t-" + strconv.Itoa(i)}
-		}
-		tr := &fakeTaskRepo{existing: many}
-		o := &Orchestrator{projectID: "p1", runID: "r1", taskRepo: tr}
-		o.markThreadsPursued(context.Background(),
-			agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeAuto})
-		if len(tr.pursued) != 1 {
-			t.Fatalf("want 1 call, got %d", len(tr.pursued))
-		}
-		if len(tr.pursued[0].ids) != maxLedgerTasksInPrompt {
-			t.Errorf("want the prompt's cap (%d) stamped, got %d",
-				maxLedgerTasksInPrompt, len(tr.pursued[0].ids))
-		}
-		if tr.pursued[0].ids[0] != "t-0" {
-			t.Errorf("the same slice the renderer takes, in the same order, got %q", tr.pursued[0].ids[0])
-		}
-	})
-
-	t.Run("no open threads is a no-op", func(t *testing.T) {
+	t.Run("a run shown no threads is a no-op", func(t *testing.T) {
 		tr := &fakeTaskRepo{}
 		o := &Orchestrator{projectID: "p1", runID: "r1", taskRepo: tr}
 		o.markThreadsPursued(context.Background(),

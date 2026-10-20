@@ -75,6 +75,22 @@ func (o *Orchestrator) loadLedgerReadContext(ctx context.Context) *ledgerReadCon
 	if pol.EvolutionMode != agentplugin.EvolutionModeOff && o.taskRepo != nil {
 		if tasks, err := o.taskRepo.List(ctx, o.projectID, commonmodels.LedgerTaskStatusOpen); err == nil {
 			lrc.tasks = tasks
+			// The threads this run is actually being shown, remembered for the
+			// reflection phase to record as pursued. Reading the queue again
+			// at the end of the run would be reading a DIFFERENT queue: the
+			// previous run's reflection can close one of these and open
+			// another while this one is exploring, and the run would then be
+			// recorded as having pursued a thread it was never told about and
+			// not the one it was. Capped here the way the prompt renderer
+			// caps it, because beyond the cap the run never saw them.
+			shown := tasks
+			if len(shown) > maxLedgerTasksInPrompt {
+				shown = shown[:maxLedgerTasksInPrompt]
+			}
+			o.shownTaskIDs = make([]string, 0, len(shown))
+			for i := range shown {
+				o.shownTaskIDs = append(o.shownTaskIDs, shown[i].ID)
+			}
 		}
 	}
 

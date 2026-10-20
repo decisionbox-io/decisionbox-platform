@@ -1123,29 +1123,17 @@ func (o *Orchestrator) markThreadsPursued(ctx context.Context, pol agentplugin.D
 	if o.taskRepo == nil || o.runID == "" || pol.EvolutionMode == agentplugin.EvolutionModeOff {
 		return
 	}
-	// Open tasks only — the same selection both prompts make
-	// (loadLedgerReadContext and generateReflection). Including in-progress
-	// ones here would record threads the run was never shown, and could push
-	// an open thread that WAS shown past the cap below.
-	open, err := o.taskRepo.List(ctx, o.projectID, commonmodels.LedgerTaskStatusOpen)
-	if err != nil {
-		applog.WithError(err).Warn("Reflection: list tasks to mark pursued failed")
+	// The threads this run was SHOWN, as they were when it was shown them.
+	// Recorded by loadLedgerReadContext at the start of the run, because the
+	// queue can move underneath a run: the previous run's reflection can
+	// close one of these and open another while this one is exploring, and
+	// reading the queue again here would record a thread this run was never
+	// told about and miss the one it was.
+	ids := o.shownTaskIDs
+	if len(ids) == 0 {
+		// No read context was loaded — the ledger prompt block never ran, so
+		// this run was shown no threads at all.
 		return
-	}
-	if len(open) == 0 {
-		return
-	}
-	// Only the threads the run was actually SHOWN. Both prompt renderers cap
-	// the queue at maxLedgerTasksInPrompt, so beyond that the run never saw
-	// them — and recording a thread as pursued by a run that was never told
-	// about it is the kind of fabricated edge this whole record exists to
-	// avoid. The same cap, over the same list, in the same order.
-	if len(open) > maxLedgerTasksInPrompt {
-		open = open[:maxLedgerTasksInPrompt]
-	}
-	ids := make([]string, 0, len(open))
-	for i := range open {
-		ids = append(ids, open[i].ID)
 	}
 	if err := o.taskRepo.MarkPursued(ctx, o.projectID, ids, o.runID); err != nil {
 		applog.WithError(err).Warn("Reflection: mark tasks pursued failed")
