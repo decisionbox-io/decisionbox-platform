@@ -17,7 +17,8 @@ import {
 } from '@tabler/icons-react';
 import { LedgerGraph } from '@/lib/api';
 import {
-  GraphIndex, InvestigationMap, KIND_LABEL, MapNode, MapNodeKind, TreeFilters,
+  EDGE_DRAWN_REVERSED, GraphIndex, InvestigationMap, KIND_LABEL, MapNode,
+  MapNodeKind, TreeFilters,
   areasOf, buildMap, findingEvidenceLink, humanise, insightLink,
   recommendationLink, runLabel, runRefForDiscovery, seenInRuns, severitiesOf,
   statusTrail, statusesOf,
@@ -635,10 +636,13 @@ function layout(
       const stroke = !lit
         ? 'var(--mantine-color-gray-3)'
         : (story ? 'var(--mantine-color-grape-5)' : 'var(--mantine-color-gray-5)');
+      // Drawn oldest-first, whichever end the payload stores it from, so an
+      // arrowhead on this map always means "and then this".
+      const back = EDGE_DRAWN_REVERSED[e.kind];
       return {
         id: e.id,
-        source: e.source,
-        target: e.target,
+        source: back ? e.target : e.source,
+        target: back ? e.source : e.target,
         label: e.label,
         animated: lit && Boolean(selected),
         labelShowBg: true,

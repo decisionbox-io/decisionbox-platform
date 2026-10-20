@@ -287,11 +287,29 @@ export interface InvestigationMap {
 }
 
 /** The relationship words, in the direction the map draws them. */
+/** The label each link carries, worded to read ALONG the arrow as it is
+ *  drawn: source, label, target. */
 const EDGE_LABEL: Partial<Record<GraphEdgeKind, string>> = {
-  grew_from: 'Opened by',
-  supersedes: 'Continues',
+  grew_from: 'Opened',
+  supersedes: 'Continued by',
   answered_by: 'Answered by',
-  recommends_on: 'Recommends',
+  recommends_on: 'Drove',
+};
+
+/** The links the payload stores pointing BACKWARDS in time: a thread names
+ *  the finding it grew out of, a recommendation names the finding it is built
+ *  on, a thread names the older thread it continues. That is the right way to
+ *  store them — the later thing is the one that knows — but drawing them that
+ *  way puts the arrowhead on the earlier card, so a map laid out oldest-left
+ *  has arrows running back against its own timeline. They are turned around
+ *  to be drawn, and their labels read in that direction.
+ *
+ *  `answered_by` is not here: the thread comes first and the finding that
+ *  answered it comes later, so stored order is already reading order. */
+export const EDGE_DRAWN_REVERSED: Partial<Record<GraphEdgeKind, boolean>> = {
+  grew_from: true,
+  supersedes: true,
+  recommends_on: true,
 };
 
 /** Human labels for a node kind, for the panel and the legend. */

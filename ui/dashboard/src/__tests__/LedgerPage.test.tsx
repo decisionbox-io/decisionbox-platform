@@ -23,14 +23,19 @@ jest.mock('@xyflow/react', () => {
   const React = jest.requireActual('react');
   return {
     __esModule: true,
-    ReactFlow: ({ nodes, nodeTypes, onNodeClick }: {
+    ReactFlow: ({ nodes, edges, nodeTypes, onNodeClick }: {
       nodes: { id: string; type: string; data: unknown; position: { x: number } }[];
+      edges: { id: string; source: string; target: string; label?: string }[];
       nodeTypes: Record<string, React.ComponentType<{ data: unknown }>>;
       onNodeClick: (e: unknown, node: { id: string; type: string }) => void;
     }) => (
       // Rendered in x order, which is the order a reader sees them in: the
-      // map's whole point is that left to right is oldest to newest.
-      <div data-testid="map-canvas">
+      // map's whole point is that left to right is oldest to newest. The
+      // edges come through as data so their direction can be asserted.
+      <div
+        data-testid="map-canvas"
+        data-edges={JSON.stringify(edges.map((e) => [e.source, e.target, e.label]))}
+      >
         {[...nodes].sort((a, b) => a.position.x - b.position.x).map((n) => {
           const Node = nodeTypes[n.type];
           return (
@@ -411,6 +416,31 @@ describe('LedgerPage', () => {
     expect(runOne).toBeLessThan(churn);
     expect(churn).toBeLessThan(runTwo);
     expect(runTwo).toBeLessThan(hub);
+  });
+
+  it('points every arrow the way the investigation went', async () => {
+    // The payload stores these links from the later card — a thread names the
+    // finding it grew out of, a recommendation names the finding it is built
+    // on, a thread names the older thread it continues. Drawn that way the
+    // arrowheads run backwards against a map laid out oldest-left, which
+    // reads as the newer work having caused the older.
+    mockAll();
+    wrap();
+    fireEvent.click(await screen.findByText('Map'));
+    const canvas = await screen.findByTestId('map-canvas');
+    const drawn = JSON.parse(canvas.getAttribute('data-edges') ?? '[]') as string[][];
+    const by = (source: string, target: string) =>
+      drawn.find((e) => e[0] === source && e[1] === target);
+
+    // The finding opened the thread, not the other way about.
+    expect(by('finding:f1', 'task:t1')?.[2]).toBe('Opened');
+    // The finding drove the recommendation.
+    expect(by('finding:f2', 'rec:rec1')?.[2]).toBe('Drove');
+    // And answered_by already ran forwards: the thread came first.
+    expect(by('task:t1', 'finding:f2')?.[2]).toBe('Answered by');
+    // Nothing is drawn from the later card back to the earlier one.
+    expect(by('task:t1', 'finding:f1')).toBeUndefined();
+    expect(by('rec:rec1', 'finding:f2')).toBeUndefined();
   });
 
   it('says so when the history it is drawing is only a window', async () => {

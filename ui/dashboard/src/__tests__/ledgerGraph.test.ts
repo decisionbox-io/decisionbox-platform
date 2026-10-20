@@ -191,13 +191,16 @@ describe('buildMap', () => {
     expect(hasEdge(map, 'rec:rec1', 'finding:f2', 'recommends_on')).toBe(true);
   });
 
-  it('labels every link in words, not stored tokens', () => {
+  it('labels every link in words, reading along the arrow', () => {
+    // The label is read source-label-target as the canvas draws it, and the
+    // canvas draws every link oldest-first — so a finding OPENED a thread and
+    // an older thread was CONTINUED BY a newer one, not the other way round.
     const map = buildMap(indexGraph(chainGraph()));
     const labels = new Set(map.edges.map((e) => e.label));
-    expect(labels).toContain('Opened by');
+    expect(labels).toContain('Opened');
     expect(labels).toContain('Answered by');
-    expect(labels).toContain('Continues');
-    expect(labels).toContain('Recommends');
+    expect(labels).toContain('Continued by');
+    expect(labels).toContain('Drove');
     map.edges.forEach((e) => {
       expect(e.label).toMatch(/^[A-Z]/);
       expect(e.label).not.toContain('_');
