@@ -187,10 +187,12 @@ func TestLedgerFindingRepository_ArchivedIndexExists(t *testing.T) {
 	t.Errorf("no (project_id, archived) index found: %+v", specs)
 }
 
-// TestLedgerFindingRepository_ListArchivedMatchingReadsOnlyWhatCouldMatch:
-// the archive grows with the project's lifetime while the active set stays
-// capped, so the dedup pass must not read all of it on every run.
-func TestLedgerFindingRepository_ListArchivedMatchingReadsOnlyWhatCouldMatch(t *testing.T) {
+// TestLedgerFindingRepository_ListMatchingReadsOnlyWhatCouldMatch: the
+// collection grows with the project's lifetime while the active set stays
+// capped, so the dedup pass must not read all of it on every run — and must
+// not filter to archived rows either, or it goes blind to a finding another
+// reflection un-archived in between and writes a duplicate.
+func TestLedgerFindingRepository_ListMatchingReadsOnlyWhatCouldMatch(t *testing.T) {
 	db, cleanup := setupMongoDB(t)
 	defer cleanup()
 	ctx := context.Background()
@@ -210,21 +212,24 @@ func TestLedgerFindingRepository_ListArchivedMatchingReadsOnlyWhatCouldMatch(t *
 		}
 	}
 
-	got, err := repo.ListArchivedMatching(ctx, "p1", []string{"churn|high eu churn"}, []string{"a-id"})
+	got, err := repo.ListMatching(ctx, "p1", []string{"churn|high eu churn"}, []string{"a-id"})
 	if err != nil {
-		t.Fatalf("list archived matching: %v", err)
+		t.Fatalf("list matching: %v", err)
 	}
 	ids := make([]string, 0, len(got))
 	for _, f := range got {
 		ids = append(ids, f.ID)
 	}
 	slices.Sort(ids)
-	if !slices.Equal(ids, []string{"a-id", "a-key"}) {
-		t.Errorf("want the key match and the id match only, got %v", ids)
+	// Archived or not — "live" shares the key, and a row that was archived
+	// when the active read ran and un-archived since must not be missed.
+	// Noise and another project's row stay out.
+	if !slices.Equal(ids, []string{"a-id", "a-key", "live"}) {
+		t.Errorf("want every match for the key or the id, got %v", ids)
 	}
 
 	// Nothing to match against means no query at all.
-	if out, err := repo.ListArchivedMatching(ctx, "p1", nil, nil); err != nil || len(out) != 0 {
+	if out, err := repo.ListMatching(ctx, "p1", nil, nil); err != nil || len(out) != 0 {
 		t.Errorf("no keys and no ids must read nothing: n=%d err=%v", len(out), err)
 	}
 }

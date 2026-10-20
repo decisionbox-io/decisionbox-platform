@@ -87,14 +87,16 @@ func (f *fakeFindingRepo) List(_ context.Context, _ string) ([]commonmodels.Ledg
 	}
 	return active, nil
 }
-func (f *fakeFindingRepo) ListArchivedMatching(_ context.Context, _ string, keys, ids []string) ([]commonmodels.LedgerFinding, error) {
+func (f *fakeFindingRepo) ListMatching(_ context.Context, _ string, keys, ids []string) ([]commonmodels.LedgerFinding, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
-	return matchArchived(f.findings, keys, ids), nil
+	return matchingFindings(f.findings, keys, ids), nil
 }
 
-func matchArchived(all []commonmodels.LedgerFinding, keys, ids []string) []commonmodels.LedgerFinding {
+// matchingFindings mirrors the repository: every row matching one of the keys
+// or ids, archived or not. The caller reconciles against what it already read.
+func matchingFindings(all []commonmodels.LedgerFinding, keys, ids []string) []commonmodels.LedgerFinding {
 	want := map[string]bool{}
 	for _, k := range keys {
 		want["k:"+k] = true
@@ -104,9 +106,6 @@ func matchArchived(all []commonmodels.LedgerFinding, keys, ids []string) []commo
 	}
 	out := []commonmodels.LedgerFinding{}
 	for i := range all {
-		if !all[i].Archived {
-			continue
-		}
 		if want["k:"+all[i].NormalizedKey] || want["i:"+all[i].ID] {
 			out = append(out, all[i])
 		}
@@ -924,6 +923,43 @@ func TestConsolidateFindings_ExactKeyMatchSkipsTheVectorSearch(t *testing.T) {
 
 	if vs.searches != 1 {
 		t.Errorf("only the candidate with no key match should be searched for, got %d searches", vs.searches)
+	}
+}
+
+// TestConsolidateFindings_MatchesARowUnarchivedUnderIt: the dedup pass reads
+// the active set, then the rows matching this run's keys. If the second read
+// were filtered to archived rows, a finding that was archived when the first
+// read ran and un-archived by another reflection before the second would fall
+// through both — and a second row would be written under the same key,
+// splitting the finding's provenance in two.
+func TestConsolidateFindings_MatchesARowUnarchivedUnderIt(t *testing.T) {
+	// Active to the second read, archived to the first: the fake's List
+	// filters archived rows out, so this stands in for exactly that window.
+	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{{
+		ID: "f1", ProjectID: "p1", Area: "churn", Name: "High EU churn",
+		NormalizedKey: commonmodels.NormalizedFindingKey("churn", "High EU churn"),
+		Severity:      "high", AffectedCount: 100, SeenCount: 1,
+		Status: commonmodels.LedgerFindingStatusConfirmed,
+	}}}
+	o := &Orchestrator{projectID: "p1", runID: "r2", findingRepo: fr}
+
+	cons, err := o.consolidateFindings(context.Background(), &models.DiscoveryResult{
+		ProjectID: "p1", ID: "d2",
+		Insights: []models.Insight{
+			{ID: "ins-1", AnalysisArea: "churn", Name: "High EU churn", Severity: "high", AffectedCount: 100},
+		},
+	})
+	if err != nil {
+		t.Fatalf("consolidate: %v", err)
+	}
+	if cons.NewCount != 0 {
+		t.Errorf("the existing row must be matched, not counted new: %d", cons.NewCount)
+	}
+	if len(fr.upserted) != 0 {
+		t.Errorf("no second row under the same key: %+v", fr.upserted)
+	}
+	if len(fr.merged) != 1 || fr.merged[0].ID != "f1" {
+		t.Errorf("want a merge into f1, got %+v", fr.merged)
 	}
 }
 

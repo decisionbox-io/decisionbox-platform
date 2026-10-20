@@ -50,6 +50,10 @@ const (
 	// Short: it is one small update, and it runs after the phase's own
 	// deadline has usually already passed.
 	reflectionCleanupTimeout = 10 * time.Second
+	// ledgerDedupSearchTimeout bounds ONE semantic-dedup lookup. Short: it is
+	// a single vector search, and it is optional — the exact-key match has
+	// already been tried.
+	ledgerDedupSearchTimeout = 15 * time.Second
 	defaultDiscoveryReflectionMaxOutput  = 3000
 	defaultDiscoveryReflectionParseRetry = 1
 	defaultDiscoveryLedgerMaxFindings    = 500
@@ -86,12 +90,12 @@ type findingStore interface {
 	// read it, which is what keeps prompt size and content unchanged by the
 	// retention cap having become a soft archive.
 	List(ctx context.Context, projectID string) ([]commonmodels.LedgerFinding, error)
-	// ListArchivedMatching is for the dedup pass: a finding the cap archived
-	// and this run saw again must merge into the existing document (and be
+	// ListMatching is for the dedup pass: a finding the cap archived and this
+	// run saw again must merge into the existing document (and be
 	// un-archived), not be written a second time under the same key. Only the
-	// archived rows that could be that finding are read — the archive grows
-	// with the project's lifetime, while the active set stays capped.
-	ListArchivedMatching(ctx context.Context, projectID string, keys, ids []string) ([]commonmodels.LedgerFinding, error)
+	// rows that could be that finding are read — the collection grows with
+	// the project's lifetime, while the active set stays capped.
+	ListMatching(ctx context.Context, projectID string, keys, ids []string) ([]commonmodels.LedgerFinding, error)
 	// Upsert writes a finding whole. For a NEW finding only: a merge into one
 	// that already exists goes through Merge, which adds rather than replaces
 	// so a reflection running beside this one does not lose its work.
@@ -454,11 +458,22 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 			hitIDs = append(hitIDs, id)
 		}
 	}
-	archived, aerr := o.findingRepo.ListArchivedMatching(ctx, o.projectID, keys, hitIDs)
+	matching, aerr := o.findingRepo.ListMatching(ctx, o.projectID, keys, hitIDs)
 	if aerr != nil {
-		return out, fmt.Errorf("list archived findings this run may have seen again: %w", aerr)
+		return out, fmt.Errorf("list findings this run may have seen again: %w", aerr)
 	}
-	prior = append(prior, archived...)
+	// Reconciled by id: this read is not filtered to archived rows, so it can
+	// return one the active read above already had.
+	seen := make(map[string]struct{}, len(prior))
+	for i := range prior {
+		seen[prior[i].ID] = struct{}{}
+	}
+	for i := range matching {
+		if _, dup := seen[matching[i].ID]; dup {
+			continue
+		}
+		prior = append(prior, matching[i])
+	}
 
 	// insertedThisRun holds the ids this loop creates. They join priorByKey /
 	// priorByID so a later candidate merges into them instead of duplicating,
@@ -742,8 +757,16 @@ func trendReason(priorSeverity string, priorAffected int, curSeverity string, cu
 
 // searchLedgerNeighbour returns the id of the nearest prior ledger finding above
 // minScore, or "" when there is none. Best-effort — a search error yields "".
+//
+// Bounded on its own, not on the phase's deadline. This is the FALLBACK for a
+// candidate no key matched, and a stalled vector store must cost that one
+// lookup rather than the whole run's consolidation: on the phase's context, a
+// stall here burns the deadline and the write that follows never happens, so
+// an optional lookup would take every finding the run exactly matched with it.
 func (o *Orchestrator) searchLedgerNeighbour(ctx context.Context, vec []float64, minScore float64) string {
-	hits, err := o.vectorStore.Search(ctx, vec, vectorstore.SearchOpts{
+	sctx, cancel := context.WithTimeout(ctx, ledgerDedupSearchTimeout)
+	defer cancel()
+	hits, err := o.vectorStore.Search(sctx, vec, vectorstore.SearchOpts{
 		ProjectIDs: []string{o.projectID},
 		Types:      []string{commonmodels.LedgerFindingVectorType},
 		Limit:      1,
