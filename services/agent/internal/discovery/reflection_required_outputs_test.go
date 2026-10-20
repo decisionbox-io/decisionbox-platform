@@ -13,6 +13,7 @@ import (
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/testutil"
 )
@@ -380,6 +381,42 @@ func (r *statefulFindingRepo) Upsert(_ context.Context, f *commonmodels.LedgerFi
 		}
 	}
 	r.findings = append(r.findings, *f)
+	return nil
+}
+
+func (r *statefulFindingRepo) Merge(_ context.Context, _, id string, m database.FindingMerge) error {
+	for i := range r.findings {
+		if r.findings[i].ID != id {
+			continue
+		}
+		fd := &r.findings[i]
+		fd.Description, fd.KeyMetric, fd.Evidence = m.Description, m.KeyMetric, m.Evidence
+		fd.Severity, fd.Status, fd.AffectedCount = m.Severity, m.Status, m.AffectedCount
+		fd.LastSeen, fd.SourceDiscoveryID = m.LastSeen, m.SourceDiscoveryID
+		fd.Liked = fd.Liked || m.Liked
+		fd.SeenCount++
+		if m.Unarchive {
+			fd.Archived = false
+			fd.ArchivedAt = time.Time{}
+		}
+		fd.SourceInsightIDs = appendUnique(fd.SourceInsightIDs, m.InsightIDs)
+		if m.Sighting != nil {
+			fd.Sightings = commonmodels.TrimFindingTrail(append(fd.Sightings, *m.Sighting))
+		}
+		fd.StatusHistory = commonmodels.TrimFindingTrail(append(fd.StatusHistory, m.StatusChanges...))
+		return nil
+	}
+	return nil
+}
+
+func (r *statefulFindingRepo) ApplyStatus(_ context.Context, _, id, status string, c commonmodels.FindingStatusChange) error {
+	for i := range r.findings {
+		if r.findings[i].ID != id {
+			continue
+		}
+		r.findings[i].Status = status
+		r.findings[i].StatusHistory = commonmodels.TrimFindingTrail(append(r.findings[i].StatusHistory, c))
+	}
 	return nil
 }
 

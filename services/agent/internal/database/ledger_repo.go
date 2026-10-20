@@ -450,6 +450,116 @@ func (r *LedgerTaskRepository) Close(ctx context.Context, projectID, id string, 
 	return res.MatchedCount > 0, nil
 }
 
+// FindingMerge is one run's contribution to a finding it has seen again:
+// what that run observed, plus the trail entries it is adding.
+type FindingMerge struct {
+	Description       string
+	KeyMetric         string
+	Evidence          string
+	Severity          string
+	Status            string
+	AffectedCount     int
+	LastSeen          time.Time
+	SourceDiscoveryID string
+	// Liked is only ever raised. A run that did not like a finding someone
+	// else did must not un-like it.
+	Liked bool
+	// Unarchive brings a finding the retention cap pushed out back into the
+	// active set.
+	Unarchive bool
+	// InsightIDs, Sighting and StatusChanges are ADDED to what is stored —
+	// never a replacement for it.
+	InsightIDs    []string
+	Sighting      *commonmodels.FindingSighting
+	StatusChanges []commonmodels.FindingStatusChange
+}
+
+// Merge applies one run's observation to a finding that already exists.
+//
+// Field by field, never a whole-document replace. Two runs can reflect over
+// one project at once — the second finishes while the first is still
+// writing — and a replace built from a snapshot read before the other run
+// wrote would silently drop its sighting, its insight ids, and any
+// answered-task edge it had just mirrored on. The provenance this collection
+// exists to hold is exactly what a replace loses, so the write says what it
+// actually did: set what this run observed, add to the trails, and add one to
+// the counter.
+//
+// The trails are capped server-side with the same limit the writer applies in
+// memory, so a merge cannot grow them past it however the two interleave.
+func (r *LedgerFindingRepository) Merge(ctx context.Context, projectID, id string, m FindingMerge) error {
+	if id == "" {
+		return fmt.Errorf("merge ledger finding: empty id")
+	}
+	set := bson.M{
+		"description":         m.Description,
+		"key_metric":          m.KeyMetric,
+		"evidence":            m.Evidence,
+		"severity":            m.Severity,
+		"status":              m.Status,
+		"affected_count":      m.AffectedCount,
+		"last_seen":           m.LastSeen,
+		"source_discovery_id": m.SourceDiscoveryID,
+		"updated_at":          time.Now(),
+	}
+	if m.Liked {
+		set["liked"] = true
+	}
+	update := bson.M{"$set": set, "$inc": bson.M{"seen_count": 1}}
+	if m.Unarchive {
+		update["$unset"] = bson.M{"archived": "", "archived_at": ""}
+	}
+	if len(m.InsightIDs) > 0 {
+		update["$addToSet"] = bson.M{"source_insight_ids": bson.M{"$each": m.InsightIDs}}
+	}
+	push := bson.M{}
+	if m.Sighting != nil {
+		push["sightings"] = bson.M{
+			"$each":  []commonmodels.FindingSighting{*m.Sighting},
+			"$slice": -commonmodels.MaxFindingTrailEntries,
+		}
+	}
+	if len(m.StatusChanges) > 0 {
+		push["status_history"] = bson.M{
+			"$each":  m.StatusChanges,
+			"$slice": -commonmodels.MaxFindingTrailEntries,
+		}
+	}
+	if len(push) > 0 {
+		update["$push"] = push
+	}
+
+	if _, err := r.collection.UpdateOne(ctx,
+		bson.M{"_id": id, "project_id": projectID}, update); err != nil {
+		return fmt.Errorf("merge ledger finding: %w", err)
+	}
+	return nil
+}
+
+// ApplyStatus records the reflection model's verdict on a finding: the status
+// it moved to, and one trail entry saying why and which run moved it.
+//
+// Two fields and an append, for the same reason Merge is field-wise: this runs
+// from a snapshot read at the start of the phase, and writing the document
+// whole would roll back anything another reflection recorded in between.
+func (r *LedgerFindingRepository) ApplyStatus(ctx context.Context, projectID, id, status string, change commonmodels.FindingStatusChange) error {
+	if id == "" {
+		return fmt.Errorf("apply ledger finding status: empty id")
+	}
+	if _, err := r.collection.UpdateOne(ctx,
+		bson.M{"_id": id, "project_id": projectID},
+		bson.M{
+			"$set": bson.M{"status": status, "updated_at": time.Now()},
+			"$push": bson.M{"status_history": bson.M{
+				"$each":  []commonmodels.FindingStatusChange{change},
+				"$slice": -commonmodels.MaxFindingTrailEntries,
+			}},
+		}); err != nil {
+		return fmt.Errorf("apply ledger finding status: %w", err)
+	}
+	return nil
+}
+
 // MarkAnsweredTask appends a task id to each finding's answered_task_ids: the
 // reverse of the task's resolved_by_finding_ids, so the investigation graph
 // walks from either end without a join.

@@ -92,7 +92,12 @@ type findingStore interface {
 	// archived rows that could be that finding are read — the archive grows
 	// with the project's lifetime, while the active set stays capped.
 	ListArchivedMatching(ctx context.Context, projectID string, keys, ids []string) ([]commonmodels.LedgerFinding, error)
+	// Upsert writes a finding whole. For a NEW finding only: a merge into one
+	// that already exists goes through Merge, which adds rather than replaces
+	// so a reflection running beside this one does not lose its work.
 	Upsert(ctx context.Context, f *commonmodels.LedgerFinding) error
+	Merge(ctx context.Context, projectID, id string, m database.FindingMerge) error
+	ApplyStatus(ctx context.Context, projectID, id, status string, c commonmodels.FindingStatusChange) error
 	// MarkAnsweredTask appends the reverse of a closed thread's
 	// resolved_by_finding_ids, atomically — never by replacing the document.
 	MarkAnsweredTask(ctx context.Context, projectID string, findingIDs []string, taskID string) error
@@ -322,7 +327,9 @@ func appendFindingSighting(f *commonmodels.LedgerFinding, s commonmodels.Finding
 // appendFindingStatusChange records why a status moved. A repeat of the same
 // verdict from the same run and the same source is skipped, so a re-judgement
 // that changes nothing does not grow the document.
-func appendFindingStatusChange(f *commonmodels.LedgerFinding, c commonmodels.FindingStatusChange) {
+// appendFindingStatusChange reports whether the entry was added, so a caller
+// writing the trail as a delta knows what to write.
+func appendFindingStatusChange(f *commonmodels.LedgerFinding, c commonmodels.FindingStatusChange) bool {
 	// Only the LAST entry suppresses a repeat. One run can legitimately move a
 	// status away and back — consolidation marks a trend `changed` and the
 	// model then confirms the finding — and matching any earlier entry would
@@ -331,10 +338,11 @@ func appendFindingStatusChange(f *commonmodels.LedgerFinding, c commonmodels.Fin
 	if n := len(f.StatusHistory); n > 0 {
 		last := f.StatusHistory[n-1]
 		if last.Status == c.Status && last.RunID == c.RunID && last.Source == c.Source {
-			return
+			return false
 		}
 	}
 	f.StatusHistory = commonmodels.TrimFindingTrail(append(f.StatusHistory, c))
+	return true
 }
 
 // appendUnique appends the ids not already present, order-stable.
@@ -497,7 +505,12 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 			match.SourceDiscoveryID = result.ID
 			match.UpdatedAt = now
 			match.SourceInsightIDs = appendUnique(match.SourceInsightIDs, cand.SourceInsightIDs)
-			appendFindingSighting(match, commonmodels.FindingSighting{
+			// What this run is ADDING, kept apart from the merged copy. The
+			// merged copy is what gets indexed; this is what gets written,
+			// because a write that says "add this" survives another run
+			// writing to the same finding and a write that says "the document
+			// is now this" does not.
+			sighting := commonmodels.FindingSighting{
 				RunID:         o.runID,
 				DiscoveryID:   result.ID,
 				Date:          now,
@@ -505,7 +518,10 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 				AffectedCount: cand.AffectedCount,
 				Severity:      cand.Severity,
 				InsightID:     insightID,
-			})
+			}
+			var statusAdded []commonmodels.FindingStatusChange
+			appendFindingSighting(match, sighting)
+			wasArchived := match.Archived
 			// A run that sees an archived finding again brings it back into the
 			// active set: it is current again, and its edges and sightings are
 			// still attached.
@@ -523,14 +539,17 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 				if match.Status == commonmodels.LedgerFindingStatusResolved ||
 					match.Status == commonmodels.LedgerFindingStatusRefuted {
 					match.Status = commonmodels.LedgerFindingStatusConfirmed
-					appendFindingStatusChange(match, commonmodels.FindingStatusChange{
+					revived := commonmodels.FindingStatusChange{
 						Status:      commonmodels.LedgerFindingStatusConfirmed,
 						Reason:      "seen again after being archived",
 						RunID:       o.runID,
 						DiscoveryID: result.ID,
 						At:          now,
 						Source:      commonmodels.FindingStatusSourceTrend,
-					})
+					}
+					if appendFindingStatusChange(match, revived) {
+						statusAdded = append(statusAdded, revived)
+					}
 				}
 			}
 			if changed {
@@ -538,18 +557,35 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 				// The trend is detected here, not judged by the model, so it
 				// carries its own reason — otherwise the page shows a status
 				// that moved with nothing to explain it.
-				appendFindingStatusChange(match, commonmodels.FindingStatusChange{
+				trend := commonmodels.FindingStatusChange{
 					Status:      commonmodels.LedgerFindingStatusChanged,
 					Reason:      trendReason(priorSeverity, priorAffected, cand.Severity, cand.AffectedCount),
 					RunID:       o.runID,
 					DiscoveryID: result.ID,
 					At:          now,
 					Source:      commonmodels.FindingStatusSourceTrend,
-				})
+				}
+				if appendFindingStatusChange(match, trend) {
+					statusAdded = append(statusAdded, trend)
+				}
 			} else if match.Status == "" {
 				match.Status = commonmodels.LedgerFindingStatusConfirmed
 			}
-			if err := o.findingRepo.Upsert(ctx, match); err != nil {
+			if err := o.findingRepo.Merge(ctx, o.projectID, match.ID, database.FindingMerge{
+				Description:       match.Description,
+				KeyMetric:         match.KeyMetric,
+				Evidence:          match.Evidence,
+				Severity:          match.Severity,
+				Status:            match.Status,
+				AffectedCount:     match.AffectedCount,
+				LastSeen:          match.LastSeen,
+				SourceDiscoveryID: match.SourceDiscoveryID,
+				Liked:             match.Liked,
+				Unarchive:         wasArchived,
+				InsightIDs:        cand.SourceInsightIDs,
+				Sighting:          &sighting,
+				StatusChanges:     statusAdded,
+			}); err != nil {
 				applog.WithError(err).Warn("Reflection: upsert merged finding failed")
 				continue
 			}
@@ -942,15 +978,18 @@ func (o *Orchestrator) applyReflection(ctx context.Context, result *models.Disco
 				// used to be dropped on the floor, which left the page showing
 				// a status with no account of why it moved or which run moved
 				// it. Recording it costs nothing — it is already in hand.
-				appendFindingStatusChange(f, commonmodels.FindingStatusChange{
+				change := commonmodels.FindingStatusChange{
 					Status:      su.Status,
 					Reason:      truncate(strings.TrimSpace(su.Reason), maxReasonLength),
 					RunID:       o.runID,
 					DiscoveryID: result.ID,
 					At:          now,
 					Source:      commonmodels.FindingStatusSourceReflection,
-				})
-				if err := o.findingRepo.Upsert(ctx, f); err != nil {
+				}
+				if !appendFindingStatusChange(f, change) {
+					continue // already the last word on this finding
+				}
+				if err := o.findingRepo.ApplyStatus(ctx, o.projectID, f.ID, su.Status, change); err != nil {
 					applog.WithError(err).Warn("Reflection: apply finding status update failed")
 				}
 			}

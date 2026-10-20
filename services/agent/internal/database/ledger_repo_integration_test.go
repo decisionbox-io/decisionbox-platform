@@ -229,6 +229,93 @@ func TestLedgerFindingRepository_ListArchivedMatchingReadsOnlyWhatCouldMatch(t *
 	}
 }
 
+// TestLedgerFindingRepository_MergeSurvivesAnOverlappingWriter is the test
+// this method exists for. Two reflections can run over one project at once —
+// the second finishes while the first is still writing — and each reads the
+// finding before either writes. A whole-document write built from the earlier
+// snapshot silently drops everything the other run recorded: its sighting,
+// its insight ids, and any answered-task edge it had just mirrored on. That
+// provenance is the entire point of this collection.
+func TestLedgerFindingRepository_MergeSurvivesAnOverlappingWriter(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewLedgerFindingRepository(db)
+
+	at := time.Date(2026, 5, 1, 9, 0, 0, 0, time.UTC)
+	seed := commonmodels.LedgerFinding{
+		ID: "f1", ProjectID: "p1", Area: "churn", Name: "High EU churn",
+		NormalizedKey: "churn|high eu churn", Severity: "low", Status: "confirmed",
+		SeenCount: 1, FirstSeen: at, LastSeen: at,
+		SourceInsightIDs: []string{"ins-0"},
+		Sightings:        []commonmodels.FindingSighting{{RunID: "r1", DiscoveryID: "d1", Date: at}},
+	}
+	if err := repo.Upsert(ctx, &seed); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Both runs have now read the finding above. Run A writes its merge.
+	if err := repo.Merge(ctx, "p1", "f1", FindingMerge{
+		Severity: "high", Status: "changed", AffectedCount: 10,
+		LastSeen: at.Add(time.Hour), SourceDiscoveryID: "d2",
+		InsightIDs: []string{"ins-a"},
+		Sighting:   &commonmodels.FindingSighting{RunID: "r2", DiscoveryID: "d2", Date: at.Add(time.Hour)},
+		StatusChanges: []commonmodels.FindingStatusChange{
+			{Status: "changed", RunID: "r2", Reason: "A moved it", At: at.Add(time.Hour)},
+		},
+	}); err != nil {
+		t.Fatalf("merge A: %v", err)
+	}
+	// And a thread closes against it in between, mirroring its edge.
+	if err := repo.MarkAnsweredTask(ctx, "p1", []string{"f1"}, "t-A"); err != nil {
+		t.Fatalf("mirror: %v", err)
+	}
+
+	// Run B now writes ITS merge, from the snapshot it read before any of
+	// that happened.
+	if err := repo.Merge(ctx, "p1", "f1", FindingMerge{
+		Severity: "critical", Status: "confirmed", AffectedCount: 20,
+		LastSeen: at.Add(2 * time.Hour), SourceDiscoveryID: "d3",
+		InsightIDs: []string{"ins-b"},
+		Sighting:   &commonmodels.FindingSighting{RunID: "r3", DiscoveryID: "d3", Date: at.Add(2 * time.Hour)},
+		StatusChanges: []commonmodels.FindingStatusChange{
+			{Status: "confirmed", RunID: "r3", Reason: "B moved it", At: at.Add(2 * time.Hour)},
+		},
+	}); err != nil {
+		t.Fatalf("merge B: %v", err)
+	}
+
+	stored, err := readAllFindings(ctx, db, "p1")
+	if err != nil || len(stored) != 1 {
+		t.Fatalf("read back: n=%d err=%v", len(stored), err)
+	}
+	got := stored[0]
+
+	// Nothing either run recorded has been lost.
+	ids := append([]string(nil), got.SourceInsightIDs...)
+	slices.Sort(ids)
+	if !slices.Equal(ids, []string{"ins-0", "ins-a", "ins-b"}) {
+		t.Errorf("insight ids: want the seed plus both runs, got %v", got.SourceInsightIDs)
+	}
+	if len(got.Sightings) != 3 {
+		t.Errorf("want the seed's sighting and one from each run, got %+v", got.Sightings)
+	}
+	if len(got.StatusHistory) != 2 {
+		t.Errorf("want a status entry from each run, got %+v", got.StatusHistory)
+	}
+	if !slices.Contains(got.AnsweredTaskIDs, "t-A") {
+		t.Errorf("the mirrored edge written between the merges was lost: %v", got.AnsweredTaskIDs)
+	}
+	// The counter counts both, rather than being overwritten with a stale one.
+	if got.SeenCount != 3 {
+		t.Errorf("seen_count should be the seed plus both merges, got %d", got.SeenCount)
+	}
+	// Last write wins for the scalars, which is what they are for.
+	if got.Severity != "critical" || got.SourceDiscoveryID != "d3" {
+		t.Errorf("the later run's observation should stand: %+v", got)
+	}
+}
+
 // TestLedgerRepository_OverlappingReflectionsEachHoldTheMarker: the marker is
 // an array, one entry per run, because two reflections can overlap. With a
 // single slot the second to finish would take the marker down while the first

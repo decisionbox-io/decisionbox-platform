@@ -63,6 +63,11 @@ type fakeFindingRepo struct {
 	findings  []commonmodels.LedgerFinding
 	upserted  []commonmodels.LedgerFinding
 	answered  []answeredCall
+	// merged holds each finding as it stood after a Merge, which is what the
+	// repository writes for a finding this run saw again.
+	merged []commonmodels.LedgerFinding
+	// statuses holds each finding after the model's verdict was applied.
+	statuses []commonmodels.LedgerFinding
 	pruneMax  int
 	upsertErr error
 	listErr   error
@@ -115,6 +120,47 @@ func (f *fakeFindingRepo) Upsert(_ context.Context, fd *commonmodels.LedgerFindi
 		return f.upsertErr
 	}
 	f.upserted = append(f.upserted, *fd)
+	return nil
+}
+func (f *fakeFindingRepo) Merge(_ context.Context, _, id string, m database.FindingMerge) error {
+	if f.upsertErr != nil {
+		return f.upsertErr
+	}
+	// Applied the way the repository applies it — fields set, trails added,
+	// counter incremented — so a test reads back what Mongo would hold.
+	for i := range f.findings {
+		if f.findings[i].ID != id {
+			continue
+		}
+		fd := &f.findings[i]
+		fd.Description, fd.KeyMetric, fd.Evidence = m.Description, m.KeyMetric, m.Evidence
+		fd.Severity, fd.Status, fd.AffectedCount = m.Severity, m.Status, m.AffectedCount
+		fd.LastSeen, fd.SourceDiscoveryID = m.LastSeen, m.SourceDiscoveryID
+		fd.Liked = fd.Liked || m.Liked
+		fd.SeenCount++
+		if m.Unarchive {
+			fd.Archived = false
+			fd.ArchivedAt = time.Time{}
+		}
+		fd.SourceInsightIDs = appendUnique(fd.SourceInsightIDs, m.InsightIDs)
+		if m.Sighting != nil {
+			fd.Sightings = commonmodels.TrimFindingTrail(append(fd.Sightings, *m.Sighting))
+		}
+		fd.StatusHistory = commonmodels.TrimFindingTrail(append(fd.StatusHistory, m.StatusChanges...))
+		f.merged = append(f.merged, *fd)
+		return nil
+	}
+	return nil
+}
+func (f *fakeFindingRepo) ApplyStatus(_ context.Context, _, id, status string, c commonmodels.FindingStatusChange) error {
+	for i := range f.findings {
+		if f.findings[i].ID != id {
+			continue
+		}
+		f.findings[i].Status = status
+		f.findings[i].StatusHistory = commonmodels.TrimFindingTrail(append(f.findings[i].StatusHistory, c))
+		f.statuses = append(f.statuses, f.findings[i])
+	}
 	return nil
 }
 func (f *fakeFindingRepo) MarkAnsweredTask(_ context.Context, _ string, findingIDs []string, taskID string) error {
@@ -366,9 +412,9 @@ func TestConsolidateFindings_NewAndTrend(t *testing.T) {
 	}
 	// The merged finding must be marked changed with a bumped seen count.
 	var merged *commonmodels.LedgerFinding
-	for i := range fr.upserted {
-		if fr.upserted[i].ID == "f1" {
-			merged = &fr.upserted[i]
+	for i := range fr.merged {
+		if fr.merged[i].ID == "f1" {
+			merged = &fr.merged[i]
 		}
 	}
 	if merged == nil {
@@ -724,16 +770,21 @@ func TestConsolidateFindings_SightingsAndStatusTrail(t *testing.T) {
 		t.Errorf("ins-2 should resolve to the new finding, got %q", got)
 	}
 
+	// A finding seen again is MERGED (a delta the other writers survive); a
+	// new one is written whole. They land in different places for that reason.
 	var merged, fresh *commonmodels.LedgerFinding
+	for i := range fr.merged {
+		if fr.merged[i].ID == "f1" {
+			merged = &fr.merged[i]
+		}
+	}
 	for i := range fr.upserted {
-		if fr.upserted[i].ID == "f1" {
-			merged = &fr.upserted[i]
-		} else {
+		if fr.upserted[i].ID != "f1" {
 			fresh = &fr.upserted[i]
 		}
 	}
 	if merged == nil || fresh == nil {
-		t.Fatalf("expected a merged and a new finding, got %+v", fr.upserted)
+		t.Fatalf("expected a merged and a new finding, got merged=%+v upserted=%+v", fr.merged, fr.upserted)
 	}
 
 	// The merge appends this run's sighting and keeps the earlier one, so the
@@ -796,10 +847,10 @@ func TestConsolidateFindings_TrendReasonNamesSeverity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("consolidate: %v", err)
 	}
-	if len(fr.upserted) != 1 || len(fr.upserted[0].StatusHistory) != 1 {
-		t.Fatalf("expected one status change, got %+v", fr.upserted)
+	if len(fr.merged) != 1 || len(fr.merged[0].StatusHistory) != 1 {
+		t.Fatalf("expected one status change, got %+v", fr.merged)
 	}
-	if got := fr.upserted[0].StatusHistory[0].Reason; !strings.Contains(got, "medium") || !strings.Contains(got, "critical") {
+	if got := fr.merged[0].StatusHistory[0].Reason; !strings.Contains(got, "medium") || !strings.Contains(got, "critical") {
 		t.Errorf("reason should name the severity move, got %q", got)
 	}
 }
@@ -831,11 +882,11 @@ func TestConsolidateFindings_ReSeenArchivedFindingIsRevived(t *testing.T) {
 	if cons.NewCount != 0 {
 		t.Errorf("re-seeing an archived finding is not a new finding, got NewCount=%d", cons.NewCount)
 	}
-	if len(fr.upserted) != 1 || fr.upserted[0].ID != "f1" {
-		t.Fatalf("expected a merge into f1, got %+v", fr.upserted)
+	if len(fr.merged) != 1 || fr.merged[0].ID != "f1" {
+		t.Fatalf("expected a merge into f1, got %+v", fr.merged)
 	}
-	if fr.upserted[0].Archived || !fr.upserted[0].ArchivedAt.IsZero() {
-		t.Errorf("a finding seen again must come back into the active set: %+v", fr.upserted[0])
+	if fr.merged[0].Archived || !fr.merged[0].ArchivedAt.IsZero() {
+		t.Errorf("a finding seen again must come back into the active set: %+v", fr.merged[0])
 	}
 }
 
@@ -904,10 +955,10 @@ func TestConsolidateFindings_RevivedTerminalFindingBecomesActive(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("consolidate: %v", err)
 			}
-			if len(fr.upserted) != 1 {
-				t.Fatalf("expected one merge, got %+v", fr.upserted)
+			if len(fr.merged) != 1 {
+				t.Fatalf("expected one merge, got %+v", fr.merged)
 			}
-			got := fr.upserted[0]
+			got := fr.merged[0]
 			if got.Status != commonmodels.LedgerFindingStatusConfirmed {
 				t.Errorf("a revived %s finding must come back active, got %q", status, got.Status)
 			}
@@ -940,11 +991,11 @@ func TestConsolidateFindings_RevivedTerminalFindingBecomesActive(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("consolidate: %v", err)
 	}
-	if fr.upserted[0].Status != commonmodels.LedgerFindingStatusMonitoring {
-		t.Errorf("an active status is not a revival and must not move: %q", fr.upserted[0].Status)
+	if fr.merged[0].Status != commonmodels.LedgerFindingStatusMonitoring {
+		t.Errorf("an active status is not a revival and must not move: %q", fr.merged[0].Status)
 	}
-	if len(fr.upserted[0].StatusHistory) != 0 {
-		t.Errorf("nothing moved, so nothing is recorded: %+v", fr.upserted[0].StatusHistory)
+	if len(fr.merged[0].StatusHistory) != 0 {
+		t.Errorf("nothing moved, so nothing is recorded: %+v", fr.merged[0].StatusHistory)
 	}
 }
 
@@ -1362,10 +1413,10 @@ func TestApplyReflection_RecordsStatusReason(t *testing.T) {
 	o.applyReflection(context.Background(), &models.DiscoveryResult{ID: "d1"},
 		agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeOff}, ref, consolidationResult{})
 
-	if len(fr.upserted) != 1 {
-		t.Fatalf("only the one valid update should be written, got %d", len(fr.upserted))
+	if len(fr.statuses) != 1 {
+		t.Fatalf("only the one valid update should be written, got %d", len(fr.statuses))
 	}
-	f := fr.upserted[0]
+	f := fr.statuses[0]
 	if f.Status != commonmodels.LedgerFindingStatusRefuted {
 		t.Errorf("status = %q, want refuted", f.Status)
 	}
