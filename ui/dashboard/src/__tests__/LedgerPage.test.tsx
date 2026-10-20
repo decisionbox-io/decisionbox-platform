@@ -401,6 +401,14 @@ describe('LedgerPage', () => {
       fireEvent.click(within(canvas).getByText('High EU churn'));
       await waitFor(() => expect(screen.queryByText(/Changed in run 2/)).not.toBeInTheDocument());
 
+      // Nor when a control elsewhere on the page is used: the graph has not
+      // changed, so the map has not, so the view must not move. (The stat
+      // card carries the same word, hence the heading-shaped one.)
+      fireEvent.click(screen.getByText('What do frontier, breadth and depth mean?'));
+      await waitFor(() =>
+        expect(screen.getByText(/the parts of your data the investigation has not looked at/i))
+          .toBeVisible());
+
       expect(fitViewSpy).toHaveBeenCalledTimes(fitsAfterOpening);
     } finally {
       window.requestAnimationFrame = raf;

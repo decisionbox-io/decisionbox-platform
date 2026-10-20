@@ -1,6 +1,6 @@
 'use client';
 
-import { ReactNode, useEffect, useState } from 'react';
+import { ReactNode, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { Loader, Select, Button, Group, Stack, Text, Card, Badge, Progress, Tooltip, Collapse, UnstyledButton, ThemeIcon, SegmentedControl } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
@@ -164,6 +164,12 @@ export default function LedgerPage() {
   // The graph route is additive: an API that predates it 404s, and an older
   // deployment must still get the page it has always had.
   const [graphUnavailable, setGraphUnavailable] = useState(false);
+  // Indexed once per payload — before any early return, because a hook has
+  // to run on every render. Rebuilding it on an unrelated state change (the
+  // findings panel opening, a follow-up expanding) would hand the map a new
+  // object, and the map would read that as a new map and refit the canvas
+  // out from under a reader who had panned somewhere.
+  const graphIndex = useMemo(() => indexGraph(graph), [graph]);
   const [showFrontierHelp, setShowFrontierHelp] = useState(false); // frontier explainer, hidden by default
   const [openThreads, setOpenThreads] = useState<Set<string>>(new Set()); // expanded follow-up ancestry
 
@@ -263,9 +269,6 @@ export default function LedgerPage() {
       </Shell>
     );
   }
-
-  // Indexed once per payload: the tree walk and the story build both read it.
-  const graphIndex = indexGraph(graph);
 
   const explored = ledger.coverage.explored_tables?.length ?? 0;
   const total = ledger.coverage.total_tables ?? 0;
