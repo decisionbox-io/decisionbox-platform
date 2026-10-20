@@ -499,6 +499,27 @@ describe('buildStories', () => {
     expect(runLabel(indexGraph(older), 'run:r1')).toBe('Run 1');
   });
 
+  it('reads a run that recorded two sightings by its last word', () => {
+    // One run writes two sightings when two of its insights consolidate into
+    // one finding. The later one is what that run settled on.
+    const graph = chainGraph();
+    const f2 = graph.findings.find((f) => f.id === 'f2')!;
+    f2.source_insight_ids = ['ins2', 'ins3'];
+    f2.sightings = [
+      { run_id: 'r2', discovery_id: 'd2', date: '2026-05-03T09:00:00Z', severity: 'low', insight_id: 'ins2' },
+      { run_id: 'r2', discovery_id: 'd2', date: '2026-05-03T09:30:00Z', severity: 'critical', insight_id: 'ins3' },
+    ];
+
+    const idx = indexGraph(graph);
+    const r2 = buildStories(idx).find((st) => st.run.run_id === 'r2')!;
+    const seen = r2.newFindings.find((x) => x.finding.id === 'f2')!;
+    expect(seen.severity).toBe('critical');
+    expect(r2.highCount).toBe(1);
+    // And the link is to the evidence it settled on, not the one it revised.
+    expect(sightingEvidenceLink('p1', seen, idx))
+      .toBe('/projects/p1/discoveries/d2/insights/ins3');
+  });
+
   it("reports no severity for a run that recorded none, rather than today's", () => {
     // A finding carries its CURRENT severity. Borrowing it for a run with no
     // sighting of its own — a trimmed trail, a legacy backfill — would report

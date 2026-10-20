@@ -646,11 +646,17 @@ export function buildStories(idx: GraphIndex): RunStory[] {
   idx.runs.forEach((run, nodeId) => {
     if (run.missing) return;
     const asSeenBy = (finding: GraphFinding): RunSighting => {
-      const sighting = (finding.sightings ?? []).find(
+      // The LAST sighting this run recorded, not the first. One run writes
+      // two when two of its insights consolidate into one finding, and the
+      // later one is that run's settled answer — taking the first reported a
+      // run that ended up calling something critical as having called it low,
+      // and linked the evidence it had already superseded.
+      const mine = (finding.sightings ?? []).filter(
         (s) => (s.run_id && `run:${s.run_id}` === nodeId)
           || (s.discovery_id && `disc:${s.discovery_id}` === nodeId)
           || (s.discovery_id && s.discovery_id === run.discovery_id),
       );
+      const sighting = mine.length > 0 ? mine[mine.length - 1] : undefined;
       return {
         finding,
         sighting,
