@@ -535,10 +535,12 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 			}
 			var statusAdded []commonmodels.FindingStatusChange
 			sightingAdded := appendFindingSighting(match, sighting)
-			wasArchived := match.Archived
 			// A run that sees an archived finding again brings it back into the
 			// active set: it is current again, and its edges and sightings are
-			// still attached.
+			// still attached. The write un-archives unconditionally; this
+			// branch is about the STATUS, which only has to move when the
+			// snapshot says the finding had been archived under a terminal
+			// one.
 			if match.Archived {
 				match.Archived = false
 				match.ArchivedAt = time.Time{}
@@ -610,7 +612,6 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 				LastSeen:          match.LastSeen,
 				SourceDiscoveryID: match.SourceDiscoveryID,
 				Liked:             match.Liked,
-				Unarchive:         wasArchived,
 				InsightIDs:        cand.SourceInsightIDs,
 				Sighting:          sightingIf(sightingAdded, sighting),
 				StatusChanges:     statusAdded,

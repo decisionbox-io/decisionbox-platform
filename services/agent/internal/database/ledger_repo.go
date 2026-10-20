@@ -466,9 +466,6 @@ type FindingMerge struct {
 	// Liked is only ever raised. A run that did not like a finding someone
 	// else did must not un-like it.
 	Liked bool
-	// Unarchive brings a finding the retention cap pushed out back into the
-	// active set.
-	Unarchive bool
 	// InsightIDs, Sighting and StatusChanges are ADDED to what is stored —
 	// never a replacement for it.
 	InsightIDs    []string
@@ -513,9 +510,15 @@ func (r *LedgerFindingRepository) Merge(ctx context.Context, projectID, id strin
 	if m.Liked {
 		set["liked"] = true
 	}
-	update := bson.M{"$set": set, "$inc": bson.M{"seen_count": 1}}
-	if m.Unarchive {
-		update["$unset"] = bson.M{"archived": "", "archived_at": ""}
+	// A merge IS an observation, so it always brings the finding back into
+	// the active set. Not conditional on what the caller read: the retention
+	// cap can archive a finding between that read and this write, and
+	// honouring the stale snapshot would leave a finding this run has just
+	// seen again archived — and therefore out of every prompt that follows.
+	update := bson.M{
+		"$set":   set,
+		"$inc":   bson.M{"seen_count": 1},
+		"$unset": bson.M{"archived": "", "archived_at": ""},
 	}
 	if len(m.InsightIDs) > 0 {
 		update["$addToSet"] = bson.M{"source_insight_ids": bson.M{"$each": m.InsightIDs}}

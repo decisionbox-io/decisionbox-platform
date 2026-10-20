@@ -271,6 +271,11 @@ func TestLedgerFindingRepository_MergeSurvivesAnOverlappingWriter(t *testing.T) 
 		t.Fatalf("mirror: %v", err)
 	}
 
+	// And the retention cap archives it, also in between.
+	if err := repo.Prune(ctx, "p1", 0); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+
 	// Run B now writes ITS merge, from the snapshot it read before any of
 	// that happened.
 	if err := repo.Merge(ctx, "p1", "f1", FindingMerge{
@@ -305,6 +310,13 @@ func TestLedgerFindingRepository_MergeSurvivesAnOverlappingWriter(t *testing.T) 
 	}
 	if !slices.Contains(got.AnsweredTaskIDs, "t-A") {
 		t.Errorf("the mirrored edge written between the merges was lost: %v", got.AnsweredTaskIDs)
+	}
+	// And a merge always brings the finding back into the active set, however
+	// stale the snapshot it was built from: the retention cap can archive a
+	// finding between the read and this write, and honouring that snapshot
+	// would leave one this run has just seen again out of every prompt.
+	if got.Archived {
+		t.Error("a finding this run observed must not stay archived")
 	}
 	// The counter counts both, rather than being overwritten with a stale one.
 	if got.SeenCount != 3 {

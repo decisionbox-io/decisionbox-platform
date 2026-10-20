@@ -140,10 +140,9 @@ func (f *fakeFindingRepo) Merge(_ context.Context, _, id string, m database.Find
 		fd.LastSeen, fd.SourceDiscoveryID = m.LastSeen, m.SourceDiscoveryID
 		fd.Liked = fd.Liked || m.Liked
 		fd.SeenCount++
-		if m.Unarchive {
-			fd.Archived = false
-			fd.ArchivedAt = time.Time{}
-		}
+		// A merge is an observation: it always brings the finding back.
+		fd.Archived = false
+		fd.ArchivedAt = time.Time{}
 		fd.SourceInsightIDs = appendUnique(fd.SourceInsightIDs, m.InsightIDs)
 		if m.Sighting != nil {
 			fd.Sightings = commonmodels.TrimFindingTrail(append(fd.Sightings, *m.Sighting))

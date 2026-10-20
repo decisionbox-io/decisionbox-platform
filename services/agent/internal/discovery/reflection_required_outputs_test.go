@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"slices"
 	"fmt"
 	"reflect"
 	"sort"
@@ -398,10 +399,9 @@ func (r *statefulFindingRepo) Merge(_ context.Context, _, id string, m database.
 		fd.LastSeen, fd.SourceDiscoveryID = m.LastSeen, m.SourceDiscoveryID
 		fd.Liked = fd.Liked || m.Liked
 		fd.SeenCount++
-		if m.Unarchive {
-			fd.Archived = false
-			fd.ArchivedAt = time.Time{}
-		}
+		// A merge is an observation: it always brings the finding back.
+		fd.Archived = false
+		fd.ArchivedAt = time.Time{}
 		fd.SourceInsightIDs = appendUnique(fd.SourceInsightIDs, m.InsightIDs)
 		if m.Sighting != nil {
 			fd.Sightings = commonmodels.TrimFindingTrail(append(fd.Sightings, *m.Sighting))
@@ -669,10 +669,31 @@ func TestReflectionSchema_ResolvedByOnlyAlongsideDone(t *testing.T) {
 				t.Error("the done branch must demand a non-empty array, not just the key")
 			}
 		case "dropped":
-			if _, demanded := branch["required"]; demanded {
-				t.Error("the dropped branch must demand nothing")
+			req, _ := branch["required"].([]interface{})
+			for _, r := range req {
+				if r == "resolved_by_finding_ids" {
+					t.Error("the dropped branch must not demand findings that answered it")
+				}
+			}
+			if _, present := bp["resolved_by_finding_ids"]; present {
+				t.Error("a dropped close has nothing to point at, so the key is not offered")
 			}
 			sawDroppedExemption = true
+		}
+
+		// Every branch stands on its own. A validator would merge each with
+		// the sibling `properties`, but a provider that compiles the schema
+		// into a grammar does not — llama.cpp builds each alternative
+		// separately, and a branch without task_id yields closes that match
+		// no task at all.
+		for _, field := range []string{"task_id", "status", "reason"} {
+			if _, present := bp[field]; !present {
+				t.Errorf("branch %v must carry %q itself", status, field)
+			}
+			req, _ := branch["required"].([]interface{})
+			if !slices.Contains(req, any(field)) {
+				t.Errorf("branch %v must require %q itself", status, field)
+			}
 		}
 	}
 	if !sawDoneDemand || !sawDroppedExemption {

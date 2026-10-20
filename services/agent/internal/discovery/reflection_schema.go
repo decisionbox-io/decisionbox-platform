@@ -208,18 +208,40 @@ func taskStatusUpdateItem(hasFindingIDs bool) map[string]interface{} {
 	if !hasFindingIDs {
 		return item
 	}
+	// Each branch is SELF-CONTAINED — it repeats task_id and reason rather
+	// than leaning on the sibling `properties` above. A JSON-Schema validator
+	// would merge the two, but a provider that compiles the schema into a
+	// grammar does not: llama.cpp (so Ollama) builds each alternative on its
+	// own, and a branch naming only `status` produced updates with no task id
+	// at all. Every one of them was then dropped for having nothing to match,
+	// so on those deployments a thread could never be closed.
+	common := func() map[string]interface{} {
+		return map[string]interface{}{
+			"task_id": str("The open task id, copied verbatim from the OPEN TASKS list"),
+			"reason":  str("One line: why the task is being closed"),
+		}
+	}
+	done := common()
+	done["status"] = map[string]interface{}{"type": "string", "const": "done"}
+	done["resolved_by_finding_ids"] = map[string]interface{}{
+		"type":        "array",
+		"description": resolvedBy["description"],
+		"items":       map[string]interface{}{"type": "string"},
+		"minItems":    1,
+	}
+	dropped := common()
+	dropped["status"] = map[string]interface{}{"type": "string", "const": "dropped"}
+
 	item["oneOf"] = []interface{}{
 		map[string]interface{}{
-			"properties": map[string]interface{}{
-				"status":                  map[string]interface{}{"const": "done"},
-				"resolved_by_finding_ids": map[string]interface{}{"type": "array", "minItems": 1},
-			},
-			"required": []interface{}{"resolved_by_finding_ids"},
+			"type":       "object",
+			"properties": done,
+			"required":   []interface{}{"task_id", "status", "reason", "resolved_by_finding_ids"},
 		},
 		map[string]interface{}{
-			"properties": map[string]interface{}{
-				"status": map[string]interface{}{"const": "dropped"},
-			},
+			"type":       "object",
+			"properties": dropped,
+			"required":   []interface{}{"task_id", "status", "reason"},
 		},
 	}
 	return item
