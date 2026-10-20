@@ -4,6 +4,7 @@ package backfill
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -460,7 +461,7 @@ func TestBackfillLedgerGraph_SkipsAProjectMidRun(t *testing.T) {
 	}
 	if _, err := client.Collection(gomongo.CollectionDiscoveryLedger).UpdateOne(ctx,
 		bson.M{"project_id": projectID},
-		bson.M{"$set": bson.M{"reflecting_run_id": "run-live", "reflecting_since": time.Now()}},
+		bson.M{"$push": bson.M{gomongo.ReflectingKey: bson.M{"run_id": "run-live", "since": time.Now()}}},
 		options.Update().SetUpsert(true)); err != nil {
 		t.Fatalf("mark reflecting: %v", err)
 	}
@@ -476,7 +477,7 @@ func TestBackfillLedgerGraph_SkipsAProjectMidRun(t *testing.T) {
 	// mid-phase never clears its own, and must not wedge the project.
 	if _, err := client.Collection(gomongo.CollectionDiscoveryLedger).UpdateOne(ctx,
 		bson.M{"project_id": projectID},
-		bson.M{"$set": bson.M{"reflecting_since": time.Now().Add(-2 * reflectionStaleAfter)}}); err != nil {
+		bson.M{"$set": bson.M{gomongo.ReflectingKey + ".0.since": time.Now().Add(-2 * reflectionStaleAfter)}}); err != nil {
 		t.Fatalf("age the marker: %v", err)
 	}
 	stale, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false)
@@ -485,6 +486,59 @@ func TestBackfillLedgerGraph_SkipsAProjectMidRun(t *testing.T) {
 	}
 	if stale.ProjectsSkippedInFlight != 0 || stale.FindingsScanned != 1 {
 		t.Errorf("a stale marker must not block the backfill: %+v", stale)
+	}
+}
+
+// TestBackfillLedgerGraph_AbandonsAProjectThatBecomesBusy: the check at the
+// top cannot see a reflection that starts after it. The writes ask again
+// immediately before they land, so a project that came back to life is
+// reported as skipped rather than half-written.
+func TestBackfillLedgerGraph_AbandonsAProjectThatBecomesBusy(t *testing.T) {
+	client, cleanup := backfillMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	const projectID = "p-becomes-busy"
+
+	at := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := client.Collection(gomongo.CollectionDiscoveryLedgerFindings).InsertOne(ctx, bson.M{
+		"_id": "f1", "project_id": projectID, "name": "Churn up", "area": "churn",
+		"status": commonmodels.LedgerFindingStatusConfirmed, "normalized_key": "churn|churn up",
+		"last_seen": at, "seen_count": 1, "source_discovery_id": "disc-1",
+	}); err != nil {
+		t.Fatalf("seed finding: %v", err)
+	}
+	if _, err := client.Collection("insights").InsertOne(ctx, bson.M{
+		"_id": "ins-1", "project_id": projectID, "discovery_id": "disc-1",
+		"analysis_area": "churn", "name": "Churn up",
+	}); err != nil {
+		t.Fatalf("seed insight: %v", err)
+	}
+	if _, err := client.Collection(gomongo.CollectionDiscoveries).InsertOne(ctx, bson.M{
+		"_id": "disc-1", "project_id": projectID, "discovery_date": at,
+		"insights": []bson.M{{"id": "ins-1", "name": "Churn up"}},
+	}); err != nil {
+		t.Fatalf("seed discovery: %v", err)
+	}
+
+	// The project is quiet when the command starts, and a reflection begins
+	// before the writes land.
+	if _, err := client.Collection(gomongo.CollectionDiscoveryLedger).UpdateOne(ctx,
+		bson.M{"project_id": projectID},
+		bson.M{"$push": bson.M{gomongo.ReflectingKey: bson.M{"run_id": "run-late", "since": time.Now()}}},
+		options.Update().SetUpsert(true)); err != nil {
+		t.Fatalf("start a late reflection: %v", err)
+	}
+
+	_, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false)
+	if !errors.Is(err, errProjectBecameBusy) && err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	// Either it was stopped at the top or stopped at the write — what matters
+	// is that nothing was written.
+	findings := readFindings(t, client, projectID)
+	if len(findings["f1"].SourceInsightIDs) != 0 {
+		t.Errorf("a project that is being written must not be backfilled: %+v", findings["f1"])
 	}
 }
 

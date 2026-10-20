@@ -43,7 +43,7 @@ function chainGraph(): LedgerGraph {
         severity: 'critical', status: 'confirmed', seen_count: 1,
         first_seen: '2026-05-03T09:00:00Z', last_seen: '2026-05-03T09:00:00Z',
         source_insight_ids: ['ins2'], answered_task_ids: ['t1'],
-        sightings: [{ run_id: 'r2', discovery_id: 'd2', date: '2026-05-03T09:00:00Z', insight_id: 'ins2' }],
+        sightings: [{ run_id: 'r2', discovery_id: 'd2', date: '2026-05-03T09:00:00Z', insight_id: 'ins2', severity: 'critical' }],
       },
       {
         node_id: 'finding:f3', id: 'f3', name: 'An archived old thing', area: 'misc',
@@ -497,6 +497,28 @@ describe('buildStories', () => {
     // An API that predates the field still gets date order out of the rows.
     const older = chainGraph();
     expect(runLabel(indexGraph(older), 'run:r1')).toBe('Run 1');
+  });
+
+  it("reports no severity for a run that recorded none, rather than today's", () => {
+    // A finding carries its CURRENT severity. Borrowing it for a run with no
+    // sighting of its own — a trimmed trail, a legacy backfill — would report
+    // that run as having found something high that a later run raised to
+    // high, and would count it in that run's headline.
+    const graph = chainGraph();
+    const f2 = graph.findings.find((f) => f.id === 'f2')!;
+    f2.severity = 'critical';
+    f2.sightings = [{ run_id: 'r2', discovery_id: 'd2', date: '2026-05-03T09:00:00Z' }];
+
+    const stories = buildStories(indexGraph(graph));
+    const r2 = stories.find((st) => st.run.run_id === 'r2')!;
+    const seen = r2.newFindings.find((x) => x.finding.id === 'f2')!;
+    expect(seen.severity).toBeUndefined();
+    expect(r2.highCount).toBe(0);
+
+    // With the sighting's own severity, it counts.
+    f2.sightings = [{ run_id: 'r2', discovery_id: 'd2', date: '2026-05-03T09:00:00Z', severity: 'critical' }];
+    const withIt = buildStories(indexGraph(graph)).find((st) => st.run.run_id === 'r2')!;
+    expect(withIt.highCount).toBe(1);
   });
 
   it('names the runs a finding was seen in, however the sighting identifies them', () => {

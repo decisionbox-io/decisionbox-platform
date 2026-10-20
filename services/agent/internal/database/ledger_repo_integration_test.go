@@ -187,6 +187,74 @@ func TestLedgerFindingRepository_ArchivedIndexExists(t *testing.T) {
 	t.Errorf("no (project_id, archived) index found: %+v", specs)
 }
 
+// TestLedgerRepository_OverlappingReflectionsEachHoldTheMarker: the marker is
+// an array, one entry per run, because two reflections can overlap. With a
+// single slot the second to finish would take the marker down while the first
+// was still writing — telling the backfill a busy project was idle.
+func TestLedgerRepository_OverlappingReflectionsEachHoldTheMarker(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewLedgerRepository(db)
+
+	inFlight := func() []string {
+		var doc struct {
+			Reflecting []struct {
+				RunID string    `bson:"run_id"`
+				Since time.Time `bson:"since"`
+			} `bson:"reflecting"`
+		}
+		if err := db.Collection(CollectionDiscoveryLedger).
+			FindOne(ctx, bson.M{"project_id": "p1"}).Decode(&doc); err != nil {
+			t.Fatalf("read marker: %v", err)
+		}
+		out := make([]string, 0, len(doc.Reflecting))
+		for _, r := range doc.Reflecting {
+			if r.Since.IsZero() {
+				t.Errorf("every entry must be dated: %+v", r)
+			}
+			out = append(out, r.RunID)
+		}
+		return out
+	}
+
+	for _, runID := range []string{"run-a", "run-b"} {
+		if err := repo.BeginReflection(ctx, "p1", runID); err != nil {
+			t.Fatalf("begin %s: %v", runID, err)
+		}
+	}
+	if got := inFlight(); !slices.Equal(got, []string{"run-a", "run-b"}) {
+		t.Fatalf("both reflections should be in flight, got %v", got)
+	}
+
+	// B finishes first. A is still writing, and must still be announced.
+	if err := repo.EndReflection(ctx, "p1", "run-b"); err != nil {
+		t.Fatalf("end run-b: %v", err)
+	}
+	if got := inFlight(); !slices.Equal(got, []string{"run-a"}) {
+		t.Errorf("run-a is still writing: %v", got)
+	}
+
+	// A re-begin leaves one entry, not two.
+	if err := repo.BeginReflection(ctx, "p1", "run-a"); err != nil {
+		t.Fatalf("re-begin run-a: %v", err)
+	}
+	if got := inFlight(); !slices.Equal(got, []string{"run-a"}) {
+		t.Errorf("a re-run must not duplicate its entry: %v", got)
+	}
+
+	if err := repo.EndReflection(ctx, "p1", "run-a"); err != nil {
+		t.Fatalf("end run-a: %v", err)
+	}
+	if got := inFlight(); len(got) != 0 {
+		t.Errorf("nothing should be left in flight: %v", got)
+	}
+	// And clearing a run that holds nothing is a no-op, not an error.
+	if err := repo.EndReflection(ctx, "p1", "run-ghost"); err != nil {
+		t.Errorf("clearing an absent marker must be a no-op: %v", err)
+	}
+}
+
 // TestLedgerFindingRepository_MarkAnsweredTaskIsAnAtomicAppend: the mirrored
 // edge is added with $addToSet, not by replacing the finding. Replacing it to
 // add one array entry would throw away whatever a reflection running beside

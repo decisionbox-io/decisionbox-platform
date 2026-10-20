@@ -110,8 +110,8 @@ const graph: LedgerGraph = {
       status: 'changed', seen_count: 2, first_seen: '2026-01-01T00:00:00Z', last_seen: '2026-01-05T00:00:00Z',
       source_insight_ids: ['ins1'],
       sightings: [
-        { run_id: 'r1', discovery_id: 'd1', date: '2026-01-01T00:00:00Z', insight_id: 'ins1' },
-        { run_id: 'r2', discovery_id: 'd2', date: '2026-01-05T00:00:00Z', insight_id: 'ins1' },
+        { run_id: 'r1', discovery_id: 'd1', date: '2026-01-01T00:00:00Z', insight_id: 'ins1', severity: 'medium' },
+        { run_id: 'r2', discovery_id: 'd2', date: '2026-01-05T00:00:00Z', insight_id: 'ins1', severity: 'high' },
       ],
       status_history: [
         { status: 'confirmed', run_id: 'r1', at: '2026-01-01T00:00:00Z', source: 'reflection', reason: 'first seen' },
@@ -123,7 +123,7 @@ const graph: LedgerGraph = {
       severity: 'critical', status: 'confirmed', seen_count: 1,
       first_seen: '2026-01-05T00:00:00Z', last_seen: '2026-01-05T00:00:00Z',
       source_insight_ids: ['ins2'], answered_task_ids: ['t1'],
-      sightings: [{ run_id: 'r2', discovery_id: 'd2', date: '2026-01-05T00:00:00Z', insight_id: 'ins2' }],
+      sightings: [{ run_id: 'r2', discovery_id: 'd2', date: '2026-01-05T00:00:00Z', insight_id: 'ins2', severity: 'critical' }],
     },
   ],
   tasks: [

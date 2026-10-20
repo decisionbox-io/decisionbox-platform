@@ -2,6 +2,7 @@ package backfill
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -156,6 +157,14 @@ func runLedgerGraphBackfill(ctx context.Context, projectID string,
 	failed := 0
 	for _, pid := range projects {
 		counts, err := backfillLedgerGraphProject(ctx, client, pid, batchSize, closeWindow, dryRun)
+		if errors.Is(err, errProjectBecameBusy) {
+			// Not a failure of the command: the project started working
+			// again mid-pass and has to be done once it is quiet.
+			counts.ProjectsSkippedInFlight = 1
+			printLedgerGraphCounts(pid, counts)
+			totals.add(counts)
+			continue
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error on project %s: %v\n", pid, err)
 			failed++
@@ -283,6 +292,21 @@ func backfillLedgerGraphProject(ctx context.Context, client *gomongo.Client, pro
 		if len(writes) == 0 || dryRun {
 			writes = writes[:0]
 			return nil
+		}
+		// Asked again, immediately before the write. A reflection that began
+		// after the check at the top would read a finding before this
+		// recovered its history and replace the document after — losing it,
+		// and losing it permanently, because the next pass skips a field that
+		// is no longer empty. Nothing here can stop that reflection; what it
+		// can do is not add to the damage, and say so rather than report a
+		// project as done when it was abandoned halfway.
+		busy, err := runInFlight(ctx, client, projectID)
+		if err != nil {
+			return err
+		}
+		if busy {
+			writes = writes[:0]
+			return errProjectBecameBusy
 		}
 		if _, err := client.Collection(collection).BulkWrite(ctx, writes,
 			options.BulkWrite().SetOrdered(false)); err != nil {
@@ -581,6 +605,11 @@ type runRef struct {
 	At          time.Time
 }
 
+// errProjectBecameBusy means a reflection started while this project was being
+// backfilled. Not an error with the command — the project simply has to be
+// done again once it is quiet — so the caller reports it as a skip.
+var errProjectBecameBusy = errors.New("a reflection started while this project was being backfilled")
+
 // runInFlight reports whether anything is still writing this project's ledger.
 //
 // Two questions, because one does not answer it. A pending or running run has
@@ -605,11 +634,14 @@ func runInFlight(ctx context.Context, client *gomongo.Client, projectID string) 
 	}
 
 	var ledger struct {
-		ReflectingSince time.Time `bson:"reflecting_since"`
+		Reflecting []struct {
+			RunID string    `bson:"run_id"`
+			Since time.Time `bson:"since"`
+		} `bson:"reflecting"`
 	}
 	err = client.Collection(gomongo.CollectionDiscoveryLedger).
 		FindOne(ctx, bson.M{"project_id": projectID},
-			options.FindOne().SetProjection(bson.M{"reflecting_since": 1})).
+			options.FindOne().SetProjection(bson.M{gomongo.ReflectingKey: 1})).
 		Decode(&ledger)
 	if err == mongo.ErrNoDocuments {
 		return false, nil
@@ -617,10 +649,12 @@ func runInFlight(ctx context.Context, client *gomongo.Client, projectID string) 
 	if err != nil {
 		return false, fmt.Errorf("check for a reflection in flight: %w", err)
 	}
-	if ledger.ReflectingSince.IsZero() {
-		return false, nil
+	for _, in := range ledger.Reflecting {
+		if !in.Since.IsZero() && time.Since(in.Since) < reflectionStaleAfter {
+			return true, nil
+		}
 	}
-	return time.Since(ledger.ReflectingSince) < reflectionStaleAfter, nil
+	return false, nil
 }
 
 // loadRunIndex returns discovery id → run id, and the project's runs in time

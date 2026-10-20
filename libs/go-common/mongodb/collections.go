@@ -52,3 +52,15 @@ const (
 	CollectionDiscoveryLedgerLearnings = "discovery_ledger_learnings"
 	CollectionDiscoveryPackProposals   = "discovery_pack_proposals"
 )
+
+// ReflectingKey is the field on a discovery_ledger document holding the
+// reflections currently in flight for that project — one `{run_id, since}`
+// entry per run. The agent's reflection phase pushes and pulls its own entry;
+// the one-shot investigation-graph backfill reads it to tell whether anything
+// is still rewriting the project's finding documents. Run status cannot answer
+// that: a run is stamped `completed` before its reflection phase starts.
+//
+// Shared here rather than in either module, because two modules agreeing on a
+// field name by copying it is how they come to disagree on it.
+const ReflectingKey = "reflecting"
+

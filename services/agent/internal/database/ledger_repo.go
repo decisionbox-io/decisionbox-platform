@@ -7,6 +7,7 @@ import (
 	"time"
 
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -71,24 +72,29 @@ func (r *LedgerRepository) Save(ctx context.Context, l *commonmodels.DiscoveryLe
 	return nil
 }
 
-// The reflection-in-flight marker. It lives in its own two keys rather than on
-// DiscoveryLedger, because Save $sets the whole struct — a save during
+// The in-flight marker lives in its own key (gomongo.ReflectingKey) rather
+// than on DiscoveryLedger, because Save $sets the whole struct — a save during
 // reflection (and there is one) would clear a field the struct carried.
-const (
-	reflectingRunIDKey = "reflecting_run_id"
-	reflectingSinceKey = "reflecting_since"
-)
+//
+// An ARRAY, one entry per run, not a single slot. Two reflections can overlap,
+// and with one slot the second to finish would take the marker down while the
+// first was still writing — announcing an idle project that is not one.
 
-// BeginReflection marks the project as having a reflection in flight.
+// BeginReflection records that this run's reflection phase is writing.
 //
 // A run is stamped `completed` BEFORE the reflection phase runs, so run status
 // cannot tell the one-shot backfill whether the ledger is still being written.
 // This can: reflection is the only thing that rewrites finding documents, and
 // it says so for exactly as long as it is doing it.
 func (r *LedgerRepository) BeginReflection(ctx context.Context, projectID, runID string) error {
+	// Any stale entry for this same run id goes first, so a re-run cannot
+	// leave two entries and an old `since` behind.
+	if err := r.EndReflection(ctx, projectID, runID); err != nil {
+		return err
+	}
 	_, err := r.collection.UpdateOne(ctx,
 		bson.M{"project_id": projectID},
-		bson.M{"$set": bson.M{reflectingRunIDKey: runID, reflectingSinceKey: time.Now()}},
+		bson.M{"$push": bson.M{gomongo.ReflectingKey: bson.M{"run_id": runID, "since": time.Now()}}},
 		options.Update().SetUpsert(true))
 	if err != nil {
 		return fmt.Errorf("mark reflection in flight: %w", err)
@@ -96,12 +102,12 @@ func (r *LedgerRepository) BeginReflection(ctx context.Context, projectID, runID
 	return nil
 }
 
-// EndReflection clears the marker, and only this run's: a straggler finishing
-// late must not clear the marker a newer run has since set.
+// EndReflection removes this run's entry, and only this run's: a straggler
+// finishing late must not announce that a reflection still running is done.
 func (r *LedgerRepository) EndReflection(ctx context.Context, projectID, runID string) error {
 	_, err := r.collection.UpdateOne(ctx,
-		bson.M{"project_id": projectID, reflectingRunIDKey: runID},
-		bson.M{"$unset": bson.M{reflectingRunIDKey: "", reflectingSinceKey: ""}})
+		bson.M{"project_id": projectID},
+		bson.M{"$pull": bson.M{gomongo.ReflectingKey: bson.M{"run_id": runID}}})
 	if err != nil {
 		return fmt.Errorf("clear reflection marker: %w", err)
 	}

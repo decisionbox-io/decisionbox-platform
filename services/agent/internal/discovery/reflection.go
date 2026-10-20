@@ -46,6 +46,10 @@ const (
 
 const (
 	defaultDiscoveryReflectionTimeout    = 3 * time.Minute
+	// reflectionCleanupTimeout bounds taking the in-flight marker back down.
+	// Short: it is one small update, and it runs after the phase's own
+	// deadline has usually already passed.
+	reflectionCleanupTimeout = 10 * time.Second
 	defaultDiscoveryReflectionMaxOutput  = 3000
 	defaultDiscoveryReflectionParseRetry = 1
 	defaultDiscoveryLedgerMaxFindings    = 500
@@ -164,7 +168,12 @@ func (o *Orchestrator) RunPhaseReflection(ctx context.Context, result *models.Di
 		applog.WithError(err).Warn("Reflection: could not mark the phase in flight")
 	}
 	defer func() {
-		if err := o.ledgerRepo.EndReflection(rctx, o.projectID, o.runID); err != nil {
+		// Its own context, not rctx: the commonest reason to reach this defer
+		// is that rctx's deadline expired, and clearing the marker with an
+		// expired context fails — leaving an idle project marked as writing.
+		cctx, ccancel := context.WithTimeout(context.WithoutCancel(ctx), reflectionCleanupTimeout)
+		defer ccancel()
+		if err := o.ledgerRepo.EndReflection(cctx, o.projectID, o.runID); err != nil {
 			applog.WithError(err).Warn("Reflection: could not clear the in-flight marker")
 		}
 	}()

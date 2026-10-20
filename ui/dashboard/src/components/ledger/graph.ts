@@ -616,7 +616,8 @@ export interface RunSighting {
    *  trail that was clipped or never recorded leaves none — and the evidence
    *  still has to be scoped to THIS run rather than borrowed from another. */
   runDiscoveryId?: string;
-  /** Severity as of that run, falling back to the finding's current one. */
+  /** Severity as that run recorded it. Undefined when the run recorded none:
+   *  the finding's current severity is a later run's answer, not this one's. */
   severity?: string;
 }
 
@@ -654,7 +655,11 @@ export function buildStories(idx: GraphIndex): RunStory[] {
         finding,
         sighting,
         runDiscoveryId: run.discovery_id,
-        severity: sighting?.severity || finding.severity,
+        // Only what THIS run recorded. A finding carries its current
+        // severity, so borrowing it would report a run as having found
+        // something high that a later run raised to high — and would count it
+        // in that run's headline. A severity nobody recorded stays unknown.
+        severity: sighting?.severity,
       };
     };
     const story: RunStory = {
