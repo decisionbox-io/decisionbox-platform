@@ -242,8 +242,13 @@ function place(map: InvestigationMap): {
 
 /** layout positions the map and dresses the nodes and edges for the canvas.
  *  Left to right, because the thing being drawn is a chain of reasoning. */
-function layout(map: InvestigationMap, selected: string | null, connected: Set<string>) {
-  const { at, focus } = place(map);
+function layout(
+  map: InvestigationMap,
+  geometry: ReturnType<typeof place>,
+  selected: string | null,
+  connected: Set<string>,
+) {
+  const { at } = geometry;
 
   const nodes: Node<MapNodeData>[] = map.nodes.map((n) => {
     return {
@@ -279,7 +284,7 @@ function layout(map: InvestigationMap, selected: string | null, connected: Set<s
     };
   });
 
-  return { nodes, edges, focus };
+  return { nodes, edges };
 }
 
 /** A link out to a detail page, with the affordance to open it in a new tab —
@@ -489,7 +494,15 @@ function Canvas({
     return set;
   }, [selected, map.edges]);
 
-  const laid = useMemo(() => layout(map, selected, connected), [map, selected, connected]);
+  // Where the cards go is decided by the map alone. Selection only changes how
+  // they are drawn — so it must not produce new geometry, or the effect below
+  // would refit the viewport on every click and snap a reader who had panned
+  // to another chain straight back to the first one.
+  const geometry = useMemo(() => place(map), [map]);
+  const laid = useMemo(
+    () => layout(map, geometry, selected, connected),
+    [map, geometry, selected, connected],
+  );
   const [nodes, setNodes, onNodesChange] = useNodesState(laid.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(laid.edges);
 
@@ -504,7 +517,7 @@ function Canvas({
   // used to be. Keyed on the map, not on the layout — selecting a card moves
   // nothing, so it must not move the view. The frame lets React Flow measure
   // the new nodes before they are fitted.
-  const focus = laid.focus;
+  const { focus } = geometry;
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => fitView({
       duration: 300,
@@ -513,7 +526,7 @@ function Canvas({
       nodes: focus.length > 0 ? focus.map((id) => ({ id })) : undefined,
     }));
     return () => window.cancelAnimationFrame(frame);
-  }, [map, focus, fitView]);
+  }, [focus, fitView]);
 
   const selectedNode = selected ? map.nodes.find((n) => n.id === selected) ?? null : null;
 

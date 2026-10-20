@@ -17,6 +17,7 @@ jest.mock('@/components/layout/AppShell', () => ({
 // stood in for by something that renders the nodes it is given. The layout is
 // the library's problem; the projection behind it is tested in
 // ledgerGraph.test.ts, and the node markup still renders through this.
+const fitViewSpy = jest.fn();
 jest.mock('@xyflow/react', () => {
   const React = jest.requireActual('react');
   return {
@@ -54,7 +55,7 @@ jest.mock('@xyflow/react', () => {
       React.useEffect(() => setV(initial), [initial]);
       return [v, setV, jest.fn()];
     },
-    useReactFlow: () => ({ fitView: jest.fn() }),
+    useReactFlow: () => ({ fitView: fitViewSpy }),
   };
 });
 
@@ -374,6 +375,36 @@ describe('LedgerPage', () => {
     expect(view().getAllByText('Finding').length).toBeGreaterThan(0);
     expect(view().getAllByText('Thread').length).toBeGreaterThan(0);
     expect(view().getAllByText('Recommendation').length).toBeGreaterThan(0);
+  });
+
+  it('does not move the viewport when a card is selected', async () => {
+    // Selecting a card changes how the map is drawn, not where anything is.
+    // Refitting on selection snapped a reader who had panned to another chain
+    // back to the first one, hiding the card they had just clicked.
+    // The refit is scheduled on an animation frame so React Flow can measure
+    // the new nodes first. Running frames inline makes the count observable.
+    const raf = window.requestAnimationFrame;
+    window.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    }) as typeof window.requestAnimationFrame;
+    try {
+      mockAll();
+      wrap();
+      fireEvent.click(await screen.findByText('Map'));
+      const canvas = await screen.findByTestId('map-canvas');
+      await waitFor(() => expect(fitViewSpy).toHaveBeenCalled());
+      const fitsAfterOpening = fitViewSpy.mock.calls.length;
+
+      fireEvent.click(within(canvas).getByText('High EU churn'));
+      await screen.findByText(/Changed in run 2/);
+      fireEvent.click(within(canvas).getByText('High EU churn'));
+      await waitFor(() => expect(screen.queryByText(/Changed in run 2/)).not.toBeInTheDocument());
+
+      expect(fitViewSpy).toHaveBeenCalledTimes(fitsAfterOpening);
+    } finally {
+      window.requestAnimationFrame = raf;
+    }
   });
 
   it('opens a card and shows its evidence, with a way out to a new tab', async () => {

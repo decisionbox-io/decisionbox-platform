@@ -467,6 +467,20 @@ describe('buildStories', () => {
       finding: { ...recovered.finding, source_insight_ids: ['ins2', 'ins3'] },
     };
     expect(sightingEvidenceLink('p1', ambiguous, idx)).toBeNull();
+
+    // A run with no sighting at all — a clipped trail, or a project the
+    // backfill never reached — is scoped to its own discovery just the same,
+    // and never falls back to whatever the finding last produced.
+    const noSighting = { finding: asFound.finding, runDiscoveryId: 'd1' };
+    expect(sightingEvidenceLink('p1', noSighting, idx))
+      .toBe('/projects/p1/discoveries/d1/insights/ins1');
+    const noSightingElsewhere = {
+      finding: { ...asFound.finding, source_insight_ids: ['ins3'] },
+      runDiscoveryId: 'd1',
+    };
+    expect(sightingEvidenceLink('p1', noSightingElsewhere, idx)).toBeNull();
+    // And with nothing at all to scope it to, there is no link.
+    expect(sightingEvidenceLink('p1', { finding: asFound.finding }, idx)).toBeNull();
   });
 
   it('numbers a run by the whole history, not by its row in a windowed response', () => {

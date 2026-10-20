@@ -156,16 +156,17 @@ export function findingEvidenceLink(
  *  of evidence came from it. Two from one run cannot be told apart, and
  *  evidence from any other run is a different run's SQL. */
 function sightingInsight(idx: GraphIndex, seen: RunSighting): GraphInsight | null {
-  const s = seen.sighting;
-  if (!s?.discovery_id) return null;
-  if (s.insight_id) {
-    const named = idx.insights.get(`insight:${s.insight_id}`);
+  const discoveryId = seen.sighting?.discovery_id || seen.runDiscoveryId;
+  if (!discoveryId) return null;
+  const namedId = seen.sighting?.insight_id;
+  if (namedId) {
+    const named = idx.insights.get(`insight:${namedId}`);
     return named && !named.missing ? named : null;
   }
   const sameRun = (seen.finding.source_insight_ids ?? [])
     .map((id) => idx.insights.get(`insight:${id}`))
     .filter((stub): stub is GraphInsight =>
-      stub !== undefined && !stub.missing && stub.discovery_id === s.discovery_id);
+      stub !== undefined && !stub.missing && stub.discovery_id === discoveryId);
   return sameRun.length === 1 ? sameRun[0] : null;
 }
 
@@ -174,11 +175,12 @@ function sightingInsight(idx: GraphIndex, seen: RunSighting): GraphInsight | nul
 export function sightingEvidenceLink(
   projectId: string, seen: RunSighting, idx: GraphIndex,
 ): string | null {
-  if (!seen.sighting) return findingEvidenceLink(projectId, seen.finding, idx);
+  // Never a fallback to the finding's newest evidence, in any branch — not
+  // even for a run whose sighting is missing entirely, which is what a
+  // clipped trail and a legacy backfill both leave behind. A historical card
+  // that borrowed it would present SQL that run never wrote as the thing it
+  // found. A card with no link is honest; a card with the wrong link is not.
   const insight = sightingInsight(idx, seen);
-  // No fallback to the finding's newest evidence. A historical card that
-  // borrowed it would present SQL that run never wrote as the thing it found.
-  // A card with no link is honest; a card with the wrong link is not.
   if (!insight) return null;
   return `/projects/${projectId}/discoveries/${insight.discovery_id}/insights/${insight.id}`;
 }
@@ -584,6 +586,10 @@ export interface RunSighting {
   finding: GraphFinding;
   /** The sighting from this run, when the finding carries one. */
   sighting?: FindingSighting;
+  /** The discovery the run produced. The sighting usually names it, but a
+   *  trail that was clipped or never recorded leaves none — and the evidence
+   *  still has to be scoped to THIS run rather than borrowed from another. */
+  runDiscoveryId?: string;
   /** Severity as of that run, falling back to the finding's current one. */
   severity?: string;
 }
@@ -618,7 +624,12 @@ export function buildStories(idx: GraphIndex): RunStory[] {
           || (s.discovery_id && `disc:${s.discovery_id}` === nodeId)
           || (s.discovery_id && s.discovery_id === run.discovery_id),
       );
-      return { finding, sighting, severity: sighting?.severity || finding.severity };
+      return {
+        finding,
+        sighting,
+        runDiscoveryId: run.discovery_id,
+        severity: sighting?.severity || finding.severity,
+      };
     };
     const story: RunStory = {
       run,
