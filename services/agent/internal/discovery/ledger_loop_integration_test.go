@@ -80,7 +80,8 @@ func TestLedgerLoop_Integration(t *testing.T) {
 	ledgerRepo := database.NewLedgerRepository(db)
 	findingRepo := database.NewLedgerFindingRepository(db)
 	taskRepo := database.NewLedgerTaskRepository(db)
-	for _, r := range []interface{ EnsureIndexes(context.Context) error }{ledgerRepo, findingRepo, taskRepo} {
+	learningRepo := database.NewLedgerLearningRepository(db)
+	for _, r := range []interface{ EnsureIndexes(context.Context) error }{ledgerRepo, findingRepo, taskRepo, learningRepo} {
 		if err := r.EnsureIndexes(ctx); err != nil {
 			t.Fatalf("ensure indexes: %v", err)
 		}
@@ -91,6 +92,7 @@ func TestLedgerLoop_Integration(t *testing.T) {
 		for _, coll := range []string{
 			database.CollectionDiscoveryLedgerFindings,
 			database.CollectionDiscoveryLedgerTasks,
+			database.CollectionDiscoveryLedgerLearnings,
 			database.CollectionDiscoveryLedger,
 		} {
 			_, _ = db.Collection(coll).DeleteMany(ctx, map[string]any{"project_id": projectID})
@@ -102,12 +104,13 @@ func TestLedgerLoop_Integration(t *testing.T) {
 	t.Cleanup(func() { agentplugin.RegisterDiscoveryPolicyProvider(stubPolicy{mode: agentplugin.EvolutionModeOff}) })
 
 	o := &Orchestrator{
-		projectID:   projectID,
-		runID:       "run-1",
-		datasets:    []string{"ds"},
-		ledgerRepo:  ledgerRepo,
-		findingRepo: findingRepo,
-		taskRepo:    taskRepo,
+		projectID:    projectID,
+		runID:        "run-1",
+		datasets:     []string{"ds"},
+		ledgerRepo:   ledgerRepo,
+		findingRepo:  findingRepo,
+		taskRepo:     taskRepo,
+		learningRepo: learningRepo,
 	}
 
 	// --- Run 1: consolidate three findings, record coverage + a convergence point. ---
@@ -115,15 +118,16 @@ func TestLedgerLoop_Integration(t *testing.T) {
 		ProjectID: projectID, ID: "disc-1",
 		Schemas: map[string]models.TableSchema{"ds.orders": {}, "ds.events": {}, "ds.users": {}},
 		Insights: []models.Insight{
-			{AnalysisArea: "churn", Name: "High EU churn", Severity: "high", AffectedCount: 100, Description: "churn elevated in EU"},
-			{AnalysisArea: "fraud", Name: "Card testing spike", Severity: "critical", AffectedCount: 12},
-			{AnalysisArea: "revenue", Name: "Refund rate up", Severity: "medium", AffectedCount: 40},
+			{ID: "ins-churn-1", AnalysisArea: "churn", Name: "High EU churn", Severity: "high", AffectedCount: 100, Description: "churn elevated in EU"},
+			{ID: "ins-fraud-1", AnalysisArea: "fraud", Name: "Card testing spike", Severity: "critical", AffectedCount: 12},
+			{ID: "ins-revenue-1", AnalysisArea: "revenue", Name: "Refund rate up", Severity: "medium", AffectedCount: 40},
 		},
 	}
-	newCount, total, reSeen, err := o.consolidateFindings(ctx, run1)
+	cons1, err := o.consolidateFindings(ctx, run1)
 	if err != nil {
 		t.Fatalf("run1 consolidate: %v", err)
 	}
+	newCount, total, reSeen := cons1.NewCount, cons1.TotalCount, cons1.ReSeen
 	if newCount != 3 || total != 3 {
 		t.Fatalf("run1 expected 3 new / 3 total, got %d / %d", newCount, total)
 	}
@@ -133,17 +137,21 @@ func TestLedgerLoop_Integration(t *testing.T) {
 	o.updateLedgerMeta(ctx, run1, &parsedReflection{
 		CoverageSummary: "orders + users covered; the events tables are untouched",
 		CoveredTables:   []string{"ds.orders", "ds.users"},
-	}, newCount, total)
+	}, consolidationResult{NewCount: newCount, TotalCount: total})
 
-	// Seed a next-task the way applyNextTasks would.
+	// Seed a next-task the way applyNextTasks would, attributed to the finding
+	// it grew out of — by the INSIGHT id, which is the id the model is shown
+	// for a finding this run produced.
 	o.applyNextTasks(ctx, &parsedReflection{NextTasks: []struct {
-		Title      string `json:"title"`
-		Text       string `json:"text"`
-		Kind       string `json:"kind"`
-		TargetType string `json:"target_type"`
-		TargetID   string `json:"target_id"`
-		Supersedes string `json:"supersedes"`
-	}{{Text: "explore the untouched events tables", Kind: "next_task"}}}, nil)
+		Title            string   `json:"title"`
+		Text             string   `json:"text"`
+		Kind             string   `json:"kind"`
+		TargetType       string   `json:"target_type"`
+		TargetID         string   `json:"target_id"`
+		Supersedes       string   `json:"supersedes"`
+		OriginFindingIDs []string `json:"origin_finding_ids"`
+	}{{Text: "explore the untouched events tables", Kind: "next_task",
+		OriginFindingIDs: []string{"ins-churn-1"}}}}, nil, cons1)
 
 	// Verify the ledger persisted with substance.
 	stored, err := findingRepo.List(ctx, projectID)
@@ -185,14 +193,15 @@ func TestLedgerLoop_Integration(t *testing.T) {
 		ProjectID: projectID, ID: "disc-2",
 		Schemas: run1.Schemas,
 		Insights: []models.Insight{
-			{AnalysisArea: "churn", Name: "High EU churn", Severity: "high", AffectedCount: 100, Description: "still elevated"}, // repeat → merge
-			{AnalysisArea: "events", Name: "Event drop-off", Severity: "high", AffectedCount: 25},                               // new
+			{ID: "ins-churn-2", AnalysisArea: "churn", Name: "High EU churn", Severity: "high", AffectedCount: 100, Description: "still elevated"}, // repeat → merge
+			{ID: "ins-events-2", AnalysisArea: "events", Name: "Event drop-off", Severity: "high", AffectedCount: 25},                              // new
 		},
 	}
-	newCount2, total2, reSeen2, err := o.consolidateFindings(ctx, run2)
+	cons2, err := o.consolidateFindings(ctx, run2)
 	if err != nil {
 		t.Fatalf("run2 consolidate: %v", err)
 	}
+	newCount2, total2, reSeen2 := cons2.NewCount, cons2.TotalCount, cons2.ReSeen
 	if newCount2 != 1 {
 		t.Errorf("run2 should add exactly 1 new finding (the repeat merges), got %d", newCount2)
 	}
@@ -213,10 +222,164 @@ func TestLedgerLoop_Integration(t *testing.T) {
 	}
 
 	// Convergence grew across the two runs.
-	o.updateLedgerMeta(ctx, run2, &parsedReflection{CoverageSummary: "events now covered too"}, newCount2, total2)
+	o.updateLedgerMeta(ctx, run2, &parsedReflection{CoverageSummary: "events now covered too"},
+		consolidationResult{NewCount: newCount2, TotalCount: total2})
 	lg, _ := ledgerRepo.Get(ctx, projectID)
 	if lg == nil || len(lg.Convergence) != 2 {
 		t.Fatalf("convergence history should have 2 points, got %+v", lg)
 	}
 	t.Logf("compounding loop verified: run1=%d findings, run2 added %d (1 repeat merged), convergence points=%d", total, newCount2, len(lg.Convergence))
+
+	// --- The investigation graph: the edges this run had in hand (#389). ---
+	//
+	// Everything above proves the loop compounds. This proves it can be
+	// retraced: finding → insight, finding → per-run sightings, task → closing
+	// run + the findings that answered it, and the mirror of that last edge on
+	// the finding itself.
+
+	// The repeated finding carries one sighting per run, with the magnitude as
+	// it stood at each — the row that makes a trend drawable.
+	var churnAfter *commonmodels.LedgerFinding
+	for i := range after {
+		if after[i].Name == "High EU churn" {
+			churnAfter = &after[i]
+		}
+	}
+	if churnAfter == nil {
+		t.Fatal("the repeated finding disappeared")
+	}
+	if len(churnAfter.Sightings) != 2 {
+		t.Fatalf("want a sighting per run, got %d: %+v", len(churnAfter.Sightings), churnAfter.Sightings)
+	}
+	if churnAfter.Sightings[0].RunID != "run-1" || churnAfter.Sightings[1].RunID != "run-2" {
+		t.Errorf("sightings should be in run order, got %+v", churnAfter.Sightings)
+	}
+	if churnAfter.Sightings[0].DiscoveryID != "disc-1" || churnAfter.Sightings[1].DiscoveryID != "disc-2" {
+		t.Errorf("each sighting must name the discovery it came from, got %+v", churnAfter.Sightings)
+	}
+	// Both runs' insights are recorded, so the finding drills through to the
+	// SQL of either run.
+	for _, want := range []string{"ins-churn-1", "ins-churn-2"} {
+		if !containsString(churnAfter.SourceInsightIDs, want) {
+			t.Errorf("finding should carry insight %s, got %v", want, churnAfter.SourceInsightIDs)
+		}
+	}
+	// The thread opened in run 1 is attributed to the finding it grew out of —
+	// resolved from the insight id the model was shown.
+	openTasks, err := taskRepo.List(ctx, projectID, commonmodels.LedgerTaskStatusOpen)
+	if err != nil || len(openTasks) != 1 {
+		t.Fatalf("expected the seeded thread: n=%d err=%v", len(openTasks), err)
+	}
+	thread := openTasks[0]
+	if len(thread.OriginFindingIDs) != 1 || thread.OriginFindingIDs[0] != churnAfter.ID {
+		t.Errorf("thread origin should resolve to the churn finding (%s), got %v", churnAfter.ID, thread.OriginFindingIDs)
+	}
+
+	// Run 2 had that thread in front of it, whether or not it closed it.
+	o.markThreadsPursued(ctx)
+
+	// Run 2 closes the thread, pointing at the finding from run 2 that
+	// answered it — by its insight id, the only id for it the model ever sees.
+	var eventsFinding *commonmodels.LedgerFinding
+	for i := range after {
+		if after[i].Name == "Event drop-off" {
+			eventsFinding = &after[i]
+		}
+	}
+	if eventsFinding == nil {
+		t.Fatal("run 2's new finding is missing")
+	}
+	ref2 := &parsedReflection{}
+	ref2.TaskStatusUpdates = []struct {
+		TaskID               string   `json:"task_id"`
+		Status               string   `json:"status"`
+		Reason               string   `json:"reason"`
+		ResolvedByFindingIDs []string `json:"resolved_by_finding_ids"`
+	}{{
+		TaskID: thread.ID, Status: commonmodels.LedgerTaskStatusDone,
+		Reason:               "the events tables explain the drop-off",
+		ResolvedByFindingIDs: []string{"ins-events-2", "fabricated-id"},
+	}, {
+		// The model contradicting itself about the same thread in one
+		// response. The first close stands and this is ignored: applying it
+		// would leave the thread dropped while still naming the findings that
+		// answered it, and leave those findings mirroring a thread that was
+		// never answered.
+		TaskID: thread.ID, Status: commonmodels.LedgerTaskStatusDropped,
+		Reason: "on reflection, a dead end",
+	}}
+	ref2.Learnings = []struct {
+		Category  string  `json:"category"`
+		Note      string  `json:"note"`
+		Relevance float64 `json:"relevance"`
+	}{{Category: "schema", Note: "the events tables are partitioned by day", Relevance: 0.8}}
+	o.applyReflection(ctx, run2,
+		agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeAuto}, ref2, cons2)
+
+	closedTasks, err := taskRepo.List(ctx, projectID, commonmodels.LedgerTaskStatusDone)
+	if err != nil || len(closedTasks) != 1 {
+		t.Fatalf("the thread should be closed: n=%d err=%v", len(closedTasks), err)
+	}
+	dropped, err := taskRepo.List(ctx, projectID, commonmodels.LedgerTaskStatusDropped)
+	if err != nil {
+		t.Fatalf("list dropped: %v", err)
+	}
+	if len(dropped) != 0 {
+		t.Errorf("the second update for an already-closed thread must be ignored, got %d dropped", len(dropped))
+	}
+	closedThread := closedTasks[0]
+	if closedThread.ClosedRunID != "run-2" || closedThread.ClosedDiscoveryID != "disc-2" {
+		t.Errorf("close not attributed to run 2: %+v", closedThread)
+	}
+	if closedThread.ClosedAt.IsZero() || closedThread.CloseReason == "" {
+		t.Errorf("a close must carry when and why: %+v", closedThread)
+	}
+	if len(closedThread.ResolvedByFindingIDs) != 1 || closedThread.ResolvedByFindingIDs[0] != eventsFinding.ID {
+		t.Errorf("resolved-by should be the run-2 finding (%s) with the fabricated id dropped, got %v",
+			eventsFinding.ID, closedThread.ResolvedByFindingIDs)
+	}
+	if !containsString(closedThread.PursuedInRunIDs, "run-2") {
+		t.Errorf("run 2 had this thread in front of it: %v", closedThread.PursuedInRunIDs)
+	}
+
+	// The reverse edge is on the finding, so the tree walks from either end.
+	reloaded, err := findingRepo.List(ctx, projectID)
+	if err != nil {
+		t.Fatalf("reload findings: %v", err)
+	}
+	var mirrored []string
+	for i := range reloaded {
+		if reloaded[i].ID == eventsFinding.ID {
+			mirrored = reloaded[i].AnsweredTaskIDs
+		}
+	}
+	if len(mirrored) != 1 || mirrored[0] != closedThread.ID {
+		t.Errorf("the answering finding should record the task it answered, got %v", mirrored)
+	}
+
+	// And the learning is on the ledger, attributed to the run that produced it
+	// — it used to go only into the project-context notes, where the ledger
+	// could not see it.
+	learnings, err := learningRepo.List(ctx, projectID, 0)
+	if err != nil {
+		t.Fatalf("list learnings: %v", err)
+	}
+	if len(learnings) != 1 {
+		t.Fatalf("want 1 learning, got %d", len(learnings))
+	}
+	if learnings[0].RunID != "run-2" || learnings[0].DiscoveryID != "disc-2" {
+		t.Errorf("learning not attributed: %+v", learnings[0])
+	}
+
+	t.Logf("investigation graph verified: %d sightings on the repeated finding, thread %s closed by %s pointing at %s",
+		len(churnAfter.Sightings), closedThread.ID, closedThread.ClosedRunID, closedThread.ResolvedByFindingIDs)
+}
+
+func containsString(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
 }

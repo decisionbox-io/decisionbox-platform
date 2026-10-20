@@ -150,6 +150,7 @@ type Orchestrator struct {
 	ledgerRepo   ledgerStore
 	findingRepo  findingStore
 	taskRepo     taskStore
+	learningRepo learningStore
 	proposalRepo proposalStore
 	feedbackRepo *database.FeedbackRepository
 	debugLogRepo *database.DebugLogRepository
@@ -225,6 +226,15 @@ type Orchestrator struct {
 	// reflection / Discovery Ledger phase (from DiscoveryOptions.ReflectionEnabled,
 	// default-on). Layer B of the gate; DISCOVERY_REFLECTION_ENABLED is Layer A.
 	reflectionEnabled bool
+	// shownTaskIDs are the open threads this run was actually shown, captured
+	// when the ledger read context was built. The reflection phase records
+	// these as pursued rather than re-reading the queue, which by then may
+	// have moved under it.
+	shownTaskIDs []string
+	// promptFindingIDs are the ledger findings the reflection prompt carried.
+	// An id the model returns that is in neither this nor the run's own
+	// insights was invented.
+	promptFindingIDs []string
 
 	// recommendationVerdicts is the resolved per-project set of validation
 	// verdicts that make an insight eligible for recommendation generation
@@ -312,6 +322,7 @@ type OrchestratorOptions struct {
 	LedgerRepo         *database.LedgerRepository
 	LedgerFindingRepo  *database.LedgerFindingRepository
 	LedgerTaskRepo     *database.LedgerTaskRepository
+	LedgerLearningRepo *database.LedgerLearningRepository
 	LedgerProposalRepo *database.LedgerProposalRepository
 	FeedbackRepo       *database.FeedbackRepository
 	DebugLogRepo       *database.DebugLogRepository
@@ -471,6 +482,10 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 	if opts.LedgerTaskRepo != nil {
 		taskRepo = opts.LedgerTaskRepo
 	}
+	var learningRepo learningStore
+	if opts.LedgerLearningRepo != nil {
+		learningRepo = opts.LedgerLearningRepo
+	}
 	var proposalRepo proposalStore
 	if opts.LedgerProposalRepo != nil {
 		proposalRepo = opts.LedgerProposalRepo
@@ -486,6 +501,7 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		ledgerRepo:            ledgerRepo,
 		findingRepo:           findingRepo,
 		taskRepo:              taskRepo,
+		learningRepo:          learningRepo,
 		proposalRepo:          proposalRepo,
 		feedbackRepo:          opts.FeedbackRepo,
 		debugLogRepo:          opts.DebugLogRepo,
