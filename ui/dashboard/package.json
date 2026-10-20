@@ -15,6 +15,7 @@
     "test:coverage": "jest --coverage"
   },
   "dependencies": {
+    "@dagrejs/dagre": "^3.1.1",
     "@mantine/charts": "^8.3.16",
     "@mantine/core": "^8.3.16",
     "@mantine/dates": "^8.3.16",
@@ -25,6 +26,7 @@
     "@mantine/nprogress": "^8.3.16",
     "@tabler/icons-react": "^3.40.0",
     "@uiw/react-md-editor": "^4.0.11",
+    "@xyflow/react": "^12.12.0",
     "dayjs": "^1.11.19",
     "next": "16.3.4",
     "react": "19.2.3",

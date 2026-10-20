@@ -1,8 +1,9 @@
 import {
-  DEFAULT_OPEN_DEPTH, MAX_TREE_DEPTH, TreeNode, areasOf, buildStories, buildTree,
-  countNodes, findingChangedInRun, findingEvidenceLink, indexGraph, insightLink,
-  MAX_TREE_NODES, matchesFilters, nodeKind, nodeRawId, recommendationLink, runLabel,
-  runRefForDiscovery, severitiesOf, sightingEvidenceLink, statusTrail, statusesOf,
+  InvestigationMap, MAX_MAP_NODES, areasOf, buildMap, buildStories,
+  findingChangedInRun, findingEvidenceLink, indexGraph, insightLink,
+  matchesFilters, nodeKind, nodeRawId, recommendationLink, runLabel,
+  runRefForDiscovery, seenInRuns, severitiesOf, sightingEvidenceLink, statusTrail,
+  statusesOf,
 } from '@/components/ledger/graph';
 import type { LedgerGraph } from '@/lib/api';
 
@@ -103,13 +104,13 @@ function chainGraph(): LedgerGraph {
   };
 }
 
-/** Flattens a tree to "depth kind:id" lines, for readable assertions. */
-function flatten(nodes: TreeNode[], out: string[] = []): string[] {
-  nodes.forEach((n) => {
-    out.push(`${n.depth} ${n.nodeId}${n.cyclic ? ' (cyclic)' : ''}`);
-    flatten(n.children, out);
-  });
-  return out;
+/** The node ids a map holds, sorted, for readable assertions. */
+function mapIds(map: InvestigationMap): string[] {
+  return map.nodes.map((n) => n.id).sort();
+}
+
+function hasEdge(map: InvestigationMap, source: string, target: string, kind: string): boolean {
+  return map.edges.some((e) => e.source === source && e.target === target && e.kind === kind);
 }
 
 describe('indexGraph', () => {
@@ -178,118 +179,115 @@ describe('node references', () => {
   });
 });
 
-describe('buildTree', () => {
-  it('builds the full finding → hypothesis → answer → recommendation chain', () => {
-    const idx = indexGraph(chainGraph());
-    const roots = buildTree(idx);
-    const flat = flatten(roots);
-
-    // f2 answered t1 and t2 grew from it, so it is not a root; f1 and f3 are.
-    expect(flat).toContain('0 finding:f1');
-    expect(flat).toContain('0 finding:f3');
-    expect(flat).not.toContain('0 finding:f2');
-
-    // The chain below f1: the hypothesis, the finding that answered it, the
-    // recommendation that finding drove, and the follow-up thread.
-    const f1 = roots.find((r) => r.nodeId === 'finding:f1')!;
-    const byId = (node: TreeNode, id: string): TreeNode | undefined => {
-      if (node.nodeId === id) return node;
-      for (const child of node.children) {
-        const hit = byId(child, id);
-        if (hit) return hit;
-      }
-      return undefined;
-    };
-    const t1 = byId(f1, 'task:t1');
-    expect(t1).toBeDefined();
-    expect(t1!.via).toBe('grew_from');
-    const f2 = byId(t1!, 'finding:f2');
-    expect(f2).toBeDefined();
-    expect(f2!.via).toBe('answered_by');
-    expect(byId(f2!, 'rec:rec1')?.via).toBe('recommends_on');
-    // The follow-up continues the hypothesis.
-    expect(byId(t1!, 'task:t2')?.via).toBe('supersedes');
+describe('buildMap', () => {
+  it('draws the full finding → thread → answer → recommendation chain', () => {
+    const map = buildMap(indexGraph(chainGraph()));
+    expect(mapIds(map)).toEqual(expect.arrayContaining([
+      'finding:f1', 'finding:f2', 'task:t1', 'task:t2', 'rec:rec1',
+    ]));
+    expect(hasEdge(map, 'task:t1', 'finding:f1', 'grew_from')).toBe(true);
+    expect(hasEdge(map, 'task:t1', 'finding:f2', 'answered_by')).toBe(true);
+    expect(hasEdge(map, 'task:t2', 'task:t1', 'supersedes')).toBe(true);
+    expect(hasEdge(map, 'rec:rec1', 'finding:f2', 'recommends_on')).toBe(true);
   });
 
-  it('puts the most severe findings first', () => {
-    const idx = indexGraph(chainGraph());
-    const roots = buildTree(idx);
-    expect(roots[0].nodeId).toBe('finding:f1'); // high beats the low-severity f3
-    expect(roots.map((r) => r.kind)).not.toContain(undefined);
+  it('labels every link in words, not stored tokens', () => {
+    const map = buildMap(indexGraph(chainGraph()));
+    const labels = new Set(map.edges.map((e) => e.label));
+    expect(labels).toContain('Opened by');
+    expect(labels).toContain('Answered by');
+    expect(labels).toContain('Continues');
+    expect(labels).toContain('Recommends');
+    map.edges.forEach((e) => {
+      expect(e.label).toMatch(/^[A-Z]/);
+      expect(e.label).not.toContain('_');
+    });
   });
 
-  it('keeps archived findings as nodes rather than hiding them', () => {
-    const idx = indexGraph(chainGraph());
-    expect(flatten(buildTree(idx))).toContain('0 finding:f3');
+  it('keeps archived findings on the map rather than hiding them', () => {
+    const map = buildMap(indexGraph(chainGraph()));
+    const archived = map.nodes.find((n) => n.id === 'finding:f3');
+    expect(archived).toBeDefined();
+    expect(archived!.archived).toBe(true);
   });
 
-  it('does not hang on a cyclic supersedes chain', () => {
+  it('is unbothered by a cycle — a graph is what the data is', () => {
     const graph = chainGraph();
-    // t1 continues t2 AND t2 continues t1 — a cycle the writer should never
-    // produce, and a payload the page must survive.
     graph.edges.push({ from: 'task:t1', to: 'task:t2', kind: 'supersedes' });
-    const idx = indexGraph(graph);
-
-    const roots = buildTree(idx);
-    const flat = flatten(roots);
-    expect(flat.some((line) => line.includes('(cyclic)'))).toBe(true);
-    // Finite, and bounded well under the hard depth cap.
-    const deepest = Math.max(...flat.map((line) => Number(line.split(' ')[0])));
-    expect(deepest).toBeLessThanOrEqual(MAX_TREE_DEPTH);
-    expect(flat.length).toBeLessThan(500);
+    const map = buildMap(indexGraph(graph));
+    expect(hasEdge(map, 'task:t1', 'task:t2', 'supersedes')).toBe(true);
+    expect(hasEdge(map, 'task:t2', 'task:t1', 'supersedes')).toBe(true);
+    expect(map.nodes.length).toBeLessThan(20);
   });
 
-  it('stops at the hard depth cap on a long chain', () => {
-    // A chain of 30 threads, each continuing the last.
+  it('pulls in what a link reaches, so a chain is never shown with a hole', () => {
+    // Filtered to one area: the thread that finding opened, the finding that
+    // answered the thread and the recommendation must come with it.
+    const map = buildMap(indexGraph(chainGraph()), { area: 'inventory' });
+    expect(mapIds(map)).toEqual(expect.arrayContaining([
+      'finding:f1', 'task:t1', 'finding:f2', 'rec:rec1',
+    ]));
+  });
+
+  it('never draws a link to a node it did not draw', () => {
+    const map = buildMap(indexGraph(chainGraph()), { severity: 'high' });
+    const drawn = new Set(map.nodes.map((n) => n.id));
+    map.edges.forEach((e) => {
+      expect(drawn.has(e.source)).toBe(true);
+      expect(drawn.has(e.target)).toBe(true);
+    });
+  });
+
+  it('caps a large investigation, keeps the worst, and says what it left out', () => {
     const graph: LedgerGraph = {
       runs: [], findings: [], tasks: [], insights: [], recommendations: [],
       learnings: [], proposals: [], edges: [], truncated: noTruncation,
     };
-    for (let i = 0; i < 30; i += 1) {
-      graph.tasks.push({ node_id: `task:t${i}`, id: `t${i}`, text: `thread ${i}`, kind: 'next_task', status: 'open' });
-      if (i > 0) graph.edges.push({ from: `task:t${i}`, to: `task:t${i - 1}`, kind: 'supersedes' });
+    for (let i = 0; i < MAX_MAP_NODES + 50; i += 1) {
+      graph.findings.push({
+        node_id: `finding:f${i}`, id: `f${i}`, name: `finding ${i}`,
+        severity: i < 10 ? 'critical' : 'low', status: 'confirmed', seen_count: 1,
+      });
     }
-    const flat = flatten(buildTree(indexGraph(graph)));
-    const deepest = Math.max(...flat.map((line) => Number(line.split(' ')[0])));
-    expect(deepest).toBeLessThanOrEqual(MAX_TREE_DEPTH);
+    const map = buildMap(indexGraph(graph));
+    expect(map.nodes).toHaveLength(MAX_MAP_NODES);
+    expect(map.truncated).toBe(true);
+    expect(map.totalNodes).toBe(MAX_MAP_NODES + 50);
+    expect(map.nodes.slice(0, 10).every((n) => n.severity === 'critical')).toBe(true);
   });
 
-  it('shows a thread whose origin finding is outside the window', () => {
-    const graph = chainGraph();
-    // The finding f1 is gone from the payload; t1 still says it grew from it.
-    graph.findings = graph.findings.filter((f) => f.id !== 'f1');
-    const roots = buildTree(indexGraph(graph));
-    // t1's parent is absent, so t1 itself becomes a root rather than vanishing.
-    expect(flatten(roots)).toContain('0 task:t1');
-  });
+  it('gives each node a readable title, kind and subtitle', () => {
+    const map = buildMap(indexGraph(chainGraph()));
+    const finding = map.nodes.find((n) => n.id === 'finding:f1')!;
+    expect(finding.kind).toBe('finding');
+    expect(finding.title).toBe('Dead stock in a few sellers');
+    expect(finding.meta).toContain('Inventory');
+    expect(finding.meta).toContain('runs 1, 2');
 
-  it('counts a subtree for the collapsed badge', () => {
-    const idx = indexGraph(chainGraph());
-    const f1 = buildTree(idx).find((r) => r.nodeId === 'finding:f1')!;
-    expect(countNodes(f1)).toBeGreaterThan(3);
-  });
-
-  it('collapses below the default depth', () => {
-    expect(DEFAULT_OPEN_DEPTH).toBe(2);
+    const thread = map.nodes.find((n) => n.id === 'task:t1')!;
+    expect(thread.kind).toBe('task');
+    expect(thread.meta).toContain('Hypothesis');
+    expect(thread.meta).toContain('Opened in run 1');
+    expect(thread.meta).toContain('Closed in run 2');
   });
 });
 
 describe('filters', () => {
   it('filters roots by area, severity, status and date', () => {
     const idx = indexGraph(chainGraph());
-    expect(buildTree(idx, { area: 'inventory' }).map((r) => r.nodeId)).toEqual(
+    expect(mapIds(buildMap(idx, { area: 'inventory' }))).toEqual(
       expect.arrayContaining(['finding:f1']),
     );
-    expect(buildTree(idx, { area: 'inventory' }).map((r) => r.nodeId)).not.toContain('finding:f3');
-    expect(buildTree(idx, { severity: 'low' }).map((r) => r.nodeId)).toContain('finding:f3');
-    expect(buildTree(idx, { status: 'resolved' }).map((r) => r.nodeId)).toContain('finding:f3');
-    expect(buildTree(idx, { from: '2026-05-03' }).map((r) => r.nodeId)).not.toContain('finding:f3');
-    expect(buildTree(idx, { to: '2026-05-01' }).map((r) => r.nodeId)).not.toContain('finding:f1');
+    expect(mapIds(buildMap(idx, { area: 'inventory' }))).not.toContain('finding:f3');
+    expect(mapIds(buildMap(idx, { severity: 'low' }))).toContain('finding:f3');
+    expect(mapIds(buildMap(idx, { status: 'resolved' }))).toContain('finding:f3');
+    expect(mapIds(buildMap(idx, { from: '2026-05-03' }))).not.toContain('finding:f3');
+    expect(mapIds(buildMap(idx, { to: '2026-05-01' }))).not.toContain('finding:f1');
   });
 
   it('"changed in the last run" keeps only what the latest run touched', () => {
     const idx = indexGraph(chainGraph());
-    const roots = buildTree(idx, { changedSinceLastRun: true }).map((r) => r.nodeId);
+    const roots = mapIds(buildMap(idx, { changedSinceLastRun: true }));
     // f1 was seen again in r2; f3 was not touched after r1.
     expect(roots).toContain('finding:f1');
     expect(roots).not.toContain('finding:f3');
@@ -301,7 +299,7 @@ describe('filters', () => {
     f3.status_history = [{ status: 'refuted', run_id: 'r2', at: '2026-05-03T09:00:00Z', source: 'reflection', reason: 'disproved' }];
     const idx = indexGraph(graph);
     expect(findingChangedInRun(f3, 'r2')).toBe(true);
-    expect(buildTree(idx, { changedSinceLastRun: true }).map((r) => r.nodeId)).toContain('finding:f3');
+    expect(mapIds(buildMap(idx, { changedSinceLastRun: true }))).toContain('finding:f3');
   });
 
   it('a finding with no runs is unchanged by definition', () => {
@@ -371,7 +369,7 @@ describe('links', () => {
     };
     const idx = indexGraph(graph);
     expect(findingChangedInRun(idx.findings.get('finding:f9')!, undefined, 'd9')).toBe(true);
-    expect(buildTree(idx, { changedSinceLastRun: true }).map((r) => r.nodeId)).toContain('finding:f9');
+    expect(mapIds(buildMap(idx, { changedSinceLastRun: true }))).toContain('finding:f9');
   });
 
   it('an insight or recommendation that is gone has no link', () => {
@@ -390,8 +388,10 @@ describe('statusTrail', () => {
     const idx = indexGraph(chainGraph());
     const trail = statusTrail(idx, idx.findings.get('finding:f1')!);
     expect(trail).toEqual([
-      'confirmed (Run 1, “first seen”)',
-      'changed (Run 2, “affected count moved from 12 to 31”)',
+      // Sentence case, and the run named in words: the trail reads as a
+      // sentence rather than as the tokens it is stored as.
+      'Confirmed in run 1, “first seen”',
+      'Changed in run 2, “affected count moved from 12 to 31”',
     ]);
   });
 
@@ -401,7 +401,7 @@ describe('statusTrail', () => {
     expect(statusTrail(idx, {
       node_id: 'finding:x', id: 'x', seen_count: 1,
       status_history: [{ status: 'confirmed', at: '2026-05-01T09:00:00Z' }],
-    })).toEqual(['confirmed (an earlier run)']);
+    })).toEqual(['Confirmed in an earlier run']);
   });
 });
 
@@ -447,10 +447,42 @@ describe('buildStories', () => {
     expect(asSeen.severity).toBe('high');
     expect(sightingEvidenceLink('p1', asSeen, idx)).toBe('/projects/p1/discoveries/d2/insights/ins3');
 
-    // A historical run with no evidence of its own borrows none: a card that
+    // A sighting the backfill recovered names its run but not its insight.
+    // The finding's evidence from that same run is what it meant...
+    const recovered = { ...asFound, sighting: { ...asFound.sighting!, insight_id: undefined } };
+    expect(sightingEvidenceLink('p1', recovered, idx)).toBe('/projects/p1/discoveries/d1/insights/ins1');
+
+    // ...but a run with no evidence of its own borrows none: a card that
     // linked to a later run's SQL would present it as what this run found.
-    const noEvidence = { ...asFound, sighting: { ...asFound.sighting!, insight_id: undefined } };
-    expect(sightingEvidenceLink('p1', noEvidence, idx)).toBeNull();
+    const elsewhere = {
+      ...recovered,
+      finding: { ...recovered.finding, source_insight_ids: ['ins3'] },
+    };
+    expect(sightingEvidenceLink('p1', elsewhere, idx)).toBeNull();
+
+    // Two pieces of evidence from the one run cannot be told apart either.
+    const ambiguous = {
+      ...recovered,
+      sighting: { ...recovered.sighting!, discovery_id: 'd2' },
+      finding: { ...recovered.finding, source_insight_ids: ['ins2', 'ins3'] },
+    };
+    expect(sightingEvidenceLink('p1', ambiguous, idx)).toBeNull();
+  });
+
+  it('names the runs a finding was seen in, however the sighting identifies them', () => {
+    const graph = chainGraph();
+    const f1 = graph.findings.find((f) => f.id === 'f1')!;
+    expect(seenInRuns(indexGraph(graph), f1)).toBe('1, 2');
+
+    // A sighting the backfill recovered carries the discovery, not the run id.
+    // The run whose document survived is a `run:` node, so looking for a
+    // `disc:` node by that discovery finds nothing and the run goes unnamed.
+    f1.sightings = (f1.sightings ?? []).map((s) => ({ ...s, run_id: '' }));
+    expect(seenInRuns(indexGraph(graph), f1)).toBe('1, 2');
+
+    // A sighting that names neither is not attributed to a run at all.
+    f1.sightings = [{ date: '2026-05-01T09:00:00Z' }];
+    expect(seenInRuns(indexGraph(graph), f1)).toBe('');
   });
 
   it('leaves out run stubs for discoveries that no longer exist', () => {
@@ -467,9 +499,9 @@ describe('buildStories', () => {
 
 // --- Scale and reachability (first platform review round) ---
 
-describe('tree expansion is bounded', () => {
+describe('the map stays finite', () => {
   /** A graph where every finding leads into every thread of the next stage —
-   *  67 nodes, and the shape whose paths multiply. */
+   *  the shape whose PATHS multiply even though its node count does not. */
   function fanOutGraph(stages: number, perStage: number): LedgerGraph {
     const g: LedgerGraph = {
       runs: [], findings: [], tasks: [], insights: [], recommendations: [],
@@ -497,69 +529,30 @@ describe('tree expansion is bounded', () => {
     return g;
   }
 
-  it('does not multiply a subtree once per path', () => {
+  it('draws one node per node, however many paths reach it', () => {
+    // The tree this replaced expanded a node once per PATH, so this 67-node
+    // graph became millions. A map has no paths to multiply.
     const graph = fanOutGraph(6, 10);
     const payloadNodes = graph.findings.length + graph.tasks.length;
     const started = Date.now();
-    const roots = buildTree(indexGraph(graph));
-    const built = flatten(roots).length;
-
-    // Without repeat-suppression this shape materialises millions of nodes.
-    expect(built).toBeLessThanOrEqual(MAX_TREE_NODES);
-    expect(built).toBeLessThan(payloadNodes * 20);
-    expect(Date.now() - started).toBeLessThan(5000);
-  });
-
-  it('flags a node whose subtree was already drawn', () => {
-    // One finding answering two threads: genuinely reachable by two paths.
-    const graph = chainGraph();
-    graph.tasks.push({
-      node_id: 'task:t3', id: 't3', title: 'Another thread f2 answered',
-      text: 'another', kind: 'next_task', status: 'done',
-      resolved_by_finding_ids: ['f2'],
-    });
-    graph.edges.push({ from: 'task:t3', to: 'finding:f2', kind: 'answered_by' });
-    const roots = buildTree(indexGraph(graph));
-    const repeated: TreeNode[] = [];
-    const visit = (nodes: TreeNode[]) => nodes.forEach((n) => {
-      if (n.repeated) repeated.push(n);
-      visit(n.children);
-    });
-    visit(roots);
-    expect(repeated.length).toBeGreaterThan(0);
-    expect(repeated.every((n) => n.children.length === 0)).toBe(true);
-  });
-
-  it('stops scheduling siblings once the budget is spent', () => {
-    // One node with thousands of children: a budget that only stopped
-    // descending would still materialise every one of them.
-    const graph: LedgerGraph = {
-      runs: [], findings: [
-        { node_id: 'finding:f1', id: 'f1', name: 'One root', severity: 'high', status: 'confirmed', seen_count: 1 },
-      ],
-      tasks: [], insights: [], recommendations: [], learnings: [], proposals: [],
-      edges: [], truncated: noTruncation,
-    };
-    for (let i = 0; i < 6000; i += 1) {
-      graph.tasks.push({ node_id: `task:t${i}`, id: `t${i}`, text: `t${i}`, kind: 'next_task', status: 'open' });
-      graph.edges.push({ from: `task:t${i}`, to: 'finding:f1', kind: 'grew_from' });
-    }
-    const built = flatten(buildTree(indexGraph(graph))).length;
-    expect(built).toBeLessThanOrEqual(MAX_TREE_NODES);
+    const map = buildMap(indexGraph(graph));
+    expect(map.nodes).toHaveLength(payloadNodes);
+    expect(new Set(map.nodes.map((n) => n.id)).size).toBe(payloadNodes);
+    expect(Date.now() - started).toBeLessThan(2000);
   });
 
   it('keeps a component whose nodes all claim each other', () => {
     // A thread that re-checks a finding and is answered by that same finding
-    // is a valid two-node cycle: both are somebody's child, so neither is a
-    // root, and the whole history would otherwise disappear.
+    // is a valid two-node cycle. A tree had no root for it and dropped the
+    // whole component; a map just draws both links.
     const graph: LedgerGraph = {
-      runs: [], findings: [
-        { node_id: 'finding:f1', id: 'f1', name: 'Recurring', severity: 'high', status: 'confirmed', seen_count: 2 },
-      ],
-      tasks: [
-        { node_id: 'task:t1', id: 't1', title: 'Re-check it', text: 'recheck', kind: 'next_task', status: 'done',
-          origin_finding_ids: ['f1'], resolved_by_finding_ids: ['f1'] },
-      ],
+      runs: [],
+      findings: [{ node_id: 'finding:f1', id: 'f1', name: 'Recurring', severity: 'high', status: 'confirmed', seen_count: 2 }],
+      tasks: [{
+        node_id: 'task:t1', id: 't1', title: 'Re-check it', text: 'recheck',
+        kind: 'next_task', status: 'done',
+        origin_finding_ids: ['f1'], resolved_by_finding_ids: ['f1'],
+      }],
       insights: [], recommendations: [], learnings: [], proposals: [],
       edges: [
         { from: 'task:t1', to: 'finding:f1', kind: 'grew_from' },
@@ -567,39 +560,18 @@ describe('tree expansion is bounded', () => {
       ],
       truncated: noTruncation,
     };
-    const flat = flatten(buildTree(indexGraph(graph)));
-    expect(flat.length).toBeGreaterThan(0);
-    expect(flat.some((line) => line.includes('finding:f1') || line.includes('task:t1'))).toBe(true);
+    const map = buildMap(indexGraph(graph));
+    expect(mapIds(map)).toEqual(['finding:f1', 'task:t1']);
+    expect(map.edges).toHaveLength(2);
   });
 
-  it('does not promote a filtered-out finding to a root when rescuing', () => {
-    // The documented rule: a finding the filters exclude is not shown as a
-    // ROOT, but may still appear beneath a thread that points at it — hiding
-    // it there would break the chain the view exists to show. The rescue must
-    // not quietly turn it back into a root.
+  it('excludes a filtered-out finding that nothing else reaches', () => {
     const graph: LedgerGraph = {
-      runs: [], findings: [
-        { node_id: 'finding:f1', id: 'f1', name: 'Low', area: 'misc', severity: 'low', status: 'confirmed', seen_count: 1 },
-      ],
-      tasks: [
-        { node_id: 'task:t1', id: 't1', text: 'recheck', kind: 'next_task', status: 'done',
-          origin_finding_ids: ['f1'], resolved_by_finding_ids: ['f1'] },
-      ],
-      insights: [], recommendations: [], learnings: [], proposals: [],
-      edges: [
-        { from: 'task:t1', to: 'finding:f1', kind: 'grew_from' },
-        { from: 'task:t1', to: 'finding:f1', kind: 'answered_by' },
-      ],
-      truncated: noTruncation,
+      runs: [],
+      findings: [{ node_id: 'finding:f1', id: 'f1', name: 'Low', area: 'misc', severity: 'low', status: 'confirmed', seen_count: 1 }],
+      tasks: [], insights: [], recommendations: [], learnings: [], proposals: [],
+      edges: [], truncated: noTruncation,
     };
-    const roots = buildTree(indexGraph(graph), { severity: 'critical' });
-    expect(roots.map((r) => r.nodeId)).not.toContain('finding:f1');
-    // The thread is still rescued, and the finding is reachable through it.
-    expect(roots.map((r) => r.nodeId)).toContain('task:t1');
-    expect(flatten(roots).join(' ')).toContain('finding:f1');
-
-    // And with no thread to rescue, a filtered-out finding is simply absent.
-    const lone: LedgerGraph = { ...graph, tasks: [], edges: [] };
-    expect(flatten(buildTree(indexGraph(lone), { severity: 'critical' }))).toEqual([]);
+    expect(buildMap(indexGraph(graph), { severity: 'critical' }).nodes).toHaveLength(0);
   });
 });

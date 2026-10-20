@@ -10,45 +10,13 @@ import type {
   LedgerGraph,
 } from '@/lib/api';
 
-/** How deep the tree expands by default. Below this, nodes are collapsed. */
-export const DEFAULT_OPEN_DEPTH = 2;
-/** How many roots are rendered before the "show more" control. */
-export const ROOTS_PAGE_SIZE = 25;
-/** Hard ceiling on the walk, so a malformed payload cannot build forever. */
-export const MAX_TREE_DEPTH = 12;
-/** Hard ceiling on how many nodes the whole tree may materialise.
- *
- *  Depth alone does not bound it. A node with several parents is reachable by
- *  several paths, and expanding it under each one multiplies: a perfectly
- *  valid graph of 67 nodes — seven findings linked through six stages of ten
- *  threads — expands to over two million, which is hundreds of megabytes and a
- *  frozen tab. The repeat-suppression below is what normally prevents that;
- *  this is the backstop for a shape it does not. */
-export const MAX_TREE_NODES = 5000;
+/** How many nodes the map draws before it stops and says so. A canvas handles
+ *  a few hundred comfortably; a 500-finding project with every thread and
+ *  recommendation hanging off it is past what a reader can take in, and the
+ *  filters are the way through. */
+export const MAX_MAP_NODES = 400;
 
-export type TreeNodeKind = 'finding' | 'task' | 'recommendation' | 'learning';
-
-/** One node in the rendered tree. `path` makes a repeated node addressable. */
-export interface TreeNode {
-  /** The payload node_id. The same node can legitimately appear under two
-   *  parents (a finding that answered two threads), so this is not unique in
-   *  the tree — `path` is. */
-  nodeId: string;
-  /** This node's subtree was already drawn elsewhere, so it renders as a leaf
-   *  rather than repeating it. */
-  repeated?: boolean;
-  /** The walk stopped here because the whole tree hit its node budget. */
-  budgetReached?: boolean;
-  path: string;
-  kind: TreeNodeKind;
-  depth: number;
-  /** Why this node hangs off its parent, for the connector label. */
-  via?: GraphEdgeKind;
-  children: TreeNode[];
-  /** True when the node is already an ancestor of itself on this path: the
-   *  payload contains a cycle, and the walk stops here rather than looping. */
-  cyclic?: boolean;
-}
+export type MapNodeKind = 'finding' | 'task' | 'recommendation';
 
 /** Everything the tree view needs, indexed. */
 export interface GraphIndex {
@@ -177,20 +145,39 @@ export function findingEvidenceLink(
   return null;
 }
 
-/** The evidence page for a finding AS ONE RUN SAW IT: that run's own sighting
- *  names its own insight, so the link opens the SQL that run wrote rather than
- *  whatever the latest run happened to produce. */
+/** The insight one sighting is evidence for.
+ *
+ *  A sighting recorded by a run names its own insight. A sighting recovered by
+ *  the backfill names only the run it came from — so the insight it meant is
+ *  the finding's evidence FROM THAT SAME RUN, and only when exactly one piece
+ *  of evidence came from it. Two from one run cannot be told apart, and
+ *  evidence from any other run is a different run's SQL. */
+function sightingInsight(idx: GraphIndex, seen: RunSighting): GraphInsight | null {
+  const s = seen.sighting;
+  if (!s?.discovery_id) return null;
+  if (s.insight_id) {
+    const named = idx.insights.get(`insight:${s.insight_id}`);
+    return named && !named.missing ? named : null;
+  }
+  const sameRun = (seen.finding.source_insight_ids ?? [])
+    .map((id) => idx.insights.get(`insight:${id}`))
+    .filter((stub): stub is GraphInsight =>
+      stub !== undefined && !stub.missing && stub.discovery_id === s.discovery_id);
+  return sameRun.length === 1 ? sameRun[0] : null;
+}
+
+/** The evidence page for a finding AS ONE RUN SAW IT: the link opens the SQL
+ *  that run wrote rather than whatever the latest run happened to produce. */
 export function sightingEvidenceLink(
   projectId: string, seen: RunSighting, idx: GraphIndex,
 ): string | null {
-  const s = seen.sighting;
-  if (s?.discovery_id && evidenceResolves(idx, s.insight_id)) {
-    return `/projects/${projectId}/discoveries/${s.discovery_id}/insights/${s.insight_id}`;
-  }
+  if (!seen.sighting) return findingEvidenceLink(projectId, seen.finding, idx);
+  const insight = sightingInsight(idx, seen);
   // No fallback to the finding's newest evidence. A historical card that
   // borrowed it would present SQL that run never wrote as the thing it found.
   // A card with no link is honest; a card with the wrong link is not.
-  return seen.sighting ? null : findingEvidenceLink(projectId, seen.finding, idx);
+  if (!insight) return null;
+  return `/projects/${projectId}/discoveries/${insight.discovery_id}/insights/${insight.id}`;
 }
 
 /** The evidence page for one insight stub. */
@@ -258,197 +245,219 @@ export function matchesFilters(
   return true;
 }
 
-/** childrenOf returns the nodes that hang under a node, with the edge that put
- *  them there.
- *
- *  Only four edge kinds make one node a child of another: a thread hangs under
- *  the finding it grew out of, a follow-up under the thread it continues, a
- *  finding that answered a thread under that thread, and a recommendation under
- *  the finding whose insight it was made from. Everything else — a run's
- *  `found`, `opened`, `closed`, `pursued`, an `in_run` — is an attribute of a
- *  node rather than a level of the tree: a tree rooted in runs is the Story
- *  view, and this one is rooted in what was found.
- *
- *  `grew_from` and `supersedes` point child → parent, so they are read
- *  backwards. */
-function childrenOf(idx: GraphIndex, nodeId: string): Array<{ nodeId: string; kind: TreeNodeKind; via: GraphEdgeKind }> {
-  const out: Array<{ nodeId: string; kind: TreeNodeKind; via: GraphEdgeKind }> = [];
+/** One node of the investigation map. */
+export interface MapNode {
+  id: string; // the payload node_id
+  kind: MapNodeKind;
+  title: string;
+  severity?: string; // findings only
+  status?: string;
+  /** The one-line subtitle: area, how often it was seen, which runs. */
+  meta?: string;
+  archived?: boolean;
+  missing?: boolean;
+  priority?: number; // recommendations only
+}
 
-  // Inbound `grew_from` / `supersedes`: the thread names its parent.
-  (idx.in.get(nodeId) ?? []).forEach((e) => {
-    if (e.kind === 'grew_from' || e.kind === 'supersedes') {
-      out.push({ nodeId: e.from, kind: 'task', via: e.kind });
-    }
-  });
-  // Outbound `answered_by`: a thread names the findings that answered it.
+/** One link of the investigation map, with the words a reader needs. */
+export interface MapEdge {
+  id: string;
+  source: string;
+  target: string;
+  kind: GraphEdgeKind;
+  label: string;
+}
+
+export interface InvestigationMap {
+  nodes: MapNode[];
+  edges: MapEdge[];
+  /** True when the node cap cut the map short. */
+  truncated: boolean;
+  /** How many nodes the filters admitted, before the cap. */
+  totalNodes: number;
+}
+
+/** The relationship words, in the direction the map draws them. */
+const EDGE_LABEL: Partial<Record<GraphEdgeKind, string>> = {
+  grew_from: 'Opened by',
+  supersedes: 'Continues',
+  answered_by: 'Answered by',
+  recommends_on: 'Recommends',
+};
+
+/** Human labels for a node kind, for the panel and the legend. */
+export const KIND_LABEL: Record<MapNodeKind, string> = {
+  finding: 'Finding',
+  task: 'Thread',
+  recommendation: 'Recommendation',
+};
+
+/** Sentence case for a stored lower-case token: "next_task" → "Next task". */
+export function humanise(token: string | undefined): string {
+  if (!token) return '';
+  const spaced = token.replace(/_/g, ' ');
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
+/** The runs a finding was seen in, as "2, 4, 7". Empty when none resolve. */
+export function seenInRuns(idx: GraphIndex, finding: GraphFinding): string {
+  const ordinals = (finding.sightings ?? [])
+    .map((s) => idx.runOrdinal.get(`run:${s.run_id}`)
+      ?? idx.runOrdinal.get(runRefForDiscovery(idx, s.discovery_id)))
+    .filter((n): n is number => Boolean(n));
+  return [...new Set(ordinals)].sort((a, b) => a - b).join(', ');
+}
+
+function findingMeta(idx: GraphIndex, f: GraphFinding): string {
+  const parts: string[] = [];
+  if (f.area) parts.push(humanise(f.area));
+  if (f.seen_count > 1) {
+    const runs = seenInRuns(idx, f);
+    parts.push(runs ? `Seen ${f.seen_count}× in runs ${runs}` : `Seen ${f.seen_count}×`);
+  }
+  return parts.join(' · ');
+}
+
+function taskMeta(idx: GraphIndex, t: GraphTask): string {
+  const parts: string[] = [humanise(t.kind)];
+  const opened = idx.runOrdinal.get(`run:${t.created_run_id}`);
+  const closed = idx.runOrdinal.get(`run:${t.closed_run_id}`);
+  if (opened) parts.push(`Opened in run ${opened}`);
+  if (closed) parts.push(`Closed in run ${closed}`);
+  return parts.filter(Boolean).join(' · ');
+}
+
+/** mapNeighbours are the nodes one link away that the map draws a link to. */
+function mapNeighbours(idx: GraphIndex, nodeId: string): string[] {
+  const out: string[] = [];
   (idx.out.get(nodeId) ?? []).forEach((e) => {
-    if (e.kind === 'answered_by') out.push({ nodeId: e.to, kind: 'finding', via: e.kind });
+    if (EDGE_LABEL[e.kind]) out.push(e.to);
+  });
+  (idx.in.get(nodeId) ?? []).forEach((e) => {
+    if (EDGE_LABEL[e.kind]) out.push(e.from);
   });
   // A recommendation reaches a finding through the insight they share.
   if (nodeKind(nodeId) === 'finding') {
-    const insightIds = (idx.out.get(nodeId) ?? [])
-      .filter((e) => e.kind === 'evidenced_by')
-      .map((e) => e.to);
-    const seen = new Set<string>();
-    insightIds.forEach((insightId) => {
-      (idx.in.get(insightId) ?? []).forEach((e) => {
-        if (e.kind === 'recommends_on' && !seen.has(e.from)) {
-          seen.add(e.from);
-          out.push({ nodeId: e.from, kind: 'recommendation', via: 'recommends_on' });
-        }
+    (idx.out.get(nodeId) ?? []).forEach((e) => {
+      if (e.kind !== 'evidenced_by') return;
+      (idx.in.get(e.to) ?? []).forEach((r) => {
+        if (r.kind === 'recommends_on') out.push(r.from);
       });
     });
   }
   return out;
 }
 
-/** buildTree assembles the roots and their descendants.
+/** buildMap projects the payload onto the nodes and links the canvas draws.
  *
- *  Roots are the findings and threads nothing else claims as a child: a finding
- *  no thread grew out of upward, and a thread with no origin finding and no
- *  parent task. That is the honest definition — a chain's root is whatever has
- *  no parent — and it means a thread whose origin finding fell outside the
- *  window still shows up rather than vanishing with its parent.
+ *  No recursion and no tree. A graph is what the data is: a cycle is just a
+ *  cycle and needs no guard, and a node reachable two ways is one node with
+ *  two links rather than a subtree drawn twice.
  *
- *  The walk guards against a cycle by tracking the ancestors on the current
- *  path, and stops at MAX_TREE_DEPTH regardless, so a payload that somehow
- *  describes an infinite structure renders finite.
- *
- *  It also expands each node ONCE. A finding that answered two threads, or a
- *  recommendation reached through two findings, is genuinely reachable by
- *  several paths; drawing its whole subtree under each one multiplies the tree
- *  without adding anything a reader has not already seen. Later appearances
- *  render as a leaf flagged `repeated`, and the client says where to look. */
-export function buildTree(
-  idx: GraphIndex, filters: TreeFilters = {},
-): TreeNode[] {
+ *  The filters decide which FINDINGS are in; anything a drawable link reaches
+ *  from them comes with them, so a chain is never shown with its middle
+ *  missing. */
+export function buildMap(idx: GraphIndex, filters: TreeFilters = {}): InvestigationMap {
   const latestRunId = idx.latestRun?.run_id;
   const latestDiscoveryId = idx.latestRun?.discovery_id;
 
-  const claimedAsChild = new Set<string>();
-  idx.findings.forEach((_f, nodeId) => {
-    (idx.in.get(nodeId) ?? []).forEach((e) => {
-      if (e.kind === 'answered_by') claimedAsChild.add(nodeId);
-    });
-  });
-  idx.tasks.forEach((_t, nodeId) => {
-    (idx.out.get(nodeId) ?? []).forEach((e) => {
-      if ((e.kind === 'grew_from' && idx.findings.has(e.to)) ||
-          (e.kind === 'supersedes' && idx.tasks.has(e.to))) {
-        claimedAsChild.add(nodeId);
-      }
-    });
-  });
-
-  const rootIds: Array<{ nodeId: string; kind: TreeNodeKind }> = [];
+  const wanted = new Set<string>();
   idx.findings.forEach((f, nodeId) => {
-    if (claimedAsChild.has(nodeId)) return;
-    if (!matchesFilters(f, filters, latestRunId, latestDiscoveryId)) return;
-    rootIds.push({ nodeId, kind: 'finding' });
-  });
-  idx.tasks.forEach((_t, nodeId) => {
-    if (claimedAsChild.has(nodeId)) return;
-    // A thread root is only interesting when no finding root already leads to
-    // it; a bare thread with no provenance is still shown, since "we are
-    // looking into this and do not know why" is real state.
-    rootIds.push({ nodeId, kind: 'task' });
+    if (matchesFilters(f, filters, latestRunId, latestDiscoveryId)) wanted.add(nodeId);
   });
 
-  // Findings first, by severity then recency, so the tree opens on what
-  // matters; threads after them.
-  const severityOrder: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
-  rootIds.sort((a, b) => {
-    if (a.kind !== b.kind) return a.kind === 'finding' ? -1 : 1;
-    if (a.kind === 'finding') {
-      const fa = idx.findings.get(a.nodeId)!;
-      const fb = idx.findings.get(b.nodeId)!;
-      const sa = severityOrder[fa.severity ?? ''] ?? 5;
-      const sb = severityOrder[fb.severity ?? ''] ?? 5;
-      if (sa !== sb) return sa - sb;
-      return new Date(fb.last_seen ?? 0).getTime() - new Date(fa.last_seen ?? 0).getTime();
+  const queue = [...wanted];
+  while (queue.length > 0) {
+    const nodeId = queue.shift()!;
+    mapNeighbours(idx, nodeId).forEach((next) => {
+      const kind = nodeKind(next);
+      if (kind !== 'finding' && kind !== 'task' && kind !== 'rec') return;
+      if (wanted.has(next)) return;
+      wanted.add(next);
+      queue.push(next);
+    });
+  }
+
+  // Most important first, so the cap keeps those.
+  const severityRank: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+  const candidates: MapNode[] = [];
+  wanted.forEach((nodeId) => {
+    const finding = idx.findings.get(nodeId);
+    if (finding) {
+      candidates.push({
+        id: nodeId,
+        kind: 'finding',
+        title: finding.name || finding.id,
+        severity: finding.severity,
+        status: finding.status,
+        meta: findingMeta(idx, finding),
+        archived: finding.archived,
+        missing: finding.missing,
+      });
+      return;
     }
-    return a.nodeId.localeCompare(b.nodeId);
+    const task = idx.tasks.get(nodeId);
+    if (task) {
+      candidates.push({
+        id: nodeId,
+        kind: 'task',
+        title: task.title || task.text || task.id,
+        status: task.status,
+        meta: taskMeta(idx, task),
+        missing: task.missing,
+      });
+      return;
+    }
+    const rec = idx.recommendations.get(nodeId);
+    if (rec) {
+      candidates.push({
+        id: nodeId,
+        kind: 'recommendation',
+        title: rec.title || rec.id,
+        meta: rec.validation_verdict ? humanise(rec.validation_verdict) : undefined,
+        priority: rec.priority,
+      });
+    }
   });
 
-  // Expanded once each, across the whole tree — see the doc comment.
-  const expanded = new Set<string>();
-  let budget = MAX_TREE_NODES;
+  const kindOrder: Record<MapNodeKind, number> = { finding: 0, task: 1, recommendation: 2 };
+  candidates.sort((a, b) => {
+    if (a.kind !== b.kind) return kindOrder[a.kind] - kindOrder[b.kind];
+    const sa = severityRank[a.severity ?? ''] ?? 5;
+    const sb = severityRank[b.severity ?? ''] ?? 5;
+    if (sa !== sb) return sa - sb;
+    return a.title.localeCompare(b.title);
+  });
 
-  const walk = (
-    nodeId: string, kind: TreeNodeKind, depth: number, path: string, ancestors: Set<string>,
-  ): TreeNode => {
-    const node: TreeNode = { nodeId, path, kind, depth, children: [] };
-    budget -= 1;
-    if (ancestors.has(nodeId)) {
-      node.cyclic = true;
-      return node;
-    }
-    if (expanded.has(nodeId)) {
-      node.repeated = true;
-      return node;
-    }
-    if (depth >= MAX_TREE_DEPTH) return node;
-    if (budget <= 0) {
-      node.budgetReached = true;
-      return node;
-    }
-    expanded.add(nodeId);
-    const nextAncestors = new Set(ancestors);
-    nextAncestors.add(nodeId);
-    const children = childrenOf(idx, nodeId);
-    for (let i = 0; i < children.length; i += 1) {
-      // Checked BEFORE each child is scheduled, not only before descending
-      // into one. A single node with thousands of children would otherwise
-      // materialise all of them — the budget would stop their subtrees and
-      // nothing else, which is not a bound on anything that matters.
-      if (budget <= 0) {
-        node.budgetReached = true;
-        break;
-      }
-      const child = children[i];
-      const built = walk(
-        child.nodeId, child.kind, depth + 1, `${path}/${i}:${child.nodeId}`, nextAncestors,
-      );
-      built.via = child.via;
-      node.children.push(built);
-    }
-    return node;
+  const truncated = candidates.length > MAX_MAP_NODES;
+  const nodes = truncated ? candidates.slice(0, MAX_MAP_NODES) : candidates;
+  const drawn = new Set(nodes.map((n) => n.id));
+
+  // Deduped: the same relationship can be asserted from either end.
+  const edges: MapEdge[] = [];
+  const seenEdge = new Set<string>();
+  const addEdge = (source: string, target: string, kind: GraphEdgeKind) => {
+    if (!drawn.has(source) || !drawn.has(target)) return;
+    const id = `${source}->${target}:${kind}`;
+    if (seenEdge.has(id)) return;
+    seenEdge.add(id);
+    edges.push({ id, source, target, kind, label: EDGE_LABEL[kind] ?? humanise(kind) });
   };
 
-  const roots: TreeNode[] = [];
-  rootIds.forEach((root) => {
-    if (budget <= 0) return;
-    roots.push(walk(root.nodeId, root.kind, 0, root.nodeId, new Set()));
+  nodes.forEach((n) => {
+    (idx.out.get(n.id) ?? []).forEach((e) => {
+      if (EDGE_LABEL[e.kind]) addEdge(n.id, e.to, e.kind);
+    });
+    if (n.kind !== 'finding') return;
+    (idx.out.get(n.id) ?? []).forEach((e) => {
+      if (e.kind !== 'evidenced_by') return;
+      (idx.in.get(e.to) ?? []).forEach((r) => {
+        if (r.kind === 'recommends_on') addEdge(r.from, n.id, 'recommends_on');
+      });
+    });
   });
 
-  // A component every one of whose nodes is somebody's child — a thread that
-  // re-checks a finding and is answered by that same finding is a legitimate
-  // two-node cycle — has no root at all, and would vanish entirely before the
-  // walk's cycle guard ever ran. One representative is promoted so the history
-  // stays visible.
-  //
-  // Only for nodes that were never root CANDIDATES. A node the filters
-  // removed is absent because the reader asked for that, and promoting it
-  // here would quietly undo the filter.
-  idx.findings.forEach((f, nodeId) => {
-    if (budget <= 0) return;
-    if (!expanded.has(nodeId) && claimedAsChild.has(nodeId) && matchesFilters(f, filters, latestRunId, latestDiscoveryId)) {
-      roots.push(walk(nodeId, 'finding', 0, nodeId, new Set()));
-    }
-  });
-  idx.tasks.forEach((_t, nodeId) => {
-    if (budget <= 0) return;
-    if (!expanded.has(nodeId) && claimedAsChild.has(nodeId)) {
-      roots.push(walk(nodeId, 'task', 0, nodeId, new Set()));
-    }
-  });
-
-  return roots;
-}
-
-/** countNodes totals a subtree, for the "N below" badge on a collapsed node. */
-export function countNodes(node: TreeNode): number {
-  return node.children.reduce((sum, c) => sum + countNodes(c), 1);
+  return { nodes, edges, truncated, totalNodes: candidates.length };
 }
 
 /** areasOf / statusesOf / severitiesOf populate the filter dropdowns from the
@@ -499,6 +508,10 @@ export interface RunStory {
   pursuedTasks: GraphTask[];
   learnings: GraphLearning[];
   proposals: GraphProposal[];
+  /** What this run's findings drove. Reached through `in_run`, which every
+   *  recommendation carries, so a run's card can offer them directly rather
+   *  than making a reader go looking. */
+  recommendations: GraphRecommendation[];
   highCount: number;
 }
 
@@ -520,7 +533,7 @@ export function buildStories(idx: GraphIndex): RunStory[] {
       run,
       ordinal: idx.runOrdinal.get(nodeId) ?? 0,
       newFindings: [], seenAgain: [], openedTasks: [], closedTasks: [],
-      pursuedTasks: [], learnings: [], proposals: [], highCount: 0,
+      pursuedTasks: [], learnings: [], proposals: [], recommendations: [], highCount: 0,
     };
     (idx.out.get(nodeId) ?? []).forEach((e) => {
       switch (e.kind) {
@@ -563,6 +576,12 @@ export function buildStories(idx: GraphIndex): RunStory[] {
           break;
       }
     });
+    // Recommendations point AT the run, so they are read from the inbound side.
+    (idx.in.get(nodeId) ?? []).forEach((e) => {
+      if (e.kind !== 'in_run') return;
+      const rec = idx.recommendations.get(e.from);
+      if (rec) story.recommendations.push(rec);
+    });
     story.highCount = story.newFindings.filter(
       (f) => f.severity === 'high' || f.severity === 'critical',
     ).length;
@@ -584,6 +603,6 @@ export function statusTrail(idx: GraphIndex, finding: GraphFinding): string[] {
   return (finding.status_history ?? []).map((h) => {
     const where = h.run_id ? runLabel(idx, `run:${h.run_id}`) : 'an earlier run';
     const why = h.reason ? `, “${h.reason}”` : '';
-    return `${h.status} (${where}${why})`;
+    return `${humanise(h.status)} in ${where.toLowerCase()}${why}`;
   });
 }

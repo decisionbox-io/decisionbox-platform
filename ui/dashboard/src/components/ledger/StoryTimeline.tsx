@@ -1,11 +1,15 @@
 'use client';
 
 import Link from 'next/link';
-import { Badge, Card, Group, Progress, Stack, Text, Tooltip } from '@mantine/core';
-import { IconFlag, IconRoute, IconBulb, IconGitPullRequest } from '@tabler/icons-react';
-import { GraphTask, LedgerGraph } from '@/lib/api';
+import { ActionIcon, Badge, Card, Group, Progress, Stack, Text, Tooltip } from '@mantine/core';
 import {
-  GraphIndex, RunSighting, RunStory, buildStories, sightingEvidenceLink,
+  IconBulb, IconExternalLink, IconFlag3, IconGitPullRequest, IconRoute,
+  IconTargetArrow,
+} from '@tabler/icons-react';
+import { GraphRecommendation, GraphTask, LedgerGraph } from '@/lib/api';
+import {
+  GraphIndex, RunSighting, RunStory, buildStories, humanise,
+  recommendationLink, sightingEvidenceLink,
 } from './graph';
 
 // Level 1 — Story.
@@ -35,6 +39,41 @@ function severityColor(severity?: string): string {
 // word, so these are rendered as clamped text with a small severity dot. The
 // full text is a tooltip away.
 
+/** A name that leads somewhere, with the affordance to open it in a new tab.
+ *  A tooltip alone could show the text and not get you to the page. */
+function LinkedName({
+  href, name, icon, color,
+}: {
+  href: string | null; name: string; icon: React.ReactNode; color?: string;
+}) {
+  const body = (
+    <Group gap={5} wrap="nowrap" style={{ maxWidth: 420, minWidth: 0 }}>
+      <span style={{ display: 'flex', flexShrink: 0, color: color ?? 'var(--mantine-color-dimmed)' }}>
+        {icon}
+      </span>
+      <Text size="xs" lineClamp={1} td={href ? 'underline' : undefined}>{name}</Text>
+    </Group>
+  );
+  return (
+    <Group gap={3} wrap="nowrap" style={{ minWidth: 0 }}>
+      <Tooltip label={name} multiline w={360} openDelay={400}>
+        {href ? <Link href={href} style={{ textDecoration: 'none', minWidth: 0 }}>{body}</Link> : body}
+      </Tooltip>
+      {href && (
+        <Tooltip label="Open in a new tab" openDelay={400}>
+          <ActionIcon
+            component="a" href={href} target="_blank" rel="noopener noreferrer"
+            size="xs" variant="subtle" color="gray"
+            aria-label={`Open ${name} in a new tab`}
+          >
+            <IconExternalLink size={12} />
+          </ActionIcon>
+        </Tooltip>
+      )}
+    </Group>
+  );
+}
+
 function SeverityDot({ severity }: { severity?: string }) {
   return (
     <div style={{
@@ -51,20 +90,25 @@ function SeverityDot({ severity }: { severity?: string }) {
  *  would make an old run report today's. */
 function FindingChip({ projectId, seen, index }: { projectId: string; seen: RunSighting; index: GraphIndex }) {
   const { finding } = seen;
-  const href = sightingEvidenceLink(projectId, seen, index);
-  const name = finding.name || finding.id;
-  const label = (
-    <Group gap={5} wrap="nowrap" style={{ maxWidth: 420, minWidth: 0 }}>
-      <SeverityDot severity={seen.severity} />
-      <Text size="xs" lineClamp={1} td={href ? 'underline' : undefined}>{name}</Text>
-    </Group>
+  return (
+    <LinkedName
+      href={sightingEvidenceLink(projectId, seen, index)}
+      name={finding.name || finding.id}
+      color={`var(--mantine-color-${severityColor(seen.severity)}-6)`}
+      icon={<SeverityDot severity={seen.severity} />}
+    />
   );
-  const wrapped = (
-    <Tooltip label={name} multiline w={360} openDelay={400}>
-      {href ? <Link href={href} style={{ textDecoration: 'none', minWidth: 0 }}>{label}</Link> : label}
-    </Tooltip>
+}
+
+function RecommendationChip({ projectId, rec }: { projectId: string; rec: GraphRecommendation }) {
+  return (
+    <LinkedName
+      href={recommendationLink(projectId, rec)}
+      name={rec.title || rec.id}
+      color="var(--mantine-color-indigo-6)"
+      icon={<IconTargetArrow size={12} />}
+    />
   );
-  return wrapped;
 }
 
 function TaskChip({ task }: { task: GraphTask }) {
@@ -74,9 +118,9 @@ function TaskChip({ task }: { task: GraphTask }) {
   return (
     <Tooltip label={task.text || label} multiline w={360} openDelay={400}>
       <Group gap={5} wrap="nowrap" style={{ maxWidth: 420, minWidth: 0 }}>
-        <Text size="xs" c="dimmed" style={{ flexShrink: 0 }}>
-          {task.kind === 'hypothesis' ? '?' : '→'}
-        </Text>
+        <span style={{ display: 'flex', flexShrink: 0, color: 'var(--mantine-color-grape-6)' }}>
+          {task.kind === 'hypothesis' ? <IconBulb size={12} /> : <IconRoute size={12} />}
+        </span>
         <Text size="xs" lineClamp={1}>{label}</Text>
       </Group>
     </Tooltip>
@@ -92,7 +136,7 @@ function ChipRow({
 }) {
   return (
     <Group gap={8} wrap="nowrap" align="flex-start">
-      <Group gap={4} wrap="nowrap" style={{ width: 74, flexShrink: 0 }}>
+      <Group gap={4} wrap="nowrap" style={{ width: 104, flexShrink: 0 }}>
         {icon}
         <Text size="xs" c="dimmed">{label}</Text>
       </Group>
@@ -170,7 +214,9 @@ export default function StoryTimeline({
                   </Text>
                   <Text size="xs" c="dimmed">· {dateLabel}</Text>
                   {story.run.run_type && (
-                    <Badge size="xs" variant="light" color="gray">{story.run.run_type}</Badge>
+                    <Badge size="xs" variant="light" color="gray" tt="none">
+                      {humanise(story.run.run_type)}
+                    </Badge>
                   )}
                 </Group>
                 <Tooltip
@@ -194,8 +240,8 @@ export default function StoryTimeline({
               <Stack gap={6} mt={10}>
                 {story.newFindings.length > 0 && (
                   <ChipRow
-                    icon={<IconFlag size={13} />}
-                    label="found"
+                    icon={<IconFlag3 size={13} />}
+                    label="Found"
                     extra={Math.max(0, story.newFindings.length - MAX_NAMED)}
                   >
                     {story.newFindings.slice(0, MAX_NAMED).map((seen) => (
@@ -206,7 +252,7 @@ export default function StoryTimeline({
                 {closed.length > 0 && (
                   <ChipRow
                     icon={<IconRoute size={13} />}
-                    label="closed"
+                    label="Closed"
                     extra={Math.max(0, closed.length - MAX_NAMED)}
                   >
                     {closed.slice(0, MAX_NAMED).map((t) => <TaskChip key={t.node_id} task={t} />)}
@@ -215,21 +261,32 @@ export default function StoryTimeline({
                 {story.openedTasks.length > 0 && (
                   <ChipRow
                     icon={<IconRoute size={13} />}
-                    label="opened"
+                    label="Opened"
                     extra={Math.max(0, story.openedTasks.length - MAX_NAMED)}
                   >
                     {story.openedTasks.slice(0, MAX_NAMED).map((t) => <TaskChip key={t.node_id} task={t} />)}
                   </ChipRow>
                 )}
+                {story.recommendations.length > 0 && (
+                  <ChipRow
+                    icon={<IconTargetArrow size={13} />}
+                    label="Recommended"
+                    extra={Math.max(0, story.recommendations.length - MAX_NAMED)}
+                  >
+                    {story.recommendations.slice(0, MAX_NAMED).map((rec) => (
+                      <RecommendationChip key={rec.node_id} projectId={projectId} rec={rec} />
+                    ))}
+                  </ChipRow>
+                )}
                 {story.proposals.length > 0 && (
                   <ChipRow
                     icon={<IconGitPullRequest size={13} />}
-                    label="proposed"
+                    label="Proposed"
                     extra={Math.max(0, story.proposals.length - MAX_NAMED)}
                   >
                     {story.proposals.slice(0, MAX_NAMED).map((p) => (
-                      <Badge key={p.node_id} size="sm" variant="light" color="yellow">
-                        {p.area_name || p.area_id}
+                      <Badge key={p.node_id} size="sm" variant="light" color="yellow" tt="none">
+                        {humanise(p.area_name || p.area_id)}
                       </Badge>
                     ))}
                   </ChipRow>
@@ -254,7 +311,7 @@ export default function StoryTimeline({
                     <Group key={l.node_id} gap={6} wrap="nowrap" align="flex-start">
                       <IconBulb size={13} style={{ marginTop: 2, flexShrink: 0 }} />
                       <Text size="xs" c="dimmed">
-                        {l.category ? `${l.category}: ` : ''}{l.note}
+                        {l.category ? `${humanise(l.category)}: ` : ''}{l.note}
                       </Text>
                     </Group>
                   ))}

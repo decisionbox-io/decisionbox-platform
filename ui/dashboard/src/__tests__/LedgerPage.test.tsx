@@ -13,6 +13,51 @@ jest.mock('@/components/layout/AppShell', () => ({
   __esModule: true, default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 
+// @xyflow/react measures a real container and jsdom has none, so the canvas is
+// stood in for by something that renders the nodes it is given. The layout is
+// the library's problem; the projection behind it is tested in
+// ledgerGraph.test.ts, and the node markup still renders through this.
+jest.mock('@xyflow/react', () => {
+  const React = jest.requireActual('react');
+  return {
+    __esModule: true,
+    ReactFlow: ({ nodes, nodeTypes, onNodeClick }: {
+      nodes: { id: string; data: unknown }[];
+      nodeTypes: Record<string, React.ComponentType<{ data: unknown }>>;
+      onNodeClick: (e: unknown, node: { id: string }) => void;
+    }) => {
+      const Node = nodeTypes.investigation;
+      return (
+        <div data-testid="map-canvas">
+          {nodes.map((n) => (
+            <div key={n.id} onClick={(e) => onNodeClick(e, n)}>
+              <Node data={n.data} />
+            </div>
+          ))}
+        </div>
+      );
+    },
+    ReactFlowProvider: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+    Background: () => null,
+    Controls: () => null,
+    MiniMap: () => null,
+    Handle: () => null,
+    Position: { Left: 'left', Right: 'right' },
+    BackgroundVariant: { Dots: 'dots' },
+    useNodesState: (initial: unknown[]) => {
+      const [v, setV] = React.useState(initial);
+      React.useEffect(() => setV(initial), [initial]);
+      return [v, setV, jest.fn()];
+    },
+    useEdgesState: (initial: unknown[]) => {
+      const [v, setV] = React.useState(initial);
+      React.useEffect(() => setV(initial), [initial]);
+      return [v, setV, jest.fn()];
+    },
+    useReactFlow: () => ({ fitView: jest.fn() }),
+  };
+});
+
 const getLedger = jest.fn();
 const getEvolutionSettings = jest.fn();
 const listPackProposals = jest.fn();
@@ -242,9 +287,9 @@ describe('LedgerPage', () => {
     expect(await screen.findByText(/Hide detail/i)).toBeInTheDocument();
   });
 
-  it('expands a follow-up task to its resolved parent (ancestors survive normalize)', async () => {
+  it('expands a follow-up task to its closed parent (ancestors survive normalize)', async () => {
     // Regression: normalizeLedger dropped `ancestors`, so a follow-up showed
-    // "Parent thread is no longer available." instead of the resolved parent.
+    // "Parent thread is no longer available." instead of the closed parent.
     getLedger.mockResolvedValue({
       ...ledger,
       tasks: [{ id: 't2', title: 'Refine churn drivers', text: 'dig into the churn drivers', kind: 'next_task', status: 'open', supersedes: 'p1' }],
@@ -255,6 +300,30 @@ describe('LedgerPage', () => {
     wrap();
     fireEvent.click(await screen.findByText(/follow-up/i));
     expect(await screen.findByText('Look at churn')).toBeInTheDocument();
+    expect(screen.queryByText(/no longer available/i)).not.toBeInTheDocument();
+  });
+
+  it('expands a follow-up whose parent is still open and listed among the tasks', async () => {
+    // A thread may supersede one that has not been closed — on real projects
+    // that is the common case. The parent is then in `tasks`, not `ancestors`,
+    // and looking only at `ancestors` reported every follow-up as orphaned.
+    getLedger.mockResolvedValue({
+      ...ledger,
+      tasks: [
+        { id: 't2', title: 'Refine churn drivers', text: 'dig into the churn drivers', kind: 'next_task', status: 'open', supersedes: 'p1' },
+        { id: 'p1', title: 'Look at churn', text: 'look at churn broadly', kind: 'next_task', status: 'open' },
+      ],
+      ancestors: [],
+    } as unknown as LedgerView);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'suggest_only', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    wrap();
+    fireEvent.click(await screen.findByText(/follow-up/i));
+    // The sentence must not call an open parent resolved.
+    const intro = await screen.findByText(/Grew out of this earlier thread/i);
+    const chain = intro.parentElement as HTMLElement;
+    // The parent is named inside the expansion, not just in its own row.
+    expect(within(chain).getByText('Look at churn')).toBeInTheDocument();
     expect(screen.queryByText(/no longer available/i)).not.toBeInTheDocument();
   });
 
@@ -287,47 +356,49 @@ describe('LedgerPage', () => {
     expect(screen.getByText(/hubs are keyed by code/i)).toBeInTheDocument();
   });
 
-  it('switches to Threads and shows the finding → thread → answer → recommendation chain', async () => {
+  it('switches to the Map and draws the whole chain as cards', async () => {
     mockAll();
     wrap();
-    fireEvent.click(await screen.findByText('Threads'));
+    fireEvent.click(await screen.findByText('Map'));
     await screen.findByText('Do those orders share a hub?');
 
-    // The root finding, the hypothesis that grew out of it, the finding that
-    // answered that thread, and the recommendation it drove.
+    // The finding, the thread that grew out of it, the finding that answered
+    // that thread, and the recommendation it drove — all on the canvas at
+    // once, which is the point of a map over a collapsed tree.
     expect(view().getByText('High EU churn')).toBeInTheDocument();
     expect(view().getByText('Do those orders share a hub?')).toBeInTheDocument();
     expect(view().getByText('Late deliveries cluster in one hub')).toBeInTheDocument();
-    // Everything below the second level is collapsed, so the recommendation
-    // that hangs off the answering finding is one click away rather than
-    // already on the page — which is what keeps the tree scannable on a mature
-    // project.
-    expect(view().queryByText('Re-route the hub overflow')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByLabelText(/Expand Late deliveries cluster in one hub/i));
-    expect(await view().findByText('Re-route the hub overflow')).toBeInTheDocument();
-    // The connector says WHY each node hangs where it does.
-    expect(view().getByText(/grew out of this/i)).toBeInTheDocument();
-    expect(view().getByText(/answered by/i)).toBeInTheDocument();
-    // The status trail, with its reasons and the runs that made them.
-    expect(view().getByText(/confirmed \(Run 1, “first seen”\) → changed \(Run 2, “magnitude up 2.1x”\)/))
-      .toBeInTheDocument();
+    expect(view().getByText('Re-route the hub overflow')).toBeInTheDocument();
+
+    // Each card says what kind of thing it is, in words.
+    expect(view().getAllByText('Finding').length).toBeGreaterThan(0);
+    expect(view().getAllByText('Thread').length).toBeGreaterThan(0);
+    expect(view().getAllByText('Recommendation').length).toBeGreaterThan(0);
   });
 
-  it('links a finding through to its evidence page', async () => {
+  it('opens a card and shows its evidence, with a way out to a new tab', async () => {
     mockAll();
     wrap();
-    fireEvent.click(await screen.findByText('Threads'));
-    await screen.findByText('Do those orders share a hub?');
-    const link = view().getByText('High EU churn').closest('a');
-    // The newest sighting that has both a discovery and an insight.
+    fireEvent.click(await screen.findByText('Map'));
+    // The collapsed Findings section at the foot of the page carries the same
+    // names, so the card has to be picked out of the canvas itself.
+    const canvas = await screen.findByTestId('map-canvas');
+    fireEvent.click(within(canvas).getByText('High EU churn'));
+
+    // The panel carries the status trail the card deliberately leaves out...
+    expect(await screen.findByText(/Changed in run 2, “magnitude up 2.1x”/)).toBeInTheDocument();
+    // ...and a link to the evidence, openable in place or in a new tab.
+    const link = screen.getByText(/Open the finding's evidence/i).closest('a');
     expect(link).toHaveAttribute('href', '/projects/p1/discoveries/d2/insights/ins1');
+    expect(screen.getByLabelText(/Open the finding's evidence in a new tab/i))
+      .toHaveAttribute('target', '_blank');
   });
 
   it('fetches the graph once, not per level switch', async () => {
     mockAll();
     wrap();
     await screen.findByText('Run 2');
-    fireEvent.click(screen.getByText('Threads'));
+    fireEvent.click(screen.getByText('Map'));
     await screen.findByText('Do those orders share a hub?');
     fireEvent.click(screen.getByText('Story'));
     await screen.findByText('Run 2');
@@ -349,16 +420,16 @@ describe('LedgerPage', () => {
     expect(screen.getByText('explore the events tables')).toBeInTheDocument();
   });
 
-  it('filters the tree to what the last run changed', async () => {
+  it('filters the map to what the last run changed', async () => {
     mockAll();
     wrap();
-    fireEvent.click(await screen.findByText('Threads'));
+    fireEvent.click(await screen.findByText('Map'));
     await screen.findByText('Do those orders share a hub?');
     expect(view().getByText('High EU churn')).toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText(/Only what changed in the last run/i));
     // f1 was seen again in run 2, so it survives the filter.
-    expect(view().getByText('High EU churn')).toBeInTheDocument();
+    expect(await view().findByText('High EU churn')).toBeInTheDocument();
   });
 
   it('renders the Threads level for a project with an empty graph', async () => {
@@ -372,11 +443,11 @@ describe('LedgerPage', () => {
     });
     wrap();
     expect(await screen.findByText(/No runs have reflected yet/i)).toBeInTheDocument();
-    fireEvent.click(screen.getByText('Threads'));
+    fireEvent.click(screen.getByText('Map'));
     expect(await screen.findByText(/Nothing matches these filters/i)).toBeInTheDocument();
   });
 
-  it('does not hang when the graph contains a cyclic thread chain', async () => {
+  it('draws a cyclic thread chain without hanging', async () => {
     mockAll();
     getLedgerGraph.mockResolvedValue({
       ...graph,
@@ -392,13 +463,10 @@ describe('LedgerPage', () => {
       ],
     });
     wrap();
-    fireEvent.click(await screen.findByText('Threads'));
-    // It renders at all — a cyclic chain used to be the shape that could hang
-    // a tree walk — and expanding the looping thread shows where the chain was
-    // cut instead of repeating forever.
-    const loop = await screen.findByText('A loop');
-    expect(loop).toBeInTheDocument();
-    fireEvent.click(screen.getByLabelText(/Expand A loop/i));
-    expect(await screen.findByText(/loops back/i)).toBeInTheDocument();
+    fireEvent.click(await screen.findByText('Map'));
+    // A cycle was the shape that could hang a tree walk. A map has no paths to
+    // walk: both threads are simply drawn, each once.
+    expect(await screen.findByText('A loop')).toBeInTheDocument();
+    expect(view().getByText('Do those orders share a hub?')).toBeInTheDocument();
   });
 });

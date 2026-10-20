@@ -11,8 +11,8 @@ import {
 import Shell from '@/components/layout/AppShell';
 import { SectionHeader, EmptyState, StatCard, SeverityBadge, AreaBadge, Th } from '@/components/common/UIComponents';
 import StoryTimeline from '@/components/ledger/StoryTimeline';
-import ThreadTree from '@/components/ledger/ThreadTree';
-import { indexGraph } from '@/components/ledger/graph';
+import { ThreadMapWithProvider } from '@/components/ledger/ThreadMap';
+import { humanise, indexGraph } from '@/components/ledger/graph';
 import {
   api, ApiError, LedgerView, LedgerTask, LedgerGraph, EvolutionSettings, PackProposal, Project,
   EvolutionMode, FrontierPolicy,
@@ -31,7 +31,7 @@ type LedgerLevel = 'story' | 'threads';
 
 const LEVELS: { value: LedgerLevel; label: string }[] = [
   { value: 'story', label: 'Story' },
-  { value: 'threads', label: 'Threads' },
+  { value: 'threads', label: 'Map' },
 ];
 
 const EVOLUTION_MODES: { value: EvolutionMode; label: string }[] = [
@@ -283,10 +283,15 @@ export default function LedgerPage() {
   const pending = proposals.filter((p) => p.status === 'proposed');
   const decided = proposals.filter((p) => p.status !== 'proposed');
 
-  // Resolve a follow-up task's parent chain from the embedded ancestors (closed
-  // tasks aren't in the live queue). Walks supersedes links, guarding cycles, so
-  // a multi-level thread (A → B → C) shows the whole lineage.
-  const ancestorById = new Map((ledger.ancestors ?? []).map((a) => [a.id, a]));
+  // Resolve a follow-up task's parent chain. The parent can be in EITHER list:
+  // `ancestors` carries the closed ones, which are absent from the live queue,
+  // but a thread often continues one that is still open — and that one is in
+  // `tasks`. Looking only at `ancestors` reported every such parent as "no
+  // longer available", which on a project whose follow-ups all continue open
+  // threads meant every one of them.
+  const ancestorById = new Map<string, LedgerTask>(
+    [...(ledger.ancestors ?? []), ...ledger.tasks].map((a) => [a.id, a]),
+  );
   const chainOf = (task: LedgerTask): LedgerTask[] => {
     const chain: LedgerTask[] = [];
     const guard = new Set<string>();
@@ -341,7 +346,7 @@ export default function LedgerPage() {
           <Text size="xs" c="dimmed">
             {level === 'story'
               ? 'What each run found, in plain language. Every name links to its evidence.'
-              : 'The investigation as a tree: a finding opens a thread, a later run answers it.'}
+              : 'The investigation as a map. Drag to pan, scroll to zoom, click a card for its detail.'}
           </Text>
         </Group>
 
@@ -350,10 +355,10 @@ export default function LedgerPage() {
             rows, the quality caveats and the validation verdict. */}
         <Section
           icon={<IconSitemap size={16} />}
-          title={level === 'story' ? 'What happened' : 'Investigation threads'}
+          title={level === 'story' ? 'What happened' : 'Investigation map'}
           description={level === 'story'
             ? 'One card per run, newest first — what it found, which threads it closed and why.'
-            : 'Findings and the threads that grew out of them. Collapsed below the second level; archived findings are dimmed, not hidden.'}
+            : 'How the investigation was worked out: a finding opens a thread, a later run answers it, and that drives a recommendation. Archived findings are dimmed, not hidden.'}
         >
           {/* A labelled region: the same finding can legitimately appear here
               and in the findings table below, and this is what tells a screen
@@ -369,7 +374,7 @@ export default function LedgerPage() {
             {!graphLoading && !graphUnavailable && graph && (
               level === 'story'
                 ? <StoryTimeline projectId={id} graph={graph} index={graphIndex} />
-                : <ThreadTree projectId={id} graph={graph} index={graphIndex} />
+                : <ThreadMapWithProvider projectId={id} graph={graph} index={graphIndex} />
             )}
           </div>
         </Section>
@@ -409,7 +414,7 @@ export default function LedgerPage() {
                 const expanded = openThreads.has(t.id);
                 return (
                   <Group key={t.id} gap="sm" wrap="nowrap" align="flex-start">
-                    <Badge size="sm" variant="light" color={t.kind === 'hypothesis' ? 'grape' : 'blue'} style={{ flexShrink: 0 }}>{t.kind.replace('_', ' ')}</Badge>
+                    <Badge size="sm" variant="light" tt="none" color={t.kind === 'hypothesis' ? 'grape' : 'blue'} style={{ flexShrink: 0 }}>{humanise(t.kind)}</Badge>
                     <div style={{ minWidth: 0, flex: 1 }}>
                       <Group gap="xs" wrap="nowrap">
                         <Text size="sm" fw={600}>{t.title || t.text}</Text>
@@ -419,10 +424,11 @@ export default function LedgerPage() {
                               size="xs"
                               variant="outline"
                               color="gray"
+                              tt="none"
                               style={{ cursor: 'pointer' }}
                               rightSection={<IconChevronRight size={10} style={{ display: 'block', transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform 150ms ease' }} />}
                             >
-                              follow-up{chain.length > 1 ? ` · ${chain.length}` : ''}
+                              Follow-up{chain.length > 1 ? ` · ${chain.length}` : ''}
                             </Badge>
                           </UnstyledButton>
                         )}
@@ -431,13 +437,13 @@ export default function LedgerPage() {
                       {t.supersedes && (
                         <Collapse in={expanded}>
                           <div style={{ marginTop: 8, paddingLeft: 12, borderLeft: '2px solid var(--db-border-default)' }}>
-                            <Text size="xs" c="dimmed" mb={6}>Grew out of {chain.length > 1 ? 'these resolved threads' : 'this resolved thread'}:</Text>
+                            <Text size="xs" c="dimmed" mb={6}>Grew out of {chain.length > 1 ? 'these earlier threads' : 'this earlier thread'}:</Text>
                             {chain.length === 0 ? (
                               <Text size="xs" c="dimmed">Parent thread is no longer available.</Text>
                             ) : chain.map((a) => (
                               <div key={a.id} style={{ marginBottom: 6 }}>
                                 <Group gap="xs" wrap="nowrap" align="center">
-                                  <Badge size="xs" variant="light" color={a.status === 'dropped' ? 'gray' : 'teal'} style={{ flexShrink: 0 }}>{a.status}</Badge>
+                                  <Badge size="xs" variant="light" tt="none" color={a.status === 'dropped' ? 'gray' : 'teal'} style={{ flexShrink: 0 }}>{humanise(a.status)}</Badge>
                                   <Text size="xs" fw={500}>{a.title || a.text}</Text>
                                 </Group>
                                 {a.title && a.title !== a.text && <Text size="xs" c="dimmed" ml={4}>{a.text}</Text>}
@@ -472,7 +478,7 @@ export default function LedgerPage() {
                 <Group key={p.id} justify="space-between" wrap="nowrap" align="flex-start">
                   <div style={{ minWidth: 0 }}>
                     <Group gap="xs" mb={2}>
-                      <Badge size="sm" variant="light">{p.action.replace('_', ' ')}</Badge>
+                      <Badge size="sm" variant="light" tt="none">{humanise(p.action)}</Badge>
                       <Text size="sm" fw={600}>{p.area_name || p.area_id}</Text>
                     </Group>
                     <Text size="sm" c="dimmed">{p.rationale}</Text>
@@ -520,8 +526,8 @@ export default function LedgerPage() {
               {decided.map((p) => (
                 <Group key={p.id} justify="space-between" wrap="nowrap" align="center">
                   <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
-                    <Badge size="sm" variant="light" color={PROPOSAL_STATUS_COLOR[p.status] || 'gray'}>{p.status}</Badge>
-                    <Badge size="sm" variant="outline">{p.action.replace('_', ' ')}</Badge>
+                    <Badge size="sm" variant="light" tt="none" color={PROPOSAL_STATUS_COLOR[p.status] || 'gray'}>{humanise(p.status)}</Badge>
+                    <Badge size="sm" variant="outline" tt="none">{humanise(p.action)}</Badge>
                     <Text size="sm" lineClamp={1}>{p.area_name || p.area_id}</Text>
                     {p.decided_by && <Text size="xs" c="dimmed">by {p.decided_by}</Text>}
                   </Group>
@@ -628,7 +634,7 @@ export default function LedgerPage() {
                         <td style={{ padding: '10px 12px' }}>{f.area ? <AreaBadge area={f.area} /> : <Text size="xs" c="dimmed">—</Text>}</td>
                         <td style={{ padding: '10px 12px' }}><SeverityBadge severity={f.severity} type="severity" /></td>
                         <td style={{ padding: '10px 12px' }}>
-                          <Badge size="sm" variant="light" color={FINDING_STATUS_COLOR[f.status] || 'gray'}>{f.status}</Badge>
+                          <Badge size="sm" variant="light" tt="none" color={FINDING_STATUS_COLOR[f.status] || 'gray'}>{humanise(f.status)}</Badge>
                         </td>
                         <td style={{ padding: '10px 12px' }}><Text size="sm">{f.seen_count}×</Text></td>
                       </tr>
