@@ -1233,6 +1233,10 @@ export interface GraphRun {
   new_findings: number;
   total_findings: number;
   marginal_ratio: number;
+  /** Which run of the investigation this is, oldest = 1, counted over the
+   *  whole history rather than over this response — which carries a window.
+   *  Absent when the run cannot be dated, and from an API that predates it. */
+  ordinal?: number;
   /** The run this edge points at could not be found (a deleted discovery). */
   missing?: boolean;
 }

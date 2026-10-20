@@ -469,6 +469,22 @@ describe('buildStories', () => {
     expect(sightingEvidenceLink('p1', ambiguous, idx)).toBeNull();
   });
 
+  it('numbers a run by the whole history, not by its row in a windowed response', () => {
+    // The response carries a window. Counting its rows would call the twelfth
+    // run of an investigation "Run 1" and renumber it whenever the window
+    // moved, so the server sends the absolute number and it wins.
+    const graph = chainGraph();
+    graph.runs[0].ordinal = 11;
+    graph.runs[1].ordinal = 12;
+    const idx = indexGraph(graph);
+    expect(runLabel(idx, 'run:r1')).toBe('Run 11');
+    expect(runLabel(idx, 'run:r2')).toBe('Run 12');
+
+    // An API that predates the field still gets date order out of the rows.
+    const older = chainGraph();
+    expect(runLabel(indexGraph(older), 'run:r1')).toBe('Run 1');
+  });
+
   it('names the runs a finding was seen in, however the sighting identifies them', () => {
     const graph = chainGraph();
     const f1 = graph.findings.find((f) => f.id === 'f1')!;
@@ -563,6 +579,59 @@ describe('the map stays finite', () => {
     const map = buildMap(indexGraph(graph));
     expect(mapIds(map)).toEqual(['finding:f1', 'task:t1']);
     expect(map.edges).toHaveLength(2);
+  });
+
+  it('draws the threads on a project where no finding links to any of them', () => {
+    // Every project that predates this provenance is this shape: real threads,
+    // no finding-to-thread edges. Seeding the walk from findings alone drew a
+    // map with not one thread on it.
+    const graph: LedgerGraph = {
+      runs: [],
+      findings: [{ node_id: 'finding:f1', id: 'f1', name: 'Dead stock', area: 'misc', severity: 'high', status: 'confirmed', seen_count: 1 }],
+      tasks: [
+        { node_id: 'task:t1', id: 't1', title: 'Check the sellers', text: 'check', kind: 'next_task', status: 'done' },
+        { node_id: 'task:t2', id: 't2', title: 'Check them again', text: 'again', kind: 'next_task', status: 'open', supersedes: 't1' },
+      ],
+      insights: [], recommendations: [], learnings: [], proposals: [],
+      edges: [{ from: 'task:t2', to: 'task:t1', kind: 'supersedes' }],
+      truncated: noTruncation,
+    };
+    const map = buildMap(indexGraph(graph));
+    expect(mapIds(map)).toEqual(['finding:f1', 'task:t1', 'task:t2']);
+    expect(hasEdge(map, 'task:t2', 'task:t1', 'supersedes')).toBe(true);
+
+    // Under a filter the map answers a question about findings, so a thread
+    // nothing matching reaches is not part of that answer.
+    expect(mapIds(buildMap(indexGraph(graph), { severity: 'high' }))).toEqual(['finding:f1']);
+  });
+
+  it('spends the node budget on whole chains, not on findings alone', () => {
+    // Findings outrank threads, so taking the highest-ranked MAX_MAP_NODES
+    // nodes on a project with that many findings kept every finding and not
+    // one link — a map of a few hundred cards joined by nothing.
+    const graph: LedgerGraph = {
+      runs: [], findings: [], tasks: [], insights: [], recommendations: [],
+      learnings: [], proposals: [], edges: [], truncated: noTruncation,
+    };
+    for (let i = 0; i < MAX_MAP_NODES + 20; i += 1) {
+      graph.findings.push({
+        node_id: `finding:f${i}`, id: `f${i}`, name: `finding ${i}`,
+        severity: 'high', status: 'confirmed', seen_count: 1,
+      });
+    }
+    // One critical finding, with a thread hanging off it.
+    graph.findings[0].severity = 'critical';
+    graph.tasks.push({ node_id: 'task:t1', id: 't1', title: 'Dig in', text: 'dig', kind: 'next_task', status: 'open' });
+    graph.edges.push({ from: 'task:t1', to: 'finding:f0', kind: 'grew_from' });
+
+    const map = buildMap(indexGraph(graph));
+    expect(map.nodes.length).toBeLessThanOrEqual(MAX_MAP_NODES);
+    expect(map.truncated).toBe(true);
+    // The chain survives whole: the thread is drawn WITH the finding it grew
+    // from, and the link between them is still there.
+    expect(mapIds(map)).toContain('finding:f0');
+    expect(mapIds(map)).toContain('task:t1');
+    expect(hasEdge(map, 'task:t1', 'finding:f0', 'grew_from')).toBe(true);
   });
 
   it('excludes a filtered-out finding that nothing else reaches', () => {

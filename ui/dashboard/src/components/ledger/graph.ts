@@ -73,13 +73,16 @@ export function indexGraph(graph: LedgerGraph | null | undefined): GraphIndex {
     pushTo(idx.in, e.to, e);
   });
 
-  // Ordinals come from date order, oldest first, so "Run 7" means the seventh
-  // run of the investigation rather than the seventh row of the response. A
-  // run with no date (a stub for a deleted discovery) gets no ordinal.
+  // "Run 7" has to mean the seventh run of the investigation. The server
+  // counts over the whole history for exactly that reason, because the
+  // response carries a window: numbering the rows here would call the twelfth
+  // run "run 1" and renumber it the next time the window moved. The row order
+  // is the fallback for an API that predates the field, where it is at least
+  // the best available answer. A run with no date gets no ordinal either way.
   const dated = (graph.runs ?? [])
     .filter((r) => !r.missing && r.date)
     .sort((a, b) => new Date(a.date!).getTime() - new Date(b.date!).getTime());
-  dated.forEach((r, i) => idx.runOrdinal.set(r.node_id, i + 1));
+  dated.forEach((r, i) => idx.runOrdinal.set(r.node_id, r.ordinal ?? i + 1));
   idx.latestRun = dated.length > 0 ? dated[dated.length - 1] : null;
 
   return idx;
@@ -357,6 +360,72 @@ function mapNeighbours(idx: GraphIndex, nodeId: string): string[] {
  *  The filters decide which FINDINGS are in; anything a drawable link reaches
  *  from them comes with them, so a chain is never shown with its middle
  *  missing. */
+/** Whether any filter narrows the map. An all-defaults filter set is the
+ *  whole investigation, which is a different question from a filtered one. */
+function narrowed(filters: TreeFilters): boolean {
+  return Boolean(
+    filters.area || filters.severity || filters.status
+    || filters.from || filters.to || filters.changedSinceLastRun,
+  );
+}
+
+/** withinBudget keeps as much of the map as MAX_MAP_NODES allows, a chain at a
+ *  time, so what is drawn is drawn whole. Chains are taken in the order of
+ *  their best node, and one too big to fit alongside what is already taken is
+ *  passed over for the next that fits — except when nothing has been taken at
+ *  all, where a chain larger than the whole budget is clipped rather than
+ *  leaving an empty map. */
+function withinBudget(
+  idx: GraphIndex, candidates: MapNode[], rank: (n: MapNode) => number,
+): MapNode[] {
+  if (candidates.length <= MAX_MAP_NODES) return candidates;
+
+  const order = new Map(candidates.map((n, i) => [n.id, i]));
+  const chain = new Map<string, string[]>();
+  const chainOf = new Map<string, string>();
+
+  candidates.forEach((n) => {
+    if (chainOf.has(n.id)) return;
+    const members: string[] = [];
+    const queue = [n.id];
+    chainOf.set(n.id, n.id);
+    while (queue.length > 0) {
+      const id = queue.shift() as string;
+      members.push(id);
+      mapNeighbours(idx, id).forEach((next) => {
+        if (!order.has(next) || chainOf.has(next)) return;
+        chainOf.set(next, n.id);
+        queue.push(next);
+      });
+    }
+    members.sort((a, b) => (order.get(a) as number) - (order.get(b) as number));
+    chain.set(n.id, members);
+  });
+
+  const byId = new Map(candidates.map((n) => [n.id, n]));
+  const roots = [...chain.keys()].sort((a, b) => {
+    const ma = chain.get(a) as string[];
+    const mb = chain.get(b) as string[];
+    const ra = Math.min(...ma.map((id) => rank(byId.get(id) as MapNode)));
+    const rb = Math.min(...mb.map((id) => rank(byId.get(id) as MapNode)));
+    if (ra !== rb) return ra - rb;
+    if (ma.length !== mb.length) return mb.length - ma.length;
+    return (order.get(a) as number) - (order.get(b) as number);
+  });
+
+  const kept: MapNode[] = [];
+  roots.forEach((root) => {
+    const members = chain.get(root) as string[];
+    if (kept.length === 0 && members.length > MAX_MAP_NODES) {
+      members.slice(0, MAX_MAP_NODES).forEach((id) => kept.push(byId.get(id) as MapNode));
+      return;
+    }
+    if (kept.length + members.length > MAX_MAP_NODES) return;
+    members.forEach((id) => kept.push(byId.get(id) as MapNode));
+  });
+  return kept;
+}
+
 export function buildMap(idx: GraphIndex, filters: TreeFilters = {}): InvestigationMap {
   const latestRunId = idx.latestRun?.run_id;
   const latestDiscoveryId = idx.latestRun?.discovery_id;
@@ -365,6 +434,12 @@ export function buildMap(idx: GraphIndex, filters: TreeFilters = {}): Investigat
   idx.findings.forEach((f, nodeId) => {
     if (matchesFilters(f, filters, latestRunId, latestDiscoveryId)) wanted.add(nodeId);
   });
+  // A thread is part of the investigation whether or not a finding links to
+  // it, and on any project that predates this provenance none of them do — so
+  // seeding only from findings draws a map with no threads on it at all.
+  // Under a filter the map answers a question about findings, and a thread
+  // nothing matching reaches is not part of that answer.
+  if (!narrowed(filters)) idx.tasks.forEach((_, nodeId) => wanted.add(nodeId));
 
   const queue = [...wanted];
   while (queue.length > 0) {
@@ -421,16 +496,21 @@ export function buildMap(idx: GraphIndex, filters: TreeFilters = {}): Investigat
   });
 
   const kindOrder: Record<MapNodeKind, number> = { finding: 0, task: 1, recommendation: 2 };
+  const rank = (n: MapNode) => severityRank[n.severity ?? ''] ?? 5;
   candidates.sort((a, b) => {
     if (a.kind !== b.kind) return kindOrder[a.kind] - kindOrder[b.kind];
-    const sa = severityRank[a.severity ?? ''] ?? 5;
-    const sb = severityRank[b.severity ?? ''] ?? 5;
+    const sa = rank(a);
+    const sb = rank(b);
     if (sa !== sb) return sa - sb;
     return a.title.localeCompare(b.title);
   });
 
-  const truncated = candidates.length > MAX_MAP_NODES;
-  const nodes = truncated ? candidates.slice(0, MAX_MAP_NODES) : candidates;
+  // The budget is spent a chain at a time, not a node at a time. Ranking every
+  // finding ahead of every thread and then taking the first N fills the map
+  // with findings on a project that has enough of them and leaves not one link
+  // standing — and the links are the whole point of drawing it.
+  const nodes = withinBudget(idx, candidates, rank);
+  const truncated = nodes.length < candidates.length;
   const drawn = new Set(nodes.map((n) => n.id));
 
   // Deduped: the same relationship can be asserted from either end.
