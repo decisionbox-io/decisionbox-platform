@@ -433,7 +433,7 @@ func TestUpdateLedgerMeta_RecordsTheCubeEvenWhenReflectionProducedNothing(t *tes
 	}
 	result := &models.DiscoveryResult{Schemas: map[string]models.TableSchema{"ds.orders": {}}}
 
-	o.updateLedgerMeta(context.Background(), result, nil, 0, 0)
+	o.updateLedgerMeta(context.Background(), result, nil, consolidationResult{})
 
 	if ledger.saved == nil {
 		t.Fatal("ledger was not saved")

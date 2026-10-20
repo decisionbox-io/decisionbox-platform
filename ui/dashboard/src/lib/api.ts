@@ -1233,6 +1233,9 @@ export interface GraphRun {
   new_findings: number;
   total_findings: number;
   marginal_ratio: number;
+  /** How many of this run's findings never reached the ledger. Zero on every
+   *  healthy run; non-zero means the counts above understate it. */
+  unrecorded_findings?: number;
   /** Which run of the investigation this is, oldest = 1, counted over the
    *  whole history rather than over this response — which carries a window.
    *  Absent when the run cannot be dated, and from an API that predates it. */

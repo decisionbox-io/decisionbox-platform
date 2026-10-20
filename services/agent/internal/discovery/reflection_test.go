@@ -10,6 +10,7 @@ import (
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -956,6 +957,103 @@ func TestDedupSearchBudget_LeavesTimeToWrite(t *testing.T) {
 	// No deadline at all (tests, single-binary runs) is the ceiling.
 	if got := dedupSearchBudget(context.Background()); got != ledgerDedupSearchBudget {
 		t.Errorf("want the ceiling with no deadline, got %s", got)
+	}
+}
+
+// TestConsolidateFindings_WritesExactMatchesBeforeAnySearch is the ordering
+// guarantee. Recording the run's findings is work the ledger owes; the
+// semantic lookup is an optional nicety for candidates no key matched. Doing
+// every lookup first made the optional step able to destroy the mandatory one
+// — a stalled vector store burned the phase's deadline and NOTHING was
+// written, including findings that matched exactly and never needed a lookup.
+func TestConsolidateFindings_WritesExactMatchesBeforeAnySearch(t *testing.T) {
+	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{{
+		ID: "f1", ProjectID: "p1", Area: "churn", Name: "High EU churn",
+		NormalizedKey: commonmodels.NormalizedFindingKey("churn", "High EU churn"),
+		Severity:      "high", AffectedCount: 100, SeenCount: 1,
+		Status: commonmodels.LedgerFindingStatusConfirmed,
+	}}}
+	// A vector store that hangs until the phase's deadline, as a stalled
+	// Qdrant does.
+	vs := &hangingVectorStore{}
+	o := &Orchestrator{
+		projectID: "p1", runID: "r2", findingRepo: fr,
+		embeddingProvider: &mockEmbeddingProvider{dims: 3, model: "m"},
+		vectorStore:       vs,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	if _, err := o.consolidateFindings(ctx, &models.DiscoveryResult{
+		ProjectID: "p1", ID: "d2",
+		Insights: []models.Insight{
+			// Matches by key: must be stored whatever the vector store does.
+			{ID: "ins-1", AnalysisArea: "churn", Name: "High EU churn", Severity: "high", AffectedCount: 100},
+			// Matches nothing: this is the one that needs the lookup.
+			{ID: "ins-2", AnalysisArea: "logistics", Name: "Something new", Severity: "low", AffectedCount: 5},
+		},
+	}); err != nil {
+		t.Fatalf("consolidate: %v", err)
+	}
+
+	if len(fr.merged) != 1 || fr.merged[0].ID != "f1" {
+		t.Errorf("the exact match must be stored despite the stalled lookup: %+v", fr.merged)
+	}
+	if vs.searches == 0 {
+		t.Error("the fixture must actually reach the lookup, or it proves nothing")
+	}
+}
+
+// hangingVectorStore stands in for a vector store that never answers.
+type hangingVectorStore struct {
+	mockVectorStore
+	searches int
+}
+
+func (h *hangingVectorStore) Search(ctx context.Context, _ []float64, _ vectorstore.SearchOpts) ([]vectorstore.SearchResult, error) {
+	h.searches++
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestConsolidateFindings_ReportsWhatItCouldNotRecord: consolidation is
+// best-effort and must never fail a run that has already succeeded — but the
+// convergence point it feeds says "this run found N", so a pass that wrote
+// nothing would report N=0. Not silence: a false account of a run that found
+// things. What it could not record is counted and carried out.
+func TestConsolidateFindings_ReportsWhatItCouldNotRecord(t *testing.T) {
+	fr := &fakeFindingRepo{upsertErr: errors.New("mongo said no")}
+	o := &Orchestrator{projectID: "p1", runID: "r1", findingRepo: fr}
+
+	cons, err := o.consolidateFindings(context.Background(), &models.DiscoveryResult{
+		ProjectID: "p1", ID: "d1",
+		Insights: []models.Insight{
+			{ID: "ins-1", AnalysisArea: "churn", Name: "A", Severity: "high", AffectedCount: 1},
+			{ID: "ins-2", AnalysisArea: "churn", Name: "B", Severity: "high", AffectedCount: 2},
+		},
+	})
+	if err != nil {
+		t.Fatalf("consolidate must not fail the run: %v", err)
+	}
+	if cons.Unrecorded != 2 {
+		t.Errorf("both findings were lost and both must be counted, got %d", cons.Unrecorded)
+	}
+	if cons.NewCount != 0 {
+		t.Errorf("nothing landed, so nothing is new: %d", cons.NewCount)
+	}
+
+	// And a read it cannot do means none of them landed either.
+	blind := &fakeFindingRepo{listErr: errors.New("mongo is down")}
+	o2 := &Orchestrator{projectID: "p1", runID: "r1", findingRepo: blind}
+	cons2, err2 := o2.consolidateFindings(context.Background(), &models.DiscoveryResult{
+		ProjectID: "p1", ID: "d1",
+		Insights: []models.Insight{{ID: "ins-1", AnalysisArea: "churn", Name: "A", Severity: "high", AffectedCount: 1}},
+	})
+	if err2 == nil {
+		t.Error("a failed read is an error, not a quiet no-op")
+	}
+	if cons2.Unrecorded != 1 {
+		t.Errorf("a pass that never started recorded nothing, got %d", cons2.Unrecorded)
 	}
 }
 

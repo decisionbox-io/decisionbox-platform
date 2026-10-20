@@ -201,7 +201,18 @@ func (o *Orchestrator) RunPhaseReflection(ctx context.Context, result *models.Di
 	//    deduped/trended against prior findings. Always runs (low-risk).
 	cons, err := o.consolidateFindings(rctx, result)
 	if err != nil {
-		applog.WithError(err).Warn("Reflection: finding consolidation failed")
+		applog.WithError(err).Error("Reflection: finding consolidation failed")
+	}
+	if cons.Unrecorded > 0 {
+		// Loud, and counted. A run that found things and could not record
+		// them is not a quiet degradation: the next run builds on the ledger,
+		// so what is missing here is missing from every run after it.
+		applog.WithFields(applog.Fields{
+			"project_id": o.projectID,
+			"run_id":     o.runID,
+			"unrecorded": cons.Unrecorded,
+			"found":      len(result.Insights),
+		}).Error("Reflection: findings from this run did not reach the ledger")
 	}
 
 	// 2. The bounded LLM call produces the judgment-heavy outputs: coverage
@@ -235,7 +246,7 @@ func (o *Orchestrator) RunPhaseReflection(ctx context.Context, result *models.Di
 	o.applyReflection(rctx, result, pol, ref, cons)
 
 	// 4. Update coverage + convergence on the ledger and prune findings.
-	o.updateLedgerMeta(rctx, result, ref, cons.NewCount, cons.TotalCount)
+	o.updateLedgerMeta(rctx, result, ref, cons)
 	if err := o.findingRepo.Prune(rctx, o.projectID,
 		goconfig.GetEnvAsInt(discoveryLedgerMaxFindingsEnv, defaultDiscoveryLedgerMaxFindings)); err != nil {
 		applog.WithError(err).Warn("Reflection: ledger prune failed")
@@ -271,6 +282,17 @@ type consolidationResult struct {
 	// ago by an earlier candidate in the same loop are indistinguishable in
 	// the stored document.
 	ReSeen map[string]struct{}
+
+	// Unrecorded is how many of this run's findings did not reach the ledger.
+	//
+	// It exists because the alternative is a lie. Consolidation is
+	// best-effort — it must never fail a run that has already succeeded — but
+	// the convergence point it feeds says "this run found N", and a pass that
+	// wrote nothing would report N=0: not silence, a false record of a run
+	// that actually found things. Carried through to the ledger so the page
+	// can say the run's findings are missing rather than that there were
+	// none.
+	Unrecorded int
 
 	// FindingIDByInsightID maps each of this run's insight ids to the ledger
 	// finding it landed on — a new one, or a prior one it merged into.
@@ -399,6 +421,7 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 	// so reading all of it here would make this path cost more every month.
 	prior, lerr := o.findingRepo.List(ctx, o.projectID)
 	if lerr != nil {
+		out.Unrecorded = len(candidates)
 		return out, fmt.Errorf("list prior findings: %w", lerr)
 	}
 
@@ -421,60 +444,24 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 	dedupMinScore := getEnvAsFloat(discoveryLedgerDedupMinScoreEnv, defaultDiscoveryLedgerDedupMinScore)
 	now := time.Now()
 
-	// Semantic dedup is the fallback for a candidate no key matches, so it is
-	// asked only about those. Searching for a candidate whose key already
-	// matches an active finding buys nothing and costs a round trip to
-	// Qdrant: on a run where every finding is a re-sighting that is one
-	// search per finding for an answer that will be thrown away, inside a
-	// phase on a deadline.
-	//
-	// Resolved here rather than inside the merge loop so the archived read
-	// below knows which ids it has to cover. Same searches, same order.
-	activeByKey := make(map[string]struct{}, len(prior))
-	for i := range prior {
-		activeByKey[prior[i].NormalizedKey] = struct{}{}
-	}
-	semanticHit := make([]string, len(candidates))
-	if vectors != nil {
-		// One budget for ALL of them, not one per lookup. A run with a dozen
-		// unmatched candidates could otherwise spend a dozen timeouts and
-		// reach the write with the phase's deadline already gone, losing
-		// every finding it had matched exactly — on a fallback that only
-		// runs when the exact key already missed. When the budget is spent
-		// the rest fall back to exact-key dedup, which is what happens
-		// anyway on a deployment with no vector store.
-		sctx, cancel := context.WithTimeout(ctx, dedupSearchBudget(ctx))
-		for i := range candidates {
-			if _, exact := activeByKey[candidates[i].NormalizedKey]; exact {
-				continue
-			}
-			if sctx.Err() != nil {
-				applog.Warn("Reflection: semantic dedup budget spent; the rest fall back to exact-key matching")
-				break
-			}
-			semanticHit[i] = o.searchLedgerNeighbour(sctx, vectors[i], dedupMinScore)
-		}
-		cancel()
-	}
-
 	// A finding the retention cap archived and this run has seen again must
 	// merge into the existing document — which un-archives it, with its
 	// sightings and edges intact — rather than being written a second time
-	// under the same normalized_key. Only the archived rows that could be
-	// that finding are read: the keys this run produced, and the ids the
-	// semantic search named.
+	// under the same normalized_key. Only the rows that could be one of this
+	// run's candidates are read, by key; the archive grows with the project's
+	// lifetime while the active set stays capped.
+	//
+	// By KEY only, and before any network call. Everything this run can match
+	// exactly is then resolvable from memory, which is what lets the writes
+	// below happen before the optional semantic fallback is ever asked
+	// anything.
 	keys := make([]string, 0, len(candidates))
 	for i := range candidates {
 		keys = append(keys, candidates[i].NormalizedKey)
 	}
-	hitIDs := make([]string, 0, len(semanticHit))
-	for _, id := range semanticHit {
-		if id != "" {
-			hitIDs = append(hitIDs, id)
-		}
-	}
-	matching, aerr := o.findingRepo.ListMatching(ctx, o.projectID, keys, hitIDs)
+	matching, aerr := o.findingRepo.ListMatching(ctx, o.projectID, keys, nil)
 	if aerr != nil {
+		out.Unrecorded = len(candidates)
 		return out, fmt.Errorf("list findings this run may have seen again: %w", aerr)
 	}
 	// Reconciled by id: this read is not filtered to archived rows, so it can
@@ -509,7 +496,37 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 	}
 	var toIndex []indexItem
 
+	// Candidates this run can already place by key come FIRST, and they are
+	// written before the semantic fallback is asked anything at all.
+	//
+	// The order is the whole point. Recording this run's findings is work the
+	// ledger owes; the semantic lookup is an optional nicety for candidates
+	// no key matched. Running every lookup before the first write made the
+	// optional step able to destroy the mandatory one: a slow vector store
+	// burned the phase's deadline and NOTHING was written, including the
+	// findings that matched exactly and never needed a lookup. Obligation
+	// first, enrichment second, so the worst a stalled lookup can now cost is
+	// the candidates that actually depend on it.
+	order := make([]int, 0, len(candidates))
 	for i := range candidates {
+		if _, exact := priorByKey[candidates[i].NormalizedKey]; exact {
+			order = append(order, i)
+		}
+	}
+	for i := range candidates {
+		if _, exact := priorByKey[candidates[i].NormalizedKey]; !exact {
+			order = append(order, i)
+		}
+	}
+
+	// One budget for every lookup together, as a second line of defence: with
+	// the writes already done it can no longer cost the run its findings, but
+	// it still must not spend a deadline the rest of the phase needs.
+	sctx, cancelSearch := context.WithTimeout(ctx, dedupSearchBudget(ctx))
+	defer cancelSearch()
+	searchBudgetSpent := false
+
+	for _, i := range order {
 		cand := candidates[i]
 		var vec []float64
 		if vectors != nil {
@@ -524,8 +541,30 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 		}
 
 		match := priorByKey[cand.NormalizedKey]
-		if match == nil && semanticHit[i] != "" {
-			match = priorByID[semanticHit[i]]
+		if match == nil && vec != nil && !searchBudgetSpent {
+			// The fallback, for this candidate only, now that everything
+			// this run could place by key is already stored.
+			if sctx.Err() != nil {
+				searchBudgetSpent = true
+				applog.Warn("Reflection: semantic dedup budget spent; the rest fall back to exact-key matching")
+			} else if id := o.searchLedgerNeighbour(sctx, vec, dedupMinScore); id != "" {
+				match = priorByID[id]
+				if match == nil {
+					// A row the key read did not cover — an archived finding
+					// this candidate was reworded from. One point lookup.
+					if found, ferr := o.findingRepo.ListMatching(ctx, o.projectID, nil, []string{id}); ferr != nil {
+						applog.WithError(ferr).Warn("Reflection: load the semantically matched finding failed")
+					} else if len(found) > 0 {
+						// Its own allocation, never appended to `prior`:
+						// growing that slice would move it and every pointer
+						// already handed to the two maps would be stale.
+						fetched := found[0]
+						match = &fetched
+						priorByID[match.ID] = match
+						priorByKey[match.NormalizedKey] = match
+					}
+				}
+			}
 		}
 
 		if match != nil {
@@ -653,8 +692,9 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 				Sighting:          sightingIf(sightingAdded, sighting),
 				StatusChanges:     statusAdded,
 			}); err != nil {
-				applog.WithError(err).Warn("Reflection: upsert merged finding failed")
+				applog.WithError(err).Warn("Reflection: merge of a re-seen finding failed")
 				*match = stored
+				out.Unrecorded++
 				continue
 			}
 			if insightID != "" {
@@ -693,7 +733,8 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 			Source:      commonmodels.FindingStatusSourceReflection,
 		})
 		if err := o.findingRepo.Upsert(ctx, &cand); err != nil {
-			applog.WithError(err).Warn("Reflection: upsert new finding failed")
+			applog.WithError(err).Warn("Reflection: insert of a new finding failed")
+			out.Unrecorded++
 			continue
 		}
 		out.NewCount++
@@ -902,7 +943,8 @@ func ledgerFindingEmbedText(f commonmodels.LedgerFinding) string {
 }
 
 // updateLedgerMeta writes the coverage map + a convergence point onto the ledger.
-func (o *Orchestrator) updateLedgerMeta(ctx context.Context, result *models.DiscoveryResult, ref *parsedReflection, newCount, totalCount int) {
+func (o *Orchestrator) updateLedgerMeta(ctx context.Context, result *models.DiscoveryResult, ref *parsedReflection, cons consolidationResult) {
+	newCount, totalCount := cons.NewCount, cons.TotalCount
 	ledger, err := o.ledgerRepo.Get(ctx, o.projectID)
 	if err != nil {
 		applog.WithError(err).Warn("Reflection: load ledger failed; skipping coverage/convergence update")
@@ -954,6 +996,11 @@ func (o *Orchestrator) updateLedgerMeta(ctx context.Context, result *models.Disc
 		TotalFindings: totalCount,
 		MarginalRatio: ratio,
 		Date:          time.Now(),
+		// Recorded on the run's own point, because this is the record every
+		// reader trusts. Without it a consolidation that wrote nothing
+		// reports "found 0" — indistinguishable from a run that genuinely
+		// found nothing, and the page would state it as fact.
+		UnrecordedFindings: cons.Unrecorded,
 	})
 	if len(ledger.Convergence) > maxConvergenceHistory {
 		ledger.Convergence = ledger.Convergence[len(ledger.Convergence)-maxConvergenceHistory:]

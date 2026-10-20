@@ -96,6 +96,12 @@ type ConvergencePoint struct {
 	TotalFindings int       `bson:"total_findings" json:"total_findings"`
 	MarginalRatio float64   `bson:"marginal_ratio" json:"marginal_ratio"`
 	Date          time.Time `bson:"date" json:"date"`
+	// UnrecordedFindings is how many of the run's findings never reached the
+	// ledger — a failed write, or a consolidation that could not read what it
+	// needed. Stored because NewFindings alone cannot tell "found nothing"
+	// from "found things and lost them", and the second silently understates
+	// every run that comes after: the next run builds on this ledger.
+	UnrecordedFindings int `bson:"unrecorded_findings,omitempty" json:"unrecorded_findings,omitempty"`
 }
 
 // LedgerFinding is a durable, deduped finding carried across runs WITH substance

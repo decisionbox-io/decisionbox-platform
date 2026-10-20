@@ -682,6 +682,27 @@ describe('LedgerPage', () => {
     });
   });
 
+  it('says a run lost findings rather than claiming it found none', async () => {
+    // A consolidation that could not write reports new_findings 0. Rendering
+    // that as "recorded no new findings" states a falsehood about a run that
+    // found things, and the ledger is what every later run builds on — so
+    // the run's own count of what it lost leads the sentence.
+    getLedgerGraph.mockResolvedValue({
+      ...graph,
+      runs: [
+        { ...graph.runs[0], new_findings: 0, unrecorded_findings: 3 },
+        graph.runs[1],
+      ],
+    } as unknown as LedgerGraph);
+    getLedger.mockResolvedValue(ledger);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'auto', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    wrap();
+
+    expect(await screen.findByText(/3 of this run's findings could not be recorded/i))
+      .toBeInTheDocument();
+  });
+
   it('fetches the graph once, not per level switch', async () => {
     mockAll();
     wrap();

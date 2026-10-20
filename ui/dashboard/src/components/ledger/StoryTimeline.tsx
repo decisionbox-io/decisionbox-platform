@@ -171,6 +171,15 @@ function sentence(story: RunStory): string {
   if (story.proposals.length > 0) {
     parts.push(`proposed ${story.proposals.length} playbook change${story.proposals.length === 1 ? '' : 's'}`);
   }
+  // Said before anything else, because it changes how every number below it
+  // should be read. A run that found things and could not store them would
+  // otherwise report "found 0" — not silence, a false account of the run.
+  const lost = story.run.unrecorded_findings ?? 0;
+  if (lost > 0) {
+    const rest = parts.length > 0 ? ` It also ${parts.join(', ')}.` : '';
+    return `${lost} of this run's finding${lost === 1 ? '' : 's'} could not be recorded, `
+      + `so what is shown for it is incomplete.${rest}`;
+  }
   if (parts.length === 0) return 'Recorded no new findings or threads.';
   // Said once, rather than leaving a reader to wonder why a run that found
   // twenty things has three cards under it.

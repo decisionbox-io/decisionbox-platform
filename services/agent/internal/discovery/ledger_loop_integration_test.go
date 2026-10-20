@@ -137,7 +137,7 @@ func TestLedgerLoop_Integration(t *testing.T) {
 	o.updateLedgerMeta(ctx, run1, &parsedReflection{
 		CoverageSummary: "orders + users covered; the events tables are untouched",
 		CoveredTables:   []string{"ds.orders", "ds.users"},
-	}, newCount, total)
+	}, consolidationResult{NewCount: newCount, TotalCount: total})
 
 	// Seed a next-task the way applyNextTasks would, attributed to the finding
 	// it grew out of — by the INSIGHT id, which is the id the model is shown
@@ -222,7 +222,8 @@ func TestLedgerLoop_Integration(t *testing.T) {
 	}
 
 	// Convergence grew across the two runs.
-	o.updateLedgerMeta(ctx, run2, &parsedReflection{CoverageSummary: "events now covered too"}, newCount2, total2)
+	o.updateLedgerMeta(ctx, run2, &parsedReflection{CoverageSummary: "events now covered too"},
+		consolidationResult{NewCount: newCount2, TotalCount: total2})
 	lg, _ := ledgerRepo.Get(ctx, projectID)
 	if lg == nil || len(lg.Convergence) != 2 {
 		t.Fatalf("convergence history should have 2 points, got %+v", lg)
