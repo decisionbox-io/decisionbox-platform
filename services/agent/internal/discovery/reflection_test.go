@@ -927,6 +927,42 @@ func TestConsolidateFindings_ExactKeyMatchSkipsTheVectorSearch(t *testing.T) {
 	}
 }
 
+// TestConsolidateFindings_AFailedWriteLeavesTheSnapshotAlone: two of a run's
+// insights can merge into the same finding. If the first write fails, the
+// second has to be measured against what is STORED — not against the
+// observation that never persisted, or a low-to-high move is measured from
+// the high it never recorded and the trend goes unwritten.
+func TestConsolidateFindings_AFailedWriteLeavesTheSnapshotAlone(t *testing.T) {
+	stored := commonmodels.LedgerFinding{
+		ID: "f1", ProjectID: "p1", Area: "churn", Name: "High EU churn",
+		NormalizedKey: commonmodels.NormalizedFindingKey("churn", "High EU churn"),
+		Severity:      "low", AffectedCount: 10, SeenCount: 1,
+		Status: commonmodels.LedgerFindingStatusConfirmed,
+	}
+	fr := &fakeFindingRepo{
+		findings:  []commonmodels.LedgerFinding{stored},
+		upsertErr: errors.New("mongo said no"),
+	}
+	o := &Orchestrator{projectID: "p1", runID: "r2", findingRepo: fr}
+
+	if _, err := o.consolidateFindings(context.Background(), &models.DiscoveryResult{
+		ProjectID: "p1", ID: "d2",
+		Insights: []models.Insight{
+			{ID: "ins-1", AnalysisArea: "churn", Name: "High EU churn", Severity: "high", AffectedCount: 900},
+		},
+	}); err != nil {
+		t.Fatalf("consolidate: %v", err)
+	}
+
+	// Nothing landed, and the in-memory copy still describes what is stored.
+	if fr.findings[0].Severity != "low" || fr.findings[0].AffectedCount != 10 {
+		t.Errorf("a failed write must leave the snapshot as it was: %+v", fr.findings[0])
+	}
+	if len(fr.findings[0].StatusHistory) != 0 {
+		t.Errorf("a failed write records no history: %+v", fr.findings[0].StatusHistory)
+	}
+}
+
 // TestConsolidateFindings_RevivedTerminalFindingBecomesActive is the other
 // half of the soft archive. Un-archiving a resolved or refuted finding is not
 // enough on its own: both statuses are terminal, so the read context still
@@ -1055,7 +1091,12 @@ func TestApplyTaskStatusUpdates_CloseMetadataAndMirroredEdge(t *testing.T) {
 		{ID: "f-prior", ProjectID: "p1"},
 		{ID: "f-new", ProjectID: "p1"},
 	}}
-	o := &Orchestrator{projectID: "p1", runID: "r1", taskRepo: tr, findingRepo: fr}
+	// The findings the prompt showed this run — what an id the model returns
+	// is validated against.
+	o := &Orchestrator{
+		projectID: "p1", runID: "r1", taskRepo: tr, findingRepo: fr,
+		promptFindingIDs: idsOf(fr.findings),
+	}
 
 	ref := &parsedReflection{}
 	ref.TaskStatusUpdates = []struct {
@@ -1140,7 +1181,12 @@ func TestApplyTaskStatusUpdates_SecondUpdateForOneThreadIsIgnored(t *testing.T) 
 		{ID: "t1", NormalizedKey: "k1", Status: commonmodels.LedgerTaskStatusOpen},
 	}}
 	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{{ID: "f1", ProjectID: "p1"}}}
-	o := &Orchestrator{projectID: "p1", runID: "r1", taskRepo: tr, findingRepo: fr}
+	// The findings the prompt showed this run — what an id the model returns
+	// is validated against.
+	o := &Orchestrator{
+		projectID: "p1", runID: "r1", taskRepo: tr, findingRepo: fr,
+		promptFindingIDs: idsOf(fr.findings),
+	}
 
 	ref := &parsedReflection{}
 	ref.TaskStatusUpdates = []struct {
@@ -1176,7 +1222,12 @@ func TestApplyTaskStatusUpdates_LosingTheRaceMirrorsNothing(t *testing.T) {
 		lost: true,
 	}
 	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{{ID: "f1", ProjectID: "p1"}}}
-	o := &Orchestrator{projectID: "p1", runID: "r1", taskRepo: tr, findingRepo: fr}
+	// The findings the prompt showed this run — what an id the model returns
+	// is validated against.
+	o := &Orchestrator{
+		projectID: "p1", runID: "r1", taskRepo: tr, findingRepo: fr,
+		promptFindingIDs: idsOf(fr.findings),
+	}
 
 	ref := &parsedReflection{}
 	ref.TaskStatusUpdates = []struct {
@@ -1199,6 +1250,33 @@ func TestApplyTaskStatusUpdates_LosingTheRaceMirrorsNothing(t *testing.T) {
 		if len(fr.upserted[i].AnsweredTaskIDs) != 0 {
 			t.Errorf("no edge may be mirrored after losing the claim: %+v", fr.upserted[i])
 		}
+	}
+}
+
+// TestKnownFindingIDs_IsWhatThePromptShowed: the active set moves during the
+// LLM call — another reflection can archive a finding while the model is
+// thinking — so validating against it afterwards would throw out an id this
+// run genuinely put on the page, leaving a thread with no parent or a close
+// with no answering finding.
+func TestKnownFindingIDs_IsWhatThePromptShowed(t *testing.T) {
+	// The repository no longer holds the finding: it was archived mid-run.
+	fr := &fakeFindingRepo{findings: nil}
+	o := &Orchestrator{
+		projectID: "p1", runID: "r1", findingRepo: fr,
+		promptFindingIDs: []string{"f-on-the-page"},
+	}
+	known := o.knownFindingIDs(context.Background())
+	if _, ok := known["f-on-the-page"]; !ok {
+		t.Error("an id the prompt showed stays valid however the active set moved")
+	}
+	if len(known) != 1 {
+		t.Errorf("only what was shown: %v", known)
+	}
+
+	// A run whose prompt carried no findings validates nothing.
+	empty := (&Orchestrator{projectID: "p1"}).knownFindingIDs(context.Background())
+	if len(empty) != 0 {
+		t.Errorf("a prompt with no findings admits no ids: %v", empty)
 	}
 }
 
@@ -1284,7 +1362,12 @@ func TestMarkThreadsPursued(t *testing.T) {
 func TestApplyNextTasks_OriginFindingIDs(t *testing.T) {
 	tr := &fakeTaskRepo{}
 	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{{ID: "f-prior"}}}
-	o := &Orchestrator{projectID: "p1", runID: "r1", taskRepo: tr, findingRepo: fr}
+	// The findings the prompt showed this run — what an id the model returns
+	// is validated against.
+	o := &Orchestrator{
+		projectID: "p1", runID: "r1", taskRepo: tr, findingRepo: fr,
+		promptFindingIDs: idsOf(fr.findings),
+	}
 
 	ref := &parsedReflection{}
 	ref.NextTasks = []struct {
@@ -1440,4 +1523,14 @@ func TestApplyReflection_RecordsStatusReason(t *testing.T) {
 		sc.Source != commonmodels.FindingStatusSourceReflection {
 		t.Errorf("status change not recorded as emitted: %+v", sc)
 	}
+}
+
+// idsOf is the ids of a set of findings, for standing in as "what the
+// reflection prompt showed this run".
+func idsOf(findings []commonmodels.LedgerFinding) []string {
+	out := make([]string, 0, len(findings))
+	for i := range findings {
+		out = append(out, findings[i].ID)
+	}
+	return out
 }

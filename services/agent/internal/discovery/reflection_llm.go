@@ -103,7 +103,17 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 	// findings on the page and no findings of its own has nothing for the model
 	// to attribute a thread to, and demanding an attribution anyway leaves it
 	// only the option of inventing one.
-	hasFindingIDs := len(priorFindingsForPrompt(prior)) > 0 || len(result.Insights) > 0
+	// The findings the prompt actually carries — capped, so beyond the cap
+	// the model never saw them. Remembered here because this is the moment
+	// they are shown: re-reading the active set afterwards reads a set that
+	// has moved (another reflection can archive one during the LLM call), and
+	// an id this run genuinely showed would then be thrown out as invented.
+	onThePage := priorFindingsForPrompt(prior)
+	o.promptFindingIDs = make([]string, 0, len(onThePage))
+	for i := range onThePage {
+		o.promptFindingIDs = append(o.promptFindingIDs, onThePage[i].ID)
+	}
+	hasFindingIDs := len(onThePage) > 0 || len(result.Insights) > 0
 
 	items := o.runCatalogItems()
 	prompt := o.buildReflectionPrompt(result, prior, tasks, pol, items, demandPriorRejudgement, hasFindingIDs)

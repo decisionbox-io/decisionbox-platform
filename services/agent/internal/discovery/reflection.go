@@ -508,6 +508,13 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 			// moved and the merge below overwrites them.
 			changed := findingMagnitudeChanged(match, &cand, trendDelta)
 			priorSeverity, priorAffected := match.Severity, match.AffectedCount
+			// The finding as it is STORED, kept until the write lands. Two of
+			// this run's insights can merge into the same finding, and if the
+			// first write fails the second must be compared against what is
+			// in Mongo — not against the observation that did not persist, or
+			// a low-to-high move is measured from the high it never recorded
+			// and the trend goes unwritten.
+			stored := *match
 			match.Description = cand.Description
 			match.KeyMetric = cand.KeyMetric
 			match.Evidence = cand.Evidence
@@ -617,6 +624,7 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 				StatusChanges:     statusAdded,
 			}); err != nil {
 				applog.WithError(err).Warn("Reflection: upsert merged finding failed")
+				*match = stored
 				continue
 			}
 			if insightID != "" {
@@ -1223,21 +1231,19 @@ func (o *Orchestrator) applyTaskStatusUpdates(ctx context.Context, result *model
 	return closed
 }
 
-// knownFindingIDs is the set of ledger finding ids the reflection prompt could
-// have shown the model: the project's active findings. An id outside it and
-// outside this run's insight ids was invented, and is dropped.
-func (o *Orchestrator) knownFindingIDs(ctx context.Context) map[string]struct{} {
-	known := map[string]struct{}{}
-	if o.findingRepo == nil {
-		return known
-	}
-	all, err := o.findingRepo.List(ctx, o.projectID)
-	if err != nil {
-		applog.WithError(err).Warn("Reflection: list findings to validate ids failed")
-		return known
-	}
-	for i := range all {
-		known[all[i].ID] = struct{}{}
+// knownFindingIDs is the set of ledger finding ids the reflection prompt
+// actually showed the model. An id outside it and outside this run's insight
+// ids was invented, and is dropped.
+//
+// What was SHOWN, not what is active now. The active set moves during the LLM
+// call — another reflection can archive a finding while the model is
+// thinking — and reading it again afterwards would throw out an id this run
+// genuinely put on the page, leaving a thread with no parent or a close with
+// no answering finding.
+func (o *Orchestrator) knownFindingIDs(_ context.Context) map[string]struct{} {
+	known := make(map[string]struct{}, len(o.promptFindingIDs))
+	for _, id := range o.promptFindingIDs {
+		known[id] = struct{}{}
 	}
 	return known
 }

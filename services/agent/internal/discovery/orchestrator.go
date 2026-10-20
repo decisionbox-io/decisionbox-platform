@@ -231,6 +231,10 @@ type Orchestrator struct {
 	// these as pursued rather than re-reading the queue, which by then may
 	// have moved under it.
 	shownTaskIDs []string
+	// promptFindingIDs are the ledger findings the reflection prompt carried.
+	// An id the model returns that is in neither this nor the run's own
+	// insights was invented.
+	promptFindingIDs []string
 
 	// recommendationVerdicts is the resolved per-project set of validation
 	// verdicts that make an insight eligible for recommendation generation
