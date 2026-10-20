@@ -90,6 +90,9 @@ type fakeTaskRepo struct {
 	// pursued records each MarkPursued call: the run id and the task ids it
 	// was given.
 	pursued []pursuedCall
+	// lost makes every Close report that another reflection closed the thread
+	// first, which is what the real repository does when its claim misses.
+	lost bool
 }
 
 type taskUpdate struct {
@@ -109,9 +112,11 @@ func (f *fakeTaskRepo) Insert(_ context.Context, ts []commonmodels.LedgerTask) e
 	f.inserted = append(f.inserted, ts...)
 	return nil
 }
-func (f *fakeTaskRepo) Close(_ context.Context, _, id string, u database.TaskClose) error {
+func (f *fakeTaskRepo) Close(_ context.Context, _, id string, u database.TaskClose) (bool, error) {
 	f.updates = append(f.updates, taskUpdate{id: id, status: u.Status, close: u})
-	return nil
+	// The real repository reports false when another reflection got there
+	// first; `lost` lets a test stand in that caller's shoes.
+	return !f.lost, nil
 }
 func (f *fakeTaskRepo) MarkPursued(_ context.Context, _ string, ids []string, runID string) error {
 	f.pursued = append(f.pursued, pursuedCall{runID: runID, ids: ids})
@@ -732,6 +737,79 @@ func TestConsolidateFindings_ReSeenArchivedFindingIsRevived(t *testing.T) {
 	}
 }
 
+// TestConsolidateFindings_RevivedTerminalFindingBecomesActive is the other
+// half of the soft archive. Un-archiving a resolved or refuted finding is not
+// enough on its own: both statuses are terminal, so the read context still
+// leaves it out of the next prompt and the next prune archives it again — it
+// would be invisible however often it came back. While pruning deleted, the
+// run that saw it again simply recreated it as confirmed.
+func TestConsolidateFindings_RevivedTerminalFindingBecomesActive(t *testing.T) {
+	for _, status := range []string{
+		commonmodels.LedgerFindingStatusResolved,
+		commonmodels.LedgerFindingStatusRefuted,
+	} {
+		t.Run(status, func(t *testing.T) {
+			archived := commonmodels.LedgerFinding{
+				ID: "f1", ProjectID: "p1", Area: "churn", Name: "High EU churn",
+				NormalizedKey: commonmodels.NormalizedFindingKey("churn", "High EU churn"),
+				Severity:      "high", AffectedCount: 100, Status: status,
+				SeenCount: 1, Archived: true, ArchivedAt: time.Now().Add(-time.Hour),
+			}
+			fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{archived}}
+			o := &Orchestrator{projectID: "p1", runID: "r1", findingRepo: fr}
+
+			if _, err := o.consolidateFindings(context.Background(), &models.DiscoveryResult{
+				ProjectID: "p1", ID: "d1",
+				Insights: []models.Insight{
+					{ID: "ins-1", AnalysisArea: "churn", Name: "High EU churn", Severity: "high", AffectedCount: 100},
+				},
+			}); err != nil {
+				t.Fatalf("consolidate: %v", err)
+			}
+			if len(fr.upserted) != 1 {
+				t.Fatalf("expected one merge, got %+v", fr.upserted)
+			}
+			got := fr.upserted[0]
+			if got.Status != commonmodels.LedgerFindingStatusConfirmed {
+				t.Errorf("a revived %s finding must come back active, got %q", status, got.Status)
+			}
+			// And the move is recorded, so the page can say why it changed.
+			if len(got.StatusHistory) == 0 {
+				t.Fatal("the revival must be recorded in the status history")
+			}
+			last := got.StatusHistory[len(got.StatusHistory)-1]
+			if last.Status != commonmodels.LedgerFindingStatusConfirmed || last.Reason == "" || last.RunID != "r1" {
+				t.Errorf("the revival entry must name its run and its reason: %+v", last)
+			}
+		})
+	}
+
+	// An active status is left exactly as it was.
+	monitoring := commonmodels.LedgerFinding{
+		ID: "f1", ProjectID: "p1", Area: "churn", Name: "High EU churn",
+		NormalizedKey: commonmodels.NormalizedFindingKey("churn", "High EU churn"),
+		Severity:      "high", AffectedCount: 100,
+		Status:    commonmodels.LedgerFindingStatusMonitoring,
+		SeenCount: 1, Archived: true, ArchivedAt: time.Now().Add(-time.Hour),
+	}
+	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{monitoring}}
+	o := &Orchestrator{projectID: "p1", runID: "r1", findingRepo: fr}
+	if _, err := o.consolidateFindings(context.Background(), &models.DiscoveryResult{
+		ProjectID: "p1", ID: "d1",
+		Insights: []models.Insight{
+			{ID: "ins-1", AnalysisArea: "churn", Name: "High EU churn", Severity: "high", AffectedCount: 100},
+		},
+	}); err != nil {
+		t.Fatalf("consolidate: %v", err)
+	}
+	if fr.upserted[0].Status != commonmodels.LedgerFindingStatusMonitoring {
+		t.Errorf("an active status is not a revival and must not move: %q", fr.upserted[0].Status)
+	}
+	if len(fr.upserted[0].StatusHistory) != 0 {
+		t.Errorf("nothing moved, so nothing is recorded: %+v", fr.upserted[0].StatusHistory)
+	}
+}
+
 // TestConsolidateFindings_TotalExcludesArchived pins the convergence
 // denominator. The dedup list deliberately includes archived rows; counting
 // them as "total findings" would quietly deflate the marginal-new ratio the
@@ -850,6 +928,75 @@ func TestApplyTaskStatusUpdates_CloseMetadataAndMirroredEdge(t *testing.T) {
 	for _, id := range []string{"f-prior", "f-new"} {
 		if !slices.Equal(mirrored[id], []string{"t1"}) {
 			t.Errorf("finding %s should record answering t1, got %v", id, mirrored[id])
+		}
+	}
+}
+
+// TestApplyTaskStatusUpdates_SecondUpdateForOneThreadIsIgnored: a reflection
+// that names the same thread twice must not apply both. A `done` followed by a
+// `dropped` would leave the thread dropped while still naming the findings
+// that answered it, and leave those findings mirroring a thread that, by its
+// own record, was never answered.
+func TestApplyTaskStatusUpdates_SecondUpdateForOneThreadIsIgnored(t *testing.T) {
+	tr := &fakeTaskRepo{existing: []commonmodels.LedgerTask{
+		{ID: "t1", NormalizedKey: "k1", Status: commonmodels.LedgerTaskStatusOpen},
+	}}
+	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{{ID: "f1", ProjectID: "p1"}}}
+	o := &Orchestrator{projectID: "p1", runID: "r1", taskRepo: tr, findingRepo: fr}
+
+	ref := &parsedReflection{}
+	ref.TaskStatusUpdates = []struct {
+		TaskID               string   `json:"task_id"`
+		Status               string   `json:"status"`
+		Reason               string   `json:"reason"`
+		ResolvedByFindingIDs []string `json:"resolved_by_finding_ids"`
+	}{
+		{TaskID: "t1", Status: "done", Reason: "answered", ResolvedByFindingIDs: []string{"f1"}},
+		{TaskID: "t1", Status: "dropped", Reason: "on reflection, a dead end"},
+	}
+
+	o.applyTaskStatusUpdates(context.Background(), &models.DiscoveryResult{ID: "d1"},
+		ref, consolidationResult{FindingIDByInsightID: map[string]string{}})
+
+	if len(tr.updates) != 1 {
+		t.Fatalf("only the first close may be applied, got %+v", tr.updates)
+	}
+	if tr.updates[0].status != commonmodels.LedgerTaskStatusDone {
+		t.Errorf("the first close stands, got %q", tr.updates[0].status)
+	}
+}
+
+// TestApplyTaskStatusUpdates_LosingTheRaceMirrorsNothing: when another
+// reflection closed the thread first, the repository reports that this call
+// did not win. Mirroring the edge anyway would point a finding at a close it
+// had no part in.
+func TestApplyTaskStatusUpdates_LosingTheRaceMirrorsNothing(t *testing.T) {
+	tr := &fakeTaskRepo{
+		existing: []commonmodels.LedgerTask{
+			{ID: "t1", NormalizedKey: "k1", Status: commonmodels.LedgerTaskStatusOpen},
+		},
+		lost: true,
+	}
+	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{{ID: "f1", ProjectID: "p1"}}}
+	o := &Orchestrator{projectID: "p1", runID: "r1", taskRepo: tr, findingRepo: fr}
+
+	ref := &parsedReflection{}
+	ref.TaskStatusUpdates = []struct {
+		TaskID               string   `json:"task_id"`
+		Status               string   `json:"status"`
+		Reason               string   `json:"reason"`
+		ResolvedByFindingIDs []string `json:"resolved_by_finding_ids"`
+	}{{TaskID: "t1", Status: "done", Reason: "answered", ResolvedByFindingIDs: []string{"f1"}}}
+
+	closed := o.applyTaskStatusUpdates(context.Background(), &models.DiscoveryResult{ID: "d1"},
+		ref, consolidationResult{FindingIDByInsightID: map[string]string{}})
+
+	if len(closed) != 0 {
+		t.Errorf("a thread this run did not close must not be reported closed: %+v", closed)
+	}
+	for i := range fr.upserted {
+		if len(fr.upserted[i].AnsweredTaskIDs) != 0 {
+			t.Errorf("no edge may be mirrored after losing the claim: %+v", fr.upserted[i])
 		}
 	}
 }

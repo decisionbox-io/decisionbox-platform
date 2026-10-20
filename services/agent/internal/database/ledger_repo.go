@@ -344,12 +344,21 @@ type TaskClose struct {
 }
 
 // Close transitions a task to a terminal status (done / dropped) and stamps the
-// close metadata in the same write.
+// close metadata in the same write. It reports whether it was this call that
+// closed the task.
+//
+// The filter requires the task to still be OPEN, which makes the close a claim
+// rather than a blind overwrite. Two reflections running over one project can
+// both read the same open thread, and without this the second would stamp its
+// own status and run over the first while leaving the first's
+// resolved_by_finding_ids in place — a thread recorded as dropped that still
+// names the findings that answered it. The loser is told it did not win so it
+// does not go on to mirror an edge nothing points back at.
 //
 // ResolvedByFindingIDs is written only when it has entries, so a `dropped` — a
 // proven dead end, which by definition has nothing to point at — does not store
 // an empty array.
-func (r *LedgerTaskRepository) Close(ctx context.Context, projectID, id string, u TaskClose) error {
+func (r *LedgerTaskRepository) Close(ctx context.Context, projectID, id string, u TaskClose) (bool, error) {
 	at := u.At
 	if at.IsZero() {
 		at = time.Now()
@@ -371,12 +380,13 @@ func (r *LedgerTaskRepository) Close(ctx context.Context, projectID, id string, 
 	if len(u.ResolvedByFindingIDs) > 0 {
 		set["resolved_by_finding_ids"] = u.ResolvedByFindingIDs
 	}
-	if _, err := r.collection.UpdateOne(ctx,
-		bson.M{"_id": id, "project_id": projectID},
-		bson.M{"$set": set}); err != nil {
-		return fmt.Errorf("close ledger task: %w", err)
+	res, err := r.collection.UpdateOne(ctx,
+		bson.M{"_id": id, "project_id": projectID, "status": commonmodels.LedgerTaskStatusOpen},
+		bson.M{"$set": set})
+	if err != nil {
+		return false, fmt.Errorf("close ledger task: %w", err)
 	}
-	return nil
+	return res.MatchedCount > 0, nil
 }
 
 // MarkPursued records that a run had these threads in front of it, whether or

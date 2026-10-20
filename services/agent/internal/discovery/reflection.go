@@ -88,7 +88,8 @@ type findingStore interface {
 type taskStore interface {
 	List(ctx context.Context, projectID string, statuses ...string) ([]commonmodels.LedgerTask, error)
 	Insert(ctx context.Context, tasks []commonmodels.LedgerTask) error
-	Close(ctx context.Context, projectID, id string, u database.TaskClose) error
+	// Close reports whether this call is the one that closed the task.
+	Close(ctx context.Context, projectID, id string, u database.TaskClose) (bool, error)
 	MarkPursued(ctx context.Context, projectID string, ids []string, runID string) error
 }
 
@@ -435,6 +436,26 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 			if match.Archived {
 				match.Archived = false
 				match.ArchivedAt = time.Time{}
+				// Un-archiving a resolved or refuted finding is not enough on
+				// its own: both statuses are terminal, so the read context
+				// would still leave it out of the next prompt and the next
+				// prune would archive it again — it would be invisible however
+				// often it reappeared. While pruning deleted, the same run
+				// simply recreated it as confirmed, and that is the state it
+				// is put back into. A reflection verdict later in this run
+				// still overrides it.
+				if match.Status == commonmodels.LedgerFindingStatusResolved ||
+					match.Status == commonmodels.LedgerFindingStatusRefuted {
+					match.Status = commonmodels.LedgerFindingStatusConfirmed
+					appendFindingStatusChange(match, commonmodels.FindingStatusChange{
+						Status:      commonmodels.LedgerFindingStatusConfirmed,
+						Reason:      "seen again after being archived",
+						RunID:       o.runID,
+						DiscoveryID: result.ID,
+						At:          now,
+						Source:      commonmodels.FindingStatusSourceTrend,
+					})
+				}
 			}
 			if changed {
 				match.Status = commonmodels.LedgerFindingStatusChanged
@@ -1026,15 +1047,22 @@ func (o *Orchestrator) applyTaskStatusUpdates(ctx context.Context, result *model
 		if status == commonmodels.LedgerTaskStatusDone {
 			resolvedBy = cons.resolveFindingIDs(u.ResolvedByFindingIDs, known)
 		}
-		if err := o.taskRepo.Close(ctx, o.projectID, t.ID, database.TaskClose{
+		won, err := o.taskRepo.Close(ctx, o.projectID, t.ID, database.TaskClose{
 			Status:               status,
 			RunID:                o.runID,
 			DiscoveryID:          result.ID,
 			At:                   now,
 			Reason:               truncate(strings.TrimSpace(u.Reason), maxReasonLength),
 			ResolvedByFindingIDs: resolvedBy,
-		}); err != nil {
+		})
+		if err != nil {
 			applog.WithError(err).Warn("Reflection: close task failed")
+			continue
+		}
+		if !won {
+			// Another reflection closed this thread between the read above and
+			// this write. Its account of the close stands; mirroring an edge
+			// here would point findings at a close they had no part in.
 			continue
 		}
 		closed[t.NormalizedKey] = true

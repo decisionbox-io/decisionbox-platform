@@ -52,13 +52,23 @@ const (
 	// the candidate set made a real closing run look ambiguous, and could
 	// stamp a failed run as the one that closed a thread.
 	runStatusCompleted = "completed"
+	// runStatusPending / runStatusRunning are the lifecycle states a project
+	// can still be writing its ledger from. The backfill derives provenance
+	// from a snapshot and the reflection phase replaces whole finding
+	// documents, so a project mid-run is left alone rather than raced.
+	runStatusPending = "pending"
+	runStatusRunning = "running"
 )
 
 // ledgerGraphCounts is what the run reports. The unlinked counts are the point:
 // they are how an operator knows the gap exists rather than assuming the
 // backfill filled it.
 type ledgerGraphCounts struct {
-	FindingsScanned       int
+	// ProjectsSkippedInFlight counts projects left untouched because a run
+	// was still going. Reported rather than silently passed over: the
+	// operator has to know the project still needs a pass.
+	ProjectsSkippedInFlight int
+	FindingsScanned         int
 	FindingsLinked        int
 	FindingsAlreadyLinked int
 	FindingsUnlinkable    int
@@ -157,6 +167,7 @@ func runLedgerGraphBackfill(ctx context.Context, projectID string,
 }
 
 func (c *ledgerGraphCounts) add(o ledgerGraphCounts) {
+	c.ProjectsSkippedInFlight += o.ProjectsSkippedInFlight
 	c.FindingsScanned += o.FindingsScanned
 	c.FindingsLinked += o.FindingsLinked
 	c.FindingsAlreadyLinked += o.FindingsAlreadyLinked
@@ -172,6 +183,12 @@ func (c *ledgerGraphCounts) add(o ledgerGraphCounts) {
 
 func printLedgerGraphCounts(label string, c ledgerGraphCounts) {
 	fmt.Printf("%s\n", label)
+	if c.ProjectsSkippedInFlight > 0 {
+		// Loud, and never folded into a "nothing to do": the project was not
+		// backfilled and someone has to come back to it.
+		fmt.Printf("  SKIPPED:   %d project(s) had a run in flight — re-run the backfill for them once it has finished\n",
+			c.ProjectsSkippedInFlight)
+	}
 	fmt.Printf("  findings:  %d scanned, %d linked to an insight, %d already linked, %d not linkable\n",
 		c.FindingsScanned, c.FindingsLinked, c.FindingsAlreadyLinked, c.FindingsUnlinkable)
 	fmt.Printf("  trails:    %d sightings, %d status histories\n", c.SightingsWritten, c.StatusTrailsWritten)
@@ -203,6 +220,21 @@ func ledgerProjectIDs(ctx context.Context, client *gomongo.Client, projectID str
 func backfillLedgerGraphProject(ctx context.Context, client *gomongo.Client, projectID string,
 	batchSize int, closeWindow time.Duration, dryRun bool) (ledgerGraphCounts, error) {
 	var counts ledgerGraphCounts
+
+	// A run in flight is the one thing this command cannot work around. It
+	// derives from a snapshot read here, and the reflection phase at the end
+	// of a run REPLACES a finding document whole — so a run that reflects
+	// between this read and these writes would overwrite provenance that was
+	// just recovered, and the per-field guards below, which skip a field that
+	// is already populated, could never put it back.
+	inFlight, err := runInFlight(ctx, client, projectID)
+	if err != nil {
+		return counts, err
+	}
+	if inFlight {
+		counts.ProjectsSkippedInFlight = 1
+		return counts, nil
+	}
 
 	findings, err := loadBackfillFindings(ctx, client, projectID)
 	if err != nil {
@@ -540,6 +572,22 @@ type runRef struct {
 	RunID       string
 	DiscoveryID string
 	At          time.Time
+}
+
+// runInFlight reports whether the project has a discovery run that has not
+// finished. Such a run still has its reflection phase to write, and that write
+// replaces finding documents whole.
+func runInFlight(ctx context.Context, client *gomongo.Client, projectID string) (bool, error) {
+	n, err := client.Collection(gomongo.CollectionDiscoveryRuns).CountDocuments(ctx,
+		bson.M{
+			"project_id": projectID,
+			"status":     bson.M{"$in": []string{runStatusPending, runStatusRunning}},
+		},
+		options.Count().SetLimit(1))
+	if err != nil {
+		return false, fmt.Errorf("check for a run in flight: %w", err)
+	}
+	return n > 0, nil
 }
 
 // loadRunIndex returns discovery id → run id, and the project's runs in time

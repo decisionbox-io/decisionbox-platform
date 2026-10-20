@@ -408,6 +408,61 @@ func TestBackfillLedgerGraph_RecoversAClosingRunOnALaterPass(t *testing.T) {
 	}
 }
 
+// TestBackfillLedgerGraph_SkipsAProjectMidRun: the backfill derives from a
+// snapshot, and the reflection phase at the end of a run replaces a finding
+// document whole. A project with a run still going is therefore left alone and
+// reported, rather than raced and silently half-overwritten.
+func TestBackfillLedgerGraph_SkipsAProjectMidRun(t *testing.T) {
+	client, cleanup := backfillMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	const projectID = "p-midrun"
+
+	at := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := client.Collection(gomongo.CollectionDiscoveryLedgerFindings).InsertOne(ctx, bson.M{
+		"_id": "f1", "project_id": projectID, "name": "Churn up", "area": "churn",
+		"status": commonmodels.LedgerFindingStatusConfirmed, "normalized_key": "churn|churn up",
+		"last_seen": at, "seen_count": 1, "source_discovery_id": "disc-1",
+	}); err != nil {
+		t.Fatalf("seed finding: %v", err)
+	}
+	if _, err := client.Collection(gomongo.CollectionDiscoveryRuns).InsertOne(ctx, bson.M{
+		"_id": "run-live", "project_id": projectID, "discovery_id": "disc-1",
+		"status": "running", "started_at": at,
+	}); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+
+	counts, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false)
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if counts.ProjectsSkippedInFlight != 1 {
+		t.Errorf("a project mid-run must be reported as skipped: %+v", counts)
+	}
+	if counts.FindingsScanned != 0 {
+		t.Errorf("a skipped project is not scanned at all: %+v", counts)
+	}
+	findings := readFindings(t, client, projectID)
+	if len(findings["f1"].SourceInsightIDs) != 0 || len(findings["f1"].Sightings) != 0 {
+		t.Errorf("a skipped project must not be written to: %+v", findings["f1"])
+	}
+
+	// Once the run finishes, the same command does the work.
+	if _, err := client.Collection(gomongo.CollectionDiscoveryRuns).UpdateOne(ctx,
+		bson.M{"_id": "run-live"},
+		bson.M{"$set": bson.M{"status": runStatusCompleted, "completed_at": at.Add(time.Hour)}}); err != nil {
+		t.Fatalf("complete the run: %v", err)
+	}
+	after, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false)
+	if err != nil {
+		t.Fatalf("second backfill: %v", err)
+	}
+	if after.ProjectsSkippedInFlight != 0 || after.FindingsScanned != 1 {
+		t.Errorf("a finished run no longer blocks the backfill: %+v", after)
+	}
+}
+
 // TestBackfillLedgerGraph_RepairsAHalfWrittenClose covers the state an
 // interrupted pass can leave behind. The closing run and its discovery are two
 // writes in one unordered batch, so one can land without the other — and the

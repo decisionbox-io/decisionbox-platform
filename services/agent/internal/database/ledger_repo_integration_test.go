@@ -206,14 +206,18 @@ func TestLedgerTaskRepository_CloseStampsMetadata(t *testing.T) {
 	}
 
 	at := time.Now().Truncate(time.Millisecond)
-	if err := repo.Close(ctx, "p1", "t1", TaskClose{
+	won, err := repo.Close(ctx, "p1", "t1", TaskClose{
 		Status: commonmodels.LedgerTaskStatusDone, RunID: "r2", DiscoveryID: "d2", At: at,
 		Reason: "9 of 12 share the same centre", ResolvedByFindingIDs: []string{"f1", "f2"},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("close t1: %v", err)
 	}
+	if !won {
+		t.Error("closing an open task is a win")
+	}
 	// A dead end: no findings answered it, so no key must be stored.
-	if err := repo.Close(ctx, "p1", "t2", TaskClose{
+	if _, err := repo.Close(ctx, "p1", "t2", TaskClose{
 		Status: commonmodels.LedgerTaskStatusDropped, RunID: "r2", DiscoveryID: "d2", At: at,
 		Reason: "the table was dropped upstream",
 	}); err != nil {
@@ -248,8 +252,30 @@ func TestLedgerTaskRepository_CloseStampsMetadata(t *testing.T) {
 		t.Errorf("a dropped task must store no resolved-by key, got %v", raw["resolved_by_finding_ids"])
 	}
 
+	// A second close of a task that is already closed must not land: two
+	// reflections can read the same open thread, and the second overwriting
+	// the first would leave a thread recorded as dropped while still naming
+	// the findings that answered it.
+	second, err := repo.Close(ctx, "p1", "t1", TaskClose{
+		Status: commonmodels.LedgerTaskStatusDropped, RunID: "r3", DiscoveryID: "d3", At: at,
+		Reason: "on reflection, a dead end",
+	})
+	if err != nil {
+		t.Fatalf("second close: %v", err)
+	}
+	if second {
+		t.Error("closing an already-closed task must report that it did not win")
+	}
+	reread, err := repo.List(ctx, "p1", commonmodels.LedgerTaskStatusDone)
+	if err != nil || len(reread) != 1 {
+		t.Fatalf("t1 must still be done: n=%d err=%v", len(reread), err)
+	}
+	if reread[0].ClosedRunID != "r2" || reread[0].CloseReason != "9 of 12 share the same centre" {
+		t.Errorf("the first close must stand whole: %+v", reread[0])
+	}
+
 	// Closing a task in another project must not match.
-	if err := repo.Close(ctx, "other", "t1", TaskClose{Status: commonmodels.LedgerTaskStatusDropped}); err != nil {
+	if _, err := repo.Close(ctx, "other", "t1", TaskClose{Status: commonmodels.LedgerTaskStatusDropped}); err != nil {
 		t.Fatalf("cross-project close should be a silent no-match, not an error: %v", err)
 	}
 	after, err := repo.List(ctx, "p1", commonmodels.LedgerTaskStatusDone)
