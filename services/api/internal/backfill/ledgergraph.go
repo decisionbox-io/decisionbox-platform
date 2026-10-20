@@ -232,6 +232,12 @@ func backfillLedgerGraphProject(ctx context.Context, client *gomongo.Client, pro
 	if err != nil {
 		return counts, err
 	}
+	discoveryByRun := make(map[string]string, len(runTimes))
+	for _, r := range runTimes {
+		if r.RunID != "" && r.DiscoveryID != "" {
+			discoveryByRun[r.RunID] = r.DiscoveryID
+		}
+	}
 
 	writes := make([]mongo.WriteModel, 0, batchSize)
 	flush := func(collection string) error {
@@ -384,6 +390,17 @@ func backfillLedgerGraphProject(ctx context.Context, client *gomongo.Client, pro
 				counts.TasksCloseRunNoRun++
 			default:
 				counts.TasksCloseRunAmbiguous++
+			}
+		}
+		// The run id and its discovery are two writes in one unordered batch,
+		// so an interrupted pass can leave the run stamped and the discovery
+		// missing — and the guard above would then skip the task forever,
+		// because its run id is already there. Recovering the discovery needs
+		// no inference: the run names its own.
+		if task.ClosedRunID != "" && task.ClosedDiscoveryID == "" {
+			if discoveryID := discoveryByRun[task.ClosedRunID]; discoveryID != "" {
+				addWrite(task.ID, "closed_discovery_id", discoveryID)
+				pending++
 			}
 		}
 		// resolved_by_finding_ids is never derived. Nothing stored says which
@@ -570,9 +587,15 @@ func loadRunIndex(ctx context.Context, client *gomongo.Client, projectID string)
 	return byDiscovery, refs, nil
 }
 
-// soleRunNear returns the one run within window of at, plus how many runs were
-// in the window at all — capped at 2, since "more than one" is all the caller
-// needs to know.
+// soleRunNear returns the one run that finished within window BEFORE at, plus
+// how many runs qualified at all — capped at 2, since "more than one" is all
+// the caller needs to know.
+//
+// Before, never after. Reflection is what closes a task and it runs after the
+// completion event, so a run that finished after the task was last written
+// cannot be the run that closed it. Measuring the gap in both directions let a
+// later run be stamped onto a task it could not have touched — and the whole
+// point of this command is that what it writes is derivable, not guessed.
 //
 // Two candidates is the case this exists for: on a project that runs often,
 // several runs are near any timestamp, and picking the closest would stamp a
@@ -584,7 +607,7 @@ func soleRunNear(runs []runRef, at time.Time, window time.Duration) (runID, disc
 	for _, r := range runs {
 		delta := at.Sub(r.At)
 		if delta < 0 {
-			delta = -delta
+			continue
 		}
 		if delta <= window {
 			candidates++

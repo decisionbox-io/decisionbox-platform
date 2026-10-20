@@ -371,12 +371,15 @@ func TestBackfillLedgerGraph_RecoversAClosingRunOnALaterPass(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed task: %v", err)
 	}
-	// Two runs an hour either side: ambiguous at six hours, decisive at one.
+	// Two runs before the close, one just before it and one hours earlier:
+	// ambiguous at six hours, decisive at one. Both before, because a run that
+	// finished after the close could not have closed it and is never a
+	// candidate — it could not make anything ambiguous either.
 	if _, err := client.Collection(gomongo.CollectionDiscoveryRuns).InsertMany(ctx, []any{
 		bson.M{"_id": "run-near", "project_id": projectID, "discovery_id": "disc-near", "status": runStatusCompleted,
 			"started_at": closedAt.Add(-time.Hour), "completed_at": closedAt.Add(-30 * time.Minute)},
 		bson.M{"_id": "run-far", "project_id": projectID, "discovery_id": "disc-far", "status": runStatusCompleted,
-			"started_at": closedAt.Add(4 * time.Hour), "completed_at": closedAt.Add(5 * time.Hour)},
+			"started_at": closedAt.Add(-5 * time.Hour), "completed_at": closedAt.Add(-4 * time.Hour)},
 	}); err != nil {
 		t.Fatalf("seed runs: %v", err)
 	}
@@ -402,6 +405,47 @@ func TestBackfillLedgerGraph_RecoversAClosingRunOnALaterPass(t *testing.T) {
 	tasks := readTasks(t, client, projectID)
 	if tasks["t1"].ClosedRunID != "run-near" || tasks["t1"].ClosedDiscoveryID != "disc-near" {
 		t.Errorf("the closing run was not recovered: %+v", tasks["t1"])
+	}
+}
+
+// TestBackfillLedgerGraph_RepairsAHalfWrittenClose covers the state an
+// interrupted pass can leave behind. The closing run and its discovery are two
+// writes in one unordered batch, so one can land without the other — and the
+// guard that skips a task whose run id is already set would then leave the
+// discovery missing on every pass after. Recovering it needs no inference: the
+// run document names its own discovery.
+func TestBackfillLedgerGraph_RepairsAHalfWrittenClose(t *testing.T) {
+	client, cleanup := backfillMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	const projectID = "p-halfwritten"
+
+	closedAt := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := client.Collection(gomongo.CollectionDiscoveryLedgerTasks).InsertOne(ctx, bson.M{
+		"_id": "t1", "project_id": projectID, "text": "a", "kind": "next_task",
+		"status": commonmodels.LedgerTaskStatusDone, "normalized_key": "k1",
+		"created_at": closedAt.Add(-48 * time.Hour), "updated_at": closedAt,
+		// The half-written state: run stamped, discovery never landed.
+		"closed_at": closedAt, "closed_run_id": "run-1",
+	}); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	if _, err := client.Collection(gomongo.CollectionDiscoveryRuns).InsertOne(ctx, bson.M{
+		"_id": "run-1", "project_id": projectID, "discovery_id": "disc-1", "status": runStatusCompleted,
+		"started_at": closedAt.Add(-2 * time.Hour), "completed_at": closedAt.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+
+	if _, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	tasks := readTasks(t, client, projectID)
+	if tasks["t1"].ClosedDiscoveryID != "disc-1" {
+		t.Errorf("the missing discovery was not repaired: %+v", tasks["t1"])
+	}
+	if tasks["t1"].ClosedRunID != "run-1" {
+		t.Errorf("the run that was already there must not change: %+v", tasks["t1"])
 	}
 }
 
@@ -439,11 +483,14 @@ func TestBackfillLedgerGraph_ClosingRunOnlyWhenUnambiguous(t *testing.T) {
 	if _, err := client.Collection(gomongo.CollectionDiscoveryRuns).InsertMany(ctx, []any{
 		bson.M{"_id": "run-clear", "project_id": projectID, "discovery_id": "disc-clear", "status": runStatusCompleted,
 			"started_at": closedAt.Add(-2 * time.Hour), "completed_at": closedAt.Add(-time.Hour)},
-		// Two runs within the window of t-ambiguous's updated_at.
+		// Two runs that both finished within the window BEFORE
+		// t-ambiguous's updated_at. A run that finished after it could not
+		// have closed it, so it is not a candidate and cannot make anything
+		// ambiguous either.
 		bson.M{"_id": "run-a", "project_id": projectID, "discovery_id": "disc-a", "status": runStatusCompleted,
 			"started_at": closedAt.Add(238 * time.Hour), "completed_at": closedAt.Add(239 * time.Hour)},
 		bson.M{"_id": "run-b", "project_id": projectID, "discovery_id": "disc-b", "status": runStatusCompleted,
-			"started_at": closedAt.Add(240 * time.Hour), "completed_at": closedAt.Add(241 * time.Hour)},
+			"started_at": closedAt.Add(235 * time.Hour), "completed_at": closedAt.Add(236 * time.Hour)},
 		// A FAILED run right next to the clear close. The reflection phase
 		// runs only after a successful discovery, so it never closed
 		// anything — and leaving it in the candidate set would make the real
@@ -519,9 +566,11 @@ func TestBackfillLedgerGraph_EmptyProject(t *testing.T) {
 // TestSoleRunNear covers the window rule directly, including the boundary.
 func TestSoleRunNear(t *testing.T) {
 	at := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	// Both before the close: a run that finished after it is not a candidate
+	// at all, so ambiguity can only come from two that finished before.
 	runs := []runRef{
 		{RunID: "r1", DiscoveryID: "d1", At: at.Add(-time.Hour)},
-		{RunID: "r2", DiscoveryID: "d2", At: at.Add(48 * time.Hour)},
+		{RunID: "r2", DiscoveryID: "d2", At: at.Add(-48 * time.Hour)},
 	}
 	if id, disc, n := soleRunNear(runs, at, 6*time.Hour); n != 1 || id != "r1" || disc != "d1" {
 		t.Errorf("one run in the window should resolve: %q %q %d", id, disc, n)
@@ -540,6 +589,23 @@ func TestSoleRunNear(t *testing.T) {
 	// Inclusive boundary: a run exactly at the edge counts.
 	if _, _, n := soleRunNear(runs[:1], at, time.Hour); n != 1 {
 		t.Error("a run exactly at the window edge should count")
+	}
+
+	// A run that finished AFTER the task was last written cannot have closed
+	// it, however close it fell. Reflection writes the close, and it runs
+	// after the completion event.
+	later := []runRef{{RunID: "r-later", DiscoveryID: "d-later", At: at.Add(time.Minute)}}
+	if id, _, n := soleRunNear(later, at, 6*time.Hour); n != 0 || id != "" {
+		t.Errorf("a run that finished after the close must not be stamped: %q %d", id, n)
+	}
+	// And one on each side resolves to the earlier one rather than reading as
+	// ambiguous: only one of them could have done it.
+	bothSides := []runRef{
+		{RunID: "r-before", DiscoveryID: "d-before", At: at.Add(-time.Minute)},
+		{RunID: "r-after", DiscoveryID: "d-after", At: at.Add(time.Minute)},
+	}
+	if id, disc, n := soleRunNear(bothSides, at, 6*time.Hour); n != 1 || id != "r-before" || disc != "d-before" {
+		t.Errorf("only the earlier run is a candidate: %q %q %d", id, disc, n)
 	}
 }
 

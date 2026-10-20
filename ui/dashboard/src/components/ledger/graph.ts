@@ -339,12 +339,23 @@ function mapNeighbours(idx: GraphIndex, nodeId: string): string[] {
   (idx.in.get(nodeId) ?? []).forEach((e) => {
     if (EDGE_LABEL[e.kind]) out.push(e.from);
   });
-  // A recommendation reaches a finding through the insight they share.
+  // A recommendation and a finding reach each other through the insight they
+  // share. Both directions, because this is what decides whether two nodes are
+  // on the same chain: one-way, a recommendation looks like the end of a chain
+  // that in fact continues through it to another finding.
   if (nodeKind(nodeId) === 'finding') {
     (idx.out.get(nodeId) ?? []).forEach((e) => {
       if (e.kind !== 'evidenced_by') return;
       (idx.in.get(e.to) ?? []).forEach((r) => {
         if (r.kind === 'recommends_on') out.push(r.from);
+      });
+    });
+  }
+  if (nodeKind(nodeId) === 'rec') {
+    (idx.out.get(nodeId) ?? []).forEach((e) => {
+      if (e.kind !== 'recommends_on') return;
+      (idx.in.get(e.to) ?? []).forEach((f) => {
+        if (f.kind === 'evidenced_by') out.push(f.from);
       });
     });
   }

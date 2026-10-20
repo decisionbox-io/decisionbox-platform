@@ -489,6 +489,19 @@ function Canvas({
     setEdges(laid.edges);
   }, [laid, setNodes, setEdges]);
 
+  // A filter rebuilds the layout from nothing, and the viewport it leaves
+  // behind can be looking at empty canvas: the one finding that matched is at
+  // the origin while the view is still centred where a map several rows deep
+  // used to be. Keyed on the map, not on the layout — selecting a card moves
+  // nothing, so it must not move the view. The frame lets React Flow measure
+  // the new nodes before they are fitted.
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(
+      () => fitView({ duration: 300, minZoom: 0.55, maxZoom: 1 }),
+    );
+    return () => window.cancelAnimationFrame(frame);
+  }, [map, fitView]);
+
   const selectedNode = selected ? map.nodes.find((n) => n.id === selected) ?? null : null;
 
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {

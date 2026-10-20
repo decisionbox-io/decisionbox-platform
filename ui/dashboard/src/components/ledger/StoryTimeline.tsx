@@ -3,8 +3,8 @@
 import Link from 'next/link';
 import { ActionIcon, Badge, Card, Group, Progress, Stack, Text, Tooltip } from '@mantine/core';
 import {
-  IconBulb, IconExternalLink, IconFlag3, IconGitPullRequest, IconRoute,
-  IconTargetArrow,
+  IconBulb, IconExternalLink, IconFlag3, IconGitPullRequest, IconRepeat,
+  IconRoute, IconTargetArrow,
 } from '@tabler/icons-react';
 import { GraphRecommendation, GraphTask, LedgerGraph } from '@/lib/api';
 import {
@@ -245,6 +245,17 @@ export default function StoryTimeline({
                     extra={Math.max(0, story.newFindings.length - MAX_NAMED)}
                   >
                     {story.newFindings.slice(0, MAX_NAMED).map((seen) => (
+                      <FindingChip key={seen.finding.node_id} projectId={projectId} seen={seen} index={index} />
+                    ))}
+                  </ChipRow>
+                )}
+                {story.seenAgain.length > 0 && (
+                  <ChipRow
+                    icon={<IconRepeat size={13} />}
+                    label="Saw again"
+                    extra={Math.max(0, story.seenAgain.length - MAX_NAMED)}
+                  >
+                    {story.seenAgain.slice(0, MAX_NAMED).map((seen) => (
                       <FindingChip key={seen.finding.node_id} projectId={projectId} seen={seen} index={index} />
                     ))}
                   </ChipRow>
