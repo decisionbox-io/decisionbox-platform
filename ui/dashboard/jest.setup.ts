@@ -35,13 +35,3 @@ if (typeof Element !== 'undefined' && !Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = function scrollIntoView() {};
 }
 
-// structuredClone: used by dagre (via @dagrejs/graphlib) to copy graph labels.
-// Node has it as a global, but jest-environment-jsdom builds a fresh global
-// object that omits it. v8's serialiser is the same algorithm underneath.
-if (typeof globalThis.structuredClone !== 'function') {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const v8 = require('node:v8');
-  (globalThis as unknown as { structuredClone: <T>(value: T) => T }).structuredClone = <T>(
-    value: T,
-  ): T => v8.deserialize(v8.serialize(value)) as T;
-}

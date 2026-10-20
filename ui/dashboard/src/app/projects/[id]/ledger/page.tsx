@@ -361,7 +361,7 @@ export default function LedgerPage() {
           title={level === 'story' ? 'What happened' : 'Investigation map'}
           description={level === 'story'
             ? 'One card per run, newest first — what it found, which threads it closed and why.'
-            : 'How the investigation was worked out: a finding opens a thread, a later run answers it, and that drives a recommendation. Archived findings are dimmed, not hidden.'}
+            : 'How the investigation was worked out, in the order it happened. Each column is one run — the leftmost is where it started — and the cards in it are that run\u2019s own work. A line leaving a column is a later run building on an earlier one. Archived findings are dimmed, not hidden.'}
         >
           {/* A labelled region: the same finding can legitimately appear here
               and in the findings table below, and this is what tells a screen

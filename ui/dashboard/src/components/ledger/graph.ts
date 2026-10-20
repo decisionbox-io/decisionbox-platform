@@ -262,6 +262,10 @@ export interface MapNode {
   archived?: boolean;
   missing?: boolean;
   priority?: number; // recommendations only
+  /** The run whose work this was — the column it sits in on the map. Empty
+   *  when nothing attributes it to a run the response can date. */
+  runRef?: string;
+  runOrdinal?: number;
 }
 
 /** One link of the investigation map, with the words a reader needs. */
@@ -362,6 +366,41 @@ function mapNeighbours(idx: GraphIndex, nodeId: string): string[] {
     });
   }
   return out;
+}
+
+/** runRefFor resolves whichever of a run id and a discovery id the response
+ *  can actually place in time. A run whose document aged out is a `disc:`
+ *  node, so the two ids have to be tried rather than assumed. */
+function runRefFor(idx: GraphIndex, runID?: string, discoveryID?: string): string {
+  if (runID && idx.runOrdinal.has(`run:${runID}`)) return `run:${runID}`;
+  const byDiscovery = runRefForDiscovery(idx, discoveryID);
+  if (byDiscovery && idx.runOrdinal.has(byDiscovery)) return byDiscovery;
+  return byDiscovery || (runID ? `run:${runID}` : '');
+}
+
+/** producedIn is the run whose work a node was — where it belongs on a map
+ *  laid out in time.
+ *
+ *  For a finding that is the run that FOUND it, not the latest run to see it
+ *  again: the map records when work happened, and a finding carried forward
+ *  for six runs was still a thing run 1 did. Seeing it again is an edge, not
+ *  a relocation. */
+export function producedIn(idx: GraphIndex, nodeId: string): string {
+  const finding = idx.findings.get(nodeId);
+  if (finding) {
+    // Sightings are append-only and oldest-first, so the first one that can
+    // be placed is the run that found it.
+    for (const s of finding.sightings ?? []) {
+      const ref = runRefFor(idx, s.run_id, s.discovery_id);
+      if (ref) return ref;
+    }
+    return '';
+  }
+  const task = idx.tasks.get(nodeId);
+  if (task) return runRefFor(idx, task.created_run_id, task.created_discovery_id);
+  const rec = idx.recommendations.get(nodeId);
+  if (rec) return runRefForDiscovery(idx, rec.discovery_id);
+  return '';
 }
 
 /** buildMap projects the payload onto the nodes and links the canvas draws.
@@ -495,10 +534,14 @@ export function buildMap(idx: GraphIndex, filters: TreeFilters = {}): Investigat
   // Most important first, so the cap keeps those.
   const severityRank: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
   const candidates: MapNode[] = [];
+  const placeInTime = (node: MapNode): MapNode => {
+    const ref = producedIn(idx, node.id);
+    return { ...node, runRef: ref, runOrdinal: idx.runOrdinal.get(ref) };
+  };
   wanted.forEach((nodeId) => {
     const finding = idx.findings.get(nodeId);
     if (finding) {
-      candidates.push({
+      candidates.push(placeInTime({
         id: nodeId,
         kind: 'finding',
         title: finding.name || finding.id,
@@ -507,30 +550,30 @@ export function buildMap(idx: GraphIndex, filters: TreeFilters = {}): Investigat
         meta: findingMeta(idx, finding),
         archived: finding.archived,
         missing: finding.missing,
-      });
+      }));
       return;
     }
     const task = idx.tasks.get(nodeId);
     if (task) {
-      candidates.push({
+      candidates.push(placeInTime({
         id: nodeId,
         kind: 'task',
         title: task.title || task.text || task.id,
         status: task.status,
         meta: taskMeta(idx, task),
         missing: task.missing,
-      });
+      }));
       return;
     }
     const rec = idx.recommendations.get(nodeId);
     if (rec) {
-      candidates.push({
+      candidates.push(placeInTime({
         id: nodeId,
         kind: 'recommendation',
         title: rec.title || rec.id,
         meta: rec.validation_verdict ? humanise(rec.validation_verdict) : undefined,
         priority: rec.priority,
-      });
+      }));
     }
   });
 

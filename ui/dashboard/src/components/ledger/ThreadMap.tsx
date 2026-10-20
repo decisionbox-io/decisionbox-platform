@@ -3,18 +3,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import {
-  Background, BackgroundVariant, Controls, Handle, MiniMap, Position,
-  ReactFlow, ReactFlowProvider, useEdgesState, useNodesState, useReactFlow,
-  type Edge, type Node, type NodeProps,
+  Background, BackgroundVariant, Controls, Handle, MarkerType, MiniMap,
+  Position, ReactFlow, ReactFlowProvider, useEdgesState, useNodesState,
+  useReactFlow, type Edge, type Node, type NodeProps,
 } from '@xyflow/react';
-import dagre from '@dagrejs/dagre';
 import {
   ActionIcon, Badge, Button, Checkbox, CloseButton, Group, Paper, ScrollArea,
   Select, Stack, Text, TextInput, Tooltip,
 } from '@mantine/core';
 import {
-  IconArrowRight, IconBulb, IconExternalLink, IconFlag3, IconLayoutGrid,
-  IconMaximize, IconRoute, IconTargetArrow,
+  IconArrowRight, IconBulb, IconChevronDown, IconClockHour4, IconExternalLink,
+  IconFlag3, IconLayoutGrid, IconMaximize, IconRoute, IconTargetArrow,
 } from '@tabler/icons-react';
 import { LedgerGraph } from '@/lib/api';
 import {
@@ -33,16 +32,14 @@ import '@xyflow/react/dist/style.css';
 // finding, and that drives a recommendation. Reading that as indented text
 // meant holding the shape in your head; drawn, it is the shape.
 //
-// @xyflow/react renders and @dagrejs/dagre lays out — both MIT, both bundled
-// at build time, so an air-gapped image needs nothing at run time. The layout
-// is left-to-right because an investigation reads as a chain, not a hierarchy.
+// @xyflow/react renders; the layout is this file's own, because the thing
+// that makes an investigation readable is the order it happened in and no
+// graph library knows that. Left to right is run 1, run 2, run 3. The library
+// is MIT and bundled at build time, so an air-gapped image needs nothing at
+// run time.
 
 const NODE_WIDTH = 268;
 const NODE_HEIGHT = 92;
-/** How far apart two unrelated chains sit, and how wide a row of them may run
- *  before the next one wraps underneath. */
-const CHAIN_GAP = 64;
-const MAX_ROW_WIDTH = 2600;
 
 const SEVERITY_COLOR: Record<string, string> = {
   critical: 'var(--mantine-color-red-6)',
@@ -147,111 +144,345 @@ function InvestigationNode({ data }: NodeProps<Node<MapNodeData>>) {
   );
 }
 
-const nodeTypes = { investigation: InvestigationNode };
-
-/** chainsOf groups the map into the separate chains it is really made of —
- *  nodes joined by an edge, in either direction. */
-function chainsOf(map: InvestigationMap): string[][] {
-  const parent = new Map<string, string>();
-  map.nodes.forEach((n) => parent.set(n.id, n.id));
-
-  const find = (id: string): string => {
-    let root = id;
-    while (parent.get(root) !== root) root = parent.get(root) as string;
-    let walk = id;
-    while (parent.get(walk) !== root) {
-      const next = parent.get(walk) as string;
-      parent.set(walk, root);
-      walk = next;
-    }
-    return root;
-  };
-
-  map.edges.forEach((e) => {
-    if (!parent.has(e.source) || !parent.has(e.target)) return;
-    const a = find(e.source);
-    const b = find(e.target);
-    if (a !== b) parent.set(a, b);
-  });
-
-  const chains = new Map<string, string[]>();
-  map.nodes.forEach((n) => {
-    const root = find(n.id);
-    const found = chains.get(root);
-    if (found) found.push(n.id);
-    else chains.set(root, [n.id]);
-  });
-  // Biggest first, so the chains worth reading start at the top left and the
-  // findings nothing has linked yet pack in behind them.
-  return [...chains.values()].sort((a, b) => b.length - a.length);
+/** A run band: one run's work, drawn as its own column under its own header.
+ *
+ *  The map is laid out in TIME, because that is the only order a reader
+ *  already has. Left to right is run 1, then run 2, then run 3 — so "how did
+ *  this start" is the leftmost band, and "what followed" is the next one
+ *  along. Everything in a band is that run's own work, which makes an edge
+ *  leaving a band exactly the thing the ledger exists to record: a later run
+ *  building on an earlier one.
+ *
+ *  Laid out by hand rather than by a graph library. A force or rank layout
+ *  arranges a graph by its edges, and most of a real ledger has none — which
+ *  is how the first version of this came out as a field of cards with no
+ *  beginning. Time is the spine; the edges hang off it. */
+interface RunBand {
+  ref: string;
+  ordinal: number;
+  /** Everything this run produced that the filters admitted. */
+  nodes: MapNode[];
+  /** The slice of it being drawn, and the slice behind the "+N more". */
+  shown: MapNode[];
+  hidden: MapNode[];
+  x: number;
+  width: number;
+  /** Where the "+N more" card goes, when the band has one. */
+  moreAt?: { x: number; y: number };
 }
 
-/** place lays each chain out on its own, left to right, then packs the chains
- *  into rows. One dagre pass over the whole map would stack every unlinked
- *  finding into a single column — on a real project that is a 5,000px ribbon
- *  one card wide, which is why the chains are laid out separately. */
-function place(map: InvestigationMap): {
+const BAND_GAP = 104;
+const CARD_GAP_X = 28;
+const CARD_GAP_Y = 16;
+/** How many cards a band stacks before it starts a second column of its own.
+ *  A first run that found forty things would otherwise be a four-thousand
+ *  pixel wall, with nothing that came after it on screen at the same time. */
+const BAND_ROWS = 7;
+const HEADER_HEIGHT = 58;
+const HEADER_GAP = 30;
+/** How many runs the view opens on. */
+const OPENING_BANDS = 3;
+
+const BAND_KIND_ORDER: Record<MapNodeKind, number> = { finding: 0, task: 1, recommendation: 2 };
+const BAND_SEVERITY: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+
+/** bandsOf groups the nodes by the run whose work they were, oldest first.
+ *
+ *  Anything no run can be found for goes in one band at the end, labelled as
+ *  such. On a project that predates this provenance that is most of the map —
+ *  and saying so once is far better than scattering it through the timeline
+ *  as though the dates were known. */
+function bandsOf(map: InvestigationMap, linked: Set<string>): RunBand[] {
+  const byRef = new Map<string, RunBand>();
+  map.nodes.forEach((n) => {
+    const ref = n.runOrdinal ? (n.runRef ?? '') : '';
+    const band = byRef.get(ref);
+    if (band) band.nodes.push(n);
+    else byRef.set(ref, {
+      ref, ordinal: n.runOrdinal ?? 0, nodes: [n], shown: [], hidden: [], x: 0, width: 0,
+    });
+  });
+
+  const bands = [...byRef.values()].sort((a, b) => {
+    if (!a.ordinal !== !b.ordinal) return a.ordinal ? -1 : 1; // undated last
+    return a.ordinal - b.ordinal;
+  });
+
+  // Within a band, whatever something links to comes first. The chains that
+  // cross bands then run along the top of the map where they can be followed,
+  // and the rest of each run's work reads underneath them.
+  bands.forEach((band) => {
+    band.nodes.sort((a, b) => {
+      const la = linked.has(a.id) ? 0 : 1;
+      const lb = linked.has(b.id) ? 0 : 1;
+      if (la !== lb) return la - lb;
+      if (a.kind !== b.kind) return BAND_KIND_ORDER[a.kind] - BAND_KIND_ORDER[b.kind];
+      const sa = BAND_SEVERITY[a.severity ?? ''] ?? 5;
+      const sb = BAND_SEVERITY[b.severity ?? ''] ?? 5;
+      if (sa !== sb) return sa - sb;
+      return a.title.localeCompare(b.title);
+    });
+  });
+  return bands;
+}
+
+/** place positions every card that is being shown, and reports the bands so
+ *  the canvas can draw the run headers, the spine, and each band's "+N more".
+ *
+ *  A band shows what links to something, then as much of the rest as fits in
+ *  a single column, and collapses whatever is left behind a count. A real run
+ *  finds dozens of things and a handful of them go on to matter; drawing all
+ *  of them gives a reader forty cards to search for the five that are the
+ *  story. The rest is not hidden — it is one click away, inside the run it
+ *  belongs to, which is also where it means anything. */
+function place(map: InvestigationMap, expanded: Set<string>): {
   at: Map<string, { x: number; y: number }>;
+  bands: RunBand[];
   focus: string[];
 } {
-  const at = new Map<string, { x: number; y: number }>();
-  let rowX = 0;
-  let rowY = 0;
-  let rowHeight = 0;
-
-  const chains = chainsOf(map);
-  chains.forEach((ids) => {
-    const member = new Set(ids);
-    const g = new dagre.graphlib.Graph();
-    g.setDefaultEdgeLabel(() => ({}));
-    g.setGraph({ rankdir: 'LR', nodesep: 26, ranksep: 110, marginx: 0, marginy: 0 });
-
-    ids.forEach((id) => g.setNode(id, { width: NODE_WIDTH, height: NODE_HEIGHT }));
-    map.edges.forEach((e) => {
-      if (member.has(e.source) && member.has(e.target)) g.setEdge(e.source, e.target);
-    });
-    dagre.layout(g);
-
-    const width = g.graph().width ?? NODE_WIDTH;
-    const height = g.graph().height ?? NODE_HEIGHT;
-    if (rowX > 0 && rowX + width > MAX_ROW_WIDTH) {
-      rowY += rowHeight + CHAIN_GAP;
-      rowX = 0;
-      rowHeight = 0;
-    }
-
-    ids.forEach((id) => {
-      const pos = g.node(id);
-      at.set(id, {
-        x: rowX + (pos?.x ?? NODE_WIDTH / 2) - NODE_WIDTH / 2,
-        y: rowY + (pos?.y ?? NODE_HEIGHT / 2) - NODE_HEIGHT / 2,
-      });
-    });
-
-    rowX += width + CHAIN_GAP;
-    rowHeight = Math.max(rowHeight, height);
+  const linked = new Set<string>();
+  map.edges.forEach((e) => {
+    linked.add(e.source);
+    linked.add(e.target);
   });
 
-  // The biggest chain, which chainsOf sorts first. Fitting the whole map
-  // centres the viewport between its rows, and at a zoom floor meant to keep
-  // cards readable that centre can be empty space — a map that opens blank
-  // while holding plenty of data. Opening on the chain worth reading is both
-  // the honest fit and the better one.
-  return { at, focus: chains[0] ?? [] };
+  const bands = bandsOf(map, linked);
+  const at = new Map<string, { x: number; y: number }>();
+  const top = HEADER_HEIGHT + HEADER_GAP;
+  let x = 0;
+
+  bands.forEach((band) => {
+    const open = expanded.has(band.ref);
+    // One row is given up to the "+N more" card when there is one.
+    const room = band.nodes.length > BAND_ROWS ? BAND_ROWS - 1 : BAND_ROWS;
+    band.shown = open ? band.nodes : band.nodes.slice(0, room);
+    band.hidden = band.nodes.slice(band.shown.length);
+
+    const cells = band.shown.length + (band.hidden.length > 0 ? 1 : 0);
+    const columns = Math.max(1, Math.ceil(cells / BAND_ROWS));
+    band.x = x;
+    band.width = columns * NODE_WIDTH + (columns - 1) * CARD_GAP_X;
+
+    const cellAt = (i: number) => ({
+      x: x + Math.floor(i / BAND_ROWS) * (NODE_WIDTH + CARD_GAP_X),
+      y: top + (i % BAND_ROWS) * (NODE_HEIGHT + CARD_GAP_Y),
+    });
+    band.shown.forEach((n, i) => at.set(n.id, cellAt(i)));
+    if (band.hidden.length > 0 || open) band.moreAt = cellAt(band.shown.length);
+
+    x += band.width + BAND_GAP;
+  });
+
+  // The view opens on the first few runs, whole — headers and "+N more"
+  // included. The first run alone answers "how did this start" and leaves the
+  // rest of the canvas empty; three answers "and what followed", which is the
+  // other half of the question and the reason this is a timeline.
+  const focus = bands.slice(0, OPENING_BANDS).flatMap((band) => [
+    bandNodeID(band.ref),
+    ...band.shown.map((n) => n.id),
+    ...(band.moreAt ? [moreNodeID(band.ref)] : []),
+  ]);
+  return { at, bands, focus };
 }
 
-/** layout positions the map and dresses the nodes and edges for the canvas.
- *  Left to right, because the thing being drawn is a chain of reasoning. */
+const bandNodeID = (ref: string) => `band:${ref || 'undated'}`;
+const moreNodeID = (ref: string) => `more:${ref || 'undated'}`;
+const bandRefOfMore = (id: string) => {
+  const ref = id.slice('more:'.length);
+  return ref === 'undated' ? '' : ref;
+};
+
+/** countsOf reads a set of cards back as "28 findings · 3 threads". */
+function countsOf(nodes: MapNode[]): string {
+  const counts = { finding: 0, task: 0, recommendation: 0 } as Record<MapNodeKind, number>;
+  nodes.forEach((n) => { counts[n.kind] += 1; });
+  const label: Record<MapNodeKind, [string, string]> = {
+    finding: ['finding', 'findings'],
+    task: ['thread', 'threads'],
+    recommendation: ['recommendation', 'recommendations'],
+  };
+  return (Object.keys(counts) as MapNodeKind[])
+    .filter((k) => counts[k] > 0)
+    .map((k) => `${counts[k]} ${label[k][counts[k] === 1 ? 0 : 1]}`)
+    .join(' · ');
+}
+
+/** bandSummary is the one line under a run's name: when it ran, and what it
+ *  did. The counts are of what the map is showing, so they agree with the
+ *  cards underneath even when a filter is on. */
+function bandSummary(idx: GraphIndex, band: RunBand): string {
+  const counts = { finding: 0, task: 0, recommendation: 0 } as Record<MapNodeKind, number>;
+  band.nodes.forEach((n) => { counts[n.kind] += 1; });
+  const parts: string[] = [];
+  const run = band.ref ? idx.runs.get(band.ref) : undefined;
+  if (run?.date) parts.push(new Date(run.date).toLocaleDateString());
+  if (counts.finding) parts.push(`${counts.finding} finding${counts.finding === 1 ? '' : 's'}`);
+  if (counts.task) parts.push(`${counts.task} thread${counts.task === 1 ? '' : 's'}`);
+  if (counts.recommendation) {
+    parts.push(`${counts.recommendation} recommendation${counts.recommendation === 1 ? '' : 's'}`);
+  }
+  return parts.join(' · ');
+}
+
+type BandHeaderData = {
+  label: string;
+  detail: string;
+  width: number;
+  dated: boolean;
+} & Record<string, unknown>;
+
+/** BandHeader names a run and sits above its cards. It is what turns a field
+ *  of cards into a sequence someone can read from the left. */
+function BandHeader({ data }: { data: BandHeaderData }) {
+  return (
+    <div
+      style={{
+        width: data.width,
+        height: HEADER_HEIGHT,
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'center',
+        padding: '0 14px',
+        borderRadius: 10,
+        background: data.dated
+          ? 'var(--mantine-color-blue-light)'
+          : 'var(--mantine-color-gray-1)',
+        border: '1px solid var(--db-border-default)',
+      }}
+    >
+      <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
+      <Group gap={7} wrap="nowrap">
+        <IconClockHour4 size={14} style={{ flexShrink: 0, opacity: 0.7 }} />
+        <Text size="sm" fw={700} lineClamp={1}>{data.label}</Text>
+      </Group>
+      {data.detail && (
+        <Text size="10px" c="dimmed" lineClamp={1} mt={2}>{data.detail}</Text>
+      )}
+      <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
+    </div>
+  );
+}
+
+type MoreCardData = {
+  label: string;
+  detail: string;
+  open: boolean;
+} & Record<string, unknown>;
+
+/** MoreCard stands in for the part of a run's work nothing links to yet. It
+ *  keeps the band one column wide, which is what lets the whole investigation
+ *  be read from left to right. */
+function MoreCard({ data }: { data: MoreCardData }) {
+  return (
+    <div
+      style={{
+        width: NODE_WIDTH,
+        minHeight: NODE_HEIGHT,
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'center',
+        padding: '9px 13px',
+        borderRadius: 10,
+        border: '1px dashed var(--db-border-default)',
+        background: 'var(--mantine-color-body)',
+        cursor: 'pointer',
+      }}
+    >
+      <Group gap={6} wrap="nowrap">
+        <IconChevronDown
+          size={13}
+          style={{
+            flexShrink: 0,
+            opacity: 0.6,
+            transform: data.open ? 'rotate(180deg)' : 'none',
+            transition: 'transform 150ms ease',
+          }}
+        />
+        <Text size="xs" fw={600}>{data.label}</Text>
+      </Group>
+      {data.detail && <Text size="10px" c="dimmed" mt={3} lineClamp={2}>{data.detail}</Text>}
+    </div>
+  );
+}
+
+/** EarlierRuns marks the left edge when the response is a window onto a
+ *  longer history. Without it the leftmost band reads as the beginning of the
+ *  investigation, which on a mature project it is not. */
+function EarlierRuns() {
+  return (
+    <div
+      style={{
+        width: NODE_WIDTH - 60,
+        height: HEADER_HEIGHT,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'flex-end',
+        paddingRight: 12,
+        gap: 6,
+      }}
+    >
+      <Text size="10px" c="dimmed" ta="right" style={{ lineHeight: 1.3 }}>
+        Earlier runs
+        <br />
+        not loaded
+      </Text>
+      <IconArrowRight size={13} style={{ opacity: 0.45, flexShrink: 0 }} />
+      <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
+    </div>
+  );
+}
+
+const nodeTypes = {
+  investigation: InvestigationNode, band: BandHeader, more: MoreCard, earlier: EarlierRuns,
+};
+
+/** The edges that carry the story across runs: a finding opened this thread,
+ *  this finding answered it, this thread continues that one. They are drawn
+ *  stronger than a recommendation's link to the finding behind it, which is
+ *  almost always within a single run. */
+const NARRATIVE_EDGE: Record<string, boolean> = {
+  grew_from: true, answered_by: true, supersedes: true,
+};
+
 function layout(
   map: InvestigationMap,
+  idx: GraphIndex,
   geometry: ReturnType<typeof place>,
   selected: string | null,
   connected: Set<string>,
+  earlierRuns: boolean,
 ) {
-  const { at } = geometry;
+  const { at, bands } = geometry;
 
-  const nodes: Node<MapNodeData>[] = map.nodes.map((n) => {
-    return {
+  const dated = bands.filter((b) => b.ordinal);
+  const marker: Node[] = earlierRuns && dated.length > 0 ? [{
+    id: 'earlier-runs',
+    type: 'earlier',
+    position: { x: dated[0].x - NODE_WIDTH, y: 0 },
+    draggable: false,
+    selectable: false,
+    data: {},
+  }] : [];
+
+  const headers: Node[] = bands.map((band) => ({
+    id: bandNodeID(band.ref),
+    type: 'band',
+    position: { x: band.x, y: 0 },
+    draggable: false,
+    selectable: false,
+    data: {
+      label: band.ref ? runLabel(idx, band.ref) : 'Not attributed to a run',
+      detail: bandSummary(idx, band),
+      width: band.width,
+      dated: Boolean(band.ordinal),
+    } as BandHeaderData,
+  }));
+
+  const drawn = new Set<string>();
+  bands.forEach((b) => b.shown.forEach((n) => drawn.add(n.id)));
+  const nodes: Node<MapNodeData>[] = map.nodes
+    .filter((n) => drawn.has(n.id))
+    .map((n) => ({
       id: n.id,
       type: 'investigation',
       position: at.get(n.id) ?? { x: 0, y: 0 },
@@ -260,31 +491,86 @@ function layout(
         selected: selected === n.id,
         dimmed: Boolean(selected) && !connected.has(n.id),
       },
-    };
-  });
+    }));
 
-  const edges: Edge[] = map.edges.map((e) => {
-    const lit = !selected || (connected.has(e.source) && connected.has(e.target));
-    return {
-      id: e.id,
-      source: e.source,
-      target: e.target,
-      label: e.label,
-      animated: lit && Boolean(selected),
-      labelShowBg: true,
-      labelBgPadding: [5, 2] as [number, number],
-      labelBgBorderRadius: 4,
-      labelStyle: { fontSize: 10, fill: 'var(--db-text-secondary, #666)' },
-      labelBgStyle: { fill: 'var(--mantine-color-body)', fillOpacity: 0.92 },
+  const more: Node[] = bands
+    .filter((band) => band.moreAt)
+    .map((band) => ({
+      id: moreNodeID(band.ref),
+      type: 'more',
+      position: band.moreAt as { x: number; y: number },
+      draggable: false,
+      selectable: false,
+      data: {
+        label: band.hidden.length > 0
+          ? `+${band.hidden.length} more from this run`
+          : 'Show less',
+        detail: band.hidden.length > 0 ? countsOf(band.hidden) : '',
+        open: band.hidden.length === 0,
+      } as MoreCardData,
+    }));
+
+  // The spine: run 1 then run 2 then run 3. Only between runs that are dated,
+  // because "then" is a claim about order and the undated band has none.
+  const spine: Edge[] = dated.slice(1).map((band, i) => ({
+    id: `spine:${dated[i].ref}->${band.ref}`,
+    source: bandNodeID(dated[i].ref),
+    target: bandNodeID(band.ref),
+    label: 'then',
+    selectable: false,
+    labelShowBg: true,
+    labelBgPadding: [5, 2] as [number, number],
+    labelBgBorderRadius: 4,
+    labelStyle: { fontSize: 10, fill: 'var(--db-text-secondary, #666)' },
+    labelBgStyle: { fill: 'var(--mantine-color-body)', fillOpacity: 0.92 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: 'var(--mantine-color-blue-4)' },
+    style: { stroke: 'var(--mantine-color-blue-4)', strokeWidth: 2 },
+  }));
+  if (marker.length > 0 && dated.length > 0) {
+    spine.unshift({
+      id: 'spine:earlier',
+      source: 'earlier-runs',
+      target: bandNodeID(dated[0].ref),
+      selectable: false,
       style: {
-        stroke: lit ? 'var(--mantine-color-gray-5)' : 'var(--mantine-color-gray-3)',
-        strokeWidth: lit && selected ? 2 : 1.4,
-        opacity: lit ? 1 : 0.35,
+        stroke: 'var(--mantine-color-blue-4)',
+        strokeWidth: 2,
+        strokeDasharray: '4 4',
       },
-    };
-  });
+    });
+  }
 
-  return { nodes, edges };
+  const edges: Edge[] = map.edges
+    // Only between cards that are actually on screen: a band with its
+    // inventory collapsed has no node for a link to land on.
+    .filter((e) => drawn.has(e.source) && drawn.has(e.target))
+    .map((e) => {
+      const lit = !selected || (connected.has(e.source) && connected.has(e.target));
+      const story = NARRATIVE_EDGE[e.kind];
+      const stroke = !lit
+        ? 'var(--mantine-color-gray-3)'
+        : (story ? 'var(--mantine-color-grape-5)' : 'var(--mantine-color-gray-5)');
+      return {
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        label: e.label,
+        animated: lit && Boolean(selected),
+        labelShowBg: true,
+        labelBgPadding: [5, 2] as [number, number],
+        labelBgBorderRadius: 4,
+        labelStyle: { fontSize: 10, fill: 'var(--db-text-secondary, #666)' },
+        labelBgStyle: { fill: 'var(--mantine-color-body)', fillOpacity: 0.92 },
+        markerEnd: { type: MarkerType.ArrowClosed, color: stroke },
+        style: {
+          stroke,
+          strokeWidth: lit && (selected || story) ? 2 : 1.4,
+          opacity: lit ? 1 : 0.3,
+        },
+      };
+    });
+
+  return { nodes: [...marker, ...headers, ...nodes, ...more], edges: [...spine, ...edges] };
 }
 
 /** A link out to a detail page, with the affordance to open it in a new tab —
@@ -463,6 +749,10 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function Legend() {
   return (
     <Group gap="md" wrap="wrap">
+      <Group gap={5} wrap="nowrap">
+        <IconClockHour4 size={13} style={{ opacity: 0.7 }} />
+        <Text size="xs" c="dimmed">One column per run, oldest first</Text>
+      </Group>
       {(['finding', 'task', 'recommendation'] as MapNodeKind[]).map((kind) => (
         <Group key={kind} gap={5} wrap="nowrap">
           <span style={{ color: KIND_COLOR[kind], display: 'flex' }}><KindIcon kind={kind} size={13} /></span>
@@ -474,11 +764,14 @@ function Legend() {
 }
 
 function Canvas({
-  projectId, index, map,
+  projectId, index, map, earlierRuns,
 }: {
-  projectId: string; index: GraphIndex; map: InvestigationMap;
+  projectId: string; index: GraphIndex; map: InvestigationMap; earlierRuns: boolean;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
+  // Which runs have had their "+N more" opened. Per band, because opening one
+  // run's inventory should not unfold every other run's as well.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const { fitView } = useReactFlow();
 
   // What stays lit when a node is selected: itself and everything one link
@@ -498,10 +791,10 @@ function Canvas({
   // they are drawn — so it must not produce new geometry, or the effect below
   // would refit the viewport on every click and snap a reader who had panned
   // to another chain straight back to the first one.
-  const geometry = useMemo(() => place(map), [map]);
+  const geometry = useMemo(() => place(map, expanded), [map, expanded]);
   const laid = useMemo(
-    () => layout(map, geometry, selected, connected),
-    [map, geometry, selected, connected],
+    () => layout(map, index, geometry, selected, connected, earlierRuns),
+    [map, index, geometry, selected, connected, earlierRuns],
   );
   const [nodes, setNodes, onNodesChange] = useNodesState(laid.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(laid.edges);
@@ -517,20 +810,37 @@ function Canvas({
   // used to be. Keyed on the map, not on the layout — selecting a card moves
   // nothing, so it must not move the view. The frame lets React Flow measure
   // the new nodes before they are fitted.
-  const { focus } = geometry;
+  // Keyed on WHAT is focused, not on the array that names it — the key IS the
+  // ids, so nothing else has to be carried across. Opening a run's "+N more"
+  // rebuilds the geometry without changing where the map starts, and refitting
+  // there would throw away the pan of whoever opened it.
+  const focusKey = geometry.focus.join('|');
   useEffect(() => {
+    const ids = focusKey ? focusKey.split('|') : [];
     const frame = window.requestAnimationFrame(() => fitView({
       duration: 300,
       minZoom: 0.55,
       maxZoom: 1,
-      nodes: focus.length > 0 ? focus.map((id) => ({ id })) : undefined,
+      nodes: ids.length > 0 ? ids.map((id) => ({ id })) : undefined,
     }));
     return () => window.cancelAnimationFrame(frame);
-  }, [focus, fitView]);
+  }, [focusKey, fitView]);
 
   const selectedNode = selected ? map.nodes.find((n) => n.id === selected) ?? null : null;
 
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
+    // A run header is a label, not a card: clicking one would dim the whole
+    // map in favour of a node that has no detail to show.
+    if (node.type === 'band') return;
+    if (node.type === 'more') {
+      const ref = bandRefOfMore(node.id);
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        if (!next.delete(ref)) next.add(ref);
+        return next;
+      });
+      return;
+    }
     setSelected((prev) => (prev === node.id ? null : node.id));
   }, []);
 
@@ -556,7 +866,9 @@ function Canvas({
         <Controls showInteractive={false} />
         <MiniMap
           pannable zoomable
-          nodeColor={(n) => accentFor(n.data as unknown as MapNode)}
+          nodeColor={(n) => (n.type === 'band'
+            ? 'var(--mantine-color-blue-3)'
+            : accentFor(n.data as unknown as MapNode))}
           style={{ background: 'var(--mantine-color-body)' }}
         />
       </ReactFlow>
@@ -650,7 +962,12 @@ export default function ThreadMap({
         </Group>
       ) : (
         <>
-          <Canvas projectId={projectId} index={index} map={map} />
+          <Canvas
+            projectId={projectId}
+            index={index}
+            map={map}
+            earlierRuns={Boolean(graph?.truncated?.runs)}
+          />
           <Group justify="space-between" wrap="wrap" gap="sm">
             <Legend />
             <Group gap="sm">

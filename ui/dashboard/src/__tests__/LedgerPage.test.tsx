@@ -23,21 +23,23 @@ jest.mock('@xyflow/react', () => {
   return {
     __esModule: true,
     ReactFlow: ({ nodes, nodeTypes, onNodeClick }: {
-      nodes: { id: string; data: unknown }[];
+      nodes: { id: string; type: string; data: unknown; position: { x: number } }[];
       nodeTypes: Record<string, React.ComponentType<{ data: unknown }>>;
-      onNodeClick: (e: unknown, node: { id: string }) => void;
-    }) => {
-      const Node = nodeTypes.investigation;
-      return (
-        <div data-testid="map-canvas">
-          {nodes.map((n) => (
-            <div key={n.id} onClick={(e) => onNodeClick(e, n)}>
-              <Node data={n.data} />
+      onNodeClick: (e: unknown, node: { id: string; type: string }) => void;
+    }) => (
+      // Rendered in x order, which is the order a reader sees them in: the
+      // map's whole point is that left to right is oldest to newest.
+      <div data-testid="map-canvas">
+        {[...nodes].sort((a, b) => a.position.x - b.position.x).map((n) => {
+          const Node = nodeTypes[n.type];
+          return (
+            <div key={n.id} data-testid={`node-${n.type}`} onClick={(e) => onNodeClick(e, n)}>
+              {Node ? <Node data={n.data} /> : null}
             </div>
-          ))}
-        </div>
-      );
-    },
+          );
+        })}
+      </div>
+    ),
     ReactFlowProvider: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
     Background: () => null,
     Controls: () => null,
@@ -45,6 +47,7 @@ jest.mock('@xyflow/react', () => {
     Handle: () => null,
     Position: { Left: 'left', Right: 'right' },
     BackgroundVariant: { Dots: 'dots' },
+    MarkerType: { ArrowClosed: 'arrowclosed' },
     useNodesState: (initial: unknown[]) => {
       const [v, setV] = React.useState(initial);
       React.useEffect(() => setV(initial), [initial]);
@@ -375,6 +378,94 @@ describe('LedgerPage', () => {
     expect(view().getAllByText('Finding').length).toBeGreaterThan(0);
     expect(view().getAllByText('Thread').length).toBeGreaterThan(0);
     expect(view().getAllByText('Recommendation').length).toBeGreaterThan(0);
+  });
+
+  it('lays the map out as a timeline of runs, oldest first', async () => {
+    // The map answers "how did this start, and what followed" by being in the
+    // order it happened: a column per run, headed by that run, left to right.
+    mockAll();
+    wrap();
+    fireEvent.click(await screen.findByText('Map'));
+    const canvas = await screen.findByTestId('map-canvas');
+
+    const headers = within(canvas).getAllByTestId('node-band');
+    expect(headers.map((h) => h.textContent)).toEqual([
+      expect.stringContaining('Run 1'),
+      expect.stringContaining('Run 2'),
+    ]);
+    // Each run says what it did, so a reader can follow the timeline without
+    // opening anything.
+    expect(headers[0].textContent).toMatch(/1 finding/);
+    expect(headers[1].textContent).toMatch(/1 recommendation/);
+    // The whole history is here, so nothing claims runs are missing.
+    expect(within(canvas).queryByText(/Earlier runs/)).not.toBeInTheDocument();
+
+    // And a card sits under the run whose work it was — the finding run 2
+    // found is in run 2's column, to the right of run 1's.
+    const order = within(canvas).getAllByTestId(/^node-/).map((n) => n.textContent ?? '');
+    const runOne = order.findIndex((t) => t.includes('Run 1'));
+    const runTwo = order.findIndex((t) => t.includes('Run 2'));
+    const churn = order.findIndex((t) => t.includes('High EU churn'));
+    const hub = order.findIndex((t) => t.includes('Late deliveries cluster in one hub'));
+    expect(runOne).toBeLessThan(churn);
+    expect(churn).toBeLessThan(runTwo);
+    expect(runTwo).toBeLessThan(hub);
+  });
+
+  it('says so when the history it is drawing is only a window', async () => {
+    // The leftmost run would otherwise read as the beginning of the
+    // investigation, which on a project with more history it is not.
+    getLedger.mockResolvedValue(ledger);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'auto', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    getLedgerGraph.mockResolvedValue({
+      ...graph,
+      truncated: { ...graph.truncated, runs: true },
+    } as unknown as LedgerGraph);
+    wrap();
+    fireEvent.click(await screen.findByText('Map'));
+    const canvas = await screen.findByTestId('map-canvas');
+    expect(within(canvas).getByText(/Earlier runs/)).toBeInTheDocument();
+  });
+
+  it('collapses the rest of a run behind a count, and opens it again', async () => {
+    // A real run finds dozens of things and a handful go on to matter. All of
+    // them drawn is a reader searching forty cards for the five that are the
+    // story — so the rest is one click away, inside the run it belongs to.
+    const many = {
+      ...graph,
+      findings: [
+        ...graph.findings,
+        ...Array.from({ length: 9 }, (_, i) => ({
+          node_id: `finding:x${i}`, id: `x${i}`, name: `Also found ${i}`, area: 'churn',
+          severity: 'low', status: 'confirmed', seen_count: 1,
+          first_seen: '2026-01-01T00:00:00Z', last_seen: '2026-01-01T00:00:00Z',
+          sightings: [{ run_id: 'r1', discovery_id: 'd1', date: '2026-01-01T00:00:00Z', severity: 'low' }],
+        })),
+      ],
+    };
+    getLedgerGraph.mockResolvedValue(many as unknown as LedgerGraph);
+    getLedger.mockResolvedValue(ledger);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'auto', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    wrap();
+    fireEvent.click(await screen.findByText('Map'));
+    const canvas = await screen.findByTestId('map-canvas');
+
+    const collapsed = within(canvas).getAllByTestId('node-investigation').length;
+    const more = within(canvas).getByText(/\+\d+ more from this run/);
+    expect(more).toBeInTheDocument();
+
+    fireEvent.click(more);
+    await waitFor(() =>
+      expect(within(canvas).getAllByTestId('node-investigation').length)
+        .toBeGreaterThan(collapsed));
+    // Nothing was thrown away: every hidden finding is reachable.
+    expect(within(canvas).getByText('Also found 8')).toBeInTheDocument();
+
+    fireEvent.click(within(canvas).getByText('Show less'));
+    await waitFor(() =>
+      expect(within(canvas).getAllByTestId('node-investigation').length).toBe(collapsed));
   });
 
   it('does not move the viewport when a card is selected', async () => {

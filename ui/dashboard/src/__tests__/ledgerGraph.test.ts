@@ -2,8 +2,8 @@ import {
   InvestigationMap, MAX_MAP_NODES, areasOf, buildMap, buildStories,
   findingChangedInRun, findingEvidenceLink, indexGraph, insightLink,
   matchesFilters, nodeKind, nodeRawId, recommendationLink, runLabel,
-  runRefForDiscovery, seenInRuns, severitiesOf, sightingEvidenceLink, statusTrail,
-  statusesOf,
+  producedIn, runRefForDiscovery, seenInRuns, severitiesOf, sightingEvidenceLink,
+  statusTrail, statusesOf,
 } from '@/components/ledger/graph';
 import type { LedgerGraph } from '@/lib/api';
 
@@ -726,6 +726,32 @@ describe('the map stays finite', () => {
     const drawn = new Set(mapIds(map));
     expect(drawn.has('finding:f0')).toBe(true);
     expect(hasEdge(map, 'task:t0', 'finding:f0', 'grew_from')).toBe(true);
+  });
+
+  it('attributes each card to the run whose work it was', () => {
+    // The map is laid out in time, so every card has to know which run it
+    // belongs to. A finding belongs to the run that FOUND it, not the latest
+    // one to see it again: seeing it again is an edge, not a relocation.
+    const graph = chainGraph();
+    const idx = indexGraph(graph);
+    expect(producedIn(idx, 'finding:f1')).toBe('run:r1'); // first seen in run 1
+    expect(producedIn(idx, 'finding:f2')).toBe('run:r2');
+    expect(producedIn(idx, 'task:t1')).toBe('run:r1');    // created_run_id
+    expect(producedIn(idx, 'rec:rec1')).toBe('run:r2');   // through its discovery
+
+    // The map carries it through, so a band can be built from it.
+    const map = buildMap(idx);
+    const byId = new Map(map.nodes.map((n) => [n.id, n]));
+    expect(byId.get('finding:f1')?.runOrdinal).toBe(1);
+    expect(byId.get('finding:f2')?.runOrdinal).toBe(2);
+
+    // A finding nothing can date is attributed to no run rather than guessed
+    // into one — it belongs in the band that says so.
+    const orphan = { ...graph };
+    orphan.findings = graph.findings.map((f) => (f.id === 'f1' ? { ...f, sightings: [] } : f));
+    const orphaned = buildMap(indexGraph(orphan));
+    const f1 = orphaned.nodes.find((n) => n.id === 'finding:f1');
+    expect(f1?.runOrdinal).toBeUndefined();
   });
 
   it('excludes a filtered-out finding that nothing else reaches', () => {
