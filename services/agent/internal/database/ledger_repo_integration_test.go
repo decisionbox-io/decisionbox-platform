@@ -256,7 +256,7 @@ func TestLedgerFindingRepository_MergeSurvivesAnOverlappingWriter(t *testing.T) 
 
 	// Both runs have now read the finding above. Run A writes its merge.
 	if err := repo.Merge(ctx, "p1", "f1", FindingMerge{
-		Severity: "high", Status: "changed", AffectedCount: 10,
+		Severity: "high", AffectedCount: 10,
 		LastSeen: at.Add(time.Hour), SourceDiscoveryID: "d2",
 		InsightIDs: []string{"ins-a"},
 		Sighting:   &commonmodels.FindingSighting{RunID: "r2", DiscoveryID: "d2", Date: at.Add(time.Hour)},
@@ -274,7 +274,7 @@ func TestLedgerFindingRepository_MergeSurvivesAnOverlappingWriter(t *testing.T) 
 	// Run B now writes ITS merge, from the snapshot it read before any of
 	// that happened.
 	if err := repo.Merge(ctx, "p1", "f1", FindingMerge{
-		Severity: "critical", Status: "confirmed", AffectedCount: 20,
+		Severity: "critical", AffectedCount: 20,
 		LastSeen: at.Add(2 * time.Hour), SourceDiscoveryID: "d3",
 		InsightIDs: []string{"ins-b"},
 		Sighting:   &commonmodels.FindingSighting{RunID: "r3", DiscoveryID: "d3", Date: at.Add(2 * time.Hour)},
@@ -313,6 +313,11 @@ func TestLedgerFindingRepository_MergeSurvivesAnOverlappingWriter(t *testing.T) 
 	// Last write wins for the scalars, which is what they are for.
 	if got.Severity != "critical" || got.SourceDiscoveryID != "d3" {
 		t.Errorf("the later run's observation should stand: %+v", got)
+	}
+	// And the status agrees with the last entry of its own history, because
+	// the two are only ever written together.
+	if got.Status != got.StatusHistory[len(got.StatusHistory)-1].Status {
+		t.Errorf("status %q contradicts its own history: %+v", got.Status, got.StatusHistory)
 	}
 }
 

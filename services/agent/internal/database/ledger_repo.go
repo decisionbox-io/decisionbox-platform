@@ -457,7 +457,6 @@ type FindingMerge struct {
 	KeyMetric         string
 	Evidence          string
 	Severity          string
-	Status            string
 	AffectedCount     int
 	LastSeen          time.Time
 	SourceDiscoveryID string
@@ -496,11 +495,17 @@ func (r *LedgerFindingRepository) Merge(ctx context.Context, projectID, id strin
 		"key_metric":          m.KeyMetric,
 		"evidence":            m.Evidence,
 		"severity":            m.Severity,
-		"status":              m.Status,
 		"affected_count":      m.AffectedCount,
 		"last_seen":           m.LastSeen,
 		"source_discovery_id": m.SourceDiscoveryID,
 		"updated_at":          time.Now(),
+	}
+	// Status is written ONLY alongside the entry that explains the move. A
+	// merge that moved nothing carries the status it read before another
+	// reflection may have moved it, and writing that back would leave a
+	// finding showing a status its own history contradicts.
+	if len(m.StatusChanges) > 0 {
+		set["status"] = m.StatusChanges[len(m.StatusChanges)-1].Status
 	}
 	if m.Liked {
 		set["liked"] = true

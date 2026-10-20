@@ -134,7 +134,10 @@ func (f *fakeFindingRepo) Merge(_ context.Context, _, id string, m database.Find
 		}
 		fd := &f.findings[i]
 		fd.Description, fd.KeyMetric, fd.Evidence = m.Description, m.KeyMetric, m.Evidence
-		fd.Severity, fd.Status, fd.AffectedCount = m.Severity, m.Status, m.AffectedCount
+		fd.Severity, fd.AffectedCount = m.Severity, m.AffectedCount
+		if len(m.StatusChanges) > 0 {
+			fd.Status = m.StatusChanges[len(m.StatusChanges)-1].Status
+		}
 		fd.LastSeen, fd.SourceDiscoveryID = m.LastSeen, m.SourceDiscoveryID
 		fd.Liked = fd.Liked || m.Liked
 		fd.SeenCount++

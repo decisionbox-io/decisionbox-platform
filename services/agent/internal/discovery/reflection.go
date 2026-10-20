@@ -315,13 +315,27 @@ func (c consolidationResult) resolveFindingIDs(raw []string, known map[string]st
 // appendFindingSighting records one run's observation of a finding. Deduped on
 // (run, insight) so re-running the phase cannot double-count, while a run whose
 // two insights both landed on this finding legitimately records both.
-func appendFindingSighting(f *commonmodels.LedgerFinding, s commonmodels.FindingSighting) {
+// sightingIf passes the sighting on only when it was actually added, so a
+// replay writes nothing rather than a duplicate.
+func sightingIf(added bool, s commonmodels.FindingSighting) *commonmodels.FindingSighting {
+	if !added {
+		return nil
+	}
+	return &s
+}
+
+// appendFindingSighting reports whether the sighting was added, so a caller
+// writing the trail as a delta knows whether to write it. A replay of the same
+// discovery must not push a second copy: duplicates would spend the trail's
+// fifty entries on repeats and evict real history to do it.
+func appendFindingSighting(f *commonmodels.LedgerFinding, s commonmodels.FindingSighting) bool {
 	for i := range f.Sightings {
 		if f.Sightings[i].RunID == s.RunID && f.Sightings[i].InsightID == s.InsightID {
-			return
+			return false
 		}
 	}
 	f.Sightings = commonmodels.TrimFindingTrail(append(f.Sightings, s))
+	return true
 }
 
 // appendFindingStatusChange records why a status moved. A repeat of the same
@@ -520,7 +534,7 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 				InsightID:     insightID,
 			}
 			var statusAdded []commonmodels.FindingStatusChange
-			appendFindingSighting(match, sighting)
+			sightingAdded := appendFindingSighting(match, sighting)
 			wasArchived := match.Archived
 			// A run that sees an archived finding again brings it back into the
 			// active set: it is current again, and its edges and sightings are
@@ -569,21 +583,36 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 					statusAdded = append(statusAdded, trend)
 				}
 			} else if match.Status == "" {
+				// A legacy row with no status at all. Setting one is a move
+				// like any other, and it is recorded for the same reason:
+				// status is only ever written together with the entry that
+				// explains it, so a concurrent write can never leave a
+				// finding showing a status its own history contradicts.
 				match.Status = commonmodels.LedgerFindingStatusConfirmed
+				first := commonmodels.FindingStatusChange{
+					Status:      commonmodels.LedgerFindingStatusConfirmed,
+					Reason:      "first recorded status",
+					RunID:       o.runID,
+					DiscoveryID: result.ID,
+					At:          now,
+					Source:      commonmodels.FindingStatusSourceTrend,
+				}
+				if appendFindingStatusChange(match, first) {
+					statusAdded = append(statusAdded, first)
+				}
 			}
 			if err := o.findingRepo.Merge(ctx, o.projectID, match.ID, database.FindingMerge{
 				Description:       match.Description,
 				KeyMetric:         match.KeyMetric,
 				Evidence:          match.Evidence,
 				Severity:          match.Severity,
-				Status:            match.Status,
 				AffectedCount:     match.AffectedCount,
 				LastSeen:          match.LastSeen,
 				SourceDiscoveryID: match.SourceDiscoveryID,
 				Liked:             match.Liked,
 				Unarchive:         wasArchived,
 				InsightIDs:        cand.SourceInsightIDs,
-				Sighting:          &sighting,
+				Sighting:          sightingIf(sightingAdded, sighting),
 				StatusChanges:     statusAdded,
 			}); err != nil {
 				applog.WithError(err).Warn("Reflection: upsert merged finding failed")

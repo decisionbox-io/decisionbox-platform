@@ -166,10 +166,15 @@ func TestBackfillLedgerGraph_LinksWhatItCanAndReportsWhatItCannot(t *testing.T) 
 	if counts.FindingsLinked != 1 {
 		t.Errorf("linked = %d, want 1 (only the exact key match)", counts.FindingsLinked)
 	}
-	// Two honest gaps — a reworded insight, and one whose id resolves nowhere
-	// — and the count is how an operator learns they exist.
-	if counts.FindingsUnlinkable != 2 {
-		t.Errorf("unlinkable = %d, want 2", counts.FindingsUnlinkable)
+	// Two honest gaps, reported apart because they call for different
+	// responses: a reworded insight nothing can match, and one whose key DOES
+	// match but whose id reaches neither the insight page nor the graph's own
+	// stubs. The counts are how an operator learns which they have.
+	if counts.FindingsUnlinkable != 1 {
+		t.Errorf("unlinkable = %d, want 1 (the reworded insight)", counts.FindingsUnlinkable)
+	}
+	if counts.FindingsUnaddressable != 1 {
+		t.Errorf("unaddressable = %d, want 1 (the minted id)", counts.FindingsUnaddressable)
 	}
 	if counts.FindingsAlreadyLinked != 1 {
 		t.Errorf("already linked = %d, want 1", counts.FindingsAlreadyLinked)
@@ -252,7 +257,7 @@ func TestBackfillLedgerGraph_DryRunWritesNothing(t *testing.T) {
 		t.Fatalf("dry run: %v", err)
 	}
 	// It still reports exactly what it would do — that is the point of the mode.
-	if counts.FindingsLinked != 1 || counts.FindingsUnlinkable != 2 {
+	if counts.FindingsLinked != 1 || counts.FindingsUnlinkable != 1 || counts.FindingsUnaddressable != 1 {
 		t.Errorf("a dry run must still report its plan: %+v", counts)
 	}
 	stored := readFindings(t, client, projectID)
@@ -490,6 +495,59 @@ func TestBackfillLedgerGraph_SkipsAProjectMidRun(t *testing.T) {
 	}
 	if stale.ProjectsSkippedInFlight != 0 || stale.FindingsScanned != 1 {
 		t.Errorf("a stale marker must not block the backfill: %+v", stale)
+	}
+}
+
+// TestBackfillLedgerGraph_ReportsADivergedIDSpaceApart: `backfill-embeddings`
+// mints a fresh standalone _id and drops the embedded one, so on a project it
+// repaired the two insight id spaces diverged. The insight page resolves ids
+// out of the discovery document and the graph's stubs come from the standalone
+// collection, so no single id reaches both. That is a different diagnosis from
+// a reworded insight — no window and no matching fixes it — and the report
+// says so rather than burying it in the same count.
+func TestBackfillLedgerGraph_ReportsADivergedIDSpaceApart(t *testing.T) {
+	client, cleanup := backfillMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	const projectID = "p-diverged"
+
+	at := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := client.Collection(gomongo.CollectionDiscoveryLedgerFindings).InsertOne(ctx, bson.M{
+		"_id": "f1", "project_id": projectID, "name": "Churn up", "area": "churn",
+		"status": commonmodels.LedgerFindingStatusConfirmed,
+		"normalized_key": commonmodels.NormalizedFindingKey("churn", "Churn up"),
+		"last_seen": at, "seen_count": 1, "source_discovery_id": "disc-1",
+	}); err != nil {
+		t.Fatalf("seed finding: %v", err)
+	}
+	// The standalone row carries an id the discovery document has never heard
+	// of — exactly what `backfill-embeddings` leaves behind.
+	if _, err := client.Collection("insights").InsertOne(ctx, bson.M{
+		"_id": "minted-by-the-embeddings-backfill", "project_id": projectID,
+		"discovery_id": "disc-1", "analysis_area": "churn", "name": "Churn up",
+	}); err != nil {
+		t.Fatalf("seed insight: %v", err)
+	}
+	if _, err := client.Collection(gomongo.CollectionDiscoveries).InsertOne(ctx, bson.M{
+		"_id": "disc-1", "project_id": projectID, "discovery_date": at,
+		"insights": []bson.M{{"id": "embedded-id", "name": "Churn up", "analysis_area": "churn"}},
+	}); err != nil {
+		t.Fatalf("seed discovery: %v", err)
+	}
+
+	counts, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false)
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if counts.FindingsUnaddressable != 1 {
+		t.Errorf("a diverged id space should be reported as such: %+v", counts)
+	}
+	if counts.FindingsUnlinkable != 0 {
+		t.Errorf("it is not the same thing as a reworded insight: %+v", counts)
+	}
+	// And nothing was written: a link to either id would be a link to nowhere.
+	if ids := readFindings(t, client, projectID)["f1"].SourceInsightIDs; len(ids) != 0 {
+		t.Errorf("no id addresses both places, so none is stored: %v", ids)
 	}
 }
 

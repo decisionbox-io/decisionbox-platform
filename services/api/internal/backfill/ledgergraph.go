@@ -80,6 +80,13 @@ type ledgerGraphCounts struct {
 	FindingsLinked        int
 	FindingsAlreadyLinked int
 	FindingsUnlinkable    int
+	// FindingsUnaddressable is the different diagnosis: the insight IS here
+	// and its key matches, but this project's two insight id spaces diverged
+	// — `backfill-embeddings` minted fresh standalone ids and dropped the
+	// embedded ones — so no single id reaches both the insight page and the
+	// graph's own stub lookup. No window and no matching fixes it; it needs
+	// the id spaces reconciled.
+	FindingsUnaddressable int
 	SightingsWritten      int
 	StatusTrailsWritten   int
 	TasksScanned          int
@@ -188,6 +195,7 @@ func (c *ledgerGraphCounts) add(o ledgerGraphCounts) {
 	c.FindingsLinked += o.FindingsLinked
 	c.FindingsAlreadyLinked += o.FindingsAlreadyLinked
 	c.FindingsUnlinkable += o.FindingsUnlinkable
+	c.FindingsUnaddressable += o.FindingsUnaddressable
 	c.SightingsWritten += o.SightingsWritten
 	c.StatusTrailsWritten += o.StatusTrailsWritten
 	c.TasksScanned += o.TasksScanned
@@ -207,6 +215,10 @@ func printLedgerGraphCounts(label string, c ledgerGraphCounts) {
 	}
 	fmt.Printf("  findings:  %d scanned, %d linked to an insight, %d already linked, %d not linkable\n",
 		c.FindingsScanned, c.FindingsLinked, c.FindingsAlreadyLinked, c.FindingsUnlinkable)
+	if c.FindingsUnaddressable > 0 {
+		fmt.Printf("             %d matched an insight whose id cannot address both the insight page and the graph — this project's id spaces diverged and matching cannot fix it\n",
+			c.FindingsUnaddressable)
+	}
 	fmt.Printf("  trails:    %d sightings, %d status histories\n", c.SightingsWritten, c.StatusTrailsWritten)
 	fmt.Printf("  tasks:     %d scanned, %d close stamps, %d closing runs resolved, %d unset (several candidate runs), %d unset (no candidate run)\n",
 		c.TasksScanned, c.TasksClosedStamped, c.TasksCloseRunResolved,
@@ -269,7 +281,7 @@ func backfillLedgerGraphProject(ctx context.Context, client *gomongo.Client, pro
 	if err != nil {
 		return counts, err
 	}
-	insightsByKey, err := loadInsightKeyIndex(ctx, client, projectID, resolvable)
+	insightsByKey, unaddressable, err := loadInsightKeyIndex(ctx, client, projectID, resolvable)
 	if err != nil {
 		return counts, err
 	}
@@ -361,9 +373,12 @@ func backfillLedgerGraphProject(ctx context.Context, client *gomongo.Client, pro
 		known := insightsByKey[f.NormalizedKey]
 		switch {
 		case len(known) == 0:
-			if len(f.SourceInsightIDs) > 0 {
+			switch {
+			case len(f.SourceInsightIDs) > 0:
 				counts.FindingsAlreadyLinked++
-			} else {
+			case has(unaddressable, f.NormalizedKey):
+				counts.FindingsUnaddressable++
+			default:
 				counts.FindingsUnlinkable++
 			}
 		case len(f.SourceInsightIDs) == 0:
@@ -593,12 +608,15 @@ func loadEmbeddedInsightIDs(ctx context.Context, client *gomongo.Client, project
 //
 // Only ids the discovery documents also carry are included — see
 // loadEmbeddedInsightIDs.
-func loadInsightKeyIndex(ctx context.Context, client *gomongo.Client, projectID string, resolvable map[string]struct{}) (map[string][]string, error) {
+func loadInsightKeyIndex(
+	ctx context.Context, client *gomongo.Client, projectID string, resolvable map[string]struct{},
+) (idx map[string][]string, unaddressable map[string]struct{}, err error) {
+	unaddressable = map[string]struct{}{}
 	cur, err := client.Collection(collectionInsights).Find(ctx,
 		bson.M{"project_id": projectID},
 		options.Find().SetProjection(bson.M{"_id": 1, "analysis_area": 1, "name": 1}))
 	if err != nil {
-		return nil, fmt.Errorf("list insights: %w", err)
+		return nil, nil, fmt.Errorf("list insights: %w", err)
 	}
 	defer cur.Close(ctx)
 	var rows []struct {
@@ -607,20 +625,30 @@ func loadInsightKeyIndex(ctx context.Context, client *gomongo.Client, projectID 
 		Name         string `bson:"name"`
 	}
 	if err := cur.All(ctx, &rows); err != nil {
-		return nil, fmt.Errorf("decode insights: %w", err)
+		return nil, nil, fmt.Errorf("decode insights: %w", err)
 	}
-	idx := make(map[string][]string, len(rows))
+	idx = make(map[string][]string, len(rows))
 	for _, r := range rows {
 		if r.ID == "" || r.Name == "" {
 			continue
 		}
 		if _, clickable := resolvable[r.ID]; !clickable {
+			// The insight page resolves an id out of the DISCOVERY document,
+			// so an id that is not in there reaches nothing. On a project
+			// repaired by `backfill-embeddings` that is every standalone row:
+			// it minted a fresh _id and dropped the embedded one, so the two
+			// id spaces diverged and no single id addresses both the page and
+			// the graph's own stub lookup. Counted apart from a reworded
+			// insight, because the two call for completely different
+			// responses — this one cannot be fixed by matching harder.
+			unaddressable[commonmodels.NormalizedFindingKey(r.AnalysisArea, r.Name)] = struct{}{}
 			continue
 		}
 		key := commonmodels.NormalizedFindingKey(r.AnalysisArea, r.Name)
 		idx[key] = append(idx[key], r.ID)
+		delete(unaddressable, key)
 	}
-	return idx, nil
+	return idx, unaddressable, nil
 }
 
 // collectionInsights is the standalone insight collection. go-common defines
@@ -633,6 +661,12 @@ type runRef struct {
 	RunID       string
 	DiscoveryID string
 	At          time.Time
+}
+
+// has is a set membership test that reads as one.
+func has(set map[string]struct{}, key string) bool {
+	_, ok := set[key]
+	return ok
 }
 
 // notIn returns the values of want that are missing from have.
