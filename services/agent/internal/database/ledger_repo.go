@@ -152,20 +152,38 @@ var notArchived = bson.M{"$ne": true}
 // identical to the behaviour before the retention cap became a soft archive:
 // this is the list both prompt paths read (the exploration phase's ledger
 // context and the reflection phase's prior-findings page). The dedup pass needs
-// the archived ones too and calls ListIncludingArchived instead — two named
-// methods rather than one boolean parameter, because a boolean at a call site
-// is how an archived finding ends up back in a prompt six months from now.
+// archived rows too and calls ListArchivedMatching instead — named methods
+// rather than one boolean parameter, because a boolean at a call site is how
+// an archived finding ends up back in a prompt six months from now.
 func (r *LedgerFindingRepository) List(ctx context.Context, projectID string) ([]commonmodels.LedgerFinding, error) {
 	return r.find(ctx, bson.M{"project_id": projectID, "archived": notArchived})
 }
 
-// ListIncludingArchived returns every finding for the project, archived ones
-// included. Used by the consolidation pass: a finding the retention cap
-// archived and this run has seen again must merge into the existing document
-// (and be un-archived), not be written a second time under the same
-// normalized_key.
-func (r *LedgerFindingRepository) ListIncludingArchived(ctx context.Context, projectID string) ([]commonmodels.LedgerFinding, error) {
-	return r.find(ctx, bson.M{"project_id": projectID})
+// ListArchivedMatching returns the ARCHIVED findings that could be the ones
+// this run is seeing again: those whose normalized key is one of the run's,
+// plus any named outright.
+//
+// The whole archive is not read. Since the retention cap archives rather than
+// deletes, that collection grows with the project's lifetime while the active
+// set stays bounded by the cap — so reading all of it on every run would make
+// a hot path cost more every month. What dedup actually needs from the archive
+// is the handful of rows that might match what this run just found.
+func (r *LedgerFindingRepository) ListArchivedMatching(ctx context.Context, projectID string, keys, ids []string) ([]commonmodels.LedgerFinding, error) {
+	if len(keys) == 0 && len(ids) == 0 {
+		return nil, nil
+	}
+	or := make([]bson.M, 0, 2)
+	if len(keys) > 0 {
+		or = append(or, bson.M{"normalized_key": bson.M{"$in": keys}})
+	}
+	if len(ids) > 0 {
+		or = append(or, bson.M{"_id": bson.M{"$in": ids}})
+	}
+	return r.find(ctx, bson.M{
+		"project_id": projectID,
+		"archived":   true,
+		"$or":        or,
+	})
 }
 
 func (r *LedgerFindingRepository) find(ctx context.Context, filter bson.M) ([]commonmodels.LedgerFinding, error) {

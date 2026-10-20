@@ -5,6 +5,7 @@ package backfill
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -339,7 +340,10 @@ func TestBackfillLedgerGraph_DoesNotOverwriteLiveProvenance(t *testing.T) {
 
 	stored := readFindings(t, client, projectID)
 	churn := stored["f-churn"]
-	if len(churn.SourceInsightIDs) != 1 || churn.SourceInsightIDs[0] != "ins-written-by-a-real-run" {
+	// The ids are MERGED, not replaced: what the run recorded is still there,
+	// and the historical ones it could not have known are added beside it.
+	// Everything else on the document is left alone entirely.
+	if !slices.Contains(churn.SourceInsightIDs, "ins-written-by-a-real-run") {
 		t.Errorf("a real run's provenance was overwritten: %v", churn.SourceInsightIDs)
 	}
 	if len(churn.Sightings) != 1 || churn.Sightings[0].RunID != "run-live" || churn.Sightings[0].AffectedCount != 999 {
@@ -486,6 +490,71 @@ func TestBackfillLedgerGraph_SkipsAProjectMidRun(t *testing.T) {
 	}
 	if stale.ProjectsSkippedInFlight != 0 || stale.FindingsScanned != 1 {
 		t.Errorf("a stale marker must not block the backfill: %+v", stale)
+	}
+}
+
+// TestBackfillLedgerGraph_CompletesAPartiallyLinkedFinding: a legacy finding
+// seen once after this provenance shipped carries exactly one insight id — the
+// one that run produced. Its older ones are still recoverable, and a
+// non-empty array must not be read as a complete one.
+func TestBackfillLedgerGraph_CompletesAPartiallyLinkedFinding(t *testing.T) {
+	client, cleanup := backfillMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	const projectID = "p-partial"
+
+	at := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := client.Collection(gomongo.CollectionDiscoveryLedgerFindings).InsertOne(ctx, bson.M{
+		"_id": "f1", "project_id": projectID, "name": "Churn up", "area": "churn",
+		"status": commonmodels.LedgerFindingStatusConfirmed,
+		"normalized_key": commonmodels.NormalizedFindingKey("churn", "Churn up"),
+		"last_seen": at, "seen_count": 2, "source_discovery_id": "disc-2",
+		// What the one post-deployment run recorded.
+		"source_insight_ids": []string{"ins-new"},
+	}); err != nil {
+		t.Fatalf("seed finding: %v", err)
+	}
+	if _, err := client.Collection("insights").InsertMany(ctx, []any{
+		bson.M{"_id": "ins-old", "project_id": projectID, "discovery_id": "disc-1",
+			"analysis_area": "churn", "name": "Churn up"},
+		bson.M{"_id": "ins-new", "project_id": projectID, "discovery_id": "disc-2",
+			"analysis_area": "churn", "name": "Churn up"},
+	}); err != nil {
+		t.Fatalf("seed insights: %v", err)
+	}
+	if _, err := client.Collection(gomongo.CollectionDiscoveries).InsertMany(ctx, []any{
+		bson.M{"_id": "disc-1", "project_id": projectID, "discovery_date": at.Add(-48 * time.Hour),
+			"insights": []bson.M{{"id": "ins-old", "name": "Churn up"}}},
+		bson.M{"_id": "disc-2", "project_id": projectID, "discovery_date": at,
+			"insights": []bson.M{{"id": "ins-new", "name": "Churn up"}}},
+	}); err != nil {
+		t.Fatalf("seed discoveries: %v", err)
+	}
+
+	counts, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false)
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if counts.FindingsLinked != 1 {
+		t.Errorf("the partially linked finding should be completed: %+v", counts)
+	}
+	got := readFindings(t, client, projectID)["f1"].SourceInsightIDs
+	slices.Sort(got)
+	if !slices.Equal(got, []string{"ins-new", "ins-old"}) {
+		t.Errorf("want both the old and the recorded insight, got %v", got)
+	}
+
+	// And a second pass changes nothing.
+	again, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false)
+	if err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	if again.FindingsLinked != 0 || again.FindingsAlreadyLinked != 1 {
+		t.Errorf("a complete finding is already linked: %+v", again)
+	}
+	after := readFindings(t, client, projectID)["f1"].SourceInsightIDs
+	if len(after) != 2 {
+		t.Errorf("a repeat must not duplicate ids: %v", after)
 	}
 }
 

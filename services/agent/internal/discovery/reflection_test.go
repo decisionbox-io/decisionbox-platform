@@ -83,12 +83,33 @@ func (f *fakeFindingRepo) List(_ context.Context, _ string) ([]commonmodels.Ledg
 	}
 	return active, nil
 }
-func (f *fakeFindingRepo) ListIncludingArchived(_ context.Context, _ string) ([]commonmodels.LedgerFinding, error) {
+func (f *fakeFindingRepo) ListArchivedMatching(_ context.Context, _ string, keys, ids []string) ([]commonmodels.LedgerFinding, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
-	return f.findings, nil
+	return matchArchived(f.findings, keys, ids), nil
 }
+
+func matchArchived(all []commonmodels.LedgerFinding, keys, ids []string) []commonmodels.LedgerFinding {
+	want := map[string]bool{}
+	for _, k := range keys {
+		want["k:"+k] = true
+	}
+	for _, id := range ids {
+		want["i:"+id] = true
+	}
+	out := []commonmodels.LedgerFinding{}
+	for i := range all {
+		if !all[i].Archived {
+			continue
+		}
+		if want["k:"+all[i].NormalizedKey] || want["i:"+all[i].ID] {
+			out = append(out, all[i])
+		}
+	}
+	return out
+}
+
 func (f *fakeFindingRepo) Upsert(_ context.Context, fd *commonmodels.LedgerFinding) error {
 	if f.upsertErr != nil {
 		return f.upsertErr

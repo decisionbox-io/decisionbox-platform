@@ -86,10 +86,12 @@ type findingStore interface {
 	// read it, which is what keeps prompt size and content unchanged by the
 	// retention cap having become a soft archive.
 	List(ctx context.Context, projectID string) ([]commonmodels.LedgerFinding, error)
-	// ListIncludingArchived is for the dedup pass only: a finding the cap
-	// archived and this run saw again must merge into the existing document
-	// (and be un-archived), not be written a second time under the same key.
-	ListIncludingArchived(ctx context.Context, projectID string) ([]commonmodels.LedgerFinding, error)
+	// ListArchivedMatching is for the dedup pass: a finding the cap archived
+	// and this run saw again must merge into the existing document (and be
+	// un-archived), not be written a second time under the same key. Only the
+	// archived rows that could be that finding are read — the archive grows
+	// with the project's lifetime, while the active set stays capped.
+	ListArchivedMatching(ctx context.Context, projectID string, keys, ids []string) ([]commonmodels.LedgerFinding, error)
 	Upsert(ctx context.Context, f *commonmodels.LedgerFinding) error
 	// MarkAnsweredTask appends the reverse of a closed thread's
 	// resolved_by_finding_ids, atomically — never by replacing the document.
@@ -363,11 +365,11 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 		ReSeen:               make(map[string]struct{}),
 		FindingIDByInsightID: make(map[string]string, len(candidates)),
 	}
-	// The dedup pass reads the ARCHIVED findings too. A finding the retention
-	// cap archived and this run has seen again must merge into the existing
-	// document — which un-archives it, with its sightings and edges intact —
-	// rather than being written a second time under the same normalized_key.
-	prior, lerr := o.findingRepo.ListIncludingArchived(ctx, o.projectID)
+	// The ACTIVE set, which the retention cap bounds. The archived rows this
+	// run might match are fetched separately, below, once there is something
+	// to match them against — the archive grows with the project's lifetime,
+	// so reading all of it here would make this path cost more every month.
+	prior, lerr := o.findingRepo.List(ctx, o.projectID)
 	if lerr != nil {
 		return out, fmt.Errorf("list prior findings: %w", lerr)
 	}
@@ -390,6 +392,38 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 	trendDelta := getEnvAsFloat(discoveryLedgerTrendDeltaEnv, defaultDiscoveryLedgerTrendDelta)
 	dedupMinScore := getEnvAsFloat(discoveryLedgerDedupMinScoreEnv, defaultDiscoveryLedgerDedupMinScore)
 	now := time.Now()
+
+	// The semantic hit per candidate, resolved here rather than inside the
+	// loop so the archived read below knows which ids it has to cover. Same
+	// searches, same order; only the moment changes.
+	semanticHit := make([]string, len(candidates))
+	if vectors != nil {
+		for i := range candidates {
+			semanticHit[i] = o.searchLedgerNeighbour(ctx, vectors[i], dedupMinScore)
+		}
+	}
+
+	// A finding the retention cap archived and this run has seen again must
+	// merge into the existing document — which un-archives it, with its
+	// sightings and edges intact — rather than being written a second time
+	// under the same normalized_key. Only the archived rows that could be
+	// that finding are read: the keys this run produced, and the ids the
+	// semantic search named.
+	keys := make([]string, 0, len(candidates))
+	for i := range candidates {
+		keys = append(keys, candidates[i].NormalizedKey)
+	}
+	hitIDs := make([]string, 0, len(semanticHit))
+	for _, id := range semanticHit {
+		if id != "" {
+			hitIDs = append(hitIDs, id)
+		}
+	}
+	archived, aerr := o.findingRepo.ListArchivedMatching(ctx, o.projectID, keys, hitIDs)
+	if aerr != nil {
+		return out, fmt.Errorf("list archived findings this run may have seen again: %w", aerr)
+	}
+	prior = append(prior, archived...)
 
 	// insertedThisRun holds the ids this loop creates. They join priorByKey /
 	// priorByID so a later candidate merges into them instead of duplicating,
@@ -425,10 +459,8 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 		}
 
 		match := priorByKey[cand.NormalizedKey]
-		if match == nil && vec != nil {
-			if id := o.searchLedgerNeighbour(ctx, vec, dedupMinScore); id != "" {
-				match = priorByID[id]
-			}
+		if match == nil && semanticHit[i] != "" {
+			match = priorByID[semanticHit[i]]
 		}
 
 		if match != nil {

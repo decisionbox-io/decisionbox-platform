@@ -75,7 +75,7 @@ func TestLedgerFindingRepository_PruneArchivesInsteadOfDeleting(t *testing.T) {
 		}
 	}
 
-	all, err := repo.ListIncludingArchived(ctx, "p1")
+	all, err := readAllFindings(ctx, db, "p1")
 	if err != nil {
 		t.Fatalf("list including archived: %v", err)
 	}
@@ -187,6 +187,48 @@ func TestLedgerFindingRepository_ArchivedIndexExists(t *testing.T) {
 	t.Errorf("no (project_id, archived) index found: %+v", specs)
 }
 
+// TestLedgerFindingRepository_ListArchivedMatchingReadsOnlyWhatCouldMatch:
+// the archive grows with the project's lifetime while the active set stays
+// capped, so the dedup pass must not read all of it on every run.
+func TestLedgerFindingRepository_ListArchivedMatchingReadsOnlyWhatCouldMatch(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewLedgerFindingRepository(db)
+
+	at := time.Now().Truncate(time.Millisecond)
+	for _, f := range []commonmodels.LedgerFinding{
+		{ID: "a-key", ProjectID: "p1", NormalizedKey: "churn|high eu churn", Archived: true, LastSeen: at},
+		{ID: "a-id", ProjectID: "p1", NormalizedKey: "other|thing", Archived: true, LastSeen: at},
+		{ID: "a-noise", ProjectID: "p1", NormalizedKey: "noise|noise", Archived: true, LastSeen: at},
+		{ID: "live", ProjectID: "p1", NormalizedKey: "churn|high eu churn", LastSeen: at},
+		{ID: "theirs", ProjectID: "other", NormalizedKey: "churn|high eu churn", Archived: true, LastSeen: at},
+	} {
+		finding := f
+		if err := repo.Upsert(ctx, &finding); err != nil {
+			t.Fatalf("seed %s: %v", f.ID, err)
+		}
+	}
+
+	got, err := repo.ListArchivedMatching(ctx, "p1", []string{"churn|high eu churn"}, []string{"a-id"})
+	if err != nil {
+		t.Fatalf("list archived matching: %v", err)
+	}
+	ids := make([]string, 0, len(got))
+	for _, f := range got {
+		ids = append(ids, f.ID)
+	}
+	slices.Sort(ids)
+	if !slices.Equal(ids, []string{"a-id", "a-key"}) {
+		t.Errorf("want the key match and the id match only, got %v", ids)
+	}
+
+	// Nothing to match against means no query at all.
+	if out, err := repo.ListArchivedMatching(ctx, "p1", nil, nil); err != nil || len(out) != 0 {
+		t.Errorf("no keys and no ids must read nothing: n=%d err=%v", len(out), err)
+	}
+}
+
 // TestLedgerRepository_OverlappingReflectionsEachHoldTheMarker: the marker is
 // an array, one entry per run, because two reflections can overlap. With a
 // single slot the second to finish would take the marker down while the first
@@ -288,7 +330,7 @@ func TestLedgerFindingRepository_MarkAnsweredTaskIsAnAtomicAppend(t *testing.T) 
 		t.Fatalf("repeat: %v", err)
 	}
 
-	all, err := repo.ListIncludingArchived(ctx, "p1")
+	all, err := readAllFindings(ctx, db, "p1")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -307,7 +349,7 @@ func TestLedgerFindingRepository_MarkAnsweredTaskIsAnAtomicAppend(t *testing.T) 
 		t.Errorf("the rest of the finding must survive the append: %+v", byID["f1"])
 	}
 	// And a finding in another project is never touched, even when named.
-	theirs, err := repo.ListIncludingArchived(ctx, "other")
+	theirs, err := readAllFindings(ctx, db, "other")
 	if err != nil {
 		t.Fatalf("list other: %v", err)
 	}
@@ -542,4 +584,21 @@ func TestLedgerLearningRepository_UpsertDedupes(t *testing.T) {
 	if len(limited) != 1 {
 		t.Errorf("limit not honoured, got %d", len(limited))
 	}
+}
+
+// readAllFindings reads every stored finding for a project, archived ones
+// included — what the repository deliberately has no production method for, so
+// a test can still see the whole collection.
+func readAllFindings(ctx context.Context, db *DB, projectID string) ([]commonmodels.LedgerFinding, error) {
+	cur, err := db.Collection(CollectionDiscoveryLedgerFindings).
+		Find(ctx, bson.M{"project_id": projectID})
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var out []commonmodels.LedgerFinding
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }

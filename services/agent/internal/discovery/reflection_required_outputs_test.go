@@ -368,10 +368,8 @@ func (r *statefulFindingRepo) List(_ context.Context, _ string) ([]commonmodels.
 	return out, nil
 }
 
-func (r *statefulFindingRepo) ListIncludingArchived(_ context.Context, _ string) ([]commonmodels.LedgerFinding, error) {
-	out := make([]commonmodels.LedgerFinding, len(r.findings))
-	copy(out, r.findings)
-	return out, nil
+func (r *statefulFindingRepo) ListArchivedMatching(_ context.Context, _ string, keys, ids []string) ([]commonmodels.LedgerFinding, error) {
+	return matchArchived(r.findings, keys, ids), nil
 }
 
 func (r *statefulFindingRepo) Upsert(_ context.Context, f *commonmodels.LedgerFinding) error {

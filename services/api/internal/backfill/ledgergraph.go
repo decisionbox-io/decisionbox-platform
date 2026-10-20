@@ -337,17 +337,47 @@ func backfillLedgerGraphProject(ctx context.Context, client *gomongo.Client, pro
 			SetUpdate(bson.M{"$set": bson.M{field: value}}))
 	}
 
+	// addToSet adds to an array that already has entries, which addWrite's
+	// "still absent" filter deliberately refuses to touch. Guarded by the
+	// document id alone because $addToSet cannot clobber: it adds what is
+	// missing and leaves everything else, including whatever a run wrote
+	// while this was working.
+	addToSet := func(id, field string, values []string) {
+		writes = append(writes, mongo.NewUpdateOneModel().
+			SetFilter(bson.M{"_id": id, "project_id": projectID}).
+			SetUpdate(bson.M{"$addToSet": bson.M{field: bson.M{"$each": values}}}))
+	}
+
 	for _, f := range findings {
 		pending := 0
 
-		if len(f.SourceInsightIDs) > 0 {
-			counts.FindingsAlreadyLinked++
-		} else if ids := insightsByKey[f.NormalizedKey]; len(ids) > 0 {
-			addWrite(f.ID, "source_insight_ids", ids)
+		// A finding seen once after this provenance shipped but before this
+		// command ran carries exactly one insight id — the one that run
+		// produced. Its older ones are still recoverable, and treating a
+		// non-empty array as complete would leave them behind for good, since
+		// every later pass would skip it for the same reason. Only the ids
+		// that are missing are added, with $addToSet so a run writing beside
+		// this cannot be overwritten and a repeat changes nothing.
+		known := insightsByKey[f.NormalizedKey]
+		switch {
+		case len(known) == 0:
+			if len(f.SourceInsightIDs) > 0 {
+				counts.FindingsAlreadyLinked++
+			} else {
+				counts.FindingsUnlinkable++
+			}
+		case len(f.SourceInsightIDs) == 0:
+			addWrite(f.ID, "source_insight_ids", known)
 			pending++
 			counts.FindingsLinked++
-		} else {
-			counts.FindingsUnlinkable++
+		default:
+			if missing := notIn(known, f.SourceInsightIDs); len(missing) > 0 {
+				addToSet(f.ID, "source_insight_ids", missing)
+				pending++
+				counts.FindingsLinked++
+			} else {
+				counts.FindingsAlreadyLinked++
+			}
 		}
 
 		// One synthetic sighting from first_seen + source_discovery_id. The
@@ -603,6 +633,23 @@ type runRef struct {
 	RunID       string
 	DiscoveryID string
 	At          time.Time
+}
+
+// notIn returns the values of want that are missing from have.
+func notIn(want, have []string) []string {
+	present := make(map[string]struct{}, len(have))
+	for _, h := range have {
+		present[h] = struct{}{}
+	}
+	missing := make([]string, 0, len(want))
+	for _, w := range want {
+		if _, ok := present[w]; ok {
+			continue
+		}
+		present[w] = struct{}{} // de-dupe within want too
+		missing = append(missing, w)
+	}
+	return missing
 }
 
 // errProjectBecameBusy means a reflection started while this project was being
