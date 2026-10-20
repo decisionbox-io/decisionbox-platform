@@ -162,7 +162,13 @@ interface RunBand {
   ordinal: number;
   /** Everything this run produced that the filters admitted. */
   nodes: MapNode[];
-  /** The slice of it being drawn, and the slice behind the "+N more". */
+  /** Everything with a link to anything — always drawn, because an edge
+   *  whose other end is not on the canvas is an edge nobody can see. */
+  linked: MapNode[];
+  /** The run's own work that nothing points at. Behind the "+N more" until
+   *  someone asks for it. */
+  loose: MapNode[];
+  /** What is on the canvas right now. */
   shown: MapNode[];
   hidden: MapNode[];
   x: number;
@@ -171,17 +177,22 @@ interface RunBand {
   moreAt?: { x: number; y: number };
 }
 
-const BAND_GAP = 104;
-const CARD_GAP_X = 28;
-const CARD_GAP_Y = 16;
-/** How many cards a band stacks before it starts a second column of its own.
- *  A first run that found forty things would otherwise be a four-thousand
- *  pixel wall, with nothing that came after it on screen at the same time. */
-const BAND_ROWS = 7;
+/** Spacing. Generous on purpose: a line you cannot follow is the same as no
+ *  line at all, and these cards are dense enough already. */
+const BAND_GAP = 150;
+const CARD_GAP_X = 56;
+const CARD_GAP_Y = 22;
+/** The gap between a run's own tiers and a loose card below them. */
+const TIER_GAP = 44;
+/** How wide the grid of loose cards gets before it wraps. */
+const LOOSE_COLUMNS = 3;
 const HEADER_HEIGHT = 58;
 const HEADER_GAP = 30;
-/** How many runs the view opens on. */
+/** How many runs the opening position is computed from. */
 const OPENING_BANDS = 3;
+/** The zoom the map opens at: close enough to read a card, wide enough that
+ *  the first runs and the lines between them are in frame together. */
+const OPENING_ZOOM = 0.72;
 
 const BAND_KIND_ORDER: Record<MapNodeKind, number> = { finding: 0, task: 1, recommendation: 2 };
 const BAND_SEVERITY: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
@@ -195,11 +206,19 @@ const BAND_SEVERITY: Record<string, number> = { critical: 0, high: 1, medium: 2,
 function bandsOf(map: InvestigationMap, linked: Set<string>): RunBand[] {
   const byRef = new Map<string, RunBand>();
   map.nodes.forEach((n) => {
-    const ref = n.runOrdinal ? (n.runRef ?? '') : '';
+    const ref = bandKeyOf(n);
     const band = byRef.get(ref);
     if (band) band.nodes.push(n);
     else byRef.set(ref, {
-      ref, ordinal: n.runOrdinal ?? 0, nodes: [n], shown: [], hidden: [], x: 0, width: 0,
+      ref,
+      ordinal: n.runOrdinal ?? 0,
+      nodes: [n],
+      linked: [],
+      loose: [],
+      shown: [],
+      hidden: [],
+      x: 0,
+      width: 0,
     });
   });
 
@@ -208,9 +227,9 @@ function bandsOf(map: InvestigationMap, linked: Set<string>): RunBand[] {
     return a.ordinal - b.ordinal;
   });
 
-  // Within a band, whatever something links to comes first. The chains that
-  // cross bands then run along the top of the map where they can be followed,
-  // and the rest of each run's work reads underneath them.
+  // Within a band, whatever something links to comes first — that is the
+  // order the org chart is built in, so the chains that cross bands start at
+  // the top of each run where they are easiest to pick up.
   bands.forEach((band) => {
     band.nodes.sort((a, b) => {
       const la = linked.has(a.id) ? 0 : 1;
@@ -226,15 +245,23 @@ function bandsOf(map: InvestigationMap, linked: Set<string>): RunBand[] {
   return bands;
 }
 
-/** place positions every card that is being shown, and reports the bands so
- *  the canvas can draw the run headers, the spine, and each band's "+N more".
+/** bandKeyOf is which band a node belongs to — its run, or the one band for
+ *  everything no run can be found for. */
+const bandKeyOf = (n: MapNode) => (n.runOrdinal ? (n.runRef ?? '') : '');
+
+/** place lays each run out as a small org chart and puts the runs in a row.
  *
- *  A band shows what links to something, then as much of the rest as fits in
- *  a single column, and collapses whatever is left behind a count. A real run
- *  finds dozens of things and a handful of them go on to matter; drawing all
- *  of them gives a reader forty cards to search for the five that are the
- *  story. The rest is not hidden — it is one click away, inside the run it
- *  belongs to, which is also where it means anything. */
+ *  Inside a run, a card that derives from another is drawn in the next tier
+ *  along, beside the card it derives from: a recommendation next to the
+ *  finding it recommends on, a thread next to the finding that opened it.
+ *  Stacking them in one column instead, which is what a grid does, leaves
+ *  every one of those links looping around half the run to get where it is
+ *  going — the lines are all still there and not one of them is followable.
+ *
+ *  Everything with a link is drawn, always. The budget comes out of the cards
+ *  nothing points at, which fold into one "+N more" per run. An edge with one
+ *  end missing is worse than useless: it tells a reader there is something to
+ *  follow and then does not let them. */
 function place(map: InvestigationMap, expanded: Set<string>): {
   at: Map<string, { x: number; y: number }>;
   bands: RunBand[];
@@ -247,34 +274,87 @@ function place(map: InvestigationMap, expanded: Set<string>): {
   });
 
   const bands = bandsOf(map, linked);
+  const bandOf = new Map<string, string>();
+  map.nodes.forEach((n) => bandOf.set(n.id, bandKeyOf(n)));
+
+  // Who derives from whom, within one run. A card's parent is the first card
+  // in its own run that it points at; a card pointing only at another run has
+  // no parent here, and stands as a tier-one card of its own.
+  const parentOf = new Map<string, string>();
+  map.edges.forEach((e) => {
+    if (parentOf.has(e.source)) return;
+    if (!linked.has(e.target)) return;
+    if (bandOf.get(e.source) !== bandOf.get(e.target)) return;
+    if (e.source === e.target) return;
+    parentOf.set(e.source, e.target);
+  });
+  // A two-tier chart, not an arbitrary one: a card whose parent is itself a
+  // child stays in tier one, so the tiers keep meaning "found" and "what came
+  // off it" rather than drifting into a ladder nobody can scan.
+  [...parentOf.keys()].forEach((id) => {
+    const parent = parentOf.get(id) as string;
+    if (parentOf.has(parent)) parentOf.delete(id);
+  });
+
   const at = new Map<string, { x: number; y: number }>();
   const top = HEADER_HEIGHT + HEADER_GAP;
+  const rowStep = NODE_HEIGHT + CARD_GAP_Y;
+  const colStep = NODE_WIDTH + CARD_GAP_X;
   let x = 0;
 
   bands.forEach((band) => {
     const open = expanded.has(band.ref);
-    // One row is given up to the "+N more" card when there is one.
-    const room = band.nodes.length > BAND_ROWS ? BAND_ROWS - 1 : BAND_ROWS;
-    band.shown = open ? band.nodes : band.nodes.slice(0, room);
-    band.hidden = band.nodes.slice(band.shown.length);
+    band.linked = band.nodes.filter((n) => linked.has(n.id));
+    band.loose = band.nodes.filter((n) => !linked.has(n.id));
+    band.shown = open ? [...band.linked, ...band.loose] : band.linked;
+    band.hidden = open ? [] : band.loose;
 
-    // The "+N more" and the "Show less" are the same cell, and an expanded
-    // band still draws one — so it is counted whenever it will be there, or a
-    // band whose cards fill its last column exactly pushes it into a column
-    // the width never accounted for, on top of the next run.
-    const hasMore = band.hidden.length > 0 || open;
-    const cells = band.shown.length + (hasMore ? 1 : 0);
-    const columns = Math.max(1, Math.ceil(cells / BAND_ROWS));
-    band.x = x;
-    band.width = columns * NODE_WIDTH + (columns - 1) * CARD_GAP_X;
-
-    const cellAt = (i: number) => ({
-      x: x + Math.floor(i / BAND_ROWS) * (NODE_WIDTH + CARD_GAP_X),
-      y: top + (i % BAND_ROWS) * (NODE_HEIGHT + CARD_GAP_Y),
+    const children = new Map<string, MapNode[]>();
+    const tierOne: MapNode[] = [];
+    band.linked.forEach((n) => {
+      const parent = parentOf.get(n.id);
+      if (parent && bandOf.get(parent) === band.ref) {
+        const kids = children.get(parent);
+        if (kids) kids.push(n);
+        else children.set(parent, [n]);
+      } else {
+        tierOne.push(n);
+      }
     });
-    band.shown.forEach((n, i) => at.set(n.id, cellAt(i)));
-    if (hasMore) band.moreAt = cellAt(band.shown.length);
 
+    let row = 0;
+    let tiers = 1;
+    tierOne.forEach((parent) => {
+      at.set(parent.id, { x, y: top + row * rowStep });
+      const kids = children.get(parent.id) ?? [];
+      kids.forEach((kid, i) => {
+        at.set(kid.id, { x: x + colStep, y: top + (row + i) * rowStep });
+      });
+      if (kids.length > 0) tiers = 2;
+      row += Math.max(1, kids.length);
+    });
+
+    // The loose cards, if they have been asked for, in a block of their own
+    // underneath — they have no links to follow, so a grid costs nothing.
+    let y = top + row * rowStep + (row > 0 ? TIER_GAP : 0);
+    if (open) {
+      band.loose.forEach((n, i) => {
+        at.set(n.id, {
+          x: x + (i % LOOSE_COLUMNS) * colStep,
+          y: y + Math.floor(i / LOOSE_COLUMNS) * rowStep,
+        });
+      });
+      if (band.loose.length > 0) {
+        tiers = Math.max(tiers, Math.min(LOOSE_COLUMNS, band.loose.length));
+        y += Math.ceil(band.loose.length / LOOSE_COLUMNS) * rowStep;
+      }
+    }
+
+    const hasMore = band.loose.length > 0;
+    if (hasMore) band.moreAt = { x, y };
+
+    band.x = x;
+    band.width = tiers * NODE_WIDTH + (tiers - 1) * CARD_GAP_X;
     x += band.width + BAND_GAP;
   });
 
@@ -777,7 +857,7 @@ function Canvas({
   // Which runs have had their "+N more" opened. Per band, because opening one
   // run's inventory should not unfold every other run's as well.
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const { fitView } = useReactFlow();
+  const { fitView, setViewport } = useReactFlow();
 
   // What stays lit when a node is selected: itself and everything one link
   // away. More than that and the highlight stops meaning anything.
@@ -815,21 +895,21 @@ function Canvas({
   // used to be. Keyed on the map, not on the layout — selecting a card moves
   // nothing, so it must not move the view. The frame lets React Flow measure
   // the new nodes before they are fitted.
-  // Keyed on WHAT is focused, not on the array that names it — the key IS the
-  // ids, so nothing else has to be carried across. Opening a run's "+N more"
-  // rebuilds the geometry without changing where the map starts, and refitting
-  // there would throw away the pan of whoever opened it.
-  const focusKey = geometry.focus.join('|');
+  // The map opens at its top left corner, which is the oldest run's header —
+  // where the investigation started. Fitting instead would centre on the
+  // middle of whatever is tallest and scroll the run headers off the top,
+  // taking the one thing that orients a reader with them.
+  //
+  // Keyed on WHAT the map is, not on the object: opening a run's "+N more"
+  // rebuilds the geometry without changing where the map starts, and moving
+  // the view there would throw away the pan of whoever opened it.
+  const originKey = geometry.focus.join('|');
   useEffect(() => {
-    const ids = focusKey ? focusKey.split('|') : [];
-    const frame = window.requestAnimationFrame(() => fitView({
-      duration: 300,
-      minZoom: 0.55,
-      maxZoom: 1,
-      nodes: ids.length > 0 ? ids.map((id) => ({ id })) : undefined,
-    }));
+    const frame = window.requestAnimationFrame(
+      () => setViewport({ x: 36, y: 20, zoom: OPENING_ZOOM }, { duration: 300 }),
+    );
     return () => window.cancelAnimationFrame(frame);
-  }, [focusKey, fitView]);
+  }, [originKey, setViewport]);
 
   const selectedNode = selected ? map.nodes.find((n) => n.id === selected) ?? null : null;
 

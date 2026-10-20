@@ -839,6 +839,42 @@ func TestConsolidateFindings_ReSeenArchivedFindingIsRevived(t *testing.T) {
 	}
 }
 
+// TestConsolidateFindings_ExactKeyMatchSkipsTheVectorSearch: semantic dedup is
+// the fallback for a candidate no key matches, so it must only be asked about
+// those. On a run where every finding is a re-sighting — which is most runs on
+// a mature project — searching anyway is one round trip per finding for an
+// answer that is thrown away, inside a phase on a deadline.
+func TestConsolidateFindings_ExactKeyMatchSkipsTheVectorSearch(t *testing.T) {
+	known := commonmodels.LedgerFinding{
+		ID: "f1", ProjectID: "p1", Area: "churn", Name: "High EU churn",
+		NormalizedKey: commonmodels.NormalizedFindingKey("churn", "High EU churn"),
+		Severity:      "high", AffectedCount: 100, SeenCount: 1,
+		Status: commonmodels.LedgerFindingStatusConfirmed,
+	}
+	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{known}}
+	vs := &mockVectorStore{}
+	o := &Orchestrator{
+		projectID: "p1", runID: "r2", findingRepo: fr,
+		embeddingProvider: &mockEmbeddingProvider{dims: 3, model: "m"},
+		vectorStore:       vs,
+	}
+
+	// One candidate that matches by key, one that does not.
+	if _, err := o.consolidateFindings(context.Background(), &models.DiscoveryResult{
+		ProjectID: "p1", ID: "d2",
+		Insights: []models.Insight{
+			{ID: "ins-1", AnalysisArea: "churn", Name: "High EU churn", Severity: "high", AffectedCount: 100},
+			{ID: "ins-2", AnalysisArea: "logistics", Name: "Something new", Severity: "low", AffectedCount: 5},
+		},
+	}); err != nil {
+		t.Fatalf("consolidate: %v", err)
+	}
+
+	if vs.searches != 1 {
+		t.Errorf("only the candidate with no key match should be searched for, got %d searches", vs.searches)
+	}
+}
+
 // TestConsolidateFindings_RevivedTerminalFindingBecomesActive is the other
 // half of the soft archive. Un-archiving a resolved or refuted finding is not
 // enough on its own: both statuses are terminal, so the read context still

@@ -18,6 +18,7 @@ jest.mock('@/components/layout/AppShell', () => ({
 // the library's problem; the projection behind it is tested in
 // ledgerGraph.test.ts, and the node markup still renders through this.
 const fitViewSpy = jest.fn();
+const setViewportSpy = jest.fn();
 jest.mock('@xyflow/react', () => {
   const React = jest.requireActual('react');
   return {
@@ -58,7 +59,7 @@ jest.mock('@xyflow/react', () => {
       React.useEffect(() => setV(initial), [initial]);
       return [v, setV, jest.fn()];
     },
-    useReactFlow: () => ({ fitView: fitViewSpy }),
+    useReactFlow: () => ({ fitView: fitViewSpy, setViewport: setViewportSpy }),
   };
 });
 
@@ -468,6 +469,42 @@ describe('LedgerPage', () => {
       expect(within(canvas).getAllByTestId('node-investigation').length).toBe(collapsed));
   });
 
+  it('never collapses a card something links to', async () => {
+    // The budget comes out of the cards nothing points at, never out of the
+    // ones that do. An edge with one end missing is worse than no edge: it
+    // tells a reader there is something to follow and then does not let them.
+    const many = {
+      ...graph,
+      findings: [
+        ...graph.findings,
+        // Nine loose findings in run 1, which is already carrying a linked
+        // one — enough to push past any per-run budget.
+        ...Array.from({ length: 9 }, (_, i) => ({
+          node_id: `finding:x${i}`, id: `x${i}`, name: `Also found ${i}`, area: 'churn',
+          severity: 'low', status: 'confirmed', seen_count: 1,
+          first_seen: '2026-01-01T00:00:00Z', last_seen: '2026-01-01T00:00:00Z',
+          sightings: [{ run_id: 'r1', discovery_id: 'd1', date: '2026-01-01T00:00:00Z', severity: 'low' }],
+        })),
+      ],
+    };
+    getLedgerGraph.mockResolvedValue(many as unknown as LedgerGraph);
+    getLedger.mockResolvedValue(ledger);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'auto', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    wrap();
+    fireEvent.click(await screen.findByText('Map'));
+    const canvas = await screen.findByTestId('map-canvas');
+
+    // Both ends of the chain are still here, loose cards or no loose cards.
+    expect(within(canvas).getByText('High EU churn')).toBeInTheDocument();
+    expect(within(canvas).getByText('Do those orders share a hub?')).toBeInTheDocument();
+    expect(within(canvas).getByText('Late deliveries cluster in one hub')).toBeInTheDocument();
+    expect(within(canvas).getByText('Re-route the hub overflow')).toBeInTheDocument();
+    // And it is the loose ones that folded away.
+    expect(within(canvas).queryByText('Also found 8')).not.toBeInTheDocument();
+    expect(within(canvas).getByText(/\+9 more from this run/)).toBeInTheDocument();
+  });
+
   it('does not move the viewport when a card is selected', async () => {
     // Selecting a card changes how the map is drawn, not where anything is.
     // Refitting on selection snapped a reader who had panned to another chain
@@ -484,8 +521,8 @@ describe('LedgerPage', () => {
       wrap();
       fireEvent.click(await screen.findByText('Map'));
       const canvas = await screen.findByTestId('map-canvas');
-      await waitFor(() => expect(fitViewSpy).toHaveBeenCalled());
-      const fitsAfterOpening = fitViewSpy.mock.calls.length;
+      await waitFor(() => expect(setViewportSpy).toHaveBeenCalled());
+      const movesAfterOpening = setViewportSpy.mock.calls.length;
 
       fireEvent.click(within(canvas).getByText('High EU churn'));
       await screen.findByText(/Changed in run 2/);
@@ -500,7 +537,7 @@ describe('LedgerPage', () => {
         expect(screen.getByText(/the parts of your data the investigation has not looked at/i))
           .toBeVisible());
 
-      expect(fitViewSpy).toHaveBeenCalledTimes(fitsAfterOpening);
+      expect(setViewportSpy).toHaveBeenCalledTimes(movesAfterOpening);
     } finally {
       window.requestAnimationFrame = raf;
     }

@@ -393,12 +393,25 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 	dedupMinScore := getEnvAsFloat(discoveryLedgerDedupMinScoreEnv, defaultDiscoveryLedgerDedupMinScore)
 	now := time.Now()
 
-	// The semantic hit per candidate, resolved here rather than inside the
-	// loop so the archived read below knows which ids it has to cover. Same
-	// searches, same order; only the moment changes.
+	// Semantic dedup is the fallback for a candidate no key matches, so it is
+	// asked only about those. Searching for a candidate whose key already
+	// matches an active finding buys nothing and costs a round trip to
+	// Qdrant: on a run where every finding is a re-sighting that is one
+	// search per finding for an answer that will be thrown away, inside a
+	// phase on a deadline.
+	//
+	// Resolved here rather than inside the merge loop so the archived read
+	// below knows which ids it has to cover. Same searches, same order.
+	activeByKey := make(map[string]struct{}, len(prior))
+	for i := range prior {
+		activeByKey[prior[i].NormalizedKey] = struct{}{}
+	}
 	semanticHit := make([]string, len(candidates))
 	if vectors != nil {
 		for i := range candidates {
+			if _, exact := activeByKey[candidates[i].NormalizedKey]; exact {
+				continue
+			}
 			semanticHit[i] = o.searchLedgerNeighbour(ctx, vectors[i], dedupMinScore)
 		}
 	}
