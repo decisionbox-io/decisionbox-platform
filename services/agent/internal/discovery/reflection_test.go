@@ -23,6 +23,11 @@ type fakeLedgerRepo struct {
 	saved   *commonmodels.DiscoveryLedger
 	getErr  error
 	saveErr error
+	// The reflection-in-flight marker, mirrored so a test can check the
+	// phase brackets itself and leaves nothing set behind.
+	reflectingRunID string
+	beganReflection int
+	endedReflection int
 }
 
 func (f *fakeLedgerRepo) Get(_ context.Context, projectID string) (*commonmodels.DiscoveryLedger, error) {
@@ -41,10 +46,23 @@ func (f *fakeLedgerRepo) Save(_ context.Context, l *commonmodels.DiscoveryLedger
 	f.saved = l
 	return nil
 }
+func (f *fakeLedgerRepo) BeginReflection(_ context.Context, _, runID string) error {
+	f.reflectingRunID = runID
+	f.beganReflection++
+	return nil
+}
+func (f *fakeLedgerRepo) EndReflection(_ context.Context, _, runID string) error {
+	if f.reflectingRunID == runID {
+		f.reflectingRunID = ""
+	}
+	f.endedReflection++
+	return nil
+}
 
 type fakeFindingRepo struct {
 	findings  []commonmodels.LedgerFinding
 	upserted  []commonmodels.LedgerFinding
+	answered  []answeredCall
 	pruneMax  int
 	upsertErr error
 	listErr   error
@@ -78,9 +96,29 @@ func (f *fakeFindingRepo) Upsert(_ context.Context, fd *commonmodels.LedgerFindi
 	f.upserted = append(f.upserted, *fd)
 	return nil
 }
+func (f *fakeFindingRepo) MarkAnsweredTask(_ context.Context, _ string, findingIDs []string, taskID string) error {
+	// Mirrors the repository's $addToSet onto the fake's own documents, so a
+	// test reads the edge back where it would really be.
+	for _, id := range findingIDs {
+		for i := range f.findings {
+			if f.findings[i].ID != id {
+				continue
+			}
+			f.findings[i].AnsweredTaskIDs = appendUnique(f.findings[i].AnsweredTaskIDs, []string{taskID})
+		}
+	}
+	f.answered = append(f.answered, answeredCall{taskID: taskID, findingIDs: findingIDs})
+	return nil
+}
 func (f *fakeFindingRepo) Prune(_ context.Context, _ string, max int) error {
 	f.pruneMax = max
 	return nil
+}
+
+// answeredCall records one MarkAnsweredTask call.
+type answeredCall struct {
+	taskID     string
+	findingIDs []string
 }
 
 type fakeTaskRepo struct {
@@ -395,6 +433,49 @@ func TestRunPhaseReflection_LicenseGate_NoWork(t *testing.T) {
 
 	if prov.calls != 0 || len(fr.upserted) != 0 {
 		t.Fatalf("no sources entitlement must do no work: calls=%d upserted=%d", prov.calls, len(fr.upserted))
+	}
+}
+
+// TestRunPhaseReflection_BracketsItselfWithTheInFlightMarker: the one-shot
+// backfill cannot tell from run status that the ledger is still being written
+// — a run is `completed` before this phase starts — so the phase says so
+// itself, and must always take the marker back down. Every exit below the
+// gates is a best-effort bail-out, and a marker left set would block the
+// backfill on a project nothing is writing.
+func TestRunPhaseReflection_BracketsItselfWithTheInFlightMarker(t *testing.T) {
+	t.Setenv("DISCOVERY_REFLECTION_ENABLED", "true")
+
+	client, _ := stubClient(t, `{"coverage_summary":"x"}`, nil)
+	lr := &fakeLedgerRepo{}
+	o := &Orchestrator{
+		reflectionEnabled: true, projectID: "proj-1", runID: "run-1", datasets: []string{"ds"},
+		llmInputWindow: 200000, llmOutputCap: 4000, aiClient: client,
+		ledgerRepo: lr, findingRepo: &fakeFindingRepo{},
+	}
+	o.RunPhaseReflection(context.Background(), &models.DiscoveryResult{ID: "d1",
+		Insights: []models.Insight{{Name: "x", AnalysisArea: "a"}}})
+
+	if lr.beganReflection != 1 || lr.endedReflection != 1 {
+		t.Errorf("the phase must bracket itself exactly once: began=%d ended=%d",
+			lr.beganReflection, lr.endedReflection)
+	}
+	if lr.reflectingRunID != "" {
+		t.Errorf("the marker must not be left set, got %q", lr.reflectingRunID)
+	}
+
+	// A phase that bails out early still clears it. An upsert failure is one
+	// of the best-effort paths that returns without finishing.
+	lr2 := &fakeLedgerRepo{}
+	o2 := &Orchestrator{
+		reflectionEnabled: true, projectID: "proj-1", runID: "run-2", datasets: []string{"ds"},
+		llmInputWindow: 200000, llmOutputCap: 4000, aiClient: client,
+		ledgerRepo: lr2, findingRepo: &fakeFindingRepo{listErr: errors.New("mongo is down")},
+	}
+	o2.RunPhaseReflection(context.Background(), &models.DiscoveryResult{ID: "d1",
+		Insights: []models.Insight{{Name: "x", AnalysisArea: "a"}}})
+	if lr2.endedReflection != 1 || lr2.reflectingRunID != "" {
+		t.Errorf("a bail-out must still clear the marker: ended=%d set=%q",
+			lr2.endedReflection, lr2.reflectingRunID)
 	}
 }
 
@@ -920,15 +1001,23 @@ func TestApplyTaskStatusUpdates_CloseMetadataAndMirroredEdge(t *testing.T) {
 		t.Errorf("a dropped task must carry no resolved-by ids, got %v", dropped.ResolvedByFindingIDs)
 	}
 
-	// The reverse edge lands on each answering finding, exactly once.
+	// The reverse edge lands on each answering finding, exactly once — and as
+	// an atomic append, not by replacing the finding document.
 	mirrored := map[string][]string{}
-	for i := range fr.upserted {
-		mirrored[fr.upserted[i].ID] = fr.upserted[i].AnsweredTaskIDs
+	for i := range fr.findings {
+		mirrored[fr.findings[i].ID] = fr.findings[i].AnsweredTaskIDs
 	}
 	for _, id := range []string{"f-prior", "f-new"} {
 		if !slices.Equal(mirrored[id], []string{"t1"}) {
 			t.Errorf("finding %s should record answering t1, got %v", id, mirrored[id])
 		}
+	}
+	if len(fr.upserted) != 0 {
+		t.Errorf("the mirrored edge must not replace a finding document: %+v", fr.upserted)
+	}
+	// One call for the one closed thread; the dropped one answers nothing.
+	if len(fr.answered) != 1 || fr.answered[0].taskID != "t1" {
+		t.Errorf("want one answered-task write for t1, got %+v", fr.answered)
 	}
 }
 

@@ -58,6 +58,13 @@ const (
 	// documents, so a project mid-run is left alone rather than raced.
 	runStatusPending = "pending"
 	runStatusRunning = "running"
+	// reflectionStaleAfter is how long a reflection marker is believed. The
+	// phase is bounded by DISCOVERY_REFLECTION_TIMEOUT (three minutes by
+	// default) and an agent killed mid-phase never clears its marker — so
+	// without a ceiling one crash would block the backfill on that project
+	// forever. Generous enough to cover a raised timeout, short enough that a
+	// crash does not wedge anything for long.
+	reflectionStaleAfter = time.Hour
 )
 
 // ledgerGraphCounts is what the run reports. The unlinked counts are the point:
@@ -574,9 +581,15 @@ type runRef struct {
 	At          time.Time
 }
 
-// runInFlight reports whether the project has a discovery run that has not
-// finished. Such a run still has its reflection phase to write, and that write
-// replaces finding documents whole.
+// runInFlight reports whether anything is still writing this project's ledger.
+//
+// Two questions, because one does not answer it. A pending or running run has
+// its reflection phase still ahead of it. But a run is stamped `completed`
+// BEFORE that phase runs — so a project whose every run reads as finished can
+// still be mid-reflection, which is exactly when a finding document is being
+// replaced. The phase marks itself for the duration, and that marker is the
+// second question. A marker older than reflectionStaleAfter is disbelieved:
+// the phase is bounded, and an agent killed mid-phase never clears its own.
 func runInFlight(ctx context.Context, client *gomongo.Client, projectID string) (bool, error) {
 	n, err := client.Collection(gomongo.CollectionDiscoveryRuns).CountDocuments(ctx,
 		bson.M{
@@ -587,7 +600,27 @@ func runInFlight(ctx context.Context, client *gomongo.Client, projectID string) 
 	if err != nil {
 		return false, fmt.Errorf("check for a run in flight: %w", err)
 	}
-	return n > 0, nil
+	if n > 0 {
+		return true, nil
+	}
+
+	var ledger struct {
+		ReflectingSince time.Time `bson:"reflecting_since"`
+	}
+	err = client.Collection(gomongo.CollectionDiscoveryLedger).
+		FindOne(ctx, bson.M{"project_id": projectID},
+			options.FindOne().SetProjection(bson.M{"reflecting_since": 1})).
+		Decode(&ledger)
+	if err == mongo.ErrNoDocuments {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check for a reflection in flight: %w", err)
+	}
+	if ledger.ReflectingSince.IsZero() {
+		return false, nil
+	}
+	return time.Since(ledger.ReflectingSince) < reflectionStaleAfter, nil
 }
 
 // loadRunIndex returns discovery id → run id, and the project's runs in time

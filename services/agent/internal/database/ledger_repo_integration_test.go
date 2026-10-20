@@ -4,6 +4,7 @@ package database
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -184,6 +185,67 @@ func TestLedgerFindingRepository_ArchivedIndexExists(t *testing.T) {
 		}
 	}
 	t.Errorf("no (project_id, archived) index found: %+v", specs)
+}
+
+// TestLedgerFindingRepository_MarkAnsweredTaskIsAnAtomicAppend: the mirrored
+// edge is added with $addToSet, not by replacing the finding. Replacing it to
+// add one array entry would throw away whatever a reflection running beside
+// this one had just written to the same finding.
+func TestLedgerFindingRepository_MarkAnsweredTaskIsAnAtomicAppend(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewLedgerFindingRepository(db)
+
+	at := time.Now().Truncate(time.Millisecond)
+	for _, f := range []commonmodels.LedgerFinding{
+		{ID: "f1", ProjectID: "p1", Name: "one", NormalizedKey: "k1", Severity: "high", LastSeen: at},
+		{ID: "f2", ProjectID: "p1", Name: "two", NormalizedKey: "k2", Severity: "low", LastSeen: at},
+		{ID: "f3", ProjectID: "other", Name: "theirs", NormalizedKey: "k3", LastSeen: at},
+	} {
+		finding := f
+		if err := repo.Upsert(ctx, &finding); err != nil {
+			t.Fatalf("seed %s: %v", f.ID, err)
+		}
+	}
+
+	if err := repo.MarkAnsweredTask(ctx, "p1", []string{"f1", "f2", "f3"}, "t1"); err != nil {
+		t.Fatalf("mark answered: %v", err)
+	}
+	// A second thread, and a repeat of the first.
+	if err := repo.MarkAnsweredTask(ctx, "p1", []string{"f1"}, "t2"); err != nil {
+		t.Fatalf("mark answered again: %v", err)
+	}
+	if err := repo.MarkAnsweredTask(ctx, "p1", []string{"f1"}, "t1"); err != nil {
+		t.Fatalf("repeat: %v", err)
+	}
+
+	all, err := repo.ListIncludingArchived(ctx, "p1")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	byID := map[string]commonmodels.LedgerFinding{}
+	for _, f := range all {
+		byID[f.ID] = f
+	}
+	if !slices.Equal(byID["f1"].AnsweredTaskIDs, []string{"t1", "t2"}) {
+		t.Errorf("f1 should answer both threads, once each: %v", byID["f1"].AnsweredTaskIDs)
+	}
+	if !slices.Equal(byID["f2"].AnsweredTaskIDs, []string{"t1"}) {
+		t.Errorf("f2 should answer t1: %v", byID["f2"].AnsweredTaskIDs)
+	}
+	// Everything else on the document is untouched.
+	if byID["f1"].Name != "one" || byID["f1"].Severity != "high" {
+		t.Errorf("the rest of the finding must survive the append: %+v", byID["f1"])
+	}
+	// And a finding in another project is never touched, even when named.
+	theirs, err := repo.ListIncludingArchived(ctx, "other")
+	if err != nil {
+		t.Fatalf("list other: %v", err)
+	}
+	if len(theirs) != 1 || len(theirs[0].AnsweredTaskIDs) != 0 {
+		t.Errorf("another project's finding must not be written: %+v", theirs)
+	}
 }
 
 // TestLedgerTaskRepository_CloseStampsMetadata is "we followed this up — what

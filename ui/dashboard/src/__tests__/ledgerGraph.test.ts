@@ -648,6 +648,43 @@ describe('the map stays finite', () => {
     expect(hasEdge(map, 'task:t1', 'finding:f0', 'grew_from')).toBe(true);
   });
 
+  it('keeps a clipped chain connected rather than keeping its best nodes', () => {
+    // One chain bigger than the whole budget. Findings outrank threads, so a
+    // ranked slice of it is every finding and not one thread — a map with no
+    // links at all, which is the one thing it must never be.
+    const graph: LedgerGraph = {
+      runs: [], findings: [], tasks: [], insights: [], recommendations: [],
+      learnings: [], proposals: [], edges: [], truncated: noTruncation,
+    };
+    // finding 0 → task 0 → finding 1 → task 1 → ... one long alternating chain.
+    const links = MAX_MAP_NODES;
+    for (let i = 0; i <= links; i += 1) {
+      graph.findings.push({
+        node_id: `finding:f${i}`, id: `f${i}`, name: `finding ${i}`,
+        severity: i === 0 ? 'critical' : 'high', status: 'confirmed', seen_count: 1,
+      });
+      if (i < links) {
+        graph.tasks.push({
+          node_id: `task:t${i}`, id: `t${i}`, title: `thread ${i}`, text: `thread ${i}`,
+          kind: 'next_task', status: 'open',
+        });
+        graph.edges.push({ from: `task:t${i}`, to: `finding:f${i}`, kind: 'grew_from' });
+        graph.edges.push({ from: `finding:f${i + 1}`, to: `task:t${i}`, kind: 'answered_by' });
+      }
+    }
+
+    const map = buildMap(indexGraph(graph));
+    expect(map.nodes.length).toBeLessThanOrEqual(MAX_MAP_NODES);
+    expect(map.truncated).toBe(true);
+    // Threads survive, and so do the links that make it a chain.
+    expect(map.nodes.some((n) => n.kind === 'task')).toBe(true);
+    expect(map.edges.length).toBeGreaterThan(0);
+    // Every drawn node is reachable from the critical finding it started at.
+    const drawn = new Set(mapIds(map));
+    expect(drawn.has('finding:f0')).toBe(true);
+    expect(hasEdge(map, 'task:t0', 'finding:f0', 'grew_from')).toBe(true);
+  });
+
   it('excludes a filtered-out finding that nothing else reaches', () => {
     const graph: LedgerGraph = {
       runs: [],

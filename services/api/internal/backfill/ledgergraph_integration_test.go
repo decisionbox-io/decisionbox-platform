@@ -11,6 +11,7 @@ import (
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	"github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 // The investigation-graph backfill, against a real MongoDB.
@@ -448,18 +449,42 @@ func TestBackfillLedgerGraph_SkipsAProjectMidRun(t *testing.T) {
 		t.Errorf("a skipped project must not be written to: %+v", findings["f1"])
 	}
 
-	// Once the run finishes, the same command does the work.
+	// A run is stamped `completed` BEFORE its reflection phase runs, so a
+	// finished run is not on its own enough: the phase marks itself while it
+	// is rewriting finding documents, and that marker still holds the
+	// backfill off.
 	if _, err := client.Collection(gomongo.CollectionDiscoveryRuns).UpdateOne(ctx,
 		bson.M{"_id": "run-live"},
 		bson.M{"$set": bson.M{"status": runStatusCompleted, "completed_at": at.Add(time.Hour)}}); err != nil {
 		t.Fatalf("complete the run: %v", err)
 	}
-	after, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false)
-	if err != nil {
-		t.Fatalf("second backfill: %v", err)
+	if _, err := client.Collection(gomongo.CollectionDiscoveryLedger).UpdateOne(ctx,
+		bson.M{"project_id": projectID},
+		bson.M{"$set": bson.M{"reflecting_run_id": "run-live", "reflecting_since": time.Now()}},
+		options.Update().SetUpsert(true)); err != nil {
+		t.Fatalf("mark reflecting: %v", err)
 	}
-	if after.ProjectsSkippedInFlight != 0 || after.FindingsScanned != 1 {
-		t.Errorf("a finished run no longer blocks the backfill: %+v", after)
+	reflecting, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false)
+	if err != nil {
+		t.Fatalf("backfill while reflecting: %v", err)
+	}
+	if reflecting.ProjectsSkippedInFlight != 1 {
+		t.Errorf("a completed run that is still reflecting must still be skipped: %+v", reflecting)
+	}
+
+	// A marker older than the ceiling is disbelieved — an agent killed
+	// mid-phase never clears its own, and must not wedge the project.
+	if _, err := client.Collection(gomongo.CollectionDiscoveryLedger).UpdateOne(ctx,
+		bson.M{"project_id": projectID},
+		bson.M{"$set": bson.M{"reflecting_since": time.Now().Add(-2 * reflectionStaleAfter)}}); err != nil {
+		t.Fatalf("age the marker: %v", err)
+	}
+	stale, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false)
+	if err != nil {
+		t.Fatalf("backfill with a stale marker: %v", err)
+	}
+	if stale.ProjectsSkippedInFlight != 0 || stale.FindingsScanned != 1 {
+		t.Errorf("a stale marker must not block the backfill: %+v", stale)
 	}
 }
 

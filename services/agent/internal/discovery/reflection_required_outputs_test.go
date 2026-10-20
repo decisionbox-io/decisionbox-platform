@@ -385,6 +385,18 @@ func (r *statefulFindingRepo) Upsert(_ context.Context, f *commonmodels.LedgerFi
 	return nil
 }
 
+func (r *statefulFindingRepo) MarkAnsweredTask(_ context.Context, _ string, findingIDs []string, taskID string) error {
+	for _, id := range findingIDs {
+		for i := range r.findings {
+			if r.findings[i].ID != id {
+				continue
+			}
+			r.findings[i].AnsweredTaskIDs = appendUnique(r.findings[i].AnsweredTaskIDs, []string{taskID})
+		}
+	}
+	return nil
+}
+
 func (r *statefulFindingRepo) Prune(_ context.Context, _ string, _ int) error { return nil }
 
 // TestRunPhaseReflection_PriorDemandNeedsEvidence holds the two traps in the

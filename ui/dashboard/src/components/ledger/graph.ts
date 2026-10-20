@@ -430,13 +430,39 @@ function withinBudget(
   roots.forEach((root) => {
     const members = chain.get(root) as string[];
     if (kept.length === 0 && members.length > MAX_MAP_NODES) {
-      members.slice(0, MAX_MAP_NODES).forEach((id) => kept.push(byId.get(id) as MapNode));
+      // One chain too big for the whole budget. Taking its best-ranked
+      // members would take findings only — they outrank everything — and
+      // leave a map with no links in it. Walking out from the best one keeps
+      // what is kept connected.
+      reachableFrom(idx, members[0], new Set(members), MAX_MAP_NODES)
+        .forEach((id) => kept.push(byId.get(id) as MapNode));
       return;
     }
     if (kept.length + members.length > MAX_MAP_NODES) return;
     members.forEach((id) => kept.push(byId.get(id) as MapNode));
   });
   return kept;
+}
+
+/** reachableFrom walks out from one node, nearest first, and returns at most
+ *  `budget` ids — a connected piece of a chain rather than a ranked slice of
+ *  one, so whatever is drawn still has its links. */
+function reachableFrom(
+  idx: GraphIndex, start: string, within: Set<string>, budget: number,
+): string[] {
+  const taken: string[] = [];
+  const seen = new Set<string>([start]);
+  const queue = [start];
+  while (queue.length > 0 && taken.length < budget) {
+    const id = queue.shift() as string;
+    taken.push(id);
+    mapNeighbours(idx, id).forEach((next) => {
+      if (!within.has(next) || seen.has(next)) return;
+      seen.add(next);
+      queue.push(next);
+    });
+  }
+  return taken;
 }
 
 export function buildMap(idx: GraphIndex, filters: TreeFilters = {}): InvestigationMap {

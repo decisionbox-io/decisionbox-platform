@@ -71,6 +71,43 @@ func (r *LedgerRepository) Save(ctx context.Context, l *commonmodels.DiscoveryLe
 	return nil
 }
 
+// The reflection-in-flight marker. It lives in its own two keys rather than on
+// DiscoveryLedger, because Save $sets the whole struct — a save during
+// reflection (and there is one) would clear a field the struct carried.
+const (
+	reflectingRunIDKey = "reflecting_run_id"
+	reflectingSinceKey = "reflecting_since"
+)
+
+// BeginReflection marks the project as having a reflection in flight.
+//
+// A run is stamped `completed` BEFORE the reflection phase runs, so run status
+// cannot tell the one-shot backfill whether the ledger is still being written.
+// This can: reflection is the only thing that rewrites finding documents, and
+// it says so for exactly as long as it is doing it.
+func (r *LedgerRepository) BeginReflection(ctx context.Context, projectID, runID string) error {
+	_, err := r.collection.UpdateOne(ctx,
+		bson.M{"project_id": projectID},
+		bson.M{"$set": bson.M{reflectingRunIDKey: runID, reflectingSinceKey: time.Now()}},
+		options.Update().SetUpsert(true))
+	if err != nil {
+		return fmt.Errorf("mark reflection in flight: %w", err)
+	}
+	return nil
+}
+
+// EndReflection clears the marker, and only this run's: a straggler finishing
+// late must not clear the marker a newer run has since set.
+func (r *LedgerRepository) EndReflection(ctx context.Context, projectID, runID string) error {
+	_, err := r.collection.UpdateOne(ctx,
+		bson.M{"project_id": projectID, reflectingRunIDKey: runID},
+		bson.M{"$unset": bson.M{reflectingRunIDKey: "", reflectingSinceKey: ""}})
+	if err != nil {
+		return fmt.Errorf("clear reflection marker: %w", err)
+	}
+	return nil
+}
+
 // LedgerFindingRepository persists durable findings carried across runs.
 type LedgerFindingRepository struct {
 	collection *mongo.Collection
@@ -387,6 +424,30 @@ func (r *LedgerTaskRepository) Close(ctx context.Context, projectID, id string, 
 		return false, fmt.Errorf("close ledger task: %w", err)
 	}
 	return res.MatchedCount > 0, nil
+}
+
+// MarkAnsweredTask appends a task id to each finding's answered_task_ids: the
+// reverse of the task's resolved_by_finding_ids, so the investigation graph
+// walks from either end without a join.
+//
+// One $addToSet over the batch rather than a read, a merge and a replace. The
+// edge is the only thing being written, and replacing the whole document to
+// add one array entry would throw away whatever a reflection running beside
+// this one had just written to the same finding — its new sighting, its
+// severity, its status. $addToSet also makes the write idempotent.
+func (r *LedgerFindingRepository) MarkAnsweredTask(ctx context.Context, projectID string, findingIDs []string, taskID string) error {
+	if len(findingIDs) == 0 || taskID == "" {
+		return nil
+	}
+	if _, err := r.collection.UpdateMany(ctx,
+		bson.M{"_id": bson.M{"$in": findingIDs}, "project_id": projectID},
+		bson.M{
+			"$addToSet": bson.M{"answered_task_ids": taskID},
+			"$set":      bson.M{"updated_at": time.Now()},
+		}); err != nil {
+		return fmt.Errorf("mark findings answered task: %w", err)
+	}
+	return nil
 }
 
 // MarkPursued records that a run had these threads in front of it, whether or

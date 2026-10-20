@@ -70,6 +70,11 @@ const (
 type ledgerStore interface {
 	Get(ctx context.Context, projectID string) (*commonmodels.DiscoveryLedger, error)
 	Save(ctx context.Context, l *commonmodels.DiscoveryLedger) error
+	// BeginReflection / EndReflection bracket the phase, so the one-shot
+	// backfill can tell that finding documents are still being rewritten.
+	// Run status cannot: a run is `completed` before this phase starts.
+	BeginReflection(ctx context.Context, projectID, runID string) error
+	EndReflection(ctx context.Context, projectID, runID string) error
 }
 
 type findingStore interface {
@@ -82,6 +87,9 @@ type findingStore interface {
 	// (and be un-archived), not be written a second time under the same key.
 	ListIncludingArchived(ctx context.Context, projectID string) ([]commonmodels.LedgerFinding, error)
 	Upsert(ctx context.Context, f *commonmodels.LedgerFinding) error
+	// MarkAnsweredTask appends the reverse of a closed thread's
+	// resolved_by_finding_ids, atomically — never by replacing the document.
+	MarkAnsweredTask(ctx context.Context, projectID string, findingIDs []string, taskID string) error
 	Prune(ctx context.Context, projectID string, max int) error
 }
 
@@ -146,6 +154,20 @@ func (o *Orchestrator) RunPhaseReflection(ctx context.Context, result *models.Di
 	if enabled, _ := policy.GetChecker().FeatureEnabled(rctx, "", policy.FeatureSources); !enabled {
 		return
 	}
+
+	// From here on this phase rewrites finding documents. Say so for as long
+	// as it takes, so the backfill leaves the project alone meanwhile. The
+	// clear is deferred rather than placed at the end: every return below is
+	// a best-effort bail-out, and a marker left set would block the backfill
+	// on a project nothing is writing.
+	if err := o.ledgerRepo.BeginReflection(rctx, o.projectID, o.runID); err != nil {
+		applog.WithError(err).Warn("Reflection: could not mark the phase in flight")
+	}
+	defer func() {
+		if err := o.ledgerRepo.EndReflection(rctx, o.projectID, o.runID); err != nil {
+			applog.WithError(err).Warn("Reflection: could not clear the in-flight marker")
+		}
+	}()
 
 	// Resolve the per-project evolution policy (best-effort; default off).
 	pol, perr := agentplugin.ResolveDiscoveryPolicy(rctx, o.projectID)
@@ -1101,33 +1123,17 @@ func (o *Orchestrator) knownFindingIDs(ctx context.Context) map[string]struct{} 
 // markFindingsAnsweredTask writes the reverse of a task's
 // resolved_by_finding_ids onto each finding. Best-effort: the forward edge is
 // already stored, so a failure here costs a convenience, not the record.
+//
+// The write is an atomic append rather than a read-merge-replace. Only the
+// edge is being added, and replacing the whole document to add it would
+// discard whatever a reflection running beside this one had just written to
+// the same finding.
 func (o *Orchestrator) markFindingsAnsweredTask(ctx context.Context, findingIDs []string, taskID string) {
 	if len(findingIDs) == 0 || o.findingRepo == nil {
 		return
 	}
-	all, err := o.findingRepo.List(ctx, o.projectID)
-	if err != nil {
-		applog.WithError(err).Warn("Reflection: list findings to mirror task edge failed")
-		return
-	}
-	byID := make(map[string]*commonmodels.LedgerFinding, len(all))
-	for i := range all {
-		byID[all[i].ID] = &all[i]
-	}
-	for _, id := range findingIDs {
-		f := byID[id]
-		if f == nil {
-			continue
-		}
-		before := len(f.AnsweredTaskIDs)
-		f.AnsweredTaskIDs = appendUnique(f.AnsweredTaskIDs, []string{taskID})
-		if len(f.AnsweredTaskIDs) == before {
-			continue // already recorded
-		}
-		f.UpdatedAt = time.Now()
-		if err := o.findingRepo.Upsert(ctx, f); err != nil {
-			applog.WithError(err).Warn("Reflection: mirror answered-task edge onto finding failed")
-		}
+	if err := o.findingRepo.MarkAnsweredTask(ctx, o.projectID, findingIDs, taskID); err != nil {
+		applog.WithError(err).Warn("Reflection: mirror answered-task edge onto finding failed")
 	}
 }
 
