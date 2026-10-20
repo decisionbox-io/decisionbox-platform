@@ -526,6 +526,14 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 	defer cancelSearch()
 	searchBudgetSpent := false
 
+	// Findings pulled in one at a time by a semantic match, each its own
+	// allocation rather than appended to `prior` — growing that slice would
+	// move it and stale every pointer already in the two maps. Kept here so
+	// the active count at the end can see them: a reworded insight that
+	// revived an archived finding has put one back into the active set, and
+	// leaving it out would understate the convergence denominator.
+	var revived []*commonmodels.LedgerFinding
+
 	for _, i := range order {
 		cand := candidates[i]
 		var vec []float64
@@ -558,10 +566,11 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 						// Its own allocation, never appended to `prior`:
 						// growing that slice would move it and every pointer
 						// already handed to the two maps would be stale.
-						fetched := found[0]
-						match = &fetched
+						pulled := found[0]
+						match = &pulled
 						priorByID[match.ID] = match
 						priorByKey[match.NormalizedKey] = match
+						revived = append(revived, match)
 					}
 				}
 			}
@@ -793,6 +802,14 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 	active := 0
 	for i := range prior {
 		if !prior[i].Archived {
+			active++
+		}
+	}
+	// And the ones a semantic match pulled in. Their flag tracks what landed:
+	// a merge that failed was rolled back, so one still marked archived is
+	// one that really is.
+	for _, f := range revived {
+		if !f.Archived {
 			active++
 		}
 	}

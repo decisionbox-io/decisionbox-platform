@@ -960,6 +960,59 @@ func TestDedupSearchBudget_LeavesTimeToWrite(t *testing.T) {
 	}
 }
 
+// TestConsolidateFindings_SemanticRevivalCountsTowardTheTotal: a reworded
+// insight that semantically matches an archived finding has put that finding
+// back into the active set. It is pulled in one at a time rather than through
+// the bulk read, so the active count has to see it — leaving it out
+// understates the convergence denominator and overstates the marginal-new
+// ratio the next run steers by.
+func TestConsolidateFindings_SemanticRevivalCountsTowardTheTotal(t *testing.T) {
+	archived := commonmodels.LedgerFinding{
+		ID: "f-old", ProjectID: "p1", Area: "churn", Name: "Churn is up in the EU",
+		NormalizedKey: commonmodels.NormalizedFindingKey("churn", "Churn is up in the EU"),
+		Severity:      "high", AffectedCount: 100, SeenCount: 1,
+		Status: commonmodels.LedgerFindingStatusConfirmed, Archived: true,
+	}
+	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{archived}}
+	// A vector store that names the archived finding — the rewording case the
+	// exact key cannot catch.
+	vs := &namingVectorStore{id: "f-old"}
+	o := &Orchestrator{
+		projectID: "p1", runID: "r2", findingRepo: fr,
+		embeddingProvider: &mockEmbeddingProvider{dims: 3, model: "m"},
+		vectorStore:       vs,
+	}
+
+	cons, err := o.consolidateFindings(context.Background(), &models.DiscoveryResult{
+		ProjectID: "p1", ID: "d2",
+		Insights: []models.Insight{
+			{ID: "ins-1", AnalysisArea: "churn", Name: "High EU churn", Severity: "high", AffectedCount: 100},
+		},
+	})
+	if err != nil {
+		t.Fatalf("consolidate: %v", err)
+	}
+	if cons.NewCount != 0 {
+		t.Errorf("a revival is not a new finding: %d", cons.NewCount)
+	}
+	if cons.TotalCount != 1 {
+		t.Errorf("the revived finding is active again and must be counted: %d", cons.TotalCount)
+	}
+	if len(fr.merged) != 1 || fr.merged[0].ID != "f-old" {
+		t.Errorf("want a merge into the archived finding, got %+v", fr.merged)
+	}
+}
+
+// namingVectorStore answers every search with one id.
+type namingVectorStore struct {
+	mockVectorStore
+	id string
+}
+
+func (n *namingVectorStore) Search(_ context.Context, _ []float64, _ vectorstore.SearchOpts) ([]vectorstore.SearchResult, error) {
+	return []vectorstore.SearchResult{{ID: n.id, Score: 1}}, nil
+}
+
 // TestConsolidateFindings_WritesExactMatchesBeforeAnySearch is the ordering
 // guarantee. Recording the run's findings is work the ledger owes; the
 // semantic lookup is an optional nicety for candidates no key matched. Doing
