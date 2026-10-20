@@ -408,8 +408,9 @@ type TaskClose struct {
 // close metadata in the same write. It reports whether it was this call that
 // closed the task.
 //
-// The filter requires the task to still be OPEN, which makes the close a claim
-// rather than a blind overwrite. Two reflections running over one project can
+// The filter requires the task to still be UNCLOSED — open or in progress,
+// which is exactly the set the caller offers the model — and that makes the
+// close a claim rather than a blind overwrite. Two reflections running over one project can
 // both read the same open thread, and without this the second would stamp its
 // own status and run over the first while leaving the first's
 // resolved_by_finding_ids in place — a thread recorded as dropped that still
@@ -442,7 +443,9 @@ func (r *LedgerTaskRepository) Close(ctx context.Context, projectID, id string, 
 		set["resolved_by_finding_ids"] = u.ResolvedByFindingIDs
 	}
 	res, err := r.collection.UpdateOne(ctx,
-		bson.M{"_id": id, "project_id": projectID, "status": commonmodels.LedgerTaskStatusOpen},
+		bson.M{"_id": id, "project_id": projectID, "status": bson.M{"$in": []string{
+			commonmodels.LedgerTaskStatusOpen, commonmodels.LedgerTaskStatusInProgress,
+		}}},
 		bson.M{"$set": set})
 	if err != nil {
 		return false, fmt.Errorf("close ledger task: %w", err)

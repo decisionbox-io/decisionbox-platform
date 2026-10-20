@@ -516,6 +516,26 @@ func TestLedgerTaskRepository_CloseStampsMetadata(t *testing.T) {
 		t.Errorf("a dropped task must store no resolved-by key, got %v", raw["resolved_by_finding_ids"])
 	}
 
+	// A thread the model picked up is `in_progress`, and the caller offers
+	// the model exactly that set alongside `open` — so it has to be
+	// closeable, or it stays in progress for ever while the caller is told it
+	// is closed.
+	if err := repo.Insert(ctx, []commonmodels.LedgerTask{{
+		ID: "t3", ProjectID: "p1", Text: "picked up", Kind: commonmodels.LedgerTaskKindNextTask,
+		Status: commonmodels.LedgerTaskStatusInProgress, NormalizedKey: "k3",
+	}}); err != nil {
+		t.Fatalf("insert t3: %v", err)
+	}
+	inProgress, err := repo.Close(ctx, "p1", "t3", TaskClose{
+		Status: commonmodels.LedgerTaskStatusDone, RunID: "r2", At: at, Reason: "answered",
+	})
+	if err != nil {
+		t.Fatalf("close t3: %v", err)
+	}
+	if !inProgress {
+		t.Error("an in-progress thread must be closeable")
+	}
+
 	// A second close of a task that is already closed must not land: two
 	// reflections can read the same open thread, and the second overwriting
 	// the first would leave a thread recorded as dropped while still naming
@@ -531,11 +551,20 @@ func TestLedgerTaskRepository_CloseStampsMetadata(t *testing.T) {
 		t.Error("closing an already-closed task must report that it did not win")
 	}
 	reread, err := repo.List(ctx, "p1", commonmodels.LedgerTaskStatusDone)
-	if err != nil || len(reread) != 1 {
-		t.Fatalf("t1 must still be done: n=%d err=%v", len(reread), err)
+	if err != nil {
+		t.Fatalf("list done: %v", err)
 	}
-	if reread[0].ClosedRunID != "r2" || reread[0].CloseReason != "9 of 12 share the same centre" {
-		t.Errorf("the first close must stand whole: %+v", reread[0])
+	var stillDone *commonmodels.LedgerTask
+	for i := range reread {
+		if reread[i].ID == "t1" {
+			stillDone = &reread[i]
+		}
+	}
+	if stillDone == nil {
+		t.Fatalf("t1 must still be done, got %+v", reread)
+	}
+	if stillDone.ClosedRunID != "r2" || stillDone.CloseReason != "9 of 12 share the same centre" {
+		t.Errorf("the first close must stand whole: %+v", stillDone)
 	}
 
 	// Closing a task in another project must not match.
@@ -546,7 +575,7 @@ func TestLedgerTaskRepository_CloseStampsMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list done: %v", err)
 	}
-	if len(after) != 1 {
+	if !slices.ContainsFunc(after, func(x commonmodels.LedgerTask) bool { return x.ID == "t1" }) {
 		t.Errorf("t1 must still be done, got %+v", after)
 	}
 }

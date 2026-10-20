@@ -952,6 +952,11 @@ function Canvas({
         onNodeClick={onNodeClick}
         onPaneClick={() => setSelected(null)}
         nodeTypes={nodeTypes}
+        // Where a card sits is what it MEANS here — its column is the run
+        // whose work it was, its tier is whether something derives from it.
+        // Dragging one somewhere else would not rearrange the map, it would
+        // make it lie.
+        nodesDraggable={false}
         // No `fitView` prop: it fits the whole map, which at a zoom floor
         // meant to keep cards readable can centre on empty space between the
         // rows. The effect above opens on the biggest chain instead; Fit and
