@@ -1188,6 +1188,19 @@ describe('LedgerPage', () => {
     expect(getProjectStatus.mock.calls.length).toBe(calls);
   });
 
+  it('says the ledger is not available when it goes away mid-update, instead of spinning for ever', async () => {
+    const { ApiError } = jest.requireMock('@/lib/api');
+    const inFlight = { ...ledger, updating: { run_id: 'r3', since: '2026-10-21T14:02:00Z' } };
+    getLedger.mockResolvedValueOnce(inFlight).mockRejectedValue(new ApiError('gone', 404));
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'auto', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    getLedgerGraph.mockResolvedValue(graph);
+    wrap();
+    await screen.findByText('Updating from the run that just finished');
+    expect(await screen.findByText('Discovery Ledger not available')).toBeInTheDocument();
+    expect(screen.queryByText('Updating from the run that just finished')).not.toBeInTheDocument();
+  });
+
   it('does not watch for a run when none is going', async () => {
     mockAll();
     wrap();

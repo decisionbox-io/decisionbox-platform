@@ -365,37 +365,47 @@ func TestDiscoveriesHandler_GetStatus_Success_MockRepo(t *testing.T) {
 	}
 }
 
-// TestDiscoveriesHandler_GetStatus_ReadFailuresAreErrors: the status route used
-// to drop a failed read of the latest run and answer 200 with no run — which
-// reads exactly like a project with none. A page watching a run took that as
-// the run having finished and stopped watching before its ledger update. A
-// failed read is now an error, which callers already treat as "ask again".
-func TestDiscoveriesHandler_GetStatus_ReadFailuresAreErrors(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		set  func(*mockDiscoveryRepo, *mockRunRepo)
-	}{
-		{"latest run", func(_ *mockDiscoveryRepo, rr *mockRunRepo) { rr.getLatestErr = errors.New("mongo down") }},
-		{"latest discovery", func(dr *mockDiscoveryRepo, _ *mockRunRepo) { dr.getLatErr = errors.New("mongo down") }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			projRepo := newMockProjectRepo()
-			discRepo := newMockDiscoveryRepo()
-			runRepo := newMockRunRepo()
-			tc.set(discRepo, runRepo)
-			h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, newMockRunner())
-			p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
-			projRepo.Create(context.Background(), p)
+// TestDiscoveriesHandler_GetStatus_FailsWhenItCannotReadTheRun: the status
+// route used to drop a failed read of the latest run and answer 200 with no
+// run — which reads exactly like a project with none. A page watching a run
+// took that as the run having finished and stopped watching before its ledger
+// update. A failed run read is now an error, which callers already treat as
+// "ask again". The discovery stats beside it are display-only, and a failure
+// to read them must not cost a caller its good answer about the run.
+func TestDiscoveriesHandler_GetStatus_FailsWhenItCannotReadTheRun(t *testing.T) {
+	setup := func(set func(*mockDiscoveryRepo, *mockRunRepo)) (*httptest.ResponseRecorder, *models.Project) {
+		projRepo := newMockProjectRepo()
+		discRepo := newMockDiscoveryRepo()
+		runRepo := newMockRunRepo()
+		set(discRepo, runRepo)
+		h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, newMockRunner())
+		p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+		projRepo.Create(context.Background(), p)
+		runRepo.addRun(&models.DiscoveryRun{ID: "run-1", ProjectID: p.ID, Status: "running", StartedAt: time.Now()})
+		req := httptest.NewRequest("GET", "/api/v1/projects/"+p.ID+"/status", nil)
+		req.SetPathValue("id", p.ID)
+		w := httptest.NewRecorder()
+		h.GetStatus(w, req)
+		return w, p
+	}
 
-			req := httptest.NewRequest("GET", "/api/v1/projects/"+p.ID+"/status", nil)
-			req.SetPathValue("id", p.ID)
-			w := httptest.NewRecorder()
-			h.GetStatus(w, req)
+	w, _ := setup(func(_ *mockDiscoveryRepo, rr *mockRunRepo) { rr.getLatestErr = errors.New("mongo down") })
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("run read failed: status = %d, want 500 — a failed read must not read as 'no run'", w.Code)
+	}
 
-			if w.Code != http.StatusInternalServerError {
-				t.Fatalf("status = %d, want 500 — a failed read must not read as 'no run'", w.Code)
-			}
-		})
+	w, _ = setup(func(dr *mockDiscoveryRepo, _ *mockRunRepo) { dr.getLatErr = errors.New("mongo down") })
+	if w.Code != http.StatusOK {
+		t.Fatalf("stats read failed: status = %d, want 200 with the run still in it", w.Code)
+	}
+	var resp APIResponse
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	data := resp.Data.(map[string]interface{})
+	if data["run"] == nil {
+		t.Error("the run must still be served when only the stats could not be read")
+	}
+	if _, ok := data["last_discovery"]; ok {
+		t.Error("stats that could not be read must be left out, not invented")
 	}
 }
 

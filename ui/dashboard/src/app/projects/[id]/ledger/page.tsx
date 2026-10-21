@@ -287,7 +287,13 @@ export default function LedgerPage() {
         lv = await api.getLedger(id);
       } catch (e) {
         if (!notFound(e)) throw e;
-        if (!cancelled) setWatching(false);
+        // The ledger has gone from this deployment: say so, as a first load
+        // that 404'd would, rather than leave an "updating" banner up that
+        // nothing is left to take down.
+        if (!cancelled) {
+          setUnsupported(true);
+          setWatching(false);
+        }
         return;
       }
       if (cancelled) return;

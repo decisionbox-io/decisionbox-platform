@@ -187,6 +187,20 @@ describe('UpcomingInvestigation', () => {
     expect(screen.getByText(/awaiting your review/)).toBeInTheDocument();
   });
 
+  it('reads the proposals only after the ledger has answered', async () => {
+    // Read together, a check straddling the end of an update could pair a
+    // finished ledger with the proposals from before it — and stop on that.
+    let releaseLedger: (v: LedgerView) => void = () => {};
+    getLedger.mockImplementationOnce(() => new Promise<LedgerView>((res) => { releaseLedger = res; }));
+    wrap();
+    await waitFor(() => expect(getLedger).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(listPackProposals).not.toHaveBeenCalled();
+    releaseLedger(view({ tasks: [thread('t1', 'A thread')] }));
+    expect(await screen.findByText('A thread')).toBeInTheDocument();
+    expect(listPackProposals).toHaveBeenCalledTimes(1);
+  });
+
   it('shows up for a first run whose threads are still being built, instead of staying hidden', async () => {
     getLedger.mockResolvedValue(view({ updating: { run_id: 'r1', since: '2026-10-21T14:02:00Z' } }));
     wrap();
