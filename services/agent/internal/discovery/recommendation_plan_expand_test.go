@@ -534,3 +534,33 @@ func TestSelectPlannedRecommendation(t *testing.T) {
 		}
 	}
 }
+
+func TestGenerateRecommendations_PlanIDsThatNameNoInsightNeverReachTheExpansion(t *testing.T) {
+	// The expansion prompt restates the planned ids verbatim for the entry to
+	// copy. An id the model invented in the plan would be handed straight back
+	// to it as the citation to use — teaching the slug-shaped failure instead
+	// of catching it.
+	const planWithASlug = `{"plan":[
+		{"title":"Recover high-value carts","related_insight_ids":["i-1","conversion:critical:invented-slug"]}
+	]}`
+	o, provider := newRoutedOrchestrator(map[string]string{
+		planCallMarker:  planWithASlug,
+		"Write entry 1": expandedRec("Recover high-value carts"),
+	})
+
+	recs, _ := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", planExpandInsights, "", "ds")
+
+	if len(provider.Calls) != 2 {
+		t.Fatalf("provider called %d times, want 2", len(provider.Calls))
+	}
+	expansionPrompt := provider.Calls[1].Request.Messages[0].Content
+	if strings.Contains(expansionPrompt, "conversion:critical:invented-slug") {
+		t.Error("the expansion prompt restated an id that names no insight")
+	}
+	if !strings.Contains(expansionPrompt, "i-1") {
+		t.Error("the expansion prompt dropped the real planned id along with the invented one")
+	}
+	if len(recs) != 1 || len(recs[0].RelatedInsightIDs) != 1 || recs[0].RelatedInsightIDs[0] != "i-1" {
+		t.Errorf("citations = %v, want only the real planned id", recs[0].RelatedInsightIDs)
+	}
+}

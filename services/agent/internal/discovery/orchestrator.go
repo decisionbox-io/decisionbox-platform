@@ -2170,17 +2170,15 @@ func (o *Orchestrator) generateRecommendations(
 		applog.Info("Recommendation generation using schema-constrained output")
 	}
 
-	recWindow, recOutputCap := o.resolveModelBudget()
-
 	// Pass 1: decide the set.
-	plan, fail := o.planRecommendations(ctx, step, prompt, recWindow, recOutputCap)
+	plan, fail := o.planRecommendations(ctx, step, prompt, insights)
 	step.RecommendationsPlanned = len(plan)
 
 	// Pass 2: write one entry at a time.
 	var recs []models.Recommendation
 	if len(plan) > 0 {
 		applog.WithFields(applog.Fields{"planned": len(plan)}).Info("Recommendation plan ready; writing one at a time")
-		recs, fail = o.expandRecommendationPlan(ctx, step, prompt, plan, recWindow, recOutputCap)
+		recs, fail = o.expandRecommendationPlan(ctx, step, prompt, plan, insights)
 	}
 
 	// Fallback: ask for the whole set in one document, the way this phase used
@@ -2197,7 +2195,7 @@ func (o *Orchestrator) generateRecommendations(
 		step.RecommendationsSingleCallFallback = true
 		applog.WithFields(applog.Fields{"reason": fail.reason()}).
 			Warn("Two-pass recommendation generation produced nothing; falling back to a single-document call")
-		recs, fail = o.generateRecommendationsSingleDocument(ctx, step, prompt, insights, recWindow, recOutputCap)
+		recs, fail = o.generateRecommendationsSingleDocument(ctx, step, prompt, insights)
 	}
 
 	// Layer 4 (surface): a zero-recommendations result caused by a response

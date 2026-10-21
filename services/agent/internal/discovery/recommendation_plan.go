@@ -547,7 +547,7 @@ func (o *Orchestrator) planRecommendations(
 	ctx context.Context,
 	step *models.RecommendationStep,
 	prompt string,
-	window, modelOutputCap int,
+	insights []models.Insight,
 ) ([]recommendationPlanItem, *recommendationFailure) {
 	format := recommendationPlanResponseFormat()
 	maxItems := recommendationPlanMaxItems()
@@ -570,7 +570,7 @@ func (o *Orchestrator) planRecommendations(
 			attemptPrompt += recommendationPlanRepairSuffix(fail.reason(), maxItems)
 		}
 
-		maxTokens := o.recommendationCallMaxTokens(ctx, attemptPrompt, window, modelOutputCap, recommendationPlanOutputTokens())
+		maxTokens := o.recommendationCallMaxTokens(ctx, attemptPrompt, recommendationPlanOutputTokens())
 		res, err := o.aiClient.ChatWithFormat(ctx, attemptPrompt, "", maxTokens, format)
 		if err != nil {
 			recordRecommendationCall(step, models.RecommendationCallPlan, attempt, 0, nil, responseHealth{}, err)
@@ -587,6 +587,25 @@ func (o *Orchestrator) planRecommendations(
 		items, dropped, perr := parseRecommendationPlan(res.Content)
 		step.RecommendationsDroppedParse += dropped
 		if perr == nil && len(items) > 0 {
+			// Keep only the ids that name an eligible insight, here rather
+			// than at the point of use. The expansion prompt restates the
+			// planned ids verbatim for the entry to copy, so an id the model
+			// invented in the plan would be handed back to it as the citation
+			// to use -- teaching the slug-shaped failure of issue #237 instead
+			// of catching it. The entry survives without ids; the expansion's
+			// own citation, and the downstream recovery, are the net.
+			dropped := 0
+			for i := range items {
+				kept := eligibleInsightIDsAmong(items[i].RelatedInsightIDs, insights)
+				dropped += len(items[i].RelatedInsightIDs) - len(kept)
+				items[i].RelatedInsightIDs = kept
+			}
+			if dropped > 0 {
+				applog.WithFields(applog.Fields{
+					"dropped": dropped,
+					"planned": len(items),
+				}).Warn("Recommendation plan cited ids that name no eligible insight; dropping them from the plan")
+			}
 			if len(items) > maxItems {
 				applog.WithFields(applog.Fields{
 					"planned":   len(items),
@@ -627,7 +646,7 @@ func (o *Orchestrator) expandRecommendationPlan(
 	step *models.RecommendationStep,
 	prompt string,
 	plan []recommendationPlanItem,
-	window, modelOutputCap int,
+	insights []models.Insight,
 ) ([]models.Recommendation, *recommendationFailure) {
 	format := recommendationResponseFormat()
 	maxRetries := recommendationExpandMaxRetries()
@@ -647,7 +666,7 @@ func (o *Orchestrator) expandRecommendationPlan(
 			break
 		}
 
-		rec, expandFail := o.expandOneRecommendation(ctx, step, prompt, plan, idx, window, modelOutputCap, format, maxRetries)
+		rec, expandFail := o.expandOneRecommendation(ctx, step, prompt, plan, idx, insights, format, maxRetries)
 		if rec == nil {
 			step.RecommendationsExpandFailed++
 			fail = expandFail
@@ -675,7 +694,7 @@ func (o *Orchestrator) expandOneRecommendation(
 	prompt string,
 	plan []recommendationPlanItem,
 	idx int,
-	window, modelOutputCap int,
+	insights []models.Insight,
 	format *gollm.ResponseFormat,
 	maxRetries int,
 ) (*models.Recommendation, *recommendationFailure) {
@@ -693,7 +712,7 @@ func (o *Orchestrator) expandOneRecommendation(
 			}).Warn("Re-asking for one recommendation after an unusable response")
 		}
 
-		maxTokens := o.recommendationCallMaxTokens(ctx, attemptPrompt, window, modelOutputCap, recommendationExpandOutputTokens())
+		maxTokens := o.recommendationCallMaxTokens(ctx, attemptPrompt, recommendationExpandOutputTokens())
 		res, err := o.aiClient.ChatWithFormat(ctx, attemptPrompt, "", maxTokens, format)
 		if err != nil {
 			recordRecommendationCall(step, models.RecommendationCallExpand, attempt, idx, nil, responseHealth{}, err)
@@ -718,7 +737,7 @@ func (o *Orchestrator) expandOneRecommendation(
 						"extra": extra,
 					}).Warn("Expansion wrote more than the one planned recommendation; keeping the planned one")
 				}
-				applyPlanToRecommendation(rec, plan[idx])
+				applyPlanToRecommendation(rec, plan[idx], insights)
 				return rec, nil
 			}
 			fail = newRecommendationParseFailure(serr)
@@ -744,14 +763,9 @@ func (o *Orchestrator) generateRecommendationsSingleDocument(
 	step *models.RecommendationStep,
 	prompt string,
 	insights []models.Insight,
-	window, modelOutputCap int,
 ) ([]models.Recommendation, *recommendationFailure) {
 	format := recommendationResponseFormat()
 	maxRetries := recommendationParseMaxRetries()
-
-	// The output budget the single call has always used: the model's own cap,
-	// measured against the input rather than assumed (issue #347).
-	maxTokens := budgetedMaxOutputTokens(window, approxTokens(ctx, prompt), modelOutputCap, analysisMinOutputTokens())
 
 	var (
 		recs []models.Recommendation
@@ -767,6 +781,13 @@ func (o *Orchestrator) generateRecommendationsSingleDocument(
 				"reason":  fail.reason(),
 			}).Warn("Re-prompting for the recommendation document after an unusable response")
 		}
+
+		// The output budget the single call has always used: the model's own
+		// cap, measured against the input rather than assumed (issue #347).
+		// Re-resolved per attempt for the reason recommendationCallMaxTokens
+		// re-resolves — the window may have been learned since.
+		recWindow, recOutputCap := o.resolveModelBudget()
+		maxTokens := budgetedMaxOutputTokens(recWindow, approxTokens(ctx, attemptPrompt), recOutputCap, analysisMinOutputTokens())
 
 		res, err := o.aiClient.ChatWithFormat(ctx, attemptPrompt, "", maxTokens, format)
 		if err != nil {
@@ -810,12 +831,15 @@ func (o *Orchestrator) generateRecommendationsSingleDocument(
 			step.RecommendationCitationRetries = cAttempt
 			applog.WithFields(applog.Fields{"attempt": cAttempt}).Warn(
 				"Re-prompting for recommendations: response cited no eligible insight id")
-			res, err := o.aiClient.ChatWithFormat(ctx, prompt+recommendationCitationRepairSuffix(insights), "", maxTokens, format)
+			citationPrompt := prompt + recommendationCitationRepairSuffix(insights)
+			citWindow, citOutputCap := o.resolveModelBudget()
+			citMaxTokens := budgetedMaxOutputTokens(citWindow, approxTokens(ctx, citationPrompt), citOutputCap, analysisMinOutputTokens())
+			res, err := o.aiClient.ChatWithFormat(ctx, citationPrompt, "", citMaxTokens, format)
 			if err != nil {
 				recordRecommendationCall(step, models.RecommendationCallSingleDocument, cAttempt, 0, nil, responseHealth{}, err)
 				break // keep the uncited document; backfill grounds it downstream
 			}
-			health := classifyResponse(res.StopReason, res.TokensOut, maxTokens, res.Content)
+			health := classifyResponse(res.StopReason, res.TokensOut, citMaxTokens, res.Content)
 			recordRecommendationCall(step, models.RecommendationCallSingleDocument, cAttempt, 0, res, health, nil)
 			parsed, _, perr := parseRecommendations(res.Content)
 			if perr == nil && len(parsed) > 0 && anyRecCitesEligible(parsed, insights) {
@@ -840,7 +864,14 @@ func (o *Orchestrator) generateRecommendationsSingleDocument(
 // it mean "this model is repeating itself", which is a thing the retry can act
 // on. The window arithmetic underneath is the same one the analysis phase uses,
 // so a large input still shrinks the output rather than overflowing (#347).
-func (o *Orchestrator) recommendationCallMaxTokens(ctx context.Context, prompt string, window, modelOutputCap, callCap int) int {
+//
+// The window is resolved here, per call, rather than once for the phase. The
+// adaptive context-overflow retry in internal/ai learns the model's true
+// window from a rejected request and hands it to the orchestrator, and a phase
+// that now makes a dozen calls should spend that lesson on the next one rather
+// than re-learning it on every entry.
+func (o *Orchestrator) recommendationCallMaxTokens(ctx context.Context, prompt string, callCap int) int {
+	window, modelOutputCap := o.resolveModelBudget()
 	limit := callCap
 	if modelOutputCap > 0 && modelOutputCap < limit {
 		limit = modelOutputCap
@@ -905,12 +936,21 @@ func selectPlannedRecommendation(parsed []models.Recommendation, plan []recommen
 	if len(parsed) == 0 {
 		return nil, 0, errors.New("the response held no recommendation")
 	}
-	if len(parsed) == 1 {
-		chosen := parsed[0]
-		return &chosen, 0, nil
-	}
 
 	target := normalizeTitleForMatch(plan[idx].Title)
+	// The other planned titles, which this response is not the place for. The
+	// target is excluded in case a plan repeated a title, so a repeat can
+	// never make an entry unanswerable.
+	others := make(map[string]struct{}, len(plan))
+	for j := range plan {
+		if j == idx {
+			continue
+		}
+		if t := normalizeTitleForMatch(plan[j].Title); t != target {
+			others[t] = struct{}{}
+		}
+	}
+
 	matches := make([]int, 0, 1)
 	for i := range parsed {
 		if normalizeTitleForMatch(parsed[i].Title) == target {
@@ -921,21 +961,25 @@ func selectPlannedRecommendation(parsed []models.Recommendation, plan []recommen
 		return nil, 0, fmt.Errorf("the response wrote %d recommendations and %d of them carry the planned title, so which one was asked for cannot be decided", len(parsed), len(matches))
 	}
 	if len(matches) == 0 {
-		// The title was reworded. Fall back to elimination: the one object
-		// that is not another planned entry restated.
-		others := make(map[string]struct{}, len(plan))
-		for j := range plan {
-			if j != idx {
-				others[normalizeTitleForMatch(plan[j].Title)] = struct{}{}
-			}
-		}
+		// The title was reworded, which the expansion is allowed to do. Fall
+		// back to elimination: the one object that is not some other planned
+		// entry restated.
+		//
+		// This is the check a sole object needs too, and it is the reason
+		// there is no shortcut for one: a response that wrote a *different*
+		// planned entry -- because it answered for the wrong one, or because
+		// the decoder dropped the right one out of a response that held both
+		// -- would otherwise be accepted as this entry, saving that entry
+		// twice, losing this one, and stamping this one's citation onto the
+		// duplicate. A reworded title is unrecognisable; another entry's
+		// title is recognisably not this one.
 		for i := range parsed {
 			if _, isOther := others[normalizeTitleForMatch(parsed[i].Title)]; !isOther {
 				matches = append(matches, i)
 			}
 		}
 		if len(matches) != 1 {
-			return nil, 0, fmt.Errorf("the response wrote %d recommendations and none of them is unambiguously the planned entry", len(parsed))
+			return nil, 0, fmt.Errorf("the response wrote %d recommendation(s) and none of them is unambiguously the planned entry", len(parsed))
 		}
 	}
 
@@ -957,14 +1001,23 @@ func normalizeTitleForMatch(title string) string {
 // the insights this recommendation was planned from. Taking them from the plan
 // when the expansion omitted them — or answered with ids that are none of them
 // — is a citation the run can stand behind, rather than the blunt downstream
-// backfill. An expansion that cites a subset is left alone: narrowing while
-// writing is a judgement, not a mistake.
+// backfill.
+//
+// Two ways that could make things worse, both avoided. An expansion that cites
+// an eligible insight is never overruled, even by a plan that named different
+// ones: narrowing or re-choosing while writing is a judgement, and a real
+// citation is the thing being protected here. And the plan's own ids are only
+// adopted if they are real — a plan entry whose ids the model invented (the
+// slug-shaped failure of issue #237) would otherwise replace a good citation
+// with one the downstream check discards, which then backfills every eligible
+// insight and loses the provenance entirely.
 //
 // Category and priority are only filled when the expansion left them empty. A
 // model that reconsidered them in the writing is not overruled.
-func applyPlanToRecommendation(rec *models.Recommendation, item recommendationPlanItem) {
-	if len(item.RelatedInsightIDs) > 0 && !citesAnyOf(rec.RelatedInsightIDs, item.RelatedInsightIDs) {
-		rec.RelatedInsightIDs = append([]string(nil), item.RelatedInsightIDs...)
+func applyPlanToRecommendation(rec *models.Recommendation, item recommendationPlanItem, eligible []models.Insight) {
+	planned := eligibleInsightIDsAmong(item.RelatedInsightIDs, eligible)
+	if len(planned) > 0 && !anyRecCitesEligible([]models.Recommendation{*rec}, eligible) {
+		rec.RelatedInsightIDs = planned
 	}
 	if strings.TrimSpace(rec.Category) == "" {
 		rec.Category = item.Category
@@ -974,23 +1027,36 @@ func applyPlanToRecommendation(rec *models.Recommendation, item recommendationPl
 	}
 }
 
-// citesAnyOf reports whether got holds at least one of want.
-func citesAnyOf(got, want []string) bool {
-	if len(got) == 0 {
-		return false
+// eligibleInsightIDsAmong returns the ids that name an insight in the eligible
+// set, in the order given, with blanks and duplicates removed. Anything else
+// is not an id this run can resolve, whatever it looks like.
+func eligibleInsightIDsAmong(ids []string, eligible []models.Insight) []string {
+	if len(ids) == 0 || len(eligible) == 0 {
+		return nil
 	}
-	wanted := make(map[string]struct{}, len(want))
-	for _, w := range want {
-		if w = strings.TrimSpace(w); w != "" {
-			wanted[w] = struct{}{}
+	known := make(map[string]struct{}, len(eligible))
+	for i := range eligible {
+		if id := strings.TrimSpace(eligible[i].ID); id != "" {
+			known[id] = struct{}{}
 		}
 	}
-	for _, g := range got {
-		if _, ok := wanted[strings.TrimSpace(g)]; ok {
-			return true
+	out := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, raw := range ids {
+		id := strings.TrimSpace(raw)
+		if _, ok := known[id]; !ok {
+			continue
 		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
 	}
-	return false
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // recommendationPhaseTokens estimates the recommendation phase's token usage

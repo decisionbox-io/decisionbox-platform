@@ -1,11 +1,16 @@
 package discovery
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
+
+// planTestInsights is the eligible set the plan-citation helpers resolve
+// against in these tests.
+var planTestInsights = []models.Insight{{ID: "i-1"}, {ID: "i-2"}, {ID: "i-3"}}
 
 const validPlanEnvelope = `{"plan":[
 	{"title":"Recover high-value carts","category":"conversion","priority":1,"related_insight_ids":["i-1","i-2"]},
@@ -197,7 +202,7 @@ func TestApplyPlanToRecommendation_TakesTheCitationWhenTheExpansionHasNone(t *te
 		Category:          "conversion",
 		Priority:          2,
 		RelatedInsightIDs: []string{"i-1", "i-2"},
-	})
+	}, planTestInsights)
 	if len(rec.RelatedInsightIDs) != 2 {
 		t.Fatalf("ids = %v, want the plan's two", rec.RelatedInsightIDs)
 	}
@@ -213,7 +218,7 @@ func TestApplyPlanToRecommendation_KeepsASubsetTheExpansionChose(t *testing.T) {
 		Category:          "conversion",
 		Priority:          1,
 		RelatedInsightIDs: []string{"i-1", "i-2"},
-	})
+	}, planTestInsights)
 	if len(rec.RelatedInsightIDs) != 1 || rec.RelatedInsightIDs[0] != "i-2" {
 		t.Errorf("ids = %v, want the expansion's subset kept", rec.RelatedInsightIDs)
 	}
@@ -227,7 +232,7 @@ func TestApplyPlanToRecommendation_ReplacesCitationsThatAreNoneOfThePlanned(t *t
 	// plan already named the insights this entry was planned from, so they are
 	// a citation the run can stand behind.
 	rec := models.Recommendation{Title: "X", RelatedInsightIDs: []string{"conversion:critical:some-slug"}}
-	applyPlanToRecommendation(&rec, recommendationPlanItem{RelatedInsightIDs: []string{"i-1"}})
+	applyPlanToRecommendation(&rec, recommendationPlanItem{RelatedInsightIDs: []string{"i-1"}}, planTestInsights)
 	if len(rec.RelatedInsightIDs) != 1 || rec.RelatedInsightIDs[0] != "i-1" {
 		t.Errorf("ids = %v, want the plan's id", rec.RelatedInsightIDs)
 	}
@@ -237,29 +242,43 @@ func TestApplyPlanToRecommendation_DoesNotInventACitation(t *testing.T) {
 	// A plan entry with no ids cannot supply one; the downstream citation
 	// recovery is what handles that, and it must still see the empty slice.
 	rec := models.Recommendation{Title: "X"}
-	applyPlanToRecommendation(&rec, recommendationPlanItem{Title: "X"})
+	applyPlanToRecommendation(&rec, recommendationPlanItem{Title: "X"}, planTestInsights)
 	if len(rec.RelatedInsightIDs) != 0 {
 		t.Errorf("ids = %v, want none", rec.RelatedInsightIDs)
 	}
 }
 
-func TestCitesAnyOf(t *testing.T) {
+func TestEligibleInsightIDsAmong(t *testing.T) {
+	eligible := []models.Insight{{ID: "i-1"}, {ID: "i-2"}, {ID: ""}}
 	cases := []struct {
-		name      string
-		got, want []string
-		expect    bool
+		name string
+		ids  []string
+		want []string
 	}{
-		{"one of two", []string{"i-2"}, []string{"i-1", "i-2"}, true},
-		{"none", []string{"i-9"}, []string{"i-1"}, false},
-		{"empty got", nil, []string{"i-1"}, false},
-		{"empty want", []string{"i-1"}, nil, false},
-		{"padded", []string{" i-1 "}, []string{"i-1"}, true},
-		{"blank want entries", []string{""}, []string{"", "i-1"}, false},
+		{"all real", []string{"i-1", "i-2"}, []string{"i-1", "i-2"}},
+		{"order kept", []string{"i-2", "i-1"}, []string{"i-2", "i-1"}},
+		{"padded", []string{" i-1 "}, []string{"i-1"}},
+		{"duplicates collapsed", []string{"i-1", "i-1"}, []string{"i-1"}},
+		{"slug-shaped id dropped", []string{"conversion:critical:some-slug"}, nil},
+		{"partly real", []string{"nope", "i-2"}, []string{"i-2"}},
+		{"blank dropped", []string{"", "  "}, nil},
+		{"nothing in", nil, nil},
 	}
 	for _, c := range cases {
-		if got := citesAnyOf(c.got, c.want); got != c.expect {
-			t.Errorf("%s: citesAnyOf(%v, %v) = %v, want %v", c.name, c.got, c.want, got, c.expect)
+		got := eligibleInsightIDsAmong(c.ids, eligible)
+		if len(got) != len(c.want) {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+			continue
 		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+				break
+			}
+		}
+	}
+	if got := eligibleInsightIDsAmong([]string{"i-1"}, nil); got != nil {
+		t.Errorf("no eligible insights must resolve nothing, got %v", got)
 	}
 }
 
@@ -309,5 +328,102 @@ func TestRecommendationPhaseTokens_RaisedBoundDoesNotInflateTheEstimate(t *testi
 	raised, raisedOut := recommendationPhaseTokens(contextTokens)
 	if raised != base || raisedOut != baseOut {
 		t.Errorf("a raised bound changed the estimate: %d/%d then %d/%d", base, baseOut, raised, raisedOut)
+	}
+}
+
+func TestSelectPlannedRecommendation_SoleObjectThatIsAnotherPlannedEntryIsRefused(t *testing.T) {
+	// The expansion may reword its own title, so an unrecognisable title is
+	// accepted. Another planned entry's title is recognisably not this entry:
+	// accepting it would save that entry twice, lose this one, and stamp this
+	// one's citation onto the duplicate. It happens when a model answers for
+	// the wrong entry, and when the decoder drops the right one out of a
+	// response that held both.
+	plan := []recommendationPlanItem{{Title: "First thing"}, {Title: "Second thing"}}
+
+	sole := []models.Recommendation{{Title: "First thing"}}
+	if got, _, err := selectPlannedRecommendation(sole, plan, 1); err == nil {
+		t.Errorf("want a refusal, got %q accepted as the second entry", got.Title)
+	}
+
+	// Asked for that entry, the same object is exactly right.
+	if got, _, err := selectPlannedRecommendation(sole, plan, 0); err != nil || got.Title != "First thing" {
+		t.Errorf("got (%v, %v), want the first entry accepted", got, err)
+	}
+
+	// A reworded title is still accepted — that is the latitude the prompt gives.
+	reworded := []models.Recommendation{{Title: "Reactivate the lapsed cohort"}}
+	if got, _, err := selectPlannedRecommendation(reworded, plan, 1); err != nil || got.Title != "Reactivate the lapsed cohort" {
+		t.Errorf("got (%v, %v), want the reworded entry accepted", got, err)
+	}
+}
+
+func TestSelectPlannedRecommendation_RepeatedPlannedTitleStillResolves(t *testing.T) {
+	// A plan that repeated a title must not make either entry unanswerable.
+	plan := []recommendationPlanItem{{Title: "Same thing"}, {Title: "Same thing"}}
+	got, _, err := selectPlannedRecommendation([]models.Recommendation{{Title: "Same thing"}}, plan, 1)
+	if err != nil || got.Title != "Same thing" {
+		t.Errorf("got (%v, %v), want the entry accepted", got, err)
+	}
+}
+
+func TestApplyPlanToRecommendation_KeepsAValidCitationOverAnInventedPlanOne(t *testing.T) {
+	// The plan's ids are not automatically better than the expansion's. If the
+	// plan invented them (issue #237's slug shape) and the expansion cited a
+	// real insight, adopting the plan's would hand the downstream check ids it
+	// discards — which then backfills every eligible insight and loses the
+	// provenance altogether.
+	rec := models.Recommendation{Title: "X", RelatedInsightIDs: []string{"i-2"}}
+	applyPlanToRecommendation(&rec, recommendationPlanItem{
+		RelatedInsightIDs: []string{"conversion:critical:some-slug"},
+	}, planTestInsights)
+	if len(rec.RelatedInsightIDs) != 1 || rec.RelatedInsightIDs[0] != "i-2" {
+		t.Errorf("ids = %v, want the expansion's real citation kept", rec.RelatedInsightIDs)
+	}
+}
+
+func TestApplyPlanToRecommendation_NeverAdoptsAnIDThatNamesNoInsight(t *testing.T) {
+	// With nothing valid on either side, the recommendation is left uncited
+	// for the downstream recovery to ground — better than a citation that
+	// resolves to nothing.
+	rec := models.Recommendation{Title: "X"}
+	applyPlanToRecommendation(&rec, recommendationPlanItem{
+		RelatedInsightIDs: []string{"conversion:critical:some-slug", ""},
+	}, planTestInsights)
+	if len(rec.RelatedInsightIDs) != 0 {
+		t.Errorf("ids = %v, want none adopted", rec.RelatedInsightIDs)
+	}
+
+	// A plan that cites some real ids among invented ones contributes the real ones.
+	rec2 := models.Recommendation{Title: "X"}
+	applyPlanToRecommendation(&rec2, recommendationPlanItem{
+		RelatedInsightIDs: []string{"made-up", "i-3"},
+	}, planTestInsights)
+	if len(rec2.RelatedInsightIDs) != 1 || rec2.RelatedInsightIDs[0] != "i-3" {
+		t.Errorf("ids = %v, want only the real one", rec2.RelatedInsightIDs)
+	}
+}
+
+func TestRecommendationCallMaxTokens_FollowsAWindowLearnedSinceTheLastCall(t *testing.T) {
+	// The phase now makes a dozen calls. The adaptive context-overflow retry
+	// learns the model's true window from a rejected request and hands it to
+	// the orchestrator, and that lesson has to reach the next call — budgeting
+	// the whole phase from one snapshot would re-learn it on every entry, at a
+	// rejected request each time.
+	o := &Orchestrator{}
+	prompt := strings.Repeat("token ", 2000)
+
+	before := o.recommendationCallMaxTokens(context.Background(), prompt, defaultRecommendationExpandOutputTokens)
+	if before <= 0 {
+		t.Fatalf("budget = %d, want a positive request", before)
+	}
+
+	// What applyCalibratedWindow records when a request comes back rejected.
+	o.calibMu.Lock()
+	o.calibratedWindow = 4096
+	o.calibMu.Unlock()
+
+	after := o.recommendationCallMaxTokens(context.Background(), prompt, defaultRecommendationExpandOutputTokens)
+	if after >= before {
+		t.Errorf("budget after calibration = %d, want less than the %d budgeted before it", after, before)
 	}
 }

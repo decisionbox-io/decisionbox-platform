@@ -143,14 +143,6 @@ func newRecOrchestrator(content string) (*Orchestrator, *testutil.MockLLMProvide
 
 var recInsights = []models.Insight{{ID: "i-1", Name: "Churn", AnalysisArea: "churn"}}
 
-// testRecWindow / testRecOutputCap stand in for a resolved model budget in the
-// tests that call one pass of the phase directly. Values of a mid-size model,
-// so the budget arithmetic returns the output cap rather than a floor.
-const (
-	testRecWindow    = 32768
-	testRecOutputCap = 8192
-)
-
 func TestGenerateRecommendations_StringImpactKept(t *testing.T) {
 	o, _ := newRecOrchestrator(validRecEnvelope)
 	recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", recInsights, "", "ds")
@@ -172,7 +164,7 @@ func TestGenerateRecommendationsSingleDocument_RetryRecovers(t *testing.T) {
 		{Content: validRecEnvelope, Usage: gollm.Usage{InputTokens: 2, OutputTokens: 3}},
 	}
 	step := &models.RecommendationStep{}
-	recs, fail := o.generateRecommendationsSingleDocument(context.Background(), step, "prompt", recInsights, testRecWindow, testRecOutputCap)
+	recs, fail := o.generateRecommendationsSingleDocument(context.Background(), step, "prompt", recInsights)
 	if len(recs) != 2 {
 		t.Fatalf("recs = %d, want 2 after retry", len(recs))
 	}
@@ -253,7 +245,7 @@ func TestGenerateRecommendationsSingleDocument_NoRetryOnPartialSuccess(t *testin
 	]}`
 	o, provider := newRecOrchestrator(partial)
 	step := &models.RecommendationStep{}
-	recs, fail := o.generateRecommendationsSingleDocument(context.Background(), step, "prompt", recInsights, testRecWindow, testRecOutputCap)
+	recs, fail := o.generateRecommendationsSingleDocument(context.Background(), step, "prompt", recInsights)
 	if len(recs) != 1 {
 		t.Fatalf("recs = %d, want 1 (keep the good one)", len(recs))
 	}
@@ -274,7 +266,7 @@ func TestGenerateRecommendationsSingleDocument_NoRetryOnPartialSuccess(t *testin
 func TestGenerateRecommendationsSingleDocument_LegitEmptyNoRetry(t *testing.T) {
 	o, provider := newRecOrchestrator(`{"recommendations":[]}`)
 	step := &models.RecommendationStep{}
-	recs, fail := o.generateRecommendationsSingleDocument(context.Background(), step, "prompt", recInsights, testRecWindow, testRecOutputCap)
+	recs, fail := o.generateRecommendationsSingleDocument(context.Background(), step, "prompt", recInsights)
 	if len(recs) != 0 {
 		t.Fatalf("recs = %d, want 0", len(recs))
 	}
@@ -297,7 +289,7 @@ func TestGenerateRecommendationsSingleDocument_CitationSelfHealRecovers(t *testi
 	o := &Orchestrator{aiClient: client}
 
 	step := &models.RecommendationStep{}
-	recs, _ := o.generateRecommendationsSingleDocument(context.Background(), step, "prompt", recInsights, testRecWindow, testRecOutputCap)
+	recs, _ := o.generateRecommendationsSingleDocument(context.Background(), step, "prompt", recInsights)
 	if len(provider.Calls) != 2 {
 		t.Fatalf("provider called %d times, want 2 (initial + citation self-heal)", len(provider.Calls))
 	}
@@ -314,7 +306,7 @@ func TestGenerateRecommendationsSingleDocument_CitationSelfHealRecovers(t *testi
 func TestGenerateRecommendationsSingleDocument_NoCitationRetryWhenAlreadyCited(t *testing.T) {
 	o, provider := newRecOrchestrator(validRecEnvelope) // rec "A" cites i-1
 	step := &models.RecommendationStep{}
-	_, _ = o.generateRecommendationsSingleDocument(context.Background(), step, "prompt", recInsights, testRecWindow, testRecOutputCap)
+	_, _ = o.generateRecommendationsSingleDocument(context.Background(), step, "prompt", recInsights)
 	if len(provider.Calls) != 1 {
 		t.Errorf("provider called %d times, want 1 (no citation self-heal when already cited)", len(provider.Calls))
 	}
