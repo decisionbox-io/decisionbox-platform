@@ -24,19 +24,17 @@ export const NODE_HEIGHT = 92;
 export const CARD_GAP_Y = 22;
 /** Between lanes. Wide, because every vertical run of a line lives in one. */
 export const LANE_GAP = 96;
-/** The column on the left that names each row's run. */
-export const RUN_COLUMN = 176;
 export const ROW_GAP = 64;
 /** A little extra air between one finding's group and the next. */
 export const GROUP_GAP = 14;
-export const CAPTION_HEIGHT = 34;
-const CAPTION_GAP = 18;
 const ROW_STEP = NODE_HEIGHT + CARD_GAP_Y;
 
 export type Lane = 0 | 1 | 2 | 3;
 export const LANE_TITLES: [string, string, string, string] = ['Picked up', 'Found', 'Recommended', 'Opened'];
 
-export const laneLeft = (lane: number) => RUN_COLUMN + LANE_GAP + lane * (NODE_WIDTH + LANE_GAP);
+// The run names and the lane names are not on the canvas: they are frozen
+// panes over it (see ThreadMap), so the canvas starts with the first lane.
+export const laneLeft = (lane: number) => LANE_GAP + lane * (NODE_WIDTH + LANE_GAP);
 export const laneRight = (lane: number) => laneLeft(lane) + NODE_WIDTH;
 /** The rail down the right of every row, which the lines that go back up the
  *  page or down to a later run travel along. */
@@ -108,7 +106,7 @@ export interface FlowGeometry {
   edges: FlowEdge[];
   width: number;
   height: number;
-  /** Where the rows start, below the lane captions. */
+  /** Where the rows start. */
   top: number;
 }
 
@@ -240,7 +238,7 @@ export function placeFlow(map: InvestigationMap, expanded: Set<string>): FlowGeo
   });
 
   const cards = new Map<string, FlowCard>();
-  const top = CAPTION_HEIGHT + CAPTION_GAP;
+  const top = 0;
   let y = top;
 
   rows.forEach((row) => {

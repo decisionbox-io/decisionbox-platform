@@ -5,15 +5,15 @@ import Link from 'next/link';
 import {
   Background, BackgroundVariant, BaseEdge, Controls, Handle, MarkerType, MiniMap,
   Position, ReactFlow, ReactFlowProvider, useEdgesState, useNodesState,
-  useReactFlow, type Edge, type EdgeProps, type Node, type NodeProps,
+  useReactFlow, useViewport, type Edge, type EdgeProps, type Node, type NodeProps,
 } from '@xyflow/react';
 import {
-  ActionIcon, Badge, Button, Checkbox, CloseButton, Group, Paper, ScrollArea,
+  ActionIcon, Badge, Checkbox, CloseButton, Group, NativeSelect, Paper, ScrollArea,
   Select, Stack, Text, TextInput, Tooltip,
 } from '@mantine/core';
 import {
   IconArrowRight, IconArrowUp, IconBulb, IconChevronDown, IconClockHour4,
-  IconCornerDownRight, IconExternalLink, IconFlag3, IconLayoutGrid, IconMaximize,
+  IconCornerDownRight, IconExternalLink, IconFlag3, IconLayoutGrid,
   IconRoute, IconTargetArrow,
 } from '@tabler/icons-react';
 import { LedgerGraph } from '@/lib/api';
@@ -25,8 +25,8 @@ import {
   statusTrail, statusesOf,
 } from './graph';
 import {
-  CAPTION_HEIGHT, FLOW_WIDTH, FlowGeometry, FlowRow, LANE_TITLES, NODE_HEIGHT,
-  NODE_WIDTH, Point, RUN_COLUMN, laneLeft, placeFlow, roundedPath,
+  FLOW_WIDTH, FlowGeometry, FlowRow, LANE_TITLES, NODE_HEIGHT,
+  NODE_WIDTH, Point, laneLeft, placeFlow, roundedPath,
 } from './flowLayout';
 
 import '@xyflow/react/dist/style.css';
@@ -183,7 +183,6 @@ function InvestigationNode({ data }: NodeProps<Node<MapNodeData>>) {
 const MAX_OPENING_ZOOM = 0.85;
 const MIN_OPENING_ZOOM = 0.4;
 
-const rowNodeID = (ref: string) => `band:${ref || 'undated'}`;
 const moreNodeID = (ref: string) => `more:${ref || 'undated'}`;
 const rowRefOfMore = (id: string) => {
   const ref = id.slice('more:'.length);
@@ -222,44 +221,6 @@ function rowSummary(row: FlowRow): string[] {
   return lines;
 }
 
-type RunLabelData = {
-  label: string;
-  date: string;
-  lines: string[];
-  height: number;
-  dated: boolean;
-} & Record<string, unknown>;
-
-/** RunLabel names the run a row belongs to, down the left of it — so a row
- *  reads like a line of a table: this run, then what it did. */
-function RunLabel({ data }: { data: RunLabelData }) {
-  return (
-    <div
-      style={{
-        width: RUN_COLUMN,
-        height: data.height,
-        padding: '12px 14px',
-        borderRadius: 10,
-        background: data.dated
-          ? 'var(--mantine-color-blue-light)'
-          : 'var(--mantine-color-gray-1)',
-        border: '1px solid var(--db-border-default)',
-      }}
-    >
-      <Group gap={7} wrap="nowrap">
-        <IconClockHour4 size={14} style={{ flexShrink: 0, opacity: 0.7 }} />
-        <Text size="sm" fw={700} lineClamp={2}>{data.label}</Text>
-      </Group>
-      {data.date && <Text size="10px" c="dimmed" mt={2}>{data.date}</Text>}
-      <Stack gap={1} mt={8}>
-        {data.lines.map((line) => (
-          <Text key={line} size="10px" c="dimmed">{line}</Text>
-        ))}
-      </Stack>
-    </div>
-  );
-}
-
 const LANE_HINTS: [string, string, string, string] = [
   'Threads earlier runs left it',
   'What it found',
@@ -267,20 +228,160 @@ const LANE_HINTS: [string, string, string, string] = [
   'Threads it left for the next run',
 ];
 
-type LaneCaptionData = { title: string; hint: string; last: boolean } & Record<string, unknown>;
+// The frozen panes. The lane names across the top and the runs down the left
+// are not on the canvas: they are held in place over it while the map scrolls
+// underneath, the way a spreadsheet freezes its header row and first column.
+// On a map this size, scrolled into the middle, the cards alone cannot say
+// which run they are in or which step they are — and that is being lost.
+const FROZEN_TOP = 54;
+const FROZEN_LEFT = 158;
+/** Roughly how tall a run's label is, so it can ride down a tall row without
+ *  running off the bottom of it. */
+const RUN_LABEL_HEIGHT = 112;
 
-/** One lane's name, across the top of the map. */
-function LaneCaption({ data }: { data: LaneCaptionData }) {
+/** What the frozen column says about one row. */
+interface RowLabel {
+  ref: string;
+  label: string;
+  date: string;
+  lines: string[];
+  top: number;
+  height: number;
+  dated: boolean;
+}
+
+function rowLabels(idx: GraphIndex, rows: FlowRow[]): RowLabel[] {
+  return rows.map((row) => {
+    const run = row.ref ? idx.runs.get(row.ref) : undefined;
+    return {
+      ref: row.ref,
+      label: row.ref ? runLabel(idx, row.ref) : 'Not attributed to a run',
+      date: run?.date ? new Date(run.date).toLocaleDateString() : '',
+      lines: rowSummary(row),
+      top: row.top,
+      height: row.height,
+      dated: Boolean(row.ordinal),
+    };
+  });
+}
+
+const PANE_STYLE: React.CSSProperties = {
+  position: 'absolute',
+  background: 'var(--mantine-color-body)',
+  zIndex: 4,
+};
+
+/** FrozenPanes tracks the viewport and keeps each name lined up with what it
+ *  names: a lane's title over that lane however far across the map has
+ *  scrolled, and a run's name beside its row however far down. A run's name
+ *  rides down with the view while its row fills the screen, so a reader in the
+ *  middle of a long run can still see which run it is. */
+function FrozenPanes({
+  rows, earlierRuns, onJump,
+}: {
+  rows: RowLabel[]; earlierRuns: boolean; onJump: (ref: string) => void;
+}) {
+  const { x, y, zoom } = useViewport();
   return (
-    <div style={{ width: NODE_WIDTH, height: CAPTION_HEIGHT, paddingLeft: 4 }}>
-      <Group gap={6} wrap="nowrap">
-        <Text size="xs" fw={700} tt="uppercase" c="dimmed" style={{ letterSpacing: '.05em' }}>
-          {data.title}
-        </Text>
-        {!data.last && <IconArrowRight size={12} style={{ opacity: 0.45 }} />}
-      </Group>
-      <Text size="10px" c="dimmed">{data.hint}</Text>
-    </div>
+    <>
+      <div
+        data-testid="frozen-lanes"
+        style={{
+          ...PANE_STYLE, top: 0, left: 0, right: 0, height: FROZEN_TOP,
+          borderBottom: '1px solid var(--db-border-default)', overflow: 'hidden',
+        }}
+      >
+        {LANE_TITLES.map((title, lane) => (
+          <div
+            key={title}
+            style={{
+              position: 'absolute', top: 0, height: FROZEN_TOP, overflow: 'hidden',
+              left: laneLeft(lane) * zoom + x, width: NODE_WIDTH * zoom,
+              padding: '10px 2px 0',
+            }}
+          >
+            <Group gap={6} wrap="nowrap">
+              <Text size="xs" fw={700} tt="uppercase" c="dimmed" style={{ letterSpacing: '.05em' }} truncate>
+                {title}
+              </Text>
+              {lane < LANE_TITLES.length - 1 && (
+                <IconArrowRight size={12} style={{ opacity: 0.45, flexShrink: 0 }} />
+              )}
+            </Group>
+            <Text size="10px" c="dimmed" truncate>{LANE_HINTS[lane]}</Text>
+          </div>
+        ))}
+      </div>
+
+      <div
+        data-testid="frozen-runs"
+        style={{
+          ...PANE_STYLE, top: FROZEN_TOP, left: 0, bottom: 0, width: FROZEN_LEFT,
+          borderRight: '1px solid var(--db-border-default)', overflow: 'hidden',
+        }}
+      >
+        {rows.map((row) => {
+          const top = row.top * zoom + y - FROZEN_TOP;
+          const height = row.height * zoom;
+          const ride = Math.min(Math.max(0, -top), Math.max(0, height - RUN_LABEL_HEIGHT));
+          return (
+            <div
+              key={row.ref || 'undated'}
+              data-testid="frozen-run"
+              style={{
+                position: 'absolute', top, height, left: 6, right: 6,
+                borderRadius: 8,
+                background: row.dated ? 'var(--mantine-color-blue-light)' : 'var(--mantine-color-gray-1)',
+                border: '1px solid var(--db-border-default)',
+              }}
+            >
+              <div style={{ position: 'absolute', top: ride, left: 0, right: 0, padding: '9px 10px' }}>
+                <Group gap={6} wrap="nowrap">
+                  <IconClockHour4 size={13} style={{ flexShrink: 0, opacity: 0.7 }} />
+                  <Text size="sm" fw={700} lineClamp={2}>{row.label}</Text>
+                </Group>
+                {row.date && <Text size="10px" c="dimmed" mt={1}>{row.date}</Text>}
+                <Stack gap={0} mt={6}>
+                  {row.lines.map((line) => (
+                    <Text key={line} size="10px" c="dimmed" lineClamp={1}>{line}</Text>
+                  ))}
+                </Stack>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div
+        style={{
+          ...PANE_STYLE, zIndex: 5, top: 0, left: 0, width: FROZEN_LEFT, height: FROZEN_TOP,
+          borderRight: '1px solid var(--db-border-default)',
+          borderBottom: '1px solid var(--db-border-default)',
+          padding: earlierRuns ? '4px 8px 0' : '11px 8px 0',
+        }}
+      >
+        <NativeSelect
+          size="xs"
+          aria-label="Jump to a run"
+          // Always back on the prompt: it is a way to move, not a setting.
+          value=""
+          data={[
+            { value: '', label: 'Jump to a run…' },
+            ...rows.map((row) => ({ value: row.ref || 'undated', label: row.label })),
+          ]}
+          onChange={(e) => {
+            const value = e.currentTarget.value;
+            if (value) onJump(value === 'undated' ? '' : value);
+          }}
+        />
+        {earlierRuns && (
+          <Group gap={4} wrap="nowrap" mt={2}>
+            <IconArrowUp size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
+            <Text size="9px" c="dimmed">Earlier runs not loaded</Text>
+          </Group>
+        )}
+      </div>
+    </>
   );
 }
 
@@ -325,31 +426,6 @@ function MoreCard({ data }: { data: MoreCardData }) {
   );
 }
 
-/** EarlierRuns marks the top when the response is a window onto a longer
- *  history. Without it the first row reads as the beginning of the
- *  investigation, which on a mature project it is not. */
-function EarlierRuns() {
-  return (
-    <div
-      style={{
-        width: RUN_COLUMN,
-        height: CAPTION_HEIGHT,
-        display: 'flex',
-        alignItems: 'center',
-        gap: 6,
-        paddingLeft: 4,
-      }}
-    >
-      <IconArrowUp size={13} style={{ opacity: 0.45, flexShrink: 0 }} />
-      <Text size="10px" c="dimmed" style={{ lineHeight: 1.3 }}>
-        Earlier runs
-        <br />
-        not loaded
-      </Text>
-    </div>
-  );
-}
-
 type RoutedEdgeData = {
   points: Point[];
   labelAt: Point;
@@ -380,10 +456,7 @@ function RoutedEdge({ id, data, style, markerEnd, label }: EdgeProps<Edge<Routed
   );
 }
 
-const nodeTypes = {
-  investigation: InvestigationNode, band: RunLabel, lane: LaneCaption, more: MoreCard,
-  earlier: EarlierRuns,
-};
+const nodeTypes = { investigation: InvestigationNode, more: MoreCard };
 const edgeTypes = { routed: RoutedEdge };
 
 /** The lines that carry the story from one run to the next: a run picked this
@@ -395,50 +468,11 @@ const NARRATIVE_EDGE: Record<string, boolean> = {
 };
 
 function layout(
-  idx: GraphIndex,
   geometry: FlowGeometry,
   selected: string | null,
   connected: Set<string>,
-  earlierRuns: boolean,
 ) {
   const { rows, cards } = geometry;
-
-  const captions: Node[] = [
-    ...(earlierRuns ? [{
-      id: 'earlier-runs',
-      type: 'earlier',
-      position: { x: 0, y: 0 },
-      draggable: false,
-      selectable: false,
-      data: {},
-    }] : []),
-    ...LANE_TITLES.map((title, lane) => ({
-      id: `lane:${lane}`,
-      type: 'lane',
-      position: { x: laneLeft(lane), y: 0 },
-      draggable: false,
-      selectable: false,
-      data: { title, hint: LANE_HINTS[lane], last: lane === LANE_TITLES.length - 1 } as LaneCaptionData,
-    })),
-  ];
-
-  const labels: Node[] = rows.map((row) => {
-    const run = row.ref ? idx.runs.get(row.ref) : undefined;
-    return {
-      id: rowNodeID(row.ref),
-      type: 'band',
-      position: { x: 0, y: row.top },
-      draggable: false,
-      selectable: false,
-      data: {
-        label: row.ref ? runLabel(idx, row.ref) : 'Not attributed to a run',
-        date: run?.date ? new Date(run.date).toLocaleDateString() : '',
-        lines: rowSummary(row),
-        height: row.height,
-        dated: Boolean(row.ordinal),
-      } as RunLabelData,
-    };
-  });
 
   const nodes: Node<MapNodeData>[] = [...cards.values()].map((card) => ({
     id: card.id,
@@ -493,7 +527,7 @@ function layout(
     };
   });
 
-  return { nodes: [...captions, ...labels, ...nodes, ...more], edges };
+  return { nodes: [...nodes, ...more], edges };
 }
 
 /** A link out to a detail page, with the affordance to open it in a new tab —
@@ -546,7 +580,7 @@ function DetailPanel({
     <Paper
       withBorder radius="md" shadow="sm"
       style={{
-        position: 'absolute', top: 12, right: 12, bottom: 12, width: 340,
+        position: 'absolute', top: FROZEN_TOP + 8, right: 12, bottom: 12, width: 340,
         zIndex: 5, display: 'flex', flexDirection: 'column',
         background: 'var(--mantine-color-body)',
       }}
@@ -674,7 +708,7 @@ function Legend() {
     <Group gap="md" wrap="wrap">
       <Group gap={5} wrap="nowrap">
         <IconClockHour4 size={13} style={{ opacity: 0.7 }} />
-        <Text size="xs" c="dimmed">One row per run, oldest at the top · each row reads left to right</Text>
+        <Text size="xs" c="dimmed">One row per run, oldest at the top · each row reads left to right · scroll to move, pinch or Ctrl/⌘ + scroll to zoom</Text>
       </Group>
       {(['finding', 'task', 'recommendation'] as MapNodeKind[]).map((kind) => (
         <Group key={kind} gap={5} wrap="nowrap">
@@ -699,7 +733,7 @@ function Canvas({
   // Which runs have had their "+N more" opened. Per row, because opening one
   // run's inventory should not unfold every other run's as well.
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const { fitView, setViewport } = useReactFlow();
+  const { getViewport, setViewport } = useReactFlow();
   const frame = useRef<HTMLDivElement>(null);
 
   // A selection a filter has since removed is no selection. Keeping it would
@@ -736,9 +770,10 @@ function Canvas({
   }, [lit, geometry]);
 
   const laid = useMemo(
-    () => layout(index, geometry, lit, connected, earlierRuns),
-    [index, geometry, lit, connected, earlierRuns],
+    () => layout(geometry, lit, connected),
+    [geometry, lit, connected],
   );
+  const labels = useMemo(() => rowLabels(index, geometry.rows), [index, geometry]);
   const [nodes, setNodes, onNodesChange] = useNodesState(laid.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(laid.edges);
 
@@ -747,10 +782,10 @@ function Canvas({
     setEdges(laid.edges);
   }, [laid, setNodes, setEdges]);
 
-  // The map opens at its top left: the lane names, and the oldest run — where
-  // the investigation started — at a zoom that gets all four lanes of a row
-  // across the screen. Fitting the whole map instead shrinks a long history
-  // until no card can be read.
+  // The map opens on the oldest run — where the investigation started — with
+  // its first lane just clear of the frozen run column, at a zoom that gets
+  // all four lanes of a row across the screen. Fitting the whole map instead
+  // shrinks a long history until no card can be read.
   //
   // Keyed on the MAP, not on what is currently drawn: opening a run's "+N
   // more" changes the second and not the first, and moving the view then
@@ -761,16 +796,28 @@ function Canvas({
   useEffect(() => {
     const raf = window.requestAnimationFrame(() => {
       const width = frame.current?.clientWidth || 1100;
-      const zoom = Math.min(MAX_OPENING_ZOOM, Math.max(MIN_OPENING_ZOOM, (width - 48) / FLOW_WIDTH));
-      setViewport({ x: 24, y: 16, zoom }, { duration: 300 });
+      const span = FLOW_WIDTH - laneLeft(0);
+      const zoom = Math.min(MAX_OPENING_ZOOM, Math.max(MIN_OPENING_ZOOM, (width - FROZEN_LEFT - 28) / span));
+      setViewport({ x: FROZEN_LEFT + 14 - laneLeft(0) * zoom, y: FROZEN_TOP + 12, zoom }, { duration: 300 });
     });
     return () => window.cancelAnimationFrame(raf);
   }, [originKey, setViewport]);
 
+  // Jumping to a run brings its row up under the frozen lane names, from the
+  // beginning — its first lane just clear of the run column — at the reader's
+  // own zoom. Keeping a sideways scroll instead lands them halfway along the
+  // row, which is no help to someone who has lost their place.
+  const jumpTo = useCallback((ref: string) => {
+    const row = geometry.rows.find((r) => r.ref === ref);
+    if (!row) return;
+    const { zoom } = getViewport();
+    setViewport(
+      { x: FROZEN_LEFT + 14 - laneLeft(0) * zoom, y: FROZEN_TOP + 12 - row.top * zoom, zoom },
+      { duration: 400 },
+    );
+  }, [geometry, getViewport, setViewport]);
+
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
-    // Run names and lane captions are labels, not cards: clicking one would
-    // dim the whole map in favour of a node that has no detail to show.
-    if (node.type === 'band' || node.type === 'lane' || node.type === 'earlier') return;
     if (node.type === 'more') {
       const ref = rowRefOfMore(node.id);
       setExpanded((prev) => {
@@ -789,7 +836,13 @@ function Canvas({
   return (
     <div
       ref={frame}
-      style={{ position: 'relative', height: 680, borderRadius: 8, overflow: 'hidden', border: '1px solid var(--db-border-default)' }}
+      style={{
+        position: 'relative',
+        // As much of the screen as the page can spare: a map this size read
+        // through a letterbox is how a reader gets lost in it.
+        height: 'max(620px, calc(100vh - 260px))',
+        borderRadius: 8, overflow: 'hidden', border: '1px solid var(--db-border-default)',
+      }}
     >
       <ReactFlow
         nodes={nodes}
@@ -805,38 +858,33 @@ function Canvas({
         // somewhere else would not rearrange the map, it would make it lie,
         // and the lines are routed around where the cards are.
         nodesDraggable={false}
-        // No `fitView` prop: see the opening effect above. Fit and the
-        // minimap are there for the whole picture.
+        // No `fitView` prop: see the opening effect above. The controls and
+        // the minimap are there for the whole picture.
         minZoom={0.1}
         maxZoom={1.6}
+        // Scrolling moves the map, the way it moves a spreadsheet; zooming is
+        // a pinch, or the wheel with Ctrl (Cmd on a Mac) held. Zoom on every
+        // scroll is how a reader trying to go down the page ends up somewhere
+        // else entirely.
+        panOnScroll
+        zoomOnScroll={false}
+        // A fence round the map, so a fling cannot leave the view on empty
+        // canvas with nothing to find the way back by.
+        translateExtent={[[-600, -400], [FLOW_WIDTH + 600, geometry.height + 800]]}
         proOptions={{ hideAttribution: false }}
       >
         <Background variant={BackgroundVariant.Dots} gap={18} size={1} />
-        <Controls showInteractive={false} />
+        <Controls showInteractive={false} position="top-right" style={{ marginTop: FROZEN_TOP + 10 }} />
         <MiniMap
           pannable zoomable
-          nodeColor={(n) => {
-            if (n.type === 'band') return 'var(--mantine-color-blue-3)';
-            if (n.type !== 'investigation') return 'var(--mantine-color-gray-3)';
-            return accentFor(n.data as unknown as MapNode);
-          }}
+          nodeColor={(n) => (n.type === 'investigation'
+            ? accentFor(n.data as unknown as MapNode)
+            : 'var(--mantine-color-gray-3)')}
           style={{ background: 'var(--mantine-color-body)' }}
         />
       </ReactFlow>
 
-      <Group
-        gap="xs"
-        style={{ position: 'absolute', top: 12, right: 12, zIndex: 4 }}
-      >
-        <Tooltip label="Fit the whole map in view" openDelay={300}>
-          <Button
-            size="xs" variant="default" leftSection={<IconMaximize size={13} />}
-            onClick={() => fitView({ duration: 300 })}
-          >
-            Fit
-          </Button>
-        </Tooltip>
-      </Group>
+      <FrozenPanes rows={labels} earlierRuns={earlierRuns} onJump={jumpTo} />
 
       {selectedNode && (
         <DetailPanel

@@ -1,6 +1,6 @@
 import { buildMap, indexGraph } from '@/components/ledger/graph';
 import {
-  FlowCard, FlowGeometry, NODE_HEIGHT, NODE_WIDTH, RUN_COLUMN, laneLeft, placeFlow,
+  FlowCard, FlowGeometry, NODE_HEIGHT, NODE_WIDTH, laneLeft, placeFlow,
   roundedPath, seenCardID, workedCardID,
 } from '@/components/ledger/flowLayout';
 import type { GraphEdge, LedgerGraph } from '@/lib/api';
@@ -196,7 +196,6 @@ function crosses(a: { x: number; y: number }, b: { x: number; y: number }, box: 
 
 function expectNoLineThroughACard(geometry: FlowGeometry) {
   const cards = [...geometry.cards.values()];
-  const runLabels: Box[] = geometry.rows.map((r) => ({ x0: 0, y0: r.top, x1: RUN_COLUMN, y1: r.top + r.height }));
   geometry.edges.forEach((e) => {
     for (let i = 1; i < e.points.length; i += 1) {
       const a = e.points[i - 1]; const b = e.points[i];
@@ -208,7 +207,8 @@ function expectNoLineThroughACard(geometry: FlowGeometry) {
           throw new Error(`line ${e.id} runs through ${card.id}`);
         }
       });
-      runLabels.forEach((box) => expect(crosses(a, b, box)).toBe(false));
+      // Nothing runs off the left of the canvas, under the frozen run column.
+      expect(Math.min(a.x, b.x)).toBeGreaterThan(0);
     }
   });
 }
