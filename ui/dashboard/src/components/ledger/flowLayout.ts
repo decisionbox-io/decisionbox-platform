@@ -254,13 +254,26 @@ export function placeFlow(map: InvestigationMap, expanded: Set<string>): FlowGeo
       const group = anchor ? (groups.get(groupOf.get(anchor) as string) as Group) : standalone('~recs', [3, 0]);
       group.lanes[2].push(n.id);
     });
+    // A thread with no finding in this row to sit beside is one of two kinds.
+    // One that a finding in ANOTHER row opened has a line coming in from the
+    // left at its own height, so it goes where the recommendation lane is
+    // clear: a group of its own at the bottom. One with no line in from the
+    // left at all — every thread on a project whose history predates the
+    // links — can go in any free space in its lane, so it fills the top of
+    // the Opened lane rather than waiting below everything the run found.
+    const free: string[] = [];
     shown.filter((n) => n.kind === 'task').forEach((n) => {
       const anchor = anchorFor(n.id, into.get(n.id), 'source');
-      const group = anchor ? (groups.get(groupOf.get(anchor) as string) as Group) : standalone('~threads', [4, 0]);
-      group.lanes[3].push(n.id);
+      if (anchor) {
+        (groups.get(groupOf.get(anchor) as string) as Group).lanes[3].push(n.id);
+        return;
+      }
+      const fedFromLeft = (into.get(n.id) ?? []).some((e) => e.kind !== 'supersedes');
+      if (fedFromLeft) standalone('~threads', [4, 0]).lanes[3].push(n.id);
+      else free.push(n.id);
     });
 
-    const ordered = [...groups.values()].sort((a, b) => {
+    const ranked = [...groups.values()].sort((a, b) => {
       for (let i = 0; i < Math.max(a.rank.length, b.rank.length); i += 1) {
         const d = (a.rank[i] ?? 0) - (b.rank[i] ?? 0);
         if (d !== 0) return d;
@@ -268,8 +281,44 @@ export function placeFlow(map: InvestigationMap, expanded: Set<string>): FlowGeo
       return (byId.get(a.lanes[1][0])?.title ?? a.key).localeCompare(byId.get(b.lanes[1][0])?.title ?? b.key);
     });
 
+    // Findings that share an outcome sit together. Several findings driving
+    // one recommendation is common — a recommendation is built on more than
+    // one insight — and ranked independently they land a screen apart, each
+    // with a line running the length of the row to reach it. So each group
+    // is followed by the others it shares a recommendation, a picked-up
+    // thread or an opened thread with, best first.
+    const cluster = new Map<string, string>();
+    const root = (key: string): string => {
+      const up = cluster.get(key);
+      if (!up || up === key) return key;
+      const top = root(up);
+      cluster.set(key, top);
+      return top;
+    };
+    const join = (a: string, b: string) => { cluster.set(root(a), root(b)); };
+    const inRowFindings = (edges: typeof drawn | undefined, end: 'source' | 'target') =>
+      (edges ?? []).map((e) => e[end]).filter((other) => groupOf.has(other) && inRow(other));
+    ranked.forEach((group) => {
+      const members = [
+        ...group.lanes[0].flatMap((id) => inRowFindings(outOf.get(id), 'target')),
+        ...group.lanes[2].flatMap((id) => inRowFindings(into.get(id), 'source')),
+        ...group.lanes[3].flatMap((id) => inRowFindings(into.get(id), 'source')),
+      ].map((finding) => groupOf.get(finding) as string);
+      members.forEach((key) => join(key, group.key));
+    });
+    const ordered: Group[] = [];
+    const placed = new Set<string>();
+    ranked.forEach((group) => {
+      if (placed.has(group.key)) return;
+      ranked.filter((g) => root(g.key) === root(group.key)).forEach((g) => {
+        placed.add(g.key);
+        ordered.push(g);
+      });
+    });
+
     let line = 0; // card rows used so far in this run
     let extra = 0; // group gaps used so far
+    const freeSlots: number[] = []; // the Opened lane's empty places, top down
     ordered.forEach((group, gi) => {
       if (gi > 0) extra += GROUP_GAP;
       const [picked, found, recs, opened] = group.lanes;
@@ -293,7 +342,28 @@ export function placeFlow(map: InvestigationMap, expanded: Set<string>): FlowGeo
       found.forEach((id, k) => place(id, 1, k));
       recs.forEach((id, k) => place(id, 2, k));
       opened.forEach((id, k) => place(id, 3, openedFrom + k));
-      line += Math.max(picked.length, found.length, recs.length, openedFrom + opened.length, 1);
+      const height = Math.max(picked.length, found.length, recs.length, openedFrom + opened.length, 1);
+      for (let k = 0; k < height; k += 1) {
+        if (k < openedFrom || k >= openedFrom + opened.length) freeSlots.push(y + (line + k) * ROW_STEP + extra);
+      }
+      line += height;
+    });
+
+    // The free threads, into the Opened lane's empty places from the top, and
+    // whatever is left over in a column of their own beneath.
+    let overflow = false;
+    free.forEach((id) => {
+      let cardY = freeSlots.shift();
+      if (cardY === undefined) {
+        if (!overflow && line > 0) extra += GROUP_GAP;
+        overflow = true;
+        cardY = y + line * ROW_STEP + extra;
+        line += 1;
+      }
+      cards.set(id, {
+        id, node: byId.get(id) as MapNode, lane: 3, x: laneLeft(3), y: cardY,
+        row: row.ref, group: `${row.ref}#~free`,
+      });
     });
 
     // The loose cards, if they have been asked for, in a block underneath —
@@ -335,9 +405,12 @@ class Channels {
   offset(key: string): number {
     const n = this.used.get(key) ?? 0;
     this.used.set(key, n + 1);
-    // 0, +6, -6, +12, -12, … and back round before it leaves the gap.
-    const step = Math.ceil(n / 2) * 6 * (n % 2 === 1 ? 1 : -1);
-    return ((step + 36) % 73) - 36;
+    // 0, +6, -6, +12, -12, … out to ±36 and back round, so however many lines
+    // share a channel none of them leaves it: the gaps are 96 wide and the
+    // cards either side start 48 from the middle.
+    const slot = n % 13;
+    const out = Math.ceil(slot / 2) * 6;
+    return slot % 2 === 1 ? out : -out;
   }
 }
 

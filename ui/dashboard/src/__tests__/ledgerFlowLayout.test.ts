@@ -147,6 +147,22 @@ function generatedGraph(runs: number, perRun: number): LedgerGraph {
         g.edges.push({ from: `run:r${r}`, to: `task:${openThreads[1]}`, kind: 'pursued' });
       }
     }
+    // One recommendation built on two of this run's findings, far apart in
+    // rank — the shape that strands a line across the whole row.
+    g.recommendations.push({ node_id: `rec:S${r}`, id: `S${r}`, discovery_id: `d${r}`, title: `S${r}`, priority: 1 });
+    g.edges.push({ from: `rec:S${r}`, to: `insight:ins-F${r}_0`, kind: 'recommends_on' });
+    g.edges.push({ from: `rec:S${r}`, to: `insight:ins-F${r}_${perRun - 1}`, kind: 'recommends_on' });
+    // Threads with no finding behind them — every thread on a project that
+    // predates the links — one continuing the last run's, so the rail is used
+    // by threads that are not beside any finding.
+    ['a', 'b', 'c'].forEach((suffix) => {
+      g.tasks.push({
+        node_id: `task:Q${r}${suffix}`, id: `Q${r}${suffix}`, title: `Q${r}${suffix}`,
+        kind: 'next_task', status: 'open', created_run_id: `r${r}`,
+      });
+    });
+    if (r > 1) g.edges.push({ from: `task:Q${r}a`, to: `task:Q${r - 1}a`, kind: 'supersedes' });
+    if (r > 1) g.edges.push({ from: `run:r${r}`, to: `task:Q${r - 1}b`, kind: 'pursued' });
   }
   return g;
 }
@@ -276,6 +292,24 @@ describe('placeFlow', () => {
     expect(open.rows[0].moreAt).toBeDefined(); // now "Show less"
   });
 
+  it('fills the top of the Opened lane with threads nothing links to', () => {
+    // On a project whose history predates the links every thread is like
+    // this, and below everything the run found is where nobody looks.
+    const geometry = layOut(threeRunGraph());
+    expect(geometry.cards.get('task:loose')?.y).toBe(geometry.rows[0].top);
+  });
+
+  it('keeps findings that drive the same recommendation together', () => {
+    const graph = generatedGraph(2, 9);
+    const { cards } = layOut(graph);
+    // S1 is built on F1_0 and F1_8. Ranked alone they would be a row apart;
+    // clustered, no other finding sits between them.
+    const ys = ['finding:F1_0', 'finding:F1_8'].map((id) => cards.get(id)!.y).sort((a, b) => a - b);
+    const between = [...cards.values()].filter((c) => c.lane === 1 && c.row === 'run:r1'
+      && c.y > ys[0] && c.y < ys[1]);
+    expect(between).toEqual([]);
+  });
+
   it('never draws a line through a card, on the fixture', () => {
     const geometry = layOut(threeRunGraph());
     expectNoOverlap(geometry);
@@ -346,5 +380,23 @@ describe('roundedPath', () => {
     const path = roundedPath([{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 2 }, { x: 40, y: 2 }]);
     expect(path).not.toContain('NaN');
     expect(path).toContain('Q 20 0 20 1');
+  });
+});
+
+describe('channels', () => {
+  it('keeps every line inside its gap however many share it', () => {
+    // A long history sends dozens of lines down the rail. The offset that
+    // spreads them used to wrap through a negative modulo and land one inside
+    // the Opened lane — through whatever card was there.
+    const geometry = layOut(generatedGraph(12, 9));
+    const railLines = geometry.edges.filter((e) => e.kind === 'picked_up' || e.kind === 'supersedes');
+    expect(railLines.length).toBeGreaterThan(20);
+    geometry.edges.forEach((e) => {
+      e.points.slice(1, -1).forEach((pt) => {
+        const insideALane = [0, 1, 2, 3].some((lane) => pt.x > laneLeft(lane) && pt.x < laneLeft(lane) + NODE_WIDTH);
+        if (insideALane) throw new Error(`${e.id} turns inside a lane at x=${pt.x}`);
+      });
+    });
+    expectNoLineThroughACard(geometry);
   });
 });
