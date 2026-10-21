@@ -251,10 +251,15 @@ func (o *Orchestrator) RunPhaseReflection(ctx context.Context, result *models.Di
 	// clear is deferred rather than placed at the end: every return below is
 	// a best-effort bail-out, and a marker left set would block the backfill
 	// on a project nothing is writing.
-	if err := o.ledgerRepo.BeginReflection(rctx, o.projectID, o.runID); err != nil {
-		applog.WithError(err).Warn("Reflection: could not mark the phase in flight")
-	}
+	//
+	// When the run already put its entry up, that entry IS this phase's: it is
+	// not put up again. BeginReflection replaces an entry by removing it and
+	// then adding it back — two writes — and a reader landing between them
+	// would see a finished update and stop waiting for the real one.
 	if !o.reflectionPending {
+		if err := o.ledgerRepo.BeginReflection(rctx, o.projectID, o.runID); err != nil {
+			applog.WithError(err).Warn("Reflection: could not mark the phase in flight")
+		}
 		defer o.endReflectionMarker(ctx)
 	}
 

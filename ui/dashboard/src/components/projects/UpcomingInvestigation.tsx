@@ -34,7 +34,10 @@ export function UpcomingInvestigation({ projectId, refreshKey }: { projectId: st
   const [pending, setPending] = useState<PackProposal[]>([]);
   const [updating, setUpdating] = useState<LedgerUpdating | null>(null);
   const [ready, setReady] = useState(false);
-  const alive = useRef(true);
+  // Every load is numbered, and only the latest may change what the card
+  // shows. Without it a slow first load could land after the reload a run's
+  // finish triggered, and put the pre-run threads back over the new ones.
+  const generation = useRef(0);
   // Restore the persisted collapsed/expanded choice via a lazy initializer. The
   // window guard keeps SSR safe, and there's no hydration mismatch because the
   // card renders nothing (ready=false) on the server and the first client paint.
@@ -52,29 +55,43 @@ export function UpcomingInvestigation({ projectId, refreshKey }: { projectId: st
     return next;
   });
 
-  // Resolves to whether the ledger is still being updated, so the check-back
-  // loop below knows whether to go round again.
-  const load = useCallback(() => Promise.all([
-    api.getLedger(projectId).catch(() => null),
-    api.listPackProposals(projectId).catch(() => [] as PackProposal[]),
-  ]).then(([lv, props]) => {
-    if (!alive.current) return false;
-    setTasks((lv?.tasks ?? []).filter((t) => (t.status || 'open') === 'open'));
-    setPending((props ?? []).filter((p) => p.status === 'proposed'));
-    setUpdating(lv?.updating ?? null);
-    setReady(true);
-    return Boolean(lv?.updating);
-  }), [projectId]);
+  // What one load found: the ledger answered and is still being updated, it
+  // answered and is done, the request failed, or a newer load superseded it.
+  type Outcome = 'updating' | 'done' | 'failed' | 'superseded';
+
+  const load = useCallback((): Promise<Outcome> => {
+    const mine = ++generation.current;
+    return Promise.all([
+      api.getLedger(projectId),
+      api.listPackProposals(projectId).catch(() => [] as PackProposal[]),
+    ]).then(([lv, props]): Outcome => {
+      if (mine !== generation.current) return 'superseded';
+      setTasks((lv?.tasks ?? []).filter((t) => (t.status || 'open') === 'open'));
+      setPending((props ?? []).filter((p) => p.status === 'proposed'));
+      setUpdating(lv?.updating ?? null);
+      setReady(true);
+      return lv?.updating ? 'updating' : 'done';
+    }, (): Outcome => {
+      if (mine !== generation.current) return 'superseded';
+      // The first load failing is the card's old behaviour — no ledger here
+      // (community builds 404 it), so nothing to show. A later one failing is
+      // a blip: what the card already shows stays, and the caller asks again.
+      setReady(true);
+      return 'failed';
+    });
+  }, [projectId]);
 
   useEffect(() => {
-    alive.current = true;
     void load();
-    return () => { alive.current = false; };
+    // Unmounting supersedes whatever is still in flight.
+    return () => { generation.current += 1; };
   }, [load, refreshKey]);
 
   // While an update is in progress, check back: a loop that schedules its own
-  // next check for as long as the answer still says "updating", and stops the
-  // moment it does not — that same answer is the updated threads. Keyed on
+  // next check until an answer says it is done — that same answer is the
+  // updated threads. Only a successful answer without the flag ends it: a
+  // failed check is a blip, and a superseded one means another load owns the
+  // card now, which this loop keeps an eye on rather than abandoning. Keyed on
   // whether there is an update at all, never on the update object, whose
   // identity says nothing about whether anything changed.
   const isUpdating = Boolean(updating);
@@ -84,7 +101,7 @@ export function UpcomingInvestigation({ projectId, refreshKey }: { projectId: st
     let timer: ReturnType<typeof setTimeout>;
     const check = () => {
       timer = setTimeout(() => {
-        void load().then((still) => { if (still && !cancelled) check(); });
+        void load().then((outcome) => { if (outcome !== 'done' && !cancelled) check(); });
       }, LEDGER_UPDATE_POLL_MS);
     };
     check();

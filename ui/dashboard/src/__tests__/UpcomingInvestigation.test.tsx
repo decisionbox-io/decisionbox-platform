@@ -84,6 +84,51 @@ describe('UpcomingInvestigation', () => {
     expect(getLedger.mock.calls.length).toBe(calls);
   });
 
+  it('keeps what it shows and keeps checking when a check fails mid-update', async () => {
+    // A failed request is not an answer. Read as one, it emptied the card and
+    // stopped checking while the update was still going.
+    const inFlight = view({
+      tasks: [thread('t1', 'An old thread')],
+      updating: { run_id: 'r9', since: '2026-10-21T14:02:00Z' },
+    });
+    getLedger
+      .mockResolvedValueOnce(inFlight)
+      .mockRejectedValue(new Error('network blip'));
+    wrap();
+    expect(await screen.findByText('An old thread')).toBeInTheDocument();
+    // Through several failed checks, the card still shows the old threads and
+    // still says why...
+    await waitFor(() => expect(getLedger.mock.calls.length).toBeGreaterThanOrEqual(4));
+    expect(screen.getByText('An old thread')).toBeInTheDocument();
+    expect(screen.getByText('Updating')).toBeInTheDocument();
+    // ...and it is still checking: when the ledger answers again, done, the
+    // new threads arrive and the badge goes.
+    getLedger.mockResolvedValue(view({ tasks: [thread('t2', 'A new thread')] }));
+    expect(await screen.findByText('A new thread')).toBeInTheDocument();
+    expect(screen.queryByText('Updating')).not.toBeInTheDocument();
+  });
+
+  it('does not let a slow earlier load overwrite a newer one', async () => {
+    // The first load is still out when the page sees the run finish and
+    // loads again. The newer answer is the one that stands.
+    let releaseFirst: (v: LedgerView) => void = () => {};
+    getLedger
+      .mockImplementationOnce(() => new Promise<LedgerView>((res) => { releaseFirst = res; }))
+      .mockResolvedValue(view({
+        tasks: [thread('t2', 'After the run')],
+        updating: { run_id: 'r2', since: '2026-10-21T14:02:00Z' },
+      }));
+    const { rerender } = wrap('');
+    rerender(<MantineProvider><UpcomingInvestigation projectId="p1" refreshKey="r2" /></MantineProvider>);
+    expect(await screen.findByText('After the run')).toBeInTheDocument();
+
+    // The stale first answer finally arrives — from before the run, idle.
+    releaseFirst(view({ tasks: [thread('t1', 'Before the run')] }));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(screen.queryByText('Before the run')).not.toBeInTheDocument();
+    expect(screen.getByText('Updating')).toBeInTheDocument();
+  });
+
   it('shows up for a first run whose threads are still being built, instead of staying hidden', async () => {
     getLedger.mockResolvedValue(view({ updating: { run_id: 'r1', since: '2026-10-21T14:02:00Z' } }));
     wrap();

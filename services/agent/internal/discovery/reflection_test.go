@@ -28,6 +28,9 @@ type fakeLedgerRepo struct {
 	reflectingRunID string
 	beganReflection int
 	endedReflection int
+	// markerEvents is every begin and end in order, so a test can prove the
+	// entry was never down in the middle of an update.
+	markerEvents []string
 }
 
 func (f *fakeLedgerRepo) Get(_ context.Context, projectID string) (*commonmodels.DiscoveryLedger, error) {
@@ -49,6 +52,7 @@ func (f *fakeLedgerRepo) Save(_ context.Context, l *commonmodels.DiscoveryLedger
 func (f *fakeLedgerRepo) BeginReflection(_ context.Context, _, runID string) error {
 	f.reflectingRunID = runID
 	f.beganReflection++
+	f.markerEvents = append(f.markerEvents, "begin")
 	return nil
 }
 func (f *fakeLedgerRepo) EndReflection(_ context.Context, _, runID string) error {
@@ -56,6 +60,7 @@ func (f *fakeLedgerRepo) EndReflection(_ context.Context, _, runID string) error
 		f.reflectingRunID = ""
 	}
 	f.endedReflection++
+	f.markerEvents = append(f.markerEvents, "end")
 	return nil
 }
 
@@ -1897,8 +1902,11 @@ func TestRunPhaseReflection_TakesThePendingMarkDown(t *testing.T) {
 	}
 	o.markReflectionPending(context.Background())
 	o.RunPhaseReflection(context.Background(), result)
-	if lr.beganReflection != 2 {
-		t.Errorf("pending mark + the phase's own start = 2 begins, got %d", lr.beganReflection)
+	// Up once, down once. The phase reuses the run's entry rather than putting
+	// it up again: replacing it is a remove-then-add, and a reader landing
+	// between the two would see the update finished while it had not begun.
+	if got := strings.Join(lr.markerEvents, ","); got != "begin,end" {
+		t.Errorf("marker events = %s, want begin,end — never down mid-update", got)
 	}
 	if lr.reflectingRunID != "" {
 		t.Errorf("the marker must come down at the end, still set to %q", lr.reflectingRunID)
