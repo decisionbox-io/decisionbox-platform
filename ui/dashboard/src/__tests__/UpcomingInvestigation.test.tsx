@@ -170,6 +170,23 @@ describe('UpcomingInvestigation', () => {
     await waitFor(() => expect(container.querySelector('.mantine-Card-root')).toBeNull());
   });
 
+  it('keeps the proposals it shows when reloading them fails', async () => {
+    // A failed proposals request is not an empty list. Read as one, the last
+    // refresh wiped the pending playbook changes the card was showing.
+    const proposal = { id: 'p', project_id: 'p1', action: 'add_area', area_id: 'a', rationale: 'r', status: 'proposed' };
+    getLedger
+      .mockResolvedValueOnce(view({ tasks: [thread('t1', 'A thread')], updating: { run_id: 'r9', since: '2026-10-21T14:02:00Z' } }))
+      .mockResolvedValue(view({ tasks: [thread('t1', 'A thread')] }));
+    listPackProposals
+      .mockResolvedValueOnce([proposal])
+      .mockRejectedValueOnce(new Error('network blip'))
+      .mockResolvedValue([proposal]);
+    wrap();
+    expect(await screen.findByText(/awaiting your review/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText('Updating')).not.toBeInTheDocument());
+    expect(screen.getByText(/awaiting your review/)).toBeInTheDocument();
+  });
+
   it('shows up for a first run whose threads are still being built, instead of staying hidden', async () => {
     getLedger.mockResolvedValue(view({ updating: { run_id: 'r1', since: '2026-10-21T14:02:00Z' } }));
     wrap();

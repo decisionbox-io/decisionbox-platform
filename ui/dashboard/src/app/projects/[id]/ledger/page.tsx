@@ -187,6 +187,9 @@ export default function LedgerPage() {
   // reloads; landing last, they would put the pre-run map and proposals back,
   // or call a graph that just loaded unavailable.
   const graphRequest = useRef(0);
+  // Whether the graph route is known to be absent — a 404, and only a 404.
+  // Any other failure is a failure, and a later reload should try again.
+  const graphRouteMissing = useRef(false);
   const loadGraph = () => {
     const mine = ++graphRequest.current;
     setGraphLoading(true);
@@ -196,7 +199,11 @@ export default function LedgerPage() {
         setGraph(g);
         setGraphUnavailable(false);
       })
-      .catch(() => { if (mine === graphRequest.current) setGraphUnavailable(true); })
+      .catch((e) => {
+        if (mine !== graphRequest.current) return;
+        if ((e as { status?: number } | null)?.status === 404) graphRouteMissing.current = true;
+        setGraphUnavailable(true);
+      })
       .finally(() => { if (mine === graphRequest.current) setGraphLoading(false); });
   };
 
@@ -248,15 +255,10 @@ export default function LedgerPage() {
   // proposals loads, and only the latest may set it: a slow first load landing
   // after the loop had seen the update would put the pre-run ledger back.
   const ledgerRequest = useRef(0);
-  // Read by the loop without restarting it: whether the graph route exists.
-  const graphMissing = useRef(false);
-  useEffect(() => { graphMissing.current = graphUnavailable; }, [graphUnavailable]);
   const [watching, setWatching] = useState(false);
-  useEffect(() => {
-    api.getProjectStatus(id)
-      .then((s) => { if (runInProgress(s?.run?.status)) setWatching(true); })
-      .catch(() => {});
-  }, [id]);
+  // Whether this watch has seen the run in progress. If it has, a status
+  // answer with no run in it says nothing about whether the run is done.
+  const sawRunGoing = useRef(false);
   const waiting = watching && !unsupported;
   useEffect(() => {
     if (!waiting) return;
@@ -268,6 +270,13 @@ export default function LedgerPage() {
       const status = await api.getProjectStatus(id);
       if (cancelled) return;
       if (runInProgress(status?.run?.status)) {
+        sawRunGoing.current = true;
+        check();
+        return;
+      }
+      // The status route can answer without the run (it does not fail when
+      // reading it does). Having seen the run going, that is not "finished".
+      if (sawRunGoing.current && !status?.run) {
         check();
         return;
       }
@@ -293,12 +302,13 @@ export default function LedgerPage() {
       // on top of this.
       const mineGraph = ++graphRequest.current;
       const mineProposals = ++proposalsRequest.current;
-      let noGraph = graphMissing.current;
+      let noGraph = graphRouteMissing.current;
       const [g, props] = await Promise.all([
         noGraph
           ? Promise.resolve(null)
           : api.getLedgerGraph(id).catch((e) => {
             if (!notFound(e)) throw e;
+            graphRouteMissing.current = true;
             noGraph = true;
             return null;
           }),
@@ -313,6 +323,7 @@ export default function LedgerPage() {
       if (mineProposals === proposalsRequest.current) setProposals(props || []);
       if (mineLedger === ledgerRequest.current) setLedger(next);
       // Last, so nothing above is lost to this loop's own cleanup.
+      sawRunGoing.current = false;
       setWatching(false);
     };
 
@@ -325,21 +336,29 @@ export default function LedgerPage() {
     return () => { cancelled = true; clearTimeout(timer); };
   }, [id, waiting]);
 
+  // The first load asks in the same order the loop does — the run, then the
+  // ledger — so the agent's mark-before-completion protects it too: a ledger
+  // read after a completed status sees the mark or the finished update. The
+  // page starts watching when the run is going, when the ledger is being
+  // updated, or when the run could not be read at all, since then it cannot
+  // know the ledger it just read is current.
   useEffect(() => {
     api.getProject(id).then(setProject).catch(() => {});
     const mine = ++ledgerRequest.current;
-    Promise.all([
-      api.getLedger(id),
-      api.getEvolutionSettings(id).catch(() => null),
-    ])
-      .then(([lv, st]) => {
+    api.getProjectStatus(id)
+      .then((status) => ({ status, known: true }), () => ({ status: undefined, known: false }))
+      .then(({ status, known }) => Promise.all([
+        api.getLedger(id),
+        api.getEvolutionSettings(id).catch(() => null),
+      ]).then(([lv, st]) => {
         if (mine === ledgerRequest.current) setLedger(normalizeLedger(lv));
-        // Opened on a ledger already being updated: wait for it to finish.
-        if (lv?.updating) setWatching(true);
+        const going = runInProgress(status?.run?.status);
+        if (going) sawRunGoing.current = true;
+        if (!known || going || lv?.updating) setWatching(true);
         setSettings(st);
         setUnsupported(false);
         loadProposals();
-      })
+      }))
       .catch((e) => {
         if (e instanceof ApiError && e.status === 404) setUnsupported(true);
       })

@@ -1023,34 +1023,82 @@ describe('LedgerPage', () => {
     expect(getProjectStatus.mock.calls.length).toBe(calls);
   });
 
-  it('does not let a slow first ledger load undo an update the page has already seen', async () => {
-    // The first load is still out when the run watch sees the update. Landing
-    // late with the pre-run ledger, it would clear the banner and stop the
-    // wait mid-update.
-    let finished = false;
-    getProjectStatus.mockImplementation(async () => {
-      finished = getProjectStatus.mock.calls.length >= 2;
-      return { project_id: 'p1', run: { id: 'r3', status: finished ? 'completed' : 'running' } };
-    });
+  it('starts watching only from its own first load, so nothing can land on top of it', async () => {
+    // A loop running ahead of a slow first load could publish the update and
+    // then have the first load's pre-run answer land on top of it. So the
+    // page does not start watching until that first load is in.
+    getProjectStatus.mockResolvedValue({ project_id: 'p1', run: { id: 'r3', status: 'running' } });
     let releaseFirst: (v: LedgerView) => void = () => {};
-    // After the one answer that says "updating", later checks never come
-    // back — so nothing but the ordering guard can keep the late first load
-    // from wiping the banner.
     getLedger
       .mockImplementationOnce(() => new Promise<LedgerView>((res) => { releaseFirst = res; }))
-      .mockResolvedValueOnce({ ...ledger, updating: { run_id: 'r3', since: '2026-10-21T14:02:00Z' } })
-      .mockImplementation(() => new Promise<LedgerView>(() => {}));
+      .mockResolvedValue(ledger);
     getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'auto', frontier_policy: 'balanced' });
     listPackProposals.mockResolvedValue([]);
     getLedgerGraph.mockResolvedValue(graph);
     wrap();
-    // The page only renders once the first load is in; until then, wait for
-    // the loop to have seen the update.
-    await waitFor(() => expect(getLedger.mock.calls.length).toBeGreaterThanOrEqual(3));
-    releaseFirst(ledger); // the pre-run answer, late
-    expect(await screen.findByText('Updating from the run that just finished')).toBeInTheDocument();
+    await waitFor(() => expect(getLedger).toHaveBeenCalledTimes(1));
     await new Promise((r) => setTimeout(r, 40));
-    expect(screen.getByText('Updating from the run that just finished')).toBeInTheDocument();
+    // Held: the run was asked once, for the first load, and nothing since.
+    expect(getProjectStatus).toHaveBeenCalledTimes(1);
+    releaseFirst(ledger);
+    // Then, with a run going, it watches.
+    await waitFor(() => expect(getProjectStatus.mock.calls.length).toBeGreaterThan(1));
+  });
+
+  it('watches when the first load could not read the run, rather than assume the ledger is current', async () => {
+    // Without the run's status the page cannot know that the ledger it just
+    // read is not from before a run that has since finished.
+    getProjectStatus
+      .mockRejectedValueOnce(new Error('status blip'))
+      .mockResolvedValue({ project_id: 'p1', run: { id: 'r3', status: 'completed' } });
+    getLedger
+      .mockResolvedValueOnce(ledger)
+      .mockResolvedValue({ ...ledger, updating: { run_id: 'r3', since: '2026-10-21T14:02:00Z' } });
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'auto', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    getLedgerGraph.mockResolvedValue(graph);
+    wrap();
+    expect(await screen.findByText('Updating from the run that just finished')).toBeInTheDocument();
+  });
+
+  it('does not take a status answer with no run in it as the run having finished', async () => {
+    // The status route can answer 200 without the run. Mid-run, finishing on
+    // that would stop the wait before the update had even been marked.
+    let n = 0;
+    getProjectStatus.mockImplementation(async () => {
+      n += 1;
+      if (n === 1) return { project_id: 'p1', run: { id: 'r3', status: 'running' } };
+      if (n <= 3) return { project_id: 'p1' }; // no run in the answer
+      return { project_id: 'p1', run: { id: 'r3', status: 'completed' } };
+    });
+    let marked = false;
+    getLedger.mockImplementation(async () => {
+      if (n >= 4) marked = true;
+      return marked ? { ...ledger, updating: { run_id: 'r3', since: '2026-10-21T14:02:00Z' } } : ledger;
+    });
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'auto', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    getLedgerGraph.mockResolvedValue(graph);
+    wrap();
+    expect(await screen.findByText('Updating from the run that just finished')).toBeInTheDocument();
+  });
+
+  it('reloads a map that failed for a passing reason, rather than treat the route as gone', async () => {
+    // Only a 404 means the graph route is not there. A first request that
+    // failed with a 500 during the update must not make the final reload skip
+    // the map and leave the old one — or none — up.
+    const { ApiError } = jest.requireMock('@/lib/api');
+    const inFlight = { ...ledger, updating: { run_id: 'r3', since: '2026-10-21T14:02:00Z' } };
+    getLedger.mockResolvedValueOnce(inFlight).mockResolvedValue(ledger);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'auto', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    getLedgerGraph.mockRejectedValueOnce(new ApiError('boom', 500)).mockResolvedValue(graph);
+    wrap();
+    await screen.findByText('Updating from the run that just finished');
+    await waitFor(() =>
+      expect(screen.queryByText('Updating from the run that just finished')).not.toBeInTheDocument());
+    expect(getLedgerGraph).toHaveBeenCalledTimes(2);
+    expect(view().getAllByText('High EU churn').length).toBeGreaterThan(0);
   });
 
   it('asks about the run before it asks the ledger, never both at once', async () => {

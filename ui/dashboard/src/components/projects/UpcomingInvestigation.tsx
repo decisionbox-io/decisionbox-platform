@@ -66,9 +66,11 @@ export function UpcomingInvestigation({ projectId, refreshKey }: { projectId: st
 
   const load = useCallback((): Promise<Outcome> => {
     const mine = ++generation.current;
+    // Both or neither: a failed proposals request is a failed load, not an
+    // empty list — read as one, it wiped the pending changes the card showed.
     return Promise.all([
       api.getLedger(projectId),
-      api.listPackProposals(projectId).catch(() => [] as PackProposal[]),
+      api.listPackProposals(projectId),
     ]).then(([lv, props]): Outcome => {
       if (mine !== generation.current) return 'superseded';
       setTasks((lv?.tasks ?? []).filter((t) => (t.status || 'open') === 'open'));
