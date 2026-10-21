@@ -90,14 +90,15 @@ const (
 	// recommendationExpandOutputTokensEnv overrides defaultRecommendationExpandOutputTokens.
 	recommendationExpandOutputTokensEnv = "RECOMMENDATION_EXPAND_OUTPUT_TOKENS"
 
-	// defaultRecommendationCallMinOutputTokens is the floor the plan and
-	// expansion output budgets never drop below, so a near-window input still
-	// gets a usable generation instead of a zero request. Far smaller than the
+	// recommendationCallMinOutputTokens is the floor the plan and expansion
+	// output budgets never drop below, so a near-window input still gets a
+	// usable generation instead of a zero request. Far smaller than the
 	// analysis floor because these calls ask for far less.
-	defaultRecommendationCallMinOutputTokens = 1024
-
-	// recommendationCallMinOutputTokensEnv overrides defaultRecommendationCallMinOutputTokens.
-	recommendationCallMinOutputTokensEnv = "RECOMMENDATION_CALL_MIN_OUTPUT_TOKENS"
+	//
+	// Not env-tunable: it is not a dial, it is the point below which a request
+	// is not worth sending. An operator with a window this tight has the two
+	// per-call ceilings to lower and the model's own window to raise.
+	recommendationCallMinOutputTokens = 1024
 
 	// defaultRecommendationExpandMaxRetries bounds the corrective re-asks for
 	// one expansion. One extra shot: the retry is reason-aware (terser on a
@@ -225,15 +226,6 @@ func recommendationExpandOutputTokens() int {
 		return v
 	}
 	return defaultRecommendationExpandOutputTokens
-}
-
-// recommendationCallMinOutputTokens returns the configured output floor for
-// the plan and expansion calls.
-func recommendationCallMinOutputTokens() int {
-	if v := goconfig.GetEnvAsInt(recommendationCallMinOutputTokensEnv, defaultRecommendationCallMinOutputTokens); v > 0 {
-		return v
-	}
-	return defaultRecommendationCallMinOutputTokens
 }
 
 // recommendationExpandMaxRetries returns the configured per-expansion retry
@@ -701,14 +693,22 @@ func (o *Orchestrator) planRecommendations(
 		// entry to the decoder, or stopped at the output limit, is a failure
 		// like any other.
 		//
-		// Not conditioned on the health verdict. A plan cut off before it
-		// wrote an entry does not parse at all -- for this to read as an empty
-		// plan the model had to close the array -- and the verdict is a
-		// statement about the tokens, not about the answer in hand. Letting it
-		// veto a parsed answer is how a structured-output provider's perfectly
-		// good empty plan ended up being argued with, since the fold discards
-		// the tool scaffolding its token count was spent on.
-		if perr == nil && dropped == 0 {
+		// "Meant it" needs one more condition than it looks like it does.
+		// Every top-level JSON value in a response is read and the first that
+		// produces a plan wins, and this pipeline really does see an empty
+		// placeholder followed by the real answer -- so a response that was
+		// cut off may have had its real plan in the part that never arrived,
+		// behind an empty one that did. The closed array proves the
+		// placeholder was complete, not that the answer was.
+		//
+		// So a truncated response is never read as an empty plan, however
+		// cleanly its prefix parsed. A degenerate-but-complete one still is:
+		// the answer is in hand and the verdict is about the tokens. The
+		// narrow condition matters -- it was once the broad one, and a
+		// structured-output provider's good empty plan got argued with
+		// because the fold discards the tool scaffolding its token count was
+		// spent on, which the arithmetic now exempts.
+		if perr == nil && dropped == 0 && !health.truncated {
 			applog.WithFields(applog.Fields{"health": health.reason}).
 				Info("Recommendation plan is empty: the model found nothing to recommend")
 			return nil, nil
@@ -865,7 +865,11 @@ func (o *Orchestrator) repairExpansionCitation(
 	}
 
 	for attempt := 1; attempt <= retries; attempt++ {
-		step.RecommendationCitationRetries = attempt
+		// Counted, not assigned: the field is the phase's total re-asks, and
+		// every planned entry can need one. Assigning the local attempt number
+		// recorded a dozen re-asks as one. The per-call record keeps the local
+		// number, which is where it means something.
+		step.RecommendationCitationRetries++
 		applog.WithFields(applog.Fields{"entry": idx + 1, "attempt": attempt}).Warn(
 			"Re-asking for one recommendation: it cited no eligible insight id")
 
@@ -983,7 +987,7 @@ func (o *Orchestrator) generateRecommendationsSingleDocument(
 	citationRetries := recommendationCitationMaxRetries()
 	if citationRetries > 0 && !anyRecCitesEligible(recs, insights) {
 		for cAttempt := 1; cAttempt <= citationRetries; cAttempt++ {
-			step.RecommendationCitationRetries = cAttempt
+			step.RecommendationCitationRetries++
 			applog.WithFields(applog.Fields{"attempt": cAttempt}).Warn(
 				"Re-prompting for recommendations: response cited no eligible insight id")
 			citationPrompt := prompt + recommendationCitationRepairSuffix(insights)
@@ -1062,7 +1066,7 @@ func (o *Orchestrator) recommendationCallMaxTokens(ctx context.Context, prompt s
 	if modelOutputCap > 0 && modelOutputCap < limit {
 		limit = modelOutputCap
 	}
-	floor := recommendationCallMinOutputTokens()
+	floor := recommendationCallMinOutputTokens
 	if floor > limit {
 		floor = limit
 	}

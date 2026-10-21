@@ -52,14 +52,16 @@ const (
 	// responseMinNonSpacePctEnv overrides defaultResponseMinNonSpacePct.
 	responseMinNonSpacePctEnv = "LLM_RESPONSE_MIN_NONSPACE_PCT"
 
-	// defaultResponseDegenerateMinRunes is the length below which the
-	// whitespace share is not judged at all. A short reply can be mostly
-	// whitespace for innocent reasons (a blank line around a one-line
-	// envelope), and there is nothing to salvage either way.
-	defaultResponseDegenerateMinRunes = 512
-
-	// responseDegenerateMinRunesEnv overrides defaultResponseDegenerateMinRunes.
-	responseDegenerateMinRunesEnv = "LLM_RESPONSE_DEGENERATE_MIN_RUNES"
+	// responseDegenerateMinRunes is the length below which the whitespace
+	// share is not judged at all. A short reply can be mostly whitespace for
+	// innocent reasons (a blank line around a one-line envelope), and there is
+	// nothing to salvage either way.
+	//
+	// Not env-tunable, for the reason responseMinRunesPerTenTokens is not: it
+	// guards a measurement from being taken on too little text, which is not a
+	// threshold anyone has a reason to move. The floor that is worth moving is
+	// the share itself.
+	responseDegenerateMinRunes = 512
 
 	// responseMinRunesPerTenTokens is the floor on how much text a response
 	// must carry for the output tokens it spent, as runes per ten tokens.
@@ -180,7 +182,7 @@ func classifyResponse(f responseFacts) responseHealth {
 func degenerateReason(f responseFacts) (reason string, missingOutput, degenerate bool) {
 	runes, nonSpace := countRunes(f.content)
 
-	if runes >= responseDegenerateMinRunes() {
+	if runes >= responseDegenerateMinRunes {
 		if pct := nonSpace * 100 / runes; pct < responseMinNonSpacePct() {
 			return fmt.Sprintf("%d%% of the response was anything other than whitespace", pct), false, true
 		}
@@ -240,14 +242,4 @@ func responseMinNonSpacePct() int {
 		return defaultResponseMinNonSpacePct
 	}
 	return v
-}
-
-// responseDegenerateMinRunes returns the configured minimum length for the
-// whitespace check, falling back to the default for an unset or non-positive
-// value.
-func responseDegenerateMinRunes() int {
-	if v := goconfig.GetEnvAsInt(responseDegenerateMinRunesEnv, defaultResponseDegenerateMinRunes); v > 0 {
-		return v
-	}
-	return defaultResponseDegenerateMinRunes
 }

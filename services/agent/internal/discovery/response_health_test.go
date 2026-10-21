@@ -213,19 +213,6 @@ func TestResponseMinNonSpacePct_RejectsUnusableOverrides(t *testing.T) {
 	}
 }
 
-func TestResponseDegenerateMinRunes_FallsBackOnUnusableOverrides(t *testing.T) {
-	for _, v := range []string{"0", "-1", "nonsense"} {
-		t.Setenv(responseDegenerateMinRunesEnv, v)
-		if got := responseDegenerateMinRunes(); got != defaultResponseDegenerateMinRunes {
-			t.Errorf("%s=%s: got %d, want the default %d", responseDegenerateMinRunesEnv, v, got, defaultResponseDegenerateMinRunes)
-		}
-	}
-	t.Setenv(responseDegenerateMinRunesEnv, "64")
-	if got := responseDegenerateMinRunes(); got != 64 {
-		t.Errorf("a valid override was ignored: got %d, want 64", got)
-	}
-}
-
 func TestClassifyResponse_AThinkingModelOutOfBudgetNeedsMoreRoom(t *testing.T) {
 	// The repair direction, which is not always the one the failure looks
 	// like. A thinking model that ran out of budget cannot be fixed by asking

@@ -725,17 +725,57 @@ func TestGenerateRecommendations_CitationReAskCannotSubstituteAnotherEntry(t *te
 	}
 }
 
-func TestGenerateRecommendations_EmptyPlanIsAnAnswerEvenWhenTheResponseLooksUnusable(t *testing.T) {
-	// A plan cut off before it wrote an entry does not parse at all — for this
-	// to read as an empty plan the model had to close the array. The health
-	// verdict is a statement about the tokens, and on a structured-output
-	// provider the fold discards the tool scaffolding those tokens went on, so
-	// letting it veto a parsed answer argues with a perfectly good one.
+func TestGenerateRecommendations_EmptyPlanFromATruncatedResponseIsRecovered(t *testing.T) {
+	// The condition "the model meant it" needs more than a clean parse. Every
+	// top-level JSON value is read and the first that produces a plan wins,
+	// and this pipeline really does see an empty placeholder followed by the
+	// real answer — so a response that was cut off may have had its real plan
+	// in the part that never arrived, behind an empty one that did. Accepting
+	// that as "nothing to recommend" is the silent zero this whole change
+	// exists to remove.
+	for _, content := range []string{
+		`{"plan":[]}`,
+		`{"plan":[]} {"plan":[{"title":"Recover high-value carts"`,
+	} {
+		provider := testutil.NewMockLLMProvider()
+		provider.ResponseQueue = []*gollm.ChatResponse{
+			{Content: content, StopReason: "length", Usage: gollm.Usage{InputTokens: 10, OutputTokens: defaultRecommendationPlanOutputTokens}},
+			{Content: content, StopReason: "length", Usage: gollm.Usage{InputTokens: 10, OutputTokens: defaultRecommendationPlanOutputTokens}},
+		}
+		provider.DefaultResponse = &gollm.ChatResponse{
+			Content:    validRecEnvelope,
+			StopReason: "end_turn",
+			Usage:      gollm.Usage{InputTokens: 10, OutputTokens: 20},
+		}
+		client, _ := ai.New(provider, "mock-model")
+		o := &Orchestrator{aiClient: client}
+
+		recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", planExpandInsights, "", "ds")
+
+		if step.RecommendationPlanRetries != 1 {
+			t.Errorf("%s: RecommendationPlanRetries = %d, want 1", content, step.RecommendationPlanRetries)
+		}
+		if !step.RecommendationsSingleCallFallback {
+			t.Errorf("%s: a truncated response must not be read as an empty plan", content)
+		}
+		if len(recs) == 0 {
+			t.Errorf("%s: the fallback should have produced recommendations", content)
+		}
+	}
+}
+
+func TestGenerateRecommendations_EmptyPlanIsAnAnswerWhenTheResponseIsComplete(t *testing.T) {
+	// The other side of the same condition, and the one that must not regress:
+	// a complete empty plan is the model saying the insights support nothing
+	// actionable. The token count here would trip the missing-output
+	// arithmetic if a complete JSON document were not exempt from it — which
+	// is how a structured-output provider's good empty answer got argued with,
+	// since the folded tool call discards the scaffolding its tokens went on.
 	provider := testutil.NewMockLLMProvider()
 	provider.DefaultResponse = &gollm.ChatResponse{
 		Content:    `{"plan":[]}`,
-		StopReason: "length",
-		Usage:      gollm.Usage{InputTokens: 10, OutputTokens: defaultRecommendationPlanOutputTokens},
+		StopReason: "end_turn",
+		Usage:      gollm.Usage{InputTokens: 10, OutputTokens: 900},
 	}
 	client, _ := ai.New(provider, "mock-model")
 	o := &Orchestrator{aiClient: client}
@@ -748,8 +788,11 @@ func TestGenerateRecommendations_EmptyPlanIsAnAnswerEvenWhenTheResponseLooksUnus
 	if len(provider.Calls) != 1 {
 		t.Errorf("provider called %d times, want 1 (no re-ask, no fallback)", len(provider.Calls))
 	}
+	if step.RecommendationsSingleCallFallback {
+		t.Error("an answer the model meant must not trigger the fallback")
+	}
 	if step.Status != "" || step.Error != "" {
-		t.Errorf("a parsed empty plan is not an error: status=%q err=%q", step.Status, step.Error)
+		t.Errorf("a complete empty plan is not an error: status=%q err=%q", step.Status, step.Error)
 	}
 }
 
@@ -877,5 +920,48 @@ func TestClassifyResponse_JudgesAgainstTheReducedBudget(t *testing.T) {
 	}
 	if h := classifyResponse(facts("", reducedBudget, originalCeiling, strings.Repeat("a", 4000))); h.truncated {
 		t.Error("judged against the original ceiling the same reply looks healthy — which is the bug")
+	}
+}
+
+func TestGenerateRecommendations_CitationReAsksAreCountedAcrossEntries(t *testing.T) {
+	// The field is the phase's total re-asks, and every planned entry can need
+	// one. Assigning the local attempt number instead of counting recorded a
+	// dozen re-asks as one, which is the number an operator would use to
+	// decide whether the plan is citing badly.
+	const planWithoutIDs = `{"plan":[
+		{"title":"Recover high-value carts","priority":1},
+		{"title":"Reactivate lapsed buyers","priority":2}
+	]}`
+	provider := testutil.NewMockLLMProvider()
+	provider.ResponseQueue = []*gollm.ChatResponse{
+		{Content: planWithoutIDs, StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+		// Entry 1: written uncited, then re-asked and still uncited.
+		{Content: expandedRec("Recover high-value carts"), StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+		{Content: expandedRec("Recover high-value carts"), StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+		// Entry 2: the same.
+		{Content: expandedRec("Reactivate lapsed buyers"), StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+		{Content: expandedRec("Reactivate lapsed buyers"), StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+	}
+	client, _ := ai.New(provider, "mock-model")
+	o := &Orchestrator{aiClient: client}
+
+	recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", planExpandInsights, "", "ds")
+
+	if len(recs) != 2 {
+		t.Fatalf("recs = %d, want 2 — an uncited recommendation is still kept", len(recs))
+	}
+	if step.RecommendationCitationRetries != 2 {
+		t.Errorf("RecommendationCitationRetries = %d, want 2 (one re-ask per entry)", step.RecommendationCitationRetries)
+	}
+	// The per-call record keeps the local attempt number, which is where it
+	// means something.
+	reasks := 0
+	for _, c := range step.Calls {
+		if c.Kind == models.RecommendationCallExpand && c.Attempt == 1 {
+			reasks++
+		}
+	}
+	if reasks != 2 {
+		t.Errorf("per-call re-asks = %d, want 2", reasks)
 	}
 }
