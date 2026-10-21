@@ -125,9 +125,10 @@ func (o *Orchestrator) EstimateCost(ctx context.Context, opts EstimateOptions) (
 	validationInputTokens := estimatedInsights * validationInputPerInsight
 	validationOutputTokens := estimatedInsights * validationOutputPerInsight
 
-	// Recommendations phase
-	recsInputTokens := baseContextSize + len(prompts.Recommendations)/4 + estimatedInsights*200
-	recsOutputTokens := 3000
+	// Recommendations phase: one plan call, then one call per planned
+	// recommendation, every one of them sending the same insight context.
+	recsInputTokens, recsOutputTokens := recommendationPhaseTokens(
+		baseContextSize + len(prompts.Recommendations)/4 + estimatedInsights*200)
 
 	totalInputTokens := explorationInputTokens + analysisInputTokens + validationInputTokens + recsInputTokens
 	totalOutputTokens := explorationOutputTokens + analysisOutputTokens + validationOutputTokens + recsOutputTokens

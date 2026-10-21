@@ -542,3 +542,61 @@ func TestListExplorationSteps_RepoError(t *testing.T) {
 type errBoom string
 
 func (e errBoom) Error() string { return string(e) }
+
+func TestGetRecommendationLog_PlanExpandTelemetryFlowsThroughResponse(t *testing.T) {
+	// The recommendation phase plans the set and then writes one entry per
+	// call, so what a short set means lives in these counters — and a run
+	// where some expansions failed and others did not leaves Error empty.
+	// Absent from RecommendationLogEntry, BSON drops them on the way in and
+	// the endpoint cannot report them however non-zero they were.
+	repo := &mockDiscoveryLogRepo{rec: &database.RecommendationLogEntry{
+		InsightCount:                      5,
+		RecommendationsPlanned:            4,
+		RecommendationsExpanded:           3,
+		RecommendationsExpandFailed:       1,
+		RecommendationPlanRetries:         1,
+		RecommendationsSingleCallFallback: true,
+		Calls: []database.RecommendationCallInfo{
+			{Kind: "plan", TokensIn: 100, TokensOut: 40, StopReason: "end_turn"},
+			{Kind: "expand", Index: 1, Attempt: 1, StopReason: "length", Truncated: true, TokensOut: 4096, ResponseChars: 9000},
+		},
+	}}
+	h := newDiscoveriesHandlerWithLogs(t, repo, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/discoveries/d/recommendation-log", nil)
+	req.SetPathValue("id", "d")
+	w := httptest.NewRecorder()
+	h.GetRecommendationLog(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var wrapper struct {
+		Data database.RecommendationLogEntry `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &wrapper); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	got := wrapper.Data
+	if got.RecommendationsPlanned != 4 || got.RecommendationsExpanded != 3 || got.RecommendationsExpandFailed != 1 {
+		t.Errorf("planned/expanded/failed = %d/%d/%d, want 4/3/1 (body: %s)",
+			got.RecommendationsPlanned, got.RecommendationsExpanded, got.RecommendationsExpandFailed, w.Body.String())
+	}
+	if got.RecommendationPlanRetries != 1 {
+		t.Errorf("RecommendationPlanRetries = %d, want 1", got.RecommendationPlanRetries)
+	}
+	if !got.RecommendationsSingleCallFallback {
+		t.Error("RecommendationsSingleCallFallback did not survive the response")
+	}
+	if len(got.Calls) != 2 {
+		t.Fatalf("Calls = %d, want 2 (body: %s)", len(got.Calls), w.Body.String())
+	}
+	if got.Calls[0].Kind != "plan" {
+		t.Errorf("Calls[0].Kind = %q, want plan", got.Calls[0].Kind)
+	}
+	// The truncation signal is the whole reason the per-call record exists.
+	if !got.Calls[1].Truncated || got.Calls[1].StopReason != "length" {
+		t.Errorf("Calls[1] lost the truncation signal: %+v", got.Calls[1])
+	}
+	if got.Calls[1].Index != 1 || got.Calls[1].Attempt != 1 || got.Calls[1].ResponseChars != 9000 {
+		t.Errorf("Calls[1] = %+v, want the entry/attempt/size it was given", got.Calls[1])
+	}
+}

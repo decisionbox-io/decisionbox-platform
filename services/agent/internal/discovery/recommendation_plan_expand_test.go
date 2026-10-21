@@ -327,3 +327,210 @@ func TestGenerateRecommendations_CancelledContextStopsExpanding(t *testing.T) {
 		t.Errorf("provider called %d times, want at most the plan call", len(provider.Calls))
 	}
 }
+
+func TestGenerateRecommendations_ExpansionReturningTheWholeSetKeepsItsOwnEntry(t *testing.T) {
+	// The costly way to get this wrong: asked for the second entry and handed
+	// the whole set, taking the first object would save the first entry twice,
+	// lose the second, and stamp the second's planned citations onto the
+	// duplicate.
+	wholeSet := `{"recommendations":[
+		{"title":"Recover high-value carts","priority":1,"expected_impact":{"metric":"m"}},
+		{"title":"Reactivate lapsed buyers","priority":2,"expected_impact":{"metric":"m"}}
+	]}`
+	o, _ := newRoutedOrchestrator(map[string]string{
+		planCallMarker:  validPlanEnvelope,
+		"Write entry 1": expandedRec("Recover high-value carts"),
+		"Write entry 2": wholeSet,
+	})
+
+	recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", planExpandInsights, "", "ds")
+
+	if len(recs) != 2 {
+		t.Fatalf("recs = %d, want 2", len(recs))
+	}
+	if recs[1].Title != "Reactivate lapsed buyers" {
+		t.Errorf("entry 2 kept %q, want its own planned entry", recs[1].Title)
+	}
+	if recs[0].Title == recs[1].Title {
+		t.Errorf("both entries carry %q — the first was saved twice", recs[0].Title)
+	}
+	// The second entry cites one insight, the first cites two. A first-object
+	// pick would have given the duplicate the second's single citation.
+	if len(recs[1].RelatedInsightIDs) != 1 || recs[1].RelatedInsightIDs[0] != "i-2" {
+		t.Errorf("entry 2 citations = %v, want its own planned [i-2]", recs[1].RelatedInsightIDs)
+	}
+	if step.RecommendationsDroppedParse != 1 {
+		t.Errorf("RecommendationsDroppedParse = %d, want 1 (the extra object)", step.RecommendationsDroppedParse)
+	}
+}
+
+func TestGenerateRecommendations_AmbiguousExpansionIsReAsked(t *testing.T) {
+	// Several objects and no way to tell which is the planned one: refused and
+	// re-asked rather than guessed at.
+	ambiguous := `{"recommendations":[
+		{"title":"Something else entirely","priority":1,"expected_impact":{"metric":"m"}},
+		{"title":"Another thing","priority":2,"expected_impact":{"metric":"m"}}
+	]}`
+	provider := testutil.NewMockLLMProvider()
+	provider.ResponseQueue = []*gollm.ChatResponse{
+		{Content: validPlanEnvelope, StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+		{Content: ambiguous, StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+		{Content: expandedRec("Recover high-value carts"), StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+		{Content: expandedRec("Reactivate lapsed buyers"), StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+	}
+	client, _ := ai.New(provider, "mock-model")
+	o := &Orchestrator{aiClient: client}
+
+	recs, _ := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", planExpandInsights, "", "ds")
+
+	if len(recs) != 2 {
+		t.Fatalf("recs = %d, want 2 (the ambiguous answer re-asked and recovered)", len(recs))
+	}
+	if recs[0].Title != "Recover high-value carts" {
+		t.Errorf("entry 1 kept %q, want the retry's answer", recs[0].Title)
+	}
+}
+
+func TestGenerateRecommendations_EmptyPlanIsAnAnswerNotAFailure(t *testing.T) {
+	// The model is entitled to decide the insights support nothing actionable,
+	// and the single document has always been allowed to say so. Re-asking
+	// would spend one long generation arguing with it and another on the
+	// fallback.
+	o, provider := newRoutedOrchestrator(map[string]string{
+		planCallMarker: `{"plan":[]}`,
+	})
+
+	recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", planExpandInsights, "", "ds")
+
+	if len(recs) != 0 {
+		t.Fatalf("recs = %d, want 0", len(recs))
+	}
+	if len(provider.Calls) != 1 {
+		t.Errorf("provider called %d times, want 1 (no re-ask, no fallback)", len(provider.Calls))
+	}
+	if step.RecommendationPlanRetries != 0 {
+		t.Errorf("RecommendationPlanRetries = %d, want 0", step.RecommendationPlanRetries)
+	}
+	if step.RecommendationsSingleCallFallback {
+		t.Error("an answer the model meant must not trigger the fallback")
+	}
+	if step.Status != "" || step.Error != "" {
+		t.Errorf("an empty plan is not an error: status=%q err=%q", step.Status, step.Error)
+	}
+}
+
+func TestGenerateRecommendations_PlanThatLostEveryEntryIsStillAFailure(t *testing.T) {
+	// An empty plan is only an answer when the model meant it. One that
+	// arrived with entries and lost every one to the decoder is a failure like
+	// any other, and is re-asked and then fallen back from.
+	o, provider := newRoutedOrchestrator(map[string]string{
+		planCallMarker: `{"plan":[{"category":"conversion"},{"title":"  "}]}`,
+	})
+	provider.DefaultResponse = &gollm.ChatResponse{
+		Content:    validRecEnvelope,
+		StopReason: "end_turn",
+		Usage:      gollm.Usage{InputTokens: 10, OutputTokens: 20},
+	}
+
+	recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", planExpandInsights, "", "ds")
+
+	if step.RecommendationPlanRetries != 1 {
+		t.Errorf("RecommendationPlanRetries = %d, want 1", step.RecommendationPlanRetries)
+	}
+	if !step.RecommendationsSingleCallFallback {
+		t.Error("a plan that lost every entry must fall back")
+	}
+	if len(recs) == 0 {
+		t.Error("the fallback document should have produced recommendations")
+	}
+}
+
+func TestSelectPlannedRecommendation(t *testing.T) {
+	plan := []recommendationPlanItem{
+		{Title: "First thing"},
+		{Title: "Second thing"},
+	}
+	rec := func(title string) models.Recommendation { return models.Recommendation{Title: title} }
+
+	cases := []struct {
+		name      string
+		parsed    []models.Recommendation
+		idx       int
+		wantTitle string
+		wantExtra int
+		wantErr   bool
+	}{
+		{
+			name:      "one object is that object",
+			parsed:    []models.Recommendation{rec("Reworded entirely")},
+			idx:       1,
+			wantTitle: "Reworded entirely",
+		},
+		{
+			name:      "the whole set, asked for the second",
+			parsed:    []models.Recommendation{rec("First thing"), rec("Second thing")},
+			idx:       1,
+			wantTitle: "Second thing",
+			wantExtra: 1,
+		},
+		{
+			name:      "the whole set, asked for the first",
+			parsed:    []models.Recommendation{rec("First thing"), rec("Second thing")},
+			idx:       0,
+			wantTitle: "First thing",
+			wantExtra: 1,
+		},
+		{
+			name:      "matched past case and spacing",
+			parsed:    []models.Recommendation{rec("first   THING"), rec("Second thing")},
+			idx:       0,
+			wantTitle: "first   THING",
+			wantExtra: 1,
+		},
+		{
+			name:      "reworded target found by elimination",
+			parsed:    []models.Recommendation{rec("First thing"), rec("Lapsed buyers, reactivated")},
+			idx:       1,
+			wantTitle: "Lapsed buyers, reactivated",
+			wantExtra: 1,
+		},
+		{
+			name:    "two copies of the planned title",
+			parsed:  []models.Recommendation{rec("Second thing"), rec("second thing")},
+			idx:     1,
+			wantErr: true,
+		},
+		{
+			name:    "nothing identifiable",
+			parsed:  []models.Recommendation{rec("One"), rec("Two")},
+			idx:     1,
+			wantErr: true,
+		},
+		{
+			name:    "no objects",
+			parsed:  nil,
+			idx:     0,
+			wantErr: true,
+		},
+	}
+
+	for _, c := range cases {
+		got, extra, err := selectPlannedRecommendation(c.parsed, plan, c.idx)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("%s: want an error, got %+v", c.name, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: unexpected error %v", c.name, err)
+			continue
+		}
+		if got.Title != c.wantTitle {
+			t.Errorf("%s: picked %q, want %q", c.name, got.Title, c.wantTitle)
+		}
+		if extra != c.wantExtra {
+			t.Errorf("%s: extra = %d, want %d", c.name, extra, c.wantExtra)
+		}
+	}
+}

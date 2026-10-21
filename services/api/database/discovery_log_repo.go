@@ -126,6 +126,20 @@ type RecommendationLogEntry struct {
 	RecommendationParseRetries  int    `bson:"recommendation_parse_retries,omitempty" json:"recommendation_parse_retries,omitempty"`
 	Status                      string `bson:"status,omitempty" json:"status,omitempty"`
 
+	// Plan/expand telemetry mirrored from the agent's RecommendationStep, for
+	// the reason the counters above are: absent from this struct, BSON drops
+	// it and the endpoint cannot report it however non-zero it was in the
+	// database. These are the fields that say what a short set was -- a short
+	// plan, or a plan that lost entries on the way out -- and that is
+	// invisible in Error, which stays empty on a run where some expansions
+	// failed and others did not.
+	RecommendationsPlanned            int                      `bson:"recommendations_planned,omitempty" json:"recommendations_planned,omitempty"`
+	RecommendationsExpanded           int                      `bson:"recommendations_expanded,omitempty" json:"recommendations_expanded,omitempty"`
+	RecommendationsExpandFailed       int                      `bson:"recommendations_expand_failed,omitempty" json:"recommendations_expand_failed,omitempty"`
+	RecommendationPlanRetries         int                      `bson:"recommendation_plan_retries,omitempty" json:"recommendation_plan_retries,omitempty"`
+	RecommendationsSingleCallFallback bool                     `bson:"recommendations_single_call_fallback,omitempty" json:"recommendations_single_call_fallback,omitempty"`
+	Calls                             []RecommendationCallInfo `bson:"calls,omitempty" json:"calls,omitempty"`
+
 	// Figure telemetry from the recommendation phase, mirrored for the reason every
 	// other field here is: absent from this struct, BSON drops it and the endpoint
 	// cannot report it however non-zero it was in the database. FiguresInlined is
@@ -138,6 +152,30 @@ type RecommendationLogEntry struct {
 	FiguresInlined    int `bson:"figures_inlined,omitempty" json:"figures_inlined,omitempty"`
 
 	Error string `bson:"error,omitempty" json:"error,omitempty"`
+}
+
+// RecommendationCallInfo is one LLM call the recommendation phase made, as the
+// endpoint reports it. The phase makes a plan call and one call per planned
+// recommendation, so Prompt/Response (which this view omits anyway) describe
+// one exchange out of up to a dozen and the totals above are sums -- this is
+// where a failure can be read back to the call that produced it.
+//
+// StopReason is the provider's own word; Truncated and Degenerate are what the
+// agent concluded from it together with the token count and the text.
+// ResponseChars sits next to TokensOut because the ratio between them tells a
+// long answer from a repeating run.
+type RecommendationCallInfo struct {
+	Kind          string `bson:"kind" json:"kind"`
+	Index         int    `bson:"index,omitempty" json:"index,omitempty"`
+	Attempt       int    `bson:"attempt,omitempty" json:"attempt,omitempty"`
+	StopReason    string `bson:"stop_reason,omitempty" json:"stop_reason,omitempty"`
+	Truncated     bool   `bson:"truncated,omitempty" json:"truncated,omitempty"`
+	Degenerate    bool   `bson:"degenerate,omitempty" json:"degenerate,omitempty"`
+	TokensIn      int    `bson:"tokens_in,omitempty" json:"tokens_in,omitempty"`
+	TokensOut     int    `bson:"tokens_out,omitempty" json:"tokens_out,omitempty"`
+	DurationMs    int64  `bson:"duration_ms,omitempty" json:"duration_ms,omitempty"`
+	ResponseChars int    `bson:"response_chars,omitempty" json:"response_chars,omitempty"`
+	Error         string `bson:"error,omitempty" json:"error,omitempty"`
 }
 
 // GetRecommendationLog returns the recommendation-phase row for a

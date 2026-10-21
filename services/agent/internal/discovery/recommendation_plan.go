@@ -123,6 +123,13 @@ const (
 	// terse retry asks for, when a full-length expansion did not fit.
 	recommendationTerseMaxActions = 3
 
+	// estimatedRecommendationsPerRun is how many recommendations the cost
+	// estimate (EstimateCost) assumes a run will produce, and so how many
+	// expansion calls it budgets for. The packs ask for a handful; this is not
+	// a limit on anything, only the estimator's assumption, and it is bounded
+	// by recommendationPlanMaxItems at the point of use.
+	estimatedRecommendationsPerRun = 6
+
 	// recommendationPlanTitleMaxRunes is the title length the plan call is
 	// asked to stay under. Long enough for the action-and-context titles the
 	// packs ask for, short enough that a plan of twenty stays small.
@@ -589,6 +596,19 @@ func (o *Orchestrator) planRecommendations(
 			}
 			return items, nil
 		}
+		// An empty plan the model actually meant is an answer: it decided the
+		// insights support nothing actionable. The single document has always
+		// been allowed to say that as {"recommendations":[]} and is not
+		// re-asked for it, so the plan is not either -- re-asking would spend
+		// another generation telling the model its valid answer was unusable,
+		// and then spend a third on the fallback. "Meant it" is a complete
+		// response that dropped no entries: an empty plan that lost every
+		// entry to the decoder, or stopped at the output limit, is a failure
+		// like any other.
+		if perr == nil && dropped == 0 && !health.unusable() {
+			applog.Info("Recommendation plan is empty: the model found nothing to recommend")
+			return nil, nil
+		}
 		fail = recommendationFailureFor(health, perr, fmt.Errorf("the plan held no usable entries"))
 	}
 	return nil, fail
@@ -686,21 +706,25 @@ func (o *Orchestrator) expandOneRecommendation(
 		parsed, dropped, perr := parseRecommendations(res.Content)
 		step.RecommendationsDroppedParse += dropped
 		if perr == nil && len(parsed) > 0 {
-			// One entry per call. A response that writes more is answering for
-			// entries whose own calls will answer for them, so the extras are
-			// dropped rather than duplicated into the set.
-			if extra := len(parsed) - 1; extra > 0 {
-				step.RecommendationsDroppedParse += extra
-				applog.WithFields(applog.Fields{
-					"entry": idx + 1,
-					"extra": extra,
-				}).Warn("Expansion wrote more than the one planned recommendation; keeping the planned one")
+			rec, extra, serr := selectPlannedRecommendation(parsed, plan, idx)
+			if serr == nil {
+				// One entry per call. A response that writes more is answering
+				// for entries whose own calls will answer for them, so the
+				// extras are dropped rather than duplicated into the set.
+				if extra > 0 {
+					step.RecommendationsDroppedParse += extra
+					applog.WithFields(applog.Fields{
+						"entry": idx + 1,
+						"extra": extra,
+					}).Warn("Expansion wrote more than the one planned recommendation; keeping the planned one")
+				}
+				applyPlanToRecommendation(rec, plan[idx])
+				return rec, nil
 			}
-			rec := parsed[0]
-			applyPlanToRecommendation(&rec, plan[idx])
-			return &rec, nil
+			fail = newRecommendationParseFailure(serr)
+		} else {
+			fail = recommendationFailureFor(health, perr, fmt.Errorf("the response held no usable recommendation"))
 		}
-		fail = recommendationFailureFor(health, perr, fmt.Errorf("the response held no usable recommendation"))
 	}
 	return nil, fail
 }
@@ -862,6 +886,70 @@ func recordRecommendationCall(
 	step.Calls = append(step.Calls, call)
 }
 
+// selectPlannedRecommendation picks, out of one expansion response, the
+// recommendation that response was asked for.
+//
+// A response holding one object is that object. The expansion is told it may
+// refine the planned title's wording, so a title that does not match verbatim
+// is expected there rather than suspicious.
+//
+// A response holding several is answering for entries whose own calls will
+// answer for them, and taking the first would be wrong exactly where it costs
+// most: asked for the second entry and handed [first, second], it would save
+// the first twice, lose the second, and stamp the second's planned citations
+// onto the duplicate. So the target is matched by title -- first on the
+// planned title itself, then as the one object that is not some other planned
+// entry's -- and an answer where that cannot be decided is refused and
+// re-asked rather than guessed at.
+func selectPlannedRecommendation(parsed []models.Recommendation, plan []recommendationPlanItem, idx int) (*models.Recommendation, int, error) {
+	if len(parsed) == 0 {
+		return nil, 0, errors.New("the response held no recommendation")
+	}
+	if len(parsed) == 1 {
+		chosen := parsed[0]
+		return &chosen, 0, nil
+	}
+
+	target := normalizeTitleForMatch(plan[idx].Title)
+	matches := make([]int, 0, 1)
+	for i := range parsed {
+		if normalizeTitleForMatch(parsed[i].Title) == target {
+			matches = append(matches, i)
+		}
+	}
+	if len(matches) > 1 {
+		return nil, 0, fmt.Errorf("the response wrote %d recommendations and %d of them carry the planned title, so which one was asked for cannot be decided", len(parsed), len(matches))
+	}
+	if len(matches) == 0 {
+		// The title was reworded. Fall back to elimination: the one object
+		// that is not another planned entry restated.
+		others := make(map[string]struct{}, len(plan))
+		for j := range plan {
+			if j != idx {
+				others[normalizeTitleForMatch(plan[j].Title)] = struct{}{}
+			}
+		}
+		for i := range parsed {
+			if _, isOther := others[normalizeTitleForMatch(parsed[i].Title)]; !isOther {
+				matches = append(matches, i)
+			}
+		}
+		if len(matches) != 1 {
+			return nil, 0, fmt.Errorf("the response wrote %d recommendations and none of them is unambiguously the planned entry", len(parsed))
+		}
+	}
+
+	chosen := parsed[matches[0]]
+	return &chosen, len(parsed) - 1, nil
+}
+
+// normalizeTitleForMatch reduces a title to what two spellings of the same
+// title share: case and run-of-whitespace differences are not a different
+// recommendation.
+func normalizeTitleForMatch(title string) string {
+	return strings.ToLower(strings.Join(strings.Fields(title), " "))
+}
+
 // applyPlanToRecommendation settles the fields the plan already decided.
 //
 // related_insight_ids is the one that matters: it is the citation the platform
@@ -903,4 +991,40 @@ func citesAnyOf(got, want []string) bool {
 		}
 	}
 	return false
+}
+
+// recommendationPhaseTokens estimates the recommendation phase's token usage
+// for the pre-run cost estimate: one plan call, then one expansion call per
+// planned recommendation (see the note at the top of this file).
+//
+// contextTokens is what every call in the phase sends — the base context, the
+// recommendation prompt, and the eligible insights. It is the dominant term
+// and each call pays it in full, so an estimate that counts it once understates
+// the phase by the whole fan-out, and understates it further the richer the
+// prompt. The expansion count is the shape the packs ask for, held under the
+// configured fan-out bound so a lowered bound lowers the estimate with it and a
+// raised one cannot inflate the estimate past what the packs would produce.
+//
+// Upper-bound arithmetic, like the rest of the estimator: a planning aid, not a
+// billing record.
+func recommendationPhaseTokens(contextTokens int) (inputTokens, outputTokens int) {
+	expansions := estimatedRecommendationsPerRun
+	if bound := recommendationPlanMaxItems(); bound < expansions {
+		expansions = bound
+	}
+	if expansions < 0 {
+		expansions = 0
+	}
+
+	// The plan carries four small fields per entry; one written recommendation
+	// carries a description, implementation steps, an impact object and
+	// figures.
+	const (
+		planOutputPerEntryTokens     = 50
+		outputPerRecommendationToken = 600
+	)
+
+	inputTokens = contextTokens * (1 + expansions)
+	outputTokens = planOutputPerEntryTokens*expansions + outputPerRecommendationToken*expansions
+	return inputTokens, outputTokens
 }

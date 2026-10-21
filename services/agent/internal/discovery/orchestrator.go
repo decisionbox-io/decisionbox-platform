@@ -2185,10 +2185,15 @@ func (o *Orchestrator) generateRecommendations(
 
 	// Fallback: ask for the whole set in one document, the way this phase used
 	// to. A model that cannot follow the two-pass contract is left where it
-	// started rather than worse off. Skipped once the run's context is done —
-	// there is nothing to gain from another long generation against a dead
-	// context, and the error would be the same one that got us here.
-	if len(recs) == 0 && ctx.Err() == nil {
+	// started rather than worse off.
+	//
+	// Only on a failure. An empty plan the model meant, and an empty set it
+	// meant, both arrive here with no failure attached, and asking the same
+	// model the same question in a different shape would be spending a long
+	// generation to argue with an answer it was entitled to give. Skipped once
+	// the run's context is done, too — the error would be the same one that
+	// got us here.
+	if len(recs) == 0 && fail != nil && ctx.Err() == nil {
 		step.RecommendationsSingleCallFallback = true
 		applog.WithFields(applog.Fields{"reason": fail.reason()}).
 			Warn("Two-pass recommendation generation produced nothing; falling back to a single-document call")

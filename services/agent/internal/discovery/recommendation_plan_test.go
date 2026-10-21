@@ -262,3 +262,52 @@ func TestCitesAnyOf(t *testing.T) {
 		}
 	}
 }
+
+func TestRecommendationPhaseTokens_CountsTheFanOut(t *testing.T) {
+	// The regression this pins: the phase sends the insight context once per
+	// call, and an estimate that counts it once is wrong by the fan-out —
+	// increasingly so for a richer prompt.
+	const contextTokens = 10_000
+
+	in, out := recommendationPhaseTokens(contextTokens)
+	if in <= contextTokens {
+		t.Fatalf("input estimate = %d, want more than the %d a single call would send", in, contextTokens)
+	}
+	if want := contextTokens * (1 + estimatedRecommendationsPerRun); in != want {
+		t.Errorf("input estimate = %d, want %d (the plan call plus one per recommendation)", in, want)
+	}
+	if out <= 0 {
+		t.Errorf("output estimate = %d, want a positive budget", out)
+	}
+}
+
+func TestRecommendationPhaseTokens_FollowsTheFanOutBoundDown(t *testing.T) {
+	// A lowered bound is a lowered estimate: the operator capped the number of
+	// calls, so the preview should say so.
+	const contextTokens = 10_000
+	t.Setenv(recommendationPlanMaxItemsEnv, "2")
+
+	in, out := recommendationPhaseTokens(contextTokens)
+	if want := contextTokens * 3; in != want {
+		t.Errorf("input estimate = %d, want %d (plan + 2 expansions)", in, want)
+	}
+
+	t.Setenv(recommendationPlanMaxItemsEnv, "1")
+	smaller, smallerOut := recommendationPhaseTokens(contextTokens)
+	if smaller >= in || smallerOut >= out {
+		t.Errorf("a smaller bound did not lower the estimate: %d/%d then %d/%d", in, out, smaller, smallerOut)
+	}
+}
+
+func TestRecommendationPhaseTokens_RaisedBoundDoesNotInflateTheEstimate(t *testing.T) {
+	// The bound exists to cap cost, not to predict it. Raising it does not
+	// mean the packs will suddenly ask for more.
+	const contextTokens = 10_000
+	base, baseOut := recommendationPhaseTokens(contextTokens)
+
+	t.Setenv(recommendationPlanMaxItemsEnv, "500")
+	raised, raisedOut := recommendationPhaseTokens(contextTokens)
+	if raised != base || raisedOut != baseOut {
+		t.Errorf("a raised bound changed the estimate: %d/%d then %d/%d", base, baseOut, raised, raisedOut)
+	}
+}
