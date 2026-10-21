@@ -1,7 +1,7 @@
 import { buildMap, indexGraph } from '@/components/ledger/graph';
 import {
   FlowCard, FlowGeometry, NODE_HEIGHT, NODE_WIDTH, RUN_COLUMN, laneLeft, placeFlow,
-  roundedPath, workedCardID,
+  roundedPath, seenCardID, workedCardID,
 } from '@/components/ledger/flowLayout';
 import type { GraphEdge, LedgerGraph } from '@/lib/api';
 
@@ -136,11 +136,19 @@ function generatedGraph(runs: number, perRun: number): LedgerGraph {
         }
         openThreads.push(t);
       }
-      // A recommendation built on a finding from an earlier run.
+      // A recommendation built on a finding from an earlier run — every
+      // other run having seen that finding again, so both the seen-again card
+      // and the honest long line get exercised.
       if (r > 1 && i === 2) {
         const rec = `X${r}`;
         g.recommendations.push({ node_id: `rec:${rec}`, id: rec, discovery_id: `d${r}`, title: rec, priority: 2 });
         g.edges.push({ from: `rec:${rec}`, to: `insight:ins-F${r - 1}_1`, kind: 'recommends_on' });
+        if (r % 2 === 0) {
+          const old = g.findings.find((f) => f.id === `F${r - 1}_1`)!;
+          old.sightings = [...(old.sightings ?? []), { run_id: `r${r}`, discovery_id: `d${r}`, date: `2026-05-0${r}T09:00:00Z` }];
+          old.seen_count = old.sightings.length;
+          g.edges.push({ from: `run:r${r}`, to: `finding:F${r - 1}_1`, kind: 'seen_in' });
+        }
       }
       // A thread pursued and not answered.
       if (r > 2 && i === 4 && openThreads.length > 1) {
@@ -310,6 +318,40 @@ describe('placeFlow', () => {
     expectNoLineThroughACard(geometry);
   });
 
+  it('draws a finding a later run saw again and built on in that run\'s row', () => {
+    // A finding is filed under the run that found it, so a recommendation a
+    // later run built on it ran a line all the way down the page. When that
+    // run recorded seeing it again, the work is that run's own.
+    const graph = threeRunGraph();
+    const a = graph.findings.find((f) => f.id === 'A')!;
+    a.sightings = [...(a.sightings ?? []), { run_id: 'r3', discovery_id: 'd3', date: '2026-05-03T09:00:00Z' }];
+    a.seen_count = 2;
+    graph.edges.push({ from: 'run:r3', to: 'finding:A', kind: 'seen_in' });
+
+    const geometry = layOut(graph);
+    const again = geometry.cards.get(seenCardID('finding:A', 'run:r3'))!;
+    expect(again.row).toBe('run:r3');
+    expect(again.lane).toBe(1);
+    expect(again.seenOf).toBe('finding:A');
+    // R4 hangs off the run-3 card, beside it, not off the run-1 one.
+    const edge = (source: string, target: string) =>
+      geometry.edges.find((e) => e.source === source && e.target === target);
+    expect(edge(seenCardID('finding:A', 'run:r3'), 'rec:R4')?.kind).toBe('recommends_on');
+    expect(edge('finding:A', 'rec:R4')).toBeUndefined();
+    expect(geometry.cards.get('rec:R4')?.y).toBe(again.y);
+    // And the original stays where it was found.
+    expect(geometry.cards.get('finding:A')?.row).toBe('run:r1');
+    expect(geometry.rows.find((r) => r.ref === 'run:r3')?.seenAgain).toBe(1);
+    expectNoLineThroughACard(geometry);
+  });
+
+  it('keeps the long line when no later sighting was recorded', () => {
+    // Shortening it would claim a re-sighting nobody recorded.
+    const geometry = layOut(threeRunGraph());
+    expect(geometry.edges.some((e) => e.source === 'finding:A' && e.target === 'rec:R4')).toBe(true);
+    expect([...geometry.cards.values()].some((c) => c.seenOf)).toBe(false);
+  });
+
   it('fills the top of the Opened lane with threads nothing links to', () => {
     // On a project whose history predates the links every thread is like
     // this, and below everything the run found is where nobody looks.
@@ -340,6 +382,7 @@ describe('placeFlow', () => {
     // The history was actually drawn: threads picked up across runs, lines
     // between rows, and plenty of them.
     expect([...geometry.cards.values()].some((c) => c.threadOf)).toBe(true);
+    expect([...geometry.cards.values()].some((c) => c.seenOf)).toBe(true);
     expect(geometry.edges.some((e) => e.kind === 'picked_up')).toBe(true);
     expect(geometry.edges.length).toBeGreaterThan(40);
     expectNoOverlap(geometry);

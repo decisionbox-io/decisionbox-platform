@@ -87,7 +87,15 @@ type MapNodeData = MapNode & {
   dimmed?: boolean;
   /** Set on the card that stands in for a thread in the run that took it up. */
   threadOf?: string;
+  /** Set on the card that stands in for a finding in a later run that saw it
+   *  again and built on it. */
+  seenOf?: string;
 } & Record<string, unknown>;
+
+/** The thing a card is: itself, or the thread or finding a later card stands
+ *  in for. Selecting either card selects the thing, and lights both. */
+const entityOf = (card: { id: string; threadOf?: string; seenOf?: string }) =>
+  card.threadOf ?? card.seenOf ?? card.id;
 
 const OUTCOME_COLOR: Record<ThreadOutcome, string> = {
   answered: 'teal', closed: 'teal', dropped: 'gray', pursued: 'blue',
@@ -100,11 +108,17 @@ const OUTCOME_COLOR: Record<ThreadOutcome, string> = {
  *
  *  The same thread is drawn twice when a later run took it up: once where it
  *  was opened, once where it was picked up. The second card is dashed and
- *  says so, and it carries what came of the thread rather than how it began. */
+ *  says so, and it carries what came of the thread rather than how it began.
+ *  A finding a later run saw again and built on gets the same treatment. */
 function InvestigationNode({ data }: NodeProps<Node<MapNodeData>>) {
   const node = data;
   const pickedUp = Boolean(node.threadOf);
+  const seenAgain = Boolean(node.seenOf);
+  const dashed = pickedUp || seenAgain;
   const accent = accentFor(node);
+  const meta = pickedUp
+    ? node.workedMeta
+    : (seenAgain ? (node.runOrdinal ? `First found in run ${node.runOrdinal}` : 'Found earlier') : node.meta);
   return (
     <div
       style={{
@@ -114,7 +128,7 @@ function InvestigationNode({ data }: NodeProps<Node<MapNodeData>>) {
         borderRadius: 10,
         overflow: 'hidden',
         background: 'var(--mantine-color-body)',
-        border: `1px ${pickedUp ? 'dashed' : 'solid'} ${node.selected ? accent : (pickedUp ? KIND_COLOR.task : 'var(--db-border-default)')}`,
+        border: `1px ${dashed ? 'dashed' : 'solid'} ${node.selected || dashed ? accent : 'var(--db-border-default)'}`,
         boxShadow: node.selected
           ? `0 0 0 2px ${accent}33, 0 6px 16px rgba(0,0,0,.10)`
           : '0 1px 3px rgba(0,0,0,.07)',
@@ -131,7 +145,7 @@ function InvestigationNode({ data }: NodeProps<Node<MapNodeData>>) {
             {pickedUp ? <IconCornerDownRight size={13} /> : <KindIcon kind={node.kind} size={13} />}
           </span>
           <Text size="10px" fw={700} c="dimmed" tt="uppercase" style={{ letterSpacing: '.04em' }}>
-            {pickedUp ? 'Thread picked up' : KIND_LABEL[node.kind]}
+            {pickedUp ? 'Thread picked up' : (seenAgain ? 'Finding seen again' : KIND_LABEL[node.kind])}
           </Text>
           {node.archived && (
             <Badge size="xs" variant="outline" color="gray" tt="none">Archived</Badge>
@@ -155,9 +169,7 @@ function InvestigationNode({ data }: NodeProps<Node<MapNodeData>>) {
           {typeof node.priority === 'number' && node.priority > 0 && (
             <Badge size="xs" variant="outline" color="gray" tt="none">P{node.priority}</Badge>
           )}
-          {(pickedUp ? node.workedMeta : node.meta) && (
-            <Text size="10px" c="dimmed" lineClamp={1}>{pickedUp ? node.workedMeta : node.meta}</Text>
-          )}
+          {meta && <Text size="10px" c="dimmed" lineClamp={1}>{meta}</Text>}
         </Group>
       </div>
       <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
@@ -204,6 +216,7 @@ function rowSummary(row: FlowRow): string[] {
   const lines: string[] = [];
   if (row.pickedUp) lines.push(`${plural(row.pickedUp, 'thread', 'threads')} picked up`);
   if (counts.finding) lines.push(plural(counts.finding, 'finding', 'findings'));
+  if (row.seenAgain) lines.push(`${plural(row.seenAgain, 'earlier finding', 'earlier findings')} seen again`);
   if (counts.recommendation) lines.push(plural(counts.recommendation, 'recommendation', 'recommendations'));
   if (counts.task) lines.push(`${plural(counts.task, 'thread', 'threads')} opened`);
   return lines;
@@ -434,7 +447,8 @@ function layout(
     data: {
       ...card.node,
       ...(card.threadOf ? { threadOf: card.threadOf } : {}),
-      selected: selected === (card.threadOf ?? card.id),
+      ...(card.seenOf ? { seenOf: card.seenOf } : {}),
+      selected: selected === entityOf(card),
       dimmed: Boolean(selected) && !connected.has(card.id),
     },
   }));
@@ -670,7 +684,7 @@ function Legend() {
       ))}
       <Group gap={5} wrap="nowrap">
         <span style={{ color: KIND_COLOR.task, display: 'flex' }}><IconCornerDownRight size={13} /></span>
-        <Text size="xs" c="dimmed">Thread picked up by a later run</Text>
+        <Text size="xs" c="dimmed">Dashed: picked up or seen again by a later run</Text>
       </Group>
     </Group>
   );
@@ -704,13 +718,14 @@ function Canvas({
   const geometry = useMemo(() => placeFlow(map, expanded), [map, expanded]);
 
   // What stays lit when a card is selected: the thing itself — both of its
-  // cards, for a thread a later run picked up — and everything one line away
+  // cards, for a thread a later run picked up or a finding it saw again — and
+  // everything one line away
   // from either. More than that and the highlight stops meaning anything.
   const connected = useMemo(() => {
     const set = new Set<string>();
     if (!lit) return set;
     geometry.cards.forEach((card) => {
-      if ((card.threadOf ?? card.id) === lit) set.add(card.id);
+      if (entityOf(card) === lit) set.add(card.id);
     });
     const own = new Set(set);
     geometry.edges.forEach((e) => {
@@ -765,9 +780,9 @@ function Canvas({
       });
       return;
     }
-    // A picked-up card is the thread it stands in for.
-    const thread = (node.data as MapNodeData | undefined)?.threadOf;
-    const id = thread ?? node.id;
+    // A picked-up or seen-again card is the thing it stands in for.
+    const data = node.data as MapNodeData | undefined;
+    const id = entityOf({ id: node.id, threadOf: data?.threadOf, seenOf: data?.seenOf });
     setSelected((prev) => (prev === id ? null : id));
   }, []);
 

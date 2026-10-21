@@ -274,6 +274,8 @@ export interface MapNode {
   outcome?: ThreadOutcome;
   /** One line saying what happened to the thread after it was opened. */
   workedMeta?: string;
+  /** Findings only: every run that recorded a sighting of it, by run node. */
+  seenIn?: string[];
 }
 
 /** What became of a thread in the run that took it up. */
@@ -685,6 +687,9 @@ export function buildMap(idx: GraphIndex, filters: TreeFilters = {}): Investigat
         meta: findingMeta(idx, finding),
         archived: finding.archived,
         missing: finding.missing,
+        seenIn: [...new Set((finding.sightings ?? [])
+          .map((sighting) => runRefFor(idx, sighting.run_id, sighting.discovery_id))
+          .filter((ref) => idx.runOrdinal.has(ref)))],
       }));
       return;
     }

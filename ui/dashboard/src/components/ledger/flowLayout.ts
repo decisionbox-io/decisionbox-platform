@@ -47,6 +47,9 @@ export const FLOW_WIDTH = laneRight(3) + LANE_GAP;
 /** The node id of the card that stands in for a thread in the run that took it
  *  up. One per thread, so it never collides with anything in the payload. */
 export const workedCardID = (threadId: string) => `worked:${threadId}`;
+/** The node id of the card that stands in for a finding in a later run that
+ *  saw it again and did something with it. One per finding per run. */
+export const seenCardID = (findingId: string, runRef: string) => `seen:${findingId}@${runRef}`;
 
 /** A card on the canvas: a payload node, or the "picked up" card for one. */
 export interface FlowCard {
@@ -61,6 +64,8 @@ export interface FlowCard {
   group: string;
   /** Set on a "picked up" card: the thread it stands in for. */
   threadOf?: string;
+  /** Set on a "seen again" card: the finding it stands in for. */
+  seenOf?: string;
 }
 
 export interface FlowRow {
@@ -76,6 +81,8 @@ export interface FlowRow {
   hasLoose: boolean;
   /** How many threads this run picked up. */
   pickedUp: number;
+  /** How many earlier findings this run saw again and built on. */
+  seenAgain: number;
   moreAt?: { x: number; y: number };
 }
 
@@ -150,6 +157,38 @@ export function placeFlow(map: InvestigationMap, expanded: Set<string>): FlowGeo
     if (e.kind === 'answered_by' && worked.has(source)) source = workedCardID(source);
     return { id: e.id, source, target, kind: e.kind, label: e.label };
   });
+  // The same for a finding. It is filed under the run that FOUND it, so when a
+  // later run sees it again and opens a thread from it, answers a thread with
+  // it, or builds a recommendation on it, that line ran from the finding's
+  // original card all the way down the page — through every row in between.
+  // When the later run recorded seeing it, that is its own work: it gets a card
+  // in that run's row, and the work hangs off that. A link with no sighting
+  // behind it is drawn as it is, long or not, because shortening it would
+  // claim a re-sighting nobody recorded.
+  const rowOfId = (id: string): string => {
+    if (id.startsWith('worked:')) return worked.get(id.slice('worked:'.length)) ?? '';
+    const n = byId.get(id);
+    return n ? rowKeyOf(n) : '';
+  };
+  const seen = new Map<string, { finding: string; row: string }>();
+  drawn.forEach((e) => {
+    (['source', 'target'] as const).forEach((end) => {
+      const id = e[end];
+      const n = byId.get(id);
+      if (!n || n.kind !== 'finding') return;
+      const there = rowOfId(end === 'source' ? e.target : e.source);
+      if (!there || there === rowKeyOf(n) || !(n.seenIn ?? []).includes(there)) return;
+      const card = seenCardID(id, there);
+      seen.set(card, { finding: id, row: there });
+      e[end] = card;
+    });
+  });
+  const nodeOf = (id: string): MapNode => {
+    if (id.startsWith('worked:')) return byId.get(id.slice('worked:'.length)) as MapNode;
+    const s = seen.get(id);
+    return (s ? byId.get(s.finding) : byId.get(id)) as MapNode;
+  };
+
   worked.forEach((row, threadId) => {
     const ordinal = byId.get(threadId)?.workedInOrdinal;
     drawn.push({
@@ -163,6 +202,10 @@ export function placeFlow(map: InvestigationMap, expanded: Set<string>): FlowGeo
 
   const linked = new Set<string>();
   drawn.forEach((e) => { linked.add(e.source); linked.add(e.target); });
+  // A finding a later run built on stays on the canvas where it was found,
+  // even when every line now leaves from its later card: it is still the
+  // beginning of that work.
+  seen.forEach(({ finding }) => linked.add(finding));
   const outOf = new Map<string, typeof drawn>();
   drawn.forEach((e) => {
     const list = outOf.get(e.source);
@@ -181,7 +224,7 @@ export function placeFlow(map: InvestigationMap, expanded: Set<string>): FlowGeo
   const rowOf = (ref: string, ordinal: number) => {
     let row = rowsByRef.get(ref);
     if (!row) {
-      row = { ref, ordinal, top: 0, height: 0, nodes: [], hidden: [], hasLoose: false, pickedUp: 0 };
+      row = { ref, ordinal, top: 0, height: 0, nodes: [], hidden: [], hasLoose: false, pickedUp: 0, seenAgain: 0 };
       rowsByRef.set(ref, row);
     }
     return row;
@@ -190,6 +233,7 @@ export function placeFlow(map: InvestigationMap, expanded: Set<string>): FlowGeo
   worked.forEach((row, threadId) => {
     rowOf(row, byId.get(threadId)?.workedInOrdinal ?? 0).pickedUp += 1;
   });
+  seen.forEach(({ row }) => { (rowsByRef.get(row) as FlowRow).seenAgain += 1; });
   const rows = [...rowsByRef.values()].sort((a, b) => {
     if (!a.ordinal !== !b.ordinal) return a.ordinal ? -1 : 1;
     return a.ordinal - b.ordinal;
@@ -205,7 +249,8 @@ export function placeFlow(map: InvestigationMap, expanded: Set<string>): FlowGeo
       const card = byId.get(id);
       if (card) return rowKeyOf(card) === row.ref;
       const thread = id.startsWith('worked:') ? id.slice('worked:'.length) : '';
-      return Boolean(thread) && worked.get(thread) === row.ref;
+      if (thread) return worked.get(thread) === row.ref;
+      return seen.get(id)?.row === row.ref;
     };
     // A thread is never folded away, linked or not: threads are what this
     // view is about, and on a project whose history predates the links every
@@ -220,10 +265,13 @@ export function placeFlow(map: InvestigationMap, expanded: Set<string>): FlowGeo
     // the finding, what it drove, and what it opened, side by side.
     const groups = new Map<string, Group>();
     const groupOf = new Map<string, string>();
-    const severity = (id: string) => SEVERITY_RANK[byId.get(id)?.severity ?? ''] ?? 5;
-    shown.filter((n) => n.kind === 'finding').forEach((n) => {
-      groups.set(n.id, { key: n.id, lanes: [[], [n.id], [], []], rank: [2, severity(n.id)] });
-      groupOf.set(n.id, n.id);
+    const severity = (id: string) => SEVERITY_RANK[nodeOf(id)?.severity ?? ''] ?? 5;
+    [
+      ...shown.filter((n) => n.kind === 'finding').map((n) => n.id),
+      ...[...seen.entries()].filter(([, s]) => s.row === row.ref).map(([id]) => id),
+    ].forEach((id) => {
+      groups.set(id, { key: id, lanes: [[], [id], [], []], rank: [2, severity(id)] });
+      groupOf.set(id, id);
     });
     const standalone = (key: string, rank: number[]) => {
       let group = groups.get(key);
@@ -276,7 +324,8 @@ export function placeFlow(map: InvestigationMap, expanded: Set<string>): FlowGeo
         const d = (a.rank[i] ?? 0) - (b.rank[i] ?? 0);
         if (d !== 0) return d;
       }
-      return (byId.get(a.lanes[1][0])?.title ?? a.key).localeCompare(byId.get(b.lanes[1][0])?.title ?? b.key);
+      const title = (g: Group) => (g.lanes[1][0] ? nodeOf(g.lanes[1][0])?.title : undefined) ?? g.key;
+      return title(a).localeCompare(title(b));
     });
 
     // Findings that share an outcome sit together. Several findings driving
@@ -326,14 +375,14 @@ export function placeFlow(map: InvestigationMap, expanded: Set<string>): FlowGeo
       // line never runs through a card.
       const openedFrom = found.length > 0 && recs.length > 0 ? recs.length : 0;
       const place = (id: string, lane: Lane, k: number) => {
-        const node = byId.get(id) ?? byId.get(id.slice('worked:'.length)) as MapNode;
         cards.set(id, {
-          id, node, lane,
+          id, node: nodeOf(id), lane,
           x: laneLeft(lane),
           y: y + (line + k) * ROW_STEP + extra,
           row: row.ref,
           group: `${row.ref}#${group.key}`,
           ...(id.startsWith('worked:') ? { threadOf: id.slice('worked:'.length) } : {}),
+          ...(seen.has(id) ? { seenOf: seen.get(id)?.finding } : {}),
         });
       };
       picked.forEach((id, k) => place(id, 0, k));

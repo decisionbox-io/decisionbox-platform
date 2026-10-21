@@ -933,4 +933,11 @@ describe('threadWorkedIn', () => {
     const t2 = map.nodes.find((n) => n.id === 'task:t2')!;
     expect(t2.workedIn).toBeUndefined();
   });
+
+  it('lists every run that saw a finding, by the run the map draws', () => {
+    const map = buildMap(indexGraph(chainGraph()));
+    expect(map.nodes.find((n) => n.id === 'finding:f1')?.seenIn).toEqual(['run:r1', 'run:r2']);
+    expect(map.nodes.find((n) => n.id === 'finding:f2')?.seenIn).toEqual(['run:r2']);
+    expect(map.nodes.find((n) => n.id === 'finding:f3')?.seenIn).toEqual([]);
+  });
 });
