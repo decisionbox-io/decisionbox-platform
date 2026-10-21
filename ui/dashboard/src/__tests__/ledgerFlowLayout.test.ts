@@ -292,6 +292,24 @@ describe('placeFlow', () => {
     expect(open.rows[0].moreAt).toBeDefined(); // now "Show less"
   });
 
+  it('opens a run\'s loose cards in their own lanes, not packed across the stages', () => {
+    // The lanes are headings. Packing loose cards three to a line filed a
+    // finding under "Recommended" and another under "Opened".
+    const graph = threeRunGraph();
+    ['M', 'N', 'O'].forEach((id) => {
+      graph.findings.push(finding(id, 1, 'low'));
+      graph.edges.push({ from: 'run:r1', to: `finding:${id}`, kind: 'found' });
+    });
+    graph.recommendations.push({ node_id: 'rec:loose', id: 'loose', discovery_id: 'd1', title: 'Loose', priority: 3 });
+    const geometry = layOut(graph, new Set(['run:r1']));
+    ['finding:L', 'finding:M', 'finding:N', 'finding:O'].forEach((id) => {
+      expect(geometry.cards.get(id)?.lane).toBe(1);
+    });
+    expect(geometry.cards.get('rec:loose')?.lane).toBe(2);
+    expectNoOverlap(geometry);
+    expectNoLineThroughACard(geometry);
+  });
+
   it('fills the top of the Opened lane with threads nothing links to', () => {
     // On a project whose history predates the links every thread is like
     // this, and below everything the run found is where nobody looks.

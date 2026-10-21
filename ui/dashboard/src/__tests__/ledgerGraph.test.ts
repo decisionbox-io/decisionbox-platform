@@ -907,6 +907,21 @@ describe('threadWorkedIn', () => {
     expect(threadWorkedIn(indexGraph(chainGraph()), 'finding:f1')).toBeNull();
   });
 
+  it('never calls a closed thread open because its closing run cannot be placed', () => {
+    const graph = threeRuns();
+    // Done, closed by a run the response does not carry, and pursued by run 3.
+    graph.tasks[1] = { ...graph.tasks[1], status: 'done', closed_run_id: 'gone', pursued_in_run_ids: ['r3'] };
+    const map = buildMap(indexGraph(graph));
+    const t2 = map.nodes.find((n) => n.id === 'task:t2')!;
+    expect(t2.outcome).toBe('pursued');
+    expect(t2.workedMeta).toBe('Pursued in run 3 · since closed');
+    expect(t2.workedMeta).not.toContain('open');
+
+    graph.tasks[1] = { ...graph.tasks[1], status: 'dropped' };
+    const dropped = buildMap(indexGraph(graph)).nodes.find((n) => n.id === 'task:t2')!;
+    expect(dropped.workedMeta).toBe('Pursued in run 3 · since dropped');
+  });
+
   it('carries onto the map, with a line saying what came of the thread', () => {
     const map = buildMap(indexGraph(chainGraph()));
     const t1 = map.nodes.find((n) => n.id === 'task:t1')!;

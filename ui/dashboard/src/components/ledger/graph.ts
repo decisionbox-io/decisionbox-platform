@@ -506,10 +506,16 @@ const OUTCOME_WORDS: Record<ThreadOutcome, string> = {
  *  still open". */
 function workedMeta(
   idx: GraphIndex, worked: { ref: string; outcome: ThreadOutcome; pursuedIn: number[] },
+  status: string | undefined,
 ): string {
   const at = idx.runOrdinal.get(worked.ref);
   const runs = (list: number[]) => `run${list.length === 1 ? '' : 's'} ${list.join(', ')}`;
-  if (worked.outcome === 'pursued') return `Pursued in ${runs(worked.pursuedIn)} · still open`;
+  if (worked.outcome === 'pursued') {
+    // The run that closed it may be one the map cannot place, and a thread
+    // recorded as done must not be called open because of that.
+    const now = status === 'done' ? 'since closed' : status === 'dropped' ? 'since dropped' : 'still open';
+    return `Pursued in ${runs(worked.pursuedIn)} · ${now}`;
+  }
   const parts = [`${OUTCOME_WORDS[worked.outcome]} in run ${at}`];
   if (worked.pursuedIn.length > 0) parts.push(`pursued in ${runs(worked.pursuedIn)}`);
   return parts.join(' · ');
@@ -696,7 +702,7 @@ export function buildMap(idx: GraphIndex, filters: TreeFilters = {}): Investigat
           workedIn: worked.ref,
           workedInOrdinal: idx.runOrdinal.get(worked.ref),
           outcome: worked.outcome,
-          workedMeta: workedMeta(idx, worked),
+          workedMeta: workedMeta(idx, worked, task.status),
         } : {}),
       }));
       return;

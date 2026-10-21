@@ -31,8 +31,6 @@ export const ROW_GAP = 64;
 export const GROUP_GAP = 14;
 export const CAPTION_HEIGHT = 34;
 const CAPTION_GAP = 18;
-/** How wide the grid of a run's loose cards gets, once it has been opened. */
-const LOOSE_COLUMNS = 3;
 const ROW_STEP = NODE_HEIGHT + CARD_GAP_Y;
 
 export type Lane = 0 | 1 | 2 | 3;
@@ -366,21 +364,28 @@ export function placeFlow(map: InvestigationMap, expanded: Set<string>): FlowGeo
       });
     });
 
-    // The loose cards, if they have been asked for, in a block underneath —
-    // they have no links to follow, so a grid costs nothing.
+    // The loose cards, if they have been asked for, in a block underneath,
+    // each in its own kind's lane. A lane is a heading — "Recommended" — so a
+    // finding packed into it to save space would be filed under a stage it
+    // never was.
     let rowsUsed = line;
     if (open) {
       if (loose.length > 0 && rowsUsed > 0) extra += GROUP_GAP;
-      loose.forEach((n, i) => {
+      const byLane = new Map<Lane, MapNode[]>();
+      loose.forEach((n) => {
+        const lane: Lane = n.kind === 'recommendation' ? 2 : 1;
+        byLane.set(lane, [...(byLane.get(lane) ?? []), n]);
+      });
+      byLane.forEach((list, lane) => list.forEach((n, k) => {
         cards.set(n.id, {
-          id: n.id, node: n, lane: (1 + (i % LOOSE_COLUMNS)) as Lane,
-          x: laneLeft(1 + (i % LOOSE_COLUMNS)),
-          y: y + (rowsUsed + Math.floor(i / LOOSE_COLUMNS)) * ROW_STEP + extra,
+          id: n.id, node: n, lane,
+          x: laneLeft(lane),
+          y: y + (rowsUsed + k) * ROW_STEP + extra,
           row: row.ref,
           group: `${row.ref}#~loose`,
         });
-      });
-      rowsUsed += Math.ceil(loose.length / LOOSE_COLUMNS);
+      }));
+      rowsUsed += Math.max(0, ...[...byLane.values()].map((list) => list.length));
     }
     if (row.hasLoose) {
       if (rowsUsed > 0) extra += GROUP_GAP;
