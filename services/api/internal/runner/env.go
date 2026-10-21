@@ -99,6 +99,29 @@ var agentForwardedEnvKeys = []string{
 	"VALIDATION_BUNDLE_CELL_CHAR_CAP",
 	"VALIDATION_REC_STEPS_TOKEN_BUDGET",
 	"VALIDATION_ESTIMATE_TOKEN_RATIO",
+	// Analysis / recommendation / exploration phase tuning. Consumed by the
+	// agent (discovery.analyzeAreaInsights, generateRecommendations and the
+	// two-pass plan/expand path, ai.ExplorationEngine). Same reason as the
+	// VALIDATION_* group above: without forwarding, an operator who sets one
+	// of these on the API deployment silently gets the default inside a
+	// container-spawned agent, and the reference documents a knob that does
+	// nothing on a Docker or Kubernetes runner.
+	//
+	// The first four are new with the two-pass recommendation phase; the rest
+	// have been documented and unforwarded since they were added, and are
+	// listed here because an operator tuning the same phase cannot be expected
+	// to discover that half of its knobs take effect and half do not.
+	"RECOMMENDATION_PLAN_MAX_ITEMS",
+	"RECOMMENDATION_PLAN_OUTPUT_TOKENS",
+	"RECOMMENDATION_EXPAND_OUTPUT_TOKENS",
+	"RECOMMENDATION_EXPAND_MAX_RETRIES",
+	"RECOMMENDATION_PARSE_MAX_RETRIES",
+	"RECOMMENDATION_CITATION_MAX_RETRIES",
+	"ANALYSIS_PARSE_MAX_RETRIES",
+	"ANALYSIS_REPAIR_MAX_ROUNDS",
+	"ANALYSIS_MIN_OUTPUT_TOKENS",
+	"EXPLORATION_MAX_OUTPUT_TOKENS",
+	"LLM_RESPONSE_MIN_NONSPACE_PCT",
 	// DISCOVERY_QUESTIONS_* knobs for the post-run clarifying-questions hop.
 	// Consumed by the agent (discovery.runPhaseQuestions). Without forwarding
 	// here, the enabled flag set on the API deployment never reaches a

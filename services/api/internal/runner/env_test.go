@@ -137,3 +137,61 @@ func TestForwardedEnv_LLMBehaviourKnobs(t *testing.T) {
 		}
 	}
 }
+
+func TestForwardedEnv_RecommendationAndAnalysisPhaseKnobs(t *testing.T) {
+	// A knob the reference documents and the runner does not forward is a
+	// knob that does nothing on a Docker or Kubernetes deployment, silently —
+	// the operator sets it on the API and the spawned agent reads the
+	// default. The recommendation phase is the case that makes it plain: its
+	// fan-out bound and its retry bound are read by the same function, so
+	// forwarding one and not the other would take effect for half of what an
+	// operator set.
+	knobs := map[string]string{
+		"RECOMMENDATION_PLAN_MAX_ITEMS":       "8",
+		"RECOMMENDATION_PLAN_OUTPUT_TOKENS":   "1024",
+		"RECOMMENDATION_EXPAND_OUTPUT_TOKENS": "8192",
+		"RECOMMENDATION_EXPAND_MAX_RETRIES":   "0",
+		"RECOMMENDATION_PARSE_MAX_RETRIES":    "2",
+		"RECOMMENDATION_CITATION_MAX_RETRIES": "0",
+		"ANALYSIS_PARSE_MAX_RETRIES":          "2",
+		"ANALYSIS_REPAIR_MAX_ROUNDS":          "3",
+		"ANALYSIS_MIN_OUTPUT_TOKENS":          "4096",
+		"EXPLORATION_MAX_OUTPUT_TOKENS":       "16384",
+		"LLM_RESPONSE_MIN_NONSPACE_PCT":       "30",
+	}
+	for k, v := range knobs {
+		t.Setenv(k, v)
+	}
+
+	found := map[string]string{}
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys) {
+		found[kv.Key] = kv.Value
+	}
+	for k, want := range knobs {
+		if found[k] != want {
+			t.Errorf("%s not forwarded to every runner: got %q, want %q", k, found[k], want)
+		}
+	}
+
+	counts := map[string]int{}
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys, dockerAgentExtraEnvKeys) {
+		counts[kv.Key]++
+	}
+	for k := range knobs {
+		if counts[k] != 1 {
+			t.Errorf("%s forwarded %d times by the Docker runner, want 1", k, counts[k])
+		}
+	}
+}
+
+func TestForwardedEnv_UnsetKnobsAreNotForwarded(t *testing.T) {
+	// Forwarding is "when set": an unset knob must not reach the agent as an
+	// empty value, which would override the agent's own default with nothing.
+	t.Setenv("RECOMMENDATION_PLAN_MAX_ITEMS", "")
+
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys) {
+		if kv.Key == "RECOMMENDATION_PLAN_MAX_ITEMS" {
+			t.Errorf("an unset knob was forwarded as %q", kv.Value)
+		}
+	}
+}
