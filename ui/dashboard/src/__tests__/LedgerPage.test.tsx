@@ -847,6 +847,33 @@ describe('LedgerPage', () => {
     expect(getLedger.mock.calls.length).toBe(calls);
   });
 
+  it('does not let the first map request overwrite the one made after the update', async () => {
+    // The first graph request can still be out when the update finishes and
+    // the page reloads the map. Landing last, it would put the pre-run map
+    // back — with the banner gone and nothing left checking.
+    const inFlight = { ...ledger, updating: { run_id: 'r3', since: '2026-10-21T14:02:00Z' } };
+    getLedger.mockResolvedValueOnce(inFlight).mockResolvedValue(ledger);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'auto', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    const after = {
+      ...graph,
+      findings: graph.findings.map((f) => (f.id === 'f1' ? { ...f, name: 'Churn, after the run' } : f)),
+    };
+    let releaseFirst: (g: LedgerGraph) => void = () => {};
+    getLedgerGraph
+      .mockImplementationOnce(() => new Promise<LedgerGraph>((res) => { releaseFirst = res; }))
+      .mockResolvedValue(after);
+    wrap();
+
+    await waitFor(() =>
+      expect(screen.queryByText('Updating from the run that just finished')).not.toBeInTheDocument());
+    await waitFor(() => expect(getLedgerGraph).toHaveBeenCalledTimes(2));
+    // The stale first answer finally lands.
+    releaseFirst(graph);
+    expect(await view().findAllByText(/Churn, after the run/)).not.toHaveLength(0);
+    expect(view().queryByText('High EU churn')).not.toBeInTheDocument();
+  });
+
   it('shows no banner when nothing is being updated', async () => {
     mockAll();
     wrap();

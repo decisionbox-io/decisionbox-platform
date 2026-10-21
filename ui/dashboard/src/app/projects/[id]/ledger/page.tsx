@@ -1,6 +1,6 @@
 'use client';
 
-import { ReactNode, useEffect, useMemo, useState } from 'react';
+import { ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { Alert, Loader, Select, Button, Group, Stack, Text, Card, Badge, Progress, Tooltip, Collapse, UnstyledButton, ThemeIcon, SegmentedControl } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
@@ -181,6 +181,17 @@ export default function LedgerPage() {
     return next;
   });
 
+  // Every graph request is numbered and only the latest may set the graph. The
+  // first one can still be out when an update finishes and its reload goes
+  // out; landing last, it would put the pre-run map back for good.
+  const graphRequest = useRef(0);
+  const loadGraph = () => {
+    const mine = ++graphRequest.current;
+    return api.getLedgerGraph(id).then((g) => {
+      if (mine === graphRequest.current) setGraph(g);
+    });
+  };
+
   const loadProposals = () => {
     api.listPackProposals(id)
       .then((p) => setProposals(p || []))
@@ -197,8 +208,7 @@ export default function LedgerPage() {
     if (loading || unsupported || !ledger) return;
     if (graph || graphLoading || graphUnavailable) return;
     setGraphLoading(true);
-    api.getLedgerGraph(id)
-      .then(setGraph)
+    loadGraph()
       .catch(() => setGraphUnavailable(true))
       .finally(() => setGraphLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -229,7 +239,7 @@ export default function LedgerPage() {
               check();
               return;
             }
-            api.getLedgerGraph(id).then(setGraph).catch(() => {});
+            loadGraph().catch(() => {});
             loadProposals();
           })
           // A failed check is not the end of the update: try again.

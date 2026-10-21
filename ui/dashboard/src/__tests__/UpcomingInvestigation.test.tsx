@@ -129,6 +129,33 @@ describe('UpcomingInvestigation', () => {
     expect(screen.getByText('Updating')).toBeInTheDocument();
   });
 
+  it('asks again when the reload a run\'s finish triggers fails', async () => {
+    // The card loaded while the run was going, so nothing was polling. Fail
+    // that one reload and, without a retry, the old threads stay up for good.
+    getLedger.mockResolvedValueOnce(view({ tasks: [thread('t1', 'Before the run')] }));
+    const { rerender } = wrap('');
+    await screen.findByText('Before the run');
+
+    getLedger
+      .mockRejectedValueOnce(new Error('network blip'))
+      .mockResolvedValue(view({
+        tasks: [thread('t1', 'Before the run')],
+        updating: { run_id: 'r2', since: '2026-10-21T14:02:00Z' },
+      }));
+    rerender(<MantineProvider><UpcomingInvestigation projectId="p1" refreshKey="r2" /></MantineProvider>);
+    expect(await screen.findByText('Updating')).toBeInTheDocument();
+  });
+
+  it('does not keep asking a deployment that has no ledger', async () => {
+    // Community builds 404 the route: nothing to show, nothing to wait for.
+    getLedger.mockRejectedValue(Object.assign(new Error('not found'), { status: 404 }));
+    const { container } = wrap('r1');
+    await waitFor(() => expect(getLedger).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 60));
+    expect(getLedger).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('.mantine-Card-root')).toBeNull();
+  });
+
   it('shows up for a first run whose threads are still being built, instead of staying hidden', async () => {
     getLedger.mockResolvedValue(view({ updating: { run_id: 'r1', since: '2026-10-21T14:02:00Z' } }));
     wrap();

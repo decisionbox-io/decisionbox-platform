@@ -1939,3 +1939,43 @@ func TestRunPhaseReflection_TakesThePendingMarkDown(t *testing.T) {
 			none.beganReflection, none.endedReflection)
 	}
 }
+
+// ctxChecker records the context the entitlement gate was asked with.
+type ctxChecker struct {
+	policy.Checker
+	sawDeadline *bool
+}
+
+func (c ctxChecker) FeatureEnabled(ctx context.Context, deploymentID, flag string) (bool, error) {
+	_, ok := ctx.Deadline()
+	*c.sawDeadline = ok
+	return c.Checker.FeatureEnabled(ctx, deploymentID, flag)
+}
+
+// TestReflectionGates_RunUnderADeadline: the entitlement check can be a call to
+// a control plane. Asked on the agent's open-ended context, one that stalls
+// would hold the agent — and the "updating" entry — past the phase's budget.
+func TestReflectionGates_RunUnderADeadline(t *testing.T) {
+	t.Setenv("DISCOVERY_REFLECTION_ENABLED", "true")
+	client, _ := stubClient(t, `{"coverage_summary":"x"}`, nil)
+	var pendingSaw, phaseSaw bool
+
+	policy.RegisterChecker(ctxChecker{Checker: policy.NewNoopChecker(), sawDeadline: &pendingSaw})
+	t.Cleanup(func() { policy.RegisterChecker(policy.NewNoopChecker()) })
+	o := &Orchestrator{
+		reflectionEnabled: true, projectID: "proj-1", runID: "run-1", datasets: []string{"ds"},
+		llmInputWindow: 200000, llmOutputCap: 4000, aiClient: client,
+		ledgerRepo: &fakeLedgerRepo{}, findingRepo: &fakeFindingRepo{},
+	}
+	o.markReflectionPending(context.Background())
+	if !pendingSaw {
+		t.Error("marking the update pending must ask the gate under a deadline")
+	}
+
+	policy.RegisterChecker(ctxChecker{Checker: policy.NewNoopChecker(), sawDeadline: &phaseSaw})
+	o.RunPhaseReflection(context.Background(), &models.DiscoveryResult{ID: "d1",
+		Insights: []models.Insight{{Name: "x", AnalysisArea: "a"}}})
+	if !phaseSaw {
+		t.Error("the phase must ask its gates under its own deadline")
+	}
+}

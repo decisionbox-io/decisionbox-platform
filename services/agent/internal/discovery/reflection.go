@@ -71,6 +71,10 @@ const (
 	// Short: it is one small update, and it runs after the phase's own
 	// deadline has usually already passed.
 	reflectionCleanupTimeout = 10 * time.Second
+	// reflectionPendingTimeout bounds marking the update pending: the gates
+	// (one may be a control-plane call) and one small write, on the path to
+	// stamping the run completed, so it must not hang there.
+	reflectionPendingTimeout = 30 * time.Second
 	// ledgerDedupSearchTimeout bounds ONE semantic-dedup lookup. Short: it is
 	// a single vector search, and it is optional — the exact-key match has
 	// already been tried.
@@ -189,11 +193,13 @@ func (o *Orchestrator) reflectionWillRun(ctx context.Context) bool {
 // which is the window a user notices. Only when the phase will actually run —
 // an entry nothing will take down is worse than none.
 func (o *Orchestrator) markReflectionPending(ctx context.Context) {
-	if !o.reflectionWillRun(ctx) {
+	// Bounded, gate included: this runs just before the run is stamped
+	// completed, and an entitlement check that stalls here would hold that up.
+	mctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reflectionPendingTimeout)
+	defer cancel()
+	if !o.reflectionWillRun(mctx) {
 		return
 	}
-	mctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reflectionCleanupTimeout)
-	defer cancel()
 	if err := o.ledgerRepo.BeginReflection(mctx, o.projectID, o.runID); err != nil {
 		applog.WithError(err).Warn("Reflection: could not mark the update pending; the ledger will not say it is being updated until the phase starts")
 		return
@@ -238,12 +244,15 @@ func (o *Orchestrator) RunPhaseReflection(ctx context.Context, result *models.Di
 		defer o.endReflectionMarker(ctx)
 	}
 
-	if !o.reflectionWillRun(ctx) || result == nil {
-		return
-	}
-
+	// The phase's deadline covers its gates too: the entitlement check can be
+	// a call to a control plane, and one that stalls must not hold the agent —
+	// and the "updating" entry — past the budget.
 	rctx, cancel := reflectionContext(ctx)
 	defer cancel()
+
+	if !o.reflectionWillRun(rctx) || result == nil {
+		return
+	}
 
 	// From here on this phase rewrites finding documents. Say so for as long
 	// as it takes, so the backfill leaves the project alone meanwhile and the

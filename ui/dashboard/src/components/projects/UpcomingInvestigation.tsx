@@ -33,6 +33,10 @@ export function UpcomingInvestigation({ projectId, refreshKey }: { projectId: st
   const [tasks, setTasks] = useState<LedgerTask[]>([]);
   const [pending, setPending] = useState<PackProposal[]>([]);
   const [updating, setUpdating] = useState<LedgerUpdating | null>(null);
+  // Set when the last load failed for a reason that may pass. The card then
+  // keeps what it shows and asks again — which matters most for the reload a
+  // run's finish triggers: fail that once and nothing else would ever ask.
+  const [retrying, setRetrying] = useState(false);
   const [ready, setReady] = useState(false);
   // Every load is numbered, and only the latest may change what the card
   // shows. Without it a slow first load could land after the reload a run's
@@ -56,8 +60,9 @@ export function UpcomingInvestigation({ projectId, refreshKey }: { projectId: st
   });
 
   // What one load found: the ledger answered and is still being updated, it
-  // answered and is done, the request failed, or a newer load superseded it.
-  type Outcome = 'updating' | 'done' | 'failed' | 'superseded';
+  // answered and is done, this deployment has no ledger (404), the request
+  // failed in a way that may pass, or a newer load superseded it.
+  type Outcome = 'updating' | 'done' | 'absent' | 'failed' | 'superseded';
 
   const load = useCallback((): Promise<Outcome> => {
     const mine = ++generation.current;
@@ -69,14 +74,21 @@ export function UpcomingInvestigation({ projectId, refreshKey }: { projectId: st
       setTasks((lv?.tasks ?? []).filter((t) => (t.status || 'open') === 'open'));
       setPending((props ?? []).filter((p) => p.status === 'proposed'));
       setUpdating(lv?.updating ?? null);
+      setRetrying(false);
       setReady(true);
       return lv?.updating ? 'updating' : 'done';
-    }, (): Outcome => {
+    }, (err: unknown): Outcome => {
       if (mine !== generation.current) return 'superseded';
-      // The first load failing is the card's old behaviour — no ledger here
-      // (community builds 404 it), so nothing to show. A later one failing is
-      // a blip: what the card already shows stays, and the caller asks again.
       setReady(true);
+      // No ledger on this deployment (community builds 404 the route): there
+      // is nothing to show and nothing to wait for.
+      if ((err as { status?: number } | null)?.status === 404) {
+        setRetrying(false);
+        return 'absent';
+      }
+      // Anything else may pass: what the card already shows stays, and it
+      // asks again.
+      setRetrying(true);
       return 'failed';
     });
   }, [projectId]);
@@ -94,19 +106,25 @@ export function UpcomingInvestigation({ projectId, refreshKey }: { projectId: st
   // card now, which this loop keeps an eye on rather than abandoning. Keyed on
   // whether there is an update at all, never on the update object, whose
   // identity says nothing about whether anything changed.
-  const isUpdating = Boolean(updating);
+  //
+  // Also runs while a failed load is being retried, so a refresh that failed
+  // once is asked again rather than left showing the old threads as current.
+  const waiting = Boolean(updating) || retrying;
   useEffect(() => {
-    if (!isUpdating) return;
+    if (!waiting) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     const check = () => {
       timer = setTimeout(() => {
-        void load().then((outcome) => { if (outcome !== 'done' && !cancelled) check(); });
+        void load().then((outcome) => {
+          if (cancelled || outcome === 'done' || outcome === 'absent') return;
+          check();
+        });
       }, LEDGER_UPDATE_POLL_MS);
     };
     check();
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [isUpdating, load]);
+  }, [waiting, load]);
 
   // Nothing to show, unless the ledger is being built: a project's first run
   // has no threads yet, and saying they are on their way is the useful thing.
