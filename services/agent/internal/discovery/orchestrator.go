@@ -2107,6 +2107,11 @@ func (o *Orchestrator) analyzeAreaInsights(ctx context.Context, areaID, prompt s
 }
 
 // generateRecommendations generates actionable recommendations and captures the full dialog.
+//
+// Two passes: a plan call that decides what the set is, then one expansion
+// call per planned entry that writes it. The single-document call this phase
+// used to make is kept as the fallback for when the plan cannot be read or
+// every expansion fails. recommendation_plan.go has the why.
 func (o *Orchestrator) generateRecommendations(
 	ctx context.Context,
 	promptTemplate string,
@@ -2146,125 +2151,60 @@ func (o *Orchestrator) generateRecommendations(
 	// Inject project knowledge sources relevant to the discovered insights.
 	// Recommendations often need broader business context (constraints, prior
 	// initiatives, tone) so we use a higher top-K than analysis prompts.
+	//
+	// Retrieved once and reused by every call in the phase: the knowledge is
+	// keyed on the insight set, which is the same for the plan and for each
+	// expansion, so re-retrieving per call would pay for an embedding and a
+	// vector search to rebuild a block that cannot have changed.
 	recommendationQuery := o.recommendationsKnowledgeQuery(insights)
 	prompt = o.injectKnowledgeSources(ctx, prompt, recommendationQuery, knowledgeTopKRecommendations)
 
 	step.Prompt = prompt
 
-	// Budget the recommendation output against the measured input (same
-	// root cause as the analysis phase, issue #347): a large insights-JSON
-	// prompt plus a fixed output cap can overflow the model window. The
-	// adaptive context-overflow retry is the net.
-	recWindow, recOutputCap := o.resolveModelBudget()
-	maxTokens := budgetedMaxOutputTokens(recWindow, approxTokens(ctx, prompt), recOutputCap, analysisMinOutputTokens())
-
-	// Layer 1 (prevention): constrain the recommendation shape at generation
-	// time where the provider supports it (issue #342). ChatWithFormat
-	// self-gates on SupportsStructuredOutput, so this is a safe no-op on
-	// providers without it (vertex-ai, azure-foundry) — the tolerant parser
-	// below is the always-on net.
-	format := recommendationResponseFormat()
+	// Layer 1 (prevention): constrain the shape at generation time where the
+	// provider supports it (issue #342). Every call below goes through
+	// ChatWithFormat, which self-gates on SupportsStructuredOutput, so this is
+	// a safe no-op on providers without it (vertex-ai, azure-foundry) — the
+	// tolerant parsers are the always-on net.
 	if o.aiClient.SupportsStructuredOutput() {
 		applog.Info("Recommendation generation using schema-constrained output")
 	}
 
-	// Layer 3 (self-heal): if a response yields zero parseable recommendations,
-	// re-ask with the specific reason before giving up. Mirrors the exploration
-	// engine's runStepWithRetry. Fires only on a parse failure, never on a
-	// legitimately empty result. Bounded and env-overridable (Rule 2).
-	maxRetries := goconfig.GetEnvAsInt(recommendationParseMaxRetriesEnv, defaultRecommendationParseMaxRetries)
-	if maxRetries < 0 {
-		maxRetries = 0
+	recWindow, recOutputCap := o.resolveModelBudget()
+
+	// Pass 1: decide the set.
+	plan, fail := o.planRecommendations(ctx, step, prompt, recWindow, recOutputCap)
+	step.RecommendationsPlanned = len(plan)
+
+	// Pass 2: write one entry at a time.
+	var recs []models.Recommendation
+	if len(plan) > 0 {
+		applog.WithFields(applog.Fields{"planned": len(plan)}).Info("Recommendation plan ready; writing one at a time")
+		recs, fail = o.expandRecommendationPlan(ctx, step, prompt, plan, recWindow, recOutputCap)
 	}
 
-	var (
-		recs         []models.Recommendation
-		parseDropped int
-		lastParseErr error
-	)
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		attemptPrompt := prompt
-		if attempt > 0 {
-			step.RecommendationParseRetries = attempt
-			attemptPrompt = prompt + recommendationRepairSuffix(lastParseErr)
-			applog.WithFields(applog.Fields{
-				"attempt": attempt,
-				"reason":  errString(lastParseErr),
-			}).Warn("Re-prompting for recommendations after unparseable response")
-		}
-
-		chatResult, err := o.aiClient.ChatWithFormat(ctx, attemptPrompt, "", maxTokens, format)
-		if err != nil {
-			step.Error = err.Error()
-			applog.WithError(err).Warn("Failed to generate recommendations")
-			return make([]models.Recommendation, 0), step
-		}
-
-		step.Response = chatResult.Content
-		step.TokensIn += chatResult.TokensIn
-		step.TokensOut += chatResult.TokensOut
-		step.DurationMs += chatResult.DurationMs
-
-		parsed, dropped, perr := parseRecommendations(chatResult.Content)
-		if perr == nil {
-			// The response was a recognizable envelope/array; record how many
-			// items it dropped even when every one failed, so the telemetry
-			// is stamped on the parse-error path below too.
-			parseDropped = dropped
-			if len(parsed) > 0 || dropped == 0 {
-				// >=1 kept, or a legitimately empty result — accept either.
-				recs, lastParseErr = parsed, nil
-				break
-			}
-			lastParseErr = fmt.Errorf("all %d recommendation(s) failed to parse", dropped)
-		} else {
-			lastParseErr = perr
-		}
+	// Fallback: ask for the whole set in one document, the way this phase used
+	// to. A model that cannot follow the two-pass contract is left where it
+	// started rather than worse off. Skipped once the run's context is done —
+	// there is nothing to gain from another long generation against a dead
+	// context, and the error would be the same one that got us here.
+	if len(recs) == 0 && ctx.Err() == nil {
+		step.RecommendationsSingleCallFallback = true
+		applog.WithFields(applog.Fields{"reason": fail.reason()}).
+			Warn("Two-pass recommendation generation produced nothing; falling back to a single-document call")
+		recs, fail = o.generateRecommendationsSingleDocument(ctx, step, prompt, insights, recWindow, recOutputCap)
 	}
 
-	// Layer 4 (surface): a zero-recommendations result caused by a parse
-	// failure is stamped with a status + error the dashboard renders, instead
-	// of silently showing an empty section (issue #342).
-	if len(recs) == 0 && lastParseErr != nil {
-		step.RecommendationsDroppedParse = parseDropped
-		step.Error = fmt.Sprintf("parse error: %s", lastParseErr.Error())
-		step.Status = statusRecommendationParseError
-		applog.WithError(lastParseErr).Warn("Failed to parse recommendations")
+	// Layer 4 (surface): a zero-recommendations result caused by a response
+	// the phase could not use is stamped with a status + error the dashboard
+	// renders, instead of silently showing an empty section (issue #342).
+	if len(recs) == 0 {
+		if fail != nil {
+			step.Status = fail.status
+			step.Error = fail.message()
+			applog.WithError(fail.err).Warn("Recommendation generation produced nothing")
+		}
 		return make([]models.Recommendation, 0), step
-	}
-
-	// Layer 3b (citation self-heal, #347): the batch parsed, but if NO
-	// recommendation cites an eligible insight id, re-ask once with the eligible
-	// UUIDs spelled out — real citations beat the downstream blunt backfill.
-	// Fires only when zero recs are cited (the small/open-model case, e.g.
-	// DeepSeek-V3.1 which omits related_insight_ids); a big model cites on the
-	// first try and skips this. Bounded + env-overridable (Rule 2). On failure
-	// we keep the uncited batch — recoverRelatedInsightIDs backfills it, so a
-	// recommendation is never lost.
-	citationRetries := goconfig.GetEnvAsInt(recommendationCitationMaxRetriesEnv, defaultRecommendationCitationMaxRetries)
-	if citationRetries < 0 {
-		citationRetries = 0
-	}
-	if len(recs) > 0 && citationRetries > 0 && !anyRecCitesEligible(recs, insights) {
-		for cAttempt := 1; cAttempt <= citationRetries; cAttempt++ {
-			step.RecommendationCitationRetries = cAttempt
-			applog.WithFields(applog.Fields{"attempt": cAttempt}).Warn(
-				"Re-prompting for recommendations: response cited no eligible insight id")
-			chatResult, err := o.aiClient.ChatWithFormat(ctx, prompt+recommendationCitationRepairSuffix(insights), "", maxTokens, format)
-			if err != nil {
-				break // keep the uncited batch; backfill grounds it downstream
-			}
-			step.TokensIn += chatResult.TokensIn
-			step.TokensOut += chatResult.TokensOut
-			step.DurationMs += chatResult.DurationMs
-			parsed, _, perr := parseRecommendations(chatResult.Content)
-			if perr == nil && len(parsed) > 0 && anyRecCitesEligible(parsed, insights) {
-				// Adopt the re-prompt only when it actually recovered a citation.
-				recs = parsed
-				step.Response = chatResult.Content
-				break
-			}
-		}
 	}
 
 	for i := range recs {
@@ -2285,7 +2225,6 @@ func (o *Orchestrator) generateRecommendations(
 		}
 	}
 
-	step.RecommendationsDroppedParse = parseDropped
 	step.Recommendations = recs
 	return recs, step
 }
@@ -2310,6 +2249,15 @@ const (
 	// produced zero recommendations because the LLM response could not be
 	// parsed. The dashboard renders it as the reason for the empty section.
 	statusRecommendationParseError = "recommendation_parse_error"
+
+	// statusRecommendationTruncated marks a RecommendationStep whose phase
+	// produced zero recommendations because the responses were cut off at the
+	// output limit rather than malformed. Kept distinct from the parse-error
+	// status because the operator-facing fix is different: malformed output is
+	// a prompt or model-quality question, a truncated response is a budget
+	// one, and reporting both as "could not be parsed" sent every
+	// investigation down the first path.
+	statusRecommendationTruncated = "recommendation_truncated"
 
 	// defaultRecommendationParseMaxRetries bounds how many corrective
 	// re-prompts the recommendation phase issues when a response yields zero

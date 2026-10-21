@@ -925,6 +925,35 @@ type RecommendationStep struct {
 	RecommendationsDroppedMissingIDs int `bson:"recommendations_dropped_missing_ids,omitempty" json:"recommendations_dropped_missing_ids,omitempty"`
 	RecommendationsDroppedUnknownID  int `bson:"recommendations_dropped_unknown_id,omitempty" json:"recommendations_dropped_unknown_id,omitempty"`
 
+	// Plan/expand telemetry for the two-pass generation (see the agent's
+	// discovery/recommendation_plan.go). RecommendationsPlanned is how many
+	// entries the plan call decided the set would hold; RecommendationsExpanded
+	// how many of them were written; RecommendationsExpandFailed how many could
+	// not be. Together they say whether a short set was a short plan or a plan
+	// that lost entries on the way out. Omitted on documents written before the
+	// two-pass phase.
+	RecommendationsPlanned      int `bson:"recommendations_planned,omitempty" json:"recommendations_planned,omitempty"`
+	RecommendationsExpanded     int `bson:"recommendations_expanded,omitempty" json:"recommendations_expanded,omitempty"`
+	RecommendationsExpandFailed int `bson:"recommendations_expand_failed,omitempty" json:"recommendations_expand_failed,omitempty"`
+
+	// RecommendationPlanRetries counts the corrective re-asks the plan call
+	// needed. Omitted when the plan was readable first time.
+	RecommendationPlanRetries int `bson:"recommendation_plan_retries,omitempty" json:"recommendation_plan_retries,omitempty"`
+
+	// RecommendationsSingleCallFallback records that the two-pass path produced
+	// nothing and the phase fell back to asking for the whole set as one
+	// document — the shape it used before. Set on a model that cannot follow
+	// the two-pass contract, and the number to watch if the fallback starts
+	// carrying runs it was only meant to catch.
+	RecommendationsSingleCallFallback bool `bson:"recommendations_single_call_fallback,omitempty" json:"recommendations_single_call_fallback,omitempty"`
+
+	// Calls is the per-call record of the phase: the plan call, each expansion,
+	// each retry. Prompt/Response above hold one exchange between them, so
+	// without this a phase that failed on its third call out of nine was
+	// indistinguishable from one that failed on its first — the tokens were
+	// summed and the response was whichever came last.
+	Calls []RecommendationCall `bson:"calls,omitempty" json:"calls,omitempty"`
+
 	// RecommendationsDroppedParse counts recommendations skipped because
 	// their individual JSON object could not be decoded (issue #342 —
 	// e.g. a field with the wrong type). It is a subset of
@@ -976,6 +1005,53 @@ type RecommendationStep struct {
 
 	Error string `bson:"error,omitempty" json:"error,omitempty"`
 }
+
+// RecommendationCall is one LLM call the recommendation phase made, recorded
+// per call rather than summed, so a failure can be read back to the call that
+// produced it.
+//
+// StopReason is the provider's own word for why generation ended, and
+// Truncated / Degenerate are what the agent concluded from it together with
+// the token count and the text: a reply stopped at the output limit, and a
+// reply that spent its budget on a repeating run. ResponseChars is kept
+// alongside TokensOut because the ratio between them is what tells those two
+// apart — dense JSON runs a couple of characters per token, a whitespace run
+// runs dozens.
+type RecommendationCall struct {
+	// Kind is RecommendationCallPlan, RecommendationCallExpand or
+	// RecommendationCallSingleDocument.
+	Kind string `bson:"kind" json:"kind"`
+
+	// Index is the plan entry this call wrote, zero-based. Only meaningful
+	// for an expansion call.
+	Index int `bson:"index,omitempty" json:"index,omitempty"`
+
+	// Attempt is the retry round, 0 for the first try.
+	Attempt int `bson:"attempt,omitempty" json:"attempt,omitempty"`
+
+	StopReason    string `bson:"stop_reason,omitempty" json:"stop_reason,omitempty"`
+	Truncated     bool   `bson:"truncated,omitempty" json:"truncated,omitempty"`
+	Degenerate    bool   `bson:"degenerate,omitempty" json:"degenerate,omitempty"`
+	TokensIn      int    `bson:"tokens_in,omitempty" json:"tokens_in,omitempty"`
+	TokensOut     int    `bson:"tokens_out,omitempty" json:"tokens_out,omitempty"`
+	DurationMs    int64  `bson:"duration_ms,omitempty" json:"duration_ms,omitempty"`
+	ResponseChars int    `bson:"response_chars,omitempty" json:"response_chars,omitempty"`
+
+	// Error is set when the call itself failed (transport, timeout) rather
+	// than returning an unusable response.
+	Error string `bson:"error,omitempty" json:"error,omitempty"`
+}
+
+// The kinds of call the recommendation phase makes.
+const (
+	// RecommendationCallPlan is the pass-1 call that decides the set.
+	RecommendationCallPlan = "plan"
+	// RecommendationCallExpand is a pass-2 call that writes one entry.
+	RecommendationCallExpand = "expand"
+	// RecommendationCallSingleDocument is the fallback call that asks for the
+	// whole set in one response.
+	RecommendationCallSingleDocument = "single_document"
+)
 
 // ValidationResult captures warehouse verification for an insight or
 // recommendation. The legacy fields are populated by old discoveries;

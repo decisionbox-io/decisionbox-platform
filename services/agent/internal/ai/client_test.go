@@ -285,3 +285,35 @@ func TestCreateMessageWithFormat_GatesOnSupport(t *testing.T) {
 		t.Error("unsupported provider must not carry ResponseFormat")
 	}
 }
+
+func TestChatPassesTheStopReasonThrough(t *testing.T) {
+	// A caller that asks for a structured document decides what to do next
+	// from this: a reply cut off at the output cap needs a smaller request,
+	// not a re-ask. Dropping it here left every such caller guessing from the
+	// text, which cannot be done.
+	for _, reason := range []string{"end_turn", "max_tokens", "length"} {
+		provider := testutil.NewMockLLMProvider()
+		provider.DefaultResponse = &gollm.ChatResponse{
+			Content:    "{}",
+			StopReason: reason,
+			Usage:      gollm.Usage{InputTokens: 7, OutputTokens: 11},
+		}
+		client, _ := New(provider, "test-model")
+
+		res, err := client.Chat(context.Background(), "prompt", "", 100)
+		if err != nil {
+			t.Fatalf("Chat: %v", err)
+		}
+		if res.StopReason != reason {
+			t.Errorf("Chat StopReason = %q, want %q", res.StopReason, reason)
+		}
+
+		res, err = client.ChatWithFormat(context.Background(), "prompt", "", 100, nil)
+		if err != nil {
+			t.Fatalf("ChatWithFormat: %v", err)
+		}
+		if res.StopReason != reason {
+			t.Errorf("ChatWithFormat StopReason = %q, want %q", res.StopReason, reason)
+		}
+	}
+}

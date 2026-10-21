@@ -220,3 +220,45 @@ func TestNormalizeStructuredToolResponse_TextResponseLeftIntact(t *testing.T) {
 		t.Errorf("content mutated: %q", resp.Content)
 	}
 }
+
+func TestNormalizeStructuredToolResponse_PreservesALengthStopReason(t *testing.T) {
+	// A forced-tool reply cut off at the output cap arrives as "max_tokens"
+	// with a partial, unparseable tool input: the input folds to an empty
+	// object, so the stop reason is the only thing left saying the answer is
+	// incomplete. Rewriting it to end_turn turned a truncated reply into a
+	// clean-looking empty one, and the caller had no way to tell.
+	resp := &ChatResponse{
+		StopReason: "max_tokens",
+		ToolCalls:  []ToolCall{{Name: "recommendations", Input: nil}},
+	}
+	if err := NormalizeStructuredToolResponse(resp, true); err != nil {
+		t.Fatalf("NormalizeStructuredToolResponse: %v", err)
+	}
+	if resp.StopReason != "max_tokens" {
+		t.Errorf("StopReason = %q, want it preserved as max_tokens", resp.StopReason)
+	}
+	if !IsLengthStopReason(resp.StopReason) {
+		t.Error("the folded reply must still read as truncated")
+	}
+	if resp.Content != "{}" {
+		t.Errorf("Content = %q, want the empty object the partial input folds to", resp.Content)
+	}
+	if len(resp.ToolCalls) != 0 {
+		t.Error("the synthetic tool call must still be hidden")
+	}
+}
+
+func TestNormalizeStructuredToolResponse_NormalizesOnlyToolStopReasons(t *testing.T) {
+	for _, in := range []string{"tool_use", "tool_calls"} {
+		resp := &ChatResponse{
+			StopReason: in,
+			ToolCalls:  []ToolCall{{Name: "x", Input: map[string]interface{}{"a": 1}}},
+		}
+		if err := NormalizeStructuredToolResponse(resp, true); err != nil {
+			t.Fatalf("NormalizeStructuredToolResponse(%q): %v", in, err)
+		}
+		if resp.StopReason != "end_turn" {
+			t.Errorf("StopReason for %q = %q, want end_turn", in, resp.StopReason)
+		}
+	}
+}

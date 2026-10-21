@@ -12,7 +12,7 @@ A discovery run is the core operation of DecisionBox. The agent autonomously exp
 | 3. Exploration | AI writes + executes SQL queries | 2-30 min |
 | 4. Analysis | Generate insights per analysis area | 1-5 min |
 | 4.5. Insight validation | LLM verifier + refuter check insights against row evidence | 1-5 min |
-| 5. Recommendations | Generate actionable advice from supported insights | 1-3 min |
+| 5. Recommendations | Generate actionable advice from supported insights (one plan call, then one call per recommendation) | 1-3 min |
 | 5.5. Recommendation validation | Same verifier + refuter check recommendations | 1-3 min |
 | 6. Update project context | Write rolling context for the next run | <1s |
 | 7. Save | Write results to MongoDB | ~1s |
@@ -262,6 +262,21 @@ The stored insights are unchanged; only the prompt copy is trimmed (`insightsFor
 
 After generation, `validateRelatedInsightIDs` drops any recommendation whose `related_insight_ids` list is empty or references an insight not in the eligible set. The dropped recommendation is logged with the bad IDs so operators can trace the cause, and the per-run drop counts are stamped onto the persisted `RecommendationStep` (`recommendations_dropped`, `recommendations_dropped_missing_ids`, `recommendations_dropped_unknown_id` — see the [RecommendationStep data model](../reference/data-models.md#recommendationstep)). The live dashboard run-step message reads "Generated N recommendations (M dropped due to invalid related_insight_ids)" when the drop counter is non-zero. The most common cause of `recommendations_dropped_unknown_id` is an LLM that emits category/severity/theme slug strings in place of the input insight's actual UUID (issue #237); the recommendation discipline rules explicitly forbid this shape, but a regression on a specific model surfaces here.
 
+### Two passes: plan, then write one at a time
+
+The set is not generated as a single document. The phase asks for it in two passes:
+
+1. **The plan call.** The eligible insights, and an output that is only the shape of the set — a `title`, a `category`, a `priority` and the `related_insight_ids` each entry is built on. This is the call that decides the set: what it covers, that no two entries say the same thing, and each priority relative to the others. Its output budget is `RECOMMENDATION_PLAN_OUTPUT_TOKENS` (default 2048), which a plan of twenty entries does not approach, so it is the one call in the phase that cannot run out of room. The planned set is bounded by `RECOMMENDATION_PLAN_MAX_ITEMS` (default 20) — a bound on fan-out, not a product decision about how many recommendations to make; that stays the pack's instruction to the model.
+2. **One expansion call per planned entry.** Each is shown the same insights *and* the whole plan — so the entry knows which others are higher priority and what they already cover — and writes exactly one recommendation, within `RECOMMENDATION_EXPAND_OUTPUT_TOKENS` (default 4096). An entry that cannot be written costs that entry and nothing else.
+
+Both instruction blocks are appended by the agent, not carried in the pack template, so a custom or edited `recommendations.md` still gets them.
+
+**Why.** Asking for the whole set in one response put every recommendation behind one output cap. A run with a dozen eligible insights asks for several recommendations, each with a description, actions, an impact object and figures, and the document does not always fit: generation stops at the cap, the JSON is cut mid-structure, and the envelope parse then discards everything — including the recommendations the response had already finished. The phase ended with none while the run still reported `completed`, and the corrective retry re-sent the same request and reproduced the same cut. Splitting the *insights* across calls would have been the wrong axis: the cap is on output, and most recommendations cite more than one insight, so batching the input is how you lose that. The insights stay whole in every call; the output is what is split.
+
+**A response that was cut off is now told apart from one that was malformed**, from the provider's stop reason (`length`, `max_tokens`, `MAX_TOKENS` — each wire spells it differently) and, for providers that report no usable reason, from output tokens equal to the budget the call was given. The two need opposite repairs: a malformed response is re-asked with the mistake named, a truncated one is re-asked *shorter*. A third shape — a response that spent its budget on a repeating whitespace run — is recorded separately (`LLM_RESPONSE_MIN_NONSPACE_PCT`), because shrinking the request does not fix a sampler and the operator should not read it as "the document was too big".
+
+**The fallback.** When the plan cannot be read, or no expansion produces anything, the phase falls back to asking for the whole set in one document, the way it did before — so a model that cannot follow the two-pass contract ends where it used to rather than worse off. `RecommendationStep.recommendations_single_call_fallback` records that it happened, and `RecommendationStep.calls[]` records every call the phase made (kind, stop reason, truncated/degenerate, tokens, duration), because `prompt`/`response` hold one exchange out of up to a dozen.
+
 ```
 Load recommendations.md prompt
   ↓
@@ -272,7 +287,9 @@ Substitute:
   {{INSIGHTS_SUMMARY}} → "Total: 7 insights (churn: 3, engagement: 2, monetization: 2)"
   {{INSIGHTS_DATA}} → eligible insights as JSON, trimmed to the recommender's fields (with IDs)
   ↓
-Send to LLM
+Append the plan instruction → send to LLM → the plan
+  ↓
+For each planned entry: append the expansion instruction (plan + which entry) → send to LLM
   ↓
 LLM responds with JSON:
   {
@@ -339,7 +356,7 @@ The run status is updated to `completed` (or `failed` if critical errors occurre
 ## Cost
 
 Each run costs:
-- **LLM tokens** — Exploration (many small calls) + Analysis (few large calls) + Recommendations (one call)
+- **LLM tokens** — Exploration (many small calls) + Analysis (few large calls) + Recommendations (one plan call + one call per recommendation, each sending the same insight context)
 - **Warehouse queries** — Each exploration step executes one SQL query
 
 Use the **cost estimation** feature (`POST /api/v1/projects/{id}/discover/estimate`) to preview costs before running. The dashboard has a checkbox: "Estimate cost before running."

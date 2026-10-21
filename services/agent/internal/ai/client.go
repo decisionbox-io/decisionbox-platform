@@ -80,6 +80,17 @@ type ChatResult struct {
 	TokensIn   int
 	TokensOut  int
 	DurationMs int64
+
+	// StopReason is the provider's reason for ending generation, passed
+	// through verbatim ("end_turn", "max_tokens", "length", "MAX_TOKENS",
+	// ... -- each wire spells it its own way; llm.IsLengthStopReason reads
+	// the output-limit case across all of them).
+	//
+	// A caller that asks for a structured document needs it: a reply cut
+	// off at the output cap is not malformed output to re-prompt out of,
+	// it is a reply that needs a smaller request, and the text alone
+	// cannot be made to say which it was.
+	StopReason string
 }
 
 // Chat sends a user prompt with an optional system prompt and returns the full result.
@@ -95,6 +106,7 @@ func (c *Client) Chat(ctx context.Context, userPrompt string, systemPrompt strin
 		TokensIn:   resp.Usage.InputTokens,
 		TokensOut:  resp.Usage.OutputTokens,
 		DurationMs: time.Since(start).Milliseconds(),
+		StopReason: resp.StopReason,
 	}, nil
 }
 
@@ -263,6 +275,7 @@ func (c *Client) ChatWithFormat(ctx context.Context, userPrompt string, systemPr
 		TokensIn:   resp.Usage.InputTokens,
 		TokensOut:  resp.Usage.OutputTokens,
 		DurationMs: time.Since(start).Milliseconds(),
+		StopReason: resp.StopReason,
 	}, nil
 }
 

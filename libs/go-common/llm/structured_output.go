@@ -111,7 +111,15 @@ func NormalizeStructuredToolResponse(resp *ChatResponse, injected bool) error {
 	resp.ToolCalls = nil
 	// The synthetic tool call is now hidden, so the upstream "tool_use"
 	// stop reason would violate the invariant that tool_use implies there
-	// are tool calls to execute. Present it as a normal terminal turn.
-	resp.StopReason = "end_turn"
+	// are tool calls to execute. Present it as a normal terminal turn --
+	// but only when a tool reason is what the provider actually reported.
+	// A reply cut off at the output cap arrives as "max_tokens" with a
+	// partial, unparseable tool input: the input above folds to an empty
+	// object and the stop reason is then the only thing left saying the
+	// answer is incomplete. Overwriting it turned a truncated reply into a
+	// clean-looking empty one, and the caller had no way to tell.
+	if isToolStopReason(resp.StopReason) {
+		resp.StopReason = "end_turn"
+	}
 	return nil
 }

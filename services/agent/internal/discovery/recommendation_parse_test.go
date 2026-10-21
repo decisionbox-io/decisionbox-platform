@@ -143,6 +143,14 @@ func newRecOrchestrator(content string) (*Orchestrator, *testutil.MockLLMProvide
 
 var recInsights = []models.Insight{{ID: "i-1", Name: "Churn", AnalysisArea: "churn"}}
 
+// testRecWindow / testRecOutputCap stand in for a resolved model budget in the
+// tests that call one pass of the phase directly. Values of a mid-size model,
+// so the budget arithmetic returns the output cap rather than a floor.
+const (
+	testRecWindow    = 32768
+	testRecOutputCap = 8192
+)
+
 func TestGenerateRecommendations_StringImpactKept(t *testing.T) {
 	o, _ := newRecOrchestrator(validRecEnvelope)
 	recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", recInsights, "", "ds")
@@ -157,21 +165,22 @@ func TestGenerateRecommendations_StringImpactKept(t *testing.T) {
 	}
 }
 
-func TestGenerateRecommendations_RetryRecovers(t *testing.T) {
+func TestGenerateRecommendationsSingleDocument_RetryRecovers(t *testing.T) {
 	o, provider := newRecOrchestrator("")
 	provider.ResponseQueue = []*gollm.ChatResponse{
 		{Content: "not json", Usage: gollm.Usage{InputTokens: 1, OutputTokens: 1}},
 		{Content: validRecEnvelope, Usage: gollm.Usage{InputTokens: 2, OutputTokens: 3}},
 	}
-	recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", recInsights, "", "ds")
+	step := &models.RecommendationStep{}
+	recs, fail := o.generateRecommendationsSingleDocument(context.Background(), step, "prompt", recInsights, testRecWindow, testRecOutputCap)
 	if len(recs) != 2 {
 		t.Fatalf("recs = %d, want 2 after retry", len(recs))
 	}
+	if fail != nil {
+		t.Errorf("recovered call must not report a failure, got %q", fail.reason())
+	}
 	if step.RecommendationParseRetries != 1 {
 		t.Errorf("RecommendationParseRetries = %d, want 1", step.RecommendationParseRetries)
-	}
-	if step.Error != "" || step.Status != "" {
-		t.Errorf("recovered run must have empty Error/Status: err=%q status=%q", step.Error, step.Status)
 	}
 	if len(provider.Calls) != 2 {
 		t.Errorf("provider called %d times, want 2 (initial + 1 retry)", len(provider.Calls))
@@ -202,12 +211,18 @@ func TestGenerateRecommendations_AllFailSetsStatus(t *testing.T) {
 func TestGenerateRecommendations_AllItemsDroppedStampsParseCount(t *testing.T) {
 	// Every item is individually malformed → 0 recs, but the parse-drop count
 	// must still be stamped on the parse-error path (Codex review, #342).
+	//
+	// Driven through the plan+expand phase end to end: an unreadable plan
+	// falls back to the single-document call, which is where a document of
+	// individually-malformed items is still parsed item by item. Both calls
+	// serve the same bad document, so the count is the fallback's two drops
+	// (the plan call's response is not a recommendation document and
+	// contributes none).
 	const allBad = `{"recommendations":[
 		{"title":"a","actions":"not an array"},
 		{"title":"b","actions":42}
 	]}`
-	o, _ := newRecOrchestrator("")
-	o.aiClient, _ = ai.New(mustQueueProvider(allBad, allBad), "mock-model")
+	o, _ := newRecOrchestrator(allBad)
 	recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", recInsights, "", "ds")
 	if len(recs) != 0 {
 		t.Fatalf("recs = %d, want 0", len(recs))
@@ -215,8 +230,11 @@ func TestGenerateRecommendations_AllItemsDroppedStampsParseCount(t *testing.T) {
 	if step.Status != statusRecommendationParseError {
 		t.Errorf("Status = %q, want %q", step.Status, statusRecommendationParseError)
 	}
-	if step.RecommendationsDroppedParse != 2 {
-		t.Errorf("RecommendationsDroppedParse = %d, want 2 (both items dropped)", step.RecommendationsDroppedParse)
+	if !step.RecommendationsSingleCallFallback {
+		t.Error("an unreadable plan must fall back to the single-document call")
+	}
+	if step.RecommendationsDroppedParse != 4 {
+		t.Errorf("RecommendationsDroppedParse = %d, want 4 (two items dropped on each of the fallback's two attempts)", step.RecommendationsDroppedParse)
 	}
 }
 
@@ -228,15 +246,19 @@ func mustQueueProvider(responses ...string) *testutil.MockLLMProvider {
 	return p
 }
 
-func TestGenerateRecommendations_NoRetryOnPartialSuccess(t *testing.T) {
+func TestGenerateRecommendationsSingleDocument_NoRetryOnPartialSuccess(t *testing.T) {
 	const partial = `{"recommendations":[
 		{"title":"Good","priority":1,"expected_impact":{"metric":"m"},"related_insight_ids":["i-1"]},
 		{"title":"Bad","actions":"not an array"}
 	]}`
 	o, provider := newRecOrchestrator(partial)
-	recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", recInsights, "", "ds")
+	step := &models.RecommendationStep{}
+	recs, fail := o.generateRecommendationsSingleDocument(context.Background(), step, "prompt", recInsights, testRecWindow, testRecOutputCap)
 	if len(recs) != 1 {
 		t.Fatalf("recs = %d, want 1 (keep the good one)", len(recs))
+	}
+	if fail != nil {
+		t.Errorf("fail = %v, want nil", fail.reason())
 	}
 	if step.RecommendationsDroppedParse != 1 {
 		t.Errorf("RecommendationsDroppedParse = %d, want 1", step.RecommendationsDroppedParse)
@@ -249,14 +271,15 @@ func TestGenerateRecommendations_NoRetryOnPartialSuccess(t *testing.T) {
 	}
 }
 
-func TestGenerateRecommendations_LegitEmptyNoRetry(t *testing.T) {
+func TestGenerateRecommendationsSingleDocument_LegitEmptyNoRetry(t *testing.T) {
 	o, provider := newRecOrchestrator(`{"recommendations":[]}`)
-	recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", recInsights, "", "ds")
+	step := &models.RecommendationStep{}
+	recs, fail := o.generateRecommendationsSingleDocument(context.Background(), step, "prompt", recInsights, testRecWindow, testRecOutputCap)
 	if len(recs) != 0 {
 		t.Fatalf("recs = %d, want 0", len(recs))
 	}
-	if step.Error != "" || step.Status != "" {
-		t.Errorf("a legitimately empty result is not an error: err=%q status=%q", step.Error, step.Status)
+	if fail != nil {
+		t.Errorf("a legitimately empty result is not a failure, got %q", fail.reason())
 	}
 	if len(provider.Calls) != 1 {
 		t.Errorf("provider called %d times, want 1 (no retry on legit empty)", len(provider.Calls))
@@ -266,14 +289,15 @@ func TestGenerateRecommendations_LegitEmptyNoRetry(t *testing.T) {
 // Citation self-heal (#347): a first batch that cites no eligible insight
 // triggers exactly one re-prompt; when the re-prompt returns valid citations
 // they are adopted (the small/open-model recovery path — DeepSeek-V3.1).
-func TestGenerateRecommendations_CitationSelfHealRecovers(t *testing.T) {
+func TestGenerateRecommendationsSingleDocument_CitationSelfHealRecovers(t *testing.T) {
 	uncited := `{"recommendations":[{"title":"X","priority":1,"expected_impact":{"metric":"m"}}]}`
 	cited := `{"recommendations":[{"title":"X","priority":1,"expected_impact":{"metric":"m"},"related_insight_ids":["i-1"]}]}`
 	provider := mustQueueProvider(uncited, cited)
 	client, _ := ai.New(provider, "mock-model")
 	o := &Orchestrator{aiClient: client}
 
-	recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", recInsights, "", "ds")
+	step := &models.RecommendationStep{}
+	recs, _ := o.generateRecommendationsSingleDocument(context.Background(), step, "prompt", recInsights, testRecWindow, testRecOutputCap)
 	if len(provider.Calls) != 2 {
 		t.Fatalf("provider called %d times, want 2 (initial + citation self-heal)", len(provider.Calls))
 	}
@@ -287,9 +311,10 @@ func TestGenerateRecommendations_CitationSelfHealRecovers(t *testing.T) {
 
 // Big-model path: a first batch that already cites a valid insight must NOT
 // trigger the citation self-heal — one call, zero citation retries.
-func TestGenerateRecommendations_NoCitationRetryWhenAlreadyCited(t *testing.T) {
+func TestGenerateRecommendationsSingleDocument_NoCitationRetryWhenAlreadyCited(t *testing.T) {
 	o, provider := newRecOrchestrator(validRecEnvelope) // rec "A" cites i-1
-	_, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", recInsights, "", "ds")
+	step := &models.RecommendationStep{}
+	_, _ = o.generateRecommendationsSingleDocument(context.Background(), step, "prompt", recInsights, testRecWindow, testRecOutputCap)
 	if len(provider.Calls) != 1 {
 		t.Errorf("provider called %d times, want 1 (no citation self-heal when already cited)", len(provider.Calls))
 	}
@@ -315,10 +340,11 @@ func TestGenerateRecommendations_StructuredOutputGating(t *testing.T) {
 	if _, _ = o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", recInsights, "", "ds"); len(provider.Calls) == 0 {
 		t.Fatal("provider was not called")
 	}
+	// The phase's first call is the plan call, so it carries the plan schema.
 	if rf := provider.Calls[0].Request.ResponseFormat; rf == nil {
 		t.Error("ResponseFormat must be set for a structured-output provider")
-	} else if rf.Name != recommendationResponseFormatName {
-		t.Errorf("ResponseFormat.Name = %q, want %q", rf.Name, recommendationResponseFormatName)
+	} else if rf.Name != recommendationPlanResponseFormatName {
+		t.Errorf("ResponseFormat.Name = %q, want %q", rf.Name, recommendationPlanResponseFormatName)
 	}
 
 	// Unsupported provider (no provenance → unknown provider): no format sent.
