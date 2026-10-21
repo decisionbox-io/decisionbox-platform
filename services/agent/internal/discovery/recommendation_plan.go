@@ -426,6 +426,20 @@ func recommendationExpandSuffix(plan []recommendationPlanItem, idx int) string {
 	return sb.String()
 }
 
+// recommendationBriefThinkingSuffix is the corrective block for a reply that
+// spent its budget without the answer reaching the caller. Asking for a
+// shorter answer would be answering the wrong question: there was no answer,
+// and what the next attempt needs is for the model to get to one. Paired with
+// a raised ceiling, so the room is there as well as asked for.
+func recommendationBriefThinkingSuffix(reason string) string {
+	return fmt.Sprintf(`
+
+Your previous response could not be used: %s. Whatever you spent that response
+on, it did not reach us. Do not plan or deliberate at length this time: decide
+quickly and spend the response on the JSON object itself, complete and
+parseable, with nothing before or after it.`, reason)
+}
+
 // recommendationTerseSuffix is the corrective block for an expansion whose
 // reply was cut off at the output limit, or spent its budget on a repeating
 // run. Naming the length as the problem is the whole point: the previous
@@ -455,6 +469,11 @@ type recommendationFailure struct {
 
 	// prefix labels err in the step's Error string.
 	prefix string
+
+	// missingOutput is set when the reply spent its budget without the answer
+	// reaching the caller — the one failure whose repair is a *larger* request
+	// rather than a smaller one.
+	missingOutput bool
 }
 
 // newRecommendationParseFailure reports a response the parsers could not read.
@@ -464,8 +483,13 @@ func newRecommendationParseFailure(err error) *recommendationFailure {
 
 // newRecommendationTruncationFailure reports a response that was cut off at
 // the output limit, or spent its budget without producing content.
-func newRecommendationTruncationFailure(reason string) *recommendationFailure {
-	return &recommendationFailure{err: errors.New(reason), status: statusRecommendationTruncated, prefix: "response unusable"}
+func newRecommendationTruncationFailure(reason string, missingOutput bool) *recommendationFailure {
+	return &recommendationFailure{
+		err:           errors.New(reason),
+		status:        statusRecommendationTruncated,
+		prefix:        "response unusable",
+		missingOutput: missingOutput,
+	}
 }
 
 // newRecommendationTransportFailure reports a call that failed outright.
@@ -480,7 +504,7 @@ func newRecommendationTransportFailure(err error) *recommendationFailure {
 func recommendationFailureFor(health responseHealth, parseErr error, emptyErr error) *recommendationFailure {
 	switch {
 	case health.unusable():
-		return newRecommendationTruncationFailure(health.reason)
+		return newRecommendationTruncationFailure(health.reason, health.missingOutput)
 	case parseErr != nil:
 		return newRecommendationParseFailure(parseErr)
 	default:
@@ -515,6 +539,9 @@ func (f *recommendationFailure) reason() string {
 func (f *recommendationFailure) retrySuffix() string {
 	if f == nil || f.err == nil {
 		return ""
+	}
+	if f.missingOutput {
+		return recommendationBriefThinkingSuffix(f.err.Error())
 	}
 	if f.status == statusRecommendationTruncated {
 		return recommendationTerseSuffix(f.err.Error())
@@ -591,7 +618,7 @@ func (o *Orchestrator) planRecommendations(
 			attemptPrompt += recommendationPlanRepairSuffix(fail.reason(), maxItems)
 		}
 
-		maxTokens := o.recommendationCallMaxTokens(ctx, attemptPrompt, recommendationPlanOutputTokens())
+		maxTokens := o.recommendationCallMaxTokens(ctx, attemptPrompt, retryCeiling(recommendationPlanOutputTokens(), fail))
 		res, err := o.aiClient.ChatWithFormat(ctx, attemptPrompt, "", maxTokens, format)
 		if err != nil {
 			recordRecommendationCall(step, models.RecommendationCallPlan, attempt, 0, nil, responseHealth{}, err)
@@ -645,8 +672,17 @@ func (o *Orchestrator) planRecommendations(
 		// response that dropped no entries: an empty plan that lost every
 		// entry to the decoder, or stopped at the output limit, is a failure
 		// like any other.
-		if perr == nil && dropped == 0 && !health.unusable() {
-			applog.Info("Recommendation plan is empty: the model found nothing to recommend")
+		//
+		// Not conditioned on the health verdict. A plan cut off before it
+		// wrote an entry does not parse at all -- for this to read as an empty
+		// plan the model had to close the array -- and the verdict is a
+		// statement about the tokens, not about the answer in hand. Letting it
+		// veto a parsed answer is how a structured-output provider's perfectly
+		// good empty plan ended up being argued with, since the fold discards
+		// the tool scaffolding its token count was spent on.
+		if perr == nil && dropped == 0 {
+			applog.WithFields(applog.Fields{"health": health.reason}).
+				Info("Recommendation plan is empty: the model found nothing to recommend")
 			return nil, nil
 		}
 		fail = recommendationFailureFor(health, perr, fmt.Errorf("the plan held no usable entries"))
@@ -733,7 +769,7 @@ func (o *Orchestrator) expandOneRecommendation(
 			}).Warn("Re-asking for one recommendation after an unusable response")
 		}
 
-		maxTokens := o.recommendationCallMaxTokens(ctx, attemptPrompt, recommendationExpandOutputTokens())
+		maxTokens := o.recommendationCallMaxTokens(ctx, attemptPrompt, retryCeiling(recommendationExpandOutputTokens(), fail))
 		res, err := o.aiClient.ChatWithFormat(ctx, attemptPrompt, "", maxTokens, format)
 		if err != nil {
 			recordRecommendationCall(step, models.RecommendationCallExpand, attempt, idx, nil, responseHealth{}, err)
@@ -743,28 +779,11 @@ func (o *Orchestrator) expandOneRecommendation(
 		health := classifyResponse(o.recommendationResponseFacts(res, maxTokens))
 		recordRecommendationCall(step, models.RecommendationCallExpand, attempt, idx, res, health, nil)
 
-		parsed, dropped, perr := parseRecommendations(res.Content)
-		step.RecommendationsDroppedParse += dropped
-		if perr == nil && len(parsed) > 0 {
-			rec, extra, serr := selectPlannedRecommendation(parsed, plan, idx)
-			if serr == nil {
-				// One entry per call. A response that writes more is answering
-				// for entries whose own calls will answer for them, so the
-				// extras are dropped rather than duplicated into the set.
-				if extra > 0 {
-					step.RecommendationsDroppedParse += extra
-					applog.WithFields(applog.Fields{
-						"entry": idx + 1,
-						"extra": extra,
-					}).Warn("Expansion wrote more than the one planned recommendation; keeping the planned one")
-				}
-				applyPlanToRecommendation(rec, plan[idx], insights)
-				return o.repairExpansionCitation(ctx, step, base, rec, insights, format, idx), nil
-			}
-			fail = newRecommendationParseFailure(serr)
-		} else {
-			fail = recommendationFailureFor(health, perr, fmt.Errorf("the response held no usable recommendation"))
+		rec, perr := adoptExpansionResponse(step, res.Content, plan, idx, insights)
+		if perr == nil {
+			return o.repairExpansionCitation(ctx, step, base, rec, plan, idx, insights, format), nil
 		}
+		fail = recommendationFailureFor(health, perr, fmt.Errorf("the response held no usable recommendation"))
 	}
 	return nil, fail
 }
@@ -803,9 +822,10 @@ func (o *Orchestrator) repairExpansionCitation(
 	step *models.RecommendationStep,
 	base string,
 	rec *models.Recommendation,
+	plan []recommendationPlanItem,
+	idx int,
 	insights []models.Insight,
 	format *gollm.ResponseFormat,
-	idx int,
 ) *models.Recommendation {
 	retries := recommendationCitationMaxRetries()
 	if retries <= 0 || anyRecCitesEligible([]models.Recommendation{*rec}, insights) {
@@ -827,17 +847,19 @@ func (o *Orchestrator) repairExpansionCitation(
 		health := classifyResponse(o.recommendationResponseFacts(res, maxTokens))
 		recordRecommendationCall(step, models.RecommendationCallExpand, attempt, idx, res, health, nil)
 
-		parsed, _, perr := parseRecommendations(res.Content)
-		if perr != nil || len(parsed) == 0 {
+		// Through the same adoption path as the first attempt. A re-ask is
+		// just as able to answer with the whole set, and adopting whatever
+		// carried a valid citation would save another entry twice and lose
+		// this one -- which is the protection selectPlannedRecommendation
+		// exists to give, so there is one way in and not two.
+		recovered, perr := adoptExpansionResponse(step, res.Content, plan, idx, insights)
+		if perr != nil {
 			continue
 		}
-		if !anyRecCitesEligible(parsed[:1], insights) {
+		if !anyRecCitesEligible([]models.Recommendation{*recovered}, insights) {
 			continue
 		}
-		// Adopt the re-ask only when it actually recovered a citation, and only
-		// the one object this call is about.
-		recovered := parsed[0]
-		return &recovered
+		return recovered
 	}
 	return rec
 }
@@ -955,6 +977,24 @@ func (o *Orchestrator) generateRecommendationsSingleDocument(
 	return recs, nil
 }
 
+// retryCeiling is the output ceiling the next attempt should ask for, given
+// how the last one failed.
+//
+// Everything else gets the same ceiling again, because the problem was the
+// answer and the re-ask names it. A reply whose budget went somewhere the
+// caller cannot see is the exception: the answer never started, so asking for
+// the same room again asks for the same outcome. That is what an uncatalogued
+// thinking model looks like from the outside — the OpenAI catalog flags no
+// model as reasoning, so o-series and GPT-5 projects reach the phase with
+// effectiveReasoning() false — and reacting to the evidence covers a model
+// nothing has classified, including one that does not exist yet.
+func retryCeiling(base int, fail *recommendationFailure) int {
+	if fail != nil && fail.missingOutput {
+		return base + recommendationReasoningHeadroomTokens
+	}
+	return base
+}
+
 // recommendationCallMaxTokens budgets one call's output: the measured input
 // against the model's window, capped by what this call actually needs rather
 // than by what the model would allow.
@@ -1019,6 +1059,50 @@ func recordRecommendationCall(
 		call.Error = callErr.Error()
 	}
 	step.Calls = append(step.Calls, call)
+}
+
+// adoptExpansionResponse reads one expansion response into the planned
+// recommendation it answers for: the tolerant parse, the entry match, and the
+// fields the plan already decided.
+//
+// Every path that takes a recommendation out of a response goes through here.
+// There were three such paths and each one that did its own selection got it
+// wrong in its own way -- taking the first object, accepting a sole object
+// unchecked, adopting whichever object carried a citation -- all with the same
+// consequence: another entry saved twice, this one lost, and this one's
+// citation stamped on the duplicate.
+func adoptExpansionResponse(
+	step *models.RecommendationStep,
+	content string,
+	plan []recommendationPlanItem,
+	idx int,
+	insights []models.Insight,
+) (*models.Recommendation, error) {
+	parsed, dropped, perr := parseRecommendations(content)
+	step.RecommendationsDroppedParse += dropped
+	if perr != nil {
+		return nil, perr
+	}
+	if len(parsed) == 0 {
+		return nil, errors.New("the response held no recommendation")
+	}
+
+	rec, extra, serr := selectPlannedRecommendation(parsed, plan, idx)
+	if serr != nil {
+		return nil, serr
+	}
+	// One entry per call. A response that writes more is answering for entries
+	// whose own calls will answer for them, so the extras are dropped rather
+	// than duplicated into the set.
+	if extra > 0 {
+		step.RecommendationsDroppedParse += extra
+		applog.WithFields(applog.Fields{
+			"entry": idx + 1,
+			"extra": extra,
+		}).Warn("Expansion wrote more than the one planned recommendation; keeping the planned one")
+	}
+	applyPlanToRecommendation(rec, plan[idx], insights)
+	return rec, nil
 }
 
 // selectPlannedRecommendation picks, out of one expansion response, the

@@ -107,18 +107,58 @@ func TestClassifyResponse_TrimmedFloodIsStillDegenerate(t *testing.T) {
 func TestClassifyResponse_AThinkingModelIsNotJudgedOnItsVisibleLength(t *testing.T) {
 	// On a reasoning model the hidden channel is counted in the output tokens
 	// and absent from the content by design, so a reply that thought at length
-	// and answered briefly is the normal case — not a reply that went missing.
-	f := facts("end_turn", 8192, 16384, `{"recommendations":[{"title":"A"}]}`)
+	// and got cut off mid-answer is a reply that needed more room — not one
+	// whose output went missing.
+	f := facts("length", 8192, 8192, `{"recommendations":[{"title":"A`)
 	f.reasoning = true
-	if h := classifyResponse(f); h.degenerate {
-		t.Errorf("a thinking model's brief answer must not read as degenerate: %+v", h)
+	h := classifyResponse(f)
+	if h.degenerate || h.missingOutput {
+		t.Errorf("a thinking model's short visible answer must not read as degenerate: %+v", h)
+	}
+	if !h.truncated {
+		t.Error("it did stop at the limit, and that much is still true of it")
 	}
 
-	// The same reply from a model with no hidden channel is a reply that went
-	// missing.
+	// The same reply from a model with no hidden channel is output that did
+	// not reach the caller.
 	f.reasoning = false
-	if h := classifyResponse(f); !h.degenerate {
-		t.Error("without a hidden channel, tokens the text cannot account for are degenerate")
+	h = classifyResponse(f)
+	if !h.degenerate || !h.missingOutput {
+		t.Errorf("without a hidden channel, tokens the text cannot account for are missing output: %+v", h)
+	}
+}
+
+func TestClassifyResponse_ACompleteDocumentIsNeverMissingOutput(t *testing.T) {
+	// The arithmetic is about text that cannot account for the tokens billed.
+	// A complete JSON document is an answer in hand, whatever the tokens went
+	// on — and on the Anthropic wire they went on a tool call whose
+	// scaffolding the fold discards, so the count describes a reply the caller
+	// no longer holds. Letting the arithmetic veto a parsed answer is how a
+	// structured-output provider's good empty answer got argued with.
+	for _, content := range []string{`{"plan":[]}`, `{}`, `{"recommendations":[{"title":"A"}]}`} {
+		h := classifyResponse(facts("end_turn", 8192, 8192, content))
+		if h.degenerate || h.missingOutput {
+			t.Errorf("%s read as degenerate: %+v", content, h)
+		}
+	}
+
+	// The same length of text that is *not* a complete document is the start
+	// of an answer that never finished.
+	if h := classifyResponse(facts("end_turn", 8192, 8192, `{"plan":[`)); !h.missingOutput {
+		t.Error("an incomplete document that cost a full budget is missing output")
+	}
+}
+
+func TestClassifyResponse_WhitespaceFloodIsNotMissingOutput(t *testing.T) {
+	// Both are degenerate, and they need opposite repairs: a flood needs a
+	// smaller request, output that never arrived needs a larger one.
+	content := `{"recommendations":[` + strings.Repeat("\n", 20000)
+	h := classifyResponse(facts("length", 8192, 8192, content))
+	if !h.degenerate {
+		t.Fatalf("a flood is degenerate: %+v", h)
+	}
+	if h.missingOutput {
+		t.Error("a flood is output that arrived, not output that went missing")
 	}
 }
 

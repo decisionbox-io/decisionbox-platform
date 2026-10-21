@@ -150,7 +150,11 @@ func TestGenerateRecommendations_TruncatedExpansionIsReAskedShorter(t *testing.T
 	provider.ResponseQueue = []*gollm.ChatResponse{
 		{Content: validPlanEnvelope, StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
 		{
-			Content:    `{"recommendations":[{"title":"Recover high-value carts","description":"` + strings.Repeat("long ", 200),
+			// Dense prose in proportion to the tokens it cost — a couple of
+			// characters per token, which is what a real document cut off at
+			// the limit looks like. A response far shorter than its token
+			// count is a different failure with a different repair.
+			Content:    `{"recommendations":[{"title":"Recover high-value carts","description":"` + strings.Repeat("long ", 1800),
 			StopReason: "length",
 			Usage:      gollm.Usage{InputTokens: 10, OutputTokens: defaultRecommendationExpandOutputTokens},
 		},
@@ -680,5 +684,120 @@ func TestGenerateRecommendations_UncitedExpansionSurvivesAFailedReAsk(t *testing
 	}
 	if step.Status != "" {
 		t.Errorf("Status = %q, want empty — a recommendation was produced", step.Status)
+	}
+}
+
+func TestGenerateRecommendations_CitationReAskCannotSubstituteAnotherEntry(t *testing.T) {
+	// The citation re-ask is as able to answer with the whole set as the first
+	// attempt was, and adopting whichever object carried a valid citation
+	// would save another entry twice and lose this one — the protection
+	// selectPlannedRecommendation exists to give, bypassed by a second way in.
+	const planWithIDsOnOne = `{"plan":[
+		{"title":"Recover high-value carts","priority":1,"related_insight_ids":["i-1"]},
+		{"title":"Reactivate lapsed buyers","priority":2}
+	]}`
+	// The re-ask for entry 2 answers with both entries; only entry 1's carries
+	// a citation.
+	wholeSetCitingOnlyTheFirst := `{"recommendations":[
+		{"title":"Recover high-value carts","priority":1,"expected_impact":{"metric":"m"},"related_insight_ids":["i-1"]},
+		{"title":"Reactivate lapsed buyers","priority":2,"expected_impact":{"metric":"m"}}
+	]}`
+	provider := testutil.NewMockLLMProvider()
+	provider.ResponseQueue = []*gollm.ChatResponse{
+		{Content: planWithIDsOnOne, StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+		{Content: expandedRec("Recover high-value carts"), StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+		{Content: expandedRec("Reactivate lapsed buyers"), StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+		{Content: wholeSetCitingOnlyTheFirst, StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+	}
+	client, _ := ai.New(provider, "mock-model")
+	o := &Orchestrator{aiClient: client}
+
+	recs, _ := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", planExpandInsights, "", "ds")
+
+	if len(recs) != 2 {
+		t.Fatalf("recs = %d, want 2", len(recs))
+	}
+	if recs[0].Title == recs[1].Title {
+		t.Fatalf("both entries carry %q — the re-ask substituted another entry", recs[0].Title)
+	}
+	if recs[1].Title != "Reactivate lapsed buyers" {
+		t.Errorf("entry 2 = %q, want its own planned entry", recs[1].Title)
+	}
+}
+
+func TestGenerateRecommendations_EmptyPlanIsAnAnswerEvenWhenTheResponseLooksUnusable(t *testing.T) {
+	// A plan cut off before it wrote an entry does not parse at all — for this
+	// to read as an empty plan the model had to close the array. The health
+	// verdict is a statement about the tokens, and on a structured-output
+	// provider the fold discards the tool scaffolding those tokens went on, so
+	// letting it veto a parsed answer argues with a perfectly good one.
+	provider := testutil.NewMockLLMProvider()
+	provider.DefaultResponse = &gollm.ChatResponse{
+		Content:    `{"plan":[]}`,
+		StopReason: "length",
+		Usage:      gollm.Usage{InputTokens: 10, OutputTokens: defaultRecommendationPlanOutputTokens},
+	}
+	client, _ := ai.New(provider, "mock-model")
+	o := &Orchestrator{aiClient: client}
+
+	recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", planExpandInsights, "", "ds")
+
+	if len(recs) != 0 {
+		t.Fatalf("recs = %d, want 0", len(recs))
+	}
+	if len(provider.Calls) != 1 {
+		t.Errorf("provider called %d times, want 1 (no re-ask, no fallback)", len(provider.Calls))
+	}
+	if step.Status != "" || step.Error != "" {
+		t.Errorf("a parsed empty plan is not an error: status=%q err=%q", step.Status, step.Error)
+	}
+}
+
+func TestGenerateRecommendations_OutputThatWentMissingIsReAskedWithMoreRoom(t *testing.T) {
+	// The repair that is the opposite of the others. A reply that spent its
+	// budget without the answer reaching us did not write too much — it never
+	// got to the answer — so the next attempt needs more room, not less. This
+	// is what an uncatalogued thinking model looks like from the outside: the
+	// OpenAI catalog flags no model as reasoning, so an o-series or GPT-5
+	// project reaches this phase with effectiveReasoning() false.
+	provider := testutil.NewMockLLMProvider()
+	provider.ResponseQueue = []*gollm.ChatResponse{
+		{Content: validPlanEnvelope, StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+		// Entry 1: the whole budget spent, almost nothing delivered, and what
+		// did arrive is not a complete document.
+		{
+			Content:    `{"recommendations":[`,
+			StopReason: "length",
+			Usage:      gollm.Usage{InputTokens: 10, OutputTokens: defaultRecommendationExpandOutputTokens},
+		},
+		{Content: expandedRec("Recover high-value carts"), StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+		{Content: expandedRec("Reactivate lapsed buyers"), StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+	}
+	client, _ := ai.New(provider, "mock-model")
+	o := &Orchestrator{aiClient: client}
+
+	recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", planExpandInsights, "", "ds")
+
+	if len(recs) != 2 {
+		t.Fatalf("recs = %d, want 2 (the entry recovered on the retry)", len(recs))
+	}
+	if !step.Calls[1].Degenerate {
+		t.Errorf("the vanished reply was not recorded as degenerate: %+v", step.Calls[1])
+	}
+
+	first := provider.Calls[1].Request.MaxTokens
+	retry := provider.Calls[2].Request.MaxTokens
+	if retry <= first {
+		t.Errorf("retry max_tokens = %d, want more than the %d the vanished attempt had", retry, first)
+	}
+	if want := defaultRecommendationExpandOutputTokens + recommendationReasoningHeadroomTokens; retry != want {
+		t.Errorf("retry max_tokens = %d, want %d", retry, want)
+	}
+	retryPrompt := provider.Calls[2].Request.Messages[0].Content
+	if !strings.Contains(retryPrompt, "did not reach us") {
+		t.Error("the retry must name what went wrong: the response did not reach us")
+	}
+	if strings.Contains(retryPrompt, "Write the same recommendation again, shorter") {
+		t.Error("a reply that never produced an answer must not be asked for a shorter one")
 	}
 }

@@ -1,7 +1,9 @@
 package discovery
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 	"unicode"
 
 	goconfig "github.com/decisionbox-io/decisionbox/libs/go-common/config"
@@ -109,9 +111,18 @@ type responseHealth struct {
 	// reply is incomplete through no fault of its shape.
 	truncated bool
 
-	// degenerate is set when the reply is overwhelmingly whitespace, so
-	// there was never an answer in it to parse.
+	// degenerate is set when the reply spent its budget on something there
+	// was never an answer in.
 	degenerate bool
+
+	// missingOutput narrows degenerate to the case where the text cannot
+	// account for the tokens the reply was billed for: it generated something
+	// the caller did not receive. The repair is the opposite of the one a
+	// too-long answer needs -- the budget was consumed before the answer
+	// began, so the next attempt needs *more* room, not a shorter answer.
+	// This is what a model that thinks without being catalogued as a thinking
+	// model looks like from the outside.
+	missingOutput bool
 
 	// reason is a short operator-facing sentence naming what happened, for
 	// the step status and the retry log. Empty when the reply is healthy.
@@ -136,8 +147,9 @@ func classifyResponse(f responseFacts) responseHealth {
 		h.reason = fmt.Sprintf("the response spent its whole output budget (%d of %d tokens)", f.outputTokens, f.requestedMaxTokens)
 	}
 
-	if reason, isDegenerate := degenerateReason(f); isDegenerate {
+	if reason, missing, isDegenerate := degenerateReason(f); isDegenerate {
 		h.degenerate = true
+		h.missingOutput = missing
 		if h.reason == "" {
 			h.reason = reason
 		} else {
@@ -149,25 +161,48 @@ func classifyResponse(f responseFacts) responseHealth {
 }
 
 // degenerateReason reports whether a reply spent its budget on something there
-// was never an answer in, and says which way it showed.
-func degenerateReason(f responseFacts) (string, bool) {
+// was never an answer in, which way it showed, and -- in missingOutput --
+// whether what showed was text that cannot account for the tokens billed.
+func degenerateReason(f responseFacts) (reason string, missingOutput, degenerate bool) {
 	runes, nonSpace := countRunes(f.content)
 
 	if runes >= responseDegenerateMinRunes() {
 		if pct := nonSpace * 100 / runes; pct < responseMinNonSpacePct() {
-			return fmt.Sprintf("%d%% of the response was anything other than whitespace", pct), true
+			return fmt.Sprintf("%d%% of the response was anything other than whitespace", pct), false, true
 		}
 	}
 
 	// A reply that cost thousands of tokens and arrived as a few dozen
-	// characters emitted something that is not in the text. Skipped for a
-	// thinking model, where the hidden channel is counted in the tokens and
-	// absent from the text by design.
-	if !f.reasoning && f.outputTokens > 0 && runes*10 < f.outputTokens*responseMinRunesPerTenTokens {
-		return fmt.Sprintf("the response cost %d output tokens and arrived as %d characters, so most of what it generated is not in the text", f.outputTokens, runes), true
+	// characters emitted something that is not in the text.
+	//
+	// Two kinds of reply are exempt, both because the gap between the tokens
+	// and the text is an accounting artifact rather than a missing answer:
+	//
+	//   - A thinking model's, where the hidden channel is counted in the
+	//     tokens and absent from the text by design.
+	//   - One whose text is a complete JSON document. The answer is intact,
+	//     whatever the tokens went on -- and on the Anthropic wire they went
+	//     on a tool call whose scaffolding the fold discards, so the count
+	//     describes a reply the caller no longer holds. Without this, a
+	//     structured-output provider's perfectly good empty answer reads as
+	//     degenerate and gets argued with.
+	if f.reasoning || isCompleteJSON(f.content) {
+		return "", false, false
+	}
+	if f.outputTokens > 0 && runes*10 < f.outputTokens*responseMinRunesPerTenTokens {
+		return fmt.Sprintf("the response cost %d output tokens and arrived as %d characters, so most of what it generated is not in the text", f.outputTokens, runes), true, true
 	}
 
-	return "", false
+	return "", false, false
+}
+
+// isCompleteJSON reports whether content is one complete JSON value and
+// nothing else. A document cut off mid-structure is not, which is the whole
+// distinction being drawn: what arrived either is an answer or is the start of
+// one that never finished.
+func isCompleteJSON(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	return trimmed != "" && json.Valid([]byte(trimmed))
 }
 
 // countRunes returns how many runes content holds and how many of them are not
