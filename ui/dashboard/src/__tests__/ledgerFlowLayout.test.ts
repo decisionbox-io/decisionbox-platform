@@ -1,9 +1,10 @@
 import { buildMap, indexGraph } from '@/components/ledger/graph';
 import {
-  FlowCard, FlowGeometry, NODE_HEIGHT, NODE_WIDTH, laneLeft, placeFlow,
+  FLOW_WIDTH, FlowCard, FlowGeometry, LANE_GAP, NODE_HEIGHT, NODE_WIDTH, laneLeft, placeFlow,
   roundedPath, seenCardID, workedCardID,
 } from '@/components/ledger/flowLayout';
 import type { GraphEdge, LedgerGraph } from '@/lib/api';
+import { frozenFit } from '@/components/ledger/ThreadMap';
 
 // The layout's promise is that a reader can follow every line. A line drawn
 // through a card renders without complaint and reads as nonsense, so these
@@ -470,5 +471,26 @@ describe('channels', () => {
       });
     });
     expectNoLineThroughACard(geometry);
+  });
+});
+
+describe('frozenFit', () => {
+  // The frozen run column is 158px wide and the lane names 54px tall. A fit
+  // that ignored them put the first lane's cards under the run column.
+  it('fits the whole map into what the frozen panes leave visible', () => {
+    const fit = frozenFit(1100, 800, 3000);
+    const screenX = (flowX: number) => flowX * fit.zoom + fit.x;
+    // The first lane's left gutter starts just right of the run column, and
+    // the last lane's rail ends inside the frame.
+    expect(screenX(laneLeft(0) - LANE_GAP / 2)).toBe(158 + 16);
+    expect(screenX(FLOW_WIDTH)).toBeLessThanOrEqual(1100);
+    // The first row starts just below the lane names, and the last row ends
+    // inside the frame.
+    expect(fit.y).toBe(54 + 16);
+    expect(3000 * fit.zoom + fit.y).toBeLessThanOrEqual(800);
+  });
+
+  it('does not blow a small map up', () => {
+    expect(frozenFit(2400, 1600, 200).zoom).toBe(1);
   });
 });

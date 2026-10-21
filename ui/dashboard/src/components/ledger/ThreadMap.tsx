@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
-  Background, BackgroundVariant, BaseEdge, Controls, Handle, MarkerType, MiniMap,
+  Background, BackgroundVariant, BaseEdge, ControlButton, Controls, Handle, MarkerType, MiniMap,
   Position, ReactFlow, ReactFlowProvider, useEdgesState, useNodesState,
   useReactFlow, useViewport, type Edge, type EdgeProps, type Node, type NodeProps,
 } from '@xyflow/react';
@@ -13,7 +13,7 @@ import {
 } from '@mantine/core';
 import {
   IconArrowRight, IconArrowUp, IconBulb, IconChevronDown, IconClockHour4,
-  IconCornerDownRight, IconExternalLink, IconFlag3, IconLayoutGrid,
+  IconCornerDownRight, IconExternalLink, IconFlag3, IconLayoutGrid, IconMaximize,
   IconRoute, IconTargetArrow,
 } from '@tabler/icons-react';
 import { LedgerGraph } from '@/lib/api';
@@ -25,7 +25,7 @@ import {
   statusTrail, statusesOf,
 } from './graph';
 import {
-  FLOW_WIDTH, FlowGeometry, FlowRow, LANE_TITLES, NODE_HEIGHT,
+  FLOW_WIDTH, FlowGeometry, FlowRow, LANE_GAP, LANE_TITLES, NODE_HEIGHT,
   NODE_WIDTH, Point, laneLeft, placeFlow, roundedPath,
 } from './flowLayout';
 
@@ -241,6 +241,20 @@ const FROZEN_LEFT = 158;
 const RUN_LABEL_FULL = 112;
 const RUN_LABEL_DATED = 48;
 const RUN_LABEL_NAME = 28;
+
+/** frozenFit is the viewport that fits the whole map into the part of the
+ *  frame the frozen panes leave visible. React Flow's own fit uses the whole
+ *  frame, which puts the first lane under the run column and the top of the
+ *  first row under the lane names. Never zoomed in past 1: a small map is
+ *  shown at its size, not blown up. */
+export function frozenFit(frameWidth: number, frameHeight: number, mapHeight: number) {
+  const margin = 16;
+  const left = laneLeft(0) - LANE_GAP / 2; // the gutter some lines run down
+  const width = Math.max(1, frameWidth - FROZEN_LEFT - 2 * margin);
+  const height = Math.max(1, frameHeight - FROZEN_TOP - 2 * margin);
+  const zoom = Math.min(1, Math.max(0.1, Math.min(width / (FLOW_WIDTH - left), height / Math.max(1, mapHeight))));
+  return { x: FROZEN_LEFT + margin - left * zoom, y: FROZEN_TOP + margin, zoom };
+}
 
 /** What the frozen column says about one row. */
 interface RowLabel {
@@ -890,7 +904,23 @@ function Canvas({
         proOptions={{ hideAttribution: false }}
       >
         <Background variant={BackgroundVariant.Dots} gap={18} size={1} />
-        <Controls showInteractive={false} position="top-right" style={{ marginTop: FROZEN_TOP + 10 }} />
+        <Controls
+          showInteractive={false}
+          showFitView={false}
+          position="top-right"
+          style={{ marginTop: FROZEN_TOP + 10 }}
+        >
+          <ControlButton
+            onClick={() => {
+              const box = frame.current;
+              setViewport(frozenFit(box?.clientWidth || 1100, box?.clientHeight || 700, geometry.height), { duration: 300 });
+            }}
+            title="Fit the whole map"
+            aria-label="Fit the whole map"
+          >
+            <IconMaximize size={12} />
+          </ControlButton>
+        </Controls>
         <MiniMap
           pannable zoomable
           nodeColor={(n) => (n.type === 'investigation'
