@@ -3,7 +3,7 @@ import {
   findingChangedInRun, findingEvidenceLink, indexGraph, insightLink,
   matchesFilters, nodeKind, nodeRawId, recommendationLink, runLabel,
   producedIn, runRefForDiscovery, seenInRuns, severitiesOf, sightingEvidenceLink,
-  statusTrail, statusesOf,
+  statusTrail, statusesOf, threadWorkedIn,
 } from '@/components/ledger/graph';
 import type { LedgerGraph } from '@/lib/api';
 
@@ -839,5 +839,105 @@ describe('the map stays finite', () => {
       edges: [], truncated: noTruncation,
     };
     expect(buildMap(indexGraph(graph), { severity: 'critical' }).nodes).toHaveLength(0);
+  });
+});
+
+describe('threadWorkedIn', () => {
+  /** chainGraph plus a third run, so "the latest run that pursued it" has
+   *  something to choose between. */
+  function threeRuns(): LedgerGraph {
+    const graph = chainGraph();
+    graph.runs.push({
+      node_id: 'run:r3', run_id: 'r3', discovery_id: 'd3', date: '2026-05-05T09:00:00Z',
+      new_findings: 0, total_findings: 3, marginal_ratio: 0,
+    });
+    return graph;
+  }
+
+  it('is the run that closed the thread, where its answer is', () => {
+    const worked = threadWorkedIn(indexGraph(chainGraph()), 'task:t1');
+    expect(worked).toEqual({ ref: 'run:r2', outcome: 'answered', pursuedIn: [] });
+  });
+
+  it('is the latest run that pursued a thread still open', () => {
+    const graph = threeRuns();
+    graph.edges.push({ from: 'run:r3', to: 'task:t2', kind: 'pursued' });
+    expect(threadWorkedIn(indexGraph(graph), 'task:t2'))
+      .toEqual({ ref: 'run:r3', outcome: 'pursued', pursuedIn: [3] });
+  });
+
+  it('reads the pursuit off the thread when the payload carries no edge for it', () => {
+    const graph = threeRuns();
+    graph.tasks[1] = { ...graph.tasks[1], pursued_in_run_ids: ['r3'] };
+    expect(threadWorkedIn(indexGraph(graph), 'task:t2')?.ref).toBe('run:r3');
+  });
+
+  it('remembers the runs that pursued a thread before the one that closed it', () => {
+    const graph = threeRuns();
+    const t1 = graph.tasks[0];
+    graph.tasks[0] = { ...t1, closed_run_id: 'r3', closed_discovery_id: 'd3' };
+    graph.edges = graph.edges.map((e) => (e.kind === 'closed' ? { ...e, from: 'run:r3' } : e));
+    graph.edges.push({ from: 'run:r2', to: 'task:t1', kind: 'pursued' });
+    expect(threadWorkedIn(indexGraph(graph), 'task:t1'))
+      .toEqual({ ref: 'run:r3', outcome: 'answered', pursuedIn: [2] });
+  });
+
+  it('tells a dropped thread and one closed with no answer apart from an answered one', () => {
+    const dropped = chainGraph();
+    dropped.tasks[0] = { ...dropped.tasks[0], status: 'dropped' };
+    expect(threadWorkedIn(indexGraph(dropped), 'task:t1')?.outcome).toBe('dropped');
+
+    const unanswered = chainGraph();
+    unanswered.tasks[0] = { ...unanswered.tasks[0], resolved_by_finding_ids: [] };
+    unanswered.edges = unanswered.edges.filter((e) => e.kind !== 'answered_by');
+    expect(threadWorkedIn(indexGraph(unanswered), 'task:t1')?.outcome).toBe('closed');
+  });
+
+  it('never names the run that opened the thread, or one it cannot place', () => {
+    // A thread is opened at the end of a run, so the run that opened it cannot
+    // have taken it up — a record saying so places the thread nowhere useful.
+    const own = chainGraph();
+    own.tasks[1] = { ...own.tasks[1], pursued_in_run_ids: ['r2'] };
+    expect(threadWorkedIn(indexGraph(own), 'task:t2')).toBeNull();
+
+    const ghost = chainGraph();
+    ghost.tasks[1] = { ...ghost.tasks[1], pursued_in_run_ids: ['gone'] };
+    expect(threadWorkedIn(indexGraph(ghost), 'task:t2')).toBeNull();
+
+    expect(threadWorkedIn(indexGraph(chainGraph()), 'finding:f1')).toBeNull();
+  });
+
+  it('never calls a closed thread open because its closing run cannot be placed', () => {
+    const graph = threeRuns();
+    // Done, closed by a run the response does not carry, and pursued by run 3.
+    graph.tasks[1] = { ...graph.tasks[1], status: 'done', closed_run_id: 'gone', pursued_in_run_ids: ['r3'] };
+    const map = buildMap(indexGraph(graph));
+    const t2 = map.nodes.find((n) => n.id === 'task:t2')!;
+    expect(t2.outcome).toBe('pursued');
+    expect(t2.workedMeta).toBe('Pursued in run 3 · since closed');
+    expect(t2.workedMeta).not.toContain('open');
+
+    graph.tasks[1] = { ...graph.tasks[1], status: 'dropped' };
+    const dropped = buildMap(indexGraph(graph)).nodes.find((n) => n.id === 'task:t2')!;
+    expect(dropped.workedMeta).toBe('Pursued in run 3 · since dropped');
+  });
+
+  it('carries onto the map, with a line saying what came of the thread', () => {
+    const map = buildMap(indexGraph(chainGraph()));
+    const t1 = map.nodes.find((n) => n.id === 'task:t1')!;
+    expect(t1.workedIn).toBe('run:r2');
+    expect(t1.workedInOrdinal).toBe(2);
+    expect(t1.outcome).toBe('answered');
+    expect(t1.workedMeta).toBe('Answered in run 2');
+    // A thread nothing took up yet has none of it.
+    const t2 = map.nodes.find((n) => n.id === 'task:t2')!;
+    expect(t2.workedIn).toBeUndefined();
+  });
+
+  it('lists every run that saw a finding, by the run the map draws', () => {
+    const map = buildMap(indexGraph(chainGraph()));
+    expect(map.nodes.find((n) => n.id === 'finding:f1')?.seenIn).toEqual(['run:r1', 'run:r2']);
+    expect(map.nodes.find((n) => n.id === 'finding:f2')?.seenIn).toEqual(['run:r2']);
+    expect(map.nodes.find((n) => n.id === 'finding:f3')?.seenIn).toEqual([]);
   });
 });

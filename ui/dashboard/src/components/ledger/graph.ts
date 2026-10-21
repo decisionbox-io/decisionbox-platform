@@ -262,11 +262,24 @@ export interface MapNode {
   archived?: boolean;
   missing?: boolean;
   priority?: number; // recommendations only
-  /** The run whose work this was — the column it sits in on the map. Empty
+  /** The run whose work this was — the row it sits in on the map. Empty
    *  when nothing attributes it to a run the response can date. */
   runRef?: string;
   runOrdinal?: number;
+  /** Threads only: the later run that took this thread up — the one that
+   *  closed it, or else the latest one that had it in front of it — and what
+   *  came of it there. Unset when no later run did. */
+  workedIn?: string;
+  workedInOrdinal?: number;
+  outcome?: ThreadOutcome;
+  /** One line saying what happened to the thread after it was opened. */
+  workedMeta?: string;
+  /** Findings only: every run that recorded a sighting of it, by run node. */
+  seenIn?: string[];
 }
+
+/** What became of a thread in the run that took it up. */
+export type ThreadOutcome = 'answered' | 'closed' | 'dropped' | 'pursued';
 
 /** One link of the investigation map, with the words a reader needs. */
 export interface MapEdge {
@@ -428,6 +441,86 @@ export function producedIn(idx: GraphIndex, nodeId: string): string {
   const rec = idx.recommendations.get(nodeId);
   if (rec) return runRefForDiscovery(idx, rec.discovery_id);
   return '';
+}
+
+/** threadWorkedIn is the run that took a thread up after the one that opened
+ *  it, and what came of it there.
+ *
+ *  The run that closed it if one did, because that is where its answer is;
+ *  otherwise the LATEST run that had it in front of it, because that is the
+ *  last thing anyone did with it. Only a run after the opening one counts — a
+ *  thread is opened at the end of a run, so the run that opened it cannot also
+ *  have pursued it, and a record saying so places the thread nowhere useful.
+ *
+ *  Both the run edges and the thread's own fields are read: the edges are what
+ *  the server resolved, and the fields are what a payload without those edges
+ *  still carries. */
+export function threadWorkedIn(
+  idx: GraphIndex, nodeId: string,
+): { ref: string; outcome: ThreadOutcome; pursuedIn: number[] } | null {
+  const task = idx.tasks.get(nodeId);
+  if (!task) return null;
+  const openedAt = idx.runOrdinal.get(producedIn(idx, nodeId)) ?? 0;
+  const later = (ref: string) => {
+    const at = idx.runOrdinal.get(ref);
+    return at !== undefined && at > openedAt ? at : 0;
+  };
+  const inbound = idx.in.get(nodeId) ?? [];
+
+  const pursued = new Map<string, number>();
+  [
+    ...inbound.filter((e) => e.kind === 'pursued').map((e) => e.from),
+    ...(task.pursued_in_run_ids ?? []).map((id) => runRefFor(idx, id)),
+  ].forEach((ref) => {
+    const at = later(ref);
+    if (at) pursued.set(ref, at);
+  });
+  const pursuedIn = [...new Set(pursued.values())].sort((a, b) => a - b);
+
+  const closedBy = [
+    ...inbound.filter((e) => e.kind === 'closed').map((e) => e.from),
+    ...(task.closed_run_id || task.closed_discovery_id
+      ? [runRefFor(idx, task.closed_run_id, task.closed_discovery_id)]
+      : []),
+  ].find((ref) => later(ref));
+  if (closedBy) {
+    const answered = (task.resolved_by_finding_ids ?? []).length > 0
+      || (idx.out.get(nodeId) ?? []).some((e) => e.kind === 'answered_by');
+    const outcome: ThreadOutcome = task.status === 'dropped'
+      ? 'dropped'
+      : (answered ? 'answered' : 'closed');
+    return { ref: closedBy, outcome, pursuedIn: pursuedIn.filter((at) => at < later(closedBy)) };
+  }
+
+  let latest = '';
+  pursued.forEach((at, ref) => {
+    if (!latest || at > (pursued.get(latest) as number)) latest = ref;
+  });
+  return latest ? { ref: latest, outcome: 'pursued', pursuedIn } : null;
+}
+
+const OUTCOME_WORDS: Record<ThreadOutcome, string> = {
+  answered: 'Answered', closed: 'Closed', dropped: 'Dropped', pursued: 'Pursued',
+};
+
+/** workedMeta says in one line what became of a thread after it was opened:
+ *  "Answered in run 5 · pursued in runs 3, 4", or "Pursued in runs 3, 4 ·
+ *  still open". */
+function workedMeta(
+  idx: GraphIndex, worked: { ref: string; outcome: ThreadOutcome; pursuedIn: number[] },
+  status: string | undefined,
+): string {
+  const at = idx.runOrdinal.get(worked.ref);
+  const runs = (list: number[]) => `run${list.length === 1 ? '' : 's'} ${list.join(', ')}`;
+  if (worked.outcome === 'pursued') {
+    // The run that closed it may be one the map cannot place, and a thread
+    // recorded as done must not be called open because of that.
+    const now = status === 'done' ? 'since closed' : status === 'dropped' ? 'since dropped' : 'still open';
+    return `Pursued in ${runs(worked.pursuedIn)} · ${now}`;
+  }
+  const parts = [`${OUTCOME_WORDS[worked.outcome]} in run ${at}`];
+  if (worked.pursuedIn.length > 0) parts.push(`pursued in ${runs(worked.pursuedIn)}`);
+  return parts.join(' · ');
 }
 
 /** buildMap projects the payload onto the nodes and links the canvas draws.
@@ -594,11 +687,15 @@ export function buildMap(idx: GraphIndex, filters: TreeFilters = {}): Investigat
         meta: findingMeta(idx, finding),
         archived: finding.archived,
         missing: finding.missing,
+        seenIn: [...new Set((finding.sightings ?? [])
+          .map((sighting) => runRefFor(idx, sighting.run_id, sighting.discovery_id))
+          .filter((ref) => idx.runOrdinal.has(ref)))],
       }));
       return;
     }
     const task = idx.tasks.get(nodeId);
     if (task) {
+      const worked = threadWorkedIn(idx, nodeId);
       candidates.push(placeInTime({
         id: nodeId,
         kind: 'task',
@@ -606,6 +703,12 @@ export function buildMap(idx: GraphIndex, filters: TreeFilters = {}): Investigat
         status: task.status,
         meta: taskMeta(idx, task),
         missing: task.missing,
+        ...(worked ? {
+          workedIn: worked.ref,
+          workedInOrdinal: idx.runOrdinal.get(worked.ref),
+          outcome: worked.outcome,
+          workedMeta: workedMeta(idx, worked, task.status),
+        } : {}),
       }));
       return;
     }
