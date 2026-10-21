@@ -24,19 +24,20 @@ jest.mock('@xyflow/react', () => {
   return {
     __esModule: true,
     ReactFlow: ({ nodes, edges, nodeTypes, onNodeClick }: {
-      nodes: { id: string; type: string; data: unknown; position: { x: number } }[];
+      nodes: { id: string; type: string; data: unknown; position: { x: number; y: number } }[];
       edges: { id: string; source: string; target: string; label?: string }[];
       nodeTypes: Record<string, React.ComponentType<{ data: unknown }>>;
       onNodeClick: (e: unknown, node: { id: string; type: string }) => void;
     }) => (
-      // Rendered in x order, which is the order a reader sees them in: the
-      // map's whole point is that left to right is oldest to newest. The
-      // edges come through as data so their direction can be asserted.
+      // Rendered in reading order — top to bottom, then left to right —
+      // which is the order a reader takes them in: one row per run, oldest at
+      // the top, each row read across. The edges come through as data so
+      // their direction can be asserted.
       <div
         data-testid="map-canvas"
         data-edges={JSON.stringify(edges.map((e) => [e.source, e.target, e.label]))}
       >
-        {[...nodes].sort((a, b) => a.position.x - b.position.x).map((n) => {
+        {[...nodes].sort((a, b) => (a.position.y - b.position.y) || (a.position.x - b.position.x)).map((n) => {
           const Node = nodeTypes[n.type];
           return (
             <div key={n.id} data-testid={`node-${n.type}`} onClick={(e) => onNodeClick(e, n)}>
@@ -51,6 +52,7 @@ jest.mock('@xyflow/react', () => {
     Controls: () => null,
     MiniMap: () => null,
     Handle: () => null,
+    BaseEdge: () => null,
     Position: { Left: 'left', Right: 'right' },
     BackgroundVariant: { Dots: 'dots' },
     MarkerType: { ArrowClosed: 'arrowclosed' },
@@ -370,13 +372,16 @@ describe('LedgerPage', () => {
     mockAll();
     wrap();
     fireEvent.click(await screen.findByText('Map'));
-    await screen.findByText('Do those orders share a hub?');
+    await screen.findAllByText('Do those orders share a hub?');
 
     // The finding, the thread that grew out of it, the finding that answered
     // that thread, and the recommendation it drove — all on the canvas at
     // once, which is the point of a map over a collapsed tree.
     expect(view().getByText('High EU churn')).toBeInTheDocument();
-    expect(view().getByText('Do those orders share a hub?')).toBeInTheDocument();
+    // The thread twice, and only twice: where run 1 opened it, and where run
+    // 2 picked it up and answered it.
+    expect(view().getAllByText('Do those orders share a hub?')).toHaveLength(2);
+    expect(view().getByText('Thread picked up')).toBeInTheDocument();
     expect(view().getByText('Late deliveries cluster in one hub')).toBeInTheDocument();
     expect(view().getByText('Re-route the hub overflow')).toBeInTheDocument();
 
@@ -386,9 +391,9 @@ describe('LedgerPage', () => {
     expect(view().getAllByText('Recommendation').length).toBeGreaterThan(0);
   });
 
-  it('lays the map out as a timeline of runs, oldest first', async () => {
+  it('lays the map out as a row per run, oldest at the top', async () => {
     // The map answers "how did this start, and what followed" by being in the
-    // order it happened: a column per run, headed by that run, left to right.
+    // order it happened: a row per run, named down its left, top to bottom.
     mockAll();
     wrap();
     fireEvent.click(await screen.findByText('Map'));
@@ -406,8 +411,8 @@ describe('LedgerPage', () => {
     // The whole history is here, so nothing claims runs are missing.
     expect(within(canvas).queryByText(/Earlier runs/)).not.toBeInTheDocument();
 
-    // And a card sits under the run whose work it was — the finding run 2
-    // found is in run 2's column, to the right of run 1's.
+    // And a card sits in the row of the run whose work it was — the finding
+    // run 2 found is in run 2's row, below run 1's.
     const order = within(canvas).getAllByTestId(/^node-/).map((n) => n.textContent ?? '');
     const runOne = order.findIndex((t) => t.includes('Run 1'));
     const runTwo = order.findIndex((t) => t.includes('Run 2'));
@@ -436,8 +441,14 @@ describe('LedgerPage', () => {
     expect(by('finding:f1', 'task:t1')?.[2]).toBe('Opened');
     // The finding drove the recommendation.
     expect(by('finding:f2', 'rec:rec1')?.[2]).toBe('Drove');
-    // And answered_by already ran forwards: the thread came first.
-    expect(by('task:t1', 'finding:f2')?.[2]).toBe('Answered by');
+    // Run 1 opened the thread and run 2 took it up: that is the jump from one
+    // run to the next, and it is drawn.
+    expect(by('task:t1', 'worked:task:t1')?.[2]).toBe('Picked up in run 2');
+    // The answer is drawn from where the thread was picked up — run 2's row
+    // reads "picked this up, and found that" — not from run 1's card, which
+    // would send the line back up the page into a run that had not happened.
+    expect(by('worked:task:t1', 'finding:f2')?.[2]).toBe('Answered by');
+    expect(by('task:t1', 'finding:f2')).toBeUndefined();
     // Nothing is drawn from the later card back to the earlier one.
     expect(by('task:t1', 'finding:f1')).toBeUndefined();
     expect(by('rec:rec1', 'finding:f2')).toBeUndefined();
@@ -527,7 +538,7 @@ describe('LedgerPage', () => {
 
     // Both ends of the chain are still here, loose cards or no loose cards.
     expect(within(canvas).getByText('High EU churn')).toBeInTheDocument();
-    expect(within(canvas).getByText('Do those orders share a hub?')).toBeInTheDocument();
+    expect(within(canvas).getAllByText('Do those orders share a hub?').length).toBeGreaterThan(0);
     expect(within(canvas).getByText('Late deliveries cluster in one hub')).toBeInTheDocument();
     expect(within(canvas).getByText('Re-route the hub overflow')).toBeInTheDocument();
     // And it is the loose ones that folded away.
@@ -708,7 +719,7 @@ describe('LedgerPage', () => {
     wrap();
     await screen.findByText('Run 2');
     fireEvent.click(screen.getByText('Map'));
-    await screen.findByText('Do those orders share a hub?');
+    await screen.findAllByText('Do those orders share a hub?');
     fireEvent.click(screen.getByText('Story'));
     await screen.findByText('Run 2');
     expect(getLedgerGraph).toHaveBeenCalledTimes(1);
@@ -733,7 +744,7 @@ describe('LedgerPage', () => {
     mockAll();
     wrap();
     fireEvent.click(await screen.findByText('Map'));
-    await screen.findByText('Do those orders share a hub?');
+    await screen.findAllByText('Do those orders share a hub?');
     expect(view().getByText('High EU churn')).toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText(/Only what changed in the last run/i));
@@ -774,8 +785,9 @@ describe('LedgerPage', () => {
     wrap();
     fireEvent.click(await screen.findByText('Map'));
     // A cycle was the shape that could hang a tree walk. A map has no paths to
-    // walk: both threads are simply drawn, each once.
+    // walk: both threads are simply drawn — t9 once, and t1 where it was
+    // opened and where it was picked up, no more.
     expect(await screen.findByText('A loop')).toBeInTheDocument();
-    expect(view().getByText('Do those orders share a hub?')).toBeInTheDocument();
+    expect(view().getAllByText('Do those orders share a hub?')).toHaveLength(2);
   });
 });
