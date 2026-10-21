@@ -5,12 +5,23 @@ import (
 	"testing"
 )
 
+// facts is the common shape these tests judge: a reply that came back with a
+// stop reason, a token cost against a budget, and some text.
+func facts(stopReason string, outputTokens, requestedMaxTokens int, content string) responseFacts {
+	return responseFacts{
+		stopReason:         stopReason,
+		outputTokens:       outputTokens,
+		requestedMaxTokens: requestedMaxTokens,
+		content:            content,
+	}
+}
+
 func TestClassifyResponse_StopReasonVocabulary(t *testing.T) {
 	// Every wire spells the output-limit reason its own way, and the phase has
 	// to read all of them: a reason it does not recognise is a truncation it
 	// re-asks for identically, which is the failure this replaces.
 	for _, reason := range []string{"length", "max_tokens", "MAX_TOKENS", " Length ", "tool_calls_length_unknown_no"} {
-		h := classifyResponse(reason, 100, 4096, "{}")
+		h := classifyResponse(facts(reason, 100, 4096, strings.Repeat("a", 1024)))
 		want := reason != "tool_calls_length_unknown_no"
 		if h.truncated != want {
 			t.Errorf("classifyResponse(%q).truncated = %v, want %v", reason, h.truncated, want)
@@ -19,7 +30,7 @@ func TestClassifyResponse_StopReasonVocabulary(t *testing.T) {
 }
 
 func TestClassifyResponse_TruncatedReasonNamesTheStopReason(t *testing.T) {
-	h := classifyResponse("length", 10, 4096, "{}")
+	h := classifyResponse(facts("length", 10, 4096, strings.Repeat("a", 1024)))
 	if !h.truncated || !strings.Contains(h.reason, "length") {
 		t.Errorf("reason = %q, want it to name the stop reason", h.reason)
 	}
@@ -28,9 +39,8 @@ func TestClassifyResponse_TruncatedReasonNamesTheStopReason(t *testing.T) {
 func TestClassifyResponse_WholeBudgetSpentIsTruncated(t *testing.T) {
 	// The provider-independent signal: a reply cannot emit more tokens than it
 	// was given, so spending them all says the same thing the stop reason
-	// does. This is the signal that catches a provider reporting no usable
-	// stop reason at all.
-	h := classifyResponse("", 8192, 8192, "{}")
+	// does. This is what catches a provider reporting no usable stop reason.
+	h := classifyResponse(facts("", 8192, 8192, strings.Repeat("a", 20000)))
 	if !h.truncated {
 		t.Fatal("output tokens equal to the requested cap must read as truncated")
 	}
@@ -40,7 +50,7 @@ func TestClassifyResponse_WholeBudgetSpentIsTruncated(t *testing.T) {
 }
 
 func TestClassifyResponse_UnderBudgetIsHealthy(t *testing.T) {
-	h := classifyResponse("end_turn", 900, 4096, strings.Repeat("a", 1024))
+	h := classifyResponse(facts("end_turn", 900, 4096, strings.Repeat("a", 2048)))
 	if h.unusable() {
 		t.Errorf("a complete reply under budget must be usable, got %+v", h)
 	}
@@ -52,10 +62,10 @@ func TestClassifyResponse_UnderBudgetIsHealthy(t *testing.T) {
 func TestClassifyResponse_UnknownBudgetSkipsTheTokenSignal(t *testing.T) {
 	// requestedMaxTokens <= 0 means "not known". Guessing from the token count
 	// alone would call every reply truncated.
-	if h := classifyResponse("end_turn", 8192, 0, "{}"); h.truncated {
+	if h := classifyResponse(facts("end_turn", 8192, 0, strings.Repeat("a", 20000))); h.truncated {
 		t.Error("an unknown budget must not be read as a truncation")
 	}
-	if h := classifyResponse("end_turn", 0, 4096, "{}"); h.truncated {
+	if h := classifyResponse(facts("end_turn", 0, 4096, "{}")); h.truncated {
 		t.Error("an unreported token count must not be read as a truncation")
 	}
 }
@@ -66,7 +76,7 @@ func TestClassifyResponse_WhitespaceFloodIsDegenerate(t *testing.T) {
 	// sampler, so it is classified apart from a reply that was simply too
 	// long.
 	content := `{"recommendations":[` + strings.Repeat("\n", 20000)
-	h := classifyResponse("length", 8192, 8192, content)
+	h := classifyResponse(facts("length", 8192, 8192, content))
 	if !h.degenerate {
 		t.Fatalf("a whitespace flood must read as degenerate, got %+v", h)
 	}
@@ -75,6 +85,54 @@ func TestClassifyResponse_WhitespaceFloodIsDegenerate(t *testing.T) {
 	}
 	if !strings.Contains(h.reason, "whitespace") {
 		t.Errorf("reason = %q, want it to name the whitespace", h.reason)
+	}
+}
+
+func TestClassifyResponse_TrimmedFloodIsStillDegenerate(t *testing.T) {
+	// A provider may trim the reply before the caller sees it (Ollama does),
+	// which takes the whitespace evidence with it: the flood arrives as the
+	// short prefix that preceded it. What survives trimming is the
+	// arithmetic — thousands of tokens billed, a few dozen characters
+	// delivered — and without reading that, the one failure this telemetry
+	// exists to distinguish is reported as ordinary truncation.
+	h := classifyResponse(facts("length", 8192, 8192, `{"recommendations":[`))
+	if !h.degenerate {
+		t.Fatalf("a trimmed flood must still read as degenerate, got %+v", h)
+	}
+	if !strings.Contains(h.reason, "8192") || !strings.Contains(h.reason, "characters") {
+		t.Errorf("reason = %q, want it to state the tokens against the characters", h.reason)
+	}
+}
+
+func TestClassifyResponse_AThinkingModelIsNotJudgedOnItsVisibleLength(t *testing.T) {
+	// On a reasoning model the hidden channel is counted in the output tokens
+	// and absent from the content by design, so a reply that thought at length
+	// and answered briefly is the normal case — not a reply that went missing.
+	f := facts("end_turn", 8192, 16384, `{"recommendations":[{"title":"A"}]}`)
+	f.reasoning = true
+	if h := classifyResponse(f); h.degenerate {
+		t.Errorf("a thinking model's brief answer must not read as degenerate: %+v", h)
+	}
+
+	// The same reply from a model with no hidden channel is a reply that went
+	// missing.
+	f.reasoning = false
+	if h := classifyResponse(f); !h.degenerate {
+		t.Error("without a hidden channel, tokens the text cannot account for are degenerate")
+	}
+}
+
+func TestClassifyResponse_ShortHealthyReplyIsNotDegenerate(t *testing.T) {
+	// A legitimately short answer costs few tokens, so the arithmetic must not
+	// flag it.
+	for _, f := range []responseFacts{
+		facts("end_turn", 8, 4096, `{"recommendations":[]}`),
+		facts("end_turn", 2, 4096, "{}"),
+		facts("end_turn", 0, 4096, "{}"),
+	} {
+		if h := classifyResponse(f); h.degenerate {
+			t.Errorf("a short healthy reply must not read as degenerate: %+v for %q", h, f.content)
+		}
 	}
 }
 
@@ -87,7 +145,7 @@ func TestClassifyResponse_DenseJSONIsNotDegenerate(t *testing.T) {
 		sb.WriteString("    {\n      \"title\": \"Recover high-value carts within two hours\",\n      \"priority\": 1\n    },\n")
 	}
 	sb.WriteString("  ]\n}")
-	if h := classifyResponse("end_turn", 900, 4096, sb.String()); h.degenerate {
+	if h := classifyResponse(facts("end_turn", 900, 4096, sb.String())); h.degenerate {
 		t.Errorf("indented JSON must not read as degenerate: %+v", h)
 	}
 }
@@ -95,7 +153,7 @@ func TestClassifyResponse_DenseJSONIsNotDegenerate(t *testing.T) {
 func TestClassifyResponse_ShortContentIsNotJudgedForWhitespace(t *testing.T) {
 	// A short reply can be mostly whitespace for innocent reasons, and there
 	// is nothing to salvage either way.
-	if h := classifyResponse("end_turn", 5, 4096, "\n\n\n  {}  \n\n\n"); h.degenerate {
+	if h := classifyResponse(facts("end_turn", 5, 4096, "\n\n\n  {}  \n\n\n")); h.degenerate {
 		t.Errorf("a short reply must not be judged on its whitespace: %+v", h)
 	}
 }

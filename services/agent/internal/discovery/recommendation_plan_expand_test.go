@@ -564,3 +564,121 @@ func TestGenerateRecommendations_PlanIDsThatNameNoInsightNeverReachTheExpansion(
 		t.Errorf("citations = %v, want only the real planned id", recs[0].RelatedInsightIDs)
 	}
 }
+
+func TestGenerateRecommendations_ReasoningModelGetsThinkingHeadroom(t *testing.T) {
+	// On a thinking model the requested output covers the hidden reasoning as
+	// well as the answer, so a ceiling sized from the visible JSON alone can
+	// be spent before the answer begins — which asking for shorter prose
+	// cannot fix. The exploration engine hit exactly this on Qwen3 and
+	// DeepSeek-R1 (#341) and the fix there was headroom.
+	o, provider := newRoutedOrchestrator(map[string]string{
+		planCallMarker:  validPlanEnvelope,
+		"Write entry 1": expandedRec("A"),
+		"Write entry 2": expandedRec("B"),
+	})
+	o.reasoningEnabled = true
+
+	if _, _ = o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", planExpandInsights, "", "ds"); len(provider.Calls) != 3 {
+		t.Fatalf("provider called %d times, want 3", len(provider.Calls))
+	}
+	if got, want := provider.Calls[0].Request.MaxTokens, defaultRecommendationPlanOutputTokens+recommendationReasoningHeadroomTokens; got != want {
+		t.Errorf("plan call max_tokens = %d, want %d (its own ceiling plus thinking room)", got, want)
+	}
+	for i, call := range provider.Calls[1:] {
+		if got, want := call.Request.MaxTokens, defaultRecommendationExpandOutputTokens+recommendationReasoningHeadroomTokens; got != want {
+			t.Errorf("expansion %d max_tokens = %d, want %d", i+1, got, want)
+		}
+	}
+
+	// A model with no hidden channel is unaffected.
+	plain, plainProvider := newRoutedOrchestrator(map[string]string{
+		planCallMarker:  validPlanEnvelope,
+		"Write entry 1": expandedRec("A"),
+		"Write entry 2": expandedRec("B"),
+	})
+	_, _ = plain.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", planExpandInsights, "", "ds")
+	if got := plainProvider.Calls[0].Request.MaxTokens; got != defaultRecommendationPlanOutputTokens {
+		t.Errorf("non-reasoning plan call max_tokens = %d, want %d unchanged", got, defaultRecommendationPlanOutputTokens)
+	}
+}
+
+func TestGenerateRecommendations_UncitedExpansionIsReAskedForItsCitation(t *testing.T) {
+	// An expanded recommendation normally takes its citation from the plan
+	// entry it was written for. When the plan has none either — it cited
+	// nothing, or cited ids that name no insight — the only thing left is the
+	// downstream backfill, which links the recommendation to every eligible
+	// insight and so says nothing about where it came from. The
+	// single-document path has always re-asked here (#347); the two-pass path
+	// re-asks per entry.
+	const planWithoutIDs = `{"plan":[{"title":"Recover high-value carts","category":"conversion","priority":1}]}`
+	uncited := expandedRec("Recover high-value carts")
+	cited := `{"recommendations":[{"title":"Recover high-value carts","priority":1,` +
+		`"expected_impact":{"metric":"m"},"related_insight_ids":["i-2"]}]}`
+
+	provider := testutil.NewMockLLMProvider()
+	provider.ResponseQueue = []*gollm.ChatResponse{
+		{Content: planWithoutIDs, StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+		{Content: uncited, StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+		{Content: cited, StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+	}
+	client, _ := ai.New(provider, "mock-model")
+	o := &Orchestrator{aiClient: client}
+
+	recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", planExpandInsights, "", "ds")
+
+	if len(provider.Calls) != 3 {
+		t.Fatalf("provider called %d times, want 3 (plan, expansion, citation re-ask)", len(provider.Calls))
+	}
+	if step.RecommendationCitationRetries != 1 {
+		t.Errorf("RecommendationCitationRetries = %d, want 1", step.RecommendationCitationRetries)
+	}
+	if len(recs) != 1 || len(recs[0].RelatedInsightIDs) != 1 || recs[0].RelatedInsightIDs[0] != "i-2" {
+		t.Errorf("citations = %v, want the recovered [i-2]", recs[0].RelatedInsightIDs)
+	}
+	// The re-ask must name the ids it wants copied.
+	if !strings.Contains(provider.Calls[2].Request.Messages[0].Content, "i-1") {
+		t.Error("the citation re-ask did not spell out the eligible ids")
+	}
+}
+
+func TestGenerateRecommendations_CitedExpansionIsNotReAsked(t *testing.T) {
+	// The plan supplies the citation on the normal path, so the re-ask must
+	// not fire — it would be a whole extra generation per entry.
+	o, provider := newRoutedOrchestrator(map[string]string{
+		planCallMarker:  validPlanEnvelope,
+		"Write entry 1": expandedRec("Recover high-value carts"),
+		"Write entry 2": expandedRec("Reactivate lapsed buyers"),
+	})
+
+	_, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", planExpandInsights, "", "ds")
+
+	if len(provider.Calls) != 3 {
+		t.Errorf("provider called %d times, want 3 (no citation re-ask)", len(provider.Calls))
+	}
+	if step.RecommendationCitationRetries != 0 {
+		t.Errorf("RecommendationCitationRetries = %d, want 0", step.RecommendationCitationRetries)
+	}
+}
+
+func TestGenerateRecommendations_UncitedExpansionSurvivesAFailedReAsk(t *testing.T) {
+	// A recommendation is never thrown away for lacking a citation: the
+	// downstream recovery grounds it.
+	const planWithoutIDs = `{"plan":[{"title":"Recover high-value carts","priority":1}]}`
+	provider := testutil.NewMockLLMProvider()
+	provider.ResponseQueue = []*gollm.ChatResponse{
+		{Content: planWithoutIDs, StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+		{Content: expandedRec("Recover high-value carts"), StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+		{Content: "still no citation here", StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+	}
+	client, _ := ai.New(provider, "mock-model")
+	o := &Orchestrator{aiClient: client}
+
+	recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", planExpandInsights, "", "ds")
+
+	if len(recs) != 1 || recs[0].Title != "Recover high-value carts" {
+		t.Fatalf("recs = %+v, want the uncited recommendation kept", recs)
+	}
+	if step.Status != "" {
+		t.Errorf("Status = %q, want empty — a recommendation was produced", step.Status)
+	}
+}

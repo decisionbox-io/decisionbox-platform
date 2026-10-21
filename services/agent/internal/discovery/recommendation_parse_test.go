@@ -180,10 +180,17 @@ func TestGenerateRecommendationsSingleDocument_RetryRecovers(t *testing.T) {
 }
 
 func TestGenerateRecommendations_AllFailSetsStatus(t *testing.T) {
+	// Four unusable responses: the plan call and its re-ask, then the
+	// single-document fallback and its re-ask. Each one is prose rather than
+	// an empty string, because an empty response that still cost output tokens
+	// is a different failure (the model emitted something that is not in the
+	// text) with a different status, and this test is about the parse.
 	o, provider := newRecOrchestrator("")
 	provider.ResponseQueue = []*gollm.ChatResponse{
-		{Content: "garbage one", Usage: gollm.Usage{InputTokens: 1, OutputTokens: 1}},
-		{Content: "garbage two", Usage: gollm.Usage{InputTokens: 1, OutputTokens: 1}},
+		{Content: "garbage one", StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 1, OutputTokens: 3}},
+		{Content: "garbage two", StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 1, OutputTokens: 3}},
+		{Content: "garbage three", StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 1, OutputTokens: 3}},
+		{Content: "garbage four", StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 1, OutputTokens: 3}},
 	}
 	recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", recInsights, "", "ds")
 	if len(recs) != 0 {

@@ -130,6 +130,27 @@ const (
 	// by recommendationPlanMaxItems at the point of use.
 	estimatedRecommendationsPerRun = 6
 
+	// recommendationReasoningHeadroomTokens is the extra output budget a
+	// reasoning-effective model gets on top of a call's own ceiling.
+	//
+	// On a thinking model the requested output covers the hidden reasoning as
+	// well as the answer -- on Ollama it becomes num_predict for the whole
+	// generation -- so a ceiling sized from the visible JSON alone can be
+	// spent before the answer begins. That is not something asking for shorter
+	// prose can fix, and it is the failure that cost the exploration engine
+	// its short runs on Qwen3 and DeepSeek-R1 (issue #341), where the same
+	// headroom was the fix.
+	//
+	// Additive rather than a flat ceiling, because the plan call and an
+	// expansion ask for genuinely different amounts of visible answer and a
+	// flat ceiling would erase the difference. The sum lands the expansion on
+	// the exploration engine's own reasoning ceiling. Still bounded by the
+	// model's output cap and budgeted against the window, so it cannot
+	// overflow; a non-reasoning model never reaches it and its budget is
+	// unchanged. Not env-tunable on its own -- the operator-facing dials are
+	// the per-call ceilings, which this is added to.
+	recommendationReasoningHeadroomTokens = 12288
+
 	// recommendationPlanTitleMaxRunes is the title length the plan call is
 	// asked to stay under. Long enough for the action-and-context titles the
 	// packs ask for, short enough that a plan of twenty stays small.
@@ -578,7 +599,7 @@ func (o *Orchestrator) planRecommendations(
 			return nil, newRecommendationTransportFailure(err)
 		}
 
-		health := classifyResponse(res.StopReason, res.TokensOut, maxTokens, res.Content)
+		health := classifyResponse(o.recommendationResponseFacts(res, maxTokens))
 		recordRecommendationCall(step, models.RecommendationCallPlan, attempt, 0, res, health, nil)
 		// The plan response is what the step records: it is the one call that
 		// describes the whole set, and so the one worth reading back.
@@ -719,7 +740,7 @@ func (o *Orchestrator) expandOneRecommendation(
 			return nil, newRecommendationTransportFailure(err)
 		}
 
-		health := classifyResponse(res.StopReason, res.TokensOut, maxTokens, res.Content)
+		health := classifyResponse(o.recommendationResponseFacts(res, maxTokens))
 		recordRecommendationCall(step, models.RecommendationCallExpand, attempt, idx, res, health, nil)
 
 		parsed, dropped, perr := parseRecommendations(res.Content)
@@ -738,7 +759,7 @@ func (o *Orchestrator) expandOneRecommendation(
 					}).Warn("Expansion wrote more than the one planned recommendation; keeping the planned one")
 				}
 				applyPlanToRecommendation(rec, plan[idx], insights)
-				return rec, nil
+				return o.repairExpansionCitation(ctx, step, base, rec, insights, format, idx), nil
 			}
 			fail = newRecommendationParseFailure(serr)
 		} else {
@@ -746,6 +767,89 @@ func (o *Orchestrator) expandOneRecommendation(
 		}
 	}
 	return nil, fail
+}
+
+// recommendationResponseFacts gathers what is known about one reply for
+// classifyResponse, including whether this run's model thinks -- which decides
+// whether tokens the text does not account for are a reply that went missing
+// or a reply that was thinking.
+func (o *Orchestrator) recommendationResponseFacts(res *ai.ChatResult, requestedMaxTokens int) responseFacts {
+	return responseFacts{
+		stopReason:         res.StopReason,
+		outputTokens:       res.TokensOut,
+		requestedMaxTokens: requestedMaxTokens,
+		content:            res.Content,
+		reasoning:          o.effectiveReasoning(),
+	}
+}
+
+// repairExpansionCitation re-asks one expansion that ended up citing no
+// eligible insight, with the eligible ids spelled out.
+//
+// The plan is normally the answer here -- an expanded recommendation takes its
+// citation from the entry it was written for. This is for when the plan has
+// none either, because the plan cited nothing or cited ids that name no
+// insight: without it the only thing left is the downstream backfill, which
+// links the recommendation to every eligible insight and so says nothing about
+// where it actually came from. The single-document path has always had this
+// re-ask (#347); the two-pass path needs its own, per entry, because that is
+// the unit it works in.
+//
+// Bounded by the same knob, and the re-ask is only adopted when it actually
+// recovers a citation. On failure the uncited recommendation is kept: it is
+// still a recommendation, and the backfill grounds it.
+func (o *Orchestrator) repairExpansionCitation(
+	ctx context.Context,
+	step *models.RecommendationStep,
+	base string,
+	rec *models.Recommendation,
+	insights []models.Insight,
+	format *gollm.ResponseFormat,
+	idx int,
+) *models.Recommendation {
+	retries := recommendationCitationMaxRetries()
+	if retries <= 0 || anyRecCitesEligible([]models.Recommendation{*rec}, insights) {
+		return rec
+	}
+
+	for attempt := 1; attempt <= retries; attempt++ {
+		step.RecommendationCitationRetries = attempt
+		applog.WithFields(applog.Fields{"entry": idx + 1, "attempt": attempt}).Warn(
+			"Re-asking for one recommendation: it cited no eligible insight id")
+
+		attemptPrompt := base + recommendationCitationRepairSuffix(insights)
+		maxTokens := o.recommendationCallMaxTokens(ctx, attemptPrompt, recommendationExpandOutputTokens())
+		res, err := o.aiClient.ChatWithFormat(ctx, attemptPrompt, "", maxTokens, format)
+		if err != nil {
+			recordRecommendationCall(step, models.RecommendationCallExpand, attempt, idx, nil, responseHealth{}, err)
+			break // keep the uncited recommendation; the backfill grounds it
+		}
+		health := classifyResponse(o.recommendationResponseFacts(res, maxTokens))
+		recordRecommendationCall(step, models.RecommendationCallExpand, attempt, idx, res, health, nil)
+
+		parsed, _, perr := parseRecommendations(res.Content)
+		if perr != nil || len(parsed) == 0 {
+			continue
+		}
+		if !anyRecCitesEligible(parsed[:1], insights) {
+			continue
+		}
+		// Adopt the re-ask only when it actually recovered a citation, and only
+		// the one object this call is about.
+		recovered := parsed[0]
+		return &recovered
+	}
+	return rec
+}
+
+// recommendationCitationMaxRetries returns the configured bound on the
+// citation re-ask, clamped at zero so a negative value disables it.
+func recommendationCitationMaxRetries() int {
+	v := goconfig.GetEnvAsInt(recommendationCitationMaxRetriesEnv, defaultRecommendationCitationMaxRetries)
+	if v < 0 {
+		return 0
+	}
+	return v
 }
 
 // generateRecommendationsSingleDocument is the fallback: the whole set asked
@@ -796,7 +900,7 @@ func (o *Orchestrator) generateRecommendationsSingleDocument(
 			return make([]models.Recommendation, 0), newRecommendationTransportFailure(err)
 		}
 
-		health := classifyResponse(res.StopReason, res.TokensOut, maxTokens, res.Content)
+		health := classifyResponse(o.recommendationResponseFacts(res, maxTokens))
 		recordRecommendationCall(step, models.RecommendationCallSingleDocument, attempt, 0, res, health, nil)
 		step.Response = res.Content
 
@@ -822,10 +926,7 @@ func (o *Orchestrator) generateRecommendationsSingleDocument(
 	// cites on the first try and skips this. Bounded + env-overridable (Rule
 	// 2). On failure we keep the uncited document — recoverRelatedInsightIDs
 	// backfills it, so a recommendation is never lost.
-	citationRetries := goconfig.GetEnvAsInt(recommendationCitationMaxRetriesEnv, defaultRecommendationCitationMaxRetries)
-	if citationRetries < 0 {
-		citationRetries = 0
-	}
+	citationRetries := recommendationCitationMaxRetries()
 	if citationRetries > 0 && !anyRecCitesEligible(recs, insights) {
 		for cAttempt := 1; cAttempt <= citationRetries; cAttempt++ {
 			step.RecommendationCitationRetries = cAttempt
@@ -839,7 +940,7 @@ func (o *Orchestrator) generateRecommendationsSingleDocument(
 				recordRecommendationCall(step, models.RecommendationCallSingleDocument, cAttempt, 0, nil, responseHealth{}, err)
 				break // keep the uncited document; backfill grounds it downstream
 			}
-			health := classifyResponse(res.StopReason, res.TokensOut, citMaxTokens, res.Content)
+			health := classifyResponse(o.recommendationResponseFacts(res, citMaxTokens))
 			recordRecommendationCall(step, models.RecommendationCallSingleDocument, cAttempt, 0, res, health, nil)
 			parsed, _, perr := parseRecommendations(res.Content)
 			if perr == nil && len(parsed) > 0 && anyRecCitesEligible(parsed, insights) {
@@ -873,6 +974,9 @@ func (o *Orchestrator) generateRecommendationsSingleDocument(
 func (o *Orchestrator) recommendationCallMaxTokens(ctx context.Context, prompt string, callCap int) int {
 	window, modelOutputCap := o.resolveModelBudget()
 	limit := callCap
+	if o.effectiveReasoning() {
+		limit += recommendationReasoningHeadroomTokens
+	}
 	if modelOutputCap > 0 && modelOutputCap < limit {
 		limit = modelOutputCap
 	}

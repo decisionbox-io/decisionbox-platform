@@ -34,6 +34,11 @@ import (
 // the budget on it. Shrinking the request does not fix the sampler, but
 // classifying it separately keeps the retry from banking on the reply and
 // keeps the operator from reading it as "the document was too big".
+//
+// That one is read two ways, because a provider may trim the reply before the
+// caller sees it (Ollama does) and take the evidence with it: the share of the
+// text that is whitespace, and -- when the text is too short to hold the
+// tokens the reply is billed for -- the arithmetic that survives trimming.
 const (
 	// defaultResponseMinNonSpacePct is the share of a response that must be
 	// something other than whitespace before it is treated as content. A
@@ -53,7 +58,50 @@ const (
 
 	// responseDegenerateMinRunesEnv overrides defaultResponseDegenerateMinRunes.
 	responseDegenerateMinRunesEnv = "LLM_RESPONSE_DEGENERATE_MIN_RUNES"
+
+	// responseMinRunesPerTenTokens is the floor on how much text a response
+	// must carry for the output tokens it spent, as runes per ten tokens.
+	//
+	// It catches the whitespace flood where the share above cannot: a provider
+	// that trims its response before returning it (Ollama does) hands back the
+	// short prefix and drops the thousands of newlines after it, so the share
+	// is measured on text that no longer contains the problem. What survives
+	// trimming is the arithmetic -- a reply that spent thousands of tokens and
+	// came back as a few dozen characters emitted something that is not in the
+	// text, whatever it was.
+	//
+	// Half a rune per token is far under any real tokenizer: dense JSON runs
+	// about two, and the densest scripts run about one. Deliberately not
+	// env-tunable -- it is not a threshold to tune, it is a floor below which
+	// no tokenizer can produce text, and the operator-facing dials for a
+	// verbose model are the per-call output ceilings.
+	responseMinRunesPerTenTokens = 5
 )
+
+// responseFacts is what is known about one LLM reply at the point of judging
+// it. Grouped rather than passed loose because the reasoning flag is easy to
+// get wrong silently: without it, a thinking model's hidden tokens read as
+// output that never arrived.
+type responseFacts struct {
+	// stopReason is the provider's own reason for ending generation.
+	stopReason string
+
+	// outputTokens is what the provider says the reply cost, and
+	// requestedMaxTokens the budget it was given. Either being zero means "not
+	// reported", and the token signals are skipped rather than guessed at.
+	outputTokens       int
+	requestedMaxTokens int
+
+	// content is the reply as the caller received it -- after any trimming or
+	// normalisation the provider applied.
+	content string
+
+	// reasoning is true when this model emits a hidden thinking channel. Its
+	// tokens are counted in outputTokens and its text is not in content, so a
+	// reply that thought at length and answered briefly is the normal case
+	// there, not a reply that went missing.
+	reasoning bool
+}
 
 // responseHealth is what one LLM reply was, beyond whether it parsed.
 type responseHealth struct {
@@ -75,48 +123,63 @@ type responseHealth struct {
 func (h responseHealth) unusable() bool { return h.truncated || h.degenerate }
 
 // classifyResponse judges one LLM reply from the provider's stop reason, the
-// output tokens it spent against the budget it was given, and the text
-// itself. requestedMaxTokens <= 0 means "not known", in which case the token
-// signal is skipped rather than guessed at.
-func classifyResponse(stopReason string, outputTokens, requestedMaxTokens int, content string) responseHealth {
+// output tokens it spent against the budget it was given, and the text itself.
+func classifyResponse(f responseFacts) responseHealth {
 	var h responseHealth
 
 	switch {
-	case gollm.IsLengthStopReason(stopReason):
+	case gollm.IsLengthStopReason(f.stopReason):
 		h.truncated = true
-		h.reason = fmt.Sprintf("the provider stopped at the output limit (stop reason %q)", stopReason)
-	case requestedMaxTokens > 0 && outputTokens > 0 && outputTokens >= requestedMaxTokens:
+		h.reason = fmt.Sprintf("the provider stopped at the output limit (stop reason %q)", f.stopReason)
+	case f.requestedMaxTokens > 0 && f.outputTokens > 0 && f.outputTokens >= f.requestedMaxTokens:
 		h.truncated = true
-		h.reason = fmt.Sprintf("the response spent its whole output budget (%d of %d tokens)", outputTokens, requestedMaxTokens)
+		h.reason = fmt.Sprintf("the response spent its whole output budget (%d of %d tokens)", f.outputTokens, f.requestedMaxTokens)
 	}
 
-	if pct, judged := nonSpacePct(content); judged && pct < responseMinNonSpacePct() {
+	if reason, isDegenerate := degenerateReason(f); isDegenerate {
 		h.degenerate = true
-		degenerate := fmt.Sprintf("%d%% of the response was anything other than whitespace", pct)
 		if h.reason == "" {
-			h.reason = degenerate
+			h.reason = reason
 		} else {
-			h.reason = h.reason + ", and " + degenerate
+			h.reason = h.reason + ", and " + reason
 		}
 	}
 
 	return h
 }
 
-// nonSpacePct returns the percentage of content that is not whitespace, and
-// whether content was long enough to judge at all.
-func nonSpacePct(content string) (pct int, judged bool) {
-	total, nonSpace := 0, 0
+// degenerateReason reports whether a reply spent its budget on something there
+// was never an answer in, and says which way it showed.
+func degenerateReason(f responseFacts) (string, bool) {
+	runes, nonSpace := countRunes(f.content)
+
+	if runes >= responseDegenerateMinRunes() {
+		if pct := nonSpace * 100 / runes; pct < responseMinNonSpacePct() {
+			return fmt.Sprintf("%d%% of the response was anything other than whitespace", pct), true
+		}
+	}
+
+	// A reply that cost thousands of tokens and arrived as a few dozen
+	// characters emitted something that is not in the text. Skipped for a
+	// thinking model, where the hidden channel is counted in the tokens and
+	// absent from the text by design.
+	if !f.reasoning && f.outputTokens > 0 && runes*10 < f.outputTokens*responseMinRunesPerTenTokens {
+		return fmt.Sprintf("the response cost %d output tokens and arrived as %d characters, so most of what it generated is not in the text", f.outputTokens, runes), true
+	}
+
+	return "", false
+}
+
+// countRunes returns how many runes content holds and how many of them are not
+// whitespace.
+func countRunes(content string) (runes, nonSpace int) {
 	for _, r := range content {
-		total++
+		runes++
 		if !unicode.IsSpace(r) {
 			nonSpace++
 		}
 	}
-	if total < responseDegenerateMinRunes() {
-		return 0, false
-	}
-	return nonSpace * 100 / total, true
+	return runes, nonSpace
 }
 
 // responseMinNonSpacePct returns the configured whitespace floor, falling back
