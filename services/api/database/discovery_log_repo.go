@@ -126,6 +126,16 @@ type RecommendationLogEntry struct {
 	RecommendationParseRetries  int    `bson:"recommendation_parse_retries,omitempty" json:"recommendation_parse_retries,omitempty"`
 	Status                      string `bson:"status,omitempty" json:"status,omitempty"`
 
+	// Citation telemetry (#347): how many times the phase had to re-ask for
+	// related_insight_ids, and how many citations the server recovered or
+	// backfilled when it could not. Mirrored for the reason every field here
+	// is — and these three were persisted and unmirrored until the field
+	// inventory was checked rather than assumed, which is how the first two
+	// got missed.
+	RecommendationCitationRetries      int `bson:"recommendation_citation_retries,omitempty" json:"recommendation_citation_retries,omitempty"`
+	RecommendationsCitationsSalvaged   int `bson:"recommendations_citations_salvaged,omitempty" json:"recommendations_citations_salvaged,omitempty"`
+	RecommendationsCitationsBackfilled int `bson:"recommendations_citations_backfilled,omitempty" json:"recommendations_citations_backfilled,omitempty"`
+
 	// Plan/expand telemetry mirrored from the agent's RecommendationStep, for
 	// the reason the counters above are: absent from this struct, BSON drops
 	// it and the endpoint cannot report it however non-zero it was in the
