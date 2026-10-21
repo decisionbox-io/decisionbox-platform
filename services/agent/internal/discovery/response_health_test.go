@@ -225,3 +225,38 @@ func TestResponseDegenerateMinRunes_FallsBackOnUnusableOverrides(t *testing.T) {
 		t.Errorf("a valid override was ignored: got %d, want 64", got)
 	}
 }
+
+func TestClassifyResponse_AThinkingModelOutOfBudgetNeedsMoreRoom(t *testing.T) {
+	// The repair direction, which is not always the one the failure looks
+	// like. A thinking model that ran out of budget cannot be fixed by asking
+	// for shorter prose — that does not shorten the thinking, and from outside
+	// there is no telling which of the two spent the budget.
+	f := facts("length", 16384, 16384, `{"recommendations":[{"title":"A`)
+	f.reasoning = true
+	h := classifyResponse(f)
+	if !h.truncated {
+		t.Fatalf("it did stop at the limit: %+v", h)
+	}
+	if h.missingOutput {
+		t.Error("a thinking model's visible length is not evidence of missing output")
+	}
+	if !h.needsMoreRoom {
+		t.Error("a thinking model out of budget needs more room, not a shorter answer")
+	}
+
+	// The same reply from a model with no hidden channel is a long answer that
+	// did not fit, and a shorter one is the right ask.
+	f.reasoning = false
+	f.content = `{"recommendations":[{"title":"A","description":"` + strings.Repeat("long ", 7000)
+	if h := classifyResponse(f); h.needsMoreRoom {
+		t.Errorf("a plain model's over-long answer must be asked for less, not more: %+v", h)
+	}
+}
+
+func TestClassifyResponse_HealthyReplyNeedsNothing(t *testing.T) {
+	f := facts("end_turn", 900, 4096, strings.Repeat("a", 2048))
+	f.reasoning = true
+	if h := classifyResponse(f); h.needsMoreRoom || h.unusable() {
+		t.Errorf("a healthy reply needs no repair at all: %+v", h)
+	}
+}

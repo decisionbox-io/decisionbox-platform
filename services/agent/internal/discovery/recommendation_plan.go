@@ -497,10 +497,11 @@ type recommendationFailure struct {
 	// prefix labels err in the step's Error string.
 	prefix string
 
-	// missingOutput is set when the reply spent its budget without the answer
-	// reaching the caller — the one failure whose repair is a *larger* request
-	// rather than a smaller one.
-	missingOutput bool
+	// needsMoreRoom is set when the repair is a *larger* request rather than a
+	// smaller one: the reply spent its budget without the answer reaching the
+	// caller, or it was a thinking model's and ran out of budget, where
+	// shorter prose does not shorten the thinking.
+	needsMoreRoom bool
 }
 
 // newRecommendationParseFailure reports a response the parsers could not read.
@@ -510,12 +511,12 @@ func newRecommendationParseFailure(err error) *recommendationFailure {
 
 // newRecommendationTruncationFailure reports a response that was cut off at
 // the output limit, or spent its budget without producing content.
-func newRecommendationTruncationFailure(reason string, missingOutput bool) *recommendationFailure {
+func newRecommendationTruncationFailure(reason string, needsMoreRoom bool) *recommendationFailure {
 	return &recommendationFailure{
 		err:           errors.New(reason),
 		status:        statusRecommendationTruncated,
 		prefix:        "response unusable",
-		missingOutput: missingOutput,
+		needsMoreRoom: needsMoreRoom,
 	}
 }
 
@@ -531,7 +532,7 @@ func newRecommendationTransportFailure(err error) *recommendationFailure {
 func recommendationFailureFor(health responseHealth, parseErr error, emptyErr error) *recommendationFailure {
 	switch {
 	case health.unusable():
-		return newRecommendationTruncationFailure(health.reason, health.missingOutput)
+		return newRecommendationTruncationFailure(health.reason, health.needsMoreRoom)
 	case parseErr != nil:
 		return newRecommendationParseFailure(parseErr)
 	default:
@@ -567,7 +568,7 @@ func (f *recommendationFailure) retrySuffix() string {
 	if f == nil || f.err == nil {
 		return ""
 	}
-	if f.missingOutput {
+	if f.needsMoreRoom {
 		return recommendationBriefThinkingSuffix(f.err.Error())
 	}
 	if f.status == statusRecommendationTruncated {
@@ -653,7 +654,7 @@ func (o *Orchestrator) planRecommendations(
 			return nil, newRecommendationTransportFailure(err)
 		}
 
-		health := classifyResponse(o.recommendationResponseFacts(res, maxTokens))
+		health := classifyResponse(o.recommendationResponseFacts(res))
 		recordRecommendationCall(step, models.RecommendationCallPlan, attempt, 0, res, health, nil)
 		// The plan response is what the step records: it is the one call that
 		// describes the whole set, and so the one worth reading back.
@@ -803,7 +804,7 @@ func (o *Orchestrator) expandOneRecommendation(
 			return nil, newRecommendationTransportFailure(err)
 		}
 
-		health := classifyResponse(o.recommendationResponseFacts(res, maxTokens))
+		health := classifyResponse(o.recommendationResponseFacts(res))
 		recordRecommendationCall(step, models.RecommendationCallExpand, attempt, idx, res, health, nil)
 
 		rec, perr := adoptExpansionResponse(step, res.Content, plan, idx, insights)
@@ -819,11 +820,15 @@ func (o *Orchestrator) expandOneRecommendation(
 // classifyResponse, including whether this run's model thinks -- which decides
 // whether tokens the text does not account for are a reply that went missing
 // or a reply that was thinking.
-func (o *Orchestrator) recommendationResponseFacts(res *ai.ChatResult, requestedMaxTokens int) responseFacts {
+func (o *Orchestrator) recommendationResponseFacts(res *ai.ChatResult) responseFacts {
 	return responseFacts{
-		stopReason:         res.StopReason,
-		outputTokens:       res.TokensOut,
-		requestedMaxTokens: requestedMaxTokens,
+		stopReason:   res.StopReason,
+		outputTokens: res.TokensOut,
+		// The budget the request finally carried, not the one asked for: the
+		// adaptive context-overflow retry lowers it, and a reply that spent
+		// the lowered budget to the last token must not read as one that had
+		// room to spare.
+		requestedMaxTokens: res.MaxTokens,
 		content:            res.Content,
 		reasoning:          o.effectiveReasoning(),
 	}
@@ -871,7 +876,7 @@ func (o *Orchestrator) repairExpansionCitation(
 			recordRecommendationCall(step, models.RecommendationCallExpand, attempt, idx, nil, responseHealth{}, err)
 			break // keep the uncited recommendation; the backfill grounds it
 		}
-		health := classifyResponse(o.recommendationResponseFacts(res, maxTokens))
+		health := classifyResponse(o.recommendationResponseFacts(res))
 		recordRecommendationCall(step, models.RecommendationCallExpand, attempt, idx, res, health, nil)
 
 		// Through the same adoption path as the first attempt. A re-ask is
@@ -949,7 +954,7 @@ func (o *Orchestrator) generateRecommendationsSingleDocument(
 			return make([]models.Recommendation, 0), newRecommendationTransportFailure(err)
 		}
 
-		health := classifyResponse(o.recommendationResponseFacts(res, maxTokens))
+		health := classifyResponse(o.recommendationResponseFacts(res))
 		recordRecommendationCall(step, models.RecommendationCallSingleDocument, attempt, 0, res, health, nil)
 		step.Response = res.Content
 
@@ -989,7 +994,7 @@ func (o *Orchestrator) generateRecommendationsSingleDocument(
 				recordRecommendationCall(step, models.RecommendationCallSingleDocument, cAttempt, 0, nil, responseHealth{}, err)
 				break // keep the uncited document; backfill grounds it downstream
 			}
-			health := classifyResponse(o.recommendationResponseFacts(res, citMaxTokens))
+			health := classifyResponse(o.recommendationResponseFacts(res))
 			recordRecommendationCall(step, models.RecommendationCallSingleDocument, cAttempt, 0, res, health, nil)
 			parsed, _, perr := parseRecommendations(res.Content)
 			if perr == nil && len(parsed) > 0 && anyRecCitesEligible(parsed, insights) {
@@ -1008,15 +1013,25 @@ func (o *Orchestrator) generateRecommendationsSingleDocument(
 // how the last one failed.
 //
 // Everything else gets the same ceiling again, because the problem was the
-// answer and the re-ask names it. A reply whose budget went somewhere the
-// caller cannot see is the exception: the answer never started, so asking for
-// the same room again asks for the same outcome. That is what an uncatalogued
-// thinking model looks like from the outside — the OpenAI catalog flags no
-// model as reasoning, so o-series and GPT-5 projects reach the phase with
-// effectiveReasoning() false — and reacting to the evidence covers a model
-// nothing has classified, including one that does not exist yet.
+// answer and the re-ask names it. Two failures are the exception, both because
+// asking for a shorter answer answers the wrong question:
+//
+//   - A reply whose budget went somewhere the caller cannot see. The answer
+//     never started, so asking for the same room again asks for the same
+//     outcome. That is also what an uncatalogued thinking model looks like
+//     from the outside — the OpenAI catalog flags no model as reasoning, so
+//     o-series and GPT-5 projects reach the phase with effectiveReasoning()
+//     false (#459) — and reacting to the evidence covers a model nothing has
+//     classified, including one that does not exist yet.
+//   - A catalogued thinking model's, when it ran out of budget. Shorter prose
+//     does not shorten the thinking, and from outside there is no telling
+//     which of the two spent the budget. More room and less deliberation is
+//     the only lever there is.
+//
+// The raise is still bounded by the model's output cap and the window, so on a
+// model with no room left to give it is a no-op rather than an overflow.
 func retryCeiling(base int, fail *recommendationFailure) int {
-	if fail != nil && fail.missingOutput {
+	if fail != nil && fail.needsMoreRoom {
 		return base + recommendationReasoningHeadroomTokens
 	}
 	return base

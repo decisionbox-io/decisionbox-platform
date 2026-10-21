@@ -801,3 +801,81 @@ func TestGenerateRecommendations_OutputThatWentMissingIsReAskedWithMoreRoom(t *t
 		t.Error("a reply that never produced an answer must not be asked for a shorter one")
 	}
 }
+
+func TestGenerateRecommendations_ThinkingModelOutOfBudgetIsReAskedWithMoreRoom(t *testing.T) {
+	// A catalogued thinking model that spends its ceiling and still gets cut
+	// off mid-answer is not writing too much prose — the thinking and the
+	// answer share one budget. More room, and less deliberation, is the only
+	// lever there is.
+	truncated := `{"recommendations":[{"title":"Recover high-value carts","description":"` + strings.Repeat("long ", 7000)
+	provider := testutil.NewMockLLMProvider()
+	provider.ResponseQueue = []*gollm.ChatResponse{
+		{Content: validPlanEnvelope, StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+		{
+			Content:    truncated,
+			StopReason: "length",
+			Usage: gollm.Usage{
+				InputTokens:  10,
+				OutputTokens: defaultRecommendationExpandOutputTokens + recommendationReasoningHeadroomTokens,
+			},
+		},
+		{Content: expandedRec("Recover high-value carts"), StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+		{Content: expandedRec("Reactivate lapsed buyers"), StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+	}
+	client, _ := ai.New(provider, "mock-model")
+	o := &Orchestrator{aiClient: client, reasoningEnabled: true}
+
+	recs, _ := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", planExpandInsights, "", "ds")
+
+	if len(recs) != 2 {
+		t.Fatalf("recs = %d, want 2 (the entry recovered on the retry)", len(recs))
+	}
+	first := provider.Calls[1].Request.MaxTokens
+	retry := provider.Calls[2].Request.MaxTokens
+	if retry <= first {
+		t.Errorf("retry max_tokens = %d, want more than the %d the first attempt had", retry, first)
+	}
+	retryPrompt := provider.Calls[2].Request.Messages[0].Content
+	if !strings.Contains(retryPrompt, "Do not plan or deliberate at length") {
+		t.Error("a thinking model out of budget must be asked to deliberate less, not to write less")
+	}
+}
+
+func TestGenerateRecommendations_EveryCallsBudgetReachesTheClassifier(t *testing.T) {
+	// A zero budget silently disables the token signal, so the phase would
+	// lose its provider-independent truncation check without anything
+	// failing. The value itself comes from the client (see
+	// TestChatReportsTheBudgetTheRequestFinallyCarried, which covers the
+	// adaptive retry lowering it).
+	o, provider := newRoutedOrchestrator(map[string]string{
+		planCallMarker:  validPlanEnvelope,
+		"Write entry 1": expandedRec("A"),
+		"Write entry 2": expandedRec("B"),
+	})
+
+	if _, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", planExpandInsights, "", "ds"); len(step.Calls) != 3 {
+		t.Fatalf("calls = %d, want 3", len(step.Calls))
+	}
+	for i := range provider.Calls {
+		if provider.Calls[i].Request.MaxTokens <= 0 {
+			t.Errorf("call %d carried no output budget", i)
+		}
+	}
+}
+
+func TestClassifyResponse_JudgesAgainstTheReducedBudget(t *testing.T) {
+	// The adaptive context-overflow retry lowers max_tokens and tries again.
+	// Judged against the original ceiling a reply that spent the lowered
+	// budget to the last token reads as one that had room to spare — and a
+	// provider that reports no usable stop reason leaves nothing else to go
+	// on, so the wrong repair gets chosen in silence.
+	const originalCeiling = 4096
+	const reducedBudget = 1200
+
+	if h := classifyResponse(facts("", reducedBudget, reducedBudget, strings.Repeat("a", 4000))); !h.truncated {
+		t.Error("a reply that spent the budget the request carried is truncated")
+	}
+	if h := classifyResponse(facts("", reducedBudget, originalCeiling, strings.Repeat("a", 4000))); h.truncated {
+		t.Error("judged against the original ceiling the same reply looks healthy — which is the bug")
+	}
+}

@@ -89,8 +89,11 @@ type responseFacts struct {
 	stopReason string
 
 	// outputTokens is what the provider says the reply cost, and
-	// requestedMaxTokens the budget it was given. Either being zero means "not
-	// reported", and the token signals are skipped rather than guessed at.
+	// requestedMaxTokens the budget the request finally carried -- which is
+	// not always the one the caller asked for, since the adaptive
+	// context-overflow retry lowers it (ai.ChatResult.MaxTokens). Either being
+	// zero means "not reported", and the token signals are skipped rather than
+	// guessed at.
 	outputTokens       int
 	requestedMaxTokens int
 
@@ -124,6 +127,15 @@ type responseHealth struct {
 	// model looks like from the outside.
 	missingOutput bool
 
+	// needsMoreRoom is the direction the repair goes, which is not always the
+	// one the failure looks like. Output that never arrived needs more room,
+	// obviously. So does a thinking model that ran out of budget, less
+	// obviously: asking it for shorter prose does not shorten the thinking,
+	// and from the outside there is no telling which of the two spent the
+	// budget. The one thing that can be done for it is to give it more room
+	// and ask it to deliberate less.
+	needsMoreRoom bool
+
 	// reason is a short operator-facing sentence naming what happened, for
 	// the step status and the retry log. Empty when the reply is healthy.
 	reason string
@@ -156,6 +168,8 @@ func classifyResponse(f responseFacts) responseHealth {
 			h.reason = h.reason + ", and " + reason
 		}
 	}
+
+	h.needsMoreRoom = h.missingOutput || (h.truncated && f.reasoning)
 
 	return h
 }

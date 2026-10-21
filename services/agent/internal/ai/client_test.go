@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
@@ -315,5 +316,54 @@ func TestChatPassesTheStopReasonThrough(t *testing.T) {
 		if res.StopReason != reason {
 			t.Errorf("ChatWithFormat StopReason = %q, want %q", res.StopReason, reason)
 		}
+	}
+}
+
+func TestChatReportsTheBudgetTheRequestFinallyCarried(t *testing.T) {
+	// The adaptive context-overflow retry lowers max_tokens and tries again,
+	// so a caller that judges a reply against "the budget it was given" has to
+	// be given the budget the request finally carried. Reporting the original
+	// makes a reply that spent the reduced budget to the last token look like
+	// one that had room to spare.
+	const overflow = `openai: API error (400): invalid_request_error - This model's maximum ` +
+		`context length is 8192 tokens. However, you requested 9000 tokens (5000 in the messages, ` +
+		`4000 in the completion). Please reduce the length of the messages or completion.`
+
+	provider := testutil.NewMockLLMProvider()
+	provider.ErrorOnCall = map[int]error{0: errors.New(overflow)}
+	provider.DefaultResponse = &gollm.ChatResponse{
+		Content:    "{}",
+		StopReason: "end_turn",
+		Usage:      gollm.Usage{InputTokens: 5000, OutputTokens: 100},
+	}
+	client, _ := New(provider, "test-model")
+
+	res, err := client.Chat(context.Background(), "prompt", "", 4000)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if len(provider.Calls) != 2 {
+		t.Fatalf("provider called %d times, want 2 (the overflow and the reduced retry)", len(provider.Calls))
+	}
+
+	retried := provider.Calls[1].Request.MaxTokens
+	if retried >= 4000 {
+		t.Fatalf("the retry carried max_tokens = %d, want it lowered below the 4000 asked for", retried)
+	}
+	if res.MaxTokens != retried {
+		t.Errorf("ChatResult.MaxTokens = %d, want the %d the request finally carried", res.MaxTokens, retried)
+	}
+}
+
+func TestChatReportsTheBudgetWhenNothingWasRetried(t *testing.T) {
+	provider := testutil.NewMockLLMProvider()
+	client, _ := New(provider, "test-model")
+
+	res, err := client.ChatWithFormat(context.Background(), "prompt", "", 2048, nil)
+	if err != nil {
+		t.Fatalf("ChatWithFormat: %v", err)
+	}
+	if res.MaxTokens != 2048 {
+		t.Errorf("ChatResult.MaxTokens = %d, want 2048", res.MaxTokens)
 	}
 }

@@ -91,13 +91,22 @@ type ChatResult struct {
 	// it is a reply that needs a smaller request, and the text alone
 	// cannot be made to say which it was.
 	StopReason string
+
+	// MaxTokens is the output budget the request finally carried, which is
+	// not always the one the caller asked for: the adaptive
+	// context-overflow retry lowers it and tries again. A caller judging a
+	// reply against its budget must use this one -- against the original,
+	// a reply that spent the reduced budget to the last token looks like a
+	// reply that had room to spare, and the provider that reports no stop
+	// reason is exactly the provider that leaves nothing else to go on.
+	MaxTokens int
 }
 
 // Chat sends a user prompt with an optional system prompt and returns the full result.
 func (c *Client) Chat(ctx context.Context, userPrompt string, systemPrompt string, maxTokens int) (*ChatResult, error) {
 	start := time.Now()
 	messages := []gollm.Message{{Role: "user", Content: userPrompt}}
-	resp, err := c.CreateMessage(ctx, messages, systemPrompt, maxTokens)
+	resp, budget, err := c.createMessage(ctx, messages, systemPrompt, maxTokens, nil, "", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -107,6 +116,7 @@ func (c *Client) Chat(ctx context.Context, userPrompt string, systemPrompt strin
 		TokensOut:  resp.Usage.OutputTokens,
 		DurationMs: time.Since(start).Milliseconds(),
 		StopReason: resp.StopReason,
+		MaxTokens:  budget,
 	}, nil
 }
 
@@ -123,7 +133,8 @@ func (c *Client) CreateMessage(ctx context.Context, messages []gollm.Message, sy
 // is false reject a non-empty tools slice with gollm.ErrToolsNotSupported, so
 // callers must gate on tool support before passing tools.
 func (c *Client) CreateMessageWithTools(ctx context.Context, messages []gollm.Message, systemPrompt string, maxTokens int, tools []gollm.ToolDefinition, toolChoice string) (*gollm.ChatResponse, error) {
-	return c.createMessage(ctx, messages, systemPrompt, maxTokens, tools, toolChoice, nil)
+	resp, _, err := c.createMessage(ctx, messages, systemPrompt, maxTokens, tools, toolChoice, nil)
+	return resp, err
 }
 
 // createMessage is the single low-level LLM call: it builds the request
@@ -131,7 +142,13 @@ func (c *Client) CreateMessageWithTools(ctx context.Context, messages []gollm.Me
 // transient upstream failures, and records observability. All public Chat /
 // CreateMessage* helpers funnel through here so retry, usage accounting, and
 // debug logging behave identically regardless of tools or structured output.
-func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, systemPrompt string, maxTokens int, tools []gollm.ToolDefinition, toolChoice string, format *gollm.ResponseFormat) (*gollm.ChatResponse, error) {
+// It also reports the max_tokens the request finally carried, which is not
+// always the max_tokens it was called with: the adaptive context-overflow
+// retry below lowers it and tries again. A caller that judges a reply against
+// the budget it was given has to be judging it against that one, or a reply
+// that spent the reduced budget to the last token looks like a reply that had
+// room to spare.
+func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, systemPrompt string, maxTokens int, tools []gollm.ToolDefinition, toolChoice string, format *gollm.ResponseFormat) (*gollm.ChatResponse, int, error) {
 	startTime := time.Now()
 
 	if c.testMode {
@@ -216,7 +233,7 @@ func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, sy
 				systemPrompt, promptContent, "", 0, 0,
 				latencyMs, err)
 		}
-		return nil, err
+		return nil, req.MaxTokens, err
 	}
 
 	logger.WithFields(logger.Fields{
@@ -234,7 +251,7 @@ func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, sy
 			latencyMs, nil)
 	}
 
-	return resp, nil
+	return resp, req.MaxTokens, nil
 }
 
 // SupportsStructuredOutput reports whether the active provider honours
@@ -258,7 +275,8 @@ func (c *Client) CreateMessageWithFormat(ctx context.Context, messages []gollm.M
 	if format != nil && !c.SupportsStructuredOutput() {
 		format = nil
 	}
-	return c.createMessage(ctx, messages, systemPrompt, maxTokens, nil, "", format)
+	resp, _, err := c.createMessage(ctx, messages, systemPrompt, maxTokens, nil, "", format)
+	return resp, err
 }
 
 // ChatWithFormat is Chat with structured output — the single-prompt convenience
@@ -266,7 +284,10 @@ func (c *Client) CreateMessageWithFormat(ctx context.Context, messages []gollm.M
 func (c *Client) ChatWithFormat(ctx context.Context, userPrompt string, systemPrompt string, maxTokens int, format *gollm.ResponseFormat) (*ChatResult, error) {
 	start := time.Now()
 	messages := []gollm.Message{{Role: "user", Content: userPrompt}}
-	resp, err := c.CreateMessageWithFormat(ctx, messages, systemPrompt, maxTokens, format)
+	if format != nil && !c.SupportsStructuredOutput() {
+		format = nil
+	}
+	resp, budget, err := c.createMessage(ctx, messages, systemPrompt, maxTokens, nil, "", format)
 	if err != nil {
 		return nil, err
 	}
@@ -276,6 +297,7 @@ func (c *Client) ChatWithFormat(ctx context.Context, userPrompt string, systemPr
 		TokensOut:  resp.Usage.OutputTokens,
 		DurationMs: time.Since(start).Milliseconds(),
 		StopReason: resp.StopReason,
+		MaxTokens:  budget,
 	}, nil
 }
 
@@ -364,8 +386,8 @@ func (c *Client) maybeLearnWindow(model string, err error) {
 		c.contextWindowObserver(model, learned)
 	}
 }
-func (c *Client) SetStep(step int)                { c.currentStep = step }
-func (c *Client) SetPhase(phase string)           { c.currentPhase = phase }
+func (c *Client) SetStep(step int)      { c.currentStep = step }
+func (c *Client) SetPhase(phase string) { c.currentPhase = phase }
 
 func (c *Client) savePrompt(messages []gollm.Message, systemPrompt string) {
 	c.promptCount++
