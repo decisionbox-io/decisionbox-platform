@@ -226,76 +226,103 @@ export default function LedgerPage() {
   // A run is marked completed before its findings are folded into the ledger,
   // so for a while after a run finishes this whole page describes the state
   // from before it — and a page opened while the run was going cannot tell
-  // from the ledger alone that it has finished. So ONE loop watches both: while
-  // a run is in progress or the ledger says it is being updated, it checks the
-  // run and the ledger; when neither is true any more, it reloads the whole
-  // page once — the map, the story and the proposals are from before the run
-  // too — and stops. One loop, because two that handed over to each other
-  // dropped the page at every seam between them.
+  // from the ledger alone that it has finished. ONE loop handles both, and it
+  // goes on until it has finished the job itself: only its own successful
+  // reload of the whole page ends it, never a ledger answer on its own. Each
+  // check, in this order:
   //
-  // Every ledger load is numbered like the graph and proposals loads, and only
-  // the latest may set it: a slow first load landing after the loop had seen
-  // the update would put the pre-run ledger back and stop the loop mid-update.
+  //   1. The run. Still going: check again later. No answer: check again.
+  //   2. Then, and only then, the ledger. The agent marks the update BEFORE it
+  //      stamps the run completed, so a ledger read after a completed status
+  //      sees either that mark or the finished update — never the moment in
+  //      between, which two reads in parallel could catch. No ledger on this
+  //      deployment (404): nothing to wait for, stop. Still updating: show it,
+  //      check again.
+  //   3. Done: reload the map and proposals with it — they are from before the
+  //      run too — set everything together, and stop. A deployment without the
+  //      graph route (404) has no map to reload; that is not a failure.
+  //
+  // Anything else that fails is not an answer: check again.
+  //
+  // Every ledger load, the first included, is numbered like the graph and
+  // proposals loads, and only the latest may set it: a slow first load landing
+  // after the loop had seen the update would put the pre-run ledger back.
   const ledgerRequest = useRef(0);
+  // Read by the loop without restarting it: whether the graph route exists.
+  const graphMissing = useRef(false);
+  useEffect(() => { graphMissing.current = graphUnavailable; }, [graphUnavailable]);
   const [watching, setWatching] = useState(false);
   useEffect(() => {
     api.getProjectStatus(id)
       .then((s) => { if (runInProgress(s?.run?.status)) setWatching(true); })
       .catch(() => {});
   }, [id]);
-  // Keyed on whether there is anything to wait for, never on the update
-  // object, whose identity says nothing about whether anything changed.
-  const waiting = watching || Boolean(ledger?.updating);
+  const waiting = watching && !unsupported;
   useEffect(() => {
     if (!waiting) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
+    const notFound = (e: unknown) => (e as { status?: number } | null)?.status === 404;
+
+    const step = async () => {
+      const status = await api.getProjectStatus(id);
+      if (cancelled) return;
+      if (runInProgress(status?.run?.status)) {
+        check();
+        return;
+      }
+
+      const mineLedger = ++ledgerRequest.current;
+      let lv: LedgerView;
+      try {
+        lv = await api.getLedger(id);
+      } catch (e) {
+        if (!notFound(e)) throw e;
+        if (!cancelled) setWatching(false);
+        return;
+      }
+      if (cancelled) return;
+      const next = normalizeLedger(lv);
+      if (next.updating) {
+        if (mineLedger === ledgerRequest.current) setLedger(next);
+        check();
+        return;
+      }
+
+      // Anything still out from before is superseded first, so it cannot land
+      // on top of this.
+      const mineGraph = ++graphRequest.current;
+      const mineProposals = ++proposalsRequest.current;
+      let noGraph = graphMissing.current;
+      const [g, props] = await Promise.all([
+        noGraph
+          ? Promise.resolve(null)
+          : api.getLedgerGraph(id).catch((e) => {
+            if (!notFound(e)) throw e;
+            noGraph = true;
+            return null;
+          }),
+        api.listPackProposals(id),
+      ]);
+      if (cancelled) return;
+      if (mineGraph === graphRequest.current) {
+        if (g) setGraph(g);
+        setGraphUnavailable(noGraph);
+        setGraphLoading(false);
+      }
+      if (mineProposals === proposalsRequest.current) setProposals(props || []);
+      if (mineLedger === ledgerRequest.current) setLedger(next);
+      // Last, so nothing above is lost to this loop's own cleanup.
+      setWatching(false);
+    };
+
     const check = () => {
-      timer = setTimeout(async () => {
-        try {
-          const mineLedger = ++ledgerRequest.current;
-          const [status, lv] = await Promise.all([
-            api.getProjectStatus(id).catch(() => null),
-            api.getLedger(id),
-          ]);
-          if (cancelled) return;
-          const next = normalizeLedger(lv);
-          // Still waiting: a run going, a ledger being updated, or no way to
-          // tell whether a run is going because its status did not answer.
-          if (status === null || runInProgress(status?.run?.status) || next.updating) {
-            if (mineLedger === ledgerRequest.current) setLedger(next);
-            check();
-            return;
-          }
-          // Done. Everything comes in together, and the banner goes only when
-          // the whole page is current. Anything still out from before is
-          // superseded first, so it cannot land on top of this.
-          const mineGraph = ++graphRequest.current;
-          const mineProposals = ++proposalsRequest.current;
-          const [g, props] = await Promise.all([
-            graphUnavailable ? Promise.resolve(null) : api.getLedgerGraph(id),
-            api.listPackProposals(id),
-          ]);
-          if (cancelled) return;
-          if (g && mineGraph === graphRequest.current) {
-            setGraph(g);
-            setGraphUnavailable(false);
-            setGraphLoading(false);
-          }
-          if (mineProposals === proposalsRequest.current) setProposals(props || []);
-          if (mineLedger === ledgerRequest.current) setLedger(next);
-          // Last, so nothing above is lost to this loop's own cleanup.
-          setWatching(false);
-        } catch {
-          // Not an answer: keep waiting and try again, rather than leave
-          // half the page from before the run with nothing saying so.
-          if (!cancelled) check();
-        }
+      timer = setTimeout(() => {
+        step().catch(() => { if (!cancelled) check(); });
       }, LEDGER_UPDATE_POLL_MS);
     };
     check();
     return () => { cancelled = true; clearTimeout(timer); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, waiting]);
 
   useEffect(() => {
@@ -307,6 +334,8 @@ export default function LedgerPage() {
     ])
       .then(([lv, st]) => {
         if (mine === ledgerRequest.current) setLedger(normalizeLedger(lv));
+        // Opened on a ledger already being updated: wait for it to finish.
+        if (lv?.updating) setWatching(true);
         setSettings(st);
         setUnsupported(false);
         loadProposals();

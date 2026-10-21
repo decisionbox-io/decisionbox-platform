@@ -1053,6 +1053,93 @@ describe('LedgerPage', () => {
     expect(screen.getByText('Updating from the run that just finished')).toBeInTheDocument();
   });
 
+  it('asks about the run before it asks the ledger, never both at once', async () => {
+    // Read together, the ledger answer could predate the agent marking the
+    // update while the run's status already said it had finished — and the
+    // page would stop waiting before the update began. So the ledger is not
+    // asked until the run has answered.
+    let releaseStatus: (s: unknown) => void = () => {};
+    getProjectStatus
+      .mockResolvedValueOnce({ project_id: 'p1', run: { id: 'r3', status: 'running' } })
+      .mockImplementationOnce(() => new Promise((res) => { releaseStatus = res; }))
+      .mockResolvedValue({ project_id: 'p1', run: { id: 'r3', status: 'completed' } });
+    getLedger.mockResolvedValue(ledger);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'auto', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    getLedgerGraph.mockResolvedValue(graph);
+    wrap();
+    await screen.findByText('Tables explored');
+    await waitFor(() => expect(getProjectStatus).toHaveBeenCalledTimes(2));
+    await new Promise((r) => setTimeout(r, 40));
+    // Only the page's own first load has asked the ledger: the check that is
+    // waiting on the run has not.
+    expect(getLedger).toHaveBeenCalledTimes(1);
+    releaseStatus({ project_id: 'p1', run: { id: 'r3', status: 'completed' } });
+    await waitFor(() => expect(getLedger.mock.calls.length).toBeGreaterThan(1));
+  });
+
+  it('keeps waiting through a failed run check rather than end on a ledger answer alone', async () => {
+    // Opened while the ledger was being updated. A run check that fails is no
+    // answer about the run, so the ledger saying "done" in that moment must
+    // not end the wait before the map and proposals have been reloaded.
+    const inFlight = { ...ledger, updating: { run_id: 'r3', since: '2026-10-21T14:02:00Z' } };
+    getProjectStatus
+      .mockResolvedValueOnce({ project_id: 'p1' })
+      .mockRejectedValueOnce(new Error('status blip'))
+      .mockResolvedValue({ project_id: 'p1', run: { id: 'r3', status: 'completed' } });
+    getLedger.mockResolvedValueOnce(inFlight).mockResolvedValue(ledger);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'auto', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    const after = {
+      ...graph,
+      findings: graph.findings.map((f) => (f.id === 'f1' ? { ...f, name: 'Churn, after the run' } : f)),
+    };
+    getLedgerGraph.mockResolvedValueOnce(graph).mockResolvedValue(after);
+    wrap();
+    await screen.findByText('Updating from the run that just finished');
+    // When the banner goes, the map has come in with it.
+    await waitFor(() =>
+      expect(screen.queryByText('Updating from the run that just finished')).not.toBeInTheDocument());
+    expect(view().getAllByText(/Churn, after the run/).length).toBeGreaterThan(0);
+  });
+
+  it('finishes on a deployment whose API has no graph route', async () => {
+    // The graph route is additive. Its 404 means there is no map to reload,
+    // not a failure to retry for ever with the banner up.
+    const { ApiError } = jest.requireMock('@/lib/api');
+    const inFlight = { ...ledger, updating: { run_id: 'r3', since: '2026-10-21T14:02:00Z' } };
+    getLedger.mockResolvedValueOnce(inFlight).mockResolvedValue(ledger);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'auto', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    // The page's own first graph request is still out when the update
+    // finishes, so it is the final reload that meets the 404.
+    getLedgerGraph
+      .mockImplementationOnce(() => new Promise<LedgerGraph>(() => {}))
+      .mockRejectedValue(new ApiError('nope', 404));
+    wrap();
+    await screen.findByText('Updating from the run that just finished');
+    await waitFor(() =>
+      expect(screen.queryByText('Updating from the run that just finished')).not.toBeInTheDocument());
+    const calls = getLedger.mock.calls.length;
+    await new Promise((r) => setTimeout(r, 40));
+    expect(getLedger.mock.calls.length).toBe(calls);
+  });
+
+  it('stops watching a deployment that has no ledger at all', async () => {
+    // A community build 404s the ledger routes. Opened during a run, the page
+    // must not keep asking the run and the ledger every few seconds for ever.
+    const { ApiError } = jest.requireMock('@/lib/api');
+    getProjectStatus.mockResolvedValue({ project_id: 'p1', run: { id: 'r3', status: 'running' } });
+    getLedger.mockRejectedValue(new ApiError('nope', 404));
+    getEvolutionSettings.mockResolvedValue(null);
+    listPackProposals.mockResolvedValue([]);
+    wrap();
+    expect(await screen.findByText('Discovery Ledger not available')).toBeInTheDocument();
+    const calls = getProjectStatus.mock.calls.length;
+    await new Promise((r) => setTimeout(r, 40));
+    expect(getProjectStatus.mock.calls.length).toBe(calls);
+  });
+
   it('does not watch for a run when none is going', async () => {
     mockAll();
     wrap();
