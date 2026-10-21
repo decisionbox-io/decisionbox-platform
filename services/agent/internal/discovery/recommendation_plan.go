@@ -176,6 +176,33 @@ type recommendationPlanItem struct {
 	RelatedInsightIDs []string `json:"related_insight_ids"`
 }
 
+// UnmarshalJSON decodes a plan entry as tolerantly as a recommendation is
+// decoded.
+//
+// The priority is the field that matters. A model that answers "high", "P2" or
+// "2" is answering the pack's own priority scale in the pack's own words, and
+// models.Recommendation has accepted that for as long as it has existed -- the
+// pack even has to tell the model to emit an integer, which is the tell that
+// they do not. A plan entry that insisted on a number would drop the entry,
+// and a dropped plan entry is a recommendation lost before it was ever
+// written: the exact loss this phase exists to stop, arriving one entry at a
+// time instead of all at once.
+//
+// models.CoercePriority is called rather than copied, because two tables of
+// severity words are two answers to one question.
+func (i *recommendationPlanItem) UnmarshalJSON(data []byte) error {
+	type alias recommendationPlanItem
+	aux := &struct {
+		Priority json.RawMessage `json:"priority"`
+		*alias
+	}{alias: (*alias)(i)}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	i.Priority = models.CoercePriority(aux.Priority)
+	return nil
+}
+
 // recommendationPlanMaxItems returns the configured fan-out bound.
 func recommendationPlanMaxItems() int {
 	if v := goconfig.GetEnvAsInt(recommendationPlanMaxItemsEnv, defaultRecommendationPlanMaxItems); v > 0 {

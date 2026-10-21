@@ -331,17 +331,22 @@ func (r *Recommendation) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, aux); err != nil {
 		return err
 	}
-	r.Priority = coercePriority(aux.Priority)
+	r.Priority = CoercePriority(aux.Priority)
 	r.SegmentSize = coerceFlexInt(aux.SegmentSize)
 	r.Confidence = coerceFlexFloat(aux.Confidence)
 	return nil
 }
 
-// coercePriority reads a recommendation priority that may be a number or a
+// CoercePriority reads a recommendation priority that may be a number or a
 // descriptive string. Numbers pass through; "P2"/"2" parse directly; and
 // severity words map onto the 1 (highest) – 5 (lowest) scale. An
 // unrecognized value yields 0 (unset) rather than failing the decode.
-func coercePriority(raw json.RawMessage) int {
+//
+// Exported because the agent's recommendation *plan* decodes the same field
+// off the same models, and a second table of severity words would be a second
+// answer to the same question. Which shapes a model emits for a priority is
+// this package's knowledge; there is one copy of it.
+func CoercePriority(raw json.RawMessage) int {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || string(raw) == "null" {
 		return 0

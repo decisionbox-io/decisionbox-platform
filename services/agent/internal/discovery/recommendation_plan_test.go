@@ -427,3 +427,66 @@ func TestRecommendationCallMaxTokens_FollowsAWindowLearnedSinceTheLastCall(t *te
 		t.Errorf("budget after calibration = %d, want less than the %d budgeted before it", after, before)
 	}
 }
+
+func TestParseRecommendationPlan_PriorityIsDecodedAsTolerantlyAsARecommendation(t *testing.T) {
+	// A dropped plan entry is a recommendation lost before it was ever
+	// written. The packs have to tell the model to emit priority as an
+	// integer, which is the tell that models do not, and
+	// models.Recommendation has always accepted the words — so a plan entry
+	// that insisted on a number would lose entries the rest of the pipeline
+	// would have taken.
+	const mixed = `{"plan":[
+		{"title":"A number","priority":2,"related_insight_ids":["i-1"]},
+		{"title":"A numeric string","priority":"3","related_insight_ids":["i-1"]},
+		{"title":"A severity word","priority":"high","related_insight_ids":["i-1"]},
+		{"title":"A P-form","priority":"P4","related_insight_ids":["i-1"]},
+		{"title":"Nonsense","priority":"whenever","related_insight_ids":["i-1"]},
+		{"title":"Absent","related_insight_ids":["i-1"]}
+	]}`
+	items, dropped, err := parseRecommendationPlan(mixed)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if dropped != 0 {
+		t.Errorf("dropped = %d, want 0 — no entry is lost to the shape of its priority", dropped)
+	}
+	if len(items) != 6 {
+		t.Fatalf("kept %d entries, want all 6", len(items))
+	}
+	if items[0].Priority != 2 {
+		t.Errorf("a number priority = %d, want 2", items[0].Priority)
+	}
+	if items[1].Priority != 3 {
+		t.Errorf("a numeric string priority = %d, want 3", items[1].Priority)
+	}
+	if items[2].Priority <= 0 || items[2].Priority > 5 {
+		t.Errorf("a severity word priority = %d, want it mapped onto the 1-5 scale", items[2].Priority)
+	}
+	if items[3].Priority != 4 {
+		t.Errorf("a P-form priority = %d, want 4", items[3].Priority)
+	}
+	// An unrecognised or absent priority is unset, not a dropped entry. The
+	// expansion is told the planned priority only when there is one.
+	if items[4].Priority != 0 || items[5].Priority != 0 {
+		t.Errorf("unrecognised/absent priorities = %d/%d, want 0 (unset)", items[4].Priority, items[5].Priority)
+	}
+	// The rest of the entry still decodes.
+	if items[2].Title != "A severity word" || len(items[2].RelatedInsightIDs) != 1 {
+		t.Errorf("the entry around the priority was not decoded: %+v", items[2])
+	}
+}
+
+func TestParseRecommendationPlan_MalformedEntryIsStillDropped(t *testing.T) {
+	// Tolerance for one field is not tolerance for a broken entry: a
+	// type-wrong array still cannot be expanded.
+	items, dropped, err := parseRecommendationPlan(`{"plan":[
+		{"title":"Keep","priority":"high","related_insight_ids":["i-1"]},
+		{"title":"Drop","related_insight_ids":"not an array"}
+	]}`)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(items) != 1 || dropped != 1 {
+		t.Fatalf("kept %d, dropped %d; want 1, 1", len(items), dropped)
+	}
+}
