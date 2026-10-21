@@ -60,12 +60,13 @@ const (
 	runStatusPending = "pending"
 	runStatusRunning = "running"
 	// reflectionStaleAfter is how long a reflection marker is believed. The
-	// phase is bounded by DISCOVERY_REFLECTION_TIMEOUT (three minutes by
+	// phase is bounded by DISCOVERY_REFLECTION_TIMEOUT (three hours by
 	// default) and an agent killed mid-phase never clears its marker — so
 	// without a ceiling one crash would block the backfill on that project
-	// forever. Generous enough to cover a raised timeout, short enough that a
-	// crash does not wedge anything for long.
-	reflectionStaleAfter = time.Hour
+	// forever. It has to stay strictly above the phase's own default budget:
+	// any shorter and the backfill calls a legitimately in-flight reflection
+	// stale and races the writes it was told to leave alone.
+	reflectionStaleAfter = 4 * time.Hour
 )
 
 // ledgerGraphCounts is what the run reports. The unlinked counts are the point:

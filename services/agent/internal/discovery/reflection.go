@@ -45,7 +45,25 @@ const (
 )
 
 const (
-	defaultDiscoveryReflectionTimeout    = 3 * time.Minute
+	// defaultDiscoveryReflectionTimeout bounds the whole reflection phase.
+	//
+	// Three HOURS, not the three minutes this started as. The phase's cost grows
+	// with the ledger it reflects on — the prompt re-judges every prior finding —
+	// so the call that returns in seconds on a project's first run takes minutes
+	// once the ledger holds a few hundred. On a production project carrying 69
+	// findings the reflection call sent a 32k-token prompt and took 2m13s; the
+	// next run's took longer than the budget and was cancelled mid-call. Step 1
+	// had already written its findings, so the ledger kept growing while
+	// everything from step 2 on — coverage, convergence, learnings, next-tasks,
+	// provenance — stopped being written after the first run. The budget was
+	// tightest exactly on the runs with the most history to reason about.
+	//
+	// So it is deliberately generous enough never to be the binding constraint:
+	// a hung provider is bounded by the per-call LLM_TIMEOUT and the pod by the
+	// agent Job's ActiveDeadlineSeconds (AGENT_JOB_TIMEOUT_HOURS). This bounds
+	// only how long we are willing to keep trying, and the phase runs after the
+	// run-completion event, so a long one delays nothing a user is waiting on.
+	defaultDiscoveryReflectionTimeout = 3 * time.Hour
 	// reflectionCleanupTimeout bounds taking the in-flight marker back down.
 	// Short: it is one small update, and it runs after the phase's own
 	// deadline has usually already passed.
