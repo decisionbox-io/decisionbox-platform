@@ -264,8 +264,17 @@ export default function LedgerPage() {
   // answer with no run in it says nothing about whether the run is done.
   const sawRunGoing = useRef(false);
   // Whether the page owes a reload of the map and proposals: an update was
-  // seen in progress and has not been caught up with yet.
+  // seen in progress, or a run finished, and it has not been caught up with.
   const owedReload = useRef(false);
+  // The run this page last saw. A different one means the last one finished —
+  // possibly with its whole update in between two checks, where no "updating"
+  // was ever seen.
+  const lastRunId = useRef('');
+  const noteRun = (runId: string | undefined) => {
+    if (!runId) return;
+    if (lastRunId.current && runId !== lastRunId.current) owedReload.current = true;
+    lastRunId.current = runId;
+  };
   const waiting = watching && !unsupported;
   useEffect(() => {
     if (!waiting) return;
@@ -278,6 +287,7 @@ export default function LedgerPage() {
       if (cancelled) return;
       const going = runInProgress(status?.run?.status);
       if (going) sawRunGoing.current = true;
+      noteRun(status?.run?.id);
       // The status route can answer without the run (it does not fail when
       // reading it does). Having seen the run going, that is not "finished".
       if (!going && sawRunGoing.current && !status?.run) {
@@ -377,6 +387,7 @@ export default function LedgerPage() {
         if (mine === ledgerRequest.current) setLedger(normalizeLedger(lv));
         const going = runInProgress(status?.run?.status);
         if (going) sawRunGoing.current = true;
+        noteRun(status?.run?.id);
         if (lv?.updating) owedReload.current = true;
         if (!known || going || lv?.updating) setWatching(true);
         setSettings(st);

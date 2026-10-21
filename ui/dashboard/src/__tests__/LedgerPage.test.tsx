@@ -201,7 +201,9 @@ const emptyGraph: LedgerGraph = {
 beforeEach(() => {
   jest.clearAllMocks();
   viewport = { x: 0, y: 0, zoom: 1 };
-  // No run in progress unless a test says so.
+  // No run in progress unless a test says so. Reset, not just cleared: a
+  // test that stops early must not leave queued answers for the next one.
+  getProjectStatus.mockReset();
   getProjectStatus.mockResolvedValue({ project_id: 'p1' });
   // The tests that predate the investigation graph are about the sections the
   // untouched investigation-view endpoint feeds; an empty graph keeps them
@@ -1224,6 +1226,27 @@ describe('LedgerPage', () => {
     // Still watching the run that is going.
     const calls = getProjectStatus.mock.calls.length;
     await waitFor(() => expect(getProjectStatus.mock.calls.length).toBeGreaterThan(calls));
+  });
+
+  it('reloads the map when one run gives way to the next between two checks', async () => {
+    // Run A and its whole update finished between two checks, and run B was
+    // already going at the next: no "updating" was ever seen. The change of
+    // run is the sign that A finished, and the map is owed a reload.
+    getProjectStatus
+      .mockResolvedValueOnce({ project_id: 'p1', run: { id: 'rA', status: 'running' } })
+      .mockResolvedValueOnce({ project_id: 'p1', run: { id: 'rA', status: 'running' } })
+      .mockResolvedValue({ project_id: 'p1', run: { id: 'rB', status: 'running' } });
+    getLedger.mockResolvedValue(ledger);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'auto', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    const after = {
+      ...graph,
+      findings: graph.findings.map((f) => (f.id === 'f1' ? { ...f, name: 'Churn, after run A' } : f)),
+    };
+    getLedgerGraph.mockResolvedValueOnce(graph).mockResolvedValue(after);
+    wrap();
+    await screen.findByText('Tables explored');
+    expect(await view().findAllByText(/Churn, after run A/)).not.toHaveLength(0);
   });
 
   it('does not watch for a run when none is going', async () => {
