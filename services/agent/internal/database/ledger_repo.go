@@ -102,6 +102,25 @@ func (r *LedgerRepository) BeginReflection(ctx context.Context, projectID, runID
 	return nil
 }
 
+// TouchReflection moves this run's entry to now, in place: one write, so the
+// entry is never absent for a reader to see — which a Begin, a remove and then
+// an add, would allow. The reflection phase calls it when it starts on an entry
+// the run put up earlier, so the marker's age is measured from when the writing
+// began, not from before the clarifying-questions hop. If the entry has gone
+// (cleared by hand, say) it is put back.
+func (r *LedgerRepository) TouchReflection(ctx context.Context, projectID, runID string) error {
+	res, err := r.collection.UpdateOne(ctx,
+		bson.M{"project_id": projectID, gomongo.ReflectingKey + ".run_id": runID},
+		bson.M{"$set": bson.M{gomongo.ReflectingKey + ".$.since": time.Now()}})
+	if err != nil {
+		return fmt.Errorf("refresh reflection marker: %w", err)
+	}
+	if res.MatchedCount == 0 {
+		return r.BeginReflection(ctx, projectID, runID)
+	}
+	return nil
+}
+
 // EndReflection removes this run's entry, and only this run's: a straggler
 // finishing late must not announce that a reflection still running is done.
 func (r *LedgerRepository) EndReflection(ctx context.Context, projectID, runID string) error {

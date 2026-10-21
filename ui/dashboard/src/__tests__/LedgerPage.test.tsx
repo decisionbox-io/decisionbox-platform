@@ -870,6 +870,7 @@ describe('LedgerPage', () => {
       .mockResolvedValue(after);
     wrap();
 
+    await screen.findByText('Updating from the run that just finished');
     await waitFor(() =>
       expect(screen.queryByText('Updating from the run that just finished')).not.toBeInTheDocument());
     await waitFor(() => expect(getLedgerGraph).toHaveBeenCalledTimes(2));
@@ -897,6 +898,100 @@ describe('LedgerPage', () => {
     await screen.findByText('Tables explored');
     expect(screen.queryByText('Updating from the run that just finished')).not.toBeInTheDocument();
     expect(await screen.findByText('Updating from the run that just finished')).toBeInTheDocument();
+  });
+
+  it('keeps the ledger reload a finished run triggers, however long it takes to answer', async () => {
+    // Stopping the run watch before that reload answered tore the watch down
+    // and threw the answer away — invisible with an answer that comes back
+    // at once, so this one is held until the watch has had its chance to go.
+    getProjectStatus
+      .mockResolvedValueOnce({ project_id: 'p1', run: { id: 'r3', status: 'running' } })
+      .mockResolvedValue({ project_id: 'p1', run: { id: 'r3', status: 'completed' } });
+    let release: (v: LedgerView) => void = () => {};
+    getLedger
+      .mockResolvedValueOnce(ledger)
+      .mockImplementationOnce(() => new Promise<LedgerView>((res) => { release = res; }))
+      .mockResolvedValue({ ...ledger, updating: { run_id: 'r3', since: '2026-10-21T14:02:00Z' } });
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'auto', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    getLedgerGraph.mockResolvedValue(graph);
+    wrap();
+    await screen.findByText('Tables explored');
+    await waitFor(() => expect(getLedger).toHaveBeenCalledTimes(2));
+    await new Promise((r) => setTimeout(r, 40));
+    release({ ...ledger, updating: { run_id: 'r3', since: '2026-10-21T14:02:00Z' } });
+    expect(await screen.findByText('Updating from the run that just finished')).toBeInTheDocument();
+  });
+
+  it('keeps the banner up until the map and proposals have reloaded too', async () => {
+    // The ledger saying "done" is not the page being current: the map and the
+    // proposals are from before the run as well. If reloading them fails, the
+    // banner stays and the page tries again, rather than going quiet over a
+    // stale map.
+    const inFlight = { ...ledger, updating: { run_id: 'r3', since: '2026-10-21T14:02:00Z' } };
+    getLedger.mockResolvedValueOnce(inFlight).mockResolvedValue(ledger);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'auto', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    const after = {
+      ...graph,
+      findings: graph.findings.map((f) => (f.id === 'f1' ? { ...f, name: 'Churn, after the run' } : f)),
+    };
+    getLedgerGraph
+      .mockResolvedValueOnce(graph)
+      .mockRejectedValueOnce(new Error('network blip'))
+      .mockResolvedValue(after);
+    wrap();
+    await screen.findByText('Updating from the run that just finished');
+    // The reload after "done" failed once: still saying so.
+    await waitFor(() => expect(getLedgerGraph).toHaveBeenCalledTimes(2));
+    expect(screen.getByText('Updating from the run that just finished')).toBeInTheDocument();
+    // Then it succeeds, and the banner goes with the new map in.
+    await waitFor(() =>
+      expect(screen.queryByText('Updating from the run that just finished')).not.toBeInTheDocument());
+    expect(view().getAllByText(/Churn, after the run/).length).toBeGreaterThan(0);
+  });
+
+  it('does not let a slow first proposals request put the old proposals back', async () => {
+    const proposal = (id: string, area: string) => ({
+      id, project_id: 'p1', action: 'add_area', area_id: id, area_name: area,
+      rationale: `${area} recurs`, status: 'proposed', created_at: '2026-10-21T14:00:00Z',
+    });
+    const inFlight = { ...ledger, updating: { run_id: 'r3', since: '2026-10-21T14:02:00Z' } };
+    getLedger.mockResolvedValueOnce(inFlight).mockResolvedValue(ledger);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'auto', frontier_policy: 'balanced' });
+    getLedgerGraph.mockResolvedValue(graph);
+    let releaseFirst: (v: unknown[]) => void = () => {};
+    listPackProposals
+      .mockImplementationOnce(() => new Promise<unknown[]>((res) => { releaseFirst = res; }))
+      .mockResolvedValue([proposal('new', 'Area from the new run')]);
+    wrap();
+    expect(await screen.findByText('Area from the new run')).toBeInTheDocument();
+    releaseFirst([proposal('old', 'Area from before')]);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(screen.queryByText('Area from before')).not.toBeInTheDocument();
+    expect(screen.getByText('Area from the new run')).toBeInTheDocument();
+  });
+
+  it('does not let a slow first graph request fail the map that loaded after it', async () => {
+    // Its failure was not ordered like its success: landing late, it called
+    // the freshly loaded graph unavailable.
+    const inFlight = { ...ledger, updating: { run_id: 'r3', since: '2026-10-21T14:02:00Z' } };
+    getLedger.mockResolvedValueOnce(inFlight).mockResolvedValue(ledger);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'auto', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    let failFirst: (e: Error) => void = () => {};
+    getLedgerGraph
+      .mockImplementationOnce(() => new Promise<LedgerGraph>((_, rej) => { failFirst = rej; }))
+      .mockResolvedValue(graph);
+    wrap();
+    await screen.findByText('Updating from the run that just finished');
+    await waitFor(() =>
+      expect(screen.queryByText('Updating from the run that just finished')).not.toBeInTheDocument());
+    expect(getLedgerGraph).toHaveBeenCalledTimes(2);
+    failFirst(new Error('late failure'));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(screen.queryByText(/does not serve the investigation graph yet/i)).not.toBeInTheDocument();
+    expect(view().getAllByText('High EU churn').length).toBeGreaterThan(0);
   });
 
   it('does not watch for a run when none is going', async () => {

@@ -109,6 +109,8 @@ type ledgerStore interface {
 	// backfill can tell that finding documents are still being rewritten.
 	// Run status cannot: a run is `completed` before this phase starts.
 	BeginReflection(ctx context.Context, projectID, runID string) error
+	// TouchReflection refreshes an entry already up, in one write.
+	TouchReflection(ctx context.Context, projectID, runID string) error
 	EndReflection(ctx context.Context, projectID, runID string) error
 }
 
@@ -262,10 +264,16 @@ func (o *Orchestrator) RunPhaseReflection(ctx context.Context, result *models.Di
 	// on a project nothing is writing.
 	//
 	// When the run already put its entry up, that entry IS this phase's: it is
-	// not put up again. BeginReflection replaces an entry by removing it and
-	// then adding it back — two writes — and a reader landing between them
-	// would see a finished update and stop waiting for the real one.
-	if !o.reflectionPending {
+	// refreshed in place rather than put up again. BeginReflection replaces an
+	// entry by removing it and adding it back — two writes — and a reader
+	// landing between them would see a finished update and stop waiting for the
+	// real one. Refreshing it restarts its age at the start of the writing, so
+	// however long the questions hop took, the entry outlives this phase.
+	if o.reflectionPending {
+		if err := o.ledgerRepo.TouchReflection(rctx, o.projectID, o.runID); err != nil {
+			applog.WithError(err).Warn("Reflection: could not refresh the in-flight marker")
+		}
+	} else {
 		if err := o.ledgerRepo.BeginReflection(rctx, o.projectID, o.runID); err != nil {
 			applog.WithError(err).Warn("Reflection: could not mark the phase in flight")
 		}

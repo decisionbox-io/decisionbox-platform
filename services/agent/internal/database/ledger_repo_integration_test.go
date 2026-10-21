@@ -406,6 +406,65 @@ func TestLedgerRepository_OverlappingReflectionsEachHoldTheMarker(t *testing.T) 
 	}
 }
 
+// TestLedgerRepository_TouchReflectionRefreshesInPlace: the reflection phase
+// refreshes the entry the run put up before it was stamped completed, so the
+// entry's age counts from when the writing starts. It must do that without the
+// entry ever going missing — a reader seeing none would take the update as
+// finished — and without disturbing another run's entry.
+func TestLedgerRepository_TouchReflectionRefreshesInPlace(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewLedgerRepository(db)
+
+	entries := func() map[string]time.Time {
+		var doc struct {
+			Reflecting []commonmodels.ReflectionMarker `bson:"reflecting"`
+		}
+		if err := db.Collection(CollectionDiscoveryLedger).
+			FindOne(ctx, bson.M{"project_id": "p1"}).Decode(&doc); err != nil {
+			t.Fatalf("read marker: %v", err)
+		}
+		out := map[string]time.Time{}
+		for _, m := range doc.Reflecting {
+			out[m.RunID] = m.Since
+		}
+		return out
+	}
+
+	for _, runID := range []string{"run-a", "run-b"} {
+		if err := repo.BeginReflection(ctx, "p1", runID); err != nil {
+			t.Fatalf("begin %s: %v", runID, err)
+		}
+	}
+	before := entries()
+	time.Sleep(20 * time.Millisecond)
+	if err := repo.TouchReflection(ctx, "p1", "run-a"); err != nil {
+		t.Fatalf("touch: %v", err)
+	}
+	after := entries()
+	if len(after) != 2 {
+		t.Fatalf("touch must not add or remove entries: %v", after)
+	}
+	if !after["run-a"].After(before["run-a"]) {
+		t.Errorf("run-a's entry must move to now: before %v after %v", before["run-a"], after["run-a"])
+	}
+	if !after["run-b"].Equal(before["run-b"]) {
+		t.Errorf("run-b's entry must be left alone: before %v after %v", before["run-b"], after["run-b"])
+	}
+
+	// An entry that has gone is put back rather than silently not refreshed.
+	if err := repo.EndReflection(ctx, "p1", "run-a"); err != nil {
+		t.Fatalf("end: %v", err)
+	}
+	if err := repo.TouchReflection(ctx, "p1", "run-a"); err != nil {
+		t.Fatalf("touch a missing entry: %v", err)
+	}
+	if _, ok := entries()["run-a"]; !ok {
+		t.Error("touching a missing entry must put it back")
+	}
+}
+
 // TestLedgerFindingRepository_MarkAnsweredTaskIsAnAtomicAppend: the mirrored
 // edge is added with $addToSet, not by replacing the finding. Replacing it to
 // add one array entry would throw away whatever a reflection running beside

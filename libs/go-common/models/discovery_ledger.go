@@ -406,10 +406,12 @@ func ReflectionTimeout() time.Duration {
 }
 
 // ReflectionMarkerTTL is how long a `reflecting` entry is believed: the budget,
-// plus an hour for what a finished run does before the phase starts and for an
-// agent's clock to disagree with the reader's. An agent killed mid-phase never
-// takes its entry down, so without a ceiling one crash would announce an update
-// in progress for ever.
+// plus an hour of slack. The agent puts the entry up before a run is stamped
+// completed and refreshes it in place when the phase starts writing, so the
+// budget is counted from the phase's start; the slack covers the hop before it
+// (the clarifying questions, a few minutes) and an agent's clock disagreeing
+// with the reader's. An agent killed mid-phase never takes its entry down, so
+// without a ceiling one crash would announce an update in progress for ever.
 func ReflectionMarkerTTL() time.Duration {
 	return ReflectionTimeout() + time.Hour
 }

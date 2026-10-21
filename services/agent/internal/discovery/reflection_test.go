@@ -55,6 +55,11 @@ func (f *fakeLedgerRepo) BeginReflection(_ context.Context, _, runID string) err
 	f.markerEvents = append(f.markerEvents, "begin")
 	return nil
 }
+func (f *fakeLedgerRepo) TouchReflection(_ context.Context, _, runID string) error {
+	f.reflectingRunID = runID
+	f.markerEvents = append(f.markerEvents, "touch")
+	return nil
+}
 func (f *fakeLedgerRepo) EndReflection(_ context.Context, _, runID string) error {
 	if f.reflectingRunID == runID {
 		f.reflectingRunID = ""
@@ -1902,11 +1907,11 @@ func TestRunPhaseReflection_TakesThePendingMarkDown(t *testing.T) {
 	}
 	o.markReflectionPending(context.Background())
 	o.RunPhaseReflection(context.Background(), result)
-	// Up once, down once. The phase reuses the run's entry rather than putting
-	// it up again: replacing it is a remove-then-add, and a reader landing
+	// Up once, refreshed in place when the writing starts, down once. Never
+	// put up again: replacing it is a remove-then-add, and a reader landing
 	// between the two would see the update finished while it had not begun.
-	if got := strings.Join(lr.markerEvents, ","); got != "begin,end" {
-		t.Errorf("marker events = %s, want begin,end — never down mid-update", got)
+	if got := strings.Join(lr.markerEvents, ","); got != "begin,touch,end" {
+		t.Errorf("marker events = %s, want begin,touch,end — never down mid-update", got)
 	}
 	if lr.reflectingRunID != "" {
 		t.Errorf("the marker must come down at the end, still set to %q", lr.reflectingRunID)

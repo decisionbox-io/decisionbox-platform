@@ -183,21 +183,31 @@ export default function LedgerPage() {
     return next;
   });
 
-  // Every graph request is numbered and only the latest may set the graph. The
-  // first one can still be out when an update finishes and its reload goes
-  // out; landing last, it would put the pre-run map back for good.
+  // Every graph and proposals request is numbered, and only the latest may
+  // change the page — its success, its failure and its loading state alike.
+  // The first ones can still be out when an update finishes and the page
+  // reloads; landing last, they would put the pre-run map and proposals back,
+  // or call a graph that just loaded unavailable.
   const graphRequest = useRef(0);
   const loadGraph = () => {
     const mine = ++graphRequest.current;
-    return api.getLedgerGraph(id).then((g) => {
-      if (mine === graphRequest.current) setGraph(g);
-    });
+    setGraphLoading(true);
+    api.getLedgerGraph(id)
+      .then((g) => {
+        if (mine !== graphRequest.current) return;
+        setGraph(g);
+        setGraphUnavailable(false);
+      })
+      .catch(() => { if (mine === graphRequest.current) setGraphUnavailable(true); })
+      .finally(() => { if (mine === graphRequest.current) setGraphLoading(false); });
   };
 
+  const proposalsRequest = useRef(0);
   const loadProposals = () => {
+    const mine = ++proposalsRequest.current;
     api.listPackProposals(id)
-      .then((p) => setProposals(p || []))
-      .catch(() => setProposals([]));
+      .then((p) => { if (mine === proposalsRequest.current) setProposals(p || []); })
+      .catch(() => { if (mine === proposalsRequest.current) setProposals([]); });
   };
 
   // Fetched once, after the ledger itself has loaded. Deliberately not on
@@ -209,10 +219,7 @@ export default function LedgerPage() {
   useEffect(() => {
     if (loading || unsupported || !ledger) return;
     if (graph || graphLoading || graphUnavailable) return;
-    setGraphLoading(true);
-    loadGraph()
-      .catch(() => setGraphUnavailable(true))
-      .finally(() => setGraphLoading(false));
+    loadGraph();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, loading, unsupported, ledger]);
 
@@ -231,21 +238,38 @@ export default function LedgerPage() {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     const check = () => {
-      timer = setTimeout(() => {
-        api.getLedger(id)
-          .then((lv) => {
-            if (cancelled) return;
-            const next = normalizeLedger(lv);
+      timer = setTimeout(async () => {
+        try {
+          const next = normalizeLedger(await api.getLedger(id));
+          if (cancelled) return;
+          if (next.updating) {
             setLedger(next);
-            if (next.updating) {
-              check();
-              return;
-            }
-            loadGraph().catch(() => {});
-            loadProposals();
-          })
-          // A failed check is not the end of the update: try again.
-          .catch(() => { if (!cancelled) check(); });
+            check();
+            return;
+          }
+          // Done. The map and the proposals are from before the run too, so
+          // they come in WITH the ledger, and the banner goes only when the
+          // whole page is current. Anything still out from before is
+          // superseded first, so it cannot land on top of this.
+          const mineGraph = ++graphRequest.current;
+          const mineProposals = ++proposalsRequest.current;
+          const [g, props] = await Promise.all([
+            graphUnavailable ? Promise.resolve(null) : api.getLedgerGraph(id),
+            api.listPackProposals(id),
+          ]);
+          if (cancelled) return;
+          if (g && mineGraph === graphRequest.current) {
+            setGraph(g);
+            setGraphUnavailable(false);
+            setGraphLoading(false);
+          }
+          if (mineProposals === proposalsRequest.current) setProposals(props || []);
+          setLedger(next);
+        } catch {
+          // Not an answer: keep the banner up and try again, rather than
+          // leave half the page from before the run with nothing saying so.
+          if (!cancelled) check();
+        }
       }, LEDGER_UPDATE_POLL_MS);
     };
     check();
@@ -277,10 +301,16 @@ export default function LedgerPage() {
               check();
               return;
             }
-            setRunActive(false);
+            // Finished. Stop watching only once the reloaded ledger is in
+            // hand: stopping first tears this loop down, and its cleanup
+            // would throw the answer away.
             api.getLedger(id)
-              .then((lv) => { if (!cancelled) setLedger(normalizeLedger(lv)); })
-              .catch(() => {});
+              .then((lv) => {
+                if (cancelled) return;
+                setLedger(normalizeLedger(lv));
+                setRunActive(false);
+              })
+              .catch(() => { if (!cancelled) check(); });
           })
           .catch(() => { if (!cancelled) check(); });
       }, RUN_WATCH_POLL_MS);
