@@ -156,6 +156,20 @@ describe('UpcomingInvestigation', () => {
     expect(container.querySelector('.mantine-Card-root')).toBeNull();
   });
 
+  it('clears itself when a later load finds no ledger at all', async () => {
+    // A 404 after a good load: what the card showed is gone, including an
+    // Updating badge that nothing would ever clear.
+    getLedger
+      .mockResolvedValueOnce(view({
+        tasks: [thread('t1', 'An old thread')],
+        updating: { run_id: 'r9', since: '2026-10-21T14:02:00Z' },
+      }))
+      .mockRejectedValue(Object.assign(new Error('not found'), { status: 404 }));
+    const { container } = wrap();
+    expect(await screen.findByText('An old thread')).toBeInTheDocument();
+    await waitFor(() => expect(container.querySelector('.mantine-Card-root')).toBeNull());
+  });
+
   it('shows up for a first run whose threads are still being built, instead of staying hidden', async () => {
     getLedger.mockResolvedValue(view({ updating: { run_id: 'r1', since: '2026-10-21T14:02:00Z' } }));
     wrap();

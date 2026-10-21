@@ -6,10 +6,6 @@
  *  notice it finishing without hammering the API for the length of a long one. */
 export const LEDGER_UPDATE_POLL_MS = 15_000;
 
-/** How often a page watching a run in progress checks whether it has finished.
- *  A run takes many minutes; a quarter of a minute is plenty. */
-export const RUN_WATCH_POLL_MS = 15_000;
-
 /** Whether a run is still going — pending or running — and so has a ledger
  *  update still ahead of it. */
 export function runInProgress(status: string | undefined): boolean {

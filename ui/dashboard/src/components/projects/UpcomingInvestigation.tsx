@@ -81,8 +81,13 @@ export function UpcomingInvestigation({ projectId, refreshKey }: { projectId: st
       if (mine !== generation.current) return 'superseded';
       setReady(true);
       // No ledger on this deployment (community builds 404 the route): there
-      // is nothing to show and nothing to wait for.
+      // is nothing to show and nothing to wait for. Whatever an earlier load
+      // put on the card goes too — threads, or an Updating badge nothing would
+      // ever clear.
       if ((err as { status?: number } | null)?.status === 404) {
+        setTasks([]);
+        setPending([]);
+        setUpdating(null);
         setRetrying(false);
         return 'absent';
       }

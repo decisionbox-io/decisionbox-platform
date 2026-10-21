@@ -4,9 +4,7 @@ import { ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { Alert, Loader, Select, Button, Group, Stack, Text, Card, Badge, Progress, Tooltip, Collapse, UnstyledButton, ThemeIcon, SegmentedControl } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import {
-  LEDGER_UPDATE_POLL_MS, RUN_WATCH_POLL_MS, runInProgress, updateStartedAt,
-} from '@/components/ledger/updating';
+import { LEDGER_UPDATE_POLL_MS, runInProgress, updateStartedAt } from '@/components/ledger/updating';
 import {
   IconBook2, IconChevronRight, IconTrendingUp, IconRoute, IconGitPullRequest,
   IconMap2, IconHistory, IconAdjustments, IconListDetails, IconSitemap,
@@ -223,33 +221,54 @@ export default function LedgerPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, loading, unsupported, ledger]);
 
+  // Keeping the page current across a run and its ledger update.
+  //
   // A run is marked completed before its findings are folded into the ledger,
   // so for a while after a run finishes this whole page describes the state
-  // from before it. While the ledger says it is being updated, check back; when
-  // it says it is done, reload the rest of the page as well — the map, the
-  // story and the proposals are all from before the run too.
+  // from before it — and a page opened while the run was going cannot tell
+  // from the ledger alone that it has finished. So ONE loop watches both: while
+  // a run is in progress or the ledger says it is being updated, it checks the
+  // run and the ledger; when neither is true any more, it reloads the whole
+  // page once — the map, the story and the proposals are from before the run
+  // too — and stops. One loop, because two that handed over to each other
+  // dropped the page at every seam between them.
   //
-  // A loop that schedules its own next check for as long as the answer says
-  // "updating", keyed on whether there is an update at all — not on the
-  // update object, whose identity says nothing about whether anything changed.
-  const isUpdating = Boolean(ledger?.updating);
+  // Every ledger load is numbered like the graph and proposals loads, and only
+  // the latest may set it: a slow first load landing after the loop had seen
+  // the update would put the pre-run ledger back and stop the loop mid-update.
+  const ledgerRequest = useRef(0);
+  const [watching, setWatching] = useState(false);
   useEffect(() => {
-    if (!isUpdating) return;
+    api.getProjectStatus(id)
+      .then((s) => { if (runInProgress(s?.run?.status)) setWatching(true); })
+      .catch(() => {});
+  }, [id]);
+  // Keyed on whether there is anything to wait for, never on the update
+  // object, whose identity says nothing about whether anything changed.
+  const waiting = watching || Boolean(ledger?.updating);
+  useEffect(() => {
+    if (!waiting) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     const check = () => {
       timer = setTimeout(async () => {
         try {
-          const next = normalizeLedger(await api.getLedger(id));
+          const mineLedger = ++ledgerRequest.current;
+          const [status, lv] = await Promise.all([
+            api.getProjectStatus(id).catch(() => null),
+            api.getLedger(id),
+          ]);
           if (cancelled) return;
-          if (next.updating) {
-            setLedger(next);
+          const next = normalizeLedger(lv);
+          // Still waiting: a run going, a ledger being updated, or no way to
+          // tell whether a run is going because its status did not answer.
+          if (status === null || runInProgress(status?.run?.status) || next.updating) {
+            if (mineLedger === ledgerRequest.current) setLedger(next);
             check();
             return;
           }
-          // Done. The map and the proposals are from before the run too, so
-          // they come in WITH the ledger, and the banner goes only when the
-          // whole page is current. Anything still out from before is
+          // Done. Everything comes in together, and the banner goes only when
+          // the whole page is current. Anything still out from before is
           // superseded first, so it cannot land on top of this.
           const mineGraph = ++graphRequest.current;
           const mineProposals = ++proposalsRequest.current;
@@ -264,10 +283,12 @@ export default function LedgerPage() {
             setGraphLoading(false);
           }
           if (mineProposals === proposalsRequest.current) setProposals(props || []);
-          setLedger(next);
+          if (mineLedger === ledgerRequest.current) setLedger(next);
+          // Last, so nothing above is lost to this loop's own cleanup.
+          setWatching(false);
         } catch {
-          // Not an answer: keep the banner up and try again, rather than
-          // leave half the page from before the run with nothing saying so.
+          // Not an answer: keep waiting and try again, rather than leave
+          // half the page from before the run with nothing saying so.
           if (!cancelled) check();
         }
       }, LEDGER_UPDATE_POLL_MS);
@@ -275,58 +296,17 @@ export default function LedgerPage() {
     check();
     return () => { cancelled = true; clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, isUpdating]);
-
-  // A page opened while a run is going cannot see from the ledger alone that
-  // the run has finished: the ledger says nothing until the run's update goes
-  // up. So while a run is in progress, watch it, and when it finishes, reload
-  // the ledger — which then says it is being updated, and the check-back loop
-  // above takes it from there.
-  const [runActive, setRunActive] = useState(false);
-  useEffect(() => {
-    api.getProjectStatus(id)
-      .then((s) => setRunActive(runInProgress(s?.run?.status)))
-      .catch(() => {});
-  }, [id]);
-  useEffect(() => {
-    if (!runActive) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const check = () => {
-      timer = setTimeout(() => {
-        api.getProjectStatus(id)
-          .then((s) => {
-            if (cancelled) return;
-            if (runInProgress(s?.run?.status)) {
-              check();
-              return;
-            }
-            // Finished. Stop watching only once the reloaded ledger is in
-            // hand: stopping first tears this loop down, and its cleanup
-            // would throw the answer away.
-            api.getLedger(id)
-              .then((lv) => {
-                if (cancelled) return;
-                setLedger(normalizeLedger(lv));
-                setRunActive(false);
-              })
-              .catch(() => { if (!cancelled) check(); });
-          })
-          .catch(() => { if (!cancelled) check(); });
-      }, RUN_WATCH_POLL_MS);
-    };
-    check();
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [id, runActive]);
+  }, [id, waiting]);
 
   useEffect(() => {
     api.getProject(id).then(setProject).catch(() => {});
+    const mine = ++ledgerRequest.current;
     Promise.all([
       api.getLedger(id),
       api.getEvolutionSettings(id).catch(() => null),
     ])
       .then(([lv, st]) => {
-        setLedger(normalizeLedger(lv));
+        if (mine === ledgerRequest.current) setLedger(normalizeLedger(lv));
         setSettings(st);
         setUnsupported(false);
         loadProposals();
