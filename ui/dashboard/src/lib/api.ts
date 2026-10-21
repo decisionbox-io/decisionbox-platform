@@ -1177,6 +1177,16 @@ export interface LedgerView {
   // Closed tasks referenced via a `supersedes` link from an open task, so a
   // follow-up's parent chain can be shown inline. Only the referenced ones.
   ancestors?: LedgerTask[];
+  // Set while a finished run is still being folded into the ledger. A run is
+  // marked completed before that happens, so until this clears, everything
+  // else in the view is the state from BEFORE the newest run. Absent on an API
+  // that predates it, which reads the same as "not updating".
+  updating?: LedgerUpdating | null;
+}
+
+export interface LedgerUpdating {
+  run_id: string;
+  since: string;
 }
 
 // --- Investigation graph (enterprise-backed, additive to the view above) ---

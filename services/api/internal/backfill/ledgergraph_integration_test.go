@@ -486,7 +486,7 @@ func TestBackfillLedgerGraph_SkipsAProjectMidRun(t *testing.T) {
 	// mid-phase never clears its own, and must not wedge the project.
 	if _, err := client.Collection(gomongo.CollectionDiscoveryLedger).UpdateOne(ctx,
 		bson.M{"project_id": projectID},
-		bson.M{"$set": bson.M{gomongo.ReflectingKey + ".0.since": time.Now().Add(-2 * reflectionStaleAfter)}}); err != nil {
+		bson.M{"$set": bson.M{gomongo.ReflectingKey + ".0.since": time.Now().Add(-2 * commonmodels.ReflectionMarkerTTL())}}); err != nil {
 		t.Fatalf("age the marker: %v", err)
 	}
 	stale, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false)

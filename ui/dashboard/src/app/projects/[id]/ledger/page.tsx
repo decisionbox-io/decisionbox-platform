@@ -2,8 +2,9 @@
 
 import { ReactNode, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { Loader, Select, Button, Group, Stack, Text, Card, Badge, Progress, Tooltip, Collapse, UnstyledButton, ThemeIcon, SegmentedControl } from '@mantine/core';
+import { Alert, Loader, Select, Button, Group, Stack, Text, Card, Badge, Progress, Tooltip, Collapse, UnstyledButton, ThemeIcon, SegmentedControl } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
+import { LEDGER_UPDATE_POLL_MS, updateStartedAt } from '@/components/ledger/updating';
 import {
   IconBook2, IconChevronRight, IconTrendingUp, IconRoute, IconGitPullRequest,
   IconMap2, IconHistory, IconAdjustments, IconListDetails, IconSitemap,
@@ -83,6 +84,7 @@ function normalizeLedger(lv: LedgerView): LedgerView {
     findings: lv?.findings ?? [],
     tasks: lv?.tasks ?? [],
     ancestors: lv?.ancestors ?? [],
+    updating: lv?.updating ?? null,
   };
 }
 
@@ -202,6 +204,43 @@ export default function LedgerPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, loading, unsupported, ledger]);
 
+  // A run is marked completed before its findings are folded into the ledger,
+  // so for a while after a run finishes this whole page describes the state
+  // from before it. While the ledger says it is being updated, check back; when
+  // it says it is done, reload the rest of the page as well — the map, the
+  // story and the proposals are all from before the run too.
+  //
+  // A loop that schedules its own next check for as long as the answer says
+  // "updating", keyed on whether there is an update at all — not on the
+  // update object, whose identity says nothing about whether anything changed.
+  const isUpdating = Boolean(ledger?.updating);
+  useEffect(() => {
+    if (!isUpdating) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const check = () => {
+      timer = setTimeout(() => {
+        api.getLedger(id)
+          .then((lv) => {
+            if (cancelled) return;
+            const next = normalizeLedger(lv);
+            setLedger(next);
+            if (next.updating) {
+              check();
+              return;
+            }
+            api.getLedgerGraph(id).then(setGraph).catch(() => {});
+            loadProposals();
+          })
+          // A failed check is not the end of the update: try again.
+          .catch(() => { if (!cancelled) check(); });
+      }, LEDGER_UPDATE_POLL_MS);
+    };
+    check();
+    return () => { cancelled = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, isUpdating]);
+
   useEffect(() => {
     api.getProject(id).then(setProject).catch(() => {});
     Promise.all([
@@ -319,6 +358,19 @@ export default function LedgerPage() {
           </Text>
         </div>
 
+        {ledger.updating && (
+          <Alert
+            color="blue"
+            variant="light"
+            icon={<Loader size={16} color="blue" />}
+            title="Updating from the run that just finished"
+          >
+            Everything below is the ledger from before that run. This page refreshes on its own when
+            the update is done, usually within a few minutes
+            {updateStartedAt(ledger.updating.since) ? ` (started ${updateStartedAt(ledger.updating.since)})` : ''}.
+          </Alert>
+        )}
+
         {/* 1. Overview — the at-a-glance numbers */}
         <Group grow align="stretch">
           <StatCard label="Tables explored" value={String(explored)} subtitle={total > 0 ? `of ${total} in catalog` : undefined} />
@@ -349,7 +401,7 @@ export default function LedgerPage() {
           <Text size="xs" c="dimmed">
             {level === 'story'
               ? 'What each run found, in plain language. Every name links to its evidence.'
-              : 'The investigation as a map. Drag to pan, scroll to zoom, click a card for its detail.'}
+              : 'The investigation as a map. Scroll to move around, pinch or Ctrl/⌘ + scroll to zoom, click a card for its detail.'}
           </Text>
         </Group>
 
@@ -361,7 +413,7 @@ export default function LedgerPage() {
           title={level === 'story' ? 'What happened' : 'Investigation map'}
           description={level === 'story'
             ? 'One card per run, newest first — what it found, which threads it closed and why.'
-            : 'How the investigation was worked out, in the order it happened. Each column is one run — the leftmost is where it started — and the cards in it are that run\u2019s own work. A line leaving a column is a later run building on an earlier one. Archived findings are dimmed, not hidden.'}
+            : 'How the investigation was worked out, in the order it happened: one row per run, oldest at the top, each read left to right — the threads it picked up, what it found, what that drove, and the threads it left for the next run. A dashed card is earlier work a later run took up again. Archived findings are dimmed, not hidden.'}
         >
           {/* A labelled region: the same finding can legitimately appear here
               and in the findings table below, and this is what tells a screen

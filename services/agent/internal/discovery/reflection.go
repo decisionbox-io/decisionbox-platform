@@ -36,7 +36,7 @@ const (
 	// "false" to opt out explicitly. Independent of the per-project Settings
 	// toggle (Layer B, default on).
 	discoveryReflectionEnabledEnv    = "DISCOVERY_REFLECTION_ENABLED"
-	discoveryReflectionTimeoutEnv    = "DISCOVERY_REFLECTION_TIMEOUT"
+	discoveryReflectionTimeoutEnv    = commonmodels.ReflectionTimeoutEnv
 	discoveryReflectionMaxOutputEnv  = "DISCOVERY_REFLECTION_MAX_OUTPUT"
 	discoveryReflectionParseRetryEnv = "DISCOVERY_REFLECTION_PARSE_MAX_RETRIES"
 	discoveryLedgerMaxFindingsEnv    = "DISCOVERY_LEDGER_MAX_FINDINGS"
@@ -63,7 +63,10 @@ const (
 	// agent Job's ActiveDeadlineSeconds (AGENT_JOB_TIMEOUT_HOURS). This bounds
 	// only how long we are willing to keep trying, and the phase runs after the
 	// run-completion event, so a long one delays nothing a user is waiting on.
-	defaultDiscoveryReflectionTimeout = 3 * time.Hour
+	//
+	// The number itself lives in go-common: the readers that decide how long to
+	// believe an in-flight marker have to agree with it.
+	defaultDiscoveryReflectionTimeout = commonmodels.DefaultReflectionTimeout
 	// reflectionCleanupTimeout bounds taking the in-flight marker back down.
 	// Short: it is one small update, and it runs after the phase's own
 	// deadline has usually already passed.
@@ -154,6 +157,62 @@ func reflectionContext(parent context.Context) (context.Context, context.CancelF
 	return context.WithTimeout(context.WithoutCancel(parent), timeout)
 }
 
+// reflectionWillRun is every gate RunPhaseReflection applies before it does any
+// work, in one place, because markReflectionPending has to ask exactly the same
+// question: an update announced for a run whose reflection is gated off is a
+// label that never goes away.
+func (o *Orchestrator) reflectionWillRun(ctx context.Context) bool {
+	if !o.reflectionEnabled {
+		return false // Layer B: per-project Settings toggle is off.
+	}
+	if !goconfig.GetEnvAsBool(discoveryReflectionEnabledEnv, true) {
+		return false // Layer A: feature not available on this deployment.
+	}
+	if o.aiClient == nil || o.ledgerRepo == nil || o.findingRepo == nil {
+		return false // Missing deps (unit / single-binary builds) — nothing to do.
+	}
+	// License entitlement: the ledger's value is the enterprise RAG + evolution
+	// workflow, gated on the same sources entitlement the answer API uses. On
+	// community / self-hosted the Noop checker returns true, so the env flag +
+	// per-project toggle remain the effective gates.
+	enabled, _ := policy.GetChecker().FeatureEnabled(ctx, "", policy.FeatureSources)
+	return enabled
+}
+
+// markReflectionPending puts this run's in-flight entry up BEFORE the run is
+// stamped completed.
+//
+// The reflection phase starts well after that stamp: the completion event and
+// the clarifying-questions hop come first, and the questions hop alone has a
+// budget of minutes. A reader that saw a completed run and no entry would show
+// the ledger as up to date while it still describes the state before that run,
+// which is the window a user notices. Only when the phase will actually run —
+// an entry nothing will take down is worse than none.
+func (o *Orchestrator) markReflectionPending(ctx context.Context) {
+	if !o.reflectionWillRun(ctx) {
+		return
+	}
+	mctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reflectionCleanupTimeout)
+	defer cancel()
+	if err := o.ledgerRepo.BeginReflection(mctx, o.projectID, o.runID); err != nil {
+		applog.WithError(err).Warn("Reflection: could not mark the update pending; the ledger will not say it is being updated until the phase starts")
+		return
+	}
+	o.reflectionPending = true
+}
+
+// endReflectionMarker takes this run's entry down on its own context, not the
+// phase's: the commonest reason to get here is that the phase's deadline has
+// expired, and clearing the marker with an expired context fails — leaving an
+// idle project marked as writing.
+func (o *Orchestrator) endReflectionMarker(ctx context.Context) {
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reflectionCleanupTimeout)
+	defer cancel()
+	if err := o.ledgerRepo.EndReflection(cctx, o.projectID, o.runID); err != nil {
+		applog.WithError(err).Warn("Reflection: could not clear the in-flight marker")
+	}
+}
+
 // RunPhaseReflection is the best-effort end-of-run reflection / consolidation
 // hop. Invoked by agentserver AFTER RunDiscovery has returned and the completion
 // event + telemetry have fired, so a slow (or timed-out) call can neither delay
@@ -169,45 +228,35 @@ func (o *Orchestrator) RunPhaseReflection(ctx context.Context, result *models.Di
 		}
 	}()
 
-	if !o.reflectionEnabled {
-		return // Layer B: per-project Settings toggle is off.
+	// The entry markReflectionPending put up before the run was stamped
+	// completed comes down however this phase ends — including at a gate it
+	// passed a minute ago, such as an entitlement revoked mid-run. Left up, it
+	// tells the user the ledger is being updated by a phase that is not running.
+	// (The phase's own Begin below refreshes the same entry; ending it twice is
+	// harmless.)
+	if o.reflectionPending {
+		defer o.endReflectionMarker(ctx)
 	}
-	if !goconfig.GetEnvAsBool(discoveryReflectionEnabledEnv, true) {
-		return // Layer A: feature not available on this deployment.
-	}
-	if o.aiClient == nil || o.ledgerRepo == nil || o.findingRepo == nil || result == nil {
-		return // Missing deps (unit / single-binary builds) — nothing to do.
+
+	if !o.reflectionWillRun(ctx) || result == nil {
+		return
 	}
 
 	rctx, cancel := reflectionContext(ctx)
 	defer cancel()
 
-	// License entitlement: the ledger's value is the enterprise RAG + evolution
-	// workflow, gated on the same sources entitlement the answer API uses. On
-	// community / self-hosted the Noop checker returns true, so the env flag +
-	// per-project toggle remain the effective gates.
-	if enabled, _ := policy.GetChecker().FeatureEnabled(rctx, "", policy.FeatureSources); !enabled {
-		return
-	}
-
 	// From here on this phase rewrites finding documents. Say so for as long
-	// as it takes, so the backfill leaves the project alone meanwhile. The
+	// as it takes, so the backfill leaves the project alone meanwhile and the
+	// ledger view can tell a user the newest run is still being folded in. The
 	// clear is deferred rather than placed at the end: every return below is
 	// a best-effort bail-out, and a marker left set would block the backfill
 	// on a project nothing is writing.
 	if err := o.ledgerRepo.BeginReflection(rctx, o.projectID, o.runID); err != nil {
 		applog.WithError(err).Warn("Reflection: could not mark the phase in flight")
 	}
-	defer func() {
-		// Its own context, not rctx: the commonest reason to reach this defer
-		// is that rctx's deadline expired, and clearing the marker with an
-		// expired context fails — leaving an idle project marked as writing.
-		cctx, ccancel := context.WithTimeout(context.WithoutCancel(ctx), reflectionCleanupTimeout)
-		defer ccancel()
-		if err := o.ledgerRepo.EndReflection(cctx, o.projectID, o.runID); err != nil {
-			applog.WithError(err).Warn("Reflection: could not clear the in-flight marker")
-		}
-	}()
+	if !o.reflectionPending {
+		defer o.endReflectionMarker(ctx)
+	}
 
 	// Resolve the per-project evolution policy (best-effort; default off).
 	pol, perr := agentplugin.ResolveDiscoveryPolicy(rctx, o.projectID)

@@ -8,6 +8,12 @@ import LedgerPage from '@/app/projects/[id]/ledger/page';
 import { LedgerGraph, LedgerView } from '@/lib/api';
 
 jest.mock('next/navigation', () => ({ useParams: () => ({ id: 'p1' }) }));
+// A few milliseconds rather than the product's quarter minute, so a test can
+// watch an update finish on real timers.
+jest.mock('@/components/ledger/updating', () => ({
+  ...jest.requireActual('@/components/ledger/updating'),
+  LEDGER_UPDATE_POLL_MS: 10,
+}));
 jest.mock('@mantine/notifications', () => ({ notifications: { show: jest.fn() } }));
 jest.mock('@/components/layout/AppShell', () => ({
   __esModule: true, default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -805,6 +811,47 @@ describe('LedgerPage', () => {
 
     expect(await screen.findByText(/3 of this run's findings could not be recorded/i))
       .toBeInTheDocument();
+  });
+
+  it('says the ledger is being updated from the run that just finished, then reloads when it is done', async () => {
+    // A run is marked completed before its findings reach the ledger. Until
+    // they do, everything on this page is from before that run — so it says
+    // so, and refreshes itself rather than leaving a reader looking at it.
+    const inFlight = { ...ledger, updating: { run_id: 'r3', since: '2026-10-21T14:02:00Z' } };
+    getLedger
+      .mockResolvedValueOnce(inFlight)
+      .mockResolvedValueOnce(inFlight)
+      .mockResolvedValue(ledger);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'auto', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    getLedgerGraph.mockResolvedValue(graph);
+    wrap();
+
+    expect(await screen.findByText('Updating from the run that just finished')).toBeInTheDocument();
+    expect(screen.getByText(/Everything below is the ledger from before that run/)).toBeInTheDocument();
+    // The page is still usable underneath it.
+    expect(screen.getByText('Tables explored')).toBeInTheDocument();
+    const graphsBefore = getLedgerGraph.mock.calls.length;
+    const proposalsBefore = listPackProposals.mock.calls.length;
+
+    // When the ledger says it is done, the banner goes and the rest of the
+    // page — the map and the proposals are from before the run too — reloads.
+    await waitFor(() =>
+      expect(screen.queryByText('Updating from the run that just finished')).not.toBeInTheDocument());
+    await waitFor(() => expect(getLedgerGraph.mock.calls.length).toBeGreaterThan(graphsBefore));
+    expect(listPackProposals.mock.calls.length).toBeGreaterThan(proposalsBefore);
+
+    // And it stops checking.
+    const calls = getLedger.mock.calls.length;
+    await new Promise((r) => setTimeout(r, 60));
+    expect(getLedger.mock.calls.length).toBe(calls);
+  });
+
+  it('shows no banner when nothing is being updated', async () => {
+    mockAll();
+    wrap();
+    await screen.findByText('Tables explored');
+    expect(screen.queryByText('Updating from the run that just finished')).not.toBeInTheDocument();
   });
 
   it('fetches the graph once, not per level switch', async () => {
