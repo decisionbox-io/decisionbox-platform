@@ -253,14 +253,14 @@ func TestGenerateRecommendations_PlanFanOutIsBounded(t *testing.T) {
 		{"title":"Three","related_insight_ids":["i-2"]},
 		{"title":"Four","related_insight_ids":["i-2"]}
 	]}`
+	// Distinct titles per entry: two entries answering with the same
+	// recommendation is a duplicate, which the selection refuses on purpose,
+	// and this test is about the bound rather than about duplicates.
 	o, provider := newRoutedOrchestrator(map[string]string{
-		planCallMarker: fourEntries,
+		planCallMarker:  fourEntries,
+		"Write entry 1": expandedRec("One"),
+		"Write entry 2": expandedRec("Two"),
 	})
-	provider.Responses[expandCallMarker] = &gollm.ChatResponse{
-		Content:    expandedRec("Written"),
-		StopReason: "end_turn",
-		Usage:      gollm.Usage{InputTokens: 10, OutputTokens: 20},
-	}
 
 	recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", planExpandInsights, "", "ds")
 
@@ -519,7 +519,7 @@ func TestSelectPlannedRecommendation(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		got, extra, err := selectPlannedRecommendation(c.parsed, plan, c.idx)
+		got, extra, err := selectPlannedRecommendation(c.parsed, plan, c.idx, nil)
 		if c.wantErr {
 			if err == nil {
 				t.Errorf("%s: want an error, got %+v", c.name, got)
@@ -963,5 +963,93 @@ func TestGenerateRecommendations_CitationReAsksAreCountedAcrossEntries(t *testin
 	}
 	if reasks != 2 {
 		t.Errorf("per-call re-asks = %d, want 2", reasks)
+	}
+}
+
+func TestGenerateRecommendations_TwoEntriesCannotWriteTheSameRecommendation(t *testing.T) {
+	// The expansion may reword its planned title, so two entries can both
+	// come back as the same recommendation. Accepting both puts a duplicate in
+	// the set, the recommendations page deduplicates by title, and one entry
+	// is lost — while the counters report both as written, which is the part
+	// that makes it invisible.
+	const duplicate = `{"recommendations":[{"title":"One single idea","priority":1,` +
+		`"expected_impact":{"metric":"m"},"related_insight_ids":["i-1"]}]}`
+	provider := testutil.NewMockLLMProvider()
+	provider.ResponseQueue = []*gollm.ChatResponse{
+		{Content: validPlanEnvelope, StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+		// Entry 1 rewords to "One single idea".
+		{Content: duplicate, StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+		// Entry 2 answers with the same thing, then recovers on the re-ask.
+		{Content: duplicate, StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+		{Content: expandedRec("Reactivate lapsed buyers"), StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+	}
+	client, _ := ai.New(provider, "mock-model")
+	o := &Orchestrator{aiClient: client}
+
+	recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", planExpandInsights, "", "ds")
+
+	if len(recs) != 2 {
+		t.Fatalf("recs = %d, want 2", len(recs))
+	}
+	if recs[0].Title == recs[1].Title {
+		t.Fatalf("the set holds two copies of %q", recs[0].Title)
+	}
+	if step.RecommendationsExpanded != 2 || step.RecommendationsExpandFailed != 0 {
+		t.Errorf("expanded/failed = %d/%d, want 2/0", step.RecommendationsExpanded, step.RecommendationsExpandFailed)
+	}
+}
+
+func TestGenerateRecommendations_APersistentDuplicateCostsItsOwnEntryOnly(t *testing.T) {
+	// When the re-ask duplicates too, that entry fails and is counted — the
+	// set is short by one and says so, rather than carrying two copies of
+	// another entry.
+	const duplicate = `{"recommendations":[{"title":"One single idea","priority":1,` +
+		`"expected_impact":{"metric":"m"},"related_insight_ids":["i-1"]}]}`
+	provider := testutil.NewMockLLMProvider()
+	provider.DefaultResponse = &gollm.ChatResponse{
+		Content:    duplicate,
+		StopReason: "end_turn",
+		Usage:      gollm.Usage{InputTokens: 10, OutputTokens: 20},
+	}
+	provider.ResponseQueue = []*gollm.ChatResponse{
+		{Content: validPlanEnvelope, StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+	}
+	client, _ := ai.New(provider, "mock-model")
+	o := &Orchestrator{aiClient: client}
+
+	recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", planExpandInsights, "", "ds")
+
+	if len(recs) != 1 {
+		t.Fatalf("recs = %d, want 1", len(recs))
+	}
+	if step.RecommendationsExpanded != 1 || step.RecommendationsExpandFailed != 1 {
+		t.Errorf("expanded/failed = %d/%d, want 1/1", step.RecommendationsExpanded, step.RecommendationsExpandFailed)
+	}
+	if step.RecommendationsSingleCallFallback {
+		t.Error("a partial set is a result; it must not trigger the fallback")
+	}
+}
+
+func TestGenerateRecommendations_CancellationAccountsForTheEntriesNeverAttempted(t *testing.T) {
+	// planned, expanded, failed and skipped have to add up to the plan.
+	// Otherwise a cancelled run reads as a run whose model quietly produced
+	// less, and the investigation starts from the wrong place.
+	o, _ := newRoutedOrchestrator(map[string]string{
+		planCallMarker: validPlanEnvelope,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, step := o.generateRecommendations(ctx, "{{INSIGHTS_DATA}}", planExpandInsights, "", "ds")
+
+	if step.RecommendationsPlanned != 2 {
+		t.Fatalf("RecommendationsPlanned = %d, want 2", step.RecommendationsPlanned)
+	}
+	if step.RecommendationsExpandSkipped != 2 {
+		t.Errorf("RecommendationsExpandSkipped = %d, want 2", step.RecommendationsExpandSkipped)
+	}
+	total := step.RecommendationsExpanded + step.RecommendationsExpandFailed + step.RecommendationsExpandSkipped
+	if total != step.RecommendationsPlanned {
+		t.Errorf("expanded+failed+skipped = %d, want the %d planned", total, step.RecommendationsPlanned)
 	}
 }

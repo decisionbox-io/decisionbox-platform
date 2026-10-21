@@ -941,6 +941,14 @@ type RecommendationStep struct {
 	RecommendationsExpanded     int `bson:"recommendations_expanded,omitempty" json:"recommendations_expanded,omitempty"`
 	RecommendationsExpandFailed int `bson:"recommendations_expand_failed,omitempty" json:"recommendations_expand_failed,omitempty"`
 
+	// RecommendationsExpandSkipped counts planned entries never attempted,
+	// because the run's context finished part-way through the expansions.
+	// Separate from failed: nothing was asked of them. Counted at all because
+	// planned/expanded/failed that do not add up to the plan is how a later
+	// investigation starts from the wrong place -- a cancelled run otherwise
+	// looks like a run whose model quietly produced less.
+	RecommendationsExpandSkipped int `bson:"recommendations_expand_skipped,omitempty" json:"recommendations_expand_skipped,omitempty"`
+
 	// RecommendationPlanRetries counts the corrective re-asks the plan call
 	// needed. Omitted when the plan was readable first time.
 	RecommendationPlanRetries int `bson:"recommendation_plan_retries,omitempty" json:"recommendation_plan_retries,omitempty"`

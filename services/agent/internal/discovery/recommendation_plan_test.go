@@ -341,18 +341,18 @@ func TestSelectPlannedRecommendation_SoleObjectThatIsAnotherPlannedEntryIsRefuse
 	plan := []recommendationPlanItem{{Title: "First thing"}, {Title: "Second thing"}}
 
 	sole := []models.Recommendation{{Title: "First thing"}}
-	if got, _, err := selectPlannedRecommendation(sole, plan, 1); err == nil {
+	if got, _, err := selectPlannedRecommendation(sole, plan, 1, nil); err == nil {
 		t.Errorf("want a refusal, got %q accepted as the second entry", got.Title)
 	}
 
 	// Asked for that entry, the same object is exactly right.
-	if got, _, err := selectPlannedRecommendation(sole, plan, 0); err != nil || got.Title != "First thing" {
+	if got, _, err := selectPlannedRecommendation(sole, plan, 0, nil); err != nil || got.Title != "First thing" {
 		t.Errorf("got (%v, %v), want the first entry accepted", got, err)
 	}
 
 	// A reworded title is still accepted — that is the latitude the prompt gives.
 	reworded := []models.Recommendation{{Title: "Reactivate the lapsed cohort"}}
-	if got, _, err := selectPlannedRecommendation(reworded, plan, 1); err != nil || got.Title != "Reactivate the lapsed cohort" {
+	if got, _, err := selectPlannedRecommendation(reworded, plan, 1, nil); err != nil || got.Title != "Reactivate the lapsed cohort" {
 		t.Errorf("got (%v, %v), want the reworded entry accepted", got, err)
 	}
 }
@@ -360,7 +360,7 @@ func TestSelectPlannedRecommendation_SoleObjectThatIsAnotherPlannedEntryIsRefuse
 func TestSelectPlannedRecommendation_RepeatedPlannedTitleStillResolves(t *testing.T) {
 	// A plan that repeated a title must not make either entry unanswerable.
 	plan := []recommendationPlanItem{{Title: "Same thing"}, {Title: "Same thing"}}
-	got, _, err := selectPlannedRecommendation([]models.Recommendation{{Title: "Same thing"}}, plan, 1)
+	got, _, err := selectPlannedRecommendation([]models.Recommendation{{Title: "Same thing"}}, plan, 1, nil)
 	if err != nil || got.Title != "Same thing" {
 		t.Errorf("got (%v, %v), want the entry accepted", got, err)
 	}

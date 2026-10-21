@@ -30,6 +30,7 @@ func TestRecommendationLogEntry_DecodesThePersistedFieldNames(t *testing.T) {
 		"recommendations_planned":              4,
 		"recommendations_expanded":             3,
 		"recommendations_expand_failed":        1,
+		"recommendations_expand_skipped":       2,
 		"recommendation_plan_retries":          1,
 		"recommendations_single_call_fallback": true,
 		"calls": bson.A{
@@ -75,6 +76,7 @@ func TestRecommendationLogEntry_DecodesThePersistedFieldNames(t *testing.T) {
 		{"recommendations_planned", entry.RecommendationsPlanned, 4},
 		{"recommendations_expanded", entry.RecommendationsExpanded, 3},
 		{"recommendations_expand_failed", entry.RecommendationsExpandFailed, 1},
+		{"recommendations_expand_skipped", entry.RecommendationsExpandSkipped, 2},
 		{"recommendation_plan_retries", entry.RecommendationPlanRetries, 1},
 		{"recommendations_single_call_fallback", entry.RecommendationsSingleCallFallback, true},
 	}

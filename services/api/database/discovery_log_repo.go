@@ -136,6 +136,7 @@ type RecommendationLogEntry struct {
 	RecommendationsPlanned            int                      `bson:"recommendations_planned,omitempty" json:"recommendations_planned,omitempty"`
 	RecommendationsExpanded           int                      `bson:"recommendations_expanded,omitempty" json:"recommendations_expanded,omitempty"`
 	RecommendationsExpandFailed       int                      `bson:"recommendations_expand_failed,omitempty" json:"recommendations_expand_failed,omitempty"`
+	RecommendationsExpandSkipped      int                      `bson:"recommendations_expand_skipped,omitempty" json:"recommendations_expand_skipped,omitempty"`
 	RecommendationPlanRetries         int                      `bson:"recommendation_plan_retries,omitempty" json:"recommendation_plan_retries,omitempty"`
 	RecommendationsSingleCallFallback bool                     `bson:"recommendations_single_call_fallback,omitempty" json:"recommendations_single_call_fallback,omitempty"`
 	Calls                             []RecommendationCallInfo `bson:"calls,omitempty" json:"calls,omitempty"`

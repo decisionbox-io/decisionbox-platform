@@ -736,14 +736,29 @@ func (o *Orchestrator) expandRecommendationPlan(
 	format := recommendationResponseFormat()
 	maxRetries := recommendationExpandMaxRetries()
 
+	// The titles already written. A planned entry is identified by its title,
+	// and the expansion may reword it, so two entries can both come back as
+	// the same reworded recommendation -- at which point the set holds a
+	// duplicate, the recommendations page deduplicates by title, and the
+	// second entry is lost while the counters report both as written. A title
+	// this phase has already accepted is therefore not available to another
+	// entry: the duplicate is refused and re-asked like any other
+	// unidentifiable answer.
+	taken := make(map[string]struct{}, len(plan))
+
 	recs := make([]models.Recommendation, 0, len(plan))
 	var fail *recommendationFailure
 	for idx := range plan {
 		if err := ctx.Err(); err != nil {
+			// The entries after this one are never attempted. Counted as
+			// skipped rather than failed -- nothing was asked of them -- and
+			// counted at all because three numbers that do not add up to the
+			// plan is how a later investigation starts from the wrong place.
+			step.RecommendationsExpandSkipped = len(plan) - idx
 			applog.WithFields(applog.Fields{
-				"written":   len(recs),
-				"planned":   len(plan),
-				"remaining": len(plan) - idx,
+				"written": len(recs),
+				"planned": len(plan),
+				"skipped": step.RecommendationsExpandSkipped,
 			}).Warn("Context finished; stopping recommendation expansion")
 			if len(recs) == 0 {
 				fail = newRecommendationTransportFailure(err)
@@ -751,7 +766,7 @@ func (o *Orchestrator) expandRecommendationPlan(
 			break
 		}
 
-		rec, expandFail := o.expandOneRecommendation(ctx, step, prompt, plan, idx, insights, format, maxRetries)
+		rec, expandFail := o.expandOneRecommendation(ctx, step, prompt, plan, idx, insights, format, maxRetries, taken)
 		if rec == nil {
 			step.RecommendationsExpandFailed++
 			fail = expandFail
@@ -761,6 +776,7 @@ func (o *Orchestrator) expandRecommendationPlan(
 			}).Warn("Could not write one planned recommendation; keeping the rest of the set")
 			continue
 		}
+		taken[normalizeTitleForMatch(rec.Title)] = struct{}{}
 		recs = append(recs, *rec)
 	}
 
@@ -782,6 +798,7 @@ func (o *Orchestrator) expandOneRecommendation(
 	insights []models.Insight,
 	format *gollm.ResponseFormat,
 	maxRetries int,
+	taken map[string]struct{},
 ) (*models.Recommendation, *recommendationFailure) {
 	base := prompt + recommendationExpandSuffix(plan, idx)
 
@@ -807,9 +824,9 @@ func (o *Orchestrator) expandOneRecommendation(
 		health := classifyResponse(o.recommendationResponseFacts(res))
 		recordRecommendationCall(step, models.RecommendationCallExpand, attempt, idx, res, health, nil)
 
-		rec, perr := adoptExpansionResponse(step, res.Content, plan, idx, insights)
+		rec, perr := adoptExpansionResponse(step, res.Content, plan, idx, insights, taken)
 		if perr == nil {
-			return o.repairExpansionCitation(ctx, step, base, rec, plan, idx, insights, format), nil
+			return o.repairExpansionCitation(ctx, step, base, rec, plan, idx, insights, format, taken), nil
 		}
 		fail = recommendationFailureFor(health, perr, fmt.Errorf("the response held no usable recommendation"))
 	}
@@ -858,6 +875,7 @@ func (o *Orchestrator) repairExpansionCitation(
 	idx int,
 	insights []models.Insight,
 	format *gollm.ResponseFormat,
+	taken map[string]struct{},
 ) *models.Recommendation {
 	retries := recommendationCitationMaxRetries()
 	if retries <= 0 || anyRecCitesEligible([]models.Recommendation{*rec}, insights) {
@@ -888,7 +906,7 @@ func (o *Orchestrator) repairExpansionCitation(
 		// carried a valid citation would save another entry twice and lose
 		// this one -- which is the protection selectPlannedRecommendation
 		// exists to give, so there is one way in and not two.
-		recovered, perr := adoptExpansionResponse(step, res.Content, plan, idx, insights)
+		recovered, perr := adoptExpansionResponse(step, res.Content, plan, idx, insights, taken)
 		if perr != nil {
 			continue
 		}
@@ -1123,6 +1141,7 @@ func adoptExpansionResponse(
 	plan []recommendationPlanItem,
 	idx int,
 	insights []models.Insight,
+	taken map[string]struct{},
 ) (*models.Recommendation, error) {
 	parsed, dropped, perr := parseRecommendations(content)
 	step.RecommendationsDroppedParse += dropped
@@ -1133,7 +1152,7 @@ func adoptExpansionResponse(
 		return nil, errors.New("the response held no recommendation")
 	}
 
-	rec, extra, serr := selectPlannedRecommendation(parsed, plan, idx)
+	rec, extra, serr := selectPlannedRecommendation(parsed, plan, idx, taken)
 	if serr != nil {
 		return nil, serr
 	}
@@ -1166,21 +1185,33 @@ func adoptExpansionResponse(
 // planned title itself, then as the one object that is not some other planned
 // entry's -- and an answer where that cannot be decided is refused and
 // re-asked rather than guessed at.
-func selectPlannedRecommendation(parsed []models.Recommendation, plan []recommendationPlanItem, idx int) (*models.Recommendation, int, error) {
+func selectPlannedRecommendation(parsed []models.Recommendation, plan []recommendationPlanItem, idx int, taken map[string]struct{}) (*models.Recommendation, int, error) {
 	if len(parsed) == 0 {
 		return nil, 0, errors.New("the response held no recommendation")
 	}
 
 	target := normalizeTitleForMatch(plan[idx].Title)
-	// The other planned titles, which this response is not the place for. The
-	// target is excluded in case a plan repeated a title, so a repeat can
-	// never make an entry unanswerable.
-	others := make(map[string]struct{}, len(plan))
+	// The titles this response is not the place for: the other planned
+	// entries, and anything an earlier expansion has already written. The
+	// second half matters because the expansion may reword -- two entries can
+	// otherwise come back as the same reworded recommendation, and a set with
+	// a duplicate in it loses one to the title deduplication downstream while
+	// the counters report both as written.
+	//
+	// The target is excluded from both in case a plan repeated a title, or an
+	// earlier entry already wrote this one's title, so neither can make an
+	// entry unanswerable.
+	others := make(map[string]struct{}, len(plan)+len(taken))
 	for j := range plan {
 		if j == idx {
 			continue
 		}
 		if t := normalizeTitleForMatch(plan[j].Title); t != target {
+			others[t] = struct{}{}
+		}
+	}
+	for t := range taken {
+		if t != target {
 			others[t] = struct{}{}
 		}
 	}
@@ -1193,6 +1224,11 @@ func selectPlannedRecommendation(parsed []models.Recommendation, plan []recommen
 	}
 	if len(matches) > 1 {
 		return nil, 0, fmt.Errorf("the response wrote %d recommendations and %d of them carry the planned title, so which one was asked for cannot be decided", len(parsed), len(matches))
+	}
+	if len(matches) == 1 {
+		if _, written := taken[target]; written {
+			return nil, 0, errors.New("the planned title has already been written by an earlier entry, so this one would duplicate it")
+		}
 	}
 	if len(matches) == 0 {
 		// The title was reworded, which the expansion is allowed to do. Fall
