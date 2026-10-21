@@ -1758,3 +1758,76 @@ func idsOf(findings []commonmodels.LedgerFinding) []string {
 	}
 	return out
 }
+
+// TestReflectionContext_DefaultBudget pins the phase's default wall-clock
+// budget at three hours.
+//
+// This is a regression guard with a production failure behind it: at the
+// original three minutes, a project carrying 69 ledger findings sent a 32k-token
+// reflection prompt, and the call was cancelled mid-flight on two consecutive
+// runs. Consolidation (step 1) had already written its findings, so the ledger
+// kept growing while coverage, convergence, learnings and next-tasks stopped
+// being written — the budget bit hardest on the runs with the most history to
+// reason about, which is exactly backwards.
+func TestReflectionContext_DefaultBudget(t *testing.T) {
+	t.Setenv(discoveryReflectionTimeoutEnv, "")
+
+	ctx, cancel := reflectionContext(context.Background())
+	defer cancel()
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("reflection context carries no deadline")
+	}
+	if got := time.Until(deadline); got < 3*time.Hour-time.Minute {
+		t.Errorf("default reflection budget = %v, want ~3h", got)
+	}
+}
+
+// TestReflectionContext_EnvOverride covers the knob an operator actually
+// reaches for — lowering the budget to cap spend — and the malformed value that
+// must fall back rather than produce a zero-length budget that cancels the
+// phase before its first call.
+func TestReflectionContext_EnvOverride(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+		least time.Duration
+		most  time.Duration
+	}{
+		{name: "lowered", value: "10m", least: 9 * time.Minute, most: 10 * time.Minute},
+		{name: "raised", value: "6h", least: 5*time.Hour + 59*time.Minute, most: 6 * time.Hour},
+		{name: "unparseable falls back", value: "soon", least: 3*time.Hour - time.Minute, most: 3 * time.Hour},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(discoveryReflectionTimeoutEnv, tc.value)
+
+			ctx, cancel := reflectionContext(context.Background())
+			defer cancel()
+
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				t.Fatal("reflection context carries no deadline")
+			}
+			if got := time.Until(deadline); got < tc.least || got > tc.most {
+				t.Errorf("budget for %q = %v, want between %v and %v", tc.value, got, tc.least, tc.most)
+			}
+		})
+	}
+}
+
+// TestReflectionContext_SurvivesParentCancellation pins the WithoutCancel: the
+// phase is invoked after the run-completion event, so the run's own context is
+// routinely already cancelled by the time it starts. Without this the whole
+// phase would be dead on arrival.
+func TestReflectionContext_SurvivesParentCancellation(t *testing.T) {
+	parent, cancelParent := context.WithCancel(context.Background())
+	cancelParent()
+
+	ctx, cancel := reflectionContext(parent)
+	defer cancel()
+
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("reflection context inherited the parent's cancellation: %v", err)
+	}
+}
