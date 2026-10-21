@@ -481,6 +481,23 @@ describe('LedgerPage', () => {
     expect(parseFloat(label.style.top)).toBe(-top);
   });
 
+  it('shortens a run name rather than spill it over the next run when zoomed out', async () => {
+    // Zoomed far out, a one-row run is a few dozen pixels tall but its name,
+    // date and summary are not — they covered the next run's name.
+    viewport = { x: 0, y: 0, zoom: 0.25 };
+    mockAll();
+    wrap();
+    fireEvent.click(await screen.findByText('Map'));
+    await screen.findByTestId('map-canvas');
+    screen.getAllByTestId('frozen-run').forEach((block) => {
+      // Clipped to its own row, whatever happens inside it...
+      expect(block.style.overflow).toBe('hidden');
+      // ...and showing only what fits: the name, with no summary under it.
+      expect(block.textContent).toMatch(/Run \d/);
+      expect(block.textContent).not.toMatch(/recommendation|finding|thread/);
+    });
+  });
+
   it('jumps to a run from the corner of the frozen panes', async () => {
     viewport = { x: -500, y: 0, zoom: 1 }; // scrolled well to the right
     mockAll();

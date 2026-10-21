@@ -28,6 +28,11 @@ export const ROW_GAP = 64;
 /** A little extra air between one finding's group and the next. */
 export const GROUP_GAP = 14;
 const ROW_STEP = NODE_HEIGHT + CARD_GAP_Y;
+/** A row is never shorter than two cards. The run's name and summary sit in a
+ *  frozen column beside it and are clipped to its height, so a run that found
+ *  one thing would otherwise show its name and lose the line saying what it
+ *  did at any ordinary zoom. */
+const MIN_ROW_HEIGHT = 2 * ROW_STEP - CARD_GAP_Y;
 
 export type Lane = 0 | 1 | 2 | 3;
 export const LANE_TITLES: [string, string, string, string] = ['Picked up', 'Found', 'Recommended', 'Opened'];
@@ -440,7 +445,7 @@ export function placeFlow(map: InvestigationMap, expanded: Set<string>): FlowGeo
       rowsUsed += 1;
     }
 
-    row.height = Math.max(rowsUsed, 1) * ROW_STEP - CARD_GAP_Y + extra;
+    row.height = Math.max(Math.max(rowsUsed, 1) * ROW_STEP - CARD_GAP_Y + extra, MIN_ROW_HEIGHT);
     y += row.height + ROW_GAP;
   });
 

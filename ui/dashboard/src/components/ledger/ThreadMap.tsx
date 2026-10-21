@@ -235,9 +235,12 @@ const LANE_HINTS: [string, string, string, string] = [
 // which run they are in or which step they are — and that is being lost.
 const FROZEN_TOP = 54;
 const FROZEN_LEFT = 158;
-/** Roughly how tall a run's label is, so it can ride down a tall row without
- *  running off the bottom of it. */
-const RUN_LABEL_HEIGHT = 112;
+/** How tall a run's label is at each level of detail, so it can ride down a
+ *  tall row without running off the bottom, and drop detail rather than spill
+ *  into the next run's row when the map is zoomed out. */
+const RUN_LABEL_FULL = 112;
+const RUN_LABEL_DATED = 48;
+const RUN_LABEL_NAME = 28;
 
 /** What the frozen column says about one row. */
 interface RowLabel {
@@ -323,29 +326,42 @@ function FrozenPanes({
         {rows.map((row) => {
           const top = row.top * zoom + y - FROZEN_TOP;
           const height = row.height * zoom;
-          const ride = Math.min(Math.max(0, -top), Math.max(0, height - RUN_LABEL_HEIGHT));
+          // As much as the row has room for: everything, then the name and
+          // date, then the name alone. A label is clipped to its own row, so
+          // zoomed out it gets shorter instead of covering the next run's.
+          const full = height >= RUN_LABEL_FULL;
+          const dated = !full && height >= RUN_LABEL_DATED;
+          const shown = full ? RUN_LABEL_FULL : (dated ? RUN_LABEL_DATED : RUN_LABEL_NAME);
+          const ride = Math.min(Math.max(0, -top), Math.max(0, height - shown));
           return (
             <div
               key={row.ref || 'undated'}
               data-testid="frozen-run"
               style={{
                 position: 'absolute', top, height, left: 6, right: 6,
-                borderRadius: 8,
+                borderRadius: 8, overflow: 'hidden',
                 background: row.dated ? 'var(--mantine-color-blue-light)' : 'var(--mantine-color-gray-1)',
                 border: '1px solid var(--db-border-default)',
               }}
             >
-              <div style={{ position: 'absolute', top: ride, left: 0, right: 0, padding: '9px 10px' }}>
+              <div
+                style={{
+                  position: 'absolute', top: ride, left: 0, right: 0,
+                  padding: full || dated ? '9px 10px' : '4px 10px',
+                }}
+              >
                 <Group gap={6} wrap="nowrap">
                   <IconClockHour4 size={13} style={{ flexShrink: 0, opacity: 0.7 }} />
-                  <Text size="sm" fw={700} lineClamp={2}>{row.label}</Text>
+                  <Text size="sm" fw={700} lineClamp={full ? 2 : 1}>{row.label}</Text>
                 </Group>
-                {row.date && <Text size="10px" c="dimmed" mt={1}>{row.date}</Text>}
-                <Stack gap={0} mt={6}>
-                  {row.lines.map((line) => (
-                    <Text key={line} size="10px" c="dimmed" lineClamp={1}>{line}</Text>
-                  ))}
-                </Stack>
+                {(full || dated) && row.date && <Text size="10px" c="dimmed" mt={1}>{row.date}</Text>}
+                {full && (
+                  <Stack gap={0} mt={6}>
+                    {row.lines.map((line) => (
+                      <Text key={line} size="10px" c="dimmed" lineClamp={1}>{line}</Text>
+                    ))}
+                  </Stack>
+                )}
               </div>
             </div>
           );

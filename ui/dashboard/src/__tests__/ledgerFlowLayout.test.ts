@@ -238,6 +238,17 @@ describe('placeFlow', () => {
     });
   });
 
+  it('never makes a row shorter than two cards, so its run can be named beside it', () => {
+    const graph = threeRunGraph();
+    // Without its recommendation, run 3 is one card: the thread it picked up.
+    graph.recommendations = graph.recommendations.filter((r) => r.id !== 'R4');
+    graph.edges = graph.edges.filter((e) => e.from !== 'rec:R4');
+    const geometry = layOut(graph);
+    const three = geometry.rows.find((r) => r.ref === 'run:r3')!;
+    expect([...geometry.cards.values()].filter((c) => c.row === 'run:r3')).toHaveLength(1);
+    expect(three.height).toBe(2 * NODE_HEIGHT + 22);
+  });
+
   it('reads each row in the order the work went: picked up, found, recommended, opened', () => {
     const { cards } = layOut(threeRunGraph());
     const lane = (id: string) => cards.get(id)?.lane;
