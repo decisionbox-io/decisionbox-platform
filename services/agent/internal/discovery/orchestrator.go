@@ -2210,6 +2210,17 @@ func (o *Orchestrator) generateRecommendations(
 		return make([]models.Recommendation, 0), step
 	}
 
+	// Ids must be unique across the set, not merely present. Each one becomes
+	// the standalone `recommendations._id` and the Qdrant point id, so a
+	// repeat makes the insert fail on a duplicate key and abandons the rest of
+	// the indexing.
+	//
+	// Uniqueness is a real risk now rather than a theoretical one: each
+	// recommendation is written by its own call, so every model that numbers
+	// its output names the first one "r-1" every time. A single document at
+	// least numbered within itself. An id the model supplied and that nothing
+	// else has taken is still honoured; a repeat is replaced.
+	seenIDs := make(map[string]struct{}, len(recs))
 	for i := range recs {
 		if recs[i].CreatedAt.IsZero() {
 			recs[i].CreatedAt = time.Now()
@@ -2217,15 +2228,23 @@ func (o *Orchestrator) generateRecommendations(
 		// Same description split as insights: Markdown rendition into
 		// DescriptionMd, plain reduction into Description.
 		recs[i].Description, recs[i].DescriptionMd = splitMarkdownDescription(recs[i].Description)
-		// Assign a UUID if the LLM didn't give one. Same rationale as for
-		// insights: the UUID is reused as the standalone `recommendations._id`
-		// and Qdrant point id, so URLs that hit the embedded array match
-		// without a fallback. Prior to this, the embedded `id` was "", which
-		// meant list → detail navigation was silently falling back to the
-		// array index and Ask source links to recommendations never worked.
-		if recs[i].ID == "" {
+		// Assign a UUID if the LLM didn't give a usable one. Same rationale as
+		// for insights: the UUID is reused as the standalone
+		// `recommendations._id` and Qdrant point id, so URLs that hit the
+		// embedded array match without a fallback. Prior to this, the embedded
+		// `id` was "", which meant list → detail navigation was silently
+		// falling back to the array index and Ask source links to
+		// recommendations never worked.
+		if _, taken := seenIDs[recs[i].ID]; recs[i].ID == "" || taken {
+			if taken {
+				applog.WithFields(applog.Fields{
+					"id":    recs[i].ID,
+					"title": recs[i].Title,
+				}).Warn("Replacing a recommendation id another recommendation in this set already carries")
+			}
 			recs[i].ID = uuid.New().String()
 		}
+		seenIDs[recs[i].ID] = struct{}{}
 	}
 
 	step.Recommendations = recs

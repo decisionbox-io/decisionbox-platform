@@ -814,7 +814,8 @@ func (o *Orchestrator) expandOneRecommendation(
 			}).Warn("Re-asking for one recommendation after an unusable response")
 		}
 
-		maxTokens := o.recommendationCallMaxTokens(ctx, attemptPrompt, retryCeiling(recommendationExpandOutputTokens(), fail))
+		ceiling := retryCeiling(recommendationExpandOutputTokens(), fail)
+		maxTokens := o.recommendationCallMaxTokens(ctx, attemptPrompt, ceiling)
 		res, err := o.aiClient.ChatWithFormat(ctx, attemptPrompt, "", maxTokens, format)
 		if err != nil {
 			recordRecommendationCall(step, models.RecommendationCallExpand, attempt, idx, nil, responseHealth{}, err)
@@ -826,7 +827,13 @@ func (o *Orchestrator) expandOneRecommendation(
 
 		rec, perr := adoptExpansionResponse(step, res.Content, plan, idx, insights, taken)
 		if perr == nil {
-			return o.repairExpansionCitation(ctx, step, base, rec, plan, idx, insights, format, taken), nil
+			// The citation re-ask inherits the conditions this attempt
+			// succeeded under -- the corrective suffix and the raised ceiling,
+			// when there were any. An expansion that only worked at 16,384
+			// tokens with "deliberate less" attached would otherwise be asked
+			// to do it again at 4,096 without it, reproducing the budget
+			// failure in the name of fixing a citation.
+			return o.repairExpansionCitation(ctx, step, attemptPrompt, rec, plan, idx, insights, format, taken, ceiling), nil
 		}
 		fail = recommendationFailureFor(health, perr, fmt.Errorf("the response held no usable recommendation"))
 	}
@@ -869,13 +876,16 @@ func (o *Orchestrator) recommendationResponseFacts(res *ai.ChatResult) responseF
 func (o *Orchestrator) repairExpansionCitation(
 	ctx context.Context,
 	step *models.RecommendationStep,
-	base string,
+	// worked is the exact prompt the expansion succeeded under, corrective
+	// suffixes included, and ceiling the output budget it succeeded with.
+	worked string,
 	rec *models.Recommendation,
 	plan []recommendationPlanItem,
 	idx int,
 	insights []models.Insight,
 	format *gollm.ResponseFormat,
 	taken map[string]struct{},
+	ceiling int,
 ) *models.Recommendation {
 	retries := recommendationCitationMaxRetries()
 	if retries <= 0 || anyRecCitesEligible([]models.Recommendation{*rec}, insights) {
@@ -891,8 +901,8 @@ func (o *Orchestrator) repairExpansionCitation(
 		applog.WithFields(applog.Fields{"entry": idx + 1, "attempt": attempt}).Warn(
 			"Re-asking for one recommendation: it cited no eligible insight id")
 
-		attemptPrompt := base + recommendationCitationRepairSuffix(insights)
-		maxTokens := o.recommendationCallMaxTokens(ctx, attemptPrompt, recommendationExpandOutputTokens())
+		attemptPrompt := worked + recommendationCitationRepairSuffix(insights)
+		maxTokens := o.recommendationCallMaxTokens(ctx, attemptPrompt, ceiling)
 		res, err := o.aiClient.ChatWithFormat(ctx, attemptPrompt, "", maxTokens, format)
 		if err != nil {
 			recordRecommendationCall(step, models.RecommendationCallExpand, attempt, idx, nil, responseHealth{}, err)

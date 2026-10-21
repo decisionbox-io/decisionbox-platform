@@ -1053,3 +1053,90 @@ func TestGenerateRecommendations_CancellationAccountsForTheEntriesNeverAttempted
 		t.Errorf("expanded+failed+skipped = %d, want the %d planned", total, step.RecommendationsPlanned)
 	}
 }
+
+func TestGenerateRecommendations_IndependentExpansionsCannotCollideOnAnID(t *testing.T) {
+	// Each recommendation is written by its own call, so every model that
+	// numbers its output calls the first one "r-1" every time — a single
+	// document at least numbered within itself. The id becomes the standalone
+	// `recommendations._id` and the Qdrant point id, so a repeat makes the
+	// insert fail on a duplicate key and abandons the rest of the indexing.
+	withID := func(id, title string) string {
+		return `{"recommendations":[{"id":"` + id + `","title":"` + title + `","priority":1,` +
+			`"expected_impact":{"metric":"m"},"related_insight_ids":["i-1"]}]}`
+	}
+	o, _ := newRoutedOrchestrator(map[string]string{
+		planCallMarker:  validPlanEnvelope,
+		"Write entry 1": withID("r-1", "Recover high-value carts"),
+		"Write entry 2": withID("r-1", "Reactivate lapsed buyers"),
+	})
+
+	recs, _ := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", planExpandInsights, "", "ds")
+
+	if len(recs) != 2 {
+		t.Fatalf("recs = %d, want 2", len(recs))
+	}
+	if recs[0].ID == recs[1].ID {
+		t.Fatalf("both recommendations carry id %q", recs[0].ID)
+	}
+	// The first claim on an id the model supplied is still honoured.
+	if recs[0].ID != "r-1" {
+		t.Errorf("recs[0].ID = %q, want the model's own r-1 kept", recs[0].ID)
+	}
+	for i := range recs {
+		if recs[i].ID == "" {
+			t.Errorf("recs[%d] has no id", i)
+		}
+	}
+}
+
+func TestGenerateRecommendations_CitationReAskKeepsWhatMadeTheExpansionWork(t *testing.T) {
+	// An expansion that only succeeded at a raised ceiling, with "deliberate
+	// less" attached, must not then be asked to do it again at the base
+	// ceiling without it — that reproduces the budget failure in the name of
+	// fixing a citation, and the downstream backfill then links the
+	// recommendation to every eligible insight.
+	const planWithoutIDs = `{"plan":[{"title":"Recover high-value carts","priority":1}]}`
+	provider := testutil.NewMockLLMProvider()
+	provider.ResponseQueue = []*gollm.ChatResponse{
+		{Content: planWithoutIDs, StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+		// Attempt 1: the budget goes somewhere the caller cannot see.
+		{
+			Content:    `{"recommendations":[`,
+			StopReason: "length",
+			Usage:      gollm.Usage{InputTokens: 10, OutputTokens: defaultRecommendationExpandOutputTokens},
+		},
+		// Attempt 2 works, at the raised ceiling — but cites nothing.
+		{Content: expandedRec("Recover high-value carts"), StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 20}},
+		// The citation re-ask.
+		{
+			Content:    `{"recommendations":[{"title":"Recover high-value carts","priority":1,"expected_impact":{"metric":"m"},"related_insight_ids":["i-1"]}]}`,
+			StopReason: "end_turn",
+			Usage:      gollm.Usage{InputTokens: 10, OutputTokens: 20},
+		},
+	}
+	client, _ := ai.New(provider, "mock-model")
+	o := &Orchestrator{aiClient: client}
+
+	recs, step := o.generateRecommendations(context.Background(), "{{INSIGHTS_DATA}}", planExpandInsights, "", "ds")
+
+	if len(provider.Calls) != 4 {
+		t.Fatalf("provider called %d times, want 4 (plan, vanished attempt, retry, citation re-ask)", len(provider.Calls))
+	}
+	recovered := provider.Calls[2].Request
+	citation := provider.Calls[3].Request
+	if citation.MaxTokens != recovered.MaxTokens {
+		t.Errorf("citation re-ask max_tokens = %d, want the %d the expansion succeeded with", citation.MaxTokens, recovered.MaxTokens)
+	}
+	if !strings.Contains(citation.Messages[0].Content, "Do not plan or deliberate at length") {
+		t.Error("the citation re-ask dropped the corrective instruction the expansion needed")
+	}
+	if !strings.Contains(citation.Messages[0].Content, "related_insight_ids") {
+		t.Error("the citation re-ask must still ask for the citation")
+	}
+	if len(recs) != 1 || len(recs[0].RelatedInsightIDs) != 1 || recs[0].RelatedInsightIDs[0] != "i-1" {
+		t.Errorf("citations = %v, want the recovered [i-1]", recs[0].RelatedInsightIDs)
+	}
+	if step.RecommendationCitationRetries != 1 {
+		t.Errorf("RecommendationCitationRetries = %d, want 1", step.RecommendationCitationRetries)
+	}
+}
