@@ -13,6 +13,7 @@ jest.mock('next/navigation', () => ({ useParams: () => ({ id: 'p1' }) }));
 jest.mock('@/components/ledger/updating', () => ({
   ...jest.requireActual('@/components/ledger/updating'),
   LEDGER_UPDATE_POLL_MS: 10,
+  RUN_WATCH_POLL_MS: 10,
 }));
 jest.mock('@mantine/notifications', () => ({ notifications: { show: jest.fn() } }));
 jest.mock('@/components/layout/AppShell', () => ({
@@ -85,6 +86,7 @@ const getEvolutionSettings = jest.fn();
 const listPackProposals = jest.fn();
 const decidePackProposal = jest.fn();
 const getLedgerGraph = jest.fn();
+const getProjectStatus = jest.fn();
 
 jest.mock('@/lib/api', () => ({
   ApiError: class extends Error { status = 0; constructor(m: string, s: number) { super(m); this.status = s; } },
@@ -95,6 +97,7 @@ jest.mock('@/lib/api', () => ({
     listPackProposals: (...a: unknown[]) => listPackProposals(...a),
     decidePackProposal: (...a: unknown[]) => decidePackProposal(...a),
     getLedgerGraph: (...a: unknown[]) => getLedgerGraph(...a),
+    getProjectStatus: (...a: unknown[]) => getProjectStatus(...a),
   },
 }));
 
@@ -199,6 +202,8 @@ const emptyGraph: LedgerGraph = {
 beforeEach(() => {
   jest.clearAllMocks();
   viewport = { x: 0, y: 0, zoom: 1 };
+  // No run in progress unless a test says so.
+  getProjectStatus.mockResolvedValue({ project_id: 'p1' });
   // The tests that predate the investigation graph are about the sections the
   // untouched investigation-view endpoint feeds; an empty graph keeps them
   // about exactly that.
@@ -872,6 +877,34 @@ describe('LedgerPage', () => {
     releaseFirst(graph);
     expect(await view().findAllByText(/Churn, after the run/)).not.toHaveLength(0);
     expect(view().queryByText('High EU churn')).not.toBeInTheDocument();
+  });
+
+  it('notices a run that finishes while the page is open, and says the ledger is being updated', async () => {
+    // Opened mid-run, the ledger has nothing to say yet. When the run
+    // finishes, the page has to look again to learn that it is now stale.
+    getProjectStatus
+      .mockResolvedValueOnce({ project_id: 'p1', run: { id: 'r3', status: 'running' } })
+      .mockResolvedValueOnce({ project_id: 'p1', run: { id: 'r3', status: 'running' } })
+      .mockResolvedValue({ project_id: 'p1', run: { id: 'r3', status: 'completed' } });
+    getLedger
+      .mockResolvedValueOnce(ledger)
+      .mockResolvedValue({ ...ledger, updating: { run_id: 'r3', since: '2026-10-21T14:02:00Z' } });
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'auto', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    getLedgerGraph.mockResolvedValue(graph);
+    wrap();
+
+    await screen.findByText('Tables explored');
+    expect(screen.queryByText('Updating from the run that just finished')).not.toBeInTheDocument();
+    expect(await screen.findByText('Updating from the run that just finished')).toBeInTheDocument();
+  });
+
+  it('does not watch for a run when none is going', async () => {
+    mockAll();
+    wrap();
+    await screen.findByText('Tables explored');
+    await new Promise((r) => setTimeout(r, 60));
+    expect(getProjectStatus).toHaveBeenCalledTimes(1);
   });
 
   it('shows no banner when nothing is being updated', async () => {

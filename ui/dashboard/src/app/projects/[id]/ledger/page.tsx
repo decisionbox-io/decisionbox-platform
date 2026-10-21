@@ -4,7 +4,9 @@ import { ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { Alert, Loader, Select, Button, Group, Stack, Text, Card, Badge, Progress, Tooltip, Collapse, UnstyledButton, ThemeIcon, SegmentedControl } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { LEDGER_UPDATE_POLL_MS, updateStartedAt } from '@/components/ledger/updating';
+import {
+  LEDGER_UPDATE_POLL_MS, RUN_WATCH_POLL_MS, runInProgress, updateStartedAt,
+} from '@/components/ledger/updating';
 import {
   IconBook2, IconChevronRight, IconTrendingUp, IconRoute, IconGitPullRequest,
   IconMap2, IconHistory, IconAdjustments, IconListDetails, IconSitemap,
@@ -250,6 +252,42 @@ export default function LedgerPage() {
     return () => { cancelled = true; clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, isUpdating]);
+
+  // A page opened while a run is going cannot see from the ledger alone that
+  // the run has finished: the ledger says nothing until the run's update goes
+  // up. So while a run is in progress, watch it, and when it finishes, reload
+  // the ledger — which then says it is being updated, and the check-back loop
+  // above takes it from there.
+  const [runActive, setRunActive] = useState(false);
+  useEffect(() => {
+    api.getProjectStatus(id)
+      .then((s) => setRunActive(runInProgress(s?.run?.status)))
+      .catch(() => {});
+  }, [id]);
+  useEffect(() => {
+    if (!runActive) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const check = () => {
+      timer = setTimeout(() => {
+        api.getProjectStatus(id)
+          .then((s) => {
+            if (cancelled) return;
+            if (runInProgress(s?.run?.status)) {
+              check();
+              return;
+            }
+            setRunActive(false);
+            api.getLedger(id)
+              .then((lv) => { if (!cancelled) setLedger(normalizeLedger(lv)); })
+              .catch(() => {});
+          })
+          .catch(() => { if (!cancelled) check(); });
+      }, RUN_WATCH_POLL_MS);
+    };
+    check();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [id, runActive]);
 
   useEffect(() => {
     api.getProject(id).then(setProject).catch(() => {});
