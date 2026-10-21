@@ -238,16 +238,20 @@ export default function LedgerPage() {
   // reload of the whole page ends it, never a ledger answer on its own. Each
   // check, in this order:
   //
-  //   1. The run. Still going: check again later. No answer: check again.
-  //   2. Then, and only then, the ledger. The agent marks the update BEFORE it
-  //      stamps the run completed, so a ledger read after a completed status
-  //      sees either that mark or the finished update — never the moment in
-  //      between, which two reads in parallel could catch. No ledger on this
-  //      deployment (404): nothing to wait for, stop. Still updating: show it,
-  //      check again.
-  //   3. Done: reload the map and proposals with it — they are from before the
-  //      run too — set everything together, and stop. A deployment without the
-  //      graph route (404) has no map to reload; that is not a failure.
+  //   1. The run. No answer: check again.
+  //   2. Then, and only then, the ledger — whether or not a run is going: a
+  //      new run can start while the last one's update is still being
+  //      written, and that update finishing must not wait hours for the new
+  //      run. The agent marks an update BEFORE it stamps the run completed, so
+  //      a ledger read after a completed status sees either that mark or the
+  //      finished update — never the moment in between, which two reads in
+  //      parallel could catch. No ledger on this deployment (404): say so and
+  //      stop. Still updating: show it, check again.
+  //   3. An update finished, or the run did: reload the map and proposals with
+  //      the ledger — they are from before it too — and set everything
+  //      together. Then, if a run is still going, keep watching it; if not,
+  //      stop. A deployment without the graph route (404) has no map to
+  //      reload; that is not a failure.
   //
   // Anything else that fails is not an answer: check again.
   //
@@ -259,6 +263,9 @@ export default function LedgerPage() {
   // Whether this watch has seen the run in progress. If it has, a status
   // answer with no run in it says nothing about whether the run is done.
   const sawRunGoing = useRef(false);
+  // Whether the page owes a reload of the map and proposals: an update was
+  // seen in progress and has not been caught up with yet.
+  const owedReload = useRef(false);
   const waiting = watching && !unsupported;
   useEffect(() => {
     if (!waiting) return;
@@ -269,14 +276,11 @@ export default function LedgerPage() {
     const step = async () => {
       const status = await api.getProjectStatus(id);
       if (cancelled) return;
-      if (runInProgress(status?.run?.status)) {
-        sawRunGoing.current = true;
-        check();
-        return;
-      }
+      const going = runInProgress(status?.run?.status);
+      if (going) sawRunGoing.current = true;
       // The status route can answer without the run (it does not fail when
       // reading it does). Having seen the run going, that is not "finished".
-      if (sawRunGoing.current && !status?.run) {
+      if (!going && sawRunGoing.current && !status?.run) {
         check();
         return;
       }
@@ -299,6 +303,13 @@ export default function LedgerPage() {
       if (cancelled) return;
       const next = normalizeLedger(lv);
       if (next.updating) {
+        owedReload.current = true;
+        if (mineLedger === ledgerRequest.current) setLedger(next);
+        check();
+        return;
+      }
+      // A run going and nothing finished since the last look: keep watching.
+      if (going && !owedReload.current) {
         if (mineLedger === ledgerRequest.current) setLedger(next);
         check();
         return;
@@ -328,6 +339,12 @@ export default function LedgerPage() {
       }
       if (mineProposals === proposalsRequest.current) setProposals(props || []);
       if (mineLedger === ledgerRequest.current) setLedger(next);
+      owedReload.current = false;
+      // A newer run still going: caught up with the last one, keep watching.
+      if (going) {
+        check();
+        return;
+      }
       // Last, so nothing above is lost to this loop's own cleanup.
       sawRunGoing.current = false;
       setWatching(false);
@@ -360,6 +377,7 @@ export default function LedgerPage() {
         if (mine === ledgerRequest.current) setLedger(normalizeLedger(lv));
         const going = runInProgress(status?.run?.status);
         if (going) sawRunGoing.current = true;
+        if (lv?.updating) owedReload.current = true;
         if (!known || going || lv?.updating) setWatching(true);
         setSettings(st);
         setUnsupported(false);

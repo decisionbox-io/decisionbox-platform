@@ -1201,6 +1201,31 @@ describe('LedgerPage', () => {
     expect(screen.queryByText('Updating from the run that just finished')).not.toBeInTheDocument();
   });
 
+  it('catches up with an update that finishes while a newer run is going', async () => {
+    // The next run started before the last one's update was written. That
+    // update finishing must clear the banner and reload the map now — not
+    // hours later when the new run ends — and the page must keep watching
+    // the new run.
+    getProjectStatus.mockResolvedValue({ project_id: 'p1', run: { id: 'r4', status: 'running' } });
+    const inFlight = { ...ledger, updating: { run_id: 'r3', since: '2026-10-21T14:02:00Z' } };
+    getLedger.mockResolvedValueOnce(inFlight).mockResolvedValueOnce(inFlight).mockResolvedValue(ledger);
+    getEvolutionSettings.mockResolvedValue({ project_id: 'p1', evolution_mode: 'auto', frontier_policy: 'balanced' });
+    listPackProposals.mockResolvedValue([]);
+    const after = {
+      ...graph,
+      findings: graph.findings.map((f) => (f.id === 'f1' ? { ...f, name: 'Churn, after the run' } : f)),
+    };
+    getLedgerGraph.mockResolvedValueOnce(graph).mockResolvedValue(after);
+    wrap();
+    await screen.findByText('Updating from the run that just finished');
+    await waitFor(() =>
+      expect(screen.queryByText('Updating from the run that just finished')).not.toBeInTheDocument());
+    expect(view().getAllByText(/Churn, after the run/).length).toBeGreaterThan(0);
+    // Still watching the run that is going.
+    const calls = getProjectStatus.mock.calls.length;
+    await waitFor(() => expect(getProjectStatus.mock.calls.length).toBeGreaterThan(calls));
+  });
+
   it('does not watch for a run when none is going', async () => {
     mockAll();
     wrap();
