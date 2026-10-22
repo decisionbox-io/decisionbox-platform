@@ -111,6 +111,27 @@ var schema = []struct {
 					SetName("project_started_not_discarded").
 					SetPartialFilterExpression(bson.M{"discarded_at": nil}),
 			},
+			// The resumed-run pass of the same readers, which sorts on
+			// last_resumed_at instead of started_at: a resumed run keeps its
+			// original started_at, so the pass above hides it behind any
+			// newer run once it is no longer active.
+			//
+			// Needs its own index for exactly the reason the one above does.
+			// LatestByProjects depends on streaming each $group-$first off an
+			// index rather than doing a blocking in-memory sort, and
+			// last_resumed_at appeared in no index at all — so that pass
+			// fetched every historical run of every project on the list,
+			// measured at the same 3,000 examined documents for three
+			// projects of 1,000 runs, and with ZERO resumed runs among them.
+			//
+			// Same partial expression, so the discarded filter does not throw
+			// the scan away again.
+			{
+				Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "last_resumed_at", Value: -1}},
+				Options: options.Index().
+					SetName("project_resumed_not_discarded").
+					SetPartialFilterExpression(bson.M{"discarded_at": nil}),
+			},
 			{Keys: bson.D{{Key: "status", Value: 1}}},
 			// Supports the run-completion dispatcher's FIFO scan
 			// (status terminal, completion_hooks_fired_at unset,

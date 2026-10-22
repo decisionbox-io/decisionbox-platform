@@ -769,6 +769,17 @@ func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "project not found")
 		return
 	}
+	// Canonical from here on, for the reason DiscardRun gives at its own
+	// assignment: this route mixes two kinds of key. ObjectIDFromHex accepts
+	// uppercase hex, so GetByID resolved "6AD0…" above — while the checkpoint
+	// collections keyed by run_id as a STRING hold the lowercase form
+	// oid.Hex() produces. Left as the path gave it, ResumeState would compare
+	// an uppercase id against lowercase rows, find no checkpoints, answer 409
+	// "no checkpoint to resume from" and then CLEAR last_checkpoint_step on
+	// the real run — taking away the Resume action the operator could see,
+	// for a run that was perfectly resumable.
+	runID = run.ID
+
 	// Authorise against the run's PROJECT, the same way DiscardRun does and
 	// for a sharper reason: this route is outside ProjectACLMiddleware (it is
 	// keyed by run id, not project id), and the readiness gate below says
@@ -1012,10 +1023,21 @@ func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 		// Back to `failed`, which leaves the run resumable again — the
 		// checkpoints are untouched, so a spawn failure costs nothing but
 		// the attempt counter.
+		//
+		// Fenced on THIS attempt, for the same reason the OnFailure callback
+		// above is: spawning is not instantaneous, and another replica's
+		// startup sweep can fail this attempt while it is pending, which
+		// frees the operator to resume again. An unfenced write here would
+		// then match the NEWER running attempt and mark it failed while its
+		// agent is working.
 		failCtx, cancelFail := cleanupContext(ctx)
 		defer cancelFail()
-		if err := h.runRepo.Fail(failCtx, runID, "failed to start resume: "+runErr.Error()); err != nil {
+		if applied, err := h.runRepo.FailAttempt(failCtx, runID, attempt, "failed to start resume: "+runErr.Error()); err != nil {
 			apilog.WithError(err).Error("failed to mark run as failed after a resume spawn failure")
+		} else if !applied {
+			apilog.WithFields(apilog.Fields{
+				"run_id": runID, "attempt": attempt,
+			}).Info("a resume spawn failed for an attempt that is no longer the live one; leaving the run to whichever attempt owns it")
 		}
 		writeError(w, http.StatusInternalServerError, "failed to start agent: "+runErr.Error())
 		return

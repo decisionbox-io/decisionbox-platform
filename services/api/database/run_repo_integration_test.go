@@ -10,6 +10,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"strings"
 )
 
 // dropRuns wipes the discovery_runs collection so each test starts on a
@@ -1299,5 +1300,78 @@ func TestInteg_RunRepo_FailAttempt_LeavesARecordThatSurvivesTheResume(t *testing
 	}
 	if resumed.Lifecycle[1].Status != "running" || resumed.Lifecycle[1].Attempt != 2 {
 		t.Errorf("lifecycle[1] = %+v, want the attempt-2 resume", resumed.Lifecycle[1])
+	}
+}
+
+// TestInteg_RunRepo_LatestByProjects_ResumedPassUsesAnIndex pins the property
+// LatestByProjects is built on, for the pass this feature added.
+//
+// Its doc comment is explicit that each $group-$first streams off an index
+// rather than doing a blocking in-memory sort, because a project with a long
+// run history would otherwise risk the aggregation sort-memory limit — and
+// that this is why the active pass is kept separate instead of folded into the
+// sort key. The resumed pass sorts on last_resumed_at, which appeared in no
+// index at all, so it fetched every historical run of every project on the
+// list on every project-list request. With zero resumed runs among them.
+//
+// Measured rather than asserted structurally, the same way the neighbouring
+// partial index was justified: a COLLSCAN here is invisible until a customer
+// has a thousand runs.
+func TestInteg_RunRepo_LatestByProjects_ResumedPassUsesAnIndex(t *testing.T) {
+	ctx := context.Background()
+	// DROP THE COLLECTION, not just its documents: dropRuns deletes rows and
+	// leaves the indexes, so an index built by an earlier run of this test
+	// would still be there and the assertion below would hold whether or not
+	// init.go still declares it. Dropping makes InitDatabase the only thing
+	// that can create it.
+	if err := testDB.Collection("discovery_runs").Drop(ctx); err != nil {
+		t.Fatalf("drop the runs collection: %v", err)
+	}
+	if err := InitDatabase(ctx, testDB); err != nil {
+		t.Fatalf("InitDatabase (creates the indexes): %v", err)
+	}
+
+	// A run history, none of it resumed — the common shape, and the one that
+	// made the missing index most expensive.
+	const runs = 200
+	base := time.Now().Add(-time.Duration(runs) * time.Minute)
+	for i := 0; i < runs; i++ {
+		seedRunForProject(t, ctx, "proj-idx", "completed", base.Add(time.Duration(i)*time.Minute), nil)
+	}
+
+	explained := testDB.Collection("discovery_runs").Database().RunCommand(ctx, bson.D{
+		{Key: "explain", Value: bson.D{
+			{Key: "aggregate", Value: "discovery_runs"},
+			{Key: "pipeline", Value: []bson.M{
+				{"$match": bson.M{
+					"project_id":      bson.M{"$in": []string{"proj-idx"}},
+					"last_resumed_at": bson.M{"$ne": nil},
+					"discarded_at":    nil,
+				}},
+				{"$sort": bson.D{{Key: "project_id", Value: 1}, {Key: "last_resumed_at", Value: -1}}},
+				{"$group": bson.M{"_id": "$project_id", "doc": bson.M{"$first": "$$ROOT"}}},
+			}},
+			{Key: "cursor", Value: bson.M{}},
+		}},
+		{Key: "verbosity", Value: "executionStats"},
+	})
+	var plan bson.M
+	if err := explained.Decode(&plan); err != nil {
+		t.Fatalf("explain the resumed pass: %v", err)
+	}
+
+	raw, err := bson.MarshalExtJSON(plan, false, false)
+	if err != nil {
+		t.Fatalf("render the plan: %v", err)
+	}
+	rendered := string(raw)
+
+	// The claim is about work done, not plan shape: a COLLSCAN of this
+	// history examines every run, an indexed plan examines almost none.
+	if strings.Contains(rendered, "COLLSCAN") {
+		t.Errorf("the resumed pass is a collection scan over %d runs; every project-list request pays the whole run history.\nplan: %s", runs, rendered)
+	}
+	if !strings.Contains(rendered, "project_resumed_not_discarded") {
+		t.Errorf("the resumed pass did not use project_resumed_not_discarded.\nplan: %s", rendered)
 	}
 }

@@ -1190,11 +1190,16 @@ func TestReflectionMarker_TakenDownWhenTheAttemptIsSuperseded(t *testing.T) {
 		t.Error("the terminalSuperseded branch does not take the reflection marker down; agentserver exits on ErrAttemptSuperseded without running the phase whose deferred clear would, so a stale attempt leaves the project marked as updating for ever")
 	}
 
-	// terminalUnknown must NOT clear it: that branch keeps its result and
-	// returns an error the entrypoint reports as a failure, and the marker
-	// belongs to whichever attempt owns the run.
-	if strings.Contains(text[unknown:], "o.endReflectionMarker(persistCtx)") {
-		t.Error("the terminalUnknown branch clears the reflection marker; that attempt was not shown to have lost the run, so it must not take down an entry the owner may be holding")
+	// And so must terminalUnknown, which I first had backwards. Both of these
+	// branches return an ERROR, and agentserver skips RunPhaseReflection on
+	// every error — so neither of them is ever going to run the hop the marker
+	// is claiming is in flight. The marker is not ownership evidence the way
+	// discarded_at is; it is a liveness claim, and the attempt that raised it
+	// is the one abandoning it. Left up it blocks ledger backfill for a whole
+	// ReflectionMarkerTTL, four hours by default.
+	unknownBranch := text[unknown:]
+	if !strings.Contains(unknownBranch, "o.endReflectionMarker(persistCtx)") {
+		t.Error("the terminalUnknown branch does not take the reflection marker down; it returns an error, so agentserver never runs the reflection phase whose deferred clear would, and ledger backfill skips the project until the marker expires")
 	}
 }
 

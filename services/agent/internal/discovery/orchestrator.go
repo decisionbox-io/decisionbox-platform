@@ -1821,6 +1821,28 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// the commoner of the two causes that land on this branch.
 		o.recordProjectLearning(persistCtx, projectCtx, allInsights)
 
+		// The pending ledger marker comes down here too, for the reason it
+		// does on the superseded branch: both of these returns are errors, and
+		// agentserver skips RunPhaseReflection — whose deferred clear is what
+		// normally takes the entry down — on every error. Left up, it blocks
+		// ledger backfill on a project nothing is writing for a whole
+		// ReflectionMarkerTTL, four hours by default.
+		//
+		// Not withheld on the grounds that ownership is undetermined here.
+		// The marker is not evidence of ownership the way discarded_at is: it
+		// is a liveness claim about a reflection hop, this attempt is the one
+		// that raised it, and this attempt is definitely not going to run it.
+		// In the commonest case reaching this branch — the write declined
+		// because the startup sweep had already marked the run failed — the
+		// ownership read positively said the run is still THIS attempt's, so
+		// there is no other holder to consider at all. Where ownership really
+		// is unknown, clearing it can take down an entry the owner has just
+		// raised, which is transient and self-correcting because the owner
+		// holds its own deferred clear; leaving a stale one is neither.
+		if o.reflectionPending {
+			o.endReflectionMarker(persistCtx)
+		}
+
 		if err == nil {
 			return result, fmt.Errorf("run %s: discovery completed but its terminal status write did not land", o.runID)
 		}
