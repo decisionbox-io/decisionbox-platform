@@ -769,6 +769,21 @@ func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "project not found")
 		return
 	}
+	// Authorise against the run's PROJECT, the same way DiscardRun does and
+	// for a sharper reason: this route is outside ProjectACLMiddleware (it is
+	// keyed by run id, not project id), and the readiness gate below says
+	// nothing about who is asking. A resume launches an agent that runs the
+	// project's queries with the project's warehouse and LLM credentials, so
+	// without this a member the project excludes through AllowedRoles can
+	// spend and read on a project it cannot open.
+	//
+	// Safe where auth is disabled: NoAuthProvider injects an admin principal,
+	// and CanAccessProject admits admin outright.
+	if principal, ok := auth.FromContext(ctx); !ok || !auth.CanAccessProject(principal, p.OrgID, p.AllowedRoles) {
+		writeError(w, http.StatusForbidden, "you do not have access to this run's project")
+		return
+	}
+
 	// The same preconditions a fresh run must clear. A resume re-enters
 	// exploration, so it needs them all — notably a ready schema index.
 	if gateErr := gateProjectForRun(p); gateErr != nil {

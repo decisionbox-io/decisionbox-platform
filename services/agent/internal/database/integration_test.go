@@ -304,3 +304,98 @@ func TestDebugLogRepository_EnsureIndexes(t *testing.T) {
 		t.Fatalf("EnsureIndexes error: %v", err)
 	}
 }
+
+// TestDiscoveryRepository_ListByRun_CarriesTheAttempt pins the field that
+// bounds retirement, against real Mongo because what can go wrong here is
+// storage behaviour a fake cannot reproduce.
+//
+// The case that matters is the document written BEFORE this field existed: it
+// has no `attempt` key at all, decodes to 0, and must read back as 1. Without
+// that normalisation every pre-upgrade result looks like attempt 0, which is
+// lower than everything, so a resumed run would happily retire results it has
+// no claim on — and the strict less-than bound would protect nothing on
+// exactly the documents least able to defend themselves.
+//
+// (`omitempty` does NOT make attempt 1 absent — it omits the zero value, and
+// 1 is not zero. A freshly written first attempt stores `attempt: 1`. The
+// legacy document below is inserted raw for that reason.)
+func TestDiscoveryRepository_ListByRun_CarriesTheAttempt(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	repo := NewDiscoveryRepository(db)
+	_ = repo.EnsureIndexes(ctx)
+
+	// Attempt 1, written the way the orchestrator writes it: omitempty means
+	// no `attempt` key reaches the document.
+	first := &models.DiscoveryResult{
+		ProjectID: "proj-1", RunID: "run-1", Attempt: 1,
+		DiscoveryDate: time.Now().Add(-time.Minute),
+	}
+	if err := repo.Save(ctx, first); err != nil {
+		t.Fatalf("save attempt 1: %v", err)
+	}
+	// The resumed attempt.
+	second := &models.DiscoveryResult{
+		ProjectID: "proj-1", RunID: "run-1", Attempt: 2,
+		DiscoveryDate: time.Now(),
+	}
+	if err := repo.Save(ctx, second); err != nil {
+		t.Fatalf("save attempt 2: %v", err)
+	}
+	// A result from another run must not appear at all.
+	other := &models.DiscoveryResult{
+		ProjectID: "proj-1", RunID: "run-2", Attempt: 1,
+		DiscoveryDate: time.Now(),
+	}
+	if err := repo.Save(ctx, other); err != nil {
+		t.Fatalf("save other run: %v", err)
+	}
+
+	// A pre-upgrade result: inserted raw, with no `attempt` key at all, which
+	// is what every document written before the field existed looks like.
+	raw := db.Collection("discoveries")
+	legacyID := primitive.NewObjectID()
+	if _, err := raw.InsertOne(ctx, bson.M{
+		"_id":            legacyID,
+		"project_id":     "proj-1",
+		"run_id":         "run-1",
+		"discovery_date": time.Now().Add(-2 * time.Minute),
+	}); err != nil {
+		t.Fatalf("insert the legacy result: %v", err)
+	}
+	var stored bson.M
+	if err := raw.FindOne(ctx, bson.M{"_id": legacyID}).Decode(&stored); err != nil {
+		t.Fatalf("read the legacy result back: %v", err)
+	}
+	if _, present := stored["attempt"]; present {
+		t.Fatalf("the legacy fixture stored an `attempt` field (%v); it is meant to have none", stored["attempt"])
+	}
+
+	refs, err := repo.ListByRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("ListByRun: %v", err)
+	}
+	if len(refs) != 3 {
+		t.Fatalf("got %d refs for run-1, want 3: %+v", len(refs), refs)
+	}
+
+	// Newest first, as the sort promises.
+	got := map[string]int{}
+	for _, r := range refs {
+		got[r.ID] = r.Attempt
+	}
+	if got[second.ID] != 2 {
+		t.Errorf("attempt 2's result came back as attempt %d", got[second.ID])
+	}
+	if got[first.ID] != 1 {
+		t.Errorf("attempt 1's result came back as attempt %d, want 1", got[first.ID])
+	}
+	if got[legacyID.Hex()] != 1 {
+		t.Errorf("the pre-upgrade result came back as attempt %d, want 1 — an absent attempt must normalise, or a strict less-than bound protects nothing on legacy documents", got[legacyID.Hex()])
+	}
+	if _, leaked := got[other.ID]; leaked {
+		t.Error("a result from another run came back; retirement would delete it")
+	}
+}
