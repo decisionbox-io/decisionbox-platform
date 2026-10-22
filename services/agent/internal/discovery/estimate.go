@@ -289,8 +289,14 @@ func estimateRunTokens(in runTokenInputs) runTokenEstimate {
 }
 
 // modeTokens splits a verifier/refuter mode's per-document token cap into
-// input and output: the cap bounds input + output together, of which the
-// verdict reply is at most MaxOutputTokens.
+// input and output. The cap bounds input + output together across all of a
+// document's rounds, so the total is never more than TokenCap whatever the
+// round count; within it, each round re-sends the bundle and history and
+// replies with a short action, so input dominates. One reply allowance
+// (MaxOutputTokens) as the output share puts output at roughly 13–15% of
+// the cap with the default settings, which is in line with measured runs.
+// Pricing every round's maximum output instead would count the same capped
+// budget twice.
 func modeTokens(mc verifier.ModeConfig) (in, out int) {
 	out = mc.MaxOutputTokens
 	if out > mc.TokenCap {

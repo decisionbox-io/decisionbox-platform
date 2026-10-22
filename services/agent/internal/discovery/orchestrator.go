@@ -851,9 +851,6 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{FILTER_RULE}}", o.buildFilterRule())
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{ANALYSIS_AREAS}}", areasDesc)
 	explorationPrompt = substituteDialectTokens(explorationPrompt, o.warehouse, refDataset)
-	// Packs are stored per project; ones written before the action key
-	// became "rationale" still teach "thinking", which some models refuse.
-	explorationPrompt = ai.NormalizeLegacyActionKey(explorationPrompt)
 
 	// Multi-warehouse: append the datasource routing contract + each
 	// datasource's routing card and its own domain-pack focus areas, so the
@@ -871,6 +868,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		explorationPrompt += buildDatasourcesPromptSection(dc, guidance)
 		o.logCorrelationContract(dc, guidance)
 	}
+
+	// Everything above is ours (pack + engine text); normalise it before
+	// project knowledge, which is the customer's own content, is appended.
+	// Packs are stored per project, and ones written before the action key
+	// became "rationale" still teach "thinking", which some models refuse.
+	explorationPrompt = ai.NormalizeLegacyActionKey(explorationPrompt)
 
 	// Inject project knowledge sources (no-op if no enterprise plugin loaded
 	// or no sources indexed). Query phrased to surface broad domain context

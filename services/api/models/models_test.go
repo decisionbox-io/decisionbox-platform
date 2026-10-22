@@ -2,6 +2,7 @@ package models
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -823,5 +824,23 @@ func TestProject_OmitEmptyState(t *testing.T) {
 	}
 	if _, ok := raw["state"]; ok {
 		t.Error("empty state should be omitted from JSON")
+	}
+}
+
+// TestCostEstimate_PreservesCachedInputTokens: the estimate handler decodes
+// the agent's JSON into this model and re-encodes it for the response, so a
+// field missing here is silently dropped before it reaches the dashboard.
+func TestCostEstimate_PreservesCachedInputTokens(t *testing.T) {
+	agentJSON := []byte(`{"llm":{"provider":"bedrock","model":"m","estimated_input_tokens":1000,"estimated_cached_input_tokens":800,"estimated_output_tokens":10,"cost_usd":1}}`)
+	var decoded CostEstimate
+	if err := json.Unmarshal(agentJSON, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	out, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"estimated_cached_input_tokens":800`) {
+		t.Errorf("cached input tokens lost in the API model: %s", out)
 	}
 }
