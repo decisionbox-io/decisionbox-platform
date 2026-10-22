@@ -41,8 +41,9 @@ const (
 	maxSchemaTitleRunes = 400
 
 	// A description: the long prose field, the one that ran away. Observed
-	// maximum 1,191.
-	maxSchemaDescriptionRunes = 5000
+	// maximum 1,191, and held under grammarRepetitionCeiling, which is why
+	// this is the one bound with less than twice the headover the evidence.
+	maxSchemaDescriptionRunes = 2000
 
 	// A sentence or two of supporting prose -- a rationale, a reason, a
 	// learning, an impact's reasoning. Observed maximum 188.
@@ -65,6 +66,29 @@ const (
 	// the long case.
 	maxSchemaIdentifierRunes = 256
 )
+
+// grammarRepetitionCeiling is the largest bound that survives translation into
+// a llama.cpp grammar, and therefore the largest bound that does anything on an
+// Ollama-backed deployment.
+//
+// A maxLength becomes a repetition there: json-schema-to-grammar.cpp emits
+// `build_repetition(char, minLength, maxLength)`, i.e. `char{0,N}`. llama.cpp's
+// grammar parser then applies MAX_REPETITION_THRESHOLD = 2000 to it, and the
+// behaviour for an upper bound is not an error:
+//
+//	if (max_times != UINT64_MAX && max_times > MAX_REPETITION_THRESHOLD) {
+//	    max_times = UINT64_MAX;
+//	}
+//
+// -- the bound is clamped back to unbounded, before handle_repetitions is
+// called, so nothing throws and nothing warns. A bound above this ceiling is
+// therefore not a stricter protection on that backend; it is no protection at
+// all, silently. (The throw in that file applies to a *minimum* repetition
+// above the threshold, which no bound here produces.)
+//
+// Checked by TestSchemaBoundsSurviveGrammarTranslation, because a bound raised
+// later would otherwise stop applying on Ollama without a single symptom.
+const grammarRepetitionCeiling = 2000
 
 // boundedString returns a JSON-Schema string field with a length ceiling.
 //

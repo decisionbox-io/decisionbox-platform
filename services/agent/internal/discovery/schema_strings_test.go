@@ -66,20 +66,39 @@ func TestSchemaBoundsClearWhatModelsActuallyWrite(t *testing.T) {
 		what  string
 		max   int
 		bound int
+		// headroom is the multiple of the observed maximum this bound must
+		// clear. Two, except where something other than the evidence decides
+		// the bound -- see description.
+		headroom int
 	}{
-		{"recommendation title (109)", 109, maxSchemaTitleRunes},
-		{"recommendation description (1191)", 1191, maxSchemaDescriptionRunes},
-		{"expected_impact.reasoning (188)", 188, maxSchemaSentenceRunes},
-		{"an action string (178)", 178, maxSchemaListItemRunes},
-		{"target_segment (194)", 194, maxSchemaSegmentRunes},
-		{"expected_impact.metric (63)", 63, maxSchemaLabelRunes},
+		{"recommendation title (109)", 109, maxSchemaTitleRunes, 2},
+		// The one bound squeezed from both sides: the evidence puts a floor
+		// under it at 1,191 and grammarRepetitionCeiling puts a hard lid on it
+		// at 2,000, because a larger bound is silently ignored on an
+		// Ollama-backed runner. 1.5x is what is left between them.
+		//
+		// This is the field to watch. If a model ever legitimately writes a
+		// description past 2,000 characters, raising the bound will not help --
+		// above the ceiling it stops applying there at all -- so the answer
+		// would be to ask the prompt for less prose, or to accept the clip on
+		// that backend deliberately.
+		{"recommendation description (1191)", 1191, maxSchemaDescriptionRunes, 1},
+		{"expected_impact.reasoning (188)", 188, maxSchemaSentenceRunes, 2},
+		{"an action string (178)", 178, maxSchemaListItemRunes, 2},
+		{"target_segment (194)", 194, maxSchemaSegmentRunes, 2},
+		{"expected_impact.metric (63)", 63, maxSchemaLabelRunes, 2},
 	}
-	const wantHeadroom = 2 // never less than twice the largest thing ever seen
 	for _, o := range observed {
-		if o.bound < o.max*wantHeadroom {
-			t.Errorf("%s: bound %d gives less than %dx headroom over the observed maximum %d; "+
+		// headroom 1 means "the evidence is not what decides this bound"; it
+		// still has to clear the evidence, with half again on top.
+		want := o.max * o.headroom
+		if o.headroom == 1 {
+			want = o.max + o.max/2
+		}
+		if o.bound < want {
+			t.Errorf("%s: bound %d is under the %d this field needs over the observed maximum %d; "+
 				"a bound that can bind on a real answer is a bug in the bound",
-				o.what, o.bound, wantHeadroom, o.max)
+				o.what, o.bound, want, o.max)
 		}
 	}
 }
@@ -165,4 +184,71 @@ func TestUnboundedSchemasAreStillTheKnownOnes(t *testing.T) {
 				"with boundedString, or record why not", name, n)
 		}
 	}
+}
+
+// TestSchemaBoundsSurviveGrammarTranslation keeps every bound inside the
+// largest one a llama.cpp grammar will honour.
+//
+// This is the failure mode a bound is least likely to be noticed in. On an
+// Ollama-backed deployment a maxLength becomes `char{0,N}`, and llama.cpp
+// clamps an upper repetition above MAX_REPETITION_THRESHOLD = 2000 straight
+// back to unbounded -- before the rule is built, without an error and without a
+// warning. A bound above the ceiling is not a stricter protection there; it is
+// no protection, and the only way to find out is to watch a model run away
+// again on a backend where the fix was supposed to hold.
+func TestSchemaBoundsSurviveGrammarTranslation(t *testing.T) {
+	bounds := map[string]int{
+		"maxSchemaTitleRunes":       maxSchemaTitleRunes,
+		"maxSchemaDescriptionRunes": maxSchemaDescriptionRunes,
+		"maxSchemaSentenceRunes":    maxSchemaSentenceRunes,
+		"maxSchemaListItemRunes":    maxSchemaListItemRunes,
+		"maxSchemaSegmentRunes":     maxSchemaSegmentRunes,
+		"maxSchemaLabelRunes":       maxSchemaLabelRunes,
+		"maxSchemaIdentifierRunes":  maxSchemaIdentifierRunes,
+	}
+	for name, bound := range bounds {
+		if bound > grammarRepetitionCeiling {
+			t.Errorf("%s = %d exceeds grammarRepetitionCeiling (%d): on a llama.cpp-backed runner "+
+				"this is silently clamped back to unbounded, so the bound does nothing there",
+				name, bound, grammarRepetitionCeiling)
+		}
+	}
+
+	// And the schema the agent actually sends, in case a field is written with
+	// a literal rather than one of the named bounds.
+	for _, path := range findOversizedBounds(recommendationResponseSchema(), "recommendation") {
+		t.Errorf("recommendation: %s", path)
+	}
+}
+
+// findOversizedBounds walks a schema and reports every maxLength above the
+// ceiling a llama.cpp grammar honours.
+func findOversizedBounds(node interface{}, path string) []string {
+	m, ok := node.(map[string]interface{})
+	if !ok {
+		var out []string
+		if arr, isArr := node.([]interface{}); isArr {
+			for i, v := range arr {
+				out = append(out, findOversizedBounds(v, fmt.Sprintf("%s[%d]", path, i))...)
+			}
+		}
+		return out
+	}
+
+	var out []string
+	if n, present := m["maxLength"].(int); present && n > grammarRepetitionCeiling {
+		out = append(out, fmt.Sprintf("%s has maxLength %d, above the %d a llama.cpp grammar honours",
+			path, n, grammarRepetitionCeiling))
+	}
+	if props, isMap := m["properties"].(map[string]interface{}); isMap {
+		for k, v := range props {
+			out = append(out, findOversizedBounds(v, path+"."+k)...)
+		}
+	}
+	for _, key := range []string{"items", "additionalProperties", "not", "anyOf", "oneOf", "allOf"} {
+		if v, present := m[key]; present {
+			out = append(out, findOversizedBounds(v, path+"."+key)...)
+		}
+	}
+	return out
 }
