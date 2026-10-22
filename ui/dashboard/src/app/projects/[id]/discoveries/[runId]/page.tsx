@@ -22,6 +22,7 @@ import UnreadDot from '@/components/common/UnreadDot';
 import QuestionsDrawer from '@/components/common/QuestionsDrawer';
 import { useReadSet } from '@/lib/readState';
 import { api, ApiError, DiscoveryResult, Feedback, Insight, Recommendation, ExplorationStep, AnalysisLogStep, ValidationLogEntry, DiscoveryQuestion } from '@/lib/api';
+import { recommendationEmptyReason } from '@/lib/recommendationEmptyReason';
 
 const severityOrder: Record<string, number> = {
   critical: 0, high: 1, medium: 2, low: 3,
@@ -164,23 +165,7 @@ export default function DiscoveryDetailPage() {
 
   // Reason shown when the recommendations section is empty, so it is never
   // silent (issue #342). Derived from the recommendation-phase log status.
-  const recEmptyReason = (() => {
-    if (recLog?.status === 'recommendation_parse_error') {
-      return 'The recommendation model returned a response that could not be parsed, so none were saved. This has been logged for investigation.';
-    }
-    if (recLog?.status === 'skipped_no_eligible_insights') {
-      return 'No insights passed validation, so no recommendations were generated.';
-    }
-    if ((recLog?.recommendations_dropped_parse ?? 0) > 0) {
-      return 'Some recommendations could not be parsed and were dropped. See the recommendation log for details.';
-    }
-    if (recLog?.error) {
-      // Generation failed (e.g. LLM timeout / rate limit) before parsing —
-      // don't present it as a valid empty result.
-      return 'Recommendation generation did not complete (see the recommendation log). This has been logged for investigation.';
-    }
-    return 'No actionable recommendations for the insights found.';
-  })();
+  const recEmptyReason = recommendationEmptyReason(recLog);
 
   return (
     <Shell breadcrumb={breadcrumb}>
