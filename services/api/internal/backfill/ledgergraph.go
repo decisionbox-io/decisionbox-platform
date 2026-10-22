@@ -59,14 +59,6 @@ const (
 	// documents, so a project mid-run is left alone rather than raced.
 	runStatusPending = "pending"
 	runStatusRunning = "running"
-	// reflectionStaleAfter is how long a reflection marker is believed. The
-	// phase is bounded by DISCOVERY_REFLECTION_TIMEOUT (three hours by
-	// default) and an agent killed mid-phase never clears its marker — so
-	// without a ceiling one crash would block the backfill on that project
-	// forever. It has to stay strictly above the phase's own default budget:
-	// any shorter and the backfill calls a legitimately in-flight reflection
-	// stale and races the writes it was told to leave alone.
-	reflectionStaleAfter = 4 * time.Hour
 )
 
 // ledgerGraphCounts is what the run reports. The unlinked counts are the point:
@@ -699,8 +691,9 @@ var errProjectBecameBusy = errors.New("a reflection started while this project w
 // BEFORE that phase runs — so a project whose every run reads as finished can
 // still be mid-reflection, which is exactly when a finding document is being
 // replaced. The phase marks itself for the duration, and that marker is the
-// second question. A marker older than reflectionStaleAfter is disbelieved:
-// the phase is bounded, and an agent killed mid-phase never clears its own.
+// second question. A marker older than commonmodels.ReflectionMarkerTTL is
+// disbelieved: the phase is bounded, and an agent killed mid-phase never clears
+// its own.
 func runInFlight(ctx context.Context, client *gomongo.Client, projectID string) (bool, error) {
 	n, err := client.Collection(gomongo.CollectionDiscoveryRuns).CountDocuments(ctx,
 		bson.M{
@@ -716,10 +709,7 @@ func runInFlight(ctx context.Context, client *gomongo.Client, projectID string) 
 	}
 
 	var ledger struct {
-		Reflecting []struct {
-			RunID string    `bson:"run_id"`
-			Since time.Time `bson:"since"`
-		} `bson:"reflecting"`
+		Reflecting []commonmodels.ReflectionMarker `bson:"reflecting"`
 	}
 	err = client.Collection(gomongo.CollectionDiscoveryLedger).
 		FindOne(ctx, bson.M{"project_id": projectID},
@@ -731,8 +721,9 @@ func runInFlight(ctx context.Context, client *gomongo.Client, projectID string) 
 	if err != nil {
 		return false, fmt.Errorf("check for a reflection in flight: %w", err)
 	}
+	now := time.Now()
 	for _, in := range ledger.Reflecting {
-		if !in.Since.IsZero() && time.Since(in.Since) < reflectionStaleAfter {
+		if in.Fresh(now) {
 			return true, nil
 		}
 	}

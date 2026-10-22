@@ -3,6 +3,8 @@ package models
 import (
 	"math"
 	"time"
+
+	"github.com/decisionbox-io/decisionbox/libs/go-common/config"
 )
 
 // Discovery Ledger — the persistent, per-project investigation state that makes
@@ -384,3 +386,48 @@ func ValidLedgerFindingStatus(s string) bool {
 	}
 	return false
 }
+
+// The reflection phase's wall-clock budget. Shared, because three places have
+// to agree on it: the agent that spends it, and the two readers that decide how
+// long to believe a `reflecting` entry an agent may have died holding — the
+// investigation-graph backfill, and the ledger view that tells a user the
+// ledger is still being updated. Two modules agreeing on a number by copying it
+// is how they come to disagree on it.
+const (
+	ReflectionTimeoutEnv     = "DISCOVERY_REFLECTION_TIMEOUT"
+	DefaultReflectionTimeout = 3 * time.Hour
+)
+
+// ReflectionTimeout is the budget this deployment runs the reflection phase
+// with. The API process reads the same variable it forwards to the agent, so
+// both sides of a deployment see one number.
+func ReflectionTimeout() time.Duration {
+	return config.GetEnvAsDuration(ReflectionTimeoutEnv, DefaultReflectionTimeout)
+}
+
+// ReflectionMarkerTTL is how long a `reflecting` entry is believed: the budget,
+// plus an hour of slack. The agent puts the entry up before a run is stamped
+// completed and refreshes it in place when the phase starts writing, so the
+// budget is counted from the phase's start; the slack covers the hop before it
+// (the clarifying questions, a few minutes) and an agent's clock disagreeing
+// with the reader's. An agent killed mid-phase never takes its entry down, so
+// without a ceiling one crash would announce an update in progress for ever.
+func ReflectionMarkerTTL() time.Duration {
+	return ReflectionTimeout() + time.Hour
+}
+
+// ReflectionMarker is one entry of a ledger's in-flight list, stored under
+// mongodb.ReflectingKey: a run whose findings are still being folded into the
+// ledger. Deliberately not a field of DiscoveryLedger — the agent saves that
+// struct with a whole-document $set, which would write a stale copy of the list
+// back over entries added since it was read.
+type ReflectionMarker struct {
+	RunID string    `bson:"run_id" json:"run_id"`
+	Since time.Time `bson:"since" json:"since"`
+}
+
+// Fresh reports whether the entry is still to be believed at now.
+func (m ReflectionMarker) Fresh(now time.Time) bool {
+	return !m.Since.IsZero() && now.Sub(m.Since) < ReflectionMarkerTTL()
+}
+

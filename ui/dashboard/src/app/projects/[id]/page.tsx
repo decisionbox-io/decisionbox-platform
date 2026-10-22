@@ -361,7 +361,12 @@ export default function ProjectPage() {
       {/* What's next — a compact preview of the open ledger threads +
           pending playbook changes carried into the next run. Renders
           nothing when the ledger is empty or the feature is off. */}
-      <UpcomingInvestigation projectId={id} />
+      <UpcomingInvestigation
+        projectId={id}
+        // A run that has just finished is about to change the ledger, and the
+        // card may have loaded while it was running: look again then.
+        refreshKey={run && run.status === 'completed' ? run.id : ''}
+      />
 
       {/* Cost Estimation */}
       {(estimating || estimate) && (

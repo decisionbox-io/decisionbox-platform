@@ -222,6 +222,9 @@ type Orchestrator struct {
 	// default-on). Layer B of the gate; the deployment flag is Layer A.
 	clarifyingQuestionsEnabled bool
 
+	// reflectionPending is set once markReflectionPending has put this run's
+	// in-flight entry up, so RunPhaseReflection knows it owns taking it down.
+	reflectionPending bool
 	// reflectionEnabled is the resolved per-project toggle for the end-of-run
 	// reflection / Discovery Ledger phase (from DiscoveryOptions.ReflectionEnabled,
 	// default-on). Layer B of the gate; DISCOVERY_REFLECTION_ENABLED is Layer A.
@@ -1473,6 +1476,13 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 		// Run embedding + indexing step to store discovery results for future retrieval/search
 		o.runPhaseEmbedIndex(persistCtx, result)
+	}
+
+	// The ledger update this run is about to owe goes up BEFORE the run reads
+	// as completed, so nothing that sees the completed run sees a ledger that
+	// claims to be current. See markReflectionPending.
+	if computeErr == nil {
+		o.markReflectionPending(persistCtx)
 	}
 
 	// Final step: update run status (success or failure) based on execution result

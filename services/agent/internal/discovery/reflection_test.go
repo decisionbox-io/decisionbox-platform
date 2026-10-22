@@ -28,6 +28,9 @@ type fakeLedgerRepo struct {
 	reflectingRunID string
 	beganReflection int
 	endedReflection int
+	// markerEvents is every begin and end in order, so a test can prove the
+	// entry was never down in the middle of an update.
+	markerEvents []string
 }
 
 func (f *fakeLedgerRepo) Get(_ context.Context, projectID string) (*commonmodels.DiscoveryLedger, error) {
@@ -49,6 +52,12 @@ func (f *fakeLedgerRepo) Save(_ context.Context, l *commonmodels.DiscoveryLedger
 func (f *fakeLedgerRepo) BeginReflection(_ context.Context, _, runID string) error {
 	f.reflectingRunID = runID
 	f.beganReflection++
+	f.markerEvents = append(f.markerEvents, "begin")
+	return nil
+}
+func (f *fakeLedgerRepo) TouchReflection(_ context.Context, _, runID string) error {
+	f.reflectingRunID = runID
+	f.markerEvents = append(f.markerEvents, "touch")
 	return nil
 }
 func (f *fakeLedgerRepo) EndReflection(_ context.Context, _, runID string) error {
@@ -56,6 +65,7 @@ func (f *fakeLedgerRepo) EndReflection(_ context.Context, _, runID string) error
 		f.reflectingRunID = ""
 	}
 	f.endedReflection++
+	f.markerEvents = append(f.markerEvents, "end")
 	return nil
 }
 
@@ -1829,5 +1839,148 @@ func TestReflectionContext_SurvivesParentCancellation(t *testing.T) {
 
 	if err := ctx.Err(); err != nil {
 		t.Fatalf("reflection context inherited the parent's cancellation: %v", err)
+	}
+}
+
+// TestMarkReflectionPending_OnlyWhenThePhaseWillRun: the entry put up before
+// the run is stamped completed tells the ledger view to say "updating". Put up
+// for a run whose reflection is gated off, nothing would ever take it down, and
+// the label would sit there until the entry went stale hours later.
+func TestMarkReflectionPending_OnlyWhenThePhaseWillRun(t *testing.T) {
+	t.Setenv("DISCOVERY_REFLECTION_ENABLED", "true")
+	client, _ := stubClient(t, `{"coverage_summary":"x"}`, nil)
+	orch := func(lr *fakeLedgerRepo, enabled bool) *Orchestrator {
+		return &Orchestrator{
+			reflectionEnabled: enabled, projectID: "proj-1", runID: "run-1",
+			aiClient: client, ledgerRepo: lr, findingRepo: &fakeFindingRepo{},
+		}
+	}
+
+	lr := &fakeLedgerRepo{}
+	o := orch(lr, true)
+	o.markReflectionPending(context.Background())
+	if lr.reflectingRunID != "run-1" || !o.reflectionPending {
+		t.Fatalf("a run that will reflect must be marked pending: set=%q pending=%v", lr.reflectingRunID, o.reflectionPending)
+	}
+
+	off := &fakeLedgerRepo{}
+	o = orch(off, false) // per-project toggle off
+	o.markReflectionPending(context.Background())
+	if off.beganReflection != 0 || o.reflectionPending {
+		t.Errorf("toggle off must not mark anything pending: began=%d", off.beganReflection)
+	}
+
+	t.Setenv("DISCOVERY_REFLECTION_ENABLED", "false")
+	envOff := &fakeLedgerRepo{}
+	o = orch(envOff, true)
+	o.markReflectionPending(context.Background())
+	if envOff.beganReflection != 0 {
+		t.Errorf("deployment flag off must not mark anything pending: began=%d", envOff.beganReflection)
+	}
+	t.Setenv("DISCOVERY_REFLECTION_ENABLED", "true")
+
+	policy.RegisterChecker(denyChecker{policy.NewNoopChecker()})
+	t.Cleanup(func() { policy.RegisterChecker(policy.NewNoopChecker()) })
+	unlicensed := &fakeLedgerRepo{}
+	o = orch(unlicensed, true)
+	o.markReflectionPending(context.Background())
+	if unlicensed.beganReflection != 0 {
+		t.Errorf("no sources entitlement must not mark anything pending: began=%d", unlicensed.beganReflection)
+	}
+}
+
+// TestRunPhaseReflection_TakesThePendingMarkDown: whatever the phase does — run
+// to the end, or stop at a gate it passed when the run finished — the entry the
+// run put up comes down, so the ledger never claims an update nobody is making.
+func TestRunPhaseReflection_TakesThePendingMarkDown(t *testing.T) {
+	t.Setenv("DISCOVERY_REFLECTION_ENABLED", "true")
+	client, _ := stubClient(t, `{"coverage_summary":"x"}`, nil)
+	result := &models.DiscoveryResult{ID: "d1", Insights: []models.Insight{{Name: "x", AnalysisArea: "a"}}}
+
+	// The ordinary case: marked pending, then the phase runs and refreshes the
+	// same entry when it actually starts writing.
+	lr := &fakeLedgerRepo{}
+	o := &Orchestrator{
+		reflectionEnabled: true, projectID: "proj-1", runID: "run-1", datasets: []string{"ds"},
+		llmInputWindow: 200000, llmOutputCap: 4000, aiClient: client,
+		ledgerRepo: lr, findingRepo: &fakeFindingRepo{},
+	}
+	o.markReflectionPending(context.Background())
+	o.RunPhaseReflection(context.Background(), result)
+	// Up once, refreshed in place when the writing starts, down once. Never
+	// put up again: replacing it is a remove-then-add, and a reader landing
+	// between the two would see the update finished while it had not begun.
+	if got := strings.Join(lr.markerEvents, ","); got != "begin,touch,end" {
+		t.Errorf("marker events = %s, want begin,touch,end — never down mid-update", got)
+	}
+	if lr.reflectingRunID != "" {
+		t.Errorf("the marker must come down at the end, still set to %q", lr.reflectingRunID)
+	}
+
+	// The entitlement went away between the run finishing and the phase
+	// starting: the phase stops at its gate, and must still clear the entry.
+	gated := &fakeLedgerRepo{}
+	o = &Orchestrator{
+		reflectionEnabled: true, projectID: "proj-1", runID: "run-2", datasets: []string{"ds"},
+		llmInputWindow: 200000, llmOutputCap: 4000, aiClient: client,
+		ledgerRepo: gated, findingRepo: &fakeFindingRepo{},
+	}
+	o.markReflectionPending(context.Background())
+	policy.RegisterChecker(denyChecker{policy.NewNoopChecker()})
+	t.Cleanup(func() { policy.RegisterChecker(policy.NewNoopChecker()) })
+	o.RunPhaseReflection(context.Background(), result)
+	if gated.beganReflection != 1 || gated.reflectingRunID != "" {
+		t.Errorf("a phase stopped at its gate must clear the pending entry: began=%d set=%q",
+			gated.beganReflection, gated.reflectingRunID)
+	}
+
+	// And a phase that was never marked pending does not reach for an entry it
+	// does not own.
+	none := &fakeLedgerRepo{}
+	o = &Orchestrator{reflectionEnabled: false, projectID: "proj-1", runID: "run-3", ledgerRepo: none}
+	o.RunPhaseReflection(context.Background(), result)
+	if none.beganReflection != 0 || none.endedReflection != 0 {
+		t.Errorf("a phase gated off from the start touches no marker: began=%d ended=%d",
+			none.beganReflection, none.endedReflection)
+	}
+}
+
+// ctxChecker records the context the entitlement gate was asked with.
+type ctxChecker struct {
+	policy.Checker
+	sawDeadline *bool
+}
+
+func (c ctxChecker) FeatureEnabled(ctx context.Context, deploymentID, flag string) (bool, error) {
+	_, ok := ctx.Deadline()
+	*c.sawDeadline = ok
+	return c.Checker.FeatureEnabled(ctx, deploymentID, flag)
+}
+
+// TestReflectionGates_RunUnderADeadline: the entitlement check can be a call to
+// a control plane. Asked on the agent's open-ended context, one that stalls
+// would hold the agent — and the "updating" entry — past the phase's budget.
+func TestReflectionGates_RunUnderADeadline(t *testing.T) {
+	t.Setenv("DISCOVERY_REFLECTION_ENABLED", "true")
+	client, _ := stubClient(t, `{"coverage_summary":"x"}`, nil)
+	var pendingSaw, phaseSaw bool
+
+	policy.RegisterChecker(ctxChecker{Checker: policy.NewNoopChecker(), sawDeadline: &pendingSaw})
+	t.Cleanup(func() { policy.RegisterChecker(policy.NewNoopChecker()) })
+	o := &Orchestrator{
+		reflectionEnabled: true, projectID: "proj-1", runID: "run-1", datasets: []string{"ds"},
+		llmInputWindow: 200000, llmOutputCap: 4000, aiClient: client,
+		ledgerRepo: &fakeLedgerRepo{}, findingRepo: &fakeFindingRepo{},
+	}
+	o.markReflectionPending(context.Background())
+	if !pendingSaw {
+		t.Error("marking the update pending must ask the gate under a deadline")
+	}
+
+	policy.RegisterChecker(ctxChecker{Checker: policy.NewNoopChecker(), sawDeadline: &phaseSaw})
+	o.RunPhaseReflection(context.Background(), &models.DiscoveryResult{ID: "d1",
+		Insights: []models.Insight{{Name: "x", AnalysisArea: "a"}}})
+	if !phaseSaw {
+		t.Error("the phase must ask its gates under its own deadline")
 	}
 }

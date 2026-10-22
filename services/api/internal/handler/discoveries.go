@@ -473,8 +473,15 @@ func (h *DiscoveriesHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get the latest run (for live status)
-	latestRun, _ := h.runRepo.GetLatestByProject(r.Context(), projectID)
+	// Get the latest run (for live status). A failure to read it is an error,
+	// not an answer: "no run" here means the project has none, and callers act
+	// on that — a page watching a run takes it as the run having finished.
+	// Not-found comes back as nil, nil, so any error is a real one.
+	latestRun, err := h.runRepo.GetLatestByProject(r.Context(), projectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get the latest run: "+err.Error())
+		return
+	}
 
 	status := map[string]interface{}{
 		"project_id": projectID,
@@ -484,7 +491,10 @@ func (h *DiscoveriesHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 		status["run"] = latestRun
 	}
 
-	// Also include latest completed discovery stats
+	// Also include latest completed discovery stats. Display-only, so a failure
+	// to read them leaves them out rather than failing the run status with
+	// them: a caller polling for the run must not lose a good answer about it
+	// to a figure it does not act on.
 	latest, _ := h.repo.GetLatest(r.Context(), projectID)
 	if latest != nil {
 		status["last_discovery"] = map[string]interface{}{
