@@ -1,0 +1,90 @@
+package discovery
+
+// Every string the model may generate carries a maximum length.
+//
+// The schemas these bounds apply to are sent as decode-time grammars where the
+// provider supports it, and a grammar constrains *structure*. It does not
+// constrain how long a string may be: `{"type":"string"}` admits a string of
+// any length, so an unbounded field is an unbounded legal walk, and a model
+// that starts repeating inside one never has to come out.
+//
+// That is not hypothetical. On a self-hosted 27B model the recommendation
+// phase produced, three runs in a row, a response shaped like
+//
+//	{"recommendations":[{"title":"<25,000 characters>
+//
+// -- one title string, never closed, the whole output budget spent inside it,
+// 17 to 23 quote characters in 26,000. The grammar was being enforced the
+// whole time and permitted every token of it. Measured against the same model
+// with a length bound on the string fields, the identical request completed in
+// 306 output tokens with a clean stop.
+//
+// The bounds below are deliberately far above anything a working model has
+// produced on this pipeline -- measured over 91 recommendations, 407 insights
+// and 60 clarifying questions, every bound sits at three to eight times the
+// largest observed value. They exist to stop a runaway, never to shape a
+// result, and a bound that ever binds on a real answer is a bug in the bound.
+//
+// Anything added here should be measured the same way rather than guessed.
+const (
+	// A name or title: a line of prose. Observed maxima 109 (recommendation
+	// title), 126 (insight name).
+	maxSchemaTitleRunes = 400
+
+	// A description: the long prose field, the one that runs away. Observed
+	// maxima 1,191 (recommendation), 1,567 (insight).
+	maxSchemaDescriptionRunes = 5000
+
+	// A sentence or two of supporting prose -- a rationale, a reason, a
+	// learning, an impact's reasoning. Observed maximum 188.
+	maxSchemaSentenceRunes = 1500
+
+	// A short paragraph -- a coverage summary. Self-described in the schema as
+	// one paragraph.
+	maxSchemaParagraphRunes = 2500
+
+	// One item of a list the model writes: an implementation step, an
+	// indicator, an option label. Observed maximum 178 (an action).
+	maxSchemaListItemRunes = 600
+
+	// A segment definition -- measurable criteria, longer than a label.
+	// Observed maximum 194.
+	maxSchemaSegmentRunes = 800
+
+	// A short free-text label the model picks: a category, a severity, a
+	// unit, a currency symbol, a scale word, a tag. Observed maximum 63.
+	maxSchemaLabelRunes = 200
+
+	// An identifier the model copies rather than composes: a UUID, a figure
+	// id, a table name, a slug. A UUID is 36; a fully-qualified table name is
+	// the long case.
+	maxSchemaIdentifierRunes = 256
+
+	// An expression the model writes in the figure/claim grammar: a filter, a
+	// scope, a row selector, a column name.
+	maxSchemaExpressionRunes = 1000
+
+	// A question, with room for a long one. Observed maximum 305.
+	maxSchemaQuestionRunes = 1000
+
+	// An analysis-area prompt the reflection phase may propose. The longest
+	// prompt shipped in a domain pack is 6,777 characters, so this is roughly
+	// three times the real article -- generous, because clipping a proposed
+	// prompt would corrupt it rather than shorten it.
+	maxSchemaPromptRunes = 20000
+)
+
+// boundedString returns a JSON-Schema string field with a length ceiling.
+//
+// There is deliberately no unbounded variant in this package. Every schema
+// used to carry its own `str := func(desc string)` helper, and that is how four
+// schemas came to describe strings a grammar would let run forever: the
+// unbounded form was the convenient one. Requiring the bound as an argument
+// makes the omission a compile error rather than an oversight.
+func boundedString(desc string, maxRunes int) map[string]interface{} {
+	return map[string]interface{}{
+		"type":        "string",
+		"description": desc,
+		"maxLength":   maxRunes,
+	}
+}

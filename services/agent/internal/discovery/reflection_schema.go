@@ -49,19 +49,16 @@ func reflectionResponseFormat(mode agentplugin.EvolutionMode, demandPriorRejudge
 // only by a signal that keeps recurring across runs, so most runs genuinely
 // have none and demanding one every time would churn the pack.
 func reflectionResponseSchema(mode agentplugin.EvolutionMode, demandPriorRejudgement bool) map[string]interface{} {
-	str := func(desc string) map[string]interface{} {
-		return map[string]interface{}{"type": "string", "description": desc}
-	}
 	strArray := func(desc string) map[string]interface{} {
 		return map[string]interface{}{
 			"type":        "array",
 			"description": desc,
-			"items":       map[string]interface{}{"type": "string"},
+			"items":       boundedString("One entry", maxSchemaListItemRunes),
 		}
 	}
 
 	props := map[string]interface{}{
-		"coverage_summary": str("One short paragraph: which tables/areas are now well covered and what remains unexplored (the frontier)."),
+		"coverage_summary": boundedString("One short paragraph: which tables/areas are now well covered and what remains unexplored (the frontier).", maxSchemaParagraphRunes),
 		"covered_tables":   strArray("Fully-qualified tables (dataset.table) this run actually queried/covered. Copy names from the warehouse catalog verbatim."),
 		// Declared unconditionally, unlike the prompt's cube section, which
 		// renders only for a run that has one. The schema is a shape for a
@@ -72,16 +69,16 @@ func reflectionResponseSchema(mode agentplugin.EvolutionMode, demandPriorRejudge
 		// checked against the run's catalog before it is stored.
 		"covered_catalog_items": strArray("Cube metrics/dimensions this run actually queried. Copy names from the cube catalog verbatim. Empty when this project has no cube-shaped datasource."),
 		"covered_areas":         strArray("Analysis-area ids that produced findings this run."),
-		"convergence_note":      str("One line: is the investigation still finding much that is new, or converging?"),
+		"convergence_note":      boundedString("One line: is the investigation still finding much that is new, or converging?", maxSchemaSentenceRunes),
 		"prior_status_updates": map[string]interface{}{
 			"type":        "array",
 			"description": "Status re-judgements for PRIOR findings (by id). Only when this run gives grounded evidence — do NOT mark a finding resolved merely because it did not reappear.",
 			"items": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"finding_id": str("The prior finding id, copied verbatim from the PRIOR FINDINGS list"),
+					"finding_id": boundedString("The prior finding id, copied verbatim from the PRIOR FINDINGS list", maxSchemaIdentifierRunes),
 					"status":     map[string]interface{}{"type": "string", "enum": []string{"confirmed", "monitoring", "changed", "resolved", "refuted"}},
-					"reason":     str("One line: the evidence for this status"),
+					"reason":     boundedString("One line: the evidence for this status", maxSchemaSentenceRunes),
 				},
 				"required": []interface{}{"finding_id", "status"},
 			},
@@ -92,7 +89,7 @@ func reflectionResponseSchema(mode agentplugin.EvolutionMode, demandPriorRejudge
 			"items": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"task_id": str("The open task id, copied verbatim from the OPEN TASKS list"),
+					"task_id": boundedString("The open task id, copied verbatim from the OPEN TASKS list", maxSchemaIdentifierRunes),
 					"status":  map[string]interface{}{"type": "string", "enum": []string{"done", "dropped"}},
 				},
 				"required": []interface{}{"task_id", "status"},
@@ -104,8 +101,8 @@ func reflectionResponseSchema(mode agentplugin.EvolutionMode, demandPriorRejudge
 			"items": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"category":  str("Short tag: schema / domain / warehouse / data-quality"),
-					"note":      str("The durable learning, one or two sentences"),
+					"category":  boundedString("Short tag: schema / domain / warehouse / data-quality", maxSchemaLabelRunes),
+					"note":      boundedString("The durable learning, one or two sentences", maxSchemaSentenceRunes),
 					"relevance": map[string]interface{}{"type": "number", "description": "0..1 importance"},
 				},
 				"required": []interface{}{"note"},
@@ -117,12 +114,12 @@ func reflectionResponseSchema(mode agentplugin.EvolutionMode, demandPriorRejudge
 			"items": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"title":       str("A short, plain-language title a business user would understand (max ~8 words; no table/column names or SQL jargon)"),
-					"text":        str("The detailed, technical description of the task as an actionable next step (may reference tables, columns, metrics, the specific hypothesis)"),
+					"title":       boundedString("A short, plain-language title a business user would understand (max ~8 words; no table/column names or SQL jargon)", maxSchemaTitleRunes),
+					"text":        boundedString("The detailed, technical description of the task as an actionable next step (may reference tables, columns, metrics, the specific hypothesis)", maxSchemaDescriptionRunes),
 					"kind":        map[string]interface{}{"type": "string", "enum": []string{"next_task", "hypothesis"}},
 					"target_type": map[string]interface{}{"type": "string", "enum": []string{"insight", "recommendation", "table", "area"}},
-					"target_id":   str("Optional: the id/name this task is about"),
-					"supersedes":  str("Optional: the id of an OPEN task (from the OPEN TASKS list) this thread continues — set it when this follow-up grew out of a task you are marking done"),
+					"target_id":   boundedString("Optional: the id/name this task is about", maxSchemaIdentifierRunes),
+					"supersedes":  boundedString("Optional: the id of an OPEN task (from the OPEN TASKS list) this thread continues — set it when this follow-up grew out of a task you are marking done", maxSchemaIdentifierRunes),
 				},
 				"required": []interface{}{"title", "text"},
 			},
@@ -134,11 +131,11 @@ func reflectionResponseSchema(mode agentplugin.EvolutionMode, demandPriorRejudge
 				"type": "object",
 				"properties": map[string]interface{}{
 					"action":    map[string]interface{}{"type": "string", "enum": []string{"add_area", "edit_area", "disable_area", "enable_area"}},
-					"area_id":   str("The analysis-area id (existing for edit/disable/enable; a new slug for add)"),
-					"area_name": str("Human-readable area name (for add/edit)"),
-					"prompt":    str("The area's analysis prompt (for add/edit)"),
-					"keywords":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Area keywords (for add/edit)"},
-					"rationale": str("Why this change — grounded in the findings above (required)"),
+					"area_id":   boundedString("The analysis-area id (existing for edit/disable/enable; a new slug for add)", maxSchemaIdentifierRunes),
+					"area_name": boundedString("Human-readable area name (for add/edit)", maxSchemaTitleRunes),
+					"prompt":    boundedString("The area's analysis prompt (for add/edit)", maxSchemaPromptRunes),
+					"keywords":  map[string]interface{}{"type": "array", "items": boundedString("One keyword", maxSchemaLabelRunes), "description": "Area keywords (for add/edit)"},
+					"rationale": boundedString("Why this change — grounded in the findings above (required)", maxSchemaSentenceRunes),
 				},
 				"required": []interface{}{"action", "area_id", "rationale"},
 			},
