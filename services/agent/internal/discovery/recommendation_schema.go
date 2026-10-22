@@ -137,6 +137,22 @@ func recommendationResponseSchema() map[string]interface{} {
 			"recommendations": map[string]interface{}{
 				"type":        "array",
 				"description": "The generated recommendations",
+				// At least one (#437). A small model decoding against a schema
+				// returns the shortest answer the schema accepts, and with an
+				// unbounded minimum that is `{"recommendations": []}` -- observed
+				// at eleven output tokens on a call that otherwise succeeded.
+				//
+				// Safe because this schema is only ever sent when at least one
+				// insight is eligible: the phase above skips to
+				// skipped_no_eligible_insights when none are, so "nothing worth
+				// recommending" is answered before the grammar is involved and a
+				// minimum here cannot force an invention. Whenever the model is
+				// called there is something to ground a recommendation in.
+				//
+				// With the per-item required list below, the cheapest valid answer
+				// is now one fully-formed recommendation rather than an empty array
+				// or a title with nothing after it.
+				"minItems": 1,
 				"items": map[string]interface{}{
 					"type":       "object",
 					"properties": recProps,

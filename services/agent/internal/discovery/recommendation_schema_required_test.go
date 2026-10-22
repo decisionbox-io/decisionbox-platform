@@ -104,36 +104,23 @@ func TestEveryRequiredFieldIsADeclaredProperty(t *testing.T) {
 // demanding a minimum on one would make omission the cheaper path.
 func TestRequiredFieldsCannotBeSatisfiedEmpty(t *testing.T) {
 	for _, problem := range findEmptySatisfiableRequired(recommendationResponseSchema(), "recommendation") {
-		if _, allowed := emptyByDesign[problem.field]; allowed {
-			continue
-		}
 		t.Errorf("%s", problem.message)
 	}
-
-	// And in the other direction: an exception that stops being reachable is an
-	// exception that has quietly become a rule nobody checks.
-	reported := map[string]bool{}
-	for _, problem := range findEmptySatisfiableRequired(recommendationResponseSchema(), "recommendation") {
-		reported[problem.field] = true
-	}
-	for field, why := range emptyByDesign {
-		if !reported[field] {
-			t.Errorf("%s is recorded in emptyByDesign (%s) but no longer satisfiable empty -- "+
-				"drop the exception", field, why)
-		}
-	}
 }
 
-// emptyByDesign records the required fields a grammar may legitimately satisfy
-// with an empty value, and why. One entry, and the reason is the whole point:
-// a run that found nothing worth recommending must be able to say so. A
-// minItems here would make the model invent a recommendation to satisfy the
-// grammar, which is the opposite of what every other entry in this file is
-// for.
-var emptyByDesign = map[string]string{
-	"recommendation.recommendations": "a run may legitimately produce no recommendations; " +
-		"demanding one would make the model invent it",
-}
+// There is deliberately no exception list here, and the first draft of this
+// file had one: the top-level `recommendations` array was recorded as
+// legitimately emptiable, reasoning that a run which found nothing worth
+// recommending has to be able to say so rather than invent one.
+//
+// That premise is wrong for this pipeline, and #437 had already measured why.
+// The schema is only sent when at least one insight is eligible -- the phase
+// skips to skipped_no_eligible_insights when none are -- so the empty case is
+// answered before the grammar is involved, and a minimum cannot force an
+// invention. Meanwhile a small model decoding against the permissive version
+// returned `{"recommendations": []}` in eleven output tokens, because that was
+// the cheapest answer the schema accepted. The exception was protecting a case
+// that cannot happen, at the cost of the one that does.
 
 // findEmptySatisfiableRequired walks a schema and reports every required field
 // a grammar could satisfy with an empty value: a string with no minLength, or
