@@ -39,8 +39,8 @@ func TestParseAction_AcceptsLegacyThinkingKey(t *testing.T) {
 func TestEngineMessages_NeverAskForThinkingKey(t *testing.T) {
 	engine := NewExplorationEngine(ExplorationEngineOptions{MaxSteps: 7, MinSteps: 5})
 	msgs := map[string]string{
-		"repair nudge (no JSON)":     explorationRepairNudge(errors.New("no action JSON object found in response"), false),
-		"repair nudge (correlation)": explorationRepairNudge(errors.New("no query, lookup_schema"), true),
+		"repair nudge (no JSON)":     explorationRepairNudge(errors.New("no action JSON object found in response"), false, false),
+		"repair nudge (correlation)": explorationRepairNudge(errors.New("no query, lookup_schema"), true, true),
 		"initial message":            engine.buildInitialMessage(ExplorationContext{}),
 	}
 	for _, reason := range []string{"productive", "unproven", "min_steps"} {
@@ -81,5 +81,27 @@ func TestNormalizeLegacyActionKey(t *testing.T) {
 	}
 	if !strings.Contains(got, "Keep thinking about churn.") {
 		t.Errorf("prose must be left alone:\n%s", got)
+	}
+}
+
+// On a multi-datasource run the action format must carry datasource_id and
+// must not prescribe SQL — a secondary datasource may speak another query
+// language, and a query without datasource_id goes to the primary.
+func TestActionMenu_MultiDatasourceIsRoutingAware(t *testing.T) {
+	engine := newCorrelationEngine(nil)
+	for name, msg := range map[string]string{
+		"initial message": engine.buildInitialMessage(ExplorationContext{}),
+		"repair nudge":    explorationRepairNudge(errors.New("no action JSON object found in response"), engine.correlationsOffered(), true),
+	} {
+		if !strings.Contains(msg, `"datasource_id"`) {
+			t.Errorf("%s: multi-datasource menu must show datasource_id:\n%s", name, msg)
+		}
+		if strings.Contains(msg, "SELECT") {
+			t.Errorf("%s: multi-datasource menu must not prescribe SQL:\n%s", name, msg)
+		}
+	}
+	single := NewExplorationEngine(ExplorationEngineOptions{MaxSteps: 7})
+	if msg := single.buildInitialMessage(ExplorationContext{}); strings.Contains(msg, "datasource_id") {
+		t.Errorf("single-datasource menu should stay unchanged:\n%s", msg)
 	}
 }

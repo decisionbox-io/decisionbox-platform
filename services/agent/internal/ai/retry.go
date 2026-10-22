@@ -341,7 +341,15 @@ var capacityProviderHints = []string{
 	"too many requests",
 	"overloaded",
 	"model busy",
+	// AWS Bedrock SDK exception names for capacity (the SDK string carries
+	// "StatusCode: NNN", not the "(NNN)" / "status NNN" shapes).
+	"modelnotreadyexception",
+	"serviceunavailableexception",
 }
+
+// sdkStatusRegex matches the HTTP status as the AWS SDK formats it in an
+// error string ("https response error StatusCode: 429, RequestID: ...").
+var sdkStatusRegex = regexp.MustCompile(`StatusCode:\s*(\d{3})`)
 
 // isCapacityLLMError reports whether err is a capacity error — rate
 // limited, throttled, or overloaded (HTTP 429 / 503 / 529 or a typed
@@ -351,11 +359,15 @@ func isCapacityLLMError(err error) bool {
 		return false
 	}
 	msg := err.Error()
-	if status, ok := extractHTTPStatus(msg); ok {
-		switch status {
-		case 429, 503, 529:
-			return true
+	status, ok := extractHTTPStatus(msg)
+	if !ok {
+		if m := sdkStatusRegex.FindStringSubmatch(msg); len(m) == 2 {
+			status, _ = strconv.Atoi(m[1])
 		}
+	}
+	switch status {
+	case 429, 503, 529:
+		return true
 	}
 	lower := strings.ToLower(msg)
 	for _, hint := range capacityProviderHints {

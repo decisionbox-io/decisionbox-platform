@@ -922,7 +922,7 @@ func (e *ExplorationEngine) runStepWithRetry(ctx context.Context, conversation *
 			break
 		}
 
-		conversation.AddUserMessage(explorationRepairNudge(err, e.correlationsOffered()))
+		conversation.AddUserMessage(explorationRepairNudge(err, e.correlationsOffered(), len(e.datasourceIDs) > 1))
 	}
 
 	in, out := usage.Totals()
@@ -1355,8 +1355,8 @@ func jsonHasActionKey(s string) bool {
 // handed a menu of four alternatives the moment its attempt at the fifth fails
 // to parse — that is the one moment the nudge would steer it away from the
 // check it was told to make.
-func explorationRepairNudge(parseErr error, withCorrelations bool) string {
-	menu, carried := explorationActionMenu(withCorrelations)
+func explorationRepairNudge(parseErr error, withCorrelations, multiDatasource bool) string {
+	menu, carried := explorationActionMenu(withCorrelations, multiDatasource)
 
 	lead := "Your previous response could not be parsed as an exploration action."
 	if parseErr != nil {
@@ -1380,11 +1380,20 @@ func explorationRepairNudge(parseErr error, withCorrelations bool) string {
 // The free-text key is "rationale", never "thinking": Claude Opus 5.5 and
 // Sonnet 5.5 refuse (stop_reason "refusal", no content) any request that
 // asks them for a JSON field named "thinking".
-func explorationActionMenu(withCorrelations bool) (menu, carried string) {
+//
+// On a multi-datasource run the query and lookup examples carry
+// datasource_id and a language-neutral query: a query without it goes to
+// the primary, and a secondary datasource may not speak SQL.
+func explorationActionMenu(withCorrelations, multiDatasource bool) (menu, carried string) {
 	var b strings.Builder
 	b.WriteString("EXACTLY ONE JSON object, with no prose or other text around it, matching one of:\n")
-	b.WriteString(`  {"rationale": "...", "query": "SELECT ..."}        — run one read-only query, or` + "\n")
-	b.WriteString(`  {"rationale": "...", "lookup_schema": ["ds.tbl"]}  — inspect table schemas, or` + "\n")
+	if multiDatasource {
+		b.WriteString(`  {"rationale": "...", "datasource_id": "<id>", "query": "..."}  — run one read-only query against one datasource, in that datasource's query language, or` + "\n")
+		b.WriteString(`  {"rationale": "...", "datasource_id": "<id>", "lookup_schema": ["ds.tbl"]}  — inspect table schemas in one datasource, or` + "\n")
+	} else {
+		b.WriteString(`  {"rationale": "...", "query": "SELECT ..."}        — run one read-only query, or` + "\n")
+		b.WriteString(`  {"rationale": "...", "lookup_schema": ["ds.tbl"]}  — inspect table schemas, or` + "\n")
+	}
 	b.WriteString(`  {"rationale": "...", "search_tables": "..."}       — find relevant tables, or` + "\n")
 	carried = "query, lookup_schema, search_tables, or done"
 	if withCorrelations {
@@ -1772,7 +1781,7 @@ func (e *ExplorationEngine) buildInitialMessage(explorationCtx ExplorationContex
 
 	msg.WriteString("Begin your data exploration.\n\n")
 	fmt.Fprintf(&msg, "You have up to %d exploration steps. Follow the rules in the system prompt.\n", e.maxSteps)
-	menu, _ := explorationActionMenu(e.correlationsOffered())
+	menu, _ := explorationActionMenu(e.correlationsOffered(), len(e.datasourceIDs) > 1)
 	msg.WriteString("Every reply is the next action: " + menu + "\n")
 
 	if e.schemaProvider != nil {

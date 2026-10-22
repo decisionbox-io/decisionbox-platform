@@ -892,3 +892,25 @@ func TestIsCapacityLLMError(t *testing.T) {
 		}
 	}
 }
+
+// TestIsCapacityLLMError_AWSSDKShapes covers Bedrock errors as the AWS SDK
+// formats them: the status is "StatusCode: NNN" and the typed exception name
+// carries the signal.
+func TestIsCapacityLLMError_AWSSDKShapes(t *testing.T) {
+	const prefix = "bedrock/anthropic: InvokeModel failed: operation error Bedrock Runtime: InvokeModel, https response error "
+	cases := []struct {
+		msg  string
+		want bool
+	}{
+		{prefix + "StatusCode: 503, RequestID: r, ServiceUnavailableException: Bedrock is unable to process your request", true},
+		{prefix + "StatusCode: 429, RequestID: r, ModelNotReadyException: Model is not ready", true},
+		{prefix + "StatusCode: 429, RequestID: r, ThrottlingException: Too many tokens", true},
+		{prefix + "StatusCode: 400, RequestID: r, ValidationException: bad request", false},
+		{prefix + "StatusCode: 500, RequestID: r, InternalServerException: internal", false},
+	}
+	for _, c := range cases {
+		if got := isCapacityLLMError(errors.New(c.msg)); got != c.want {
+			t.Errorf("isCapacityLLMError(%q) = %v, want %v", c.msg, got, c.want)
+		}
+	}
+}
