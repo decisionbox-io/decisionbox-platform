@@ -423,6 +423,15 @@ type OrchestratorOptions struct {
 	RunStepIndex RunStepIndex
 }
 
+// setLLMPhase tags every following LLM call with the discovery phase, so the
+// usage log, the policy usage event and the debug log attribute tokens (and
+// cost) to the phase that spent them. No-op without an aiClient.
+func (o *Orchestrator) setLLMPhase(phase string) {
+	if o.aiClient != nil {
+		o.aiClient.SetPhase(phase)
+	}
+}
+
 // NewOrchestrator creates a new discovery orchestrator.
 func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 	var debugLogger *debug.Logger
@@ -842,6 +851,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{FILTER_RULE}}", o.buildFilterRule())
 	explorationPrompt = strings.ReplaceAll(explorationPrompt, "{{ANALYSIS_AREAS}}", areasDesc)
 	explorationPrompt = substituteDialectTokens(explorationPrompt, o.warehouse, refDataset)
+	// Packs are stored per project; ones written before the action key
+	// became "rationale" still teach "thinking", which some models refuse.
+	explorationPrompt = ai.NormalizeLegacyActionKey(explorationPrompt)
 
 	// Multi-warehouse: append the datasource routing contract + each
 	// datasource's routing card and its own domain-pack focus areas, so the
@@ -869,6 +881,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// Phase 3: Autonomous exploration
 	applog.Info("Phase 3: Running autonomous exploration")
 	o.statusReporter.SetPhase(ctx, models.PhaseExploration, "Starting autonomous data exploration...", 10)
+	o.setLLMPhase(models.PhaseExploration)
 
 	// Build the SchemaProvider that backs the lookup_schema /
 	// search_tables actions. The cache provider serves entirely from
@@ -1040,6 +1053,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 	applog.Info("Phase 4: Running analysis by area")
 	o.statusReporter.SetPhase(ctx, models.PhaseAnalysis, "Analyzing discoveries by category...", 65)
+	o.setLLMPhase(models.PhaseAnalysis)
 	allInsights := make([]models.Insight, 0)
 	analysisLog := make([]models.AnalysisStep, 0)
 
@@ -1248,7 +1262,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// The verifier only runs for successfully parsed insights.
 		if len(insights) > 0 {
 			var areaResults []models.ValidationResult
+			o.setLLMPhase(models.PhaseValidation)
 			areaResults, insightsValidatedThisRun = valPhase.validateInsights(ctx, insights, stepByID, area.ID, insightsValidatedThisRun)
+			o.setLLMPhase(models.PhaseAnalysis)
 			step.ValidationResults = areaResults
 		}
 
@@ -1303,6 +1319,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// {confirmed, supported}) flow to the recommender.
 	applog.Info("Phase 5: Generating recommendations")
 	o.statusReporter.SetPhase(ctx, models.PhaseRecommendations, "Generating actionable recommendations...", 85)
+	o.setLLMPhase(models.PhaseRecommendations)
 	recommenderInput := filterEligibleInsights(allInsights, o.recommendationVerdicts)
 	applog.WithFields(applog.Fields{
 		"total_insights":    len(allInsights),
@@ -1364,7 +1381,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// Skip recommendation validation if no recommendations were generated.
 	// Validation is only meaningful when there are recommendations to verify.
 	if len(recommendations) > 0 {
+		o.setLLMPhase(models.PhaseValidation)
 		recValidationResults = valPhase.validateRecommendations(ctx, recommendations, allInsights, stepByID)
+		o.setLLMPhase(models.PhaseRecommendations)
 	}
 
 	// Phase 6: Update project context with discovered patterns

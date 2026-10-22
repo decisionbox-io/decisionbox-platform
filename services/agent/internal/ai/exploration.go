@@ -773,8 +773,12 @@ func (e *ExplorationEngine) Explore(
 // parser's "explicit action" path — older prompts still emit
 // `{"action": "query_data", ...}`.
 type ExplorationAction struct {
-	// Common
-	Thinking string `json:"thinking"`
+	// Common. Thinking holds the model's one-line rationale for the step
+	// (persisted as the step's "thinking"). The wire key is "rationale";
+	// "thinking" is still read from packs written before the rename —
+	// Claude Opus/Sonnet 5.5 refuse requests that ask for a "thinking" key.
+	Thinking  string `json:"thinking"`
+	Rationale string `json:"rationale"`
 
 	// query_data
 	Query string `json:"query"`
@@ -950,6 +954,9 @@ func ParseAction(response string, allowed []string) (*ExplorationAction, error) 
 	var action ExplorationAction
 	if err := json.Unmarshal([]byte(jsonStr), &action); err != nil {
 		return nil, fmt.Errorf("failed to parse action JSON: %w", err)
+	}
+	if action.Rationale != "" {
+		action.Thinking = action.Rationale
 	}
 
 	// Tool-use envelope normalisation. Anthropic Claude and OpenAI
@@ -1349,17 +1356,7 @@ func jsonHasActionKey(s string) bool {
 // to parse — that is the one moment the nudge would steer it away from the
 // check it was told to make.
 func explorationRepairNudge(parseErr error, withCorrelations bool) string {
-	var b strings.Builder
-	b.WriteString("Respond with EXACTLY ONE JSON object, no prose and no <think> blocks around it, matching one of:\n")
-	b.WriteString(`  {"thinking": "...", "query": "SELECT ..."}        — run one read-only query, or` + "\n")
-	b.WriteString(`  {"thinking": "...", "lookup_schema": ["ds.tbl"]}  — inspect table schemas, or` + "\n")
-	b.WriteString(`  {"thinking": "...", "search_tables": "..."}       — find relevant tables, or` + "\n")
-	carried := "query, lookup_schema, search_tables, or done"
-	if withCorrelations {
-		b.WriteString(`  {"thinking": "...", "get_correlations": {"a": "<datasource_id>", "b": "<datasource_id>"}} — check the reviewed join keys for a pair, or` + "\n")
-		carried = "query, lookup_schema, search_tables, get_correlations, or done"
-	}
-	b.WriteString(`  {"done": true, "summary": "..."}                  — only when exploration is truly finished.`)
+	menu, carried := explorationActionMenu(withCorrelations)
 
 	lead := "Your previous response could not be parsed as an exploration action."
 	if parseErr != nil {
@@ -1372,7 +1369,43 @@ func explorationRepairNudge(parseErr error, withCorrelations bool) string {
 			lead = "Your previous JSON had no usable action — it must carry one of " + carried + "."
 		}
 	}
-	return lead + " " + b.String() + "\nDo not emit planning JSON before the action, and do not wrap it in markdown fences."
+	return lead + " Respond with " + menu + "\nDo not emit planning JSON before the action, and do not wrap it in markdown fences."
+}
+
+// explorationActionMenu is the single statement of the exploration action
+// format: the opening message teaches it and the repair nudge restates it,
+// so the two can never drift. It returns the menu text (starting "EXACTLY
+// ONE JSON object ...") and the comma list of the actions it offers.
+//
+// The free-text key is "rationale", never "thinking": Claude Opus 5.5 and
+// Sonnet 5.5 refuse (stop_reason "refusal", no content) any request that
+// asks them for a JSON field named "thinking".
+func explorationActionMenu(withCorrelations bool) (menu, carried string) {
+	var b strings.Builder
+	b.WriteString("EXACTLY ONE JSON object, with no prose or other text around it, matching one of:\n")
+	b.WriteString(`  {"rationale": "...", "query": "SELECT ..."}        — run one read-only query, or` + "\n")
+	b.WriteString(`  {"rationale": "...", "lookup_schema": ["ds.tbl"]}  — inspect table schemas, or` + "\n")
+	b.WriteString(`  {"rationale": "...", "search_tables": "..."}       — find relevant tables, or` + "\n")
+	carried = "query, lookup_schema, search_tables, or done"
+	if withCorrelations {
+		b.WriteString(`  {"rationale": "...", "get_correlations": {"a": "<datasource_id>", "b": "<datasource_id>"}} — check the reviewed join keys for a pair, or` + "\n")
+		carried = "query, lookup_schema, search_tables, get_correlations, or done"
+	}
+	b.WriteString(`  {"done": true, "summary": "..."}                   — only when exploration is truly finished.`)
+	return b.String(), carried
+}
+
+// legacyActionKey matches the pre-rename exploration action key used as a
+// JSON key ("thinking": ...), not the word in prose.
+var legacyActionKey = regexp.MustCompile(`"thinking"(\s*):`)
+
+// NormalizeLegacyActionKey rewrites the exploration action key "thinking"
+// to "rationale" wherever a prompt uses it as a JSON key. Domain packs are
+// stored per project, so packs written (or generated) before the rename
+// still teach "thinking" — and Claude Opus 5.5 refuses a conversation that
+// asks for it. Prose mentions of the word are left alone.
+func NormalizeLegacyActionKey(prompt string) string {
+	return legacyActionKey.ReplaceAllString(prompt, `"rationale"$1:`)
 }
 
 // executeAction executes the action and returns the user-message string
@@ -1600,7 +1633,7 @@ func (e *ExplorationEngine) executeLookupSchema(
 	if len(refs) == 0 {
 		step.Error = "lookup_schema with no tables"
 		return "lookup_schema action had no tables. " +
-			`Use {"thinking": "...", "lookup_schema": ["dataset.table_a", "dataset.table_b"]}.`
+			`Use {"rationale": "...", "lookup_schema": ["dataset.table_a", "dataset.table_b"]}.`
 	}
 
 	// Local dedup: anything already fetched short-circuits without
@@ -1693,7 +1726,7 @@ func (e *ExplorationEngine) executeSearchTables(
 	if query == "" {
 		step.Error = "search_tables with empty query"
 		return "search_tables action had an empty query. " +
-			`Use {"thinking": "...", "search_tables": "topic terms describing what you're looking for"}.`
+			`Use {"rationale": "...", "search_tables": "topic terms describing what you're looking for"}.`
 	}
 
 	k := action.SearchTopK
@@ -1738,8 +1771,9 @@ func (e *ExplorationEngine) buildInitialMessage(explorationCtx ExplorationContex
 	var msg strings.Builder
 
 	msg.WriteString("Begin your data exploration.\n\n")
-	fmt.Fprintf(&msg, "You have up to %d exploration steps. ", e.maxSteps)
-	msg.WriteString("Follow the rules and format described in the system prompt.\n")
+	fmt.Fprintf(&msg, "You have up to %d exploration steps. Follow the rules in the system prompt.\n", e.maxSteps)
+	menu, _ := explorationActionMenu(e.correlationsOffered())
+	msg.WriteString("Every reply is the next action: " + menu + "\n")
 
 	if e.schemaProvider != nil {
 		fmt.Fprintf(&msg,

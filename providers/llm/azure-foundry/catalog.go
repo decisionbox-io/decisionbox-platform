@@ -2,6 +2,44 @@ package azurefoundry
 
 import gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 
+// Claude Opus 4.8 and the Claude 5 line share a 1M-token context window and a
+// 128K max output. List prices per 1M tokens. Haiku 5.5 is tiered by prompt
+// length: the constants are its prices for prompts up to 100K tokens; longer
+// prompts bill at 5x.
+// Sources: https://platform.claude.com/docs/en/about-claude/pricing and
+// https://platform.claude.com/docs/en/about-claude/models/overview
+const (
+	opus48In    = 5.0
+	opus48Out   = 25.0
+	opus5In     = 5.0
+	opus5Out    = 25.0
+	opus55In    = 4.0
+	opus55Out   = 20.0
+	sonnet5In   = 2.0
+	sonnet5Out  = 10.0
+	sonnet55In  = 2.0
+	sonnet55Out = 10.0
+	haiku55In   = 0.10
+	haiku55Out  = 0.50
+
+	claude5Max         = 128000
+	claude5InputWindow = 1000000
+
+	// Opus 5.5 and Sonnet 5.5 read cached prompt tokens at 5% of base input
+	// (other Claude models at 10%, see claudeCacheReadMultiplier).
+	opus55CacheRead   = 0.20
+	sonnet55CacheRead = 0.10
+)
+
+// Anthropic prompt-cache pricing as multiples of base input price (5-minute
+// cache): writing a prefix costs 1.25x, reading it back 0.1x. Filled onto
+// every Claude entry that does not set its own cache prices.
+// Source: https://platform.claude.com/docs/en/about-claude/pricing
+const (
+	claudeCacheWriteMultiplier = 1.25
+	claudeCacheReadMultiplier  = 0.1
+)
+
 // Pricing & cap constants — Anthropic on Azure Marketplace mirrors
 // Anthropic's published list price; OpenAI on Foundry mirrors OpenAI
 // list. Sources: platform.claude.com/docs/en/about-claude/pricing
@@ -54,6 +92,69 @@ const (
 func buildAzureFoundryCatalog() []gollm.ModelEntry {
 	models := []gollm.ModelEntry{
 		// --- Anthropic Claude on Foundry ---
+		// Opus 5.5 and Sonnet 5.5 think on every request (adaptive thinking
+		// cannot be disabled) and reject a forced tool_choice with a 400;
+		// Haiku 5.5 thinks adaptively but accepts a forced tool choice
+		// (verified on Bedrock 2026-10-22).
+		{
+			ID:              "claude-opus-4-8",
+			Aliases:         []string{"opus-4-8"},
+			DisplayName:     "Claude Opus 4.8 (Azure Foundry)",
+			Wire:            gollm.WireAnthropic,
+			MaxOutputTokens: claude5Max,
+			MaxInputTokens:  claude5InputWindow,
+			Pricing:         gollm.TokenPricing{InputPerMillion: opus48In, OutputPerMillion: opus48Out},
+		},
+		{
+			ID:              "claude-opus-5",
+			Aliases:         []string{"opus-5"},
+			DisplayName:     "Claude Opus 5 (Azure Foundry)",
+			Wire:            gollm.WireAnthropic,
+			MaxOutputTokens: claude5Max,
+			MaxInputTokens:  claude5InputWindow,
+			Pricing:         gollm.TokenPricing{InputPerMillion: opus5In, OutputPerMillion: opus5Out},
+		},
+		{
+			ID:                      "claude-opus-5-5",
+			Aliases:                 []string{"opus-5-5"},
+			DisplayName:             "Claude Opus 5.5 (Azure Foundry)",
+			Wire:                    gollm.WireAnthropic,
+			MaxOutputTokens:         claude5Max,
+			MaxInputTokens:          claude5InputWindow,
+			Pricing:                 gollm.TokenPricing{InputPerMillion: opus55In, OutputPerMillion: opus55Out, CacheReadPerMillion: opus55CacheRead},
+			Reasoning:               true,
+			RejectsForcedToolChoice: true,
+		},
+		{
+			ID:              "claude-sonnet-5",
+			Aliases:         []string{"sonnet-5"},
+			DisplayName:     "Claude Sonnet 5 (Azure Foundry)",
+			Wire:            gollm.WireAnthropic,
+			MaxOutputTokens: claude5Max,
+			MaxInputTokens:  claude5InputWindow,
+			Pricing:         gollm.TokenPricing{InputPerMillion: sonnet5In, OutputPerMillion: sonnet5Out},
+		},
+		{
+			ID:                      "claude-sonnet-5-5",
+			Aliases:                 []string{"sonnet-5-5"},
+			DisplayName:             "Claude Sonnet 5.5 (Azure Foundry)",
+			Wire:                    gollm.WireAnthropic,
+			MaxOutputTokens:         claude5Max,
+			MaxInputTokens:          claude5InputWindow,
+			Pricing:                 gollm.TokenPricing{InputPerMillion: sonnet55In, OutputPerMillion: sonnet55Out, CacheReadPerMillion: sonnet55CacheRead},
+			Reasoning:               true,
+			RejectsForcedToolChoice: true,
+		},
+		{
+			ID:              "claude-haiku-5-5",
+			Aliases:         []string{"haiku-5-5"},
+			DisplayName:     "Claude Haiku 5.5 (Azure Foundry)",
+			Wire:            gollm.WireAnthropic,
+			MaxOutputTokens: claude5Max,
+			MaxInputTokens:  claude5InputWindow,
+			Pricing:         gollm.TokenPricing{InputPerMillion: haiku55In, OutputPerMillion: haiku55Out},
+			Reasoning:       true,
+		},
 		{
 			ID:              "claude-opus-4-7",
 			Aliases:         []string{"opus-4-7"},
@@ -171,6 +272,19 @@ func buildAzureFoundryCatalog() []gollm.ModelEntry {
 	for i := range models {
 		if models[i].Wire == gollm.WireAnthropic && models[i].MaxInputTokens == 0 {
 			models[i].MaxInputTokens = claude4InputWindow
+		}
+	}
+	// Prompt-cache prices for Claude entries that do not set their own.
+	for i := range models {
+		pr := &models[i].Pricing
+		if models[i].Wire != gollm.WireAnthropic || pr.InputPerMillion == 0 {
+			continue
+		}
+		if pr.CacheWritePerMillion == 0 {
+			pr.CacheWritePerMillion = pr.InputPerMillion * claudeCacheWriteMultiplier
+		}
+		if pr.CacheReadPerMillion == 0 {
+			pr.CacheReadPerMillion = pr.InputPerMillion * claudeCacheReadMultiplier
 		}
 	}
 	return models

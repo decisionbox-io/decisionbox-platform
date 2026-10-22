@@ -21,6 +21,14 @@ Add one `ModelEntry` to the provider's `catalog.go` (e.g. `providers/llm/bedrock
 ```
 
 The bedrock package's alias helpers (`claudeAliasesFor`, `openSourceAliasesFor`) generate the cross-region inference profile + suffix-stripped variants automatically; for other clouds list aliases inline.
+Claude models that Bedrock ships with an unsuffixed canonical ID (Opus 4.8 and later, e.g. `anthropic.claude-opus-4-8`) use `claudeAliasesExcept(family, id)`, which leaves the canonical ID out of the alias list.
+
+Two capability fields matter for Claude entries:
+
+- `Reasoning: true` for models that think by default (Claude Opus 5.5, Sonnet 5.5, Haiku 5.5) — the exploration step then gets the larger reasoning output budget, since thinking counts towards `max_tokens`.
+- `RejectsForcedToolChoice: true` for models that return a 400 for `tool_choice` of type `tool` / `any` (Opus 5.5, Sonnet 5.5). Providers relax such a request with `gollm.RelaxForcedToolChoice`.
+
+Claude entries get prompt-cache prices (`CacheReadPerMillion`, `CacheWritePerMillion`) filled from base input at 0.1x / 1.25x unless the entry sets its own (Opus 5.5 and Sonnet 5.5 read at 0.05x).
 
 Then add a test that pins the entry's wire / cap / pricing, and you are done — the dashboard picks it up automatically.
 
@@ -67,8 +75,10 @@ Called by the "Test Connection" button in the dashboard.
 | `Content` | string | Response text |
 | `Model` | string | Model that generated this |
 | `StopReason` | string | Why generation stopped |
-| `Usage.InputTokens` | int | Input tokens consumed |
-| `Usage.OutputTokens` | int | Output tokens generated |
+| `Usage.InputTokens` | int | Total prompt tokens, including any part read from or written to a prompt cache |
+| `Usage.OutputTokens` | int | Output tokens generated (hidden reasoning included) |
+| `Usage.CacheReadTokens` / `Usage.CacheWriteTokens` | int | Part of `InputTokens` read from / written to the provider's prompt cache (zero when not reported) |
+| `Usage.ReasoningTokens` | int | Part of `OutputTokens` spent on hidden reasoning (zero when not reported) |
 | `ToolCalls` | []ToolCall | Tool invocations the model emitted (empty when no tools were called) |
 
 ## Step 1: Create the Package
@@ -253,7 +263,8 @@ func (p *MyProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.Ch
 - **Build the HTTP client with `gollm.HTTPClientFor(cfg, timeout)`** — for any provider that talks to an HTTP endpoint, this one helper honours the per-project custom-TLS keys (`tls_ca_cert` to append a private CA, `tls_skip_verify` to disable verification) and returns the plain default client when neither is set. Surface the two fields in the dashboard by appending `gollm.TLSConfigFields()` to your `ConfigFields` when the endpoint can sit behind a private CA. Providers whose transport is SDK-managed (e.g. Bedrock's AWS SDK) override the SDK's HTTP client only when `gollm.HasCustomTLS(cfg)` is true.
 - **Unknown-model defaults** — a model that matches no catalog entry falls back to `gollm.DefaultMaxInputTokens` (128K) and `gollm.DefaultMaxOutputTokens` (64K). Set a per-provider `DefaultMaxInputTokens` / `DefaultMaxOutputTokens` only when the upstream would reject those (document the exception).
 - **Support model override** — `req.Model` may differ from the provider default (per-request override).
-- **Return accurate token counts** — Used for cost estimation and context tracking. `openaicompat.ParseResponseBody` fills them from the server's `usage` object.
+- **Return accurate token counts** — Used for cost estimation and context tracking. `openaicompat.ParseResponseBody` fills them from the server's `usage` object, including `prompt_tokens_details.cached_tokens` and `completion_tokens_details.reasoning_tokens`. Report `InputTokens` as the total prompt even when the upstream counts cached tokens separately (Anthropic does).
+- **Anthropic-wire providers share `libs/go-common/llm/anthropicwire`** — `SystemField` / `MarkLastMessage` place prompt-cache breakpoints (gate them on `gollm.PromptCacheEnabled(cfg)` and surface `gollm.PromptCacheConfigFields()`), `ToolChoice` maps the tool-choice string, and `Usage.ToLLM()` converts Anthropic usage (whose `input_tokens` excludes cached tokens) to the neutral totals. Call `gollm.RelaxForcedToolChoice` when `gollm.RejectsForcedToolChoice(provider, model)` is true.
 - **Handle retries externally** — The agent's AI client handles retries. Your provider should not retry internally.
 - **Populate the catalog** — For every model the provider supports, add a `ModelEntry` to your provider's `ProviderMeta.Models`. Each entry's `Wire`, `MaxOutputTokens`, and `Pricing` is the authoritative record. The agent uses `gollm.GetMaxOutputTokens(provider, model)` to cap completions during phases that need long output (recommendation generation). Use `Aliases` for cross-region inference profiles, date-stamped variants, and family-only short forms (`opus-4-7`, `sonnet-4-6`).
 

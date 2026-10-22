@@ -2,6 +2,7 @@ package llm
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -218,5 +219,30 @@ func TestNormalizeStructuredToolResponse_TextResponseLeftIntact(t *testing.T) {
 	}
 	if resp.Content != `{"slug":"acme"}` {
 		t.Errorf("content mutated: %q", resp.Content)
+	}
+}
+
+// RelaxForcedToolChoice is the documented replacement for a forced tool
+// choice on models that reject one: tools stay, the choice becomes "auto",
+// and the system prompt names the tool to call.
+func TestRelaxForcedToolChoice(t *testing.T) {
+	forced := RelaxForcedToolChoice(ChatRequest{SystemPrompt: "base", ToolChoice: "emit", Tools: []ToolDefinition{{Name: "emit"}}})
+	if forced.ToolChoice != "auto" || len(forced.Tools) != 1 {
+		t.Errorf("forced tool: choice=%q tools=%d", forced.ToolChoice, len(forced.Tools))
+	}
+	if !strings.HasPrefix(forced.SystemPrompt, "base\n\n") || !strings.Contains(forced.SystemPrompt, `"emit"`) {
+		t.Errorf("system prompt should keep the original and name the tool: %q", forced.SystemPrompt)
+	}
+
+	anyTool := RelaxForcedToolChoice(ChatRequest{ToolChoice: "any"})
+	if anyTool.ToolChoice != "auto" || !strings.Contains(anyTool.SystemPrompt, "one of the provided tools") {
+		t.Errorf("any: %+v", anyTool)
+	}
+
+	for _, c := range []string{"", "auto", "none"} {
+		req := ChatRequest{SystemPrompt: "base", ToolChoice: c}
+		if got := RelaxForcedToolChoice(req); got.ToolChoice != c || got.SystemPrompt != "base" {
+			t.Errorf("non-forced choice %q must be unchanged, got %+v", c, got)
+		}
 	}
 }

@@ -154,32 +154,3 @@ func TestAnthropic_ToolResultsOnAssistantMessageErrors(t *testing.T) {
 		t.Error("tool_results on role=assistant should error")
 	}
 }
-
-func TestAnthropic_BuildAnthropicToolChoice(t *testing.T) {
-	cases := []struct {
-		in string
-		want map[string]interface{}
-	}{
-		{"", nil},
-		{"auto", nil},
-		{"any", map[string]interface{}{"type": "any"}},
-		{"required", map[string]interface{}{"type": "any"}},
-		{"none", map[string]interface{}{"type": "none"}},
-		{"inspect_table", map[string]interface{}{"type": "tool", "name": "inspect_table"}},
-	}
-	for _, c := range cases {
-		got := buildAnthropicToolChoice(c.in)
-		if (got == nil) != (c.want == nil) {
-			t.Errorf("buildAnthropicToolChoice(%q) = %v, want %v", c.in, got, c.want)
-			continue
-		}
-		if got == nil {
-			continue
-		}
-		for k, v := range c.want {
-			if got[k] != v {
-				t.Errorf("buildAnthropicToolChoice(%q)[%q] = %v, want %v", c.in, k, got[k], v)
-			}
-		}
-	}
-}

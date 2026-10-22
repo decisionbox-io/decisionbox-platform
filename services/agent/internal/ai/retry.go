@@ -70,6 +70,20 @@ const MaxBackoff = 60 * time.Second
 // entirely (initial attempt only); set higher for flaky upstreams.
 const LLMRetryMaxAttemptsEnv = "LLM_RETRY_MAX_ATTEMPTS"
 
+// DefaultCapacityMaxAttempts caps the total attempts for capacity errors —
+// rate limits, throttling, "overloaded" / "model busy" (HTTP 429 / 503 /
+// 529). These clear when the upstream queue drains, which takes longer
+// than a one-retry budget allows: on the generic budget a single
+// capacity blip at exploration step 1 failed the whole run. Six attempts
+// with the exponential backoff (5s, 10s, 20s, 40s, 60s cap) wait out
+// roughly two minutes before giving up.
+const DefaultCapacityMaxAttempts = 6
+
+// LLMRetryCapacityMaxAttemptsEnv overrides DefaultCapacityMaxAttempts.
+// The budget only ever widens the generic one: a value below
+// LLM_RETRY_MAX_ATTEMPTS leaves the generic budget in force.
+const LLMRetryCapacityMaxAttemptsEnv = "LLM_RETRY_CAPACITY_MAX_ATTEMPTS"
+
 // LLMRetryBaseBackoffEnv is the env var that overrides the first
 // retry's delay. Accepts any Go-duration string ("3s", "10s",
 // "30s"). Default DefaultBaseBackoff.
@@ -98,8 +112,13 @@ func chatWithRetry(ctx context.Context, provider gollm.Provider, req gollm.ChatR
 		}
 	}
 
+	capacityAttempts := config.GetEnvAsInt(LLMRetryCapacityMaxAttemptsEnv, DefaultCapacityMaxAttempts)
+
 	var lastErr error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
+	limit := maxAttempts
+	attempt := 0
+	for {
+		attempt++
 		resp, err := provider.Chat(ctx, req)
 		if err == nil {
 			return resp, nil
@@ -121,16 +140,19 @@ func chatWithRetry(ctx context.Context, provider gollm.Provider, req gollm.ChatR
 			}
 			return nil, err
 		}
-		if attempt == maxAttempts {
+		if isCapacityLLMError(err) && capacityAttempts > limit {
+			limit = capacityAttempts
+		}
+		if attempt >= limit {
 			break
 		}
 
 		backoff := backoffDuration(baseBackoff, attempt)
 		logger.WithFields(logger.Fields{
-			"attempt":     attempt,
-			"max":         maxAttempts,
-			"backoff_ms":  backoff.Milliseconds(),
-			"error":       err.Error(),
+			"attempt":    attempt,
+			"max":        limit,
+			"backoff_ms": backoff.Milliseconds(),
+			"error":      err.Error(),
 		}).Warn("LLM call failed with transient error; retrying")
 
 		timer := time.NewTimer(backoff)
@@ -147,7 +169,7 @@ func chatWithRetry(ctx context.Context, provider gollm.Provider, req gollm.ChatR
 		}
 	}
 
-	return nil, fmt.Errorf("llm: exhausted %d retry attempts: %w", maxAttempts, lastErr)
+	return nil, fmt.Errorf("llm: exhausted %d retry attempts: %w", attempt, lastErr)
 }
 
 // backoffDuration returns the sleep for attempt N (1-indexed).
@@ -305,6 +327,42 @@ func isRetryableLLMError(ctx context.Context, err error) bool {
 		}
 	}
 
+	return false
+}
+
+// capacityProviderHints are provider error fragments that mean the
+// upstream is out of capacity or rate-limiting this caller, for errors
+// that carry no numeric status (typed SDK exceptions, typed JSON error
+// bodies). Lower-case; matched as substrings.
+var capacityProviderHints = []string{
+	"throttl",
+	"rate limit",
+	"rate_limit",
+	"too many requests",
+	"overloaded",
+	"model busy",
+}
+
+// isCapacityLLMError reports whether err is a capacity error — rate
+// limited, throttled, or overloaded (HTTP 429 / 503 / 529 or a typed
+// equivalent) — which earns the longer DefaultCapacityMaxAttempts budget.
+func isCapacityLLMError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if status, ok := extractHTTPStatus(msg); ok {
+		switch status {
+		case 429, 503, 529:
+			return true
+		}
+	}
+	lower := strings.ToLower(msg)
+	for _, hint := range capacityProviderHints {
+		if strings.Contains(lower, hint) {
+			return true
+		}
+	}
 	return false
 }
 

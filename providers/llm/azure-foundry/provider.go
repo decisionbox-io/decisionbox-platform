@@ -49,7 +49,7 @@ func init() {
 	gollm.RegisterWithMeta(providerName, factory, gollm.ProviderMeta{
 		Name:        "Azure AI Foundry",
 		Description: "Microsoft Azure-managed AI platform — Claude & OpenAI models with API key auth",
-		ConfigFields: append(append([]gollm.ConfigField{
+		ConfigFields: append(append(append([]gollm.ConfigField{
 			{Key: "endpoint", Label: "Endpoint URL", Required: true, Type: "string", Placeholder: "https://my-resource.services.ai.azure.com"},
 			{
 				Key:         "model",
@@ -73,7 +73,7 @@ func init() {
 					{Value: string(gollm.WireOpenAICompat), Label: "OpenAI Chat Completions"},
 				},
 			},
-		}, gollm.ContextWindowConfigFields()...), gollm.TLSConfigFields()...),
+		}, gollm.ContextWindowConfigFields()...), gollm.TLSConfigFields()...), gollm.PromptCacheConfigFields()...),
 		AuthMethods: []gollm.AuthMethod{
 			{
 				ID: "api_key", Name: "API Key",
@@ -137,6 +137,7 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		model:        model,
 		wireOverride: wireOverride,
 		httpClient:   httpClient,
+		promptCache:  gollm.PromptCacheEnabled(cfg),
 	}, nil
 }
 
@@ -147,6 +148,9 @@ type AzureFoundryProvider struct {
 	model        string
 	wireOverride gollm.Wire
 	httpClient   *http.Client
+	// promptCache places prompt-cache breakpoints on Claude requests
+	// (project config prompt_cache, on unless "false").
+	promptCache bool
 }
 
 // Validate exercises the same dispatch path as a real Chat call with

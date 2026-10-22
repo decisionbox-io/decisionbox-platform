@@ -8,7 +8,7 @@ Any HTTPS LLM endpoint fronted by a private / internal CA can be trusted without
 
 | Provider | Models | Auth | Best For |
 |----------|--------|------|----------|
-| **Claude (Anthropic)** | Claude Sonnet 4, Opus 4, Haiku 4.5 | API key | Best quality. Direct access, simple setup. |
+| **Claude (Anthropic)** | Claude Opus 4.8 / 5 / 5.5, Sonnet 5 / 5.5, Haiku 5.5, and the Claude 4.x line | API key | Best quality. Direct access, simple setup. |
 | **OpenAI** | GPT-5, GPT-4.1, GPT-4o, o3, o4-mini | API key | Widely used. Good alternative. |
 | **Ollama** | Llama 3.1, Qwen 2.5, Mistral, any GGUF | None (local) | Free, private, no API key needed. |
 | **Vertex AI** | Gemini, Claude, Llama MaaS, Qwen MaaS, DeepSeek MaaS, Mistral MaaS | GCP ADC | GCP users. Managed billing, IAM auth. |
@@ -34,11 +34,16 @@ Sign up at [console.anthropic.com](https://console.anthropic.com) and create an 
 
 | Model | Quality | Speed | Cost |
 |-------|---------|-------|------|
-| `claude-opus-4-6` | Highest | Slow | $5/$25 per million tokens |
+| `claude-opus-5-5` | Highest | Slow | $4/$20 per million tokens |
+| `claude-opus-4-8` | Highest | Slow | $5/$25 per million tokens |
+| `claude-sonnet-5-5` | High | Fast | $2/$10 per million tokens |
 | `claude-sonnet-4-6` | High | Fast | $3/$15 per million tokens |
-| `claude-haiku-4-5` | Good | Fastest | $1/$5 per million tokens |
+| `claude-haiku-5-5` | Good | Fastest | $0.10/$0.50 per million tokens (prompts up to 100K tokens; 5x above) |
 
 **Recommendation:** Start with Sonnet for a balance of quality and cost. Use Opus for complex datasets.
+
+Claude Opus 4.8 and the Claude 5 line have a 1M-token context window and 128K max output.
+Opus 5.5 and Sonnet 5.5 think on every request and reject a forced tool choice; DecisionBox handles both (see [Prompt caching and Claude 5.x](#prompt-caching-and-claude-5x)).
 
 ## OpenAI
 
@@ -341,7 +346,7 @@ This is the recommended way to reach a self-hosted gateway, especially on-prem b
 ### 1. Point at your proxy
 
 1. Select **LiteLLM** as the LLM provider.
-2. Enter the **LiteLLM proxy URL** as `base_url` (e.g. `https://litellm.internal:4000`). The OpenAI-compatible `/v1` routes are derived from it.
+2. Enter the **LiteLLM proxy URL** as `base_url` (e.g. `https://litellm.internal:4000`). The OpenAI-compatible `/v1` routes are derived from it: `/v1` is appended unless the URL path already carries a version segment, so a hosted OpenAI-compatible API whose base has a path (e.g. `https://api.example.com/v1/openai`) is used as given.
 3. If the proxy requires a master or virtual key, set it as the **LiteLLM key** under **Settings → AI Provider** (sent as a `Bearer` token). Leave it blank for an open proxy.
 
 ### 2. Pick a model
@@ -410,6 +415,26 @@ Example (API request to create a project):
 ```
 
 A typo in `wire_override` is rejected at project-save time with HTTP 400. Once saved, the agent uses the override for every dispatch until the model is added to the catalog (at which point the override becomes unnecessary).
+
+## Prompt caching and Claude 5.x
+
+Discovery is multi-turn: every exploration step re-sends the system prompt and the whole conversation so far, and every verifier / refuter round re-sends its system prompt.
+On Claude — direct, Bedrock, Vertex AI and Azure AI Foundry alike — DecisionBox marks a prompt-cache breakpoint on the system prompt and on the last message of every multi-turn request, so each call reads the previous call's prefix at the cache-read price (10% of base input on most Claude models, 5% on Opus 5.5 and Sonnet 5.5) and writes only the new tail.
+Single-message requests (analysis, recommendations) mark only the shared system prompt, so they never pay the cache-write premium for a prefix nothing reads back.
+
+Prompt caching is **on by default**.
+Measured on a production-scale ERP warehouse with the same model and settings on the same day, it cut the exploration phase's cost by about 95% and the whole run's by about three quarters, with an unchanged quality profile.
+To turn it off for a project, set **Prompt caching (Claude models)** off in the LLM settings (`llm.config.prompt_cache: "false"`) — only needed if your account or region does not support caching.
+
+OpenAI-compatible providers (OpenAI, LiteLLM, vLLM and hosted OpenAI-compatible APIs) cache repeated prefixes automatically on the server side; nothing needs to be set.
+
+Every LLM call's usage — logged as `LLM call usage` and sent to the usage hook — carries the cached part of the prompt (`cache_read_tokens`, `cache_write_tokens`), hidden reasoning tokens (`reasoning_tokens`), the stop reason, and the discovery **phase** the call belongs to (exploration, analysis, validation, recommendations, questions, reflection), so cost can be attributed per phase.
+`input_tokens` is always the total prompt size, cached part included.
+
+**Claude Opus 5.5 and Sonnet 5.5.**
+They reject a forced tool choice (`tool_choice` of type `tool` / `any`) with a 400, so for those models DecisionBox asks for structured output with an `auto` tool choice plus an instruction naming the tool — the replacement Anthropic documents.
+They also refuse (stop reason `refusal`, no output) any conversation that asks for a JSON field named `thinking`, which is why the exploration and Ask action key is `rationale`.
+Thinking cannot be disabled on Opus 5.5 and counts towards `max_tokens`; the catalog marks these models as reasoning models, so the exploration step gets the larger reasoning output budget.
 
 ## Context window and output limits
 

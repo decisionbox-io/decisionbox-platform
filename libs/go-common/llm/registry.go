@@ -23,6 +23,12 @@ type ProviderFactory func(cfg ProviderConfig) (Provider, error)
 type TokenPricing struct {
 	InputPerMillion  float64 `json:"input_per_million"`
 	OutputPerMillion float64 `json:"output_per_million"`
+	// CacheReadPerMillion / CacheWritePerMillion price prompt tokens read
+	// from / written to the provider's prompt cache. Zero when the model
+	// has no prompt caching (or it is not catalogued) — callers then
+	// price every input token at InputPerMillion.
+	CacheReadPerMillion  float64 `json:"cache_read_per_million,omitempty"`
+	CacheWritePerMillion float64 `json:"cache_write_per_million,omitempty"`
 }
 
 // Wire identifies the request/response schema a model expects.
@@ -190,6 +196,14 @@ type ModelEntry struct {
 	// Default false. Catalog entries set it explicitly when the
 	// model's published capabilities include reasoning / thinking.
 	Reasoning bool
+
+	// RejectsForcedToolChoice declares that the model returns a 400 for
+	// a forced tool choice (Anthropic `tool_choice` of type "tool" or
+	// "any") — Claude Opus 5.5, Sonnet 5.5 and Fable 5.1 do. Providers
+	// relax such a request to an "auto" tool choice plus an instruction
+	// to call the tool (see RelaxForcedToolChoice), which is the
+	// upstream-documented replacement. Default false.
+	RejectsForcedToolChoice bool
 }
 
 // matches reports whether id resolves to this entry. Exact,
@@ -756,6 +770,48 @@ func IsReasoningModel(providerName, model string) bool {
 		return false
 	}
 	return e.Reasoning
+}
+
+// RejectsForcedToolChoice reports whether the catalog row for (provider,
+// model) declares that the model rejects a forced tool choice. False when
+// the provider is not registered or the model is not catalogued.
+func RejectsForcedToolChoice(providerName, model string) bool {
+	providersMu.RLock()
+	meta, ok := providerMeta[providerName]
+	providersMu.RUnlock()
+	if !ok {
+		return false
+	}
+	e, ok := meta.FindModel(model)
+	return ok && e.RejectsForcedToolChoice
+}
+
+// PromptCacheKey is the project-config key that switches provider-side
+// prompt caching off for providers that implement it (the Anthropic wire:
+// claude, bedrock, vertex-ai, azure-foundry). Caching is on unless the
+// value is "false". Stored in project.LLM.Config.
+const PromptCacheKey = "prompt_cache"
+
+// PromptCacheEnabled reports whether cfg leaves prompt caching on. Any
+// value other than a case-insensitive "false" (including absence) keeps
+// it on, so existing projects get caching without a config change.
+func PromptCacheEnabled(cfg ProviderConfig) bool {
+	return !strings.EqualFold(strings.TrimSpace(cfg[PromptCacheKey]), "false")
+}
+
+// PromptCacheConfigFields returns the dashboard config field that switches
+// prompt caching off. Providers that implement PromptCacheKey append it to
+// their ProviderMeta.ConfigFields; the dashboard renders it generically.
+func PromptCacheConfigFields() []ConfigField {
+	return []ConfigField{
+		{
+			Key:         PromptCacheKey,
+			Label:       "Prompt caching (Claude models)",
+			Type:        "boolean",
+			Default:     "true",
+			Description: "Cache the repeated prefix of multi-turn calls (the system prompt and the conversation so far) so later calls read it at the provider's cache-read price. Applies to Claude models only. Turn off only if your account or region does not support prompt caching.",
+		},
+	}
 }
 
 // MaxInputTokensKey is the project-config key for a manual context-window

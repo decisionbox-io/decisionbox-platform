@@ -401,7 +401,9 @@ export default function ProjectPage() {
                       </div>
                       <div style={{ fontSize: 22, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>${estimate.llm.cost_usd.toFixed(4)}</div>
                       <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>
-                        ~{(estimate.llm.estimated_input_tokens / 1000).toFixed(0)}K in + {(estimate.llm.estimated_output_tokens / 1000).toFixed(0)}K out
+                        ~{(estimate.llm.estimated_input_tokens / 1000).toFixed(0)}K in
+                        {estimate.llm.estimated_cached_input_tokens ? ` (${(estimate.llm.estimated_cached_input_tokens / 1000).toFixed(0)}K cached)` : ''}
+                        {' '}+ {(estimate.llm.estimated_output_tokens / 1000).toFixed(0)}K out
                       </div>
                     </div>
                     <div>

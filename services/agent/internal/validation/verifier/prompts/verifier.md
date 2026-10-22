@@ -38,7 +38,7 @@ Emit EXACTLY ONE of the following four keys per response, with EXACTLY the paylo
 {"submit_verdict": { ... full payload, see schema ... }}
 ```
 
-Mixing keys (e.g. `{"thinking": "...", "query_warehouse": "..."}`) is a parse error. Emit ONLY one of the four envelope keys, nothing else at top level.
+Mixing keys (e.g. `{"notes": "...", "query_warehouse": "..."}`) is a parse error. Emit ONLY one of the four envelope keys, nothing else at top level.
 
 {{SOURCE_STEPS_TRUNCATION_NOTICE}}
 

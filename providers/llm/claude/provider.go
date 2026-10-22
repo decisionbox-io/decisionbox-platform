@@ -14,6 +14,7 @@ import (
 	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/anthropicwire"
 )
 
 const (
@@ -46,11 +47,12 @@ func init() {
 			Timeout:        gollm.ResolveHTTPTimeout(cfg, claudeDefaultTimeout),
 			RequestDelayMs: delayMs,
 			HTTPClient:     httpClient,
+			PromptCache:    gollm.PromptCacheEnabled(cfg),
 		})
 	}, gollm.ProviderMeta{
 		Name:        "Claude (Anthropic)",
 		Description: "Anthropic Claude API - direct access",
-		ConfigFields: []gollm.ConfigField{
+		ConfigFields: append([]gollm.ConfigField{
 			{
 				Key:         "model",
 				Label:       "Model",
@@ -60,7 +62,7 @@ func init() {
 				Default:     "claude-sonnet-4-6",
 				Description: "Pick a catalogued Claude model or type any Anthropic model ID.",
 			},
-		},
+		}, gollm.PromptCacheConfigFields()...),
 		AuthMethods: []gollm.AuthMethod{
 			{
 				ID: "api_key", Name: "API Key",
@@ -97,6 +99,9 @@ type ClaudeConfig struct {
 	// custom CA / skip-verify applies. Nil falls back to a default client
 	// with Timeout (unchanged behaviour for direct constructor callers).
 	HTTPClient *http.Client
+	// PromptCache places prompt-cache breakpoints on requests (the system
+	// prompt, and the last message of multi-turn requests).
+	PromptCache bool
 }
 
 // ClaudeProvider implements llm.Provider for Anthropic Claude.
@@ -106,6 +111,8 @@ type ClaudeProvider struct {
 	httpClient *http.Client
 	maxRetries int
 	delayMs    int
+	// promptCache places prompt-cache breakpoints (ClaudeConfig.PromptCache).
+	promptCache bool
 }
 
 // NewClaudeProvider creates a Claude LLM provider.
@@ -129,11 +136,12 @@ func NewClaudeProvider(cfg ClaudeConfig) (*ClaudeProvider, error) {
 	}
 
 	return &ClaudeProvider{
-		apiKey:     cfg.APIKey,
-		model:      cfg.Model,
-		httpClient: httpClient,
-		maxRetries: cfg.MaxRetries,
-		delayMs:    cfg.RequestDelayMs,
+		apiKey:      cfg.APIKey,
+		model:       cfg.Model,
+		httpClient:  httpClient,
+		maxRetries:  cfg.MaxRetries,
+		delayMs:     cfg.RequestDelayMs,
+		promptCache: cfg.PromptCache,
 	}, nil
 }
 
@@ -175,30 +183,32 @@ func (p *ClaudeProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*goll
 	// whose input schema is the requested schema. This is a no-op when no
 	// ResponseFormat was set or the caller supplied its own tools.
 	req, structured := gollm.ApplyResponseFormatAsTool(req)
+	if gollm.RejectsForcedToolChoice("claude", model) {
+		req = gollm.RelaxForcedToolChoice(req)
+	}
 
 	claudeMessages, err := convertMessagesForClaude(req.Messages)
 	if err != nil {
 		return nil, fmt.Errorf("claude: %w", err)
 	}
 
+	if p.promptCache && anthropicwire.CacheConversationTail(len(claudeMessages)) {
+		markLastClaudeMessage(claudeMessages)
+	}
 	apiReq := claudeRequest{
 		Model:     model,
 		MaxTokens: maxTokens,
 		Messages:  claudeMessages,
-		System:    req.SystemPrompt,
+	}
+	if req.SystemPrompt != "" {
+		apiReq.System = anthropicwire.SystemField(req.SystemPrompt, p.promptCache)
 	}
 	if len(req.Tools) > 0 {
 		apiReq.Tools = convertToolsForClaude(req.Tools)
 	}
-	if tc := convertToolChoiceForClaude(req.ToolChoice); tc != nil {
-		// Forcing the synthetic structured-output tool asks for a single
-		// object, so disable parallel tool use on it (Anthropic honours the
-		// flag inside the tool_choice object).
-		if req.DisableParallelToolUse {
-			if t, _ := tc["type"].(string); t == "tool" || t == "any" {
-				tc["disable_parallel_tool_use"] = true
-			}
-		}
+	// The synthetic structured-output tool asks for a single object, so
+	// parallel tool use is disabled on it (DisableParallelToolUse).
+	if tc := anthropicwire.ToolChoice(req.ToolChoice, req.DisableParallelToolUse); tc != nil {
 		apiReq.ToolChoice = tc
 	}
 
@@ -289,11 +299,8 @@ func (p *ClaudeProvider) sendRequest(ctx context.Context, req *claudeRequest) (*
 		Content:    content,
 		Model:      apiResp.Model,
 		StopReason: apiResp.StopReason,
-		Usage: gollm.Usage{
-			InputTokens:  apiResp.Usage.InputTokens,
-			OutputTokens: apiResp.Usage.OutputTokens,
-		},
-		ToolCalls: toolCalls,
+		Usage:      apiResp.Usage.ToLLM(),
+		ToolCalls:  toolCalls,
 	}, nil
 }
 
@@ -376,23 +383,6 @@ func convertToolsForClaude(tools []gollm.ToolDefinition) []claudeTool {
 	return out
 }
 
-// convertToolChoiceForClaude maps the wire-neutral tool_choice string to
-// Anthropic's structured form ({"type":"auto"|"any"|"none"|"tool","name":"X"}).
-// Returns nil for "" or "auto" so the request omits the field, which is
-// Anthropic's own default.
-func convertToolChoiceForClaude(choice string) map[string]interface{} {
-	switch choice {
-	case "", "auto":
-		return nil
-	case "any", "required":
-		return map[string]interface{}{"type": "any"}
-	case "none":
-		return map[string]interface{}{"type": "none"}
-	default:
-		return map[string]interface{}{"type": "tool", "name": choice}
-	}
-}
-
 // claudeMessage's Content field is a json.Marshaler-friendly union:
 // either a plain string or a []claudeContentBlock. We use interface{} at
 // the struct field so encoding picks the correct shape at marshal time.
@@ -413,6 +403,9 @@ type claudeContentBlock struct {
 	ToolUseID string `json:"tool_use_id,omitempty"`
 	Content   string `json:"content,omitempty"`
 	IsError   *bool  `json:"is_error,omitempty"`
+
+	// CacheControl marks a prompt-cache breakpoint on this block.
+	CacheControl map[string]interface{} `json:"cache_control,omitempty"`
 }
 
 type claudeTool struct {
@@ -422,10 +415,12 @@ type claudeTool struct {
 }
 
 type claudeRequest struct {
-	Model      string                 `json:"model"`
-	MaxTokens  int                    `json:"max_tokens"`
-	Messages   []claudeMessage        `json:"messages"`
-	System     string                 `json:"system,omitempty"`
+	Model     string          `json:"model"`
+	MaxTokens int             `json:"max_tokens"`
+	Messages  []claudeMessage `json:"messages"`
+	// System is the plain prompt string, or a one-block list carrying a
+	// cache breakpoint when prompt caching is on (anthropicwire.SystemField).
+	System     interface{}            `json:"system,omitempty"`
 	Tools      []claudeTool           `json:"tools,omitempty"`
 	ToolChoice map[string]interface{} `json:"tool_choice,omitempty"`
 }
@@ -445,10 +440,7 @@ type claudeResponse struct {
 	Model      string                  `json:"model"`
 	Content    []claudeResponseContent `json:"content"`
 	StopReason string                  `json:"stop_reason"`
-	Usage      struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage"`
+	Usage      anthropicwire.Usage     `json:"usage"`
 }
 
 type claudeErrorResponse struct {
@@ -456,4 +448,25 @@ type claudeErrorResponse struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
 	} `json:"error"`
+}
+
+// markLastClaudeMessage puts a prompt-cache breakpoint on the final content
+// block of the last message, converting plain string content into a
+// one-block list (the typed-struct counterpart of
+// anthropicwire.MarkLastMessage).
+func markLastClaudeMessage(msgs []claudeMessage) {
+	if len(msgs) == 0 {
+		return
+	}
+	last := &msgs[len(msgs)-1]
+	switch c := last.Content.(type) {
+	case string:
+		if c != "" {
+			last.Content = []claudeContentBlock{{Type: "text", Text: c, CacheControl: anthropicwire.CacheControl()}}
+		}
+	case []claudeContentBlock:
+		if len(c) > 0 {
+			c[len(c)-1].CacheControl = anthropicwire.CacheControl()
+		}
+	}
 }

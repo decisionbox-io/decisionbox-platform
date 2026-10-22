@@ -331,7 +331,7 @@ func (e *ExplorationEngine) rejectionFor(reason string, step int) (nudge, record
 		"Explore something no earlier step has looked at: a different metric, " +
 		"a different breakdown, or a segment none of them touched. " +
 		"Respond with the next query in the documented JSON format: " +
-		`{"thinking": "...", "query": "..."}.`
+		`{"rationale": "...", "query": "..."}.`
 
 	switch reason {
 	case "productive":
@@ -343,7 +343,7 @@ func (e *ExplorationEngine) rejectionFor(reason string, step int) (nudge, record
 			"You've only completed %d of the required minimum %d exploration steps. "+
 				"Do not signal completion yet — there are more analysis areas to cover. "+
 				"Respond with the next query in the documented JSON format: "+
-				`{"thinking": "...", "query": "SELECT ..."}.`,
+				`{"rationale": "...", "query": "SELECT ..."}.`,
 			step, e.minSteps,
 		),
 		fmt.Sprintf("rejected premature completion (%d < %d)", step, e.minSteps)

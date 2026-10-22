@@ -32,7 +32,7 @@ Each turn you respond with EXACTLY ONE JSON object. The available actions are:
 
 ```json
 {
-  "thinking": "What I'm trying to discover and why",
+  "rationale": "What I'm trying to discover and why",
   "query": "SELECT ... FROM {{REF:table}} {{FILTER}} ..."
 }
 ```
@@ -41,7 +41,7 @@ Each turn you respond with EXACTLY ONE JSON object. The available actions are:
 
 ```json
 {
-  "thinking": "I want to use users + posts next",
+  "rationale": "I want to use users + posts next",
   "lookup_schema": ["{{DATASET}}.users", "{{DATASET}}.content_posts"]
 }
 ```
@@ -57,7 +57,7 @@ Rules:
 
 ```json
 {
-  "thinking": "I'm looking for follow / friendship graph data",
+  "rationale": "I'm looking for follow / friendship graph data",
   "search_tables": "follow friendship graph relationship"
 }
 ```

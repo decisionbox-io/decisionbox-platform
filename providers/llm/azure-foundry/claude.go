@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/anthropicwire"
 )
 
 // claudeChat sends a request to Claude on Azure AI Foundry.
@@ -30,12 +31,15 @@ func (p *AzureFoundryProvider) claudeChat(ctx context.Context, req gollm.ChatReq
 		}
 	}
 
-	messages := make([]map[string]string, 0, len(req.Messages))
+	messages := make([]map[string]interface{}, 0, len(req.Messages))
 	for _, msg := range req.Messages {
-		messages = append(messages, map[string]string{
+		messages = append(messages, map[string]interface{}{
 			"role":    msg.Role,
 			"content": msg.Content,
 		})
+	}
+	if p.promptCache && anthropicwire.CacheConversationTail(len(messages)) {
+		anthropicwire.MarkLastMessage(messages)
 	}
 
 	maxTokens := req.MaxTokens
@@ -50,7 +54,7 @@ func (p *AzureFoundryProvider) claudeChat(ctx context.Context, req gollm.ChatReq
 	}
 
 	if req.SystemPrompt != "" {
-		body["system"] = req.SystemPrompt
+		body["system"] = anthropicwire.SystemField(req.SystemPrompt, p.promptCache)
 	}
 
 	if req.Temperature > 0 {
@@ -93,12 +97,9 @@ func (p *AzureFoundryProvider) claudeChat(ctx context.Context, req gollm.ChatReq
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
-		Model      string `json:"model"`
-		StopReason string `json:"stop_reason"`
-		Usage      struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
+		Model      string              `json:"model"`
+		StopReason string              `json:"stop_reason"`
+		Usage      anthropicwire.Usage `json:"usage"`
 	}
 
 	if err := json.Unmarshal(respBody, &anthropicResp); err != nil {
@@ -116,9 +117,6 @@ func (p *AzureFoundryProvider) claudeChat(ctx context.Context, req gollm.ChatReq
 		Content:    content,
 		Model:      anthropicResp.Model,
 		StopReason: anthropicResp.StopReason,
-		Usage: gollm.Usage{
-			InputTokens:  anthropicResp.Usage.InputTokens,
-			OutputTokens: anthropicResp.Usage.OutputTokens,
-		},
+		Usage:      anthropicResp.Usage.ToLLM(),
 	}, nil
 }

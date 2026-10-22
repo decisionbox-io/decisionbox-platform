@@ -81,7 +81,7 @@ Each agent loops up to N rounds (`VALIDATION_VERIFIER_MAX_ROUNDS`, default 8; re
 | `{"read_step_rows": {"step_id": N, "offset": K, "limit": L}}` | Paginated step snapshot | Returns rows from the in-memory exploration step. Out-of-range offsets return `truncated: true` so the agent can mark the dependent claim `unverifiable`. |
 | `{"submit_verdict": {…}}` | Full structured verdict | Terminal output. |
 
-Extra top-level keys (e.g. `{"thinking": "…", "query_warehouse": "…"}`) are parse errors — the agent gets the error in `recent_tool_errors` and retries.
+Extra top-level keys (e.g. `{"notes": "…", "query_warehouse": "…"}`) are parse errors — the agent gets the error in `recent_tool_errors` and retries.
 
 ## The verdict
 

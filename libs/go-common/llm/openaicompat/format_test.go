@@ -448,3 +448,19 @@ func TestBuildRequestBody_EmptySchemaResponseFormatOmitted(t *testing.T) {
 		t.Error("response_format should be omitted when schema is empty")
 	}
 }
+
+// prompt_tokens already includes the cached prefix (OpenAI semantics); the
+// detail objects break it down and must reach the neutral Usage.
+func TestParseResponseBody_CacheAndReasoningUsage(t *testing.T) {
+	raw := []byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":10119,"completion_tokens":240,"total_tokens":10359,
+		"prompt_tokens_details":{"cached_tokens":10112},"completion_tokens_details":{"reasoning_tokens":200}}}`)
+	resp, err := ParseResponseBody(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := gollm.Usage{InputTokens: 10119, OutputTokens: 240, CacheReadTokens: 10112, ReasoningTokens: 200}
+	if resp.Usage != want {
+		t.Errorf("usage = %+v, want %+v", resp.Usage, want)
+	}
+}

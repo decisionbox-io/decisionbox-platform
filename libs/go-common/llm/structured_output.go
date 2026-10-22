@@ -115,3 +115,34 @@ func NormalizeStructuredToolResponse(resp *ChatResponse, injected bool) error {
 	resp.StopReason = "end_turn"
 	return nil
 }
+
+// RelaxForcedToolChoice rewrites a forced tool choice for a model that
+// rejects one (ModelEntry.RejectsForcedToolChoice — Claude Opus 5.5,
+// Sonnet 5.5, Fable 5.1 return a 400 for tool_choice "tool"/"any"). The
+// upstream-documented replacement is an "auto" tool choice: the request
+// keeps its tools, ToolChoice becomes "auto", and the system prompt gains
+// one sentence telling the model which tool to call. Non-forced choices
+// ("", "auto", "none") are returned unchanged.
+//
+// The structured-output path stays correct either way: when the model
+// still answers in text instead of calling the synthetic tool,
+// NormalizeStructuredToolResponse leaves Content for the caller's parser.
+func RelaxForcedToolChoice(req ChatRequest) ChatRequest {
+	choice := strings.TrimSpace(req.ToolChoice)
+	var instruction string
+	switch strings.ToLower(choice) {
+	case "", "auto", "none":
+		return req
+	case "any", "required":
+		instruction = "Respond by calling one of the provided tools."
+	default:
+		instruction = fmt.Sprintf("Respond by calling the %q tool exactly once, with the complete answer as its input.", choice)
+	}
+	req.ToolChoice = "auto"
+	if req.SystemPrompt == "" {
+		req.SystemPrompt = instruction
+	} else {
+		req.SystemPrompt += "\n\n" + instruction
+	}
+	return req
+}

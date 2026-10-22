@@ -216,10 +216,31 @@ type ToolResult struct {
 }
 
 // Usage tracks token consumption.
+//
+// InputTokens is always the TOTAL prompt size, including any part served
+// from or written to a provider-side prompt cache, so context-window and
+// budget arithmetic never depends on whether caching was used. The cache
+// and reasoning fields break that total down for cost accounting; they are
+// zero when the provider does not report them.
 type Usage struct {
 	InputTokens  int
 	OutputTokens int
+
+	// CacheReadTokens is the part of InputTokens read from the prompt
+	// cache (billed at the provider's discounted cache-read rate).
+	CacheReadTokens int
+	// CacheWriteTokens is the part of InputTokens written to the prompt
+	// cache on this call (Anthropic bills it at a premium over base input).
+	CacheWriteTokens int
+	// ReasoningTokens is the part of OutputTokens spent on hidden
+	// reasoning, when the provider reports it separately.
+	ReasoningTokens int
 }
+
+// StopReasonRefusal is the stop reason Anthropic models return when a
+// safety classifier declines the request. The reply carries no usable
+// content, and re-sending the same conversation is refused again.
+const StopReasonRefusal = "refusal"
 
 // ErrToolsNotSupported is returned by Provider.Chat when ChatRequest.Tools
 // is non-empty on a provider whose ProviderMeta.SupportsTools is false.

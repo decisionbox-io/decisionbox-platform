@@ -818,6 +818,7 @@ curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/disc
       "provider": "claude",
       "model": "claude-sonnet-4-6",
       "estimated_input_tokens": 250000,
+      "estimated_cached_input_tokens": 190000,
       "estimated_output_tokens": 50000,
       "cost_usd": 0.825
     },
@@ -831,6 +832,10 @@ curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/disc
   }
 }
 ```
+
+The estimate is an upper bound.
+Exploration re-sends the whole conversation every step, so its input grows with the square of the step count; validation is sized from the verifier and refuter token caps.
+`estimated_cached_input_tokens` is the part of the input expected to be read from the provider's prompt cache and priced at the cache-read rate — present only when the model caches prompts (Claude on every provider) and the project leaves `prompt_cache` on.
 
 ---
 

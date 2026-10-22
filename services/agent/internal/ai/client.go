@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,10 @@ import (
 )
 
 // Client provides LLM operations for the discovery agent.
+// ErrModelRefused is returned when the model declines a request
+// (gollm.StopReasonRefusal). The request should not be re-sent as-is.
+var ErrModelRefused = errors.New("llm: the model refused the request")
+
 type Client struct {
 	provider     gollm.Provider
 	providerName string
@@ -198,7 +203,7 @@ func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, sy
 	if err != nil {
 		// Observability: record the failed call. Provider may have
 		// returned partial usage even on error; report what we have.
-		c.emitLLMUsage(ctx, 0, 0, latencyMs, err)
+		c.emitLLMUsage(ctx, gollm.Usage{}, "", latencyMs, err)
 		if c.debugLogger != nil {
 			c.debugLogger.LogLLM(ctx, c.currentStep, c.currentPhase, c.model,
 				systemPrompt, promptContent, "", 0, 0,
@@ -213,13 +218,20 @@ func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, sy
 		"stop_reason":   resp.StopReason,
 	}).Debug("LLM response received")
 
-	c.emitLLMUsage(ctx, resp.Usage.InputTokens, resp.Usage.OutputTokens, latencyMs, nil)
+	c.emitLLMUsage(ctx, resp.Usage, resp.StopReason, latencyMs, nil)
 
 	if c.debugLogger != nil {
 		c.debugLogger.LogLLM(ctx, c.currentStep, c.currentPhase, c.model,
 			systemPrompt, promptContent, resp.Content,
 			resp.Usage.InputTokens, resp.Usage.OutputTokens,
 			latencyMs, nil)
+	}
+
+	// A safety refusal carries no usable content, and re-sending the same
+	// conversation is refused again, so surface it as an error instead of
+	// an empty reply the caller would re-ask or try to parse.
+	if resp.StopReason == gollm.StopReasonRefusal {
+		return nil, fmt.Errorf("%w (model %s, phase %q)", ErrModelRefused, c.model, c.currentPhase)
 	}
 
 	return resp, nil
@@ -271,17 +283,21 @@ func (c *Client) ChatWithFormat(ctx context.Context, userPrompt string, systemPr
 // and fires the policy ObserveLLMTokens hook (a no-op on self-hosted
 // via the Noop checker; on cloud, the policy plugin batches events
 // and flushes to the control plane).
-func (c *Client) emitLLMUsage(ctx context.Context, inTok, outTok int, latencyMs int64, callErr error) {
+func (c *Client) emitLLMUsage(ctx context.Context, usage gollm.Usage, stopReason string, latencyMs int64, callErr error) {
 	fields := logger.Fields{
-		"provider":      c.providerName,
-		"model":         c.model,
-		"project_id":    c.projectID,
-		"run_id":        c.runID,
-		"input_tokens":  inTok,
-		"output_tokens": outTok,
-		"latency_ms":    latencyMs,
-		"phase":         c.currentPhase,
-		"step":          c.currentStep,
+		"provider":           c.providerName,
+		"model":              c.model,
+		"project_id":         c.projectID,
+		"run_id":             c.runID,
+		"input_tokens":       usage.InputTokens,
+		"output_tokens":      usage.OutputTokens,
+		"cache_read_tokens":  usage.CacheReadTokens,
+		"cache_write_tokens": usage.CacheWriteTokens,
+		"reasoning_tokens":   usage.ReasoningTokens,
+		"stop_reason":        stopReason,
+		"latency_ms":         latencyMs,
+		"phase":              c.currentPhase,
+		"step":               c.currentStep,
 	}
 	if callErr != nil {
 		fields["error"] = callErr.Error()
@@ -295,14 +311,18 @@ func (c *Client) emitLLMUsage(ctx context.Context, inTok, outTok int, latencyMs 
 		checker = policy.GetChecker()
 	}
 	checker.ObserveLLMTokens(ctx, "", policy.LLMUsageEvent{
-		ProjectID:    c.projectID,
-		RunID:        c.runID,
-		Provider:     c.providerName,
-		Model:        c.model,
-		InputTokens:  inTok,
-		OutputTokens: outTok,
-		LatencyMs:    int(latencyMs),
-		OccurredAt:   time.Now().UTC(),
+		ProjectID:        c.projectID,
+		RunID:            c.runID,
+		Provider:         c.providerName,
+		Model:            c.model,
+		InputTokens:      usage.InputTokens,
+		OutputTokens:     usage.OutputTokens,
+		CacheReadTokens:  usage.CacheReadTokens,
+		CacheWriteTokens: usage.CacheWriteTokens,
+		ReasoningTokens:  usage.ReasoningTokens,
+		Phase:            c.currentPhase,
+		LatencyMs:        int(latencyMs),
+		OccurredAt:       time.Now().UTC(),
 	})
 }
 

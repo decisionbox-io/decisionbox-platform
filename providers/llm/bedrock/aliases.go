@@ -73,6 +73,21 @@ func claudeAliasesFor(family string) []string {
 	return out
 }
 
+// claudeAliasesExcept returns claudeAliasesFor(family) without id. Claude
+// Opus 4.8 and later ship on Bedrock with an unsuffixed canonical ID
+// (anthropic.claude-opus-4-8), which claudeAliasesFor emits as its bare
+// no-suffix alias; the canonical ID must not also appear as an alias.
+func claudeAliasesExcept(family, id string) []string {
+	all := claudeAliasesFor(family)
+	out := make([]string, 0, len(all))
+	for _, a := range all {
+		if a != id {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 // openSourceRegionPrefixes are the cross-region inference profile
 // geo qualifiers Bedrock ships for non-Anthropic foundation models
 // (Qwen, DeepSeek, Mistral, Meta Llama). The matrix is narrower than
