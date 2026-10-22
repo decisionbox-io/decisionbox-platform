@@ -1225,3 +1225,79 @@ func TestInteg_DiscoveryRepo_HasResultForRun(t *testing.T) {
 		})
 	}
 }
+
+// TestInteg_RunRepo_FailAttempt_LeavesARecordThatSurvivesTheResume pins the
+// one record of a killed agent's failure.
+//
+// BeginResume clears `error` and `completed_at` on purpose — a running run
+// must not display an error and an end time — and says the lifecycle log keeps
+// the failure. For a failure the AGENT reports that holds: recordAttemptOutcome
+// appends the event before the terminal write. This is the path where the agent
+// reports nothing, because it was killed: the API's watcher calls FailAttempt
+// instead. Without the push in that same update, resuming erased both why the
+// previous attempt failed and when it ended, with nothing anywhere to recover
+// them from.
+//
+// Against real Mongo because the claim is specifically that one UpdateOne
+// carries a $set and a $push together, and that $unset in a later update does
+// not disturb the pushed array.
+func TestInteg_RunRepo_FailAttempt_LeavesARecordThatSurvivesTheResume(t *testing.T) {
+	ctx := context.Background()
+	dropRuns(t, ctx)
+	repo := NewRunRepository(testDB)
+	id := seedRunForProject(t, ctx, "proj-lifecycle", "running", time.Now(), nil)
+
+	const reason = "agent was killed by SIGKILL (exit status 137)"
+	applied, err := repo.FailAttempt(ctx, id, 1, reason)
+	if err != nil {
+		t.Fatalf("FailAttempt: %v", err)
+	}
+	if !applied {
+		t.Fatal("FailAttempt did not apply to a running run")
+	}
+
+	run, err := repo.GetByID(ctx, id)
+	if err != nil {
+		t.Fatalf("GetByID after the failure: %v", err)
+	}
+	if run.Error != reason {
+		t.Errorf("error = %q, want the kill reason", run.Error)
+	}
+	if len(run.Lifecycle) != 1 {
+		t.Fatalf("lifecycle has %d events after the failure, want 1: %+v", len(run.Lifecycle), run.Lifecycle)
+	}
+	if run.Lifecycle[0].Status != "failed" || run.Lifecycle[0].Reason != reason {
+		t.Errorf("lifecycle[0] = %+v, want a failed event carrying the reason", run.Lifecycle[0])
+	}
+	if run.Lifecycle[0].Attempt != 1 {
+		t.Errorf("lifecycle[0].Attempt = %d, want 1 — the attempt the fenced write applied to", run.Lifecycle[0].Attempt)
+	}
+	failedAt := run.Lifecycle[0].At
+
+	// Now resume, which is what clears the fields the operator would
+	// otherwise read the failure from.
+	if _, err := repo.BeginResume(ctx, id); err != nil {
+		t.Fatalf("BeginResume: %v", err)
+	}
+	resumed, err := repo.GetByID(ctx, id)
+	if err != nil {
+		t.Fatalf("GetByID after the resume: %v", err)
+	}
+	if resumed.Error != "" || resumed.CompletedAt != nil {
+		t.Errorf("resume left error=%q completed_at=%v; it is supposed to clear both", resumed.Error, resumed.CompletedAt)
+	}
+
+	// And the failure is still on the record, which is the whole point.
+	if len(resumed.Lifecycle) != 2 {
+		t.Fatalf("lifecycle has %d events after the resume, want 2 (failed, resumed): %+v", len(resumed.Lifecycle), resumed.Lifecycle)
+	}
+	if resumed.Lifecycle[0].Status != "failed" || resumed.Lifecycle[0].Reason != reason {
+		t.Errorf("the failure was lost from the lifecycle: %+v", resumed.Lifecycle[0])
+	}
+	if !resumed.Lifecycle[0].At.Equal(failedAt) {
+		t.Errorf("the failure's timestamp moved: %v -> %v", failedAt, resumed.Lifecycle[0].At)
+	}
+	if resumed.Lifecycle[1].Status != "running" || resumed.Lifecycle[1].Attempt != 2 {
+		t.Errorf("lifecycle[1] = %+v, want the attempt-2 resume", resumed.Lifecycle[1])
+	}
+}

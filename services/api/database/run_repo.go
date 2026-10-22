@@ -739,6 +739,26 @@ func (r *RunRepository) FailAttempt(ctx context.Context, runID string, attempt i
 			"completed_at": now,
 			"updated_at":   now,
 		},
+		// In the SAME update as the status, because this is the only record
+		// that survives a resume. BeginResume clears `error` and
+		// `completed_at` — deliberately, a running run must not show an error
+		// and an end time — on the stated grounds that the lifecycle log
+		// keeps the failure. For a failure the AGENT reports that is true:
+		// recordAttemptOutcome appends the event before the terminal write.
+		// This path is the one where the agent cannot report anything — the
+		// watcher calling in after the process was killed — so without this
+		// push the run has no record of the failure at all once it is
+		// resumed, and the operator loses both why it failed and when.
+		//
+		// Attempt comes from the caller rather than the document because the
+		// filter below is fenced on it: whichever attempt this write applies
+		// to is the attempt the event belongs to.
+		"$push": bson.M{"lifecycle": models.RunLifecycleEvent{
+			Status:  "failed",
+			At:      now,
+			Reason:  errMsg,
+			Attempt: attempt,
+		}},
 	}
 	filter := bson.M{
 		"_id":    oid,
