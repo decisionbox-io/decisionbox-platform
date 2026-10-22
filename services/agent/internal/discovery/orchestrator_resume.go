@@ -544,10 +544,22 @@ func retireDiscovery(ctx context.Context, runID, discoveryID string, deps retire
 		}
 
 		pointIDs := append(append(make([]string, 0, len(insightIDs)+len(recIDs)), insightIDs...), recIDs...)
-		if len(pointIDs) > 0 && deps.vectors != nil {
-			// Still delete what WAS listed: fewer orphans is strictly
-			// better, and the rows stay behind to name the rest.
-			if vecErr := deps.vectors.Delete(ctx, pointIDs); vecErr != nil {
+		if len(pointIDs) > 0 {
+			if deps.vectors == nil {
+				// No vector store in this process, and points that need
+				// deleting. That is NOT "nothing to delete": initQdrant
+				// failing its health check leaves the provider nil while the
+				// agent carries on — its schema and step-index clients are
+				// separate, so a run can finish perfectly well after Qdrant
+				// comes back. Treating a missing deleter as success would
+				// delete the rows whose ids ARE those points' ids, leaving
+				// them unaddressable, which is the orphan this whole
+				// ordering exists to prevent.
+				pointsGone = false
+				logf.Warn("a superseded attempt has indexed points but this process has no vector store (its health check failed at boot); keeping its Mongo rows so the points stay addressable")
+			} else if vecErr := deps.vectors.Delete(ctx, pointIDs); vecErr != nil {
+				// Still delete what WAS listed: fewer orphans is strictly
+				// better, and the rows stay behind to name the rest.
 				pointsGone = false
 				logf.WithError(vecErr).Warn("failed to delete a superseded attempt's vectors; keeping its Mongo rows so the points stay addressable")
 			}

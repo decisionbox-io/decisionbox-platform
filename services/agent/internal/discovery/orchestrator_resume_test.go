@@ -1284,3 +1284,60 @@ func TestRetireSuperseded_FirstAttemptRetiresNothing(t *testing.T) {
 		t.Errorf("deleted %v; attempt 1 has nothing to supersede", disc.deleted)
 	}
 }
+
+// TestRetireSuperseded_NoVectorStoreRetiresNothing is the third way the
+// all-or-nothing rule can be broken, and the only one that is silent.
+//
+// A failed list and a failed delete both set pointsGone false. A MISSING
+// deleter used to look like success: the guard was `len(pointIDs) > 0 &&
+// deps.vectors != nil`, so with a nil vector store the delete was skipped and
+// pointsGone stayed true from the list. initQdrant failing its health check
+// leaves exactly that state — nil provider, agent still running, because the
+// schema and step-index clients are separate — and the rows whose ids ARE the
+// point ids would then be deleted while the points survived. Project search
+// appends a hit it cannot load as a blank result rather than skipping it, so
+// the symptom is empty rows in a user's search, long after the run.
+func TestRetireSuperseded_NoVectorStoreRetiresNothing(t *testing.T) {
+	disc := &fakeDiscoveryRetirer{byRun: map[string][]database.DiscoveryRef{
+		"run-1": {{ID: "disc-new", Attempt: 2}, {ID: "disc-old", Attempt: 1}},
+	}}
+	logs := &fakeDiscoveryLogPersister{}
+	embed := &mockEmbedIndexStore{
+		deleteInsightIDs: []string{"ins-1"},
+		deleteRecIDs:     []string{"rec-1"},
+	}
+
+	// Points to delete, and nothing to delete them with.
+	retireSuperseded(context.Background(), "run-1", "disc-new", 2, retireDeps{
+		discoveries: disc, logs: logs, embed: embed, vectors: nil,
+	})
+
+	if len(disc.deleted) != 0 {
+		t.Errorf("deleted discoveries %v while their vectors survive; the ids are the point ids, so those points are now unaddressable", disc.deleted)
+	}
+	if len(embed.deletedDiscoveries) != 0 {
+		t.Errorf("deleted standalone docs %v while their vectors survive", embed.deletedDiscoveries)
+	}
+	if len(logs.deletedDiscoveryIDs) != 0 {
+		t.Errorf("deleted split logs %v for a result that was not retired", logs.deletedDiscoveryIDs)
+	}
+}
+
+// And with no points indexed there is nothing for a vector store to do, so a
+// nil one must NOT block the retirement — otherwise the common case (a
+// previous attempt that died before indexing) stops being cleaned up at all.
+func TestRetireSuperseded_NoVectorStoreStillRetiresWhenNothingIsIndexed(t *testing.T) {
+	disc := &fakeDiscoveryRetirer{byRun: map[string][]database.DiscoveryRef{
+		"run-1": {{ID: "disc-new", Attempt: 2}, {ID: "disc-old", Attempt: 1}},
+	}}
+	logs := &fakeDiscoveryLogPersister{}
+	embed := &mockEmbedIndexStore{} // nothing indexed
+
+	retireSuperseded(context.Background(), "run-1", "disc-new", 2, retireDeps{
+		discoveries: disc, logs: logs, embed: embed, vectors: nil,
+	})
+
+	if len(disc.deleted) != 1 || disc.deleted[0] != "disc-old" {
+		t.Errorf("deleted = %v, want disc-old — no points means no orphans to worry about", disc.deleted)
+	}
+}
