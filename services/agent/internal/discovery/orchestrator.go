@@ -1758,25 +1758,28 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// is untouched either way.
 		o.retireOwnResult(persistCtx, result.ID)
 
-		// The entry markReflectionPending put up a moment ago comes back down
-		// too. That call runs before ownership is known, so a superseded
-		// attempt has already told the project its ledger is being updated —
-		// and agentserver exits on ErrAttemptSuperseded WITHOUT running the
-		// reflection phase, whose deferred clear is what normally takes the
-		// entry down. Left up by an attempt that reached here after the owner
-		// had finished its own reflection, it is permanent: the ledger view
-		// tells the user an update is in flight for ever, and the backfill
-		// keeps away from a project nothing is writing.
+		// The entry markReflectionPending raised is deliberately LEFT UP here,
+		// and that is the opposite of what this branch first did.
 		//
-		// The entry is keyed on (project, run) and not on the attempt, so this
-		// can in principle take down one the OWNER has just put up, and a
-		// reader would see the update as finished while it is still being
-		// folded in. That is transient and self-correcting — the owner holds
-		// its own deferred clear, so the end state is right either way —
-		// where leaving a stale entry up is neither.
-		if o.reflectionPending {
-			o.endReflectionMarker(persistCtx)
-		}
+		// It is keyed on (project, run), not on the attempt, so it is shared
+		// with whichever attempt now owns the run — and this branch is the one
+		// case where we positively know that is somebody else. Taking it down
+		// is not the harmless, self-correcting act it looks like: the entry is
+		// what tells the dashboard an update is still being written, and both
+		// the ledger page and UpcomingInvestigation STOP POLLING once it
+		// disappears ("an update finished, or the run did: reload ... if not,
+		// stop"). Clearing it mid-reflection therefore makes the owner's
+		// half-written findings, threads and proposals read as the finished
+		// article until somebody reloads the page.
+		//
+		// Leaving it is the conservative failure, and it is usually not a
+		// failure at all: the owner is on the SAME run, so its own
+		// BeginReflection / TouchReflection / endReflectionMarker cycle ends
+		// this very entry. Only one ordering leaks — this attempt raising the
+		// entry after the owner had already finished reflecting — and that
+		// shows a stale "updating" and holds the backfill off for a
+		// ReflectionMarkerTTL. Visibly wrong and bounded beats silently
+		// presenting an incomplete reflection as complete.
 
 		// And it must NOT fall through to the success path. Compute may have
 		// gone perfectly — err is nil here — but the result it produced has
@@ -1834,7 +1837,17 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// had already marked the run failed — the ownership read positively
 		// said the run is still THIS attempt's, so there is no other holder
 		// to protect at all.
-		if o.reflectionPending {
+		// Gated on POSITIVE ownership, not on the absence of evidence that we
+		// lost the run. Two causes reach this branch: the ownership read said
+		// the run is still this attempt's, or nothing established anything
+		// (the terminal write errored, or the read itself did). In the first
+		// there is no other holder of the entry and clearing it is both safe
+		// and necessary — this attempt raised it and is about to abandon the
+		// hop, and agentserver skips RunPhaseReflection on every error
+		// return, so nothing else will take it down before its TTL. In the
+		// second, clearing it risks exactly what the superseded branch above
+		// refuses to risk.
+		if o.reflectionPending && o.statusReporter.StillOwnsRun() {
 			o.endReflectionMarker(persistCtx)
 		}
 

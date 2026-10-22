@@ -1128,7 +1128,7 @@ func TestRecordProjectLearning_SafeWithoutItsDependencies(t *testing.T) {
 	o.recordProjectLearning(context.Background(), nil, nil)
 }
 
-// TestReflectionMarker_TakenDownWheneverThisAttemptAbandonsTheHop pins the
+// TestReflectionMarker_OnlyAConfirmedOwnerTakesItDown pins the
 // pairing that the ledger's pending marker and the terminal switch only need
 // once they meet — which they first do in this merge.
 //
@@ -1145,7 +1145,7 @@ func TestRecordProjectLearning_SafeWithoutItsDependencies(t *testing.T) {
 // Asserted against the source for the reason the neighbouring ownership tests
 // give: driving RunDiscovery's terminal section end-to-end needs a live
 // warehouse, an LLM and Mongo.
-func TestReflectionMarker_TakenDownWheneverThisAttemptAbandonsTheHop(t *testing.T) {
+func TestReflectionMarker_OnlyAConfirmedOwnerTakesItDown(t *testing.T) {
 	src, err := os.ReadFile("orchestrator.go")
 	if err != nil {
 		t.Fatalf("read orchestrator.go: %v", err)
@@ -1170,15 +1170,66 @@ func TestReflectionMarker_TakenDownWheneverThisAttemptAbandonsTheHop(t *testing.
 		t.Fatal("could not delimit the terminal branches")
 	}
 
-	// Both error branches must take it down. Bounded to each case so the
-	// assertion cannot be satisfied by a clear somewhere harmless.
-	for name, branch := range map[string]string{
-		"terminalSuperseded": text[superseded:unknown],
-		"terminalUnknown":    text[unknown:],
+	// The rule is ownership, not "was not shown to have lost the run", and
+	// the two branches sit on opposite sides of it.
+	//
+	// terminalSuperseded positively lost the run, so the entry belongs to
+	// somebody else and must be left alone. The entry is keyed on
+	// (project, run) rather than on the attempt, and its disappearance is
+	// what tells the ledger page and UpcomingInvestigation to stop polling —
+	// so clearing it mid-reflection publishes the owner's half-written
+	// findings as finished. A stale entry is visibly wrong and TTL-bounded;
+	// that is not.
+	if strings.Contains(text[superseded:unknown], "o.endReflectionMarker(persistCtx)") {
+		t.Error("the terminalSuperseded branch clears the reflection marker; it positively lost the run, so that entry is the owner's, and taking it down stops the dashboard polling and presents a half-written reflection as complete")
+	}
+
+	// terminalUnknown may clear it, but only when an ownership read has
+	// positively confirmed the run is still this attempt's. The other causes
+	// that land here establish nothing.
+	unknownBranch := text[unknown:]
+	if !strings.Contains(unknownBranch, "o.endReflectionMarker(persistCtx)") {
+		t.Error("the terminalUnknown branch never takes the reflection marker down; this attempt raised it and returns an error, and agentserver skips RunPhaseReflection on every error, so nothing clears it before its TTL")
+	}
+	if !strings.Contains(unknownBranch, "o.statusReporter.StillOwnsRun()") {
+		t.Error("the terminalUnknown clear is not gated on confirmed ownership; a write that merely errored establishes nothing, and clearing on that risks the same published-too-early reflection as the superseded branch")
+	}
+}
+
+// TestStillOwnsRun_OnlyAfterTheReadSaysSo pins the gate itself: absence of
+// evidence must not read as ownership.
+func TestStillOwnsRun_OnlyAfterTheReadSaysSo(t *testing.T) {
+	// Never classified — the terminal write errored, so no ownership read
+	// happened at all.
+	if (&StatusReporter{}).StillOwnsRun() {
+		t.Error("a reporter that never read ownership claims to own the run")
+	}
+	// And nil is safe, because the orchestrator asks without status reporting.
+	var none *StatusReporter
+	if none.StillOwnsRun() {
+		t.Error("a nil reporter claims to own the run")
+	}
+
+	for name, tc := range map[string]struct {
+		doc  *fakeRunDoc
+		want bool
+	}{
+		// The one case that confirms ownership.
+		"the read says the run is still ours": {&fakeRunDoc{owns: true}, true},
+		// And the cases that do not. The read error is the sharpest: it is
+		// the absence of an answer, and the old reasoning — "not shown to
+		// have lost it" — would have treated it as ownership.
+		"another attempt has taken over": {&fakeRunDoc{owns: false}, false},
+		"the operator cancelled the run": {&fakeRunDoc{cancelled: true}, false},
+		"the ownership read failed":      {&fakeRunDoc{ownsErr: errors.New("mongo down")}, false},
 	} {
-		if !strings.Contains(branch, "o.endReflectionMarker(persistCtx)") {
-			t.Errorf("the %s branch does not take the reflection marker down; it returns an error, so agentserver never runs the reflection phase whose deferred clear would, and ledger backfill skips the project until the marker expires", name)
-		}
+		t.Run(name, func(t *testing.T) {
+			s := &StatusReporter{repo: tc.doc, projectID: "p1", runID: "run-1", attempt: 2}
+			s.classifyUnappliedTerminal(context.Background(), "completion")
+			if got := s.StillOwnsRun(); got != tc.want {
+				t.Errorf("StillOwnsRun() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

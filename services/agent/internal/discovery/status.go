@@ -100,6 +100,21 @@ type StatusReporter struct {
 	projectID   string
 	runID       string
 	maxSteps    int
+	// ownershipConfirmed is set only when an ownership READ has positively
+	// answered that this attempt still owns the run. It stays false when the
+	// terminal write simply errored, and when the ownership read itself
+	// failed — both of which land on terminalUnknown without establishing
+	// anything.
+	//
+	// It exists for writes to state SHARED with the run's other attempts,
+	// where "I was not shown to have lost the run" is not good enough. The
+	// ledger's in-flight marker is keyed on (project, run) and not on the
+	// attempt, so clearing it on a hunch takes down an entry the real owner
+	// may be holding — and that entry is what tells the dashboard to keep
+	// polling, so clearing it early makes the page present a half-written
+	// reflection as finished.
+	ownershipConfirmed bool
+
 	// attempt is which attempt of the run this process is. It fences the
 	// terminal status write against a previous attempt's agent that is still
 	// alive — see database.attemptFilter. Zero means "unknown", which
@@ -515,6 +530,7 @@ func (s *StatusReporter) classifyUnappliedTerminal(ctx context.Context, what str
 		logger.WithFields(logger.Fields{
 			"run_id": s.runID, "attempt": s.attempt,
 		}).Warn("the run was already terminal when this attempt tried to record its " + what + "; the outcome was not recorded, but this attempt still owns the run so its result is kept")
+		s.ownershipConfirmed = true
 		return terminalUnknown
 
 	case database.RunCancelled:
@@ -550,6 +566,19 @@ func (s *StatusReporter) classifyUnappliedTerminal(ctx context.Context, what str
 		}).Warn("this attempt no longer owns the run; its " + what + " was not recorded")
 		return terminalSuperseded
 	}
+}
+
+// StillOwnsRun reports whether an ownership read has positively confirmed
+// that this attempt still owns the run.
+//
+// False is the answer whenever nothing established it — no read happened, or
+// the read failed. Callers use it to decide whether they may touch state
+// shared with the run's other attempts; see ownershipConfirmed.
+func (s *StatusReporter) StillOwnsRun() bool {
+	if s == nil {
+		return false
+	}
+	return s.ownershipConfirmed
 }
 
 // MarkExplorationCheckpoint records that this run now has a checkpoint for
