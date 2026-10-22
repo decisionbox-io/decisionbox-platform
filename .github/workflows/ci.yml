@@ -2,14 +2,21 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    # epic/** as well as main: an epic branch collects a feature's PRs and
+    # merges to main as one unit, so the PRs that build it need the same gates
+    # the PR to main would have run. Without it a pull_request against an epic
+    # base matches no trigger at all and every job here is skipped — which
+    # reads as a green PR that was never tested.
+    branches: [main, 'epic/**']
     # `labeled` is included so adding the `run-integration-tests` label actually
     # starts the label-gated integration-tests job — the default activity types
     # (opened/synchronize/reopened) don't fire on a label change, so without it
     # the label can only take effect on the next push.
     types: [opened, synchronize, reopened, labeled]
   push:
-    branches: [main]
+    # Same reason on push: the epic branch is what finally merges to main, so
+    # it is verified as it accumulates rather than only once at the end.
+    branches: [main, 'epic/**']
 
 concurrency:
   group: ci-${{ github.ref }}
