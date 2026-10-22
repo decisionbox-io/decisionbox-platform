@@ -1824,22 +1824,6 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// the commoner of the two causes that land on this branch.
 		o.recordProjectLearning(persistCtx, projectCtx, allInsights)
 
-		// And the pending ledger marker comes down here too, for the same
-		// reason it does on the superseded branch: both of these returns are
-		// ERRORS, and agentserver skips RunPhaseReflection — whose deferred
-		// clear normally takes the entry down — on every error. So neither
-		// branch is ever going to run the hop the marker claims is in flight,
-		// and left up it blocks ledger backfill on a project nothing is
-		// writing for a whole ReflectionMarkerTTL, four hours by default.
-		//
-		// Not withheld on the grounds that ownership is undetermined here.
-		// The marker is not ownership evidence the way discarded_at is: it is
-		// a liveness claim about a hop, this attempt raised it, and this
-		// attempt is definitely not going to run it. In the commonest case
-		// reaching this branch — the write declined because the startup sweep
-		// had already marked the run failed — the ownership read positively
-		// said the run is still THIS attempt's, so there is no other holder
-		// to protect at all.
 		// Gated on POSITIVE ownership, not on the absence of evidence that we
 		// lost the run. Two causes reach this branch: the ownership read said
 		// the run is still this attempt's, or nothing established anything
@@ -1849,7 +1833,8 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// hop, and agentserver skips RunPhaseReflection on every error
 		// return, so nothing else will take it down before its TTL. In the
 		// second, clearing it risks exactly what the superseded branch above
-		// refuses to risk.
+		// refuses to risk: the entry is keyed on (project, run), and its
+		// disappearance is what stops the dashboard polling.
 		if o.reflectionPending && o.statusReporter.StillOwnsRun() {
 			o.endReflectionMarker(persistCtx)
 		}

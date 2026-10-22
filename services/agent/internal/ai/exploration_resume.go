@@ -325,6 +325,35 @@ func (e *ExplorationEngine) replayPrefix(ctx context.Context, conversation *Conv
 		// — so the damage is one redundant upsert rather than a corrupted
 		// point, but the asymmetry with the live path is not worth keeping,
 		// and the next shared write added here would not be so forgiving.
+		// KNOWN DEFECT, not yet fixed, flagged for review rather than
+		// guessed at — see the PR discussion.
+		//
+		// This rewrites a replayed row with the CURRENT attempt, and the
+		// attempt is what LoadPrefix uses to find a stale tail: a row whose
+		// attempt is LOWER than the prefix so far is taken to have answered a
+		// question the prefix no longer asks, and truncates the prefix there.
+		// Replaying walks that value up from the front, so a process that
+		// dies midway through replay leaves a decreasing sequence — 2,1,1 for
+		// a three-step prefix — and the NEXT resume keeps only step 1 and
+		// re-explores the rest. The steps it throws away are untouched and
+		// perfectly valid; the cost is paying the warehouse again for work
+		// already paid for.
+		//
+		// The three ways out are not equivalent and one of them changes how
+		// supersession is detected during replay, which is why this is not
+		// being decided here:
+		//
+		//   1. Do not rewrite replayed rows at all, and take the ownership
+		//      probe from MarkExplorationCheckpoint instead, which is already
+		//      attempt-fenced and already answers ownership "for free" on a
+		//      write this attempt makes anyway. The prefix then stays on its
+		//      original attempt and only ever INCREASES, which the rule
+		//      permits. Smallest, and removes a write per replayed step.
+		//   2. Adopt the whole trusted prefix before replay begins, restamping
+		//      in DESCENDING step order so that even a partial restamp leaves
+		//      a non-decreasing sequence.
+		//   3. Relax the staleness rule, which weakens a check that exists for
+		//      a real reason.
 		if e.checkpoint(ctx, step, cp.Args) {
 			out.Superseded = true
 			return out
