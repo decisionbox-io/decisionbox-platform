@@ -577,6 +577,8 @@ func (h *DiscoveriesHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	// transient Mongo error wipe a LIVE run off the page, and a terminal
 	// panel is not polled, so Progress and Cancel would not come back when
 	// the database did.
+	//
+	// Not-found comes back as nil, nil, so any error here is a real one.
 	latestRun, err := h.runRepo.GetLatestByProject(r.Context(), projectID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to read the project's current run: "+err.Error())
@@ -591,7 +593,10 @@ func (h *DiscoveriesHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 		status["run"] = latestRun
 	}
 
-	// Also include latest completed discovery stats
+	// Also include latest completed discovery stats. Display-only, so a failure
+	// to read them leaves them out rather than failing the run status with
+	// them: a caller polling for the run must not lose a good answer about it
+	// to a figure it does not act on.
 	latest, _ := h.repo.GetLatest(r.Context(), projectID)
 	if latest != nil {
 		status["last_discovery"] = map[string]interface{}{

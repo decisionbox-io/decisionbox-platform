@@ -942,6 +942,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	ledgerRepo := database.NewLedgerRepository(db)
 	ledgerFindingRepo := database.NewLedgerFindingRepository(db)
 	ledgerTaskRepo := database.NewLedgerTaskRepository(db)
+	ledgerLearningRepo := database.NewLedgerLearningRepository(db)
 	ledgerProposalRepo := database.NewLedgerProposalRepository(db)
 
 	if err := contextRepo.EnsureIndexes(ctx); err != nil {
@@ -964,7 +965,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		applog.WithError(err).Warn("Failed to ensure discovery checkpoint indexes")
 	}
 	for _, li := range []interface{ EnsureIndexes(context.Context) error }{
-		ledgerRepo, ledgerFindingRepo, ledgerTaskRepo, ledgerProposalRepo,
+		ledgerRepo, ledgerFindingRepo, ledgerTaskRepo, ledgerLearningRepo, ledgerProposalRepo,
 	} {
 		if err := li.EnsureIndexes(ctx); err != nil {
 			applog.WithError(err).Warn("Failed to ensure discovery ledger indexes")
@@ -1082,6 +1083,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		LedgerRepo:              ledgerRepo,
 		LedgerFindingRepo:       ledgerFindingRepo,
 		LedgerTaskRepo:          ledgerTaskRepo,
+		LedgerLearningRepo:      ledgerLearningRepo,
 		LedgerProposalRepo:      ledgerProposalRepo,
 		FeedbackRepo:            database.NewFeedbackRepository(db),
 		DebugLogRepo:            debugLogRepo,

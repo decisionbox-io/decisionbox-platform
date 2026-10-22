@@ -1161,6 +1161,9 @@ export interface LedgerFinding {
   liked?: boolean;
   first_seen: string;
   last_seen: string;
+  // Archived by the retention cap. The investigation view never returns these;
+  // the investigation graph does, so a long history can still be retraced.
+  archived?: boolean;
 }
 
 export interface LedgerTask {
@@ -1201,6 +1204,184 @@ export interface LedgerView {
   // Closed tasks referenced via a `supersedes` link from an open task, so a
   // follow-up's parent chain can be shown inline. Only the referenced ones.
   ancestors?: LedgerTask[];
+  // Set while a finished run is still being folded into the ledger. A run is
+  // marked completed before that happens, so until this clears, everything
+  // else in the view is the state from BEFORE the newest run. Absent on an API
+  // that predates it, which reads the same as "not updating".
+  updating?: LedgerUpdating | null;
+}
+
+export interface LedgerUpdating {
+  run_id: string;
+  since: string;
+}
+
+// --- Investigation graph (enterprise-backed, additive to the view above) ---
+//
+// A flat node + edge list rather than a nested tree: `supersedes` chains can
+// cycle, and the client lays the tree out itself. Every node carries a
+// `node_id` and every edge references one, because a run is identified by two
+// different ids (its run id and the discovery it produced) and a bare id could
+// not say which an edge means.
+
+/** Node kinds, as they appear in a `node_id` prefix and in `GraphEdge`. */
+export type GraphNodeKind =
+  | 'run' | 'disc' | 'finding' | 'task' | 'insight' | 'rec' | 'learning' | 'proposal';
+
+/** Edge kinds. A closed set, each in one canonical direction. */
+export type GraphEdgeKind =
+  | 'found' | 'seen_in' | 'evidenced_by' | 'in_run' | 'recommends_on'
+  | 'grew_from' | 'answered_by' | 'supersedes'
+  | 'opened' | 'closed' | 'pursued' | 'learned' | 'proposed';
+
+export interface GraphEdge {
+  from: string;
+  to: string;
+  kind: GraphEdgeKind;
+}
+
+export interface FindingSighting {
+  run_id: string;
+  discovery_id: string;
+  date: string;
+  key_metric?: string;
+  affected_count?: number;
+  severity?: string;
+  insight_id?: string;
+}
+
+export interface FindingStatusChange {
+  status: string;
+  reason?: string;
+  run_id?: string;
+  discovery_id?: string;
+  at: string;
+  source?: string; // reflection | trend | backfill
+}
+
+export interface GraphRun {
+  node_id: string;
+  run_id?: string;
+  discovery_id?: string;
+  date?: string;
+  run_type?: string;
+  areas?: string[];
+  warehouse_id?: string;
+  new_findings: number;
+  total_findings: number;
+  marginal_ratio: number;
+  /** How many of this run's findings never reached the ledger. Zero on every
+   *  healthy run; non-zero means the counts above understate it. */
+  unrecorded_findings?: number;
+  /** Which run of the investigation this is, oldest = 1, counted over the
+   *  whole history rather than over this response — which carries a window.
+   *  Absent when the run cannot be dated, and from an API that predates it. */
+  ordinal?: number;
+  /** The run this edge points at could not be found (a deleted discovery). */
+  missing?: boolean;
+}
+
+export interface GraphFinding {
+  node_id: string;
+  id: string;
+  name?: string;
+  area?: string;
+  severity?: string;
+  status?: string;
+  seen_count: number;
+  first_seen?: string;
+  last_seen?: string;
+  archived?: boolean;
+  source_insight_ids?: string[];
+  answered_task_ids?: string[];
+  sightings?: FindingSighting[];
+  status_history?: FindingStatusChange[];
+  missing?: boolean;
+}
+
+export interface GraphTask {
+  node_id: string;
+  id: string;
+  title?: string;
+  text?: string;
+  kind?: string;
+  status?: string;
+  supersedes?: string;
+  origin_finding_ids?: string[];
+  resolved_by_finding_ids?: string[];
+  pursued_in_run_ids?: string[];
+  created_run_id?: string;
+  created_discovery_id?: string;
+  closed_run_id?: string;
+  closed_discovery_id?: string;
+  closed_at?: string;
+  close_reason?: string;
+  missing?: boolean;
+}
+
+export interface GraphInsight {
+  node_id: string;
+  id: string;
+  discovery_id?: string;
+  name?: string;
+  area?: string;
+  severity?: string;
+  validation_verdict?: string;
+  missing?: boolean;
+}
+
+export interface GraphRecommendation {
+  node_id: string;
+  id: string;
+  discovery_id?: string;
+  title?: string;
+  priority?: number;
+  related_insight_ids?: string[];
+  validation_verdict?: string;
+}
+
+export interface GraphLearning {
+  node_id: string;
+  id: string;
+  category?: string;
+  note?: string;
+  relevance?: number;
+  run_id?: string;
+  discovery_id?: string;
+}
+
+export interface GraphProposal {
+  node_id: string;
+  id: string;
+  action?: string;
+  area_id?: string;
+  area_name?: string;
+  rationale?: string;
+  status?: string;
+  created_run_id?: string;
+  source_discovery_id?: string;
+}
+
+/** Which lists were cut to keep the response bounded. */
+export interface GraphTruncation {
+  runs: boolean;
+  learnings: boolean;
+  recommendations: boolean;
+  finding_trails: boolean;
+  /** A long-lived thread's pursuit history was clipped to the run window. */
+  task_pursuits: boolean;
+}
+
+export interface LedgerGraph {
+  runs: GraphRun[];
+  findings: GraphFinding[];
+  tasks: GraphTask[];
+  insights: GraphInsight[];
+  recommendations: GraphRecommendation[];
+  learnings: GraphLearning[];
+  proposals: GraphProposal[];
+  edges: GraphEdge[];
+  truncated: GraphTruncation;
 }
 
 export interface PackProposal {
@@ -1898,6 +2079,15 @@ export const api = {
     }),
   getLedger: (projectId: string) =>
     request<LedgerView>(`/api/v1/projects/${projectId}/discovery-ledger`),
+  // The investigation graph. Bounded by the most recent N runs server-side;
+  // `runs` / `since` narrow it further on a long-lived project.
+  getLedgerGraph: (projectId: string, opts?: { runs?: number; since?: string }) => {
+    const params = new URLSearchParams();
+    if (opts?.runs) params.set('runs', String(opts.runs));
+    if (opts?.since) params.set('since', opts.since);
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    return request<LedgerGraph>(`/api/v1/projects/${projectId}/discovery-ledger/graph${suffix}`);
+  },
   listPackProposals: (projectId: string, status?: string) => {
     const suffix = status ? `?status=${encodeURIComponent(status)}` : '';
     return request<PackProposal[]>(`/api/v1/projects/${projectId}/discovery-ledger/proposals${suffix}`);

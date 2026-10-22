@@ -164,6 +164,7 @@ type Orchestrator struct {
 	ledgerRepo   ledgerStore
 	findingRepo  findingStore
 	taskRepo     taskStore
+	learningRepo learningStore
 	proposalRepo proposalStore
 	feedbackRepo *database.FeedbackRepository
 	debugLogRepo *database.DebugLogRepository
@@ -259,10 +260,22 @@ type Orchestrator struct {
 	// default-on). Layer B of the gate; the deployment flag is Layer A.
 	clarifyingQuestionsEnabled bool
 
+	// reflectionPending is set once markReflectionPending has put this run's
+	// in-flight entry up, so RunPhaseReflection knows it owns taking it down.
+	reflectionPending bool
 	// reflectionEnabled is the resolved per-project toggle for the end-of-run
 	// reflection / Discovery Ledger phase (from DiscoveryOptions.ReflectionEnabled,
 	// default-on). Layer B of the gate; DISCOVERY_REFLECTION_ENABLED is Layer A.
 	reflectionEnabled bool
+	// shownTaskIDs are the open threads this run was actually shown, captured
+	// when the ledger read context was built. The reflection phase records
+	// these as pursued rather than re-reading the queue, which by then may
+	// have moved under it.
+	shownTaskIDs []string
+	// promptFindingIDs are the ledger findings the reflection prompt carried.
+	// An id the model returns that is in neither this nor the run's own
+	// insights was invented.
+	promptFindingIDs []string
 
 	// recommendationVerdicts is the resolved per-project set of validation
 	// verdicts that make an insight eligible for recommendation generation
@@ -350,6 +363,7 @@ type OrchestratorOptions struct {
 	LedgerRepo         *database.LedgerRepository
 	LedgerFindingRepo  *database.LedgerFindingRepository
 	LedgerTaskRepo     *database.LedgerTaskRepository
+	LedgerLearningRepo *database.LedgerLearningRepository
 	LedgerProposalRepo *database.LedgerProposalRepository
 	FeedbackRepo       *database.FeedbackRepository
 	DebugLogRepo       *database.DebugLogRepository
@@ -522,6 +536,10 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 	if opts.LedgerTaskRepo != nil {
 		taskRepo = opts.LedgerTaskRepo
 	}
+	var learningRepo learningStore
+	if opts.LedgerLearningRepo != nil {
+		learningRepo = opts.LedgerLearningRepo
+	}
 	var proposalRepo proposalStore
 	if opts.LedgerProposalRepo != nil {
 		proposalRepo = opts.LedgerProposalRepo
@@ -537,6 +555,7 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		ledgerRepo:            ledgerRepo,
 		findingRepo:           findingRepo,
 		taskRepo:              taskRepo,
+		learningRepo:          learningRepo,
 		proposalRepo:          proposalRepo,
 		feedbackRepo:          opts.FeedbackRepo,
 		debugLogRepo:          opts.DebugLogRepo,
@@ -1695,6 +1714,13 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// "which model ran which attempt" is answerable.
 	o.recordAttemptOutcome(persistCtx, time.Since(startTime), computeErr)
 
+	// The ledger update this run is about to owe goes up BEFORE the run reads
+	// as completed, so nothing that sees the completed run sees a ledger that
+	// claims to be current. See markReflectionPending.
+	if computeErr == nil {
+		o.markReflectionPending(persistCtx)
+	}
+
 	// Final step: update run status (success or failure) based on execution
 	// result. It runs BEFORE the cleanup below, and that order is load-bearing:
 	// the terminal write is attempt-fenced, so whether it landed is this
@@ -1731,6 +1757,26 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// So it deletes its OWN output and nothing else. The owner's result
 		// is untouched either way.
 		o.retireOwnResult(persistCtx, result.ID)
+
+		// The entry markReflectionPending put up a moment ago comes back down
+		// too. That call runs before ownership is known, so a superseded
+		// attempt has already told the project its ledger is being updated —
+		// and agentserver exits on ErrAttemptSuperseded WITHOUT running the
+		// reflection phase, whose deferred clear is what normally takes the
+		// entry down. Left up by an attempt that reached here after the owner
+		// had finished its own reflection, it is permanent: the ledger view
+		// tells the user an update is in flight for ever, and the backfill
+		// keeps away from a project nothing is writing.
+		//
+		// The entry is keyed on (project, run) and not on the attempt, so this
+		// can in principle take down one the OWNER has just put up, and a
+		// reader would see the update as finished while it is still being
+		// folded in. That is transient and self-correcting — the owner holds
+		// its own deferred clear, so the end state is right either way —
+		// where leaving a stale entry up is neither.
+		if o.reflectionPending {
+			o.endReflectionMarker(persistCtx)
+		}
 
 		// And it must NOT fall through to the success path. Compute may have
 		// gone perfectly — err is nil here — but the result it produced has
@@ -1771,6 +1817,26 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// startup sweep marked failed while its agent was still working —
 		// the commoner of the two causes that land on this branch.
 		o.recordProjectLearning(persistCtx, projectCtx, allInsights)
+
+		// And the pending ledger marker comes down here too, for the same
+		// reason it does on the superseded branch: both of these returns are
+		// ERRORS, and agentserver skips RunPhaseReflection — whose deferred
+		// clear normally takes the entry down — on every error. So neither
+		// branch is ever going to run the hop the marker claims is in flight,
+		// and left up it blocks ledger backfill on a project nothing is
+		// writing for a whole ReflectionMarkerTTL, four hours by default.
+		//
+		// Not withheld on the grounds that ownership is undetermined here.
+		// The marker is not ownership evidence the way discarded_at is: it is
+		// a liveness claim about a hop, this attempt raised it, and this
+		// attempt is definitely not going to run it. In the commonest case
+		// reaching this branch — the write declined because the startup sweep
+		// had already marked the run failed — the ownership read positively
+		// said the run is still THIS attempt's, so there is no other holder
+		// to protect at all.
+		if o.reflectionPending {
+			o.endReflectionMarker(persistCtx)
+		}
 
 		if err == nil {
 			return result, fmt.Errorf("run %s: discovery completed but its terminal status write did not land", o.runID)

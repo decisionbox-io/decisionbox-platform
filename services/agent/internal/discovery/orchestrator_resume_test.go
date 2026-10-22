@@ -1127,3 +1127,77 @@ func TestRecordProjectLearning_SafeWithoutItsDependencies(t *testing.T) {
 	// A context that was never loaded.
 	o.recordProjectLearning(context.Background(), nil, nil)
 }
+
+// TestReflectionMarker_TakenDownWheneverThisAttemptAbandonsTheHop pins the
+// pairing that the ledger's pending marker and the terminal switch only need
+// once they meet — which they first do in this merge.
+//
+// markReflectionPending puts an "updating" entry up for (project, run) BEFORE
+// the terminal status write, because nothing that sees a completed run may see
+// a ledger claiming to be current. That is before ownership is known, so every
+// attempt raises one. What normally takes it down is the reflection phase's
+// deferred clear — and agentserver skips RunPhaseReflection on EVERY error
+// return, which is what both the superseded and the unknown branches do. So
+// whichever of them an attempt lands on, it has raised an entry for a hop it
+// will never run, and left up that entry blocks ledger backfill on an idle
+// project for a whole ReflectionMarkerTTL, four hours by default.
+//
+// Asserted against the source for the reason the neighbouring ownership tests
+// give: driving RunDiscovery's terminal section end-to-end needs a live
+// warehouse, an LLM and Mongo.
+func TestReflectionMarker_TakenDownWheneverThisAttemptAbandonsTheHop(t *testing.T) {
+	src, err := os.ReadFile("orchestrator.go")
+	if err != nil {
+		t.Fatalf("read orchestrator.go: %v", err)
+	}
+	text := string(src)
+
+	mark := strings.Index(text, "o.markReflectionPending(persistCtx)")
+	// The STATUS FLIP is the landmark, not the switch that reads its answer:
+	// finalizeStatus is what makes the run read as terminal, and everything
+	// between it and the switch is already too late.
+	flip := strings.Index(text, "outcome, err := finalizeStatus(")
+	if mark < 0 || flip < 0 {
+		t.Fatal("could not locate markReflectionPending or the terminal status write")
+	}
+	if mark > flip {
+		t.Error("the reflection marker goes up after the terminal status write; a reader can then see a completed run with a ledger that claims to be current")
+	}
+
+	superseded := strings.Index(text, "case terminalSuperseded:")
+	unknown := strings.Index(text, "case terminalUnknown:")
+	if superseded < 0 || unknown < 0 || unknown < superseded {
+		t.Fatal("could not delimit the terminal branches")
+	}
+
+	// Both error branches must take it down. Bounded to each case so the
+	// assertion cannot be satisfied by a clear somewhere harmless.
+	for name, branch := range map[string]string{
+		"terminalSuperseded": text[superseded:unknown],
+		"terminalUnknown":    text[unknown:],
+	} {
+		if !strings.Contains(branch, "o.endReflectionMarker(persistCtx)") {
+			t.Errorf("the %s branch does not take the reflection marker down; it returns an error, so agentserver never runs the reflection phase whose deferred clear would, and ledger backfill skips the project until the marker expires", name)
+		}
+	}
+}
+
+// TestEndReflectionMarker_ClearsTheEntryForThisRun is the behavioural half:
+// the clears above are only worth anything if the call actually writes an end
+// for this run's entry.
+func TestEndReflectionMarker_ClearsTheEntryForThisRun(t *testing.T) {
+	led := &fakeLedgerRepo{}
+	o := &Orchestrator{projectID: "p1", runID: "run-1", ledgerRepo: led}
+
+	if err := led.BeginReflection(context.Background(), "p1", "run-1"); err != nil {
+		t.Fatalf("seed the marker: %v", err)
+	}
+	o.endReflectionMarker(context.Background())
+
+	if led.reflectingRunID != "" {
+		t.Errorf("the entry is still up for %q after the clear", led.reflectingRunID)
+	}
+	if got := led.markerEvents; len(got) != 2 || got[1] != "end" {
+		t.Errorf("marker events = %v, want a begin then an end", got)
+	}
+}

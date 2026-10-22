@@ -42,6 +42,9 @@ type mockVectorStore struct {
 	dupes    []vectorstore.SearchResult
 	ensured  bool
 	deleted  []string
+	// searches counts Search calls, so a test can hold the line that semantic
+	// dedup is only asked about candidates no key already matched.
+	searches int
 }
 
 func (m *mockVectorStore) Upsert(_ context.Context, points []vectorstore.Point) error {
@@ -50,6 +53,7 @@ func (m *mockVectorStore) Upsert(_ context.Context, points []vectorstore.Point) 
 }
 
 func (m *mockVectorStore) Search(_ context.Context, _ []float64, _ vectorstore.SearchOpts) ([]vectorstore.SearchResult, error) {
+	m.searches++
 	return nil, nil
 }
 
