@@ -399,7 +399,7 @@ func (o *Orchestrator) recordAttemptOutcome(ctx context.Context, elapsed time.Du
 // DELETES things — can be exercised against fakes rather than only against a
 // live MongoDB.
 type discoveryRetirer interface {
-	ListIDsByRun(ctx context.Context, runID string) ([]string, error)
+	ListByRun(ctx context.Context, runID string) ([]database.DiscoveryRef, error)
 	DeleteByID(ctx context.Context, idHex string) error
 }
 
@@ -450,7 +450,7 @@ func (o *Orchestrator) retireOwnResult(ctx context.Context, discoveryID string) 
 }
 
 func (o *Orchestrator) retireSupersededAttempts(ctx context.Context, keepDiscoveryID string) {
-	retireSuperseded(ctx, o.runID, keepDiscoveryID, retireDeps{
+	retireSuperseded(ctx, o.runID, keepDiscoveryID, o.resume.attemptNumber(), retireDeps{
 		discoveries: o.discoveryRepo,
 		logs:        o.discoveryLogRepo,
 		embed:       o.embedIndexStore,
@@ -458,11 +458,29 @@ func (o *Orchestrator) retireSupersededAttempts(ctx context.Context, keepDiscove
 	})
 }
 
-func retireSuperseded(ctx context.Context, runID, keepDiscoveryID string, deps retireDeps) {
+// retireSuperseded deletes the results of this run's EARLIER attempts, and
+// only those.
+//
+// attempt bounds it, and the bound is the whole safety of this function.
+// Claiming the terminal write establishes ownership at the moment of that
+// write — not at this cleanup, which is a detached tail-end write and can lag
+// arbitrarily behind it. So an attempt that failed, claimed its terminal
+// status and was then resumed can arrive HERE after its successor has already
+// saved a discovery: resume is a button on the failed run, and the successor
+// saves well before its own terminal write. Deleting "everything for this run
+// except my own id" would then delete the successor's discovery, its split
+// logs, its standalone findings and its vectors, and keep the dead attempt's.
+//
+// A strict less-than also means attempt 1 retires nothing, which is correct:
+// the first attempt has nothing to supersede.
+func retireSuperseded(ctx context.Context, runID, keepDiscoveryID string, attempt int, deps retireDeps) {
 	if runID == "" || keepDiscoveryID == "" || deps.discoveries == nil {
 		return
 	}
-	ids, err := deps.discoveries.ListIDsByRun(ctx, runID)
+	if attempt <= 0 {
+		attempt = 1
+	}
+	refs, err := deps.discoveries.ListByRun(ctx, runID)
 	if err != nil {
 		applog.WithFields(applog.Fields{
 			"run_id": runID,
@@ -471,11 +489,23 @@ func retireSuperseded(ctx context.Context, runID, keepDiscoveryID string, deps r
 		return
 	}
 
-	for _, id := range ids {
-		if id == keepDiscoveryID {
+	for _, ref := range refs {
+		if ref.ID == keepDiscoveryID {
 			continue
 		}
-		retireDiscovery(ctx, runID, id, deps)
+		if ref.Attempt >= attempt {
+			// Same attempt or newer. Newer owns the run and must be left
+			// alone; equal cannot be retired by its own peer, and there is
+			// no legitimate way for one attempt to produce two results.
+			applog.WithFields(applog.Fields{
+				"run_id":       runID,
+				"discovery_id": ref.ID,
+				"its_attempt":  ref.Attempt,
+				"this_attempt": attempt,
+			}).Info("leaving a discovery from an attempt that is not older than this one; it is not this attempt's to retire")
+			continue
+		}
+		retireDiscovery(ctx, runID, ref.ID, deps)
 	}
 }
 

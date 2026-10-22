@@ -1633,7 +1633,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// produced — needed to retire a superseded attempt's partial
 		// result, and to keep that result out of this run's own
 		// previously-discovered context.
-		RunID:          o.runID,
+		RunID: o.runID,
+		// Which attempt produced it, so a previous attempt's late cleanup
+		// can tell this result from one of its own. See DiscoveryResult.Attempt.
+		Attempt:        o.resume.attemptNumber(),
 		Domain:         o.domain,
 		Category:       o.category,
 		RunType:        runType,

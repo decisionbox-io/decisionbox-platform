@@ -185,24 +185,37 @@ func (r *DiscoveryRepository) ListRecent(ctx context.Context, projectID string, 
 	return results, nil
 }
 
-// ListIDsByRun returns the _ids of every discovery produced by one run,
-// newest first.
+// DiscoveryRef is one discovery of a run together with the attempt that
+// produced it. The attempt is what makes retirement safe: see
+// models.DiscoveryResult.Attempt.
+type DiscoveryRef struct {
+	ID string
+	// Attempt is normalised on read — a document written before the field
+	// existed has no attempt and reads as 1.
+	Attempt int
+}
+
+// ListByRun returns every discovery produced by one run, newest first, each
+// with the attempt that produced it.
 //
 // A run produces exactly one result on the happy path. It produces more only
 // when it was resumed after a previous attempt had already saved a partial
 // result — which is precisely the case the caller needs to find, so it can
-// retire the superseded documents once the new attempt has landed.
+// retire the superseded documents once the new attempt has landed. The
+// attempt comes back with each id because "superseded" means a LOWER attempt,
+// and nothing else: the caller cannot infer it from the ordering, which is by
+// discovery_date and so depends on two agents' clocks.
 //
 // Documents written before run_id existed carry none, so they never match —
 // the right answer for a historical result.
-func (r *DiscoveryRepository) ListIDsByRun(ctx context.Context, runID string) ([]string, error) {
+func (r *DiscoveryRepository) ListByRun(ctx context.Context, runID string) ([]DiscoveryRef, error) {
 	if runID == "" {
 		return nil, nil
 	}
 	cursor, err := r.collection.Find(ctx,
 		bson.M{"run_id": runID},
 		options.Find().
-			SetProjection(bson.M{"_id": 1}).
+			SetProjection(bson.M{"_id": 1, "attempt": 1}).
 			SetSort(bson.D{{Key: "discovery_date", Value: -1}}),
 	)
 	if err != nil {
@@ -210,20 +223,27 @@ func (r *DiscoveryRepository) ListIDsByRun(ctx context.Context, runID string) ([
 	}
 	defer cursor.Close(ctx) //nolint:errcheck
 
-	ids := make([]string, 0, 2)
+	refs := make([]DiscoveryRef, 0, 2)
 	for cursor.Next(ctx) {
 		var doc struct {
-			ID primitive.ObjectID `bson:"_id"`
+			ID      primitive.ObjectID `bson:"_id"`
+			Attempt int                `bson:"attempt"`
 		}
 		if err := cursor.Decode(&doc); err != nil {
 			return nil, fmt.Errorf("decode discovery id for run %s: %w", runID, err)
 		}
-		ids = append(ids, doc.ID.Hex())
+		// Normalised here rather than at every caller: a document from
+		// before the field existed can only be the first attempt.
+		attempt := doc.Attempt
+		if attempt <= 0 {
+			attempt = 1
+		}
+		refs = append(refs, DiscoveryRef{ID: doc.ID.Hex(), Attempt: attempt})
 	}
 	if err := cursor.Err(); err != nil {
 		return nil, fmt.Errorf("cursor discoveries for run %s: %w", runID, err)
 	}
-	return ids, nil
+	return refs, nil
 }
 
 // DeleteByID removes one discovery document. Used to retire the partial

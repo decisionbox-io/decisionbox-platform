@@ -67,15 +67,24 @@ func (f *fakeCheckpointStore) DeleteByRun(_ context.Context, runID string) (int6
 
 // fakeDiscoveryRetirer is the discoveries collection as the retire step sees
 // it: a list keyed by run, and deletes it records.
+// refsAt is shorthand for "these discoveries, all produced by this attempt".
+func refsAt(attempt int, ids ...string) []database.DiscoveryRef {
+	refs := make([]database.DiscoveryRef, 0, len(ids))
+	for _, id := range ids {
+		refs = append(refs, database.DiscoveryRef{ID: id, Attempt: attempt})
+	}
+	return refs
+}
+
 type fakeDiscoveryRetirer struct {
-	byRun   map[string][]string
+	byRun   map[string][]database.DiscoveryRef
 	deleted []string
 
 	listErr   error
 	deleteErr error
 }
 
-func (f *fakeDiscoveryRetirer) ListIDsByRun(_ context.Context, runID string) ([]string, error) {
+func (f *fakeDiscoveryRetirer) ListByRun(_ context.Context, runID string) ([]database.DiscoveryRef, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -483,8 +492,8 @@ func TestResumePhaseDetail_ExplainsTheRunToTheOperator(t *testing.T) {
 // no-duplicate-results guarantee: the attempt that just landed survives, the
 // earlier one and everything derived from it goes.
 func TestRetireSuperseded_DeletesTheOldAttemptAndNothingElse(t *testing.T) {
-	disc := &fakeDiscoveryRetirer{byRun: map[string][]string{
-		"run-1": {"disc-new", "disc-old"},
+	disc := &fakeDiscoveryRetirer{byRun: map[string][]database.DiscoveryRef{
+		"run-1": {{ID: "disc-new", Attempt: 2}, {ID: "disc-old", Attempt: 1}},
 	}}
 	logs := &fakeDiscoveryLogPersister{}
 	embed := &mockEmbedIndexStore{
@@ -493,7 +502,7 @@ func TestRetireSuperseded_DeletesTheOldAttemptAndNothingElse(t *testing.T) {
 	}
 	vecs := &fakeVectorStore{}
 
-	retireSuperseded(context.Background(), "run-1", "disc-new", retireDeps{
+	retireSuperseded(context.Background(), "run-1", "disc-new", 2, retireDeps{
 		discoveries: disc, logs: logs, embed: embed, vectors: vecs,
 	})
 
@@ -524,19 +533,19 @@ func TestRetireSuperseded_DeletesTheOldAttemptAndNothingElse(t *testing.T) {
 func TestRetireSuperseded_NoOpCases(t *testing.T) {
 	cases := map[string]struct {
 		runID, keepID string
-		byRun         map[string][]string
+		byRun         map[string][]database.DiscoveryRef
 	}{
-		"only this attempt's result exists": {"run-1", "disc-new", map[string][]string{"run-1": {"disc-new"}}},
-		"previous attempt saved nothing":    {"run-1", "disc-new", map[string][]string{}},
-		"no run id":                         {"", "disc-new", map[string][]string{"run-1": {"disc-old"}}},
-		"save failed, so no id to keep":     {"run-1", "", map[string][]string{"run-1": {"disc-old"}}},
+		"only this attempt's result exists": {"run-1", "disc-new", map[string][]database.DiscoveryRef{"run-1": refsAt(2, "disc-new")}},
+		"previous attempt saved nothing":    {"run-1", "disc-new", map[string][]database.DiscoveryRef{}},
+		"no run id":                         {"", "disc-new", map[string][]database.DiscoveryRef{"run-1": refsAt(1, "disc-old")}},
+		"save failed, so no id to keep":     {"run-1", "", map[string][]database.DiscoveryRef{"run-1": refsAt(1, "disc-old")}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			disc := &fakeDiscoveryRetirer{byRun: tc.byRun}
 			logs := &fakeDiscoveryLogPersister{}
 			embed := &mockEmbedIndexStore{}
-			retireSuperseded(context.Background(), tc.runID, tc.keepID, retireDeps{
+			retireSuperseded(context.Background(), tc.runID, tc.keepID, 2, retireDeps{
 				discoveries: disc, logs: logs, embed: embed, vectors: &fakeVectorStore{},
 			})
 			if len(disc.deleted) != 0 || len(logs.deletedDiscoveryIDs) != 0 || len(embed.deletedDiscoveries) != 0 {
@@ -553,10 +562,10 @@ func TestRetireSuperseded_NoOpCases(t *testing.T) {
 // destroys a run's output.
 func TestRetireSuperseded_ListFailureKeepsBothResults(t *testing.T) {
 	disc := &fakeDiscoveryRetirer{
-		byRun:   map[string][]string{"run-1": {"disc-new", "disc-old"}},
+		byRun:   map[string][]database.DiscoveryRef{"run-1": {{ID: "disc-new", Attempt: 2}, {ID: "disc-old", Attempt: 1}}},
 		listErr: errors.New("mongo down"),
 	}
-	retireSuperseded(context.Background(), "run-1", "disc-new", retireDeps{discoveries: disc})
+	retireSuperseded(context.Background(), "run-1", "disc-new", 2, retireDeps{discoveries: disc})
 	if len(disc.deleted) != 0 {
 		t.Errorf("deleted %v despite not being able to read the list", disc.deleted)
 	}
@@ -569,12 +578,12 @@ func TestRetireSuperseded_ListFailureKeepsBothResults(t *testing.T) {
 // /discoveries/{id}/... So a leftover log row is noise, while a leftover
 // discoveries document is a second visible result for one run.
 func TestRetireSuperseded_DeletesTheParentWhenOnlyTheLogsFail(t *testing.T) {
-	disc := &fakeDiscoveryRetirer{byRun: map[string][]string{"run-1": {"disc-old"}}}
+	disc := &fakeDiscoveryRetirer{byRun: map[string][]database.DiscoveryRef{"run-1": refsAt(1, "disc-old")}}
 	logs := &fakeDiscoveryLogPersister{deleteErr: errors.New("logs boom")}
 	embed := &mockEmbedIndexStore{deleteInsightIDs: []string{"ins-1"}}
 	vecs := &fakeVectorStore{}
 
-	retireSuperseded(context.Background(), "run-1", "disc-new", retireDeps{
+	retireSuperseded(context.Background(), "run-1", "disc-new", 2, retireDeps{
 		discoveries: disc, logs: logs, embed: embed, vectors: vecs,
 	})
 
@@ -602,7 +611,7 @@ func TestRetireSuperseded_DeletesTheParentWhenOnlyTheLogsFail(t *testing.T) {
 func TestRetireSuperseded_AFailedVectorCleanupRetiresNothing(t *testing.T) {
 	for name, deps := range map[string]func() (*fakeDiscoveryRetirer, retireDeps){
 		"the point delete fails": func() (*fakeDiscoveryRetirer, retireDeps) {
-			disc := &fakeDiscoveryRetirer{byRun: map[string][]string{"run-1": {"disc-old"}}}
+			disc := &fakeDiscoveryRetirer{byRun: map[string][]database.DiscoveryRef{"run-1": refsAt(1, "disc-old")}}
 			embed := &mockEmbedIndexStore{deleteInsightIDs: []string{"ins-1"}}
 			return disc, retireDeps{
 				discoveries: disc,
@@ -612,7 +621,7 @@ func TestRetireSuperseded_AFailedVectorCleanupRetiresNothing(t *testing.T) {
 			}
 		},
 		"the id list fails, so the surviving points cannot even be named": func() (*fakeDiscoveryRetirer, retireDeps) {
-			disc := &fakeDiscoveryRetirer{byRun: map[string][]string{"run-1": {"disc-old"}}}
+			disc := &fakeDiscoveryRetirer{byRun: map[string][]database.DiscoveryRef{"run-1": refsAt(1, "disc-old")}}
 			embed := &mockEmbedIndexStore{listError: errors.New("mongo down")}
 			return disc, retireDeps{
 				discoveries: disc,
@@ -624,7 +633,7 @@ func TestRetireSuperseded_AFailedVectorCleanupRetiresNothing(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			disc, d := deps()
-			retireSuperseded(context.Background(), "run-1", "disc-new", d)
+			retireSuperseded(context.Background(), "run-1", "disc-new", 2, d)
 			if len(disc.deleted) != 0 {
 				t.Errorf("deleted %v; retiring the parent while its findings survive leaves them on display with no result behind them", disc.deleted)
 			}
@@ -641,8 +650,8 @@ func TestRetireSuperseded_AFailedVectorCleanupRetiresNothing(t *testing.T) {
 // the orphan's discovery_date is typically later than the owner's, so its
 // result becomes the project's LATEST: the dead attempt wins the display.
 func TestRetireOwnResult_ASupersededAttemptCleansUpAfterItself(t *testing.T) {
-	disc := &fakeDiscoveryRetirer{byRun: map[string][]string{
-		"run-1": {"disc-orphan", "disc-live"},
+	disc := &fakeDiscoveryRetirer{byRun: map[string][]database.DiscoveryRef{
+		"run-1": {{ID: "disc-orphan", Attempt: 1}, {ID: "disc-live", Attempt: 2}},
 	}}
 	logs := &fakeDiscoveryLogPersister{}
 	embed := &mockEmbedIndexStore{
@@ -1250,5 +1259,72 @@ func TestEndReflectionMarker_ClearsTheEntryForThisRun(t *testing.T) {
 	}
 	if got := led.markerEvents; len(got) != 2 || got[1] != "end" {
 		t.Errorf("marker events = %v, want a begin then an end", got)
+	}
+}
+
+// TestRetireSuperseded_AnEarlierAttemptCannotDeleteItsSuccessorsResult is the
+// bound that makes this function safe, and the one the claim gate alone does
+// NOT provide.
+//
+// terminalClaimed establishes ownership at the terminal WRITE. This cleanup is
+// a detached tail-end write that can lag arbitrarily behind it, and resume is
+// a button on the failed run. So the order below is reachable:
+//
+//	attempt 1 fails with a partial result saved
+//	attempt 1's terminal write lands  -> terminalClaimed
+//	operator resumes                  -> attempt 2 begins
+//	attempt 2 saves its discovery     (saves precede its terminal write)
+//	attempt 1's cleanup finally runs  -> sees BOTH results
+//
+// "Delete everything for this run except my own id" would, at that point,
+// destroy the live attempt's discovery, split logs, standalone findings and
+// vectors, and keep the dead attempt's — the exact inversion the claim gate
+// was added to prevent, one step further along.
+func TestRetireSuperseded_AnEarlierAttemptCannotDeleteItsSuccessorsResult(t *testing.T) {
+	disc := &fakeDiscoveryRetirer{byRun: map[string][]database.DiscoveryRef{
+		// Newest first, as the repository returns them — and note the
+		// successor sorts FIRST, so ordering is no defence.
+		"run-1": {{ID: "disc-attempt-2", Attempt: 2}, {ID: "disc-attempt-1", Attempt: 1}},
+	}}
+	logs := &fakeDiscoveryLogPersister{}
+	embed := &mockEmbedIndexStore{
+		deleteInsightIDs: []string{"ins-live"},
+		deleteRecIDs:     []string{"rec-live"},
+	}
+	vecs := &fakeVectorStore{}
+
+	// Attempt 1 cleaning up, keeping its own result, after attempt 2 saved.
+	retireSuperseded(context.Background(), "run-1", "disc-attempt-1", 1, retireDeps{
+		discoveries: disc, logs: logs, embed: embed, vectors: vecs,
+	})
+
+	if len(disc.deleted) != 0 {
+		t.Fatalf("attempt 1 deleted %v; attempt 2 owns this run and its result must survive", disc.deleted)
+	}
+	if len(logs.deletedDiscoveryIDs) != 0 {
+		t.Errorf("attempt 1 deleted split logs %v belonging to a newer attempt", logs.deletedDiscoveryIDs)
+	}
+	if len(embed.deletedDiscoveries) != 0 {
+		t.Errorf("attempt 1 deleted standalone docs %v belonging to a newer attempt", embed.deletedDiscoveries)
+	}
+	if len(vecs.deleted) != 0 {
+		t.Errorf("attempt 1 deleted vectors %v belonging to a newer attempt", vecs.deleted)
+	}
+}
+
+// And the first attempt of a run that was never resumed retires nothing at
+// all, which is the common path: there is no earlier attempt to supersede.
+func TestRetireSuperseded_FirstAttemptRetiresNothing(t *testing.T) {
+	disc := &fakeDiscoveryRetirer{byRun: map[string][]database.DiscoveryRef{
+		// A legacy sibling with no attempt field reads as attempt 1 too, so
+		// it is not strictly older and is left alone rather than guessed at.
+		"run-1": {{ID: "disc-mine", Attempt: 1}, {ID: "disc-legacy", Attempt: 1}},
+	}}
+	retireSuperseded(context.Background(), "run-1", "disc-mine", 1, retireDeps{
+		discoveries: disc, logs: &fakeDiscoveryLogPersister{},
+		embed: &mockEmbedIndexStore{}, vectors: &fakeVectorStore{},
+	})
+	if len(disc.deleted) != 0 {
+		t.Errorf("deleted %v; attempt 1 has nothing to supersede", disc.deleted)
 	}
 }

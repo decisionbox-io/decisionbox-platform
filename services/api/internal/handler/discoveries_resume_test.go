@@ -172,11 +172,21 @@ func newResumeFixture(t *testing.T) *resumeFixture {
 	return &resumeFixture{h: h, runs: runs, projs: projs, discs: discs, cps: cps, runner: rr}
 }
 
-func (f *resumeFixture) post(runID string) *httptest.ResponseRecorder {
+// resumeReq carries an admin principal, as every request that reaches this
+// handler in production does: the route authorises against the run's project,
+// and where auth is disabled NoAuthProvider injects exactly this. The tests
+// that exercise the refusal build their own request instead.
+func resumeReq(runID string) *http.Request {
 	req := httptest.NewRequest("POST", "/api/v1/runs/"+runID+"/resume", nil)
 	req.SetPathValue("runId", runID)
+	return req.WithContext(auth.WithUser(req.Context(), &auth.UserPrincipal{
+		Sub: "tester", OrgID: "default", Roles: []string{"admin"},
+	}))
+}
+
+func (f *resumeFixture) post(runID string) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
-	f.h.ResumeRun(w, req)
+	f.h.ResumeRun(w, resumeReq(runID))
 	return w
 }
 
@@ -572,10 +582,8 @@ func TestStartRun_FailureCallbackIsScopedToAttemptOne(t *testing.T) {
 
 	// It fails, then is resumed.
 	runs.runs[res.RunID].Status = "failed"
-	req := httptest.NewRequest("POST", "/api/v1/runs/"+res.RunID+"/resume", nil)
-	req.SetPathValue("runId", res.RunID)
 	w := httptest.NewRecorder()
-	h.ResumeRun(w, req)
+	h.ResumeRun(w, resumeReq(res.RunID))
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("resume: status = %d; body = %s", w.Code, w.Body.String())
 	}
@@ -951,8 +959,9 @@ func TestStartRun_FailureCallbackConfirmsTheReservationEvenWhenTheStatusWriteNoO
 // postWithCtx is post() with a caller-supplied request context, so a test can
 // cancel the request mid-handler the way a closing browser tab does.
 func (f *resumeFixture) postWithCtx(ctx context.Context, runID string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest("POST", "/api/v1/runs/"+runID+"/resume", nil).WithContext(ctx)
-	req.SetPathValue("runId", runID)
+	req := resumeReq(runID).WithContext(auth.WithUser(ctx, &auth.UserPrincipal{
+		Sub: "tester", OrgID: "default", Roles: []string{"admin"},
+	}))
 	w := httptest.NewRecorder()
 	f.h.ResumeRun(w, req)
 	return w
@@ -1068,10 +1077,8 @@ func TestResumeRun_ASlowRecheckDoesNotStarveTheStandDown(t *testing.T) {
 	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), f.projs, slow, nil, nil, nil, f.runner).
 		WithCheckpoints(f.cps)
 
-	req := httptest.NewRequest("POST", "/api/v1/runs/run-1/resume", nil)
-	req.SetPathValue("runId", "run-1")
 	w := httptest.NewRecorder()
-	h.ResumeRun(w, req)
+	h.ResumeRun(w, resumeReq("run-1"))
 
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500 (the recheck could not be completed); body = %s", w.Code, w.Body.String())
@@ -1494,6 +1501,54 @@ func TestDiscardRun_RefusesAPrincipalTheProjectExcludes(t *testing.T) {
 	}
 	if len(f.cps.deleted) != 0 {
 		t.Errorf("a refused discard deleted checkpoints: %v", f.cps.deleted)
+	}
+}
+
+// The same gap on the resume route, which matters for a different reason than
+// the discard's: resume is not destructive, it is EXPENSIVE and it reads. It
+// launches an agent that runs the project's queries with the project's
+// warehouse and LLM credentials, so an excluded principal resuming a known run
+// id spends the project's budget and produces findings from data it cannot
+// open. The readiness gate the route already had says nothing about who asks.
+func TestResumeRun_RefusesAPrincipalTheProjectExcludes(t *testing.T) {
+	f := newResumeFixture(t)
+	f.runs.runs["run-1"].Status = "failed"
+	f.projs.projects["p1"].AllowedRoles = []string{"analyst"}
+
+	req := httptest.NewRequest("POST", "/api/v1/runs/run-1/resume", nil)
+	req.SetPathValue("runId", "run-1")
+	req = req.WithContext(auth.WithUser(req.Context(), &auth.UserPrincipal{
+		Sub: "outsider", OrgID: "default", Roles: []string{"auditor"},
+	}))
+	w := httptest.NewRecorder()
+	f.h.ResumeRun(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body = %s", w.Code, w.Body.String())
+	}
+	// And it must refuse BEFORE touching the run: a resume that bumped the
+	// attempt and then returned 403 would have retired the previous attempt
+	// and left the run unresumable by anyone.
+	if f.runs.runs["run-1"].Attempt > 1 {
+		t.Errorf("the attempt was bumped to %d despite the project excluding the caller", f.runs.runs["run-1"].Attempt)
+	}
+	if f.runs.runs["run-1"].Status != "failed" {
+		t.Errorf("run status = %q, want it left failed", f.runs.runs["run-1"].Status)
+	}
+}
+
+// And with no principal at all, on resume too.
+func TestResumeRun_RefusesWithNoPrincipal(t *testing.T) {
+	f := newResumeFixture(t)
+	f.runs.runs["run-1"].Status = "failed"
+
+	req := httptest.NewRequest("POST", "/api/v1/runs/run-1/resume", nil)
+	req.SetPathValue("runId", "run-1")
+	w := httptest.NewRecorder()
+	f.h.ResumeRun(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body = %s", w.Code, w.Body.String())
 	}
 }
 
