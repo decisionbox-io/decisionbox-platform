@@ -36,38 +36,31 @@ func recommendationResponseFormat() *gollm.ResponseFormat {
 // kept in lockstep with models.Recommendation / models.Impact json tags by
 // TestRecommendationSchema_MatchesStructTags.
 func recommendationResponseSchema() map[string]interface{} {
-	str := func(desc string) map[string]interface{} {
-		return map[string]interface{}{"type": "string", "description": desc}
-	}
-	strItems := func(desc string) map[string]interface{} {
-		return map[string]interface{}{"type": "string", "description": desc}
-	}
-
 	recProps := map[string]interface{}{
-		"category":       str("Recommendation category (e.g. churn, engagement, monetization)"),
-		"title":          str("Specific, action-oriented recommendation title"),
-		"description":    str("Explanation of the recommendation, citing the supporting numbers"),
+		"category":       boundedString("Recommendation category (e.g. churn, engagement, monetization)", maxSchemaLabelRunes),
+		"title":          boundedString("Specific, action-oriented recommendation title", maxSchemaTitleRunes),
+		"description":    boundedString("Explanation of the recommendation, citing the supporting numbers", maxSchemaDescriptionRunes),
 		"priority":       map[string]interface{}{"type": "integer", "description": "1 (highest priority) to 5 (lowest)"},
-		"target_segment": str("The user segment this recommendation targets"),
+		"target_segment": boundedString("The user segment this recommendation targets", maxSchemaSegmentRunes),
 		"segment_size":   map[string]interface{}{"type": "integer", "description": "Number of users in the target segment"},
 		"expected_impact": map[string]interface{}{
 			"type":        "object",
 			"description": "Structured expected impact. MUST be an object, never a bare string.",
 			"properties": map[string]interface{}{
-				"metric":                str("Which metric is expected to improve"),
-				"estimated_improvement": str(`Expected improvement, e.g. "+15-20%" or "+$4,975/month"`),
-				"reasoning":             str("Why this improvement is expected"),
+				"metric":                boundedString("Which metric is expected to improve", maxSchemaLabelRunes),
+				"estimated_improvement": boundedString(`Expected improvement, e.g. "+15-20%" or "+$4,975/month"`, maxSchemaLabelRunes),
+				"reasoning":             boundedString("Why this improvement is expected", maxSchemaSentenceRunes),
 			},
 		},
 		"actions": map[string]interface{}{
 			"type":        "array",
 			"description": "Concrete implementation steps",
-			"items":       strItems("A single implementation step"),
+			"items":       boundedString("A single implementation step", maxSchemaListItemRunes),
 		},
 		"related_insight_ids": map[string]interface{}{
 			"type":        "array",
 			"description": "UUIDs of the insights this recommendation addresses, copied verbatim from the input insights",
-			"items":       strItems("An insight UUID from the input"),
+			"items":       boundedString("An insight UUID from the input", maxSchemaIdentifierRunes),
 		},
 		"confidence": map[string]interface{}{"type": "number", "description": "Confidence from 0.0 to 1.0"},
 		// Described here for the reason the insight schema describes its own
@@ -85,10 +78,10 @@ func recommendationResponseSchema() map[string]interface{} {
 			"items": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"id":       str(`What the prose references, "f1". Unique within this recommendation.`),
-					"kind":     str("`ref` to restate one insight figure, `sum` to total several"),
-					"unit":     str("count, currency, percent, multiple or plain — notation only, never a word like days"),
-					"scale":    str("thousands, millions or billions to abbreviate; omit to write in full"),
+					"id":       boundedString(`What the prose references, "f1". Unique within this recommendation.`, maxSchemaIdentifierRunes),
+					"kind":     boundedString("`ref` to restate one insight figure, `sum` to total several", maxSchemaLabelRunes),
+					"unit":     boundedString("count, currency, percent, multiple or plain — notation only, never a word like days", maxSchemaLabelRunes),
+					"scale":    boundedString("thousands, millions or billions to abbreviate; omit to write in full", maxSchemaLabelRunes),
 					"decimals": map[string]interface{}{"type": "integer", "description": "Decimal places to print. This is the precision being claimed."},
 					"approx":   map[string]interface{}{"type": "boolean", "description": "Print a leading tilde to mark the number as rounded"},
 					"refs": map[string]interface{}{
@@ -97,8 +90,8 @@ func recommendationResponseSchema() map[string]interface{} {
 						"items": map[string]interface{}{
 							"type": "object",
 							"properties": map[string]interface{}{
-								"insight": str("The insight's id, copied verbatim from the input"),
-								"figure":  str(`The figure's id inside that insight's figures array, "f2"`),
+								"insight": boundedString("The insight's id, copied verbatim from the input", maxSchemaIdentifierRunes),
+								"figure":  boundedString(`The figure's id inside that insight's figures array, "f2"`, maxSchemaIdentifierRunes),
 							},
 							"required": []interface{}{"insight", "figure"},
 						},
