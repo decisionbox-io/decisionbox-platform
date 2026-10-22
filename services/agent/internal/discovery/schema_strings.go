@@ -1,6 +1,7 @@
 package discovery
 
-// Every string the model may generate carries a maximum length.
+// Every string the recommendation schema asks the model for carries a maximum
+// length.
 //
 // The schemas these bounds apply to are sent as decode-time grammars where the
 // provider supports it, and a grammar constrains *structure*. It does not
@@ -20,28 +21,32 @@ package discovery
 // 306 output tokens with a clean stop.
 //
 // The bounds below are deliberately far above anything a working model has
-// produced on this pipeline -- measured over 91 recommendations, 407 insights
-// and 60 clarifying questions, every bound sits at three to eight times the
-// largest observed value. They exist to stop a runaway, never to shape a
-// result, and a bound that ever binds on a real answer is a bug in the bound.
+// produced on this pipeline -- measured over the 91 recommendations it has
+// written, every bound sits at three to eight times the largest observed
+// value. They exist to stop a runaway, never to shape a result, and a bound
+// that ever binds on a real answer is a bug in the bound.
 //
 // Anything added here should be measured the same way rather than guessed.
+//
+// SCOPE, deliberately narrow. The insight, clarifying-question and reflection
+// schemas describe unbounded strings through the same mechanism and are not
+// bounded here: the recommendation phase is the one with a reproduction, and
+// those three are producing results today, so bounding them is a regression
+// risk taken for a failure that has not been observed in them. They each still
+// carry their own `str := func(desc string)` helper, which is the pattern to
+// avoid copying -- see the follow-up issue referenced in
+// schema_strings_test.go.
 const (
-	// A name or title: a line of prose. Observed maxima 109 (recommendation
-	// title), 126 (insight name).
+	// A name or title: a line of prose. Observed maximum 109.
 	maxSchemaTitleRunes = 400
 
-	// A description: the long prose field, the one that runs away. Observed
-	// maxima 1,191 (recommendation), 1,567 (insight).
+	// A description: the long prose field, the one that ran away. Observed
+	// maximum 1,191.
 	maxSchemaDescriptionRunes = 5000
 
 	// A sentence or two of supporting prose -- a rationale, a reason, a
 	// learning, an impact's reasoning. Observed maximum 188.
 	maxSchemaSentenceRunes = 1500
-
-	// A short paragraph -- a coverage summary. Self-described in the schema as
-	// one paragraph.
-	maxSchemaParagraphRunes = 2500
 
 	// One item of a list the model writes: an implementation step, an
 	// indicator, an option label. Observed maximum 178 (an action).
@@ -59,19 +64,6 @@ const (
 	// id, a table name, a slug. A UUID is 36; a fully-qualified table name is
 	// the long case.
 	maxSchemaIdentifierRunes = 256
-
-	// An expression the model writes in the figure/claim grammar: a filter, a
-	// scope, a row selector, a column name.
-	maxSchemaExpressionRunes = 1000
-
-	// A question, with room for a long one. Observed maximum 305.
-	maxSchemaQuestionRunes = 1000
-
-	// An analysis-area prompt the reflection phase may propose. The longest
-	// prompt shipped in a domain pack is 6,777 characters, so this is roughly
-	// three times the real article -- generous, because clipping a proposed
-	// prompt would corrupt it rather than shorten it.
-	maxSchemaPromptRunes = 20000
 )
 
 // boundedString returns a JSON-Schema string field with a length ceiling.

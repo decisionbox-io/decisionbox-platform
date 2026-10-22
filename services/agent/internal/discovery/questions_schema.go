@@ -33,9 +33,13 @@ func questionsResponseFormat() *gollm.ResponseFormat {
 // names track models.DiscoveryQuestion / QuestionTarget / QuestionOption json
 // tags via TestQuestionsSchema_MatchesStructTags.
 func questionsResponseSchema() map[string]interface{} {
+	str := func(desc string) map[string]interface{} {
+		return map[string]interface{}{"type": "string", "description": desc}
+	}
+
 	questionProps := map[string]interface{}{
-		"question":  boundedString("The clarifying question, grounded in a specific finding/table/column", maxSchemaQuestionRunes),
-		"rationale": boundedString("One line: why we're asking — the uncertainty this resolves", maxSchemaSentenceRunes),
+		"question":  str("The clarifying question, grounded in a specific finding/table/column"),
+		"rationale": str("One line: why we're asking — the uncertainty this resolves"),
 		"linked_target": map[string]interface{}{
 			"type":        "object",
 			"description": "The finding this question is about, so the dashboard can link back to it",
@@ -45,7 +49,7 @@ func questionsResponseSchema() map[string]interface{} {
 					"enum":        []string{"insight", "recommendation", "table", "area"},
 					"description": "What the question targets",
 				},
-				"id": boundedString("The insight/recommendation UUID (copied verbatim from the input), or the fully-qualified table name, or the analysis area id", maxSchemaIdentifierRunes),
+				"id": str("The insight/recommendation UUID (copied verbatim from the input), or the fully-qualified table name, or the analysis area id"),
 			},
 			"required": []interface{}{"type", "id"},
 		},
@@ -60,8 +64,8 @@ func questionsResponseSchema() map[string]interface{} {
 			"items": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"id":    boundedString("Short stable option id (e.g. a slug)", maxSchemaIdentifierRunes),
-					"label": boundedString("Human-readable option label", maxSchemaListItemRunes),
+					"id":    str("Short stable option id (e.g. a slug)"),
+					"label": str("Human-readable option label"),
 				},
 				"required": []interface{}{"id", "label"},
 			},
