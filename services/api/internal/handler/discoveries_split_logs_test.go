@@ -55,11 +55,18 @@ type mockRunStepRepo struct {
 	err        error
 	gotSinceID string
 	gotLimit   int
+	// gotAttempt is which attempt the handler asked for, and calls counts
+	// how many times it asked at all — an unknown run must not reach the
+	// step repository.
+	gotAttempt int
+	calls      int
 }
 
-func (m *mockRunStepRepo) ListByRun(_ context.Context, _, sinceID string, limit int) ([]database.RunStepDoc, error) {
+func (m *mockRunStepRepo) ListByRun(_ context.Context, _, sinceID string, limit, attempt int) ([]database.RunStepDoc, error) {
 	m.gotSinceID = sinceID
 	m.gotLimit = limit
+	m.gotAttempt = attempt
+	m.calls++
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -68,9 +75,21 @@ func (m *mockRunStepRepo) ListByRun(_ context.Context, _, sinceID string, limit 
 
 // newDiscoveriesHandlerWithLogs constructs a handler wired with the two
 // new repos and stubs for everything else.
+//
+// The run repository is real-ish rather than nil because ListRunSteps now
+// reads the run to learn which attempt's feed to serve. defaultRun answers
+// for whatever run ID the caller invents, on attempt 1.
 func newDiscoveriesHandlerWithLogs(t *testing.T, logRepo *mockDiscoveryLogRepo, stepRepo *mockRunStepRepo) *DiscoveriesHandler {
 	t.Helper()
-	return NewDiscoveriesHandler(nil, nil, nil, nil, logRepo, stepRepo, nil)
+	return NewDiscoveriesHandler(nil, nil, runRepoOnAttempt(1), nil, logRepo, stepRepo, nil)
+}
+
+// runRepoOnAttempt is a run repository that answers every lookup with a run
+// on the given attempt.
+func runRepoOnAttempt(attempt int) *mockRunRepo {
+	m := newMockRunRepo()
+	m.defaultRun = &models.DiscoveryRun{Attempt: attempt}
+	return m
 }
 
 func TestListExplorationSteps_HappyPath(t *testing.T) {
@@ -542,3 +561,82 @@ func TestListExplorationSteps_RepoError(t *testing.T) {
 type errBoom string
 
 func (e errBoom) Error() string { return string(e) }
+
+// TestListRunSteps_ServesOnlyTheRunsCurrentAttempt is why the endpoint reads
+// the run at all.
+//
+// A resume starts a new attempt while the superseded agent may still be
+// mid-LLM-call, and that agent keeps writing live-feed rows until its next
+// ownership gate. Those rows carry its own (older) attempt. If the endpoint
+// served them, the operator would watch a resumed run's log interleave two
+// attempts — and because the `_id > since_id` cursor assumes one writer per
+// run, the live attempt's own rows could be dropped from the stream for
+// good. So the handler asks the run which attempt it is on and forwards it.
+func TestListRunSteps_ServesOnlyTheRunsCurrentAttempt(t *testing.T) {
+	stepRepo := &mockRunStepRepo{}
+	h := NewDiscoveriesHandler(nil, nil, runRepoOnAttempt(5), nil, nil, stepRepo, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/run-1/steps", nil)
+	req.SetPathValue("runId", "run-1")
+	w := httptest.NewRecorder()
+	h.ListRunSteps(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if stepRepo.gotAttempt != 5 {
+		t.Errorf("asked the step repo for attempt %d, want 5 — serving another attempt's rows is the bug this closes", stepRepo.gotAttempt)
+	}
+}
+
+// TestListRunSteps_UnknownRunStaysAnEmptyList pins the contract for a run ID
+// that resolves to nothing. The dashboard polls this endpoint on a timer with
+// IDs it was handed, so a stale poll returns an empty feed rather than
+// becoming an error — and it must not reach the step repository, because
+// without a run there is no attempt to scope the query to.
+func TestListRunSteps_UnknownRunStaysAnEmptyList(t *testing.T) {
+	stepRepo := &mockRunStepRepo{docs: []database.RunStepDoc{{RunID: "run-1"}}}
+	h := NewDiscoveriesHandler(nil, nil, newMockRunRepo(), nil, nil, stepRepo, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/ghost/steps", nil)
+	req.SetPathValue("runId", "ghost")
+	w := httptest.NewRecorder()
+	h.ListRunSteps(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if stepRepo.calls != 0 {
+		t.Errorf("step repo was called %d time(s) for a run that does not exist; an unscoped query is exactly what this endpoint must not issue", stepRepo.calls)
+	}
+	var env struct {
+		Data []database.RunStepDoc `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if len(env.Data) != 0 {
+		t.Errorf("got %d steps for an unknown run, want 0", len(env.Data))
+	}
+}
+
+// TestListRunSteps_RunLookupError surfaces a failed run read rather than
+// quietly serving an unscoped feed.
+func TestListRunSteps_RunLookupError(t *testing.T) {
+	runRepo := newMockRunRepo()
+	runRepo.getErr = errBoom("mongo down")
+	stepRepo := &mockRunStepRepo{}
+	h := NewDiscoveriesHandler(nil, nil, runRepo, nil, nil, stepRepo, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/run-1/steps", nil)
+	req.SetPathValue("runId", "run-1")
+	w := httptest.NewRecorder()
+	h.ListRunSteps(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	if stepRepo.calls != 0 {
+		t.Errorf("step repo was called %d time(s) after the run read failed; the attempt was unknown", stepRepo.calls)
+	}
+}

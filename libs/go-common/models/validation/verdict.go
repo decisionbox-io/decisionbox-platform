@@ -26,6 +26,25 @@ type StructuredVerdict struct {
 	LLMTokensIn    int   `bson:"llm_tokens_in"   json:"llm_tokens_in"`
 	LLMTokensOut   int   `bson:"llm_tokens_out"  json:"llm_tokens_out"`
 	DurationMillis int64 `bson:"duration_millis" json:"duration_millis"`
+
+	// Paging depth on read_step_rows. The counts above say how many
+	// reads happened; these say how DEEP they went, which is a different
+	// question and the only one that can settle how many rows the
+	// evidence path actually needs.
+	//
+	// It matters because a resumed run's steps carry a bounded row
+	// sample rather than the full result (the rows died with the crashed
+	// process). Whether that costs anything depends entirely on how far
+	// past the first window agents ever read — and nothing recorded that
+	// before, so the question was unanswerable rather than answered.
+	//
+	// StepReadMaxOffset is the deepest offset any read asked for across
+	// the call: 0 everywhere means no agent ever pages past its first
+	// window. StepReadBeyondRetained is true when a read came back empty
+	// because the retained sample ended there, i.e. the one event where a
+	// sampled step denied an agent rows a live step would have given it.
+	StepReadMaxOffset      int  `bson:"step_read_max_offset,omitempty"      json:"step_read_max_offset,omitempty"`
+	StepReadBeyondRetained bool `bson:"step_read_beyond_retained,omitempty" json:"step_read_beyond_retained,omitempty"`
 }
 
 // ClaimVerdict is the agent's per-claim assessment. Exactly one entry
