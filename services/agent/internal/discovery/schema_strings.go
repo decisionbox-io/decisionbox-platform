@@ -104,3 +104,23 @@ func boundedString(desc string, maxRunes int) map[string]interface{} {
 		"maxLength":   maxRunes,
 	}
 }
+
+// nonEmptyString is boundedString for a field the schema also requires.
+//
+// `required` makes a key present and says nothing about its value, so a
+// grammar satisfies a required string with "". That is not a hypothetical
+// either: the run that first completed under these bounds wrote a title and
+// then closed the object, and every field it skipped persisted as the zero
+// value -- which reads downstream exactly like the absent field `required`
+// exists to prevent.
+//
+// A minimum of one, not a measured floor. The point is only that the model
+// cannot satisfy the grammar by opening the field and closing it; how much it
+// writes is the prompt's business. One repetition is also far below the
+// threshold that makes a *minimum* throw in a llama.cpp grammar, which an
+// ambitious floor here would risk -- see grammarRepetitionCeiling.
+func nonEmptyString(desc string, maxRunes int) map[string]interface{} {
+	f := boundedString(desc, maxRunes)
+	f["minLength"] = 1
+	return f
+}

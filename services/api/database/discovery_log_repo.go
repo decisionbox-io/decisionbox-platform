@@ -123,6 +123,12 @@ type RecommendationLogEntry struct {
 	// "skipped_no_eligible_insights") so the dashboard renders why the section
 	// is empty instead of a generic "none found". Zero/empty values omitted.
 	RecommendationsDroppedParse int    `bson:"recommendations_dropped_parse,omitempty" json:"recommendations_dropped_parse,omitempty"`
+	// RecommendationsDroppedUnresolvedFigures mirrors the agent counter for
+	// recommendations discarded because their prose referenced figures they
+	// never declared. Mirrored for the reason every other field here is:
+	// absent from this struct, BSON drops it and the endpoint cannot report it
+	// however non-zero it was in the database.
+	RecommendationsDroppedUnresolvedFigures int `bson:"recommendations_dropped_unresolved_figures,omitempty" json:"recommendations_dropped_unresolved_figures,omitempty"`
 	RecommendationParseRetries  int    `bson:"recommendation_parse_retries,omitempty" json:"recommendation_parse_retries,omitempty"`
 	Status                      string `bson:"status,omitempty" json:"status,omitempty"`
 
