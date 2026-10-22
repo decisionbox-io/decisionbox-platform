@@ -1127,3 +1127,84 @@ func TestRecordProjectLearning_SafeWithoutItsDependencies(t *testing.T) {
 	// A context that was never loaded.
 	o.recordProjectLearning(context.Background(), nil, nil)
 }
+
+// TestReflectionMarker_TakenDownWhenTheAttemptIsSuperseded pins the pairing
+// that the ledger's pending marker and the superseded branch only need
+// together.
+//
+// markReflectionPending puts an "updating" entry up for (project, run) BEFORE
+// the terminal write, because nothing that sees a completed run may see a
+// ledger claiming to be current. That is before ownership is known — so a
+// superseded attempt puts the entry up too. What normally takes it down is the
+// reflection phase's deferred clear, and agentserver exits on
+// ErrAttemptSuperseded WITHOUT running that phase. An attempt that reaches the
+// superseded branch after the owner has already finished its own reflection
+// therefore leaves the entry up for good: the ledger view tells the user an
+// update is in flight for ever, and the backfill keeps away from a project
+// nothing is writing.
+//
+// Asserted against the source for the reason TestOwnershipGates and
+// TestProjectLearning_OnlyRecordedWhenTheResultSurvives give: driving
+// RunDiscovery's terminal section end-to-end needs a live warehouse, an LLM
+// and Mongo.
+func TestReflectionMarker_TakenDownWhenTheAttemptIsSuperseded(t *testing.T) {
+	src, err := os.ReadFile("orchestrator.go")
+	if err != nil {
+		t.Fatalf("read orchestrator.go: %v", err)
+	}
+	text := string(src)
+
+	mark := strings.Index(text, "o.markReflectionPending(persistCtx)")
+	// The STATUS FLIP is the landmark, not the switch that reads its answer:
+	// finalizeStatus is what makes the run read as terminal, and everything
+	// between it and the switch is already too late.
+	flip := strings.Index(text, "outcome, err := finalizeStatus(")
+	if mark < 0 || flip < 0 {
+		t.Fatal("could not locate markReflectionPending or the terminal status write")
+	}
+
+	// The marker goes up before that write — the invariant it exists for, and
+	// the reason a superseded attempt can be holding one.
+	if mark > flip {
+		t.Error("the reflection marker goes up after the terminal status write; a reader can then see a completed run with a ledger that claims to be current")
+	}
+
+	// And the superseded branch must take it back down. Bounded to that case
+	// so the assertion cannot be satisfied by a clear somewhere harmless.
+	superseded := strings.Index(text, "case terminalSuperseded:")
+	unknown := strings.Index(text, "case terminalUnknown:")
+	if superseded < 0 || unknown < 0 || unknown < superseded {
+		t.Fatal("could not delimit the terminalSuperseded branch")
+	}
+	branch := text[superseded:unknown]
+	if !strings.Contains(branch, "o.endReflectionMarker(persistCtx)") {
+		t.Error("the terminalSuperseded branch does not take the reflection marker down; agentserver exits on ErrAttemptSuperseded without running the phase whose deferred clear would, so a stale attempt leaves the project marked as updating for ever")
+	}
+
+	// terminalUnknown must NOT clear it: that branch keeps its result and
+	// returns an error the entrypoint reports as a failure, and the marker
+	// belongs to whichever attempt owns the run.
+	if strings.Contains(text[unknown:], "o.endReflectionMarker(persistCtx)") {
+		t.Error("the terminalUnknown branch clears the reflection marker; that attempt was not shown to have lost the run, so it must not take down an entry the owner may be holding")
+	}
+}
+
+// TestEndReflectionMarker_ClearsTheEntryForThisRun is the behavioural half:
+// the clear above is only worth anything if it actually writes an end for this
+// run's entry.
+func TestEndReflectionMarker_ClearsTheEntryForThisRun(t *testing.T) {
+	led := &fakeLedgerRepo{}
+	o := &Orchestrator{projectID: "p1", runID: "run-1", ledgerRepo: led}
+
+	if err := led.BeginReflection(context.Background(), "p1", "run-1"); err != nil {
+		t.Fatalf("seed the marker: %v", err)
+	}
+	o.endReflectionMarker(context.Background())
+
+	if led.reflectingRunID != "" {
+		t.Errorf("the entry is still up for %q after the clear", led.reflectingRunID)
+	}
+	if got := led.markerEvents; len(got) != 2 || got[1] != "end" {
+		t.Errorf("marker events = %v, want a begin then an end", got)
+	}
+}

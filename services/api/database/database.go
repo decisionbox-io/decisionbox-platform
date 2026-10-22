@@ -235,6 +235,16 @@ var projectChildCollections = []string{
 	// run's per-run Qdrant collection open too, for a project that no
 	// longer exists.
 	"discovery_checkpoints",
+	// The Discovery Ledger. All of these are keyed by project_id and none of
+	// them were in this list, so deleting a project left its whole
+	// investigation behind — the coverage map, every durable finding, every
+	// open thread and every pack proposal. The learnings collection is new;
+	// the other four have leaked since the ledger shipped.
+	"discovery_ledger",
+	"discovery_ledger_findings",
+	"discovery_ledger_tasks",
+	"discovery_ledger_learnings",
+	"discovery_pack_proposals",
 }
 
 // DeleteCascade removes every Mongo row owned by a project, then the

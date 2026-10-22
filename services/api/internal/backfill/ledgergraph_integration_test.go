@@ -1,0 +1,907 @@
+//go:build integration
+
+package backfill
+
+import (
+	"context"
+	"errors"
+	"slices"
+	"testing"
+	"time"
+
+	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
+	"github.com/testcontainers/testcontainers-go/modules/mongodb"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo/options"
+)
+
+// The investigation-graph backfill, against a real MongoDB.
+//
+// The behaviour worth testing here is almost entirely about restraint: what it
+// refuses to derive, and whether it says so. A backfill that silently produced
+// a plausible edge for everything would pass a happy-path test and be worse
+// than useless on a real project.
+
+func backfillMongo(t *testing.T) (*gomongo.Client, func()) {
+	t.Helper()
+	ctx := context.Background()
+	container, err := mongodb.Run(ctx, "mongo:7.0")
+	if err != nil {
+		t.Fatalf("start mongo: %v", err)
+	}
+	uri, err := container.ConnectionString(ctx)
+	if err != nil {
+		t.Fatalf("connection string: %v", err)
+	}
+	cfg := gomongo.DefaultConfig()
+	cfg.URI = uri
+	cfg.Database = "backfill_ledger_graph_test"
+	client, err := gomongo.NewClient(ctx, cfg)
+	if err != nil {
+		t.Fatalf("connect mongo: %v", err)
+	}
+	return client, func() {
+		_ = client.Disconnect(ctx)
+		_ = container.Terminate(ctx)
+	}
+}
+
+// seedLegacyLedger writes the shape a project that has been running since
+// before any of this existed actually has: findings with a normalized key, a
+// source discovery and a status, and no provenance whatsoever.
+func seedLegacyLedger(t *testing.T, client *gomongo.Client, projectID string) {
+	t.Helper()
+	ctx := context.Background()
+	firstSeen := time.Date(2026, 1, 10, 9, 0, 0, 0, time.UTC)
+
+	insights := []any{
+		// Exactly matches a finding's area + name.
+		bson.M{"_id": "ins-1", "project_id": projectID, "discovery_id": "disc-1",
+			"analysis_area": "churn", "name": "High EU churn"},
+		// The same finding surfaced again by a later run: both are real sources.
+		bson.M{"_id": "ins-1b", "project_id": projectID, "discovery_id": "disc-2",
+			"analysis_area": "churn", "name": "High EU churn"},
+		// A REWORDING of the dead-stock finding. The semantic-dedup path would
+		// have merged this at write time; an exact key match cannot, and must
+		// not pretend otherwise.
+		bson.M{"_id": "ins-2", "project_id": projectID, "discovery_id": "disc-1",
+			"analysis_area": "inventory", "name": "Unsold stock sits with a handful of sellers"},
+		// Another project's insight with the same name — must never be linked.
+		bson.M{"_id": "ins-other", "project_id": "other-project", "discovery_id": "disc-x",
+			"analysis_area": "churn", "name": "High EU churn"},
+		// A standalone insight whose id exists nowhere in its discovery: the
+		// UUID `backfill-embeddings` minted for an insight that had none. It
+		// matches a finding's key perfectly and still cannot be linked to.
+		bson.M{"_id": "ins-orphan-uuid", "project_id": projectID, "discovery_id": "disc-1",
+			"analysis_area": "pricing", "name": "Legacy insight with a minted id"},
+	}
+	if _, err := client.Collection("insights").InsertMany(ctx, insights); err != nil {
+		t.Fatalf("seed insights: %v", err)
+	}
+
+	// The discovery documents the insight page resolves an id against. An id
+	// that is not in here cannot be linked to, however good it looks in the
+	// standalone collection — `backfill-embeddings` mints a fresh UUID for an
+	// insight whose embedded id was empty, and that UUID resolves nowhere.
+	if _, err := client.Collection(gomongo.CollectionDiscoveries).InsertMany(ctx, []any{
+		bson.M{"_id": "disc-1", "project_id": projectID, "discovery_date": firstSeen,
+			"insights": []bson.M{{"id": "ins-1"}, {"id": "ins-2"}}},
+		bson.M{"_id": "disc-2", "project_id": projectID, "discovery_date": firstSeen.Add(72 * time.Hour),
+			"insights": []bson.M{{"id": "ins-1b"}}},
+	}); err != nil {
+		t.Fatalf("seed discoveries: %v", err)
+	}
+
+	findings := []any{
+		bson.M{
+			"_id": "f-churn", "project_id": projectID, "area": "churn", "name": "High EU churn",
+			"normalized_key": commonmodels.NormalizedFindingKey("churn", "High EU churn"),
+			"severity":       "high", "status": commonmodels.LedgerFindingStatusConfirmed,
+			"seen_count": 3, "affected_count": 240, "key_metric": "affected=240",
+			"first_seen": firstSeen, "last_seen": firstSeen.Add(72 * time.Hour),
+			"source_discovery_id": "disc-2", "updated_at": firstSeen.Add(72 * time.Hour),
+		},
+		bson.M{
+			"_id": "f-stock", "project_id": projectID, "area": "inventory",
+			"name":           "Dead stock concentrated in a few sellers",
+			"normalized_key": commonmodels.NormalizedFindingKey("inventory", "Dead stock concentrated in a few sellers"),
+			"severity":       "medium", "status": commonmodels.LedgerFindingStatusMonitoring,
+			"seen_count": 1, "first_seen": firstSeen, "last_seen": firstSeen,
+			"source_discovery_id": "disc-1", "updated_at": firstSeen,
+		},
+		bson.M{
+			// Its only candidate insight carries an id the discovery document
+			// does not: linkable-looking, and not actually clickable.
+			"_id": "f-legacy-id", "project_id": projectID, "area": "pricing",
+			"name":           "Legacy insight with a minted id",
+			"normalized_key": commonmodels.NormalizedFindingKey("pricing", "Legacy insight with a minted id"),
+			"severity":       "low", "status": commonmodels.LedgerFindingStatusConfirmed,
+			"seen_count": 1, "first_seen": firstSeen, "last_seen": firstSeen,
+			"source_discovery_id": "disc-1", "updated_at": firstSeen,
+		},
+		// Already linked by a post-#389 run: must be left exactly as it is.
+		bson.M{
+			"_id": "f-fresh", "project_id": projectID, "area": "fraud", "name": "Card testing",
+			"normalized_key": commonmodels.NormalizedFindingKey("fraud", "Card testing"),
+			"severity":       "critical", "status": commonmodels.LedgerFindingStatusConfirmed,
+			"seen_count": 1, "first_seen": firstSeen, "last_seen": firstSeen,
+			"source_discovery_id": "disc-2", "updated_at": firstSeen,
+			"source_insight_ids": []string{"ins-kept"},
+			"sightings":          []bson.M{{"run_id": "run-kept", "discovery_id": "disc-2"}},
+			"status_history":     []bson.M{{"status": "confirmed", "source": "reflection"}},
+		},
+	}
+	if _, err := client.Collection(gomongo.CollectionDiscoveryLedgerFindings).InsertMany(ctx, findings); err != nil {
+		t.Fatalf("seed findings: %v", err)
+	}
+}
+
+func TestBackfillLedgerGraph_LinksWhatItCanAndReportsWhatItCannot(t *testing.T) {
+	client, cleanup := backfillMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	const projectID = "p-legacy"
+	seedLegacyLedger(t, client, projectID)
+
+	// A single run, well away from any task timestamp.
+	completed := time.Date(2026, 1, 13, 9, 5, 0, 0, time.UTC)
+	if _, err := client.Collection(gomongo.CollectionDiscoveryRuns).InsertMany(ctx, []any{
+		bson.M{"_id": "run-1", "project_id": projectID, "discovery_id": "disc-1", "status": runStatusCompleted,
+			"started_at": completed.Add(-72 * time.Hour), "completed_at": completed.Add(-71 * time.Hour)},
+		bson.M{"_id": "run-2", "project_id": projectID, "discovery_id": "disc-2", "status": runStatusCompleted,
+			"started_at": completed.Add(-time.Hour), "completed_at": completed},
+	}); err != nil {
+		t.Fatalf("seed runs: %v", err)
+	}
+
+	counts, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false)
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	if counts.FindingsScanned != 4 {
+		t.Errorf("scanned = %d, want 4", counts.FindingsScanned)
+	}
+	if counts.FindingsLinked != 1 {
+		t.Errorf("linked = %d, want 1 (only the exact key match)", counts.FindingsLinked)
+	}
+	// Two honest gaps, reported apart because they call for different
+	// responses: a reworded insight nothing can match, and one whose key DOES
+	// match but whose id reaches neither the insight page nor the graph's own
+	// stubs. The counts are how an operator learns which they have.
+	if counts.FindingsUnlinkable != 1 {
+		t.Errorf("unlinkable = %d, want 1 (the reworded insight)", counts.FindingsUnlinkable)
+	}
+	if counts.FindingsUnaddressable != 1 {
+		t.Errorf("unaddressable = %d, want 1 (the minted id)", counts.FindingsUnaddressable)
+	}
+	if counts.FindingsAlreadyLinked != 1 {
+		t.Errorf("already linked = %d, want 1", counts.FindingsAlreadyLinked)
+	}
+
+	stored := readFindings(t, client, projectID)
+
+	churn := stored["f-churn"]
+	// Both insights behind the key are sources — each really did produce it.
+	if len(churn.SourceInsightIDs) != 2 {
+		t.Errorf("f-churn should link both insights behind its key, got %v", churn.SourceInsightIDs)
+	}
+	for _, id := range churn.SourceInsightIDs {
+		if id == "ins-other" {
+			t.Error("another project's insight must never be linked")
+		}
+	}
+	// One synthetic sighting from first_seen + source_discovery_id, resolved to
+	// the run that produced that discovery. The other two sightings behind
+	// seen_count=3 are unrecoverable and are not invented.
+	if len(churn.Sightings) != 1 {
+		t.Fatalf("want exactly 1 synthetic sighting, got %d: %+v", len(churn.Sightings), churn.Sightings)
+	}
+	if churn.Sightings[0].DiscoveryID != "disc-2" || churn.Sightings[0].RunID != "run-2" {
+		t.Errorf("sighting should resolve its run through discovery_runs: %+v", churn.Sightings[0])
+	}
+	if churn.SeenCount != 3 {
+		t.Errorf("seen_count must stay the honest total, got %d", churn.SeenCount)
+	}
+	if len(churn.StatusHistory) != 1 ||
+		churn.StatusHistory[0].Source != commonmodels.FindingStatusSourceBackfill ||
+		churn.StatusHistory[0].Status != commonmodels.LedgerFindingStatusConfirmed {
+		t.Errorf("status trail should hold one derived entry: %+v", churn.StatusHistory)
+	}
+	// And unattributed: source_discovery_id names the run that last SAW the
+	// finding, while a status is moved by whichever run re-judged it — which
+	// can do so on other evidence, without seeing it again.
+	if churn.StatusHistory[0].RunID != "" || churn.StatusHistory[0].DiscoveryID != "" {
+		t.Errorf("a derived status entry must not guess the run that moved it: %+v", churn.StatusHistory[0])
+	}
+	// A derived entry carries no reason. Nothing stored says why the status
+	// moved, and a made-up reason would read exactly like a real one.
+	if churn.StatusHistory[0].Reason != "" {
+		t.Errorf("a derived status entry must invent no reason, got %q", churn.StatusHistory[0].Reason)
+	}
+
+	stock := stored["f-stock"]
+	if len(stock.SourceInsightIDs) != 0 {
+		t.Errorf("a reworded insight must be left unlinked, not guessed: %v", stock.SourceInsightIDs)
+	}
+	// And the one whose only candidate id the discovery document does not
+	// carry: a link there would look right and 404 for the reader.
+	if ids := stored["f-legacy-id"].SourceInsightIDs; len(ids) != 0 {
+		t.Errorf("an insight id that resolves nowhere must not be linked: %v", ids)
+	}
+	// It still gets its sighting and status trail — those are derivable even
+	// when the provenance is not.
+	if len(stock.Sightings) != 1 || len(stock.StatusHistory) != 1 {
+		t.Errorf("an unlinkable finding still gets its derivable trails: %+v", stock)
+	}
+
+	fresh := stored["f-fresh"]
+	if len(fresh.SourceInsightIDs) != 1 || fresh.SourceInsightIDs[0] != "ins-kept" {
+		t.Errorf("an already-linked finding must not be touched: %v", fresh.SourceInsightIDs)
+	}
+	if len(fresh.Sightings) != 1 || fresh.Sightings[0].RunID != "run-kept" {
+		t.Errorf("an existing sighting trail must not be overwritten: %+v", fresh.Sightings)
+	}
+}
+
+func TestBackfillLedgerGraph_DryRunWritesNothing(t *testing.T) {
+	client, cleanup := backfillMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	const projectID = "p-dry"
+	seedLegacyLedger(t, client, projectID)
+
+	counts, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, true)
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	// It still reports exactly what it would do — that is the point of the mode.
+	if counts.FindingsLinked != 1 || counts.FindingsUnlinkable != 1 || counts.FindingsUnaddressable != 1 {
+		t.Errorf("a dry run must still report its plan: %+v", counts)
+	}
+	stored := readFindings(t, client, projectID)
+	if len(stored["f-churn"].SourceInsightIDs) != 0 || len(stored["f-churn"].Sightings) != 0 {
+		t.Errorf("dry run wrote to the database: %+v", stored["f-churn"])
+	}
+}
+
+func TestBackfillLedgerGraph_IsIdempotent(t *testing.T) {
+	client, cleanup := backfillMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	const projectID = "p-twice"
+	seedLegacyLedger(t, client, projectID)
+
+	first, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false)
+	if err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	afterFirst := readFindings(t, client, projectID)
+
+	second, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	// Nothing left to do: every field the second run would write is already
+	// there, so an interrupted run is simply repeated.
+	if second.FindingsLinked != 0 || second.SightingsWritten != 0 || second.StatusTrailsWritten != 0 {
+		t.Errorf("a second run should be a no-op, got %+v", second)
+	}
+	if second.FindingsAlreadyLinked != first.FindingsAlreadyLinked+first.FindingsLinked {
+		t.Errorf("the second run should see the first run's links as already linked: %+v", second)
+	}
+	afterSecond := readFindings(t, client, projectID)
+	for id, f := range afterSecond {
+		if len(f.Sightings) != len(afterFirst[id].Sightings) {
+			t.Errorf("%s sightings grew on a re-run: %d → %d", id, len(afterFirst[id].Sightings), len(f.Sightings))
+		}
+	}
+}
+
+// TestBackfillLedgerGraph_DoesNotOverwriteLiveProvenance is the race this
+// backfill can actually lose. It reads a snapshot of the project's findings
+// and then writes; a discovery that reflects in between records real sightings,
+// real insight ids and a real status history on the same documents. A write
+// guarded only by the document id would replace all of that with values
+// derived from a snapshot taken before any of it existed.
+func TestBackfillLedgerGraph_DoesNotOverwriteLiveProvenance(t *testing.T) {
+	client, cleanup := backfillMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	const projectID = "p-race"
+	seedLegacyLedger(t, client, projectID)
+
+	// What the backfill would write if nothing changed under it.
+	planned, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, true)
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if planned.FindingsLinked == 0 || planned.SightingsWritten == 0 {
+		t.Fatalf("the fixture must have something to write: %+v", planned)
+	}
+
+	// A run reflects between the read and the write: f-churn gains the real
+	// thing, recorded by the agent.
+	live := bson.M{
+		"source_insight_ids": []string{"ins-written-by-a-real-run"},
+		"sightings": []bson.M{
+			{"run_id": "run-live", "discovery_id": "disc-live", "affected_count": 999},
+		},
+		"status_history": []bson.M{
+			{"status": "changed", "run_id": "run-live", "source": "trend", "reason": "a real reason"},
+		},
+	}
+	if _, err := client.Collection(gomongo.CollectionDiscoveryLedgerFindings).
+		UpdateOne(ctx, bson.M{"_id": "f-churn"}, bson.M{"$set": live}); err != nil {
+		t.Fatalf("simulate a concurrent reflection: %v", err)
+	}
+
+	// The same snapshot is then written — as it would be by a run already in
+	// flight when the reflection landed.
+	if _, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	stored := readFindings(t, client, projectID)
+	churn := stored["f-churn"]
+	// The ids are MERGED, not replaced: what the run recorded is still there,
+	// and the historical ones it could not have known are added beside it.
+	// Everything else on the document is left alone entirely.
+	if !slices.Contains(churn.SourceInsightIDs, "ins-written-by-a-real-run") {
+		t.Errorf("a real run's provenance was overwritten: %v", churn.SourceInsightIDs)
+	}
+	if len(churn.Sightings) != 1 || churn.Sightings[0].RunID != "run-live" || churn.Sightings[0].AffectedCount != 999 {
+		t.Errorf("a real run's sighting was overwritten: %+v", churn.Sightings)
+	}
+	if len(churn.StatusHistory) != 1 || churn.StatusHistory[0].Reason != "a real reason" {
+		t.Errorf("a real run's status history was overwritten: %+v", churn.StatusHistory)
+	}
+	// And the finding that did NOT change still got its backfill.
+	stock := stored["f-stock"]
+	if len(stock.Sightings) != 1 {
+		t.Errorf("the untouched finding should still have been backfilled: %+v", stock)
+	}
+}
+
+// TestBackfillLedgerGraph_RecoversAClosingRunOnALaterPass: an ambiguous first
+// pass stamps the close date and leaves the closing run unset. A later pass
+// with a tighter window must be able to finish the job rather than skip the
+// task because one of its fields is already there.
+func TestBackfillLedgerGraph_RecoversAClosingRunOnALaterPass(t *testing.T) {
+	client, cleanup := backfillMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	const projectID = "p-retry"
+
+	closedAt := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := client.Collection(gomongo.CollectionDiscoveryLedgerTasks).InsertOne(ctx, bson.M{
+		"_id": "t1", "project_id": projectID, "text": "a", "kind": "next_task",
+		"status": commonmodels.LedgerTaskStatusDone, "normalized_key": "k1",
+		"created_at": closedAt.Add(-48 * time.Hour), "updated_at": closedAt,
+	}); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	// Two runs before the close, one just before it and one hours earlier:
+	// ambiguous at six hours, decisive at one. Both before, because a run that
+	// finished after the close could not have closed it and is never a
+	// candidate — it could not make anything ambiguous either.
+	if _, err := client.Collection(gomongo.CollectionDiscoveryRuns).InsertMany(ctx, []any{
+		bson.M{"_id": "run-near", "project_id": projectID, "discovery_id": "disc-near", "status": runStatusCompleted,
+			"started_at": closedAt.Add(-time.Hour), "completed_at": closedAt.Add(-30 * time.Minute)},
+		bson.M{"_id": "run-far", "project_id": projectID, "discovery_id": "disc-far", "status": runStatusCompleted,
+			"started_at": closedAt.Add(-5 * time.Hour), "completed_at": closedAt.Add(-4 * time.Hour)},
+	}); err != nil {
+		t.Fatalf("seed runs: %v", err)
+	}
+
+	first, err := backfillLedgerGraphProject(ctx, client, projectID, 10, 6*time.Hour, false)
+	if err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	if first.TasksCloseRunAmbiguous != 1 {
+		t.Fatalf("the first pass should find it ambiguous: %+v", first)
+	}
+	if tasks := readTasks(t, client, projectID); tasks["t1"].ClosedAt.IsZero() || tasks["t1"].ClosedRunID != "" {
+		t.Fatalf("after the first pass: date stamped, run unset — got %+v", tasks["t1"])
+	}
+
+	second, err := backfillLedgerGraphProject(ctx, client, projectID, 10, time.Hour, false)
+	if err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	if second.TasksCloseRunResolved != 1 {
+		t.Errorf("a tighter window should resolve it: %+v", second)
+	}
+	tasks := readTasks(t, client, projectID)
+	if tasks["t1"].ClosedRunID != "run-near" || tasks["t1"].ClosedDiscoveryID != "disc-near" {
+		t.Errorf("the closing run was not recovered: %+v", tasks["t1"])
+	}
+}
+
+// TestBackfillLedgerGraph_SkipsAProjectMidRun: the backfill derives from a
+// snapshot, and the reflection phase at the end of a run replaces a finding
+// document whole. A project with a run still going is therefore left alone and
+// reported, rather than raced and silently half-overwritten.
+func TestBackfillLedgerGraph_SkipsAProjectMidRun(t *testing.T) {
+	client, cleanup := backfillMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	const projectID = "p-midrun"
+
+	at := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := client.Collection(gomongo.CollectionDiscoveryLedgerFindings).InsertOne(ctx, bson.M{
+		"_id": "f1", "project_id": projectID, "name": "Churn up", "area": "churn",
+		"status": commonmodels.LedgerFindingStatusConfirmed, "normalized_key": "churn|churn up",
+		"last_seen": at, "seen_count": 1, "source_discovery_id": "disc-1",
+	}); err != nil {
+		t.Fatalf("seed finding: %v", err)
+	}
+	if _, err := client.Collection(gomongo.CollectionDiscoveryRuns).InsertOne(ctx, bson.M{
+		"_id": "run-live", "project_id": projectID, "discovery_id": "disc-1",
+		"status": "running", "started_at": at,
+	}); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+
+	counts, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false)
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if counts.ProjectsSkippedInFlight != 1 {
+		t.Errorf("a project mid-run must be reported as skipped: %+v", counts)
+	}
+	if counts.FindingsScanned != 0 {
+		t.Errorf("a skipped project is not scanned at all: %+v", counts)
+	}
+	findings := readFindings(t, client, projectID)
+	if len(findings["f1"].SourceInsightIDs) != 0 || len(findings["f1"].Sightings) != 0 {
+		t.Errorf("a skipped project must not be written to: %+v", findings["f1"])
+	}
+
+	// A run is stamped `completed` BEFORE its reflection phase runs, so a
+	// finished run is not on its own enough: the phase marks itself while it
+	// is rewriting finding documents, and that marker still holds the
+	// backfill off.
+	if _, err := client.Collection(gomongo.CollectionDiscoveryRuns).UpdateOne(ctx,
+		bson.M{"_id": "run-live"},
+		bson.M{"$set": bson.M{"status": runStatusCompleted, "completed_at": at.Add(time.Hour)}}); err != nil {
+		t.Fatalf("complete the run: %v", err)
+	}
+	if _, err := client.Collection(gomongo.CollectionDiscoveryLedger).UpdateOne(ctx,
+		bson.M{"project_id": projectID},
+		bson.M{"$push": bson.M{gomongo.ReflectingKey: bson.M{"run_id": "run-live", "since": time.Now()}}},
+		options.Update().SetUpsert(true)); err != nil {
+		t.Fatalf("mark reflecting: %v", err)
+	}
+	reflecting, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false)
+	if err != nil {
+		t.Fatalf("backfill while reflecting: %v", err)
+	}
+	if reflecting.ProjectsSkippedInFlight != 1 {
+		t.Errorf("a completed run that is still reflecting must still be skipped: %+v", reflecting)
+	}
+
+	// A marker older than the ceiling is disbelieved — an agent killed
+	// mid-phase never clears its own, and must not wedge the project.
+	if _, err := client.Collection(gomongo.CollectionDiscoveryLedger).UpdateOne(ctx,
+		bson.M{"project_id": projectID},
+		bson.M{"$set": bson.M{gomongo.ReflectingKey + ".0.since": time.Now().Add(-2 * commonmodels.ReflectionMarkerTTL())}}); err != nil {
+		t.Fatalf("age the marker: %v", err)
+	}
+	stale, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false)
+	if err != nil {
+		t.Fatalf("backfill with a stale marker: %v", err)
+	}
+	if stale.ProjectsSkippedInFlight != 0 || stale.FindingsScanned != 1 {
+		t.Errorf("a stale marker must not block the backfill: %+v", stale)
+	}
+}
+
+// TestBackfillLedgerGraph_ReportsADivergedIDSpaceApart: `backfill-embeddings`
+// mints a fresh standalone _id and drops the embedded one, so on a project it
+// repaired the two insight id spaces diverged. The insight page resolves ids
+// out of the discovery document and the graph's stubs come from the standalone
+// collection, so no single id reaches both. That is a different diagnosis from
+// a reworded insight — no window and no matching fixes it — and the report
+// says so rather than burying it in the same count.
+func TestBackfillLedgerGraph_ReportsADivergedIDSpaceApart(t *testing.T) {
+	client, cleanup := backfillMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	const projectID = "p-diverged"
+
+	at := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := client.Collection(gomongo.CollectionDiscoveryLedgerFindings).InsertOne(ctx, bson.M{
+		"_id": "f1", "project_id": projectID, "name": "Churn up", "area": "churn",
+		"status": commonmodels.LedgerFindingStatusConfirmed,
+		"normalized_key": commonmodels.NormalizedFindingKey("churn", "Churn up"),
+		"last_seen": at, "seen_count": 1, "source_discovery_id": "disc-1",
+	}); err != nil {
+		t.Fatalf("seed finding: %v", err)
+	}
+	// The standalone row carries an id the discovery document has never heard
+	// of — exactly what `backfill-embeddings` leaves behind.
+	if _, err := client.Collection("insights").InsertOne(ctx, bson.M{
+		"_id": "minted-by-the-embeddings-backfill", "project_id": projectID,
+		"discovery_id": "disc-1", "analysis_area": "churn", "name": "Churn up",
+	}); err != nil {
+		t.Fatalf("seed insight: %v", err)
+	}
+	if _, err := client.Collection(gomongo.CollectionDiscoveries).InsertOne(ctx, bson.M{
+		"_id": "disc-1", "project_id": projectID, "discovery_date": at,
+		"insights": []bson.M{{"id": "embedded-id", "name": "Churn up", "analysis_area": "churn"}},
+	}); err != nil {
+		t.Fatalf("seed discovery: %v", err)
+	}
+
+	counts, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false)
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if counts.FindingsUnaddressable != 1 {
+		t.Errorf("a diverged id space should be reported as such: %+v", counts)
+	}
+	if counts.FindingsUnlinkable != 0 {
+		t.Errorf("it is not the same thing as a reworded insight: %+v", counts)
+	}
+	// And nothing was written: a link to either id would be a link to nowhere.
+	if ids := readFindings(t, client, projectID)["f1"].SourceInsightIDs; len(ids) != 0 {
+		t.Errorf("no id addresses both places, so none is stored: %v", ids)
+	}
+}
+
+// TestBackfillLedgerGraph_CompletesAPartiallyLinkedFinding: a legacy finding
+// seen once after this provenance shipped carries exactly one insight id — the
+// one that run produced. Its older ones are still recoverable, and a
+// non-empty array must not be read as a complete one.
+func TestBackfillLedgerGraph_CompletesAPartiallyLinkedFinding(t *testing.T) {
+	client, cleanup := backfillMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	const projectID = "p-partial"
+
+	at := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := client.Collection(gomongo.CollectionDiscoveryLedgerFindings).InsertOne(ctx, bson.M{
+		"_id": "f1", "project_id": projectID, "name": "Churn up", "area": "churn",
+		"status": commonmodels.LedgerFindingStatusConfirmed,
+		"normalized_key": commonmodels.NormalizedFindingKey("churn", "Churn up"),
+		"last_seen": at, "seen_count": 2, "source_discovery_id": "disc-2",
+		// What the one post-deployment run recorded.
+		"source_insight_ids": []string{"ins-new"},
+	}); err != nil {
+		t.Fatalf("seed finding: %v", err)
+	}
+	if _, err := client.Collection("insights").InsertMany(ctx, []any{
+		bson.M{"_id": "ins-old", "project_id": projectID, "discovery_id": "disc-1",
+			"analysis_area": "churn", "name": "Churn up"},
+		bson.M{"_id": "ins-new", "project_id": projectID, "discovery_id": "disc-2",
+			"analysis_area": "churn", "name": "Churn up"},
+	}); err != nil {
+		t.Fatalf("seed insights: %v", err)
+	}
+	if _, err := client.Collection(gomongo.CollectionDiscoveries).InsertMany(ctx, []any{
+		bson.M{"_id": "disc-1", "project_id": projectID, "discovery_date": at.Add(-48 * time.Hour),
+			"insights": []bson.M{{"id": "ins-old", "name": "Churn up"}}},
+		bson.M{"_id": "disc-2", "project_id": projectID, "discovery_date": at,
+			"insights": []bson.M{{"id": "ins-new", "name": "Churn up"}}},
+	}); err != nil {
+		t.Fatalf("seed discoveries: %v", err)
+	}
+
+	counts, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false)
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if counts.FindingsLinked != 1 {
+		t.Errorf("the partially linked finding should be completed: %+v", counts)
+	}
+	got := readFindings(t, client, projectID)["f1"].SourceInsightIDs
+	slices.Sort(got)
+	if !slices.Equal(got, []string{"ins-new", "ins-old"}) {
+		t.Errorf("want both the old and the recorded insight, got %v", got)
+	}
+
+	// And a second pass changes nothing.
+	again, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false)
+	if err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	if again.FindingsLinked != 0 || again.FindingsAlreadyLinked != 1 {
+		t.Errorf("a complete finding is already linked: %+v", again)
+	}
+	after := readFindings(t, client, projectID)["f1"].SourceInsightIDs
+	if len(after) != 2 {
+		t.Errorf("a repeat must not duplicate ids: %v", after)
+	}
+}
+
+// TestBackfillLedgerGraph_AbandonsAProjectThatBecomesBusy: the check at the
+// top cannot see a reflection that starts after it. The writes ask again
+// immediately before they land, so a project that came back to life is
+// reported as skipped rather than half-written.
+func TestBackfillLedgerGraph_AbandonsAProjectThatBecomesBusy(t *testing.T) {
+	client, cleanup := backfillMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	const projectID = "p-becomes-busy"
+
+	at := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := client.Collection(gomongo.CollectionDiscoveryLedgerFindings).InsertOne(ctx, bson.M{
+		"_id": "f1", "project_id": projectID, "name": "Churn up", "area": "churn",
+		"status": commonmodels.LedgerFindingStatusConfirmed, "normalized_key": "churn|churn up",
+		"last_seen": at, "seen_count": 1, "source_discovery_id": "disc-1",
+	}); err != nil {
+		t.Fatalf("seed finding: %v", err)
+	}
+	if _, err := client.Collection("insights").InsertOne(ctx, bson.M{
+		"_id": "ins-1", "project_id": projectID, "discovery_id": "disc-1",
+		"analysis_area": "churn", "name": "Churn up",
+	}); err != nil {
+		t.Fatalf("seed insight: %v", err)
+	}
+	if _, err := client.Collection(gomongo.CollectionDiscoveries).InsertOne(ctx, bson.M{
+		"_id": "disc-1", "project_id": projectID, "discovery_date": at,
+		"insights": []bson.M{{"id": "ins-1", "name": "Churn up"}},
+	}); err != nil {
+		t.Fatalf("seed discovery: %v", err)
+	}
+
+	// The project is quiet when the command starts, and a reflection begins
+	// before the writes land.
+	if _, err := client.Collection(gomongo.CollectionDiscoveryLedger).UpdateOne(ctx,
+		bson.M{"project_id": projectID},
+		bson.M{"$push": bson.M{gomongo.ReflectingKey: bson.M{"run_id": "run-late", "since": time.Now()}}},
+		options.Update().SetUpsert(true)); err != nil {
+		t.Fatalf("start a late reflection: %v", err)
+	}
+
+	_, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false)
+	if !errors.Is(err, errProjectBecameBusy) && err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	// Either it was stopped at the top or stopped at the write — what matters
+	// is that nothing was written.
+	findings := readFindings(t, client, projectID)
+	if len(findings["f1"].SourceInsightIDs) != 0 {
+		t.Errorf("a project that is being written must not be backfilled: %+v", findings["f1"])
+	}
+}
+
+// TestBackfillLedgerGraph_RepairsAHalfWrittenClose covers the state an
+// interrupted pass can leave behind. The closing run and its discovery are two
+// writes in one unordered batch, so one can land without the other — and the
+// guard that skips a task whose run id is already set would then leave the
+// discovery missing on every pass after. Recovering it needs no inference: the
+// run document names its own discovery.
+func TestBackfillLedgerGraph_RepairsAHalfWrittenClose(t *testing.T) {
+	client, cleanup := backfillMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	const projectID = "p-halfwritten"
+
+	closedAt := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := client.Collection(gomongo.CollectionDiscoveryLedgerTasks).InsertOne(ctx, bson.M{
+		"_id": "t1", "project_id": projectID, "text": "a", "kind": "next_task",
+		"status": commonmodels.LedgerTaskStatusDone, "normalized_key": "k1",
+		"created_at": closedAt.Add(-48 * time.Hour), "updated_at": closedAt,
+		// The half-written state: run stamped, discovery never landed.
+		"closed_at": closedAt, "closed_run_id": "run-1",
+	}); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	if _, err := client.Collection(gomongo.CollectionDiscoveryRuns).InsertOne(ctx, bson.M{
+		"_id": "run-1", "project_id": projectID, "discovery_id": "disc-1", "status": runStatusCompleted,
+		"started_at": closedAt.Add(-2 * time.Hour), "completed_at": closedAt.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+
+	if _, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	tasks := readTasks(t, client, projectID)
+	if tasks["t1"].ClosedDiscoveryID != "disc-1" {
+		t.Errorf("the missing discovery was not repaired: %+v", tasks["t1"])
+	}
+	if tasks["t1"].ClosedRunID != "run-1" {
+		t.Errorf("the run that was already there must not change: %+v", tasks["t1"])
+	}
+}
+
+// TestBackfillLedgerGraph_ClosingRunOnlyWhenUnambiguous is the inference this
+// backfill is most likely to get wrong, so it is the one that refuses hardest:
+// closed_at is simply the task's last write, but the RUN that closed it is
+// stamped only when exactly one run is near that time.
+func TestBackfillLedgerGraph_ClosingRunOnlyWhenUnambiguous(t *testing.T) {
+	client, cleanup := backfillMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	const projectID = "p-tasks"
+
+	closedAt := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := client.Collection(gomongo.CollectionDiscoveryLedgerTasks).InsertMany(ctx, []any{
+		// One run nearby → resolvable.
+		bson.M{"_id": "t-clear", "project_id": projectID, "text": "a", "kind": "next_task",
+			"status": commonmodels.LedgerTaskStatusDone, "normalized_key": "k1",
+			"created_at": closedAt.Add(-48 * time.Hour), "updated_at": closedAt},
+		// Two runs nearby → must stay unset.
+		bson.M{"_id": "t-ambiguous", "project_id": projectID, "text": "b", "kind": "next_task",
+			"status": commonmodels.LedgerTaskStatusDropped, "normalized_key": "k2",
+			"created_at": closedAt.Add(-48 * time.Hour), "updated_at": closedAt.Add(240 * time.Hour)},
+		// No run anywhere near → closed_at only.
+		bson.M{"_id": "t-orphan", "project_id": projectID, "text": "c", "kind": "next_task",
+			"status": commonmodels.LedgerTaskStatusDone, "normalized_key": "k3",
+			"created_at": closedAt.Add(-48 * time.Hour), "updated_at": closedAt.Add(1000 * time.Hour)},
+		// Still open: a close stamp would be a lie.
+		bson.M{"_id": "t-open", "project_id": projectID, "text": "d", "kind": "next_task",
+			"status": commonmodels.LedgerTaskStatusOpen, "normalized_key": "k4",
+			"created_at": closedAt.Add(-48 * time.Hour), "updated_at": closedAt},
+	}); err != nil {
+		t.Fatalf("seed tasks: %v", err)
+	}
+	if _, err := client.Collection(gomongo.CollectionDiscoveryRuns).InsertMany(ctx, []any{
+		bson.M{"_id": "run-clear", "project_id": projectID, "discovery_id": "disc-clear", "status": runStatusCompleted,
+			"started_at": closedAt.Add(-2 * time.Hour), "completed_at": closedAt.Add(-time.Hour)},
+		// Two runs that both finished within the window BEFORE
+		// t-ambiguous's updated_at. A run that finished after it could not
+		// have closed it, so it is not a candidate and cannot make anything
+		// ambiguous either.
+		bson.M{"_id": "run-a", "project_id": projectID, "discovery_id": "disc-a", "status": runStatusCompleted,
+			"started_at": closedAt.Add(238 * time.Hour), "completed_at": closedAt.Add(239 * time.Hour)},
+		bson.M{"_id": "run-b", "project_id": projectID, "discovery_id": "disc-b", "status": runStatusCompleted,
+			"started_at": closedAt.Add(235 * time.Hour), "completed_at": closedAt.Add(236 * time.Hour)},
+		// A FAILED run right next to the clear close. The reflection phase
+		// runs only after a successful discovery, so it never closed
+		// anything — and leaving it in the candidate set would make the real
+		// closing run look ambiguous.
+		bson.M{"_id": "run-failed", "project_id": projectID, "discovery_id": "disc-failed", "status": "failed",
+			"started_at": closedAt.Add(-90 * time.Minute), "completed_at": closedAt.Add(-80 * time.Minute)},
+	}); err != nil {
+		t.Fatalf("seed runs: %v", err)
+	}
+
+	counts, err := backfillLedgerGraphProject(ctx, client, projectID, 10, defaultCloseWindow, false)
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if counts.TasksScanned != 3 {
+		t.Errorf("only closed tasks are scanned, got %d", counts.TasksScanned)
+	}
+	if counts.TasksClosedStamped != 3 {
+		t.Errorf("every closed task gets its closed_at, got %d", counts.TasksClosedStamped)
+	}
+	if counts.TasksCloseRunResolved != 1 {
+		t.Errorf("only the unambiguous task gets a closing run, got %d", counts.TasksCloseRunResolved)
+	}
+	// The two reasons a closing run is unset are reported apart, because they
+	// call for different responses: a tighter window, or nothing at all.
+	if counts.TasksCloseRunAmbiguous != 1 {
+		t.Errorf("one task had several candidate runs, got %d", counts.TasksCloseRunAmbiguous)
+	}
+	if counts.TasksCloseRunNoRun != 1 {
+		t.Errorf("one task had no candidate run at all, got %d", counts.TasksCloseRunNoRun)
+	}
+
+	tasks := readTasks(t, client, projectID)
+	if tasks["t-clear"].ClosedRunID != "run-clear" || tasks["t-clear"].ClosedDiscoveryID != "disc-clear" {
+		t.Errorf("t-clear: %+v", tasks["t-clear"])
+	}
+	if tasks["t-ambiguous"].ClosedRunID != "" {
+		t.Errorf("two candidate runs means the answer is unknown, got %q", tasks["t-ambiguous"].ClosedRunID)
+	}
+	if tasks["t-ambiguous"].ClosedAt.IsZero() {
+		t.Error("closed_at is still derivable even when the run is not")
+	}
+	if tasks["t-orphan"].ClosedRunID != "" || tasks["t-orphan"].ClosedAt.IsZero() {
+		t.Errorf("t-orphan: %+v", tasks["t-orphan"])
+	}
+	if !tasks["t-open"].ClosedAt.IsZero() {
+		t.Errorf("an open task must never be stamped closed: %+v", tasks["t-open"])
+	}
+	// resolved_by_finding_ids is never derived, for any of them.
+	for id, task := range tasks {
+		if len(task.ResolvedByFindingIDs) != 0 {
+			t.Errorf("%s: the findings that answered a task are not derivable and must not be guessed: %v",
+				id, task.ResolvedByFindingIDs)
+		}
+	}
+}
+
+// TestBackfillLedgerGraph_EmptyProject — a project with no ledger at all must
+// be a clean no-op rather than an error, since the all-projects mode walks
+// whatever is there.
+func TestBackfillLedgerGraph_EmptyProject(t *testing.T) {
+	client, cleanup := backfillMongo(t)
+	defer cleanup()
+	counts, err := backfillLedgerGraphProject(context.Background(), client, "p-nothing", 10, defaultCloseWindow, false)
+	if err != nil {
+		t.Fatalf("empty project: %v", err)
+	}
+	if counts.FindingsScanned != 0 || counts.TasksScanned != 0 {
+		t.Errorf("nothing to scan: %+v", counts)
+	}
+}
+
+// TestSoleRunNear covers the window rule directly, including the boundary.
+func TestSoleRunNear(t *testing.T) {
+	at := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	// Both before the close: a run that finished after it is not a candidate
+	// at all, so ambiguity can only come from two that finished before.
+	runs := []runRef{
+		{RunID: "r1", DiscoveryID: "d1", At: at.Add(-time.Hour)},
+		{RunID: "r2", DiscoveryID: "d2", At: at.Add(-48 * time.Hour)},
+	}
+	if id, disc, n := soleRunNear(runs, at, 6*time.Hour); n != 1 || id != "r1" || disc != "d1" {
+		t.Errorf("one run in the window should resolve: %q %q %d", id, disc, n)
+	}
+	// Two candidates and none are reported apart: the first says to try a
+	// tighter window, the second that there is nothing to match against.
+	if _, _, n := soleRunNear(runs, at, 72*time.Hour); n != 2 {
+		t.Errorf("a window containing both runs is ambiguous, got %d", n)
+	}
+	if _, _, n := soleRunNear(runs, at.Add(500*time.Hour), 6*time.Hour); n != 0 {
+		t.Errorf("no run in the window should report none, got %d", n)
+	}
+	if _, _, n := soleRunNear(nil, at, 6*time.Hour); n != 0 {
+		t.Errorf("no runs at all should report none, got %d", n)
+	}
+	// Inclusive boundary: a run exactly at the edge counts.
+	if _, _, n := soleRunNear(runs[:1], at, time.Hour); n != 1 {
+		t.Error("a run exactly at the window edge should count")
+	}
+
+	// A run that finished AFTER the task was last written cannot have closed
+	// it, however close it fell. Reflection writes the close, and it runs
+	// after the completion event.
+	later := []runRef{{RunID: "r-later", DiscoveryID: "d-later", At: at.Add(time.Minute)}}
+	if id, _, n := soleRunNear(later, at, 6*time.Hour); n != 0 || id != "" {
+		t.Errorf("a run that finished after the close must not be stamped: %q %d", id, n)
+	}
+	// And one on each side resolves to the earlier one rather than reading as
+	// ambiguous: only one of them could have done it.
+	bothSides := []runRef{
+		{RunID: "r-before", DiscoveryID: "d-before", At: at.Add(-time.Minute)},
+		{RunID: "r-after", DiscoveryID: "d-after", At: at.Add(time.Minute)},
+	}
+	if id, disc, n := soleRunNear(bothSides, at, 6*time.Hour); n != 1 || id != "r-before" || disc != "d-before" {
+		t.Errorf("only the earlier run is a candidate: %q %q %d", id, disc, n)
+	}
+}
+
+func readFindings(t *testing.T, client *gomongo.Client, projectID string) map[string]commonmodels.LedgerFinding {
+	t.Helper()
+	cur, err := client.Collection(gomongo.CollectionDiscoveryLedgerFindings).
+		Find(context.Background(), bson.M{"project_id": projectID})
+	if err != nil {
+		t.Fatalf("read findings: %v", err)
+	}
+	var rows []commonmodels.LedgerFinding
+	if err := cur.All(context.Background(), &rows); err != nil {
+		t.Fatalf("decode findings: %v", err)
+	}
+	out := make(map[string]commonmodels.LedgerFinding, len(rows))
+	for _, r := range rows {
+		out[r.ID] = r
+	}
+	return out
+}
+
+func readTasks(t *testing.T, client *gomongo.Client, projectID string) map[string]commonmodels.LedgerTask {
+	t.Helper()
+	cur, err := client.Collection(gomongo.CollectionDiscoveryLedgerTasks).
+		Find(context.Background(), bson.M{"project_id": projectID})
+	if err != nil {
+		t.Fatalf("read tasks: %v", err)
+	}
+	var rows []commonmodels.LedgerTask
+	if err := cur.All(context.Background(), &rows); err != nil {
+		t.Fatalf("decode tasks: %v", err)
+	}
+	out := make(map[string]commonmodels.LedgerTask, len(rows))
+	for _, r := range rows {
+		out[r.ID] = r
+	}
+	return out
+}
