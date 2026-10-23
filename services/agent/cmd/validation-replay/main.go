@@ -44,7 +44,9 @@ import (
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
+	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
+	mongoSecrets "github.com/decisionbox-io/decisionbox/providers/secrets/mongodb"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	agentmodels "github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
@@ -126,7 +128,19 @@ func run() error {
 	fmt.Fprintf(os.Stderr, "loaded project=%q discovery=%s insights=%d recs=%d steps=%d\n",
 		project.Name, fl.discoveryID, len(discovery.Insights), len(discovery.Recommendations), len(stepByID))
 
-	llmProvider, err := initLLM(project, fl)
+	// The project's LLM key, resolved as the agent resolves it: the
+	// llm-credentials secret, else LLM_API_KEY. Bedrock / Vertex projects
+	// authenticate by role and need neither.
+	credential, credSource, credErr := gosecrets.ResolveCredential(ctx, openSecretProvider(db), fl.projectID, "llm-credentials", "LLM_API_KEY")
+	if credErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: reading llm-credentials: %v\n", credErr)
+	}
+	if credSource == "" {
+		credSource = "none"
+	}
+	fmt.Fprintf(os.Stderr, "llm credential source: %s\n", credSource)
+
+	llmProvider, err := initLLM(project, fl, credential)
 	if err != nil {
 		return fmt.Errorf("init LLM: %w", err)
 	}
@@ -257,7 +271,48 @@ func run() error {
 		_, _ = os.Stdout.Write(out)
 		_, _ = os.Stdout.WriteString("\n")
 	}
+	if noLLMTokensUsed(report.Targets) {
+		return errors.New("no LLM call succeeded (zero tokens used), so the verdicts above are not verdicts; check the project's llm-credentials secret or LLM_API_KEY")
+	}
 	return nil
+}
+
+// openSecretProvider opens the project secret store the agent reads
+// (SECRET_PROVIDER, default mongodb in the same database). Nil when it
+// cannot be opened — the caller then falls back to the environment.
+func openSecretProvider(db *mongo.Database) gosecrets.Provider {
+	cfg := gosecrets.LoadConfig()
+	var (
+		sp  gosecrets.Provider
+		err error
+	)
+	if cfg.Provider == "" || cfg.Provider == "mongodb" {
+		sp, err = mongoSecrets.NewMongoProvider(db.Collection("secrets"), cfg.Namespace, cfg.EncryptionKey)
+	} else {
+		sp, err = gosecrets.NewProvider(cfg)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: secret store unavailable (%v); using the environment only\n", err)
+		return nil
+	}
+	return sp
+}
+
+// noLLMTokensUsed reports whether a replay validated something without a
+// single token reaching the model — every call failed (a missing key, an
+// unreachable endpoint), so its verdicts are not verdicts.
+func noLLMTokensUsed(targets []TargetResult) bool {
+	if len(targets) == 0 {
+		return false
+	}
+	for _, t := range targets {
+		for _, v := range []*valmodels.StructuredVerdict{t.Verifier, t.Refuter} {
+			if v != nil && v.LLMTokensIn+v.LLMTokensOut > 0 {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 type target struct {
@@ -339,14 +394,24 @@ func parseFlags() cliFlags {
 	return fl
 }
 
-func initLLM(project *ProjectDoc, fl cliFlags) (gollm.Provider, error) {
+func initLLM(project *ProjectDoc, fl cliFlags, credential string) (gollm.Provider, error) {
 	if project.LLM.Provider == "" {
 		return nil, errors.New("project has no LLM provider configured")
 	}
+	return gollm.NewProvider(project.LLM.Provider, llmProviderConfig(project, fl, credential))
+}
+
+// llmProviderConfig builds the provider config the agent would: the
+// project's resolved API key (when there is one) as credentials_json, then
+// the project's saved LLM settings on top.
+func llmProviderConfig(project *ProjectDoc, fl cliFlags, credential string) gollm.ProviderConfig {
 	cfg := gollm.ProviderConfig{
 		"model":           project.LLM.Model,
 		"max_retries":     "3",
 		"timeout_seconds": "120",
+	}
+	if credential != "" {
+		cfg["credentials_json"] = credential
 	}
 	for k, v := range project.LLM.Config {
 		cfg[k] = v
@@ -362,7 +427,7 @@ func initLLM(project *ProjectDoc, fl cliFlags) (gollm.Provider, error) {
 			cfg["auth_method"] = "adc"
 		}
 	}
-	return gollm.NewProvider(project.LLM.Provider, cfg)
+	return cfg
 }
 
 func initWarehouse(project *ProjectDoc, fl cliFlags) (gowarehouse.Provider, error) {
