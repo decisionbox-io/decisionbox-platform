@@ -8,7 +8,7 @@ This page documents the seven hooks. They are intentionally feature-agnostic so 
 ## Hook 1 — Context providers
 
 Plugins can append markdown sections to agent prompts (alongside the project's knowledge sources).
-The agent walks every registered provider and concatenates non-empty sections in registration order.
+The agent calls every registered provider at once and concatenates non-empty sections in registration order.
 
 ```go
 import (
@@ -37,6 +37,7 @@ Behavior:
 - Multiple registrations are allowed; output is emitted in registration order.
 - Empty strings are dropped silently — providers don't have to special-case "nothing to add".
 - A panicking or erroring provider does not abort the prompt; its section is skipped and the failure is reported via the `onError` callback the agent passes.
+- Providers run concurrently, so `Section` must be safe to call from several goroutines. The agent bounds each retrieval with one deadline (3s per phase); every provider gets all of it, so a slow provider cannot starve the ones registered after it.
 - Calling `RegisterContextProvider` with a duplicate name or a nil provider panics.
 
 The platform's built-in knowledge-sources retriever registers itself through this hook (`libs/go-common/sources/contextprovider.go`).
