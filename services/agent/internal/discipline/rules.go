@@ -339,6 +339,15 @@ R. RELATED_INSIGHT_IDS MUST BE VERBATIM UUIDs FROM THE INPUT
    matched to an actual input insight will be discarded server-side
    before it reaches the user.
 
+A. THE STEPS GO IN ` + "`actions`" + `, NOT IN THE DESCRIPTION
+   ` + "`actions`" + ` is an array of strings, one implementation step per
+   entry, and it is the only place the steps belong. Every
+   recommendation carries at least one. Writing them as a numbered
+   list inside ` + "`description`" + ` instead leaves the array empty, and the
+   array is what is rendered as the recommendation's step list — so a
+   recommendation whose steps are only in its prose reads to the
+   person acting on it as having none.
+
 NON-DRAMATIC LANGUAGE (recommendation prose)
    Recommendation ` + "`title`" + `, ` + "`description`" + `, and ` + "`actions`" + ` are subject to
    the same non-dramatic-language rule as insight prose: describe
@@ -355,8 +364,8 @@ M. STRUCTURED MARKDOWN DESCRIPTION
    instruction governs the response ENVELOPE only — it does not restrict
    the content of string fields. Use a short opening takeaway (headline
    number in **bold**), short paragraphs, **bold** / *italic* for key
-   terms and numbers, bulleted (-) or numbered (1.) lists for the steps
-   or actions, small sub-headings using ### or #### only, and simple
+   terms and numbers, bulleted (-) or numbered (1.) lists where a list
+   aids reading, small sub-headings using ### or #### only, and simple
    GitHub-Flavored tables. Do NOT use images, raw HTML, links, or
    top-level # / ## headings. This controls structure, not tone — the
    non-dramatic-language rule still applies. Escape every newline inside
