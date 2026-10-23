@@ -1,6 +1,6 @@
 module github.com/decisionbox-io/decisionbox/providers/warehouse/databricks
 
-go 1.26.8
+go 1.26.10
 
 require (
 	github.com/databricks/databricks-sql-go v1.7.0

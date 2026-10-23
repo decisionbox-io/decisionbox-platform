@@ -1,6 +1,6 @@
 module github.com/decisionbox-io/decisionbox/providers/secrets/mongodb
 
-go 1.26.8
+go 1.26.10
 
 require (
 	github.com/decisionbox-io/decisionbox/libs/go-common v0.0.0
