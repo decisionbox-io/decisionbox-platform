@@ -123,8 +123,25 @@ type RecommendationLogEntry struct {
 	// "skipped_no_eligible_insights") so the dashboard renders why the section
 	// is empty instead of a generic "none found". Zero/empty values omitted.
 	RecommendationsDroppedParse int    `bson:"recommendations_dropped_parse,omitempty" json:"recommendations_dropped_parse,omitempty"`
+	// RecommendationsDroppedUnresolvedFigures mirrors the agent counter for
+	// recommendations discarded because their prose referenced figures they
+	// never declared. Mirrored for the reason every other field here is:
+	// absent from this struct, BSON drops it and the endpoint cannot report it
+	// however non-zero it was in the database.
+	RecommendationsDroppedUnresolvedFigures int `bson:"recommendations_dropped_unresolved_figures,omitempty" json:"recommendations_dropped_unresolved_figures,omitempty"`
 	RecommendationParseRetries  int    `bson:"recommendation_parse_retries,omitempty" json:"recommendation_parse_retries,omitempty"`
 	Status                      string `bson:"status,omitempty" json:"status,omitempty"`
+
+	// Figure telemetry from the recommendation phase, mirrored for the reason every
+	// other field here is: absent from this struct, BSON drops it and the endpoint
+	// cannot report it however non-zero it was in the database. FiguresInlined is
+	// the one to watch -- prose that stated a number instead of referencing an
+	// insight figure is prose nothing checked.
+	FiguresSettled    int `bson:"figures_settled,omitempty" json:"figures_settled,omitempty"`
+	FiguresAdopted    int `bson:"figures_adopted,omitempty" json:"figures_adopted,omitempty"`
+	FiguresResolved   int `bson:"figures_resolved,omitempty" json:"figures_resolved,omitempty"`
+	FiguresUnresolved int `bson:"figures_unresolved,omitempty" json:"figures_unresolved,omitempty"`
+	FiguresInlined    int `bson:"figures_inlined,omitempty" json:"figures_inlined,omitempty"`
 
 	Error string `bson:"error,omitempty" json:"error,omitempty"`
 }

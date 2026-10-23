@@ -219,7 +219,7 @@ Formatted list of all analysis areas the agent should explore.
 
 **Source:** Exploration results selected for the current analysis area by the area's step picker (vector retrieval + keyword boost + token-budget trim).
 
-JSON array of compacted exploration-step digests. Each entry carries the step's purpose / SQL / thinking plus a `query_result` field whose value is a `CompactResult` produced by `services/agent/internal/discovery/render_query_results.go` — head and tail rows, per-column statistics, and small-result inlining when the row count fits — not the raw row blob.
+JSON array of compacted exploration-step digests. Each entry carries the step's purpose / SQL (the statement that actually ran, i.e. `query_executed` when the fixer rewrote the model's proposal) / thinking plus a `query_result` field whose value is a `CompactResult` produced by `services/agent/internal/discovery/render_query_results.go` — head and tail rows, per-column statistics, and small-result inlining when the row count fits — not the raw row blob.
 
 **Example value:**
 ```json
@@ -265,11 +265,13 @@ Text summary with counts per area.
 **Source:** The insights the recommendation-eligibility filter forwarded from the analysis phase
 
 A JSON array of those insights, trimmed to the fields the recommender reasons over.
-Each entry carries `id`, `analysis_area`, `name`, `description`, `severity`, `affected_count`, `risk_score`, `confidence`, `metrics`, `indicators`, `target_segment` and `evidence_quality`.
+Each entry carries `id`, `analysis_area`, `name`, `description`, `severity`, `affected_count`, `risk_score`, `confidence`, `metrics`, `indicators`, `target_segment`, `evidence_quality` and `figures`.
+`figures` is the insight's checked numbers, and it is here because the recommendation contract tells the model to reference them by id rather than retype their values — an id the prompt never showed is an id the model cannot name.
+Figures whose sentence a repair rewrote, and figures no reference could resolve (a duplicated id, an id the reference grammar cannot express, a figure with no value), are withheld from this list for the same reason: advertising one makes a model that follows the contract exactly ship `{{f1}}` to a reader.
 The LLM uses `id` to populate `related_insight_ids` on the recommendations it emits, so `id` is always present and must be copied verbatim.
 
-Five fields on the stored insight are deliberately **not** in this variable: `validation`, `source_steps`, `sql_metadata`, `discovered_at` and `description_md`.
-None of them is used to write a recommendation.
+The stored insight's other fields are deliberately **not** in this variable: `validation`, `source_steps`, `sql_metadata`, `discovered_at`, `description_md`, and the records derived from the figures — `quantifier_claims`, `evidence_checks`, `evidence_figures`, `evidence_figure_corrections`, `evidence_figure_template` and `evidence_repair`.
+None of them is used to write a recommendation, and the last group must not be: each of those records keeps the value or the text as it was *before* this pipeline corrected it, so including them would put a number the platform already replaced, or a sentence it deleted for being false, back in front of the model.
 `validation` in particular carries the verifier's and the refuter's full write-ups — about 80% of the rendered prompt on a typical run, enough on its own to exceed a 40 960-token context window and end the run with no recommendations.
 The validation verdict still governs which insights appear here at all; it is applied by the eligibility filter before the prompt is built (see [Discovery lifecycle → Recommendations](../concepts/discovery-lifecycle.md#phase-5-recommendations)).
 `source_steps` lists exploration-step numbers, and those steps are not part of this prompt, so the insights above are the only evidence it carries — the platform-enforced recommendation rules require every figure in a recommendation to be traceable to a field of the insight it cites.
@@ -289,7 +291,10 @@ The stored insights keep every field — the trimming applies to the prompt copy
     "confidence": 0.85,
     "metrics": {"churn_rate": 0.67, "avg_sessions_before_churn": 1.2},
     "indicators": ["Only 33% return after Day 1", "Avg session: 4.2 minutes"],
-    "target_segment": "Players who attempted fewer than 3 levels"
+    "target_segment": "Players who attempted fewer than 3 levels",
+    "figures": [
+      {"id": "f1", "value": 67, "unit": "percent", "decimals": 0, "step": 12, "kind": "ratio", "column": "players", "row": "returned = false"}
+    ]
   }
 ]
 ```

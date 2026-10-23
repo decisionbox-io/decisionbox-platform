@@ -428,48 +428,69 @@ type parsedQuestion struct {
 // unparseable (rawCount > 0, kept empty → retry). A non-nil error is returned
 // only when the response is not recognizable as questions at all.
 func parseQuestions(response string) ([]parsedQuestion, int, error) {
-	cleaned := cleanJSONResponse(response)
-
-	var raws []json.RawMessage
-	if strings.HasPrefix(strings.TrimSpace(cleaned), "[") {
-		if err := json.Unmarshal([]byte(cleaned), &raws); err != nil {
-			return nil, 0, err
+	vals, ferr := jsonValues(cleanJSONResponse(response))
+	if len(vals) == 0 {
+		if ferr == nil {
+			ferr = fmt.Errorf("no JSON value in response")
 		}
-	} else {
-		var envelope map[string]json.RawMessage
-		if err := json.Unmarshal([]byte(cleaned), &envelope); err != nil {
-			return nil, 0, err
-		}
-		var qRaw json.RawMessage
-		found := false
-		for k, v := range envelope {
-			if strings.EqualFold(k, "questions") {
-				qRaw, found = v, true
-				break
+		return nil, 0, ferr
+	}
+	// First value that produces a question wins -- see response_values.go. rawCount
+	// stays the emptiness signal for the caller, so it comes from the value that was
+	// used, not from the first one.
+	var firstOut []parsedQuestion
+	firstRaw := 0
+	var firstErr error
+	for i, val := range vals {
+		raws, err := envelopeItems(val, "questions")
+		if err != nil {
+			if i == 0 {
+				firstErr = err
 			}
+			continue
 		}
-		if !found {
-			return nil, 0, fmt.Errorf(`response is missing the "questions" key`)
+		kept := decodeQuestionItems(raws)
+		if len(kept) > 0 {
+			return kept, len(raws), nil
 		}
-		if strings.TrimSpace(string(qRaw)) == "null" {
-			return nil, 0, fmt.Errorf(`"questions" is null`)
-		}
-		if err := json.Unmarshal(qRaw, &raws); err != nil {
-			return nil, 0, fmt.Errorf(`"questions" is not an array: %w`, err)
+		if i == 0 {
+			firstOut, firstRaw = kept, len(raws)
 		}
 	}
+	if firstErr != nil {
+		return nil, 0, firstErr
+	}
+	return firstOut, firstRaw, nil
+}
 
+// decodeQuestionItems decodes the items of one questions array, dropping what cannot be
+// asked.
+func decodeQuestionItems(raws []json.RawMessage) []parsedQuestion {
 	out := make([]parsedQuestion, 0, len(raws))
 	for i, raw := range raws {
+		// A null element unmarshals into a zero-value question without error, so it
+		// would be asked as a blank one.
+		if strings.TrimSpace(string(raw)) == "null" {
+			applog.WithFields(applog.Fields{"index": i}).
+				Warn("Dropping a null clarifying question; keeping the rest of the batch")
+			continue
+		}
 		var q parsedQuestion
 		if err := json.Unmarshal(raw, &q); err != nil {
 			applog.WithFields(applog.Fields{"index": i, "reason": err.Error()}).
 				Warn("Dropping unparseable clarifying question; keeping the rest of the batch")
 			continue
 		}
+		// No question text is nothing to ask. Unlike an insight or a recommendation
+		// there is no second field that could carry the content instead.
+		if strings.TrimSpace(q.Question) == "" {
+			applog.WithFields(applog.Fields{"index": i}).
+				Warn("Dropping a clarifying question with no question text; keeping the rest of the batch")
+			continue
+		}
 		out = append(out, q)
 	}
-	return out, len(raws), nil
+	return out
 }
 
 // postProcessQuestions turns raw parsed questions into persistable ones,

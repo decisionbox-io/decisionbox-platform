@@ -241,6 +241,24 @@ func TestCubeSeedPack_RecommendationExampleMatchesTheModel(t *testing.T) {
 		"description_md":  "rendered from description, not written by the model",
 		"validation":      "attached by the validation phase after generation",
 		"expected_impact": "checked through its own fields below, since it is an object",
+
+		// The figure trail. The three derived records are the same case as
+		// `validation`: attached after generation, and a pack that taught the model
+		// to emit one would be teaching it to author the record of its own check.
+		"evidence_figures":            "attached by the figure-resolution pass after generation",
+		"evidence_figure_corrections": "attached by the figure-resolution pass after generation",
+		"evidence_figure_template":    "kept by the renderer, not written by the model",
+
+		// `figures` is different, and the exclusion is deliberate rather than an
+		// omission. The model does author it -- but the contract that asks for it is
+		// appended to every recommendation prompt in code, precisely because a
+		// contract living in pack templates is one an edited pack or a custom
+		// template does not have. Teaching it here would put a second, hand-
+		// maintained copy of that contract in a file that can drift from it, which
+		// is the failure the code-side contract exists to avoid. It is covered where
+		// it lives: the agent's TestRecommendationsPrompt_CarriesTheFigureContract
+		// and TestRecommendationSchema_DescribesEveryArrayTheContractAsksFor.
+		"figures": "asked for by the contract the orchestrator appends, not by pack content",
 	}
 
 	body := loadSeedPack(t, cubeSeedSlug).Prompts.Base.Recommendations
