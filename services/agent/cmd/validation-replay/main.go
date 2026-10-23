@@ -35,6 +35,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -57,6 +58,9 @@ import (
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/litellm"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/openai"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai"
+	_ "github.com/decisionbox-io/decisionbox/providers/secrets/aws"   // registers "aws"
+	_ "github.com/decisionbox-io/decisionbox/providers/secrets/azure" // registers "azure"
+	_ "github.com/decisionbox-io/decisionbox/providers/secrets/gcp"   // registers "gcp"
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery"
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/databricks"
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/mssql"
@@ -144,7 +148,8 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init LLM: %w", err)
 	}
-	llmClient, err := ai.New(llmProvider, project.LLM.Model)
+	calls := &countingProvider{Provider: llmProvider}
+	llmClient, err := ai.New(calls, project.LLM.Model)
 	if err != nil {
 		return fmt.Errorf("init ai.Client: %w", err)
 	}
@@ -271,8 +276,8 @@ func run() error {
 		_, _ = os.Stdout.Write(out)
 		_, _ = os.Stdout.WriteString("\n")
 	}
-	if noLLMTokensUsed(report.Targets) {
-		return errors.New("no LLM call succeeded (zero tokens used), so the verdicts above are not verdicts; check the project's llm-credentials secret or LLM_API_KEY")
+	if calls.everyCallFailed() {
+		return errors.New("every LLM call failed, so the verdicts above are not verdicts; check the project's llm-credentials secret or LLM_API_KEY")
 	}
 	return nil
 }
@@ -298,21 +303,27 @@ func openSecretProvider(db *mongo.Database) gosecrets.Provider {
 	return sp
 }
 
-// noLLMTokensUsed reports whether a replay validated something without a
-// single token reaching the model — every call failed (a missing key, an
-// unreachable endpoint), so its verdicts are not verdicts.
-func noLLMTokensUsed(targets []TargetResult) bool {
-	if len(targets) == 0 {
-		return false
+// countingProvider counts the chat calls that returned a response and the
+// ones that failed, so the replay can tell "every call failed" (a missing
+// key, an unreachable endpoint) from a response without usage accounting.
+type countingProvider struct {
+	gollm.Provider
+	ok, failed atomic.Int64
+}
+
+func (p *countingProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
+	resp, err := p.Provider.Chat(ctx, req)
+	if err != nil {
+		p.failed.Add(1)
+	} else {
+		p.ok.Add(1)
 	}
-	for _, t := range targets {
-		for _, v := range []*valmodels.StructuredVerdict{t.Verifier, t.Refuter} {
-			if v != nil && v.LLMTokensIn+v.LLMTokensOut > 0 {
-				return false
-			}
-		}
-	}
-	return true
+	return resp, err
+}
+
+// everyCallFailed reports whether calls were made and none succeeded.
+func (p *countingProvider) everyCallFailed() bool {
+	return p.ok.Load() == 0 && p.failed.Load() > 0
 }
 
 type target struct {
