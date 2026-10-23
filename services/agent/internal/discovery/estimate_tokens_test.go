@@ -1,7 +1,9 @@
 package discovery
 
 import (
+	"math"
 	"testing"
+	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation/verifier"
@@ -148,5 +150,67 @@ func TestRunTokenEstimate_ValidationTierPerMode(t *testing.T) {
 	refuter := docs * (17000*1 + 3000*10) / 1e6
 	if got, want := e.costs(tiered).Validation, 5*verifier+refuter; got-want > 1e-12 || want-got > 1e-12 {
 		t.Errorf("validation = %v, want %v (verifier tiered, refuter not)", got, want)
+	}
+}
+
+// exploreCostByStep is the per-step definition the closed form must match.
+func exploreCostByStep(e runTokenEstimate, p gollm.TokenPricing) float64 {
+	var total float64
+	for step := 1; step <= e.steps; step++ {
+		prompt := e.systemPrompt + (step-1)*e.growth
+		var in float64
+		switch {
+		case e.promptCache && step > 1:
+			in = float64(prompt-e.growth)*p.CacheReadPerMillion + float64(e.growth)*p.CacheWritePerMillion
+		case e.promptCache:
+			in = float64(prompt) * p.CacheWritePerMillion
+		default:
+			in = float64(prompt) * p.InputPerMillion
+		}
+		mult := 1.0
+		if p.LongContextThreshold > 0 && p.LongContextMultiplier > 0 && prompt > p.LongContextThreshold {
+			mult = p.LongContextMultiplier
+		}
+		total += mult * (in + float64(avgExplorationOutputPerStep)*p.OutputPerMillion) / 1e6
+	}
+	return total
+}
+
+// Exploration cost is a closed form, so it matches pricing every step for
+// any step count, cache setting and tier threshold position.
+func TestRunTokenEstimate_ExplorationClosedFormMatchesPerStep(t *testing.T) {
+	g := avgExplorationUserMessagePerStep + avgExplorationOutputPerStep
+	for _, steps := range []int{1, 2, 3, 7, 60, 250} {
+		for _, cache := range []bool{false, true} {
+			for _, threshold := range []int{0, 500, 1000, 1000 + g, 1000 + 2*g + 1, 1000 + 40*g, 1 << 40} {
+				p := gollm.TokenPricing{InputPerMillion: 5, OutputPerMillion: 25, CacheReadPerMillion: 0.5,
+					CacheWritePerMillion: 6.25, LongContextThreshold: threshold, LongContextMultiplier: 5}
+				e := estimateRunTokens(runTokenInputs{MaxSteps: steps, SystemPromptTokens: 1000, PromptCache: cache,
+					Validation: validationCfgForTest()})
+				got, want := e.costs(p).Exploration, exploreCostByStep(e, p)
+				if math.Abs(got-want) > 1e-9*math.Max(1, want) {
+					t.Errorf("steps=%d cache=%v threshold=%d: exploration = %v, want %v", steps, cache, threshold, got, want)
+				}
+			}
+		}
+	}
+}
+
+// max_steps reaches the estimator from an API request unbounded; pricing
+// must not do work proportional to it.
+func TestRunTokenEstimate_HugeStepCountReturnsPromptly(t *testing.T) {
+	e := estimateRunTokens(runTokenInputs{MaxSteps: 1 << 40, SystemPromptTokens: 1000, PromptCache: true,
+		Validation: validationCfgForTest()})
+	p := gollm.TokenPricing{InputPerMillion: 5, OutputPerMillion: 25, CacheReadPerMillion: 0.5, CacheWritePerMillion: 6.25,
+		LongContextThreshold: 100000, LongContextMultiplier: 5}
+	done := make(chan float64, 1)
+	go func() { done <- e.costs(p).Exploration }()
+	select {
+	case got := <-done:
+		if got <= 0 {
+			t.Errorf("exploration = %v, want a positive cost", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("pricing a huge step count did not return within 2s")
 	}
 }

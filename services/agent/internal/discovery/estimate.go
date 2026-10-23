@@ -337,6 +337,11 @@ func modeTokens(mc verifier.ModeConfig) (in, out int) {
 // prompt exceeds the threshold — per request, as the provider bills it.
 // Verifier and refuter are priced separately, each tiered by its own
 // estimated per-document input.
+//
+// The step count comes from the API request unbounded, so exploration is
+// summed in closed form: from step 2 on a step's cost is linear in the step
+// number, so the steps below and above the tier threshold are each an
+// arithmetic series.
 func (e runTokenEstimate) costs(p gollm.TokenPricing) phaseCosts {
 	const perMillion = 1_000_000.0
 	tier := func(prompt int) float64 {
@@ -348,9 +353,9 @@ func (e runTokenEstimate) costs(p gollm.TokenPricing) phaseCosts {
 	usd := func(in, out int, inRate float64) float64 {
 		return float64(in)/perMillion*inRate + float64(out)/perMillion*p.OutputPerMillion
 	}
-	var c phaseCosts
-	for step := 1; step <= e.steps; step++ {
-		prompt := e.systemPrompt + (step-1)*e.growth
+	promptAt := func(step int) int { return e.systemPrompt + (step-1)*e.growth }
+	stepCost := func(step int) float64 {
+		prompt := promptAt(step)
 		var in float64
 		switch {
 		case e.promptCache && step > 1:
@@ -361,8 +366,30 @@ func (e runTokenEstimate) costs(p gollm.TokenPricing) phaseCosts {
 		default:
 			in = float64(prompt) / perMillion * p.InputPerMillion
 		}
-		out := float64(avgExplorationOutputPerStep) / perMillion * p.OutputPerMillion
-		c.Exploration += tier(prompt) * (in + out)
+		return in + float64(avgExplorationOutputPerStep)/perMillion*p.OutputPerMillion
+	}
+	// series sums steps first..last (first >= 2, where the cost is linear).
+	series := func(first, last int) float64 {
+		if first > last {
+			return 0
+		}
+		return float64(last-first+1) * (stepCost(first) + stepCost(last)) / 2
+	}
+	// baseSteps = the last step whose prompt is at or under the threshold.
+	baseSteps := e.steps
+	if p.LongContextThreshold > 0 && p.LongContextMultiplier > 0 {
+		switch {
+		case e.systemPrompt > p.LongContextThreshold:
+			baseSteps = 0
+		case e.growth > 0:
+			baseSteps = min(e.steps, (p.LongContextThreshold-e.systemPrompt)/e.growth+1)
+		}
+	}
+	var c phaseCosts
+	if e.steps >= 1 {
+		c.Exploration = tier(promptAt(1)) * stepCost(1)
+		c.Exploration += series(2, baseSteps)
+		c.Exploration += tier(promptAt(e.steps)) * series(max(2, baseSteps+1), e.steps)
 	}
 	if e.areas > 0 {
 		perAreaIn, perAreaOut := e.AnalysisInput/e.areas, e.AnalysisOutput/e.areas

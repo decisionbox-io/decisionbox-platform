@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
@@ -27,7 +28,7 @@ type Client struct {
 	runID        string
 	debugLogger  *debug.Logger
 	testMode     bool
-	promptCount  int
+	promptCount  atomic.Int64 // test-mode capture sequence; validation may call concurrently
 	currentStep  int
 	currentPhase string
 
@@ -375,7 +376,7 @@ func (c *Client) SetStep(step int)                { c.currentStep = step }
 func (c *Client) SetPhase(phase string)           { c.currentPhase = phase }
 
 func (c *Client) savePrompt(messages []gollm.Message, systemPrompt string) {
-	c.promptCount++
+	seq := c.promptCount.Add(1)
 	promptDir := "test-prompts"
 	if err := os.MkdirAll(promptDir, 0750); err != nil {
 		logger.WithField("error", err).Debug("failed to create prompt dir")
@@ -383,10 +384,10 @@ func (c *Client) savePrompt(messages []gollm.Message, systemPrompt string) {
 	}
 
 	timestamp := time.Now().Format("20060102-150405")
-	filename := fmt.Sprintf("%03d-%s-prompt.txt", c.promptCount, timestamp)
+	filename := fmt.Sprintf("%03d-%s-prompt.txt", seq, timestamp)
 
 	var content string
-	content += fmt.Sprintf("=== PROMPT #%d ===\n", c.promptCount)
+	content += fmt.Sprintf("=== PROMPT #%d ===\n", seq)
 	if systemPrompt != "" {
 		content += "SYSTEM:\n" + systemPrompt + "\n---\n"
 	}
