@@ -24,7 +24,7 @@ func TestAnUnmarkedCurrencyFigurePrintsTheWarehousesCurrency(t *testing.T) {
 		Figures: []models.Figure{currencyFigure("f1", 1234567890)},
 	}}
 
-	settleInsightFigureCurrencies(insights, "TRY")
+	settleInsightFigureCurrencies(insights, projectCurrencyPlan("TRY"), nil)
 
 	written := newFigureWriter("Turkish").renderFigure(insights[0].Figures[0])
 	if strings.Contains(written, "$") {
@@ -71,7 +71,7 @@ func TestACurrencyTheModelStatedIsNeverReplaced(t *testing.T) {
 		{ID: "f2", Value: 20, Unit: models.UnitCurrency, Currency: "USD", Step: 1, Kind: "cell"},
 	}}}
 
-	settleInsightFigureCurrencies(insights, "TRY")
+	settleInsightFigureCurrencies(insights, projectCurrencyPlan("TRY"), nil)
 
 	if got := insights[0].Figures[0].Symbol(); got != "€" {
 		t.Errorf("euro figure became %q", got)
@@ -86,7 +86,7 @@ func TestWithoutAProjectCurrencyNothingChanges(t *testing.T) {
 	// the figure stays unmarked and Symbol falls through to its dollar default.
 	insights := []models.Insight{{Figures: []models.Figure{currencyFigure("f1", 1)}}}
 
-	settleInsightFigureCurrencies(insights, "")
+	settleInsightFigureCurrencies(insights, projectCurrencyPlan(""), nil)
 
 	if c := insights[0].Figures[0].Currency; c != "" {
 		t.Errorf("stamped %q with no project currency to stamp", c)
@@ -104,7 +104,7 @@ func TestOnlyCurrencyFiguresAreTouched(t *testing.T) {
 		{ID: "f2", Value: 24.66, Unit: models.UnitPercent, Step: 1, Kind: "cell"},
 	}}}
 
-	settleInsightFigureCurrencies(insights, "TRY")
+	settleInsightFigureCurrencies(insights, projectCurrencyPlan("TRY"), nil)
 
 	for _, f := range insights[0].Figures {
 		if f.Currency != "" {
@@ -170,5 +170,111 @@ func TestNeitherPromptTellsTheModelToOmitTheCurrency(t *testing.T) {
 		if !strings.Contains(lower, "always") {
 			t.Errorf("%s does not tell the model the currency is always stated", name)
 		}
+	}
+}
+
+// projectCurrencyPlan is the legacy single-warehouse shape: no datasources configured,
+// so the project's currency is the only answer there is.
+func projectCurrencyPlan(currency string) currencyPlan {
+	return newCurrencyPlan(profileWithCurrency(currency), nil)
+}
+
+func profileWithCurrency(currency string) map[string]interface{} {
+	return map[string]interface{}{"financials": map[string]interface{}{"local_currency": currency}}
+}
+
+func datasource(id, currency string) models.WarehouseConfig {
+	wh := models.WarehouseConfig{ID: id}
+	if currency != "" {
+		wh.Profile = profileWithCurrency(currency)
+	}
+	return wh
+}
+
+func TestAFigureTakesTheCurrencyOfTheDatasourceItWasReadFrom(t *testing.T) {
+	// A run can span datasources: the orchestrator holds one provider and one config
+	// per warehouse and routes each step to the one it belongs to. Two of them can
+	// report in different currencies, and an amount read from the second is in the
+	// second's -- stamping the primary's over it is this file's own defect in a new
+	// place.
+	plan := newCurrencyPlan(profileWithCurrency("TRY"), []models.WarehouseConfig{
+		datasource("default", "TRY"),
+		datasource("eu", "EUR"),
+	})
+	stepByID := map[int]*models.ExplorationStep{
+		3: {Step: 3, WarehouseID: "default"},
+		7: {Step: 7, WarehouseID: "eu"},
+	}
+	insights := []models.Insight{{Figures: []models.Figure{
+		{ID: "f1", Value: 1, Unit: models.UnitCurrency, Step: 3, Kind: "cell"},
+		{ID: "f2", Value: 2, Unit: models.UnitCurrency, Step: 7, Kind: "cell"},
+	}}}
+
+	settleInsightFigureCurrencies(insights, plan, stepByID)
+
+	if got := insights[0].Figures[0].Symbol(); got != "₺" {
+		t.Errorf("the primary datasource's figure got %q", got)
+	}
+	if got := insights[0].Figures[1].Symbol(); got != "€" {
+		t.Errorf("the secondary datasource's figure got %q, want the euro it was read in", got)
+	}
+}
+
+func TestADatasourceWithNoCurrencyOfItsOwnFallsBackToTheProjects(t *testing.T) {
+	// What WarehouseConfig.Profile documents: empty falls back to Project.Profile.
+	plan := newCurrencyPlan(profileWithCurrency("TRY"), []models.WarehouseConfig{datasource("extra", "")})
+	stepByID := map[int]*models.ExplorationStep{1: {Step: 1, WarehouseID: "extra"}}
+	insights := []models.Insight{{Figures: []models.Figure{
+		{ID: "f1", Value: 1, Unit: models.UnitCurrency, Step: 1, Kind: "cell"},
+	}}}
+
+	settleInsightFigureCurrencies(insights, plan, stepByID)
+
+	if got := insights[0].Figures[0].Symbol(); got != "₺" {
+		t.Errorf("got %q, want the project's currency", got)
+	}
+}
+
+func TestAnUntaggedStepIsTheLegacyShape(t *testing.T) {
+	// A single-warehouse run tags no step, which is every run before multi-warehouse.
+	plan := newCurrencyPlan(profileWithCurrency("TRY"), nil)
+	stepByID := map[int]*models.ExplorationStep{1: {Step: 1}}
+	insights := []models.Insight{{Figures: []models.Figure{
+		{ID: "f1", Value: 1, Unit: models.UnitCurrency, Step: 1, Kind: "cell"},
+	}}}
+
+	settleInsightFigureCurrencies(insights, plan, stepByID)
+
+	if got := insights[0].Figures[0].Symbol(); got != "₺" {
+		t.Errorf("got %q, want the project's currency", got)
+	}
+}
+
+func TestAFigureCitingAStepThatDoesNotExistIsFilledOnlyWhereThereIsNoDoubt(t *testing.T) {
+	// A figure can cite a step the run never took -- the unresolved-reference gate
+	// exists because models do that. There is then nothing to read a datasource from,
+	// so the only safe fill is a currency every datasource agrees on.
+	agree := newCurrencyPlan(profileWithCurrency("TRY"), []models.WarehouseConfig{
+		datasource("default", "TRY"), datasource("second", "TRY"),
+	})
+	disagree := newCurrencyPlan(profileWithCurrency("TRY"), []models.WarehouseConfig{
+		datasource("default", "TRY"), datasource("eu", "EUR"),
+	})
+	orphan := func() []models.Insight {
+		return []models.Insight{{Figures: []models.Figure{
+			{ID: "f1", Value: 1, Unit: models.UnitCurrency, Step: 99, Kind: "cell"},
+		}}}
+	}
+
+	ins := orphan()
+	settleInsightFigureCurrencies(ins, agree, map[int]*models.ExplorationStep{})
+	if got := ins[0].Figures[0].Symbol(); got != "₺" {
+		t.Errorf("datasources agreeing: got %q, want the agreed currency", got)
+	}
+
+	ins = orphan()
+	settleInsightFigureCurrencies(ins, disagree, map[int]*models.ExplorationStep{})
+	if c := ins[0].Figures[0].Currency; c != "" {
+		t.Errorf("datasources disagreeing: stamped %q, where no currency is knowable", c)
 	}
 }

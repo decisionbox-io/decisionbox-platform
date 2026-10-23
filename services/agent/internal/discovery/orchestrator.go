@@ -1036,6 +1036,8 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// orchestrator's explorationResult.Steps slice is the live source
 	// the executor reads at validation time).
 	stepByID := buildStepIndex(explorationResult.Steps)
+	// One plan per run, read once: the project's profile and each datasource's own.
+	currencies := newCurrencyPlan(o.profile, o.warehouses)
 	valPhase := &validationPhase{
 		agent: o.validationAgent,
 		cfg:   o.validationCfg,
@@ -1234,8 +1236,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// answers "$" for a figure that states none, so an unmarked amount in any other
 		// currency printed a dollar sign -- in one shipped sentence, next to the currency
 		// the model had written as a word. Settled here rather than at each print site so
-		// a stored figure says what it is in: see figure_currency.go.
-		settleInsightFigureCurrencies(insights, o.defaultCurrency())
+		// a stored figure says what it is in, and per datasource rather than per run,
+		// because a figure read from a secondary warehouse is in that warehouse's
+		// currency: see figure_currency.go.
+		settleInsightFigureCurrencies(insights, currencies, stepByID)
 
 		// Phase 4.5: Validate insights via the LLM-native verifier
 		// agent. Walks insights in affected_count-desc order,
@@ -3436,9 +3440,3 @@ func (o *Orchestrator) figureWriter() figureWriter {
 	return newFigureWriter(o.language)
 }
 
-// defaultCurrency is what an amount is in when the model did not say: the warehouse's own
-// currency, out of the same profile the prompt already shows it in. Empty when the project
-// states none, which leaves every figure as written and Figure.Symbol's default in place.
-func (o *Orchestrator) defaultCurrency() string {
-	return localCurrency(o.profile)
-}

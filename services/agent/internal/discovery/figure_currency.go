@@ -95,12 +95,88 @@ func localCurrency(profile map[string]interface{}) string {
 	return strings.TrimSpace(stated)
 }
 
+// currencyPlan answers what currency an unmarked figure is in.
+//
+// Per datasource, not per run. A run can span several warehouses -- the orchestrator
+// holds one provider and one config per datasource and routes a step to the one it
+// belongs to -- and two warehouses can report in different currencies. One currency
+// applied to every figure would stamp the primary's onto an amount read from a
+// secondary, which is the mislabelling this file exists to prevent, in a new place.
+type currencyPlan struct {
+	// byWarehouse is each datasource's own currency, keyed the way a step tags itself.
+	// A datasource that states none is absent and resolves to the project's, which is
+	// what WarehouseConfig.Profile documents ("empty falls back to Project.Profile").
+	byWarehouse map[string]string
+	project     string
+	// agreed is the currency to use for a figure whose own datasource cannot be
+	// determined -- a figure citing a step that is not in the index. It is set only
+	// while every datasource resolves to the same currency; where they disagree there
+	// is no safe answer and nothing is filled.
+	agreed string
+}
+
+// newCurrencyPlan reads the project's profile and each datasource's own.
+//
+// warehouses is empty on a legacy single-warehouse run, which leaves the project's
+// currency as the only answer -- the behaviour a single-warehouse deployment wants and
+// the one every existing run has.
+func newCurrencyPlan(projectProfile map[string]interface{}, warehouses []models.WarehouseConfig) currencyPlan {
+	p := currencyPlan{byWarehouse: map[string]string{}, project: localCurrency(projectProfile)}
+
+	distinct := map[string]struct{}{}
+	for _, wh := range warehouses {
+		id := wh.ID
+		if id == "" {
+			id = models.DefaultWarehouseID
+		}
+		if c := localCurrency(wh.Profile); c != "" {
+			p.byWarehouse[id] = c
+		}
+		distinct[p.forWarehouse(id)] = struct{}{}
+	}
+	if len(warehouses) == 0 {
+		distinct[p.project] = struct{}{}
+	}
+	if len(distinct) == 1 {
+		for c := range distinct {
+			p.agreed = c
+		}
+	}
+	return p
+}
+
+// forWarehouse is a datasource's currency: its own, or the project's where it states
+// none. An unknown id resolves to the project's for the same reason.
+func (p currencyPlan) forWarehouse(id string) string {
+	if id == "" {
+		id = models.DefaultWarehouseID
+	}
+	if c, ok := p.byWarehouse[id]; ok {
+		return c
+	}
+	return p.project
+}
+
+// forStep is the currency of the datasource a figure's cited step queried.
+//
+// A figure names the step its number came from, and a step is tagged with the
+// datasource it ran against. An untagged step is the legacy shape and resolves to the
+// project's currency; a step that is not in the index at all is a figure citing
+// something that did not happen, so there is nothing to read its currency from and the
+// answer is whatever every datasource agrees on -- nothing, where they do not.
+func (p currencyPlan) forStep(step int, stepByID map[int]*models.ExplorationStep) string {
+	if s, ok := stepByID[step]; ok && s != nil {
+		return p.forWarehouse(s.WarehouseID)
+	}
+	return p.agreed
+}
+
 // settleCurrencies fills and normalises the currency on a figure list, in place.
 //
-// local is the currency to fall back on, or "" to fill nothing. A figure that states its
-// own currency is only normalised, never replaced: on a multi-currency warehouse that
-// statement is the only thing distinguishing a euro amount from a local one.
-func settleCurrencies(figures []models.Figure, local string) {
+// A figure that states its own currency is only normalised, never replaced: on a
+// multi-currency warehouse that statement is the only thing distinguishing an amount in
+// another currency from a local one.
+func settleCurrencies(figures []models.Figure, currencyFor func(models.Figure) string) {
 	for i := range figures {
 		f := &figures[i]
 		// Asked only of a currency figure. Symbol answers "$" for a count too, so an
@@ -110,19 +186,22 @@ func settleCurrencies(figures []models.Figure, local string) {
 			continue
 		}
 		if strings.TrimSpace(f.Currency) == "" {
-			f.Currency = currencySymbol(local)
+			f.Currency = currencySymbol(currencyFor(*f))
 			continue
 		}
 		f.Currency = currencySymbol(f.Currency)
 	}
 }
 
-// settleInsightFigureCurrencies settles every insight's figures against the warehouse's
-// currency. Called once, on the way out of the analysis parse and before anything reads
-// a figure, so every later phase sees a figure that says what it is in.
-func settleInsightFigureCurrencies(insights []models.Insight, local string) {
+// settleInsightFigureCurrencies settles every insight's figures against the currency of
+// the datasource each figure was read from. Called once, on the way out of the analysis
+// parse and before anything reads a figure, so every later phase sees a figure that says
+// what it is in.
+func settleInsightFigureCurrencies(insights []models.Insight, plan currencyPlan, stepByID map[int]*models.ExplorationStep) {
 	for i := range insights {
-		settleCurrencies(insights[i].Figures, local)
+		settleCurrencies(insights[i].Figures, func(f models.Figure) string {
+			return plan.forStep(f.Step, stepByID)
+		})
 	}
 }
 
@@ -133,9 +212,10 @@ func settleInsightFigureCurrencies(insights []models.Insight, local string) {
 // insight it references prints, adopted once the reference resolves -- the symbol was
 // never the model's to state at this layer, and adoptResolvedFigureValues fills it only
 // while the field is empty. Defaulting it would fill the field that adoption tests for,
-// so a recommendation restating a euro insight would print the local currency instead.
+// so a recommendation restating an insight in another currency would print the local one
+// instead.
 func normalizeRecommendationFigureCurrencies(recs []models.Recommendation) {
 	for i := range recs {
-		settleCurrencies(recs[i].Figures, "")
+		settleCurrencies(recs[i].Figures, func(models.Figure) string { return "" })
 	}
 }
