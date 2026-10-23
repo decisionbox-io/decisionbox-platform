@@ -731,6 +731,30 @@ func runReachesCube(routable map[string]*queryexec.QueryExecutor, warehouses []m
 	return false
 }
 
+// soleDatasourceSlug returns the provider slug of the one datasource a run
+// can query, or "" when it can query several. With no per-datasource
+// executors the run is single-warehouse wiring and the primary is the only
+// source (see runReachesCube); a legacy single-warehouse run carries no
+// warehouses[] entry, so the primary's id falls back to its slug.
+func soleDatasourceSlug(routable map[string]*queryexec.QueryExecutor, warehouses []models.WarehouseConfig, primaryID, primarySlug string) string {
+	switch len(routable) {
+	case 0:
+		return primarySlug
+	case 1:
+		for id := range routable {
+			for _, wh := range warehouses {
+				if normDatasourceID(wh.ID) == id {
+					return wh.Provider
+				}
+			}
+			if id == primaryID {
+				return primarySlug
+			}
+		}
+	}
+	return ""
+}
+
 // providerIsCube resolves one provider slug's declared shape.
 func providerIsCube(slug string) bool {
 	if slug == "" {

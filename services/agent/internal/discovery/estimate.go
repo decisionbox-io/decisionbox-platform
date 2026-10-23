@@ -249,11 +249,11 @@ type runTokenEstimate struct {
 	ValidationInput, ValidationOutput                           int
 	RecommendationsInput, RecommendationsOutput                 int
 
-	steps, systemPrompt, growth int      // exploration request shape
-	promptCache                 bool     // exploration reads its prefix from cache
-	areas                       int      // analysis requests
-	modeTokens                  [][2]int // per-document (input, output) of each validation mode
-	docs                        int      // validated documents
+	steps, systemPrompt, growth int            // exploration request shape
+	promptCache                 bool           // exploration reads its prefix from cache
+	areas                       int            // analysis requests
+	modeTokens                  []modeEstimate // per-document tokens of each validation mode
+	docs                        int            // validated documents
 }
 
 // phaseCosts is the priced forecast, per phase, in USD.
@@ -293,12 +293,12 @@ func estimateRunTokens(in runTokenInputs) runTokenEstimate {
 	docs := in.NumAreas * estimatedInsightsPerArea
 	e.docs = docs
 	perDocIn, perDocOut := modeTokens(in.Validation.Verifier)
-	e.modeTokens = [][2]int{{perDocIn, perDocOut}}
+	e.modeTokens = []modeEstimate{{perDocIn, perDocOut, in.Validation.Verifier.MaxRounds}}
 	if in.Validation.RefuterEnabled {
 		rIn, rOut := modeTokens(in.Validation.Refuter)
 		perDocIn += rIn
 		perDocOut += rOut
-		e.modeTokens = append(e.modeTokens, [2]int{rIn, rOut})
+		e.modeTokens = append(e.modeTokens, modeEstimate{rIn, rOut, in.Validation.Refuter.MaxRounds})
 	}
 	e.ValidationInput = docs * perDocIn
 	e.ValidationOutput = docs * perDocOut
@@ -306,6 +306,21 @@ func estimateRunTokens(in runTokenInputs) runTokenEstimate {
 	e.RecommendationsInput = in.BaseContextTokens + in.RecommendationsPromptTokens + docs*recommendationInputPerIns
 	e.RecommendationsOutput = recommendationsOutput
 	return e
+}
+
+// modeEstimate is one validation mode's per-document estimate: input and
+// output across all its rounds, and the round count they are spread over.
+type modeEstimate struct {
+	in, out, rounds int
+}
+
+// perRequestInput is the average prompt of one round — what a per-request
+// price tier is decided on.
+func (m modeEstimate) perRequestInput() int {
+	if m.rounds <= 1 {
+		return m.in
+	}
+	return m.in / m.rounds
 }
 
 // modeTokens splits a verifier/refuter mode's per-document token cap into
@@ -335,8 +350,9 @@ func modeTokens(mc verifier.ModeConfig) (in, out int) {
 // at the base rate. A long-prompt tier (TokenPricing.LongContextThreshold,
 // e.g. Claude Haiku 5.5 above 100K) multiplies every rate of a request whose
 // prompt exceeds the threshold — per request, as the provider bills it.
-// Verifier and refuter are priced separately, each tiered by its own
-// estimated per-document input.
+// Verifier and refuter are priced separately. A mode's token cap bounds all
+// of a document's rounds together, so each is tiered by its average request
+// (estimated input over its rounds), not by the whole budget.
 //
 // The step count comes from the API request unbounded, so exploration is
 // summed in closed form: from step 2 on a step's cost is linear in the step
@@ -396,7 +412,7 @@ func (e runTokenEstimate) costs(p gollm.TokenPricing) phaseCosts {
 		c.Analysis = float64(e.areas) * tier(perAreaIn) * usd(perAreaIn, perAreaOut, p.InputPerMillion)
 	}
 	for _, mt := range e.modeTokens {
-		c.Validation += float64(e.docs) * tier(mt[0]) * usd(mt[0], mt[1], p.InputPerMillion)
+		c.Validation += float64(e.docs) * tier(mt.perRequestInput()) * usd(mt.in, mt.out, p.InputPerMillion)
 	}
 	c.Recommendations = tier(e.RecommendationsInput) * usd(e.RecommendationsInput, e.RecommendationsOutput, p.InputPerMillion)
 	return c

@@ -967,6 +967,11 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		"max_steps":            opts.MaxSteps,
 	}).Info("exploration: stopping rule resolved")
 
+	// The action format the engine states follows the sole datasource's own
+	// query language, so a run that can only reach a non-SQL source is never
+	// shown a SQL example (nor, for a cube, table lookups).
+	soleSlug := soleDatasourceSlug(dsExecutors, o.warehouses, normDatasourceID(o.warehouseID), o.warehouseProviderSlug)
+
 	o.explorationEngine = ai.NewExplorationEngine(ai.ExplorationEngineOptions{
 		Client:            o.aiClient,
 		Executor:          executor,
@@ -978,6 +983,8 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// A run that can query a cube stops on whether it is still finding
 		// anything new, not on a step count — see exploration_stopping.go.
 		StopOnNoNewSignal: reachesCube,
+		NonSQLLanguage:    gowarehouse.NonSQLLanguageOf(soleSlug),
+		CubeSource:        providerIsCube(soleSlug),
 		Dataset:           datasetsStr,
 		SchemaProvider:    schemaProvider,
 		StepIndexer:       stepIndexer,

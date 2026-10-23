@@ -39,8 +39,8 @@ func TestParseAction_AcceptsLegacyThinkingKey(t *testing.T) {
 func TestEngineMessages_NeverAskForThinkingKey(t *testing.T) {
 	engine := NewExplorationEngine(ExplorationEngineOptions{MaxSteps: 7, MinSteps: 5})
 	msgs := map[string]string{
-		"repair nudge (no JSON)":     explorationRepairNudge(errors.New("no action JSON object found in response"), false, false),
-		"repair nudge (correlation)": explorationRepairNudge(errors.New("no query, lookup_schema"), true, true),
+		"repair nudge (no JSON)":     explorationRepairNudge(errors.New("no action JSON object found in response"), false, actionMenuSource{}),
+		"repair nudge (correlation)": explorationRepairNudge(errors.New("no query, lookup_schema"), true, actionMenuSource{multi: true}),
 		"initial message":            engine.buildInitialMessage(ExplorationContext{}),
 	}
 	for _, reason := range []string{"productive", "unproven", "min_steps"} {
@@ -91,7 +91,7 @@ func TestActionMenu_MultiDatasourceIsRoutingAware(t *testing.T) {
 	engine := newCorrelationEngine(nil)
 	for name, msg := range map[string]string{
 		"initial message": engine.buildInitialMessage(ExplorationContext{}),
-		"repair nudge":    explorationRepairNudge(errors.New("no action JSON object found in response"), engine.correlationsOffered(), true),
+		"repair nudge":    explorationRepairNudge(errors.New("no action JSON object found in response"), engine.correlationsOffered(), engine.menuSource()),
 	} {
 		if !strings.Contains(msg, `"datasource_id"`) {
 			t.Errorf("%s: multi-datasource menu must show datasource_id:\n%s", name, msg)
@@ -103,5 +103,39 @@ func TestActionMenu_MultiDatasourceIsRoutingAware(t *testing.T) {
 	single := NewExplorationEngine(ExplorationEngineOptions{MaxSteps: 7})
 	if msg := single.buildInitialMessage(ExplorationContext{}); strings.Contains(msg, "datasource_id") {
 		t.Errorf("single-datasource menu should stay unchanged:\n%s", msg)
+	}
+}
+
+// When the only datasource a run can query is not SQL, the stated format
+// must not prescribe SQL; when it is a cube it must not offer table
+// lookups either — a cube has no tables, and its pack says lookup_schema is
+// not used. The language the source declares is named instead.
+func TestActionMenu_SoleNonSQLSourceIsNotTaughtSQL(t *testing.T) {
+	cube := NewExplorationEngine(ExplorationEngineOptions{MaxSteps: 7, NonSQLLanguage: "Analytics report request", CubeSource: true})
+	objects := NewExplorationEngine(ExplorationEngineOptions{MaxSteps: 7, NonSQLLanguage: "CRM object query"})
+	cases := []struct {
+		name       string
+		msg        string
+		lang       string
+		wantLookup bool
+	}{
+		{"cube initial", cube.buildInitialMessage(ExplorationContext{}), "Analytics report request", false},
+		{"cube nudge", explorationRepairNudge(errors.New("no action JSON object found in response"), false, cube.menuSource()), "Analytics report request", false},
+		{"objects initial", objects.buildInitialMessage(ExplorationContext{}), "CRM object query", true},
+	}
+	for _, c := range cases {
+		if strings.Contains(c.msg, "SELECT") {
+			t.Errorf("%s: a non-SQL source must not be taught SQL:\n%s", c.name, c.msg)
+		}
+		if !strings.Contains(c.msg, c.lang) {
+			t.Errorf("%s: the source's query language %q is not named:\n%s", c.name, c.lang, c.msg)
+		}
+		if got := strings.Contains(c.msg, `"lookup_schema"`); got != c.wantLookup {
+			t.Errorf("%s: lookup_schema offered = %v, want %v:\n%s", c.name, got, c.wantLookup, c.msg)
+		}
+	}
+	sql := NewExplorationEngine(ExplorationEngineOptions{MaxSteps: 7})
+	if msg := sql.buildInitialMessage(ExplorationContext{}); !strings.Contains(msg, `"query": "SELECT ..."`) {
+		t.Errorf("a SQL source keeps the SQL example:\n%s", msg)
 	}
 }

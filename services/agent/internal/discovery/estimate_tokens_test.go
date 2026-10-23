@@ -132,9 +132,11 @@ func TestRunTokenEstimate_LongContextTierPerRequest(t *testing.T) {
 // Each validation mode is tiered by its own estimated input, not its cap:
 // a verifier cap just over the threshold whose estimated input (cap minus
 // the reply allowance) is under it stays on the base tier, and a refuter
-// under the threshold is never inflated by the verifier's tier.
+// under the threshold is never inflated by the verifier's tier. The
+// verifier runs one round here, so its whole input is one request.
 func TestRunTokenEstimate_ValidationTierPerMode(t *testing.T) {
 	cfg := validationCfgForTest()
+	cfg.Verifier.MaxRounds = 1
 	cfg.Verifier.TokenCap = 102000 // estimated input 98000
 	flat := gollm.TokenPricing{InputPerMillion: 1, OutputPerMillion: 10}
 	tiered := flat
@@ -212,5 +214,27 @@ func TestRunTokenEstimate_HugeStepCountReturnsPromptly(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("pricing a huge step count did not return within 2s")
+	}
+}
+
+// A validation mode's token cap bounds the input of all of a document's
+// rounds together, so the long-prompt tier is decided per request: a
+// 106K-token budget spread over 8 rounds never sends a prompt over a 100K
+// threshold, while the same budget in a single round does.
+func TestRunTokenEstimate_ValidationTierPerRequestNotPerBudget(t *testing.T) {
+	flat := gollm.TokenPricing{InputPerMillion: 1, OutputPerMillion: 10}
+	tiered := flat
+	tiered.LongContextThreshold, tiered.LongContextMultiplier = 100000, 5
+	cfg := validationCfgForTest()
+	cfg.RefuterEnabled = false
+	cfg.Verifier = verifier.ModeConfig{MaxRounds: 8, TokenCap: 110000, MaxOutputTokens: 4000}
+	e := estimateRunTokens(runTokenInputs{MaxSteps: 1, NumAreas: 1, Validation: cfg})
+	if got, want := e.costs(tiered).Validation, e.costs(flat).Validation; got != want {
+		t.Errorf("8 rounds of ~13K each were tiered: %v, want %v", got, want)
+	}
+	cfg.Verifier.MaxRounds = 1
+	e = estimateRunTokens(runTokenInputs{MaxSteps: 1, NumAreas: 1, Validation: cfg})
+	if got, want := e.costs(tiered).Validation, 5*e.costs(flat).Validation; math.Abs(got-want) > 1e-12 {
+		t.Errorf("one 106K round not tiered: %v, want %v", got, want)
 	}
 }
