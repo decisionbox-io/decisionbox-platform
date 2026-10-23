@@ -126,10 +126,23 @@ const recommendationFigureContract = "## Numbers come from the insights, by refe
 	"Every number you report is already in your input: an insight declared it and the " +
 	"platform has checked it. Do not retype one. Put a reference in the prose and name the " +
 	"figure in a top-level `figures` array — the platform writes the checked value into " +
-	"`title`, `description` and `actions` before anyone reads them.\n\n" +
+	"`title`, `description`, `actions` and `expected_impact` before anyone reads them.\n\n" +
+	// Every field the sentence above names is shown here, because a model copies the
+	// shape it is shown. It was not always: the example showed `title`, `description`
+	// and `figures` alone, and a run on a large model answered in exactly that shape --
+	// eight recommendations with no `actions` key at all, their steps written into the
+	// description as a numbered list instead. The schema requires `actions`, which did
+	// not save it, because on the Anthropic wire a response format is a forced tool's
+	// input schema and is validated best-effort rather than enforced at decode. On that
+	// wire this example is the only thing asking. Pinned by
+	// TestTheWorkedExampleShowsEveryFieldTheContractSaysCarriesAReference.
 	"```json\n" +
 	"\"title\": \"Win back the {{f1}} buyers in the 6+ order bands\",\n" +
 	"\"description\": \"{{f1}} buyers sit in the two highest frequency bands ({{f2}} and {{f3}}).\",\n" +
+	"\"actions\": [\"Add the {{f2}} band to the reminder track\",\n" +
+	"            \"Review the discount floor for the {{f3}} band\"],\n" +
+	"\"expected_impact\": {\"metric\": \"repeat orders\", \"estimated_improvement\": " +
+	"\"5-8% of the {{f1}} buyers\"},\n" +
 	"\"figures\": [\n" +
 	"  {\"id\": \"f1\", \"unit\": \"count\", \"kind\": \"sum\",\n" +
 	"   \"refs\": [{\"insight\": \"<insight id>\", \"figure\": \"f4\"},\n" +
