@@ -136,7 +136,7 @@ func TestCatalog_ClaudeOpus48AndClaude5Line(t *testing.T) {
 		{"us.anthropic.claude-opus-4-8", 5, 25, false, false},
 		{"global.anthropic.claude-opus-5-5", 4, 20, true, true},
 		{"global.anthropic.claude-sonnet-5-5", 2, 10, true, true},
-		{"global.anthropic.claude-haiku-5-5", 0.10, 0.50, true, false},
+		{"global.anthropic.claude-haiku-5-5", 0.10, 0.50, false, false},
 		{"global.anthropic.claude-sonnet-5", 2, 10, false, false},
 		{"global.anthropic.claude-opus-5", 5, 25, false, false},
 	}

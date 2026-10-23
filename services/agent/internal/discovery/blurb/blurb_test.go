@@ -16,6 +16,9 @@ import (
 	// resolve the catalog flag for gemma4 / gemma3 / qwen3 /
 	// deepseek-r1 in TestNew_RejectsCatalogFlaggedReasoningModels.
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/ollama"
+	// Bedrock's catalog: the Claude 5.5 entries in
+	// TestNew_ClaudeHaiku55AllowedOpusSonnet55Rejected.
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/bedrock"
 )
 
 // --- fakeLLM: replaces a Provider for unit tests ---
@@ -872,5 +875,20 @@ func TestOneBlurb_DoesNotRetry_ContentFilter(t *testing.T) {
 	}
 	if got := atomic.LoadInt64(&llm.called); got != 1 {
 		t.Errorf("LLM called %d times, want 1 (content_filter deterministic)", got)
+	}
+}
+
+// TestNew_ClaudeHaiku55AllowedOpusSonnet55Rejected: Haiku 5.5 is the cheap,
+// fast model table descriptions are meant for; it thinks only adaptively,
+// so the catalog must not flag it as reasoning-class (which would reject it
+// here). Opus 5.5 and Sonnet 5.5 think on every request and stay rejected.
+func TestNew_ClaudeHaiku55AllowedOpusSonnet55Rejected(t *testing.T) {
+	if _, err := New(Config{LLM: &fakeLLM{respondWith: "blurb"}, Model: "global.anthropic.claude-haiku-5-5", ProviderName: "bedrock"}); err != nil {
+		t.Errorf("Haiku 5.5 must be accepted for table descriptions: %v", err)
+	}
+	for _, model := range []string{"global.anthropic.claude-opus-5-5", "us.anthropic.claude-sonnet-5-5"} {
+		if _, err := New(Config{LLM: &fakeLLM{respondWith: "blurb"}, Model: model, ProviderName: "bedrock"}); !errors.Is(err, ErrReasoningModelNotSupported) {
+			t.Errorf("New(%q) err = %v, want ErrReasoningModelNotSupported", model, err)
+		}
 	}
 }

@@ -98,9 +98,10 @@ func buildAzureFoundryCatalog() []gollm.ModelEntry {
 	models := []gollm.ModelEntry{
 		// --- Anthropic Claude on Foundry ---
 		// Opus 5.5 and Sonnet 5.5 think on every request (adaptive thinking
-		// cannot be disabled) and reject a forced tool_choice with a 400;
-		// Haiku 5.5 thinks adaptively but accepts a forced tool choice
-		// (verified on Bedrock 2026-10-22).
+		// cannot be disabled) and reject a forced tool_choice with a 400.
+		// Haiku 5.5 thinks only adaptively, accepts a forced tool choice
+		// (verified on Bedrock 2026-10-22) and is not flagged Reasoning, so
+		// it stays usable as the fast table-description (blurb) model.
 		{
 			ID:              "claude-opus-4-8",
 			Aliases:         []string{"opus-4-8"},
@@ -158,7 +159,6 @@ func buildAzureFoundryCatalog() []gollm.ModelEntry {
 			MaxOutputTokens: claude5Max,
 			MaxInputTokens:  claude5InputWindow,
 			Pricing:         gollm.TokenPricing{InputPerMillion: haiku55In, OutputPerMillion: haiku55Out, LongContextThreshold: haiku55LongContextThreshold, LongContextMultiplier: haiku55LongContextMultiplier},
-			Reasoning:       true,
 		},
 		{
 			ID:              "claude-opus-4-7",
