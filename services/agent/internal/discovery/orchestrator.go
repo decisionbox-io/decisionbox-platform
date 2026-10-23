@@ -1230,6 +1230,13 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		insights := outcome.insights
 		step.Insights = insights
 
+		// Which currency each amount is in, before anything reads a figure. Figure.Symbol
+		// answers "$" for a figure that states none, so an unmarked amount in any other
+		// currency printed a dollar sign -- in one shipped sentence, next to the currency
+		// the model had written as a word. Settled here rather than at each print site so
+		// a stored figure says what it is in: see figure_currency.go.
+		settleInsightFigureCurrencies(insights, o.defaultCurrency())
+
 		// Phase 4.5: Validate insights via the LLM-native verifier
 		// agent. Walks insights in affected_count-desc order,
 		// applies the per-run cap (insightsValidatedThisRun is threaded
@@ -1416,6 +1423,11 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		//
 		// After the id validation rather than before, so a recommendation dropped for
 		// citing an insight that does not exist is not first given rendered numbers.
+		//
+		// A code the model wrote here becomes the symbol it prints, before adoption reads
+		// it. No default at this layer -- the currency belongs to the insight being
+		// restated, and adoption fills it only while the field is empty.
+		normalizeRecommendationFigureCurrencies(recommendations)
 		figSettled, figAdopted := o.figureWriter().attachRecommendationFigureVerdicts(recommendations, recommenderInput)
 		figTally := o.figureWriter().renderRecommendationFigures(recommendations)
 		if recStep != nil {
@@ -3422,4 +3434,11 @@ func (o *Orchestrator) recommendationsKnowledgeQuery(insights []models.Insight) 
 // notation -- there is one writer and everything that prints a number goes through it.
 func (o *Orchestrator) figureWriter() figureWriter {
 	return newFigureWriter(o.language)
+}
+
+// defaultCurrency is what an amount is in when the model did not say: the warehouse's own
+// currency, out of the same profile the prompt already shows it in. Empty when the project
+// states none, which leaves every figure as written and Figure.Symbol's default in place.
+func (o *Orchestrator) defaultCurrency() string {
+	return localCurrency(o.profile)
 }

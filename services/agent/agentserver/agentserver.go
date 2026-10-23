@@ -301,6 +301,17 @@ func warehouseDomainOr(wh models.WarehouseConfig, projectDomain string) string {
 	return projectDomain
 }
 
+// warehouseProfileOr returns the per-warehouse profile, falling back to the project's as
+// WarehouseConfig.Profile documents. Currency lives in this profile and belongs to the
+// warehouse rather than the project, so a project with two warehouses reporting in
+// different currencies needs the per-warehouse one to win.
+func warehouseProfileOr(wh models.WarehouseConfig, projectProfile map[string]interface{}) map[string]interface{} {
+	if len(wh.Profile) > 0 {
+		return wh.Profile
+	}
+	return projectProfile
+}
+
 // warehouseIDOrDefault returns the warehouse's id, mapping the empty id to the
 // reserved default (matching the model accessors + schema_retrieve). Callers use
 // it wherever an id feeds a warehouse-scoped lookup, so an id-less default entry
@@ -1079,7 +1090,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		Domain:                warehouseDomainOr(primaryWH, project.Domain),
 		Category:              project.Category,
 		Language:              project.Language,
-		Profile:               project.Profile,
+		Profile:               warehouseProfileOr(primaryWH, project.Profile),
 		ProjectPrompts:        project.Prompts,
 		Datasets:              datasets,
 		FilterField:           primaryWH.FilterField,

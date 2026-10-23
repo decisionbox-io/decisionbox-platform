@@ -49,7 +49,14 @@ type Figure struct {
 	// interval a figure claims is half the last place Go printed, and Go chose it.
 	Unit string `bson:"unit,omitempty" json:"unit,omitempty"`
 
-	// Currency is the symbol a currency figure prints, "$" by default.
+	// Currency is the symbol a currency figure prints.
+	//
+	// Settled before anything reads it: the discovery agent fills an unstated one from
+	// the warehouse's own currency, so a figure read back from storage says what it is
+	// in. "$" survives only as Symbol's last resort, for a project that configures no
+	// currency at all -- on a warehouse that does not report in dollars it printed a
+	// dollar sign over most of a run's amounts, in one case inside a sentence that wrote
+	// the real currency as a word beside it.
 	//
 	// Here because Go took over the rendering. While the model typed its own numbers it
 	// typed its own symbol with them, and a euro-denominated warehouse got euros; once Go
@@ -397,6 +404,12 @@ const MaxFigureDecimals = 6
 // claims is half the last place it printed, and that is only knowable if the count of places
 // is the count that was asked for.
 // Symbol is the currency symbol this figure prints.
+//
+// The dollar fallback is the last resort, not the default: it is what remains once the
+// field was not stated and no warehouse currency was configured to state it. Callers that
+// want a figure to carry its own currency settle the field, rather than reading around
+// this -- Symbol is what the renderer, the reference index and the exports all go
+// through, so filling the field once reaches all of them.
 func (f Figure) Symbol() string {
 	if c := strings.TrimSpace(f.Currency); c != "" {
 		return c
