@@ -106,7 +106,26 @@ const figureContract = "## Every number is data, not text\n\n" +
 	"and does not loosen the check, so it is not a way to make a figure unrefutable.\n\n" +
 	"**Declare a figure even when you are unsure the arithmetic is right.** A declaration that " +
 	"turns out wrong is corrected for you, from your own evidence, before anyone reads it. A " +
-	"number you type instead ships as written."
+	"number you type instead ships as written.\n\n" +
+	// The carve-out the recommendation contract always had and this one did not. Without
+	// it the instruction above is unqualified, and the insight rules separately require a
+	// superlative claim to name the data window it came from -- so the only way to obey
+	// both was a reference to something no `kind` can declare. Two insights in one run
+	// wrote the literal "{{window}}" into shipped text, reaching for exactly that.
+	// Pinned by TestBothFigureContractsSayWhatStaysAsOrdinaryText.
+	"### What stays as ordinary text\n\n" +
+	"A figure is a number you read out of the rows. Some of what you write is not that, and " +
+	"belongs in the sentence exactly as you would write it:\n\n" +
+	"- **The window, and any threshold or band you are reading against.** " +
+	"*\"in the queried window (2026-03-01 to 2026-05-11)\"*, *\"over 90 days\"*, " +
+	"*\"the top decile\"*. The rules require you to name the window a superlative is " +
+	"derived from; write it out. A date, a date range and a cutoff are not figures and " +
+	"there is no `kind` that declares one — **never write a reference for one.**\n" +
+	"- **Identifiers and labels you are quoting.** An item code, a vendor name, an account " +
+	"number. They are not quantities.\n\n" +
+	"A reference only ever names a figure you declared in this insight's own `figures` " +
+	"array. If you find yourself wanting to reference something you cannot declare, that is " +
+	"the sign it belongs in the prose."
 
 // recommendationFigureContract asks a recommendation to reference the insights' figures
 // rather than retype their numbers.
