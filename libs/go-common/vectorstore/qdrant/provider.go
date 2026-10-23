@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	pb "github.com/qdrant/go-client/qdrant"
+	"google.golang.org/grpc"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 )
@@ -50,17 +51,32 @@ func New(cfg Config) (*Provider, error) {
 		cfg.Port = 6334
 	}
 
-	client, err := pb.NewClient(&pb.Config{
-		Host:   cfg.Host,
-		Port:   cfg.Port,
-		APIKey: cfg.APIKey,
-		UseTLS: cfg.UseTLS,
-	})
+	client, err := pb.NewClient(ClientConfig(cfg.Host, cfg.Port, cfg.APIKey, cfg.UseTLS))
 	if err != nil {
 		return nil, fmt.Errorf("qdrant: failed to create client: %w", err)
 	}
 
 	return &Provider{client: client}, nil
+}
+
+// ClientConfig is the go-client configuration every DecisionBox Qdrant
+// connection is built from.
+//
+// It disables gRPC service config. With it on, gRPC's DNS resolver also looks
+// up a "_grpc_config.<host>" TXT record before the channel can connect, and
+// on a Docker Compose network that lookup stalls: creating a client took 8s
+// there, against 2ms with it off. Every connection pays it — the version
+// check on creation is the channel's first call — and the prompt-context
+// providers that open one have a 3s budget, so their sections were dropped on
+// every run. Qdrant publishes no service config, so nothing is lost.
+func ClientConfig(host string, port int, apiKey string, useTLS bool) *pb.Config {
+	return &pb.Config{
+		Host:        host,
+		Port:        port,
+		APIKey:      apiKey,
+		UseTLS:      useTLS,
+		GrpcOptions: []grpc.DialOption{grpc.WithDisableServiceConfig()},
+	}
 }
 
 // newWithClient creates a Provider with an injected client (for testing).

@@ -1296,11 +1296,7 @@ func newRunStepIndexClient(cfg *config.Config) (*pb.Client, func(), error) {
 			port = p
 		}
 	}
-	client, err := pb.NewClient(&pb.Config{
-		Host:   host,
-		Port:   port,
-		APIKey: cfg.Qdrant.APIKey,
-	})
+	client, err := pb.NewClient(qdrantstore.ClientConfig(host, port, cfg.Qdrant.APIKey, false))
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("qdrant client: %w", err)
 	}
