@@ -98,3 +98,18 @@ func TestUsageToLLM(t *testing.T) {
 		t.Errorf("ToLLM() = %+v, want %+v", got, want)
 	}
 }
+
+// Claude models that think report the thinking share of output_tokens in
+// output_tokens_details.thinking_tokens (shape taken from a live Bedrock
+// Opus 5.5 response). OutputTokens stays the inclusive total.
+func TestUsageToLLM_ThinkingTokens(t *testing.T) {
+	var u Usage
+	body := `{"input_tokens":689,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":1069,"output_tokens_details":{"thinking_tokens":472},"service_tier":"standard"}`
+	if err := json.Unmarshal([]byte(body), &u); err != nil {
+		t.Fatal(err)
+	}
+	want := gollm.Usage{InputTokens: 689, OutputTokens: 1069, ReasoningTokens: 472}
+	if got := u.ToLLM(); got != want {
+		t.Errorf("ToLLM() = %+v, want %+v", got, want)
+	}
+}

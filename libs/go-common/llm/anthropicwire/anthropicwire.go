@@ -57,13 +57,17 @@ func MarkLastMessage(messages []map[string]interface{}) {
 }
 
 // Usage mirrors the Messages API usage object, including the prompt-cache
-// counters. Anthropic's input_tokens counts only the uncached tail of the
-// prompt.
+// counters and the thinking share of the output. Anthropic's input_tokens
+// counts only the uncached tail of the prompt; output_tokens includes the
+// thinking tokens.
 type Usage struct {
 	InputTokens              int `json:"input_tokens"`
 	OutputTokens             int `json:"output_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	OutputTokensDetails      struct {
+		ThinkingTokens int `json:"thinking_tokens"`
+	} `json:"output_tokens_details"`
 }
 
 // ToLLM converts to the provider-neutral Usage, whose InputTokens is the
@@ -75,6 +79,7 @@ func (u Usage) ToLLM() gollm.Usage {
 		OutputTokens:     u.OutputTokens,
 		CacheReadTokens:  u.CacheReadInputTokens,
 		CacheWriteTokens: u.CacheCreationInputTokens,
+		ReasoningTokens:  u.OutputTokensDetails.ThinkingTokens,
 	}
 }
 
