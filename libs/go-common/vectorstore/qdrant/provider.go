@@ -7,6 +7,7 @@ import (
 
 	pb "github.com/qdrant/go-client/qdrant"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/resolver"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 )
@@ -62,22 +63,45 @@ func New(cfg Config) (*Provider, error) {
 // ClientConfig is the go-client configuration every DecisionBox Qdrant
 // connection is built from.
 //
-// It disables gRPC service config. With it on, gRPC's DNS resolver also looks
-// up a "_grpc_config.<host>" TXT record before the channel can connect, and
-// on a Docker Compose network that lookup stalls: creating a client took 8s
-// there, against 2ms with it off. Every connection pays it — the version
-// check on creation is the channel's first call — and the prompt-context
-// providers that open one have a 3s budget, so their sections were dropped on
-// every run. Qdrant publishes no service config, so nothing is lost.
+// It keeps gRPC's DNS resolver out of the connection: the target goes to the
+// dialer as it is, and the dialer looks the host up the ordinary way. gRPC's
+// resolver also queries a "_grpc_config.<host>" TXT record and — once any
+// linked package registers the grpclb balancer, which the cloud SDKs in the
+// agent do — a "_grpclb._tcp.<host>" SRV record, and on a Docker Compose
+// network those lookups stall: every new connection took 8s there, against
+// 2ms without them. The go-client opens a pool of connections lazily, so the
+// first query on each paid it, and the prompt-context providers (3s budget)
+// timed out on every run. A Qdrant endpoint is one address, so there is no
+// load-balancing or service config to lose.
 func ClientConfig(host string, port int, apiKey string, useTLS bool) *pb.Config {
 	return &pb.Config{
-		Host:        host,
-		Port:        port,
-		APIKey:      apiKey,
-		UseTLS:      useTLS,
-		GrpcOptions: []grpc.DialOption{grpc.WithDisableServiceConfig()},
+		Host:   host,
+		Port:   port,
+		APIKey: apiKey,
+		UseTLS: useTLS,
+		GrpcOptions: []grpc.DialOption{
+			grpc.WithResolvers(dialerResolves{}),
+			grpc.WithDisableServiceConfig(),
+		},
 	}
 }
+
+// dialerResolves replaces gRPC's "dns" resolver for one channel: it reports
+// the target itself as the only address, so the host name reaches the dialer
+// unresolved and no TXT or SRV lookup is made.
+type dialerResolves struct{}
+
+func (dialerResolves) Scheme() string { return "dns" }
+
+func (dialerResolves) Build(t resolver.Target, cc resolver.ClientConn, _ resolver.BuildOptions) (resolver.Resolver, error) {
+	if err := cc.UpdateState(resolver.State{Addresses: []resolver.Address{{Addr: t.Endpoint()}}}); err != nil {
+		return nil, err
+	}
+	return dialerResolves{}, nil
+}
+
+func (dialerResolves) ResolveNow(resolver.ResolveNowOptions) {}
+func (dialerResolves) Close()                                {}
 
 // newWithClient creates a Provider with an injected client (for testing).
 func newWithClient(client qdrantClient) *Provider {
