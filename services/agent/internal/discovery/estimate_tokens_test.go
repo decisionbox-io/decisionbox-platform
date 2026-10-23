@@ -126,3 +126,27 @@ func TestRunTokenEstimate_LongContextTierPerRequest(t *testing.T) {
 		t.Errorf("validation under the threshold must not be tiered: %v vs %v", got, f.Validation)
 	}
 }
+
+// Each validation mode is tiered by its own estimated input, not its cap:
+// a verifier cap just over the threshold whose estimated input (cap minus
+// the reply allowance) is under it stays on the base tier, and a refuter
+// under the threshold is never inflated by the verifier's tier.
+func TestRunTokenEstimate_ValidationTierPerMode(t *testing.T) {
+	cfg := validationCfgForTest()
+	cfg.Verifier.TokenCap = 102000 // estimated input 98000
+	flat := gollm.TokenPricing{InputPerMillion: 1, OutputPerMillion: 10}
+	tiered := flat
+	tiered.LongContextThreshold, tiered.LongContextMultiplier = 100000, 5
+	e := estimateRunTokens(runTokenInputs{MaxSteps: 1, NumAreas: 1, Validation: cfg})
+	if got, want := e.costs(tiered).Validation, e.costs(flat).Validation; got != want {
+		t.Errorf("validation tiered by cap: %v, want %v (inputs are under the threshold)", got, want)
+	}
+	cfg.Verifier.TokenCap = 110000 // estimated input 106000: only the verifier crosses
+	e = estimateRunTokens(runTokenInputs{MaxSteps: 1, NumAreas: 1, Validation: cfg})
+	docs := float64(estimatedInsightsPerArea)
+	verifier := docs * (106000*1 + 4000*10) / 1e6
+	refuter := docs * (17000*1 + 3000*10) / 1e6
+	if got, want := e.costs(tiered).Validation, 5*verifier+refuter; got-want > 1e-12 || want-got > 1e-12 {
+		t.Errorf("validation = %v, want %v (verifier tiered, refuter not)", got, want)
+	}
+}

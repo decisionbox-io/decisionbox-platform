@@ -249,11 +249,11 @@ type runTokenEstimate struct {
 	ValidationInput, ValidationOutput                           int
 	RecommendationsInput, RecommendationsOutput                 int
 
-	steps, systemPrompt, growth int   // exploration request shape
-	promptCache                 bool  // exploration reads its prefix from cache
-	areas                       int   // analysis requests
-	modeCaps                    []int // per-document token cap of each validation mode
-	docs                        int   // validated documents
+	steps, systemPrompt, growth int      // exploration request shape
+	promptCache                 bool     // exploration reads its prefix from cache
+	areas                       int      // analysis requests
+	modeTokens                  [][2]int // per-document (input, output) of each validation mode
+	docs                        int      // validated documents
 }
 
 // phaseCosts is the priced forecast, per phase, in USD.
@@ -293,12 +293,12 @@ func estimateRunTokens(in runTokenInputs) runTokenEstimate {
 	docs := in.NumAreas * estimatedInsightsPerArea
 	e.docs = docs
 	perDocIn, perDocOut := modeTokens(in.Validation.Verifier)
-	e.modeCaps = []int{in.Validation.Verifier.TokenCap}
+	e.modeTokens = [][2]int{{perDocIn, perDocOut}}
 	if in.Validation.RefuterEnabled {
 		rIn, rOut := modeTokens(in.Validation.Refuter)
 		perDocIn += rIn
 		perDocOut += rOut
-		e.modeCaps = append(e.modeCaps, in.Validation.Refuter.TokenCap)
+		e.modeTokens = append(e.modeTokens, [2]int{rIn, rOut})
 	}
 	e.ValidationInput = docs * perDocIn
 	e.ValidationOutput = docs * perDocOut
@@ -334,9 +334,9 @@ func modeTokens(mc verifier.ModeConfig) (in, out int) {
 // at the base input rate. The other phases are single-shot requests billed
 // at the base rate. A long-prompt tier (TokenPricing.LongContextThreshold,
 // e.g. Claude Haiku 5.5 above 100K) multiplies every rate of a request whose
-// prompt exceeds the threshold — per request, as the provider bills it. A
-// validation request is bounded by its mode's token cap, so the cap decides
-// its tier.
+// prompt exceeds the threshold — per request, as the provider bills it.
+// Verifier and refuter are priced separately, each tiered by its own
+// estimated per-document input.
 func (e runTokenEstimate) costs(p gollm.TokenPricing) phaseCosts {
 	const perMillion = 1_000_000.0
 	tier := func(prompt int) float64 {
@@ -368,14 +368,8 @@ func (e runTokenEstimate) costs(p gollm.TokenPricing) phaseCosts {
 		perAreaIn, perAreaOut := e.AnalysisInput/e.areas, e.AnalysisOutput/e.areas
 		c.Analysis = float64(e.areas) * tier(perAreaIn) * usd(perAreaIn, perAreaOut, p.InputPerMillion)
 	}
-	if e.docs > 0 {
-		m := 1.0
-		for _, capTokens := range e.modeCaps {
-			if t := tier(capTokens); t > m {
-				m = t
-			}
-		}
-		c.Validation = m * usd(e.ValidationInput, e.ValidationOutput, p.InputPerMillion)
+	for _, mt := range e.modeTokens {
+		c.Validation += float64(e.docs) * tier(mt[0]) * usd(mt[0], mt[1], p.InputPerMillion)
 	}
 	c.Recommendations = tier(e.RecommendationsInput) * usd(e.RecommendationsInput, e.RecommendationsOutput, p.InputPerMillion)
 	return c
