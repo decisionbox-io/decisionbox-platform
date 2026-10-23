@@ -210,6 +210,13 @@ type ModelEntry struct {
 	// to call the tool (see RelaxForcedToolChoice), which is the
 	// upstream-documented replacement. Default false.
 	RejectsForcedToolChoice bool
+
+	// AdaptiveThinking qualifies Reasoning: the model thinks only when a
+	// request calls for it (Claude Haiku 5.5, Sonnet 5.5) rather than on
+	// every request (Opus 5.5). Output budgets still allow for thinking, but
+	// a short task such as a table description gets a plain, fast answer, so
+	// the blurb generator accepts the model. Meaningful only with Reasoning.
+	AdaptiveThinking bool
 }
 
 // matches reports whether id resolves to this entry. Exact,
@@ -776,6 +783,23 @@ func IsReasoningModel(providerName, model string) bool {
 		return false
 	}
 	return e.Reasoning
+}
+
+// IsAdaptiveThinkingModel reports whether the catalog row for (provider,
+// model) declares that the model thinks only when a request needs it. False
+// when the provider is not registered or the model is not catalogued.
+func IsAdaptiveThinkingModel(providerName, model string) bool {
+	providersMu.RLock()
+	meta, ok := providerMeta[providerName]
+	providersMu.RUnlock()
+	if !ok {
+		return false
+	}
+	e, ok := meta.FindModel(model)
+	if !ok {
+		return false
+	}
+	return e.AdaptiveThinking
 }
 
 // RejectsForcedToolChoice reports whether the catalog row for (provider,

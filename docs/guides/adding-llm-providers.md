@@ -25,7 +25,8 @@ Claude models that Bedrock ships with an unsuffixed canonical ID (Opus 4.8 and l
 
 Two capability fields matter for Claude entries:
 
-- `Reasoning: true` for models that think on every request (Claude Opus 5.5, Sonnet 5.5) — the exploration step then gets the larger reasoning output budget, since thinking counts towards `max_tokens`. The flag also keeps a model out of table-description (blurb) generation, so leave it off models that only think adaptively (Haiku 5.5).
+- `Reasoning: true` for models that may think before answering (Claude Opus 5.5, Sonnet 5.5, Haiku 5.5) — the exploration step then gets the larger reasoning output budget, since thinking counts towards `max_tokens`.
+- `AdaptiveThinking: true` alongside `Reasoning` when the model thinks only when a request needs it (Sonnet 5.5, Haiku 5.5) rather than on every request (Opus 5.5). Table-description (blurb) generation refuses reasoning models unless they are adaptive, since a short prompt then gets a plain, fast answer; the blurb-LLM connection test applies the same rule (`blurb.CheckModel`).
 - `RejectsForcedToolChoice: true` for models that return a 400 for `tool_choice` of type `tool` / `any` (Opus 5.5, Sonnet 5.5). Providers relax such a request with `gollm.RelaxForcedToolChoice`.
 
 Claude entries get prompt-cache prices (`CacheReadPerMillion`, `CacheWritePerMillion`) filled from base input at 0.1x / 1.25x unless the entry sets its own (Opus 5.5 and Sonnet 5.5 read at 0.05x).

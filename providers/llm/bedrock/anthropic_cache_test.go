@@ -131,14 +131,15 @@ func TestCatalog_ClaudeOpus48AndClaude5Line(t *testing.T) {
 		in, out   float64
 		reasoning bool
 		rejects   bool
+		adaptive  bool
 	}{
-		{"anthropic.claude-opus-4-8", 5, 25, false, false},
-		{"us.anthropic.claude-opus-4-8", 5, 25, false, false},
-		{"global.anthropic.claude-opus-5-5", 4, 20, true, true},
-		{"global.anthropic.claude-sonnet-5-5", 2, 10, true, true},
-		{"global.anthropic.claude-haiku-5-5", 0.10, 0.50, false, false},
-		{"global.anthropic.claude-sonnet-5", 2, 10, false, false},
-		{"global.anthropic.claude-opus-5", 5, 25, false, false},
+		{"anthropic.claude-opus-4-8", 5, 25, false, false, false},
+		{"us.anthropic.claude-opus-4-8", 5, 25, false, false, false},
+		{"global.anthropic.claude-opus-5-5", 4, 20, true, true, false},
+		{"global.anthropic.claude-sonnet-5-5", 2, 10, true, true, true},
+		{"global.anthropic.claude-haiku-5-5", 0.10, 0.50, true, false, true},
+		{"global.anthropic.claude-sonnet-5", 2, 10, false, false, false},
+		{"global.anthropic.claude-opus-5", 5, 25, false, false, false},
 	}
 	for _, c := range cases {
 		if got := gollm.GetMaxInputTokens(providerName, c.id); got != 1000000 {
@@ -157,6 +158,9 @@ func TestCatalog_ClaudeOpus48AndClaude5Line(t *testing.T) {
 		}
 		if got := gollm.RejectsForcedToolChoice(providerName, c.id); got != c.rejects {
 			t.Errorf("%s: rejects forced tool choice = %v, want %v", c.id, got, c.rejects)
+		}
+		if got := gollm.IsAdaptiveThinkingModel(providerName, c.id); got != c.adaptive {
+			t.Errorf("%s: adaptive thinking = %v, want %v", c.id, got, c.adaptive)
 		}
 	}
 }

@@ -36,6 +36,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/discovery"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/discovery/blurb"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 
@@ -749,6 +750,11 @@ func runTestConnection(cfg *config.Config, projectID, target, warehouseID string
 		// provider's setup.
 		providerName, model, credential, err := resolveBlurbLLM(ctx, cfg, project, secretProvider, projectID)
 		if err != nil {
+			return err
+		}
+		// The same eligibility rule the indexer applies, so a model it would
+		// refuse fails here rather than at the next index run.
+		if err := blurb.CheckModel(providerName, model); err != nil {
 			return err
 		}
 		testCfg := *cfg

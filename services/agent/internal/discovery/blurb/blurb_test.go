@@ -878,17 +878,36 @@ func TestOneBlurb_DoesNotRetry_ContentFilter(t *testing.T) {
 	}
 }
 
-// TestNew_ClaudeHaiku55AllowedOpusSonnet55Rejected: Haiku 5.5 is the cheap,
-// fast model table descriptions are meant for; it thinks only adaptively,
-// so the catalog must not flag it as reasoning-class (which would reject it
-// here). Opus 5.5 and Sonnet 5.5 think on every request and stay rejected.
-func TestNew_ClaudeHaiku55AllowedOpusSonnet55Rejected(t *testing.T) {
-	if _, err := New(Config{LLM: &fakeLLM{respondWith: "blurb"}, Model: "global.anthropic.claude-haiku-5-5", ProviderName: "bedrock"}); err != nil {
-		t.Errorf("Haiku 5.5 must be accepted for table descriptions: %v", err)
+// TestNew_AdaptiveThinkersAllowedAlwaysThinkingRejected: a table description
+// is a short task, so what disqualifies a model is thinking on EVERY request.
+// Haiku 5.5 and Sonnet 5.5 think only when a request needs it (measured on a
+// table-description prompt: no thinking tokens, ~3.5s) and must be accepted
+// even though the catalog flags them Reasoning for output budgeting; Opus 5.5
+// thinks on every request and stays rejected.
+func TestNew_AdaptiveThinkersAllowedAlwaysThinkingRejected(t *testing.T) {
+	for _, model := range []string{"global.anthropic.claude-haiku-5-5", "us.anthropic.claude-sonnet-5-5"} {
+		if _, err := New(Config{LLM: &fakeLLM{respondWith: "blurb"}, Model: model, ProviderName: "bedrock"}); err != nil {
+			t.Errorf("New(%q) must be accepted for table descriptions: %v", model, err)
+		}
 	}
-	for _, model := range []string{"global.anthropic.claude-opus-5-5", "us.anthropic.claude-sonnet-5-5"} {
-		if _, err := New(Config{LLM: &fakeLLM{respondWith: "blurb"}, Model: model, ProviderName: "bedrock"}); !errors.Is(err, ErrReasoningModelNotSupported) {
-			t.Errorf("New(%q) err = %v, want ErrReasoningModelNotSupported", model, err)
+	if _, err := New(Config{LLM: &fakeLLM{respondWith: "blurb"}, Model: "global.anthropic.claude-opus-5-5", ProviderName: "bedrock"}); !errors.Is(err, ErrReasoningModelNotSupported) {
+		t.Errorf("Opus 5.5 err = %v, want ErrReasoningModelNotSupported", err)
+	}
+}
+
+// TestCheckModel is the same rule the blurb-llm connection test applies, so a
+// model the indexer will refuse fails at configuration time, not after an
+// indexing run.
+func TestCheckModel(t *testing.T) {
+	if err := CheckModel("bedrock", "global.anthropic.claude-opus-5-5"); !errors.Is(err, ErrReasoningModelNotSupported) {
+		t.Errorf("Opus 5.5: %v, want ErrReasoningModelNotSupported", err)
+	}
+	if err := CheckModel("ollama", "deepseek-r1:8b"); !errors.Is(err, ErrReasoningModelNotSupported) {
+		t.Errorf("deepseek-r1 (catalog Reasoning, not adaptive): %v, want ErrReasoningModelNotSupported", err)
+	}
+	for _, m := range []string{"global.anthropic.claude-sonnet-5-5", "global.anthropic.claude-haiku-5-5", "us.anthropic.claude-opus-4-8"} {
+		if err := CheckModel("bedrock", m); err != nil {
+			t.Errorf("%s: %v, want nil", m, err)
 		}
 	}
 }
