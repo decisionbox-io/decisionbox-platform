@@ -118,10 +118,11 @@ func (o *Orchestrator) EstimateCost(ctx context.Context, opts EstimateOptions) (
 	// snapshots, and family-only short forms all hit the same row.
 	// When the model is not in the catalog we emit no cost estimate
 	// rather than show a $0 line.
-	var llmCostUSD float64
+	var phase phaseCosts
 	if priced {
-		llmCostUSD = tokens.cost(pricing)
+		phase = tokens.costs(pricing)
 	}
+	llmCostUSD := phase.total()
 
 	// --- Warehouse cost estimation ---
 	var warehouseCostUSD float64
@@ -163,12 +164,6 @@ func (o *Orchestrator) EstimateCost(ctx context.Context, opts EstimateOptions) (
 		}
 	}
 
-	// --- Build breakdown ---
-	explorationShare := float64(explorationInputTokens+explorationOutputTokens) / float64(totalInputTokens+totalOutputTokens)
-	analysisShare := float64(analysisInputTokens+analysisOutputTokens) / float64(totalInputTokens+totalOutputTokens)
-	validationShare := float64(validationInputTokens+validationOutputTokens) / float64(totalInputTokens+totalOutputTokens)
-	recsShare := float64(recsInputTokens+recsOutputTokens) / float64(totalInputTokens+totalOutputTokens)
-
 	totalCost := llmCostUSD + warehouseCostUSD
 
 	estimate := &models.CostEstimate{
@@ -187,11 +182,13 @@ func (o *Orchestrator) EstimateCost(ctx context.Context, opts EstimateOptions) (
 			CostUSD:               warehouseCostUSD,
 		},
 		TotalUSD: totalCost,
+		// Each phase priced on its own, so caching (exploration only) and
+		// a long-prompt tier land on the phase that incurs them.
 		Breakdown: models.CostBreakdown{
-			Exploration:     explorationShare * llmCostUSD,
-			Analysis:        analysisShare * llmCostUSD,
-			Validation:      validationShare * llmCostUSD,
-			Recommendations: recsShare * llmCostUSD,
+			Exploration:     phase.Exploration,
+			Analysis:        phase.Analysis,
+			Validation:      phase.Validation,
+			Recommendations: phase.Recommendations,
 		},
 	}
 
@@ -242,12 +239,30 @@ type runTokenInputs struct {
 
 // runTokenEstimate is the per-phase token forecast for one discovery run.
 // ExplorationCachedInput is the part of ExplorationInput read from the
-// prompt cache (zero without caching).
+// prompt cache (zero without caching). The unexported fields keep the
+// request-level shape pricing needs: each exploration step is one request
+// whose prompt grows by a fixed step, and a long-prompt price tier applies
+// per request, not per phase.
 type runTokenEstimate struct {
 	ExplorationInput, ExplorationCachedInput, ExplorationOutput int
 	AnalysisInput, AnalysisOutput                               int
 	ValidationInput, ValidationOutput                           int
 	RecommendationsInput, RecommendationsOutput                 int
+
+	steps, systemPrompt, growth int   // exploration request shape
+	promptCache                 bool  // exploration reads its prefix from cache
+	areas                       int   // analysis requests
+	modeCaps                    []int // per-document token cap of each validation mode
+	docs                        int   // validated documents
+}
+
+// phaseCosts is the priced forecast, per phase, in USD.
+type phaseCosts struct {
+	Exploration, Analysis, Validation, Recommendations float64
+}
+
+func (c phaseCosts) total() float64 {
+	return c.Exploration + c.Analysis + c.Validation + c.Recommendations
 }
 
 // estimateRunTokens forecasts a run's tokens per phase.
@@ -264,21 +279,26 @@ func estimateRunTokens(in runTokenInputs) runTokenEstimate {
 	var e runTokenEstimate
 	n := in.MaxSteps
 	growth := avgExplorationUserMessagePerStep + avgExplorationOutputPerStep
+	e.steps, e.systemPrompt, e.growth, e.promptCache = n, in.SystemPromptTokens, growth, in.PromptCache
 	e.ExplorationInput = n*in.SystemPromptTokens + growth*n*(n-1)/2
 	e.ExplorationOutput = n * avgExplorationOutputPerStep
 	if in.PromptCache && n > 1 {
 		e.ExplorationCachedInput = (n-1)*in.SystemPromptTokens + growth*(n-1)*(n-2)/2
 	}
+	e.areas = in.NumAreas
 
 	e.AnalysisInput = in.NumAreas * (in.BaseContextTokens + in.AvgAreaPromptTokens + analysisQueryResultsPerArea)
 	e.AnalysisOutput = in.NumAreas * analysisOutputPerArea
 
 	docs := in.NumAreas * estimatedInsightsPerArea
+	e.docs = docs
 	perDocIn, perDocOut := modeTokens(in.Validation.Verifier)
+	e.modeCaps = []int{in.Validation.Verifier.TokenCap}
 	if in.Validation.RefuterEnabled {
 		rIn, rOut := modeTokens(in.Validation.Refuter)
 		perDocIn += rIn
 		perDocOut += rOut
+		e.modeCaps = append(e.modeCaps, in.Validation.Refuter.TokenCap)
 	}
 	e.ValidationInput = docs * perDocIn
 	e.ValidationOutput = docs * perDocOut
@@ -305,22 +325,58 @@ func modeTokens(mc verifier.ModeConfig) (in, out int) {
 	return mc.TokenCap - out, out
 }
 
-// cost prices the forecast. Cached exploration input is billed at the
-// cache-read rate and the rest of exploration input at the cache-write
-// rate (the cache breakpoint sits at the end of each request, so every
-// uncached token is written); other phases are single-shot and billed at
-// the base input rate.
-func (e runTokenEstimate) cost(p gollm.TokenPricing) float64 {
+// costs prices the forecast per phase.
+//
+// Exploration is priced step by step: with prompt caching a step reads the
+// previous step's prompt at the cache-read rate and writes the new tail at
+// the cache-write rate (the breakpoint sits at the end of each request, so
+// every uncached token is written); without it the whole prompt is billed
+// at the base input rate. The other phases are single-shot requests billed
+// at the base rate. A long-prompt tier (TokenPricing.LongContextThreshold,
+// e.g. Claude Haiku 5.5 above 100K) multiplies every rate of a request whose
+// prompt exceeds the threshold — per request, as the provider bills it. A
+// validation request is bounded by its mode's token cap, so the cap decides
+// its tier.
+func (e runTokenEstimate) costs(p gollm.TokenPricing) phaseCosts {
 	const perMillion = 1_000_000.0
-	in := float64(e.AnalysisInput + e.ValidationInput + e.RecommendationsInput)
-	exploreUncached := float64(e.ExplorationInput - e.ExplorationCachedInput)
-	usd := in / perMillion * p.InputPerMillion
-	if e.ExplorationCachedInput > 0 {
-		usd += float64(e.ExplorationCachedInput)/perMillion*p.CacheReadPerMillion +
-			exploreUncached/perMillion*p.CacheWritePerMillion
-	} else {
-		usd += exploreUncached / perMillion * p.InputPerMillion
+	tier := func(prompt int) float64 {
+		if p.LongContextThreshold > 0 && p.LongContextMultiplier > 0 && prompt > p.LongContextThreshold {
+			return p.LongContextMultiplier
+		}
+		return 1
 	}
-	out := float64(e.ExplorationOutput + e.AnalysisOutput + e.ValidationOutput + e.RecommendationsOutput)
-	return usd + out/perMillion*p.OutputPerMillion
+	usd := func(in, out int, inRate float64) float64 {
+		return float64(in)/perMillion*inRate + float64(out)/perMillion*p.OutputPerMillion
+	}
+	var c phaseCosts
+	for step := 1; step <= e.steps; step++ {
+		prompt := e.systemPrompt + (step-1)*e.growth
+		var in float64
+		switch {
+		case e.promptCache && step > 1:
+			cached := prompt - e.growth
+			in = float64(cached)/perMillion*p.CacheReadPerMillion + float64(prompt-cached)/perMillion*p.CacheWritePerMillion
+		case e.promptCache:
+			in = float64(prompt) / perMillion * p.CacheWritePerMillion
+		default:
+			in = float64(prompt) / perMillion * p.InputPerMillion
+		}
+		out := float64(avgExplorationOutputPerStep) / perMillion * p.OutputPerMillion
+		c.Exploration += tier(prompt) * (in + out)
+	}
+	if e.areas > 0 {
+		perAreaIn, perAreaOut := e.AnalysisInput/e.areas, e.AnalysisOutput/e.areas
+		c.Analysis = float64(e.areas) * tier(perAreaIn) * usd(perAreaIn, perAreaOut, p.InputPerMillion)
+	}
+	if e.docs > 0 {
+		m := 1.0
+		for _, capTokens := range e.modeCaps {
+			if t := tier(capTokens); t > m {
+				m = t
+			}
+		}
+		c.Validation = m * usd(e.ValidationInput, e.ValidationOutput, p.InputPerMillion)
+	}
+	c.Recommendations = tier(e.RecommendationsInput) * usd(e.RecommendationsInput, e.RecommendationsOutput, p.InputPerMillion)
+	return c
 }

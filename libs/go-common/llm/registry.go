@@ -29,6 +29,12 @@ type TokenPricing struct {
 	// price every input token at InputPerMillion.
 	CacheReadPerMillion  float64 `json:"cache_read_per_million,omitempty"`
 	CacheWritePerMillion float64 `json:"cache_write_per_million,omitempty"`
+	// LongContextThreshold, when > 0, is the prompt size (tokens, cached
+	// part included) above which a request is billed at
+	// LongContextMultiplier times every rate above — Claude Haiku 5.5 bills
+	// prompts over 100K tokens at 5x. Applied per request.
+	LongContextThreshold  int     `json:"long_context_threshold,omitempty"`
+	LongContextMultiplier float64 `json:"long_context_multiplier,omitempty"`
 }
 
 // Wire identifies the request/response schema a model expects.

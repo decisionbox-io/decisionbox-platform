@@ -29,6 +29,11 @@ const (
 	// (other Claude models at 10%, see claudeCacheReadMultiplier).
 	opus55CacheRead   = 0.20
 	sonnet55CacheRead = 0.10
+
+	// Haiku 5.5 bills a request whose prompt exceeds 100K tokens at 5x
+	// every rate.
+	haiku55LongContextThreshold  = 100000
+	haiku55LongContextMultiplier = 5.0
 )
 
 // Anthropic prompt-cache pricing as multiples of base input price (5-minute
@@ -218,7 +223,7 @@ func buildVertexCatalog() []gollm.ModelEntry {
 			Wire:            gollm.WireAnthropic,
 			MaxOutputTokens: claude5Max,
 			MaxInputTokens:  claude5InputWindow,
-			Pricing:         gollm.TokenPricing{InputPerMillion: haiku55In, OutputPerMillion: haiku55Out},
+			Pricing:         gollm.TokenPricing{InputPerMillion: haiku55In, OutputPerMillion: haiku55Out, LongContextThreshold: haiku55LongContextThreshold, LongContextMultiplier: haiku55LongContextMultiplier},
 			Reasoning:       true,
 		},
 		{

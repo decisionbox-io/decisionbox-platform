@@ -836,6 +836,7 @@ curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/disc
 The estimate is an upper bound.
 Exploration re-sends the whole conversation every step, so its input grows with the square of the step count; validation is sized from the verifier and refuter token caps.
 `estimated_cached_input_tokens` is the part of the input expected to be read from the provider's prompt cache and priced at the cache-read rate — present only when the model caches prompts (Claude on every provider) and the project leaves `prompt_cache` on.
+Each phase in `breakdown` is priced on its own, request by request, so the cache discount and any long-prompt price tier (Claude Haiku 5.5 bills prompts over 100K tokens at 5x) land on the requests that incur them.
 
 ---
 

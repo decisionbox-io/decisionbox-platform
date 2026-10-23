@@ -62,22 +62,67 @@ func TestEstimateRunTokens_ValidationFromTokenCaps(t *testing.T) {
 	}
 }
 
-func TestRunTokenEstimate_CostPricesCacheReads(t *testing.T) {
+func TestRunTokenEstimate_CachingLowersExplorationCost(t *testing.T) {
 	pricing := gollm.TokenPricing{InputPerMillion: 5, OutputPerMillion: 25, CacheReadPerMillion: 0.5, CacheWritePerMillion: 6.25}
 	base := runTokenInputs{MaxSteps: 60, NumAreas: 9, SystemPromptTokens: 8000, Validation: validationCfgForTest()}
-	plain := estimateRunTokens(base)
+	plain := estimateRunTokens(base).costs(pricing)
 	base.PromptCache = true
-	cached := estimateRunTokens(base)
-	if plain.cost(pricing) <= cached.cost(pricing) {
-		t.Errorf("caching must lower the estimate: plain $%.2f, cached $%.2f", plain.cost(pricing), cached.cost(pricing))
+	cached := estimateRunTokens(base).costs(pricing)
+	if cached.Exploration >= plain.Exploration {
+		t.Errorf("caching must lower exploration: plain $%.2f, cached $%.2f", plain.Exploration, cached.Exploration)
 	}
-	// Without caching every input token is billed at the base rate.
-	e := runTokenEstimate{ExplorationInput: 1_000_000, AnalysisInput: 1_000_000, ExplorationOutput: 1_000_000}
-	if got := e.cost(pricing); got != 5+5+25 {
-		t.Errorf("uncached cost = %v, want 35", got)
+	// Caching is exploration-only: the other phases are priced the same.
+	if cached.Analysis != plain.Analysis || cached.Validation != plain.Validation || cached.Recommendations != plain.Recommendations {
+		t.Errorf("caching moved non-exploration phases: plain %+v cached %+v", plain, cached)
 	}
-	e.ExplorationCachedInput = 600_000
-	if got, want := e.cost(pricing), 5+0.6*0.5+0.4*6.25+25; got-want > 1e-9 || want-got > 1e-9 {
-		t.Errorf("cached cost = %v, want %v", got, want)
+}
+
+// Each phase is priced on its own, request by request; the breakdown must
+// not spread exploration's cache discount over other phases.
+func TestRunTokenEstimate_PhaseCostsArePricedPerPhase(t *testing.T) {
+	pricing := gollm.TokenPricing{InputPerMillion: 1, OutputPerMillion: 10, CacheReadPerMillion: 0.1, CacheWritePerMillion: 2}
+	e := estimateRunTokens(runTokenInputs{MaxSteps: 3, NumAreas: 1, SystemPromptTokens: 1000, PromptCache: true,
+		BaseContextTokens: 100, AvgAreaPromptTokens: 100, Validation: validationCfgForTest()})
+	c := e.costs(pricing)
+	g := avgExplorationUserMessagePerStep + avgExplorationOutputPerStep
+	out := float64(avgExplorationOutputPerStep) * 10
+	// Step 1 writes its whole prompt; steps 2 and 3 read the previous prompt
+	// and write the new tail.
+	wantExplore := (1000*2.0 + out +
+		float64(1000)*0.1 + float64(g)*2 + out +
+		float64(1000+g)*0.1 + float64(g)*2 + out) / 1e6
+	if diff := c.Exploration - wantExplore; diff > 1e-12 || diff < -1e-12 {
+		t.Errorf("exploration = %v, want %v", c.Exploration, wantExplore)
+	}
+	wantValidation := (float64(e.ValidationInput)*1 + float64(e.ValidationOutput)*10) / 1e6
+	if diff := c.Validation - wantValidation; diff > 1e-12 || diff < -1e-12 {
+		t.Errorf("validation = %v, want %v (base rate, no cache discount)", c.Validation, wantValidation)
+	}
+	if got := c.total(); got != c.Exploration+c.Analysis+c.Validation+c.Recommendations {
+		t.Errorf("total %v is not the sum of the phases", got)
+	}
+}
+
+// A long-prompt tier multiplies every rate of a request whose prompt is
+// over the threshold, per request — as Claude Haiku 5.5 bills prompts over
+// 100K tokens at 5x. A long exploration crosses it through history growth.
+func TestRunTokenEstimate_LongContextTierPerRequest(t *testing.T) {
+	flat := gollm.TokenPricing{InputPerMillion: 1, OutputPerMillion: 10}
+	tiered := flat
+	tiered.LongContextThreshold = 1000 + avgExplorationUserMessagePerStep + avgExplorationOutputPerStep // step 2's prompt
+	tiered.LongContextMultiplier = 5
+	e := estimateRunTokens(runTokenInputs{MaxSteps: 3, NumAreas: 1, SystemPromptTokens: 1000, Validation: validationCfgForTest()})
+	f, tc := e.costs(flat), e.costs(tiered)
+	g := avgExplorationUserMessagePerStep + avgExplorationOutputPerStep
+	out := float64(avgExplorationOutputPerStep) * 10
+	step3 := (float64(1000+2*g)*1 + out) / 1e6 // only step 3 is over the threshold
+	if diff := tc.Exploration - (f.Exploration + 4*step3); diff > 1e-12 || diff < -1e-12 {
+		t.Errorf("tiered exploration = %v, want %v", tc.Exploration, f.Exploration+4*step3)
+	}
+	// Validation requests are bounded by the mode caps (30K / 20K), below
+	// a 100K threshold, so they stay on the base tier.
+	tiered.LongContextThreshold = 100000
+	if got := e.costs(tiered).Validation; got != f.Validation {
+		t.Errorf("validation under the threshold must not be tiered: %v vs %v", got, f.Validation)
 	}
 }

@@ -176,6 +176,10 @@ func TestCatalog_ClaudeCachePrices(t *testing.T) {
 			t.Errorf("%s: cache read/write = %v/%v (ok=%v), want %v/%v", id, pr.CacheReadPerMillion, pr.CacheWritePerMillion, ok, want[0], want[1])
 		}
 	}
+	// Haiku 5.5 bills prompts over 100K tokens at 5x.
+	if pr, _ := meta.PricingFor("global.anthropic.claude-haiku-5-5"); pr.LongContextThreshold != 100000 || pr.LongContextMultiplier != 5 {
+		t.Errorf("haiku 5.5 long-prompt tier = %d / %v, want 100000 / 5", pr.LongContextThreshold, pr.LongContextMultiplier)
+	}
 	// Non-Claude models have no prompt-cache prices.
 	if pr, _ := meta.PricingFor("qwen.qwen3-next-80b-a3b"); pr.CacheReadPerMillion != 0 || pr.CacheWritePerMillion != 0 {
 		t.Errorf("qwen should carry no cache prices: %+v", pr)
