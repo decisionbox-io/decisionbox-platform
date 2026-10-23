@@ -933,6 +933,20 @@ type RecommendationStep struct {
 	// Omitted on a clean run.
 	RecommendationsDroppedParse int `bson:"recommendations_dropped_parse,omitempty" json:"recommendations_dropped_parse,omitempty"`
 
+	// RecommendationsDroppedUnresolvedFigures counts recommendations whose
+	// prose still carried a figure reference after the render pass -- a
+	// number the model promised and never declared, so nothing could write a
+	// value into the sentence.
+	//
+	// Separate from the other three because it is a different failure with a
+	// different fix: a hallucinated citation is a model that cannot copy a
+	// UUID, a parse drop is a model that cannot emit the type, and this is a
+	// model that used the figure format halfway. Folding it into the total
+	// alone would make a run that produced nothing look like a run that
+	// produced nothing for a reason we already knew about. Omitted on a clean
+	// run.
+	RecommendationsDroppedUnresolvedFigures int `bson:"recommendations_dropped_unresolved_figures,omitempty" json:"recommendations_dropped_unresolved_figures,omitempty"`
+
 	// Figure telemetry for the recommendation phase, mirroring the per-area
 	// counters on AnalysisStep. Omitted on a run whose model declared no figures,
 	// so a provider that ignores the contract is visible as absence rather than as

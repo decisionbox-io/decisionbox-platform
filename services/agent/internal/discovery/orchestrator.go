@@ -1425,6 +1425,21 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			recStep.FiguresUnresolved = figTally.unresolved
 			recStep.FiguresInlined = figTally.inlined
 		}
+
+		// A reference the render could not resolve is a number the model
+		// promised and never declared. Counting it was not enough: one run
+		// shipped three recommendations carrying twelve of them, the verifier
+		// read the placeholders and called two of the three supported, and a
+		// reader would have seen "{{f1}}" where a currency amount belongs.
+		//
+		// After the render, because that is what makes a surviving reference
+		// unresolved rather than merely unrendered, and after the id
+		// validation for the same reason it is: a recommendation already
+		// dropped for citing an insight that does not exist should not be
+		// dropped twice and counted twice.
+		var figDropped int
+		recommendations, figDropped = dropRecommendationsWithUnresolvedFigures(recommendations)
+		applyUnresolvedFigureDropStats(recStep, recommendations, figDropped)
 	}
 
 	// Emit a per-call RunStep so the live UI carries the recommendation
@@ -2310,6 +2325,17 @@ const (
 	// produced zero recommendations because the LLM response could not be
 	// parsed. The dashboard renders it as the reason for the empty section.
 	statusRecommendationParseError = "recommendation_parse_error"
+
+	// statusRecommendationFiguresUnresolved marks a RecommendationStep
+	// emptied by the figure gate: the model produced recommendations, and
+	// every one of them referenced a number it never declared.
+	//
+	// Stamped because the gate introduces the failure mode this pipeline has
+	// fought hardest -- an empty section with no reason. A run that drops
+	// every recommendation for a cause the counters know about must not render
+	// as "none found"; that is indistinguishable from a model that had nothing
+	// to say.
+	statusRecommendationFiguresUnresolved = "recommendation_figures_unresolved"
 
 	// defaultRecommendationParseMaxRetries bounds how many corrective
 	// re-prompts the recommendation phase issues when a response yields zero
