@@ -7,6 +7,18 @@ import gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 // on the Anthropic wire).
 const insightResponseFormatName = "insights"
 
+// insightCurrencyFieldDescription describes the figure `currency` field.
+//
+// Named rather than written inline because the wording is the fix: both this and
+// figureContract used to say to omit it for dollars, so an unmarked figure meant dollars
+// by instruction, and most analysis calls in a run over a warehouse that does not report
+// in dollars left every currency figure unmarked. Pinned by
+// TestNeitherPromptTellsTheModelToOmitTheCurrency.
+const insightCurrencyFieldDescription = `Currency this amount is in: the symbol it ` +
+	`prints or its ISO code, "₺" or "TRY". Always set it on a currency figure -- the ` +
+	`warehouse's own currency is in the profile above, and a row in another currency is ` +
+	`the case this field exists for`
+
 // insightResponseFormat returns the structured-output request for the analysis
 // phase's corrective RETRY only. The first analysis call stays a plain Chat so
 // big models that already work are byte-identical; this schema is attached only
@@ -75,7 +87,7 @@ func insightResponseSchema() map[string]interface{} {
 					// signal, so it was the one being obeyed. Pinned by
 					// TestInsightSchema_FigureEnumsMatchTheClosedSets.
 					"unit":     str(`One of "count", "currency", "percent", "multiple", "plain" -- notation, never a word like days`),
-					"currency": str(`Symbol a currency figure prints; omit for dollars, set it when the data is not in dollars (e.g. "€")`),
+					"currency": str(insightCurrencyFieldDescription),
 					"scale":    str(`Abbreviation for a large number: "thousands", "millions", "billions"; omit to write it in full`),
 					"decimals": map[string]interface{}{"type": "integer", "description": "Decimal places to print; this is the precision being claimed"},
 					"approx":   map[string]interface{}{"type": "boolean", "description": "Print a tilde to mark the number as rounded"},

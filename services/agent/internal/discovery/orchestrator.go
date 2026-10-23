@@ -1036,6 +1036,8 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// orchestrator's explorationResult.Steps slice is the live source
 	// the executor reads at validation time).
 	stepByID := buildStepIndex(explorationResult.Steps)
+	// One plan per run, read once: the project's profile and each datasource's own.
+	currencies := newCurrencyPlan(o.profile, o.warehouses)
 	valPhase := &validationPhase{
 		agent: o.validationAgent,
 		cfg:   o.validationCfg,
@@ -1230,6 +1232,15 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		insights := outcome.insights
 		step.Insights = insights
 
+		// Which currency each amount is in, before anything reads a figure. Figure.Symbol
+		// answers "$" for a figure that states none, so an unmarked amount in any other
+		// currency printed a dollar sign -- in one shipped sentence, next to the currency
+		// the model had written as a word. Settled here rather than at each print site so
+		// a stored figure says what it is in, and per datasource rather than per run,
+		// because a figure read from a secondary warehouse is in that warehouse's
+		// currency: see figure_currency.go.
+		settleInsightFigureCurrencies(insights, currencies, stepByID)
+
 		// Phase 4.5: Validate insights via the LLM-native verifier
 		// agent. Walks insights in affected_count-desc order,
 		// applies the per-run cap (insightsValidatedThisRun is threaded
@@ -1416,6 +1427,11 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		//
 		// After the id validation rather than before, so a recommendation dropped for
 		// citing an insight that does not exist is not first given rendered numbers.
+		//
+		// A code the model wrote here becomes the symbol it prints, before adoption reads
+		// it. No default at this layer -- the currency belongs to the insight being
+		// restated, and adoption fills it only while the field is empty.
+		normalizeRecommendationFigureCurrencies(recommendations)
 		figSettled, figAdopted := o.figureWriter().attachRecommendationFigureVerdicts(recommendations, recommenderInput)
 		figTally := o.figureWriter().renderRecommendationFigures(recommendations)
 		if recStep != nil {
@@ -3423,3 +3439,4 @@ func (o *Orchestrator) recommendationsKnowledgeQuery(insights []models.Insight) 
 func (o *Orchestrator) figureWriter() figureWriter {
 	return newFigureWriter(o.language)
 }
+
