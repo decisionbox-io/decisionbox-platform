@@ -102,7 +102,7 @@ func (p *BedrockProvider) chatAnthropic(ctx context.Context, req gollm.ChatReque
 		return nil, fmt.Errorf("bedrock/anthropic: failed to parse response: %w", err)
 	}
 
-	if err := gollm.RefusalError(anthropicResp.StopReason, req.Model); err != nil {
+	if err := gollm.RefusalError(anthropicResp.StopReason, req.Model, anthropicResp.Usage.ToLLM()); err != nil {
 		return nil, fmt.Errorf("bedrock/anthropic: %w", err)
 	}
 

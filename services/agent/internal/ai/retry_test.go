@@ -382,6 +382,7 @@ func TestIsRetryableLLMError_Truthtable(t *testing.T) {
 		{"net_op_timeout", &net.OpError{Op: "dial", Err: errors.New("i/o timeout")}, true},
 		{"io_eof", io.EOF, true},
 		{"plain_unrelated", errors.New("invalid model id"), false},
+		{"model_refused", fmt.Errorf("bedrock/anthropic: %w", gollm.RefusalError(gollm.StopReasonRefusal, "m", gollm.Usage{})), false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -106,7 +106,7 @@ func (p *AzureFoundryProvider) claudeChat(ctx context.Context, req gollm.ChatReq
 		return nil, fmt.Errorf("azure-foundry/claude: failed to parse response: %w", err)
 	}
 
-	if err := gollm.RefusalError(anthropicResp.StopReason, req.Model); err != nil {
+	if err := gollm.RefusalError(anthropicResp.StopReason, req.Model, anthropicResp.Usage.ToLLM()); err != nil {
 		return nil, fmt.Errorf("azure-foundry/claude: %w", err)
 	}
 

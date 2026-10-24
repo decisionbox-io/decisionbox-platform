@@ -121,7 +121,7 @@ func (p *VertexAIProvider) chatAnthropic(ctx context.Context, req gollm.ChatRequ
 		return nil, fmt.Errorf("vertex-ai/anthropic: failed to parse response: %w", err)
 	}
 
-	if err := gollm.RefusalError(anthropicResp.StopReason, req.Model); err != nil {
+	if err := gollm.RefusalError(anthropicResp.StopReason, req.Model, anthropicResp.Usage.ToLLM()); err != nil {
 		return nil, fmt.Errorf("vertex-ai/anthropic: %w", err)
 	}
 

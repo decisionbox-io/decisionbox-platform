@@ -261,6 +261,10 @@ func isRetryableLLMError(ctx context.Context, err error) bool {
 	if err == nil {
 		return false
 	}
+	// A refusal is final: the same request is refused again.
+	if errors.Is(err, gollm.ErrModelRefused) {
+		return false
+	}
 
 	// Parent context cancellation always bails — propagating the
 	// signal is more important than the retry budget. Covers both

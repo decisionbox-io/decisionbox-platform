@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -202,12 +203,18 @@ func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, sy
 	}
 
 	if err != nil {
-		// Observability: record the failed call. Provider may have
-		// returned partial usage even on error; report what we have.
-		c.emitLLMUsage(ctx, gollm.Usage{}, "", latencyMs, err)
+		// Observability: record the failed call. A refusal carries the
+		// call's usage (its input is still billed); report what we have.
+		var usage gollm.Usage
+		stop := ""
+		var refused *gollm.RefusedError
+		if errors.As(err, &refused) {
+			usage, stop = refused.Usage, gollm.StopReasonRefusal
+		}
+		c.emitLLMUsage(ctx, usage, stop, latencyMs, err)
 		if c.debugLogger != nil {
 			c.debugLogger.LogLLM(ctx, c.currentStep, c.currentPhase, c.model,
-				systemPrompt, promptContent, "", 0, 0,
+				systemPrompt, promptContent, "", usage.InputTokens, usage.OutputTokens,
 				latencyMs, err)
 		}
 		return nil, err

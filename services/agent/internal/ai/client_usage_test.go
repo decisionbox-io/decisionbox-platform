@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
@@ -33,6 +34,28 @@ func TestCreateMessage_RefusalIsAnError(t *testing.T) {
 	_, err := c.CreateMessage(context.Background(), []gollm.Message{{Role: "user", Content: "hi"}}, "sys", 100)
 	if !errors.Is(err, ErrModelRefused) {
 		t.Fatalf("err = %v, want ErrModelRefused", err)
+	}
+}
+
+// A provider reports a refusal as an error carrying the call's usage (a
+// refused call still bills its input). The client must record that usage —
+// not an all-zero event — and must not re-send the request.
+func TestCreateMessage_ProviderRefusalKeepsUsageAndIsNotRetried(t *testing.T) {
+	provider := testutil.NewMockLLMProvider()
+	provider.Error = fmt.Errorf("bedrock/anthropic: %w", gollm.RefusalError(gollm.StopReasonRefusal, "m", gollm.Usage{InputTokens: 120}))
+	c, _ := New(provider, "m")
+	chk := &capturingChecker{}
+	c.policyChecker = chk
+
+	_, err := c.CreateMessage(context.Background(), []gollm.Message{{Role: "user", Content: "hi"}}, "sys", 100)
+	if !errors.Is(err, ErrModelRefused) {
+		t.Fatalf("err = %v, want ErrModelRefused", err)
+	}
+	if len(provider.Calls) != 1 {
+		t.Fatalf("refusal sent %d requests, want 1", len(provider.Calls))
+	}
+	if len(chk.events) != 1 || chk.events[0].InputTokens != 120 {
+		t.Fatalf("usage events = %+v, want one with the refused call's 120 input tokens", chk.events)
 	}
 }
 

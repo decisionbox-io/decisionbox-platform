@@ -19,5 +19,10 @@ func TestAnthropic_RefusalIsAnError(t *testing.T) {
 		if !errors.Is(err, gollm.ErrModelRefused) {
 			t.Fatalf("structured=%v: err = %v (resp %+v), want ErrModelRefused", rf != nil, err, resp)
 		}
+		// The refused call's input is billed; the error carries its usage.
+		var re *gollm.RefusedError
+		if !errors.As(err, &re) || re.Usage.InputTokens != 120 {
+			t.Fatalf("structured=%v: usage not carried: %+v", rf != nil, re)
+		}
 	}
 }
