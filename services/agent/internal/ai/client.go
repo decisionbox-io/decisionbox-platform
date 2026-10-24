@@ -2,7 +2,6 @@ package ai
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,8 +16,9 @@ import (
 
 // Client provides LLM operations for the discovery agent.
 // ErrModelRefused is returned when the model declines a request
-// (gollm.StopReasonRefusal). The request should not be re-sent as-is.
-var ErrModelRefused = errors.New("llm: the model refused the request")
+// (gollm.StopReasonRefusal). The request should not be re-sent as-is. It is
+// the providers' sentinel, so errors.Is matches a refusal reported either way.
+var ErrModelRefused = gollm.ErrModelRefused
 
 type Client struct {
 	provider     gollm.Provider

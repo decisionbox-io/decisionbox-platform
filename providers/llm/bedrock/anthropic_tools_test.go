@@ -154,3 +154,22 @@ func TestAnthropic_ToolResultsOnAssistantMessageErrors(t *testing.T) {
 		t.Error("tool_results on role=assistant should error")
 	}
 }
+
+// End to end through the Bedrock wire: a Claude reply that sends the
+// structured answer's array as one JSON-encoded string reaches the caller
+// with the array decoded, so the caller's parser accepts it.
+func TestAnthropic_StructuredStringifiedArrayDecoded(t *testing.T) {
+	reply := `{"content":[{"type":"tool_use","id":"t1","name":"clarifying_questions","input":{"questions":"[{\"question\":\"a?\"}]"}}],"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}}`
+	_, p := capturingClient([]byte(reply))
+	schema := map[string]interface{}{"type": "object", "properties": map[string]interface{}{
+		"questions": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object"}}}}
+	resp, err := p.chatAnthropic(context.Background(), gollm.ChatRequest{Model: p.model,
+		Messages:       []gollm.Message{{Role: "user", Content: "ask"}},
+		ResponseFormat: &gollm.ResponseFormat{Name: "clarifying_questions", Schema: schema}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Content != `{"questions":[{"question":"a?"}]}` {
+		t.Fatalf("content = %s, want the array decoded", resp.Content)
+	}
+}

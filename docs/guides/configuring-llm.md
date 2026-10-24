@@ -435,6 +435,8 @@ Every LLM call's usage — logged as `LLM call usage` and sent to the usage hook
 They reject a forced tool choice (`tool_choice` of type `tool` / `any`) with a 400, so for those models DecisionBox asks for structured output with an `auto` tool choice plus an instruction naming the tool — the replacement Anthropic documents.
 They also refuse (stop reason `refusal`, no output) any conversation that asks for a JSON field named `thinking`, which is why the exploration and Ask action key is `rationale`.
 Thinking cannot be disabled on Opus 5.5 and counts towards `max_tokens`; the catalog marks these models as reasoning models, so the exploration step gets the larger reasoning output budget.
+A refusal reaches the caller as an error (`gollm.ErrModelRefused`) from every Claude provider, never as an empty reply.
+Opus 5.5 and Haiku 5.5 sometimes send an array inside a structured answer as one JSON-encoded string; where the schema expects an array or object, the provider decodes it before the caller parses the reply.
 
 ## Context window and output limits
 

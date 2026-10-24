@@ -216,7 +216,11 @@ func (p *ClaudeProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*goll
 	for attempt := 1; attempt <= p.maxRetries; attempt++ {
 		resp, err := p.sendRequest(ctx, &apiReq)
 		if err == nil {
-			if nerr := gollm.NormalizeStructuredToolResponse(resp, structured); nerr != nil {
+			// A refusal is final: the same request is refused again.
+			if rerr := gollm.RefusalError(resp.StopReason, model); rerr != nil {
+				return nil, fmt.Errorf("claude: %w", rerr)
+			}
+			if nerr := gollm.NormalizeStructuredToolResponse(resp, structured, req.ResponseFormat); nerr != nil {
 				return nil, fmt.Errorf("claude: %w", nerr)
 			}
 			return resp, nil

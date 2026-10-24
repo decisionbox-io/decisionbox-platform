@@ -242,6 +242,11 @@ type Usage struct {
 // content, and re-sending the same conversation is refused again.
 const StopReasonRefusal = "refusal"
 
+// ErrModelRefused is returned by a provider's Chat when the model declined
+// the request (StopReasonRefusal). Re-sending the same conversation is
+// refused again, so callers must not retry it as-is.
+var ErrModelRefused = sentinelError("llm: the model refused the request")
+
 // ErrToolsNotSupported is returned by Provider.Chat when ChatRequest.Tools
 // is non-empty on a provider whose ProviderMeta.SupportsTools is false.
 // Sentinel so callers can errors.Is against it cleanly.

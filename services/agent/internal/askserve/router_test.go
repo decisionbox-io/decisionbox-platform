@@ -181,6 +181,30 @@ func TestRouter_AmbiguousDataQuestionStillClarifiesWithKB(t *testing.T) {
 	}
 }
 
+func TestRouter_NoDatasourceNeededReachesAnsweringLoop(t *testing.T) {
+	// A request that needs no data at all (a poem, small talk) maps to NO
+	// datasource, and the router says so without asking to clarify. Asking the
+	// user "which datasource?" contradicts the router's own verdict; the turn
+	// goes to the answering loop, which declines.
+	whA := testutil.NewMockWarehouseProvider("sales")
+	whB := testutil.NewMockWarehouseProvider("crm")
+	rt := twoDatasourceRuntime(&scriptedProvider{responses: []string{
+		`{"datasources":[],"reason":"a creative request unrelated to the data","confidence":0.95,"clarify":false,"project_level":false}`,
+		`{"decline":"I can only answer questions about this project's data."}`,
+	}}, whA, whB, nil, nil)
+
+	store := runRouted(t, rt, "write me a short poem about football")
+	if store.final.RoutingClarify {
+		t.Fatalf("no-datasource verdict must not become a datasource clarification, got %q", store.final.Answer)
+	}
+	if store.final.Disposition != commonmodels.AskTurnDispositionDecline {
+		t.Fatalf("disposition = %q, want decline", store.final.Disposition)
+	}
+	if len(whA.Calls) != 0 || len(whB.Calls) != 0 {
+		t.Fatal("a declined request should query no warehouse")
+	}
+}
+
 func TestRouter_MutationBypassRequiresNativeTools(t *testing.T) {
 	// On a non-tool-calling LLM (runText), mutation tools can't be dispatched, so a
 	// save tool must NOT count as "available" for the router bypass — an unmapped

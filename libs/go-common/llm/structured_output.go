@@ -87,7 +87,11 @@ func isReservedToolChoice(s string) bool {
 // on by default): folding only the first would silently drop the rest, so
 // the caller must surface the failure and retry rather than persist a
 // partial object.
-func NormalizeStructuredToolResponse(resp *ChatResponse, injected bool) error {
+//
+// rf is the request's ResponseFormat. When it carries a schema, a string
+// value where the schema expects an array or object is decoded if it holds
+// that JSON (see decodeStringifiedValues).
+func NormalizeStructuredToolResponse(resp *ChatResponse, injected bool, rf *ResponseFormat) error {
 	if !injected || resp == nil || len(resp.ToolCalls) == 0 {
 		return nil
 	}
@@ -103,6 +107,9 @@ func NormalizeStructuredToolResponse(resp *ChatResponse, injected bool) error {
 	if input == nil {
 		input = map[string]interface{}{}
 	}
+	if rf != nil {
+		decodeStringifiedValues(input, rf.Schema)
+	}
 	b, err := json.Marshal(input)
 	if err != nil {
 		return fmt.Errorf("structured output: marshal tool input: %w", err)
@@ -114,6 +121,51 @@ func NormalizeStructuredToolResponse(resp *ChatResponse, injected bool) error {
 	// are tool calls to execute. Present it as a normal terminal turn.
 	resp.StopReason = "end_turn"
 	return nil
+}
+
+// decodeStringifiedValues replaces, in place, string values that the schema
+// types as "array" or "object" with the JSON they encode. Claude 5.x models
+// sometimes send a nested array of objects as one JSON-encoded string inside
+// the tool input ({"questions": "[{...}]"}), which every caller's parser then
+// rejects. A string that does not decode, or decodes to another type, is left
+// as the model sent it.
+func decodeStringifiedValues(obj, schema map[string]interface{}) {
+	props, _ := schema["properties"].(map[string]interface{})
+	for key, val := range obj {
+		if ps, ok := props[key].(map[string]interface{}); ok {
+			obj[key] = decodeStringified(val, ps)
+		}
+	}
+}
+
+func decodeStringified(val interface{}, schema map[string]interface{}) interface{} {
+	want, _ := schema["type"].(string)
+	if str, ok := val.(string); ok && (want == "array" || want == "object") {
+		var decoded interface{}
+		if json.Unmarshal([]byte(strings.TrimSpace(str)), &decoded) == nil {
+			switch decoded.(type) {
+			case []interface{}:
+				if want == "array" {
+					val = decoded
+				}
+			case map[string]interface{}:
+				if want == "object" {
+					val = decoded
+				}
+			}
+		}
+	}
+	switch x := val.(type) {
+	case map[string]interface{}:
+		decodeStringifiedValues(x, schema)
+	case []interface{}:
+		if items, ok := schema["items"].(map[string]interface{}); ok {
+			for i := range x {
+				x[i] = decodeStringified(x[i], items)
+			}
+		}
+	}
+	return val
 }
 
 // RelaxForcedToolChoice rewrites a forced tool choice for a model that

@@ -102,6 +102,10 @@ func (p *BedrockProvider) chatAnthropic(ctx context.Context, req gollm.ChatReque
 		return nil, fmt.Errorf("bedrock/anthropic: failed to parse response: %w", err)
 	}
 
+	if err := gollm.RefusalError(anthropicResp.StopReason, req.Model); err != nil {
+		return nil, fmt.Errorf("bedrock/anthropic: %w", err)
+	}
+
 	content := ""
 	var toolCalls []gollm.ToolCall
 	for _, block := range anthropicResp.Content {
@@ -128,7 +132,7 @@ func (p *BedrockProvider) chatAnthropic(ctx context.Context, req gollm.ChatReque
 		Usage:      anthropicResp.Usage.ToLLM(),
 		ToolCalls:  toolCalls,
 	}
-	if err := gollm.NormalizeStructuredToolResponse(resp, structured); err != nil {
+	if err := gollm.NormalizeStructuredToolResponse(resp, structured, req.ResponseFormat); err != nil {
 		return nil, fmt.Errorf("bedrock/anthropic: %w", err)
 	}
 	return resp, nil
