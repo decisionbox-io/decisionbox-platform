@@ -1,6 +1,6 @@
 module github.com/decisionbox-io/decisionbox/libs/go-common
 
-go 1.26.8
+go 1.26.10
 
 require (
 	github.com/pkoukk/tiktoken-go v0.1.8

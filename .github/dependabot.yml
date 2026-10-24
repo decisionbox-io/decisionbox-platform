@@ -1,0 +1,57 @@
+# Dependabot: security updates only, grouped per ecosystem.
+#
+# Routine version-bump PRs are off (open-pull-requests-limit: 0). Dependabot
+# still opens a PR when a security alert has a patched version; the groups
+# below put every security fix for one ecosystem into a single PR instead of
+# one PR per package. "Dependabot security updates" must also be enabled for
+# the repository (org security configuration) for any PR to be opened.
+#
+# schedule is required by the file format; with version updates off it only
+# controls when Dependabot re-checks, not how many PRs it opens.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directories:
+      - "/libs/**/*"
+      - "/providers/**/*"
+      - "/services/*"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    groups:
+      go-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: "/ui/dashboard"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    groups:
+      npm-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directories:
+      - "/services/agent"
+      - "/services/api"
+      - "/ui/dashboard"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    groups:
+      docker-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    groups:
+      actions-security:
+        applies-to: security-updates
+        patterns: ["*"]
