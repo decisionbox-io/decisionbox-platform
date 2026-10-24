@@ -142,7 +142,12 @@ func decodeStringified(val interface{}, schema map[string]interface{}) interface
 	want, _ := schema["type"].(string)
 	if str, ok := val.(string); ok && (want == "array" || want == "object") {
 		var decoded interface{}
-		if json.Unmarshal([]byte(strings.TrimSpace(str)), &decoded) == nil {
+		raw := strings.TrimSpace(str)
+		err := json.Unmarshal([]byte(raw), &decoded)
+		if err != nil {
+			err = json.Unmarshal([]byte(dropUnmatchedClosers(raw)), &decoded)
+		}
+		if err == nil {
 			switch decoded.(type) {
 			case []interface{}:
 				if want == "array" {
@@ -166,6 +171,51 @@ func decodeStringified(val interface{}, schema map[string]interface{}) interface
 		}
 	}
 	return val
+}
+
+// dropUnmatchedClosers removes '}' and ']' that close nothing open. A
+// stringified value is often invalid in exactly this way — one closing brace
+// too many after the array, or after each item — because no schema constrains
+// the inside of a string. Brackets inside JSON strings are content and are
+// kept; nothing is added or reordered, so a value missing an opener still
+// fails to parse and is left as sent.
+func dropUnmatchedClosers(s string) string {
+	var out strings.Builder
+	out.Grow(len(s))
+	var open []byte
+	inString, escaped := false, false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+			out.WriteByte(c)
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{', '[':
+			open = append(open, c)
+		case '}', ']':
+			want := byte('{')
+			if c == ']' {
+				want = '['
+			}
+			if len(open) == 0 || open[len(open)-1] != want {
+				continue
+			}
+			open = open[:len(open)-1]
+		}
+		out.WriteByte(c)
+	}
+	return out.String()
 }
 
 // RelaxForcedToolChoice rewrites a forced tool choice for a model that

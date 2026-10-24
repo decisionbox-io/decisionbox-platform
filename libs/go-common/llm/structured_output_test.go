@@ -251,7 +251,7 @@ func TestNormalizeStructuredToolResponse_DecodesStringifiedNestedValues(t *testi
 		"questions": `[{"question":"a?","options":"[{\"id\":\"x\"}]"}]`,
 		"meta":      ` {"k":1} `,
 		"title":     `[draft] plan`,
-		"broken":    `[{"question":"b?"}}]`,
+		"broken":    `[{"question":"b?"`,
 		"wrong":     `{"not":"an array"}`,
 	}}}}
 	if err := NormalizeStructuredToolResponse(resp, true, &ResponseFormat{Name: "q", Schema: schema}); err != nil {
@@ -271,10 +271,53 @@ func TestNormalizeStructuredToolResponse_DecodesStringifiedNestedValues(t *testi
 	if _, ok := got["meta"].(map[string]interface{}); !ok {
 		t.Errorf("meta not decoded to an object: %#v", got["meta"])
 	}
-	for k, want := range map[string]string{"title": `[draft] plan`, "broken": `[{"question":"b?"}}]`, "wrong": `{"not":"an array"}`} {
+	for k, want := range map[string]string{"title": `[draft] plan`, "broken": `[{"question":"b?"`, "wrong": `{"not":"an array"}`} {
 		if got[k] != want {
 			t.Errorf("%s = %#v, want the original string %q", k, got[k], want)
 		}
+	}
+}
+
+// The stringified values are often not valid JSON either, in two recurring
+// shapes: one closing brace too many after the array (Haiku 5.5) or after each
+// item (Opus 5.5). Dropping brackets that close nothing recovers them; nothing
+// is ever added, and a string that still does not parse is left as sent.
+func TestNormalizeStructuredToolResponse_DropsUnmatchedClosers(t *testing.T) {
+	schema := map[string]interface{}{"type": "object", "properties": map[string]interface{}{
+		"questions": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object"}}}}
+	cases := []struct {
+		name, in string
+		wantLen  int // -1: left as the original string
+	}{
+		{"extra brace after the array", `[{"question":"a?"},{"question":"b?"}]}`, 2},
+		{"extra brace after each item", `[{"question":"a?","options":[{"id":"x","label":"X"}]}},{"question":"b?","options":[]}}]`, 2},
+		{"braces inside strings are content", `[{"question":"is } a ] brace?"}]}`, 1},
+		{"missing opener stays a string", `[{"options":[{"id":"x"}, "id":"y"}]}]`, -1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			resp := &ChatResponse{ToolCalls: []ToolCall{{Name: "q", Input: map[string]interface{}{"questions": c.in}}}}
+			if err := NormalizeStructuredToolResponse(resp, true, &ResponseFormat{Name: "q", Schema: schema}); err != nil {
+				t.Fatal(err)
+			}
+			var got map[string]interface{}
+			if err := json.Unmarshal([]byte(resp.Content), &got); err != nil {
+				t.Fatal(err)
+			}
+			if c.wantLen < 0 {
+				if got["questions"] != c.in {
+					t.Fatalf("questions = %#v, want the original string", got["questions"])
+				}
+				return
+			}
+			qs, ok := got["questions"].([]interface{})
+			if !ok || len(qs) != c.wantLen {
+				t.Fatalf("questions = %#v, want %d items", got["questions"], c.wantLen)
+			}
+			if c.name == "braces inside strings are content" && qs[0].(map[string]interface{})["question"] != "is } a ] brace?" {
+				t.Errorf("string content changed: %#v", qs[0])
+			}
+		})
 	}
 }
 
