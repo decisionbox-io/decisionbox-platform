@@ -217,6 +217,22 @@ func TestRunTokenEstimate_HugeStepCountReturnsPromptly(t *testing.T) {
 	}
 }
 
+// The token totals are products of max_steps; an unbounded request must not
+// overflow them into negative numbers on the way to the dashboard. Above the
+// cap the estimate is the cap's estimate.
+func TestRunTokenEstimate_HugeStepCountDoesNotOverflow(t *testing.T) {
+	in := runTokenInputs{MaxSteps: 100_000_000, SystemPromptTokens: 1000, PromptCache: true, Validation: validationCfgForTest()}
+	huge := estimateRunTokens(in)
+	if huge.ExplorationInput <= 0 || huge.ExplorationCachedInput <= 0 || huge.ExplorationOutput <= 0 ||
+		huge.ExplorationCachedInput > huge.ExplorationInput {
+		t.Fatalf("overflowed totals: in=%d cached=%d out=%d", huge.ExplorationInput, huge.ExplorationCachedInput, huge.ExplorationOutput)
+	}
+	in.MaxSteps = maxEstimateSteps
+	if capped := estimateRunTokens(in); capped.ExplorationInput != huge.ExplorationInput {
+		t.Errorf("above the cap: in=%d, want the cap's %d", huge.ExplorationInput, capped.ExplorationInput)
+	}
+}
+
 // A validation mode's token cap bounds the input of all of a document's
 // rounds together, so the long-prompt tier is decided per request: a
 // 106K-token budget spread over 8 rounds never sends a prompt over a 100K

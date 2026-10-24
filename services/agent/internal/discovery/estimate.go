@@ -213,6 +213,12 @@ const (
 	// appends each step — query results (~1.5K tokens), lookup_schema
 	// (~0.7K) and search_tables (~0.4K) in a ~70/20/10 mix.
 	avgExplorationUserMessagePerStep = 1200
+
+	// maxEstimateSteps caps the step count the estimate is computed for.
+	// max_steps reaches it unbounded from the API, and the exploration totals
+	// grow with its square; past the cap they would overflow int.
+	maxEstimateSteps = 1_000_000
+
 	// analysisQueryResultsPerArea is the condensed step results an
 	// analysis area reads.
 	analysisQueryResultsPerArea = 2000
@@ -277,7 +283,7 @@ func (c phaseCosts) total() float64 {
 // each document's tokens per mode.
 func estimateRunTokens(in runTokenInputs) runTokenEstimate {
 	var e runTokenEstimate
-	n := in.MaxSteps
+	n := min(in.MaxSteps, maxEstimateSteps)
 	growth := avgExplorationUserMessagePerStep + avgExplorationOutputPerStep
 	e.steps, e.systemPrompt, e.growth, e.promptCache = n, in.SystemPromptTokens, growth, in.PromptCache
 	e.ExplorationInput = n*in.SystemPromptTokens + growth*n*(n-1)/2
