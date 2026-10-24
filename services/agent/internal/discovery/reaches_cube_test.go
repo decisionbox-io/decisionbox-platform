@@ -107,3 +107,33 @@ func TestRunReachesCube_ReadsTheWarehouseListNotOnlyThePrimary(t *testing.T) {
 		t.Error("a cube configured as a secondary datasource was not seen")
 	}
 }
+
+// soleDatasourceSlug names the provider of the one datasource a run can
+// query, so the engine can state that source's own query format. A run
+// that can query several has no single answer.
+func TestSoleDatasourceSlug(t *testing.T) {
+	wired := func(ids ...string) map[string]*queryexec.QueryExecutor {
+		m := map[string]*queryexec.QueryExecutor{}
+		for _, id := range ids {
+			m[id] = nil
+		}
+		return m
+	}
+	whs := []models.WarehouseConfig{{ID: "wh", Provider: testTablesSlug}, {ID: "ga", Provider: testCubeSlug}}
+	cases := map[string]struct {
+		routable map[string]*queryexec.QueryExecutor
+		whs      []models.WarehouseConfig
+		want     string
+	}{
+		"legacy single warehouse (no executors map)": {nil, nil, "primary-slug"},
+		"only the cube is wired":                     {wired("ga"), whs, testCubeSlug},
+		"only the warehouse is wired":                {wired("wh"), whs, testTablesSlug},
+		"the primary, with no warehouses[] entry":    {wired("default"), nil, "primary-slug"},
+		"several are wired":                          {wired("wh", "ga"), whs, ""},
+	}
+	for name, c := range cases {
+		if got := soleDatasourceSlug(c.routable, c.whs, "default", "primary-slug"); got != c.want {
+			t.Errorf("%s: got %q, want %q", name, got, c.want)
+		}
+	}
+}

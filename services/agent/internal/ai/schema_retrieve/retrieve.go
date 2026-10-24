@@ -26,6 +26,8 @@ import (
 	"strings"
 
 	pb "github.com/qdrant/go-client/qdrant"
+
+	qdrantstore "github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore/qdrant"
 )
 
 // CollectionPrefix is the stable prefix for schema-index collections.
@@ -80,12 +82,7 @@ func New(cfg Config) (*Retriever, error) {
 	if port == 0 {
 		port = 6334
 	}
-	client, err := pb.NewClient(&pb.Config{
-		Host:   cfg.Host,
-		Port:   port,
-		APIKey: cfg.APIKey,
-		UseTLS: cfg.UseTLS,
-	})
+	client, err := pb.NewClient(qdrantstore.ClientConfig(cfg.Host, port, cfg.APIKey, cfg.UseTLS))
 	if err != nil {
 		return nil, fmt.Errorf("schema_retrieve: connect Qdrant: %w", err)
 	}

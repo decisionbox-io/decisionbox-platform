@@ -2,6 +2,7 @@ package llm
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -129,7 +130,7 @@ func TestNormalizeStructuredToolResponse_FoldsToolInputToContent(t *testing.T) {
 			Input: map[string]interface{}{"slug": "acme"},
 		}},
 	}
-	if err := NormalizeStructuredToolResponse(resp, true); err != nil {
+	if err := NormalizeStructuredToolResponse(resp, true, nil); err != nil {
 		t.Fatalf("normalize: %v", err)
 	}
 	if resp.Content == "" {
@@ -160,7 +161,7 @@ func TestNormalizeStructuredToolResponse_EmptyObjectFolded(t *testing.T) {
 		StopReason: "tool_use",
 		ToolCalls:  []ToolCall{{ID: "t1", Name: "domain_pack", Input: map[string]interface{}{}}},
 	}
-	if err := NormalizeStructuredToolResponse(resp, true); err != nil {
+	if err := NormalizeStructuredToolResponse(resp, true, nil); err != nil {
 		t.Fatalf("normalize: %v", err)
 	}
 	if resp.Content != "{}" {
@@ -175,7 +176,7 @@ func TestNormalizeStructuredToolResponse_EmptyObjectFolded(t *testing.T) {
 // "null".
 func TestNormalizeStructuredToolResponse_NilInputBecomesEmptyObject(t *testing.T) {
 	resp := &ChatResponse{ToolCalls: []ToolCall{{ID: "t1", Name: "domain_pack"}}}
-	if err := NormalizeStructuredToolResponse(resp, true); err != nil {
+	if err := NormalizeStructuredToolResponse(resp, true, nil); err != nil {
 		t.Fatalf("normalize: %v", err)
 	}
 	if resp.Content != "{}" {
@@ -185,7 +186,7 @@ func TestNormalizeStructuredToolResponse_NilInputBecomesEmptyObject(t *testing.T
 
 func TestNormalizeStructuredToolResponse_NotInjectedIsNoop(t *testing.T) {
 	resp := &ChatResponse{Content: "hello", ToolCalls: []ToolCall{{Name: "x", Input: map[string]interface{}{"a": 1}}}}
-	if err := NormalizeStructuredToolResponse(resp, false); err != nil {
+	if err := NormalizeStructuredToolResponse(resp, false, nil); err != nil {
 		t.Fatalf("normalize: %v", err)
 	}
 	if resp.Content != "hello" || resp.ToolCalls == nil {
@@ -204,7 +205,7 @@ func TestNormalizeStructuredToolResponse_MultipleToolCallsError(t *testing.T) {
 			{ID: "t2", Name: "domain_pack", Input: map[string]interface{}{"b": 2}},
 		},
 	}
-	if err := NormalizeStructuredToolResponse(resp, true); err == nil {
+	if err := NormalizeStructuredToolResponse(resp, true, nil); err == nil {
 		t.Fatal("want error for multiple tool calls, got nil")
 	}
 }
@@ -213,10 +214,134 @@ func TestNormalizeStructuredToolResponse_MultipleToolCallsError(t *testing.T) {
 // the caller's own parser must still see it — Content is left untouched.
 func TestNormalizeStructuredToolResponse_TextResponseLeftIntact(t *testing.T) {
 	resp := &ChatResponse{Content: `{"slug":"acme"}`}
-	if err := NormalizeStructuredToolResponse(resp, true); err != nil {
+	if err := NormalizeStructuredToolResponse(resp, true, nil); err != nil {
 		t.Fatalf("normalize: %v", err)
 	}
 	if resp.Content != `{"slug":"acme"}` {
 		t.Errorf("content mutated: %q", resp.Content)
+	}
+}
+
+// Claude 5.x sometimes emits a nested array of objects as ONE JSON-encoded
+// string inside the tool input ({"questions": "[{...}]"}). Where the schema
+// says array/object and the string is that JSON, the fold decodes it; a
+// string-typed field, or a string that is not valid JSON of the expected type,
+// is left as the model sent it so the caller's own checks still see it.
+func TestNormalizeStructuredToolResponse_DecodesStringifiedNestedValues(t *testing.T) {
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"questions": map[string]interface{}{
+				"type": "array",
+				"items": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"question": map[string]interface{}{"type": "string"},
+						"options":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object"}},
+					},
+				},
+			},
+			"meta":   map[string]interface{}{"type": "object"},
+			"title":  map[string]interface{}{"type": "string"},
+			"broken": map[string]interface{}{"type": "array"},
+			"wrong":  map[string]interface{}{"type": "array"},
+		},
+	}
+	resp := &ChatResponse{StopReason: "tool_use", ToolCalls: []ToolCall{{ID: "t1", Name: "q", Input: map[string]interface{}{
+		"questions": `[{"question":"a?","options":"[{\"id\":\"x\"}]"}]`,
+		"meta":      ` {"k":1} `,
+		"title":     `[draft] plan`,
+		"broken":    `[{"question":"b?"`,
+		"wrong":     `{"not":"an array"}`,
+	}}}}
+	if err := NormalizeStructuredToolResponse(resp, true, &ResponseFormat{Name: "q", Schema: schema}); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal([]byte(resp.Content), &got); err != nil {
+		t.Fatalf("content is not JSON: %v", err)
+	}
+	qs, ok := got["questions"].([]interface{})
+	if !ok || len(qs) != 1 {
+		t.Fatalf("questions not decoded to an array: %#v", got["questions"])
+	}
+	if opts, ok := qs[0].(map[string]interface{})["options"].([]interface{}); !ok || len(opts) != 1 {
+		t.Errorf("nested options not decoded: %#v", qs[0])
+	}
+	if _, ok := got["meta"].(map[string]interface{}); !ok {
+		t.Errorf("meta not decoded to an object: %#v", got["meta"])
+	}
+	for k, want := range map[string]string{"title": `[draft] plan`, "broken": `[{"question":"b?"`, "wrong": `{"not":"an array"}`} {
+		if got[k] != want {
+			t.Errorf("%s = %#v, want the original string %q", k, got[k], want)
+		}
+	}
+}
+
+// The stringified values are often not valid JSON either, in two recurring
+// shapes: one closing brace too many after the array (Haiku 5.5) or after each
+// item (Opus 5.5). Dropping brackets that close nothing recovers them; nothing
+// is ever added, and a string that still does not parse is left as sent.
+func TestNormalizeStructuredToolResponse_DropsUnmatchedClosers(t *testing.T) {
+	schema := map[string]interface{}{"type": "object", "properties": map[string]interface{}{
+		"questions": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object"}}}}
+	cases := []struct {
+		name, in string
+		wantLen  int // -1: left as the original string
+	}{
+		{"extra brace after the array", `[{"question":"a?"},{"question":"b?"}]}`, 2},
+		{"extra brace after each item", `[{"question":"a?","options":[{"id":"x","label":"X"}]}},{"question":"b?","options":[]}}]`, 2},
+		{"braces inside strings are content", `[{"question":"is } a ] brace?"}]}`, 1},
+		{"missing opener stays a string", `[{"options":[{"id":"x"}, "id":"y"}]}]`, -1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			resp := &ChatResponse{ToolCalls: []ToolCall{{Name: "q", Input: map[string]interface{}{"questions": c.in}}}}
+			if err := NormalizeStructuredToolResponse(resp, true, &ResponseFormat{Name: "q", Schema: schema}); err != nil {
+				t.Fatal(err)
+			}
+			var got map[string]interface{}
+			if err := json.Unmarshal([]byte(resp.Content), &got); err != nil {
+				t.Fatal(err)
+			}
+			if c.wantLen < 0 {
+				if got["questions"] != c.in {
+					t.Fatalf("questions = %#v, want the original string", got["questions"])
+				}
+				return
+			}
+			qs, ok := got["questions"].([]interface{})
+			if !ok || len(qs) != c.wantLen {
+				t.Fatalf("questions = %#v, want %d items", got["questions"], c.wantLen)
+			}
+			if c.name == "braces inside strings are content" && qs[0].(map[string]interface{})["question"] != "is } a ] brace?" {
+				t.Errorf("string content changed: %#v", qs[0])
+			}
+		})
+	}
+}
+
+// RelaxForcedToolChoice is the documented replacement for a forced tool
+// choice on models that reject one: tools stay, the choice becomes "auto",
+// and the system prompt names the tool to call.
+func TestRelaxForcedToolChoice(t *testing.T) {
+	forced := RelaxForcedToolChoice(ChatRequest{SystemPrompt: "base", ToolChoice: "emit", Tools: []ToolDefinition{{Name: "emit"}}})
+	if forced.ToolChoice != "auto" || len(forced.Tools) != 1 {
+		t.Errorf("forced tool: choice=%q tools=%d", forced.ToolChoice, len(forced.Tools))
+	}
+	if !strings.HasPrefix(forced.SystemPrompt, "base\n\n") || !strings.Contains(forced.SystemPrompt, `"emit"`) {
+		t.Errorf("system prompt should keep the original and name the tool: %q", forced.SystemPrompt)
+	}
+
+	anyTool := RelaxForcedToolChoice(ChatRequest{ToolChoice: "any"})
+	if anyTool.ToolChoice != "auto" || !strings.Contains(anyTool.SystemPrompt, "one of the provided tools") {
+		t.Errorf("any: %+v", anyTool)
+	}
+
+	for _, c := range []string{"", "auto", "none"} {
+		req := ChatRequest{SystemPrompt: "base", ToolChoice: c}
+		if got := RelaxForcedToolChoice(req); got.ToolChoice != c || got.SystemPrompt != "base" {
+			t.Errorf("non-forced choice %q must be unchanged, got %+v", c, got)
+		}
 	}
 }

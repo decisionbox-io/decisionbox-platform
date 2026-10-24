@@ -143,17 +143,21 @@ The catalog is the only schema content sent up-front. Per-table column lists and
 Each turn is exactly ONE JSON object — pick whichever shape applies:
 
 ```json
-{"thinking": "Need columns of orders + users", "lookup_schema": ["sales.orders", "sales.users"]}
+{"rationale": "Need columns of orders + users", "lookup_schema": ["sales.orders", "sales.users"]}
 ```
 ```json
-{"thinking": "Looking for tables that hold cart abandonment events", "search_tables": "shopping cart abandoned events", "search_top_k": 10}
+{"rationale": "Looking for tables that hold cart abandonment events", "search_tables": "shopping cart abandoned events", "search_top_k": 10}
 ```
 ```json
-{"thinking": "Testing D1 retention by signup day", "query": "SELECT ... FROM ..."}
+{"rationale": "Testing D1 retention by signup day", "query": "SELECT ... FROM ..."}
 ```
 ```json
 {"done": true, "summary": "Covered all priority areas."}
 ```
+
+The agent also states this format in its first exploration message, so a pack that leaves it out still works — but showing it in the pack keeps the model's first reply on-format.
+Use `rationale` for the free-text key, never `thinking`: Claude Opus 5.5 and Sonnet 5.5 refuse (stop reason `refusal`, no output) a conversation that asks them for a JSON field named `thinking`.
+Packs saved before this change are rewritten to `rationale` when the exploration prompt is rendered, and replies that still use `thinking` keep parsing.
 
 ## Rules
 

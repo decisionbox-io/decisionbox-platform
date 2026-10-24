@@ -433,7 +433,7 @@ func writeCorrelationContract(b *strings.Builder, dc *datasourceContext, guidanc
 	// already stopped considering the one it did not pick.
 	b.WriteString("Before you query the SECOND datasource of any pair named in this section, you MUST call `get_correlations` for that pair and follow what it says. It names the exact fields, so you do not have to infer them from matching names — which is how the wrong correlation gets made.\n")
 	a, z := exampleCall(dc, guidance)
-	fmt.Fprintf(b, "  {\"thinking\": \"...\", \"get_correlations\": {\"a\": \"%s\", \"b\": \"%s\"}}\n", a, z)
+	fmt.Fprintf(b, "  {\"rationale\": \"...\", \"get_correlations\": {\"a\": \"%s\", \"b\": \"%s\"}}\n", a, z)
 
 	if guidance.unread {
 		// Nothing to name, and saying nothing would be read as nothing to
@@ -729,6 +729,30 @@ func runReachesCube(routable map[string]*queryexec.QueryExecutor, warehouses []m
 		}
 	}
 	return false
+}
+
+// soleDatasourceSlug returns the provider slug of the one datasource a run
+// can query, or "" when it can query several. With no per-datasource
+// executors the run is single-warehouse wiring and the primary is the only
+// source (see runReachesCube); a legacy single-warehouse run carries no
+// warehouses[] entry, so the primary's id falls back to its slug.
+func soleDatasourceSlug(routable map[string]*queryexec.QueryExecutor, warehouses []models.WarehouseConfig, primaryID, primarySlug string) string {
+	switch len(routable) {
+	case 0:
+		return primarySlug
+	case 1:
+		for id := range routable {
+			for _, wh := range warehouses {
+				if normDatasourceID(wh.ID) == id {
+					return wh.Provider
+				}
+			}
+			if id == primaryID {
+				return primarySlug
+			}
+		}
+	}
+	return ""
 }
 
 // providerIsCube resolves one provider slug's declared shape.

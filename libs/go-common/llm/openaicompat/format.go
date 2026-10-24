@@ -128,11 +128,26 @@ type Choice struct {
 	FinishReason string  `json:"finish_reason"`
 }
 
-// Usage holds token counts reported by the server.
+// Usage holds token counts reported by the server. prompt_tokens already
+// includes any cached prefix (OpenAI semantics, also followed by vLLM,
+// LiteLLM and hosted OpenAI-compatible APIs); the detail objects break it
+// down when the server reports them.
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens            int                      `json:"prompt_tokens"`
+	CompletionTokens        int                      `json:"completion_tokens"`
+	TotalTokens             int                      `json:"total_tokens"`
+	PromptTokensDetails     *PromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+}
+
+// PromptTokensDetails is the prompt-side usage breakdown.
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+// CompletionTokensDetails is the completion-side usage breakdown.
+type CompletionTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
 // APIError is the error envelope returned by OpenAI-compatible servers when
@@ -338,6 +353,12 @@ func ParseResponseBody(raw []byte) (*gollm.ChatResponse, error) {
 			InputTokens:  body.Usage.PromptTokens,
 			OutputTokens: body.Usage.CompletionTokens,
 		},
+	}
+	if d := body.Usage.PromptTokensDetails; d != nil {
+		resp.Usage.CacheReadTokens = d.CachedTokens
+	}
+	if d := body.Usage.CompletionTokensDetails; d != nil {
+		resp.Usage.ReasoningTokens = d.ReasoningTokens
 	}
 	if len(choice.Message.ToolCalls) > 0 {
 		resp.ToolCalls = make([]gollm.ToolCall, 0, len(choice.Message.ToolCalls))

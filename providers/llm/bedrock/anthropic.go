@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/anthropicwire"
 )
 
 // chatAnthropic sends a request to a Claude model on Bedrock using
@@ -27,6 +28,9 @@ func (p *BedrockProvider) chatAnthropic(ctx context.Context, req gollm.ChatReque
 	// so a ResponseFormat becomes a single forced tool. No-op when unset
 	// or the caller supplied its own tools.
 	req, structured := gollm.ApplyResponseFormatAsTool(req)
+	if gollm.RejectsForcedToolChoice(providerName, req.Model) {
+		req = gollm.RelaxForcedToolChoice(req)
+	}
 
 	messages, err := buildAnthropicMessages(req.Messages)
 	if err != nil {
@@ -45,7 +49,10 @@ func (p *BedrockProvider) chatAnthropic(ctx context.Context, req gollm.ChatReque
 	}
 
 	if req.SystemPrompt != "" {
-		body["system"] = req.SystemPrompt
+		body["system"] = anthropicwire.SystemField(req.SystemPrompt, p.promptCache)
+	}
+	if p.promptCache && anthropicwire.CacheConversationTail(len(messages)) {
+		anthropicwire.MarkLastMessage(messages)
 	}
 
 	if req.Temperature > 0 {
@@ -55,14 +62,9 @@ func (p *BedrockProvider) chatAnthropic(ctx context.Context, req gollm.ChatReque
 	if len(req.Tools) > 0 {
 		body["tools"] = buildAnthropicTools(req.Tools)
 	}
-	if tc := buildAnthropicToolChoice(req.ToolChoice); tc != nil {
-		// Forcing the synthetic structured-output tool asks for a single
-		// object, so disable parallel tool use on it.
-		if req.DisableParallelToolUse {
-			if t, _ := tc["type"].(string); t == "tool" || t == "any" {
-				tc["disable_parallel_tool_use"] = true
-			}
-		}
+	// The synthetic structured-output tool asks for a single object, so
+	// parallel tool use is disabled on it (DisableParallelToolUse).
+	if tc := anthropicwire.ToolChoice(req.ToolChoice, req.DisableParallelToolUse); tc != nil {
 		body["tool_choice"] = tc
 	}
 
@@ -91,16 +93,17 @@ func (p *BedrockProvider) chatAnthropic(ctx context.Context, req gollm.ChatReque
 			Name  string          `json:"name,omitempty"`
 			Input json.RawMessage `json:"input,omitempty"`
 		} `json:"content"`
-		Model      string `json:"model"`
-		StopReason string `json:"stop_reason"`
-		Usage      struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
+		Model      string              `json:"model"`
+		StopReason string              `json:"stop_reason"`
+		Usage      anthropicwire.Usage `json:"usage"`
 	}
 
 	if err := json.NewDecoder(bytes.NewReader(output.Body)).Decode(&anthropicResp); err != nil {
 		return nil, fmt.Errorf("bedrock/anthropic: failed to parse response: %w", err)
+	}
+
+	if err := gollm.RefusalError(anthropicResp.StopReason, req.Model, anthropicResp.Usage.ToLLM()); err != nil {
+		return nil, fmt.Errorf("bedrock/anthropic: %w", err)
 	}
 
 	content := ""
@@ -126,13 +129,10 @@ func (p *BedrockProvider) chatAnthropic(ctx context.Context, req gollm.ChatReque
 		Content:    content,
 		Model:      anthropicResp.Model,
 		StopReason: anthropicResp.StopReason,
-		Usage: gollm.Usage{
-			InputTokens:  anthropicResp.Usage.InputTokens,
-			OutputTokens: anthropicResp.Usage.OutputTokens,
-		},
-		ToolCalls: toolCalls,
+		Usage:      anthropicResp.Usage.ToLLM(),
+		ToolCalls:  toolCalls,
 	}
-	if err := gollm.NormalizeStructuredToolResponse(resp, structured); err != nil {
+	if err := gollm.NormalizeStructuredToolResponse(resp, structured, req.ResponseFormat); err != nil {
 		return nil, fmt.Errorf("bedrock/anthropic: %w", err)
 	}
 	return resp, nil
@@ -209,19 +209,4 @@ func buildAnthropicTools(tools []gollm.ToolDefinition) []map[string]interface{} 
 		}
 	}
 	return out
-}
-
-// buildAnthropicToolChoice mirrors claude/provider.go's
-// convertToolChoiceForClaude. "auto"/"" → nil (Anthropic default).
-func buildAnthropicToolChoice(choice string) map[string]interface{} {
-	switch choice {
-	case "", "auto":
-		return nil
-	case "any", "required":
-		return map[string]interface{}{"type": "any"}
-	case "none":
-		return map[string]interface{}{"type": "none"}
-	default:
-		return map[string]interface{}{"type": "tool", "name": choice}
-	}
 }

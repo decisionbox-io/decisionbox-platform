@@ -38,47 +38,47 @@ func buildSystemPrompt(rt *ProjectRuntime, routing turnRouting, cfg Config, char
 	// instruction in the prompt, and concrete beats prose.
 	switch {
 	case routing.multi && shapes.anyCube:
-		b.WriteString(`  {"thinking":"...","datasource_id":"<id>","query":"...","purpose":"what this answers"}` + "  — run one read-only query against one datasource, written in THAT datasource's query language\n")
+		b.WriteString(`  {"rationale":"...","datasource_id":"<id>","query":"...","purpose":"what this answers"}` + "  — run one read-only query against one datasource, written in THAT datasource's query language\n")
 		// Withheld on the same condition the tool path withholds the tool: the
 		// text parser accepts any action this list advertises and execLookup
 		// will run it, so advertising a lookup no datasource can answer spends
 		// a grounding step on a guaranteed failure. Kept whenever one of them
 		// still has tables.
 		if !shapes.allCube {
-			b.WriteString(`  {"thinking":"...","datasource_id":"<id>","lookup_schema":["dataset.table_a"]}` + "  — get columns + sample rows for tables in one datasource\n")
+			b.WriteString(`  {"rationale":"...","datasource_id":"<id>","lookup_schema":["dataset.table_a"]}` + "  — get columns + sample rows for tables in one datasource\n")
 		}
 		writeJoinsOnForm(&b)
 	case routing.multi:
-		b.WriteString(`  {"thinking":"...","datasource_id":"<id>","query":"SELECT ...","purpose":"what this answers"}` + "  — run a read-only SQL query against one datasource\n")
-		b.WriteString(`  {"thinking":"...","datasource_id":"<id>","lookup_schema":["dataset.table_a"]}` + "  — get columns + sample rows for tables in one datasource\n")
+		b.WriteString(`  {"rationale":"...","datasource_id":"<id>","query":"SELECT ...","purpose":"what this answers"}` + "  — run a read-only SQL query against one datasource\n")
+		b.WriteString(`  {"rationale":"...","datasource_id":"<id>","lookup_schema":["dataset.table_a"]}` + "  — get columns + sample rows for tables in one datasource\n")
 		writeJoinsOnForm(&b)
 	case shapes.anyCube:
-		b.WriteString(`  {"thinking":"...","query":"...","purpose":"what this answers"}` + "  — run a read-only query, written in this source's query language\n")
+		b.WriteString(`  {"rationale":"...","query":"...","purpose":"what this answers"}` + "  — run a read-only query, written in this source's query language\n")
 	default:
-		b.WriteString(`  {"thinking":"...","query":"SELECT ...","purpose":"what this answers"}` + "  — run a read-only SQL query\n")
-		b.WriteString(`  {"thinking":"...","lookup_schema":["dataset.table_a","dataset.table_b"]}` + "  — get columns + sample rows for tables\n")
+		b.WriteString(`  {"rationale":"...","query":"SELECT ...","purpose":"what this answers"}` + "  — run a read-only SQL query\n")
+		b.WriteString(`  {"rationale":"...","lookup_schema":["dataset.table_a","dataset.table_b"]}` + "  — get columns + sample rows for tables\n")
 	}
 	if shapes.anyCube {
 		// The same contradiction the tool description had: this is the one
 		// discovery action that works against a source with no tables, and the
 		// prompt has just sent the model here — describing it as a table search
 		// argues against taking the only path that can work.
-		b.WriteString(`  {"thinking":"...","search_tables":"keywords describing what you need"}` + "  — find relevant tables, metrics or dimensions semantically\n")
+		b.WriteString(`  {"rationale":"...","search_tables":"keywords describing what you need"}` + "  — find relevant tables, metrics or dimensions semantically\n")
 	} else {
-		b.WriteString(`  {"thinking":"...","search_tables":"keywords describing what you need"}` + "  — find relevant tables semantically\n")
+		b.WriteString(`  {"rationale":"...","search_tables":"keywords describing what you need"}` + "  — find relevant tables semantically\n")
 	}
 	if rt.InsightsProvider != nil {
-		b.WriteString(`  {"thinking":"...","search_insights":"keywords"}` + "  — search prior discovered insights & recommendations\n")
+		b.WriteString(`  {"rationale":"...","search_insights":"keywords"}` + "  — search prior discovered insights & recommendations\n")
 	}
 	if rt.KnowledgeProvider != nil {
-		b.WriteString(`  {"thinking":"...","search_knowledge":"keywords"}` + "  — search the project's documents & notes\n")
+		b.WriteString(`  {"rationale":"...","search_knowledge":"keywords"}` + "  — search the project's documents & notes\n")
 	}
 	if chartsEnabled {
-		b.WriteString(`  {"thinking":"...","render_chart":{"type":"bar","source_step_id":"q2","x":{"field":"month"},"y":[{"field":"revenue"}],"data":[...]}}` + "  — chart a prior query result\n")
+		b.WriteString(`  {"rationale":"...","render_chart":{"type":"bar","source_step_id":"q2","x":{"field":"month"},"y":[{"field":"revenue"}],"data":[...]}}` + "  — chart a prior query result\n")
 	}
-	b.WriteString(`  {"thinking":"...","answer":"final grounded answer for the user"}` + "  — when you can answer\n")
-	b.WriteString(`  {"thinking":"...","clarify":"a single clarifying question"}` + "  — when the question is too ambiguous to answer, or when a tool's result asks you to put something to the user before continuing\n")
-	b.WriteString(`  {"thinking":"...","decline":"why this cannot be answered from the data"}` + "  — when it is unanswerable\n")
+	b.WriteString(`  {"rationale":"...","answer":"final grounded answer for the user"}` + "  — when you can answer\n")
+	b.WriteString(`  {"rationale":"...","clarify":"a single clarifying question"}` + "  — when the question is too ambiguous to answer, or when a tool's result asks you to put something to the user before continuing\n")
+	b.WriteString(`  {"rationale":"...","decline":"why this cannot be answered from the data"}` + "  — when it is unanswerable\n")
 
 	writeResultHandling(&b, cfg, shapes.anyCube)
 	if chartsEnabled {

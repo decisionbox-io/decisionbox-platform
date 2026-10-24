@@ -100,35 +100,6 @@ func TestChat_WithTools_RequestShape(t *testing.T) {
 	}
 }
 
-func TestChat_ToolChoice_Translations(t *testing.T) {
-	cases := []struct {
-		input    string
-		expected map[string]interface{}
-	}{
-		{"", nil},
-		{"auto", nil},
-		{"any", map[string]interface{}{"type": "any"}},
-		{"required", map[string]interface{}{"type": "any"}},
-		{"none", map[string]interface{}{"type": "none"}},
-		{"inspect_table", map[string]interface{}{"type": "tool", "name": "inspect_table"}},
-	}
-	for _, c := range cases {
-		got := convertToolChoiceForClaude(c.input)
-		if (got == nil) != (c.expected == nil) {
-			t.Errorf("input %q: got=%v want=%v", c.input, got, c.expected)
-			continue
-		}
-		if got == nil {
-			continue
-		}
-		for k, v := range c.expected {
-			if got[k] != v {
-				t.Errorf("input %q: got[%q]=%v, want %v", c.input, k, got[k], v)
-			}
-		}
-	}
-}
-
 func TestChat_ToolResultsOnUserMessage_Roundtrip(t *testing.T) {
 	var captured claudeRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

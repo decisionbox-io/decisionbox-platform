@@ -55,14 +55,24 @@ type UserIdentity struct {
 // agent's LLM wrapper after every call (success or failure). In v1 the
 // control plane records tokens for monitoring only — never enforces a cap.
 type LLMUsageEvent struct {
-	ProjectID    string    `json:"project_id"`
-	RunID        string    `json:"run_id,omitempty"`
-	Provider     string    `json:"provider"`
-	Model        string    `json:"model"`
-	InputTokens  int       `json:"input_tokens"`
-	OutputTokens int       `json:"output_tokens"`
-	LatencyMs    int       `json:"latency_ms"`
-	OccurredAt   time.Time `json:"occurred_at"`
+	ProjectID string `json:"project_id"`
+	RunID     string `json:"run_id,omitempty"`
+	Provider  string `json:"provider"`
+	Model     string `json:"model"`
+	// InputTokens is the total prompt, cached part included;
+	// CacheReadTokens / CacheWriteTokens say how much of it was served
+	// from / written to the provider's prompt cache (priced differently).
+	InputTokens      int `json:"input_tokens"`
+	OutputTokens     int `json:"output_tokens"`
+	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+	// ReasoningTokens is the part of OutputTokens spent on hidden reasoning.
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	// Phase is the discovery phase the call belongs to (exploration,
+	// analysis, validation, ...); empty outside discovery.
+	Phase      string    `json:"phase,omitempty"`
+	LatencyMs  int       `json:"latency_ms"`
+	OccurredAt time.Time `json:"occurred_at"`
 }
 
 // PolicyError is the typed error returned by every Check* method when the
