@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -1129,9 +1130,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		}
 
 		// Output estimate as JSON to stdout (API captures this)
-		estimateJSON, _ := json.MarshalIndent(estimate, "", "  ")
-		fmt.Println(string(estimateJSON))
-		return nil
+		return writeEstimate(os.Stdout, estimate)
 	}
 
 	// Run discovery. The outer cap is intentionally generous —
@@ -1489,4 +1488,16 @@ func classifyError(err error) string {
 	default:
 		return "unknown"
 	}
+}
+
+// writeEstimate prints the cost estimate on ONE line. The API takes the last
+// stdout line that is a complete JSON object (log lines may be interleaved),
+// so an indented object is never found.
+func writeEstimate(w io.Writer, estimate *models.CostEstimate) error {
+	b, err := json.Marshal(estimate)
+	if err != nil {
+		return fmt.Errorf("encode cost estimate: %w", err)
+	}
+	_, err = fmt.Fprintln(w, string(b))
+	return err
 }
