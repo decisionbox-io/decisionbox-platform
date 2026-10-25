@@ -35,6 +35,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -415,6 +417,20 @@ func initLLM(project *ProjectDoc, fl cliFlags, credential string) (gollm.Provide
 // llmProviderConfig builds the provider config the agent would: the
 // project's resolved API key (when there is one) as credentials_json, then
 // the project's saved LLM settings on top.
+// replayPromptCacheEnabled mirrors models.Project.EffectivePromptCacheEnabled.
+// This tool has its own minimal project document, so the rule is duplicated
+// rather than imported; TestReplayPromptCacheMatchesAgentModel pins them
+// together.
+func replayPromptCacheEnabled(project *ProjectDoc) bool {
+	if project == nil {
+		return true
+	}
+	if project.PromptCacheEnabled != nil {
+		return *project.PromptCacheEnabled
+	}
+	return !strings.EqualFold(strings.TrimSpace(project.LLM.Config[gollm.PromptCacheKey]), "false")
+}
+
 func llmProviderConfig(project *ProjectDoc, fl cliFlags, credential string) gollm.ProviderConfig {
 	cfg := gollm.ProviderConfig{
 		"model":           project.LLM.Model,
@@ -427,6 +443,10 @@ func llmProviderConfig(project *ProjectDoc, fl cliFlags, credential string) goll
 	for k, v := range project.LLM.Config {
 		cfg[k] = v
 	}
+	// Resolve prompt caching exactly as the agent does — the project field
+	// when set, else the legacy config value, else on — and write it where
+	// the providers read it. Set after the merge so the field wins.
+	cfg[gollm.PromptCacheKey] = strconv.FormatBool(replayPromptCacheEnabled(project))
 	if fl.lAuthOverride != "" {
 		cfg["auth_method"] = fl.lAuthOverride
 	}
@@ -568,14 +588,14 @@ func getEnv(k, fallback string) string {
 
 // MVPReport is the structured output the MVP writes to --out.
 type MVPReport struct {
-	ProjectID      string          `json:"project_id"`
-	DiscoveryID    string          `json:"discovery_id"`
-	LLM            string          `json:"llm"`
-	Warehouse      string          `json:"warehouse"`
-	RefuterEnabled bool            `json:"refuter_enabled"`
+	ProjectID      string           `json:"project_id"`
+	DiscoveryID    string           `json:"discovery_id"`
+	LLM            string           `json:"llm"`
+	Warehouse      string           `json:"warehouse"`
+	RefuterEnabled bool             `json:"refuter_enabled"`
 	RunCaps        verifier.RunCaps `json:"run_caps"`
-	Mode           string          `json:"mode"`
-	Targets        []TargetResult  `json:"targets"`
+	Mode           string           `json:"mode"`
+	Targets        []TargetResult   `json:"targets"`
 }
 
 type TargetResult struct {
