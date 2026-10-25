@@ -286,3 +286,75 @@ func TestLLMProvider_ClaudePricing(t *testing.T) {
 		}
 	}
 }
+
+// --- Handler constructors ---
+
+func TestNewProjectsHandler(t *testing.T) {
+	h := NewProjectsHandler(nil, nil)
+	if h == nil {
+		t.Fatal("NewProjectsHandler returned nil")
+	}
+}
+
+func TestNewPricingHandler(t *testing.T) {
+	h := NewPricingHandler(nil)
+	if h == nil {
+		t.Fatal("NewPricingHandler returned nil")
+	}
+}
+
+func TestNewFeedbackHandler(t *testing.T) {
+	h := NewFeedbackHandler(nil)
+	if h == nil {
+		t.Fatal("NewFeedbackHandler returned nil")
+	}
+}
+
+func TestNewDomainsHandler(t *testing.T) {
+	h := NewDomainsHandler(nil)
+	if h == nil {
+		t.Fatal("NewDomainsHandler returned nil")
+	}
+}
+
+func TestNewDomainPacksHandler(t *testing.T) {
+	h := NewDomainPacksHandler(nil)
+	if h == nil {
+		t.Fatal("NewDomainPacksHandler returned nil")
+	}
+}
+
+func TestNewProvidersHandler(t *testing.T) {
+	h := NewProvidersHandler()
+	if h == nil {
+		t.Fatal("NewProvidersHandler returned nil")
+	}
+}
+
+func TestNewSecretsHandler(t *testing.T) {
+	h := NewSecretsHandler(nil, nil)
+	if h == nil {
+		t.Fatal("NewSecretsHandler returned nil")
+	}
+}
+
+func TestNewTestConnectionHandler(t *testing.T) {
+	h := NewTestConnectionHandler(nil, nil)
+	if h == nil {
+		t.Fatal("NewTestConnectionHandler returned nil")
+	}
+}
+
+func TestHealthCheck_ResponseFormat(t *testing.T) {
+	req := httptest.NewRequest("GET", "/api/v1/health", nil)
+	w := httptest.NewRecorder()
+
+	HealthCheck(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	if w.Header().Get("Content-Type") != "application/json" {
+		t.Errorf("Content-Type = %q", w.Header().Get("Content-Type"))
+	}
+}

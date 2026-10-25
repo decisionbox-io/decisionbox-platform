@@ -799,47 +799,6 @@ curl -X PUT http://localhost:8080/api/v1/pricing \
 
 ---
 
-## Cost Estimation
-
-### POST /api/v1/projects/{id}/discover/estimate
-
-Estimate the cost of a discovery run without executing it. Spawns the agent with `--estimate` flag.
-
-```bash
-curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/discover/estimate \
-  -H "Content-Type: application/json" \
-  -d '{"max_steps": 100}'
-```
-
-```json
-{
-  "data": {
-    "llm": {
-      "provider": "claude",
-      "model": "claude-sonnet-4-6",
-      "estimated_input_tokens": 250000,
-      "estimated_cached_input_tokens": 190000,
-      "estimated_output_tokens": 50000,
-      "cost_usd": 0.825
-    },
-    "warehouse": {
-      "provider": "bigquery",
-      "estimated_queries": 100,
-      "estimated_bytes_scanned": 5368709120,
-      "cost_usd": 0.0375
-    },
-    "total_cost_usd": 0.8625
-  }
-}
-```
-
-The estimate is an upper bound.
-Exploration re-sends the whole conversation every step, so its input grows with the square of the step count; validation is sized from the verifier and refuter token caps.
-`estimated_cached_input_tokens` is the part of the input expected to be read from the provider's prompt cache and priced at the cache-read rate — present only when the model caches prompts (Claude on every provider) and the project leaves `prompt_cache` on.
-Each phase in `breakdown` is priced on its own, request by request, so the cache discount and any long-prompt price tier (Claude Haiku 5.5 bills prompts over 100K tokens at 5x) land on the requests that incur them.
-
----
-
 ## Connection Testing
 
 ### POST /api/v1/projects/{id}/test/warehouse

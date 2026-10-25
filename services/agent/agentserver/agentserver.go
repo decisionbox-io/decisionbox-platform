@@ -9,7 +9,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -81,7 +80,6 @@ func Run() {
 		includeLog      = flag.Bool("include-log", false, "Include full exploration log")
 		testMode        = flag.Bool("test", false, "Test mode - limit analyses for faster testing")
 		enableDebugLogs = flag.Bool("enable-debug-logs", true, "Enable detailed debug logging to MongoDB")
-		estimateOnly    = flag.Bool("estimate", false, "Estimate cost only (no actual discovery)")
 		testConnection  = flag.String("test-connection", "", "Test provider connection: 'warehouse', 'llm', 'embedding', or 'blurb-llm'")
 		listTables      = flag.Bool("list-tables", false, "List the warehouse's qualified table names as JSON and exit (cheap, no schema/blurb/embed) — powers the pre-index discovery-scope picker.")
 		testWarehouseID = flag.String("warehouse-id", "", "For --test-connection / --list-tables: the specific datasource id to target. Empty = the project's primary (back-compat).")
@@ -241,7 +239,7 @@ func Run() {
 		}
 	}
 
-	if err := runDiscovery(cfg, *projectID, *runID, selectedAreas, *maxSteps, *minSteps, *includeLog, *testMode, *enableDebugLogs, *estimateOnly); err != nil {
+	if err := runDiscovery(cfg, *projectID, *runID, selectedAreas, *maxSteps, *minSteps, *includeLog, *testMode, *enableDebugLogs); err != nil {
 		applog.WithError(err).Fatal("Discovery failed")
 	}
 
@@ -803,7 +801,7 @@ func runTestConnection(cfg *config.Config, projectID, target, warehouseID string
 
 // --- Discovery ---
 
-func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAreas []string, maxSteps, minSteps int, includeLog, testMode, enableDebugLogs, estimateOnly bool) error {
+func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAreas []string, maxSteps, minSteps int, includeLog, testMode, enableDebugLogs bool) error {
 	ctx := context.Background()
 
 	// Set project ID in context for warehouse middleware (e.g. governance)
@@ -1005,10 +1003,9 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	// shared schema-retrieval client isn't tied up by the analysis
 	// path. Required for the run — analysis ranking depends on it,
 	// so a missing embedding provider here is a hard error rather
-	// than a silent regression to keyword-only selection. A cost
-	// estimate runs no analysis and builds none.
+	// than a silent regression to keyword-only selection.
 	var runStepIndex discovery.RunStepIndex
-	needRunStepIndex, err := runStepIndexNeeded(estimateOnly, runID, embeddingProvider != nil)
+	needRunStepIndex, err := runStepIndexNeeded(runID, embeddingProvider != nil)
 	if err != nil {
 		return err
 	}
@@ -1114,24 +1111,6 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		Warehouses:            effectiveWarehouses,
 		RunStepIndex:          runStepIndex,
 	})
-
-	// Estimate mode: calculate costs without running discovery
-	if estimateOnly {
-		applog.Info("Running cost estimation only")
-		estimateCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		defer cancel()
-
-		estimate, err := orchestrator.EstimateCost(estimateCtx, discovery.EstimateOptions{
-			MaxSteps:      maxSteps,
-			SelectedAreas: selectedAreas,
-		})
-		if err != nil {
-			return fmt.Errorf("cost estimation failed: %w", err)
-		}
-
-		// Output estimate as JSON to stdout (API captures this)
-		return writeEstimate(os.Stdout, estimate)
-	}
 
 	// Run discovery. The outer cap is intentionally generous —
 	// enterprise warehouses can return long-running SQL (multi-hour
@@ -1289,13 +1268,8 @@ func topRecommendationBriefs(recs []models.Recommendation, limit int) []notify.R
 }
 
 // runStepIndexNeeded reports whether this invocation builds the per-run step
-// index, and what is missing when it must. A cost estimate runs no analysis,
-// so it needs neither the index nor the run id it is keyed by — the API's
-// estimate call passes none.
-func runStepIndexNeeded(estimateOnly bool, runID string, hasEmbedder bool) (bool, error) {
-	if estimateOnly {
-		return false, nil
-	}
+// index, and what is missing when it must.
+func runStepIndexNeeded(runID string, hasEmbedder bool) (bool, error) {
 	if !hasEmbedder {
 		return true, fmt.Errorf("analysis ranking requires an embedding provider — configure one in project settings")
 	}
@@ -1488,16 +1462,4 @@ func classifyError(err error) string {
 	default:
 		return "unknown"
 	}
-}
-
-// writeEstimate prints the cost estimate on ONE line. The API takes the last
-// stdout line that is a complete JSON object (log lines may be interleaved),
-// so an indented object is never found.
-func writeEstimate(w io.Writer, estimate *models.CostEstimate) error {
-	b, err := json.Marshal(estimate)
-	if err != nil {
-		return fmt.Errorf("encode cost estimate: %w", err)
-	}
-	_, err = fmt.Fprintln(w, string(b))
-	return err
 }
