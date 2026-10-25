@@ -241,6 +241,10 @@ export default function ProjectSettingsPage() {
     try {
       const proj = await api.getProject(id);
       setProject(proj);
+      // Caching resolves through llm.config when the project field is unset,
+      // so changing providers can move the effective value. Re-derive rather
+      // than leaving the switch on what it read at mount.
+      setPromptCacheEnabled(readPromptCache(proj));
     } catch {
       // Refresh failures are non-fatal — the panel that just saved
       // already updated its own local state.

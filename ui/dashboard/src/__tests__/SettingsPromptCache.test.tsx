@@ -20,7 +20,10 @@ jest.mock('@/components/layout/AppShell', () => ({
   default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 jest.mock('@/components/projects/ProvidersPanel', () => ({
-  __esModule: true, default: () => <div>ProvidersPanel</div>,
+  __esModule: true,
+  default: ({ onSaved }: { onSaved?: () => void }) => (
+    <button type="button" onClick={() => onSaved?.()}>provider-saved</button>
+  ),
 }));
 jest.mock('@/components/projects/WarehouseConfigPanel', () => ({
   __esModule: true, default: () => <div>WarehouseConfigPanel</div>,
@@ -148,5 +151,25 @@ describe('Settings → Advanced: prompt caching', () => {
     // Another Advanced switch proves the tab rendered.
     expect(await screen.findByRole('switch', { name: /suggested questions/i })).toBeInTheDocument();
     expect(screen.queryByRole('switch', { name: /prompt caching/i })).not.toBeInTheDocument();
+  });
+});
+
+// Two regressions review found once the project field became the authority.
+describe('Settings → Advanced: prompt caching, legacy-key seam', () => {
+  // Caching resolves through llm.config when the project field is unset, so
+  // changing providers can move the effective value. The switch used to keep
+  // whatever it read at mount and could show caching off while it was on.
+  it('re-derives after a provider save changes the effective value', async () => {
+    (api.getProject as jest.Mock)
+      .mockResolvedValueOnce(project({}, { prompt_cache: 'false' }))
+      .mockResolvedValue(project());
+    await renderAdvanced();
+    expect(await screen.findByRole('switch', { name: /prompt caching/i })).not.toBeChecked();
+
+    // The AI tab saved; the page refreshes and must re-read the value.
+    fireEvent.click(screen.getByRole('tab', { name: /ai & embedding/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'provider-saved' }));
+    fireEvent.click(screen.getByRole('tab', { name: /advanced/i }));
+    await waitFor(() => expect(theSwitch()).toBeChecked());
   });
 });
