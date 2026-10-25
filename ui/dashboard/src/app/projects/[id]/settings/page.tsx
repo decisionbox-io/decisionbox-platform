@@ -146,6 +146,11 @@ export default function ProjectSettingsPage() {
   // means on — see gollm.PromptCacheEnabled.
   const [promptCacheEnabled, setPromptCacheEnabled] = useState(true);
   const [savingPromptCache, setSavingPromptCache] = useState(false);
+  // Both this switch and the AI tab's panel write llm.config, and Update
+  // replaces that block wholesale — so the two writes must not overlap. The
+  // panel's save spans its secret writes too, so take its word for when it
+  // is busy rather than guessing from onSaved.
+  const [providersSaving, setProvidersSaving] = useState(false);
 
   // Advanced — Suggested questions toggle (lives on the project document).
   // Defaults to true (ask_suggestions_enabled === undefined) — opt-out; it
@@ -578,6 +583,7 @@ export default function ProjectSettingsPage() {
             projectId={id}
             variant="page"
             authoritativeLLMConfig={{ [PROMPT_CACHE_KEY]: promptCacheEnabled ? 'true' : 'false' }}
+            onSavingChange={setProvidersSaving}
             onSaved={(saved) => {
               // Prefer the panel's own result: it is the server's response to
               // the write, so it cannot be staler than a follow-up GET, and a
@@ -691,7 +697,7 @@ export default function ProjectSettingsPage() {
                   label="Prompt caching (Claude models)"
                   description="Cache the repeated prefix of multi-turn calls (the system prompt and the conversation so far) so later calls read it at the provider's cache-read price. Applies to Claude models only. Turn off only if your account or region does not support prompt caching."
                   checked={promptCacheEnabled}
-                  disabled={savingPromptCache}
+                  disabled={savingPromptCache || providersSaving}
                   onChange={(e) => savePromptCacheEnabled(e.currentTarget.checked)}
                 />
               )}

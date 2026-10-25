@@ -37,9 +37,10 @@ jest.mock('@/components/projects/ProvidersPanel', () => ({
   default: class ProvidersPanelMock extends (jest.requireActual('react').Component) {
     componentDidMount() { providersMounts.count += 1; }
     render() {
-      const { onSaved, authoritativeLLMConfig } = this.props as {
+      const { onSaved, authoritativeLLMConfig, onSavingChange } = this.props as {
         onSaved: (p: unknown) => void;
         authoritativeLLMConfig?: Record<string, string>;
+        onSavingChange?: (saving: boolean) => void;
       };
       return (
         <>
@@ -49,6 +50,10 @@ jest.mock('@/components/projects/ProvidersPanel', () => ({
           {/* The real panel hands its save result to onSaved; the mock
               forwards whatever the test put in panelSave. */}
           <button type="button" onClick={() => onSaved(panelSave.saved)}>save-providers</button>
+          {/* The real panel's save spans its secret writes, so "busy" and
+              "finished" are separate moments. */}
+          <button type="button" onClick={() => onSavingChange?.(true)}>begin-provider-save</button>
+          <button type="button" onClick={() => onSavingChange?.(false)}>end-provider-save</button>
         </>
       );
     }
@@ -250,6 +255,35 @@ describe('Settings → Advanced: prompt caching', () => {
     expect(payload.llm.model).toBe('NEW-model');
     expect(payload.llm.config.region).toBe('eu-west-1');
     expect(payload.llm.config.prompt_cache).toBe('false');
+  });
+
+  // Regression: the panel's save spans its project update AND the secret
+  // writes that follow, and onSaved only fires at the end. A cache toggle
+  // inside that window sent an LLM block captured before the provider save
+  // and silently undid it. The switch is disabled while the panel is busy.
+  it('cannot be toggled while a provider save is in flight', async () => {
+    (api.getProject as jest.Mock).mockResolvedValue(
+      project({ provider: 'bedrock', model: 'm', config: { region: 'us-east-1' } }),
+    );
+    await renderAdvanced();
+    const sw = await screen.findByRole('switch', { name: /prompt caching/i });
+    expect(sw).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('tab', { name: /ai & embedding/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'begin-provider-save' }));
+    fireEvent.click(screen.getByRole('tab', { name: /advanced/i }));
+
+    // Disabled is the guarantee a real click obeys. (fireEvent.click
+    // dispatches straight at the input and bypasses the activation check a
+    // browser applies to a disabled control, so "clicking does nothing" is
+    // not a assertion this layer can make honestly.)
+    await waitFor(() => expect(screen.getByRole('switch', { name: /prompt caching/i })).toBeDisabled());
+
+    // And it comes back once the panel reports it has finished.
+    fireEvent.click(screen.getByRole('tab', { name: /ai & embedding/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'end-provider-save' }));
+    fireEvent.click(screen.getByRole('tab', { name: /advanced/i }));
+    await waitFor(() => expect(screen.getByRole('switch', { name: /prompt caching/i })).toBeEnabled());
   });
 
   it('is not offered for a provider that does not implement it', async () => {
