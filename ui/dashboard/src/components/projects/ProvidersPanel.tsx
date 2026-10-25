@@ -31,6 +31,16 @@ export interface ProvidersPanelProps {
   projectId: string;
   variant: Variant;
   onSaved?: (project: Project) => void;
+  /**
+   * authoritativeLLMConfig carries llm.config keys this panel does NOT own but
+   * must not clobber. The panel loads the project once and keeps llm.config in
+   * its own form state, while Update replaces the whole LLM block — so a key
+   * edited elsewhere after this panel mounted (prompt_cache, from Settings →
+   * Advanced) would be written back stale on the next save. Values given here
+   * win over the form's copy at save time. The panel renders no control for
+   * them, so there is nothing to keep in sync visually.
+   */
+  authoritativeLLMConfig?: Record<string, string>;
 }
 
 function PanelSection({ children }: { children: React.ReactNode }) {
@@ -57,7 +67,7 @@ function PanelSection({ children }: { children: React.ReactNode }) {
 // Used by:
 //   - settings/page.tsx          (variant="page")
 //   - plugin-overlaid wizards    (variant="wizard")
-export default function ProvidersPanel({ projectId, variant, onSaved }: ProvidersPanelProps) {
+export default function ProvidersPanel({ projectId, variant, onSaved, authoritativeLLMConfig }: ProvidersPanelProps) {
   const [project, setProject] = useState<Project | null>(null);
   const [llmProviders, setLlmProviders] = useState<ProviderMeta[]>([]);
   const [embeddingProviders, setEmbeddingProviders] = useState<EmbeddingProviderMeta[]>([]);
@@ -215,6 +225,8 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
         ),
       );
       if (llm.authMethod) llmConfig.auth_method = llm.authMethod;
+      // Keys owned elsewhere win over this form's possibly-stale copy.
+      Object.assign(llmConfig, authoritativeLLMConfig || {});
       // Carry every form-state config field for embedding (project_id,
       // location, region, …). The form holds them under
       // embedding.config[key], which is what the agent reads from

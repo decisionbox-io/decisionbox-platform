@@ -568,16 +568,16 @@ export default function ProjectSettingsPage() {
 
         {!aiConfigManaged && (
         <Tabs.Panel value="ai">
-          {/* ProvidersPanel loads the project once (its effect is keyed on
-              projectId) and holds llm.config in its own form state, so after
-              the Advanced switch changes prompt_cache its form is stale — and
-              its next save would write the old value back, silently undoing
-              the change. Key it on the stored value so it remounts and
-              reloads when, and only when, that value actually moves. */}
+          {/* The panel owns the provider, model, credentials and embedding;
+              it does not own prompt_cache, which this page's Advanced tab
+              writes. Hand it the stored value so its save preserves it
+              instead of writing back the copy it loaded on mount — rather
+              than remounting the panel, which would silently discard any
+              unsaved edits in this tab. */}
           <ProvidersPanel
-            key={`providers-${String(project?.llm?.config?.[PROMPT_CACHE_KEY] ?? 'unset')}`}
             projectId={id}
             variant="page"
+            authoritativeLLMConfig={{ [PROMPT_CACHE_KEY]: promptCacheEnabled ? 'true' : 'false' }}
             onSaved={() => { void refreshProject(); }}
           />
         </Tabs.Panel>
