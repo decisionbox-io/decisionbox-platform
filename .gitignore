@@ -6,6 +6,19 @@ bin/
 *.so
 *.dylib
 
+# Compiled command binaries. `go build` with no -o writes the binary next to
+# the package it built, so a build run from a cmd/ directory — or a
+# `go build -o <name>` in the repo root — leaves a ~100 MB artifact that is
+# easy to `git add -A` by accident and impossible to remove from history
+# afterwards. Name each cmd target rather than globbing: an entry like
+# `/agent` would also ignore a future source directory of that name.
+/codecov
+/decisionbox-api
+/decisionbox-agent
+/services/api/api
+/services/agent/agent
+/services/agent/validation-replay
+
 # Go
 vendor/
 *.test
