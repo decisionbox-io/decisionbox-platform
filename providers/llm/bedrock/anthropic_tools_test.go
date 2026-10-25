@@ -155,31 +155,21 @@ func TestAnthropic_ToolResultsOnAssistantMessageErrors(t *testing.T) {
 	}
 }
 
-func TestAnthropic_BuildAnthropicToolChoice(t *testing.T) {
-	cases := []struct {
-		in string
-		want map[string]interface{}
-	}{
-		{"", nil},
-		{"auto", nil},
-		{"any", map[string]interface{}{"type": "any"}},
-		{"required", map[string]interface{}{"type": "any"}},
-		{"none", map[string]interface{}{"type": "none"}},
-		{"inspect_table", map[string]interface{}{"type": "tool", "name": "inspect_table"}},
+// End to end through the Bedrock wire: a Claude reply that sends the
+// structured answer's array as one JSON-encoded string reaches the caller
+// with the array decoded, so the caller's parser accepts it.
+func TestAnthropic_StructuredStringifiedArrayDecoded(t *testing.T) {
+	reply := `{"content":[{"type":"tool_use","id":"t1","name":"clarifying_questions","input":{"questions":"[{\"question\":\"a?\"}]"}}],"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}}`
+	_, p := capturingClient([]byte(reply))
+	schema := map[string]interface{}{"type": "object", "properties": map[string]interface{}{
+		"questions": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object"}}}}
+	resp, err := p.chatAnthropic(context.Background(), gollm.ChatRequest{Model: p.model,
+		Messages:       []gollm.Message{{Role: "user", Content: "ask"}},
+		ResponseFormat: &gollm.ResponseFormat{Name: "clarifying_questions", Schema: schema}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, c := range cases {
-		got := buildAnthropicToolChoice(c.in)
-		if (got == nil) != (c.want == nil) {
-			t.Errorf("buildAnthropicToolChoice(%q) = %v, want %v", c.in, got, c.want)
-			continue
-		}
-		if got == nil {
-			continue
-		}
-		for k, v := range c.want {
-			if got[k] != v {
-				t.Errorf("buildAnthropicToolChoice(%q)[%q] = %v, want %v", c.in, k, got[k], v)
-			}
-		}
+	if resp.Content != `{"questions":[{"question":"a?"}]}` {
+		t.Fatalf("content = %s, want the array decoded", resp.Content)
 	}
 }

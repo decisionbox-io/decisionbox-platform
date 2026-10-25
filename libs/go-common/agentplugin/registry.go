@@ -112,6 +112,13 @@ func GetAllContextProviders() []ContextProvider {
 // the rest. If onError is nil, errors are silently dropped; callers that
 // want logging should pass a function that logs.
 //
+// Providers run concurrently, so a deadline on ctx bounds the whole render
+// while each provider gets all of it: run one after another, a provider that
+// spent the deadline would hand the next an already-expired context and
+// suppress its section exactly as an error does. Sections and onError calls
+// still follow registration order, and onError is called from the caller's
+// goroutine.
+//
 // A panic inside a provider is recovered and converted to an error so a
 // misbehaving plugin can never abort prompt assembly.
 func RenderSections(ctx context.Context, projectID string, query string, opts ContextProviderOpts, onError func(name string, err error)) string {
@@ -119,25 +126,41 @@ func RenderSections(ctx context.Context, projectID string, query string, opts Co
 	if len(provs) == 0 {
 		return ""
 	}
+	type result struct {
+		name    string
+		section string
+		err     error
+	}
+	results := make([]result, len(provs))
+	var wg sync.WaitGroup
+	for i, p := range provs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Capture the name once via the panic-safe helper so neither
+			// the error message in safeSection nor the onError callback
+			// re-invokes a misbehaving Name() — that would leak a panic
+			// out of RenderSections and contradict the "one bad provider
+			// can never abort prompt assembly" guarantee.
+			name := safeName(p)
+			section, err := safeSection(ctx, p, name, projectID, query, opts)
+			results[i] = result{name: name, section: section, err: err}
+		}()
+	}
+	wg.Wait()
+
 	sections := make([]string, 0, len(provs))
-	for _, p := range provs {
-		// Capture the name once via the panic-safe helper so neither
-		// the error message in safeSection nor the onError callback
-		// re-invokes a misbehaving Name() — that would leak a panic
-		// out of RenderSections and contradict the "one bad provider
-		// can never abort prompt assembly" guarantee.
-		name := safeName(p)
-		section, err := safeSection(ctx, p, name, projectID, query, opts)
-		if err != nil {
+	for _, r := range results {
+		if r.err != nil {
 			if onError != nil {
-				onError(name, err)
+				onError(r.name, r.err)
 			}
 			continue
 		}
-		if strings.TrimSpace(section) == "" {
+		if strings.TrimSpace(r.section) == "" {
 			continue
 		}
-		sections = append(sections, strings.TrimRight(section, "\n"))
+		sections = append(sections, strings.TrimRight(r.section, "\n"))
 	}
 	if len(sections) == 0 {
 		return ""

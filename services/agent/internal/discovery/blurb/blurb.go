@@ -190,13 +190,8 @@ func New(cfg Config) (*Generator, error) {
 	if cfg.Model == "" && !cfg.AllowEmptyModel {
 		return nil, ErrModelMissing
 	}
-	// Two independent reasoning signals: the substring patterns
-	// (catch families with no shared catalog flag: OpenAI o-series,
-	// GPT-5, extended-thinking Claude) and the registry's catalog
-	// flag (catches Ollama models the catalog declares as Reasoning:
-	// gemma4 / gemma3 / qwen3 / deepseek-r1). Either route rejects.
-	if IsReasoningClassModel(cfg.Model) || gollm.IsReasoningModel(cfg.ProviderName, cfg.Model) {
-		return nil, fmt.Errorf("blurb: %w (model=%q)", ErrReasoningModelNotSupported, cfg.Model)
+	if err := CheckModel(cfg.ProviderName, cfg.Model); err != nil {
+		return nil, err
 	}
 	workers := cfg.Workers
 	if workers <= 0 {
@@ -694,6 +689,23 @@ var reasoningClassPatterns = []string{
 	// "gpt-5-nano", and dated snapshots (gpt-5-2025-08-07).
 	"gpt-5",
 	"extended-thinking",
+}
+
+// CheckModel reports whether (provider, model) may write table descriptions.
+// Two independent reasoning signals: the substring patterns (families with no
+// shared catalog flag: OpenAI o-series, GPT-5, extended-thinking Claude) and
+// the registry's catalog flag (Ollama models declared Reasoning: gemma4 /
+// gemma3 / qwen3 / deepseek-r1). A catalog Reasoning model that thinks only
+// adaptively (gollm.IsAdaptiveThinkingModel — Claude Haiku 5.5, Sonnet 5.5)
+// answers a short prompt without thinking and is accepted. The blurb-llm
+// connection test applies the same rule, so a refused model fails when it is
+// configured rather than when an index run starts.
+func CheckModel(providerName, model string) error {
+	if IsReasoningClassModel(model) ||
+		(gollm.IsReasoningModel(providerName, model) && !gollm.IsAdaptiveThinkingModel(providerName, model)) {
+		return fmt.Errorf("blurb: %w (model=%q)", ErrReasoningModelNotSupported, model)
+	}
+	return nil
 }
 
 // IsReasoningClassModel returns true for models whose output channel

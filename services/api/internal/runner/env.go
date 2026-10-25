@@ -67,6 +67,7 @@ var agentForwardedEnvKeys = []string{
 	"LLM_REQUEST_DELAY_MS",
 	"LLM_RETRY_BASE_BACKOFF",
 	"LLM_RETRY_MAX_ATTEMPTS",
+	"LLM_RETRY_CAPACITY_MAX_ATTEMPTS",
 	// LIST_TABLES_TIMEOUT_SECONDS bounds the agent's --list-tables run (the
 	// pre-index table preview). The API sizes the wait/Job deadline from it too;
 	// forward it so a container-spawned agent uses the same budget instead of
@@ -99,6 +100,7 @@ var agentForwardedEnvKeys = []string{
 	"VALIDATION_BUNDLE_CELL_CHAR_CAP",
 	"VALIDATION_REC_STEPS_TOKEN_BUDGET",
 	"VALIDATION_ESTIMATE_TOKEN_RATIO",
+	"VALIDATION_CONCURRENCY",
 	// DISCOVERY_QUESTIONS_* knobs for the post-run clarifying-questions hop.
 	// Consumed by the agent (discovery.runPhaseQuestions). Without forwarding
 	// here, the enabled flag set on the API deployment never reaches a

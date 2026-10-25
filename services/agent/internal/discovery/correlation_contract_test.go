@@ -533,3 +533,17 @@ func TestCuratedCorrelations_NotReadWithoutAPair(t *testing.T) {
 		t.Fatalf("provider called %d times for a real pair, want 1", calls)
 	}
 }
+
+// TestCorrelationContract_UsesRationaleKey: the taught action shape must not
+// ask for a "thinking" key — Claude Opus/Sonnet 5.5 refuse a conversation
+// that does.
+func TestCorrelationContract_UsesRationaleKey(t *testing.T) {
+	got := buildDatasourcesPromptSection(sqlOnlyContext(),
+		correlationGuidance{keys: []agentplugin.CorrelationKey{confirmedKey()}})
+	if strings.Contains(got, `"thinking"`) {
+		t.Errorf("the correlation contract asks for a \"thinking\" key:\n%s", got)
+	}
+	if !strings.Contains(got, `{"rationale": "...", "get_correlations"`) {
+		t.Errorf("want the action shape with the rationale key:\n%s", got)
+	}
+}

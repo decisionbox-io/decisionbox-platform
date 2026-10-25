@@ -1407,7 +1407,7 @@ export interface QuestionAnswerPayload {
 }
 
 export interface CostEstimate {
-  llm: { provider: string; model: string; estimated_input_tokens: number; estimated_output_tokens: number; cost_usd: number };
+  llm: { provider: string; model: string; estimated_input_tokens: number; estimated_cached_input_tokens?: number; estimated_output_tokens: number; cost_usd: number };
   warehouse: { provider: string; estimated_queries: number; estimated_bytes_scanned: number; cost_usd: number };
   total_cost_usd: number;
   breakdown: { exploration: number; analysis: number; validation: number; recommendations: number };

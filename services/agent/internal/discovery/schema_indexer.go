@@ -345,6 +345,10 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 	}
 	describingDur := time.Since(blurbStart)
 	applog.WithField("elapsed", describingDur.String()).Info("schema_indexer: blurb generation complete")
+	if failed := failedBlurbs(blurbs); len(failed) > 0 {
+		applog.WithFields(applog.Fields{"count": len(failed), "tables": failed}).
+			Warn("schema_indexer: tables left out of the index because their description failed; table search cannot return them")
+	}
 
 	// 5. Embed + upsert.
 	embedStart := time.Now()
@@ -481,6 +485,23 @@ func (si *SchemaIndexer) retractCatalog(ctx context.Context, projectID string) {
 			applog.WithError(err).Warn("schema_indexer: could not retract this datasource's cached catalog; removed items may stay authorised until the next successful index")
 		}
 	}
+}
+
+// failedBlurbs names each table whose description failed (an error or an
+// empty reply) with its reason. Those tables are left out of the index —
+// under the generator's failure budget the build still succeeds — so
+// without this the only trace is the dropped count.
+func failedBlurbs(blurbs []blurb.Output) []string {
+	var failed []string
+	for _, b := range blurbs {
+		switch {
+		case b.Err != nil:
+			failed = append(failed, b.Table+": "+b.Err.Error())
+		case b.Blurb == "":
+			failed = append(failed, b.Table+": empty description")
+		}
+	}
+	return failed
 }
 
 // indexableCatalogItems keeps what is worth indexing and counts what is not.

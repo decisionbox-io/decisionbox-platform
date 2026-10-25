@@ -60,7 +60,7 @@ func init() {
 	gollm.RegisterWithMeta(providerName, factory, gollm.ProviderMeta{
 		Name:        "Google Vertex AI",
 		Description: "GCP-managed AI platform — Gemini, Claude, Llama, Qwen, DeepSeek, Mistral with GCP auth",
-		ConfigFields: append(append([]gollm.ConfigField{
+		ConfigFields: append(append(append([]gollm.ConfigField{
 			{Key: "project_id", Label: "GCP Project ID", Required: true, Type: "string", Placeholder: "my-gcp-project"},
 			{Key: "location", Label: "Region", Type: "string", Default: "us-east5", Description: "GCP region (us-east5 for Claude, us-central1 for Gemini)"},
 			{
@@ -95,7 +95,7 @@ func init() {
 					{Value: string(gollm.WireOpenAICompat), Label: "OpenAI Chat Completions"},
 				},
 			},
-		}, gollm.ContextWindowConfigFields()...), gollm.TLSConfigFields()...),
+		}, gollm.ContextWindowConfigFields()...), gollm.TLSConfigFields()...), gollm.PromptCacheConfigFields()...),
 		AuthMethods: []gollm.AuthMethod{
 			{
 				ID: gcpcreds.MethodADC, Name: "Application Default Credentials",
@@ -209,6 +209,7 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		wireOverride: wireOverride,
 		auth:         auth,
 		httpClient:   httpClient,
+		promptCache:  gollm.PromptCacheEnabled(cfg),
 		// A user-account ADC token needs a quota project on
 		// aiplatform.googleapis.com; a real service-account key already
 		// bills to its own project and adding the header would force a
@@ -238,6 +239,10 @@ type VertexAIProvider struct {
 	// quota project), false for service-account keys (they bill to their
 	// own project and the header can trigger a serviceusage 403).
 	useQuotaProjectHeader bool
+
+	// promptCache places prompt-cache breakpoints on Claude requests
+	// (project config prompt_cache, on unless "false").
+	promptCache bool
 
 	// endpointHost caches the prediction host resolved for endpointID
 	// (its dedicated DNS, or the shared aiplatform host when not

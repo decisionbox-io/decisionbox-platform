@@ -1,6 +1,10 @@
 package models
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 func TestCostEstimate_Fields(t *testing.T) {
 	e := CostEstimate{
@@ -44,5 +48,20 @@ func TestCostEstimate_ZeroCost(t *testing.T) {
 
 	if e.TotalUSD != 0 {
 		t.Error("should be zero for free providers")
+	}
+}
+
+func TestLLMCostEstimate_CachedInputTokensJSON(t *testing.T) {
+	b, err := json.Marshal(LLMCostEstimate{EstimatedInputTokens: 100, EstimatedCachedInputTokens: 80})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back LLMCostEstimate
+	if err := json.Unmarshal(b, &back); err != nil || back.EstimatedCachedInputTokens != 80 {
+		t.Fatalf("round trip = %+v (%v) from %s", back, err, b)
+	}
+	b, _ = json.Marshal(LLMCostEstimate{EstimatedInputTokens: 100})
+	if strings.Contains(string(b), "estimated_cached_input_tokens") {
+		t.Errorf("zero cached tokens should be omitted: %s", b)
 	}
 }

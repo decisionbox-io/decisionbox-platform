@@ -132,6 +132,9 @@ Cloud providers (Bedrock, Vertex AI, Azure AI Foundry) serve many models behind 
 Shared helpers live alongside the catalog:
 
 - `libs/go-common/llm/openaicompat` — request/response types + typed `APIError` for any provider speaking the OpenAI `/chat/completions` wire. Used by `openai`, `azure-foundry` (OpenAI path), `bedrock` (non-Anthropic path), and `vertex-ai` (MaaS path).
+- `libs/go-common/llm/anthropicwire` — the Anthropic Messages pieces shared by `claude`, `bedrock`, `vertex-ai` and `azure-foundry`: prompt-cache breakpoints, the tool-choice mapping, and usage conversion including cache read / write tokens.
+
+Catalog entries also carry capability flags the dispatch path reads instead of matching model names: `Reasoning` (the model thinks by default) and `RejectsForcedToolChoice` (Claude Opus 5.5 / Sonnet 5.5 — a forced tool choice is relaxed to `auto` plus an instruction), and Claude entries carry prompt-cache prices next to their list price.
 
 Adding a new model to an existing cloud is a single `ModelEntry` in the provider's `catalog.go` — no provider code change. See [Adding LLM Providers](../guides/adding-llm-providers.md#adding-a-new-model-to-an-existing-cloud).
 
@@ -145,6 +148,7 @@ Adding a new model to an existing cloud is a single `ModelEntry` in the provider
 - `tls_ca_cert` / `tls_skip_verify` — Custom TLS for a private-CA HTTPS endpoint (LiteLLM, OpenAI, Ollama, Azure Foundry, Vertex AI). See [Custom TLS (private CA)](../guides/configuring-llm.md#custom-tls-private-ca).
 - `max_input_tokens` — Manual context-window override (positive integer). Wins over the catalog and the default when set — for a custom or proxied model (e.g. a LiteLLM route) whose real window DecisionBox cannot infer. Surfaced in the dashboard as "Context window override (tokens)".
 - `max_output_tokens` — Manual output-token cap (positive integer). Providers clamp each request's `max_tokens` to it — for a custom or proxied model whose real output limit is below the default (e.g. `qwen3-32b` caps output at 32768). Surfaced as "Max output tokens override".
+- `prompt_cache` — Prompt caching on Claude models (claude, bedrock, vertex-ai, azure-foundry); on unless `"false"`. See [Prompt caching and Claude 5.x](../guides/configuring-llm.md#prompt-caching-and-claude-5x).
 
 **Unknown-model defaults:** a model that matches no catalog entry (and no per-provider default) resolves to **128K input / 64K output** tokens, so budgeting and long-form generations use a modern window rather than a stale floor.
 

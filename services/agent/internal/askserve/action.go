@@ -65,7 +65,11 @@ type turnAction struct {
 // keys; tool-use-trained models that wrap the call in {"name","input"} are
 // normalised by normaliseToolEnvelope before dispatch.
 type rawAction struct {
-	Thinking string `json:"thinking"`
+	// Rationale is the free-text key the prompt asks for. Thinking is still
+	// read from models that emit the pre-rename key; Claude Opus/Sonnet 5.5
+	// refuse a conversation that asks for a "thinking" field.
+	Rationale string `json:"rationale"`
+	Thinking  string `json:"thinking"`
 
 	Query      string          `json:"query"`
 	Purpose    string          `json:"purpose"`
@@ -108,7 +112,11 @@ func parseTurnAction(response string) (*turnAction, error) {
 	}
 	normaliseToolEnvelope(jsonStr, &raw)
 
-	act := &turnAction{Thinking: strings.TrimSpace(raw.Thinking)}
+	rationale := raw.Rationale
+	if rationale == "" {
+		rationale = raw.Thinking
+	}
+	act := &turnAction{Thinking: strings.TrimSpace(rationale)}
 
 	// A chart mixed with ANY other action in one payload is rejected rather than
 	// silently dropped: the model must emit the chart in its own step (it charts a

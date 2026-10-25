@@ -9,11 +9,15 @@ type CostEstimate struct {
 }
 
 type LLMCostEstimate struct {
-	Provider              string  `json:"provider"`
-	Model                 string  `json:"model"`
-	EstimatedInputTokens  int     `json:"estimated_input_tokens"`
-	EstimatedOutputTokens int     `json:"estimated_output_tokens"`
-	CostUSD               float64 `json:"cost_usd"`
+	Provider             string `json:"provider"`
+	Model                string `json:"model"`
+	EstimatedInputTokens int    `json:"estimated_input_tokens"`
+	// EstimatedCachedInputTokens is the part of EstimatedInputTokens
+	// expected to be read from the provider's prompt cache (priced at the
+	// cache-read rate); zero when the model or project does not cache.
+	EstimatedCachedInputTokens int     `json:"estimated_cached_input_tokens,omitempty"`
+	EstimatedOutputTokens      int     `json:"estimated_output_tokens"`
+	CostUSD                    float64 `json:"cost_usd"`
 }
 
 type WarehouseCostEstimate struct {

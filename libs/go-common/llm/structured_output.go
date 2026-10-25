@@ -87,7 +87,11 @@ func isReservedToolChoice(s string) bool {
 // on by default): folding only the first would silently drop the rest, so
 // the caller must surface the failure and retry rather than persist a
 // partial object.
-func NormalizeStructuredToolResponse(resp *ChatResponse, injected bool) error {
+//
+// rf is the request's ResponseFormat. When it carries a schema, a string
+// value where the schema expects an array or object is decoded if it holds
+// that JSON (see decodeStringifiedValues).
+func NormalizeStructuredToolResponse(resp *ChatResponse, injected bool, rf *ResponseFormat) error {
 	if !injected || resp == nil || len(resp.ToolCalls) == 0 {
 		return nil
 	}
@@ -103,6 +107,9 @@ func NormalizeStructuredToolResponse(resp *ChatResponse, injected bool) error {
 	if input == nil {
 		input = map[string]interface{}{}
 	}
+	if rf != nil {
+		decodeStringifiedValues(input, rf.Schema)
+	}
 	b, err := json.Marshal(input)
 	if err != nil {
 		return fmt.Errorf("structured output: marshal tool input: %w", err)
@@ -114,4 +121,130 @@ func NormalizeStructuredToolResponse(resp *ChatResponse, injected bool) error {
 	// are tool calls to execute. Present it as a normal terminal turn.
 	resp.StopReason = "end_turn"
 	return nil
+}
+
+// decodeStringifiedValues replaces, in place, string values that the schema
+// types as "array" or "object" with the JSON they encode. Claude 5.x models
+// sometimes send a nested array of objects as one JSON-encoded string inside
+// the tool input ({"questions": "[{...}]"}), which every caller's parser then
+// rejects. A string that does not decode, or decodes to another type, is left
+// as the model sent it.
+func decodeStringifiedValues(obj, schema map[string]interface{}) {
+	props, _ := schema["properties"].(map[string]interface{})
+	for key, val := range obj {
+		if ps, ok := props[key].(map[string]interface{}); ok {
+			obj[key] = decodeStringified(val, ps)
+		}
+	}
+}
+
+func decodeStringified(val interface{}, schema map[string]interface{}) interface{} {
+	want, _ := schema["type"].(string)
+	if str, ok := val.(string); ok && (want == "array" || want == "object") {
+		var decoded interface{}
+		raw := strings.TrimSpace(str)
+		err := json.Unmarshal([]byte(raw), &decoded)
+		if err != nil {
+			err = json.Unmarshal([]byte(dropUnmatchedClosers(raw)), &decoded)
+		}
+		if err == nil {
+			switch decoded.(type) {
+			case []interface{}:
+				if want == "array" {
+					val = decoded
+				}
+			case map[string]interface{}:
+				if want == "object" {
+					val = decoded
+				}
+			}
+		}
+	}
+	switch x := val.(type) {
+	case map[string]interface{}:
+		decodeStringifiedValues(x, schema)
+	case []interface{}:
+		if items, ok := schema["items"].(map[string]interface{}); ok {
+			for i := range x {
+				x[i] = decodeStringified(x[i], items)
+			}
+		}
+	}
+	return val
+}
+
+// dropUnmatchedClosers removes '}' and ']' that close nothing open. A
+// stringified value is often invalid in exactly this way — one closing brace
+// too many after the array, or after each item — because no schema constrains
+// the inside of a string. Brackets inside JSON strings are content and are
+// kept; nothing is added or reordered, so a value missing an opener still
+// fails to parse and is left as sent.
+func dropUnmatchedClosers(s string) string {
+	var out strings.Builder
+	out.Grow(len(s))
+	var open []byte
+	inString, escaped := false, false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+			out.WriteByte(c)
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{', '[':
+			open = append(open, c)
+		case '}', ']':
+			want := byte('{')
+			if c == ']' {
+				want = '['
+			}
+			if len(open) == 0 || open[len(open)-1] != want {
+				continue
+			}
+			open = open[:len(open)-1]
+		}
+		out.WriteByte(c)
+	}
+	return out.String()
+}
+
+// RelaxForcedToolChoice rewrites a forced tool choice for a model that
+// rejects one (ModelEntry.RejectsForcedToolChoice — Claude Opus 5.5,
+// Sonnet 5.5, Fable 5.1 return a 400 for tool_choice "tool"/"any"). The
+// upstream-documented replacement is an "auto" tool choice: the request
+// keeps its tools, ToolChoice becomes "auto", and the system prompt gains
+// one sentence telling the model which tool to call. Non-forced choices
+// ("", "auto", "none") are returned unchanged.
+//
+// The structured-output path stays correct either way: when the model
+// still answers in text instead of calling the synthetic tool,
+// NormalizeStructuredToolResponse leaves Content for the caller's parser.
+func RelaxForcedToolChoice(req ChatRequest) ChatRequest {
+	choice := strings.TrimSpace(req.ToolChoice)
+	var instruction string
+	switch strings.ToLower(choice) {
+	case "", "auto", "none":
+		return req
+	case "any", "required":
+		instruction = "Respond by calling one of the provided tools."
+	default:
+		instruction = fmt.Sprintf("Respond by calling the %q tool exactly once, with the complete answer as its input.", choice)
+	}
+	req.ToolChoice = "auto"
+	if req.SystemPrompt == "" {
+		req.SystemPrompt = instruction
+	} else {
+		req.SystemPrompt += "\n\n" + instruction
+	}
+	return req
 }
