@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **The pre-run cost estimate, end to end.** `POST /api/v1/projects/{id}/discover/estimate`, the agent's `--estimate` mode, the dashboard's "Estimate cost before running" checkbox and the Cost Estimate panel, and the `warehouse.CostEstimator` optional provider interface are gone — `services/api/internal/{server/server.go,handler/estimate.go}`, `services/api/models/pricing.go`, `services/agent/agentserver/agentserver.go`, `services/agent/internal/{discovery,models}/estimate.go`, `libs/go-common/warehouse/provider.go`, `providers/warehouse/bigquery/provider.go`, `ui/dashboard/src/{app/projects/[id]/page.tsx,lib/api.ts}`. The endpoint ran the agent as a **subprocess of the API process**, but discovery runs the agent as a Job from the agent image, so the API image carries no agent binary — every Helm deployment answered `estimation failed: exec: "decisionbox-agent": executable file not found in $PATH`. Bundling the agent into the API image would double it for a feature nobody asked to keep. The estimate's only accuracy guarantee was being an upper bound; a run's actual cost is reported per phase from real token usage, which is what cost questions are answered from now. `GET`/`PUT /api/v1/pricing`, the pricing repository and provider pricing seeding are untouched. BigQuery keeps `ValidateSQL` (its own compile-check, which also sets `QueryConfig.DryRun`); only the `DryRun` cost method goes. A warehouse provider outside this repo that implements `CostEstimator` still compiles — it is an optional type-assertion interface — and simply stops having `DryRun` called.
+
 ### Added
 
 - **Prompt caching on Claude, everywhere Claude runs.** Discovery is multi-turn — each exploration step re-sends the system prompt and the whole conversation, each verifier / refuter round its system prompt — and none of it was cached, so every step paid full price for a prefix the previous step had just sent.

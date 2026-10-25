@@ -1406,13 +1406,6 @@ export interface QuestionAnswerPayload {
   answer_note?: string;
 }
 
-export interface CostEstimate {
-  llm: { provider: string; model: string; estimated_input_tokens: number; estimated_cached_input_tokens?: number; estimated_output_tokens: number; cost_usd: number };
-  warehouse: { provider: string; estimated_queries: number; estimated_bytes_scanned: number; cost_usd: number };
-  total_cost_usd: number;
-  breakdown: { exploration: number; analysis: number; validation: number; recommendations: number };
-}
-
 export interface Pricing {
   id?: string;
   llm: Record<string, Record<string, { input_per_million: number; output_per_million: number }>>;
@@ -2045,12 +2038,6 @@ export const api = {
       `/api/v1/projects/${projectId}/discovery-ledger/proposals/${proposalId}/${action}`,
       { method: 'POST' },
     ),
-
-  // Cost estimation
-  estimateCost: (projectId: string, opts?: { areas?: string[]; max_steps?: number }) =>
-    request<CostEstimate>(`/api/v1/projects/${projectId}/discover/estimate`, {
-      method: 'POST', body: opts ? JSON.stringify(opts) : undefined,
-    }),
 
   // Pricing
   getPricing: () => request<Pricing>('/api/v1/pricing'),

@@ -2,7 +2,7 @@
  * @jest-environment jsdom
  */
 import '@testing-library/jest-dom';
-import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, act } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import ProjectPage from '@/app/projects/[id]/page';
 import type { DiscoveryRunStatus, ProjectStatus } from '@/lib/api';
@@ -31,7 +31,6 @@ const listDiscoveries = jest.fn();
 const getProjectStatus = jest.fn();
 const listProjectQuestions = jest.fn();
 const listRunSteps = jest.fn();
-const estimateCost = jest.fn();
 
 jest.mock('@/lib/api', () => ({
   __esModule: true,
@@ -54,7 +53,6 @@ jest.mock('@/lib/api', () => ({
     getDebugLogs: jest.fn().mockResolvedValue([]),
     triggerDiscovery: jest.fn(),
     getRun: jest.fn(),
-    estimateCost: (...a: unknown[]) => estimateCost(...a),
     cancelRun: jest.fn(),
   },
 }));
@@ -199,25 +197,5 @@ describe('ProjectPage status polling (#405)', () => {
     } finally {
       jest.useRealTimers();
     }
-  });
-});
-
-describe('ProjectPage cost estimate', () => {
-  it('shows the cached share of the estimated input tokens', async () => {
-    getProjectStatus.mockResolvedValue({ project_id: 'p1' } as ProjectStatus);
-    estimateCost.mockResolvedValue({
-      llm: { provider: 'bedrock', model: 'm', estimated_input_tokens: 2554019, estimated_cached_input_tokens: 1758900, estimated_output_tokens: 158000, cost_usd: 8.9 },
-      warehouse: { provider: 'postgres', estimated_queries: 61, estimated_bytes_scanned: 0, cost_usd: 0 },
-      total_cost_usd: 8.9,
-      breakdown: { exploration: 2.06, analysis: 0.51, validation: 6.24, recommendations: 0.09 },
-    });
-
-    renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: /run discovery/i }));
-    fireEvent.click(await screen.findByLabelText('Estimate cost before running'));
-    fireEvent.click(await screen.findByText('Run All Areas'));
-
-    expect(await screen.findByText('Cost Estimate')).toBeInTheDocument();
-    expect(screen.getByText(/~2554K in \(1759K cached\)/)).toBeInTheDocument();
   });
 });

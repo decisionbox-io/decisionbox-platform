@@ -17,7 +17,6 @@ decisionbox-agent [flags]
 | `--areas` | No | *(all areas)* | Comma-separated list of analysis area IDs to run. If omitted, all areas from the domain pack are run. |
 | `--max-steps` | No | `100` | Maximum number of exploration steps. Each step is one LLM call + one SQL query. More steps = more comprehensive but slower and more expensive. |
 | `--min-steps` | No | `0` | Minimum exploration steps before the agent accepts a completion signal. If the LLM returns `{"done": true}` before this count, the signal is rejected, a `complete_rejected` step is recorded, and exploration continues with a nudge. `0` (default) disables the floor. Use on reasoning models (Qwen3, DeepSeek-R1, GPT-OSS) that tend to terminate exploration too early — a reasonable starting value is 50–70% of `--max-steps`. A run that can query a cube-shaped datasource honours this floor too, and then keeps exploring past it while steps are still turning up something new — so the flag is a minimum there as everywhere, never a maximum. `--max-steps` still caps it. |
-| `--estimate` | No | `false` | Estimate cost only. Discovers schemas, calculates token estimates, runs dry-run queries, and outputs a JSON cost estimate to stdout. Does not run actual discovery. |
 | `--skip-cache` | No | `false` | Force re-discovery of warehouse table schemas, ignoring any cached schemas. |
 | `--enable-debug-logs` | No | `true` | Write detailed debug logs to the `discovery_debug_logs` MongoDB collection (TTL: 30 days). Includes full LLM requests/responses. |
 | `--test` | No | `false` | Test mode. Limits analysis to one area for faster iteration. |
@@ -41,22 +40,6 @@ SECRET_PROVIDER=mongodb \
 
 ```bash
 decisionbox-agent --project-id=507f1f77bcf86cd799439011 --areas=churn,monetization --max-steps=50
-```
-
-### Estimate Cost
-
-```bash
-decisionbox-agent --project-id=507f1f77bcf86cd799439011 --estimate
-```
-
-Outputs JSON to stdout:
-
-```json
-{
-  "llm": {"provider": "claude", "model": "claude-sonnet-4", "estimated_input_tokens": 250000, "cost_usd": 0.825},
-  "warehouse": {"provider": "bigquery", "estimated_queries": 100, "cost_usd": 0.0375},
-  "total_cost_usd": 0.8625
-}
 ```
 
 ### Run with the API (Typical Flow)

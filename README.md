@@ -54,7 +54,6 @@ Your Data Warehouse             DecisionBox Agent            Dashboard
 - **Autonomous agent loop** — AI writes and executes SQL, iterates on results, and produces insights + ranked recommendations without prompts or questions
 - **Insight validation** — Independent verification queries re-check every claim against your warehouse before it ships
 - **Live progress** — Watch the agent explore in real time with phase tracking, step details, and expandable SQL
-- **Cost estimation** — Estimate LLM tokens + warehouse query costs before running
 - **Selective discovery** — Run specific analysis areas on demand
 - **Feedback loop** — Like/dislike insights and recommendations; the agent learns from feedback on the next run
 
@@ -78,7 +77,7 @@ Your Data Warehouse             DecisionBox Agent            Dashboard
 - **System-test pack** — Diagnostic pack (env-gated) for validating warehouse connectivity and type mapping
 
 ### Warehouses
-- **BigQuery** — ADC or Service Account Key, with dry-run cost estimation
+- **BigQuery** — ADC or Service Account Key
 - **Redshift** — Serverless + provisioned; IAM Role, Access Keys, or Assume Role with external ID for cross-account
 - **Snowflake** — Username/password or Key Pair (JWT)
 - **PostgreSQL** — Username/password or connection string, SSL configurable

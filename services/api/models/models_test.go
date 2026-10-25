@@ -2,7 +2,6 @@ package models
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 )
@@ -659,77 +658,6 @@ func TestPricing_JSONRoundTrip(t *testing.T) {
 	}
 }
 
-func TestCostEstimate_JSONRoundTrip(t *testing.T) {
-	original := CostEstimate{
-		LLM: LLMCostEstimate{
-			Provider:              "claude",
-			Model:                 "claude-sonnet-4",
-			EstimatedInputTokens:  50000,
-			EstimatedOutputTokens: 20000,
-			CostUSD:               0.45,
-		},
-		Warehouse: WarehouseCostEstimate{
-			Provider:              "bigquery",
-			EstimatedQueries:      50,
-			EstimatedBytesScanned: 1073741824, // 1 GB
-			CostUSD:               0.006,
-		},
-		TotalUSD: 0.456,
-		Breakdown: CostBreakdown{
-			Exploration:     0.15,
-			Analysis:        0.20,
-			Validation:      0.05,
-			Recommendations: 0.056,
-		},
-	}
-
-	data, err := json.Marshal(original)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var decoded CostEstimate
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatal(err)
-	}
-
-	if decoded.LLM.Provider != "claude" {
-		t.Errorf("LLM.Provider = %q", decoded.LLM.Provider)
-	}
-	if decoded.LLM.EstimatedInputTokens != 50000 {
-		t.Errorf("LLM.EstimatedInputTokens = %d", decoded.LLM.EstimatedInputTokens)
-	}
-	if decoded.Warehouse.Provider != "bigquery" {
-		t.Errorf("Warehouse.Provider = %q", decoded.Warehouse.Provider)
-	}
-	if decoded.Warehouse.EstimatedBytesScanned != 1073741824 {
-		t.Errorf("Warehouse.EstimatedBytesScanned = %d", decoded.Warehouse.EstimatedBytesScanned)
-	}
-	if decoded.TotalUSD != 0.456 {
-		t.Errorf("TotalUSD = %f", decoded.TotalUSD)
-	}
-	if decoded.Breakdown.Exploration != 0.15 {
-		t.Errorf("Breakdown.Exploration = %f", decoded.Breakdown.Exploration)
-	}
-}
-
-func TestCostEstimate_FieldTags(t *testing.T) {
-	estimate := CostEstimate{
-		LLM:       LLMCostEstimate{Provider: "claude"},
-		Warehouse: WarehouseCostEstimate{Provider: "bigquery"},
-	}
-	data, _ := json.Marshal(estimate)
-	var raw map[string]interface{}
-	json.Unmarshal(data, &raw)
-
-	expectedFields := []string{"llm", "warehouse", "total_cost_usd", "breakdown"}
-	for _, f := range expectedFields {
-		if _, ok := raw[f]; !ok {
-			t.Errorf("missing JSON field %q in CostEstimate", f)
-		}
-	}
-}
-
 // --- WarehouseConfig ---
 
 func TestWarehouseConfig_JSONRoundTrip(t *testing.T) {
@@ -824,23 +752,5 @@ func TestProject_OmitEmptyState(t *testing.T) {
 	}
 	if _, ok := raw["state"]; ok {
 		t.Error("empty state should be omitted from JSON")
-	}
-}
-
-// TestCostEstimate_PreservesCachedInputTokens: the estimate handler decodes
-// the agent's JSON into this model and re-encodes it for the response, so a
-// field missing here is silently dropped before it reaches the dashboard.
-func TestCostEstimate_PreservesCachedInputTokens(t *testing.T) {
-	agentJSON := []byte(`{"llm":{"provider":"bedrock","model":"m","estimated_input_tokens":1000,"estimated_cached_input_tokens":800,"estimated_output_tokens":10,"cost_usd":1}}`)
-	var decoded CostEstimate
-	if err := json.Unmarshal(agentJSON, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	out, err := json.Marshal(decoded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(out), `"estimated_cached_input_tokens":800`) {
-		t.Errorf("cached input tokens lost in the API model: %s", out)
 	}
 }
