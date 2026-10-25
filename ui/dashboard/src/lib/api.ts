@@ -394,6 +394,10 @@ export interface Project {
   // questions shown on insight / recommendation pages ("Ask about this"). Makes
   // an automatic LLM call on page entry, so users can opt out in Settings.
   ask_suggestions_enabled?: boolean;
+  /** Prompt caching for providers that implement it. Undefined means "not set
+   *  on the project" — resolve through the legacy llm.config.prompt_cache
+   *  entry and then to on, the way the server does. */
+  prompt_cache_enabled?: boolean;
   // Which validation verdicts make an insight eligible for recommendation
   // generation. Undefined / empty → default {confirmed, supported} (the
   // historical filter). Selectable values: confirmed, supported, partial,

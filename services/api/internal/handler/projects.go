@@ -667,6 +667,14 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		existing.SmartOverflowEnabled = incoming.SmartOverflowEnabled
 	}
 
+	// PromptCacheEnabled: same nil-means-untouched pointer semantics. A
+	// project field rather than an LLM.Config entry precisely so it can be
+	// changed on its own — the LLM block is replaced wholesale above, so a
+	// config-only setting could not be touched without restating the
+	// provider, model and credentials.
+	if incoming.PromptCacheEnabled != nil {
+		existing.PromptCacheEnabled = incoming.PromptCacheEnabled
+	}
 	// ReasoningEnabled: same nil-means-untouched pointer semantics.
 	if incoming.ReasoningEnabled != nil {
 		existing.ReasoningEnabled = incoming.ReasoningEnabled

@@ -31,25 +31,6 @@ export interface ProvidersPanelProps {
   projectId: string;
   variant: Variant;
   onSaved?: (project: Project) => void;
-  /**
-   * authoritativeLLMConfig carries llm.config keys this panel does NOT own but
-   * must not clobber. The panel loads the project once and keeps llm.config in
-   * its own form state, while Update replaces the whole LLM block — so a key
-   * edited elsewhere after this panel mounted (prompt_cache, from Settings →
-   * Advanced) would be written back stale on the next save. Values given here
-   * win over the form's copy at save time. The panel renders no control for
-   * them, so there is nothing to keep in sync visually.
-   */
-  authoritativeLLMConfig?: Record<string, string>;
-  /**
-   * onSavingChange reports whether a save is in flight. A parent that also
-   * writes llm.config needs it: this panel's save spans the project update
-   * AND the secret writes + secret re-list that follow, and onSaved only
-   * fires at the end. A parent write landing inside that window would send
-   * an LLM block captured before this save and undo it, because Update
-   * replaces the block wholesale.
-   */
-  onSavingChange?: (saving: boolean) => void;
 }
 
 function PanelSection({ children }: { children: React.ReactNode }) {
@@ -76,7 +57,7 @@ function PanelSection({ children }: { children: React.ReactNode }) {
 // Used by:
 //   - settings/page.tsx          (variant="page")
 //   - plugin-overlaid wizards    (variant="wizard")
-export default function ProvidersPanel({ projectId, variant, onSaved, authoritativeLLMConfig, onSavingChange }: ProvidersPanelProps) {
+export default function ProvidersPanel({ projectId, variant, onSaved }: ProvidersPanelProps) {
   const [project, setProject] = useState<Project | null>(null);
   const [llmProviders, setLlmProviders] = useState<ProviderMeta[]>([]);
   const [embeddingProviders, setEmbeddingProviders] = useState<EmbeddingProviderMeta[]>([]);
@@ -223,7 +204,6 @@ export default function ProvidersPanel({ projectId, variant, onSaved, authoritat
   const handleSave = async () => {
     if (!project) return;
     setSaving(true);
-    onSavingChange?.(true);
     try {
       // Drop wire_override in endpoint mode: it is hidden in the form but
       // a stale value would be rejected by the provider (an endpoint
@@ -235,8 +215,6 @@ export default function ProvidersPanel({ projectId, variant, onSaved, authoritat
         ),
       );
       if (llm.authMethod) llmConfig.auth_method = llm.authMethod;
-      // Keys owned elsewhere win over this form's possibly-stale copy.
-      Object.assign(llmConfig, authoritativeLLMConfig || {});
       // Carry every form-state config field for embedding (project_id,
       // location, region, …). The form holds them under
       // embedding.config[key], which is what the agent reads from
@@ -276,7 +254,6 @@ export default function ProvidersPanel({ projectId, variant, onSaved, authoritat
       notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
     } finally {
       setSaving(false);
-      onSavingChange?.(false);
     }
   };
 
@@ -310,7 +287,6 @@ export default function ProvidersPanel({ projectId, variant, onSaved, authoritat
       )}
 
       <LLMFormFields
-            hiddenConfigKeys={Object.keys(authoritativeLLMConfig || {})}
         providers={llmProviders}
         value={llm}
         onChange={setLlm}

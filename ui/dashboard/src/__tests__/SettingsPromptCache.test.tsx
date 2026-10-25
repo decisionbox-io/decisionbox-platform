@@ -6,10 +6,10 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import ProjectSettingsPage from '@/app/projects/[id]/settings/page';
 
-// Prompt caching is a provider config field (llm.config.prompt_cache), not a
-// project field, and it was only ever rendered in the credentials phase of the
-// LLM form — which a configured project skips. These cover it in Advanced,
-// where it is reachable.
+// Prompt caching is reachable in Settings → Advanced, and is a project field
+// so saving it cannot disturb the provider, model or credentials the AI tab
+// owns. It used to be rendered only in the LLM form's credentials phase, which
+// a configured project skips entirely.
 
 jest.mock('next/navigation', () => ({
   useParams: () => ({ id: 'proj-1' }),
@@ -19,45 +19,8 @@ jest.mock('@/components/layout/AppShell', () => ({
   __esModule: true,
   default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
-// The real panel loads the project once and keeps llm.config in its own form
-// state. The mock stands in for that: it counts mounts (so a remount after the
-// stored value changes is observable) and exposes its onSaved callback, which
-// is how a save in the AI tab reaches this page.
-// Stands in for the real panel, which loads the project once and keeps
-// llm.config in its own form state. A class so componentDidMount counts real
-// MOUNTS: the fix must NOT remount it (that would discard unsaved edits), so
-// the count staying at 1 is part of what is being asserted. It also echoes the
-// authoritative prop, which is what keeps its save from writing a stale
-// prompt_cache.
-const providersMounts = { count: 0 };
-// What the mocked panel hands to onSaved — the real one passes its save result.
-const panelSave: { saved: unknown } = { saved: undefined };
 jest.mock('@/components/projects/ProvidersPanel', () => ({
-  __esModule: true,
-  default: class ProvidersPanelMock extends (jest.requireActual('react').Component) {
-    componentDidMount() { providersMounts.count += 1; }
-    render() {
-      const { onSaved, authoritativeLLMConfig, onSavingChange } = this.props as {
-        onSaved: (p: unknown) => void;
-        authoritativeLLMConfig?: Record<string, string>;
-        onSavingChange?: (saving: boolean) => void;
-      };
-      return (
-        <>
-          <span data-testid="authoritative-prompt-cache">
-            {String(authoritativeLLMConfig?.prompt_cache ?? 'none')}
-          </span>
-          {/* The real panel hands its save result to onSaved; the mock
-              forwards whatever the test put in panelSave. */}
-          <button type="button" onClick={() => onSaved(panelSave.saved)}>save-providers</button>
-          {/* The real panel's save spans its secret writes, so "busy" and
-              "finished" are separate moments. */}
-          <button type="button" onClick={() => onSavingChange?.(true)}>begin-provider-save</button>
-          <button type="button" onClick={() => onSavingChange?.(false)}>end-provider-save</button>
-        </>
-      );
-    }
-  },
+  __esModule: true, default: () => <div>ProvidersPanel</div>,
 }));
 jest.mock('@/components/projects/WarehouseConfigPanel', () => ({
   __esModule: true, default: () => <div>WarehouseConfigPanel</div>,
@@ -79,217 +42,108 @@ jest.mock('@/lib/api', () => ({
 
 import { api } from '@/lib/api';
 
-// A provider that implements prompt caching declares the field itself; one
-// that does not simply omits it. The switch keys off that, not a hardcoded
-// provider list.
+// A provider that implements caching declares the field; one that does not
+// omits it. The switch keys off that, not a hardcoded provider list.
 const CACHING_PROVIDER = {
-  id: 'bedrock',
-  name: 'Bedrock',
+  id: 'bedrock', name: 'Bedrock', auth_methods: [],
   config_fields: [
     { key: 'region', label: 'Region', type: 'string' },
     { key: 'prompt_cache', label: 'Prompt caching (Claude models)', type: 'boolean', default: 'true' },
   ],
-  auth_methods: [],
 };
 const NON_CACHING_PROVIDER = {
-  id: 'openai',
-  name: 'OpenAI',
+  id: 'openai', name: 'OpenAI', auth_methods: [],
   config_fields: [{ key: 'organization', label: 'Organization', type: 'string' }],
-  auth_methods: [],
 };
 
-function project(llm: Record<string, unknown>) {
+function project(extra: Record<string, unknown> = {}, llmConfig: Record<string, string> = {}) {
   return {
-    id: 'proj-1',
-    name: 'Acme',
-    state: 'ready',
-    description: '',
-    llm,
+    id: 'proj-1', name: 'Acme', state: 'ready', description: '',
+    llm: { provider: 'bedrock', model: 'anthropic.claude-opus-5-5', config: { region: 'us-east-1', ...llmConfig } },
     embedding: { provider: 'bedrock', model: 'titan', config: {} },
     warehouse: { provider: 'postgres', datasets: ['public'] },
+    ...extra,
   };
 }
 
 async function renderAdvanced() {
   render(<MantineProvider><ProjectSettingsPage /></MantineProvider>);
-  const tab = await screen.findByRole('tab', { name: /advanced/i });
-  fireEvent.click(tab);
-  return tab;
+  fireEvent.click(await screen.findByRole('tab', { name: /advanced/i }));
 }
+
+const theSwitch = () => screen.getByRole('switch', { name: /prompt caching/i });
 
 beforeEach(() => {
   jest.clearAllMocks();
-  panelSave.saved = undefined;
   (api.listLLMProviders as jest.Mock).mockResolvedValue([CACHING_PROVIDER, NON_CACHING_PROVIDER]);
 });
 
 describe('Settings → Advanced: prompt caching', () => {
-  it('is on when the key is absent — caching is the default, so an unset key must not read as off', async () => {
-    (api.getProject as jest.Mock).mockResolvedValue(
-      project({ provider: 'bedrock', model: 'anthropic.claude-opus-5-5', config: { region: 'us-east-1' } }),
-    );
+  it('is on when nothing is set — caching is opt-out', async () => {
+    (api.getProject as jest.Mock).mockResolvedValue(project());
     await renderAdvanced();
-    const sw = await screen.findByRole('switch', { name: /prompt caching/i });
-    expect(sw).toBeChecked();
+    expect(await screen.findByRole('switch', { name: /prompt caching/i })).toBeChecked();
   });
 
-  it('is off when the stored value is "false", case-insensitively', async () => {
-    (api.getProject as jest.Mock).mockResolvedValue(
-      project({ provider: 'bedrock', model: 'm', config: { prompt_cache: 'FALSE' } }),
-    );
+  it('reads the project field when it is set', async () => {
+    (api.getProject as jest.Mock).mockResolvedValue(project({ prompt_cache_enabled: false }));
     await renderAdvanced();
     expect(await screen.findByRole('switch', { name: /prompt caching/i })).not.toBeChecked();
   });
 
-  it('turning it off sends the whole LLM block with only prompt_cache changed', async () => {
-    (api.getProject as jest.Mock).mockResolvedValue(
-      project({ provider: 'bedrock', model: 'anthropic.claude-opus-5-5', config: { region: 'us-east-1', auth_method: 'access_keys' } }),
-    );
-    (api.updateProject as jest.Mock).mockResolvedValue(
-      project({ provider: 'bedrock', model: 'anthropic.claude-opus-5-5', config: { region: 'us-east-1', auth_method: 'access_keys', prompt_cache: 'false' } }),
-    );
+  // The wizard still writes the legacy provider config key, and projects
+  // created before the field only have that. Reading the field as a plain
+  // boolean would show caching as off for every one of them.
+  it('falls back to the legacy llm.config value, case-insensitively', async () => {
+    (api.getProject as jest.Mock).mockResolvedValue(project({}, { prompt_cache: 'FALSE' }));
+    await renderAdvanced();
+    expect(await screen.findByRole('switch', { name: /prompt caching/i })).not.toBeChecked();
+  });
+
+  it('the project field wins over a conflicting legacy value', async () => {
+    (api.getProject as jest.Mock).mockResolvedValue(project({ prompt_cache_enabled: true }, { prompt_cache: 'false' }));
+    await renderAdvanced();
+    expect(await screen.findByRole('switch', { name: /prompt caching/i })).toBeChecked();
+  });
+
+  // The point of the project field: the save touches one field, so it cannot
+  // restate — and therefore cannot revert — the provider, model or
+  // credentials that the AI tab owns and writes separately.
+  it('saves one field and nothing else', async () => {
+    (api.getProject as jest.Mock).mockResolvedValue(project());
+    (api.updateProject as jest.Mock).mockResolvedValue(project({ prompt_cache_enabled: false }));
     await renderAdvanced();
     fireEvent.click(await screen.findByRole('switch', { name: /prompt caching/i }));
 
     await waitFor(() => expect(api.updateProject).toHaveBeenCalled());
     const [, payload] = (api.updateProject as jest.Mock).mock.calls[0];
-    // Update replaces the LLM block wholesale, so provider, model and the
-    // other config keys must survive the round trip.
-    expect(payload.llm.provider).toBe('bedrock');
-    expect(payload.llm.model).toBe('anthropic.claude-opus-5-5');
-    expect(payload.llm.config.region).toBe('us-east-1');
-    expect(payload.llm.config.auth_method).toBe('access_keys');
-    expect(payload.llm.config.prompt_cache).toBe('false');
-    await waitFor(() => expect(screen.getByRole('switch', { name: /prompt caching/i })).not.toBeChecked());
+    expect(payload).toEqual({ prompt_cache_enabled: false });
+    expect(payload.llm).toBeUndefined();
+    await waitFor(() => expect(theSwitch()).not.toBeChecked());
   });
 
-  it('turning it back on sends "true"', async () => {
-    (api.getProject as jest.Mock).mockResolvedValue(
-      project({ provider: 'bedrock', model: 'm', config: { prompt_cache: 'false' } }),
-    );
-    (api.updateProject as jest.Mock).mockResolvedValue(
-      project({ provider: 'bedrock', model: 'm', config: { prompt_cache: 'true' } }),
-    );
+  it('turning it back on sends true', async () => {
+    (api.getProject as jest.Mock).mockResolvedValue(project({ prompt_cache_enabled: false }));
+    (api.updateProject as jest.Mock).mockResolvedValue(project({ prompt_cache_enabled: true }));
     await renderAdvanced();
     fireEvent.click(await screen.findByRole('switch', { name: /prompt caching/i }));
-    await waitFor(() => expect(api.updateProject).toHaveBeenCalled());
-    const [, payload] = (api.updateProject as jest.Mock).mock.calls[0];
-    expect(payload.llm.config.prompt_cache).toBe('true');
+    await waitFor(() => expect(api.updateProject).toHaveBeenCalledWith('proj-1', { prompt_cache_enabled: true }));
   });
 
-  it('rolls back and reports when the save fails', async () => {
-    (api.getProject as jest.Mock).mockResolvedValue(
-      project({ provider: 'bedrock', model: 'm', config: {} }),
-    );
+  it('rolls back when the save fails', async () => {
+    (api.getProject as jest.Mock).mockResolvedValue(project());
     (api.updateProject as jest.Mock).mockRejectedValue(new Error('nope'));
     await renderAdvanced();
     const sw = await screen.findByRole('switch', { name: /prompt caching/i });
     expect(sw).toBeChecked();
     fireEvent.click(sw);
-    // Optimistically off, then back on once the save fails.
-    await waitFor(() => expect(screen.getByRole('switch', { name: /prompt caching/i })).toBeChecked());
+    await waitFor(() => expect(theSwitch()).toBeChecked());
   });
 
-  // Regression: llm.config is written by two editors on this page. Turning
-  // caching off in Advanced used to leave the AI tab's form holding the old
-  // config, so its next save silently re-enabled caching — and this tab's
-  // switch kept showing the stale value either way. The fix must do that
-  // WITHOUT remounting the provider form, which would discard unsaved edits.
-  it('stays in step with the AI tab without remounting it', async () => {
-    const off = project({ provider: 'bedrock', model: 'm', config: { region: 'us-east-1', prompt_cache: 'false' } });
-    (api.getProject as jest.Mock)
-      .mockResolvedValueOnce(project({ provider: 'bedrock', model: 'm', config: { region: 'us-east-1' } }))
-      .mockResolvedValue(off);
-    (api.updateProject as jest.Mock).mockResolvedValue(off);
-    panelSave.saved = off;
-
-    await renderAdvanced();
-    const sw = await screen.findByRole('switch', { name: /prompt caching/i });
-    expect(sw).toBeChecked();
-    const mountsBefore = providersMounts.count;
-    expect(screen.getByTestId('authoritative-prompt-cache')).toHaveTextContent('true');
-
-    fireEvent.click(sw);
-    await waitFor(() => expect(screen.getByRole('switch', { name: /prompt caching/i })).not.toBeChecked());
-
-    // The panel is told the new value, so its save cannot write back the
-    // config it loaded on mount...
-    await waitFor(() => expect(screen.getByTestId('authoritative-prompt-cache')).toHaveTextContent('false'));
-    // ...and it was NOT remounted, so anything the user had typed there survives.
-    expect(providersMounts.count).toBe(mountsBefore);
-
-    // A save from the AI tab, reached the way a user reaches it.
-    fireEvent.click(screen.getByRole('tab', { name: /ai & embedding/i }));
-    fireEvent.click(await screen.findByRole('button', { name: 'save-providers' }));
-
-    // Back on Advanced, the switch shows the value from the panel's save
-    // result, not whatever it last set locally. No follow-up GET is asserted
-    // — preferring the write's own response over a refetch is the point.
-    fireEvent.click(screen.getByRole('tab', { name: /advanced/i }));
-    await waitFor(() => expect(screen.getByRole('switch', { name: /prompt caching/i })).not.toBeChecked());
-  });
-
-  // Regression: onSaved used to ignore the project the panel returns and rely
-  // on a second fetch. Until that landed, this page still held the pre-save
-  // provider and model — and because Update replaces the LLM block wholesale,
-  // the next cache toggle wrote the old provider back, undoing a save the user
-  // had been told succeeded.
-  it('does not undo a provider save when caching is toggled afterwards', async () => {
-    const before = project({ provider: 'bedrock', model: 'old-model', config: { region: 'us-east-1' } });
-    const afterProviderSave = project({ provider: 'bedrock', model: 'NEW-model', config: { region: 'eu-west-1' } });
-    // The page's own refresh is made to lag: it keeps returning the stale doc,
-    // so only consuming the panel's result can keep this correct.
-    (api.getProject as jest.Mock).mockResolvedValue(before);
-    (api.updateProject as jest.Mock).mockImplementation(async (_id, body) => ({ ...afterProviderSave, ...body }));
-
-    panelSave.saved = afterProviderSave;
-    render(<MantineProvider><ProjectSettingsPage /></MantineProvider>);
-    fireEvent.click(await screen.findByRole('tab', { name: /ai & embedding/i }));
-    fireEvent.click(await screen.findByRole('button', { name: 'save-providers' }));
-
-    fireEvent.click(screen.getByRole('tab', { name: /advanced/i }));
-    fireEvent.click(await screen.findByRole('switch', { name: /prompt caching/i }));
-    await waitFor(() => expect(api.updateProject).toHaveBeenCalled());
-
-    const [, payload] = (api.updateProject as jest.Mock).mock.calls.at(-1)!;
-    expect(payload.llm.model).toBe('NEW-model');
-    expect(payload.llm.config.region).toBe('eu-west-1');
-    expect(payload.llm.config.prompt_cache).toBe('false');
-  });
-
-  // Regression: the panel's save spans its project update AND the secret
-  // writes that follow, and onSaved only fires at the end. A cache toggle
-  // inside that window sent an LLM block captured before the provider save
-  // and silently undid it. The switch is disabled while the panel is busy.
-  it('cannot be toggled while a provider save is in flight', async () => {
-    (api.getProject as jest.Mock).mockResolvedValue(
-      project({ provider: 'bedrock', model: 'm', config: { region: 'us-east-1' } }),
-    );
-    await renderAdvanced();
-    const sw = await screen.findByRole('switch', { name: /prompt caching/i });
-    expect(sw).toBeEnabled();
-
-    fireEvent.click(screen.getByRole('tab', { name: /ai & embedding/i }));
-    fireEvent.click(await screen.findByRole('button', { name: 'begin-provider-save' }));
-    fireEvent.click(screen.getByRole('tab', { name: /advanced/i }));
-
-    // Disabled is the guarantee a real click obeys. (fireEvent.click
-    // dispatches straight at the input and bypasses the activation check a
-    // browser applies to a disabled control, so "clicking does nothing" is
-    // not a assertion this layer can make honestly.)
-    await waitFor(() => expect(screen.getByRole('switch', { name: /prompt caching/i })).toBeDisabled());
-
-    // And it comes back once the panel reports it has finished.
-    fireEvent.click(screen.getByRole('tab', { name: /ai & embedding/i }));
-    fireEvent.click(screen.getByRole('button', { name: 'end-provider-save' }));
-    fireEvent.click(screen.getByRole('tab', { name: /advanced/i }));
-    await waitFor(() => expect(screen.getByRole('switch', { name: /prompt caching/i })).toBeEnabled());
-  });
-
-  it('is not offered for a provider that does not implement it', async () => {
-    (api.getProject as jest.Mock).mockResolvedValue(
-      project({ provider: 'openai', model: 'gpt-4.1', config: {} }),
-    );
+  it('is not offered for a provider that does not implement caching', async () => {
+    (api.getProject as jest.Mock).mockResolvedValue({
+      ...project(), llm: { provider: 'openai', model: 'gpt-4.1', config: {} },
+    });
     await renderAdvanced();
     // Another Advanced switch proves the tab rendered.
     expect(await screen.findByRole('switch', { name: /suggested questions/i })).toBeInTheDocument();

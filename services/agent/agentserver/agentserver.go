@@ -601,6 +601,13 @@ func initLLMProvider(ctx context.Context, cfg *config.Config, project *models.Pr
 		}).Debug("Merged provider-specific config from project")
 	}
 
+	// Prompt caching is resolved from the project (field, else the legacy
+	// config entry, else on) and written into the config the providers read,
+	// so the four Anthropic-wire providers keep consulting PromptCacheKey
+	// exactly as before. Set after the project-config merge so the resolved
+	// value wins over a stale literal in LLM.Config.
+	llmCfg[gollm.PromptCacheKey] = strconv.FormatBool(project.EffectivePromptCacheEnabled())
+
 	provider, err := gollm.NewProvider(project.LLM.Provider, llmCfg)
 	if err != nil {
 		applog.WithFields(applog.Fields{

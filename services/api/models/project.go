@@ -1,6 +1,7 @@
 package models
 
 import (
+	"strings"
 	"time"
 
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
@@ -150,6 +151,21 @@ type Project struct {
 	// output headroom + ReasoningEffort=on). The agent reads its own copy via
 	// the agent's models.Project — keep the two definitions in sync.
 	ReasoningEnabled *bool `bson:"reasoning_enabled,omitempty" json:"reasoning_enabled,omitempty"`
+
+	// PromptCacheEnabled is the per-project prompt-caching toggle for the
+	// providers that implement it (the Anthropic wire). Nil means "not set
+	// here", which falls back to the legacy LLM.Config["prompt_cache"] value
+	// and then to on — caching has always been opt-out, and a project that
+	// predates this field must not have it silently switched off.
+	//
+	// It is a project field rather than an LLM.Config entry because Update
+	// replaces the whole LLM block, so a config-only setting cannot be
+	// changed without restating the provider, model and credentials — which
+	// races with anything else editing them. Resolve it with
+	// EffectivePromptCacheEnabled, never by reading the field directly.
+	// The agent reads its own copy via the agent's models.Project — keep the
+	// two definitions in sync.
+	PromptCacheEnabled *bool `bson:"prompt_cache_enabled,omitempty" json:"prompt_cache_enabled,omitempty"`
 
 	// AskSuggestionsEnabled is the per-project toggle for LLM-generated suggested
 	// starter questions on insight / recommendation pages (the "Ask about this"
@@ -351,6 +367,25 @@ func (p *Project) EffectiveSmartOverflowEnabled() bool {
 // EffectiveReasoningEnabled resolves the per-project reasoning toggle. Nil → false
 // (opt-in; default matches today). The matching helper on the agent's
 // models.Project must stay in sync.
+// promptCacheConfigKey mirrors gollm.PromptCacheKey. Duplicated as a literal
+// so this package keeps no dependency on the provider registry; the two are
+// asserted equal in the agent-side test.
+const promptCacheConfigKey = "prompt_cache"
+
+// EffectivePromptCacheEnabled resolves prompt caching for this project:
+// the project field when set, else the legacy LLM.Config["prompt_cache"]
+// entry, else on. Matches gollm.PromptCacheEnabled's rule for the legacy
+// value — anything that is not a case-insensitive "false" means on.
+func (p *Project) EffectivePromptCacheEnabled() bool {
+	if p == nil {
+		return true
+	}
+	if p.PromptCacheEnabled != nil {
+		return *p.PromptCacheEnabled
+	}
+	return !strings.EqualFold(strings.TrimSpace(p.LLM.Config[promptCacheConfigKey]), "false")
+}
+
 func (p *Project) EffectiveReasoningEnabled() bool {
 	if p.ReasoningEnabled == nil {
 		return false

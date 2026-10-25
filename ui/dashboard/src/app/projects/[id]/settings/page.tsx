@@ -55,26 +55,26 @@ const RECOMMENDATION_VERDICT_OPTIONS = [
   { value: 'rejected', label: 'Rejected — evidence contradicts the claim (caution)' },
 ];
 
-// PROMPT_CACHE_KEY mirrors gollm.PromptCacheKey. Prompt caching is a provider
-// config field rather than a project field, and it is tri-state in storage:
-// absent, "true" or "false". Caching is ON unless the value is literally
-// "false", so an absent key must not read as off.
-const PROMPT_CACHE_KEY = 'prompt_cache';
+// Prompt caching is a per-project field (prompt_cache_enabled), resolved the
+// way the server resolves it: the field when set, else the legacy
+// llm.config.prompt_cache entry, else on. The legacy value is still what the
+// creation wizard writes, and projects predating the field only have that —
+// reading it as a plain boolean would show caching as off for all of them.
+// Mirrors Project.EffectivePromptCacheEnabled.
+const LEGACY_PROMPT_CACHE_KEY = 'prompt_cache';
 
 function readPromptCache(proj: Project | null | undefined): boolean {
-  return String(proj?.llm?.config?.[PROMPT_CACHE_KEY] ?? '').trim().toLowerCase() !== 'false';
+  if (typeof proj?.prompt_cache_enabled === 'boolean') return proj.prompt_cache_enabled;
+  return String(proj?.llm?.config?.[LEGACY_PROMPT_CACHE_KEY] ?? '').trim().toLowerCase() !== 'false';
 }
 
-// promptCacheSupported reports whether the project's configured provider
-// implements prompt caching, by looking for the field the provider itself
-// declares. Keying off the provider's own metadata rather than a hardcoded
-// list means a new Anthropic-wire provider gets the switch for free, and a
-// provider that does not implement it never shows a control that does
-// nothing.
+// promptCacheSupported keys off the provider's own metadata rather than a
+// hardcoded list, so a new Anthropic-wire provider gets the switch for free
+// and a provider that does not implement caching never shows an inert one.
 function promptCacheSupported(proj: Project | null, providers: ProviderMeta[]): boolean {
   if (!proj?.llm?.provider) return false;
   const meta = providers.find((m) => m.id === proj.llm.provider);
-  return (meta?.config_fields || []).some((f) => f.key === PROMPT_CACHE_KEY);
+  return (meta?.config_fields || []).some((f) => f.key === LEGACY_PROMPT_CACHE_KEY);
 }
 
 export default function ProjectSettingsPage() {
@@ -139,18 +139,10 @@ export default function ProjectSettingsPage() {
   const [reasoningEnabled, setReasoningEnabled] = useState(false);
   const [savingReasoning, setSavingReasoning] = useState(false);
 
-  // Advanced — Prompt caching. Unlike its neighbours this one lives in
-  // llm.config, not on the project document: PromptCacheKey is a provider
-  // config field the Anthropic-wire providers read at construction. Caching
-  // is on unless the stored value is literally "false", so an absent key
-  // means on — see gollm.PromptCacheEnabled.
+  // Advanced — Prompt caching (lives on the project document). Defaults to
+  // true — opt-out, like validation and the ledger.
   const [promptCacheEnabled, setPromptCacheEnabled] = useState(true);
   const [savingPromptCache, setSavingPromptCache] = useState(false);
-  // Both this switch and the AI tab's panel write llm.config, and Update
-  // replaces that block wholesale — so the two writes must not overlap. The
-  // panel's save spans its secret writes too, so take its word for when it
-  // is busy rather than guessing from onSaved.
-  const [providersSaving, setProvidersSaving] = useState(false);
 
   // Advanced — Suggested questions toggle (lives on the project document).
   // Defaults to true (ask_suggestions_enabled === undefined) — opt-out; it
@@ -249,10 +241,6 @@ export default function ProjectSettingsPage() {
     try {
       const proj = await api.getProject(id);
       setProject(proj);
-      // Prompt caching lives in llm.config, which the AI tab also writes, so
-      // a save there can change it underneath this tab's switch. Re-read it
-      // rather than leaving the switch showing what it was before.
-      setPromptCacheEnabled(readPromptCache(proj));
     } catch {
       // Refresh failures are non-fatal — the panel that just saved
       // already updated its own local state.
@@ -404,22 +392,16 @@ export default function ProjectSettingsPage() {
     }
   };
 
-  // Save the prompt-caching switch. Optimistic update + rollback, like its
-  // neighbours — but it writes llm.config, and Update replaces the LLM block
-  // wholesale when a provider is present (existing.LLM = incoming.LLM), so the
-  // request carries the whole current llm with only this key changed.
+  // Save the prompt-caching toggle. Optimistic update + rollback on failure.
+  // One field, so it cannot disturb the provider, model or credentials the
+  // AI tab owns — which is the whole reason this is a project field and not
+  // an llm.config entry.
   const savePromptCacheEnabled = async (next: boolean) => {
-    if (!project) return;
     const prev = promptCacheEnabled;
     setPromptCacheEnabled(next);
     setSavingPromptCache(true);
     try {
-      const saved = await api.updateProject(id, {
-        llm: {
-          ...project.llm,
-          config: { ...(project.llm.config || {}), [PROMPT_CACHE_KEY]: next ? 'true' : 'false' },
-        },
-      });
+      const saved = await api.updateProject(id, { prompt_cache_enabled: next });
       setProject(saved);
       setPromptCacheEnabled(readPromptCache(saved));
       notifications.show({
@@ -573,33 +555,7 @@ export default function ProjectSettingsPage() {
 
         {!aiConfigManaged && (
         <Tabs.Panel value="ai">
-          {/* The panel owns the provider, model, credentials and embedding;
-              it does not own prompt_cache, which this page's Advanced tab
-              writes. Hand it the stored value so its save preserves it
-              instead of writing back the copy it loaded on mount — rather
-              than remounting the panel, which would silently discard any
-              unsaved edits in this tab. */}
-          <ProvidersPanel
-            projectId={id}
-            variant="page"
-            authoritativeLLMConfig={{ [PROMPT_CACHE_KEY]: promptCacheEnabled ? 'true' : 'false' }}
-            onSavingChange={setProvidersSaving}
-            onSaved={(saved) => {
-              // Prefer the panel's own result: it is the server's response to
-              // the write, so it cannot be staler than a follow-up GET, and a
-              // GET that lags or fails would leave this page holding the
-              // pre-save provider and model — which the next prompt-cache
-              // save would PUT straight back, undoing the provider save
-              // (Update replaces the LLM block wholesale). Refetch only when
-              // no result was handed over.
-              if (saved) {
-                setProject(saved);
-                setPromptCacheEnabled(readPromptCache(saved));
-                return;
-              }
-              void refreshProject();
-            }}
-          />
+          <ProvidersPanel projectId={id} variant="page" onSaved={() => { void refreshProject(); }} />
         </Tabs.Panel>
         )}
 
@@ -687,17 +643,12 @@ export default function ProjectSettingsPage() {
                 disabled={savingAskSuggestions}
                 onChange={(e) => saveAskSuggestionsEnabled(e.currentTarget.checked)}
               />
-              {/* Only for providers that implement prompt caching — the
-                  Anthropic wire. Elsewhere the key is inert, and a switch
-                  that changes nothing is worse than no switch. Label and
-                  description are the provider's own (PromptCacheConfigFields)
-                  so the creation wizard and this tab say the same thing. */}
               {promptCacheSupported(project, llmProviders) && (
                 <Switch
                   label="Prompt caching (Claude models)"
                   description="Cache the repeated prefix of multi-turn calls (the system prompt and the conversation so far) so later calls read it at the provider's cache-read price. Applies to Claude models only. Turn off only if your account or region does not support prompt caching."
                   checked={promptCacheEnabled}
-                  disabled={savingPromptCache || providersSaving}
+                  disabled={savingPromptCache}
                   onChange={(e) => savePromptCacheEnabled(e.currentTarget.checked)}
                 />
               )}
