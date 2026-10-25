@@ -72,3 +72,48 @@ func TestProject_EffectiveRecommendationVerdicts(t *testing.T) {
 		t.Errorf("set verdicts = %v, want %v", got, want)
 	}
 }
+
+// Prompt caching resolves from the project field when set, else the legacy
+// LLM.Config entry, else on. The legacy fallback matters: the setting existed
+// as a provider config key before it was a project field, and a project that
+// predates the field must not be silently switched off — nor silently
+// switched ON if its config says "false".
+func TestProject_EffectivePromptCacheEnabled(t *testing.T) {
+	yes, no := true, false
+	cfg := func(v string) map[string]string {
+		if v == "" {
+			return nil
+		}
+		return map[string]string{"prompt_cache": v}
+	}
+	cases := []struct {
+		name  string
+		field *bool
+		conf  string
+		want  bool
+	}{
+		{"nothing set — caching is opt-out", nil, "", true},
+		{"legacy config false, no field", nil, "false", false},
+		{"legacy config FALSE is case-insensitive", nil, "FALSE", false},
+		{"legacy config padded false still counts", nil, "  false  ", false},
+		{"legacy config true", nil, "true", true},
+		{"legacy config junk is not false, so on", nil, "banana", true},
+		{"field true wins over legacy false", &yes, "false", true},
+		{"field false wins over legacy true", &no, "true", false},
+		{"field false with no legacy value", &no, "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := &Project{PromptCacheEnabled: c.field}
+			p.LLM.Config = cfg(c.conf)
+			if got := p.EffectivePromptCacheEnabled(); got != c.want {
+				t.Errorf("EffectivePromptCacheEnabled() = %v, want %v", got, c.want)
+			}
+		})
+	}
+	// A nil project must not panic — callers resolve before knowing whether
+	// the project loaded.
+	if !(*Project)(nil).EffectivePromptCacheEnabled() {
+		t.Error("nil project should resolve to caching on")
+	}
+}

@@ -1726,3 +1726,63 @@ func TestSanitizeLanguage_Cases(t *testing.T) {
 		})
 	}
 }
+
+// Prompt caching is a project field so it can be changed on its own. The LLM
+// block is replaced wholesale by Update, so a config-only setting could not be
+// touched without restating the provider, model and credentials — and a
+// request that restates them races with anything else editing them. This test
+// is the guarantee that makes the settings page safe: one field in, and
+// everything the AI tab owns comes out untouched.
+func TestProjectsHandler_Update_PromptCacheEnabled_LeavesLLMAlone(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, nil)
+
+	p := &models.Project{
+		Name: "Acme",
+		LLM: models.LLMConfig{
+			Provider: "bedrock",
+			Model:    "anthropic.claude-opus-5-5",
+			Config:   map[string]string{"region": "us-east-1", "auth_method": "access_keys"},
+		},
+	}
+	repo.Create(context.Background(), p)
+
+	req := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(`{"prompt_cache_enabled":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+	h.Update(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	updated, _ := repo.GetByID(context.Background(), p.ID)
+	if updated.PromptCacheEnabled == nil || *updated.PromptCacheEnabled {
+		t.Errorf("PromptCacheEnabled = %v, want a stored false", updated.PromptCacheEnabled)
+	}
+	if updated.EffectivePromptCacheEnabled() {
+		t.Error("EffectivePromptCacheEnabled() should now resolve off")
+	}
+	// The whole point: nothing the AI tab owns moved.
+	if updated.LLM.Provider != "bedrock" || updated.LLM.Model != "anthropic.claude-opus-5-5" {
+		t.Errorf("LLM identity changed: %+v", updated.LLM)
+	}
+	if updated.LLM.Config["region"] != "us-east-1" || updated.LLM.Config["auth_method"] != "access_keys" {
+		t.Errorf("LLM config changed: %+v", updated.LLM.Config)
+	}
+
+	// And omitting the field leaves the stored value alone — nil means
+	// "not present", not "set to false".
+	req2 := httptest.NewRequest("PUT", "/api/v1/projects/"+p.ID, strings.NewReader(`{"name":"Renamed"}`))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.SetPathValue("id", p.ID)
+	w2 := httptest.NewRecorder()
+	h.Update(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("second update status = %d: %s", w2.Code, w2.Body.String())
+	}
+	again, _ := repo.GetByID(context.Background(), p.ID)
+	if again.PromptCacheEnabled == nil || *again.PromptCacheEnabled {
+		t.Errorf("an unrelated update cleared the setting: %v", again.PromptCacheEnabled)
+	}
+}
