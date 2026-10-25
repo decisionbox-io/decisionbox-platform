@@ -19,8 +19,22 @@ jest.mock('@/components/layout/AppShell', () => ({
   __esModule: true,
   default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
+// The real panel loads the project once and keeps llm.config in its own form
+// state. The mock stands in for that: it counts mounts (so a remount after the
+// stored value changes is observable) and exposes its onSaved callback, which
+// is how a save in the AI tab reaches this page.
+const providersMounts = { count: 0 };
 jest.mock('@/components/projects/ProvidersPanel', () => ({
-  __esModule: true, default: () => <div>ProvidersPanel</div>,
+  __esModule: true,
+  // A class, so componentDidMount counts real MOUNTS — a render counter would
+  // be satisfied by any re-render and would not prove the remount.
+  default: class ProvidersPanelMock extends (jest.requireActual('react').Component) {
+    componentDidMount() { providersMounts.count += 1; }
+    render() {
+      const { onSaved } = this.props as { onSaved: () => void };
+      return <button type="button" onClick={onSaved}>save-providers</button>;
+    }
+  },
 }));
 jest.mock('@/components/projects/WarehouseConfigPanel', () => ({
   __esModule: true, default: () => <div>WarehouseConfigPanel</div>,
@@ -150,6 +164,42 @@ describe('Settings → Advanced: prompt caching', () => {
     fireEvent.click(sw);
     // Optimistically off, then back on once the save fails.
     await waitFor(() => expect(screen.getByRole('switch', { name: /prompt caching/i })).toBeChecked());
+  });
+
+  // Regression: llm.config is written by two editors on this page. Turning
+  // caching off in Advanced used to leave the AI tab's form holding the old
+  // config, so its next save silently re-enabled caching — and this tab's
+  // switch kept showing the stale value either way.
+  it('stays in step with a save from the AI tab', async () => {
+    const off = project({ provider: 'bedrock', model: 'm', config: { region: 'us-east-1', prompt_cache: 'false' } });
+    (api.getProject as jest.Mock)
+      .mockResolvedValueOnce(project({ provider: 'bedrock', model: 'm', config: { region: 'us-east-1' } }))
+      .mockResolvedValue(off);
+    (api.updateProject as jest.Mock).mockResolvedValue(off);
+
+    await renderAdvanced();
+    const sw = await screen.findByRole('switch', { name: /prompt caching/i });
+    expect(sw).toBeChecked();
+
+    providersMounts.count = 0;
+    fireEvent.click(sw);
+    await waitFor(() => expect(screen.getByRole('switch', { name: /prompt caching/i })).not.toBeChecked());
+    // The stored value moved, so the provider form must be rebuilt from it
+    // instead of keeping the config it loaded on mount.
+    await waitFor(() => expect(providersMounts.count).toBeGreaterThan(0));
+
+    // Now a save from the AI tab, reached the way a user reaches it. (Mantine
+    // keeps inactive panels mounted but hidden, which is exactly why the
+    // provider form holds stale config in the first place — role queries skip
+    // hidden nodes, so switch tabs rather than querying through it.)
+    fireEvent.click(screen.getByRole('tab', { name: /ai & embedding/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'save-providers' }));
+    await waitFor(() => expect(api.getProject).toHaveBeenCalledTimes(2));
+
+    // Back on Advanced, the switch must show the stored value the refresh
+    // just read, not whatever it last set locally.
+    fireEvent.click(screen.getByRole('tab', { name: /advanced/i }));
+    await waitFor(() => expect(screen.getByRole('switch', { name: /prompt caching/i })).not.toBeChecked());
   });
 
   it('is not offered for a provider that does not implement it', async () => {

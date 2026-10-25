@@ -244,6 +244,10 @@ export default function ProjectSettingsPage() {
     try {
       const proj = await api.getProject(id);
       setProject(proj);
+      // Prompt caching lives in llm.config, which the AI tab also writes, so
+      // a save there can change it underneath this tab's switch. Re-read it
+      // rather than leaving the switch showing what it was before.
+      setPromptCacheEnabled(readPromptCache(proj));
     } catch {
       // Refresh failures are non-fatal — the panel that just saved
       // already updated its own local state.
@@ -564,7 +568,18 @@ export default function ProjectSettingsPage() {
 
         {!aiConfigManaged && (
         <Tabs.Panel value="ai">
-          <ProvidersPanel projectId={id} variant="page" onSaved={() => { void refreshProject(); }} />
+          {/* ProvidersPanel loads the project once (its effect is keyed on
+              projectId) and holds llm.config in its own form state, so after
+              the Advanced switch changes prompt_cache its form is stale — and
+              its next save would write the old value back, silently undoing
+              the change. Key it on the stored value so it remounts and
+              reloads when, and only when, that value actually moves. */}
+          <ProvidersPanel
+            key={`providers-${String(project?.llm?.config?.[PROMPT_CACHE_KEY] ?? 'unset')}`}
+            projectId={id}
+            variant="page"
+            onSaved={() => { void refreshProject(); }}
+          />
         </Tabs.Panel>
         )}
 
