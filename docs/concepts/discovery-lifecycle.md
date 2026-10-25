@@ -346,8 +346,6 @@ Each run costs:
 - **LLM tokens** — Exploration (many small calls) + Analysis (few large calls) + Recommendations (one call)
 - **Warehouse queries** — Each exploration step executes one SQL query
 
-Use the **cost estimation** feature (`POST /api/v1/projects/{id}/discover/estimate`) to preview costs before running. The dashboard has a checkbox: "Estimate cost before running."
-
 ## Next Steps
 
 - [Architecture](architecture.md) — System components and data flow

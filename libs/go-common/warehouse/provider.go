@@ -108,13 +108,6 @@ type Provider interface {
 	Close() error
 }
 
-// CostEstimator is an optional interface for providers that support dry-run cost estimation.
-// Use type assertion to check: if ce, ok := provider.(CostEstimator); ok { ... }
-type CostEstimator interface {
-	// DryRun estimates bytes that would be scanned by a query without executing it.
-	DryRun(ctx context.Context, query string) (*DryRunResult, error)
-}
-
 // SampleQueryBuilder is an optional interface for providers that can build
 // a native-dialect "sample N rows" query. Schema discovery uses this to
 // read a few rows per table during the warehouse scan; implementing it
@@ -162,11 +155,6 @@ type RefQualifier interface {
 	// cross-project BigQuery, "dataset.table" otherwise). Callers must
 	// validate inputs are plain identifiers; this method does not sanitise.
 	QualifiedName(dataset, table string) string
-}
-
-// DryRunResult holds the result of a dry-run query estimation.
-type DryRunResult struct {
-	BytesProcessed int64
 }
 
 // QueryResult holds the result of a warehouse query.

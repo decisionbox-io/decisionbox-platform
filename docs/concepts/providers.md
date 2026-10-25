@@ -191,14 +191,6 @@ Each provider also declares a short dialect label as `ProviderMeta.Dialect` (`Bi
 | `HealthCheck(ctx)` | Check warehouse connectivity |
 | `Close()` | Clean up connections |
 
-**Optional interface:** `warehouse.CostEstimator` — For providers that support dry-run cost estimation (BigQuery does, Redshift partially).
-
-```go
-type CostEstimator interface {
-    DryRun(ctx context.Context, query string) (*DryRunResult, error)
-}
-```
-
 See [Adding Warehouse Providers](../guides/adding-warehouse-providers.md) to implement your own.
 
 ### Secret Providers
