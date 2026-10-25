@@ -61,8 +61,8 @@ const RECOMMENDATION_VERDICT_OPTIONS = [
 // "false", so an absent key must not read as off.
 const PROMPT_CACHE_KEY = 'prompt_cache';
 
-function readPromptCache(proj: Project): boolean {
-  return String(proj.llm?.config?.[PROMPT_CACHE_KEY] ?? '').trim().toLowerCase() !== 'false';
+function readPromptCache(proj: Project | null | undefined): boolean {
+  return String(proj?.llm?.config?.[PROMPT_CACHE_KEY] ?? '').trim().toLowerCase() !== 'false';
 }
 
 // promptCacheSupported reports whether the project's configured provider
@@ -578,7 +578,21 @@ export default function ProjectSettingsPage() {
             projectId={id}
             variant="page"
             authoritativeLLMConfig={{ [PROMPT_CACHE_KEY]: promptCacheEnabled ? 'true' : 'false' }}
-            onSaved={() => { void refreshProject(); }}
+            onSaved={(saved) => {
+              // Prefer the panel's own result: it is the server's response to
+              // the write, so it cannot be staler than a follow-up GET, and a
+              // GET that lags or fails would leave this page holding the
+              // pre-save provider and model — which the next prompt-cache
+              // save would PUT straight back, undoing the provider save
+              // (Update replaces the LLM block wholesale). Refetch only when
+              // no result was handed over.
+              if (saved) {
+                setProject(saved);
+                setPromptCacheEnabled(readPromptCache(saved));
+                return;
+              }
+              void refreshProject();
+            }}
           />
         </Tabs.Panel>
         )}

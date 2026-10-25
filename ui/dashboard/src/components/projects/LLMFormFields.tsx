@@ -43,6 +43,10 @@ interface Props {
    *  api.listLiveLLMModels call so it can pass projectId or other context
    *  that this component does not need to know about. */
   onLoadModels: () => void;
+  /** Config keys the PARENT owns and renders its own control for. Hiding
+   *  them here keeps one key to one control: two switches writing the same
+   *  llm.config entry means whichever saves last wins, silently. */
+  hiddenConfigKeys?: string[];
   /** Settings/wizard variants pass `true` when an API key has already
    *  been persisted; the input then asks for a new key (optional) instead
    *  of treating it as required. */
@@ -60,6 +64,7 @@ interface Props {
 export function LLMFormFields({
   providers, value, onChange, phase, onPhaseChange,
   liveModels, liveError, loading, onLoadModels, hasSavedApiKey,
+  hiddenConfigKeys,
 }: Props) {
   const selected = providers.find((p) => p.id === value.provider) || null;
   const authMethods = selected?.auth_methods ?? [];
@@ -189,6 +194,7 @@ export function LLMFormFields({
         <>
           {selected?.config_fields
             .filter((f) => f.key !== 'model' && f.key !== 'wire_override' && f.key !== 'max_input_tokens' && f.key !== 'max_output_tokens')
+            .filter((f) => !(hiddenConfigKeys || []).includes(f.key))
             .map((field) => (
               <CatalogAwareField
                 key={field.key}

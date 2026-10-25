@@ -30,13 +30,15 @@ jest.mock('@/components/layout/AppShell', () => ({
 // authoritative prop, which is what keeps its save from writing a stale
 // prompt_cache.
 const providersMounts = { count: 0 };
+// What the mocked panel hands to onSaved — the real one passes its save result.
+const panelSave: { saved: unknown } = { saved: undefined };
 jest.mock('@/components/projects/ProvidersPanel', () => ({
   __esModule: true,
   default: class ProvidersPanelMock extends (jest.requireActual('react').Component) {
     componentDidMount() { providersMounts.count += 1; }
     render() {
       const { onSaved, authoritativeLLMConfig } = this.props as {
-        onSaved: () => void;
+        onSaved: (p: unknown) => void;
         authoritativeLLMConfig?: Record<string, string>;
       };
       return (
@@ -44,7 +46,9 @@ jest.mock('@/components/projects/ProvidersPanel', () => ({
           <span data-testid="authoritative-prompt-cache">
             {String(authoritativeLLMConfig?.prompt_cache ?? 'none')}
           </span>
-          <button type="button" onClick={onSaved}>save-providers</button>
+          {/* The real panel hands its save result to onSaved; the mock
+              forwards whatever the test put in panelSave. */}
+          <button type="button" onClick={() => onSaved(panelSave.saved)}>save-providers</button>
         </>
       );
     }
@@ -110,6 +114,7 @@ async function renderAdvanced() {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  panelSave.saved = undefined;
   (api.listLLMProviders as jest.Mock).mockResolvedValue([CACHING_PROVIDER, NON_CACHING_PROVIDER]);
 });
 
@@ -191,6 +196,7 @@ describe('Settings → Advanced: prompt caching', () => {
       .mockResolvedValueOnce(project({ provider: 'bedrock', model: 'm', config: { region: 'us-east-1' } }))
       .mockResolvedValue(off);
     (api.updateProject as jest.Mock).mockResolvedValue(off);
+    panelSave.saved = off;
 
     await renderAdvanced();
     const sw = await screen.findByRole('switch', { name: /prompt caching/i });
@@ -210,12 +216,40 @@ describe('Settings → Advanced: prompt caching', () => {
     // A save from the AI tab, reached the way a user reaches it.
     fireEvent.click(screen.getByRole('tab', { name: /ai & embedding/i }));
     fireEvent.click(await screen.findByRole('button', { name: 'save-providers' }));
-    await waitFor(() => expect(api.getProject).toHaveBeenCalledTimes(2));
 
-    // Back on Advanced, the switch shows the stored value the refresh read,
-    // not whatever it last set locally.
+    // Back on Advanced, the switch shows the value from the panel's save
+    // result, not whatever it last set locally. No follow-up GET is asserted
+    // — preferring the write's own response over a refetch is the point.
     fireEvent.click(screen.getByRole('tab', { name: /advanced/i }));
     await waitFor(() => expect(screen.getByRole('switch', { name: /prompt caching/i })).not.toBeChecked());
+  });
+
+  // Regression: onSaved used to ignore the project the panel returns and rely
+  // on a second fetch. Until that landed, this page still held the pre-save
+  // provider and model — and because Update replaces the LLM block wholesale,
+  // the next cache toggle wrote the old provider back, undoing a save the user
+  // had been told succeeded.
+  it('does not undo a provider save when caching is toggled afterwards', async () => {
+    const before = project({ provider: 'bedrock', model: 'old-model', config: { region: 'us-east-1' } });
+    const afterProviderSave = project({ provider: 'bedrock', model: 'NEW-model', config: { region: 'eu-west-1' } });
+    // The page's own refresh is made to lag: it keeps returning the stale doc,
+    // so only consuming the panel's result can keep this correct.
+    (api.getProject as jest.Mock).mockResolvedValue(before);
+    (api.updateProject as jest.Mock).mockImplementation(async (_id, body) => ({ ...afterProviderSave, ...body }));
+
+    panelSave.saved = afterProviderSave;
+    render(<MantineProvider><ProjectSettingsPage /></MantineProvider>);
+    fireEvent.click(await screen.findByRole('tab', { name: /ai & embedding/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'save-providers' }));
+
+    fireEvent.click(screen.getByRole('tab', { name: /advanced/i }));
+    fireEvent.click(await screen.findByRole('switch', { name: /prompt caching/i }));
+    await waitFor(() => expect(api.updateProject).toHaveBeenCalled());
+
+    const [, payload] = (api.updateProject as jest.Mock).mock.calls.at(-1)!;
+    expect(payload.llm.model).toBe('NEW-model');
+    expect(payload.llm.config.region).toBe('eu-west-1');
+    expect(payload.llm.config.prompt_cache).toBe('false');
   });
 
   it('is not offered for a provider that does not implement it', async () => {

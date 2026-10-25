@@ -299,6 +299,7 @@ export default function ProvidersPanel({ projectId, variant, onSaved, authoritat
       )}
 
       <LLMFormFields
+            hiddenConfigKeys={Object.keys(authoritativeLLMConfig || {})}
         providers={llmProviders}
         value={llm}
         onChange={setLlm}
