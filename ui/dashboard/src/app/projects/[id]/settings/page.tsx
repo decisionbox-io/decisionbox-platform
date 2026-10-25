@@ -55,6 +55,28 @@ const RECOMMENDATION_VERDICT_OPTIONS = [
   { value: 'rejected', label: 'Rejected — evidence contradicts the claim (caution)' },
 ];
 
+// PROMPT_CACHE_KEY mirrors gollm.PromptCacheKey. Prompt caching is a provider
+// config field rather than a project field, and it is tri-state in storage:
+// absent, "true" or "false". Caching is ON unless the value is literally
+// "false", so an absent key must not read as off.
+const PROMPT_CACHE_KEY = 'prompt_cache';
+
+function readPromptCache(proj: Project): boolean {
+  return String(proj.llm?.config?.[PROMPT_CACHE_KEY] ?? '').trim().toLowerCase() !== 'false';
+}
+
+// promptCacheSupported reports whether the project's configured provider
+// implements prompt caching, by looking for the field the provider itself
+// declares. Keying off the provider's own metadata rather than a hardcoded
+// list means a new Anthropic-wire provider gets the switch for free, and a
+// provider that does not implement it never shows a control that does
+// nothing.
+function promptCacheSupported(proj: Project | null, providers: ProviderMeta[]): boolean {
+  if (!proj?.llm?.provider) return false;
+  const meta = providers.find((m) => m.id === proj.llm.provider);
+  return (meta?.config_fields || []).some((f) => f.key === PROMPT_CACHE_KEY);
+}
+
 export default function ProjectSettingsPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
@@ -116,6 +138,14 @@ export default function ProjectSettingsPage() {
   // document). Defaults to false (reasoning_enabled === undefined) — opt-in.
   const [reasoningEnabled, setReasoningEnabled] = useState(false);
   const [savingReasoning, setSavingReasoning] = useState(false);
+
+  // Advanced — Prompt caching. Unlike its neighbours this one lives in
+  // llm.config, not on the project document: PromptCacheKey is a provider
+  // config field the Anthropic-wire providers read at construction. Caching
+  // is on unless the stored value is literally "false", so an absent key
+  // means on — see gollm.PromptCacheEnabled.
+  const [promptCacheEnabled, setPromptCacheEnabled] = useState(true);
+  const [savingPromptCache, setSavingPromptCache] = useState(false);
 
   // Advanced — Suggested questions toggle (lives on the project document).
   // Defaults to true (ask_suggestions_enabled === undefined) — opt-out; it
@@ -180,6 +210,7 @@ export default function ProjectSettingsPage() {
         setReflectionEnabled(proj.reflection_enabled !== false);
         setReasoningEnabled(proj.reasoning_enabled === true);
         setAskSuggestionsEnabled(proj.ask_suggestions_enabled !== false);
+        setPromptCacheEnabled(readPromptCache(proj));
         setRecommendationVerdicts(
           proj.recommendation_verdicts && proj.recommendation_verdicts.length > 0
             ? proj.recommendation_verdicts
@@ -361,6 +392,37 @@ export default function ProjectSettingsPage() {
       notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
     } finally {
       setSavingReasoning(false);
+    }
+  };
+
+  // Save the prompt-caching switch. Optimistic update + rollback, like its
+  // neighbours — but it writes llm.config, and Update replaces the LLM block
+  // wholesale when a provider is present (existing.LLM = incoming.LLM), so the
+  // request carries the whole current llm with only this key changed.
+  const savePromptCacheEnabled = async (next: boolean) => {
+    if (!project) return;
+    const prev = promptCacheEnabled;
+    setPromptCacheEnabled(next);
+    setSavingPromptCache(true);
+    try {
+      const saved = await api.updateProject(id, {
+        llm: {
+          ...project.llm,
+          config: { ...(project.llm.config || {}), [PROMPT_CACHE_KEY]: next ? 'true' : 'false' },
+        },
+      });
+      setProject(saved);
+      setPromptCacheEnabled(readPromptCache(saved));
+      notifications.show({
+        title: 'Saved',
+        message: next ? 'Prompt caching enabled' : 'Prompt caching disabled',
+        color: 'green',
+      });
+    } catch (e: unknown) {
+      setPromptCacheEnabled(prev);
+      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+    } finally {
+      setSavingPromptCache(false);
     }
   };
 
@@ -590,6 +652,20 @@ export default function ProjectSettingsPage() {
                 disabled={savingAskSuggestions}
                 onChange={(e) => saveAskSuggestionsEnabled(e.currentTarget.checked)}
               />
+              {/* Only for providers that implement prompt caching — the
+                  Anthropic wire. Elsewhere the key is inert, and a switch
+                  that changes nothing is worse than no switch. Label and
+                  description are the provider's own (PromptCacheConfigFields)
+                  so the creation wizard and this tab say the same thing. */}
+              {promptCacheSupported(project, llmProviders) && (
+                <Switch
+                  label="Prompt caching (Claude models)"
+                  description="Cache the repeated prefix of multi-turn calls (the system prompt and the conversation so far) so later calls read it at the provider's cache-read price. Applies to Claude models only. Turn off only if your account or region does not support prompt caching."
+                  checked={promptCacheEnabled}
+                  disabled={savingPromptCache}
+                  onChange={(e) => savePromptCacheEnabled(e.currentTarget.checked)}
+                />
+              )}
               <MultiSelect
                 label="Recommendation eligibility"
                 description="Which validation verdicts qualify an insight for recommendation generation. Default is Confirmed + Supported (only positively-validated insights). Add Partial / Unverifiable when the warehouse can't self-verify (e.g. no temp-table permission) but you trust the analysis. Rejected means the evidence contradicts the insight — include with caution. Insights whose validation didn't run stay eligible regardless. Clearing the selection reverts to the default."
