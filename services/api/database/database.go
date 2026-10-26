@@ -158,6 +158,45 @@ func projectAccessFilter(ctx context.Context) bson.M {
 	return bson.M{"$and": and}
 }
 
+// clearableProjectFields are the omitempty fields a handler may legitimately
+// CLEAR by resolving them to empty, paired with the test for "the handler
+// resolved this to empty".
+//
+// $set alone cannot express a clear: every one of these is tagged omitempty,
+// so a nil or empty value omits the key and leaves the stored value in place.
+// That made the documented blurb_llm clear path — existing.BlurbLLM = nil on
+// an empty-provider request, which the enterprise generate page relies on —
+// a silent no-op, and per-layer models need removal to actually remove.
+//
+// The list is explicit rather than derived from the struct on purpose. Update
+// is always handed the MERGED `existing` project, so a field the client did
+// not send is still populated and must survive; only a field a handler
+// deliberately resolved to empty may be unset. Inferring that from omitempty
+// alone would turn every unsent pointer toggle into a reset.
+var clearableProjectFields = []struct {
+	bsonName string
+	cleared  func(*models.Project) bool
+}{
+	{"blurb_llm", func(p *models.Project) bool { return p.BlurbLLM == nil }},
+	{"llm_providers", func(p *models.Project) bool { return len(p.LLMProviders) == 0 }},
+	{"layer_models", func(p *models.Project) bool { return len(p.LayerModels) == 0 }},
+}
+
+// clearedProjectFields returns the $unset document for the clearable fields
+// this project resolved to empty.
+func clearedProjectFields(p *models.Project) bson.M {
+	unset := bson.M{}
+	for _, f := range clearableProjectFields {
+		if f.cleared(p) {
+			unset[f.bsonName] = ""
+		}
+	}
+	if len(unset) == 0 {
+		return nil
+	}
+	return unset
+}
+
 func (r *ProjectRepository) Update(ctx context.Context, id string, p *models.Project) error {
 	oid, err := primitive.ObjectIDFromHex(id)
 	if err != nil {
@@ -172,6 +211,9 @@ func (r *ProjectRepository) Update(ctx context.Context, id string, p *models.Pro
 	p.ID = ""
 	p.UpdatedAt = time.Now()
 	update := bson.M{"$set": p}
+	if unset := clearedProjectFields(p); len(unset) > 0 {
+		update["$unset"] = unset
+	}
 
 	result, err := r.col.UpdateOne(ctx, bson.M{"_id": oid}, update)
 	p.ID = id
