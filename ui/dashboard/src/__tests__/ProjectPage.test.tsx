@@ -395,6 +395,54 @@ describe('Resume affordance on a failed run (#438)', () => {
     expect(screen.queryByText(/Resume from step/)).not.toBeInTheDocument();
   });
 
+  it('does not let a refused resume install its old run over a newer one', async () => {
+    const { notifications } = jest.requireMock('@mantine/notifications');
+    jest.useFakeTimers();
+    try {
+      getProjectStatus.mockResolvedValue(status(makeRun({
+        id: 'run-a', status: 'failed', last_checkpoint_step: 42,
+      })));
+      // The refusal round-trip is held open: that is the window in which the
+      // run on screen can change under the handler.
+      let refuse: (e: Error) => void = () => {};
+      resumeRun.mockImplementation(() => new Promise((_res, rej) => { refuse = rej; }));
+      // What the handler re-reads when it is refused: run A, still failed.
+      getRun.mockResolvedValue(makeRun({ id: 'run-a', status: 'failed', last_checkpoint_step: 42 }));
+
+      renderPage();
+      await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+      const btn = await waitFor(() => screen.getByText(/Resume from step 42/));
+      await act(async () => { btn.click(); });
+
+      // Dismissing re-arms the poll for a terminal run — that watch exists
+      // precisely to notice a new one — so run B can arrive while the resume
+      // for A is still in flight.
+      const dismiss = screen.getByText('Dismiss');
+      await act(async () => { dismiss.click(); });
+      getProjectStatus.mockResolvedValue(status(makeRun({ id: 'run-b', status: 'running' })));
+      await act(async () => { await jest.advanceTimersByTimeAsync(15000); });
+      await waitFor(() => expect(screen.getByText('Discovery running')).toBeInTheDocument());
+
+      // Only now is A's resume refused, and its handler re-reads A.
+      await act(async () => {
+        refuse(new Error('another run is already in progress'));
+        await jest.advanceTimersByTimeAsync(0);
+      });
+
+      // The refusal is still surfaced...
+      expect(notifications.show).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Cannot resume' }),
+      );
+      // ...and B stays on screen. Installing failed A here would stop the
+      // polling B depends on, so its progress and its Cancel button would be
+      // gone until somebody reloaded.
+      expect(screen.getByText('Discovery running')).toBeInTheDocument();
+      expect(screen.queryByText(/Resume from step/)).not.toBeInTheDocument();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('keeps the panel usable when the refusal refresh itself fails', async () => {
     const { notifications } = jest.requireMock('@mantine/notifications');
     getProjectStatus.mockResolvedValue(status(makeRun({

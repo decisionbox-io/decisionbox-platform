@@ -680,12 +680,22 @@ export default function ProjectPage() {
             // terminal run does not poll, so without this the panel would go
             // on offering Resume for an active run until someone reloaded.
             try {
-              // Only when the read actually returned a run: replacing state
-              // with an empty response would blank the panel, which is a
-              // worse outcome than the stale view this refresh exists to
-              // fix.
               const fresh = await api.getRun(run.id);
-              if (fresh) installRun(fresh);
+              // Two conditions, and the second is the one that is easy to
+              // miss. The read must have returned a run — replacing state
+              // with an empty response would blank the panel, a worse
+              // outcome than the stale view this refresh exists to fix. And
+              // the run on screen must still be THIS run: a refusal is a
+              // round-trip, which is plenty of time for a different run to
+              // be started, and installing the old failed one over a live
+              // one would hide its progress and its Cancel button until
+              // somebody reloaded, because a terminal run does not poll.
+              // Same check the discard handler makes, for the same reason.
+              //
+              // The case this refresh exists for still works: when another
+              // tab won the race the run id is unchanged and only its status
+              // is stale, so the guard passes.
+              if (fresh && runRef.current?.id === run.id) installRun(fresh);
             } catch {
               // The real error is already on screen; a failed refresh adds
               // nothing to it.
