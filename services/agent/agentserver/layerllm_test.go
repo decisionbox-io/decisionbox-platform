@@ -68,7 +68,6 @@ func TestEveryLayerOnTheDefaultCostsOneProviderOneProbeOneBudget(t *testing.T) {
 		project:   singleModelProject(),
 		projectID: "p1",
 		runID:     "r1",
-		gate:      true,
 		deps:      c.deps(),
 	})
 	if err != nil {
@@ -123,7 +122,7 @@ func TestOneProviderServesEveryModelOnAnEntry(t *testing.T) {
 
 	c := &counters{}
 	if _, err := buildLayerSet(context.Background(), layerSetInput{
-		project: p, projectID: "p1", gate: true, deps: c.deps(),
+		project: p, projectID: "p1", deps: c.deps(),
 	}); err != nil {
 		t.Fatalf("buildLayerSet: %v", err)
 	}
@@ -156,7 +155,7 @@ func TestMixedPipelineBuildsOneProviderPerEntry(t *testing.T) {
 
 	c := &counters{}
 	set, err := buildLayerSet(context.Background(), layerSetInput{
-		project: p, projectID: "p1", layers: discoveryLayers, gate: true, deps: c.deps(),
+		project: p, projectID: "p1", layers: discoveryLayers, deps: c.deps(),
 	})
 	if err != nil {
 		t.Fatalf("buildLayerSet: %v", err)
@@ -202,7 +201,7 @@ func TestOneGatewayEntryWithAnAliasPerLayerIsOneProviderAndManyBudgets(t *testin
 
 	c := &counters{}
 	if _, err := buildLayerSet(context.Background(), layerSetInput{
-		project: p, projectID: "p1", gate: true, deps: c.deps(),
+		project: p, projectID: "p1", deps: c.deps(),
 	}); err != nil {
 		t.Fatalf("buildLayerSet: %v", err)
 	}
@@ -232,7 +231,7 @@ func TestPromptCachingDifferingOnOneEntryBuildsTwoProviders(t *testing.T) {
 
 	c := &counters{}
 	set, err := buildLayerSet(context.Background(), layerSetInput{
-		project: p, projectID: "p1", layers: []string{llmlayer.LayerSQLRepair, llmlayer.LayerAnalysis}, gate: true, deps: c.deps(),
+		project: p, projectID: "p1", layers: []string{llmlayer.LayerSQLRepair, llmlayer.LayerAnalysis}, deps: c.deps(),
 	})
 	if err != nil {
 		t.Fatalf("buildLayerSet: %v", err)
@@ -250,7 +249,7 @@ func TestPromptCachingDifferingOnOneEntryBuildsTwoProviders(t *testing.T) {
 func TestForNeverReturnsNilAndFallsBackToTheDefault(t *testing.T) {
 	c := &counters{}
 	set, err := buildLayerSet(context.Background(), layerSetInput{
-		project: singleModelProject(), projectID: "p1", layers: []string{llmlayer.LayerAnalysis}, gate: true, deps: c.deps(),
+		project: singleModelProject(), projectID: "p1", layers: []string{llmlayer.LayerAnalysis}, deps: c.deps(),
 	})
 	if err != nil {
 		t.Fatalf("buildLayerSet: %v", err)
@@ -277,7 +276,7 @@ func TestALayerNamingAMissingEntryStillBuilds(t *testing.T) {
 
 	c := &counters{}
 	set, err := buildLayerSet(context.Background(), layerSetInput{
-		project: p, projectID: "p1", layers: []string{llmlayer.LayerExploration}, gate: true, deps: c.deps(),
+		project: p, projectID: "p1", layers: []string{llmlayer.LayerExploration}, deps: c.deps(),
 	})
 	if err != nil {
 		t.Fatalf("a layer naming a deleted entry must fall back, not fail the run: %v", err)
@@ -292,7 +291,7 @@ func TestTestModeReachesEveryClient(t *testing.T) {
 	// Applying it to one now would leave sixteen layers running unlimited.
 	c := &counters{}
 	set, err := buildLayerSet(context.Background(), layerSetInput{
-		project: singleModelProject(), projectID: "p1", runID: "r1", gate: true, testMode: true, deps: c.deps(),
+		project: singleModelProject(), projectID: "p1", runID: "r1", testMode: true, deps: c.deps(),
 	})
 	if err != nil {
 		t.Fatalf("buildLayerSet: %v", err)
@@ -307,7 +306,7 @@ func TestTestModeReachesEveryClient(t *testing.T) {
 func TestEachLayersClientIsTaggedWithItsPhase(t *testing.T) {
 	c := &counters{}
 	set, err := buildLayerSet(context.Background(), layerSetInput{
-		project: singleModelProject(), projectID: "p1", runID: "r1", gate: true, deps: c.deps(),
+		project: singleModelProject(), projectID: "p1", runID: "r1", deps: c.deps(),
 	})
 	if err != nil {
 		t.Fatalf("buildLayerSet: %v", err)
@@ -336,7 +335,7 @@ func TestPerLayerReasoningReachesTheClient(t *testing.T) {
 
 	c := &counters{}
 	set, err := buildLayerSet(context.Background(), layerSetInput{
-		project: p, projectID: "p1", layers: []string{llmlayer.LayerExploration, llmlayer.LayerAnalysis}, gate: true, deps: c.deps(),
+		project: p, projectID: "p1", layers: []string{llmlayer.LayerExploration, llmlayer.LayerAnalysis}, deps: c.deps(),
 	})
 	if err != nil {
 		t.Fatalf("buildLayerSet: %v", err)
@@ -349,35 +348,53 @@ func TestPerLayerReasoningReachesTheClient(t *testing.T) {
 	}
 }
 
-func TestGateRefusesAnUnconfiguredProject(t *testing.T) {
+// The agent does not carry the per-layer configuration gate; the API does,
+// because the API is the only side that knows whether the gate can be true.
+//
+// Two shapes that reach the agent with no version stamp and MUST run:
+// an existing MANAGED project (the gateway owns its configuration and
+// managedai.Apply only stamps it on the next write), and the pre-#407
+// single-model project that schema indexing and the connection test have
+// always built from. The unstamped project here stands for both.
+func TestTheAgentRunsAProjectTheAPIAlreadyLetThrough(t *testing.T) {
 	p := &models.Project{}
 	p.LLM = models.LLMConfig{Provider: "bedrock", Model: "opus"}
 	// Deliberately not seeded: version 0.
 
 	c := &counters{}
-	_, err := buildLayerSet(context.Background(), layerSetInput{
-		project: p, projectID: "p1", gate: true, deps: c.deps(),
+	set, err := buildLayerSet(context.Background(), layerSetInput{
+		project: p, projectID: "p1", deps: c.deps(),
 	})
-	if !errors.Is(err, llmlayer.ErrLLMNotConfigured) {
-		t.Fatalf("buildLayerSet = %v, want llmlayer.ErrLLMNotConfigured", err)
+	if err != nil {
+		t.Fatalf("buildLayerSet = %v, want the legacy fields to resolve", err)
+	}
+	if got := set.For(llmlayer.LayerAnalysis); got == nil || got.Model != "opus" {
+		t.Fatalf("analysis layer = %+v, want the legacy model", got)
+	}
+	if c.providerBuilds != 1 {
+		t.Errorf("built %d providers for a single-model project, want 1", c.providerBuilds)
+	}
+}
+
+// A project with no LLM at all is still refused — by the resolver, not by a
+// gate, so the refusal survives the gate living elsewhere.
+func TestAProjectWithNoProviderAtAllIsStillRefused(t *testing.T) {
+	c := &counters{}
+	_, err := buildLayerSet(context.Background(), layerSetInput{
+		project: &models.Project{}, projectID: "p1", deps: c.deps(),
+	})
+	if !errors.Is(err, llmlayer.ErrNoProviderConfigured) {
+		t.Fatalf("buildLayerSet = %v, want llmlayer.ErrNoProviderConfigured", err)
 	}
 	if c.providerBuilds != 0 {
 		t.Error("a refused project must not build any provider")
-	}
-
-	// The ungated form serves schema indexing and the connection test, which
-	// have to work before a project has been through settings.
-	if _, err := buildLayerSet(context.Background(), layerSetInput{
-		project: p, projectID: "p1", gate: false, deps: c.deps(),
-	}); err != nil {
-		t.Errorf("ungated buildLayerSet = %v, want nil", err)
 	}
 }
 
 func TestDiscoveryDoesNotBuildLayersItNeverCalls(t *testing.T) {
 	c := &counters{}
 	set, err := buildLayerSet(context.Background(), layerSetInput{
-		project: singleModelProject(), projectID: "p1", layers: discoveryLayers, gate: true, deps: c.deps(),
+		project: singleModelProject(), projectID: "p1", layers: discoveryLayers, deps: c.deps(),
 	})
 	if err != nil {
 		t.Fatalf("buildLayerSet: %v", err)

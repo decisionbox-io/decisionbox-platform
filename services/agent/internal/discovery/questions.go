@@ -186,7 +186,7 @@ func (o *Orchestrator) generateQuestions(ctx context.Context, items []uncertaint
 	// ambiguities (the answer is now in the KB).
 	prompt = o.injectKnowledgeSources(ctx, prompt, "clarifying questions about "+strings.Join(o.datasets, ", "), knowledgeTopKRecommendations)
 
-	window, modelOutputCap := o.resolveModelBudget()
+	window, modelOutputCap := o.budgetFor(llmlayer.LayerQuestions)
 	// Default to the model's own cap, mirroring the analysis/recommendation
 	// paths; DISCOVERY_QUESTIONS_MAX_OUTPUT stays available as an operator
 	// override and is never allowed above what the model itself accepts (a

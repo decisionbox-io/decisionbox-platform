@@ -1215,7 +1215,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// output cap + safety margin are reserved. Recomputed per area so a
 		// window calibrated mid-run (from an overflow 400) tightens the
 		// remaining areas too.
-		areaWindow, areaOutputCap := o.resolveModelBudget()
+		areaWindow, areaOutputCap := o.budgetFor(llmlayer.LayerAnalysis)
 		picker.BudgetTokens = analysisPickerBudgetTokens(AnalysisQueryResultsBudgetTokens, areaWindow, areaOutputCap)
 
 		pickResult, pickErr := picker.Pick(ctx, area, explorationResult.Steps)
@@ -2029,7 +2029,7 @@ func (o *Orchestrator) generateRecommendations(
 	// root cause as the analysis phase, issue #347): a large insights-JSON
 	// prompt plus a fixed output cap can overflow the model window. The
 	// adaptive context-overflow retry is the net.
-	recWindow, recOutputCap := o.resolveModelBudget()
+	recWindow, recOutputCap := o.budgetFor(llmlayer.LayerRecommendations)
 	maxTokens := budgetedMaxOutputTokens(recWindow, approxTokens(ctx, prompt), recOutputCap, analysisMinOutputTokens())
 
 	// Layer 1 (prevention): constrain the recommendation shape at generation

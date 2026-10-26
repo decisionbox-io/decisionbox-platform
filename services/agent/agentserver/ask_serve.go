@@ -118,7 +118,6 @@ func runAskServe(cfg *config.Config) error {
 			project:   project,
 			projectID: projectID,
 			layers:    askServeLayers,
-			gate:      true,
 			deps:      newLayerSetDeps(cfg, secretProvider, projectID, nil),
 		})
 		if err != nil {

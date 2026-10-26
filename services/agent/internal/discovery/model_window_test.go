@@ -36,13 +36,13 @@ func TestResolveModelBudget_PrefersResolvedThenCalibrated(t *testing.T) {
 		llmOutputCap:   64000,
 	}
 	// Before any calibration: uses the run-start resolved window.
-	if w, out := o.resolveModelBudget(); w != 131072 || out != 64000 {
+	if w, out := o.budgetFor(llmlayer.DefaultLayer); w != 131072 || out != 64000 {
 		t.Fatalf("pre-calibration got window=%d out=%d, want 131072/64000", w, out)
 	}
 
 	// After calibration: the learned true window wins.
 	o.applyCalibratedWindow(context.Background(), "GLM-5", 202752)
-	if w, _ := o.resolveModelBudget(); w != 202752 {
+	if w, _ := o.budgetFor(llmlayer.DefaultLayer); w != 202752 {
 		t.Fatalf("post-calibration window=%d, want 202752", w)
 	}
 }
@@ -109,7 +109,7 @@ func TestApplyCalibratedWindow_IgnoresNonPositive(t *testing.T) {
 func TestResolveModelBudget_FallsBackToCatalogWhenUnset(t *testing.T) {
 	// No pre-resolved values and an unregistered provider → package defaults.
 	o := &Orchestrator{llmProvider: "unregistered-x", llmModel: "m"}
-	w, out := o.resolveModelBudget()
+	w, out := o.budgetFor(llmlayer.DefaultLayer)
 	if w <= 0 || out <= 0 {
 		t.Fatalf("fallback must yield positive budget, got window=%d out=%d", w, out)
 	}

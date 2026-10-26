@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -29,7 +30,6 @@ type Client struct {
 	runID        string
 	debugLogger  *debug.Logger
 	testMode     bool
-	promptCount  atomic.Int64 // test-mode capture sequence; validation may call concurrently
 	currentStep  int
 	currentPhase string
 
@@ -397,8 +397,18 @@ func (c *Client) maybeLearnWindow(model string, err error) {
 func (c *Client) SetStep(step int)      { c.currentStep = step }
 func (c *Client) SetPhase(phase string) { c.currentPhase = phase }
 
+// promptCaptureSeq numbers test-mode prompt captures for the whole process.
+//
+// Per-client it would collide: every LLM layer has its own Client, each would
+// start at 1, and the capture filename's other component is a
+// seconds-resolution timestamp — so two layers calling within the same second
+// overwrote each other's capture. A process-wide counter also makes the
+// numbering the run's real call order, which is what someone reading a
+// directory of captures wants.
+var promptCaptureSeq atomic.Int64
+
 func (c *Client) savePrompt(messages []gollm.Message, systemPrompt string) {
-	seq := c.promptCount.Add(1)
+	seq := promptCaptureSeq.Add(1)
 	promptDir := "test-prompts"
 	if err := os.MkdirAll(promptDir, 0750); err != nil {
 		logger.WithField("error", err).Debug("failed to create prompt dir")
@@ -406,7 +416,12 @@ func (c *Client) savePrompt(messages []gollm.Message, systemPrompt string) {
 	}
 
 	timestamp := time.Now().Format("20060102-150405")
+	// The phase names which layer's client wrote this, so a seventeen-layer
+	// run's captures can be read without opening them.
 	filename := fmt.Sprintf("%03d-%s-prompt.txt", seq, timestamp)
+	if phase := promptCaptureTag(c.currentPhase); phase != "" {
+		filename = fmt.Sprintf("%03d-%s-%s-prompt.txt", seq, timestamp, phase)
+	}
 
 	var content string
 	content += fmt.Sprintf("=== PROMPT #%d ===\n", seq)
@@ -420,4 +435,20 @@ func (c *Client) savePrompt(messages []gollm.Message, systemPrompt string) {
 	if err := os.WriteFile(filepath.Join(promptDir, filename), []byte(content), 0600); err != nil {
 		logger.WithField("error", err).Debug("failed to write prompt file")
 	}
+}
+
+// promptCaptureTag reduces a phase tag to something safe in a filename.
+// Phase tags are internal constants ([a-z_]), so this only has to refuse a
+// surprise rather than sanitise hostile input.
+func promptCaptureTag(phase string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(phase)) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '_' || r == '-':
+			b.WriteByte('-')
+		}
+	}
+	return b.String()
 }

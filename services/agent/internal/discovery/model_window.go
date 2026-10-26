@@ -51,16 +51,6 @@ type modelWindowPersister interface {
 	SaveWindow(ctx context.Context, providerID, provider, model string, window int) error
 }
 
-// resolveModelBudget returns the DEFAULT layer's budget.
-//
-// Kept as a no-argument method because the existing suite calls it directly
-// (model_window_test.go) — a rename would break compilation regardless of any
-// runtime fallback, and the point of the fallback is that the suite passes
-// unedited. budgetFor is the per-layer form.
-func (o *Orchestrator) resolveModelBudget() (window, outputCap int) {
-	return o.budgetFor(llmlayer.DefaultLayer)
-}
-
 // budgetFor returns the effective context window and output cap for one
 // layer's model. Precedence:
 //  1. a window calibrated for THIS TARGET from an overflow 400 this run

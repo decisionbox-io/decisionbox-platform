@@ -1048,7 +1048,6 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		projectID:   projectID,
 		runID:       runID,
 		layers:      discoveryLayers,
-		gate:        true,
 		testMode:    testMode,
 		debugLogger: nil, // the orchestrator owns the debug logger and attaches it to every client
 		deps:        newLayerSetDeps(cfg, secretProvider, projectID, windowStore),

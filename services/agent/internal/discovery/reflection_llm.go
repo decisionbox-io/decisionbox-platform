@@ -119,7 +119,7 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 	items := o.runCatalogItems()
 	prompt := o.buildReflectionPrompt(result, prior, tasks, pol, items, demandPriorRejudgement, hasFindingIDs)
 
-	window, modelOutputCap := o.resolveModelBudget()
+	window, modelOutputCap := o.budgetFor(llmlayer.LayerReflection)
 	// Default to the model's own cap, mirroring the analysis and recommendation
 	// paths; DISCOVERY_REFLECTION_MAX_OUTPUT stays available as an operator
 	// override. The response is bounded by the prompt caps

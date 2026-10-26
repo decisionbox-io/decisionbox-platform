@@ -74,11 +74,6 @@ type layerSetInput struct {
 	// layers lists the layers to build. Only these are resolved — a discovery
 	// run does not pay for the Ask or pack-generation layers.
 	layers []string
-	// gate, when true, refuses an unconfigured project
-	// (llmlayer.ErrLLMNotConfigured). The product paths set it; the
-	// connection test and schema indexing do not, because they have to work
-	// before a project has been through settings.
-	gate bool
 	// testMode and debugLogger are applied to EVERY layer's client. Anything
 	// applied to only one would silently switch a feature off for sixteen
 	// layers.
@@ -143,15 +138,20 @@ func buildLayerSet(ctx context.Context, in layerSetInput) (*layerSet, error) {
 			continue
 		}
 
-		var (
-			spec llmlayer.LayerSpec
-			err  error
-		)
-		if in.gate {
-			spec, err = in.project.LayerSpec(layer)
-		} else {
-			spec, err = in.project.LayerSpecUnchecked(layer)
-		}
+		// Unchecked: the "has this project been configured for per-layer
+		// models" gate is a PRODUCT precondition and lives in the API, which
+		// is the only place that knows whether it can be true. On a managed
+		// deployment the whole AI configuration belongs to the gateway —
+		// managedai.Apply overwrites it on every write — so there is nothing
+		// for a user to review and no settings page to be sent to, and a
+		// project configured before #407 carries no version stamp. Repeating
+		// the gate here, where that is invisible, refused every existing
+		// cloud project after the API had already let the run through.
+		//
+		// Nothing is lost: the API refuses an unconfigured project at both
+		// entry points (StartRun and Ask), and a project with no provider at
+		// all still fails below with ErrNoProviderConfigured.
+		spec, err := in.project.LayerSpecUnchecked(layer)
 		if err != nil {
 			return nil, fmt.Errorf("resolve layer %q: %w", layer, err)
 		}

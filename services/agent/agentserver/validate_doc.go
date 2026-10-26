@@ -207,7 +207,6 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 		project:   project,
 		projectID: project.ID,
 		layers:    validationLayers,
-		gate:      true,
 		deps:      newLayerSetDeps(cfg, secretProvider, project.ID, nil),
 	})
 	if err != nil {

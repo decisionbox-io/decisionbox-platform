@@ -4,9 +4,12 @@ import (
 	"context"
 	"testing"
 
+	agentplugin "github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/testutil"
 )
 
 // fakeLayerSet is a minimal ai.LayerSet for the orchestrator's layer plumbing.
@@ -156,5 +159,101 @@ func TestBudgetFallsBackToTheCatalogWithNoResolvedValues(t *testing.T) {
 	w, c := o.budgetFor(llmlayer.LayerAnalysis)
 	if w <= 0 || c <= 0 {
 		t.Errorf("catalog fallback gave %d/%d, want positive values", w, c)
+	}
+}
+
+// layerLLMOn is layerLLM with a real provider behind the layer's client, so a
+// test can read the request a phase actually put on the wire.
+func layerLLMOn(t *testing.T, layer, providerID, provider, model string, window, outputCap int, p gollm.Provider) *ai.LayerLLM {
+	t.Helper()
+	client, err := ai.New(p, model)
+	if err != nil {
+		t.Fatalf("ai.New: %v", err)
+	}
+	client.SetProvenance("p", "r", provider)
+	return &ai.LayerLLM{
+		Layer: layer, ProviderID: providerID, Provider: provider, Model: model,
+		Window: window, OutputCap: outputCap, Client: client,
+	}
+}
+
+// Every phase must size its request against the model it is about to call.
+//
+// This is the bug the per-layer split creates and nothing else catches: the
+// phase takes its CLIENT from its own layer and its BUDGET from a helper, and
+// a helper that answers for the default layer sends a 32,000-token max_tokens
+// to a model that accepts 1,024 — a 4xx on some providers and a silently
+// truncated answer on others. Four call sites had it; two of them (questions
+// and reflection) are drivable from here, and they fail the moment a phase
+// goes back to budgeting against the default.
+func TestEachPhaseBudgetsAgainstItsOwnLayer(t *testing.T) {
+	const tinyCap = 1024
+
+	cases := []struct {
+		name  string
+		layer string
+		// run drives the phase on an orchestrator whose layer set gives the
+		// phase's layer tinyCap and the default layer a generous one.
+		run func(t *testing.T, o *Orchestrator)
+	}{
+		{
+			name:  "questions",
+			layer: llmlayer.LayerQuestions,
+			run: func(t *testing.T, o *Orchestrator) {
+				o.clarifyingQuestionsEnabled = true
+				o.questionRepo = &fakeQuestionRepo{}
+				items := []uncertaintyItem{{TargetType: "insight", TargetID: "i-1", Label: "churn", Reason: "unverifiable"}}
+				if _, err := o.generateQuestions(context.Background(), items, nil, map[string]bool{"i-1": true}, 3); err != nil {
+					t.Fatalf("generateQuestions: %v", err)
+				}
+			},
+		},
+		{
+			name:  "reflection",
+			layer: llmlayer.LayerReflection,
+			run: func(t *testing.T, o *Orchestrator) {
+				o.findingRepo = &fakeFindingRepo{}
+				if _, err := o.generateReflection(context.Background(),
+					&models.DiscoveryResult{Schemas: map[string]models.TableSchema{"ds.orders": {}}},
+					agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeSuggestOnly, FrontierPolicy: agentplugin.FrontierBalanced},
+					consolidationResult{},
+				); err != nil {
+					t.Fatalf("generateReflection: %v", err)
+				}
+			},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			small := testutil.NewMockLLMProvider()
+			small.DefaultResponse = &gollm.ChatResponse{Content: `{"questions":[],"coverage_summary":"covered","learnings":[],"next_tasks":[]}`}
+			big := testutil.NewMockLLMProvider()
+			big.DefaultResponse = small.DefaultResponse
+
+			deflt := layerLLMOn(t, llmlayer.DefaultLayer, llmlayer.DefaultProviderID, "bedrock", "opus", 200000, 32000, big)
+			phase := layerLLMOn(t, c.layer, "cheap", "litellm", "qwen3-32b", 200000, tinyCap, small)
+
+			o := &Orchestrator{
+				aiClient:  deflt.Client,
+				projectID: "p", runID: "r", datasets: []string{"ds"},
+				llmInputWindow: 200000, llmOutputCap: 32000,
+				layers: &fakeLayerSet{
+					byLayer:  map[string]*ai.LayerLLM{llmlayer.DefaultLayer: deflt, c.layer: phase},
+					fallback: deflt,
+				},
+			}
+			c.run(t, o)
+
+			if len(big.Calls) > 0 {
+				t.Fatalf("the %s phase called the DEFAULT layer's model", c.name)
+			}
+			if len(small.Calls) == 0 {
+				t.Fatalf("the %s phase never called its own layer's model", c.name)
+			}
+			if got := small.Calls[0].Request.MaxTokens; got > tinyCap {
+				t.Errorf("max_tokens = %d on a layer that accepts %d — the phase budgeted against the default layer", got, tinyCap)
+			}
+		})
 	}
 }
