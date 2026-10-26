@@ -299,9 +299,24 @@ func dualWriteLegacyLLM(p *models.Project) {
 	switch {
 	case err != nil:
 		// Leave the mirror as it is rather than guessing.
-	case td.Provider == def.Provider && td.Model == def.Model:
-		// Equal to the default: an older image reusing the analysis slot is
-		// correct, and leaving a stale override would make it wrong.
+	case td.Target() == def.Target():
+		// The same deployment as the default — compared on the whole target,
+		// configuration included, because two rows can share a provider and
+		// model while naming different endpoint_ids. An older image reusing
+		// the analysis slot is then correct, and a stale override would make
+		// it wrong.
+		p.BlurbLLM = nil
+	case !llmlayer.IsReservedProviderID(td.ProviderID):
+		// The table-description layer is on a SECONDARY entry, whose
+		// credential lives under a namespaced key an older image has never
+		// heard of: it reads blurb-llm-credentials, then llm-credentials. So
+		// a mirror here would point that image at a third-party endpoint
+		// while handing it the primary credential.
+		//
+		// Clearing the mirror makes the older image fall back to the
+		// analysis slot — the wrong MODEL, but an authorised call with a
+		// credential that belongs to the endpoint receiving it. Current
+		// images read the layer rows and are unaffected.
 		p.BlurbLLM = nil
 	default:
 		p.BlurbLLM = &models.BlurbLLMConfig{
@@ -532,7 +547,7 @@ func mirrorLegacyLLMOntoDefaultLayer(p *models.Project) {
 		if llmlayer.NormalizeProviderID(e.ID) == llmlayer.DefaultProviderID {
 			sawDefault = true
 			e.Provider = p.LLM.Provider
-			e.Config = legacyConnectionConfig(p.LLM.Config)
+			e.Config = llmlayer.ConnectionConfig(p.LLM.Config)
 		}
 		updated = append(updated, e)
 	}
@@ -540,7 +555,7 @@ func mirrorLegacyLLMOntoDefaultLayer(p *models.Project) {
 		updated = append([]llmlayer.ProviderEntry{{
 			ID:       llmlayer.DefaultProviderID,
 			Provider: p.LLM.Provider,
-			Config:   legacyConnectionConfig(p.LLM.Config),
+			Config:   llmlayer.ConnectionConfig(p.LLM.Config),
 		}}, updated...)
 	}
 	p.LLMProviders = updated
@@ -551,68 +566,13 @@ func mirrorLegacyLLMOntoDefaultLayer(p *models.Project) {
 	row := p.LayerModels[llmlayer.DefaultLayer]
 	row.ProviderID = llmlayer.DefaultProviderID
 	row.Model = p.LLM.Model
-	// The keys legacyConnectionConfig kept off the ENTRY are model-scoped, so
+	// The keys ConnectionConfig kept off the ENTRY are model-scoped, so
 	// they belong on the row — dropping them would accept a legacy write of
 	// max_output_tokens or reasoning_enabled with a 200 and silently discard
 	// it. Replaced rather than merged: for a caller writing the legacy block,
 	// that block is the whole truth about the default pair.
-	row.Config = legacyModelConfig(p.LLM.Config)
+	row.Config = llmlayer.ModelConfig(p.LLM.Config)
 	p.LayerModels[llmlayer.DefaultLayer] = row
-}
-
-// legacyConnectionConfig strips the model-scoped keys out of a legacy
-// llm.config so they do not land on a provider ENTRY, where they would apply
-// to every layer that shares the connection.
-func legacyConnectionConfig(cfg map[string]string) map[string]string {
-	if len(cfg) == 0 {
-		return nil
-	}
-	modelScoped := map[string]bool{}
-	for _, k := range legacyModelScopedKeys {
-		modelScoped[k] = true
-	}
-	out := make(map[string]string, len(cfg))
-	for k, v := range cfg {
-		if modelScoped[k] || k == "model" || k == "credentials_json" {
-			continue
-		}
-		out[k] = v
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-// legacyModelConfig is legacyConnectionConfig's complement: the model-scoped
-// keys of a legacy llm.config, which belong on the default layer row rather
-// than on the provider entry. Between them the two functions partition the
-// legacy config, bar `model` and `credentials_json` — the model is the row's
-// own field and a credential never belongs in a config map.
-func legacyModelConfig(cfg map[string]string) map[string]string {
-	if len(cfg) == 0 {
-		return nil
-	}
-	out := map[string]string{}
-	for _, k := range legacyModelScopedKeys {
-		if v, ok := cfg[k]; ok {
-			out[k] = v
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-// legacyModelScopedKeys are the legacy llm.config keys that describe the
-// MODEL rather than the connection.
-var legacyModelScopedKeys = []string{
-	"max_input_tokens",
-	"max_output_tokens",
-	"wire_override",
-	gollm.PromptCacheKey,
-	gollm.ReasoningEnabledKey,
 }
 
 // stampLLMConfigVersion records that this project has been configured for the
@@ -695,6 +655,21 @@ func applyLLMLayerCreate(w http.ResponseWriter, r *http.Request, p *models.Proje
 	}
 	if len(p.LayerModels) == 0 {
 		p.SeedLLMLayersFromLegacy()
+		// The seed is DERIVED, so it can be something the user never asked
+		// for and could not have been saved: a project created with a
+		// reasoning-class analysis model seeds that model into table
+		// descriptions, whose own rule refuses it, and the first schema index
+		// would then fail with the settings page as the only cure. Leaving
+		// such a project unconfigured sends the user there instead — with
+		// every value pre-filled and one choice to make. The validation above
+		// still rejects a bad REQUEST; this judges a configuration nobody
+		// typed.
+		if msg := validateLLMLayerConfig(p); msg != "" {
+			p.LLMProviders = nil
+			p.LayerModels = nil
+			p.LLMConfigVersion = 0
+			return true
+		}
 	}
 	if err := checkLLMProviderEntriesAllowed(r.Context(), p); err != nil {
 		if writePolicyError(w, err) {

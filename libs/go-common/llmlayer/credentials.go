@@ -218,6 +218,27 @@ func CredentialChain(layer, providerID string, cfg map[string]string) []Credenti
 	}
 }
 
+// ChainKey renders a credential chain as a comparable identity.
+//
+// Two layers can share a provider entry, a model AND a merged configuration
+// and still authenticate differently: table descriptions tries the blurb
+// secret before the default one. Anything that groups layers by the
+// deployment they reach — a connection, a probe, a shared provider instance —
+// has to know that, or one layer's working credential will be reported, or
+// used, for another's.
+//
+// It is the chain's shape, never a credential value.
+func ChainKey(refs []CredentialRef) string {
+	var b strings.Builder
+	for _, ref := range refs {
+		b.WriteString(ref.SecretKey)
+		b.WriteByte('|')
+		b.WriteString(ref.EnvVar)
+		b.WriteByte(';')
+	}
+	return b.String()
+}
+
 // IsReservedProviderID reports whether id names one of the two reserved
 // entries, whose credentials live under the legacy keys.
 func IsReservedProviderID(id string) bool {

@@ -257,3 +257,79 @@ func TestEachPhaseBudgetsAgainstItsOwnLayer(t *testing.T) {
 		})
 	}
 }
+
+// A window learned by overflowing one endpoint must not move another's
+// budget, even when both name the same model on the same provider entry.
+//
+// A user-deployed Vertex or Bedrock endpoint is the real case: the model id
+// identifies the family, endpoint_id identifies the deployment, and the two
+// deployments can have different context windows. Provider construction and
+// budget resolution already tell them apart; the calibration key did not.
+func TestCalibrationIsScopedToTheEndpointThatLearnedIt(t *testing.T) {
+	cfgA := map[string]string{"project_id": "gcp", "location": "us-central1", "endpoint_id": "ep-a"}
+	cfgB := map[string]string{"project_id": "gcp", "location": "us-central1", "endpoint_id": "ep-b"}
+
+	a := layerLLM(llmlayer.LayerExploration, llmlayer.DefaultProviderID, "vertex-ai", "gemini-2.5-pro", 200000, 8192)
+	a.Config = gollm.ProviderConfig(cfgA)
+	b := layerLLM(llmlayer.LayerAnalysis, llmlayer.DefaultProviderID, "vertex-ai", "gemini-2.5-pro", 200000, 8192)
+	b.Config = gollm.ProviderConfig(cfgB)
+
+	store := &fakeWindowStore{}
+	o := &Orchestrator{
+		aiClient:        a.Client,
+		modelWindowRepo: store,
+		layers: &fakeLayerSet{
+			byLayer:  map[string]*ai.LayerLLM{llmlayer.LayerExploration: a, llmlayer.LayerAnalysis: b, llmlayer.DefaultLayer: a},
+			fallback: a,
+		},
+	}
+
+	o.applyCalibratedWindowFor(context.Background(), a, "gemini-2.5-pro", 40960)
+
+	if w, _ := o.budgetFor(llmlayer.LayerExploration); w != 40960 {
+		t.Errorf("ep-a window = %d, want the calibrated 40960", w)
+	}
+	if w, _ := o.budgetFor(llmlayer.LayerAnalysis); w != 200000 {
+		t.Errorf("ep-b window = %d, want its own 200000 — the two endpoints share only a model id", w)
+	}
+	// And the persisted key separates them, so the next run reloads them apart.
+	if len(store.saved) != 1 {
+		t.Fatalf("persisted %d windows, want 1", len(store.saved))
+	}
+	keyA := ModelWindowKey("gemini-2.5-pro", gollm.ProviderConfig(cfgA))
+	keyB := ModelWindowKey("gemini-2.5-pro", gollm.ProviderConfig(cfgB))
+	if keyA == keyB {
+		t.Errorf("ModelWindowKey is %q for both endpoints", keyA)
+	}
+	if store.saved[0].model != keyA {
+		t.Errorf("persisted under %q, want %q", store.saved[0].model, keyA)
+	}
+}
+
+// The validation output budget is a deployment setting, but it cannot exceed
+// what the layer's model will accept.
+//
+// Per-layer models made this reachable: a validation layer can now be pointed
+// at a small model, and a 4,000-token request to a model that accepts 1,024 is
+// a 4xx on every validation call. The deployment setting still wins when it is
+// the lower of the two — tuning the budget down is a legitimate thing to do.
+func TestValidationOutputBudgetIsClampedToTheLayerModel(t *testing.T) {
+	small := layerLLM(llmlayer.LayerValidationVerifier, "cheap", "litellm", "qwen3-32b", 128000, 1024)
+	big := layerLLM(llmlayer.LayerValidationRefuter, llmlayer.DefaultProviderID, "bedrock", "opus", 200000, 32000)
+
+	if got := clampToLayerCap(4000, small); got != 1024 {
+		t.Errorf("clamped budget = %d, want the layer's 1024", got)
+	}
+	if got := clampToLayerCap(3000, big); got != 3000 {
+		t.Errorf("budget = %d, want the deployment's 3000 — the layer accepts more", got)
+	}
+	// An unresolved layer, or one with no cap, leaves the budget alone rather
+	// than collapsing it to zero.
+	if got := clampToLayerCap(4000, nil); got != 4000 {
+		t.Errorf("budget with no layer = %d, want 4000", got)
+	}
+	noCap := layerLLM(llmlayer.LayerValidationVerifier, llmlayer.DefaultProviderID, "bedrock", "opus", 200000, 0)
+	if got := clampToLayerCap(4000, noCap); got != 4000 {
+		t.Errorf("budget with no resolved cap = %d, want 4000", got)
+	}
+}

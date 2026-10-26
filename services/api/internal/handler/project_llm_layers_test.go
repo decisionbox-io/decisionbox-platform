@@ -709,14 +709,17 @@ func TestUpdate_DualWritesTheLegacyMirror(t *testing.T) {
 	h := NewProjectsHandler(repo, newMockDomainPackRepo())
 	p := configuredProject(t, repo)
 
+	// The table-description layer is on the RESERVED blurb entry, whose
+	// credential already lives under the key an older image reads
+	// (blurb-llm-credentials) — so the mirror is safe to write.
 	w := putProject(t, h, p.ID, `{
 	  "llm_providers": [
 	    {"id": "default", "provider": "bedrock", "config": {"region": "us-east-1"}},
-	    {"id": "cheap", "provider": "litellm", "config": {"base_url": "http://cheap"}}
+	    {"id": "blurb", "provider": "litellm", "config": {"base_url": "http://cheap"}}
 	  ],
 	  "layer_models": {
 	    "default": {"provider_id": "default", "model": "opus", "config": {"reasoning_enabled": "true"}},
-	    "table_descriptions": {"provider_id": "cheap", "model": "qwen3-32b"}
+	    "table_descriptions": {"provider_id": "blurb", "model": "qwen3-32b"}
 	  }
 	}`)
 	if w.Code != http.StatusOK {
@@ -979,5 +982,130 @@ func TestUpdate_AcceptsAPrefixedEnvVarFallback(t *testing.T) {
 	w := putProject(t, h, p.ID, body)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+}
+
+// The legacy blurb mirror is NOT written when table descriptions are on a
+// secondary entry.
+//
+// The mirror would point an older agent, sources-worker or
+// fileingestion-worker image at that entry's endpoint while the credential it
+// reads for blurb_llm is fixed: blurb-llm-credentials, then llm-credentials.
+// It has never heard of a namespaced key. So the write would hand a
+// third-party endpoint the primary credential — authentication failure if we
+// are lucky, disclosure if we are not.
+//
+// Clearing it is the honest degradation: the older image falls back to the
+// analysis slot, which is the wrong MODEL but an authorised call. Current
+// images read the layer rows and are unaffected either way.
+func TestUpdate_RefusesToMirrorASecondaryEntryIntoTheBlurbSlot(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, newMockDomainPackRepo())
+	p := configuredProject(t, repo)
+
+	// Something stale in the mirror first, so the test proves a CLEAR rather
+	// than an absence.
+	stored, _ := repo.GetByID(context.Background(), p.ID)
+	stored.BlurbLLM = &models.BlurbLLMConfig{Provider: "bedrock", Model: "haiku"}
+	if err := repo.Update(context.Background(), p.ID, stored); err != nil {
+		t.Fatalf("seed the stale mirror: %v", err)
+	}
+
+	w := putProject(t, h, p.ID, `{
+	  "llm_providers": [
+	    {"id": "default", "provider": "bedrock", "config": {"region": "us-east-1"}},
+	    {"id": "cheap", "provider": "litellm", "config": {"base_url": "http://cheap"}}
+	  ],
+	  "layer_models": {
+	    "default": {"provider_id": "default", "model": "opus"},
+	    "table_descriptions": {"provider_id": "cheap", "model": "qwen3-32b"}
+	  }
+	}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — a secondary blurb entry is a supported choice: %s", w.Code, w.Body.String())
+	}
+	stored, _ = repo.GetByID(context.Background(), p.ID)
+	if stored.BlurbLLM != nil {
+		t.Errorf("blurb_llm = %+v, want it cleared: an older image cannot read that entry's credential", stored.BlurbLLM)
+	}
+	// The layer row itself is untouched — this is about the mirror only.
+	row := stored.LayerModels[llmlayer.LayerTableDescriptions]
+	if row.ProviderID != "cheap" || row.Model != "qwen3-32b" {
+		t.Errorf("table_descriptions row = %+v, want the user's choice kept", row)
+	}
+}
+
+// Two rows can name the same provider and model and still be different
+// deployments — a Vertex endpoint_id override is the real case. Clearing the
+// mirror on a provider+model match alone pointed an older image at the
+// analysis endpoint instead of the one chosen for table descriptions.
+func TestUpdate_KeepsTheBlurbMirrorWhenOnlyTheEndpointDiffers(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, newMockDomainPackRepo())
+	p := configuredProject(t, repo)
+
+	w := putProject(t, h, p.ID, `{
+	  "llm_providers": [
+	    {"id": "default", "provider": "vertex-ai", "config": {"project_id": "gcp", "location": "us-central1", "endpoint_id": "ep-analysis"}}
+	  ],
+	  "layer_models": {
+	    "default": {"provider_id": "default", "model": "gemini-2.5-pro"},
+	    "table_descriptions": {"provider_id": "default", "model": "gemini-2.5-pro", "config": {"endpoint_id": "ep-blurb"}}
+	  }
+	}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	stored, _ := repo.GetByID(context.Background(), p.ID)
+	if stored.BlurbLLM == nil {
+		t.Fatal("blurb_llm was cleared, so an older image would index against the analysis endpoint")
+	}
+	if stored.BlurbLLM.Config["endpoint_id"] != "ep-blurb" {
+		t.Errorf("blurb_llm.config = %+v, want the table-description endpoint", stored.BlurbLLM.Config)
+	}
+}
+
+// A project created with a reasoning-class analysis model is NOT born
+// configured.
+//
+// The seed is derived: it would put that model on table descriptions, whose
+// own rule refuses it, and the first schema index would fail with the
+// settings page as the only cure. The project is created and gated instead,
+// so the user is sent there with everything pre-filled and one choice to
+// make — rather than finding out from a failed index.
+func TestCreate_IsNotBornConfiguredWhenTheSeedWouldBeRefused(t *testing.T) {
+	repo := newMockProjectRepo()
+	packRepo := newMockDomainPackRepo()
+	packRepo.add(testDomainPack("gaming", "match3"))
+	h := NewProjectsHandler(repo, packRepo)
+
+	body := `{"name":"Reasoning","domain":"gaming","category":"match3","llm":{"provider":"openai","model":"gpt-5"},` +
+		`"embedding":{"provider":"openai","model":"text-embedding-3-small"}}`
+	req := httptest.NewRequest("POST", "/api/v1/projects", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.Create(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 — a reasoning analysis model is a legitimate choice: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	stored, _ := repo.GetByID(context.Background(), resp.Data.ID)
+	if stored.LLMConfigured() {
+		t.Errorf("project is configured with layer_models=%+v; the seed its own rule refuses must not be stamped", stored.LayerModels)
+	}
+	if len(stored.LayerModels) != 0 {
+		t.Errorf("layer_models = %+v, want none — settings re-seeds and asks for the one missing choice", stored.LayerModels)
+	}
+	// The project is otherwise intact: the user's analysis model survives.
+	if stored.LLM.Model != "gpt-5" {
+		t.Errorf("llm.model = %q, want the model the user chose", stored.LLM.Model)
 	}
 }

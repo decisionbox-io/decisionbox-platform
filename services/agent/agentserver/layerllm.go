@@ -55,9 +55,14 @@ func (s *layerSet) built() []*ai.LayerLLM {
 // dedupe guarantees can be asserted by counting calls rather than by reading
 // the code and hoping.
 type layerSetDeps struct {
-	// buildProvider constructs a provider from a resolved spec. Defaults to
-	// llmlayer.BuildProvider with the deployment's LLM settings.
-	buildProvider func(ctx context.Context, spec llmlayer.LayerSpec) (gollm.Provider, gollm.ProviderConfig, error)
+	// resolveCredential resolves one layer's credential. Separate from
+	// buildProvider because the credential decides whether two layers may
+	// SHARE a provider, so it has to be known before that decision.
+	resolveCredential func(ctx context.Context, spec llmlayer.LayerSpec) (llmlayer.Credential, error)
+	// buildProvider constructs a provider from a resolved spec and its
+	// credential. Defaults to llmlayer.BuildProviderWith with the
+	// deployment's LLM settings.
+	buildProvider func(ctx context.Context, spec llmlayer.LayerSpec, cred llmlayer.Credential) (gollm.Provider, gollm.ProviderConfig, error)
 	// resolveBudget resolves (window, outputCap) for one target. Defaults to
 	// resolveModelBudget, which includes the live ModelInfoResolver probe.
 	resolveBudget func(ctx context.Context, provider gollm.Provider, spec llmlayer.LayerSpec, persistedWindow int) (window, outputCap int)
@@ -111,6 +116,9 @@ func buildLayerSet(ctx context.Context, in layerSetInput) (*layerSet, error) {
 	if deps.buildProvider == nil {
 		return nil, fmt.Errorf("buildLayerSet: buildProvider is required")
 	}
+	if deps.resolveCredential == nil {
+		return nil, fmt.Errorf("buildLayerSet: resolveCredential is required")
+	}
 	if deps.resolveBudget == nil {
 		return nil, fmt.Errorf("buildLayerSet: resolveBudget is required")
 	}
@@ -130,6 +138,10 @@ func buildLayerSet(ctx context.Context, in layerSetInput) (*layerSet, error) {
 	providers := map[string]gollm.Provider{}
 	configs := map[string]gollm.ProviderConfig{}
 	budgets := map[string]budget{}
+	// One secret read per credential CHAIN, not per layer: a single-model
+	// project reads the default chain once and the blurb chain once, and
+	// every layer sharing a chain reuses the result.
+	creds := map[string]llmlayer.Credential{}
 
 	set := &layerSet{byLayer: make(map[string]*ai.LayerLLM, len(want))}
 
@@ -163,14 +175,48 @@ func buildLayerSet(ctx context.Context, in layerSetInput) (*layerSet, error) {
 			}).Warn("Layer names an LLM provider entry this project does not have; using the default entry")
 		}
 
-		// One provider per (entry, merged config).
-		providerKey := spec.ProviderID + "\x00" + llmlayer.ConfigKey(gollm.ProviderConfig(spec.Config))
+		chainKey := llmlayer.ChainKey(llmlayer.CredentialChain(spec.Layer, spec.ProviderID, spec.Config))
+		cred, haveCred := creds[chainKey]
+		if !haveCred {
+			var cerr error
+			cred, cerr = deps.resolveCredential(ctx, spec)
+			if cerr != nil {
+				// The agent's long-standing policy: an unexpected
+				// secret-store error is logged and the resolved fallback is
+				// used, so an env-only or managed deployment keeps working
+				// through a transient blip.
+				applog.WithFields(applog.Fields{
+					"layer":             layer,
+					"credential_source": cred.Source,
+					"error":             cerr.Error(),
+				}).Warn("Secret-store error while resolving a layer's credential; continuing on the fallback")
+			}
+			creds[chainKey] = cred
+		}
+
+		// One provider per (entry, merged config, RESOLVED credential).
+		//
+		// The credential belongs in the key because it is not a function of
+		// the entry alone: table descriptions tries the blurb secret before
+		// the default one, so two layers on ONE entry with identical config
+		// can authenticate as different principals. Keyed without it, the
+		// first layer built won, and a project with a separate blurb
+		// credential indexed its tables on the analysis key — which is what
+		// resolveBlurbLLM used to get right by building its own provider.
+		//
+		// It is keyed on the credential's IDENTITY (which key it came from,
+		// and whether that was the store or the environment), never its
+		// value, and on the RESOLVED one rather than the chain — so a
+		// project whose blurb chain falls through to the default key still
+		// shares one provider instance, as it should.
+		providerKey := spec.ProviderID + "\x00" + llmlayer.ConfigKey(gollm.ProviderConfig(spec.Config)) +
+			"\x00" + cred.SecretKey + "\x00" + cred.Source
 		provider, built := providers[providerKey]
 		var mergedCfg gollm.ProviderConfig
 		if built {
 			mergedCfg = configs[providerKey]
 		} else {
-			provider, mergedCfg, err = deps.buildProvider(ctx, spec)
+			provider, mergedCfg, err = deps.buildProvider(ctx, spec, cred)
 			if err != nil {
 				return nil, fmt.Errorf("build LLM for layer %q: %w", layer, err)
 			}
@@ -279,8 +325,11 @@ func newLayerSetDeps(cfg *config.Config, secretProvider gosecrets.Provider, proj
 		},
 	}
 	return layerSetDeps{
-		buildProvider: func(ctx context.Context, spec llmlayer.LayerSpec) (gollm.Provider, gollm.ProviderConfig, error) {
-			return llmlayer.BuildProvider(ctx, secretProvider, projectID, spec, opts)
+		resolveCredential: func(ctx context.Context, spec llmlayer.LayerSpec) (llmlayer.Credential, error) {
+			return llmlayer.ResolveCredential(ctx, secretProvider, projectID, spec, opts)
+		},
+		buildProvider: func(_ context.Context, spec llmlayer.LayerSpec, cred llmlayer.Credential) (gollm.Provider, gollm.ProviderConfig, error) {
+			return llmlayer.BuildProviderWith(spec, cred, opts)
 		},
 		resolveBudget: func(ctx context.Context, provider gollm.Provider, spec llmlayer.LayerSpec, persisted int) (int, int) {
 			return resolveModelBudget(ctx, provider, spec.Provider, spec.Model, gollm.ProviderConfig(spec.Config), persisted)
@@ -300,19 +349,48 @@ type modelWindowReader interface {
 	window(ctx context.Context, spec llmlayer.LayerSpec) int
 }
 
-// discoveryLayers are the layers a DISCOVERY run resolves. Listed rather than
-// taking the whole set so a run does not build providers for Ask, pack
-// generation, file ingestion or the executive summary — none of which it
-// calls.
-var discoveryLayers = []string{
-	llmlayer.LayerExploration,
-	llmlayer.LayerAnalysis,
-	llmlayer.LayerValidationVerifier,
-	llmlayer.LayerValidationRefuter,
-	llmlayer.LayerRecommendations,
-	llmlayer.LayerQuestions,
-	llmlayer.LayerReflection,
-	llmlayer.LayerSQLRepair,
+// discoveryPhases says which optional discovery phases THIS run will execute.
+type discoveryPhases struct {
+	validation bool
+	refuter    bool
+	questions  bool
+	reflection bool
+}
+
+// discoveryLayers are the layers a DISCOVERY run resolves.
+//
+// Listed rather than taking the whole set so a run does not build providers
+// for Ask, pack generation, file ingestion or the executive summary — none of
+// which it calls. Gated on the enabled phases for a sharper reason: building
+// a provider reads a credential and constructs a connection, so a broken
+// override on a layer this run will never call aborted the run before
+// exploration started. VALIDATION_REFUTER_ENABLED=false could not route
+// around a broken refuter endpoint, which is the one thing it is for.
+//
+// A layer that is not built still resolves through layerSet.For, which falls
+// back to the default layer — so being wrong here costs the default model,
+// not a nil client.
+func discoveryLayers(phases discoveryPhases) []string {
+	layers := []string{
+		llmlayer.LayerExploration,
+		llmlayer.LayerAnalysis,
+		llmlayer.LayerRecommendations,
+		// The query fixer runs inside exploration, so it is never optional.
+		llmlayer.LayerSQLRepair,
+	}
+	if phases.validation {
+		layers = append(layers, llmlayer.LayerValidationVerifier)
+		if phases.refuter {
+			layers = append(layers, llmlayer.LayerValidationRefuter)
+		}
+	}
+	if phases.questions {
+		layers = append(layers, llmlayer.LayerQuestions)
+	}
+	if phases.reflection {
+		layers = append(layers, llmlayer.LayerReflection)
+	}
+	return layers
 }
 
 // askServeLayers are the layers the ask-serve process resolves: the answer

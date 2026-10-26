@@ -48,12 +48,32 @@ export interface ProviderEntryForm {
   isNew: boolean;
 }
 
-export function entryFormsFrom(entries: LLMProviderEntry[]): ProviderEntryForm[] {
+/**
+ * entryFormsFrom builds the form state for a project's saved entries.
+ *
+ * `providers` is the registry metadata, and it is load-bearing rather than
+ * decorative: a stored entry on a single-method provider (OpenAI, Claude,
+ * Azure) usually has no explicit `config.auth_method`, and
+ * ProviderCredentialsPhase hides the method selector for a single-method
+ * provider while auto-selecting only when the PROVIDER changes. With the
+ * method left empty, such an entry rendered neither a selector nor a
+ * credential input — so its key could not be entered or rotated without
+ * switching provider and back. The previous settings editor pre-selected the
+ * sole method for exactly this reason.
+ */
+export function entryFormsFrom(
+  entries: LLMProviderEntry[],
+  providers: ProviderMeta[] = [],
+): ProviderEntryForm[] {
+  const soleAuthMethod = (providerID: string): string => {
+    const methods = providers.find((p) => p.id === providerID)?.auth_methods ?? [];
+    return methods.length === 1 ? methods[0].id : '';
+  };
   const forms = entries.map((e) => ({
     id: e.id || DEFAULT_LLM_PROVIDER_ID,
     label: e.label || '',
     provider: e.provider,
-    authMethod: e.config?.['auth_method'] || '',
+    authMethod: e.config?.['auth_method'] || soleAuthMethod(e.provider),
     config: { ...(e.config || {}) },
     apiKey: '',
     isNew: false,

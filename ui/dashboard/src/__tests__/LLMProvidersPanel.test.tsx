@@ -223,3 +223,31 @@ describe('LLMProvidersPanel — the default-layer test button', () => {
     expect(screen.getAllByRole('button', { name: 'Test LLM Connection' })).toHaveLength(1);
   });
 });
+
+// A saved entry on a single-method provider usually has no explicit
+// config.auth_method, and ProviderCredentialsPhase hides the selector for a
+// single-method provider while auto-selecting only when the PROVIDER changes.
+// Left empty, such an entry rendered neither a selector nor a credential
+// input — so its key could not be entered or rotated without switching
+// provider and back. The previous editor pre-selected the sole method.
+describe('entryFormsFrom — the sole auth method', () => {
+  const META = [
+    { id: 'openai', name: 'OpenAI', description: '', config_fields: [], auth_methods: [{ id: 'api_key', label: 'API key', fields: [] }] },
+    { id: 'bedrock', name: 'Bedrock', description: '', config_fields: [], auth_methods: [{ id: 'keys', label: 'Keys', fields: [] }, { id: 'role', label: 'Role', fields: [] }] },
+  ] as never[];
+
+  it('is pre-selected for a stored entry that names none', () => {
+    const forms = entryFormsFrom([{ id: 'default', provider: 'openai' }], META);
+    expect(forms[0].authMethod).toBe('api_key');
+  });
+
+  it('is left for the user to pick when the provider has several', () => {
+    const forms = entryFormsFrom([{ id: 'default', provider: 'bedrock' }], META);
+    expect(forms[0].authMethod).toBe('');
+  });
+
+  it('never overrides a stored choice', () => {
+    const forms = entryFormsFrom([{ id: 'default', provider: 'bedrock', config: { auth_method: 'role' } }], META);
+    expect(forms[0].authMethod).toBe('role');
+  });
+});

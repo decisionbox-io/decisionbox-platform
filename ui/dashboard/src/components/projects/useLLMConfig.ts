@@ -84,7 +84,10 @@ export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void):
         setProviders(provs);
         setSeeded(cfg.seeded);
         setConfigured(cfg.configured);
-        setEntryForms(entryFormsFrom(cfg.providers));
+        // The registry metadata goes in: a single-method provider's entry
+        // needs its sole auth method pre-selected, or its credential input
+        // never renders.
+        setEntryForms(entryFormsFrom(cfg.providers, provs));
         setLayerModels(cfg.layer_models || {});
         // Only a PERSISTED entry can be connection-tested: the test reads
         // stored config and the stored secret, not in-flight form state.

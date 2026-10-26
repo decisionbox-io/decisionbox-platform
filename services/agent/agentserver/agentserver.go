@@ -38,6 +38,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/discovery"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation/verifier"
 
 	// LLM provider registrations
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/azure-foundry" // registers "azure-foundry"
@@ -1038,16 +1039,26 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	}
 	windowStore := projectModelWindowStore{repo: modelWindowRepo, projectID: projectID}
 
+	// Which optional phases this run will execute, resolved BEFORE the layer
+	// set so a disabled phase's provider is never built. The same values are
+	// handed to RunDiscovery below, so the two cannot disagree.
+	phases := discoveryPhases{
+		validation: project.EffectiveValidationEnabled(),
+		refuter:    refuterEnabled(),
+		questions:  project.EffectiveClarifyingQuestionsEnabled(),
+		reflection: project.EffectiveReflectionEnabled(),
+	}
+
 	// Build the per-layer LLM set (#407). One provider per (provider entry,
-	// merged config), one budget resolution and live probe per distinct model,
-	// one client per layer — so a project with every layer on the default
-	// still pays for exactly one provider, one probe and one budget, as it
-	// did before this existed.
+	// merged config, resolved credential), one budget resolution and live
+	// probe per distinct model, one client per layer — so a project with
+	// every layer on the default still pays for exactly one provider, one
+	// probe and one budget, as it did before this existed.
 	layerSet, err := buildLayerSet(ctx, layerSetInput{
 		project:     project,
 		projectID:   projectID,
 		runID:       runID,
-		layers:      discoveryLayers,
+		layers:      discoveryLayers(phases),
 		testMode:    testMode,
 		debugLogger: nil, // the orchestrator owns the debug logger and attaches it to every client
 		deps:        newLayerSetDeps(cfg, secretProvider, projectID, windowStore),
@@ -1456,4 +1467,12 @@ func classifyError(err error) string {
 	default:
 		return "unknown"
 	}
+}
+
+// refuterEnabled mirrors the gate the validation phase itself applies, so the
+// refuter's provider is built exactly when the refuter will be called.
+// Reading it here is env parsing, not I/O.
+func refuterEnabled() bool {
+	cfg, _ := verifier.LoadConfigFromEnv()
+	return cfg.RefuterEnabled
 }

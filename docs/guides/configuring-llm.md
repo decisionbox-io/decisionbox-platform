@@ -481,6 +481,12 @@ The reserved entries keep their fixed, unprefixed `LLM_API_KEY` and `BLURB_LLM_A
 
 `layer_models.default` must name the reserved `default` provider entry. To change what every layer inherits, edit that entry; to put some layers on another connection, give those layers their own rows. The restriction is what keeps the legacy mirror honest: it copies the default row's endpoint into `project.llm`, while the credential an older agent image reads for `project.llm` is fixed at `llm-credentials` — the reserved entry's key. A default row pointing elsewhere would send one entry's credential to another entry's endpoint.
 
+Table descriptions are the exception that proves the rule: that layer MAY use a secondary entry, because a cheap model on another provider is exactly why a project has one. The `blurb_llm` mirror is then left **empty** rather than filled in, since an older image resolves it from `blurb-llm-credentials` → `llm-credentials` and has never heard of a namespaced key. It falls back to the analysis slot — the wrong model, but a call authorised for the endpoint receiving it. Put that layer on the reserved `blurb` entry instead and the mirror is written, because the credential already lives under the key the older image reads.
+
+### Two layers on one connection, two credentials
+
+Table descriptions resolve `blurb-llm-credentials` before the default key, which means a project can have two layers on one provider entry authenticating as different principals. Everything that groups layers by the deployment they reach — the provider instances a run builds, the live probes a support bundle makes — folds the resolved credential into that decision. A project whose blurb chain falls through to the default key still builds one provider instance; a project with a real blurb credential builds two, which is what it had before per-layer models existed.
+
 ### Existing projects need one visit to settings
 
 A project created before per-layer models is **not** configured for them, and discovery is refused until someone saves its configuration. The values arrive pre-filled from what the project already uses, so it is a review-and-confirm.

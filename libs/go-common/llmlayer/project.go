@@ -301,11 +301,25 @@ func (c ProjectConfig) SeedFromLegacy() ([]ProviderEntry, map[string]LayerModel)
 	if len(entries) == 0 {
 		return nil, nil
 	}
+	// The legacy config is PARTITIONED, not duplicated: its connection
+	// fields stay on the entry and its model-scoped fields move to the row.
+	// Left whole on the entry, an existing max_output_tokens or wire_override
+	// would keep applying while the settings page — which reads the row —
+	// showed the control blank, and clearing that control could not remove
+	// it.
+	for i := range entries {
+		if entries[i].ID == DefaultProviderID {
+			entries[i].Config = ConnectionConfig(entries[i].Config)
+		}
+	}
 
 	defaultRow := LayerModel{
 		ProviderID: DefaultProviderID,
 		Model:      c.Legacy.Model,
-		Config:     map[string]string{},
+		Config:     ModelConfig(c.Legacy.Config),
+	}
+	if defaultRow.Config == nil {
+		defaultRow.Config = map[string]string{}
 	}
 	// Carry the two project-level toggles onto the default row, which is what
 	// moving them per layer means for an existing project: the value the
@@ -322,10 +336,18 @@ func (c ProjectConfig) SeedFromLegacy() ([]ProviderEntry, map[string]LayerModel)
 	// differs from the default pair.
 	blurb := c.EffectiveLayerModel(LayerTableDescriptions)
 	if blurb.ProviderID != defaultRow.ProviderID || blurb.Model != defaultRow.Model {
-		layers[LayerTableDescriptions] = LayerModel{
+		row := LayerModel{
 			ProviderID: blurb.ProviderID,
 			Model:      blurb.Model,
-			Config:     copyConfig(blurb.Config),
+			Config:     ModelConfig(blurb.Config),
+		}
+		// A blurb override's own connection fields belong to the entry
+		// EffectiveProviders synthesised for it, not to the row.
+		layers[LayerTableDescriptions] = row
+		for i := range entries {
+			if entries[i].ID == blurb.ProviderID {
+				entries[i].Config = ConnectionConfig(entries[i].Config)
+			}
 		}
 	}
 
@@ -401,13 +423,58 @@ func boolString(b bool) string {
 	return "false"
 }
 
-func copyConfig(in map[string]string) map[string]string {
-	if len(in) == 0 {
+// ModelScopedKeys are the config keys that describe the MODEL rather than the
+// connection, so they belong on a layer row rather than on a provider entry.
+//
+// The split is what lets several layers share one connection: a key left on
+// the entry applies to every layer that names it, which is right for a region
+// or a base_url and wrong for an output cap.
+var ModelScopedKeys = []string{
+	"max_input_tokens",
+	"max_output_tokens",
+	"wire_override",
+	gollm.PromptCacheKey,
+	gollm.ReasoningEnabledKey,
+}
+
+// ModelConfig returns the model-scoped half of a config map, or nil when
+// there is none.
+func ModelConfig(cfg map[string]string) map[string]string {
+	if len(cfg) == 0 {
 		return nil
 	}
-	out := make(map[string]string, len(in))
-	for k, v := range in {
+	out := map[string]string{}
+	for _, k := range ModelScopedKeys {
+		if v, ok := cfg[k]; ok {
+			out[k] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// ConnectionConfig returns the connection half of a config map: everything
+// that is not model-scoped, bar `model` (the row's own field) and
+// `credentials_json` (which never belongs in a project document at all).
+func ConnectionConfig(cfg map[string]string) map[string]string {
+	if len(cfg) == 0 {
+		return nil
+	}
+	modelScoped := make(map[string]bool, len(ModelScopedKeys))
+	for _, k := range ModelScopedKeys {
+		modelScoped[k] = true
+	}
+	out := make(map[string]string, len(cfg))
+	for k, v := range cfg {
+		if modelScoped[k] || k == "model" || k == "credentials_json" {
+			continue
+		}
 		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

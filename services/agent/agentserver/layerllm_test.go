@@ -3,6 +3,7 @@ package agentserver
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
@@ -25,19 +26,33 @@ func (*countingProviderStub) Validate(context.Context) error { return nil }
 // counters records how many times each expensive thing was built, so the
 // dedupe guarantees are asserted rather than read out of the code.
 type counters struct {
-	providerBuilds int
-	budgetResolves int
-	windowReads    int
+	providerBuilds  int
+	budgetResolves  int
+	windowReads     int
+	credentialReads int
 	// specs is every spec a provider was built for, in order.
 	specs []llmlayer.LayerSpec
+	// secrets, when set, maps a secret key to its stored value; a chain
+	// resolves to the first key present. Empty means every chain resolves to
+	// nothing, which is the single-credential case.
+	secrets map[string]string
 }
 
 func (c *counters) deps() layerSetDeps {
 	return layerSetDeps{
-		buildProvider: func(_ context.Context, spec llmlayer.LayerSpec) (gollm.Provider, gollm.ProviderConfig, error) {
+		resolveCredential: func(_ context.Context, spec llmlayer.LayerSpec) (llmlayer.Credential, error) {
+			c.credentialReads++
+			for _, ref := range llmlayer.CredentialChain(spec.Layer, spec.ProviderID, spec.Config) {
+				if v, ok := c.secrets[ref.SecretKey]; ok {
+					return llmlayer.Credential{Value: v, SecretKey: ref.SecretKey, Source: "dashboard"}, nil
+				}
+			}
+			return llmlayer.Credential{Source: "none"}, nil
+		},
+		buildProvider: func(_ context.Context, spec llmlayer.LayerSpec, cred llmlayer.Credential) (gollm.Provider, gollm.ProviderConfig, error) {
 			c.providerBuilds++
 			c.specs = append(c.specs, spec)
-			return &countingProviderStub{id: c.providerBuilds}, llmlayer.ProviderConfig(spec, llmlayer.Credential{}, llmlayer.BuildOptions{}), nil
+			return &countingProviderStub{id: c.providerBuilds}, llmlayer.ProviderConfig(spec, cred, llmlayer.BuildOptions{}), nil
 		},
 		resolveBudget: func(_ context.Context, _ gollm.Provider, spec llmlayer.LayerSpec, persisted int) (int, int) {
 			c.budgetResolves++
@@ -155,7 +170,7 @@ func TestMixedPipelineBuildsOneProviderPerEntry(t *testing.T) {
 
 	c := &counters{}
 	set, err := buildLayerSet(context.Background(), layerSetInput{
-		project: p, projectID: "p1", layers: discoveryLayers, deps: c.deps(),
+		project: p, projectID: "p1", layers: discoveryLayers(allPhases), deps: c.deps(),
 	})
 	if err != nil {
 		t.Fatalf("buildLayerSet: %v", err)
@@ -391,10 +406,114 @@ func TestAProjectWithNoProviderAtAllIsStillRefused(t *testing.T) {
 	}
 }
 
+// allPhases is a run with every optional phase on: the widest layer list.
+var allPhases = discoveryPhases{validation: true, refuter: true, questions: true, reflection: true}
+
+// A phase that is switched off must not have its provider built.
+//
+// Building one reads a credential and opens a connection, so a broken
+// override on a layer the run will never call aborted the run before
+// exploration started — which left VALIDATION_REFUTER_ENABLED=false unable to
+// route around a broken refuter endpoint, the one thing it exists for.
+func TestADisabledPhaseBuildsNoProvider(t *testing.T) {
+	cases := []struct {
+		name   string
+		phases discoveryPhases
+		absent []string
+	}{
+		{
+			"validation off takes the refuter with it",
+			discoveryPhases{refuter: true, questions: true, reflection: true},
+			[]string{llmlayer.LayerValidationVerifier, llmlayer.LayerValidationRefuter},
+		},
+		{
+			"the refuter alone",
+			discoveryPhases{validation: true, questions: true, reflection: true},
+			[]string{llmlayer.LayerValidationRefuter},
+		},
+		{
+			"questions and reflection off",
+			discoveryPhases{validation: true, refuter: true},
+			[]string{llmlayer.LayerQuestions, llmlayer.LayerReflection},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := discoveryLayers(tc.phases)
+			for _, layer := range tc.absent {
+				if slices.Contains(got, layer) {
+					t.Errorf("%q is in the layer list for a run that will not call it: %v", layer, got)
+				}
+			}
+			// What a run always calls stays in, whatever is off.
+			for _, layer := range []string{
+				llmlayer.LayerExploration, llmlayer.LayerAnalysis,
+				llmlayer.LayerRecommendations, llmlayer.LayerSQLRepair,
+			} {
+				if !slices.Contains(got, layer) {
+					t.Errorf("%q is missing from the layer list: %v", layer, got)
+				}
+			}
+		})
+	}
+
+	// And the whole point: a broken override on a disabled layer does not
+	// stop the run.
+	c := &countersFailingOn{layer: llmlayer.LayerValidationRefuter, counters: &counters{}}
+	if _, err := buildLayerSet(context.Background(), layerSetInput{
+		project:   refuterOverrideProject(),
+		projectID: "p1",
+		layers:    discoveryLayers(discoveryPhases{validation: true, questions: true, reflection: true}),
+		deps:      c.deps(),
+	}); err != nil {
+		t.Fatalf("buildLayerSet = %v; a disabled refuter's broken provider must not abort the run", err)
+	}
+	// With it enabled the same project does fail, so the stub is honest.
+	c2 := &countersFailingOn{layer: llmlayer.LayerValidationRefuter, counters: &counters{}}
+	if _, err := buildLayerSet(context.Background(), layerSetInput{
+		project:   refuterOverrideProject(),
+		projectID: "p1",
+		layers:    discoveryLayers(allPhases),
+		deps:      c2.deps(),
+	}); err == nil {
+		t.Error("an ENABLED refuter with a broken provider must fail the run")
+	}
+}
+
+// refuterOverrideProject puts the refuter on its own entry, so a failure can
+// be scoped to it.
+func refuterOverrideProject() *models.Project {
+	p := singleModelProject()
+	p.LLMProviders = append(p.LLMProviders, llmlayer.ProviderEntry{
+		ID: "refuter-box", Provider: "litellm", Config: map[string]string{"base_url": "http://broken"},
+	})
+	p.LayerModels[llmlayer.LayerValidationRefuter] = llmlayer.LayerModel{ProviderID: "refuter-box", Model: "qwen3-32b"}
+	return p
+}
+
+// countersFailingOn is counters whose provider construction fails for one
+// layer's entry.
+type countersFailingOn struct {
+	layer string
+	*counters
+}
+
+func (c *countersFailingOn) deps() layerSetDeps {
+	d := c.counters.deps()
+	inner := d.buildProvider
+	d.buildProvider = func(ctx context.Context, spec llmlayer.LayerSpec, cred llmlayer.Credential) (gollm.Provider, gollm.ProviderConfig, error) {
+		if spec.Layer == c.layer {
+			return nil, nil, errors.New("connection refused")
+		}
+		return inner(ctx, spec, cred)
+	}
+	return d
+}
+
 func TestDiscoveryDoesNotBuildLayersItNeverCalls(t *testing.T) {
 	c := &counters{}
 	set, err := buildLayerSet(context.Background(), layerSetInput{
-		project: singleModelProject(), projectID: "p1", layers: discoveryLayers, deps: c.deps(),
+		project: singleModelProject(), projectID: "p1", layers: discoveryLayers(allPhases), deps: c.deps(),
 	})
 	if err != nil {
 		t.Fatalf("buildLayerSet: %v", err)
@@ -409,5 +528,71 @@ func TestDiscoveryDoesNotBuildLayersItNeverCalls(t *testing.T) {
 		if set.For(layer).Layer != llmlayer.DefaultLayer {
 			t.Errorf("For(%q) must fall back to the default", layer)
 		}
+	}
+}
+
+// Two layers on ONE entry can authenticate as different principals.
+//
+// Table descriptions resolves blurb-llm-credentials before the default key —
+// that is today's behaviour and a project can really be configured that way.
+// Keyed on (entry, config) alone, the first layer built won the shared
+// provider and table descriptions indexed on the ANALYSIS key, which
+// resolveBlurbLLM used to get right by building its own provider. A single
+// model everywhere made it invisible.
+func TestASeparateBlurbCredentialGetsItsOwnProvider(t *testing.T) {
+	c := &counters{secrets: map[string]string{
+		llmlayer.LegacyCredentialsKey: "analysis-key",
+		llmlayer.BlurbCredentialsKey:  "blurb-key",
+	}}
+	set, err := buildLayerSet(context.Background(), layerSetInput{
+		project:   singleModelProject(),
+		projectID: "p1",
+		layers:    []string{llmlayer.LayerAnalysis, llmlayer.LayerTableDescriptions},
+		deps:      c.deps(),
+	})
+	if err != nil {
+		t.Fatalf("buildLayerSet: %v", err)
+	}
+
+	analysis := set.For(llmlayer.LayerAnalysis)
+	td := set.For(llmlayer.LayerTableDescriptions)
+	if analysis.Config["credentials_json"] != "analysis-key" {
+		t.Errorf("analysis credential = %q, want the default key's value", analysis.Config["credentials_json"])
+	}
+	if td.Config["credentials_json"] != "blurb-key" {
+		t.Errorf("table-description credential = %q, want the blurb key's value", td.Config["credentials_json"])
+	}
+	if analysis.LLM == td.LLM {
+		t.Error("two layers authenticating as different principals shared one provider instance")
+	}
+	if c.providerBuilds != 2 {
+		t.Errorf("built %d providers, want 2 — one per credential", c.providerBuilds)
+	}
+}
+
+// And the converse, which is what keeps the single-model guarantee true: a
+// project with NO blurb secret has its blurb chain fall through to the
+// default key, so every layer is still one provider. Keying on the chain
+// rather than on the credential it resolves to would have split this.
+func TestABlurbChainThatFallsThroughStillSharesOneProvider(t *testing.T) {
+	c := &counters{secrets: map[string]string{llmlayer.LegacyCredentialsKey: "the-only-key"}}
+	set, err := buildLayerSet(context.Background(), layerSetInput{
+		project:   singleModelProject(),
+		projectID: "p1",
+		layers:    llmlayer.Keys(),
+		deps:      c.deps(),
+	})
+	if err != nil {
+		t.Fatalf("buildLayerSet: %v", err)
+	}
+	if c.providerBuilds != 1 {
+		t.Errorf("built %d providers for one model and one credential, want 1", c.providerBuilds)
+	}
+	if got := set.For(llmlayer.LayerTableDescriptions).Config["credentials_json"]; got != "the-only-key" {
+		t.Errorf("table-description credential = %q, want the default key it falls through to", got)
+	}
+	// One read per CHAIN, not per layer: seventeen layers, two chains.
+	if c.credentialReads > 2 {
+		t.Errorf("resolved credentials %d times for two distinct chains", c.credentialReads)
 	}
 }

@@ -240,6 +240,19 @@ func BuildProvider(ctx context.Context, secrets gosecrets.Provider, projectID st
 	if err != nil && opts.Logf != nil {
 		opts.Logf("llmlayer: layer=%s unexpected secret-store error, continuing with %s credential: %v", spec.Layer, cred.Source, err)
 	}
+	return BuildProviderWith(spec, cred, opts)
+}
+
+// BuildProviderWith is BuildProvider with the credential already resolved.
+//
+// It exists for a caller that builds several layers at once and shares
+// provider instances between them: the credential is part of what makes two
+// layers the same connection, so it has to be known BEFORE the sharing
+// decision, not inside the construction that follows it.
+func BuildProviderWith(spec LayerSpec, cred Credential, opts BuildOptions) (gollm.Provider, gollm.ProviderConfig, error) {
+	if err := spec.Validate(); err != nil {
+		return nil, nil, err
+	}
 	cfg := ProviderConfig(spec, cred, opts)
 	provider, perr := gollm.NewProvider(spec.Provider, cfg)
 	if perr != nil {
@@ -257,9 +270,13 @@ func BuildProvider(ctx context.Context, secrets gosecrets.Provider, projectID st
 // instance, because gollm providers treat their construction-time model as a
 // fallback only and ai.Client sets ChatRequest.Model on every call.
 //
-// The model is deliberately NOT part of it. The credential is not either —
-// it is derived from the entry, so two specs on one entry always resolve the
-// same one.
+// The model is deliberately NOT part of it, because gollm providers treat the
+// construction-time model as a fallback only.
+//
+// Neither is the credential, which is NOT derived from the entry alone: the
+// chain depends on the LAYER (table descriptions tries the blurb secret
+// first), so a caller sharing providers has to fold the resolved credential
+// into its own key alongside this one. buildLayerSet does.
 func ConfigKey(cfg gollm.ProviderConfig) string {
 	keys := make([]string, 0, len(cfg))
 	for k := range cfg {

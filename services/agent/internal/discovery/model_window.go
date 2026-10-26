@@ -12,21 +12,33 @@ import (
 )
 
 // ModelWindowKey is the identifier under which a model's self-calibrated
-// context window is persisted (project + provider + this key). It is the model
-// id, except for endpoint-based projects (user-deployed Vertex endpoints) whose
-// llm.model is intentionally blank and whose deployment is identified by
-// endpoint_id — there it keys by "endpoint:<id>" so calibration still persists
-// and reloads across runs. Returns "" only when neither a model nor an endpoint
-// id is present (persistence is then skipped). Used by both the run-start
-// resolver (read) and the calibration observer (write) so the keys match.
+// context window is persisted (project + provider entry + this key).
+//
+// It is the model id, qualified by endpoint_id whenever one is set. A
+// user-deployed Vertex endpoint can carry no model id at all — llm.model is
+// intentionally blank there — and it can equally carry one: two layers on the
+// same entry naming the same model while overriding endpoint_id differently
+// are TWO deployments, and a window learned by overflowing one must not
+// shrink the other's budget or overwrite its stored value. Provider
+// construction and budget resolution already tell them apart; this is the
+// third place that has to.
+//
+// Returns "" only when neither a model nor an endpoint id is present
+// (persistence is then skipped). Used by both the run-start resolver (read)
+// and the calibration observer (write), so the keys match.
 func ModelWindowKey(model string, cfg gollm.ProviderConfig) string {
-	if m := strings.TrimSpace(model); m != "" {
-		return m
-	}
+	m := strings.TrimSpace(model)
+	var endpoint string
 	if cfg != nil {
-		if ep := strings.TrimSpace(cfg["endpoint_id"]); ep != "" {
-			return "endpoint:" + ep
-		}
+		endpoint = strings.TrimSpace(cfg["endpoint_id"])
+	}
+	switch {
+	case m != "" && endpoint != "":
+		return m + "@endpoint:" + endpoint
+	case m != "":
+		return m
+	case endpoint != "":
+		return "endpoint:" + endpoint
 	}
 	return ""
 }

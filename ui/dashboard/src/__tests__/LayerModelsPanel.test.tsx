@@ -20,7 +20,11 @@ jest.mock('@/components/common/LLMModelField', () => ({
     <input aria-label="Model" value={value} onChange={(e) => onChange(e.currentTarget.value)} />
   ),
 }));
+// Spread the real module: the panel reads DEFAULT_LLM_PROVIDER_ID from it,
+// and a mock that defines only `api` leaves that undefined — which is a
+// different component than the one that ships.
 jest.mock('@/lib/api', () => ({
+  ...jest.requireActual('@/lib/api'),
   api: {
     listLLMLayers: jest.fn(),
     listLiveLLMModelsForProvider: jest.fn().mockResolvedValue({ models: [] }),
@@ -250,5 +254,66 @@ describe('LayerModelsPanel — the default row carries the model settings', () =
     );
     await screen.findByText('Main layers');
     expect(screen.queryByLabelText('Wire override')).not.toBeInTheDocument();
+  });
+});
+
+// The default row always uses the reserved entry — the API refuses anything
+// else, because the legacy mirror an older agent image reads resolves its
+// credential from a fixed key. A picker here produced a selection that could
+// never be saved.
+describe('LayerModelsPanel — the default row is pinned to the reserved entry', () => {
+  it('shows the connection rather than offering a choice', async () => {
+    renderPanel({ [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' } });
+    await screen.findByText('Main layers');
+
+    // The default card's Provider control is read-only and names the entry.
+    const provider = screen.getAllByLabelText('Provider')[0] as HTMLInputElement;
+    expect(provider).toHaveAttribute('readonly');
+    expect(provider.value).toBe('Bedrock — Opus');
+  });
+
+  it('keeps writing the reserved entry onto the row', async () => {
+    const onChange = renderPanel({ [DEFAULT_LAYER]: { model: 'opus' } });
+    await screen.findByText('Main layers');
+    fireEvent.change(screen.getAllByLabelText('Model')[0], { target: { value: 'sonnet' } });
+    const next = onChange.mock.calls[onChange.mock.calls.length - 1][0];
+    expect(next[DEFAULT_LAYER].provider_id).toBe('default');
+    expect(next[DEFAULT_LAYER].model).toBe('sonnet');
+  });
+
+  // An override row DOES choose, which is the whole point of a second entry.
+  it('still offers the choice on a layer of its own', async () => {
+    renderPanel({
+      [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' },
+      analysis: { provider_id: 'cheap', model: 'haiku' },
+    });
+    await screen.findByText('Main layers');
+    const pickers = screen.getAllByLabelText('Provider').filter((el) => !el.hasAttribute('readonly'));
+    expect(pickers.length).toBeGreaterThan(0);
+  });
+});
+
+// A model list that failed to load must not stay empty for the session. An
+// entry the user has just added is not on the server yet, so the lookup 404s
+// — and the picker stayed empty even after the connection was saved and
+// working.
+describe('LayerModelsPanel — a failed model load can be retried', () => {
+  it('offers a reload and asks again', async () => {
+    (api.listLiveLLMModelsForProvider as jest.Mock).mockRejectedValueOnce(new Error('not found'));
+    // An override on a MAIN layer, which is the group the accordion opens
+    // with — a collapsed panel's controls are not reachable.
+    renderPanel({
+      [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' },
+      analysis: { provider_id: 'cheap', model: '' },
+    });
+    await screen.findByText('Main layers');
+    await waitFor(() => expect(api.listLiveLLMModelsForProvider).toHaveBeenCalled());
+
+    const before = (api.listLiveLLMModelsForProvider as jest.Mock).mock.calls.length;
+    const reload = screen.getAllByRole('button', { name: 'Reload models' })[0];
+    fireEvent.click(reload);
+    await waitFor(() => {
+      expect((api.listLiveLLMModelsForProvider as jest.Mock).mock.calls.length).toBeGreaterThan(before);
+    });
   });
 });

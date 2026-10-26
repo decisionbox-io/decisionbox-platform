@@ -21,6 +21,7 @@ import {
 } from '@mantine/core';
 import { IconAlertCircle, IconRotateClockwise } from '@tabler/icons-react';
 import {
+  DEFAULT_LLM_PROVIDER_ID as DEFAULT_PROVIDER_ID,
   LLMLayerDescriptor, LLMProviderEntry, LayerModel, LiveModel, ProviderMeta, api,
 } from '@/lib/api';
 import { LiveModelCombobox } from '@/components/common/LLMModelField';
@@ -84,8 +85,20 @@ export function LayerModelsPanel({
       const resp = await api.listLiveLLMModelsForProvider(projectId, { provider_id: entryId });
       setLiveByEntry((prev) => ({ ...prev, [entryId]: resp.models }));
     } catch {
+      // A failure is not a verdict for the session. An entry the user has
+      // just added is not on the server yet, so this 404s — and leaving it
+      // marked as requested meant the picker stayed empty even after the
+      // connection was saved and working. Forgetting it lets the next
+      // attempt (a save, a re-pick, or Reload) try again.
+      requestedRef.current.delete(entryId);
       setLiveByEntry((prev) => ({ ...prev, [entryId]: [] }));
     }
+  };
+
+  /** Drops what was loaded for an entry and fetches it again. */
+  const reloadModelsFor = async (entryId: string) => {
+    requestedRef.current.delete(entryId);
+    await loadModelsFor(entryId);
   };
 
   // The model-scoped settings, rendered identically for the default row and
@@ -264,12 +277,23 @@ export function LayerModelsPanel({
                     setRow(layer.key, { ...effective, provider_id: val, model: '' });
                   }}
                 />
-                <LiveModelCombobox
-                  providerMeta={meta}
-                  liveModels={liveByEntry[entryId] ?? null}
-                  value={effective.model || ''}
-                  onChange={(val) => setRow(layer.key, { ...effective, model: val })}
-                />
+                <Stack gap={4}>
+                  <LiveModelCombobox
+                    providerMeta={meta}
+                    liveModels={liveByEntry[entryId] ?? null}
+                    value={effective.model || ''}
+                    onChange={(val) => setRow(layer.key, { ...effective, model: val })}
+                  />
+                  {(liveByEntry[entryId]?.length ?? 0) === 0 && entryId && (
+                    <Button
+                      variant="subtle"
+                      size="compact-xs"
+                      onClick={() => { void reloadModelsFor(entryId); }}
+                    >
+                      Reload models
+                    </Button>
+                  )}
+                </Stack>
               </Group>
               {renderModelSettings(effective, meta, setConfig)}
               <TestConnectionButton
@@ -285,16 +309,23 @@ export function LayerModelsPanel({
     );
   };
 
+  // Written explicitly rather than left to whatever was stored: the reserved
+  // entry is what the API requires on this row.
+  const writeDefaultRow = (next: LayerModel) => {
+    onChange({ ...value, [DEFAULT_LAYER]: { ...next, provider_id: DEFAULT_PROVIDER_ID } });
+  };
+
   const setDefaultConfig = (key: string, raw: string | null) => {
     const config = { ...(defaultRow.config || {}) };
     if (raw === null) delete config[key];
     else config[key] = raw;
-    onChange({ ...value, [DEFAULT_LAYER]: { ...defaultRow, config } });
+    writeDefaultRow({ ...defaultRow, config });
   };
 
-  const defaultEntry = entries.find((e) => e.id === (defaultRow.provider_id || entryOptions[0]?.value));
+  // The reserved entry, always: see the note on the Provider field below.
+  const defaultEntryId = DEFAULT_PROVIDER_ID;
+  const defaultEntry = entries.find((e) => e.id === defaultEntryId);
   const defaultMeta = providers.find((p) => p.id === defaultEntry?.provider) || null;
-  const defaultEntryId = defaultRow.provider_id || (entryOptions[0]?.value ?? '');
 
   return (
     <Stack gap="md">
@@ -321,21 +352,30 @@ export function LayerModelsPanel({
             </Button>
           </Group>
           <Group grow align="flex-start">
-            <Select
+            {/*
+              * The default row always uses the reserved entry, so this is a
+              * label rather than a picker. The entry is a SLOT, not a
+              * pointer: the legacy mirror an older agent image reads copies
+              * this row's endpoint into project.llm while the credential it
+              * reads for that is fixed at llm-credentials, so a default row
+              * pointing elsewhere would send one entry's credential to
+              * another's endpoint — which is why the API refuses it. Offering
+              * the choice here only produced a selection that could not be
+              * saved.
+              */}
+            <TextInput
               label="Provider"
-              data={entryOptions}
-              value={defaultRow.provider_id || null}
-              onChange={(val) => {
-                if (!val) return;
-                void loadModelsFor(val);
-                onChange({ ...value, [DEFAULT_LAYER]: { ...defaultRow, provider_id: val, model: '' } });
-              }}
+              description={entryOptions.length > 1
+                ? 'Every layer inherits this connection. Edit it under Providers, or give a layer its own row below.'
+                : 'Edit this connection under Providers.'}
+              value={defaultEntry?.label || defaultEntry?.provider || DEFAULT_PROVIDER_ID}
+              readOnly
             />
             <LiveModelCombobox
               providerMeta={defaultMeta}
               liveModels={liveByEntry[defaultEntryId] ?? null}
               value={defaultRow.model || ''}
-              onChange={(val) => onChange({ ...value, [DEFAULT_LAYER]: { ...defaultRow, model: val } })}
+              onChange={(val) => writeDefaultRow({ ...defaultRow, model: val })}
             />
           </Group>
           {renderModelSettings(defaultRow, defaultMeta, setDefaultConfig)}
