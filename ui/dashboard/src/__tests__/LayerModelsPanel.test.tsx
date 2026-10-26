@@ -1,0 +1,177 @@
+/**
+ * @jest-environment jsdom
+ */
+import '@testing-library/jest-dom';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { MantineProvider } from '@mantine/core';
+import { LayerModelsPanel, DEFAULT_LAYER } from '@/components/projects/LayerModelsPanel';
+import type { LLMProviderEntry, LayerModel } from '@/lib/api';
+
+// The per-layer model controls replaced two project-wide switches in
+// Settings → Advanced (reasoning and prompt caching). Both are per layer now
+// because a mixed pipeline makes one project-wide toggle span providers where
+// it is inert on some and meaningful on others.
+
+jest.mock('@/components/projects/WarehouseConfigPanel', () => ({
+  TestConnectionButton: ({ label }: { label?: string }) => <button type="button">{label || 'Test'}</button>,
+}));
+jest.mock('@/components/common/LLMModelField', () => ({
+  LiveModelCombobox: ({ value, onChange }: { value: string; onChange: (v: string) => void }) => (
+    <input aria-label="Model" value={value} onChange={(e) => onChange(e.currentTarget.value)} />
+  ),
+}));
+jest.mock('@/lib/api', () => ({
+  api: {
+    listLLMLayers: jest.fn(),
+    listLiveLLMModelsForProvider: jest.fn().mockResolvedValue({ models: [] }),
+  },
+}));
+
+import { api } from '@/lib/api';
+
+const LAYERS = [
+  { key: 'exploration', label: 'Exploration', description: 'Explores the warehouse.', group: 'main', refuses_reasoning_models: false },
+  { key: 'analysis', label: 'Analysis', description: 'Turns evidence into insights.', group: 'main', refuses_reasoning_models: false },
+  { key: 'sql_repair', label: 'SQL repair', description: 'Repairs a rejected query.', group: 'small', refuses_reasoning_models: false },
+  { key: 'table_descriptions', label: 'Table descriptions', description: 'Describes each table.', group: 'small', refuses_reasoning_models: true },
+];
+
+const ENTRIES: LLMProviderEntry[] = [
+  { id: 'default', label: 'Bedrock — Opus', provider: 'bedrock' },
+  { id: 'cheap', label: 'Bedrock — Haiku', provider: 'bedrock' },
+];
+
+function renderPanel(value: Record<string, LayerModel>, onChange = jest.fn()) {
+  render(
+    <MantineProvider>
+      <LayerModelsPanel
+        projectId="proj-1"
+        entries={ENTRIES}
+        providers={[{ id: 'bedrock', name: 'Bedrock', description: '', config_fields: [], auth_methods: [] } as never]}
+        value={value}
+        onChange={onChange}
+      />
+    </MantineProvider>,
+  );
+  return onChange;
+}
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  (api.listLLMLayers as jest.Mock).mockResolvedValue({
+    version: 1, layers: LAYERS, default_layer_key: 'default',
+  });
+});
+
+describe('LayerModelsPanel', () => {
+  it('takes the layer list from the API rather than a copy of its own', async () => {
+    renderPanel({ [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' } });
+    // A layer added server-side has to appear here with no front-end release,
+    // which is only true while this component holds no list.
+    expect(await screen.findByText('Exploration')).toBeInTheDocument();
+    expect(api.listLLMLayers).toHaveBeenCalled();
+  });
+
+  it('groups main and small layers', async () => {
+    renderPanel({ [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' } });
+    expect(await screen.findByText('Main layers')).toBeInTheDocument();
+    expect(screen.getByText('Small layers')).toBeInTheDocument();
+  });
+
+  it('marks a layer that refuses reasoning models, so the user is warned before a save the API rejects', async () => {
+    renderPanel({ [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' } });
+    await screen.findByText('Main layers');
+    fireEvent.click(screen.getByText('Small layers'));
+    expect(await screen.findByText('no reasoning models')).toBeInTheDocument();
+  });
+
+  it('shows every layer as using the default until it has a row', async () => {
+    renderPanel({ [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' } });
+    await screen.findByText('Exploration');
+    const switches = screen.getAllByRole('switch', { name: /uses the default/i });
+    expect(switches.length).toBeGreaterThan(0);
+    switches.forEach((s) => expect(s).toBeChecked());
+  });
+
+  it('turning off "uses the default" seeds the row from the default pair', async () => {
+    const onChange = renderPanel({ [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus', config: { prompt_cache: 'false' } } });
+    await screen.findByText('Exploration');
+    fireEvent.click(screen.getAllByRole('switch', { name: /uses the default/i })[0]);
+    await waitFor(() => expect(onChange).toHaveBeenCalled());
+    const next = onChange.mock.calls[0][0];
+    // Seeded, not blank: an override starts from what the layer was already
+    // doing, so the user changes one thing rather than re-entering a pair.
+    expect(next.exploration).toEqual({ provider_id: 'default', model: 'opus', config: { prompt_cache: 'false' } });
+  });
+
+  it('resetting an override removes its row so the layer inherits again', async () => {
+    const onChange = renderPanel({
+      [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' },
+      exploration: { provider_id: 'cheap', model: 'haiku' },
+    });
+    await screen.findByText('Exploration');
+    fireEvent.click(screen.getByRole('button', { name: /Reset Exploration/i }));
+    await waitFor(() => expect(onChange).toHaveBeenCalled());
+    expect(onChange.mock.calls[0][0].exploration).toBeUndefined();
+  });
+
+  it('Apply to all clears every override, which is what the words mean', async () => {
+    const onChange = renderPanel({
+      [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' },
+      exploration: { provider_id: 'cheap', model: 'haiku' },
+      sql_repair: { provider_id: 'cheap', model: 'haiku' },
+    });
+    await screen.findByText('Exploration');
+    fireEvent.click(screen.getByRole('button', { name: /Apply to all/i }));
+    await waitFor(() => expect(onChange).toHaveBeenCalled());
+    expect(onChange.mock.calls[0][0]).toEqual({ [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' } });
+  });
+
+  // Caching has always been opt-out, so a layer that says nothing caches.
+  it('shows prompt caching on when a layer says nothing about it', async () => {
+    renderPanel({
+      [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' },
+      exploration: { provider_id: 'cheap', model: 'haiku' },
+    });
+    await screen.findByText('Exploration');
+    const caching = screen.getAllByRole('switch', { name: /prompt caching/i });
+    caching.forEach((s) => expect(s).toBeChecked());
+  });
+
+  it('reads a layer-level prompt-cache override back', async () => {
+    renderPanel({
+      [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' },
+      exploration: { provider_id: 'cheap', model: 'haiku', config: { prompt_cache: 'false' } },
+    });
+    await screen.findByText('Exploration');
+    // Two switches: the default row's (on) and the override's (off).
+    const caching = screen.getAllByRole('switch', { name: /prompt caching/i });
+    expect(caching.some((s) => !(s as HTMLInputElement).checked)).toBe(true);
+  });
+
+  // Prompt caching is applied when the connection is built, not per request,
+  // so turning it off for one layer buys a second connection. The UI says so
+  // where the toggle lives rather than leaving it as a surprise on the bill.
+  it('says that turning caching off for one layer opens a second connection', async () => {
+    renderPanel({
+      [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' },
+      exploration: { provider_id: 'cheap', model: 'haiku' },
+    });
+    await screen.findByText('Exploration');
+    expect(screen.getAllByText(/opens a second connection/i).length).toBeGreaterThan(0);
+  });
+
+  it('switching a layer to another provider entry clears its model', async () => {
+    const onChange = renderPanel({
+      [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' },
+      exploration: { provider_id: 'default', model: 'opus' },
+    });
+    await screen.findByText('Exploration');
+    // The model belongs to the connection it was picked from; carrying it to
+    // another entry would send a model that entry may not serve.
+    const onChangeCalls = () => onChange.mock.calls.map((c) => c[0]);
+    fireEvent.change(screen.getAllByLabelText('Model')[1], { target: { value: 'haiku' } });
+    await waitFor(() => expect(onChangeCalls().length).toBeGreaterThan(0));
+    expect(onChangeCalls()[0].exploration.model).toBe('haiku');
+  });
+});

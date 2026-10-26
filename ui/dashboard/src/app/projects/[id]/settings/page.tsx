@@ -10,10 +10,12 @@ import Link from 'next/link';
 import { notifications } from '@mantine/notifications';
 import { IconAlertCircle, IconPlus } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
-import { BlurbLLMEditor, BlurbLLMState, emptyBlurbLLMState } from '@/components/BlurbLLMEditor';
 import WarehouseConfigPanel from '@/components/projects/WarehouseConfigPanel';
 import ProvidersPanel from '@/components/projects/ProvidersPanel';
-import { api, Project, ProviderMeta } from '@/lib/api';
+import { LLMProvidersPanel } from '@/components/projects/LLMProvidersPanel';
+import { LayerModelsPanel } from '@/components/projects/LayerModelsPanel';
+import { useLLMConfig } from '@/components/projects/useLLMConfig';
+import { api, Project } from '@/lib/api';
 
 // Output language choices rendered into prompt {{LANGUAGE}} substitutions
 // on the agent + API side. The wire format is the human-readable name
@@ -55,34 +57,16 @@ const RECOMMENDATION_VERDICT_OPTIONS = [
   { value: 'rejected', label: 'Rejected — evidence contradicts the claim (caution)' },
 ];
 
-// Prompt caching is a per-project field (prompt_cache_enabled), resolved the
-// way the server resolves it: the field when set, else the legacy
-// llm.config.prompt_cache entry, else on. The legacy value is still what the
-// creation wizard writes, and projects predating the field only have that —
-// reading it as a plain boolean would show caching as off for all of them.
-// Mirrors Project.EffectivePromptCacheEnabled.
-const LEGACY_PROMPT_CACHE_KEY = 'prompt_cache';
-
-function readPromptCache(proj: Project | null | undefined): boolean {
-  if (typeof proj?.prompt_cache_enabled === 'boolean') return proj.prompt_cache_enabled;
-  return String(proj?.llm?.config?.[LEGACY_PROMPT_CACHE_KEY] ?? '').trim().toLowerCase() !== 'false';
-}
-
-// promptCacheSupported keys off the provider's own metadata rather than a
-// hardcoded list, so a new Anthropic-wire provider gets the switch for free
-// and a provider that does not implement caching never shows an inert one.
-function promptCacheSupported(proj: Project | null, providers: ProviderMeta[]): boolean {
-  if (!proj?.llm?.provider) return false;
-  const meta = providers.find((m) => m.id === proj.llm.provider);
-  return (meta?.config_fields || []).some((f) => f.key === LEGACY_PROMPT_CACHE_KEY);
-}
-
 export default function ProjectSettingsPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
 
+  // The per-layer LLM configuration is one state owner shared by the two tabs
+  // that show it: a layer row referencing an entry that has not been saved is
+  // a write the API refuses, so the halves cannot save independently.
+  const llmConfig = useLLMConfig(id);
+
   const [project, setProject] = useState<Project | null>(null);
-  const [llmProviders, setLlmProviders] = useState<ProviderMeta[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -107,10 +91,6 @@ export default function ProjectSettingsPage() {
   const [profileSchema, setProfileSchema] = useState<Record<string, unknown> | null>(null);
   const [savingProfile, setSavingProfile] = useState(false);
 
-  // Blurb tab state
-  const [blurb, setBlurb] = useState<BlurbLLMState>(emptyBlurbLLMState);
-  const [savingBlurb, setSavingBlurb] = useState(false);
-
   // Advanced — local-only preference, not on the project document.
   const [debugLogsEnabled, setDebugLogsEnabled] = useState(false);
 
@@ -134,15 +114,9 @@ export default function ProjectSettingsPage() {
   const [reflectionEnabled, setReflectionEnabled] = useState(true);
   const [savingReflection, setSavingReflection] = useState(false);
 
-  // Advanced — Enable reasoning toggle (model-agnostic, lives on the project
-  // document). Defaults to false (reasoning_enabled === undefined) — opt-in.
-  const [reasoningEnabled, setReasoningEnabled] = useState(false);
-  const [savingReasoning, setSavingReasoning] = useState(false);
 
   // Advanced — Prompt caching (lives on the project document). Defaults to
   // true — opt-out, like validation and the ledger.
-  const [promptCacheEnabled, setPromptCacheEnabled] = useState(true);
-  const [savingPromptCache, setSavingPromptCache] = useState(false);
 
   // Advanced — Suggested questions toggle (lives on the project document).
   // Defaults to true (ask_suggestions_enabled === undefined) — opt-out; it
@@ -163,7 +137,9 @@ export default function ProjectSettingsPage() {
   // tabs drop out of the valid set in managed mode.
   const validTabs = [
     'general', 'warehouse',
-    ...(aiConfigManaged ? [] : ['ai', 'blurb']),
+    // `blurb` is kept as an accepted hash: links to #blurb predate the
+    // rename and still land on the models tab.
+    ...(aiConfigManaged ? [] : ['ai', 'models', 'blurb']),
     'profile', 'advanced',
   ];
   const [activeTab, setActiveTab] = useState<string>('general');
@@ -171,7 +147,10 @@ export default function ProjectSettingsPage() {
     if (typeof window === 'undefined') return;
     const applyHash = () => {
       const h = window.location.hash.replace(/^#/, '');
-      if (h && validTabs.includes(h)) setActiveTab(h);
+      // #blurb predates the rename to #models and still has to land
+      // somewhere sensible — the models tab is where that setting moved.
+      const tab = h === 'blurb' ? 'models' : h;
+      if (tab && validTabs.includes(tab)) setActiveTab(tab);
     };
     applyHash();
     window.addEventListener('hashchange', applyHash);
@@ -188,15 +167,13 @@ export default function ProjectSettingsPage() {
   useEffect(() => {
     Promise.all([
       api.getProject(id),
-      api.listLLMProviders(),
       // Never let the capability probe break the settings page: managed
       // mode and this endpoint ship together, so a failure means an older
       // API without it — treat that as unmanaged (show config).
       api.getAppConfig().catch(() => ({ ai_config_managed: false })),
     ])
-      .then(([proj, llmProvs, appConfig]) => {
+      .then(([proj, appConfig]) => {
         setProject(proj);
-        setLlmProviders(llmProvs);
         setAiConfigManaged(appConfig.ai_config_managed);
         setName(proj.name);
         setDescription(proj.description || '');
@@ -205,28 +182,13 @@ export default function ProjectSettingsPage() {
         setSmartOverflowEnabled(proj.smart_overflow_enabled !== false);
         setClarifyingQuestionsEnabled(proj.clarifying_questions_enabled !== false);
         setReflectionEnabled(proj.reflection_enabled !== false);
-        setReasoningEnabled(proj.reasoning_enabled === true);
         setAskSuggestionsEnabled(proj.ask_suggestions_enabled !== false);
-        setPromptCacheEnabled(readPromptCache(proj));
         setRecommendationVerdicts(
           proj.recommendation_verdicts && proj.recommendation_verdicts.length > 0
             ? proj.recommendation_verdicts
             : RECOMMENDATION_VERDICT_DEFAULT,
         );
         setProfile((proj.profile || {}) as Record<string, Record<string, unknown>>);
-        if (proj.blurb_llm && proj.blurb_llm.provider) {
-          const blurbProviderID = proj.blurb_llm.provider;
-          const blurbMeta = llmProvs?.find((p) => p.id === blurbProviderID);
-          const blurbMethods = blurbMeta?.auth_methods ?? [];
-          setBlurb({
-            enabled: true,
-            provider: blurbProviderID,
-            authMethod: blurbMethods.length === 1 ? blurbMethods[0].id : '',
-            model: proj.blurb_llm.model || '',
-            config: proj.blurb_llm.config || {},
-            apiKey: '',
-          });
-        }
         if (proj.domain) {
           api.getProfileSchema(proj.domain, proj.category)
             .then(setProfileSchema)
@@ -241,10 +203,6 @@ export default function ProjectSettingsPage() {
     try {
       const proj = await api.getProject(id);
       setProject(proj);
-      // Caching resolves through llm.config when the project field is unset,
-      // so changing providers can move the effective value. Re-derive rather
-      // than leaving the switch on what it read at mount.
-      setPromptCacheEnabled(readPromptCache(proj));
     } catch {
       // Refresh failures are non-fatal — the panel that just saved
       // already updated its own local state.
@@ -374,53 +332,6 @@ export default function ProjectSettingsPage() {
     }
   };
 
-  // Save the reasoning toggle. Optimistic update + rollback on failure.
-  const saveReasoningEnabled = async (next: boolean) => {
-    const prev = reasoningEnabled;
-    setReasoningEnabled(next);
-    setSavingReasoning(true);
-    try {
-      const saved = await api.updateProject(id, { reasoning_enabled: next });
-      setProject(saved);
-      setReasoningEnabled(saved.reasoning_enabled === true);
-      notifications.show({
-        title: 'Saved',
-        message: next ? 'Reasoning enabled' : 'Reasoning disabled',
-        color: 'green',
-      });
-    } catch (e: unknown) {
-      setReasoningEnabled(prev);
-      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
-    } finally {
-      setSavingReasoning(false);
-    }
-  };
-
-  // Save the prompt-caching toggle. Optimistic update + rollback on failure.
-  // One field, so it cannot disturb the provider, model or credentials the
-  // AI tab owns — which is the whole reason this is a project field and not
-  // an llm.config entry.
-  const savePromptCacheEnabled = async (next: boolean) => {
-    const prev = promptCacheEnabled;
-    setPromptCacheEnabled(next);
-    setSavingPromptCache(true);
-    try {
-      const saved = await api.updateProject(id, { prompt_cache_enabled: next });
-      setProject(saved);
-      setPromptCacheEnabled(readPromptCache(saved));
-      notifications.show({
-        title: 'Saved',
-        message: next ? 'Prompt caching enabled' : 'Prompt caching disabled',
-        color: 'green',
-      });
-    } catch (e: unknown) {
-      setPromptCacheEnabled(prev);
-      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
-    } finally {
-      setSavingPromptCache(false);
-    }
-  };
-
   // Save the suggested-questions toggle. Optimistic update + rollback on failure.
   const saveAskSuggestionsEnabled = async (next: boolean) => {
     const prev = askSuggestionsEnabled;
@@ -480,37 +391,6 @@ export default function ProjectSettingsPage() {
     }
   };
 
-  const saveBlurb = async () => {
-    setSavingBlurb(true);
-    try {
-      const saved = await api.updateProject(id, {
-        blurb_llm:
-          blurb.enabled && blurb.provider && blurb.model
-            ? {
-                provider: blurb.provider,
-                model: blurb.model,
-                config: {
-                  ...Object.fromEntries(
-                    Object.entries(blurb.config).filter(([k]) => k !== 'model' && k !== 'api_key'),
-                  ),
-                  ...(blurb.authMethod ? { auth_method: blurb.authMethod } : {}),
-                },
-              }
-            : undefined,
-      });
-      if (blurb.enabled && blurb.apiKey) {
-        await api.setSecret(id, 'blurb-llm-credentials', blurb.apiKey);
-        setBlurb((prev) => ({ ...prev, apiKey: '' }));
-      }
-      setProject(saved);
-      notifications.show({ title: 'Saved', message: 'Blurb LLM updated', color: 'green' });
-    } catch (e: unknown) {
-      notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
-    } finally {
-      setSavingBlurb(false);
-    }
-  };
-
   return (
     <Shell breadcrumb={breadcrumb}>
       <Tabs
@@ -524,8 +404,8 @@ export default function ProjectSettingsPage() {
         <Tabs.List>
           <Tabs.Tab value="general">General</Tabs.Tab>
           <Tabs.Tab value="warehouse">Data Warehouse</Tabs.Tab>
-          {!aiConfigManaged && <Tabs.Tab value="ai">AI &amp; Embedding</Tabs.Tab>}
-          {!aiConfigManaged && <Tabs.Tab value="blurb">Blurb Model</Tabs.Tab>}
+          {!aiConfigManaged && <Tabs.Tab value="ai">LLM Providers</Tabs.Tab>}
+          {!aiConfigManaged && <Tabs.Tab value="models">Models</Tabs.Tab>}
           {profileSchema && <Tabs.Tab value="profile">Profile</Tabs.Tab>}
           <Tabs.Tab value="advanced">Advanced</Tabs.Tab>
         </Tabs.List>
@@ -559,29 +439,67 @@ export default function ProjectSettingsPage() {
 
         {!aiConfigManaged && (
         <Tabs.Panel value="ai">
-          <ProvidersPanel projectId={id} variant="page" onSaved={() => { void refreshProject(); }} />
+          <Stack gap="md">
+            <SettingsSection>
+              {llmConfig.seeded && (
+                <Alert color="blue" icon={<IconAlertCircle size={16} />} mb="sm">
+                  These values come from this project&apos;s current setup and are
+                  not saved yet. Review them — and the per-layer models under
+                  <b> Models</b> — then save.
+                </Alert>
+              )}
+              <LLMProvidersPanel
+                projectId={id}
+                providers={llmConfig.providers}
+                value={llmConfig.entryForms}
+                onChange={llmConfig.setEntryForms}
+                secrets={llmConfig.secrets}
+                layersByProviderId={llmConfig.layersByProviderId}
+                savedIds={llmConfig.savedIds}
+              />
+              {llmConfig.validationError && (
+                <Alert color="yellow" icon={<IconAlertCircle size={16} />} mt="sm">
+                  {llmConfig.validationError}
+                </Alert>
+              )}
+              <Group justify="flex-end" mt="sm">
+                <Button
+                  onClick={() => { void llmConfig.save().then(() => refreshProject()); }}
+                  loading={llmConfig.saving}
+                  disabled={!!llmConfig.validationError}
+                >
+                  Save LLM configuration
+                </Button>
+              </Group>
+            </SettingsSection>
+            <ProvidersPanel projectId={id} variant="page" onSaved={() => { void refreshProject(); }} />
+          </Stack>
         </Tabs.Panel>
         )}
 
         {!aiConfigManaged && (
-        <Tabs.Panel value="blurb">
+        <Tabs.Panel value="models">
           <SettingsSection>
-            <Text size="sm" fw={500}>Blurb Model</Text>
-            <Text size="xs" c="dimmed" mb="sm">
-              The LLM used during schema indexing to generate the per-table
-              descriptions that get embedded into Qdrant. Override here to pick a
-              cheaper / faster model. Changes apply to the next re-index.
-            </Text>
-            <BlurbLLMEditor
-              llmProviders={llmProviders}
-              value={blurb}
-              onChange={(next) => setBlurb(next)}
-              startInModelPhase={!!project?.blurb_llm?.provider}
+            <LayerModelsPanel
               projectId={id}
-              savedProvider={project?.blurb_llm?.provider || project?.llm?.provider}
+              entries={llmConfig.entries}
+              providers={llmConfig.providers}
+              value={llmConfig.layerModels}
+              onChange={llmConfig.setLayerModels}
             />
-            <Group justify="flex-end">
-              <Button onClick={saveBlurb} loading={savingBlurb}>Save blurb model</Button>
+            {llmConfig.validationError && (
+              <Alert color="yellow" icon={<IconAlertCircle size={16} />} mt="sm">
+                {llmConfig.validationError}
+              </Alert>
+            )}
+            <Group justify="flex-end" mt="sm">
+              <Button
+                onClick={() => { void llmConfig.save().then(() => refreshProject()); }}
+                loading={llmConfig.saving}
+                disabled={!!llmConfig.validationError}
+              >
+                Save LLM configuration
+              </Button>
             </Group>
           </SettingsSection>
         </Tabs.Panel>
@@ -634,28 +552,12 @@ export default function ProjectSettingsPage() {
                 onChange={(e) => saveReflectionEnabled(e.currentTarget.checked)}
               />
               <Switch
-                label="Enable reasoning"
-                description="Turn on for reasoning models (e.g. Kimi, qwen3, DeepSeek-R1, Ollama thinking models). Off by default. When on, the model gets extra window-budgeted output headroom during exploration so a long hidden chain-of-thought doesn't truncate the step, and discovery requests reasoning on every call — providers that support native thinking act on it (capability-checked); others simply get the headroom. Leave off for non-reasoning models."
-                checked={reasoningEnabled}
-                disabled={savingReasoning}
-                onChange={(e) => saveReasoningEnabled(e.currentTarget.checked)}
-              />
-              <Switch
                 label="Suggested questions"
                 description="When on, opening an insight or recommendation shows a few AI-generated starter questions you can ask about it. This makes an automatic LLM call the first time each item is opened (results are cached), so turn it off to avoid the extra requests. On by default."
                 checked={askSuggestionsEnabled}
                 disabled={savingAskSuggestions}
                 onChange={(e) => saveAskSuggestionsEnabled(e.currentTarget.checked)}
               />
-              {promptCacheSupported(project, llmProviders) && (
-                <Switch
-                  label="Prompt caching (Claude models)"
-                  description="Cache the repeated prefix of multi-turn calls (the system prompt and the conversation so far) so later calls read it at the provider's cache-read price. Applies to Claude models only. Turn off only if your account or region does not support prompt caching."
-                  checked={promptCacheEnabled}
-                  disabled={savingPromptCache}
-                  onChange={(e) => savePromptCacheEnabled(e.currentTarget.checked)}
-                />
-              )}
               <MultiSelect
                 label="Recommendation eligibility"
                 description="Which validation verdicts qualify an insight for recommendation generation. Default is Confirmed + Supported (only positively-validated insights). Add Partial / Unverifiable when the warehouse can't self-verify (e.g. no temp-table permission) but you trust the analysis. Rejected means the evidence contradicts the insight — include with caution. Insights whose validation didn't run stay eligible regardless. Clearing the selection reverts to the default."
