@@ -99,6 +99,8 @@ type ExplorationEngine struct {
 	// persistStep checkpoints each completed step; resume is the prefix to
 	// replay before entering the loop. Both nil on an ordinary run.
 	persistStep StepPersister
+	// fenceReplay gates replay without writing a step row. See StepFence.
+	fenceReplay StepFence
 	resume      *ResumeState
 
 	// schemaProvider serves the on-demand schema actions (lookup_schema,
@@ -380,6 +382,23 @@ type ExplorationEngineOptions struct {
 	// the action arguments needed to rebuild the turn. See StepPersister.
 	PersistStep StepPersister
 
+	// FenceReplayedStep asks whether this attempt may go on replaying, once
+	// per replayed step. Optional; nil skips the check.
+	//
+	// Separate from PersistStep because replay must NOT rewrite the rows it
+	// is replaying. Their attempt number is what LoadPrefix uses to find a
+	// stale tail — a row whose attempt is lower than the prefix so far is
+	// taken to have answered a question the prefix no longer asks — so
+	// restamping them from the front means a replay that dies midway leaves
+	// a DECREASING sequence, and the next resume discards everything after
+	// the first row it rewrote. Those rows are untouched and valid; throwing
+	// them away pays the warehouse and the model again for work already
+	// paid for, which is the one thing resume exists to prevent.
+	//
+	// So the rows keep their original lineage and only this fence runs. See
+	// StepFence.
+	FenceReplayedStep StepFence
+
 	// Resume is the already-executed prefix to replay instead of
 	// re-executing. Nil or empty is an ordinary run, byte-identical to one
 	// with no resume wiring at all.
@@ -394,6 +413,13 @@ type ExplorationEngineOptions struct {
 // working. A missing row is handled on the read side, which replays only the
 // contiguous prefix and re-explores from the first gap.
 type StepPersister func(ctx context.Context, step models.ExplorationStep, args models.CheckpointArgs) error
+
+// StepFence reports whether this attempt may still act on the run, without
+// writing anything that belongs to a step. It returns ErrAttemptSuperseded
+// when the attempt has lost the run, and the caller must stop rather than
+// carry on into the writes that are shared between attempts — the per-run
+// vector index and the live step feed.
+type StepFence func(ctx context.Context, step int) error
 
 // ResumeState is the prefix of a previous attempt that this run replays
 // rather than re-executing.
@@ -500,6 +526,7 @@ func NewExplorationEngine(opts ExplorationEngineOptions) *ExplorationEngine {
 		reasoningEffective: opts.ReasoningEffective,
 
 		persistStep: opts.PersistStep,
+		fenceReplay: opts.FenceReplayedStep,
 		resume:      opts.Resume,
 	}
 }

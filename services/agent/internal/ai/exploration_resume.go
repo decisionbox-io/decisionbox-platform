@@ -316,47 +316,45 @@ func (e *ExplorationEngine) replayPrefix(ctx context.Context, conversation *Conv
 			out.CompletionMsg = cp.Args.CompletionReason
 		}
 
-		// Checkpoint first, for the reason the live loop checkpoints first:
-		// the ownership probe rides on a write this attempt makes anyway,
-		// and the re-index below is keyed on run_id alone. A superseded
-		// attempt that re-indexed before asking would write into the live
-		// attempt's per-run collection. The content it writes is the same
-		// content — both attempts replay from the same fenced checkpoint row
-		// — so the damage is one redundant upsert rather than a corrupted
-		// point, but the asymmetry with the live path is not worth keeping,
-		// and the next shared write added here would not be so forgiving.
-		// KNOWN DEFECT, not yet fixed, flagged for review rather than
-		// guessed at — see the PR discussion.
+		// Fence first, for the reason the live loop checkpoints first: the
+		// writes that follow are SHARED between attempts — the per-run vector
+		// index below is keyed on run_id alone, and the live step feed is the
+		// same — so a superseded attempt must be stopped before it reaches
+		// them, not after.
 		//
-		// This rewrites a replayed row with the CURRENT attempt, and the
-		// attempt is what LoadPrefix uses to find a stale tail: a row whose
-		// attempt is LOWER than the prefix so far is taken to have answered a
-		// question the prefix no longer asks, and truncates the prefix there.
-		// Replaying walks that value up from the front, so a process that
-		// dies midway through replay leaves a decreasing sequence — 2,1,1 for
-		// a three-step prefix — and the NEXT resume keeps only step 1 and
-		// re-explores the rest. The steps it throws away are untouched and
-		// perfectly valid; the cost is paying the warehouse again for work
+		// A fence and NOT a checkpoint write, which is the whole point. The
+		// rows being replayed already exist, written by the attempt that
+		// earned them, and their attempt number is what LoadPrefix uses to
+		// find a stale tail: a row whose attempt is lower than the prefix so
+		// far is read as having answered a question the prefix no longer asks,
+		// and truncates the prefix there. Rewriting them with THIS attempt
+		// walks that value up from the front, so a replay interrupted midway
+		// leaves a decreasing sequence — 2,1,1 across a three-step prefix —
+		// and the next resume keeps only the rows it had already rewritten and
+		// re-explores the rest. Those rows are untouched and perfectly valid;
+		// discarding them pays the warehouse and the model again for work
 		// already paid for.
 		//
-		// The three ways out are not equivalent and one of them changes how
-		// supersession is detected during replay, which is why this is not
-		// being decided here:
-		//
-		//   1. Do not rewrite replayed rows at all, and take the ownership
-		//      probe from MarkExplorationCheckpoint instead, which is already
-		//      attempt-fenced and already answers ownership "for free" on a
-		//      write this attempt makes anyway. The prefix then stays on its
-		//      original attempt and only ever INCREASES, which the rule
-		//      permits. Smallest, and removes a write per replayed step.
-		//   2. Adopt the whole trusted prefix before replay begins, restamping
-		//      in DESCENDING step order so that even a partial restamp leaves
-		//      a non-decreasing sequence.
-		//   3. Relax the staleness rule, which weakens a check that exists for
-		//      a real reason.
-		if e.checkpoint(ctx, step, cp.Args) {
-			out.Superseded = true
-			return out
+		// Leaving them alone means the prefix only ever INCREASES — the
+		// replayed rows keep their original attempt, and the new steps this
+		// attempt goes on to execute carry its own — which is exactly what the
+		// staleness rule permits.
+		if e.fenceReplay != nil {
+			if err := e.fenceReplay(ctx, step.Step); err != nil {
+				if errors.Is(err, ErrAttemptSuperseded) {
+					logger.WithFields(logger.Fields{
+						"step": step.Step,
+					}).Warn("exploration: another attempt of this run has taken over during replay; stopping so this one writes nothing further")
+					out.Superseded = true
+					return out
+				}
+				// Anything else is not evidence of being superseded. Replay is
+				// reading work that is already durable, so there is nothing to
+				// lose by carrying on.
+				logger.WithFields(logger.Fields{
+					"step": step.Step, "error": err.Error(),
+				}).Warn("exploration: could not confirm this attempt still owns the run while replaying; continuing")
+			}
 		}
 
 		// Re-indexing a replayed step is exact and idempotent: the embedded

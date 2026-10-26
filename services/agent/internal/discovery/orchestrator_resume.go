@@ -173,6 +173,41 @@ func (o *Orchestrator) checkpointStep(ctx context.Context, step models.Explorati
 	return nil
 }
 
+// fenceReplayedStep is the replay counterpart of checkpointStep: the same two
+// ownership questions, and none of the writing.
+//
+// A replayed step needs no checkpoint row — one already exists, written by the
+// attempt that earned it — and must not be given a new one. The row's attempt
+// is what LoadPrefix uses to find a stale tail, so restamping the prefix from
+// the front means an interrupted replay leaves a decreasing sequence and the
+// next resume throws away valid, already-paid-for steps. Leaving the rows
+// alone keeps the prefix monotonic.
+//
+// What replay does still need is to be stopped before the writes the engine
+// shares between attempts — the per-run vector index, keyed on run_id alone,
+// and the live step feed. Hence both fences, in the same order and for the
+// same reasons checkpointStep gives:
+//
+//   - OwnsRun, because it answers for a CANCELLED run too, which an
+//     attempt-only comparison cannot see.
+//   - MarkExplorationCheckpoint, whose applied-ness is the stronger fence: it
+//     is attempt-fenced, so a resume landing in between makes it not apply.
+//     Safe to call while replaying even though the marker is already at or
+//     past this step, because it is a $max — it cannot walk the value back
+//     down to the step being replayed.
+func (o *Orchestrator) fenceReplayedStep(ctx context.Context, step int) error {
+	if o.statusReporter == nil {
+		return nil
+	}
+	if !o.statusReporter.OwnsRun(ctx) {
+		return ai.ErrAttemptSuperseded
+	}
+	if !o.statusReporter.MarkExplorationCheckpoint(ctx, step) {
+		return ai.ErrAttemptSuperseded
+	}
+	return nil
+}
+
 // checkpointExplorationSummary records that exploration finished. Its
 // presence is what lets a later attempt go straight to analysis — zero
 // exploration LLM calls, zero warehouse queries.

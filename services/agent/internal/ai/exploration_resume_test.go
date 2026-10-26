@@ -30,6 +30,12 @@ type resumeHarness struct {
 	onSteps  []int
 	perssted []models.ExplorationStep
 	args     []models.CheckpointArgs
+	// fenced is the step number of every replay fence call, in order. Replay
+	// must fence without writing, so these are what prove it ran at all.
+	fenced []int
+	// fenceErr, when set, is what the fence returns from the call whose step
+	// number matches the key.
+	fenceErr map[int]error
 }
 
 func newResumeHarness(t *testing.T, opts ExplorationEngineOptions, scripted ...string) *resumeHarness {
@@ -59,6 +65,12 @@ func newResumeHarness(t *testing.T, opts ExplorationEngineOptions, scripted ...s
 		t.Fatal(err)
 	}
 	opts.Client = client
+	if opts.FenceReplayedStep == nil {
+		opts.FenceReplayedStep = func(_ context.Context, step int) error {
+			h.fenced = append(h.fenced, step)
+			return h.fenceErr[step]
+		}
+	}
 	if opts.Executor == nil {
 		opts.Executor = queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{Warehouse: h.wh, MaxRetries: 1})
 	}
@@ -259,15 +271,22 @@ func TestReplay_DoesNotRefireTheLiveStepFeed(t *testing.T) {
 	if len(h.onSteps) != 1 || h.onSteps[0] != 3 {
 		t.Errorf("onStep calls = %v, want exactly [3] — replayed steps must not re-fire the live feed", h.onSteps)
 	}
-	// But the prefix IS re-checkpointed under this attempt, so a run that
-	// dies twice still resumes from the same place.
-	if len(h.perssted) != 3 {
-		t.Fatalf("checkpoint writes = %d, want 3 (2 replayed + 1 new)", len(h.perssted))
+	// And the prefix is NOT re-checkpointed, which this test used to assert
+	// the opposite of — on the grounds that rewriting it meant "a run that
+	// dies twice still resumes from the same place". That reasoning was
+	// backwards. The row's attempt is what LoadPrefix uses to find a stale
+	// tail, so rewriting the prefix from the front means a replay that dies
+	// MIDWAY leaves a decreasing sequence (2,1,1 across three steps) and the
+	// next resume keeps only the rows already rewritten, re-exploring valid
+	// steps that were already paid for. Leaving them alone keeps the prefix
+	// monotonic, which is what lets a run die twice and still resume whole.
+	if len(h.perssted) != 1 || h.perssted[0].Step != 3 {
+		t.Fatalf("checkpoint writes = %+v, want only the new step 3 — replayed rows must keep the attempt that earned them", h.perssted)
 	}
-	for i, s := range h.perssted {
-		if s.Step != i+1 {
-			t.Errorf("checkpoint[%d] is step %d, want %d", i, s.Step, i+1)
-		}
+	// Replay is still fenced, once per replayed step: the writes that follow
+	// in the engine are shared between attempts.
+	if len(h.fenced) != 2 || h.fenced[0] != 1 || h.fenced[1] != 2 {
+		t.Errorf("replay fence calls = %v, want [1 2]", h.fenced)
 	}
 }
 
@@ -923,9 +942,11 @@ func TestCheckpointSupersededDuringReplayStopsBeforeExploring(t *testing.T) {
 			queryStep(1, 3, rows(3)), queryStep(2, 3, rows(3)),
 		}},
 	}, `{"done": true, "summary": "done"}`)
-	h.engine.persistStep = func(context.Context, models.ExplorationStep, models.CheckpointArgs) error {
-		return ErrAttemptSuperseded
-	}
+	// Through the replay FENCE, not through persistStep: replay no longer
+	// writes the rows it replays — their attempt is what keeps a later
+	// LoadPrefix from reading the prefix as a stale tail — so the fence is
+	// what gates it. The invariant under test is unchanged.
+	h.fenceErr = map[int]error{1: ErrAttemptSuperseded}
 
 	_, err := h.engine.Explore(context.Background(), ExplorationContext{
 		ProjectID: "proj", Dataset: "ds", InitialPrompt: "Explore.",
@@ -1029,5 +1050,79 @@ func TestReplay_QueryDataKeepsItsRecordedError(t *testing.T) {
 	}
 	if out.Steps[0].Error == "" {
 		t.Error("a replayed query_data step lost its recorded error; nothing re-ran it, so that error is the only account of what happened")
+	}
+}
+
+// TestReplay_AnInterruptedReplayLeavesThePrefixMonotonic is the defect option 1
+// was chosen to fix, stated as the thing a later resume depends on.
+//
+// LoadPrefix finds a stale tail by comparing attempts: a row whose attempt is
+// LOWER than the prefix so far is read as having answered a question the
+// prefix no longer asks, and the prefix is truncated there. That rule is
+// right, and it is why replay must not restamp the rows it replays. Rewriting
+// them walks the attempt up from the front, so a replay that stops midway —
+// the process killed again, or this attempt superseded — leaves a decreasing
+// sequence like 2,1,1 across a three-step prefix, and the NEXT resume keeps
+// only step 1 and re-explores steps 2 and 3. Those steps are untouched and
+// valid; re-exploring them pays the warehouse and the model a second time for
+// work already paid for, which is the single thing this whole feature exists
+// to prevent.
+//
+// So: nothing replayed is written, and the only row this attempt writes is the
+// step it actually executes. A later LoadPrefix therefore sees the original
+// attempt across the whole replayed prefix and this attempt's number only
+// after it — monotonic, so no stale tail, so nothing discarded.
+func TestReplay_AnInterruptedReplayLeavesThePrefixMonotonic(t *testing.T) {
+	prefix := []models.ExplorationCheckpoint{
+		queryStep(1, 3, rows(3)), queryStep(2, 3, rows(3)), queryStep(3, 3, rows(3)),
+	}
+	h := newResumeHarness(t, ExplorationEngineOptions{
+		MaxSteps: 10,
+		Resume:   &ResumeState{Steps: prefix},
+	}, `{"done": true, "summary": "done"}`)
+
+	// Interrupted partway: superseded while replaying the second step, which
+	// is precisely where the old behaviour had already rewritten step 1 and
+	// not yet reached step 3.
+	h.fenceErr = map[int]error{2: ErrAttemptSuperseded}
+
+	res, err := h.engine.Explore(context.Background(), ExplorationContext{
+		ProjectID: "proj", Dataset: "ds", InitialPrompt: "Explore.",
+	})
+	if !errors.Is(err, ErrAttemptSuperseded) {
+		t.Fatalf("Explore err = %v, want ErrAttemptSuperseded", err)
+	}
+	if !errors.Is(res.Error, ErrAttemptSuperseded) {
+		t.Errorf("result.Error = %v, want it to carry the supersession", res.Error)
+	}
+
+	// The point: not one row was rewritten, so there is no attempt for a
+	// later LoadPrefix to see go backwards.
+	if len(h.perssted) != 0 {
+		t.Errorf("an interrupted replay wrote %+v; every one of those rewrites a row whose attempt a later resume compares, and the first one that lands makes the rest read as a stale tail", h.perssted)
+	}
+	// It stopped at the step that lost the run rather than ploughing on.
+	if len(h.fenced) != 2 || h.fenced[1] != 2 {
+		t.Errorf("fence calls = %v, want it to stop at step 2", h.fenced)
+	}
+}
+
+// And the fence is not treated as ownership evidence when it simply fails: a
+// replay reads work that is already durable, so a Mongo hiccup must not
+// abandon a prefix that is sitting right there.
+func TestReplay_AFailingFenceDoesNotAbandonTheReplay(t *testing.T) {
+	h := newResumeHarness(t, ExplorationEngineOptions{
+		MaxSteps: 10,
+		Resume:   &ResumeState{Steps: []models.ExplorationCheckpoint{queryStep(1, 3, rows(3)), queryStep(2, 3, rows(3))}},
+	}, `{"done": true, "summary": "done"}`)
+	h.fenceErr = map[int]error{1: fmt.Errorf("mongo is down")}
+
+	res := h.run(t)
+
+	if !res.Completed {
+		t.Fatalf("a failing replay fence abandoned the run: %+v", res)
+	}
+	if res.TotalSteps != 3 {
+		t.Errorf("TotalSteps = %d, want 3 (2 replayed + the completion)", res.TotalSteps)
 	}
 }

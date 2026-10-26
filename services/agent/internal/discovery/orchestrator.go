@@ -1078,6 +1078,8 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// a flattened summary, this one takes the whole step plus the
 		// action arguments replay needs.
 		PersistStep: o.checkpointStep,
+		// Replay fences without writing: see fenceReplayedStep.
+		FenceReplayedStep: o.fenceReplayedStep,
 		// The already-executed prefix to replay instead of re-query. Nil on
 		// an ordinary run.
 		Resume: o.resume.engineResume(),
