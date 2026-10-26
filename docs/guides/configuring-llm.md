@@ -1,5 +1,7 @@
 # Configuring LLM Providers
 
+A project can use **several providers at once** and pick a **provider and model for each layer** of the product. See [Providers and models per layer](#providers-and-models-per-layer) below; everything after it is per-provider setup, unchanged.
+
 DecisionBox supports seven LLM providers. Cloud providers (Bedrock, Vertex AI, Azure AI Foundry) speak multiple wire formats and dispatch per model through their inline catalog — see [Model catalog and wire formats](#model-catalog-and-wire-formats) below.
 
 Any HTTPS LLM endpoint fronted by a private / internal CA can be trusted without rebuilding an image — see [Custom TLS (private CA)](#custom-tls-private-ca) below.
@@ -416,6 +418,69 @@ Example (API request to create a project):
 
 A typo in `wire_override` is rejected at project-save time with HTTP 400. Once saved, the agent uses the override for every dispatch until the model is added to the catalog (at which point the override becomes unnecessary).
 
+## Providers and models per layer
+
+A project holds a set of named **provider entries** — connections, each with its own credentials — and chooses a **(provider entry, model)** pair for each **layer**: the named places DecisionBox calls a model.
+
+**Settings → LLM Providers** manages the connections. **Settings → Models** chooses the models: one default pair that every layer uses, plus an override for any layer that wants something else. The common case is three controls — provider, model, reasoning — and a project never has to touch the rest.
+
+### The layers
+
+`GET /api/v1/llm/layers` is the authoritative list; the dashboard reads it rather than holding a copy. There are seventeen, grouped by whether the model choice changes what people see.
+
+| Group | Layers |
+|---|---|
+| Main | `exploration`, `analysis`, `validation_verifier`, `validation_refuter`, `recommendations`, `ask` |
+| Small | `questions`, `reflection`, `sql_repair`, `ask_router`, `ask_suggestions`, `table_descriptions`, `source_summary`, `pack_gen`, `file_ingestion`, `exec_summary`, `report_style` |
+
+Where a layer matches a discovery phase it is spelled the same, so the `LLM call usage` log's `phase` field and the layer key are the same string. Validation is the exception: one phase now spends two models, so the log keeps `phase=validation` while `validation_verifier` and `validation_refuter` are configured separately. That pair is where the model matters most — verdicts depend heavily on it, and swapping it changes what users see as verified.
+
+### Why mix models
+
+Measured on a production ERP warehouse, with prompt caching on and the same judge scoring every run:
+
+| Pipeline | Fully supported | Cost per run | Wall clock |
+|---|---|---|---|
+| One high-end model everywhere | 40–52% (avg 46%) | $13.46 | 46 min |
+| High-end model, cheap model on the small layers | 40.5% | $11.71 | 26 min |
+| Open-weight model exploring, high-end analysing and validating, cheap on the small layers | 38.5–61% (avg 49%) | ~$10.10 | 25–27 min |
+
+A quarter off the cost and half the wall clock, with no loss in finding quality. The third row mixes **providers**, not just models, which is why a project can hold several connections.
+
+### Token budgets, reasoning and prompt caching are per layer
+
+Each layer's context window and output ceiling come from **its own** model, not the default one — including the `max_input_tokens` / `max_output_tokens` overrides, which a layer sets for itself.
+
+Reasoning and prompt caching are per layer for the same reason: in a mixed pipeline one project-wide switch would span providers where it is inert on some and meaningful on others.
+
+One asymmetry worth knowing. Reasoning is requested **per call**, so a per-layer setting costs nothing. Prompt caching is applied when the **connection is built**, so two layers on the same provider entry with different caching settings are two connections — one extra HTTP client on that entry. The settings page says so where the toggle is.
+
+### Credentials
+
+Each provider entry has its own credential, stored in the secret store and never in the project document.
+
+| Entry | Secret key |
+|---|---|
+| `default` | `llm-credentials` (environment fallback `LLM_API_KEY`) |
+| `blurb` | `blurb-llm-credentials` → `BLURB_LLM_API_KEY` → `llm-credentials` → `LLM_API_KEY` |
+| anything else | `llm-credentials-<hex of the id>` |
+
+The reserved `default` entry keeps the key a single-provider project already uses, so configuring layers moves no secret. A non-reserved entry has **no shared environment fallback**: it reads only its own key, plus an `env_var` an operator names in the entry's config. The reason is concrete — an OpenAI-compatible entry sends whatever credential it is given as a bearer token to its own `base_url`, so a transient secret-store failure must not be able to send the default entry's key to a third party.
+
+### Existing projects need one visit to settings
+
+A project created before per-layer models is **not** configured for them, and discovery is refused until someone saves its configuration. The values arrive pre-filled from what the project already uses, so it is a review-and-confirm.
+
+This applies to **scheduled runs too**: a schedule on an unconfigured project fails until the visit happens, and records why in its run history. There is one gate for every way work starts rather than a second path that runs on a configuration nobody reviewed.
+
+The legacy `llm` and `blurb_llm` fields keep being written as a mirror of the default and table-description layers, so an agent, sources-worker or fileingestion-worker image older than the API keeps reading a truthful single-provider setup.
+
+### Per-layer rules
+
+Exactly one layer has a pre-flight rule: `table_descriptions` refuses a reasoning-class model. A model that thinks on every request returns an empty description inside that layer's small budget, and an index run fires one call per table. The rule reaches the dashboard as data (`refuses_reasoning_models`), so the picker warns before a save the API would reject.
+
+A model that refuses a request at run time — some models decline pack generation — is a different thing: it is not knowable before the call, so it surfaces as an error naming the model and the layer to change, not as a denylist.
+
 ## Prompt caching and Claude 5.x
 
 Discovery is multi-turn: every exploration step re-sends the system prompt and the whole conversation so far, and every verifier / refuter round re-sends its system prompt.
@@ -424,7 +489,7 @@ Single-message requests (analysis, recommendations) mark only the shared system 
 
 Prompt caching is **on by default**.
 Measured on a production-scale ERP warehouse with the same model and settings on the same day, it cut the exploration phase's cost by about 95% and the whole run's by about three quarters, with an unchanged quality profile.
-To turn it off for a project, set **Prompt caching (Claude models)** off in the LLM settings (`llm.config.prompt_cache: "false"`) — only needed if your account or region does not support caching.
+To turn it off, clear **Prompt caching** on the layer in **Settings → Models** — only needed if your account or region does not support caching. It is a per-layer setting because a mixed pipeline spans providers where caching is inert on some and meaningful on others; see [Providers and models per layer](#providers-and-models-per-layer) for the one cost that comes with flipping it for a single layer.
 
 OpenAI-compatible providers (OpenAI, LiteLLM, vLLM and hosted OpenAI-compatible APIs) cache repeated prefixes automatically on the server side; nothing needs to be set.
 
@@ -445,8 +510,8 @@ Discovery budgets the tokens it generates against the model's context window so 
 DecisionBox does not need the model to be in its catalog to do this. It resolves the window in priority order — **operator override → self-calibration → live auto-detection → catalog → default** — so an arbitrary customer model works out of the box:
 
 - **Auto-detection (no typing).** When you click **Load models**, DecisionBox reads the real window/output from the provider where it is exposed — LiteLLM (`GET /model/info`), Ollama (`GET /api/show` `context_length`), and OpenAI-compatible gateways that report `max_model_len` (e.g. vLLM). Selecting such a model **prefills** the two fields below with the detected values.
-- **Manual override.** The **Context window override (tokens)** (`max_input_tokens`) and **Max output tokens override** (`max_output_tokens`) fields let you set the real limits for any model DecisionBox cannot detect. The override always wins. Leave them blank to use the detected/catalogued value or the conservative default (128K input, 64K output).
-- **Self-calibration.** If a request still overflows (an under-estimated window on an unknown model), the model's error states its true window. The agent recomputes a fitting `max_tokens`, retries once, and records the window (in the `llm_model_windows` collection) so later runs for the same model budget correctly up front — you never have to look the number up.
+- **Manual override.** The **Max input tokens** (`max_input_tokens`) and **Max output tokens** (`max_output_tokens`) fields let you set the real limits for any model DecisionBox cannot detect. The override always wins. Leave them blank to use the detected/catalogued value or the conservative default (128K input, 64K output). They are **per layer**, because the ceiling belongs to the model that layer runs.
+- **Self-calibration.** If a request still overflows (an under-estimated window on an unknown model), the model's error states its true window. The agent recomputes a fitting `max_tokens`, retries once, and records the window (in the `llm_model_windows` collection) so later runs for the same model budget correctly up front — you never have to look the number up. A window is recorded against the **provider entry and model** that learned it, so a window learned on one layer's cheap model never shrinks another layer's budget, and two connections to different deployments that happen to name the same model alias do not contaminate each other.
 
 For most catalogued models and most gateways you never touch these fields. Set `max_input_tokens` explicitly only for a model that is uncatalogued *and* whose gateway does not report its window.
 
