@@ -845,6 +845,19 @@ type AnalysisStep struct {
 	// hole.
 	FigureRefsUnresolved int `bson:"figure_refs_unresolved,omitempty" json:"figure_refs_unresolved,omitempty"`
 
+	// FiguresValueUnreadable is the part of FigureRefsUnresolved where the model DID
+	// declare the figure and put something in `value` that no number reads from -- a
+	// vendor name, an ISO date. Recorded separately because the two want opposite
+	// fixes: an undeclared reference is the model forgetting, this is `value` being
+	// typed number with no field able to carry a non-numeric cell, so the model has
+	// nowhere legal to put one.
+	//
+	// It is broken out because the undifferentiated counter could not answer which
+	// defect was worth fixing. Establishing that split across the run record once took
+	// replaying raw model responses out of Mongo, and a fifth of those carry warehouse
+	// bytes that are not valid UTF-8 and do not decode at all.
+	FiguresValueUnreadable int `bson:"figures_value_unreadable,omitempty" json:"figures_value_unreadable,omitempty"`
+
 	// InsightsClaimsDropped counts insights that kept a refuted claim through
 	// the round cap and had the sentence removed instead. Read against
 	// InsightsRepaired this is the repaired-vs-discarded ratio: the point of

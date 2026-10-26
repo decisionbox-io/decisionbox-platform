@@ -117,6 +117,18 @@ type Figure struct {
 	// recommendation side had the same defect from the other direction and was fixed
 	// first; this is the same distinction, drawn once and used by both.
 	ValueMissing bool `bson:"-" json:"-"`
+
+	// ValueRaw keeps what the model actually sent in `value` when no number could be
+	// read from it. Like ValueMissing it is neither stored nor served, and for the same
+	// reason: it exists only between decoding a response and reporting on it.
+	//
+	// It exists because Value is a float64, so a failed parse leaves 0 and the original
+	// is gone -- and 0 is indistinguishable from a model that really declared zero. A
+	// live run put a vendor name and an ISO date in this field; the only way that was
+	// ever established was by re-reading the raw response out of Mongo, which is lossy
+	// (a fifth of them carry warehouse bytes that are not valid UTF-8 and do not decode).
+	// Keeping it here lets the layer that notices say what it saw.
+	ValueRaw string `bson:"-" json:"-"`
 }
 
 // FigureRef points at a figure another document declared and Go already settled.
@@ -344,6 +356,11 @@ func (f *Figure) UnmarshalJSON(data []byte) error {
 	var ok bool
 	f.Value, ok = flexFloatOK(aux.Value)
 	f.ValueMissing = !ok
+	if !ok {
+		// Truncated: this is reported in a log line, and `value` is model output of
+		// no bounded length.
+		f.ValueRaw = truncateRawValue(string(bytes.TrimSpace(aux.Value)))
+	}
 	f.Step = int(flexFloat(aux.Step))
 	f.Decimals = int(flexFloat(aux.Decimals))
 	return nil
@@ -384,6 +401,16 @@ func flexFloatOK(raw json.RawMessage) (float64, bool) {
 		return 0, false
 	}
 	return v, true
+}
+
+// maxValueRawChars bounds what a log line will carry from an unreadable `value`.
+const maxValueRawChars = 120
+
+func truncateRawValue(s string) string {
+	if len(s) <= maxValueRawChars {
+		return s
+	}
+	return s[:maxValueRawChars] + "..."
 }
 
 // MaxFigureDecimals bounds the decimal places a figure may be written to.

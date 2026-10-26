@@ -1321,6 +1321,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		if rendered := o.figureWriter().renderInsightFigures(insights); rendered.resolved > 0 || rendered.inlined > 0 || rendered.unresolved > 0 {
 			step.FiguresInlined = rendered.inlined
 			step.FigureRefsUnresolved = rendered.unresolved
+			step.FiguresValueUnreadable = rendered.valueUnreadable
 		}
 
 		// Settle every quantifier claim the model declared against the rows of

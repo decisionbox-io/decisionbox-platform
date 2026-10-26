@@ -123,9 +123,18 @@ func (w figureWriter) renderInsightFigures(insights []models.Insight) figureRend
 			// tried to resolve, so a placeholder naming an id the grammar cannot express is
 			// reported instead of slipping past the counter built on that same grammar.
 			tally.unresolved += len(left) - len(r.unresolved)
+			// WHY each one failed, not just that it did. Three defects reach this line
+			// looking the same in the prose and wanting different fixes, and the counter
+			// this log sits beside cannot tell them apart -- so the split had to be
+			// reconstructed by replaying raw model responses out of Mongo, a fifth of
+			// which do not decode. Classified from ins.Figures because the renderer was
+			// handed only the usable ones and the reason is filtered out by then.
+			causes, unreadable := unresolvedCauses(ins.Figures, left)
+			tally.valueUnreadable += unreadable
 			applog.WithFields(applog.Fields{
 				"insight": ins.Name,
 				"refs":    left,
+				"causes":  causes,
 			}).Warn("Insight prose still carries references after rendering; they ship as written")
 		}
 		if bare := bareNumeralFields(tpl); len(bare) > 0 {
@@ -345,6 +354,11 @@ type figureRenderTally struct {
 	// tilde -- the template already wrote, so the render dropped its own rather than
 	// doubling it.
 	markerKept int
+	// valueUnreadable counts references to a figure the model DID declare and gave a
+	// value no number could be read from -- a vendor name, a date. Separate from
+	// unresolved because the two want opposite fixes: an undeclared reference is the
+	// model forgetting, this is the model having nowhere to put a non-numeric cell.
+	valueUnreadable int
 }
 
 // trailingNotation is the run of figure notation a template left immediately before a
@@ -510,4 +524,55 @@ func strayRefs(name, description string, indicators ...string) []string {
 		out = append(out, reAnyRef.FindAllString(s, -1)...)
 	}
 	return out
+}
+
+// unresolvedCauses says, for each reference the render could not resolve, WHY.
+//
+// The renderer only ever sees usableFigures, so by the time a reference is in
+// r.unresolved the reason it failed has been filtered away. Three different defects
+// arrive here looking identical in the prose, and they do not share a fix:
+//
+//   - not declared at all -- the model referenced an id it never wrote a figure for
+//     ({{window}}, {{period}}); the contract has to tell it that stays as prose.
+//   - declared with a value no number parses from -- `value` is typed number and a
+//     model with a vendor name or a date to cite has nowhere else to put it. This is
+//     the largest class in the shipped record and the raw value is the evidence, which
+//     is why Figure.ValueRaw is kept.
+//   - declared but unusable for a structural reason -- a duplicated id, or an id the
+//     reference grammar cannot express.
+//
+// Counting them together, which is all FigureRefsUnresolved ever did, makes the record
+// say "something broke" when what is needed is "this broke". Establishing the split for
+// one run previously took replaying raw responses out of Mongo, a fifth of which do not
+// decode.
+func unresolvedCauses(declared []models.Figure, refs []string) (lines []string, valueUnreadable int) {
+	byID := make(map[string]models.Figure, len(declared))
+	dup := duplicateFigureIDs(declared)
+	for _, f := range declared {
+		byID[f.ID] = f
+	}
+	seen := map[string]struct{}{}
+	for _, ref := range refs {
+		if _, already := seen[ref]; already {
+			continue
+		}
+		seen[ref] = struct{}{}
+
+		f, isDeclared := byID[ref]
+		switch {
+		case !isDeclared:
+			lines = append(lines, fmt.Sprintf("%s: referenced but never declared", ref))
+		case f.ValueMissing:
+			valueUnreadable++
+			lines = append(lines, fmt.Sprintf("%s: declared %s/%s with a value no number reads from: %q",
+				ref, f.Unit, f.Kind, f.ValueRaw))
+		case dup[ref]:
+			lines = append(lines, fmt.Sprintf("%s: declared more than once, so the id is ambiguous", ref))
+		case !figureIDPattern.MatchString(f.ID):
+			lines = append(lines, fmt.Sprintf("%s: id is outside the reference grammar", ref))
+		default:
+			lines = append(lines, fmt.Sprintf("%s: declared and usable, yet unresolved -- unexplained", ref))
+		}
+	}
+	return lines, valueUnreadable
 }

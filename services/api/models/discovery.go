@@ -190,6 +190,16 @@ type AnalysisStep struct {
 	FiguresCorrected     int `bson:"figures_corrected,omitempty" json:"figures_corrected,omitempty"`
 	FiguresInlined       int `bson:"figures_inlined,omitempty" json:"figures_inlined,omitempty"`
 	FigureRefsUnresolved int `bson:"figure_refs_unresolved,omitempty" json:"figure_refs_unresolved,omitempty"`
+
+	// Parse telemetry for this area, mirrored for the same reason. Both were
+	// persisted by the agent and absent here -- found by the class test below
+	// rather than by anyone noticing, which is the whole argument for having it.
+	InsightsDroppedParse int `bson:"insights_dropped_parse,omitempty" json:"insights_dropped_parse,omitempty"`
+	AnalysisParseRetries int `bson:"analysis_parse_retries,omitempty" json:"analysis_parse_retries,omitempty"`
+	// The part of FigureRefsUnresolved where the figure WAS declared and its value
+	// could not be read as a number. Mirrored for the reason stated above, which this
+	// field is the newest example of.
+	FiguresValueUnreadable int `bson:"figures_value_unreadable,omitempty" json:"figures_value_unreadable,omitempty"`
 }
 
 // SelectedStep mirrors the agent's struct: which exploration step
