@@ -383,6 +383,18 @@ func (h *ProjectsHandler) applyLLMLayerUpdate(
 	existing, incoming *models.Project,
 	sentFields map[string]json.RawMessage,
 ) (bool, []llmlayer.ProviderEntry) {
+	// Managed mode: managedai.Apply has already replaced the incoming
+	// per-layer configuration with the gateway preset wholesale, so there is
+	// nothing user-supplied left to guard and nothing optional about applying
+	// it — a managed project is configured by construction whether or not the
+	// request mentioned the fields.
+	if managedai.Enabled() {
+		existing.LLMProviders = incoming.LLMProviders
+		existing.LayerModels = incoming.LayerModels
+		existing.LLMConfigVersion = incoming.LLMConfigVersion
+		return true, nil
+	}
+
 	_, providersSent := sentFields["llm_providers"]
 	_, layersSent := sentFields["layer_models"]
 	if !providersSent && !layersSent {
