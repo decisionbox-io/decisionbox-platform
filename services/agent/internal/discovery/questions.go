@@ -85,6 +85,7 @@ type uncertaintyItem struct {
 // deployment flag (Layer A) and the per-project toggle (Layer B); short-circuits
 // with no LLM call when nothing was genuinely uncertain.
 func (o *Orchestrator) RunPhaseQuestions(ctx context.Context, result *models.DiscoveryResult) {
+	o.setLLMPhase(models.PhaseQuestions)
 	if !o.clarifyingQuestionsEnabled {
 		return // Layer B: per-project Settings toggle is off.
 	}

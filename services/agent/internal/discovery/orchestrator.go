@@ -150,6 +150,7 @@ type Orchestrator struct {
 	ledgerRepo   ledgerStore
 	findingRepo  findingStore
 	taskRepo     taskStore
+	learningRepo learningStore
 	proposalRepo proposalStore
 	feedbackRepo *database.FeedbackRepository
 	debugLogRepo *database.DebugLogRepository
@@ -221,10 +222,22 @@ type Orchestrator struct {
 	// default-on). Layer B of the gate; the deployment flag is Layer A.
 	clarifyingQuestionsEnabled bool
 
+	// reflectionPending is set once markReflectionPending has put this run's
+	// in-flight entry up, so RunPhaseReflection knows it owns taking it down.
+	reflectionPending bool
 	// reflectionEnabled is the resolved per-project toggle for the end-of-run
 	// reflection / Discovery Ledger phase (from DiscoveryOptions.ReflectionEnabled,
 	// default-on). Layer B of the gate; DISCOVERY_REFLECTION_ENABLED is Layer A.
 	reflectionEnabled bool
+	// shownTaskIDs are the open threads this run was actually shown, captured
+	// when the ledger read context was built. The reflection phase records
+	// these as pursued rather than re-reading the queue, which by then may
+	// have moved under it.
+	shownTaskIDs []string
+	// promptFindingIDs are the ledger findings the reflection prompt carried.
+	// An id the model returns that is in neither this nor the run's own
+	// insights was invented.
+	promptFindingIDs []string
 
 	// recommendationVerdicts is the resolved per-project set of validation
 	// verdicts that make an insight eligible for recommendation generation
@@ -312,6 +325,7 @@ type OrchestratorOptions struct {
 	LedgerRepo         *database.LedgerRepository
 	LedgerFindingRepo  *database.LedgerFindingRepository
 	LedgerTaskRepo     *database.LedgerTaskRepository
+	LedgerLearningRepo *database.LedgerLearningRepository
 	LedgerProposalRepo *database.LedgerProposalRepository
 	FeedbackRepo       *database.FeedbackRepository
 	DebugLogRepo       *database.DebugLogRepository
@@ -409,6 +423,15 @@ type OrchestratorOptions struct {
 	RunStepIndex RunStepIndex
 }
 
+// setLLMPhase tags every following LLM call with the discovery phase, so the
+// usage log, the policy usage event and the debug log attribute tokens (and
+// cost) to the phase that spent them. No-op without an aiClient.
+func (o *Orchestrator) setLLMPhase(phase string) {
+	if o.aiClient != nil {
+		o.aiClient.SetPhase(phase)
+	}
+}
+
 // NewOrchestrator creates a new discovery orchestrator.
 func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 	var debugLogger *debug.Logger
@@ -471,6 +494,10 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 	if opts.LedgerTaskRepo != nil {
 		taskRepo = opts.LedgerTaskRepo
 	}
+	var learningRepo learningStore
+	if opts.LedgerLearningRepo != nil {
+		learningRepo = opts.LedgerLearningRepo
+	}
 	var proposalRepo proposalStore
 	if opts.LedgerProposalRepo != nil {
 		proposalRepo = opts.LedgerProposalRepo
@@ -486,6 +513,7 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		ledgerRepo:            ledgerRepo,
 		findingRepo:           findingRepo,
 		taskRepo:              taskRepo,
+		learningRepo:          learningRepo,
 		proposalRepo:          proposalRepo,
 		feedbackRepo:          opts.FeedbackRepo,
 		debugLogRepo:          opts.DebugLogRepo,
@@ -841,6 +869,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		o.logCorrelationContract(dc, guidance)
 	}
 
+	// Everything above is ours (pack + engine text); normalise it before
+	// project knowledge, which is the customer's own content, is appended.
+	// Packs are stored per project, and ones written before the action key
+	// became "rationale" still teach "thinking", which some models refuse.
+	explorationPrompt = ai.NormalizeLegacyActionKey(explorationPrompt)
+
 	// Inject project knowledge sources (no-op if no enterprise plugin loaded
 	// or no sources indexed). Query phrased to surface broad domain context
 	// useful for any exploration step.
@@ -850,6 +884,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// Phase 3: Autonomous exploration
 	applog.Info("Phase 3: Running autonomous exploration")
 	o.statusReporter.SetPhase(ctx, models.PhaseExploration, "Starting autonomous data exploration...", 10)
+	o.setLLMPhase(models.PhaseExploration)
 
 	// Build the SchemaProvider that backs the lookup_schema /
 	// search_tables actions. The cache provider serves entirely from
@@ -932,6 +967,11 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		"max_steps":            opts.MaxSteps,
 	}).Info("exploration: stopping rule resolved")
 
+	// The action format the engine states follows the sole datasource's own
+	// query language, so a run that can only reach a non-SQL source is never
+	// shown a SQL example (nor, for a cube, table lookups).
+	soleSlug := soleDatasourceSlug(dsExecutors, o.warehouses, normDatasourceID(o.warehouseID), o.warehouseProviderSlug)
+
 	o.explorationEngine = ai.NewExplorationEngine(ai.ExplorationEngineOptions{
 		Client:            o.aiClient,
 		Executor:          executor,
@@ -943,6 +983,8 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// A run that can query a cube stops on whether it is still finding
 		// anything new, not on a step count — see exploration_stopping.go.
 		StopOnNoNewSignal: reachesCube,
+		NonSQLLanguage:    gowarehouse.NonSQLLanguageOf(soleSlug),
+		CubeSource:        providerIsCube(soleSlug),
 		Dataset:           datasetsStr,
 		SchemaProvider:    schemaProvider,
 		StepIndexer:       stepIndexer,
@@ -1028,6 +1070,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 	applog.Info("Phase 4: Running analysis by area")
 	o.statusReporter.SetPhase(ctx, models.PhaseAnalysis, "Analyzing discoveries by category...", 65)
+	o.setLLMPhase(models.PhaseAnalysis)
 	allInsights := make([]models.Insight, 0)
 	analysisLog := make([]models.AnalysisStep, 0)
 
@@ -1316,7 +1359,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 		if len(insights) > 0 {
 			var areaResults []models.ValidationResult
+			o.setLLMPhase(models.PhaseValidation)
 			areaResults, insightsValidatedThisRun = valPhase.validateInsights(ctx, insights, stepByID, area.ID, insightsValidatedThisRun)
+			o.setLLMPhase(models.PhaseAnalysis)
 			step.ValidationResults = areaResults
 		}
 
@@ -1384,6 +1429,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// {confirmed, supported}) flow to the recommender.
 	applog.Info("Phase 5: Generating recommendations")
 	o.statusReporter.SetPhase(ctx, models.PhaseRecommendations, "Generating actionable recommendations...", 85)
+	o.setLLMPhase(models.PhaseRecommendations)
 	recommenderInput := filterEligibleInsights(allInsights, o.recommendationVerdicts)
 	applog.WithFields(applog.Fields{
 		"total_insights":    len(allInsights),
@@ -1486,7 +1532,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// Skip recommendation validation if no recommendations were generated.
 	// Validation is only meaningful when there are recommendations to verify.
 	if len(recommendations) > 0 {
+		o.setLLMPhase(models.PhaseValidation)
 		recValidationResults = valPhase.validateRecommendations(ctx, recommendations, allInsights, stepByID)
+		o.setLLMPhase(models.PhaseRecommendations)
 	}
 
 	// Phase 6: Update project context with discovered patterns
@@ -1598,6 +1646,13 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 		// Run embedding + indexing step to store discovery results for future retrieval/search
 		o.runPhaseEmbedIndex(persistCtx, result)
+	}
+
+	// The ledger update this run is about to owe goes up BEFORE the run reads
+	// as completed, so nothing that sees the completed run sees a ledger that
+	// claims to be current. See markReflectionPending.
+	if computeErr == nil {
+		o.markReflectionPending(persistCtx)
 	}
 
 	// Final step: update run status (success or failure) based on execution result

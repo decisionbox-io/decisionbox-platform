@@ -120,6 +120,10 @@ Each step is written to the `discovery_runs` collection in real-time, so the das
 
 **Self-healing SQL:** If a query fails, the agent sends the error message to the LLM and asks it to fix the SQL. This uses the warehouse provider's `SQLFixPrompt()` (BigQuery-specific SQL fix instructions, Redshift-specific, etc.).
 
+**The action format is the engine's, not the pack's.** The first exploration message states it — exactly one JSON object per reply, `{"rationale": "...", "query": "..."}` / `lookup_schema` / `search_tables` / `{"done": true, ...}` — from the same source the reformat nudge uses, so a domain pack whose exploration prompt never describes it (a custom or generated pack) does not leave the model guessing and paying a reformat round-trip per guess. The format follows what the run can query: on a multi-datasource run every query and lookup names its `datasource_id`; when the only datasource is not SQL, the query example names that source's declared query language rather than showing SQL, and a cube-shaped source (no tables) is not offered `lookup_schema`.
+The free-text key is `rationale`; `thinking` is still read, and legacy pack prompts that teach it are rewritten at render time, because Claude Opus 5.5 and Sonnet 5.5 refuse a conversation that asks for a JSON field named `thinking`.
+A refusal (stop reason `refusal`, no content) fails the step with an explicit error instead of being re-asked as an unparseable reply — re-sending the same conversation is refused again.
+
 **Tolerant action parsing:** Exploration continues only when the LLM returns a JSON object containing a recognized action key — `query` (run a query), `lookup_schema` / `search_tables` (inspect the warehouse), `done` (terminate), the legacy `action` field, or a tool-use envelope (`{"name": "…", "input": {…}}`). To reach that action reliably on reasoning / open models, the parser strips `<think>…</think>` reasoning blocks (recovering an action written *inside* one) so brace-y reasoning can't shadow the real action, and rejects a truncated/malformed object rather than extracting a nested draft from it. The per-step output budget (`EXPLORATION_MAX_OUTPUT_TOKENS`) is sized so a long reasoning block cannot truncate the action to empty. (Exploration does not force a provider-native `response_format` on the action — doing so dropped the model's `thinking` and corrupted output on some backends; the tolerant parser and retry are the net instead.) Responses that are pure prose, malformed JSON, or JSON with no usable action (e.g. a reasoning-model preamble like `{"plan": "...", "thinking": "..."}`) are rejected and the agent re-prompts with a reason-aware reformat nudge (up to 3 retries per step), preventing silent early termination on models whose prose mentions words like "done" or "complete".
 
 **Early-termination guard (`--min-steps`):** Models biased toward early completion (Qwen3, DeepSeek-R1, GPT-OSS) sometimes return `{"done": true}` after just 1–2 steps even with a 100-step budget. Setting `--min-steps=N` rejects `done` signals until step `N`, records a `complete_rejected` exploration step, and injects a nudge telling the model how many steps remain. Default is `0` (no floor) for backwards compatibility.
@@ -341,8 +345,6 @@ The run status is updated to `completed` (or `failed` if critical errors occurre
 Each run costs:
 - **LLM tokens** — Exploration (many small calls) + Analysis (few large calls) + Recommendations (one call)
 - **Warehouse queries** — Each exploration step executes one SQL query
-
-Use the **cost estimation** feature (`POST /api/v1/projects/{id}/discover/estimate`) to preview costs before running. The dashboard has a checkbox: "Estimate cost before running."
 
 ## Next Steps
 

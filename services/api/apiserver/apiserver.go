@@ -78,12 +78,17 @@ import (
 // main.go drift:
 //
 //	decisionbox-api backfill-embeddings [flags]
+//	decisionbox-api backfill-ledger-graph [flags]
 //
 // When a subcommand is invoked, Run() routes to it and returns without
 // starting the HTTP server.
 func Run() {
 	if len(os.Args) > 1 && os.Args[1] == "backfill-embeddings" {
 		backfill.RunBackfillEmbeddings(os.Args[2:])
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "backfill-ledger-graph" {
+		backfill.RunBackfillLedgerGraph(os.Args[2:])
 		return
 	}
 

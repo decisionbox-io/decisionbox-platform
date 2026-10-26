@@ -96,6 +96,13 @@ func (r *runner) route(ctx context.Context, rt *ProjectRuntime, st *turnState) (
 		if len(valid) == 0 && dec.ProjectLevel && hasProjectLevel {
 			return false
 		}
+		// The router named no datasource at all and did not ask to clarify: the
+		// request needs no data (a poem, small talk). Asking "which datasource?"
+		// would contradict that verdict, so the answering loop takes the turn and
+		// declines it. Unknown ids filtered out above still clarify.
+		if len(dec.Datasources) == 0 && !dec.Clarify && !dec.ProjectLevel && dec.Confidence >= routeClarifyThreshold {
+			return false
+		}
 		q := strings.TrimSpace(dec.Question)
 		if q == "" {
 			q = routeDefaultClarify(st.routing.datasources)

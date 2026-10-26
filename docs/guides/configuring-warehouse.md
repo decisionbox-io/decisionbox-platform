@@ -80,7 +80,7 @@ The agent adds `WHERE app_id = '68a42f378e3b227c8e41b0e5'` to all queries.
 
 ### Cost
 
-BigQuery charges per TB scanned (default: $7.50/TB for on-demand pricing). The cost estimation feature uses BigQuery's dry-run API to preview costs before running.
+BigQuery charges per TB scanned (default: $7.50/TB for on-demand pricing).
 
 ## Amazon Redshift
 
@@ -209,7 +209,6 @@ Row counts come from `INFORMATION_SCHEMA.TABLES.ROW_COUNT` — no full-table sca
 ### Cost
 
 Snowflake charges per-second based on warehouse size (credits per hour).
-There is no dry-run API, so the cost estimation feature is not available for Snowflake.
 
 ## PostgreSQL
 
@@ -276,8 +275,7 @@ Row counts come from `pg_class.reltuples` — an estimate maintained by PostgreS
 
 ### Cost
 
-PostgreSQL is self-hosted or managed (RDS, Cloud SQL, AlloyDB, Supabase).
-There is no per-query cost model, so the cost estimation feature is not available.
+PostgreSQL is self-hosted or managed (RDS, Cloud SQL, AlloyDB, Supabase), and has no per-query cost model.
 
 ## Databricks
 
@@ -344,7 +342,6 @@ Databricks SQL extends ANSI SQL with:
 ### Cost
 
 Databricks SQL warehouses charge per DBU (Databricks Unit) based on cluster size and runtime.
-There is no per-query cost estimation API, so the cost estimation feature is not available.
 
 ## Microsoft SQL Server
 
@@ -423,7 +420,6 @@ No `QUALIFY` clause — filter window-function results via CTE or subquery.
 ### Cost
 
 SQL Server and Azure SQL Database have multiple pricing models (DTU, vCore, per-second serverless).
-There is no per-query cost estimation API, so the cost estimation feature is not available.
 
 ## Cross-Cloud Authentication
 

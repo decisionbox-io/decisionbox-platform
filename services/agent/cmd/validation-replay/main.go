@@ -35,6 +35,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -44,7 +47,9 @@ import (
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
+	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
+	mongoSecrets "github.com/decisionbox-io/decisionbox/providers/secrets/mongodb"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	agentmodels "github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
@@ -55,6 +60,9 @@ import (
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/litellm"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/openai"
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai"
+	_ "github.com/decisionbox-io/decisionbox/providers/secrets/aws"   // registers "aws"
+	_ "github.com/decisionbox-io/decisionbox/providers/secrets/azure" // registers "azure"
+	_ "github.com/decisionbox-io/decisionbox/providers/secrets/gcp"   // registers "gcp"
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery"
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/databricks"
 	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/mssql"
@@ -126,11 +134,24 @@ func run() error {
 	fmt.Fprintf(os.Stderr, "loaded project=%q discovery=%s insights=%d recs=%d steps=%d\n",
 		project.Name, fl.discoveryID, len(discovery.Insights), len(discovery.Recommendations), len(stepByID))
 
-	llmProvider, err := initLLM(project, fl)
+	// The project's LLM key, resolved as the agent resolves it: the
+	// llm-credentials secret, else LLM_API_KEY. Bedrock / Vertex projects
+	// authenticate by role and need neither.
+	credential, credSource, credErr := gosecrets.ResolveCredential(ctx, openSecretProvider(db), fl.projectID, "llm-credentials", "LLM_API_KEY")
+	if credErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: reading llm-credentials: %v\n", credErr)
+	}
+	if credSource == "" {
+		credSource = "none"
+	}
+	fmt.Fprintf(os.Stderr, "llm credential source: %s\n", credSource)
+
+	llmProvider, err := initLLM(project, fl, credential)
 	if err != nil {
 		return fmt.Errorf("init LLM: %w", err)
 	}
-	llmClient, err := ai.New(llmProvider, project.LLM.Model)
+	calls := &countingProvider{Provider: llmProvider}
+	llmClient, err := ai.New(calls, project.LLM.Model)
 	if err != nil {
 		return fmt.Errorf("init ai.Client: %w", err)
 	}
@@ -257,7 +278,54 @@ func run() error {
 		_, _ = os.Stdout.Write(out)
 		_, _ = os.Stdout.WriteString("\n")
 	}
+	if calls.everyCallFailed() {
+		return errors.New("every LLM call failed, so the verdicts above are not verdicts; check the project's llm-credentials secret or LLM_API_KEY")
+	}
 	return nil
+}
+
+// openSecretProvider opens the project secret store the agent reads
+// (SECRET_PROVIDER, default mongodb in the same database). Nil when it
+// cannot be opened — the caller then falls back to the environment.
+func openSecretProvider(db *mongo.Database) gosecrets.Provider {
+	cfg := gosecrets.LoadConfig()
+	var (
+		sp  gosecrets.Provider
+		err error
+	)
+	if cfg.Provider == "" || cfg.Provider == "mongodb" {
+		sp, err = mongoSecrets.NewMongoProvider(db.Collection("secrets"), cfg.Namespace, cfg.EncryptionKey)
+	} else {
+		sp, err = gosecrets.NewProvider(cfg)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: secret store unavailable (%v); using the environment only\n", err)
+		return nil
+	}
+	return sp
+}
+
+// countingProvider counts the chat calls that returned a response and the
+// ones that failed, so the replay can tell "every call failed" (a missing
+// key, an unreachable endpoint) from a response without usage accounting.
+type countingProvider struct {
+	gollm.Provider
+	ok, failed atomic.Int64
+}
+
+func (p *countingProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
+	resp, err := p.Provider.Chat(ctx, req)
+	if err != nil {
+		p.failed.Add(1)
+	} else {
+		p.ok.Add(1)
+	}
+	return resp, err
+}
+
+// everyCallFailed reports whether calls were made and none succeeded.
+func (p *countingProvider) everyCallFailed() bool {
+	return p.ok.Load() == 0 && p.failed.Load() > 0
 }
 
 type target struct {
@@ -339,18 +407,46 @@ func parseFlags() cliFlags {
 	return fl
 }
 
-func initLLM(project *ProjectDoc, fl cliFlags) (gollm.Provider, error) {
+func initLLM(project *ProjectDoc, fl cliFlags, credential string) (gollm.Provider, error) {
 	if project.LLM.Provider == "" {
 		return nil, errors.New("project has no LLM provider configured")
 	}
+	return gollm.NewProvider(project.LLM.Provider, llmProviderConfig(project, fl, credential))
+}
+
+// llmProviderConfig builds the provider config the agent would: the
+// project's resolved API key (when there is one) as credentials_json, then
+// the project's saved LLM settings on top.
+// replayPromptCacheEnabled mirrors models.Project.EffectivePromptCacheEnabled.
+// This tool has its own minimal project document, so the rule is duplicated
+// rather than imported; TestReplayPromptCacheMatchesAgentModel pins them
+// together.
+func replayPromptCacheEnabled(project *ProjectDoc) bool {
+	if project == nil {
+		return true
+	}
+	if project.PromptCacheEnabled != nil {
+		return *project.PromptCacheEnabled
+	}
+	return !strings.EqualFold(strings.TrimSpace(project.LLM.Config[gollm.PromptCacheKey]), "false")
+}
+
+func llmProviderConfig(project *ProjectDoc, fl cliFlags, credential string) gollm.ProviderConfig {
 	cfg := gollm.ProviderConfig{
 		"model":           project.LLM.Model,
 		"max_retries":     "3",
 		"timeout_seconds": "120",
 	}
+	if credential != "" {
+		cfg["credentials_json"] = credential
+	}
 	for k, v := range project.LLM.Config {
 		cfg[k] = v
 	}
+	// Resolve prompt caching exactly as the agent does — the project field
+	// when set, else the legacy config value, else on — and write it where
+	// the providers read it. Set after the merge so the field wins.
+	cfg[gollm.PromptCacheKey] = strconv.FormatBool(replayPromptCacheEnabled(project))
 	if fl.lAuthOverride != "" {
 		cfg["auth_method"] = fl.lAuthOverride
 	}
@@ -362,7 +458,7 @@ func initLLM(project *ProjectDoc, fl cliFlags) (gollm.Provider, error) {
 			cfg["auth_method"] = "adc"
 		}
 	}
-	return gollm.NewProvider(project.LLM.Provider, cfg)
+	return cfg
 }
 
 func initWarehouse(project *ProjectDoc, fl cliFlags) (gowarehouse.Provider, error) {
@@ -492,14 +588,14 @@ func getEnv(k, fallback string) string {
 
 // MVPReport is the structured output the MVP writes to --out.
 type MVPReport struct {
-	ProjectID      string          `json:"project_id"`
-	DiscoveryID    string          `json:"discovery_id"`
-	LLM            string          `json:"llm"`
-	Warehouse      string          `json:"warehouse"`
-	RefuterEnabled bool            `json:"refuter_enabled"`
+	ProjectID      string           `json:"project_id"`
+	DiscoveryID    string           `json:"discovery_id"`
+	LLM            string           `json:"llm"`
+	Warehouse      string           `json:"warehouse"`
+	RefuterEnabled bool             `json:"refuter_enabled"`
 	RunCaps        verifier.RunCaps `json:"run_caps"`
-	Mode           string          `json:"mode"`
-	Targets        []TargetResult  `json:"targets"`
+	Mode           string           `json:"mode"`
+	Targets        []TargetResult   `json:"targets"`
 }
 
 type TargetResult struct {

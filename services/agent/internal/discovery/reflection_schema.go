@@ -14,10 +14,10 @@ const reflectionResponseFormatName = "discovery_reflection"
 // this is a safe no-op on providers without it (the tolerant parser is the
 // always-on net). Strict is false for the same reason as the questions schema:
 // OpenAI strict mode requires every property required and forbids open objects.
-func reflectionResponseFormat(mode agentplugin.EvolutionMode, demandPriorRejudgement bool) *gollm.ResponseFormat {
+func reflectionResponseFormat(mode agentplugin.EvolutionMode, demandPriorRejudgement, hasFindingIDs bool) *gollm.ResponseFormat {
 	return &gollm.ResponseFormat{
 		Name:   reflectionResponseFormatName,
-		Schema: reflectionResponseSchema(mode, demandPriorRejudgement),
+		Schema: reflectionResponseSchema(mode, demandPriorRejudgement, hasFindingIDs),
 		Strict: false,
 	}
 }
@@ -48,7 +48,14 @@ func reflectionResponseFormat(mode agentplugin.EvolutionMode, demandPriorRejudge
 // domain_pack_deltas stays optional in every mode: a pack change is warranted
 // only by a signal that keeps recurring across runs, so most runs genuinely
 // have none and demanding one every time would churn the pack.
-func reflectionResponseSchema(mode agentplugin.EvolutionMode, demandPriorRejudgement bool) map[string]interface{} {
+//   - origin_finding_ids — only when the prompt carries at least one finding
+//     id to copy. A run with no prior findings and no findings of its own has
+//     nothing to attribute a thread to, and the only way left to satisfy a
+//     demand is to invent an id.
+//   - resolved_by_finding_ids — only alongside a `done`, expressed as a
+//     two-branch condition on the item rather than a blanket `required`,
+//     because a `dropped` is a proven dead end and has nothing to point at.
+func reflectionResponseSchema(mode agentplugin.EvolutionMode, demandPriorRejudgement, hasFindingIDs bool) map[string]interface{} {
 	str := func(desc string) map[string]interface{} {
 		return map[string]interface{}{"type": "string", "description": desc}
 	}
@@ -89,14 +96,7 @@ func reflectionResponseSchema(mode agentplugin.EvolutionMode, demandPriorRejudge
 		"task_status_updates": map[string]interface{}{
 			"type":        "array",
 			"description": "Close OPEN tasks (by id) this run resolved: 'done' when a finding from THIS run answers the task, 'dropped' when it is a proven dead-end / no longer relevant. Only with grounded evidence — leave a partially-explored or untouched task alone. Empty if you closed none.",
-			"items": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"task_id": str("The open task id, copied verbatim from the OPEN TASKS list"),
-					"status":  map[string]interface{}{"type": "string", "enum": []string{"done", "dropped"}},
-				},
-				"required": []interface{}{"task_id", "status"},
-			},
+			"items":       taskStatusUpdateItem(hasFindingIDs),
 		},
 		"learnings": map[string]interface{}{
 			"type":        "array",
@@ -117,14 +117,15 @@ func reflectionResponseSchema(mode agentplugin.EvolutionMode, demandPriorRejudge
 			"items": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"title":       str("A short, plain-language title a business user would understand (max ~8 words; no table/column names or SQL jargon)"),
-					"text":        str("The detailed, technical description of the task as an actionable next step (may reference tables, columns, metrics, the specific hypothesis)"),
-					"kind":        map[string]interface{}{"type": "string", "enum": []string{"next_task", "hypothesis"}},
-					"target_type": map[string]interface{}{"type": "string", "enum": []string{"insight", "recommendation", "table", "area"}},
-					"target_id":   str("Optional: the id/name this task is about"),
-					"supersedes":  str("Optional: the id of an OPEN task (from the OPEN TASKS list) this thread continues — set it when this follow-up grew out of a task you are marking done"),
+					"title":              str("A short, plain-language title a business user would understand (max ~8 words; no table/column names or SQL jargon)"),
+					"text":               str("The detailed, technical description of the task as an actionable next step (may reference tables, columns, metrics, the specific hypothesis)"),
+					"kind":               map[string]interface{}{"type": "string", "enum": []string{"next_task", "hypothesis"}},
+					"target_type":        map[string]interface{}{"type": "string", "enum": []string{"insight", "recommendation", "table", "area"}},
+					"target_id":          str("Optional: the id/name this task is about"),
+					"supersedes":         str("Optional: the id of an OPEN task (from the OPEN TASKS list) this thread continues — set it when this follow-up grew out of a task you are marking done"),
+					"origin_finding_ids": strArray("The ids of the findings this thread grew out of — from THIS RUN'S FINDINGS or PRIOR FINDINGS, copied verbatim. Records why the thread exists; `supersedes` only links it to an earlier task."),
 				},
-				"required": []interface{}{"title", "text"},
+				"required": nextTaskRequired(hasFindingIDs),
 			},
 		},
 		"domain_pack_deltas": map[string]interface{}{
@@ -161,12 +162,118 @@ func reflectionResponseSchema(mode agentplugin.EvolutionMode, demandPriorRejudge
 		requireNonEmpty(props, "next_tasks",
 			"Evolution is ON for this run: propose at least one, grounded in this run's findings and coverage.")
 	}
+	if hasFindingIDs {
+		requireNonEmpty(nextTaskProps(props), "origin_finding_ids",
+			"This run's prompt lists finding ids: attribute the thread to at least one, copied verbatim.")
+	}
 
 	return map[string]interface{}{
 		"type":       "object",
 		"properties": props,
 		"required":   required,
 	}
+}
+
+// taskStatusUpdateItem is the item schema for task_status_updates.
+//
+// resolved_by_finding_ids is demanded only alongside a `done`, so the
+// requirement is expressed as a two-branch oneOf on the item rather than as a
+// blanket `required`: a `dropped` is a proven dead end, and demanding findings
+// that answered it would be demanding an answer to a question that has none.
+// The branch is added only when the prompt carries finding ids at all.
+//
+// Strict mode is off for this schema (see reflectionResponseFormat), so a
+// composite keyword is safe here: providers that validate structured output do
+// so against this document, and the tolerant parser is the net for any that
+// ignore it.
+func taskStatusUpdateItem(hasFindingIDs bool) map[string]interface{} {
+	str := func(desc string) map[string]interface{} {
+		return map[string]interface{}{"type": "string", "description": desc}
+	}
+	resolvedBy := map[string]interface{}{
+		"type":        "array",
+		"description": "The ids of the findings that ANSWERED this task — usually findings from THIS run — copied verbatim. Omit on a 'dropped': a dead end has nothing to point at.",
+		"items":       map[string]interface{}{"type": "string"},
+	}
+	item := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"task_id":                 str("The open task id, copied verbatim from the OPEN TASKS list"),
+			"status":                  map[string]interface{}{"type": "string", "enum": []string{"done", "dropped"}},
+			"reason":                  str("One line: why the task is being closed"),
+			"resolved_by_finding_ids": resolvedBy,
+		},
+		"required": []interface{}{"task_id", "status", "reason"},
+	}
+	if !hasFindingIDs {
+		return item
+	}
+	// Each branch is SELF-CONTAINED — it repeats task_id and reason rather
+	// than leaning on the sibling `properties` above. A JSON-Schema validator
+	// would merge the two, but a provider that compiles the schema into a
+	// grammar does not: llama.cpp (so Ollama) builds each alternative on its
+	// own, and a branch naming only `status` produced updates with no task id
+	// at all. Every one of them was then dropped for having nothing to match,
+	// so on those deployments a thread could never be closed.
+	common := func() map[string]interface{} {
+		return map[string]interface{}{
+			"task_id": str("The open task id, copied verbatim from the OPEN TASKS list"),
+			"reason":  str("One line: why the task is being closed"),
+		}
+	}
+	done := common()
+	done["status"] = map[string]interface{}{"type": "string", "const": "done"}
+	done["resolved_by_finding_ids"] = map[string]interface{}{
+		"type":        "array",
+		"description": resolvedBy["description"],
+		"items":       map[string]interface{}{"type": "string"},
+		"minItems":    1,
+	}
+	dropped := common()
+	dropped["status"] = map[string]interface{}{"type": "string", "const": "dropped"}
+
+	item["oneOf"] = []interface{}{
+		map[string]interface{}{
+			"type":       "object",
+			"properties": done,
+			"required":   []interface{}{"task_id", "status", "reason", "resolved_by_finding_ids"},
+		},
+		map[string]interface{}{
+			"type":       "object",
+			"properties": dropped,
+			"required":   []interface{}{"task_id", "status", "reason"},
+		},
+	}
+	return item
+}
+
+// nextTaskProps reaches the next_tasks item's property map so a conditional
+// demand can be attached to one of its fields. Returns an empty map rather
+// than panicking if the shape is ever restructured, so requireNonEmpty becomes
+// a no-op instead of a crash in a best-effort phase.
+func nextTaskProps(props map[string]interface{}) map[string]interface{} {
+	nt, ok := props["next_tasks"].(map[string]interface{})
+	if !ok {
+		return map[string]interface{}{}
+	}
+	item, ok := nt["items"].(map[string]interface{})
+	if !ok {
+		return map[string]interface{}{}
+	}
+	itemProps, ok := item["properties"].(map[string]interface{})
+	if !ok {
+		return map[string]interface{}{}
+	}
+	return itemProps
+}
+
+// nextTaskRequired is the next_tasks item's required list. origin_finding_ids
+// joins it only when the prompt carries finding ids to copy.
+func nextTaskRequired(hasFindingIDs bool) []interface{} {
+	if hasFindingIDs {
+		return []interface{}{"title", "text", "origin_finding_ids"}
+	}
+	return []interface{}{"title", "text"}
 }
 
 // requireNonEmpty marks an array property as needing at least one item and

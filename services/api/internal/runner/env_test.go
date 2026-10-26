@@ -112,6 +112,8 @@ func TestForwardedEnv_LLMBehaviourKnobs(t *testing.T) {
 		"LLM_REQUEST_DELAY_MS":   "250",
 		"LLM_RETRY_BASE_BACKOFF": "2s",
 		"LLM_RETRY_MAX_ATTEMPTS": "4",
+		// Capacity-error budget (429 / 503 / 529, throttling, "model busy").
+		"LLM_RETRY_CAPACITY_MAX_ATTEMPTS": "8",
 	}
 	for k, v := range knobs {
 		t.Setenv(k, v)
@@ -136,4 +138,16 @@ func TestForwardedEnv_LLMBehaviourKnobs(t *testing.T) {
 			t.Errorf("%s forwarded %d times by the Docker runner, want 1", k, counts[k])
 		}
 	}
+}
+
+// TestForwardedEnv_ValidationConcurrency pins that the validation fan-out
+// knob reaches container-spawned agents (subprocess agents inherit it).
+func TestForwardedEnv_ValidationConcurrency(t *testing.T) {
+	t.Setenv("VALIDATION_CONCURRENCY", "4")
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys) {
+		if kv.Key == "VALIDATION_CONCURRENCY" && kv.Value == "4" {
+			return
+		}
+	}
+	t.Error("VALIDATION_CONCURRENCY is not forwarded to every runner")
 }

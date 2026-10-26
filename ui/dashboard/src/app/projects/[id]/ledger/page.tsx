@@ -1,23 +1,39 @@
 'use client';
 
-import { ReactNode, useEffect, useState } from 'react';
+import { ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { Loader, Select, Button, Group, Stack, Text, Card, Badge, Progress, Tooltip, Collapse, UnstyledButton, ThemeIcon } from '@mantine/core';
+import { Alert, Loader, Select, Button, Group, Stack, Text, Card, Badge, Progress, Tooltip, Collapse, UnstyledButton, ThemeIcon, SegmentedControl } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
+import { LEDGER_UPDATE_POLL_MS, runInProgress, updateStartedAt } from '@/components/ledger/updating';
 import {
   IconBook2, IconChevronRight, IconTrendingUp, IconRoute, IconGitPullRequest,
-  IconMap2, IconHistory, IconAdjustments, IconListDetails,
+  IconMap2, IconHistory, IconAdjustments, IconListDetails, IconSitemap,
 } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
 import { SectionHeader, EmptyState, StatCard, SeverityBadge, AreaBadge, Th } from '@/components/common/UIComponents';
+import StoryTimeline from '@/components/ledger/StoryTimeline';
+import { ThreadMapWithProvider } from '@/components/ledger/ThreadMap';
+import { humanise, indexGraph } from '@/components/ledger/graph';
 import {
-  api, ApiError, LedgerView, LedgerTask, EvolutionSettings, PackProposal, Project,
+  api, ApiError, LedgerView, LedgerTask, LedgerGraph, EvolutionSettings, PackProposal, Project,
   EvolutionMode, FrontierPolicy,
 } from '@/lib/api';
 
 // Cap the "Next up" list so the ledger never renders an unbounded wall of
 // tasks; the rest are summarised as "+N more".
 const MAX_NEXT_UP = 12;
+
+// The three levels of the investigation view. Story is the default: plain
+// language and no graph answers "where did this come from" for most readers.
+// Threads is the tree. The third level is not a view — every node in the first
+// two links through to the insight page that already renders the narrative, the
+// SQL, the rows, the quality caveats and the validation verdict.
+type LedgerLevel = 'story' | 'threads';
+
+const LEVELS: { value: LedgerLevel; label: string }[] = [
+  { value: 'story', label: 'Story' },
+  { value: 'threads', label: 'Map' },
+];
 
 const EVOLUTION_MODES: { value: EvolutionMode; label: string }[] = [
   { value: 'off', label: 'Off — record only' },
@@ -68,6 +84,7 @@ function normalizeLedger(lv: LedgerView): LedgerView {
     findings: lv?.findings ?? [],
     tasks: lv?.tasks ?? [],
     ancestors: lv?.ancestors ?? [],
+    updating: lv?.updating ?? null,
   };
 }
 
@@ -143,6 +160,18 @@ export default function LedgerPage() {
   const [savingMode, setSavingMode] = useState(false);
   const [deciding, setDeciding] = useState<string>(''); // proposal id currently being decided
   const [showFindings, setShowFindings] = useState(false); // advanced detail, collapsed by default
+  const [level, setLevel] = useState<LedgerLevel>('story');
+  const [graph, setGraph] = useState<LedgerGraph | null>(null);
+  const [graphLoading, setGraphLoading] = useState(false);
+  // The graph route is additive: an API that predates it 404s, and an older
+  // deployment must still get the page it has always had.
+  const [graphUnavailable, setGraphUnavailable] = useState(false);
+  // Indexed once per payload — before any early return, because a hook has
+  // to run on every render. Rebuilding it on an unrelated state change (the
+  // findings panel opening, a follow-up expanding) would hand the map a new
+  // object, and the map would read that as a new map and refit the canvas
+  // out from under a reader who had panned somewhere.
+  const graphIndex = useMemo(() => indexGraph(graph), [graph]);
   const [showFrontierHelp, setShowFrontierHelp] = useState(false); // frontier explainer, hidden by default
   const [openThreads, setOpenThreads] = useState<Set<string>>(new Set()); // expanded follow-up ancestry
 
@@ -152,24 +181,219 @@ export default function LedgerPage() {
     return next;
   });
 
-  const loadProposals = () => {
-    api.listPackProposals(id)
-      .then((p) => setProposals(p || []))
-      .catch(() => setProposals([]));
+  // Every graph and proposals request is numbered, and only the latest may
+  // change the page — its success, its failure and its loading state alike.
+  // The first ones can still be out when an update finishes and the page
+  // reloads; landing last, they would put the pre-run map and proposals back,
+  // or call a graph that just loaded unavailable.
+  const graphRequest = useRef(0);
+  // Whether the graph route is known to be absent — a 404, and only a 404.
+  // Any other failure is a failure, and a later reload should try again.
+  const graphRouteMissing = useRef(false);
+  const loadGraph = () => {
+    const mine = ++graphRequest.current;
+    setGraphLoading(true);
+    api.getLedgerGraph(id)
+      .then((g) => {
+        if (mine !== graphRequest.current) return;
+        setGraph(g);
+        setGraphUnavailable(false);
+      })
+      .catch((e) => {
+        if (mine !== graphRequest.current) return;
+        if ((e as { status?: number } | null)?.status === 404) graphRouteMissing.current = true;
+        setGraphUnavailable(true);
+      })
+      .finally(() => { if (mine === graphRequest.current) setGraphLoading(false); });
   };
 
+  const proposalsRequest = useRef(0);
+  const loadProposals = () => {
+    const mine = ++proposalsRequest.current;
+    api.listPackProposals(id)
+      .then((p) => { if (mine === proposalsRequest.current) setProposals(p || []); })
+      .catch(() => { if (mine === proposalsRequest.current) setProposals([]); });
+  };
+
+  // Fetched once, after the ledger itself has loaded. Deliberately not on
+  // first paint: the graph carries a project's whole history and neither the
+  // stat cards nor the open-thread queue need it. And never on a deployment
+  // where the ledger routes 404 — the page already says the feature is not
+  // available, and a second request to the same absent API tells nobody
+  // anything.
+  useEffect(() => {
+    if (loading || unsupported || !ledger) return;
+    if (graph || graphLoading || graphUnavailable) return;
+    loadGraph();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, loading, unsupported, ledger]);
+
+  // Keeping the page current across a run and its ledger update.
+  //
+  // A run is marked completed before its findings are folded into the ledger,
+  // so for a while after a run finishes this whole page describes the state
+  // from before it — and a page opened while the run was going cannot tell
+  // from the ledger alone that it has finished. ONE loop handles both, and it
+  // goes on until it has finished the job itself: only its own successful
+  // reload of the whole page ends it, never a ledger answer on its own. Each
+  // check, in this order:
+  //
+  //   1. The run. No answer: check again.
+  //   2. Then, and only then, the ledger — whether or not a run is going: a
+  //      new run can start while the last one's update is still being
+  //      written, and that update finishing must not wait hours for the new
+  //      run. The agent marks an update BEFORE it stamps the run completed, so
+  //      a ledger read after a completed status sees either that mark or the
+  //      finished update — never the moment in between, which two reads in
+  //      parallel could catch. No ledger on this deployment (404): say so and
+  //      stop. Still updating: show it, check again.
+  //   3. An update finished, or the run did: reload the map and proposals with
+  //      the ledger — they are from before it too — and set everything
+  //      together. Then, if a run is still going, keep watching it; if not,
+  //      stop. A deployment without the graph route (404) has no map to
+  //      reload; that is not a failure.
+  //
+  // Anything else that fails is not an answer: check again.
+  //
+  // Every ledger load, the first included, is numbered like the graph and
+  // proposals loads, and only the latest may set it: a slow first load landing
+  // after the loop had seen the update would put the pre-run ledger back.
+  const ledgerRequest = useRef(0);
+  const [watching, setWatching] = useState(false);
+  // Whether this watch has seen the run in progress. If it has, a status
+  // answer with no run in it says nothing about whether the run is done.
+  const sawRunGoing = useRef(false);
+  // Whether the page owes a reload of the map and proposals: an update was
+  // seen in progress, or a run finished, and it has not been caught up with.
+  const owedReload = useRef(false);
+  // The run this page last saw. A different one means the last one finished —
+  // possibly with its whole update in between two checks, where no "updating"
+  // was ever seen.
+  const lastRunId = useRef('');
+  const noteRun = (runId: string | undefined) => {
+    if (!runId) return;
+    if (lastRunId.current && runId !== lastRunId.current) owedReload.current = true;
+    lastRunId.current = runId;
+  };
+  const waiting = watching && !unsupported;
+  useEffect(() => {
+    if (!waiting) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const notFound = (e: unknown) => (e as { status?: number } | null)?.status === 404;
+
+    const step = async () => {
+      const status = await api.getProjectStatus(id);
+      if (cancelled) return;
+      const going = runInProgress(status?.run?.status);
+      if (going) sawRunGoing.current = true;
+      noteRun(status?.run?.id);
+      // The status route can answer without the run (it does not fail when
+      // reading it does). Having seen the run going, that is not "finished".
+      if (!going && sawRunGoing.current && !status?.run) {
+        check();
+        return;
+      }
+
+      const mineLedger = ++ledgerRequest.current;
+      let lv: LedgerView;
+      try {
+        lv = await api.getLedger(id);
+      } catch (e) {
+        if (!notFound(e)) throw e;
+        // The ledger has gone from this deployment: say so, as a first load
+        // that 404'd would, rather than leave an "updating" banner up that
+        // nothing is left to take down.
+        if (!cancelled) {
+          setUnsupported(true);
+          setWatching(false);
+        }
+        return;
+      }
+      if (cancelled) return;
+      const next = normalizeLedger(lv);
+      if (next.updating) {
+        owedReload.current = true;
+        if (mineLedger === ledgerRequest.current) setLedger(next);
+        check();
+        return;
+      }
+      // A run going and nothing finished since the last look: keep watching.
+      if (going && !owedReload.current) {
+        if (mineLedger === ledgerRequest.current) setLedger(next);
+        check();
+        return;
+      }
+
+      // Anything still out from before is superseded first, so it cannot land
+      // on top of this.
+      const mineGraph = ++graphRequest.current;
+      const mineProposals = ++proposalsRequest.current;
+      let noGraph = graphRouteMissing.current;
+      const [g, props] = await Promise.all([
+        noGraph
+          ? Promise.resolve(null)
+          : api.getLedgerGraph(id).catch((e) => {
+            if (!notFound(e)) throw e;
+            graphRouteMissing.current = true;
+            noGraph = true;
+            return null;
+          }),
+        api.listPackProposals(id),
+      ]);
+      if (cancelled) return;
+      if (mineGraph === graphRequest.current) {
+        if (g) setGraph(g);
+        setGraphUnavailable(noGraph);
+        setGraphLoading(false);
+      }
+      if (mineProposals === proposalsRequest.current) setProposals(props || []);
+      if (mineLedger === ledgerRequest.current) setLedger(next);
+      owedReload.current = false;
+      // A newer run still going: caught up with the last one, keep watching.
+      if (going) {
+        check();
+        return;
+      }
+      // Last, so nothing above is lost to this loop's own cleanup.
+      sawRunGoing.current = false;
+      setWatching(false);
+    };
+
+    const check = () => {
+      timer = setTimeout(() => {
+        step().catch(() => { if (!cancelled) check(); });
+      }, LEDGER_UPDATE_POLL_MS);
+    };
+    check();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [id, waiting]);
+
+  // The first load asks in the same order the loop does — the run, then the
+  // ledger — so the agent's mark-before-completion protects it too: a ledger
+  // read after a completed status sees the mark or the finished update. The
+  // page starts watching when the run is going, when the ledger is being
+  // updated, or when the run could not be read at all, since then it cannot
+  // know the ledger it just read is current.
   useEffect(() => {
     api.getProject(id).then(setProject).catch(() => {});
-    Promise.all([
-      api.getLedger(id),
-      api.getEvolutionSettings(id).catch(() => null),
-    ])
-      .then(([lv, st]) => {
-        setLedger(normalizeLedger(lv));
+    const mine = ++ledgerRequest.current;
+    api.getProjectStatus(id)
+      .then((status) => ({ status, known: true }), () => ({ status: undefined, known: false }))
+      .then(({ status, known }) => Promise.all([
+        api.getLedger(id),
+        api.getEvolutionSettings(id).catch(() => null),
+      ]).then(([lv, st]) => {
+        if (mine === ledgerRequest.current) setLedger(normalizeLedger(lv));
+        const going = runInProgress(status?.run?.status);
+        if (going) sawRunGoing.current = true;
+        noteRun(status?.run?.id);
+        if (lv?.updating) owedReload.current = true;
+        if (!known || going || lv?.updating) setWatching(true);
         setSettings(st);
         setUnsupported(false);
         loadProposals();
-      })
+      }))
       .catch((e) => {
         if (e instanceof ApiError && e.status === 404) setUnsupported(true);
       })
@@ -242,10 +466,15 @@ export default function LedgerPage() {
   const pending = proposals.filter((p) => p.status === 'proposed');
   const decided = proposals.filter((p) => p.status !== 'proposed');
 
-  // Resolve a follow-up task's parent chain from the embedded ancestors (closed
-  // tasks aren't in the live queue). Walks supersedes links, guarding cycles, so
-  // a multi-level thread (A → B → C) shows the whole lineage.
-  const ancestorById = new Map((ledger.ancestors ?? []).map((a) => [a.id, a]));
+  // Resolve a follow-up task's parent chain. The parent can be in EITHER list:
+  // `ancestors` carries the closed ones, which are absent from the live queue,
+  // but a thread often continues one that is still open — and that one is in
+  // `tasks`. Looking only at `ancestors` reported every such parent as "no
+  // longer available", which on a project whose follow-ups all continue open
+  // threads meant every one of them.
+  const ancestorById = new Map<string, LedgerTask>(
+    [...(ledger.ancestors ?? []), ...ledger.tasks].map((a) => [a.id, a]),
+  );
   const chainOf = (task: LedgerTask): LedgerTask[] => {
     const chain: LedgerTask[] = [];
     const guard = new Set<string>();
@@ -270,6 +499,19 @@ export default function LedgerPage() {
           </Text>
         </div>
 
+        {ledger.updating && (
+          <Alert
+            color="blue"
+            variant="light"
+            icon={<Loader size={16} color="blue" />}
+            title="Updating from the run that just finished"
+          >
+            Everything below is the ledger from before that run. This page refreshes on its own when
+            the update is done, usually within a few minutes
+            {updateStartedAt(ledger.updating.since) ? ` (started ${updateStartedAt(ledger.updating.since)})` : ''}.
+          </Alert>
+        )}
+
         {/* 1. Overview — the at-a-glance numbers */}
         <Group grow align="stretch">
           <StatCard label="Tables explored" value={String(explored)} subtitle={total > 0 ? `of ${total} in catalog` : undefined} />
@@ -289,8 +531,54 @@ export default function LedgerPage() {
           />
         </Group>
 
-        {/* 2. Momentum — is discovery still surfacing new things? */}
-        {ledger.convergence.length > 0 && (
+        {/* The level picker. Story is the default; Threads is the tree. */}
+        <Group justify="space-between" align="center" wrap="wrap">
+          <SegmentedControl
+            value={level}
+            onChange={(v) => setLevel(v as LedgerLevel)}
+            data={LEVELS}
+            size="sm"
+          />
+          <Text size="xs" c="dimmed">
+            {level === 'story'
+              ? 'What each run found, in plain language. Every name links to its evidence.'
+              : 'The investigation as a map. Scroll to move around, pinch or Ctrl/⌘ + scroll to zoom, click a card for its detail.'}
+          </Text>
+        </Group>
+
+        {/* Levels 1 and 2. Level 3 is not a view: every node here links through
+            to the insight page that already renders the narrative, the SQL, the
+            rows, the quality caveats and the validation verdict. */}
+        <Section
+          icon={<IconSitemap size={16} />}
+          title={level === 'story' ? 'What happened' : 'Investigation map'}
+          description={level === 'story'
+            ? 'One card per run, newest first — what it found, which threads it closed and why.'
+            : 'How the investigation was worked out, in the order it happened: one row per run, oldest at the top, each read left to right — the threads it picked up, what it found, what that drove, and the threads it left for the next run. A dashed card is earlier work a later run took up again. Archived findings are dimmed, not hidden.'}
+        >
+          {/* A labelled region: the same finding can legitimately appear here
+              and in the findings table below, and this is what tells a screen
+              reader (and a test) which one it is looking at. */}
+          <div role="region" aria-label="Investigation view">
+            {graphLoading && <Group justify="center" p="md"><Loader size="sm" /></Group>}
+            {!graphLoading && graphUnavailable && (
+              <Text size="sm" c="dimmed">
+                This deployment&apos;s API does not serve the investigation graph yet. The
+                sections below are unaffected.
+              </Text>
+            )}
+            {!graphLoading && !graphUnavailable && graph && (
+              level === 'story'
+                ? <StoryTimeline projectId={id} graph={graph} index={graphIndex} />
+                : <ThreadMapWithProvider projectId={id} graph={graph} index={graphIndex} />
+            )}
+          </div>
+        </Section>
+
+        {/* 2. Momentum — is discovery still surfacing new things? The Story
+            timeline folds the same signal into each run's card, so this stays
+            for the Threads view and for a project whose graph is unavailable. */}
+        {ledger.convergence.length > 0 && (level !== 'story' || graphUnavailable) && (
           <Section
             icon={<IconTrendingUp size={16} />}
             title="Momentum"
@@ -322,7 +610,7 @@ export default function LedgerPage() {
                 const expanded = openThreads.has(t.id);
                 return (
                   <Group key={t.id} gap="sm" wrap="nowrap" align="flex-start">
-                    <Badge size="sm" variant="light" color={t.kind === 'hypothesis' ? 'grape' : 'blue'} style={{ flexShrink: 0 }}>{t.kind.replace('_', ' ')}</Badge>
+                    <Badge size="sm" variant="light" tt="none" color={t.kind === 'hypothesis' ? 'grape' : 'blue'} style={{ flexShrink: 0 }}>{humanise(t.kind)}</Badge>
                     <div style={{ minWidth: 0, flex: 1 }}>
                       <Group gap="xs" wrap="nowrap">
                         <Text size="sm" fw={600}>{t.title || t.text}</Text>
@@ -332,10 +620,11 @@ export default function LedgerPage() {
                               size="xs"
                               variant="outline"
                               color="gray"
+                              tt="none"
                               style={{ cursor: 'pointer' }}
                               rightSection={<IconChevronRight size={10} style={{ display: 'block', transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform 150ms ease' }} />}
                             >
-                              follow-up{chain.length > 1 ? ` · ${chain.length}` : ''}
+                              Follow-up{chain.length > 1 ? ` · ${chain.length}` : ''}
                             </Badge>
                           </UnstyledButton>
                         )}
@@ -344,13 +633,13 @@ export default function LedgerPage() {
                       {t.supersedes && (
                         <Collapse in={expanded}>
                           <div style={{ marginTop: 8, paddingLeft: 12, borderLeft: '2px solid var(--db-border-default)' }}>
-                            <Text size="xs" c="dimmed" mb={6}>Grew out of {chain.length > 1 ? 'these resolved threads' : 'this resolved thread'}:</Text>
+                            <Text size="xs" c="dimmed" mb={6}>Grew out of {chain.length > 1 ? 'these earlier threads' : 'this earlier thread'}:</Text>
                             {chain.length === 0 ? (
                               <Text size="xs" c="dimmed">Parent thread is no longer available.</Text>
                             ) : chain.map((a) => (
                               <div key={a.id} style={{ marginBottom: 6 }}>
                                 <Group gap="xs" wrap="nowrap" align="center">
-                                  <Badge size="xs" variant="light" color={a.status === 'dropped' ? 'gray' : 'teal'} style={{ flexShrink: 0 }}>{a.status}</Badge>
+                                  <Badge size="xs" variant="light" tt="none" color={a.status === 'dropped' ? 'gray' : 'teal'} style={{ flexShrink: 0 }}>{humanise(a.status)}</Badge>
                                   <Text size="xs" fw={500}>{a.title || a.text}</Text>
                                 </Group>
                                 {a.title && a.title !== a.text && <Text size="xs" c="dimmed" ml={4}>{a.text}</Text>}
@@ -385,7 +674,7 @@ export default function LedgerPage() {
                 <Group key={p.id} justify="space-between" wrap="nowrap" align="flex-start">
                   <div style={{ minWidth: 0 }}>
                     <Group gap="xs" mb={2}>
-                      <Badge size="sm" variant="light">{p.action.replace('_', ' ')}</Badge>
+                      <Badge size="sm" variant="light" tt="none">{humanise(p.action)}</Badge>
                       <Text size="sm" fw={600}>{p.area_name || p.area_id}</Text>
                     </Group>
                     <Text size="sm" c="dimmed">{p.rationale}</Text>
@@ -433,8 +722,8 @@ export default function LedgerPage() {
               {decided.map((p) => (
                 <Group key={p.id} justify="space-between" wrap="nowrap" align="center">
                   <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
-                    <Badge size="sm" variant="light" color={PROPOSAL_STATUS_COLOR[p.status] || 'gray'}>{p.status}</Badge>
-                    <Badge size="sm" variant="outline">{p.action.replace('_', ' ')}</Badge>
+                    <Badge size="sm" variant="light" tt="none" color={PROPOSAL_STATUS_COLOR[p.status] || 'gray'}>{humanise(p.status)}</Badge>
+                    <Badge size="sm" variant="outline" tt="none">{humanise(p.action)}</Badge>
                     <Text size="sm" lineClamp={1}>{p.area_name || p.area_id}</Text>
                     {p.decided_by && <Text size="xs" c="dimmed">by {p.decided_by}</Text>}
                   </Group>
@@ -541,7 +830,7 @@ export default function LedgerPage() {
                         <td style={{ padding: '10px 12px' }}>{f.area ? <AreaBadge area={f.area} /> : <Text size="xs" c="dimmed">—</Text>}</td>
                         <td style={{ padding: '10px 12px' }}><SeverityBadge severity={f.severity} type="severity" /></td>
                         <td style={{ padding: '10px 12px' }}>
-                          <Badge size="sm" variant="light" color={FINDING_STATUS_COLOR[f.status] || 'gray'}>{f.status}</Badge>
+                          <Badge size="sm" variant="light" tt="none" color={FINDING_STATUS_COLOR[f.status] || 'gray'}>{humanise(f.status)}</Badge>
                         </td>
                         <td style={{ padding: '10px 12px' }}><Text size="sm">{f.seen_count}×</Text></td>
                       </tr>

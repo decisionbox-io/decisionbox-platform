@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -127,6 +128,39 @@ func TestLoadLedgerReadContext_RanksAndExcludesResolved(t *testing.T) {
 	}
 	if len(lrc.tasks) != 1 {
 		t.Errorf("auto mode should surface open tasks, got %d", len(lrc.tasks))
+	}
+}
+
+// TestLoadLedgerReadContext_RemembersOnlyWhatThePromptShows: the read context
+// is where the run is handed its threads, so it is where the record of which
+// threads it was handed belongs. Capped the way the prompt renderer caps it —
+// beyond the cap the run was never told about them, and recording a thread as
+// pursued by a run that never saw it is the kind of fabricated edge this whole
+// record exists to avoid.
+func TestLoadLedgerReadContext_RemembersOnlyWhatThePromptShows(t *testing.T) {
+	agentplugin.RegisterDiscoveryPolicyProvider(stubPolicy{mode: agentplugin.EvolutionModeAuto})
+	t.Cleanup(func() { agentplugin.RegisterDiscoveryPolicyProvider(stubPolicy{mode: agentplugin.EvolutionModeOff}) })
+
+	many := make([]commonmodels.LedgerTask, maxLedgerTasksInPrompt+5)
+	for i := range many {
+		many[i] = commonmodels.LedgerTask{ID: "t-" + strconv.Itoa(i), Text: "thread", Status: "open"}
+	}
+	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{
+		{ID: "a", Area: "x", Name: "finding", Severity: "high", Status: "confirmed", LastSeen: time.Now()},
+	}}
+	o := &Orchestrator{
+		projectID: "p1", findingRepo: fr, ledgerRepo: &fakeLedgerRepo{},
+		taskRepo: &fakeTaskRepo{existing: many},
+	}
+
+	o.loadLedgerReadContext(context.Background())
+
+	if len(o.shownTaskIDs) != maxLedgerTasksInPrompt {
+		t.Errorf("want the prompt's cap (%d) remembered, got %d",
+			maxLedgerTasksInPrompt, len(o.shownTaskIDs))
+	}
+	if o.shownTaskIDs[0] != "t-0" {
+		t.Errorf("the same slice the renderer takes, in the same order, got %q", o.shownTaskIDs[0])
 	}
 }
 

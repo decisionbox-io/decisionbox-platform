@@ -38,6 +38,7 @@ const (
 	CollectionDiscoveryLedger            = gomongo.CollectionDiscoveryLedger
 	CollectionDiscoveryLedgerFindings    = gomongo.CollectionDiscoveryLedgerFindings
 	CollectionDiscoveryLedgerTasks       = gomongo.CollectionDiscoveryLedgerTasks
+	CollectionDiscoveryLedgerLearnings   = gomongo.CollectionDiscoveryLedgerLearnings
 	CollectionDiscoveryPackProposals     = gomongo.CollectionDiscoveryPackProposals
 )
 

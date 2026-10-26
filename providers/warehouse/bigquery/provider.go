@@ -493,28 +493,3 @@ func (p *BigQueryProvider) Close() error {
 	}
 	return nil
 }
-
-// DryRun estimates bytes that would be scanned by a query without executing it.
-// Implements warehouse.CostEstimator.
-func (p *BigQueryProvider) DryRun(ctx context.Context, query string) (*gowarehouse.DryRunResult, error) {
-	q := p.client.Query(query)
-	p.applyDefaultProject(q)
-	q.DryRun = true
-
-	job, err := q.Run(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("bigquery dry-run: %w", err)
-	}
-
-	status := job.LastStatus()
-	if status == nil {
-		return &gowarehouse.DryRunResult{BytesProcessed: 0}, nil
-	}
-
-	return &gowarehouse.DryRunResult{
-		BytesProcessed: status.Statistics.TotalBytesProcessed,
-	}, nil
-}
-
-// Compile-time check that BigQueryProvider implements CostEstimator.
-var _ gowarehouse.CostEstimator = (*BigQueryProvider)(nil)

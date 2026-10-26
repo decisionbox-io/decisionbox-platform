@@ -382,6 +382,7 @@ func TestIsRetryableLLMError_Truthtable(t *testing.T) {
 		{"net_op_timeout", &net.OpError{Op: "dial", Err: errors.New("i/o timeout")}, true},
 		{"io_eof", io.EOF, true},
 		{"plain_unrelated", errors.New("invalid model id"), false},
+		{"model_refused", fmt.Errorf("bedrock/anthropic: %w", gollm.RefusalError(gollm.StopReasonRefusal, "m", gollm.Usage{})), false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -808,5 +809,109 @@ func TestBackoffDuration_RespectsCap(t *testing.T) {
 	// Account for the -25% jitter floor.
 	if d < MaxBackoff*3/4 {
 		t.Errorf("backoff %v should be near MaxBackoff %v (with jitter window)", d, MaxBackoff)
+	}
+}
+
+// capacityErr is the error shape the litellm provider surfaced for a
+// hosted model that was temporarily out of capacity — the motivating case
+// for a separate, longer budget: on the generic 2-attempt budget one such
+// blip at exploration step 1 failed the whole run.
+func capacityErr() error {
+	return errors.New("litellm: API error (429): invalid_request_error - Model busy, retry later")
+}
+
+// TestChatWithRetry_CapacityErrorsGetLongerBudget pins that a rate-limit /
+// capacity error is retried beyond the generic default budget.
+func TestChatWithRetry_CapacityErrorsGetLongerBudget(t *testing.T) {
+	shortBackoffFor(t)
+	llm := &retryFakeLLM{scripted: []retryScript{
+		{err: capacityErr()},
+		{err: capacityErr()},
+		{err: capacityErr()},
+		{resp: okResp()},
+	}}
+	if _, err := chatWithRetry(context.Background(), llm, gollm.ChatRequest{}); err != nil {
+		t.Fatalf("three capacity errors then success should recover on the default capacity budget; got %v", err)
+	}
+	if got := atomic.LoadInt64(&llm.calls); got != 4 {
+		t.Errorf("LLM called %d times, want 4", got)
+	}
+}
+
+// TestChatWithRetry_CapacityBudgetEnv pins the operator knob for the
+// capacity budget.
+func TestChatWithRetry_CapacityBudgetEnv(t *testing.T) {
+	shortBackoffFor(t)
+	t.Setenv(LLMRetryCapacityMaxAttemptsEnv, "2")
+	llm := &retryFakeLLM{scripted: []retryScript{
+		{err: capacityErr()},
+		{err: capacityErr()},
+		{resp: okResp()},
+	}}
+	if _, err := chatWithRetry(context.Background(), llm, gollm.ChatRequest{}); err == nil {
+		t.Fatal("expected failure once the capacity budget of 2 attempts is spent")
+	}
+	if got := atomic.LoadInt64(&llm.calls); got != 2 {
+		t.Errorf("LLM called %d times, want 2", got)
+	}
+}
+
+// TestChatWithRetry_NonCapacityTransientKeepsDefaultBudget pins that only
+// capacity errors get the longer budget; other transients keep the generic
+// one.
+func TestChatWithRetry_NonCapacityTransientKeepsDefaultBudget(t *testing.T) {
+	shortBackoffFor(t)
+	llm := &retryFakeLLM{scripted: []retryScript{
+		{err: httpErr(499)},
+		{err: httpErr(499)},
+		{resp: okResp()},
+	}}
+	if _, err := chatWithRetry(context.Background(), llm, gollm.ChatRequest{}); err == nil {
+		t.Fatal("expected failure after the generic budget of 2 attempts")
+	}
+	if got := atomic.LoadInt64(&llm.calls); got != int64(DefaultMaxAttempts) {
+		t.Errorf("LLM called %d times, want %d", got, DefaultMaxAttempts)
+	}
+}
+
+func TestIsCapacityLLMError(t *testing.T) {
+	cases := map[string]bool{
+		"litellm: API error (429): invalid_request_error - Model busy, retry later":                   true,
+		"vertex-ai/google-native: API error (status 429): quota":                                      true,
+		"claude: API error: overloaded_error - Overloaded":                                            true,
+		"claude: API error: rate_limit_error - Number of request tokens has exceeded your rate limit": true,
+		"claude: API error (status 529): overloaded":                                                  true,
+		"bedrock/anthropic: InvokeModel failed: ThrottlingException: Too many requests":               true,
+		"openai: API error (503): Service Unavailable":                                                true,
+		"vertex-ai/google-native: API error (status 499): cancelled":                                  false,
+		"openai: API error (500): internal":                                                           false,
+		"claude: API error: invalid_request_error - bad schema":                                       false,
+	}
+	for msg, want := range cases {
+		if got := isCapacityLLMError(errors.New(msg)); got != want {
+			t.Errorf("isCapacityLLMError(%q) = %v, want %v", msg, got, want)
+		}
+	}
+}
+
+// TestIsCapacityLLMError_AWSSDKShapes covers Bedrock errors as the AWS SDK
+// formats them: the status is "StatusCode: NNN" and the typed exception name
+// carries the signal.
+func TestIsCapacityLLMError_AWSSDKShapes(t *testing.T) {
+	const prefix = "bedrock/anthropic: InvokeModel failed: operation error Bedrock Runtime: InvokeModel, https response error "
+	cases := []struct {
+		msg  string
+		want bool
+	}{
+		{prefix + "StatusCode: 503, RequestID: r, ServiceUnavailableException: Bedrock is unable to process your request", true},
+		{prefix + "StatusCode: 429, RequestID: r, ModelNotReadyException: Model is not ready", true},
+		{prefix + "StatusCode: 429, RequestID: r, ThrottlingException: Too many tokens", true},
+		{prefix + "StatusCode: 400, RequestID: r, ValidationException: bad request", false},
+		{prefix + "StatusCode: 500, RequestID: r, InternalServerException: internal", false},
+	}
+	for _, c := range cases {
+		if got := isCapacityLLMError(errors.New(c.msg)); got != c.want {
+			t.Errorf("isCapacityLLMError(%q) = %v, want %v", c.msg, got, c.want)
+		}
 	}
 }

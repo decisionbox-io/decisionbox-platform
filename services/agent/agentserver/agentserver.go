@@ -36,6 +36,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/discovery"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/discovery/blurb"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 
@@ -79,7 +80,6 @@ func Run() {
 		includeLog      = flag.Bool("include-log", false, "Include full exploration log")
 		testMode        = flag.Bool("test", false, "Test mode - limit analyses for faster testing")
 		enableDebugLogs = flag.Bool("enable-debug-logs", true, "Enable detailed debug logging to MongoDB")
-		estimateOnly    = flag.Bool("estimate", false, "Estimate cost only (no actual discovery)")
 		testConnection  = flag.String("test-connection", "", "Test provider connection: 'warehouse', 'llm', 'embedding', or 'blurb-llm'")
 		listTables      = flag.Bool("list-tables", false, "List the warehouse's qualified table names as JSON and exit (cheap, no schema/blurb/embed) — powers the pre-index discovery-scope picker.")
 		testWarehouseID = flag.String("warehouse-id", "", "For --test-connection / --list-tables: the specific datasource id to target. Empty = the project's primary (back-compat).")
@@ -239,7 +239,7 @@ func Run() {
 		}
 	}
 
-	if err := runDiscovery(cfg, *projectID, *runID, selectedAreas, *maxSteps, *minSteps, *includeLog, *testMode, *enableDebugLogs, *estimateOnly); err != nil {
+	if err := runDiscovery(cfg, *projectID, *runID, selectedAreas, *maxSteps, *minSteps, *includeLog, *testMode, *enableDebugLogs); err != nil {
 		applog.WithError(err).Fatal("Discovery failed")
 	}
 
@@ -601,6 +601,13 @@ func initLLMProvider(ctx context.Context, cfg *config.Config, project *models.Pr
 		}).Debug("Merged provider-specific config from project")
 	}
 
+	// Prompt caching is resolved from the project (field, else the legacy
+	// config entry, else on) and written into the config the providers read,
+	// so the four Anthropic-wire providers keep consulting PromptCacheKey
+	// exactly as before. Set after the project-config merge so the resolved
+	// value wins over a stale literal in LLM.Config.
+	llmCfg[gollm.PromptCacheKey] = strconv.FormatBool(project.EffectivePromptCacheEnabled())
+
 	provider, err := gollm.NewProvider(project.LLM.Provider, llmCfg)
 	if err != nil {
 		applog.WithFields(applog.Fields{
@@ -751,6 +758,11 @@ func runTestConnection(cfg *config.Config, projectID, target, warehouseID string
 		if err != nil {
 			return err
 		}
+		// The same eligibility rule the indexer applies, so a model it would
+		// refuse fails here rather than at the next index run.
+		if err := blurb.CheckModel(providerName, model); err != nil {
+			return err
+		}
 		testCfg := *cfg
 		testCfg.LLM.MaxRetries = 1
 		testCfg.LLM.RequestDelayMs = 0
@@ -796,7 +808,7 @@ func runTestConnection(cfg *config.Config, projectID, target, warehouseID string
 
 // --- Discovery ---
 
-func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAreas []string, maxSteps, minSteps int, includeLog, testMode, enableDebugLogs, estimateOnly bool) error {
+func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAreas []string, maxSteps, minSteps int, includeLog, testMode, enableDebugLogs bool) error {
 	ctx := context.Background()
 
 	// Set project ID in context for warehouse middleware (e.g. governance)
@@ -936,6 +948,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	ledgerRepo := database.NewLedgerRepository(db)
 	ledgerFindingRepo := database.NewLedgerFindingRepository(db)
 	ledgerTaskRepo := database.NewLedgerTaskRepository(db)
+	ledgerLearningRepo := database.NewLedgerLearningRepository(db)
 	ledgerProposalRepo := database.NewLedgerProposalRepository(db)
 
 	if err := contextRepo.EnsureIndexes(ctx); err != nil {
@@ -951,7 +964,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		applog.WithError(err).Warn("Failed to ensure discovery question indexes")
 	}
 	for _, li := range []interface{ EnsureIndexes(context.Context) error }{
-		ledgerRepo, ledgerFindingRepo, ledgerTaskRepo, ledgerProposalRepo,
+		ledgerRepo, ledgerFindingRepo, ledgerTaskRepo, ledgerLearningRepo, ledgerProposalRepo,
 	} {
 		if err := li.EnsureIndexes(ctx); err != nil {
 			applog.WithError(err).Warn("Failed to ensure discovery ledger indexes")
@@ -998,44 +1011,45 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	// path. Required for the run — analysis ranking depends on it,
 	// so a missing embedding provider here is a hard error rather
 	// than a silent regression to keyword-only selection.
-	runStepClient, runStepCloser, err := newRunStepIndexClient(cfg)
+	var runStepIndex discovery.RunStepIndex
+	needRunStepIndex, err := runStepIndexNeeded(runID, embeddingProvider != nil)
 	if err != nil {
-		return fmt.Errorf("connect run step index (Qdrant): %w", err)
+		return err
 	}
-	defer runStepCloser()
-	if embeddingProvider == nil {
-		return fmt.Errorf("analysis ranking requires an embedding provider — configure one in project settings")
-	}
-	if runID == "" {
-		return fmt.Errorf("run id is required for run-scoped step index — caller must pass --run-id")
-	}
-	runStepIndex, err := discovery.NewRunStepIndex(runStepClient, embeddingProvider, runID)
-	if err != nil {
-		return fmt.Errorf("init run step index: %w", err)
-	}
-	applog.WithFields(applog.Fields{
-		"run_id":         runID,
-		"collection":     discovery.RunStepIndexCollectionName(runID),
-		"embedder_model": embeddingProvider.ModelName(),
-		"embedder_dims":  embeddingProvider.Dimensions(),
-	}).Info("Run-step index ready")
+	if needRunStepIndex {
+		runStepClient, runStepCloser, err := newRunStepIndexClient(cfg)
+		if err != nil {
+			return fmt.Errorf("connect run step index (Qdrant): %w", err)
+		}
+		defer runStepCloser()
+		runStepIndex, err = discovery.NewRunStepIndex(runStepClient, embeddingProvider, runID)
+		if err != nil {
+			return fmt.Errorf("init run step index: %w", err)
+		}
+		applog.WithFields(applog.Fields{
+			"run_id":         runID,
+			"collection":     discovery.RunStepIndexCollectionName(runID),
+			"embedder_model": embeddingProvider.ModelName(),
+			"embedder_dims":  embeddingProvider.Dimensions(),
+		}).Info("Run-step index ready")
 
-	// Boot-time orphan sweep: drop per-run collections from previous
-	// runs that crashed before reaching the deferred Drop. The
-	// orchestrator's Drop covers clean exits; this covers crashes.
-	sweepCtx, sweepCancel := context.WithTimeout(ctx, 30*time.Second)
-	keep := loadActiveRunIDs(sweepCtx, db)
-	keep[runID] = struct{}{}
-	applog.WithFields(applog.Fields{
-		"keep_count": len(keep),
-		"run_id":     runID,
-	}).Debug("Run-step-index orphan sweep starting")
-	if dropped, err := discovery.SweepOrphanRunStepIndexes(sweepCtx, runStepClient, keep); err != nil {
-		applog.WithError(err).Warn("Run-step-index orphan sweep failed; orphans will retry next boot")
-	} else if dropped > 0 {
-		applog.WithField("dropped", dropped).Info("Run-step-index orphan sweep dropped stale collections")
+		// Boot-time orphan sweep: drop per-run collections from previous
+		// runs that crashed before reaching the deferred Drop. The
+		// orchestrator's Drop covers clean exits; this covers crashes.
+		sweepCtx, sweepCancel := context.WithTimeout(ctx, 30*time.Second)
+		keep := loadActiveRunIDs(sweepCtx, db)
+		keep[runID] = struct{}{}
+		applog.WithFields(applog.Fields{
+			"keep_count": len(keep),
+			"run_id":     runID,
+		}).Debug("Run-step-index orphan sweep starting")
+		if dropped, err := discovery.SweepOrphanRunStepIndexes(sweepCtx, runStepClient, keep); err != nil {
+			applog.WithError(err).Warn("Run-step-index orphan sweep failed; orphans will retry next boot")
+		} else if dropped > 0 {
+			applog.WithField("dropped", dropped).Info("Run-step-index orphan sweep dropped stale collections")
+		}
+		sweepCancel()
 	}
-	sweepCancel()
 
 	// Resolve the effective context window + output cap for this run without
 	// depending on the model being catalogued: operator override → persisted
@@ -1069,6 +1083,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		LedgerRepo:            ledgerRepo,
 		LedgerFindingRepo:     ledgerFindingRepo,
 		LedgerTaskRepo:        ledgerTaskRepo,
+		LedgerLearningRepo:    ledgerLearningRepo,
 		LedgerProposalRepo:    ledgerProposalRepo,
 		FeedbackRepo:          database.NewFeedbackRepository(db),
 		DebugLogRepo:          debugLogRepo,
@@ -1103,26 +1118,6 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		Warehouses:            effectiveWarehouses,
 		RunStepIndex:          runStepIndex,
 	})
-
-	// Estimate mode: calculate costs without running discovery
-	if estimateOnly {
-		applog.Info("Running cost estimation only")
-		estimateCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		defer cancel()
-
-		estimate, err := orchestrator.EstimateCost(estimateCtx, discovery.EstimateOptions{
-			MaxSteps:      maxSteps,
-			SelectedAreas: selectedAreas,
-		})
-		if err != nil {
-			return fmt.Errorf("cost estimation failed: %w", err)
-		}
-
-		// Output estimate as JSON to stdout (API captures this)
-		estimateJSON, _ := json.MarshalIndent(estimate, "", "  ")
-		fmt.Println(string(estimateJSON))
-		return nil
-	}
 
 	// Run discovery. The outer cap is intentionally generous —
 	// enterprise warehouses can return long-running SQL (multi-hour
@@ -1279,6 +1274,18 @@ func topRecommendationBriefs(recs []models.Recommendation, limit int) []notify.R
 	return briefs
 }
 
+// runStepIndexNeeded reports whether this invocation builds the per-run step
+// index, and what is missing when it must.
+func runStepIndexNeeded(runID string, hasEmbedder bool) (bool, error) {
+	if !hasEmbedder {
+		return true, fmt.Errorf("analysis ranking requires an embedding provider — configure one in project settings")
+	}
+	if runID == "" {
+		return true, fmt.Errorf("run id is required for run-scoped step index — caller must pass --run-id")
+	}
+	return true, nil
+}
+
 // newRunStepIndexClient opens a gRPC connection to Qdrant for the
 // run-scoped step index. The returned closer must be invoked at end
 // of run — defer it.
@@ -1294,11 +1301,7 @@ func newRunStepIndexClient(cfg *config.Config) (*pb.Client, func(), error) {
 			port = p
 		}
 	}
-	client, err := pb.NewClient(&pb.Config{
-		Host:   host,
-		Port:   port,
-		APIKey: cfg.Qdrant.APIKey,
-	})
+	client, err := pb.NewClient(qdrantstore.ClientConfig(host, port, cfg.Qdrant.APIKey, false))
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("qdrant client: %w", err)
 	}

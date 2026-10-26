@@ -90,6 +90,13 @@ func TestNormalizeBaseURL(t *testing.T) {
 		"https://litellm.internal:4000/v1": "https://litellm.internal:4000/v1",
 		"https://host/v1/":                 "https://host/v1",
 		"  https://host  ":                 "https://host/v1",
+		// A versioned API root with a sub-path is already complete:
+		// appending /v1 would turn it into .../v1/openai/v1 (404).
+		"https://api.example.com/v1/openai":  "https://api.example.com/v1/openai",
+		"https://api.example.com/v1/openai/": "https://api.example.com/v1/openai",
+		"https://gateway.example.com/api/v2": "https://gateway.example.com/api/v2",
+		// A path without a version segment still gets /v1.
+		"https://proxy.example.com/litellm": "https://proxy.example.com/litellm/v1",
 	}
 	for in, want := range cases {
 		if got := normalizeBaseURL(in); got != want {

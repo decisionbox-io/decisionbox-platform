@@ -18,10 +18,10 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	mongoSecrets "github.com/decisionbox-io/decisionbox/providers/secrets/mongodb"
 	_ "github.com/decisionbox-io/decisionbox/providers/secrets/aws"
 	_ "github.com/decisionbox-io/decisionbox/providers/secrets/azure"
 	_ "github.com/decisionbox-io/decisionbox/providers/secrets/gcp"
+	mongoSecrets "github.com/decisionbox-io/decisionbox/providers/secrets/mongodb"
 
 	_ "github.com/decisionbox-io/decisionbox/providers/embedding/azure-openai"
 	_ "github.com/decisionbox-io/decisionbox/providers/embedding/bedrock"
@@ -118,10 +118,10 @@ func RunBackfillEmbeddings(args []string) {
 }
 
 type projectInfo struct {
-	OID      primitive.ObjectID `bson:"_id"`
-	Name     string             `bson:"name"`
-	Domain   string             `bson:"domain"`
-	Category string             `bson:"category"`
+	OID       primitive.ObjectID `bson:"_id"`
+	Name      string             `bson:"name"`
+	Domain    string             `bson:"domain"`
+	Category  string             `bson:"category"`
 	Embedding struct {
 		Provider string            `bson:"provider"`
 		Model    string            `bson:"model"`
@@ -285,7 +285,7 @@ func denormalizeDiscoveries(ctx context.Context, client *gomongo.Client, proj pr
 		now := time.Now()
 		for _, ins := range disc.Insights {
 			doc := bson.M{
-				"_id":           uuid.New().String(),
+				"_id":          uuid.New().String(),
 				"project_id":   disc.ProjectID,
 				"discovery_id": disc.ID,
 				"domain":       disc.Domain,
@@ -310,7 +310,7 @@ func denormalizeDiscoveries(ctx context.Context, client *gomongo.Client, proj pr
 		// Denormalize recommendations
 		for _, rec := range disc.Recommendations {
 			doc := bson.M{
-				"_id":           uuid.New().String(),
+				"_id":          uuid.New().String(),
 				"project_id":   disc.ProjectID,
 				"discovery_id": disc.ID,
 				"domain":       disc.Domain,
@@ -441,11 +441,11 @@ func processBatch(ctx context.Context, client *gomongo.Client, qdrant vectorstor
 
 		payload := map[string]interface{}{
 			"type":            docType,
-			"project_id":     b.ProjectID,
-			"discovery_id":   b.DiscoveryID,
+			"project_id":      b.ProjectID,
+			"discovery_id":    b.DiscoveryID,
 			"embedding_model": modelName,
-			"confidence":     b.Confidence,
-			"created_at":     b.CreatedAt.Format(time.RFC3339),
+			"confidence":      b.Confidence,
+			"created_at":      b.CreatedAt.Format(time.RFC3339),
 		}
 		if b.Severity != "" {
 			payload["severity"] = b.Severity
@@ -455,8 +455,8 @@ func processBatch(ctx context.Context, client *gomongo.Client, qdrant vectorstor
 		}
 
 		points = append(points, vectorstore.Point{
-			ID:     b.ID,
-			Vector: vectors[i],
+			ID:      b.ID,
+			Vector:  vectors[i],
 			Payload: payload,
 		})
 	}

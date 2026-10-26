@@ -156,12 +156,16 @@ func findUnboundedStrings(node interface{}, path string) []string {
 // being recorded fails here too, rather than joining the gap unnoticed --
 // which is how one unbounded helper became four.
 func TestUnboundedSchemasAreStillTheKnownOnes(t *testing.T) {
-	// The reflection schema's richest shape: every branch its evolution mode
-	// and re-judgement flag can emit.
+	// The reflection schema's richest shape: every branch its evolution mode,
+	// its re-judgement flag and its finding-id flag can emit. All three are
+	// set to the value that ADDS structure, because an unbounded string this
+	// walk never reaches is one it cannot report -- and hasFindingIDs in
+	// particular swaps the task-status item for two self-contained branches
+	// carrying strings of their own.
 	candidates := map[string]map[string]interface{}{
 		"insight":    insightResponseSchema(),
 		"questions":  questionsResponseSchema(),
-		"reflection": reflectionResponseSchema(agentplugin.EvolutionModeAuto, true),
+		"reflection": reflectionResponseSchema(agentplugin.EvolutionModeAuto, true, true),
 	}
 
 	unbounded := map[string]int{}

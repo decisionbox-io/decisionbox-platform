@@ -47,6 +47,13 @@ const (
 	// similarly small (in which case the comparison is apples-to-
 	// apples and the threshold doesn't apply).
 	EnvMinSampleSize = "VALIDATION_MIN_SAMPLE_SIZE"
+
+	// EnvConcurrency bounds how many documents are validated at once.
+	// Default 1 (one at a time). Each document runs its verifier then its
+	// refuter, both issuing LLM calls and warehouse queries, so raising it
+	// multiplies the load on the LLM provider's rate limit and on the
+	// warehouse; validation is otherwise the longest phase of a run.
+	EnvConcurrency = "VALIDATION_CONCURRENCY"
 )
 
 // RunCaps are the run-level caps the orchestrator applies AROUND the
@@ -60,6 +67,9 @@ type RunCaps struct {
 	// can request the entire step result, blowing prompt + memory +
 	// cost before history truncation can help. Default 200.
 	MaxReadStepRowsCall int
+	// Concurrency is how many documents are validated at once
+	// (VALIDATION_CONCURRENCY). Values below 1 mean 1.
+	Concurrency int
 }
 
 // LoadConfigFromEnv reads every documented validation knob from env
@@ -86,6 +96,7 @@ func LoadConfigFromEnv() (Config, RunCaps) {
 		MaxInsightsPerRun:        getEnvInt(EnvMaxInsightsPerRun, 30),
 		MaxRecommendationsPerRun: getEnvInt(EnvMaxRecsPerRun, 15),
 		MaxReadStepRowsCall:      getEnvInt(EnvMaxReadStepRowsCall, 200),
+		Concurrency:              getEnvInt(EnvConcurrency, 1),
 	}
 	return cfg, caps
 }

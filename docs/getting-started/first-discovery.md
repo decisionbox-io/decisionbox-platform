@@ -88,7 +88,6 @@ Wait for **Settings → Schema Index** to reach **Ready** — the Run discovery 
 
 The dropdown lets you configure:
 - **Exploration steps**: More steps = more comprehensive (default: 100). Start with 50-100 for your first run.
-- **Estimate cost**: Check this to see estimated LLM and warehouse costs before running.
 - **Run All Areas**: Runs all analysis areas (churn, engagement, monetization, etc.)
 - **Select areas**: Run only specific analysis areas.
 

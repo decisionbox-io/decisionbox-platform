@@ -291,7 +291,7 @@ func TestCubeSeedPack_TeachesTheActionEnvelope(t *testing.T) {
 	// runtime surface carrying its metric and dimension names, and search_tables
 	// is how a run reaches that index. A cube pack that omits it leaves the
 	// model with no way to learn a single name the source will accept.
-	for _, key := range []string{`"thinking"`, `"query"`, `"datasource_id"`, `"done"`, `"search_tables"`} {
+	for _, key := range []string{`"rationale"`, `"query"`, `"datasource_id"`, `"done"`, `"search_tables"`} {
 		if !strings.Contains(body, key) {
 			t.Errorf("the exploration prompt never shows %s, so the model is not told how to reply", key)
 		}

@@ -6,12 +6,17 @@ import agentmodels "github.com/decisionbox-io/decisionbox/services/agent/interna
 // needs to construct the LLM + warehouse providers. Lives here so the
 // MVP doesn't drag in the full agent project loader.
 type ProjectDoc struct {
-	Name      string         `bson:"name"`
-	Domain    string         `bson:"domain"`
-	Category  string         `bson:"category"`
-	Language  string         `bson:"language"`
-	Warehouse WarehouseCfg   `bson:"warehouse"`
-	LLM       LLMCfg         `bson:"llm"`
+	Name      string       `bson:"name"`
+	Domain    string       `bson:"domain"`
+	Category  string       `bson:"category"`
+	Language  string       `bson:"language"`
+	Warehouse WarehouseCfg `bson:"warehouse"`
+	LLM       LLMCfg       `bson:"llm"`
+	// PromptCacheEnabled must be decoded, or replay would resolve caching
+	// from the legacy config alone and diverge from the run it is replaying
+	// — in both directions, since the field can turn caching off over a
+	// legacy "true" and on over a legacy "false".
+	PromptCacheEnabled *bool `bson:"prompt_cache_enabled"`
 }
 
 type WarehouseCfg struct {

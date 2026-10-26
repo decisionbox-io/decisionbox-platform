@@ -68,7 +68,7 @@ Both agents consume a read-only `verifier.Bundle` assembled at the start of each
 - `SourceStepsTruncated` + `SourceStepsOmitted` — set when a recommendation's source-step union exceeded the token budget (`VALIDATION_REC_STEPS_TOKEN_BUDGET`, default 12 000).
 - `PriorClaims` — the verifier's enumerated claim set, copied verbatim into the refuter's bundle so both agents attack the same surface.
 
-The bundle is built in-memory from `explorationResult.Steps` (the live slice the orchestrator already holds); no Mongo round-trip is required. The replay CLI (`services/agent/cmd/validation-replay/`) builds the same bundle from the persisted `discovery_exploration_steps` collection — useful for replay-testing a discovery without re-running the agent. The replay CLI uses a direct `warehouse.GetTableSchemaInDataset` shim for `lookup_schema` instead of the production `ai.SchemaProvider` (Qdrant-backed retrieval + ranking); bundle correctness and validator behaviour are identical because the finaliser doesn't depend on schema-ranking layer.
+The bundle is built in-memory from `explorationResult.Steps` (the live slice the orchestrator already holds); no Mongo round-trip is required. The replay CLI (`services/agent/cmd/validation-replay/`) builds the same bundle from the persisted `discovery_exploration_steps` collection — useful for replay-testing a discovery without re-running the agent. The replay CLI uses a direct `warehouse.GetTableSchemaInDataset` shim for `lookup_schema` instead of the production `ai.SchemaProvider` (Qdrant-backed retrieval + ranking); bundle correctness and validator behaviour are identical because the finaliser doesn't depend on schema-ranking layer. It judges with the project's own LLM, whose API key it resolves as the agent does (the `llm-credentials` secret from `SECRET_PROVIDER`, else `LLM_API_KEY`), and it exits non-zero when every LLM call failed, rather than reporting a set of `unverifiable` verdicts as a result.
 
 ## The four tools
 
@@ -81,7 +81,7 @@ Each agent loops up to N rounds (`VALIDATION_VERIFIER_MAX_ROUNDS`, default 8; re
 | `{"read_step_rows": {"step_id": N, "offset": K, "limit": L}}` | Paginated step snapshot | Returns rows from the in-memory exploration step. Out-of-range offsets return `truncated: true` so the agent can mark the dependent claim `unverifiable`. |
 | `{"submit_verdict": {…}}` | Full structured verdict | Terminal output. |
 
-Extra top-level keys (e.g. `{"thinking": "…", "query_warehouse": "…"}`) are parse errors — the agent gets the error in `recent_tool_errors` and retries.
+Extra top-level keys (e.g. `{"notes": "…", "query_warehouse": "…"}`) are parse errors — the agent gets the error in `recent_tool_errors` and retries.
 
 ## The verdict
 
