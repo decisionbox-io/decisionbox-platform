@@ -160,31 +160,54 @@ func ResolveCredential(ctx context.Context, secrets gosecrets.Provider, projectI
 
 // ProviderConfig assembles the gollm.ProviderConfig for a layer.
 //
-// The merge order matters and is NOT "deployment defaults win":
+// The merge order matters and is NOT simply "deployment defaults win":
 //
-//  1. deployment defaults (max_retries, timeout_seconds, request_delay_ms)
-//     and the resolved credential + model,
+//  1. the deployment defaults (max_retries, timeout_seconds,
+//     request_delay_ms), each written only when it is set,
 //  2. the spec's Config — the provider entry's config with the layer's
 //     merged over it,
-//  3. the layer's resolved prompt_cache, pinned last.
+//  3. the RESOLVED values, pinned last: model, credentials_json and
+//     prompt_cache.
 //
 // Step 2 overriding step 1 is deliberate and long-standing: a project that
 // raised its own timeout_seconds for a slow on-prem model must keep it, which
-// libs/go-common/llm/timeout.go documents as intentional. Step 3 is pinned
-// after the merge so a stale literal in either config map loses to the
-// setting the user actually chose for this layer.
+// libs/go-common/llm/timeout.go documents as intentional.
+//
+// Step 3 is pinned AFTER the merge because those three are resolved, not
+// configured. A `model` or `credentials_json` entry inside a config map is a
+// stray — the API strips credential keys on write, and the model comes from
+// the layer — so letting one win would send a different model than the user
+// chose, or a credential from the project document instead of the secret
+// store. Fine-tuning evaluation guarded this explicitly and had a test for
+// it; the agent's own initLLMProvider did not, so centralising the order here
+// closes that hole on every surface rather than spreading it.
 func ProviderConfig(spec LayerSpec, cred Credential, opts BuildOptions) gollm.ProviderConfig {
-	out := gollm.ProviderConfig{
-		"model":            spec.Model,
-		"max_retries":      strconv.Itoa(opts.MaxRetries),
-		"timeout_seconds":  strconv.Itoa(opts.TimeoutSeconds),
-		"request_delay_ms": strconv.Itoa(opts.RequestDelayMs),
+	out := gollm.ProviderConfig{}
+	// A deployment default is written only when it is set. Writing "0" would
+	// not mean "use the provider's default" — it would mean zero retries and
+	// a zero-second timeout — so a caller with no deployment config (an
+	// enterprise plugin, say) must leave the keys absent exactly as it does
+	// today.
+	if opts.MaxRetries > 0 {
+		out["max_retries"] = strconv.Itoa(opts.MaxRetries)
 	}
-	if cred.Value != "" || !opts.OmitEmptyCredential {
-		out["credentials_json"] = cred.Value
+	if opts.TimeoutSeconds > 0 {
+		out["timeout_seconds"] = strconv.Itoa(opts.TimeoutSeconds)
+	}
+	if opts.RequestDelayMs > 0 {
+		out["request_delay_ms"] = strconv.Itoa(opts.RequestDelayMs)
 	}
 	for k, v := range spec.Config {
 		out[k] = v
+	}
+	out["model"] = spec.Model
+	if cred.Value != "" || !opts.OmitEmptyCredential {
+		out["credentials_json"] = cred.Value
+	} else {
+		// Nothing resolved and the caller wants the key absent — so drop a
+		// stray one that came out of a config map rather than leaving it to
+		// be sent as a bearer token.
+		delete(out, "credentials_json")
 	}
 	out[gollm.PromptCacheKey] = strconv.FormatBool(spec.PromptCache)
 	return out

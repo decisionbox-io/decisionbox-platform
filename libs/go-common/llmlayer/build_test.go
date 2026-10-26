@@ -255,6 +255,30 @@ func TestProjectConfigWinsOverDeploymentDefaults(t *testing.T) {
 	}
 }
 
+// A `model` or `credentials_json` entry inside a config map is a stray, and
+// letting one win would send a model the user did not choose, or a credential
+// out of the project document instead of the secret store.
+func TestResolvedModelAndCredentialBeatAStrayConfigEntry(t *testing.T) {
+	spec := testSpec(LayerAnalysis, DefaultProviderID)
+	spec.Config["model"] = "WRONG-MODEL"
+	spec.Config["credentials_json"] = "WRONG-CREDS"
+
+	cfg := ProviderConfig(spec, Credential{Value: "real-key"}, BuildOptions{})
+	if cfg["model"] != "m1" {
+		t.Errorf("model = %q, want the layer's resolved model", cfg["model"])
+	}
+	if cfg["credentials_json"] != "real-key" {
+		t.Errorf("credentials_json = %q, want the resolved credential", cfg["credentials_json"])
+	}
+
+	// And with nothing resolved, OmitEmptyCredential must drop the stray
+	// rather than ship it as a bearer token.
+	cfg = ProviderConfig(spec, Credential{}, BuildOptions{OmitEmptyCredential: true})
+	if v, ok := cfg["credentials_json"]; ok {
+		t.Errorf("credentials_json = %q, want the stray config entry dropped", v)
+	}
+}
+
 func TestResolvedPromptCacheBeatsAStaleLiteralInEitherConfigMap(t *testing.T) {
 	spec := testSpec(LayerAnalysis, DefaultProviderID)
 	spec.Config[gollm.PromptCacheKey] = "false" // a stale literal from before the toggle moved
@@ -273,6 +297,23 @@ func TestResolvedPromptCacheBeatsAStaleLiteralInEitherConfigMap(t *testing.T) {
 	cfg = buildOnce(t, newFakeSecrets(map[string]string{LegacyCredentialsKey: "k"}), spec, BuildOptions{})
 	if gollm.PromptCacheEnabled(cfg) != false {
 		t.Error("a layer with caching off must construct with caching off even when a config map says otherwise")
+	}
+}
+
+func TestUnsetDeploymentDefaultsAreOmittedNotWrittenAsZero(t *testing.T) {
+	// A caller with no deployment config — an enterprise plugin, the replay
+	// tool — must leave these keys absent, as it does today. "0" would mean
+	// zero retries and a zero-second timeout, not "use the provider default".
+	cfg := ProviderConfig(testSpec(LayerPackGen, DefaultProviderID), Credential{Value: "k"}, BuildOptions{})
+	for _, key := range []string{"max_retries", "timeout_seconds", "request_delay_ms"} {
+		if v, ok := cfg[key]; ok {
+			t.Errorf("%s = %q, want the key absent", key, v)
+		}
+	}
+	// And a set value is still written.
+	cfg = ProviderConfig(testSpec(LayerPackGen, DefaultProviderID), Credential{Value: "k"}, BuildOptions{MaxRetries: 3})
+	if cfg["max_retries"] != "3" {
+		t.Errorf("max_retries = %q, want 3", cfg["max_retries"])
 	}
 }
 
