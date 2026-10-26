@@ -398,9 +398,24 @@ func (h *ProjectsHandler) applyLLMLayerUpdate(
 	_, providersSent := sentFields["llm_providers"]
 	_, layersSent := sentFields["layer_models"]
 	if !providersSent && !layersSent {
-		// Nothing per-layer in this request. The legacy merge above still
-		// applies, so re-run the dual-write only when the project is already
-		// configured — otherwise an unrelated edit would stamp it.
+		// Nothing per-layer in this request — but a client may still have
+		// sent the LEGACY llm block, and on a configured project that block
+		// is only a mirror. Changing it alone would move the mirror and
+		// nothing the product reads: the user picks a model, gets a 200, and
+		// every layer keeps running the old one.
+		//
+		// So a legacy write on a configured project moves the DEFAULT LAYER
+		// too, which is what "set this project's model" has always meant. An
+		// older dashboard build, a script, or a curl keeps working rather
+		// than silently doing nothing.
+		if _, llmSent := sentFields["llm"]; llmSent && existing.LLMConfigured() {
+			mirrorLegacyLLMOntoDefaultLayer(existing)
+			if msg := validateLLMLayerConfig(existing); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return false, nil
+			}
+			dualWriteLegacyLLM(existing)
+		}
 		return true, nil
 	}
 
@@ -438,6 +453,77 @@ func (h *ProjectsHandler) applyLLMLayerUpdate(
 		return true, nil
 	}
 	return true, removedProviderEntries(removed, existing.LLMProviders)
+}
+
+// mirrorLegacyLLMOntoDefaultLayer moves a legacy llm write onto the default
+// layer row, so a client that only knows the single-provider shape still
+// changes what the product reads.
+//
+// The default ENTRY's provider and connection config move with it — the model
+// is the layer's, but a provider change is a connection change. Only the
+// default entry is touched: a legacy write carries no information about any
+// other entry, and inventing one would be worse than ignoring it.
+func mirrorLegacyLLMOntoDefaultLayer(p *models.Project) {
+	if p.LLM.Provider == "" {
+		return
+	}
+	entries := p.LLMProviders
+	if len(entries) == 0 {
+		entries = p.EffectiveLLMProviders()
+	}
+	updated := make([]llmlayer.ProviderEntry, 0, len(entries))
+	sawDefault := false
+	for _, e := range entries {
+		if llmlayer.NormalizeProviderID(e.ID) == llmlayer.DefaultProviderID {
+			sawDefault = true
+			e.Provider = p.LLM.Provider
+			e.Config = legacyConnectionConfig(p.LLM.Config)
+		}
+		updated = append(updated, e)
+	}
+	if !sawDefault {
+		updated = append([]llmlayer.ProviderEntry{{
+			ID:       llmlayer.DefaultProviderID,
+			Provider: p.LLM.Provider,
+			Config:   legacyConnectionConfig(p.LLM.Config),
+		}}, updated...)
+	}
+	p.LLMProviders = updated
+
+	if p.LayerModels == nil {
+		p.LayerModels = map[string]llmlayer.LayerModel{}
+	}
+	row := p.LayerModels[llmlayer.DefaultLayer]
+	row.ProviderID = llmlayer.DefaultProviderID
+	row.Model = p.LLM.Model
+	p.LayerModels[llmlayer.DefaultLayer] = row
+}
+
+// legacyConnectionConfig strips the model-scoped keys out of a legacy
+// llm.config so they do not land on a provider ENTRY, where they would apply
+// to every layer that shares the connection.
+func legacyConnectionConfig(cfg map[string]string) map[string]string {
+	if len(cfg) == 0 {
+		return nil
+	}
+	modelScoped := map[string]bool{
+		"max_input_tokens":        true,
+		"max_output_tokens":       true,
+		"wire_override":           true,
+		gollm.PromptCacheKey:      true,
+		gollm.ReasoningEnabledKey: true,
+	}
+	out := make(map[string]string, len(cfg))
+	for k, v := range cfg {
+		if modelScoped[k] || k == "model" || k == "credentials_json" {
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // stampLLMConfigVersion records that this project has been configured for the

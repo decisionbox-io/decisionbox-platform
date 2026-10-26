@@ -813,3 +813,82 @@ func TestCreate_IsBornConfiguredFromTheLegacyFieldsAlone(t *testing.T) {
 		t.Errorf("exploration resolved to %s/%s, want bedrock/opus", spec.Provider, spec.Model)
 	}
 }
+
+// A client that only knows the legacy single-provider shape — an older
+// dashboard build, a script, a curl — must still change what the product
+// reads. On a configured project the legacy block is only a mirror, so moving
+// it alone would leave the user with a 200 and every layer on the old model.
+func TestUpdate_ALegacyLLMWriteMovesTheDefaultLayer(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, newMockDomainPackRepo())
+	p := configuredProject(t, repo)
+
+	w := putProject(t, h, p.ID, `{"llm": {"provider": "claude", "model": "claude-haiku-4-5", "config": {"max_output_tokens": "4096"}}}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	stored, _ := repo.GetByID(context.Background(), p.ID)
+
+	spec, err := stored.LayerSpec(llmlayer.LayerAnalysis)
+	if err != nil {
+		t.Fatalf("LayerSpec: %v", err)
+	}
+	if spec.Provider != "claude" || spec.Model != "claude-haiku-4-5" {
+		t.Errorf("analysis resolved to %s/%s, want the model the legacy write asked for", spec.Provider, spec.Model)
+	}
+	if stored.LLMConfigVersion != llmlayer.ConfigVersion {
+		t.Errorf("llm_config_version = %d; a legacy write must not un-configure the project", stored.LLMConfigVersion)
+	}
+}
+
+// A model-scoped key from a legacy config must not land on the provider ENTRY,
+// where it would apply to every layer sharing that connection.
+func TestUpdate_ALegacyWriteKeepsModelScopedKeysOffTheEntry(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, newMockDomainPackRepo())
+	p := configuredProject(t, repo)
+
+	w := putProject(t, h, p.ID, `{"llm": {"provider": "claude", "model": "m", "config": {"region": "eu-west-1", "max_output_tokens": "4096", "wire_override": "anthropic"}}}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	stored, _ := repo.GetByID(context.Background(), p.ID)
+	entry, ok := stored.LLMProviderByID(llmlayer.DefaultProviderID)
+	if !ok {
+		t.Fatal("the default entry is missing")
+	}
+	if entry.Config["region"] != "eu-west-1" {
+		t.Errorf("the connection field did not reach the entry: %+v", entry.Config)
+	}
+	for _, key := range []string{"max_output_tokens", "wire_override"} {
+		if _, present := entry.Config[key]; present {
+			t.Errorf("model-scoped key %q landed on the provider entry", key)
+		}
+	}
+}
+
+// An UNCONFIGURED project is untouched by a legacy write: the forced review is
+// the point, and stamping it here would skip it.
+func TestUpdate_ALegacyWriteDoesNotConfigureAnUnconfiguredProject(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, newMockDomainPackRepo())
+
+	p := &models.Project{Name: "legacy", Domain: "gaming", Category: "match3"}
+	p.LLM = models.LLMConfig{Provider: "bedrock", Model: "opus"}
+	repo.Create(context.Background(), p)
+
+	w := putProject(t, h, p.ID, `{"llm": {"provider": "claude", "model": "haiku"}}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	stored, _ := repo.GetByID(context.Background(), p.ID)
+	if stored.LLMConfigVersion != 0 {
+		t.Errorf("llm_config_version = %d, want 0", stored.LLMConfigVersion)
+	}
+	if len(stored.LayerModels) != 0 {
+		t.Errorf("layer_models = %+v, want none", stored.LayerModels)
+	}
+	if stored.LLM.Model != "haiku" {
+		t.Errorf("the legacy write itself must still land: llm = %+v", stored.LLM)
+	}
+}
