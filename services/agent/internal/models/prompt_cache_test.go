@@ -6,16 +6,6 @@ import (
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 )
 
-// The agent and the API each resolve prompt caching with a local copy of the
-// provider-registry key, so neither model package depends on the registry.
-// That only holds while the copies agree with the real thing.
-func TestPromptCacheConfigKeyMatchesRegistry(t *testing.T) {
-	if promptCacheConfigKey != gollm.PromptCacheKey {
-		t.Fatalf("promptCacheConfigKey = %q, but gollm.PromptCacheKey = %q — the legacy fallback would stop reading the stored value",
-			promptCacheConfigKey, gollm.PromptCacheKey)
-	}
-}
-
 // The agent must resolve exactly as the API does, or a project would cache
 // during Ask and not during discovery (or the reverse).
 func TestProject_EffectivePromptCacheEnabled(t *testing.T) {

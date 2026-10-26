@@ -85,6 +85,12 @@ type SchemaIndexRun struct {
 // Credentials flow through the same `llm-credentials` secret when the blurb
 // and analysis provider match. When they differ, a separate
 // `blurb-llm-credentials` secret holds the blurb provider's key.
+//
+// Since per-layer models (#407) this block is the DUAL-WRITE MIRROR of the
+// `table_descriptions` layer, kept so an older agent image still indexes with
+// the model the user chose. The live value is
+// Project.EffectiveLayerModel(llmlayer.LayerTableDescriptions); read this
+// field only through the accessors, and never when layer_models is non-empty.
 type BlurbLLMConfig struct {
 	Provider string            `bson:"provider" json:"provider"`
 	Model    string            `bson:"model" json:"model"`

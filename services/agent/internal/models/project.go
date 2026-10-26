@@ -5,6 +5,8 @@ import (
 	"time"
 
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
+	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 )
 
@@ -42,6 +44,38 @@ type Project struct {
 	LLM       LLMConfig                 `bson:"llm" json:"llm"`
 	BlurbLLM  *BlurbLLMConfig           `bson:"blurb_llm,omitempty" json:"blurb_llm,omitempty"`
 	Embedding goembedding.ProjectConfig `bson:"embedding,omitempty" json:"embedding,omitempty"`
+
+	// LLMProviders is the project's set of named LLM provider entries
+	// (per-layer models, #407). Several providers per project, so a pipeline
+	// can mix vendors — the benchmark's cheapest good configuration explores
+	// on one and analyses on another.
+	//
+	// Empty for a project that predates the feature: the accessors synthesise
+	// a "default" entry from LLM (and a "blurb" entry from BlurbLLM) at read
+	// time, exactly as EffectiveWarehouses does, so no backfill migration is
+	// needed to READ an old document. Configuring one is a separate, explicit
+	// step — see LLMConfigVersion. Keep in sync with the other copy of this
+	// struct.
+	LLMProviders []llmlayer.ProviderEntry `bson:"llm_providers,omitempty" json:"llm_providers,omitempty"`
+
+	// LayerModels maps each LLM layer (llmlayer.Layer*) to the provider entry
+	// and model it uses, plus the reserved llmlayer.DefaultLayer row that
+	// every layer without one of its own inherits. A layer's own Config holds
+	// model-scoped settings — token budgets, wire_override, endpoint_id,
+	// reasoning_enabled, prompt_cache — merged over its provider entry's
+	// connection config.
+	//
+	// Non-empty means AUTHORITATIVE: the legacy BlurbLLM mirror is not
+	// consulted, so resetting a table-description override cannot rediscover
+	// the stale mirror. Keep in sync with the other copy of this struct.
+	LayerModels map[string]llmlayer.LayerModel `bson:"layer_models,omitempty" json:"layer_models,omitempty"`
+
+	// LLMConfigVersion is the per-layer-configuration generation this project
+	// has been configured for. 0 (or absent, which decodes as 0) means it
+	// never has been: discovery is refused and the dashboard sends the user to
+	// settings, where the values are pre-filled from the legacy fields.
+	// Resolve it with LLMConfigured, never by comparing the field.
+	LLMConfigVersion int `bson:"llm_config_version,omitempty" json:"llm_config_version,omitempty"`
 
 	Profile map[string]interface{} `bson:"profile,omitempty" json:"profile,omitempty"`
 
@@ -320,14 +354,6 @@ func (p *Project) EffectiveSmartOverflowEnabled() bool {
 	return *p.SmartOverflowEnabled
 }
 
-// EffectiveReasoningEnabled resolves the per-project reasoning toggle. Returns
-// false when unset — reasoning is opt-in, so the default matches today's
-// behaviour (no reasoning param, no exploration headroom).
-// promptCacheConfigKey mirrors gollm.PromptCacheKey. Kept as a literal so
-// this package keeps no dependency on the provider registry; TestPromptCacheKey
-// asserts the two agree.
-const promptCacheConfigKey = "prompt_cache"
-
 // EffectivePromptCacheEnabled resolves prompt caching for this project: the
 // project field when set, else the legacy LLM.Config["prompt_cache"] entry,
 // else on. Mirrors the API-side helper — keep the two in sync.
@@ -338,9 +364,13 @@ func (p *Project) EffectivePromptCacheEnabled() bool {
 	if p.PromptCacheEnabled != nil {
 		return *p.PromptCacheEnabled
 	}
-	return !strings.EqualFold(strings.TrimSpace(p.LLM.Config[promptCacheConfigKey]), "false")
+	return !strings.EqualFold(strings.TrimSpace(p.LLM.Config[gollm.PromptCacheKey]), "false")
 }
 
+// EffectiveReasoningEnabled resolves the per-project reasoning toggle.
+// Nil -> false (opt-in). Since #407 this is the MIGRATION SEED for every
+// layer and then the dual-write mirror of the default layer; per-layer
+// reasoning is resolved through LayerSpec. Keep the two copies in sync.
 func (p *Project) EffectiveReasoningEnabled() bool {
 	if p.ReasoningEnabled == nil {
 		return false
@@ -426,4 +456,103 @@ func (p *Project) WarehouseByID(id string) (WarehouseConfig, bool) {
 		}
 	}
 	return WarehouseConfig{}, false
+}
+
+// --- Per-layer LLM providers and models (#407) ---
+
+// LLMLayerConfig packages the project's LLM configuration for llmlayer, which
+// owns the legacy-versus-plural reading rules.
+//
+// The rules live there, not here, because both copies of this struct — the
+// API's and the agent's — have to agree on three-branch blurb semantics, the
+// default-row inheritance and the per-layer reasoning and prompt-cache
+// resolution. Duplicating that logic is how two surfaces end up resolving the
+// same document differently.
+func (p *Project) LLMLayerConfig() llmlayer.ProjectConfig {
+	if p == nil {
+		return llmlayer.ProjectConfig{}
+	}
+	cfg := llmlayer.ProjectConfig{
+		Providers:   p.LLMProviders,
+		LayerModels: p.LayerModels,
+		Version:     p.LLMConfigVersion,
+		Legacy: llmlayer.Legacy{
+			Provider:    p.LLM.Provider,
+			Model:       p.LLM.Model,
+			Config:      p.LLM.Config,
+			Reasoning:   p.ReasoningEnabled,
+			PromptCache: p.PromptCacheEnabled,
+		},
+	}
+	if p.BlurbLLM != nil {
+		cfg.Legacy.Blurb = &llmlayer.LegacyBlurb{
+			Provider: p.BlurbLLM.Provider,
+			Model:    p.BlurbLLM.Model,
+			Config:   p.BlurbLLM.Config,
+		}
+	}
+	return cfg
+}
+
+// LLMConfigured reports whether this project has been configured for
+// per-layer models. A project that has not been is refused at StartRun and by
+// every layer resolver, and the dashboard sends the user to settings.
+func (p *Project) LLMConfigured() bool {
+	return p.LLMLayerConfig().Configured()
+}
+
+// EffectiveLLMProviders returns the project's provider entries, synthesising
+// them from the legacy LLM / BlurbLLM fields for a project that predates
+// per-layer models — the same read-time synthesis EffectiveWarehouses does,
+// so no backfill migration is needed to READ an old document.
+func (p *Project) EffectiveLLMProviders() []llmlayer.ProviderEntry {
+	return p.LLMLayerConfig().EffectiveProviders()
+}
+
+// LLMProviderByID returns the provider entry with the given id; an empty id
+// resolves to the reserved default entry.
+func (p *Project) LLMProviderByID(id string) (llmlayer.ProviderEntry, bool) {
+	return p.LLMLayerConfig().ProviderByID(id)
+}
+
+// DefaultLLMProvider returns the project's default provider entry — always
+// the reserved id "default", which is why an older image reading
+// llm-credentials still finds the right key.
+func (p *Project) DefaultLLMProvider() llmlayer.ProviderEntry {
+	return p.LLMLayerConfig().DefaultProvider()
+}
+
+// EffectiveLayerModel resolves one layer's (provider entry, model) pair.
+func (p *Project) EffectiveLayerModel(layer string) llmlayer.LayerModel {
+	return p.LLMLayerConfig().EffectiveLayerModel(layer)
+}
+
+// LayerSpec resolves a layer to a fully merged provider spec, refusing an
+// unconfigured project with llmlayer.ErrLLMNotConfigured. Every path that
+// runs product work uses this.
+func (p *Project) LayerSpec(layer string) (llmlayer.LayerSpec, error) {
+	return p.LLMLayerConfig().Spec(layer)
+}
+
+// LayerSpecUnchecked resolves a layer WITHOUT the configuration gate, for the
+// paths that must work on an unconfigured project: the settings pre-fill, the
+// per-layer connection test, schema indexing and the support bundle.
+func (p *Project) LayerSpecUnchecked(layer string) (llmlayer.LayerSpec, error) {
+	return p.LLMLayerConfig().SpecUnchecked(layer)
+}
+
+// SeedLLMLayersFromLegacy fills LLMProviders and LayerModels from the
+// project's current single-provider configuration and stamps the config
+// version, so the forced trip through settings is a review-and-confirm rather
+// than a seventeen-row data-entry exercise.
+//
+// A no-op when the project has no provider to seed from.
+func (p *Project) SeedLLMLayersFromLegacy() {
+	providers, layers := p.LLMLayerConfig().SeedFromLegacy()
+	if len(providers) == 0 {
+		return
+	}
+	p.LLMProviders = providers
+	p.LayerModels = layers
+	p.LLMConfigVersion = llmlayer.ConfigVersion
 }

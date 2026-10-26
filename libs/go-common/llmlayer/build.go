@@ -51,6 +51,12 @@ type LayerSpec struct {
 	// REQUEST by ai.Client.SetReasoning rather than at construction, so it
 	// does not participate in provider dedupe.
 	Reasoning bool
+	// FellBackFromProviderID is set when the layer named a provider entry the
+	// project does not have and resolution fell back to the default. Empty
+	// normally. Callers log it; the API refuses the delete that would cause
+	// it, so a non-empty value means the document was edited outside the
+	// handler.
+	FellBackFromProviderID string
 }
 
 // HasEndpoint reports whether this spec points at a user-deployed endpoint,
@@ -241,4 +247,3 @@ func ConfigKey(cfg gollm.ProviderConfig) string {
 	}
 	return b.String()
 }
-
