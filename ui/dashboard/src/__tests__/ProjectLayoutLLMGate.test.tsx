@@ -25,7 +25,7 @@ jest.mock('@/lib/api', () => ({ api: { getProject: jest.fn() } }));
 import { api } from '@/lib/api';
 
 function renderLayout() {
-  render(
+  return render(
     <MantineProvider>
       <ProjectLayout><div>project page</div></ProjectLayout>
     </MantineProvider>,
@@ -72,6 +72,31 @@ describe('project layout — per-layer LLM configuration gate', () => {
     renderLayout();
     expect(await screen.findByText('project page')).toBeInTheDocument();
     expect(replace).not.toHaveBeenCalled();
+  });
+
+  // The other half of the redirect, and the one that matters: this layout
+  // WRAPS the settings page it sends people to, and Next.js keeps the layout
+  // mounted across that navigation. If the alert is rendered from the
+  // redirect state alone, the user lands on settings and sees the alert
+  // instead of the form — the page they were sent to is the page they cannot
+  // reach.
+  it('shows the settings page once the redirect lands there', async () => {
+    (api.getProject as jest.Mock).mockResolvedValue({ id: 'proj-1', llm_config_required: true });
+    const { rerender } = renderLayout();
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('/projects/proj-1/settings#models'));
+    expect(await screen.findByText(/needs a provider and a model for each layer/i)).toBeInTheDocument();
+
+    // The navigation the router just performed, with the layout and its state
+    // preserved — which is what Next.js does.
+    pathname = '/projects/proj-1/settings#models';
+    rerender(
+      <MantineProvider>
+        <ProjectLayout><div>project page</div></ProjectLayout>
+      </MantineProvider>,
+    );
+
+    expect(await screen.findByText('project page')).toBeInTheDocument();
+    expect(screen.queryByText(/needs a provider and a model for each layer/i)).not.toBeInTheDocument();
   });
 
   // Navigation that breaks on a transient error is worse than navigation that

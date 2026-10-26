@@ -464,7 +464,7 @@ export default function ProjectSettingsPage() {
               )}
               <Group justify="flex-end" mt="sm">
                 <Button
-                  onClick={() => { void llmConfig.save().then(() => refreshProject()); }}
+                  onClick={() => { void llmConfig.save().then((ok) => { if (ok) refreshProject(); }); }}
                   loading={llmConfig.saving}
                   disabled={!!llmConfig.validationError}
                 >
@@ -494,7 +494,7 @@ export default function ProjectSettingsPage() {
             )}
             <Group justify="flex-end" mt="sm">
               <Button
-                onClick={() => { void llmConfig.save().then(() => refreshProject()); }}
+                onClick={() => { void llmConfig.save().then((ok) => { if (ok) refreshProject(); }); }}
                 loading={llmConfig.saving}
                 disabled={!!llmConfig.validationError}
               >

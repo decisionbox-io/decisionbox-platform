@@ -69,7 +69,12 @@ export default function ProjectLayout({ children }: { children: React.ReactNode 
   }, [needsCheck, projectId, router]);
 
   const checked = !needsCheck || result !== 'pending';
-  const redirecting = result === 'redirecting';
+  // Gated on needsCheck, not just on the state: this layout WRAPS the settings
+  // page it redirects to, and Next.js preserves it across that navigation. The
+  // state stays 'redirecting' there, so reading it alone kept rendering the
+  // alert in place of the settings form — the one page the user was sent to
+  // was the one page they could not reach without a reload.
+  const redirecting = needsCheck && result === 'redirecting';
 
   if (redirecting) {
     return (

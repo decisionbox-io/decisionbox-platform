@@ -46,12 +46,25 @@ export interface UseLLMConfig {
   layersByProviderId: Record<string, string[]>;
   /** A user-facing reason the configuration cannot be saved yet, or null. */
   validationError: string | null;
-  save: () => Promise<void>;
+  /**
+   * Persists the configuration. Resolves TRUE when it was written and FALSE
+   * when it was not — a failed credential write, a rejected project update,
+   * or a validation error that stopped it before the request.
+   *
+   * It reports rather than rejects because the failure is already shown to
+   * the user as a notification; the boolean is for a caller that must not act
+   * on an unsaved configuration. A wizard that advanced on a resolved promise
+   * moved the user past a step whose values were never stored.
+   */
+  save: () => Promise<boolean>;
   entries: LLMProviderEntry[];
 }
 
 export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void): UseLLMConfig {
-  const [loading, setLoading] = useState(true);
+  // An empty projectId means there is nothing to load — the form a host passes
+  // when it owns the lifecycle itself. Reporting `loading` for a fetch that
+  // will never happen would strand whatever rendered it.
+  const [loading, setLoading] = useState(Boolean(projectId));
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [seeded, setSeeded] = useState(false);
@@ -119,8 +132,8 @@ export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void):
     return null;
   }, [entries, entryForms, layerModels]);
 
-  const save = useCallback(async () => {
-    if (!projectId || validationError) return;
+  const save = useCallback(async (): Promise<boolean> => {
+    if (!projectId || validationError) return false;
     setSaving(true);
     try {
       // Credentials first: a layer row may reference an entry whose secret
@@ -142,8 +155,10 @@ export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void):
       setSecrets(updated || []);
       notifications.show({ title: 'Saved', message: 'LLM configuration updated', color: 'green' });
       onSaved?.(saved);
+      return true;
     } catch (e: unknown) {
       notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+      return false;
     } finally {
       setSaving(false);
     }

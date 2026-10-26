@@ -232,13 +232,30 @@ export function LLMProvidersPanel({
                   apiKey: next.apiKey,
                 })}
                 loadButtonLabel="Check connection"
-                onLoad={async () => {
+                onLoad={async (cfg) => {
+                  // Which endpoint this check actually exercises matters, and
+                  // the two routes answer different questions:
+                  //
+                  //   in flight  — the values in the form, credential
+                  //                included. The only honest answer for an
+                  //                entry the server has never seen, and the
+                  //                only one that exercises a credential the
+                  //                user has just replaced.
+                  //   the entry  — the entry's STORED config and its
+                  //                credential chain, so a saved entry needs
+                  //                no key retyped and a secondary with no
+                  //                secret of its own fails here exactly as it
+                  //                would fail a run.
+                  //
+                  // A stored credential is deliberately never sent to a
+                  // form-supplied endpoint: that combination is an
+                  // exfiltration channel, not a connection check.
+                  const typedCredential = Boolean(cfg['api_key'] || cfg['credentials_json']);
+                  const inFlight = form.isNew || !savedIds.includes(form.id) || typedCredential;
                   try {
-                    // Read through the ENTRY, so the server uses that entry's
-                    // own config and credential chain — a secondary entry
-                    // with no secret of its own fails here exactly as it
-                    // would fail a run.
-                    const resp = await api.listLiveLLMModelsForProvider(projectId, { provider_id: form.id });
+                    const resp = inFlight
+                      ? await api.listLiveLLMModels(form.provider, cfg)
+                      : await api.listLiveLLMModelsForProvider(projectId, { provider_id: form.id });
                     setLiveModels((prev) => ({ ...prev, [form.id]: resp.models }));
                     return { ok: true, liveError: resp.live_error };
                   } catch (e: unknown) {
@@ -252,7 +269,15 @@ export function LLMProvidersPanel({
                     ? `${liveModels[form.id]!.length} models reachable on this connection. Pick which layers use them under Models.`
                     : 'Models are chosen per layer under Models.'}
                 </Text>
-                {meta && savedIds.includes(form.id) && (
+                {/*
+                  * target="llm" tests the project's DEFAULT layer, which is
+                  * only this card's own connection on the reserved entry. On
+                  * a secondary card it reported the default provider's
+                  * result, so a broken secondary looked healthy. Checking a
+                  * secondary entry is what "Check connection" above does —
+                  * through the entry, by id.
+                  */}
+                {meta && form.id === DEFAULT_LLM_PROVIDER_ID && savedIds.includes(form.id) && (
                   <TestConnectionButton projectId={projectId} target="llm" />
                 )}
               </ProviderCredentialsPhase>

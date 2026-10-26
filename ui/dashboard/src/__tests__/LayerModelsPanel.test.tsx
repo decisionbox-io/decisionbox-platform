@@ -41,13 +41,22 @@ const ENTRIES: LLMProviderEntry[] = [
   { id: 'cheap', label: 'Bedrock — Haiku', provider: 'bedrock' },
 ];
 
+const BEDROCK_META = {
+  id: 'bedrock', name: 'Bedrock', description: '', auth_methods: [],
+  // Bedrock really does declare wire_override: a customer-named deployment's
+  // wire cannot be inferred from the model id.
+  config_fields: [
+    { key: 'wire_override', label: 'Wire override', required: false, type: 'string', placeholder: '', description: 'Override wire dispatch', default: '', options: [] },
+  ],
+};
+
 function renderPanel(value: Record<string, LayerModel>, onChange = jest.fn()) {
   render(
     <MantineProvider>
       <LayerModelsPanel
         projectId="proj-1"
         entries={ENTRIES}
-        providers={[{ id: 'bedrock', name: 'Bedrock', description: '', config_fields: [], auth_methods: [] } as never]}
+        providers={[BEDROCK_META as never]}
         value={value}
         onChange={onChange}
       />
@@ -173,5 +182,73 @@ describe('LayerModelsPanel', () => {
     fireEvent.change(screen.getAllByLabelText('Model')[1], { target: { value: 'haiku' } });
     await waitFor(() => expect(onChangeCalls().length).toBeGreaterThan(0));
     expect(onChangeCalls()[0].exploration.model).toBe('haiku');
+  });
+});
+
+// The live picker is the point of the panel, and it was unreachable: the
+// model list loaded only when a provider SELECTION CHANGED, so opening a
+// saved project's Models tab showed none — and a project on the default
+// entry alone has no other selection to make.
+describe('LayerModelsPanel — live models for the entries already selected', () => {
+  it('loads them when the tab opens', async () => {
+    renderPanel({
+      [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' },
+      sql_repair: { provider_id: 'cheap', model: 'haiku' },
+    });
+    await waitFor(() => expect(api.listLiveLLMModelsForProvider).toHaveBeenCalledWith('proj-1', { provider_id: 'default' }));
+    expect(api.listLiveLLMModelsForProvider).toHaveBeenCalledWith('proj-1', { provider_id: 'cheap' });
+  });
+
+  it('asks for each entry once, however many layers share it', async () => {
+    renderPanel({
+      [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' },
+      exploration: { provider_id: 'default', model: 'opus' },
+      analysis: { provider_id: 'default', model: 'opus' },
+    });
+    await waitFor(() => expect(api.listLiveLLMModelsForProvider).toHaveBeenCalled());
+    const forDefault = (api.listLiveLLMModelsForProvider as jest.Mock).mock.calls
+      .filter(([, body]) => body.provider_id === 'default');
+    expect(forDefault).toHaveLength(1);
+  });
+});
+
+// Every model-scoped control has to exist on the DEFAULT row too. A project
+// that runs one model everywhere never opens an override, so a control
+// offered only there is a control it cannot reach — which is how the token
+// caps and wire_override disappeared from settings for exactly the
+// customer-named Bedrock / Vertex / Azure deployments that need them.
+describe('LayerModelsPanel — the default row carries the model settings', () => {
+  it('offers the token caps and the wire override', async () => {
+    renderPanel({ [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' } });
+    await screen.findByText('Main layers');
+    // One per row rendered; the default card is the first.
+    expect(screen.getAllByLabelText('Max input tokens').length).toBeGreaterThan(0);
+    expect(screen.getAllByLabelText('Max output tokens').length).toBeGreaterThan(0);
+    expect(screen.getAllByLabelText('Wire override').length).toBeGreaterThan(0);
+  });
+
+  it('writes a wire override onto the default row', async () => {
+    const onChange = renderPanel({ [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' } });
+    await screen.findByText('Main layers');
+    fireEvent.change(screen.getAllByLabelText('Wire override')[0], { target: { value: 'anthropic-messages' } });
+    expect(onChange).toHaveBeenCalled();
+    const next = onChange.mock.calls[onChange.mock.calls.length - 1][0];
+    expect(next[DEFAULT_LAYER].config.wire_override).toBe('anthropic-messages');
+  });
+
+  it('hides the wire override on a provider that does not declare it', async () => {
+    render(
+      <MantineProvider>
+        <LayerModelsPanel
+          projectId="proj-1"
+          entries={[{ id: 'default', label: 'Claude', provider: 'claude' }]}
+          providers={[{ id: 'claude', name: 'Claude', description: '', config_fields: [], auth_methods: [] } as never]}
+          value={{ [DEFAULT_LAYER]: { provider_id: 'default', model: 'sonnet' } }}
+          onChange={jest.fn()}
+        />
+      </MantineProvider>,
+    );
+    await screen.findByText('Main layers');
+    expect(screen.queryByLabelText('Wire override')).not.toBeInTheDocument();
   });
 });

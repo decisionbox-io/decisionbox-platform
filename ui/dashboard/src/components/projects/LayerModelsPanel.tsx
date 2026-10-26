@@ -14,7 +14,7 @@
  * front-end release, and the per-layer model rules arrive with it.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Accordion, ActionIcon, Alert, Badge, Button, Card, Group, Loader, Select,
   Stack, Switch, Text, TextInput, Tooltip,
@@ -54,6 +54,10 @@ export function LayerModelsPanel({
   const [layers, setLayers] = useState<LLMLayerDescriptor[] | null>(null);
   const [layersError, setLayersError] = useState<string | null>(null);
   const [liveByEntry, setLiveByEntry] = useState<Record<string, LiveModel[] | null>>({});
+  // Entries whose model list has been requested. A ref, not the state map:
+  // several rows can ask for the same entry in one render pass, and reading
+  // the state would see the value from before the batch.
+  const requestedRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     api.listLLMLayers()
@@ -74,8 +78,8 @@ export function LayerModelsPanel({
   // the same reason the agent builds one provider per entry rather than one
   // per layer.
   const loadModelsFor = async (entryId: string) => {
-    if (liveByEntry[entryId] !== undefined) return;
-    setLiveByEntry((prev) => ({ ...prev, [entryId]: null }));
+    if (requestedRef.current.has(entryId)) return;
+    requestedRef.current.add(entryId);
     try {
       const resp = await api.listLiveLLMModelsForProvider(projectId, { provider_id: entryId });
       setLiveByEntry((prev) => ({ ...prev, [entryId]: resp.models }));
@@ -83,6 +87,87 @@ export function LayerModelsPanel({
       setLiveByEntry((prev) => ({ ...prev, [entryId]: [] }));
     }
   };
+
+  // The model-scoped settings, rendered identically for the default row and
+  // for a layer's own row. One block on purpose: a control offered on an
+  // override but not on the default is a control a project that runs one
+  // model everywhere cannot reach at all — which is how the token caps and
+  // wire_override went missing from settings.
+  const renderModelSettings = (
+    row: LayerModel,
+    meta: ProviderMeta | null,
+    setCfg: (key: string, raw: string | null) => void,
+  ) => {
+    // Needed for a customer-named Bedrock / Vertex / Azure deployment whose
+    // wire cannot be inferred from the model id. Offered only where the
+    // provider declares it, so it is not a dead box on Claude or OpenAI.
+    const wireField = meta?.config_fields?.find((f) => f.key === 'wire_override');
+    return (
+      <>
+        <Group grow align="flex-start">
+          <TextInput
+            label="Max input tokens"
+            description="Blank uses the model's own window."
+            value={row.config?.['max_input_tokens'] || ''}
+            onChange={(e) => setCfg('max_input_tokens', e.currentTarget.value || null)}
+          />
+          <TextInput
+            label="Max output tokens"
+            description="Blank uses the model's own ceiling."
+            value={row.config?.['max_output_tokens'] || ''}
+            onChange={(e) => setCfg('max_output_tokens', e.currentTarget.value || null)}
+          />
+        </Group>
+        {wireField && (
+          <TextInput
+            label={wireField.label || 'Wire override'}
+            description={wireField.description || 'Only for a deployment whose wire cannot be inferred from the model id.'}
+            placeholder={wireField.placeholder || ''}
+            value={row.config?.['wire_override'] || ''}
+            onChange={(e) => setCfg('wire_override', e.currentTarget.value || null)}
+          />
+        )}
+        <Group gap="lg" wrap="wrap">
+          <Switch
+            size="xs"
+            label="Reasoning"
+            checked={boolFrom(row.config, REASONING_KEY, false)}
+            onChange={(e) => setCfg(REASONING_KEY, e.currentTarget.checked ? 'true' : 'false')}
+          />
+          <Switch
+            size="xs"
+            label="Prompt caching"
+            description="Turning this off for one layer alone opens a second connection to that provider — caching is applied when the connection is built, not per request."
+            checked={boolFrom(row.config, PROMPT_CACHE_KEY, true)}
+            onChange={(e) => setCfg(PROMPT_CACHE_KEY, e.currentTarget.checked ? 'true' : 'false')}
+          />
+        </Group>
+      </>
+    );
+  };
+
+  // The entries the rows already name — what has to be loaded when the tab
+  // OPENS, not only when a selection changes. Without this the live picker on
+  // a saved project stayed empty: nothing had changed, so nothing loaded, and
+  // a project on the default entry alone had no other selection to make.
+  const selectedEntryIds = useMemo(() => {
+    const fallback = entryOptions[0]?.value;
+    const ids = new Set<string>();
+    if (fallback) ids.add(fallback);
+    for (const row of Object.values(value)) {
+      if (row.provider_id) ids.add(row.provider_id);
+    }
+    return Array.from(ids).sort().join(',');
+  }, [value, entryOptions]);
+
+  useEffect(() => {
+    for (const id of selectedEntryIds.split(',')) {
+      if (id) void loadModelsFor(id);
+    }
+    // loadModelsFor guards against repeats through requestedRef, so the only
+    // dependency is which entries are selected.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedEntryIds, projectId]);
 
   const setRow = (layer: string, next: LayerModel | null) => {
     const copy = { ...value };
@@ -116,9 +201,6 @@ export function LayerModelsPanel({
     const entryId = effective.provider_id || (entryOptions[0]?.value ?? '');
     const entry = entries.find((e) => e.id === entryId);
     const meta = providers.find((p) => p.id === entry?.provider) || null;
-    const reasoningOn = boolFrom(effective.config, REASONING_KEY, false);
-    // Caching has always been opt-out, so absence means on.
-    const cacheOn = boolFrom(effective.config, PROMPT_CACHE_KEY, true);
 
     const setConfig = (key: string, raw: string | null) => {
       const config = { ...(row?.config || {}) };
@@ -189,35 +271,7 @@ export function LayerModelsPanel({
                   onChange={(val) => setRow(layer.key, { ...effective, model: val })}
                 />
               </Group>
-              <Group grow align="flex-start">
-                <TextInput
-                  label="Max input tokens"
-                  description="Blank uses the model's own window."
-                  value={effective.config?.['max_input_tokens'] || ''}
-                  onChange={(e) => setConfig('max_input_tokens', e.currentTarget.value || null)}
-                />
-                <TextInput
-                  label="Max output tokens"
-                  description="Blank uses the model's own ceiling."
-                  value={effective.config?.['max_output_tokens'] || ''}
-                  onChange={(e) => setConfig('max_output_tokens', e.currentTarget.value || null)}
-                />
-              </Group>
-              <Group gap="lg" wrap="wrap">
-                <Switch
-                  size="xs"
-                  label="Reasoning"
-                  checked={reasoningOn}
-                  onChange={(e) => setConfig(REASONING_KEY, e.currentTarget.checked ? 'true' : 'false')}
-                />
-                <Switch
-                  size="xs"
-                  label="Prompt caching"
-                  description="Turning this off for one layer alone opens a second connection to that provider — caching is applied when the connection is built, not per request."
-                  checked={cacheOn}
-                  onChange={(e) => setConfig(PROMPT_CACHE_KEY, e.currentTarget.checked ? 'true' : 'false')}
-                />
-              </Group>
+              {renderModelSettings(effective, meta, setConfig)}
               <TestConnectionButton
                 projectId={projectId}
                 target="llm"
@@ -229,6 +283,13 @@ export function LayerModelsPanel({
         </Stack>
       </Card>
     );
+  };
+
+  const setDefaultConfig = (key: string, raw: string | null) => {
+    const config = { ...(defaultRow.config || {}) };
+    if (raw === null) delete config[key];
+    else config[key] = raw;
+    onChange({ ...value, [DEFAULT_LAYER]: { ...defaultRow, config } });
   };
 
   const defaultEntry = entries.find((e) => e.id === (defaultRow.provider_id || entryOptions[0]?.value));
@@ -277,32 +338,7 @@ export function LayerModelsPanel({
               onChange={(val) => onChange({ ...value, [DEFAULT_LAYER]: { ...defaultRow, model: val } })}
             />
           </Group>
-          <Group gap="lg" wrap="wrap">
-            <Switch
-              size="xs"
-              label="Reasoning"
-              checked={boolFrom(defaultRow.config, REASONING_KEY, false)}
-              onChange={(e) => onChange({
-                ...value,
-                [DEFAULT_LAYER]: {
-                  ...defaultRow,
-                  config: { ...(defaultRow.config || {}), [REASONING_KEY]: e.currentTarget.checked ? 'true' : 'false' },
-                },
-              })}
-            />
-            <Switch
-              size="xs"
-              label="Prompt caching"
-              checked={boolFrom(defaultRow.config, PROMPT_CACHE_KEY, true)}
-              onChange={(e) => onChange({
-                ...value,
-                [DEFAULT_LAYER]: {
-                  ...defaultRow,
-                  config: { ...(defaultRow.config || {}), [PROMPT_CACHE_KEY]: e.currentTarget.checked ? 'true' : 'false' },
-                },
-              })}
-            />
-          </Group>
+          {renderModelSettings(defaultRow, defaultMeta, setDefaultConfig)}
           <TestConnectionButton projectId={projectId} target="llm" label="Test default model" />
         </Stack>
       </Card>

@@ -13,7 +13,7 @@ import {
 import { TestConnectionButton } from './WarehouseConfigPanel';
 import { LLMProvidersPanel } from './LLMProvidersPanel';
 import { LayerModelsPanel } from './LayerModelsPanel';
-import { useLLMConfig } from './useLLMConfig';
+import { UseLLMConfig, useLLMConfig } from './useLLMConfig';
 
 // autoSingleAuthMethod returns the only auth method when a provider has
 // exactly one, or empty string otherwise. Used to pre-select api_key
@@ -30,6 +30,16 @@ export interface ProvidersPanelProps {
   projectId: string;
   variant: Variant;
   onSaved?: (project: Project) => void;
+  /**
+   * The per-layer LLM configuration lifecycle, when the HOST owns it.
+   *
+   * A host that also renders <LayerModelsPanel> — a wizard whose next step is
+   * the models — must pass its own instance. Two instances of the hook load
+   * independently and neither reloads after the other saves, so the entries
+   * written in this step are invisible to the next one, and that step's save
+   * writes its stale copy back over them.
+   */
+  llmConfig?: UseLLMConfig;
 }
 
 function PanelSection({ children }: { children: React.ReactNode }) {
@@ -64,7 +74,9 @@ function PanelSection({ children }: { children: React.ReactNode }) {
 //                               has its own tabs there)
 //   - the creation wizard and
 //     plugin-overlaid wizards  (variant="wizard" — both halves, in order)
-export default function ProvidersPanel({ projectId, variant, onSaved }: ProvidersPanelProps) {
+export default function ProvidersPanel({
+  projectId, variant, onSaved, llmConfig: injectedLLMConfig,
+}: ProvidersPanelProps) {
   const [project, setProject] = useState<Project | null>(null);
   const [embeddingProviders, setEmbeddingProviders] = useState<EmbeddingProviderMeta[]>([]);
   const [loading, setLoading] = useState(true);
@@ -73,10 +85,14 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
   const [secretsList, setSecretsList] = useState<SecretEntryResponse[]>([]);
   const [embedding, setEmbedding] = useState<EmbeddingState>(emptyEmbeddingState);
 
-  const llmConfig = useLLMConfig(projectId, (saved) => {
+  // Created here only when the host does not own one. The hook treats an
+  // empty projectId as "nothing to load", so the unused instance costs no
+  // request — and calling it unconditionally keeps the hook order stable.
+  const ownLLMConfig = useLLMConfig(injectedLLMConfig ? '' : projectId, (saved) => {
     setProject(saved);
     onSaved?.(saved);
   });
+  const llmConfig = injectedLLMConfig ?? ownLLMConfig;
 
   const loadOnce = useRef(false);
   useEffect(() => {
