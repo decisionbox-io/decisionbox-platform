@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"time"
 
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
@@ -199,14 +200,22 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 	defer warehouseProvider.Close()
 	docWH, _ := project.WarehouseByID(docWHID)
 
-	llmProvider, err := initLLMProvider(ctx, cfg, project, secretProvider, project.ID)
+	// The two validation layers (#407): the verifier and the refuter can run
+	// on different models, which is the pair where the choice matters most —
+	// swapping it changes what users see as verified.
+	layers, err := buildLayerSet(ctx, layerSetInput{
+		project:   project,
+		projectID: project.ID,
+		layers:    validationLayers,
+		gate:      true,
+		deps:      newLayerSetDeps(cfg, secretProvider, project.ID, nil),
+	})
 	if err != nil {
 		return err
 	}
-	aiClient, err := ai.New(llmProvider, project.LLM.Model)
-	if err != nil {
-		return fmt.Errorf("init ai client: %w", err)
-	}
+	verifierLayer := layers.For(llmlayer.LayerValidationVerifier)
+	refuterLayer := layers.For(llmlayer.LayerValidationRefuter)
+	aiClient := verifierLayer.Client
 
 	// Schema provider for the verifier's lookup_schema tool is
 	// deliberately omitted in v1 of the manual-validation path: the
@@ -232,9 +241,11 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 	}
 
 	input := discovery.ValidateSingleDocInput{
-		AIClient: aiClient,
-		Cfg:      vCfg,
-		Caps:     vCaps,
+		AIClient:       aiClient,
+		VerifierClient: verifierLayer.Client,
+		RefuterClient:  refuterLayer.Client,
+		Cfg:            vCfg,
+		Caps:           vCaps,
 		WH: verifier.WarehouseInfo{
 			Dialect:     warehouseProvider.SQLDialect(),
 			Dataset:     warehouseProvider.GetDataset(),
@@ -450,4 +461,3 @@ func indexExplorationSteps(steps []models.ExplorationStep) map[int]*models.Explo
 	}
 	return out
 }
-

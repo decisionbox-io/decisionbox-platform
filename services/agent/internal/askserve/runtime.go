@@ -30,6 +30,16 @@ type ProjectRuntime struct {
 	AIClient *ai.Client
 	// Model is the project's configured model id (for the transcript record).
 	Model string
+	// RouterClient drives the datasource router — its own layer
+	// (llmlayer.LayerAskRouter), because picking a datasource is a small,
+	// mechanical decision a cheap model makes well. Nil ⇒ the router uses
+	// AIClient, which is today's behaviour.
+	RouterClient *ai.Client
+	// OutputCap bounds one assistant message, from the `ask` layer's resolved
+	// budget. 0 ⇒ the package default. It replaced a hardcoded 4096, which
+	// silently truncated a model whose real cap was lower and wasted headroom
+	// on one whose cap was higher.
+	OutputCap int
 	// InsightsProvider serves search_insights (semantic search over the
 	// project's discovered insights). Project-level and datasource-agnostic.
 	// May be nil when the project has no embedder / vector store.
@@ -99,6 +109,8 @@ type connEntry struct {
 type ProjectRuntimeOptions struct {
 	AIClient          *ai.Client
 	Model             string
+	RouterClient      *ai.Client
+	OutputCap         int
 	InsightsProvider  ai.InsightsProvider
 	KnowledgeProvider KnowledgeProvider
 	MutationTools     []MutationTool
@@ -121,6 +133,8 @@ func NewProjectRuntime(opts ProjectRuntimeOptions) *ProjectRuntime {
 	return &ProjectRuntime{
 		AIClient:          opts.AIClient,
 		Model:             opts.Model,
+		RouterClient:      opts.RouterClient,
+		OutputCap:         opts.OutputCap,
 		InsightsProvider:  opts.InsightsProvider,
 		KnowledgeProvider: opts.KnowledgeProvider,
 		MutationTools:     opts.MutationTools,
@@ -129,9 +143,9 @@ func NewProjectRuntime(opts ProjectRuntimeOptions) *ProjectRuntime {
 		PrimaryID:         opts.PrimaryID,
 		BusinessSummary:   opts.BusinessSummary,
 		build:             opts.Build,
-		maxWarm:          maxWarm,
-		warm:             make(map[string]*connEntry),
-		sharedClosers:    opts.SharedClosers,
+		maxWarm:           maxWarm,
+		warm:              make(map[string]*connEntry),
+		sharedClosers:     opts.SharedClosers,
 	}
 }
 
@@ -322,4 +336,26 @@ func closeConn(conn *WarehouseConn) {
 			_ = c()
 		}
 	}
+}
+
+// router returns the client the datasource router's call goes through: the
+// ask_router layer's own client when the project configured one, else the
+// answer client.
+func (r *ProjectRuntime) router() *ai.Client {
+	if r != nil && r.RouterClient != nil {
+		return r.RouterClient
+	}
+	if r == nil {
+		return nil
+	}
+	return r.AIClient
+}
+
+// stepOutputCap bounds one assistant message: the `ask` layer's resolved
+// output cap, or the package default when the runtime was built without one.
+func (r *ProjectRuntime) stepOutputCap() int {
+	if r != nil && r.OutputCap > 0 {
+		return r.OutputCap
+	}
+	return defaultStepOutputTokens
 }

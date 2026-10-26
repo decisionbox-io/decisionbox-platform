@@ -3,6 +3,8 @@ package discovery
 import (
 	"context"
 	"testing"
+
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 )
 
 // fakeWindowStore records SaveWindow calls for the self-calibration test.
@@ -12,16 +14,17 @@ type fakeWindowStore struct {
 }
 
 type savedWindow struct {
-	provider string
-	model    string
-	window   int
+	providerID string
+	provider   string
+	model      string
+	window     int
 }
 
-func (f *fakeWindowStore) SaveWindow(_ context.Context, provider, model string, window int) error {
+func (f *fakeWindowStore) SaveWindow(_ context.Context, providerID, provider, model string, window int) error {
 	if f.saveErr != nil {
 		return f.saveErr
 	}
-	f.saved = append(f.saved, savedWindow{provider, model, window})
+	f.saved = append(f.saved, savedWindow{providerID, provider, model, window})
 	return nil
 }
 
@@ -53,8 +56,8 @@ func TestApplyCalibratedWindow_PersistsOnceOnChange(t *testing.T) {
 	if len(store.saved) != 1 {
 		t.Fatalf("expected exactly one persist on change, got %d", len(store.saved))
 	}
-	if store.saved[0] != (savedWindow{"bedrock", "GLM-5", 202752}) {
-		t.Fatalf("persisted %+v, want bedrock/GLM-5/202752", store.saved[0])
+	if store.saved[0] != (savedWindow{llmlayer.DefaultProviderID, "bedrock", "GLM-5", 202752}) {
+		t.Fatalf("persisted %+v, want default/bedrock/GLM-5/202752", store.saved[0])
 	}
 
 	// A new value persists again.

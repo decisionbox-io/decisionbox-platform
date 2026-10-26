@@ -8,6 +8,7 @@ import (
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 )
 
@@ -186,7 +187,7 @@ func (r *runner) decideRoute(ctx context.Context, st *turnState, evidence string
 		fmt.Fprintf(&b, "\nRELEVANT TABLES (semantic search across datasources):\n%s\n", evidence)
 	}
 
-	resp, err := st.client.CreateMessage(ctx, []gollm.Message{{Role: "user", Content: b.String()}}, system, routeMaxOutputTokens)
+	resp, err := st.routerClientOrAnswer().CreateMessage(ctx, []gollm.Message{{Role: "user", Content: b.String()}}, system, routeMaxOutputTokens)
 	if err != nil {
 		return routeDecision{}, err
 	}
@@ -288,4 +289,14 @@ func containsStr(xs []string, x string) bool {
 		}
 	}
 	return false
+}
+
+// routerClientOrAnswer is the client the routing call goes through: the
+// ask_router layer's own, or the answer client for a turn whose runtime did
+// not resolve one.
+func (st *turnState) routerClientOrAnswer() *ai.Client {
+	if st.routerClient != nil {
+		return st.routerClient
+	}
+	return st.client
 }

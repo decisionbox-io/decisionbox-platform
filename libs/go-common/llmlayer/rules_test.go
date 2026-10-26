@@ -81,11 +81,45 @@ func TestDescriptorRuleFlagAgreesWithCheckLayerModel(t *testing.T) {
 	}
 }
 
-func TestIsReasoningClassModelIsCaseInsensitive(t *testing.T) {
-	if !IsReasoningClassModel("GPT-5-Mini") {
-		t.Error("matching must be case-insensitive — provider catalogs differ in casing")
+// The substring-pattern half of the rule, moved here with the list it reads.
+// The catalog-flag half needs registered provider metadata and is exercised in
+// the agent's blurb package, where the providers are imported.
+func TestIsReasoningClassModelMatches(t *testing.T) {
+	reasoning := []string{
+		"deepseek.deepseek-r1-v1:0",
+		"r1-distill-llama",
+		"o1-preview",
+		"o3-mini-high",
+		"o4-mini",
+		"some-model-extended-thinking",
+		"DeepSeek-R1", // case-insensitive
+		// GPT-5 family — reasoning by default, so a small description budget
+		// returns empty content.
+		"gpt-5",
+		"gpt-5-mini",
+		"gpt-5-nano",
+		"gpt-5-2025-08-07",
+		"GPT-5",
 	}
-	if IsReasoningClassModel("claude-haiku-4-5") {
-		t.Error("claude-haiku-4-5 is not reasoning-class")
+	for _, m := range reasoning {
+		if !IsReasoningClassModel(m) {
+			t.Errorf("%q should be reasoning-class", m)
+		}
+	}
+}
+
+func TestIsReasoningClassModelNoFalsePositives(t *testing.T) {
+	normal := []string{
+		"gpt-4o",
+		"gpt-4.1-nano",
+		"claude-haiku-4-5",
+		"claude-sonnet-4-6",
+		"qwen.qwen3-32b-v1:0",
+		"ollama3-70b",
+	}
+	for _, m := range normal {
+		if IsReasoningClassModel(m) {
+			t.Errorf("%q should NOT be reasoning-class", m)
+		}
 	}
 }

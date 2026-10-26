@@ -80,7 +80,7 @@ const (
 	// already been tried.
 	ledgerDedupSearchTimeout = 15 * time.Second
 	// ledgerDedupSearchBudget is the ceiling on all of them together.
-	ledgerDedupSearchBudget = 45 * time.Second
+	ledgerDedupSearchBudget              = 45 * time.Second
 	defaultDiscoveryReflectionMaxOutput  = 3000
 	defaultDiscoveryReflectionParseRetry = 1
 	defaultDiscoveryLedgerMaxFindings    = 500

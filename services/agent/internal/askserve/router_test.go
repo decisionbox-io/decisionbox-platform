@@ -132,7 +132,7 @@ func TestRouter_ProjectLevelToolsBypassClarifyDeadEnd(t *testing.T) {
 	whB := testutil.NewMockWarehouseProvider("crm")
 	rt := twoDatasourceRuntime(&scriptedProvider{responses: []string{
 		`{"datasources":[],"project_level":true,"reason":"knowledge question","confidence":0.9}`, // router flags a non-data question
-		`{"search_knowledge":"refund policy"}`,       // loop: KB search grounds
+		`{"search_knowledge":"refund policy"}`,                                                   // loop: KB search grounds
 		`{"answer":"Refunds are allowed within 30 days."}`,
 	}}, whA, whB, nil, nil)
 	rt.KnowledgeProvider = &fakeKnowledge{chunks: []KnowledgeChunk{
@@ -218,7 +218,9 @@ func TestRouter_MutationBypassRequiresNativeTools(t *testing.T) {
 	}}, whA, whB, nil, nil)
 	rt.MutationTools = []MutationTool{{
 		Name: "save_note", Description: "Save.", InputSchema: map[string]any{"type": "object"},
-		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) { return MutationOutput{ProposalID: "p"}, nil },
+		Run: func(ctx context.Context, in MutationInput) (MutationOutput, error) {
+			return MutationOutput{ProposalID: "p"}, nil
+		},
 	}} // no KnowledgeProvider
 
 	store := &fakeStore{}

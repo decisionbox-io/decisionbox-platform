@@ -70,9 +70,9 @@ type DocDigest struct {
 // the verifier can build claims against the same fields. Maps 1:1
 // to models.Recommendation.ExpectedImpact.
 type ExpectedImpactDigest struct {
-	Metric                string `json:"metric,omitempty"`
-	EstimatedImprovement  string `json:"estimated_improvement,omitempty"`
-	Reasoning             string `json:"reasoning,omitempty"`
+	Metric               string `json:"metric,omitempty"`
+	EstimatedImprovement string `json:"estimated_improvement,omitempty"`
+	Reasoning            string `json:"reasoning,omitempty"`
 }
 
 // SourceStepDigest is one exploration step boiled down to schema +

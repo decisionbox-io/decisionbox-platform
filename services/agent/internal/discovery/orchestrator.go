@@ -15,6 +15,7 @@ import (
 	goconfig "github.com/decisionbox-io/decisionbox/libs/go-common/config"
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 	_ "github.com/decisionbox-io/decisionbox/libs/go-common/sources" // registers knowledge-sources context provider via init()
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
@@ -206,11 +207,22 @@ type Orchestrator struct {
 	llmInputWindow int
 	llmOutputCap   int
 
-	// calibMu guards calibratedWindow, the model's true context window learned
-	// from a context-overflow 400 during this run. When set it wins over the
-	// resolved window so the remaining areas budget against ground truth.
-	calibMu          sync.Mutex
-	calibratedWindow int
+	// layers resolves each LLM layer to its own provider, model, client and
+	// budget. Nil means "one model for everything" — every layer then uses
+	// aiClient and the run-start budget, which is what the unit tests and an
+	// older caller get.
+	layers ai.LayerSet
+
+	// calibMu guards calibratedWindows: each TARGET's true context window
+	// learned from a context-overflow 400 during this run. When set it wins
+	// over the resolved window so the remaining areas budget against ground
+	// truth.
+	//
+	// Keyed per target, not per run: a window learned from the analysis model
+	// must not be applied to the cheap model a small layer uses. That was a
+	// latent bug before per-layer models — with one model it could not show.
+	calibMu           sync.Mutex
+	calibratedWindows map[string]int
 
 	// reasoningEnabled is the resolved model-agnostic per-project "Enable
 	// reasoning" toggle for this run (from DiscoveryOptions.ReasoningEnabled).
@@ -363,6 +375,12 @@ type OrchestratorOptions struct {
 	// on demand.
 	LLMInputWindow int
 	LLMOutputCap   int
+	// LayerClients resolves each LLM layer to its own provider, model, client
+	// and budget (per-layer models, #407). Nil ⇒ every layer uses AIClient
+	// and the LLMInputWindow / LLMOutputCap below, which is exactly today's
+	// single-model behaviour.
+	LayerClients ai.LayerSet
+
 	// ModelWindowRepo persists a context window learned from an overflow 400.
 	// Optional — nil skips cross-run persistence.
 	ModelWindowRepo   modelWindowPersister
@@ -423,13 +441,44 @@ type OrchestratorOptions struct {
 	RunStepIndex RunStepIndex
 }
 
-// setLLMPhase tags every following LLM call with the discovery phase, so the
-// usage log, the policy usage event and the debug log attribute tokens (and
-// cost) to the phase that spent them. No-op without an aiClient.
+// setLLMPhase tags the following LLM calls on the shared client with the
+// discovery phase, so the usage log, the policy usage event and the debug log
+// attribute tokens (and cost) to the phase that spent them. No-op without an
+// aiClient.
+//
+// Each layer's own client is tagged at construction instead, so these calls
+// only matter on the single-client path — but they are kept unconditional:
+// aiClient is the default layer's client there too, and it is what every call
+// site that names no layer uses.
 func (o *Orchestrator) setLLMPhase(phase string) {
 	if o.aiClient != nil {
 		o.aiClient.SetPhase(phase)
 	}
+}
+
+// layer returns a layer's resolved LLM, or nil when this run has no per-layer
+// set (one model for everything).
+func (o *Orchestrator) layer(name string) *ai.LayerLLM {
+	if o.layers == nil {
+		return nil
+	}
+	return o.layers.For(name)
+}
+
+// ai returns the ai.Client a layer's calls go through.
+//
+// Each layer's client is already tagged with its phase, carries its own
+// reasoning setting and reports its own model, so there is no phase to set
+// here — which is why the old setLLMPhase, and in particular the flip-flopping
+// pairs around the validation phases, are gone.
+//
+// Falls back to the single client when this run has no per-layer set, so an
+// Orchestrator constructed without one behaves exactly as before.
+func (o *Orchestrator) ai(name string) *ai.Client {
+	if l := o.layer(name); l != nil && l.Client != nil {
+		return l.Client
+	}
+	return o.aiClient
 }
 
 // NewOrchestrator creates a new discovery orchestrator.
@@ -445,8 +494,24 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		})
 	}
 
-	if opts.AIClient != nil && debugLogger != nil {
-		opts.AIClient.SetDebugLogger(debugLogger)
+	// The debug logger is created here, so it has to reach EVERY layer's
+	// client — attaching it to one would silently switch debug logging off
+	// for sixteen layers of a mixed pipeline.
+	if debugLogger != nil {
+		if opts.AIClient != nil {
+			opts.AIClient.SetDebugLogger(debugLogger)
+		}
+		if opts.LayerClients != nil {
+			seen := map[*ai.Client]bool{opts.AIClient: true}
+			for _, name := range append([]string{llmlayer.DefaultLayer}, llmlayer.Keys()...) {
+				l := opts.LayerClients.For(name)
+				if l == nil || l.Client == nil || seen[l.Client] {
+					continue
+				}
+				seen[l.Client] = true
+				l.Client.SetDebugLogger(debugLogger)
+			}
+		}
 	}
 
 	// Verifier agent is constructed inside RunDiscovery once the
@@ -532,6 +597,8 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		llmProvider:           opts.LLMProvider,
 		llmModel:              opts.LLMModel,
 		llmConfig:             opts.LLMConfig,
+		layers:                opts.LayerClients,
+		calibratedWindows:     map[string]int{},
 		llmInputWindow:        opts.LLMInputWindow,
 		llmOutputCap:          opts.LLMOutputCap,
 		modelWindowRepo:       opts.ModelWindowRepo,
@@ -703,7 +770,27 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// legacy Status field.
 	if o.aiClient != nil && opts.ValidationEnabled {
 		o.validationCfg, o.validationCaps = verifier.LoadConfigFromEnv()
-		va, vErr := verifier.NewAgent(o.aiClient, o.validationCfg)
+		// The verifier and the refuter are separate layers, so a project can
+		// run the two halves on different models. The mode-keyed client set is
+		// built only when this run has one; otherwise both modes share the one
+		// client, exactly as before.
+		//
+		// The refuter's client is only resolved when the refuter will actually
+		// run — a refuter-disabled run must not build a provider it never
+		// calls.
+		var va *verifier.Agent
+		var vErr error
+		if o.layers != nil {
+			byMode := map[valmodels.AgentMode]verifier.LLMClient{
+				valmodels.ModeVerifier: o.ai(llmlayer.LayerValidationVerifier),
+			}
+			if o.validationCfg.RefuterEnabled {
+				byMode[valmodels.ModeRefuter] = o.ai(llmlayer.LayerValidationRefuter)
+			}
+			va, vErr = verifier.NewAgentPerMode(byMode, o.ai(llmlayer.LayerValidationVerifier), o.validationCfg)
+		} else {
+			va, vErr = verifier.NewAgent(o.aiClient, o.validationCfg)
+		}
 		if vErr != nil {
 			return nil, fmt.Errorf("init validation agent: %w", vErr)
 		}
@@ -954,7 +1041,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// override → live auto-detect → catalog → default). Only consulted on the
 	// reasoning-effective path — a non-reasoning model keeps today's fixed
 	// exploration ceiling regardless of these values.
-	exploreWindow, exploreOutputCap := o.resolveModelBudget()
+	exploreWindow, exploreOutputCap := o.budgetFor(llmlayer.LayerExploration)
 
 	// Which stopping rule this run's exploration uses. Logged because the
 	// two rules end a run for different reasons, and a run that stopped
@@ -973,7 +1060,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	soleSlug := soleDatasourceSlug(dsExecutors, o.warehouses, normDatasourceID(o.warehouseID), o.warehouseProviderSlug)
 
 	o.explorationEngine = ai.NewExplorationEngine(ai.ExplorationEngineOptions{
-		Client:            o.aiClient,
+		Client:            o.ai(llmlayer.LayerExploration),
 		Executor:          executor,
 		Executors:         dsExecutors,
 		PrimaryDatasource: normDatasourceID(o.warehouseID),
@@ -993,7 +1080,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// R3: reasoning-aware, window-budgeted per-step output ceiling.
 		Window:             exploreWindow,
 		OutputCap:          exploreOutputCap,
-		ReasoningEffective: o.effectiveReasoning(),
+		ReasoningEffective: o.effectiveReasoningFor(llmlayer.LayerExploration),
 		// Stream every exploration step to the StatusReporter so the live
 		// dashboard can track exploration progress, executed queries,
 		// token usage, query fixes, and failures in real time.
@@ -1848,7 +1935,7 @@ func (o *Orchestrator) analyzeAreaInsights(ctx context.Context, areaID, prompt s
 			err        error
 		)
 		if attempt == 0 {
-			chatResult, err = o.aiClient.Chat(ctx, prompt, "", maxTokens)
+			chatResult, err = o.ai(llmlayer.LayerAnalysis).Chat(ctx, prompt, "", maxTokens)
 		} else {
 			out.parseRetries = attempt
 			attemptPrompt := prompt + analysisRepairSuffix(lastParseErr)
@@ -1857,7 +1944,7 @@ func (o *Orchestrator) analyzeAreaInsights(ctx context.Context, areaID, prompt s
 				"attempt": attempt,
 				"reason":  errString(lastParseErr),
 			}).Warn("Re-prompting for insights after unparseable response")
-			chatResult, err = o.aiClient.ChatWithFormat(ctx, attemptPrompt, "", maxTokens, insightFormat)
+			chatResult, err = o.ai(llmlayer.LayerAnalysis).ChatWithFormat(ctx, attemptPrompt, "", maxTokens, insightFormat)
 		}
 		if err != nil {
 			out.chatErr = err
@@ -1951,7 +2038,7 @@ func (o *Orchestrator) generateRecommendations(
 	// providers without it (vertex-ai, azure-foundry) — the tolerant parser
 	// below is the always-on net.
 	format := recommendationResponseFormat()
-	if o.aiClient.SupportsStructuredOutput() {
+	if o.ai(llmlayer.LayerRecommendations).SupportsStructuredOutput() {
 		applog.Info("Recommendation generation using schema-constrained output")
 	}
 
@@ -1980,7 +2067,7 @@ func (o *Orchestrator) generateRecommendations(
 			}).Warn("Re-prompting for recommendations after unparseable response")
 		}
 
-		chatResult, err := o.aiClient.ChatWithFormat(ctx, attemptPrompt, "", maxTokens, format)
+		chatResult, err := o.ai(llmlayer.LayerRecommendations).ChatWithFormat(ctx, attemptPrompt, "", maxTokens, format)
 		if err != nil {
 			step.Error = err.Error()
 			applog.WithError(err).Warn("Failed to generate recommendations")
@@ -2037,7 +2124,7 @@ func (o *Orchestrator) generateRecommendations(
 			step.RecommendationCitationRetries = cAttempt
 			applog.WithFields(applog.Fields{"attempt": cAttempt}).Warn(
 				"Re-prompting for recommendations: response cited no eligible insight id")
-			chatResult, err := o.aiClient.ChatWithFormat(ctx, prompt+recommendationCitationRepairSuffix(insights), "", maxTokens, format)
+			chatResult, err := o.ai(llmlayer.LayerRecommendations).ChatWithFormat(ctx, prompt+recommendationCitationRepairSuffix(insights), "", maxTokens, format)
 			if err != nil {
 				break // keep the uncited batch; backfill grounds it downstream
 			}

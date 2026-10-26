@@ -19,8 +19,8 @@ import (
 // (o1*, o3*, o4*). The reasoning families have wire-level quirks
 // (max_completion_tokens, no temperature, hidden thinking tokens) but
 // those are dispatch-layer concerns, not wire-format ones. They still
-// belong on the LLM picker — blurb generation is the only path that
-// rejects them, via blurb.IsReasoningClassModel.
+// belong on the LLM picker — table descriptions are the only layer that
+// rejects them, via llmlayer.CheckLayerModel.
 //
 // Non-LLM endpoints under the same API key (embeddings, TTS, Whisper,
 // DALL-E, gpt-image-*) also come back from /v1/models. We classify

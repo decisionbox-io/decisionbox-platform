@@ -351,7 +351,22 @@ func (c *Client) ModelName() string { return c.model }
 // MaxOutputTokens against the central registry — read it through here.
 func (c *Client) ProviderName() string { return c.providerName }
 
-func (c *Client) SetTestMode(enabled bool)        { c.testMode = enabled }
+func (c *Client) SetTestMode(enabled bool) { c.testMode = enabled }
+
+// TestMode and Phase expose what was set on this client.
+//
+// They exist because a run now holds one client PER LAYER, and the thing that
+// has to be verifiable is that every one of them received the run-wide
+// settings — test mode, the debug logger, the phase tag. A feature that
+// reached only the default layer's client would be off for sixteen others and
+// show up as missing attribution, not as an error.
+func (c *Client) TestMode() bool { return c.testMode }
+
+// Phase returns the discovery phase this client's calls are attributed to.
+func (c *Client) Phase() string { return c.currentPhase }
+
+// DebugLoggerAttached reports whether a debug logger reached this client.
+func (c *Client) DebugLoggerAttached() bool       { return c.debugLogger != nil }
 func (c *Client) SetDebugLogger(dl *debug.Logger) { c.debugLogger = dl }
 
 // SetReasoning enables or disables native reasoning (hidden chain-of-thought)
@@ -379,8 +394,8 @@ func (c *Client) maybeLearnWindow(model string, err error) {
 		c.contextWindowObserver(model, learned)
 	}
 }
-func (c *Client) SetStep(step int)                { c.currentStep = step }
-func (c *Client) SetPhase(phase string)           { c.currentPhase = phase }
+func (c *Client) SetStep(step int)      { c.currentStep = step }
+func (c *Client) SetPhase(phase string) { c.currentPhase = phase }
 
 func (c *Client) savePrompt(messages []gollm.Message, systemPrompt string) {
 	seq := c.promptCount.Add(1)

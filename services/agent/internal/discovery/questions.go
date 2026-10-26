@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"strings"
 	"time"
 
@@ -194,7 +195,7 @@ func (o *Orchestrator) generateQuestions(ctx context.Context, items []uncertaint
 	maxTokens := budgetedMaxOutputTokens(window, approxTokens(ctx, prompt), outputCap, analysisMinOutputTokens())
 
 	format := questionsResponseFormat()
-	if o.aiClient.SupportsStructuredOutput() {
+	if o.ai(llmlayer.LayerQuestions).SupportsStructuredOutput() {
 		applog.Info("Clarifying-question generation using schema-constrained output")
 	}
 
@@ -211,7 +212,7 @@ func (o *Orchestrator) generateQuestions(ctx context.Context, items []uncertaint
 			attemptPrompt = prompt + questionsRepairSuffix(lastErr)
 			applog.WithField("attempt", attempt).Warn("Re-prompting for clarifying questions after an unusable response")
 		}
-		chatResult, err := o.aiClient.ChatWithFormat(ctx, attemptPrompt, "", maxTokens, format)
+		chatResult, err := o.ai(llmlayer.LayerQuestions).ChatWithFormat(ctx, attemptPrompt, "", maxTokens, format)
 		if err != nil {
 			return nil, fmt.Errorf("questions llm call: %w", err)
 		}

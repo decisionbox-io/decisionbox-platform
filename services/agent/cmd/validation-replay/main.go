@@ -34,9 +34,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"os"
-	"strconv"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -137,25 +136,37 @@ func run() error {
 	// The project's LLM key, resolved as the agent resolves it: the
 	// llm-credentials secret, else LLM_API_KEY. Bedrock / Vertex projects
 	// authenticate by role and need neither.
-	credential, credSource, credErr := gosecrets.ResolveCredential(ctx, openSecretProvider(db), fl.projectID, "llm-credentials", "LLM_API_KEY")
-	if credErr != nil {
-		fmt.Fprintf(os.Stderr, "warning: reading llm-credentials: %v\n", credErr)
-	}
-	if credSource == "" {
-		credSource = "none"
-	}
-	fmt.Fprintf(os.Stderr, "llm credential source: %s\n", credSource)
+	// Resolve the two validation layers through llmlayer, so the replay runs
+	// the models the RUN would have used — including a project that points
+	// the verifier and the refuter at different entries.
+	secretProvider := openSecretProvider(db)
+	layerCfg := project.llmLayerConfig()
 
-	llmProvider, err := initLLM(project, fl, credential)
+	verifierSpec, err := layerCfg.SpecUnchecked(llmlayer.LayerValidationVerifier)
 	if err != nil {
-		return fmt.Errorf("init LLM: %w", err)
+		return fmt.Errorf("resolve the verifier layer: %w", err)
 	}
-	calls := &countingProvider{Provider: llmProvider}
-	llmClient, err := ai.New(calls, project.LLM.Model)
+	refuterSpec, err := layerCfg.SpecUnchecked(llmlayer.LayerValidationRefuter)
 	if err != nil {
-		return fmt.Errorf("init ai.Client: %w", err)
+		return fmt.Errorf("resolve the refuter layer: %w", err)
 	}
-	llmClient.SetProvenance(fl.projectID, fl.discoveryID, project.LLM.Provider)
+
+	verifierClient, calls, err := replayClient(ctx, secretProvider, fl, verifierSpec)
+	if err != nil {
+		return fmt.Errorf("init verifier LLM: %w", err)
+	}
+	// The refuter shares the verifier's client when both layers resolve to
+	// the same target, so an unmixed project still opens one connection.
+	refuterClient := verifierClient
+	callCounters := []*countingProvider{calls}
+	if refuterSpec.Target() != verifierSpec.Target() {
+		rc, refuterCalls, rerr := replayClient(ctx, secretProvider, fl, refuterSpec)
+		if rerr != nil {
+			return fmt.Errorf("init refuter LLM: %w", rerr)
+		}
+		refuterClient = rc
+		callCounters = append(callCounters, refuterCalls)
+	}
 
 	whProvider, err := initWarehouse(project, fl)
 	if err != nil {
@@ -164,7 +175,11 @@ func run() error {
 	defer whProvider.Close()
 
 	cfg, runCaps := verifier.LoadConfigFromEnv()
-	agent, err := verifier.NewAgent(llmClient, cfg)
+	byMode := map[valmodels.AgentMode]verifier.LLMClient{valmodels.ModeVerifier: verifierClient}
+	if cfg.RefuterEnabled {
+		byMode[valmodels.ModeRefuter] = refuterClient
+	}
+	agent, err := verifier.NewAgentPerMode(byMode, verifierClient, cfg)
 	if err != nil {
 		return fmt.Errorf("build agent: %w", err)
 	}
@@ -278,8 +293,8 @@ func run() error {
 		_, _ = os.Stdout.Write(out)
 		_, _ = os.Stdout.WriteString("\n")
 	}
-	if calls.everyCallFailed() {
-		return errors.New("every LLM call failed, so the verdicts above are not verdicts; check the project's llm-credentials secret or LLM_API_KEY")
+	if everyCallFailedAcross(callCounters) {
+		return errors.New("every LLM call failed, so the verdicts above are not verdicts; check the project's LLM provider credentials (its secret, or the environment fallback for the default entry)")
 	}
 	return nil
 }
@@ -326,6 +341,19 @@ func (p *countingProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*go
 // everyCallFailed reports whether calls were made and none succeeded.
 func (p *countingProvider) everyCallFailed() bool {
 	return p.ok.Load() == 0 && p.failed.Load() > 0
+}
+
+// everyCallFailedAcross reports whether calls were made across every counter
+// and none succeeded. With the verifier and the refuter on different models
+// there are two counters, and "no verdict is a verdict" only holds when
+// NEITHER model ever answered.
+func everyCallFailedAcross(counters []*countingProvider) bool {
+	var ok, failed int64
+	for _, c := range counters {
+		ok += c.ok.Load()
+		failed += c.failed.Load()
+	}
+	return ok == 0 && failed > 0
 }
 
 type target struct {
@@ -407,58 +435,59 @@ func parseFlags() cliFlags {
 	return fl
 }
 
-func initLLM(project *ProjectDoc, fl cliFlags, credential string) (gollm.Provider, error) {
-	if project.LLM.Provider == "" {
-		return nil, errors.New("project has no LLM provider configured")
+// replayClient builds one layer's provider + client for the replay, counting
+// its calls.
+//
+// It goes through llmlayer.BuildProvider rather than assembling a config
+// here, which is what keeps the replay honest: the credential chain, the merge
+// order and the prompt-cache resolution are the production ones, so a replay
+// cannot resolve a model or a setting differently from the run it is
+// reproducing. The duplicated prompt-cache rule this file used to carry is
+// gone with it.
+func replayClient(ctx context.Context, secretProvider gosecrets.Provider, fl cliFlags, spec llmlayer.LayerSpec) (*ai.Client, *countingProvider, error) {
+	if spec.Provider == "" {
+		return nil, nil, errors.New("project has no LLM provider configured")
 	}
-	return gollm.NewProvider(project.LLM.Provider, llmProviderConfig(project, fl, credential))
-}
-
-// llmProviderConfig builds the provider config the agent would: the
-// project's resolved API key (when there is one) as credentials_json, then
-// the project's saved LLM settings on top.
-// replayPromptCacheEnabled mirrors models.Project.EffectivePromptCacheEnabled.
-// This tool has its own minimal project document, so the rule is duplicated
-// rather than imported; TestReplayPromptCacheMatchesAgentModel pins them
-// together.
-func replayPromptCacheEnabled(project *ProjectDoc) bool {
-	if project == nil {
-		return true
-	}
-	if project.PromptCacheEnabled != nil {
-		return *project.PromptCacheEnabled
-	}
-	return !strings.EqualFold(strings.TrimSpace(project.LLM.Config[gollm.PromptCacheKey]), "false")
-}
-
-func llmProviderConfig(project *ProjectDoc, fl cliFlags, credential string) gollm.ProviderConfig {
-	cfg := gollm.ProviderConfig{
-		"model":           project.LLM.Model,
-		"max_retries":     "3",
-		"timeout_seconds": "120",
-	}
-	if credential != "" {
-		cfg["credentials_json"] = credential
-	}
-	for k, v := range project.LLM.Config {
+	// The replay's auth override, and the cloud defaults the CLI applies when
+	// a project document carries none.
+	cfg := make(map[string]string, len(spec.Config)+1)
+	for k, v := range spec.Config {
 		cfg[k] = v
 	}
-	// Resolve prompt caching exactly as the agent does — the project field
-	// when set, else the legacy config value, else on — and write it where
-	// the providers read it. Set after the merge so the field wins.
-	cfg[gollm.PromptCacheKey] = strconv.FormatBool(replayPromptCacheEnabled(project))
 	if fl.lAuthOverride != "" {
 		cfg["auth_method"] = fl.lAuthOverride
 	}
 	if cfg["auth_method"] == "" {
-		switch project.LLM.Provider {
+		switch spec.Provider {
 		case "bedrock":
 			cfg["auth_method"] = "iam_role"
 		case "vertex-ai":
 			cfg["auth_method"] = "adc"
 		}
 	}
-	return cfg
+	spec.Config = cfg
+
+	cred, credErr := llmlayer.ResolveCredential(ctx, secretProvider, fl.projectID, spec, llmlayer.BuildOptions{})
+	if credErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: reading the %s layer's credential: %v\n", spec.Layer, credErr)
+	}
+	fmt.Fprintf(os.Stderr, "layer %s: provider_id=%s provider=%s model=%s credential source: %s\n",
+		spec.Layer, spec.ProviderID, spec.Provider, spec.Model, cred.Source)
+
+	provider, err := gollm.NewProvider(spec.Provider, llmlayer.ProviderConfig(spec, cred, llmlayer.BuildOptions{
+		MaxRetries:     3,
+		TimeoutSeconds: 120,
+	}))
+	if err != nil {
+		return nil, nil, err
+	}
+	calls := &countingProvider{Provider: provider}
+	client, err := ai.New(calls, spec.Model)
+	if err != nil {
+		return nil, nil, fmt.Errorf("init ai.Client: %w", err)
+	}
+	client.SetProvenance(fl.projectID, fl.discoveryID, spec.Provider)
+	return client, calls, nil
 }
 
 func initWarehouse(project *ProjectDoc, fl cliFlags) (gowarehouse.Provider, error) {
