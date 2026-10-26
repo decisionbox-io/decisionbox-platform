@@ -78,11 +78,19 @@ func (s LayerSpec) Validate() error {
 	return CheckLayerModel(s.Layer, s.Provider, s.Model)
 }
 
-// Target identifies the (provider entry, model) pair this spec resolves to.
-// Two layers with the same Target share a model window, a budget resolution
-// and a live model-info probe.
+// Target identifies the deployment this spec resolves to: the provider entry,
+// the model, AND the merged configuration. Two layers with the same Target
+// share a connection, a model window, a budget resolution and a live
+// model-info probe.
+//
+// The configuration is part of the identity, not decoration. Two layers can
+// name the same entry and model while differing in endpoint_id,
+// wire_override, a token cap or prompt caching — and prompt caching in
+// particular is applied when the connection is BUILT, so collapsing those
+// would replay one layer's calls against another layer's endpoint and
+// settings. It is the same key agentserver builds a provider under.
 func (s LayerSpec) Target() string {
-	return s.ProviderID + "/" + s.Provider + "/" + s.Model
+	return s.ProviderID + "/" + s.Provider + "/" + s.Model + "/" + ConfigKey(gollm.ProviderConfig(s.Config))
 }
 
 // BuildOptions carries the deployment-level provider defaults and the

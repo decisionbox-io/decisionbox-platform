@@ -79,6 +79,8 @@ func TestInteg_ProjectUpdate_ClearsProviderEntriesAndLayerOverrides(t *testing.T
 	// support operation does to re-run the migration.
 	p.LLMProviders = nil
 	p.LayerModels = nil
+	// What stampLLMConfigVersion does for a configuration cleared to nothing.
+	p.LLMConfigVersion = 0
 	if err := repo.Update(ctx, p.ID, p); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
@@ -92,6 +94,16 @@ func TestInteg_ProjectUpdate_ClearsProviderEntriesAndLayerOverrides(t *testing.T
 	}
 	if len(got.LayerModels) != 0 {
 		t.Errorf("layer_models = %+v after a clear", got.LayerModels)
+	}
+	// The stamp has to go with the rows: a project with no rows but a
+	// surviving version reads back as configured, so the review it was just
+	// reset for would be skipped and every layer would fall through to the
+	// legacy fields instead.
+	if got.LLMConfigVersion != 0 {
+		t.Errorf("llm_config_version = %d after a clear, want 0 — the project is unconfigured again", got.LLMConfigVersion)
+	}
+	if got.LLMConfigured() {
+		t.Error("a project with no provider entries and no layer rows reports itself configured")
 	}
 }
 

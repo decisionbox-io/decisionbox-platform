@@ -465,7 +465,21 @@ Each provider entry has its own credential, stored in the secret store and never
 | `blurb` | `blurb-llm-credentials` → `BLURB_LLM_API_KEY` → `llm-credentials` → `LLM_API_KEY` |
 | anything else | `llm-credentials-<hex of the id>` |
 
-The reserved `default` entry keeps the key a single-provider project already uses, so configuring layers moves no secret. A non-reserved entry has **no shared environment fallback**: it reads only its own key, plus an `env_var` an operator names in the entry's config. The reason is concrete — an OpenAI-compatible entry sends whatever credential it is given as a bearer token to its own `base_url`, so a transient secret-store failure must not be able to send the default entry's key to a third party.
+The reserved `default` entry keeps the key a single-provider project already uses, so configuring layers moves no secret. A non-reserved entry has **no shared environment fallback**: it reads only its own key, plus an `env_var` named in the entry's config. The reason is concrete — an OpenAI-compatible entry sends whatever credential it is given as a bearer token to its own `base_url`, so a transient secret-store failure must not be able to send the default entry's key to a third party.
+
+An `env_var` must name a variable starting **`DBX_LLM_`**, and any other name is refused on save and ignored on read. The entry's config and its `base_url` are written by whoever can edit the project, who is not necessarily the operator who owns the pod — so without the prefix, naming `MONGODB_URI` beside an endpoint of your choosing would read it out of the process environment and send it to that endpoint as a bearer token. The prefix leaves the choice with the operator, who decides what to export:
+
+```yaml
+env:
+  - name: DBX_LLM_ACME_KEY        # nameable from a project document
+    valueFrom: { secretKeyRef: { name: acme-llm, key: api-key } }
+```
+
+The reserved entries keep their fixed, unprefixed `LLM_API_KEY` and `BLURB_LLM_API_KEY`, which no project document chooses.
+
+### The default row uses the default entry
+
+`layer_models.default` must name the reserved `default` provider entry. To change what every layer inherits, edit that entry; to put some layers on another connection, give those layers their own rows. The restriction is what keeps the legacy mirror honest: it copies the default row's endpoint into `project.llm`, while the credential an older agent image reads for `project.llm` is fixed at `llm-credentials` — the reserved entry's key. A default row pointing elsewhere would send one entry's credential to another entry's endpoint.
 
 ### Existing projects need one visit to settings
 

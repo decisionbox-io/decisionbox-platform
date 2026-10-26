@@ -186,9 +186,9 @@ func TestSecondaryEntryDoesNotBorrowTheDefaultsKeyOnABackendError(t *testing.T) 
 }
 
 func TestSecondaryEntryUsesTheEnvVarItNames(t *testing.T) {
-	t.Setenv("DEEPINFRA_KEY", "named-env-key")
+	t.Setenv("DBX_LLM_DEEPINFRA_KEY", "named-env-key")
 	spec := testSpec(LayerExploration, "deepinfra")
-	spec.Config[EnvVarConfigKey] = "DEEPINFRA_KEY"
+	spec.Config[EnvVarConfigKey] = "DBX_LLM_DEEPINFRA_KEY"
 
 	cred, err := ResolveCredential(context.Background(), newFakeSecrets(map[string]string{}), "proj1", spec, BuildOptions{})
 	if err != nil {
@@ -429,6 +429,41 @@ func TestTargetDistinguishesEntriesSharingAModelAlias(t *testing.T) {
 	}
 }
 
+// Target is used to decide when two layers may SHARE a connection, so a
+// difference that changes the connection has to show in it. Prompt caching is
+// the sharpest case: it is applied when the provider is constructed, not per
+// request, so two layers that disagree about it cannot be one client.
+func TestTargetDistinguishesLayersThatDisagreeAboutTheConnection(t *testing.T) {
+	base := LayerSpec{ProviderID: DefaultProviderID, Provider: "litellm", Model: "qwen3-32b"}
+	cases := []struct {
+		name string
+		cfg  map[string]string
+	}{
+		{"a different endpoint", map[string]string{"endpoint_id": "ep-2"}},
+		{"a wire override", map[string]string{"wire_override": "anthropic-messages"}},
+		{"prompt caching off", map[string]string{gollm.PromptCacheKey: "false"}},
+		{"a tighter output cap", map[string]string{"max_output_tokens": "1024"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			other := base
+			other.Config = c.cfg
+			if base.Target() == other.Target() {
+				t.Errorf("Target() collapsed two layers differing by %v", c.cfg)
+			}
+		})
+	}
+	// And identical configuration still collapses, or every layer on one
+	// model would open its own connection and pay for its own probe.
+	same := base
+	same.Config = map[string]string{"base_url": "https://x/v1"}
+	alsoSame := base
+	alsoSame.Config = map[string]string{"base_url": "https://x/v1"}
+	if same.Target() != alsoSame.Target() {
+		t.Error("Target() must still collapse two layers with the same entry, model and configuration")
+	}
+}
+
 func TestBuildProviderReportsAnUnknownProviderSlugWithTheLayerNamed(t *testing.T) {
 	spec := testSpec(LayerAnalysis, DefaultProviderID)
 	spec.Provider = "no-such-provider"
@@ -450,5 +485,23 @@ func TestIsNotConfigured(t *testing.T) {
 	}
 	if IsNotConfigured(ErrModelMissing) {
 		t.Error("IsNotConfigured must not match an unrelated error")
+	}
+}
+
+func TestAnUnsanctionedEnvVarIsNotResolvedEvenWhenItExists(t *testing.T) {
+	// The exfiltration path, end to end: a project member names a variable
+	// the pod really does carry and points the entry at their own endpoint.
+	// ResolveCredential must come back empty.
+	t.Setenv("MONGODB_URI", "mongodb://user:password@cluster/db")
+	spec := testSpec(LayerAnalysis, "exfil")
+	spec.Config[EnvVarConfigKey] = "MONGODB_URI"
+	spec.Config["base_url"] = "https://attacker.example/v1"
+
+	cred, err := ResolveCredential(context.Background(), newFakeSecrets(map[string]string{}), "proj1", spec, BuildOptions{})
+	if err != nil {
+		t.Fatalf("ResolveCredential: %v", err)
+	}
+	if cred.Value != "" {
+		t.Fatalf("resolved %q from a variable the project document named; the deployment's own environment must be unreachable", cred.Value)
 	}
 }

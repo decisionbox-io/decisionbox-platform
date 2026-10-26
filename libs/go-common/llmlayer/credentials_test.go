@@ -152,8 +152,22 @@ func TestCredentialChainPerEntry(t *testing.T) {
 		},
 		{
 			"a non-reserved entry may name its own env var explicitly",
-			LayerExploration, "deepinfra", map[string]string{EnvVarConfigKey: " DEEPINFRA_KEY "},
-			[]step{{CredentialsKey("deepinfra"), "DEEPINFRA_KEY"}},
+			LayerExploration, "deepinfra", map[string]string{EnvVarConfigKey: " DBX_LLM_DEEPINFRA_KEY "},
+			[]step{{CredentialsKey("deepinfra"), "DBX_LLM_DEEPINFRA_KEY"}},
+		},
+		{
+			// Whoever can edit the project picks this name, so an unprefixed
+			// one must resolve to NO fallback rather than to the variable it
+			// names: with an attacker-chosen base_url on the same entry, the
+			// value would be sent to that endpoint as a bearer token.
+			"an env var the deployment did not sanction yields no fallback",
+			LayerExploration, "exfil", map[string]string{EnvVarConfigKey: "MONGODB_URI"},
+			[]step{{CredentialsKey("exfil"), ""}},
+		},
+		{
+			"the bare prefix is not a variable name",
+			LayerExploration, "exfil", map[string]string{EnvVarConfigKey: EnvVarPrefix},
+			[]step{{CredentialsKey("exfil"), ""}},
 		},
 		{
 			"table descriptions on a non-reserved entry does NOT borrow the blurb chain",
@@ -183,6 +197,34 @@ func TestNonReservedChainNeverNamesTheDefaultsKeyOrEnv(t *testing.T) {
 		}
 		if ref.EnvVar == LegacyCredentialsEnv || ref.EnvVar == BlurbCredentialsEnv {
 			t.Errorf("non-reserved entry may fall back to %q", ref.EnvVar)
+		}
+	}
+}
+
+func TestNoProjectDocumentCanNameTheDeploymentsOwnSecrets(t *testing.T) {
+	// The names a real pod carries. None of them may be reachable by writing
+	// a provider entry, whatever the entry is called.
+	for _, name := range []string{
+		"MONGODB_URI", "SECRET_ENCRYPTION_KEY", "AWS_SECRET_ACCESS_KEY",
+		"AWS_SESSION_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS", "DBX_LICENSE_KEY",
+		LegacyCredentialsEnv, BlurbCredentialsEnv,
+		// Near-misses: a lowercase prefix, and the prefix somewhere other
+		// than the start.
+		"dbx_llm_KEY", "MY_DBX_LLM_KEY",
+	} {
+		if AllowedEnvVar(name) {
+			t.Errorf("AllowedEnvVar(%q) = true; a project document must not be able to name it", name)
+		}
+		chain := CredentialChain(LayerAnalysis, "thirdparty", map[string]string{EnvVarConfigKey: name})
+		for _, ref := range chain {
+			if ref.EnvVar != "" {
+				t.Errorf("CredentialChain honoured env var %q", ref.EnvVar)
+			}
+		}
+	}
+	for _, name := range []string{EnvVarPrefix + "ACME_KEY", EnvVarPrefix + "X"} {
+		if !AllowedEnvVar(name) {
+			t.Errorf("AllowedEnvVar(%q) = false; a prefixed name is what an operator exports for this", name)
 		}
 	}
 }

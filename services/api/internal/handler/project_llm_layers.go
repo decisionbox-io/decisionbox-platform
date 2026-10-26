@@ -45,6 +45,39 @@ func normalizeLLMLayerConfig(p *models.Project) {
 // Everything here is a client error worth naming precisely: a layer key typo
 // would otherwise be stored and silently ignored forever, and a layer pointing
 // at an entry that does not exist would quietly run on the default model.
+// layerSpecForRequest resolves a layer's spec for a request path, applying the
+// per-layer configuration gate only where it can be true.
+//
+// A managed deployment owns the whole AI configuration: managedai.Apply
+// replaces it on every write, the dashboard hides the surface, and
+// GetProject reports llm_config_required=false. So there is nothing for a
+// user to review and nowhere to send them — and a project last written before
+// #407 carries no version stamp at all, which would otherwise turn every
+// existing cloud tenant's Ask into a 412 on upgrade. StartRun makes the same
+// exemption; this is the read path's half of it.
+func layerSpecForRequest(p *models.Project, layer string) (llmlayer.LayerSpec, error) {
+	if managedai.Enabled() {
+		return p.LayerSpecUnchecked(layer)
+	}
+	return p.LayerSpec(layer)
+}
+
+// validateEnvVarFallback rejects an env_var a project document may not name.
+//
+// Refusing it on write is what makes the rule visible: llmlayer drops an
+// unsanctioned name silently on the read path (it has to — a refusal there
+// would have to mean "use some other credential"), so without this the user
+// would configure a fallback, get a 200, and find out at run time that it
+// does nothing.
+func validateEnvVarFallback(cfg map[string]string) string {
+	name := strings.TrimSpace(cfg[llmlayer.EnvVarConfigKey])
+	if name == "" || llmlayer.AllowedEnvVar(name) {
+		return ""
+	}
+	return fmt.Sprintf("%s: %q is not a variable a project may read — name one the deployment exported for this purpose, starting %q",
+		llmlayer.EnvVarConfigKey, name, llmlayer.EnvVarPrefix)
+}
+
 func validateLLMLayerConfig(p *models.Project) string {
 	if len(p.LLMProviders) == 0 && len(p.LayerModels) == 0 {
 		return ""
@@ -70,6 +103,9 @@ func validateLLMLayerConfig(p *models.Project) string {
 		if msg := validateLLMConfig(e.Provider, e.Config); msg != "" {
 			return fmt.Sprintf("llm_providers[%s].config: %s", e.ID, strings.TrimPrefix(msg, "llm.config."))
 		}
+		if msg := validateEnvVarFallback(e.Config); msg != "" {
+			return fmt.Sprintf("llm_providers[%s].config: %s", e.ID, msg)
+		}
 	}
 	if len(p.LLMProviders) > 0 && !hasDefault {
 		// The default entry is reserved, not a pointer: an older agent,
@@ -81,8 +117,22 @@ func validateLLMLayerConfig(p *models.Project) string {
 
 	// --- layer rows ---
 	if len(p.LayerModels) > 0 {
-		if _, ok := p.LayerModels[llmlayer.DefaultLayer]; !ok {
+		def, ok := p.LayerModels[llmlayer.DefaultLayer]
+		if !ok {
 			return fmt.Sprintf("layer_models: a %q row is required — it is what every layer without its own row uses", llmlayer.DefaultLayer)
+		}
+		// The default row must name the reserved entry, which dualWriteLegacy
+		// LLM depends on and only documented until now. The legacy mirror
+		// copies the default row's endpoint into project.llm, while the
+		// credential an older agent reads for it is fixed at
+		// "llm-credentials" — the reserved entry's key. Pointing the row at a
+		// secondary entry would therefore hand the reserved entry's
+		// credential to the secondary entry's base_url on every mixed-version
+		// deployment. Reconciling the secrets instead is not an option: it
+		// would overwrite a stored credential behind the user's back.
+		if id := llmlayer.NormalizeProviderID(def.ProviderID); id != llmlayer.DefaultProviderID {
+			return fmt.Sprintf("layer_models[%s]: must use the %q provider entry, not %q — edit that entry to change what every layer inherits, or give the layers you want on %q their own rows",
+				llmlayer.DefaultLayer, llmlayer.DefaultProviderID, id, id)
 		}
 	}
 	cfg := p.LLMLayerConfig()
@@ -100,6 +150,11 @@ func validateLLMLayerConfig(p *models.Project) string {
 		}
 		if msg := validateLLMConfig(spec.Provider, lm.Config); msg != "" {
 			return fmt.Sprintf("layer_models[%s].config: %s", key, strings.TrimPrefix(msg, "llm.config."))
+		}
+		// The credential chain reads the MERGED config, so a layer row can
+		// name an environment variable too and is held to the same rule.
+		if msg := validateEnvVarFallback(lm.Config); msg != "" {
+			return fmt.Sprintf("layer_models[%s].config: %s", key, msg)
 		}
 		// The layer's own pre-flight rule. Validate() applies it for a real
 		// layer key; the default row is checked against every layer that would
@@ -496,6 +551,12 @@ func mirrorLegacyLLMOntoDefaultLayer(p *models.Project) {
 	row := p.LayerModels[llmlayer.DefaultLayer]
 	row.ProviderID = llmlayer.DefaultProviderID
 	row.Model = p.LLM.Model
+	// The keys legacyConnectionConfig kept off the ENTRY are model-scoped, so
+	// they belong on the row — dropping them would accept a legacy write of
+	// max_output_tokens or reasoning_enabled with a 200 and silently discard
+	// it. Replaced rather than merged: for a caller writing the legacy block,
+	// that block is the whole truth about the default pair.
+	row.Config = legacyModelConfig(p.LLM.Config)
 	p.LayerModels[llmlayer.DefaultLayer] = row
 }
 
@@ -506,12 +567,9 @@ func legacyConnectionConfig(cfg map[string]string) map[string]string {
 	if len(cfg) == 0 {
 		return nil
 	}
-	modelScoped := map[string]bool{
-		"max_input_tokens":        true,
-		"max_output_tokens":       true,
-		"wire_override":           true,
-		gollm.PromptCacheKey:      true,
-		gollm.ReasoningEnabledKey: true,
+	modelScoped := map[string]bool{}
+	for _, k := range legacyModelScopedKeys {
+		modelScoped[k] = true
 	}
 	out := make(map[string]string, len(cfg))
 	for k, v := range cfg {
@@ -524,6 +582,37 @@ func legacyConnectionConfig(cfg map[string]string) map[string]string {
 		return nil
 	}
 	return out
+}
+
+// legacyModelConfig is legacyConnectionConfig's complement: the model-scoped
+// keys of a legacy llm.config, which belong on the default layer row rather
+// than on the provider entry. Between them the two functions partition the
+// legacy config, bar `model` and `credentials_json` — the model is the row's
+// own field and a credential never belongs in a config map.
+func legacyModelConfig(cfg map[string]string) map[string]string {
+	if len(cfg) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for _, k := range legacyModelScopedKeys {
+		if v, ok := cfg[k]; ok {
+			out[k] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// legacyModelScopedKeys are the legacy llm.config keys that describe the
+// MODEL rather than the connection.
+var legacyModelScopedKeys = []string{
+	"max_input_tokens",
+	"max_output_tokens",
+	"wire_override",
+	gollm.PromptCacheKey,
+	gollm.ReasoningEnabledKey,
 }
 
 // stampLLMConfigVersion records that this project has been configured for the

@@ -556,25 +556,6 @@ func TestLayersUsingProviderNamesTheReferencingLayers(t *testing.T) {
 		t.Error("an unreferenced entry must report no layers")
 	}
 }
-
-func TestDistinctTargetsCollapsesEveryLayerOnTheDefaultToOne(t *testing.T) {
-	c := legacyOnly()
-	c.Version = ConfigVersion
-	c.Providers, c.LayerModels = c.SeedFromLegacy()
-	if got := c.DistinctTargets(); len(got) != 1 {
-		t.Fatalf("DistinctTargets() = %d, want 1 — a project on one model must not pay for seventeen budget resolutions and probes", len(got))
-	}
-
-	// The benchmark's mixed pipeline: three entries, four distinct models.
-	c.Providers = append(c.Providers, ProviderEntry{ID: "deepinfra", Provider: "litellm"}, ProviderEntry{ID: "cheap", Provider: "bedrock"})
-	c.LayerModels[LayerExploration] = LayerModel{ProviderID: "deepinfra", Model: "deepseek-v4.1-flash"}
-	c.LayerModels[LayerRecommendations] = LayerModel{ProviderID: "cheap", Model: "haiku"}
-	c.LayerModels[LayerReflection] = LayerModel{ProviderID: "cheap", Model: "haiku"}
-	if got := c.DistinctTargets(); len(got) != 3 {
-		t.Errorf("DistinctTargets() = %d, want 3 (opus on default, deepseek on deepinfra, haiku on cheap)", len(got))
-	}
-}
-
 func TestValidateLayerKeyAcceptsTheDefaultRowAndRejectsTypos(t *testing.T) {
 	if !ValidateLayerKey(DefaultLayer) {
 		t.Error("the reserved default row must be a legal layer_models key")

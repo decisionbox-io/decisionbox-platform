@@ -52,6 +52,34 @@ const (
 // configure one — it just has to be named rather than inherited.
 const EnvVarConfigKey = "env_var"
 
+// EnvVarPrefix is the prefix an environment variable must carry to be
+// nameable from a project document.
+//
+// EnvVarConfigKey is written by whoever can edit the project, who is not
+// necessarily the operator who owns the pod. With no restriction on the name,
+// `env_var: "MONGODB_URI"` on an entry whose base_url the same writer chose
+// turns the live-model probe — and the first LLM call of the next run — into
+// an exfiltration channel for any variable in the API or agent environment:
+// an OpenAI-compatible entry sends whatever credential it resolves to its own
+// base_url as a bearer token.
+//
+// The prefix puts the decision back with the operator, who chooses what to
+// export: a credential meant for a provider entry is exported as, say,
+// DBX_LLM_ACME_KEY, while the pod's own secrets (MONGODB_URI,
+// SECRET_ENCRYPTION_KEY, AWS_SECRET_ACCESS_KEY) are structurally out of
+// reach. The two reserved entries keep their fixed, unprefixed names
+// (LLM_API_KEY, BLURB_LLM_API_KEY) because those are not chosen by a project
+// document at all.
+const EnvVarPrefix = "DBX_LLM_"
+
+// AllowedEnvVar reports whether a project document may name this environment
+// variable as a provider entry's credential fallback. The bare prefix with
+// nothing after it is not a variable name, so it is refused too.
+func AllowedEnvVar(name string) bool {
+	n := strings.TrimSpace(name)
+	return n != EnvVarPrefix && strings.HasPrefix(n, EnvVarPrefix)
+}
+
 // MaxProviderIDLen caps a provider-entry id at 32 characters.
 //
 // The limit comes from Azure Key Vault, which validates the COMPOSED secret
@@ -154,7 +182,9 @@ type CredentialRef struct {
 // credential it is given as a bearer token to its own base_url — so a
 // transient secret-store blip could ship the default entry's key to a
 // third-party endpoint. An operator who wants a pod-level credential for a
-// secondary entry names it explicitly with EnvVarConfigKey.
+// secondary entry names it explicitly with EnvVarConfigKey — and only a
+// name carrying EnvVarPrefix is honoured, so naming one cannot read a
+// variable the deployment did not export for this purpose.
 func CredentialChain(layer, providerID string, cfg map[string]string) []CredentialRef {
 	id := NormalizeProviderID(providerID)
 
@@ -173,9 +203,17 @@ func CredentialChain(layer, providerID string, cfg map[string]string) []Credenti
 	case id == DefaultProviderID:
 		return []CredentialRef{{SecretKey: LegacyCredentialsKey, EnvVar: LegacyCredentialsEnv}}
 	default:
+		// A name the deployment did not sanction is dropped rather than
+		// rejected: the chain is walked on the read path, where a refused
+		// name has to mean "this entry has no environment fallback" and
+		// never "fall back to something else".
+		env := strings.TrimSpace(cfg[EnvVarConfigKey])
+		if !AllowedEnvVar(env) {
+			env = ""
+		}
 		return []CredentialRef{{
 			SecretKey: CredentialsKey(id),
-			EnvVar:    strings.TrimSpace(cfg[EnvVarConfigKey]),
+			EnvVar:    env,
 		}}
 	}
 }

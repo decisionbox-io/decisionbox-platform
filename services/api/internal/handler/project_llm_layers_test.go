@@ -645,6 +645,27 @@ func TestUpdate_RejectsUnknownLayerAndUnknownProviderID(t *testing.T) {
 			`{"llm_providers":[{"id":"default","provider":"bedrock"}],"layer_models":{"default":{"model":"opus"},"ask":{"model":""}}}`,
 			"no model configured",
 		},
+		{
+			// The invariant dualWriteLegacyLLM depends on. The mirror copies
+			// the default row's endpoint into project.llm while the
+			// credential an older agent reads for it is fixed at
+			// llm-credentials — the reserved entry's key.
+			"the default row pointed at a secondary entry",
+			`{"llm_providers":[{"id":"default","provider":"bedrock"},{"id":"cheap","provider":"bedrock"}],"layer_models":{"default":{"provider_id":"cheap","model":"opus"}}}`,
+			`must use the \"default\" provider entry`,
+		},
+		{
+			// A project member picks this name; the deployment decides which
+			// variables are nameable.
+			"an entry naming an environment variable the deployment did not export",
+			`{"llm_providers":[{"id":"default","provider":"bedrock"},{"id":"exfil","provider":"openai","config":{"base_url":"https://attacker.example/v1","env_var":"MONGODB_URI"}}],"layer_models":{"default":{"model":"opus"}}}`,
+			"is not a variable a project may read",
+		},
+		{
+			"a layer row naming an environment variable the deployment did not export",
+			`{"llm_providers":[{"id":"default","provider":"bedrock"}],"layer_models":{"default":{"model":"opus"},"ask":{"model":"opus","config":{"env_var":"SECRET_ENCRYPTION_KEY"}}}}`,
+			"is not a variable a project may read",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -865,6 +886,24 @@ func TestUpdate_ALegacyWriteKeepsModelScopedKeysOffTheEntry(t *testing.T) {
 			t.Errorf("model-scoped key %q landed on the provider entry", key)
 		}
 	}
+	// Off the entry is only half of it: they have to land on the default ROW,
+	// or a legacy client's budget and wire override are accepted with a 200
+	// and silently discarded.
+	row := stored.LayerModels[llmlayer.DefaultLayer]
+	if row.Config["max_output_tokens"] != "4096" || row.Config["wire_override"] != "anthropic" {
+		t.Errorf("default row config = %+v, want the model-scoped keys from the legacy write", row.Config)
+	}
+	if _, present := row.Config["region"]; present {
+		t.Error("a connection field landed on the layer row, where it would apply to only one layer")
+	}
+	// And they have to survive the round trip back out to an older image.
+	spec, err := stored.LayerSpecUnchecked(llmlayer.DefaultLayer)
+	if err != nil {
+		t.Fatalf("LayerSpecUnchecked: %v", err)
+	}
+	if spec.Config["max_output_tokens"] != "4096" || spec.Config["region"] != "eu-west-1" {
+		t.Errorf("resolved default spec config = %+v, want the connection and model settings merged", spec.Config)
+	}
 }
 
 // An UNCONFIGURED project is untouched by a legacy write: the forced review is
@@ -890,5 +929,55 @@ func TestUpdate_ALegacyWriteDoesNotConfigureAnUnconfiguredProject(t *testing.T) 
 	}
 	if stored.LLM.Model != "haiku" {
 		t.Errorf("the legacy write itself must still land: llm = %+v", stored.LLM)
+	}
+}
+
+// The Ask read path makes the same managed exemption StartRun does.
+//
+// Without it an existing cloud project — gateway-configured, version 0
+// because managedai.Apply stamps only on write — answers 412 "configure your
+// models" on a deployment that has no AI configuration surface at all. The
+// discovery half was already covered; this is the half that broke Ask.
+func TestLayerSpecForRequest_NotGatedOnAManagedDeployment(t *testing.T) {
+	p := &models.Project{Name: "cloud", Domain: "gaming"}
+	p.LLM = models.LLMConfig{
+		Provider: "openai",
+		Model:    "decisionbox-analysis-model",
+		Config:   map[string]string{"base_url": "https://gateway.example/v1"},
+	}
+	// Deliberately version 0: what every project written before #407 carries.
+
+	if _, err := layerSpecForRequest(p, llmlayer.LayerAsk); !llmlayer.IsNotConfigured(err) {
+		t.Fatalf("self-hosted: err = %v, want the configuration gate to refuse", err)
+	}
+
+	t.Cleanup(managedai.Load)
+	t.Setenv(managedai.EnvGatewayURL, "https://gateway.example/v1")
+	t.Setenv(managedai.EnvAnalysisModel, "decisionbox-analysis-model")
+	t.Setenv(managedai.EnvBlurbModel, "decisionbox-blurb-model")
+	t.Setenv(managedai.EnvEmbedModel, "decisionbox-embed-model")
+	managedai.Load()
+
+	spec, err := layerSpecForRequest(p, llmlayer.LayerAsk)
+	if err != nil {
+		t.Fatalf("managed: err = %v, want the gateway configuration to resolve", err)
+	}
+	if spec.Model != "decisionbox-analysis-model" {
+		t.Errorf("managed ask model = %q, want the stored gateway alias", spec.Model)
+	}
+}
+
+// The positive half of the env_var rule: a name the operator exported for
+// this purpose is accepted, so the restriction does not remove the feature.
+func TestUpdate_AcceptsAPrefixedEnvVarFallback(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, newMockDomainPackRepo())
+	p := configuredProject(t, repo)
+
+	body := `{"llm_providers":[{"id":"default","provider":"bedrock"},{"id":"deepinfra","provider":"openai","config":{"base_url":"https://api.deepinfra.com/v1/openai","env_var":"DBX_LLM_DEEPINFRA_KEY"}}],` +
+		`"layer_models":{"default":{"model":"opus"},"exploration":{"provider_id":"deepinfra","model":"deepseek-v3"}}}`
+	w := putProject(t, h, p.ID, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
 	}
 }

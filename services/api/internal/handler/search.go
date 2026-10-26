@@ -692,7 +692,7 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	// answer "configure your models" to a request whose real problem is a
 	// session that is not the caller's — the 404 is the more accurate reply
 	// and was the contract before this gate existed.
-	askSpec, err := project.LayerSpec(llmlayer.LayerAsk)
+	askSpec, err := layerSpecForRequest(project, llmlayer.LayerAsk)
 	if err != nil {
 		msg := "LLM provider not configured for this project"
 		if llmlayer.IsNotConfigured(err) {

@@ -180,6 +180,11 @@ var clearableProjectFields = []struct {
 	{"blurb_llm", func(p *models.Project) bool { return p.BlurbLLM == nil }},
 	{"llm_providers", func(p *models.Project) bool { return len(p.LLMProviders) == 0 }},
 	{"layer_models", func(p *models.Project) bool { return len(p.LayerModels) == 0 }},
+	// The version stamp has to go with the rows it describes. It is
+	// omitempty too, so a configuration cleared back to nothing would leave
+	// the stored version behind — and a project with no rows but a version
+	// reads back as CONFIGURED, skipping the review it was just reset for.
+	{"llm_config_version", func(p *models.Project) bool { return p.LLMConfigVersion == 0 }},
 }
 
 // clearedProjectFields returns the $unset document for the clearable fields

@@ -346,27 +346,6 @@ func (c ProjectConfig) LayersUsingProvider(providerID string) []string {
 	return out
 }
 
-// DistinctTargets returns the set of (provider entry, provider, model)
-// triples the project's layers resolve to. One budget resolution and one live
-// model-info probe per entry here, which is what keeps "every layer on the
-// default" to a single probe.
-func (c ProjectConfig) DistinctTargets() []LayerSpec {
-	seen := map[string]bool{}
-	var out []LayerSpec
-	for _, key := range Keys() {
-		spec, err := c.SpecUnchecked(key)
-		if err != nil {
-			continue
-		}
-		if seen[spec.Target()] {
-			continue
-		}
-		seen[spec.Target()] = true
-		out = append(out, spec)
-	}
-	return out
-}
-
 func (c ProjectConfig) resolvedPromptCache() bool {
 	// Matches EffectivePromptCacheEnabled: the project field when set, else
 	// the legacy llm.config entry, else on.
