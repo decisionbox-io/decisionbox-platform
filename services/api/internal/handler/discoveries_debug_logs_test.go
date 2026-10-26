@@ -15,12 +15,12 @@ import (
 // tests. It records the last call arguments so tests can assert on how the
 // handler forwards `since` and `limit` from the query string.
 type mockDebugLogRepo struct {
-	entries []models.DebugLogEntry
-	err     error
-	lastRun string
+	entries   []models.DebugLogEntry
+	err       error
+	lastRun   string
 	lastSince time.Time
 	lastLimit int
-	calls   int
+	calls     int
 }
 
 func (m *mockDebugLogRepo) ListByRun(_ context.Context, runID string, since time.Time, limit int) ([]models.DebugLogEntry, error) {

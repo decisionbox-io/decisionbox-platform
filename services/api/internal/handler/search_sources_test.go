@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -47,6 +48,7 @@ func askProjectRepo() *mockProjectRepoForSearch {
 				Provider: "test-llm",
 				Model:    "test-llm-model",
 			},
+			LLMConfigVersion: llmlayer.ConfigVersion,
 		},
 	}
 }
@@ -61,7 +63,7 @@ func TestAsk_KnowledgeSourcesIncluded(t *testing.T) {
 		chunks: []gosources.Chunk{
 			{
 				SourceID: "src-1", SourceName: "handbook.pdf", SourceType: "pdf",
-				Text: "Retention is measured weekly across all live cohorts.",
+				Text:  "Retention is measured weekly across all live cohorts.",
 				Score: 0.87, Metadata: map[string]string{"page": "12"},
 			},
 		},

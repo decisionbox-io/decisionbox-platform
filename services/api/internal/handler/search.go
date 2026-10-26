@@ -11,6 +11,7 @@ import (
 
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	gosources "github.com/decisionbox-io/decisionbox/libs/go-common/sources"
@@ -684,11 +685,28 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		seed = h.hydrateSeed(ctx, projectID, req.SeedContext)
 	}
 
+	// Resolve the `ask` layer: every model id, window and budget below is
+	// this layer's, not the project's analysis model.
+	//
+	// Placed after the session lookup so an unconfigured project does not
+	// answer "configure your models" to a request whose real problem is a
+	// session that is not the caller's — the 404 is the more accurate reply
+	// and was the contract before this gate existed.
+	askSpec, err := project.LayerSpec(llmlayer.LayerAsk)
+	if err != nil {
+		msg := "LLM provider not configured for this project"
+		if llmlayer.IsNotConfigured(err) {
+			msg = llmlayer.ErrLLMNotConfigured.Error()
+		}
+		writeErrorCode(w, http.StatusPreconditionFailed, ErrCodeLLMNotConfigured, msg, err.Error())
+		return
+	}
+
 	if len(insights) == 0 && len(knowledgeChunks) == 0 && seed == nil {
 		writeJSON(w, http.StatusOK, askResponse{
 			Answer:    "No relevant insights or knowledge sources found for this question. Try running a discovery first, attaching documents in Knowledge Sources, or rephrasing your question.",
 			Sources:   []searchResultItem{},
-			Model:     project.LLM.Model,
+			Model:     askSpec.Model,
 			SessionID: req.SessionID,
 		})
 		return
@@ -708,7 +726,7 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		project.EffectiveLanguage(),
 	)
 
-	llmProvider, err := h.createLLMProvider(ctx, project, projectID)
+	llmProvider, _, err := llmlayer.BuildProvider(ctx, h.secretProvider, projectID, askSpec, llmlayer.BuildOptions{})
 	if err != nil {
 		writeErrorCode(w, http.StatusPreconditionFailed,
 			ErrCodeLLMNotConfigured,
@@ -742,7 +760,7 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	// num_ctx) so the budgeter trims to the operator-chosen window
 	// instead of letting the request hit the server's Truncate=false
 	// guard with an oversize prompt.
-	modelMaxInput := gollm.GetEffectiveInputWindow(project.LLM.Provider, project.LLM.Model, project.LLM.Config)
+	modelMaxInput := gollm.GetEffectiveInputWindow(askSpec.Provider, askSpec.Model, askSpec.Config)
 	budget := gollm.NewBudget(modelMaxInput, askMaxOutputTokens, askReservedSystemTokens, false)
 
 	questionTokens, _ := counter.Count(ctx, req.Question)
@@ -752,7 +770,7 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 			ErrCodeContextOverflow,
 			"the question alone exceeds this model's input window",
 			fmt.Sprintf("model=%s window=%d question_tokens=%d",
-				project.LLM.Model, modelMaxInput, questionTokens))
+				askSpec.Model, modelMaxInput, questionTokens))
 		return
 	}
 
@@ -775,7 +793,7 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 			ErrCodeContextOverflow,
 			"retrieved context plus this question exceeds the model's input window",
 			fmt.Sprintf("model=%s window=%d question=%d rag=%d knowledge=%d",
-				project.LLM.Model, modelMaxInput, questionTokens, ragTokens, knowledgeTokens))
+				askSpec.Model, modelMaxInput, questionTokens, ragTokens, knowledgeTokens))
 		return
 	}
 
@@ -793,7 +811,7 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 			ErrCodeContextOverflow,
 			"the assembled question + retrieved context exceeds this model's input window",
 			fmt.Sprintf("model=%s window=%d prompt_tokens=%d available=%d",
-				project.LLM.Model, modelMaxInput, promptTokens, budget.Available()))
+				askSpec.Model, modelMaxInput, promptTokens, budget.Available()))
 		return
 	}
 
@@ -827,7 +845,7 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	// upstream error, or context-cancelled → silently fall through
 	// and let provider report any overflow as a typed 413 via
 	// classifyLLMError below.
-	if overflow, ok := verifyExactPromptFits(ctx, llmProvider, project.LLM.Model, systemPrompt, messages, modelMaxInput); ok && overflow != nil {
+	if overflow, ok := verifyExactPromptFits(ctx, llmProvider, askSpec.Model, systemPrompt, messages, modelMaxInput); ok && overflow != nil {
 		writeErrorCode(w, http.StatusRequestEntityTooLarge,
 			ErrCodeContextOverflow,
 			"the assembled prompt exceeds the model's input window (verified via exact counter)",
@@ -840,7 +858,7 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	// answer in cited insights/recommendations + knowledge chunks, so the
 	// model's default sampling is acceptable here.
 	chatResp, err := llmProvider.Chat(ctx, gollm.ChatRequest{
-		Model:        project.LLM.Model,
+		Model:        askSpec.Model,
 		SystemPrompt: systemPrompt,
 		Messages:     messages,
 		MaxTokens:    askMaxOutputTokens,
@@ -944,29 +962,6 @@ func truncateForSession(s string) string {
 // collide on SourceID when top-K retrieval returns more than one per document.
 func chunkCitationID(c gosources.Chunk) string {
 	return fmt.Sprintf("%s#%d", c.SourceID, c.Position)
-}
-
-// createLLMProvider creates an LLM provider for a project's RAG answer synthesis.
-func (h *SearchHandler) createLLMProvider(ctx context.Context, project *models.Project, projectID string) (gollm.Provider, error) {
-	// Per-project secret wins, else the LLM_API_KEY env fallback: managed
-	// mode stores no per-project AI secret, so Ask's RAG synthesis (which
-	// runs in the API process) must reach the gateway via env. Resolution
-	// order shared with the agent via gosecrets.ResolveCredential.
-	apiKey, _, _ := gosecrets.ResolveCredential(ctx, h.secretProvider, projectID, "llm-credentials", "LLM_API_KEY")
-
-	cfg := gollm.ProviderConfig{
-		"credentials_json": apiKey,
-		"model":            project.LLM.Model,
-	}
-	for k, v := range project.LLM.Config {
-		cfg[k] = v
-	}
-	// Resolved from the project, after the merge, for the same reason as the
-	// agent's own construction: the providers read PromptCacheKey and the
-	// project field is the authority over any legacy literal in LLM.Config.
-	cfg[gollm.PromptCacheKey] = strconv.FormatBool(project.EffectivePromptCacheEnabled())
-
-	return gollm.NewProvider(project.LLM.Provider, cfg)
 }
 
 // ListHistory returns recent search/ask queries for a project.

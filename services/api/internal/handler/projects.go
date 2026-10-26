@@ -252,6 +252,15 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Settle the per-layer LLM configuration (#407). A create is an explicit
+	// configuration act, so the project is born configured and never gated;
+	// a body carrying only the legacy llm / blurb_llm fields is seeded from
+	// them. Runs before the plan gates below, which read p.LLM.Provider —
+	// the dual-write may rewrite it from the default layer.
+	if !applyLLMLayerCreate(w, r, &p) {
+		return
+	}
+
 	// Sanitize Language at create time too — the field flows into LLM
 	// system prompts, so the same prompt-injection guard applies.
 	if cleanLang, err := sanitizeLanguage(p.Language); err != nil {
@@ -463,6 +472,9 @@ func (h *ProjectsHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.enrichLastRun(r.Context(), projects)
+	for _, p := range projects {
+		h.stampLLMConfigRequired(p)
+	}
 
 	writeJSON(w, http.StatusOK, projects)
 }
@@ -483,6 +495,7 @@ func (h *ProjectsHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.enrichLastRun(r.Context(), []*models.Project{p})
+	h.stampLLMConfigRequired(p)
 
 	writeJSON(w, http.StatusOK, p)
 }
@@ -695,13 +708,28 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		existing.RecommendationVerdicts = incoming.RecommendationVerdicts
 	}
 
+	// Per-layer LLM providers and models (#407). Last of the merges, because
+	// the dual-write it performs rewrites existing.LLM / existing.BlurbLLM
+	// from the resolved default and table-description layers — so it has to
+	// run after the legacy merge above rather than be overwritten by it.
+	ok, removedProviders := h.applyLLMLayerUpdate(w, r, existing, &incoming, sentFields)
+	if !ok {
+		return
+	}
+
 	if err := h.repo.Update(r.Context(), id, existing); err != nil {
 		apilog.WithFields(apilog.Fields{"project_id": id, "error": err.Error()}).Error("Failed to update project")
 		writeError(w, http.StatusInternalServerError, "failed to update project: "+err.Error())
 		return
 	}
 
+	// After the save, not before: a removed entry's credential is only
+	// genuinely unused once the configuration that stopped referencing it has
+	// landed.
+	h.neutraliseProviderSecrets(r.Context(), id, removedProviders)
+
 	apilog.WithField("project_id", id).Info("Project updated")
+	h.stampLLMConfigRequired(existing)
 	writeJSON(w, http.StatusOK, existing)
 }
 

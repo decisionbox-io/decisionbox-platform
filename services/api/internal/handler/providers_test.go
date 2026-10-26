@@ -116,9 +116,9 @@ func TestWriteLiveModelsResponse_BothRowProvenance(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	rows := map[string]struct {
-		src    string
-		disp   int
-		live   int
+		src  string
+		disp int
+		live int
 	}{}
 	for _, m := range body.Data.Models {
 		rows[m.ID] = struct {
@@ -231,7 +231,7 @@ type stubProjectRepo struct {
 func (r *stubProjectRepo) GetByID(_ context.Context, _ string) (*models.Project, error) {
 	return r.project, r.err
 }
-func (r *stubProjectRepo) Create(context.Context, *models.Project) error            { return nil }
+func (r *stubProjectRepo) Create(context.Context, *models.Project) error             { return nil }
 func (r *stubProjectRepo) List(context.Context, int, int) ([]*models.Project, error) { return nil, nil }
 func (r *stubProjectRepo) Update(context.Context, string, *models.Project) error     { return nil }
 func (r *stubProjectRepo) Delete(context.Context, string) error                      { return nil }

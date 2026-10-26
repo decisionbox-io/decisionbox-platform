@@ -12,9 +12,12 @@ import (
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gocatalog "github.com/decisionbox-io/decisionbox/libs/go-common/llm/catalog"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
+	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
+	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
 // ProvidersHandler handles provider listing endpoints. The repo +
@@ -188,7 +191,8 @@ func (h *ProvidersHandler) ListLiveLLMModels(w http.ResponseWriter, r *http.Requ
 //
 //   - If the factory rejects an empty model (Chat-path validators) the
 //     helper returns (nil, nil) — the dashboard then renders free-text
-//     + catalog, no user-visible error.
+//
+//   - catalog, no user-visible error.
 //
 //   - If the constructed provider doesn't implement ModelLister, also
 //     (nil, nil).
@@ -229,6 +233,14 @@ func displayOr(a, b string) string {
 // resolveBlurbLLM behaviour — a missing blurb_llm means "reuse analysis").
 type projectLiveModelsRequest struct {
 	Slot string `json:"slot,omitempty"`
+	// ProviderID selects one of the project's named LLM provider entries
+	// (per-layer models, #407). Takes precedence over Slot when set. Slot is
+	// kept because it is a published API the dashboard and scripts call.
+	ProviderID string `json:"provider_id,omitempty"`
+	// Layer, with ProviderID unset, selects the entry a given layer resolves
+	// to — what the per-layer model picker needs when the user has not yet
+	// chosen an entry by hand.
+	Layer string `json:"layer,omitempty"`
 }
 
 // ListLiveLLMModelsForProject runs the same merge as ListLiveLLMModels
@@ -274,6 +286,10 @@ func (h *ProvidersHandler) ListLiveLLMModelsForProject(w http.ResponseWriter, r 
 		writeError(w, http.StatusBadRequest, "invalid slot: "+slot+" (must be llm or blurb_llm)")
 		return
 	}
+	if body.Layer != "" && !llmlayer.ValidateLayerKey(body.Layer) {
+		writeError(w, http.StatusBadRequest, "unknown layer: "+body.Layer)
+		return
+	}
 
 	project, err := h.projectRepo.GetByID(r.Context(), pid)
 	if err != nil {
@@ -282,6 +298,15 @@ func (h *ProvidersHandler) ListLiveLLMModelsForProject(w http.ResponseWriter, r 
 	}
 	if project == nil {
 		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+
+	// A named provider entry (or a layer naming one) resolves through
+	// llmlayer, so "Load models" reads the same entry, config and credential
+	// chain the agent would use for that layer — including the fact that a
+	// non-reserved entry has no shared environment fallback.
+	if body.ProviderID != "" || body.Layer != "" {
+		h.listLiveModelsForProviderEntry(w, r, project, body)
 		return
 	}
 
@@ -669,4 +694,79 @@ func writeEmbeddingLiveModelsResponse(w http.ResponseWriter, meta goembedding.Pr
 		resp["live_error"] = liveErr.Error()
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// listLiveModelsForProviderEntry serves the per-layer half of
+// ListLiveLLMModelsForProject: it resolves a named provider entry — directly,
+// or through the layer that uses it — and lists the models reachable on it.
+//
+// It goes through llmlayer.LayerSpec and llmlayer.ResolveCredential rather
+// than reading the project's fields itself, so the dashboard's "Load models"
+// reads exactly the entry, merged config and credential the agent would use
+// for that layer. A secondary entry with no secret of its own therefore fails
+// here the same way it would fail a run, instead of appearing to work because
+// the primary's key was lying around in the environment.
+func (h *ProvidersHandler) listLiveModelsForProviderEntry(w http.ResponseWriter, r *http.Request, project *models.Project, body projectLiveModelsRequest) {
+	layer := body.Layer
+	if layer == "" {
+		layer = llmlayer.DefaultLayer
+	}
+	spec, err := project.LayerSpecUnchecked(layer)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.ProviderID != "" {
+		entry, ok := project.LLMProviderByID(body.ProviderID)
+		if !ok {
+			writeError(w, http.StatusNotFound, "no LLM provider entry with id "+body.ProviderID+" on this project")
+			return
+		}
+		spec.ProviderID = llmlayer.NormalizeProviderID(entry.ID)
+		spec.Provider = entry.Provider
+		spec.Config = entry.Config
+		// The caller asked about an ENTRY, not a layer's model: listing is a
+		// connection-level operation and fetchLiveModels supplies a
+		// placeholder model for factories that demand one at construction.
+		spec.Model = ""
+	}
+	if spec.Provider == "" {
+		writeError(w, http.StatusBadRequest, "this project has no LLM provider configured")
+		return
+	}
+
+	meta, ok := gollm.GetProviderMeta(spec.Provider)
+	if !ok {
+		writeError(w, http.StatusNotFound, "unknown provider on project: "+spec.Provider)
+		return
+	}
+
+	cred, err := llmlayer.ResolveCredential(r.Context(), h.secretProvider, project.ID, spec, llmlayer.BuildOptions{})
+	if err != nil {
+		apilog.WithFields(apilog.Fields{
+			"project_id":  project.ID,
+			"provider_id": spec.ProviderID,
+			"error":       err.Error(),
+		}).Warn("Secret read failed while listing live models")
+	}
+
+	cfg := map[string]string{}
+	for k, v := range spec.Config {
+		cfg[k] = v
+	}
+	if spec.Model != "" {
+		cfg["model"] = spec.Model
+	}
+	if cred.Value != "" {
+		cfg["credentials_json"] = cred.Value
+	}
+	// cfg holds the secret for the duration of this handler; it goes out of
+	// scope on return. Go strings are immutable so active scrubbing is not
+	// possible; we rely on scope + GC.
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	live, liveErr := fetchLiveModels(ctx, spec.Provider, cfg)
+	writeLiveModelsResponse(w, meta, live, liveErr)
 }

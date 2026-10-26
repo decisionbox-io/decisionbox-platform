@@ -89,6 +89,14 @@ type Project struct {
 	// Resolve it with LLMConfigured, never by comparing the field.
 	LLMConfigVersion int `bson:"llm_config_version,omitempty" json:"llm_config_version,omitempty"`
 
+	// LLMConfigRequired is a READ-TIME flag (never stored, bson:"-") telling
+	// the dashboard that this project has not been configured for per-layer
+	// models and must be sent to settings before it can run. Stamped by the
+	// List / Get / Update handlers so the dashboard's project-scoped guard
+	// needs no second request, and always false on managed deployments, which
+	// have no AI configuration surface to send anyone to.
+	LLMConfigRequired bool `bson:"-" json:"llm_config_required,omitempty"`
+
 	Profile map[string]interface{} `bson:"profile,omitempty" json:"profile,omitempty"`
 	Prompts *ProjectPrompts        `bson:"prompts,omitempty" json:"prompts,omitempty"`
 

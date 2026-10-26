@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -90,7 +91,7 @@ func TestDiscoveriesHandler_List_Success_MockRepo(t *testing.T) {
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, newMockRunner())
 
 	// Create a project
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", LLMConfigVersion: llmlayer.ConfigVersion}
 	projRepo.Create(context.Background(), p)
 
 	// Add discoveries
@@ -315,7 +316,7 @@ func TestDiscoveriesHandler_GetStatus_Success_MockRepo(t *testing.T) {
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, newMockRunner())
 
 	// Create a project
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", LLMConfigVersion: llmlayer.ConfigVersion}
 	projRepo.Create(context.Background(), p)
 
 	// Add a run
@@ -379,7 +380,7 @@ func TestDiscoveriesHandler_GetStatus_FailsWhenItCannotReadTheRun(t *testing.T) 
 		runRepo := newMockRunRepo()
 		set(discRepo, runRepo)
 		h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, newMockRunner())
-		p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+		p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", LLMConfigVersion: llmlayer.ConfigVersion}
 		projRepo.Create(context.Background(), p)
 		runRepo.addRun(&models.DiscoveryRun{ID: "run-1", ProjectID: p.ID, Status: "running", StartedAt: time.Now()})
 		req := httptest.NewRequest("GET", "/api/v1/projects/"+p.ID+"/status", nil)
@@ -432,7 +433,7 @@ func TestDiscoveriesHandler_GetStatus_NoRunsOrDiscoveries_MockRepo(t *testing.T)
 	runRepo := newMockRunRepo()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, newMockRunner())
 
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", LLMConfigVersion: llmlayer.ConfigVersion}
 	projRepo.Create(context.Background(), p)
 
 	req := httptest.NewRequest("GET", "/api/v1/projects/"+p.ID+"/status", nil)
@@ -463,7 +464,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_Success_MockRepo(t *testing.T) {
 	mockRun := newMockRunner()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, mockRun)
 
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", LLMConfigVersion: llmlayer.ConfigVersion}
 	projRepo.Create(context.Background(), p)
 
 	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/discover",
@@ -517,10 +518,11 @@ func TestDiscoveriesHandler_TriggerDiscovery_RefusesNonReadyState(t *testing.T) 
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, mockRun)
 
 	p := &models.Project{
-		Name:     "Plugin-managed",
-		Domain:   "gaming",
-		Category: "match3",
-		State:    "plugin_in_progress",
+		Name:             "Plugin-managed",
+		Domain:           "gaming",
+		Category:         "match3",
+		LLMConfigVersion: llmlayer.ConfigVersion,
+		State:            "plugin_in_progress",
 	}
 	projRepo.Create(context.Background(), p)
 
@@ -553,10 +555,11 @@ func TestDiscoveriesHandler_TriggerDiscovery_AcceptsReadyState(t *testing.T) {
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, mockRun)
 
 	p := &models.Project{
-		Name:     "Ready",
-		Domain:   "gaming",
-		Category: "match3",
-		State:    models.ProjectStateReady,
+		Name:             "Ready",
+		Domain:           "gaming",
+		Category:         "match3",
+		LLMConfigVersion: llmlayer.ConfigVersion,
+		State:            models.ProjectStateReady,
 	}
 	projRepo.Create(context.Background(), p)
 
@@ -590,7 +593,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_MinSteps_DefaultsTo60Percent(t *tes
 	mockRun := newMockRunner()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, mockRun)
 
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", LLMConfigVersion: llmlayer.ConfigVersion}
 	projRepo.Create(context.Background(), p)
 
 	// max_steps=50 and no min_steps → default = floor(50 * 0.6) = 30.
@@ -620,7 +623,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_MinSteps_DefaultUsesMaxStepsDefault
 	mockRun := newMockRunner()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, mockRun)
 
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", LLMConfigVersion: llmlayer.ConfigVersion}
 	projRepo.Create(context.Background(), p)
 
 	// Empty body — max_steps omitted. The handler treats zero as the
@@ -650,7 +653,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_MinSteps_ExplicitValueHonored(t *te
 	mockRun := newMockRunner()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, mockRun)
 
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", LLMConfigVersion: llmlayer.ConfigVersion}
 	projRepo.Create(context.Background(), p)
 
 	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/discover",
@@ -676,7 +679,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_MinSteps_ExplicitZeroDisablesFloor(
 	mockRun := newMockRunner()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, mockRun)
 
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", LLMConfigVersion: llmlayer.ConfigVersion}
 	projRepo.Create(context.Background(), p)
 
 	// Crucial: {"min_steps": 0} must be distinguishable from "min_steps
@@ -705,7 +708,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_MinSteps_RejectsNegative(t *testing
 	mockRun := newMockRunner()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, mockRun)
 
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", LLMConfigVersion: llmlayer.ConfigVersion}
 	projRepo.Create(context.Background(), p)
 
 	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/discover",
@@ -731,7 +734,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_MinSteps_RejectsExceedingMaxSteps(t
 	mockRun := newMockRunner()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, mockRun)
 
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", LLMConfigVersion: llmlayer.ConfigVersion}
 	projRepo.Create(context.Background(), p)
 
 	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/discover",
@@ -762,7 +765,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_MinSteps_EqualToMaxStepsAccepted(t 
 	mockRun := newMockRunner()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, mockRun)
 
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", LLMConfigVersion: llmlayer.ConfigVersion}
 	projRepo.Create(context.Background(), p)
 
 	// Boundary — the handler uses `>` not `>=`, so equality is accepted.
@@ -840,7 +843,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_AlreadyRunning_MockRepo(t *testing.
 	runRepo := newMockRunRepo()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, newMockRunner())
 
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", LLMConfigVersion: llmlayer.ConfigVersion}
 	projRepo.Create(context.Background(), p)
 
 	// Add a running run for this project
@@ -884,7 +887,7 @@ func TestDiscoveriesHandler_StartRun_SkipIfRunning_EnforcedUnderAdvisoryChecker(
 	runRepo := newMockRunRepo()
 	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projRepo, runRepo, nil, nil, nil, newMockRunner())
 
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", LLMConfigVersion: llmlayer.ConfigVersion}
 	projRepo.Create(context.Background(), p)
 	runRepo.addRun(&models.DiscoveryRun{
 		ID: "existing-run", ProjectID: p.ID, Status: "running", Phase: "exploration", StartedAt: time.Now(),
@@ -908,7 +911,7 @@ func TestDiscoveriesHandler_TriggerDiscovery_RunnerFails_MockRepo(t *testing.T) 
 	mockRun.runErr = fmt.Errorf("binary not found")
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, mockRun)
 
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", LLMConfigVersion: llmlayer.ConfigVersion}
 	projRepo.Create(context.Background(), p)
 
 	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/discover", nil)

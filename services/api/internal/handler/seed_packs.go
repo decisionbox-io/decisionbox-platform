@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
+	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
@@ -17,8 +17,8 @@ var seedFS embed.FS
 
 // portableFormat is the envelope for portable domain pack JSON files.
 type portableFormat struct {
-	Format        string           `json:"format"`
-	FormatVersion int              `json:"format_version"`
+	Format        string            `json:"format"`
+	FormatVersion int               `json:"format_version"`
 	Pack          models.DomainPack `json:"pack"`
 }
 
@@ -77,4 +77,3 @@ func SeedBuiltInPacks(ctx context.Context, repo database.DomainPackRepo) {
 		apilog.WithField("slug", pack.Slug).Info("Seeded built-in domain pack")
 	}
 }
-
