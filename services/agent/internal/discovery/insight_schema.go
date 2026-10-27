@@ -77,18 +77,40 @@ func insightResponseFormat() *gollm.ResponseFormat {
 // property names are kept in lockstep with models.Insight json tags by
 // TestInsightSchema_MatchesStructTags.
 func insightResponseSchema() map[string]interface{} {
-	str := func(desc string) map[string]interface{} {
+	// Bounds, from the 562 insights this pipeline has written. A bound exists to stop a
+	// runaway and must never be able to bind on a real answer, so each one clears its
+	// observed maximum several times over: name 126, target_segment 136, an indicator 103,
+	// a claim 142, the longest row/scope selector 261, every label and id under 20.
+	//
+	// Measured when the schema stopped being retry-only. While it was attached on a
+	// corrective retry alone, describing an unbounded string here was a recorded risk
+	// nobody had to take; sending it on every analysis call is what made these live.
+	label := func(desc string) map[string]interface{} { return boundedString(desc, maxSchemaLabelRunes) }
+	selector := func(desc string) map[string]interface{} { return boundedString(desc, maxSchemaSegmentRunes) }
+
+	// The one string this schema still leaves unbounded, and the measurement that decides
+	// it. Insight descriptions run long: p50 815, p95 1,146, p99 1,464, maximum 1,643. The
+	// largest bound that does anything on an Ollama-backed runner is
+	// grammarRepetitionCeiling (2,000) -- above it a maxLength is silently clamped back to
+	// unbounded -- which leaves 1.22x the observed maximum and 1.37x p99. That is a bound
+	// that can clip a legitimate description, and there is no higher one that protects
+	// anything, so no bound is the honest answer rather than a comfortable-looking number.
+	//
+	// Named instead of reusing a generic helper so the exception is visible at the call
+	// site, and pinned by TestTheInsightSchemaBoundsEveryStringItCan, which fails if a
+	// second unbounded string appears.
+	unboundedProse := func(desc string) map[string]interface{} {
 		return map[string]interface{}{"type": "string", "description": desc}
 	}
 
 	insightProps := map[string]interface{}{
-		"name":           str("Short, specific name for the discovered pattern or finding. " + figureReferenceRule),
-		"description":    str("Explanation of the finding. " + figureReferenceRule),
-		"severity":       str(`One of "critical", "high", "medium", "low"`),
+		"name":           boundedString("Short, specific name for the discovered pattern or finding. "+figureReferenceRule, maxSchemaTitleRunes),
+		"description":    unboundedProse("Explanation of the finding. " + figureReferenceRule),
+		"severity":       label(`One of "critical", "high", "medium", "low"`),
 		"affected_count": map[string]interface{}{"type": "integer", "description": "Number of users/entities affected"},
 		"risk_score":     map[string]interface{}{"type": "number", "description": "Risk score from 0.0 to 1.0"},
 		"confidence":     map[string]interface{}{"type": "number", "description": "Confidence from 0.0 to 1.0"},
-		"target_segment": str("The user segment this insight applies to"),
+		"target_segment": boundedString("The user segment this insight applies to", maxSchemaSegmentRunes),
 		"metrics": map[string]interface{}{
 			"type":        "object",
 			"description": "Free-form domain-specific metrics for this insight",
@@ -96,7 +118,7 @@ func insightResponseSchema() map[string]interface{} {
 		"indicators": map[string]interface{}{
 			"type":        "array",
 			"description": "Signals/behaviours that characterize this pattern",
-			"items":       str("A single indicator. " + figureReferenceRule),
+			"items":       boundedString("A single indicator. "+figureReferenceRule, maxSchemaListItemRunes),
 		},
 		"figures": map[string]interface{}{
 			"type": "array",
@@ -105,8 +127,8 @@ func insightResponseSchema() map[string]interface{} {
 			"items": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"id": str("Key the prose references; unique within this insight. Name it for what it " +
-						"holds -- `churn_rate`, `total_revenue` -- not by position"),
+					"id": boundedString("Key the prose references; unique within this insight. Name it for what it "+
+						"holds -- `churn_rate`, `total_revenue` -- not by position", maxSchemaIdentifierRunes),
 					"value": map[string]interface{}{"type": "number", "description": "The number in the units of the step's own column: 8476238553, or 24.66 for a percentage"},
 					// No "days". The closed set in models.Figure deliberately has no unit
 					// for a word, because a unit here is notation and a word is prose --
@@ -116,9 +138,9 @@ func insightResponseSchema() map[string]interface{} {
 					// mistake the contract forbids in prose; the schema is the stronger
 					// signal, so it was the one being obeyed. Pinned by
 					// TestInsightSchema_FigureEnumsMatchTheClosedSets.
-					"unit":     str(`One of "count", "currency", "percent", "multiple", "plain" -- notation, never a word like days`),
-					"currency": str(insightCurrencyFieldDescription),
-					"scale":    str(`Abbreviation for a large number: "thousands", "millions", "billions"; omit to write it in full`),
+					"unit":     label(`One of "count", "currency", "percent", "multiple", "plain" -- notation, never a word like days`),
+					"currency": label(insightCurrencyFieldDescription),
+					"scale":    label(`Abbreviation for a large number: "thousands", "millions", "billions"; omit to write it in full`),
 					"decimals": map[string]interface{}{"type": "integer", "description": "Decimal places to print; this is the precision being claimed"},
 					"approx":   map[string]interface{}{"type": "boolean", "description": "Print a tilde to mark the number as rounded"},
 					"step":     map[string]interface{}{"type": "integer", "description": "Exploration step whose rows produced the figure"},
@@ -126,11 +148,11 @@ func insightResponseSchema() map[string]interface{} {
 					// because the two read the same two cells and only the sentence tells
 					// them apart. A run offering ratio alone shipped a vouched figure
 					// behind "109.6% more" where the excess is 9.6%.
-					"kind":   str(`One of "cell", "sum", "count", "ratio", "excess", "diff". "ratio" is a/b and "excess" is a/b-1, so a sentence saying one thing is N% MORE than another is an excess`),
-					"column": str("Column the arithmetic runs over"),
-					"row":    str("Terms selecting the single row a cell, a ratio or excess numerator, or a diff's left operand comes from"),
-					"other":  str("Terms selecting a diff's right operand, or the denominator row of a ratio or an excess"),
-					"scope":  str("Which rows a sum, a count, or a ratio or excess denominator covers"),
+					"kind":   label(`One of "cell", "sum", "count", "ratio", "excess", "diff". "ratio" is a/b and "excess" is a/b-1, so a sentence saying one thing is N% MORE than another is an excess`),
+					"column": label("Column the arithmetic runs over"),
+					"row":    selector("Terms selecting the single row a cell, a ratio or excess numerator, or a diff's left operand comes from"),
+					"other":  selector("Terms selecting a diff's right operand, or the denominator row of a ratio or an excess"),
+					"scope":  selector("Which rows a sum, a count, or a ratio or excess denominator covers"),
 				},
 				"required": []string{"id", "value", "step", "kind"},
 			},
@@ -142,24 +164,24 @@ func insightResponseSchema() map[string]interface{} {
 			"items": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"claim":        str("The statement, verbatim as written in name, description or indicators"),
-					"kind":         str(`One of "only", "all", "rank", "monotonic", "cardinality"`),
+					"claim":        boundedString("The statement, verbatim as written in name, description or indicators", maxSchemaListItemRunes),
+					"kind":         label(`One of "only", "all", "rank", "monotonic", "cardinality"`),
 					"step":         map[string]interface{}{"type": "integer", "description": "Exploration step whose rows settle the claim"},
-					"column":       str("Column the claim ranks by, or whose direction it asserts"),
-					"filter":       str("Conjunction of `column <op> literal` terms joined by AND"),
-					"scope":        str("Which rows the claim is about, same grammar as filter; applied before top_n"),
+					"column":       label("Column the claim ranks by, or whose direction it asserts"),
+					"filter":       selector("Conjunction of `column <op> literal` terms joined by AND"),
+					"scope":        selector("Which rows the claim is about, same grammar as filter; applied before top_n"),
 					"top_n":        map[string]interface{}{"type": "integer", "description": "Narrow the scope to the top N rows before applying the predicate"},
-					"top_n_column": str("Column the top-N scope is ranked by"),
-					"subject":      str("Terms selecting the single row a rank claim is about, same grammar as filter"),
+					"top_n_column": label("Column the top-N scope is ranked by"),
+					"subject":      selector("Terms selecting the single row a rank claim is about, same grammar as filter"),
 					"rank":         map[string]interface{}{"type": "integer", "description": "1-based rank from the order end"},
 					"count": map[string]interface{}{"type": "integer", "minimum": 1,
 						"description": "Asserted number of rows. Required for a cardinality claim, and must be positive: " +
 							"an omitted count cannot be told from an asserted zero, so a cardinality claim without one is not checked"},
-					"order": str(`"desc" (default) or "asc"`),
+					"order": label(`"desc" (default) or "asc"`),
 					// An enum rather than a description, because a trend the evaluator
 					// cannot read is not checked at all. "decrease" or "down" used to be
 					// silently treated as increasing, which refuted correct series.
-					"order_by": str("Required for a monotonic claim: the column that puts the rows in " +
+					"order_by": label("Required for a monotonic claim: the column that puts the rows in " +
 						"sequence — the year, the decile, the band. The platform sorts by it ascending before " +
 						"checking the trend, so the order your query returned does not matter. It must be a " +
 						"numeric column, and it must not be the same column as `column`"),

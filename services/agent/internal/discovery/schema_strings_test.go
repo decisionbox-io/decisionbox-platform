@@ -48,7 +48,15 @@ func TestEverySchemaStringIsBounded(t *testing.T) {
 // produced the runaway in the first place, so a reader who copies it should
 // find this note. Tracked in #462.
 var unboundedSchemasByDesign = map[string]string{
-	"insight":   "the analysis phase is producing insights today; bounding it is a regression risk for a failure not observed there",
+	// Narrowed to one field, and for a measured reason rather than an untaken risk. Every
+	// other string in the insight schema is now bounded, because the schema stopped being
+	// retry-only and a grammar began applying to it. `description` is the one that cannot
+	// be: measured over 562 insights it runs p50 815, p95 1,146, p99 1,464, maximum 1,643,
+	// and the largest bound that does anything on an Ollama-backed runner is 2,000 -- 1.22x
+	// that maximum. A bound that can clip a real answer is a bug in the bound, and there is
+	// no higher one that protects anything, so this field stays unbounded on purpose.
+	// TestTheInsightSchemaBoundsEveryStringItCan holds the rest of the schema to that.
+	"insight":   "only `description`: 1,643 observed against a 2,000 grammar ceiling leaves no bound that cannot bind on a real answer",
 	"questions": "same, and its output is short in practice (observed maximum 305 characters)",
 	"reflection": "same, and its area-prompt field is the one bound hardest to size from evidence -- " +
 		"the ledger collections this lab has are empty, so the only measurement available is the packaged prompts",

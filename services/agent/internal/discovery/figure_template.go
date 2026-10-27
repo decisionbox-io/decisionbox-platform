@@ -53,6 +53,20 @@ var figureIDPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
 // Years are excluded because a period is prose, not a measurement -- "in 1997", "the
 // 1992-1997 window" -- and requiring a declaration for one would make the common case
 // unwriteable.
+//
+// What this counter now includes, and what it therefore no longer means on its own: the
+// contract's "what stays as ordinary text" section tells the model in so many words to
+// write a window, a threshold or a band into the sentence -- "over 90 days", "deciles 1 to
+// 3". Those carry digits and are not date-shaped, so reDateish does not mask them and every
+// one of them lands here. FiguresInlined is consequently a mix of sanctioned prose and
+// genuine opt-outs, and a rise in it is not by itself evidence of either.
+//
+// Left as a mix deliberately. Separating the two means deciding from the text whether a
+// digit is a measurement or a chosen bound, which is reading numbers out of prose -- the
+// one thing this layer exists to avoid, and the reason the check is allowed to be a
+// compliance check at all. The honest fix is a vocabulary for a non-numeric or
+// model-chosen value, which is tracked separately; until then the counter is read beside
+// the unresolved and unreadable counts rather than alone.
 var reBareDigit = regexp.MustCompile(`\d`)
 
 // Dates and years are masked before the digit check. A period is prose, not a
