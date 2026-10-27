@@ -1719,3 +1719,109 @@ func TestUpdate_ALegacyBlurbModelChangeLeavesSharersAlone(t *testing.T) {
 		t.Errorf("table_descriptions model = %q, want the legacy blurb write", got)
 	}
 }
+
+// The Models tab falls back to caching ON and reasoning OFF for a default
+// row that states neither. The backend does not: it resolves them from the
+// legacy project fields, which is what those fields have always meant.
+//
+// So a CONFIGURED project running with caching off and reasoning on showed
+// the exact opposite in both controls — and every override inheriting from
+// that row showed it too. The payload states what runs instead.
+func TestGetProjectLLMConfig_StatesTheDefaultRowsEffectiveToggles(t *testing.T) {
+	projRepo := newMockProjectRepo()
+	h := NewProjectsHandler(projRepo, newMockDomainPackRepo())
+
+	no, yes := false, true
+	p := &models.Project{
+		Name: "configured", Domain: "gaming", Category: "match3",
+		PromptCacheEnabled: &no,
+		ReasoningEnabled:   &yes,
+	}
+	p.LLM = models.LLMConfig{Provider: "bedrock", Model: "opus"}
+	p.LLMProviders = []llmlayer.ProviderEntry{{ID: llmlayer.DefaultProviderID, Provider: "bedrock"}}
+	// Configured through a layer_models PUT whose default row says nothing
+	// about either toggle.
+	p.LayerModels = map[string]llmlayer.LayerModel{
+		llmlayer.DefaultLayer: {ProviderID: llmlayer.DefaultProviderID, Model: "opus"},
+	}
+	p.LLMConfigVersion = llmlayer.ConfigVersion
+	projRepo.Create(context.Background(), p)
+
+	req := httptest.NewRequest("GET", "/api/v1/projects/"+p.ID+"/llm/config", nil)
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+	h.GetProjectLLMConfig(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	var env struct {
+		Data struct {
+			LayerModels map[string]llmlayer.LayerModel `json:"layer_models"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	def := env.Data.LayerModels[llmlayer.DefaultLayer]
+	// What the project actually runs with, not the form's own defaults.
+	if def.Config[gollm.PromptCacheKey] != "false" {
+		t.Errorf("prompt_cache = %q, want \"false\" — the form would otherwise show caching on while it runs off",
+			def.Config[gollm.PromptCacheKey])
+	}
+	if def.Config[gollm.ReasoningEnabledKey] != "true" {
+		t.Errorf("reasoning_enabled = %q, want \"true\"", def.Config[gollm.ReasoningEnabledKey])
+	}
+
+	// Saving the untouched payload back changes nothing about what runs.
+	spec, err := p.LayerSpecUnchecked(llmlayer.DefaultLayer)
+	if err != nil {
+		t.Fatalf("LayerSpecUnchecked: %v", err)
+	}
+	saved := &models.Project{LLMProviders: p.LLMProviders, LayerModels: env.Data.LayerModels, LLMConfigVersion: llmlayer.ConfigVersion}
+	after, err := saved.LayerSpecUnchecked(llmlayer.DefaultLayer)
+	if err != nil {
+		t.Fatalf("LayerSpecUnchecked after: %v", err)
+	}
+	if after.PromptCache != spec.PromptCache || after.Reasoning != spec.Reasoning {
+		t.Errorf("after saving the untouched form: caching %v→%v, reasoning %v→%v",
+			spec.PromptCache, after.PromptCache, spec.Reasoning, after.Reasoning)
+	}
+}
+
+// A row that states its own value keeps it: the resolution fills gaps, it
+// does not overwrite a choice.
+func TestGetProjectLLMConfig_LeavesAStatedToggleAlone(t *testing.T) {
+	projRepo := newMockProjectRepo()
+	h := NewProjectsHandler(projRepo, newMockDomainPackRepo())
+
+	yes := true
+	p := &models.Project{Name: "c", Domain: "gaming", Category: "match3", PromptCacheEnabled: &yes}
+	p.LLM = models.LLMConfig{Provider: "bedrock", Model: "opus"}
+	p.LLMProviders = []llmlayer.ProviderEntry{{ID: llmlayer.DefaultProviderID, Provider: "bedrock"}}
+	p.LayerModels = map[string]llmlayer.LayerModel{
+		llmlayer.DefaultLayer: {
+			ProviderID: llmlayer.DefaultProviderID, Model: "opus",
+			Config: map[string]string{gollm.PromptCacheKey: "false"},
+		},
+	}
+	p.LLMConfigVersion = llmlayer.ConfigVersion
+	projRepo.Create(context.Background(), p)
+
+	req := httptest.NewRequest("GET", "/api/v1/projects/"+p.ID+"/llm/config", nil)
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+	h.GetProjectLLMConfig(w, req)
+
+	var env struct {
+		Data struct {
+			LayerModels map[string]llmlayer.LayerModel `json:"layer_models"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := env.Data.LayerModels[llmlayer.DefaultLayer].Config[gollm.PromptCacheKey]; got != "false" {
+		t.Errorf("prompt_cache = %q, want the row's own \"false\"", got)
+	}
+}

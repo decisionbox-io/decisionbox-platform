@@ -214,6 +214,22 @@ export default function ProjectSettingsPage() {
     : [{ label: 'Settings' }];
 
   if (loading) return <Shell><Loader /></Shell>;
+
+  // Nothing the LLM editors show means anything until the configuration has
+  // loaded. On a failed load the hook keeps empty providers and rows and
+  // reports the reason in `error` — but the tabs rendered that as a project
+  // with nothing configured, and the obvious response to THAT is to type the
+  // configuration in again and save, writing it over the real one with its
+  // secondary entries and per-layer overrides.
+  const llmConfigUnavailable = llmConfig.loading
+    ? <Loader />
+    : llmConfig.error
+      ? (
+        <Alert color="red" icon={<IconAlertCircle size={16} />}>
+          Could not load this project&apos;s LLM configuration: {llmConfig.error}
+        </Alert>
+      )
+      : null;
   if (error) return <Shell><Alert color="red" icon={<IconAlertCircle size={16} />}>{error}</Alert></Shell>;
   if (!project) return <Shell><Text>Project not found</Text></Shell>;
 
@@ -441,6 +457,7 @@ export default function ProjectSettingsPage() {
         <Tabs.Panel value="ai">
           <Stack gap="md">
             <SettingsSection>
+              {llmConfigUnavailable ?? <>
               {llmConfig.seeded && (
                 <Alert color="blue" icon={<IconAlertCircle size={16} />} mb="sm">
                   These values come from this project&apos;s current setup and are
@@ -473,6 +490,7 @@ export default function ProjectSettingsPage() {
                   Save LLM configuration
                 </Button>
               </Group>
+              </>}
             </SettingsSection>
             <ProvidersPanel projectId={id} variant="page" onSaved={() => { void refreshProject(); }} />
           </Stack>
@@ -482,6 +500,7 @@ export default function ProjectSettingsPage() {
         {!aiConfigManaged && (
         <Tabs.Panel value="models">
           <SettingsSection>
+            {llmConfigUnavailable ?? <>
             <LayerModelsPanel
               projectId={id}
               entries={llmConfig.entries}
@@ -506,6 +525,7 @@ export default function ProjectSettingsPage() {
                 Save LLM configuration
               </Button>
             </Group>
+            </>}
           </SettingsSection>
         </Tabs.Panel>
         )}

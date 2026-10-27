@@ -563,7 +563,53 @@ func (h *ProjectsHandler) GetProjectLLMConfig(w http.ResponseWriter, r *http.Req
 	if resp.Providers == nil {
 		resp.Providers = []llmlayer.ProviderEntry{}
 	}
+	resp.LayerModels = withEffectiveDefaultToggles(project, resp.LayerModels)
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// withEffectiveDefaultToggles states the default row's two booleans
+// explicitly, because the form's fallback is not the backend's.
+//
+// A configured project whose default row omits them still resolves them
+// from the legacy project fields — that is what those fields have always
+// meant — while the Models tab falls back to caching ON and reasoning OFF.
+// A project running with caching off and reasoning on therefore showed the
+// exact opposite in both controls, and every override inheriting from that
+// row showed it too. A control that reports the opposite of what runs is
+// worse than no control.
+//
+// Resolved rather than guessed, so the value shown is the value that runs
+// and saving the untouched form changes nothing. Only an EXISTING default
+// row is touched: inventing one would put a model-less row in front of a
+// project that has no provider at all.
+func withEffectiveDefaultToggles(p *models.Project, rows map[string]llmlayer.LayerModel) map[string]llmlayer.LayerModel {
+	row, ok := rows[llmlayer.DefaultLayer]
+	if !ok {
+		return rows
+	}
+	spec, err := p.LayerSpecUnchecked(llmlayer.DefaultLayer)
+	if err != nil {
+		return rows
+	}
+	cfg := make(map[string]string, len(row.Config)+2)
+	for k, v := range row.Config {
+		cfg[k] = v
+	}
+	if _, set := cfg[gollm.PromptCacheKey]; !set {
+		cfg[gollm.PromptCacheKey] = strconv.FormatBool(spec.PromptCache)
+	}
+	if _, set := cfg[gollm.ReasoningEnabledKey]; !set {
+		cfg[gollm.ReasoningEnabledKey] = strconv.FormatBool(spec.Reasoning)
+	}
+	row.Config = cfg
+
+	// Copied, not mutated: rows may be the stored project's own map.
+	out := make(map[string]llmlayer.LayerModel, len(rows))
+	for k, v := range rows {
+		out[k] = v
+	}
+	out[llmlayer.DefaultLayer] = row
+	return out
 }
 
 // applyLLMLayerUpdate merges the request's per-layer LLM configuration onto
