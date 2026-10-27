@@ -85,3 +85,91 @@ func TestTheInsightSchemaStillDescribesWhatItAsksFor(t *testing.T) {
 		}
 	}
 }
+
+// insightRequiredFields are the fields an insight cannot lack, and the share of the 562
+// insights this pipeline has written that carried each one.
+//
+// The number is the argument. A field a model omits legitimately cannot be required without
+// forcing it to invent one, so `figures` (88%) and `quantifier_claims` (61%) are absent from
+// this set on purpose: a finding that states no number declares no figure.
+var insightRequiredFields = map[string]string{
+	"name":         "562 of 562",
+	"description":  "562 of 562",
+	"severity":     "562 of 562",
+	"source_steps": "562 of 562",
+}
+
+func TestTheInsightSchemaRequiresWhatAnInsightCannotLack(t *testing.T) {
+	// The schema required nothing while it was attached on a retry alone. Sending it on
+	// every analysis call turns that into a contract that obliges no field: a
+	// grammar-constrained model satisfies it with a name and no finding, the tolerant
+	// parser accepts that, and nothing retries.
+	items := insightItemSchema(t)
+
+	required := map[string]bool{}
+	for _, r := range toStringSlice(items["required"]) {
+		required[r] = true
+	}
+	if len(required) == 0 {
+		t.Fatal("the insight item requires no field, so a model can satisfy the schema with an " +
+			"empty object and the tolerant parser will accept it without a retry")
+	}
+	for field, evidence := range insightRequiredFields {
+		if !required[field] {
+			t.Errorf("%s is not required, and it was present in %s real insights; a schema sent "+
+				"on every call that does not oblige it permits a finding without one", field, evidence)
+		}
+	}
+	for _, overreach := range []string{"figures", "quantifier_claims"} {
+		if required[overreach] {
+			t.Errorf("%s is required, which forces a model to invent one: it was present in "+
+				"88%% and 61%% of real insights respectively, because a finding that states no "+
+				"number declares no figure", overreach)
+		}
+	}
+}
+
+func TestEveryRequiredInsightFieldRejectsAnEmptyValue(t *testing.T) {
+	// `required` makes a key present and says nothing about its value: a grammar satisfies
+	// a required string with "" and a required array with []. That is documented on
+	// nonEmptyString because it already happened once -- a run wrote a title, closed the
+	// object, and every skipped field persisted as its zero value, which reads downstream
+	// exactly like the absent field `required` was added to prevent.
+	items := insightItemSchema(t)
+	props, _ := items["properties"].(map[string]interface{})
+	for _, field := range toStringSlice(items["required"]) {
+		node, ok := props[field].(map[string]interface{})
+		if !ok {
+			t.Errorf("%s is required but the schema describes no such property", field)
+			continue
+		}
+		switch node["type"] {
+		case "string":
+			if n, _ := node["minLength"].(int); n < 1 {
+				t.Errorf("required string %s has no minLength, so a grammar satisfies it with \"\"", field)
+			}
+		case "array":
+			if n, _ := node["minItems"].(int); n < 1 {
+				t.Errorf("required array %s has no minItems, so a grammar satisfies it with []", field)
+			}
+		}
+	}
+}
+
+// insightItemSchema returns the per-insight object from the envelope.
+func insightItemSchema(t *testing.T) map[string]interface{} {
+	t.Helper()
+	props, ok := insightResponseSchema()["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("the insight schema has no properties")
+	}
+	arr, ok := props["insights"].(map[string]interface{})
+	if !ok {
+		t.Fatal("the insight schema has no insights array")
+	}
+	items, ok := arr["items"].(map[string]interface{})
+	if !ok {
+		t.Fatal("the insights array describes no item")
+	}
+	return items
+}

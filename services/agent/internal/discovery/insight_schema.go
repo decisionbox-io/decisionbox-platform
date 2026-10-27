@@ -99,14 +99,20 @@ func insightResponseSchema() map[string]interface{} {
 	// Named instead of reusing a generic helper so the exception is visible at the call
 	// site, and pinned by TestTheInsightSchemaBoundsEveryStringItCan, which fails if a
 	// second unbounded string appears.
+	//
+	// minLength is set even though no maximum is: `required` makes a key present and says
+	// nothing about its value, so a grammar satisfies a required string with "". That is
+	// the trap nonEmptyString exists for, and this field is required below.
 	unboundedProse := func(desc string) map[string]interface{} {
-		return map[string]interface{}{"type": "string", "description": desc}
+		return map[string]interface{}{"type": "string", "description": desc, "minLength": 1}
 	}
 
 	insightProps := map[string]interface{}{
-		"name":           boundedString("Short, specific name for the discovered pattern or finding. "+figureReferenceRule, maxSchemaTitleRunes),
-		"description":    unboundedProse("Explanation of the finding. " + figureReferenceRule),
-		"severity":       label(`One of "critical", "high", "medium", "low"`),
+		"name":        nonEmptyString("Short, specific name for the discovered pattern or finding. "+figureReferenceRule, maxSchemaTitleRunes),
+		"description": unboundedProse("Explanation of the finding. " + figureReferenceRule),
+		// nonEmptyString rather than label because this field is required below, and a
+		// grammar satisfies a required string with "".
+		"severity":       nonEmptyString(`One of "critical", "high", "medium", "low"`, maxSchemaLabelRunes),
 		"affected_count": map[string]interface{}{"type": "integer", "description": "Number of users/entities affected"},
 		"risk_score":     map[string]interface{}{"type": "number", "description": "Risk score from 0.0 to 1.0"},
 		"confidence":     map[string]interface{}{"type": "number", "description": "Confidence from 0.0 to 1.0"},
@@ -195,6 +201,10 @@ func insightResponseSchema() map[string]interface{} {
 			"type":        "array",
 			"description": "Exploration step numbers this insight is based on",
 			"items":       map[string]interface{}{"type": "integer", "description": "An exploration step number"},
+			// Required below, so minItems for the same reason name carries minLength: a
+			// grammar satisfies a required array with [], and an insight citing no step is
+			// a finding with no evidence behind it.
+			"minItems": 1,
 		},
 	}
 
@@ -207,6 +217,31 @@ func insightResponseSchema() map[string]interface{} {
 				"items": map[string]interface{}{
 					"type":       "object",
 					"properties": insightProps,
+					// The fields an insight is worthless without.
+					//
+					// This object required nothing at all, which was survivable while the
+					// schema was attached on a corrective retry only and became a defect
+					// the moment it went on every analysis call: a schema that obliges no
+					// field is presented as a contract while permitting `{"name": "..."}`,
+					// and the tolerant parser accepts that, so nothing retries and the
+					// area silently yields a headline with no finding under it. It is
+					// sharpest on a llama.cpp-backed runner, where a JSON schema becomes a
+					// grammar: optional properties are only reachable in the schema's own
+					// order, Go serialises these map keys alphabetically, and a model
+					// following the packs' name-first examples would have had no legal way
+					// back to `description` or `figures` afterwards.
+					//
+					// Chosen from measurement, not taste: across the 562 insights this
+					// pipeline has written, name, description, severity and source_steps
+					// are present in 562. `figures` is in 88% and `quantifier_claims` in
+					// 61% -- a finding that states no number declares no figure, and a
+					// claim no quantifier covers needs no entry -- so requiring either
+					// would force a model to invent one. The recommendation schema has
+					// required six fields since platform#340, which is why that phase has
+					// run on this wire without this failure.
+					//
+					// Pinned by TestTheInsightSchemaRequiresWhatAnInsightCannotLack.
+					"required": []interface{}{"name", "description", "severity", "source_steps"},
 				},
 			},
 		},
