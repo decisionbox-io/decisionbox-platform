@@ -182,3 +182,51 @@ describe('useLLMConfig — repointing an entry', () => {
     expect(hook.result.current.layerModels.default.model).toBe('gpt-4o');
   });
 });
+
+// An endpoint serves its own model over its own wire, so the two settings
+// are a contradiction — vertex-ai refuses to build at all when both are
+// set. The single-column form deleted wire_override as the endpoint was
+// typed; after the split (endpoint on the entry, override on the row)
+// nothing did, so a Vertex project with a layer override saved cleanly and
+// then failed to construct that layer on the next run.
+describe('useLLMConfig.setEntryForms — entering endpoint mode', () => {
+  const VERTEX = {
+    seeded: false,
+    configured: true,
+    providers: [{ id: 'default', provider: 'vertex-ai', config: { project_id: 'p' } }],
+    layer_models: {
+      default: { provider_id: 'default', model: 'gemini-2.5-flash', config: { wire_override: 'google-native' } },
+      ask: { provider_id: 'other', model: 'x', config: { wire_override: 'anthropic-messages' } },
+    },
+  };
+
+  it('drops the wire override of every layer on the entry that gained one', async () => {
+    (api.getProjectLLMConfig as jest.Mock).mockResolvedValue(VERTEX);
+    const hook = renderHook(() => useLLMConfig('p1'));
+    await waitFor(() => expect(hook.result.current.loading).toBe(false));
+
+    act(() => {
+      hook.result.current.setEntryForms(hook.result.current.entryForms.map((f) => (
+        f.id === 'default' ? { ...f, config: { ...f.config, endpoint_id: '123456789' } } : f
+      )));
+    });
+
+    expect(hook.result.current.layerModels.default.config?.wire_override).toBeUndefined();
+    // A layer on ANOTHER entry is not in endpoint mode and keeps its own.
+    expect(hook.result.current.layerModels.ask.config?.wire_override).toBe('anthropic-messages');
+  });
+
+  it('leaves the overrides alone when the entry has no endpoint', async () => {
+    (api.getProjectLLMConfig as jest.Mock).mockResolvedValue(VERTEX);
+    const hook = renderHook(() => useLLMConfig('p1'));
+    await waitFor(() => expect(hook.result.current.loading).toBe(false));
+
+    act(() => {
+      hook.result.current.setEntryForms(hook.result.current.entryForms.map((f) => (
+        f.id === 'default' ? { ...f, config: { ...f.config, project_id: 'q' } } : f
+      )));
+    });
+
+    expect(hook.result.current.layerModels.default.config?.wire_override).toBe('google-native');
+  });
+});

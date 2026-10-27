@@ -238,6 +238,12 @@ export function LayerModelsPanel({
     return boolFrom(value[DEFAULT_LAYER]?.config, key, fallback);
   };
 
+  /** Whether a row's connection is served by a user-deployed endpoint. */
+  const usingEndpoint = (row: LayerModel) => {
+    const entry = entries.find((e) => e.id === (row.provider_id || DEFAULT_PROVIDER_ID));
+    return Boolean((row.config?.['endpoint_id'] || entry?.config?.['endpoint_id'] || '').trim());
+  };
+
   const renderModelSettings = (
     row: LayerModel,
     meta: ProviderMeta | null,
@@ -245,8 +251,13 @@ export function LayerModelsPanel({
   ) => {
     // Needed for a customer-named Bedrock / Vertex / Azure deployment whose
     // wire cannot be inferred from the model id. Offered only where the
-    // provider declares it, so it is not a dead box on Claude or OpenAI.
-    const wireField = meta?.config_fields?.find((f) => f.key === 'wire_override');
+    // provider declares it, so it is not a dead box on Claude or OpenAI —
+    // and never on an endpoint, which serves its own model over its own
+    // wire. vertex-ai refuses to build at all when both are set, so a box
+    // that can only produce a broken layer should not be there.
+    const wireField = usingEndpoint(row)
+      ? undefined
+      : meta?.config_fields?.find((f) => f.key === 'wire_override');
     return (
       <>
         <Group grow align="flex-start">
@@ -368,7 +379,6 @@ export function LayerModelsPanel({
    */
   const selectModel = (layerKey: string, row: LayerModel, model: string, live: LiveModel[] | null, apply: (next: LayerModel) => void) => {
     const config: Record<string, string> = { ...(row.config || {}) };
-    const previous = (live ?? []).find((m) => m.id === row.model);
     const chosen = (live ?? []).find((m) => m.id === model);
     const filled = autofilledRef.current[layerKey] ?? {};
     const next: { max_input_tokens?: string; max_output_tokens?: string } = {};
@@ -380,7 +390,15 @@ export function LayerModelsPanel({
 
     (['max_input_tokens', 'max_output_tokens'] as const).forEach((key) => {
       const current = (config[key] ?? '').trim();
-      const ours = current !== '' && (current === filled[key] || current === reported(previous, key));
+      // Only what this panel RECORDED filling counts as ours. Treating "it
+      // equals what the current model reports" as ours too looked like a
+      // way to recognise our own value across a reload, but it cannot tell
+      // that apart from an operator who pinned the limit to the number the
+      // model reports — which is the obvious thing to type. They then
+      // switched model and watched their 8192 become 200000, or vanish.
+      // A stale limit left behind is visible in the field and editable; a
+      // budget silently rewritten is not.
+      const ours = current !== '' && current === filled[key];
       if (current !== '' && !ours) return; // typed by the operator — left alone
       const detected = reported(chosen, key);
       if (detected !== undefined) {

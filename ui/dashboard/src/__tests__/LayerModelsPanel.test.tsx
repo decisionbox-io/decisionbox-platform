@@ -722,16 +722,36 @@ describe('LayerModelsPanel — selecting a model records its reported limits', (
   });
 
   it('clears its own stale value when the new model reports none', async () => {
-    // The row already holds exactly what small-8k reports, so the panel
-    // recognises the value as one it would have filled.
+    const onChange = renderPanel({ [DEFAULT_LAYER]: { provider_id: 'default', model: '' } });
+    await screen.findByText('Main layers');
+    await waitFor(() => expect(api.listLiveLLMModelsForProvider).toHaveBeenCalled());
+
+    // The panel fills 8192 itself here, which is what makes it the panel's
+    // to clear a moment later.
+    fireEvent.change(screen.getAllByLabelText('Model')[0], { target: { value: 'small-8k' } });
+    expect(onChange.mock.calls.at(-1)![0][DEFAULT_LAYER].config.max_input_tokens).toBe('8192');
+
+    fireEvent.change(screen.getAllByLabelText('Model')[0], { target: { value: 'unknown' } });
+    const next = onChange.mock.calls.at(-1)![0];
+    expect(next[DEFAULT_LAYER].config?.max_input_tokens).toBeUndefined();
+  });
+
+  // A limit that merely EQUALS what the current model reports is not the
+  // panel's to touch. Pinning input to the number the model reports is the
+  // obvious thing for an operator to type, and recognising that as
+  // auto-filled turned their 8192 into 200000 on the next model switch —
+  // or deleted it when the next model reported nothing.
+  it('leaves a typed limit alone even when it matches the current model', async () => {
     const onChange = renderPanel({
       [DEFAULT_LAYER]: { provider_id: 'default', model: 'small-8k', config: { max_input_tokens: '8192' } },
     });
     await screen.findByText('Main layers');
     await waitFor(() => expect(api.listLiveLLMModelsForProvider).toHaveBeenCalled());
 
+    fireEvent.change(screen.getAllByLabelText('Model')[0], { target: { value: 'big-200k' } });
+    expect(onChange.mock.calls.at(-1)![0][DEFAULT_LAYER].config.max_input_tokens).toBe('8192');
+
     fireEvent.change(screen.getAllByLabelText('Model')[0], { target: { value: 'unknown' } });
-    const next = onChange.mock.calls[onChange.mock.calls.length - 1][0];
-    expect(next[DEFAULT_LAYER].config?.max_input_tokens).toBeUndefined();
+    expect(onChange.mock.calls.at(-1)![0][DEFAULT_LAYER].config.max_input_tokens).toBe('8192');
   });
 });

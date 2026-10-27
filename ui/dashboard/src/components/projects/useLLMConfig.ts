@@ -151,31 +151,53 @@ export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void):
   }, [projectId]);
 
   /**
-   * editEntries replaces the provider-entry forms, clearing the models of
-   * any layer whose entry just changed PROVIDER.
+   * editEntries replaces the provider-entry forms, and follows the two
+   * row-level consequences an entry edit has.
    *
-   * A model belongs to the provider it was picked from. Repointing an entry
+   * A changed PROVIDER clears the models of every layer on that entry. A
+   * model belongs to the provider it was picked from: repointing an entry
    * from OpenAI to Claude left every layer on it holding a model the new
-   * provider does not serve — and validation only checks that a model is
+   * provider does not serve, and validation only checks that a model is
    * non-empty, so the save went through and those layers called a model
    * that does not exist. The row-level picker already clears the model when
    * its entry changes; this is the same rule seen from the Providers tab.
+   *
+   * Gaining an ENDPOINT clears those layers' wire_override. An endpoint
+   * serves its own model over its own wire — vertex-ai refuses to build at
+   * all when both are set — and the two now live apart: the endpoint on the
+   * entry, the override on the row. The single-column form used to delete
+   * the override as the endpoint was typed; nothing did after the split, so
+   * a Vertex project with a layer override saved cleanly and then failed to
+   * construct that layer.
    */
   const editEntries = useCallback((next: ProviderEntryForm[]) => {
     const repointed = new Set<string>();
+    const endpointed = new Set<string>();
+    const endpointOf = (f: ProviderEntryForm | undefined) => (f?.config?.['endpoint_id'] ?? '').trim();
     for (const f of next) {
       const before = entryForms.find((p) => p.id === f.id);
-      if (before && before.provider && f.provider && before.provider !== f.provider) {
+      if (!before) continue;
+      if (before.provider && f.provider && before.provider !== f.provider) {
         repointed.add(f.id);
+      }
+      if (!endpointOf(before) && endpointOf(f)) {
+        endpointed.add(f.id);
       }
     }
     setEntryForms(next);
-    if (repointed.size === 0) return;
+    if (repointed.size === 0 && endpointed.size === 0) return;
     setLayerModels((rows) => {
       const out: Record<string, LayerModel> = {};
       for (const [layer, row] of Object.entries(rows)) {
         const id = row.provider_id || DEFAULT_LLM_PROVIDER_ID;
-        out[layer] = repointed.has(id) ? { ...row, model: '' } : row;
+        let edited = row;
+        if (repointed.has(id)) edited = { ...edited, model: '' };
+        if (endpointed.has(id) && edited.config?.['wire_override']) {
+          const config = { ...edited.config };
+          delete config['wire_override'];
+          edited = { ...edited, config };
+        }
+        out[layer] = edited;
       }
       return out;
     });

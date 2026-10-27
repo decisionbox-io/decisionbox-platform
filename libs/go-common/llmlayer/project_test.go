@@ -410,6 +410,69 @@ func TestPerLayerPromptCaching(t *testing.T) {
 			t.Error("the pre-existing llm.config prompt_cache entry must keep working")
 		}
 	})
+
+	// The project toggles describe the ANALYSIS pair, and on a legacy
+	// document that is all they ever described: schema indexing built the
+	// blurb provider straight from blurb_llm.config. Letting the project
+	// field govern the blurb slot here turns caching back on for table
+	// descriptions the moment the image is upgraded — and the first save
+	// turns it off again, because the seed puts the blurb config's own half
+	// on that row.
+	t.Run("the blurb slot keeps its own toggles on a legacy document", func(t *testing.T) {
+		c := legacyOnly()
+		c.Legacy.PromptCache = boolPtr(true)
+		c.Legacy.Reasoning = boolPtr(true)
+		c.Legacy.Blurb = &LegacyBlurb{
+			Provider: "openai",
+			Model:    "gpt-4.1-nano",
+			Config: map[string]string{
+				gollm.PromptCacheKey:      "false",
+				gollm.ReasoningEnabledKey: "false",
+			},
+		}
+		spec, err := c.SpecUnchecked(LayerTableDescriptions)
+		if err != nil {
+			t.Fatalf("SpecUnchecked(table_descriptions): %v", err)
+		}
+		if spec.PromptCache {
+			t.Error("table descriptions cached, but blurb_llm.config turned caching off and the project field never reached this slot")
+		}
+		if spec.Reasoning {
+			t.Error("table descriptions ran with reasoning, which blurb_llm.config turned off")
+		}
+
+		// The analysis pair is still governed by the project field — that is
+		// what it has always meant, and the two must not be swapped.
+		analysis, _ := c.SpecUnchecked(LayerAnalysis)
+		if !analysis.PromptCache {
+			t.Error("the project-wide caching switch stopped applying to the analysis pair")
+		}
+	})
+
+	// And once the project IS configured, the row's own config wins
+	// everywhere — which is the value the seed wrote from that same blurb
+	// config, so the upgrade and the first save agree.
+	t.Run("the seeded row resolves to what the legacy read resolved to", func(t *testing.T) {
+		c := legacyOnly()
+		c.Legacy.PromptCache = boolPtr(true)
+		c.Legacy.Blurb = &LegacyBlurb{
+			Provider: "openai",
+			Model:    "gpt-4.1-nano",
+			Config:   map[string]string{gollm.PromptCacheKey: "false"},
+		}
+		before, _ := c.SpecUnchecked(LayerTableDescriptions)
+
+		entries, layers := c.SeedFromLegacy()
+		seeded := ProjectConfig{Providers: entries, LayerModels: layers, Legacy: c.Legacy}
+		after, err := seeded.SpecUnchecked(LayerTableDescriptions)
+		if err != nil {
+			t.Fatalf("SpecUnchecked after seeding: %v", err)
+		}
+		if before.PromptCache != after.PromptCache {
+			t.Errorf("caching was %v before the seed and %v after; saving an unchanged seed must not change what runs",
+				before.PromptCache, after.PromptCache)
+		}
+	})
 }
 
 // --- the configuration gate ---

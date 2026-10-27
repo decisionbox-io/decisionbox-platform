@@ -262,14 +262,30 @@ func (c ProjectConfig) SpecUnchecked(layer string) (LayerSpec, error) {
 		cfg[k] = v
 	}
 
+	// The project-level toggles describe the ANALYSIS pair, and on a legacy
+	// document that is all they ever described: the blurb slot was built
+	// straight from blurb_llm.config, which prompt_cache_enabled and
+	// reasoning_enabled never reached. Letting them govern it here would
+	// silently turn caching back on for table descriptions on upgrade — and
+	// then off again on the first save, because the seed puts the blurb
+	// config's own half on that row. A toggle that flips on upgrade and
+	// flips back on save is worse than either value.
+	configured := len(c.LayerModels) > 0
+	projectToggles := func(v *bool) *bool {
+		if !configured && NormalizeProviderID(entry.ID) != DefaultProviderID {
+			return nil
+		}
+		return v
+	}
+
 	return LayerSpec{
 		Layer:                  layer,
 		ProviderID:             NormalizeProviderID(entry.ID),
 		Provider:               entry.Provider,
 		Model:                  lm.Model,
 		Config:                 cfg,
-		PromptCache:            resolveBoolConfig(cfg, gollm.PromptCacheKey, c.Legacy.PromptCache, true, len(c.LayerModels) > 0),
-		Reasoning:              resolveBoolConfig(cfg, gollm.ReasoningEnabledKey, c.Legacy.Reasoning, false, len(c.LayerModels) > 0),
+		PromptCache:            resolveBoolConfig(cfg, gollm.PromptCacheKey, projectToggles(c.Legacy.PromptCache), true, configured),
+		Reasoning:              resolveBoolConfig(cfg, gollm.ReasoningEnabledKey, projectToggles(c.Legacy.Reasoning), false, configured),
 		FellBackFromProviderID: fellBack,
 	}, nil
 }
