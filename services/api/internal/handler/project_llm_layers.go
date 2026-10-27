@@ -372,9 +372,17 @@ func mirrorLegacyBlurbOntoTableDescriptions(p *models.Project) {
 		p.LLMProviders = append(p.LLMProviders, entry)
 	}
 
+	// A blank model on a non-endpoint blurb override INHERITS the analysis
+	// model — that is what the legacy resolver has always done, and it is a
+	// shape clients still send. Writing the blank through produced a row
+	// with no model and a 400 on a request that used to work.
+	model := b.Model
+	if strings.TrimSpace(model) == "" && strings.TrimSpace(b.Config[llmlayer.EndpointIDConfigKey]) == "" {
+		model = p.LLM.Model
+	}
 	p.LayerModels[llmlayer.LayerTableDescriptions] = llmlayer.LayerModel{
 		ProviderID: llmlayer.BlurbProviderID,
-		Model:      b.Model,
+		Model:      model,
 		Config:     llmlayer.ModelConfig(b.Config),
 	}
 }

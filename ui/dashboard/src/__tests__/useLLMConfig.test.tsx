@@ -100,3 +100,29 @@ describe('useLLMConfig.save', () => {
     expect(api.updateProject).toHaveBeenCalled();
   });
 });
+
+// savedEntries is compared against the in-flight entries to decide whether a
+// connection has been edited. The in-flight ones go through
+// entryFormsFrom -> entriesFrom, which pre-selects a single-method
+// provider's sole auth_method and writes it into the config — so comparing
+// against the RAW stored entries marked every such connection as unsaved,
+// and its model list never loaded.
+describe('useLLMConfig.savedEntries', () => {
+  it('is normalised the same way the edited entries are', async () => {
+    (api.getProjectLLMConfig as jest.Mock).mockResolvedValue({
+      seeded: false,
+      configured: true,
+      // Stored without an explicit auth_method, as a real OpenAI entry is.
+      providers: [{ id: 'default', provider: 'openai', config: {} }],
+      layer_models: { default: { provider_id: 'default', model: 'gpt-4o' } },
+    });
+    (api.listLLMProviders as jest.Mock).mockResolvedValue([
+      { id: 'openai', name: 'OpenAI', description: '', config_fields: [], auth_methods: [{ id: 'api_key', name: 'API Key', fields: [] }] },
+    ]);
+
+    const hook = renderHook(() => useLLMConfig('p1'));
+    await waitFor(() => expect(hook.result.current.loading).toBe(false));
+
+    expect(hook.result.current.savedEntries).toEqual(hook.result.current.entries);
+  });
+});

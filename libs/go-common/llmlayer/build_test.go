@@ -505,3 +505,32 @@ func TestAnUnsanctionedEnvVarIsNotResolvedEvenWhenItExists(t *testing.T) {
 		t.Fatalf("resolved %q from a variable the project document named; the deployment's own environment must be unreachable", cred.Value)
 	}
 }
+
+// ClampOutput is the one definition of "a deployment budget can only be
+// lowered", used by discovery, the standalone validator, replay, Ask,
+// schema indexing and the datasource router. Each of those had its own
+// comparison once, and each one that was missing let a layer pointed at a
+// small model reject every call.
+func TestClampOutputOnlyEverLowers(t *testing.T) {
+	small := LayerSpec{Provider: "litellm", Model: "qwen3-32b", Config: map[string]string{"max_output_tokens": "1024"}}
+	if got := small.ClampOutput(4000); got != 1024 {
+		t.Errorf("clamped = %d, want the layer's 1024", got)
+	}
+	if got := small.ClampOutput(512); got != 512 {
+		t.Errorf("clamped = %d, want the caller's lower 512", got)
+	}
+
+	// An operator override wins over the catalog, which is the existing
+	// precedence for max_output_tokens.
+	catalogued := LayerSpec{Provider: "bedrock", Model: "anthropic.claude-haiku-4-5"}
+	if ceiling := catalogued.OutputCeiling(); ceiling <= 0 {
+		t.Fatalf("a catalogued model reported no ceiling (%d)", ceiling)
+	}
+
+	// An unknown model has no ceiling, so the caller's budget stands rather
+	// than collapsing to zero.
+	unknown := LayerSpec{Provider: "litellm", Model: "something-nobody-catalogued"}
+	if got := unknown.ClampOutput(4000); got != 4000 {
+		t.Errorf("clamped = %d with no known ceiling, want 4000", got)
+	}
+}

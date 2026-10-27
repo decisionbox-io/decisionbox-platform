@@ -180,6 +180,16 @@ func run() error {
 	}
 	defer whProvider.Close()
 
+	// Clamped to each layer's own ceiling, exactly as RunDiscovery and the
+	// standalone validator do. A replay that sends a budget production
+	// would have lowered is not reproducing the run: a layer capped below
+	// the deployment default gets its calls rejected here and returns
+	// `unverifiable` where production returned a verdict.
+	cfg.Verifier.MaxOutputTokens = verifierSpec.ClampOutput(cfg.Verifier.MaxOutputTokens)
+	if cfg.RefuterEnabled {
+		cfg.Refuter.MaxOutputTokens = refuterSpec.ClampOutput(cfg.Refuter.MaxOutputTokens)
+	}
+
 	byMode := map[valmodels.AgentMode]verifier.LLMClient{valmodels.ModeVerifier: verifierClient}
 	if cfg.RefuterEnabled {
 		byMode[valmodels.ModeRefuter] = refuterClient

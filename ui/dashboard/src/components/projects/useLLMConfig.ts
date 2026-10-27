@@ -103,7 +103,13 @@ export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void):
         // Only a PERSISTED entry can be connection-tested: the test reads
         // stored config and the stored secret, not in-flight form state.
         setSavedIds(cfg.seeded ? [] : cfg.providers.map((e) => e.id || DEFAULT_LLM_PROVIDER_ID));
-        setSavedEntries(cfg.seeded ? [] : cfg.providers);
+        // Normalised through the SAME round trip the in-flight entries take,
+        // so the two are comparable. entryFormsFrom pre-selects a
+        // single-method provider's sole auth_method and entriesFrom writes
+        // it into the config, so a raw stored entry differs from an
+        // untouched edited one — which made every such connection look
+        // unsaved, and its model list never load.
+        setSavedEntries(cfg.seeded ? [] : entriesFrom(entryFormsFrom(cfg.providers, provs)));
         api.listSecrets(projectId).then((s) => setSecrets(s || [])).catch(() => {});
       })
       .catch((e) => setError((e as Error).message))

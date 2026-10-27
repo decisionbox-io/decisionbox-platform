@@ -1156,6 +1156,43 @@ func TestUpdate_LegacyOnlyWritesMoveTheirLayerRows(t *testing.T) {
 		}
 	})
 
+	// A blank model on a non-endpoint blurb override INHERITS the analysis
+	// model — the legacy resolver has always done that, and it is a shape
+	// clients still send. Writing the blank through produced a row with no
+	// model and a 400 on a request that used to work.
+	t.Run("a blurb write with no model inherits the analysis model", func(t *testing.T) {
+		repo := newMockProjectRepo()
+		h := NewProjectsHandler(repo, newMockDomainPackRepo())
+		p := configuredProject(t, repo)
+
+		w := putProject(t, h, p.ID, `{"blurb_llm":{"provider":"bedrock","model":""}}`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		stored, _ := repo.GetByID(context.Background(), p.ID)
+		row := stored.LayerModels[llmlayer.LayerTableDescriptions]
+		if row.Model != stored.LLM.Model {
+			t.Errorf("table_descriptions model = %q, want the analysis model %q", row.Model, stored.LLM.Model)
+		}
+	})
+
+	// An ENDPOINT-backed override legitimately carries no model: the
+	// deployment serves its own, so inheriting one would be wrong.
+	t.Run("an endpoint-backed blurb write keeps its empty model", func(t *testing.T) {
+		repo := newMockProjectRepo()
+		h := NewProjectsHandler(repo, newMockDomainPackRepo())
+		p := configuredProject(t, repo)
+
+		w := putProject(t, h, p.ID, `{"blurb_llm":{"provider":"vertex-ai","model":"","config":{"project_id":"gcp","location":"us-central1","endpoint_id":"ep-7"}}}`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		stored, _ := repo.GetByID(context.Background(), p.ID)
+		if row := stored.LayerModels[llmlayer.LayerTableDescriptions]; row.Model != "" {
+			t.Errorf("table_descriptions model = %q, want it left empty for the endpoint", row.Model)
+		}
+	})
+
 	t.Run("an empty blurb provider clears the row", func(t *testing.T) {
 		repo := newMockProjectRepo()
 		h := NewProjectsHandler(repo, newMockDomainPackRepo())
