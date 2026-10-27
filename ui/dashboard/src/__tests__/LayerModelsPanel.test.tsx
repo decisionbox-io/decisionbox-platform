@@ -466,3 +466,49 @@ describe('LayerModelsPanel — inherited toggles show what will run', () => {
     expect(caching[1]).toBeChecked();
   });
 });
+
+// A credential-only save changes neither the provider nor the config, so
+// the connection key never moves — and a list discovered with the old key,
+// or the live_error from a bad one, survived the fix with no way back but a
+// page reload. The host reports the save; nothing the panel can see does.
+describe('LayerModelsPanel — a save refetches the model lists', () => {
+  it('asks again when the save generation moves', async () => {
+    const value = { [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' } };
+    const render1 = (gen: number) => (
+      <MantineProvider>
+        <LayerModelsPanel
+          projectId="proj-1" entries={ENTRIES} savedEntries={ENTRIES} savedGeneration={gen}
+          providers={[BEDROCK_META as never]} value={value} onChange={jest.fn()}
+        />
+      </MantineProvider>
+    );
+    const { rerender } = render(render1(0));
+    await waitFor(() => expect(api.listLiveLLMModelsForProvider).toHaveBeenCalled());
+    const before = (api.listLiveLLMModelsForProvider as jest.Mock).mock.calls.length;
+
+    // Same entries, same connection — only the save counter moves.
+    rerender(render1(1));
+    await waitFor(() => {
+      expect((api.listLiveLLMModelsForProvider as jest.Mock).mock.calls.length).toBeGreaterThan(before);
+    });
+  });
+
+  it('does not ask again on an unrelated re-render', async () => {
+    const value = { [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' } };
+    const el = () => (
+      <MantineProvider>
+        <LayerModelsPanel
+          projectId="proj-1" entries={[...ENTRIES]} savedEntries={[...ENTRIES]} savedGeneration={3}
+          providers={[BEDROCK_META as never]} value={{ ...value }} onChange={jest.fn()}
+        />
+      </MantineProvider>
+    );
+    const { rerender } = render(el());
+    await waitFor(() => expect(api.listLiveLLMModelsForProvider).toHaveBeenCalled());
+    const before = (api.listLiveLLMModelsForProvider as jest.Mock).mock.calls.length;
+
+    rerender(el());
+    await waitFor(() => expect(api.listLiveLLMModelsForProvider).toHaveBeenCalled());
+    expect((api.listLiveLLMModelsForProvider as jest.Mock).mock.calls.length).toBe(before);
+  });
+});

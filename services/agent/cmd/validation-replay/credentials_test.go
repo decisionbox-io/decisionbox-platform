@@ -140,3 +140,32 @@ func TestCountingProvider(t *testing.T) {
 		t.Error("no calls made: not a failure")
 	}
 }
+
+// Two validation layers on one connection that differ only by reasoning
+// need two CLIENTS, because the client is what carries the setting.
+//
+// Target deliberately excludes reasoning — it is requested per call and
+// does not change the connection — so sharing on Target alone made the
+// refuter send the verifier's reasoning setting, and a replay that does not
+// reproduce the run's requests is worse than no replay.
+func TestSameReplayClientSeparatesLayersThatDifferOnlyByReasoning(t *testing.T) {
+	base := llmlayer.LayerSpec{
+		ProviderID: llmlayer.DefaultProviderID, Provider: "bedrock", Model: "opus",
+		Config: map[string]string{"region": "us-east-1"},
+	}
+	thinking := base
+	thinking.Reasoning = true
+
+	if sameReplayClient(base, thinking) {
+		t.Error("two layers with different reasoning settings shared one client")
+	}
+	// The connection itself is still shared: same target.
+	if base.Target() != thinking.Target() {
+		t.Error("reasoning changed the connection identity; it is a per-request setting")
+	}
+	// And identical layers still share, so an unmixed project opens one.
+	same := base
+	if !sameReplayClient(base, same) {
+		t.Error("two identical layers were split into two clients")
+	}
+}

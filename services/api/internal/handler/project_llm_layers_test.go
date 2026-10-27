@@ -1418,3 +1418,53 @@ func TestTestLLM_AnOlderAgentIsReportedAsSuch(t *testing.T) {
 		t.Error("an unrelated unknown flag was reported as the layer problem")
 	}
 }
+
+// The legacy mirror has to be resolved from the project AS UPDATED.
+//
+// dualWriteLegacyLLM replaces p.PromptCacheEnabled with what the DEFAULT
+// ROW resolves to, and a table-description row that sets its own model but
+// no caching entry inherits exactly that. Resolving it from the snapshot
+// taken at the top of the function used the pre-update pointer — so the
+// mirror carried the old value and an older agent image indexed with a
+// different caching setting from the one a current image resolves for the
+// same project.
+func TestUpdate_TheBlurbMirrorReflectsTheDefaultRowJustSaved(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, newMockDomainPackRepo())
+	p := configuredProject(t, repo)
+
+	// The project field says caching is ON; the default ROW being saved
+	// turns it off, and table descriptions inherit that.
+	on := true
+	stored, _ := repo.GetByID(context.Background(), p.ID)
+	stored.PromptCacheEnabled = &on
+	if err := repo.Update(context.Background(), p.ID, stored); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	w := putProject(t, h, p.ID, `{
+	  "llm_providers": [{"id": "default", "provider": "bedrock"}],
+	  "layer_models": {
+	    "default": {"provider_id": "default", "model": "opus", "config": {"prompt_cache": "false"}},
+	    "table_descriptions": {"provider_id": "default", "model": "haiku"}
+	  }
+	}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+
+	got, _ := repo.GetByID(context.Background(), p.ID)
+	spec, err := got.LayerSpecUnchecked(llmlayer.LayerTableDescriptions)
+	if err != nil {
+		t.Fatalf("LayerSpecUnchecked: %v", err)
+	}
+	if spec.PromptCache {
+		t.Error("the table-description layer resolves caching ON; it inherits a default row that turned it off")
+	}
+	if got.BlurbLLM == nil {
+		t.Fatal("the blurb mirror was cleared; this layer has its own model")
+	}
+	if cached := got.BlurbLLM.Config["prompt_cache"]; cached != "false" {
+		t.Errorf("blurb mirror prompt_cache = %q, want false — an older image must not index with the pre-update value", cached)
+	}
+}

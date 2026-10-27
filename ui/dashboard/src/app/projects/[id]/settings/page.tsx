@@ -484,6 +484,7 @@ export default function ProjectSettingsPage() {
               projectId={id}
               entries={llmConfig.entries}
               savedEntries={llmConfig.savedEntries}
+              savedGeneration={llmConfig.savedGeneration}
               providers={llmConfig.providers}
               value={llmConfig.layerModels}
               onChange={llmConfig.setLayerModels}

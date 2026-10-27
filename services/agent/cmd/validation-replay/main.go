@@ -156,16 +156,23 @@ func run() error {
 		return fmt.Errorf("init verifier LLM: %w", err)
 	}
 	// The refuter shares the verifier's client when both layers resolve to
-	// the same target, so an unmixed project still opens one connection —
-	// and it is not built at all when the refuter will not run. Building a
-	// provider reads a credential and opens a connection, so an unused
-	// refuter override with a broken endpoint used to abort a verifier-only
-	// replay; discovery, the standalone validator and ask-serve all gate
-	// their layer lists the same way.
+	// the same target AND ask for the same reasoning, so an unmixed project
+	// still opens one connection. Reasoning is deliberately not part of
+	// Target — it is a per-REQUEST setting and does not change the
+	// connection — but it IS carried by the client, so two layers that
+	// differ by it need two clients or the refuter would send the
+	// verifier's setting and the replay would stop reproducing the run.
+	//
+	// Neither client is built for a mode that will not call it: building a
+	// provider reads a credential and opens a connection, so a broken
+	// refuter override used to abort a verifier-only replay. Discovery, the
+	// standalone validator and ask-serve all gate their layer lists the
+	// same way.
 	cfg, runCaps := verifier.LoadConfigFromEnv()
+	refuterWillRun := cfg.RefuterEnabled && fl.mode != "verify"
 	refuterClient := verifierClient
 	callCounters := []*countingProvider{calls}
-	if cfg.RefuterEnabled && refuterSpec.Target() != verifierSpec.Target() {
+	if refuterWillRun && !sameReplayClient(verifierSpec, refuterSpec) {
 		rc, refuterCalls, rerr := replayClient(ctx, secretProvider, fl, refuterSpec)
 		if rerr != nil {
 			return fmt.Errorf("init refuter LLM: %w", rerr)
@@ -673,4 +680,15 @@ func printTargetSummary(w *os.File, t TargetResult) {
 		fmt.Fprintf(w, "  refuter:  overall=%s claims=%d tokens=in:%d/out:%d reason=%q\n",
 			t.Refuter.Overall, len(t.Refuter.ClaimVerdicts), t.Refuter.LLMTokensIn, t.Refuter.LLMTokensOut, t.Refuter.OverallReason)
 	}
+}
+
+// sameReplayClient reports whether two layers can share one ai.Client.
+//
+// The provider connection is shared on Target alone, but a Client also
+// carries the reasoning setting — which Target deliberately excludes,
+// because reasoning is requested per call and does not change the
+// connection. Two layers differing only by it are one connection and two
+// clients, and production builds them that way.
+func sameReplayClient(a, b llmlayer.LayerSpec) bool {
+	return a.Target() == b.Target() && a.Reasoning == b.Reasoning
 }

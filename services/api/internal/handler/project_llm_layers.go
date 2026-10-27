@@ -296,7 +296,13 @@ func dualWriteLegacyLLM(p *models.Project) {
 	p.ReasoningEnabled = &reasoning
 	p.PromptCacheEnabled = &promptCache
 
-	td, err := cfg.SpecUnchecked(llmlayer.LayerTableDescriptions)
+	// Re-resolved from the UPDATED project: the toggles above replaced
+	// p.ReasoningEnabled / p.PromptCacheEnabled, and cfg still holds the
+	// pointers it was built with. A table-description row that sets its own
+	// model but inherits caching would otherwise be mirrored with the
+	// previous value, so an older agent image indexed with a different
+	// caching setting from the one a current image resolves.
+	td, err := p.LLMLayerConfig().SpecUnchecked(llmlayer.LayerTableDescriptions)
 	switch {
 	case err != nil:
 		// Leave the mirror as it is rather than guessing.

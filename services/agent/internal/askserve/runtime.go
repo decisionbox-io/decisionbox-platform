@@ -359,10 +359,18 @@ func (r *ProjectRuntime) router() *ai.Client {
 	return r.AIClient
 }
 
-// stepOutputCap bounds one assistant message: the `ask` layer's resolved
-// output cap, or the package default when the runtime was built without one.
+// stepOutputCap bounds ONE assistant message.
+//
+// The ask layer's resolved cap only ever LOWERS the package default. The
+// resolved cap is the model's whole output ceiling, and for a model with no
+// catalogued ceiling that is the global fallback — 64K — which is not a
+// sane reservation for one step of a multi-step loop: it replaces a 4,096
+// request with an oversized one on every step and pushes turns that used to
+// fit into overflow retries. What the layer's cap is good for is the
+// opposite case, a model that accepts LESS than the default and would
+// reject it.
 func (r *ProjectRuntime) stepOutputCap() int {
-	if r != nil && r.OutputCap > 0 {
+	if r != nil && r.OutputCap > 0 && r.OutputCap < defaultStepOutputTokens {
 		return r.OutputCap
 	}
 	return defaultStepOutputTokens

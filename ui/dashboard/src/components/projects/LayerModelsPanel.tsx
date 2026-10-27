@@ -44,6 +44,12 @@ export interface LayerModelsPanelProps {
    * nothing unsaved.
    */
   savedEntries?: LLMProviderEntry[];
+  /**
+   * Incremented by the host on every successful save. Any cached model list
+   * is dropped when it moves, because a credential-only save changes
+   * nothing else that this panel can see.
+   */
+  savedGeneration?: number;
   providers: ProviderMeta[];
   value: Record<string, LayerModel>;
   onChange: (next: Record<string, LayerModel>) => void;
@@ -57,7 +63,7 @@ function boolFrom(config: Record<string, string> | undefined, key: string, fallb
 }
 
 export function LayerModelsPanel({
-  projectId, entries, savedEntries, providers, value, onChange,
+  projectId, entries, savedEntries, savedGeneration = 0, providers, value, onChange,
 }: LayerModelsPanelProps) {
   const stored = savedEntries ?? entries;
   const [layers, setLayers] = useState<LLMLayerDescriptor[] | null>(null);
@@ -242,9 +248,19 @@ export function LayerModelsPanel({
   // (or a live_error from a bad one) would otherwise survive the fix with
   // no way back but a page reload. savedEntries is replaced on every save,
   // so its identity is the signal.
-  const savedIdentityRef = useRef(stored);
-  if (savedIdentityRef.current !== stored) {
-    savedIdentityRef.current = stored;
+  // A save is the one event that can change what the server would answer
+  // without changing the connection key: a credential-only save leaves the
+  // provider and config untouched, so a list discovered with the old key —
+  // or the live_error from a bad one — would survive the fix with no way
+  // back but a page reload.
+  //
+  // The host tells us a save happened. Sniffing the saved entries for a
+  // change cannot: equal content is exactly what a credential-only save
+  // produces, and a new array identity is what any parent re-render
+  // produces.
+  const savedGenerationRef = useRef(savedGeneration);
+  if (savedGenerationRef.current !== savedGeneration) {
+    savedGenerationRef.current = savedGeneration;
     requestedRef.current.clear();
   }
 
@@ -255,7 +271,7 @@ export function LayerModelsPanel({
     // loadModelsFor guards against repeats through requestedRef, so the only
     // dependencies are which entries are selected and what they point at.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedConnections, projectId]);
+  }, [selectedConnections, projectId, savedGeneration]);
 
   const setRow = (layer: string, next: LayerModel | null) => {
     const copy = { ...value };

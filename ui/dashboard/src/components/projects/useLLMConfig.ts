@@ -52,6 +52,16 @@ export interface UseLLMConfig {
    * offering its old provider's models.
    */
   savedEntries: LLMProviderEntry[];
+  /**
+   * Incremented on every successful save.
+   *
+   * A credential-only save changes neither the provider nor the config, so
+   * nothing about the stored connection moves — and anything downstream
+   * that caches per connection would keep serving what it fetched with the
+   * old key. This is the fact that a save happened, which no amount of
+   * comparing the entries can tell you.
+   */
+  savedGeneration: number;
   /** Layer keys per entry id, for the in-use removal guard. */
   layersByProviderId: Record<string, string[]>;
   /** A user-facing reason the configuration cannot be saved yet, or null. */
@@ -85,6 +95,7 @@ export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void):
   const [secrets, setSecrets] = useState<SecretEntryResponse[]>([]);
   const [savedIds, setSavedIds] = useState<string[]>([]);
   const [savedEntries, setSavedEntries] = useState<LLMProviderEntry[]>([]);
+  const [savedGeneration, setSavedGeneration] = useState(0);
 
   const loadOnce = useRef(false);
   useEffect(() => {
@@ -182,6 +193,7 @@ export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void):
       setEntryForms((prev) => prev.map((f) => ({ ...f, apiKey: '', isNew: false })));
       setSavedIds(entries.map((e) => e.id));
       setSavedEntries(entries);
+      setSavedGeneration((n) => n + 1);
       setSeeded(false);
       setConfigured(true);
       // Best-effort, and deliberately NOT part of whether the save
@@ -208,6 +220,7 @@ export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void):
   return {
     loading, error, saving, seeded, configured, providers,
     entryForms, setEntryForms, layerModels, setLayerModels,
-    secrets, savedIds, savedEntries, layersByProviderId, validationError, save, entries,
+    secrets, savedIds, savedEntries, savedGeneration,
+    layersByProviderId, validationError, save, entries,
   };
 }
