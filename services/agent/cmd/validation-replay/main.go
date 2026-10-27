@@ -156,10 +156,16 @@ func run() error {
 		return fmt.Errorf("init verifier LLM: %w", err)
 	}
 	// The refuter shares the verifier's client when both layers resolve to
-	// the same target, so an unmixed project still opens one connection.
+	// the same target, so an unmixed project still opens one connection —
+	// and it is not built at all when the refuter will not run. Building a
+	// provider reads a credential and opens a connection, so an unused
+	// refuter override with a broken endpoint used to abort a verifier-only
+	// replay; discovery, the standalone validator and ask-serve all gate
+	// their layer lists the same way.
+	cfg, runCaps := verifier.LoadConfigFromEnv()
 	refuterClient := verifierClient
 	callCounters := []*countingProvider{calls}
-	if refuterSpec.Target() != verifierSpec.Target() {
+	if cfg.RefuterEnabled && refuterSpec.Target() != verifierSpec.Target() {
 		rc, refuterCalls, rerr := replayClient(ctx, secretProvider, fl, refuterSpec)
 		if rerr != nil {
 			return fmt.Errorf("init refuter LLM: %w", rerr)
@@ -174,7 +180,6 @@ func run() error {
 	}
 	defer whProvider.Close()
 
-	cfg, runCaps := verifier.LoadConfigFromEnv()
 	byMode := map[valmodels.AgentMode]verifier.LLMClient{valmodels.ModeVerifier: verifierClient}
 	if cfg.RefuterEnabled {
 		byMode[valmodels.ModeRefuter] = refuterClient
