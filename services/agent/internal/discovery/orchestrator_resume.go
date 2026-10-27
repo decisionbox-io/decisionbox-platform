@@ -260,12 +260,18 @@ func (o *Orchestrator) checkpointExplorationSummary(ctx context.Context, res *ai
 
 // refreshCheckpointTTL re-anchors the retention clock on a run's checkpoints.
 //
-// For the skip-exploration path, which rebuilds from the rows without
-// rewriting them: their created_at — the TTL anchor — would stay at whatever
-// the previous attempt stamped. An operator resuming near
-// DISCOVERY_CHECKPOINT_RETENTION would then watch the rows expire while the
-// resumed attempt was still working, and a second resume would be impossible.
-// The replay path has no such problem: it rewrites every row it replays.
+// Both resume paths need it, and the replay path needs it for a reason that
+// only became true recently. Neither rewrites the rows it reads: the
+// skip-exploration path rebuilds from them, and replay deliberately leaves
+// their `attempt` alone so a later LoadPrefix cannot read the prefix as a
+// stale tail. So in both cases created_at — the TTL anchor — stays at
+// whatever the attempt that wrote the row stamped, and an operator resuming
+// near DISCOVERY_CHECKPOINT_RETENTION would watch the prefix expire while the
+// resumed attempt was still working, leaving a second resume impossible.
+//
+// This comment used to say the replay path had no such problem "because it
+// rewrites every row it replays". That was true until those rewrites were
+// removed, and the sentence outlived the behaviour it described.
 //
 // One bulk update rather than N rewrites — the content is unchanged and only
 // the anchor needs moving. Best-effort: losing it costs resumability on a

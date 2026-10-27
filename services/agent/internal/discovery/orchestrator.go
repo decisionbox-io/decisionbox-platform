@@ -1175,6 +1175,22 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			"steps":  explorationResult.TotalSteps,
 		}).Info("Exploration already complete from a previous attempt — skipping Phase 3 entirely")
 	} else {
+		// Replaying a prefix reads those rows without rewriting them — see
+		// the replay fence in exploration_resume.go — so their retention
+		// clock is still running from whichever attempt wrote them. Re-anchor
+		// it here, once, for the same reason the skip-exploration branch
+		// above does: an operator resuming near DISCOVERY_CHECKPOINT_RETENTION
+		// would otherwise watch the prefix expire while this attempt is still
+		// working, and a second resume would be refused for having nothing to
+		// replay — with newer checkpoints sitting right there.
+		//
+		// Bulk, and lineage-preserving: TouchByRun moves created_at only. It
+		// does not touch `attempt`, which is the whole point of not rewriting
+		// the rows.
+		if len(o.resume.replayableSteps()) > 0 {
+			o.refreshCheckpointTTL(ctx)
+		}
+
 		var err error
 		explorationResult, err = o.explorationEngine.Explore(ctx, ai.ExplorationContext{
 			ProjectID:     o.projectID,

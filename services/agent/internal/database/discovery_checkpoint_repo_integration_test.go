@@ -1051,3 +1051,80 @@ func TestInteg_Checkpoint_SummaryAloneIsNotResumable(t *testing.T) {
 		})
 	}
 }
+
+// TestInteg_Checkpoint_TouchByRunLeavesTheAttemptAlone pins the property that
+// makes the retention refresh safe to use on the REPLAY path.
+//
+// Replay reads its prefix without rewriting the rows, because their attempt
+// is what LoadPrefix uses to find a stale tail — rewriting them from the
+// front leaves a decreasing sequence and the next resume discards valid,
+// already-paid-for steps. But not rewriting them also means nothing moves
+// their created_at, so the retention clock keeps running from whichever
+// attempt wrote them, and a resume near the horizon can watch its own prefix
+// expire mid-run.
+//
+// TouchByRun is what resolves that, and only because it moves created_at and
+// leaves everything else untouched. If it ever also stamped the attempt, the
+// refresh would quietly undo the thing it was added alongside.
+func TestInteg_Checkpoint_TouchByRunLeavesTheAttemptAlone(t *testing.T) {
+	ctx := context.Background()
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	repo := NewDiscoveryCheckpointRepository(db)
+	if err := repo.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("EnsureIndexes: %v", err)
+	}
+
+	// A prefix written by attempt 1, as the attempt that earned it would.
+	for step := 1; step <= 3; step++ {
+		if err := repo.SaveStep(ctx, checkpointStepInput("run-1", step, 10)); err != nil {
+			t.Fatalf("seed step %d: %v", step, err)
+		}
+	}
+
+	before := map[int]time.Time{}
+	cur, err := db.Collection("discovery_checkpoints").Find(ctx, bson.M{"run_id": "run-1"})
+	if err != nil {
+		t.Fatalf("read the seeded rows: %v", err)
+	}
+	var seeded []ExplorationCheckpointDoc
+	if err := cur.All(ctx, &seeded); err != nil {
+		t.Fatalf("decode the seeded rows: %v", err)
+	}
+	for _, d := range seeded {
+		before[d.StepNumber] = d.CreatedAt
+	}
+
+	// Enough of a gap that a moved anchor is unambiguous.
+	time.Sleep(1100 * time.Millisecond)
+
+	touched, err := repo.TouchByRun(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("TouchByRun: %v", err)
+	}
+	if touched != 3 {
+		t.Errorf("touched %d rows, want 3", touched)
+	}
+
+	cur, err = db.Collection("discovery_checkpoints").Find(ctx, bson.M{"run_id": "run-1"})
+	if err != nil {
+		t.Fatalf("re-read the rows: %v", err)
+	}
+	var after []ExplorationCheckpointDoc
+	if err := cur.All(ctx, &after); err != nil {
+		t.Fatalf("decode the re-read rows: %v", err)
+	}
+	if len(after) != 3 {
+		t.Fatalf("got %d rows back, want 3", len(after))
+	}
+	for _, d := range after {
+		if !d.CreatedAt.After(before[d.StepNumber]) {
+			t.Errorf("step %d: created_at did not move (%v -> %v); the retention clock is still running from the previous attempt",
+				d.StepNumber, before[d.StepNumber], d.CreatedAt)
+		}
+		if d.Attempt != 1 {
+			t.Errorf("step %d: attempt moved to %d; a refreshed prefix must keep the attempt that earned it, or a later LoadPrefix reads it as a stale tail",
+				d.StepNumber, d.Attempt)
+		}
+	}
+}

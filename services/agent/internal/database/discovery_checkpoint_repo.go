@@ -514,10 +514,17 @@ func (r *DiscoveryCheckpointRepository) DeleteByRun(ctx context.Context, runID s
 // TouchByRun re-anchors the retention clock on every checkpoint of a run,
 // and reports how many rows moved.
 //
-// For a resumed run that rebuilds from its checkpoints without rewriting
-// them — the skip-exploration path — whose created_at would otherwise stay at
-// whatever the previous attempt stamped. One bulk update rather than N
+// For a resumed run that reads its checkpoints without rewriting them, which
+// is BOTH resume paths: the skip-exploration path rebuilds from the rows, and
+// replay deliberately leaves their attempt alone so a later LoadPrefix cannot
+// read the prefix as a stale tail. Their created_at would otherwise stay at
+// whatever the attempt that wrote them stamped. One bulk update rather than N
 // rewrites, because only the anchor needs moving.
+//
+// It sets created_at and NOTHING else, and that is load-bearing rather than
+// incidental: touching attempt here would hand a replayed prefix this
+// attempt's number and reintroduce the decreasing-sequence defect that not
+// rewriting the rows exists to avoid.
 func (r *DiscoveryCheckpointRepository) TouchByRun(ctx context.Context, runID string) (int64, error) {
 	if runID == "" {
 		return 0, errors.New("touch checkpoints: run_id is required")

@@ -1520,3 +1520,51 @@ func TestFenceReplayedStep(t *testing.T) {
 		}
 	})
 }
+
+// TestRefreshCheckpointTTL_OnBothResumePaths pins a pairing that only became
+// necessary when replay stopped rewriting its rows.
+//
+// Neither resume path rewrites the checkpoints it reads. The skip-exploration
+// path rebuilds from them; replay deliberately leaves their attempt alone, so
+// that a later LoadPrefix cannot read the prefix as a stale tail. In both
+// cases created_at — the TTL anchor — stays at whatever the attempt that
+// wrote the row stamped, so an operator resuming near
+// DISCOVERY_CHECKPOINT_RETENTION watches the prefix expire while this attempt
+// is still working, and the next resume is refused for having nothing to
+// replay.
+//
+// Replay used to be exempt, and the refresh helper's comment said so in those
+// words — "it rewrites every row it replays". Removing those rewrites made
+// the exemption false and the sentence stale, and nothing failed.
+//
+// Asserted against the source for the reason the neighbouring ownership tests
+// give: both call sites are inside RunDiscovery, which cannot be driven
+// without a live warehouse, an LLM and Mongo.
+func TestRefreshCheckpointTTL_OnBothResumePaths(t *testing.T) {
+	src, err := os.ReadFile("orchestrator.go")
+	if err != nil {
+		t.Fatalf("read orchestrator.go: %v", err)
+	}
+	text := string(src)
+
+	if n := strings.Count(text, "o.refreshCheckpointTTL(ctx)"); n != 2 {
+		t.Errorf("refreshCheckpointTTL has %d call sites, want 2 — one per resume path (skip-exploration and replay)", n)
+	}
+
+	// The replay one is guarded on there being a prefix to replay: a fresh
+	// run has no rows to re-anchor and must not pay for a bulk update.
+	if !strings.Contains(text, "if len(o.resume.replayableSteps()) > 0 {\n\t\t\to.refreshCheckpointTTL(ctx)") {
+		t.Error("the replay path does not re-anchor the retention clock behind a replayable-prefix guard; a resume near the retention horizon can lose the prefix it is replaying")
+	}
+
+	// And it happens BEFORE the engine runs, not after: the expiry it
+	// prevents occurs while exploration is in flight.
+	refresh := strings.Index(text, "if len(o.resume.replayableSteps()) > 0 {")
+	explore := strings.Index(text, "o.explorationEngine.Explore(ctx")
+	if refresh < 0 || explore < 0 {
+		t.Fatal("could not locate the refresh or the engine call")
+	}
+	if refresh > explore {
+		t.Error("the retention clock is re-anchored after exploration; the rows can expire while it is running, which is the window this exists to close")
+	}
+}
