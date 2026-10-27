@@ -452,6 +452,14 @@ type retireDeps struct {
 	logs        discoveryLogPersister
 	embed       EmbedIndexStore
 	vectors     vectorDeleter
+	// vectorsExpected is whether this DEPLOYMENT has a vector store at all,
+	// which is not the same question as whether this PROCESS has one.
+	//
+	// Both arrive here as a nil vectors: initQdrant returns nil both when
+	// QDRANT_URL is unset and when the health check fails, and the caller
+	// logs the second and carries on. They need opposite answers, so the
+	// config has to say which it is — see retireDiscovery.
+	vectorsExpected bool
 }
 
 // vectorDeleter is the one method of vectorstore.Provider the retire step
@@ -483,19 +491,21 @@ func (o *Orchestrator) retireOwnResult(ctx context.Context, discoveryID string) 
 		"discovery_id": discoveryID,
 	}).Warn("this attempt lost the run; removing the result it produced so the owning attempt's stays the project's latest")
 	retireDiscovery(ctx, o.runID, discoveryID, retireDeps{
-		discoveries: o.discoveryRepo,
-		logs:        o.discoveryLogRepo,
-		embed:       o.embedIndexStore,
-		vectors:     o.vectorStore,
+		discoveries:     o.discoveryRepo,
+		logs:            o.discoveryLogRepo,
+		embed:           o.embedIndexStore,
+		vectors:         o.vectorStore,
+		vectorsExpected: o.vectorStoreConfigured,
 	})
 }
 
 func (o *Orchestrator) retireSupersededAttempts(ctx context.Context, keepDiscoveryID string) {
 	retireSuperseded(ctx, o.runID, keepDiscoveryID, o.resume.attemptNumber(), retireDeps{
-		discoveries: o.discoveryRepo,
-		logs:        o.discoveryLogRepo,
-		embed:       o.embedIndexStore,
-		vectors:     o.vectorStore,
+		discoveries:     o.discoveryRepo,
+		logs:            o.discoveryLogRepo,
+		embed:           o.embedIndexStore,
+		vectors:         o.vectorStore,
+		vectorsExpected: o.vectorStoreConfigured,
 	})
 }
 
@@ -586,23 +596,38 @@ func retireDiscovery(ctx context.Context, runID, discoveryID string, deps retire
 
 		pointIDs := append(append(make([]string, 0, len(insightIDs)+len(recIDs)), insightIDs...), recIDs...)
 		if len(pointIDs) > 0 {
-			if deps.vectors == nil {
-				// No vector store in this process, and points that need
-				// deleting. That is NOT "nothing to delete": initQdrant
-				// failing its health check leaves the provider nil while the
-				// agent carries on — its schema and step-index clients are
-				// separate, so a run can finish perfectly well after Qdrant
-				// comes back. Treating a missing deleter as success would
-				// delete the rows whose ids ARE those points' ids, leaving
-				// them unaddressable, which is the orphan this whole
-				// ordering exists to prevent.
-				pointsGone = false
-				logf.Warn("a superseded attempt has indexed points but this process has no vector store (its health check failed at boot); keeping its Mongo rows so the points stay addressable")
-			} else if vecErr := deps.vectors.Delete(ctx, pointIDs); vecErr != nil {
+			switch {
+			case deps.vectors != nil:
 				// Still delete what WAS listed: fewer orphans is strictly
 				// better, and the rows stay behind to name the rest.
+				if vecErr := deps.vectors.Delete(ctx, pointIDs); vecErr != nil {
+					pointsGone = false
+					logf.WithError(vecErr).Warn("failed to delete a superseded attempt's vectors; keeping its Mongo rows so the points stay addressable")
+				}
+			case deps.vectorsExpected:
+				// A vector store this deployment HAS but this process cannot
+				// reach — initQdrant failing its health check leaves the
+				// provider nil while the agent carries on, because its schema
+				// and step-index clients are separate, so a run can finish
+				// perfectly well after Qdrant comes back.
+				//
+				// Treating that as "nothing to delete" would delete the rows
+				// whose ids ARE those points' ids, leaving them
+				// unaddressable, which is the orphan this whole ordering
+				// exists to prevent.
 				pointsGone = false
-				logf.WithError(vecErr).Warn("failed to delete a superseded attempt's vectors; keeping its Mongo rows so the points stay addressable")
+				logf.Warn("a superseded attempt has indexed points but this process cannot reach the vector store; keeping its Mongo rows so the points stay addressable")
+			default:
+				// No vector store in this DEPLOYMENT, so these ids name
+				// Mongo rows and nothing else. They look like point ids
+				// either way: PointIDsByDiscovery lists the standalone
+				// insight and recommendation rows out of Mongo, and
+				// runPhaseEmbedIndex writes those rows BEFORE it checks for a
+				// vector store. Refusing to retire on that basis left a
+				// superseded or cancelled attempt's findings on display for
+				// ever, reachable by project id with no parent to explain
+				// them — the exact state retirement exists to prevent.
+				logf.Debug("retiring a result with standalone rows and no vectors; this deployment has no vector store, so there is nothing to orphan")
 			}
 		}
 

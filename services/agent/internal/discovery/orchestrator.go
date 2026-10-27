@@ -291,9 +291,11 @@ type Orchestrator struct {
 	// repo is wired).
 	modelWindowRepo modelWindowPersister
 
-	vectorStore       vectorstore.Provider
-	embeddingProvider goembedding.Provider
-	embedIndexStore   EmbedIndexStore
+	vectorStore vectorstore.Provider
+	// vectorStoreConfigured mirrors OrchestratorOptions.VectorStoreConfigured.
+	vectorStoreConfigured bool
+	embeddingProvider     goembedding.Provider
+	embedIndexStore       EmbedIndexStore
 
 	// embedder + schemaRetriever are the Qdrant-backed schema retrieval
 	// layer (top-K relevant tables in the prompt instead of dumping the
@@ -408,8 +410,14 @@ type OrchestratorOptions struct {
 	EnableDebugLogs   bool
 
 	// Optional — nil if Qdrant/embedding not configured
-	VectorStore       vectorstore.Provider
-	EmbeddingProvider goembedding.Provider
+	VectorStore vectorstore.Provider
+	// VectorStoreConfigured is whether this DEPLOYMENT has a vector store,
+	// which VectorStore being nil does not answer: initQdrant returns nil
+	// both when QDRANT_URL is unset and when its health check fails, and the
+	// caller logs the second and carries on. Only retirement needs to tell
+	// those apart — see retireDeps.vectorsExpected.
+	VectorStoreConfigured bool
+	EmbeddingProvider     goembedding.Provider
 
 	// EmbedIndexStore is needed for Phase 8 to write to insights/recommendations collections
 	EmbedIndexStore EmbedIndexStore
@@ -578,6 +586,7 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		llmOutputCap:          opts.LLMOutputCap,
 		modelWindowRepo:       opts.ModelWindowRepo,
 		vectorStore:           opts.VectorStore,
+		vectorStoreConfigured: opts.VectorStoreConfigured,
 		embeddingProvider:     opts.EmbeddingProvider,
 		embedIndexStore:       opts.EmbedIndexStore,
 		checkpointRepo:        checkpointRepo,

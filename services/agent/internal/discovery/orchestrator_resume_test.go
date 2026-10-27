@@ -1351,9 +1351,10 @@ func TestRetireSuperseded_NoVectorStoreRetiresNothing(t *testing.T) {
 		deleteRecIDs:     []string{"rec-1"},
 	}
 
-	// Points to delete, and nothing to delete them with.
+	// Points to delete, and nothing to delete them with — on a deployment
+	// that HAS a vector store, so those ids really do name points.
 	retireSuperseded(context.Background(), "run-1", "disc-new", 2, retireDeps{
-		discoveries: disc, logs: logs, embed: embed, vectors: nil,
+		discoveries: disc, logs: logs, embed: embed, vectors: nil, vectorsExpected: true,
 	})
 
 	if len(disc.deleted) != 0 {
@@ -1378,7 +1379,7 @@ func TestRetireSuperseded_NoVectorStoreStillRetiresWhenNothingIsIndexed(t *testi
 	embed := &mockEmbedIndexStore{} // nothing indexed
 
 	retireSuperseded(context.Background(), "run-1", "disc-new", 2, retireDeps{
-		discoveries: disc, logs: logs, embed: embed, vectors: nil,
+		discoveries: disc, logs: logs, embed: embed, vectors: nil, vectorsExpected: true,
 	})
 
 	if len(disc.deleted) != 1 || disc.deleted[0] != "disc-old" {
@@ -1566,5 +1567,49 @@ func TestRefreshCheckpointTTL_OnBothResumePaths(t *testing.T) {
 	}
 	if refresh > explore {
 		t.Error("the retention clock is re-anchored after exploration; the rows can expire while it is running, which is the window this exists to close")
+	}
+}
+
+// TestRetireSuperseded_NoVectorStoreInTheDeploymentStillRetires is the other
+// half of the nil-vector-store rule, and the half its first version got wrong.
+//
+// A nil vector store arrives two ways and they need opposite answers:
+// initQdrant returns nil for an unset QDRANT_URL and for a failed health
+// check alike. Refusing to retire covers the second — points exist and this
+// process cannot delete them — but applied to the first it strands results
+// that never had a point at all.
+//
+// And every result looks indexed from here. PointIDsByDiscovery lists the
+// standalone insight and recommendation rows out of MONGO, not out of Qdrant,
+// and runPhaseEmbedIndex writes those rows BEFORE it checks for a vector
+// store. So on a deployment without one, every result reports "point ids" and
+// owns no points — and a blanket refusal left superseded and cancelled
+// attempts' findings on display for ever, reachable by project id with no
+// parent to explain them, which is the exact thing retirement exists to stop.
+func TestRetireSuperseded_NoVectorStoreInTheDeploymentStillRetires(t *testing.T) {
+	disc := &fakeDiscoveryRetirer{byRun: map[string][]database.DiscoveryRef{
+		"run-1": {{ID: "disc-new", Attempt: 2}, {ID: "disc-old", Attempt: 1}},
+	}}
+	logs := &fakeDiscoveryLogPersister{}
+	// Standalone rows exist, as they always do — saved before indexing is
+	// even considered.
+	embed := &mockEmbedIndexStore{
+		deleteInsightIDs: []string{"ins-1"},
+		deleteRecIDs:     []string{"rec-1"},
+	}
+
+	// No vector store, and none expected: this deployment has no Qdrant.
+	retireSuperseded(context.Background(), "run-1", "disc-new", 2, retireDeps{
+		discoveries: disc, logs: logs, embed: embed, vectors: nil, vectorsExpected: false,
+	})
+
+	if len(disc.deleted) != 1 || disc.deleted[0] != "disc-old" {
+		t.Errorf("deleted = %v, want disc-old — there are no points to orphan on a deployment without a vector store", disc.deleted)
+	}
+	if len(embed.deletedDiscoveries) != 1 || embed.deletedDiscoveries[0] != "disc-old" {
+		t.Errorf("standalone deletes = %v, want disc-old; left behind they stay reachable by project id with no parent", embed.deletedDiscoveries)
+	}
+	if len(logs.deletedDiscoveryIDs) != 1 || logs.deletedDiscoveryIDs[0] != "disc-old" {
+		t.Errorf("split-log deletes = %v, want disc-old", logs.deletedDiscoveryIDs)
 	}
 }
