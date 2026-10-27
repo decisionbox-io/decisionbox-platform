@@ -522,8 +522,19 @@ export function LayerModelsPanel({
                 label="uses the default"
                 checked={usesDefault}
                 onChange={(e) => {
-                  if (e.currentTarget.checked) setRow(layer.key, null);
-                  else setRow(layer.key, { ...defaultRow, config: { ...(defaultRow.config || {}) } });
+                  if (e.currentTarget.checked) {
+                    setRow(layer.key, null);
+                    delete autofilledRef.current[layer.key];
+                    return;
+                  }
+                  // The new row is a COPY of the default's, so it inherits
+                  // the default's auto-fill provenance too. Without it the
+                  // copied limits read as operator-pinned the moment the
+                  // override picks a different model — and an Ask override
+                  // moved onto an 8K model kept the default's 200K window,
+                  // which the server then budgets against.
+                  autofilledRef.current[layer.key] = { ...(autofilledRef.current[DEFAULT_LAYER] ?? {}) };
+                  setRow(layer.key, { ...defaultRow, config: { ...(defaultRow.config || {}) } });
                 }}
               />
             </Group>

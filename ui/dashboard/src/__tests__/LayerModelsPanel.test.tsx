@@ -2,6 +2,7 @@
  * @jest-environment jsdom
  */
 import '@testing-library/jest-dom';
+import { useState } from 'react';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { LayerModelsPanel, DEFAULT_LAYER } from '@/components/projects/LayerModelsPanel';
@@ -862,5 +863,98 @@ describe('LayerModelsPanel — pointing a layer at an endpoint entry', () => {
     const next = onChange.mock.calls.at(-1)![0];
     expect(next.analysis.provider_id).toBe('default');
     expect(next.analysis.config?.wire_override).toBe('google-native');
+  });
+});
+
+// Enabling an override COPIES the default row, limits included — so it has
+// to copy where those limits came from too.
+//
+// Without that the copied values read as operator-pinned the moment the
+// override picks its own model, and the panel keeps them: an Ask override
+// moved onto an 8K model kept the default's 200K window, which Ask then
+// budgets requests against.
+describe('LayerModelsPanel — an override inherits the default row', () => {
+  const LIVE = [
+    { id: 'small-8k', name: 'Small', source: 'live', dispatchable: true, live_max_input_tokens: 8192, live_max_output_tokens: 1024 },
+    { id: 'big-200k', name: 'Big', source: 'live', dispatchable: true, live_max_input_tokens: 200000, live_max_output_tokens: 32000 },
+  ];
+
+  // A controlled host, because this is a THREE-step interaction: the panel
+  // fills the default's limits, the override copies them, and the override
+  // then picks a different model.
+  function renderControlled(initial: Record<string, LayerModel>) {
+    const seen: Record<string, LayerModel>[] = [];
+    function Host() {
+      const [value, setValue] = useState(initial);
+      seen.push(value);
+      return (
+        <MantineProvider>
+          <LayerModelsPanel
+            projectId="proj-1" entries={ENTRIES} savedEntries={ENTRIES}
+            providers={[BEDROCK_META as never]}
+            value={value}
+            onChange={setValue}
+          />
+        </MantineProvider>
+      );
+    }
+    render(<Host />);
+    return () => seen[seen.length - 1];
+  }
+
+  beforeEach(() => {
+    (api.listLiveLLMModelsForProvider as jest.Mock).mockResolvedValue({ models: LIVE });
+  });
+
+  it('refreshes the limits it inherited when the override picks its own model', async () => {
+    const latest = renderControlled({ [DEFAULT_LAYER]: { provider_id: 'default', model: '' } });
+    await screen.findByText('Main layers');
+    await waitFor(() => expect(api.listLiveLLMModelsForProvider).toHaveBeenCalled());
+
+    // The panel fills the default's limits from the big model.
+    fireEvent.change(screen.getAllByLabelText('Model')[0], { target: { value: 'big-200k' } });
+    await waitFor(() => expect(latest()[DEFAULT_LAYER].config?.max_input_tokens).toBe('200000'));
+
+    // Turn off "uses the default" for the first overridable layer.
+    const switches = screen.getAllByRole('switch', { name: 'uses the default' });
+    await act(async () => { fireEvent.click(switches[0]); });
+
+    // That override now carries the copied 200000 — and its own picker.
+    const overridden = Object.keys(latest()).find((k) => k !== DEFAULT_LAYER)!;
+    expect(latest()[overridden].config?.max_input_tokens).toBe('200000');
+
+    const pickers = screen.getAllByLabelText('Model');
+    await act(async () => {
+      fireEvent.change(pickers[pickers.length - 1], { target: { value: 'small-8k' } });
+    });
+
+    await waitFor(() => expect(latest()[overridden].config?.max_input_tokens).toBe('8192'));
+    expect(latest()[overridden].config?.max_output_tokens).toBe('1024');
+    // And the default row it was copied from is untouched.
+    expect(latest()[DEFAULT_LAYER].config?.max_input_tokens).toBe('200000');
+    // Enabling the override also asks for the new row's model list, so let
+    // that settle rather than leaving it to resolve after the test.
+    await act(async () => {});
+  });
+
+  it('still leaves a limit the operator typed on the default row alone', async () => {
+    const latest = renderControlled({
+      [DEFAULT_LAYER]: { provider_id: 'default', model: 'big-200k', config: { max_input_tokens: '4096' } },
+    });
+    await screen.findByText('Main layers');
+    await waitFor(() => expect(api.listLiveLLMModelsForProvider).toHaveBeenCalled());
+
+    const switches = screen.getAllByRole('switch', { name: 'uses the default' });
+    await act(async () => { fireEvent.click(switches[0]); });
+    const overridden = Object.keys(latest()).find((k) => k !== DEFAULT_LAYER)!;
+
+    const pickers = screen.getAllByLabelText('Model');
+    await act(async () => {
+      fireEvent.change(pickers[pickers.length - 1], { target: { value: 'small-8k' } });
+    });
+    // Nothing auto-filled it, so nothing refreshes it.
+    await waitFor(() => expect(latest()[overridden].model).toBe('small-8k'));
+    expect(latest()[overridden].config?.max_input_tokens).toBe('4096');
+    await act(async () => {});
   });
 });
