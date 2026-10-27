@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -167,5 +168,36 @@ func TestSameReplayClientSeparatesLayersThatDifferOnlyByReasoning(t *testing.T) 
 	same := base
 	if !sameReplayClient(base, same) {
 		t.Error("two identical layers were split into two clients")
+	}
+}
+
+// Building a provider reads a credential and opens a connection, so a layer
+// whose client is never called must not be built: a broken refuter override
+// used to abort a verifier-only replay, and — until this pair was derived
+// together — missing VERIFIER credentials aborted `--mode=refute` with a
+// perfectly good refuter configured.
+func TestReplayLayers_OnlyTheLayersThatWillBeCalled(t *testing.T) {
+	for _, tc := range []struct {
+		mode           string
+		refuterEnabled bool
+		verifier       bool
+		refuter        bool
+	}{
+		{"both", true, true, true},
+		{"both", false, true, false},
+		{"verify", true, true, false},
+		{"verify", false, true, false},
+		{"refute", true, false, true},
+		// Nothing to run: the report says so rather than the replay dying
+		// on a credential for a layer it would never have called.
+		{"refute", false, false, false},
+	} {
+		t.Run(fmt.Sprintf("%s/refuter=%v", tc.mode, tc.refuterEnabled), func(t *testing.T) {
+			v, r := replayLayers(tc.mode, tc.refuterEnabled)
+			if v != tc.verifier || r != tc.refuter {
+				t.Errorf("replayLayers(%q, %v) = (%v, %v), want (%v, %v)",
+					tc.mode, tc.refuterEnabled, v, r, tc.verifier, tc.refuter)
+			}
+		})
 	}
 }

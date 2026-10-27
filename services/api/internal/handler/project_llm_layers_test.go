@@ -1636,3 +1636,86 @@ func TestUpdate_ALegacyModelChangeLeavesOverridesAlone(t *testing.T) {
 		t.Errorf("default model = %q, want the legacy write", got)
 	}
 }
+
+// The blurb entry is SHARED, so its provider change moves every row on it.
+//
+// Nothing stops a project pointing SQL repair at the reserved blurb entry —
+// the dashboard lists it like any other. A legacy client switching blurb_llm
+// from Bedrock to OpenAI rewrote the entry and the table-description row and
+// left SQL repair resolving to openai + a Bedrock model id: a 200 on the
+// write, and a provider rejection on every repair afterwards.
+func TestUpdate_ALegacyBlurbProviderChangeMovesEveryLayerOnThatEntry(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, newMockDomainPackRepo())
+	p := configuredProject(t, repo)
+
+	if w := putProject(t, h, p.ID, `{
+	  "llm_providers": [
+	    {"id": "default", "provider": "openai"},
+	    {"id": "blurb", "provider": "bedrock"}
+	  ],
+	  "layer_models": {
+	    "default": {"provider_id": "default", "model": "gpt-4o"},
+	    "table_descriptions": {"provider_id": "blurb", "model": "qwen.qwen3-32b-v1:0"},
+	    "sql_repair": {"provider_id": "blurb", "model": "qwen.qwen3-32b-v1:0"}
+	  }
+	}`); w.Code != http.StatusOK {
+		t.Fatalf("seed: %s", w.Body.String())
+	}
+
+	// A legacy client repoints the blurb half at OpenAI.
+	if w := putProject(t, h, p.ID, `{"blurb_llm": {"provider": "openai", "model": "gpt-4o-mini"}}`); w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	stored, _ := repo.GetByID(context.Background(), p.ID)
+	repair, err := stored.LayerSpecUnchecked(llmlayer.LayerSQLRepair)
+	if err != nil {
+		t.Fatalf("LayerSpecUnchecked(sql_repair): %v", err)
+	}
+	if repair.Provider != "openai" || repair.Model != "gpt-4o-mini" {
+		t.Errorf("sql_repair resolved to %s/%s, want the provider and model the legacy blurb write set", repair.Provider, repair.Model)
+	}
+	// And the layer the write is actually about still moves.
+	td, err := stored.LayerSpecUnchecked(llmlayer.LayerTableDescriptions)
+	if err != nil {
+		t.Fatalf("LayerSpecUnchecked(table_descriptions): %v", err)
+	}
+	if td.Provider != "openai" || td.Model != "gpt-4o-mini" {
+		t.Errorf("table_descriptions resolved to %s/%s", td.Provider, td.Model)
+	}
+}
+
+// And a blurb write that does NOT change the provider leaves a layer sharing
+// that entry on its own model.
+func TestUpdate_ALegacyBlurbModelChangeLeavesSharersAlone(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, newMockDomainPackRepo())
+	p := configuredProject(t, repo)
+
+	if w := putProject(t, h, p.ID, `{
+	  "llm_providers": [
+	    {"id": "default", "provider": "openai"},
+	    {"id": "blurb", "provider": "openai"}
+	  ],
+	  "layer_models": {
+	    "default": {"provider_id": "default", "model": "gpt-4o"},
+	    "table_descriptions": {"provider_id": "blurb", "model": "gpt-4.1-nano"},
+	    "sql_repair": {"provider_id": "blurb", "model": "gpt-4o-mini"}
+	  }
+	}`); w.Code != http.StatusOK {
+		t.Fatalf("seed: %s", w.Body.String())
+	}
+
+	if w := putProject(t, h, p.ID, `{"blurb_llm": {"provider": "openai", "model": "gpt-4.1-mini"}}`); w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+
+	stored, _ := repo.GetByID(context.Background(), p.ID)
+	if got := stored.LayerModels[llmlayer.LayerSQLRepair].Model; got != "gpt-4o-mini" {
+		t.Errorf("sql_repair model = %q, want its own model kept — the provider did not change", got)
+	}
+	if got := stored.LayerModels[llmlayer.LayerTableDescriptions].Model; got != "gpt-4.1-mini" {
+		t.Errorf("table_descriptions model = %q, want the legacy blurb write", got)
+	}
+}

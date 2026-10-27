@@ -5,7 +5,8 @@ import '@testing-library/jest-dom';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import {
-  LLMProvidersPanel, ProviderEntryForm, entriesFrom, entryFormsFrom, pendingCredentialWrites,
+  LLMProvidersPanel, ProviderEntryForm, connectionKeyFor, entriesFrom, entryFormsFrom,
+  pendingCredentialWrites,
 } from '@/components/projects/LLMProvidersPanel';
 
 jest.mock('@/components/projects/WarehouseConfigPanel', () => ({
@@ -207,10 +208,69 @@ describe('LLMProvidersPanel — which connection "Check connection" checks', () 
   });
 
   it('reads an untouched saved entry through the entry, so no key need be retyped', async () => {
-    renderPanel([form({ id: 'default' }), form({ id: 'cheap' })]);
+    const forms = [form({ id: 'default' }), form({ id: 'cheap' })];
+    render(
+      <MantineProvider>
+        <LLMProvidersPanel
+          projectId="proj-1" providers={PROVIDERS} value={forms} onChange={jest.fn()}
+          secrets={[]} layersByProviderId={{}} savedIds={['default', 'cheap']}
+          savedEntries={entriesFrom(forms)}
+        />
+      </MantineProvider>,
+    );
     clickCheck(1);
     await waitFor(() => expect(api.listLiveLLMModelsForProvider).toHaveBeenCalledWith('proj-1', { provider_id: 'cheap' }));
     expect(api.listLiveLLMModels).not.toHaveBeenCalled();
+  });
+
+  // The third way it did not. Switching a SAVED entry to another provider
+  // without typing a key left isNew false and the id saved, so the check
+  // went through the entry and answered about the connection the user had
+  // just left — and its models were then reported as the new connection's,
+  // which the Models tab offers. The stored key is not sent: it belongs to
+  // the provider that was replaced.
+  it('checks a repointed saved entry in flight, with only what the form holds', async () => {
+    const saved = entriesFrom([form({ id: 'default' })]);
+    const repointed = [form({ id: 'default', provider: 'ollama', config: { base_url: 'http://localhost:11434' } })];
+    render(
+      <MantineProvider>
+        <LLMProvidersPanel
+          projectId="proj-1" providers={PROVIDERS} value={repointed} onChange={jest.fn()}
+          secrets={[]} layersByProviderId={{}} savedIds={['default']}
+          savedEntries={saved}
+        />
+      </MantineProvider>,
+    );
+    clickCheck(0);
+    await waitFor(() => expect(api.listLiveLLMModels)
+      .toHaveBeenCalledWith('ollama', { base_url: 'http://localhost:11434' }));
+    expect(api.listLiveLLMModelsForProvider).not.toHaveBeenCalled();
+  });
+
+  it('files what it discovered under the connection it checked', async () => {
+    (api.listLiveLLMModels as jest.Mock).mockResolvedValueOnce({
+      models: [{ id: 'qwen3', display_name: 'Qwen3', wire: '', source: 'live', dispatchable: true }],
+    });
+    const saved = entriesFrom([form({ id: 'default' })]);
+    const repointed = [form({ id: 'default', provider: 'ollama', config: { base_url: 'http://localhost:11434' } })];
+    const discovered = jest.fn();
+    render(
+      <MantineProvider>
+        <LLMProvidersPanel
+          projectId="proj-1" providers={PROVIDERS} value={repointed} onChange={jest.fn()}
+          secrets={[]} layersByProviderId={{}} savedIds={['default']}
+          savedEntries={saved} onModelsDiscovered={discovered}
+        />
+      </MantineProvider>,
+    );
+    clickCheck(0);
+    // Keyed by the OLLAMA connection — filed under the entry id, this list
+    // would still be offered after the entry was repointed again.
+    await waitFor(() => expect(discovered).toHaveBeenCalledWith(
+      connectionKeyFor(entriesFrom(repointed)[0]),
+      [{ id: 'qwen3', display_name: 'Qwen3', wire: '', source: 'live', dispatchable: true }],
+    ));
+    expect(discovered).not.toHaveBeenCalledWith(connectionKeyFor(saved[0]), expect.anything());
   });
 });
 

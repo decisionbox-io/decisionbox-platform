@@ -374,9 +374,11 @@ func mirrorLegacyBlurbOntoTableDescriptions(p *models.Project) {
 		Config:   llmlayer.ConnectionConfig(b.Config),
 	}
 	replaced := false
+	providerChanged := false
 	for i := range p.LLMProviders {
 		if llmlayer.NormalizeProviderID(p.LLMProviders[i].ID) == llmlayer.BlurbProviderID {
 			entry.Label = p.LLMProviders[i].Label
+			providerChanged = p.LLMProviders[i].Provider != "" && p.LLMProviders[i].Provider != entry.Provider
 			p.LLMProviders[i] = entry
 			replaced = true
 		}
@@ -397,6 +399,30 @@ func mirrorLegacyBlurbOntoTableDescriptions(p *models.Project) {
 		ProviderID: llmlayer.BlurbProviderID,
 		Model:      model,
 		Config:     llmlayer.ModelConfig(b.Config),
+	}
+
+	// The blurb entry is a SHARED entry, not a private slot, so its provider
+	// change moves every row on it — exactly as the default entry's does.
+	//
+	// Nothing stops a project pointing SQL repair at the blurb entry; the
+	// dashboard lists it like any other. A legacy client then switching
+	// blurb_llm from Bedrock to OpenAI rewrote the entry and the
+	// table-description row, and left SQL repair resolving to
+	// openai + qwen.qwen3-32b-v1:0 — a 200 on the write and a provider
+	// rejection on every repair afterwards. Rows on other entries are
+	// explicitly elsewhere and are untouched.
+	if !providerChanged {
+		return
+	}
+	for key, lm := range p.LayerModels {
+		if key == llmlayer.LayerTableDescriptions {
+			continue
+		}
+		if llmlayer.NormalizeProviderID(lm.ProviderID) != llmlayer.BlurbProviderID {
+			continue
+		}
+		lm.Model = model
+		p.LayerModels[key] = lm
 	}
 }
 

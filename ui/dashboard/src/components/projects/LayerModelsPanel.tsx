@@ -26,6 +26,7 @@ import {
 } from '@/lib/api';
 import { LiveModelCombobox } from '@/components/common/LLMModelField';
 import { TestConnectionButton } from './WarehouseConfigPanel';
+import { connectionKeyFor } from './LLMProvidersPanel';
 
 /** The reserved row every layer without one of its own inherits. */
 export const DEFAULT_LAYER = 'default';
@@ -63,6 +64,7 @@ export interface LayerModelsPanelProps {
    * yet — the only answer available for one, and what keeps "change a
    * provider, pick its model, save" possible in a single pass.
    */
+  /** Discovered model lists, keyed by connection — see connectionKeyFor. */
   discoveredModels?: Record<string, LiveModel[]>;
   providers: ProviderMeta[];
   value: Record<string, LayerModel>;
@@ -118,8 +120,15 @@ export function LayerModelsPanel({
   // OpenAI to Claude kept offering OpenAI's models, even after saving.
   const connectionKey = (entryId: string) => {
     const e = stored.find((x) => x.id === entryId);
-    if (!e) return entryId;
-    return `${entryId}\u0000${e.provider}\u0000${JSON.stringify(e.config ?? {})}`;
+    return e ? connectionKeyFor(e) : entryId;
+  };
+
+  // The identity of what the FORM now describes, which is what a discovered
+  // list is filed under. Not the same thing as connectionKey above: that one
+  // identifies the stored connection, which is what the server answers about.
+  const editedConnectionKey = (entryId: string) => {
+    const e = entries.find((x) => x.id === entryId);
+    return e ? connectionKeyFor(e) : entryId;
   };
 
   // True when the form has moved away from what the server has. A list
@@ -130,8 +139,7 @@ export function LayerModelsPanel({
     const persisted = stored.find((x) => x.id === entryId);
     if (!edited) return false;
     if (!persisted) return true;
-    return edited.provider !== persisted.provider
-      || JSON.stringify(edited.config ?? {}) !== JSON.stringify(persisted.config ?? {});
+    return connectionKeyFor(edited) !== connectionKeyFor(persisted);
   };
 
   /**
@@ -191,9 +199,13 @@ export function LayerModelsPanel({
    * that, changing a provider cleared the model (it belongs to the old
    * one), left no list to pick from, and blocked the save that needs a
    * model: a dead end reachable from a two-click edit.
+   *
+   * Looked up by the connection the form now describes, so an entry edited
+   * AGAIN since the check misses rather than being offered the previous
+   * connection's models.
    */
   const modelsFor = (entryId: string, layer = DEFAULT_LAYER) => {
-    if (connectionUnsaved(entryId)) return discoveredModels?.[entryId] ?? null;
+    if (connectionUnsaved(entryId)) return discoveredModels?.[editedConnectionKey(entryId)] ?? null;
     return liveByEntry[cacheKeyFor(entryId, layer)] ?? null;
   };
 

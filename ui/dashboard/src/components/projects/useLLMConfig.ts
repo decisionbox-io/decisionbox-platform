@@ -63,8 +63,9 @@ export interface UseLLMConfig {
    */
   savedGeneration: number;
   /**
-   * Models the Providers tab discovered for an entry with the credential
-   * currently in its form, keyed by entry id.
+   * Models the Providers tab discovered with the credential in its form,
+   * keyed by the CONNECTION they were discovered against — see
+   * connectionKeyFor.
    *
    * The Models tab cannot ask the server about a connection that has not
    * been saved — the server would answer about the stored one — but the
@@ -72,9 +73,14 @@ export interface UseLLMConfig {
    * Sharing the answer is what keeps "change a provider, pick its model,
    * save" possible in one pass: otherwise the model is cleared, the list
    * cannot load, and the save is blocked until a model is chosen.
+   *
+   * Keyed by connection rather than by entry id because an entry can be
+   * repointed again: keyed by id, the list discovered for Ollama was still
+   * offered after the entry was switched to vLLM, and those model ids could
+   * be selected and saved against a connection that cannot serve them.
    */
   discoveredModels: Record<string, LiveModel[]>;
-  reportDiscoveredModels: (entryID: string, models: LiveModel[]) => void;
+  reportDiscoveredModels: (connectionKey: string, models: LiveModel[]) => void;
   /** Layer keys per entry id, for the in-use removal guard. */
   layersByProviderId: Record<string, string[]>;
   /** A user-facing reason the configuration cannot be saved yet, or null. */
@@ -110,8 +116,8 @@ export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void):
   const [savedEntries, setSavedEntries] = useState<LLMProviderEntry[]>([]);
   const [savedGeneration, setSavedGeneration] = useState(0);
   const [discoveredModels, setDiscoveredModels] = useState<Record<string, LiveModel[]>>({});
-  const reportDiscoveredModels = useCallback((entryID: string, models: LiveModel[]) => {
-    setDiscoveredModels((prev) => ({ ...prev, [entryID]: models }));
+  const reportDiscoveredModels = useCallback((connectionKey: string, models: LiveModel[]) => {
+    setDiscoveredModels((prev) => ({ ...prev, [connectionKey]: models }));
   }, []);
 
   const loadOnce = useRef(false);

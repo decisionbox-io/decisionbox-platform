@@ -456,6 +456,7 @@ export default function ProjectSettingsPage() {
                 secrets={llmConfig.secrets}
                 layersByProviderId={llmConfig.layersByProviderId}
                 savedIds={llmConfig.savedIds}
+                savedEntries={llmConfig.savedEntries}
                 onModelsDiscovered={llmConfig.reportDiscoveredModels}
               />
               {llmConfig.validationError && (

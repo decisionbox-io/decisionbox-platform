@@ -151,10 +151,14 @@ func run() error {
 		return fmt.Errorf("resolve the refuter layer: %w", err)
 	}
 
-	verifierClient, calls, err := replayClient(ctx, secretProvider, fl, verifierSpec)
-	if err != nil {
-		return fmt.Errorf("init verifier LLM: %w", err)
-	}
+	// Neither client is built for a mode that will not call it: building a
+	// provider reads a credential and opens a connection, so a broken
+	// override aborts a replay that was never going to use it. Gating only
+	// the refuter still let `--mode=refute` die on missing VERIFIER
+	// credentials with a working refuter configured. Discovery, the
+	// standalone validator and ask-serve all gate their layer lists the
+	// same way.
+	//
 	// The refuter shares the verifier's client when both layers resolve to
 	// the same target AND ask for the same reasoning, so an unmixed project
 	// still opens one connection. Reasoning is deliberately not part of
@@ -162,17 +166,24 @@ func run() error {
 	// connection — but it IS carried by the client, so two layers that
 	// differ by it need two clients or the refuter would send the
 	// verifier's setting and the replay would stop reproducing the run.
-	//
-	// Neither client is built for a mode that will not call it: building a
-	// provider reads a credential and opens a connection, so a broken
-	// refuter override used to abort a verifier-only replay. Discovery, the
-	// standalone validator and ask-serve all gate their layer lists the
-	// same way.
 	cfg, runCaps := verifier.LoadConfigFromEnv()
-	refuterWillRun := cfg.RefuterEnabled && fl.mode != "verify"
-	refuterClient := verifierClient
-	callCounters := []*countingProvider{calls}
-	if refuterWillRun && !sameReplayClient(verifierSpec, refuterSpec) {
+	verifierWillRun, refuterWillRun := replayLayers(fl.mode, cfg.RefuterEnabled)
+
+	var verifierClient, refuterClient *ai.Client
+	var callCounters []*countingProvider
+	if verifierWillRun {
+		c, calls, cerr := replayClient(ctx, secretProvider, fl, verifierSpec)
+		if cerr != nil {
+			return fmt.Errorf("init verifier LLM: %w", cerr)
+		}
+		verifierClient = c
+		callCounters = append(callCounters, calls)
+	}
+	switch {
+	case !refuterWillRun:
+	case verifierClient != nil && sameReplayClient(verifierSpec, refuterSpec):
+		refuterClient = verifierClient
+	default:
 		rc, refuterCalls, rerr := replayClient(ctx, secretProvider, fl, refuterSpec)
 		if rerr != nil {
 			return fmt.Errorf("init refuter LLM: %w", rerr)
@@ -197,11 +208,22 @@ func run() error {
 		cfg.Refuter.MaxOutputTokens = refuterSpec.ClampOutput(cfg.Refuter.MaxOutputTokens)
 	}
 
-	byMode := map[valmodels.AgentMode]verifier.LLMClient{valmodels.ModeVerifier: verifierClient}
-	if cfg.RefuterEnabled {
-		byMode[valmodels.ModeRefuter] = refuterClient
+	// A typed nil in the map would satisfy llmFor's non-nil check and be
+	// called, so only the clients that were actually built go in — and the
+	// fallback is whichever of them exists.
+	byMode := map[valmodels.AgentMode]verifier.LLMClient{}
+	fallback := verifier.LLMClient(nil)
+	if verifierClient != nil {
+		byMode[valmodels.ModeVerifier] = verifierClient
+		fallback = verifierClient
 	}
-	agent, err := verifier.NewAgentPerMode(byMode, verifierClient, cfg)
+	if refuterClient != nil {
+		byMode[valmodels.ModeRefuter] = refuterClient
+		if fallback == nil {
+			fallback = refuterClient
+		}
+	}
+	agent, err := verifier.NewAgentPerMode(byMode, fallback, cfg)
 	if err != nil {
 		return fmt.Errorf("build agent: %w", err)
 	}
@@ -319,6 +341,17 @@ func run() error {
 		return errors.New("every LLM call failed, so the verdicts above are not verdicts; check the project's LLM provider credentials (its secret, or the environment fallback for the default entry)")
 	}
 	return nil
+}
+
+// replayLayers reports which validation layers this replay will actually
+// call, which is what decides whether their clients are worth building.
+//
+// The pair is derived in one place because the two gates are not symmetric:
+// the refuter also answers to a deployment switch, and reading that switch
+// at only one of the two decision points is how a verifier-only gate
+// shipped.
+func replayLayers(mode string, refuterEnabled bool) (verifier, refuter bool) {
+	return mode != "refute", refuterEnabled && mode != "verify"
 }
 
 // openSecretProvider opens the project secret store the agent reads

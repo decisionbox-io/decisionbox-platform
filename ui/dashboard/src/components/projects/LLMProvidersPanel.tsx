@@ -122,6 +122,26 @@ export function entriesFrom(forms: ProviderEntryForm[]): LLMProviderEntry[] {
     });
 }
 
+/**
+ * The identity of the CONNECTION an entry describes, not just its id.
+ *
+ * An entry keeps its id when its provider, endpoint or configuration change
+ * — that is what an id is for — so anything cached or discovered against the
+ * id alone outlives the connection it describes. Keying by this instead means
+ * a repointed entry simply misses, which is the honest answer.
+ *
+ * Config keys are sorted, because the same connection reaches this from two
+ * directions: built from a form here, and decoded from the server there.
+ * JSON.stringify would call those two different connections.
+ */
+export function connectionKeyFor(
+  entry: { id: string; provider?: string; config?: Record<string, string> },
+): string {
+  const cfg = entry.config ?? {};
+  const stable = Object.keys(cfg).sort().map((k) => `${k}=${cfg[k]}`).join('\u0001');
+  return `${entry.id}\u0000${entry.provider ?? ''}\u0000${stable}`;
+}
+
 /** Secret writes for the entries whose credential the user just typed. */
 export function pendingCredentialWrites(forms: ProviderEntryForm[]): { key: string; value: string }[] {
   return forms
@@ -140,15 +160,23 @@ export interface LLMProvidersPanelProps {
   /** Entry ids the project has already saved — only those can be tested. */
   savedIds: string[];
   /**
-   * Reports the models a connection check discovered, so the Models tab can
-   * offer them for a connection the server has not been given yet.
+   * The entries as the server has them, so an edited connection can be told
+   * from a stored one. Without it a repointed entry is checked against the
+   * connection it replaced.
    */
-  onModelsDiscovered?: (entryID: string, models: LiveModel[]) => void;
+  savedEntries?: LLMProviderEntry[];
+  /**
+   * Reports the models a connection check discovered, keyed by the CONNECTION
+   * they were discovered against, so the Models tab can offer them for a
+   * connection the server has not been given yet — and cannot offer them for
+   * a connection that has since changed again.
+   */
+  onModelsDiscovered?: (connectionKey: string, models: LiveModel[]) => void;
 }
 
 export function LLMProvidersPanel({
   projectId, providers, value, onChange, secrets, layersByProviderId, savedIds,
-  onModelsDiscovered,
+  savedEntries, onModelsDiscovered,
 }: LLMProvidersPanelProps) {
   const [liveModels, setLiveModels] = useState<Record<string, LiveModel[] | null>>({});
 
@@ -307,14 +335,31 @@ export function LLMProvidersPanel({
                   // A stored credential is deliberately never sent to a
                   // form-supplied endpoint: that combination is an
                   // exfiltration channel, not a connection check.
+                  //
+                  // An EDITED connection therefore goes in flight too, even
+                  // with no key typed. Switching a saved Bedrock entry to
+                  // Ollama left isNew false and the id saved, so the check
+                  // queried the STORED Bedrock connection and reported its
+                  // models as the new connection's — which the Models tab
+                  // then offered, letting a Bedrock model id be saved
+                  // against Ollama. It is also the only route that can
+                  // reach the new endpoint at all: the stored key belongs
+                  // to the provider the user just left, and is not sent.
                   const typedCredential = Boolean(cfg['api_key'] || cfg['credentials_json']);
-                  const inFlight = form.isNew || !savedIds.includes(form.id) || typedCredential;
+                  const [formEntry] = entriesFrom([form]);
+                  const savedEntry = savedEntries?.find((e) => e.id === form.id);
+                  const edited = Boolean(formEntry && savedEntry
+                    && connectionKeyFor(formEntry) !== connectionKeyFor(savedEntry));
+                  const inFlight = form.isNew || !savedIds.includes(form.id) || typedCredential || edited;
                   try {
                     const resp = inFlight
                       ? await api.listLiveLLMModels(form.provider, cfg)
                       : await api.listLiveLLMModelsForProvider(projectId, { provider_id: form.id });
                     setLiveModels((prev) => ({ ...prev, [form.id]: resp.models }));
-                    onModelsDiscovered?.(form.id, resp.models);
+                    // Keyed by the connection that was actually checked —
+                    // `form` is this render's, so an edit made while the
+                    // request was in flight cannot relabel the answer.
+                    if (formEntry) onModelsDiscovered?.(connectionKeyFor(formEntry), resp.models);
                     return { ok: true, liveError: resp.live_error };
                   } catch (e: unknown) {
                     setLiveModels((prev) => ({ ...prev, [form.id]: null }));

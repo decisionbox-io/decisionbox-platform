@@ -5,6 +5,7 @@ import '@testing-library/jest-dom';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { LayerModelsPanel, DEFAULT_LAYER } from '@/components/projects/LayerModelsPanel';
+import { connectionKeyFor } from '@/components/projects/LLMProvidersPanel';
 import type { LLMProviderEntry, LayerModel } from '@/lib/api';
 
 // The per-layer model controls replaced two project-wide switches in
@@ -453,7 +454,7 @@ describe('LayerModelsPanel — an edited connection has no model list yet', () =
           value={{ [DEFAULT_LAYER]: { provider_id: 'default', model: '' } }}
           onChange={jest.fn()}
           discoveredModels={{
-            default: [
+            [connectionKeyFor(EDITED[0])]: [
               { id: 'claude-opus-5', display_name: 'Opus 5', wire: 'anthropic', source: 'live', dispatchable: true },
             ] as never,
           }}
@@ -480,13 +481,66 @@ describe('LayerModelsPanel — an edited connection has no model list yet', () =
           providers={[BEDROCK_META as never]}
           value={{ [DEFAULT_LAYER]: { provider_id: 'default', model: '' } }}
           onChange={jest.fn()}
-          discoveredModels={{ cheap: [{ id: 'other', display_name: 'Other', wire: '', source: 'live', dispatchable: true }] as never }}
+          discoveredModels={{
+            [connectionKeyFor(ENTRIES[1])]: [
+              { id: 'other', display_name: 'Other', wire: '', source: 'live', dispatchable: true },
+            ] as never,
+          }}
         />
       </MantineProvider>,
     );
     await screen.findByText('Main layers');
     const pickers = screen.getAllByLabelText('Model');
     expect(pickers.every((p) => p.getAttribute('data-models') !== 'other')).toBe(true);
+  });
+
+  // Keyed by entry id, a list discovered for Ollama was still offered after
+  // the entry was repointed again — and the Models tab clears the model on a
+  // provider change, so the user would pick one of those stale ids and save
+  // it against a connection that cannot serve it.
+  it('does not offer a list discovered before the connection changed again', async () => {
+    const AGAIN: LLMProviderEntry[] = [
+      { id: 'default', label: 'vLLM', provider: 'litellm', config: { base_url: 'http://vllm' } },
+      ENTRIES[1],
+    ];
+    render(
+      <MantineProvider>
+        <LayerModelsPanel
+          projectId="proj-1" entries={AGAIN} savedEntries={ENTRIES}
+          providers={[BEDROCK_META as never]}
+          value={{ [DEFAULT_LAYER]: { provider_id: 'default', model: '' } }}
+          onChange={jest.fn()}
+          // Discovered while the entry still said Claude.
+          discoveredModels={{
+            [connectionKeyFor(EDITED[0])]: [
+              { id: 'claude-opus-5', display_name: 'Opus 5', wire: 'anthropic', source: 'live', dispatchable: true },
+            ] as never,
+          }}
+        />
+      </MantineProvider>,
+    );
+    await screen.findByText('Main layers');
+    const pickers = screen.getAllByLabelText('Model');
+    expect(pickers.every((p) => p.getAttribute('data-models') !== 'claude-opus-5')).toBe(true);
+  });
+});
+
+// The same connection reaches the key from two directions — built from a
+// form on the Providers tab, decoded from the server on the Models tab — so
+// a key that depended on config key ORDER would call one connection two,
+// and every discovered list would miss.
+describe('connectionKeyFor', () => {
+  it('does not depend on the order the config was built in', () => {
+    const a = { id: 'x', provider: 'litellm', config: { base_url: 'http://x', auth_method: 'api_key' } };
+    const b = { id: 'x', provider: 'litellm', config: { auth_method: 'api_key', base_url: 'http://x' } };
+    expect(connectionKeyFor(a)).toBe(connectionKeyFor(b));
+  });
+
+  it('separates connections that differ', () => {
+    const base = { id: 'x', provider: 'litellm', config: { base_url: 'http://x' } };
+    expect(connectionKeyFor(base)).not.toBe(connectionKeyFor({ ...base, provider: 'ollama' }));
+    expect(connectionKeyFor(base)).not.toBe(connectionKeyFor({ ...base, config: { base_url: 'http://y' } }));
+    expect(connectionKeyFor(base)).not.toBe(connectionKeyFor({ ...base, id: 'y' }));
   });
 });
 
