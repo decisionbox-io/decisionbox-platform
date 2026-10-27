@@ -289,3 +289,53 @@ describe('useLLMConfig — a seeded project has a saved baseline', () => {
     expect(hook.result.current.savedEntries).toEqual(hook.result.current.entries);
   });
 });
+
+// entriesFrom strips model-scoped keys from an entry, because that is where
+// they belong — but only the dashboard partitions them. An entry written
+// through the API can carry a token limit or a wire override, and the
+// backend merges an entry's config UNDER every row on it, so they are live.
+// Loading such a project and saving anything dropped them: a silent loss of
+// a budget, or of the override a custom deployment needs to dispatch at all.
+describe('useLLMConfig — entry-level model settings survive the round trip', () => {
+  const API_WRITTEN = {
+    seeded: false,
+    configured: true,
+    providers: [
+      {
+        id: 'default',
+        provider: 'vertex-ai',
+        config: { project_id: 'p', wire_override: 'anthropic', max_output_tokens: '8192' },
+      },
+    ],
+    layer_models: {
+      default: { provider_id: 'default', model: 'claude-opus' },
+      analysis: { provider_id: 'default', model: 'claude-opus', config: { max_output_tokens: '2048' } },
+    },
+  };
+
+  it('moves them onto the rows that use the entry', async () => {
+    (api.getProjectLLMConfig as jest.Mock).mockResolvedValue(API_WRITTEN);
+    const hook = renderHook(() => useLLMConfig('p1'));
+    await waitFor(() => expect(hook.result.current.loading).toBe(false));
+
+    // Both settings now live on the default row, where the control is.
+    expect(hook.result.current.layerModels.default.config?.wire_override).toBe('anthropic');
+    expect(hook.result.current.layerModels.default.config?.max_output_tokens).toBe('8192');
+    // A row that sets the key already won the backend's merge, so it keeps
+    // its own value rather than being overwritten by the entry's.
+    expect(hook.result.current.layerModels.analysis.config?.max_output_tokens).toBe('2048');
+    expect(hook.result.current.layerModels.analysis.config?.wire_override).toBe('anthropic');
+    // And the entry the next save writes carries the connection half only.
+    const [entry] = hook.result.current.entries;
+    expect(entry.config?.project_id).toBe('p');
+    expect(entry.config?.wire_override).toBeUndefined();
+    expect(entry.config?.max_output_tokens).toBeUndefined();
+  });
+
+  it('leaves a project whose entries hold no model settings alone', async () => {
+    (api.getProjectLLMConfig as jest.Mock).mockResolvedValue(CONFIG);
+    const hook = renderHook(() => useLLMConfig('p1'));
+    await waitFor(() => expect(hook.result.current.loading).toBe(false));
+    expect(hook.result.current.layerModels).toEqual(CONFIG.layer_models);
+  });
+});

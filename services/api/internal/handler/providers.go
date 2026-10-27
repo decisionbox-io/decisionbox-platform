@@ -310,41 +310,42 @@ func (h *ProvidersHandler) ListLiveLLMModelsForProject(w http.ResponseWriter, r 
 		return
 	}
 
-	// Resolve the slot to a (provider, model, config, []secretKey) tuple.
-	// For slot=blurb_llm the secret lookup order matches the agent's
-	// resolveBlurbLLM (index_schema.go): blurb-llm-credentials first,
-	// then fall back to llm-credentials. This applies whether or not
-	// project.BlurbLLM is populated — a user can configure a blurb-
-	// specific credential even when blurb shares the analysis provider,
-	// and the dashboard's "Load models" must read the same credential
-	// the agent would read at indexing time.
+	// The legacy blurb slot IS the table-descriptions layer, and on a
+	// configured project only the layer can answer for it.
+	//
+	// dualWriteLegacyLLM deliberately clears blurb_llm when that layer uses
+	// a non-reserved entry — there is no legacy field that can describe
+	// "the entry named deepinfra" — so the slot branch below fell through
+	// to the default provider and listed the wrong connection's models.
+	// Resolving through the layer is right for an unmigrated project too:
+	// LayerSpecUnchecked synthesises the blurb entry from blurb_llm, and
+	// llmlayer.CredentialChain gives that reserved entry the same
+	// blurb-first order this branch used to hard-code. A layer on a NAMED
+	// entry gets that entry's own key instead, which is the point — a
+	// secondary connection has no share of the blurb or default
+	// credential, here or at indexing time.
+	if slot == "blurb_llm" {
+		h.listLiveModelsForProviderEntry(w, r, project, projectLiveModelsRequest{Layer: llmlayer.LayerTableDescriptions})
+		return
+	}
+
+	// Resolve the analysis slot to a (provider, model, config, []secretKey)
+	// tuple. The blurb slot's own chain — blurb-llm-credentials first, then
+	// llm-credentials — now comes from llmlayer.CredentialChain by way of
+	// the table-descriptions layer, which is the same order and one
+	// definition of it.
 	var (
 		provider   string
 		modelID    string
 		slotCfg    map[string]string
 		secretKeys []string
 	)
-	switch slot {
-	case "blurb_llm":
-		if project.BlurbLLM != nil && project.BlurbLLM.Provider != "" {
-			provider = project.BlurbLLM.Provider
-			modelID = project.BlurbLLM.Model
-			slotCfg = project.BlurbLLM.Config
-		} else {
-			// No blurb override — borrow the analysis LLM's provider/
-			// model/config but still prefer the blurb-specific secret
-			// per the agent's resolveBlurbLLM contract.
-			provider = project.LLM.Provider
-			modelID = project.LLM.Model
-			slotCfg = project.LLM.Config
-		}
-		secretKeys = []string{"blurb-llm-credentials", "llm-credentials"}
-	default:
-		provider = project.LLM.Provider
-		modelID = project.LLM.Model
-		slotCfg = project.LLM.Config
-		secretKeys = []string{"llm-credentials"}
-	}
+	// Only the analysis slot reaches here: blurb_llm went to its layer
+	// above, and those two are the only slots the parser accepts.
+	provider = project.LLM.Provider
+	modelID = project.LLM.Model
+	slotCfg = project.LLM.Config
+	secretKeys = []string{"llm-credentials"}
 
 	if provider == "" {
 		writeError(w, http.StatusBadRequest, "project has no "+slot+" provider configured")

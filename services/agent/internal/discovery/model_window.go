@@ -95,6 +95,21 @@ func (o *Orchestrator) budgetFor(layer string) (window, outputCap int) {
 		window = gollm.GetEffectiveInputWindow(provider, model, cfg)
 	}
 
+	// An explicit max_input_tokens is a CEILING, and calibration measures
+	// the endpoint — not this layer's budget — so it may lower the window
+	// and never raise it.
+	//
+	// Calibration is keyed by the connection, which is right: the real
+	// window belongs to the endpoint, and two layers on one connection
+	// should share what either of them learns. But it means a window
+	// exploration measured at 32K was handed to an analysis layer the
+	// operator had capped at 4K, because calibration took precedence over
+	// the resolved budget. Re-applying the cap keeps the sharing and keeps
+	// the cap — the same clamp-only-lowers rule the output side follows.
+	if cap := gollm.MaxInputOverride(cfg); cap > 0 && window > cap {
+		window = cap
+	}
+
 	outputCap = resolvedCap
 	if outputCap <= 0 {
 		outputCap = gollm.ClampMaxTokens(

@@ -333,3 +333,53 @@ func TestValidationOutputBudgetIsClampedToTheLayerModel(t *testing.T) {
 		t.Errorf("budget with no resolved cap = %d, want 4000", got)
 	}
 }
+
+// Calibration is keyed by the CONNECTION, which is right — the real window
+// belongs to the endpoint and two layers on one connection should share
+// what either learns. But an explicit max_input_tokens is a ceiling, so
+// what is shared must still be clamped to it: exploration measuring 32K
+// handed that window to an analysis layer the operator had capped at 4K,
+// because calibration took precedence over the resolved budget.
+func TestCalibrationNeverRaisesALayerAboveItsOwnInputCap(t *testing.T) {
+	deflt := layerLLM(llmlayer.DefaultLayer, llmlayer.DefaultProviderID, "litellm", "qwen3", 32768, 8192)
+	// Same entry, same model — one connection — but capped by the operator.
+	capped := layerLLM(llmlayer.LayerAnalysis, llmlayer.DefaultProviderID, "litellm", "qwen3", 4096, 8192)
+	capped.Config = gollm.ProviderConfig{"max_input_tokens": "4096"}
+	o := &Orchestrator{
+		aiClient:        deflt.Client,
+		modelWindowRepo: &fakeWindowStore{},
+		layers: &fakeLayerSet{
+			byLayer:  map[string]*ai.LayerLLM{llmlayer.DefaultLayer: deflt, llmlayer.LayerAnalysis: capped},
+			fallback: deflt,
+		},
+	}
+
+	// Exploration measures the endpoint's real window on the default layer.
+	o.applyCalibratedWindowFor(context.Background(), deflt, "qwen3", 32768)
+
+	if w, _ := o.budgetFor(llmlayer.DefaultLayer); w != 32768 {
+		t.Errorf("the default layer's window = %d, want the calibrated 32768 — it has no cap of its own", w)
+	}
+	if w, _ := o.budgetFor(llmlayer.LayerAnalysis); w != 4096 {
+		t.Errorf("analysis window = %d, want its explicit 4096 cap — calibration measures the endpoint, not this layer's budget", w)
+	}
+}
+
+// And the clamp only lowers: a calibration BELOW the cap is the honest
+// window and must win, or a layer capped generously would keep budgeting
+// against a window its endpoint does not have.
+func TestCalibrationStillLowersBelowAnInputCap(t *testing.T) {
+	deflt := layerLLM(llmlayer.DefaultLayer, llmlayer.DefaultProviderID, "litellm", "qwen3", 200000, 8192)
+	deflt.Config = gollm.ProviderConfig{"max_input_tokens": "200000"}
+	o := &Orchestrator{
+		aiClient:        deflt.Client,
+		modelWindowRepo: &fakeWindowStore{},
+		layers:          &fakeLayerSet{byLayer: map[string]*ai.LayerLLM{llmlayer.DefaultLayer: deflt}, fallback: deflt},
+	}
+
+	o.applyCalibratedWindowFor(context.Background(), deflt, "qwen3", 40960)
+
+	if w, _ := o.budgetFor(llmlayer.DefaultLayer); w != 40960 {
+		t.Errorf("window = %d, want the measured 40960 — the endpoint does not have the 200000 the operator hoped for", w)
+	}
+}

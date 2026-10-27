@@ -28,7 +28,7 @@ import {
 } from '@mantine/core';
 import { IconAlertCircle, IconPlus, IconShieldCheck, IconTrash } from '@tabler/icons-react';
 import {
-  api, DEFAULT_LLM_PROVIDER_ID, LLMProviderEntry, LiveModel, MAX_LLM_PROVIDER_ID_LEN,
+  api, DEFAULT_LLM_PROVIDER_ID, LayerModel, LLMProviderEntry, LiveModel, MAX_LLM_PROVIDER_ID_LEN,
   ProviderMeta, SecretEntryResponse, isValidLLMProviderId, llmProviderSecretKey,
 } from '@/lib/api';
 import {
@@ -41,7 +41,7 @@ import { TestConnectionButton } from './WarehouseConfigPanel';
  * belong on a layer row. Mirrors llmlayer.ModelScopedKeys on the server,
  * which partitions a legacy config the same way.
  */
-const MODEL_SCOPED_KEYS = [
+export const MODEL_SCOPED_KEYS = [
   'max_input_tokens', 'max_output_tokens', 'wire_override',
   'prompt_cache', 'reasoning_enabled',
 ];
@@ -120,6 +120,45 @@ export function entriesFrom(forms: ProviderEntryForm[]): LLMProviderEntry[] {
       if (f.authMethod) config.auth_method = f.authMethod;
       return { id: f.id, label: f.label || undefined, provider: f.provider, config };
     });
+}
+
+/**
+ * Moves an entry's MODEL-scoped settings onto the layer rows that use it.
+ *
+ * entriesFrom strips those keys from the entry, because that is where they
+ * belong — but only the dashboard partitions them. An entry written through
+ * the API can carry max_input_tokens, max_output_tokens or wire_override,
+ * and the backend merges an entry's config UNDER every row on it, so they
+ * are live settings. Loading such a project and saving anything at all
+ * dropped them: a silent loss of a token limit, or of the wire override a
+ * custom deployment needs to be dispatchable at all.
+ *
+ * A row that sets the key already wins the merge, so it is left alone and
+ * the result is the configuration that was already running — now visible in
+ * the controls that own it.
+ */
+export function materialiseEntrySettings(
+  entries: LLMProviderEntry[],
+  rows: Record<string, LayerModel>,
+): Record<string, LayerModel> {
+  const scoped = new Map<string, Record<string, string>>();
+  for (const e of entries) {
+    const half = Object.entries(e.config ?? {}).filter(([k]) => MODEL_SCOPED_KEYS.includes(k));
+    if (half.length > 0) scoped.set(e.id, Object.fromEntries(half));
+  }
+  if (scoped.size === 0) return rows;
+
+  const out: Record<string, LayerModel> = {};
+  for (const [layer, row] of Object.entries(rows)) {
+    const half = scoped.get(row.provider_id || DEFAULT_LLM_PROVIDER_ID);
+    if (!half) {
+      out[layer] = row;
+      continue;
+    }
+    const config = { ...half, ...(row.config ?? {}) };
+    out[layer] = { ...row, config };
+  }
+  return out;
 }
 
 /**

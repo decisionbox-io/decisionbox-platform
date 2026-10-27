@@ -11,6 +11,7 @@ import (
 	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 
@@ -748,5 +749,53 @@ func TestValidateLLMConfig_GenericFallbackForProvidersWithoutOptions(t *testing.
 	}
 	if msg := validateLLMConfig("claude", map[string]string{"wire_override": "antropik"}); msg == "" {
 		t.Error("generic fallback should reject typo")
+	}
+}
+
+// On a CONFIGURED project the blurb slot is the table-descriptions layer,
+// and only the layer can answer for it.
+//
+// dualWriteLegacyLLM deliberately clears blurb_llm when that layer uses a
+// non-reserved entry — no legacy field can say "the entry named cheap" — so
+// the slot branch fell through to the analysis provider and listed the
+// wrong connection's models under the wrong credential.
+func TestProvidersHandler_BlurbSlotFollowsTheTableDescriptionLayer(t *testing.T) {
+	repo := &stubProjectRepo{project: &models.Project{
+		ID:  "p",
+		LLM: models.LLMConfig{Provider: "claude", Model: "claude-sonnet-4-6"},
+		// Cleared, exactly as a per-layer save leaves it.
+		BlurbLLM: nil,
+		LLMProviders: []llmlayer.ProviderEntry{
+			{ID: llmlayer.DefaultProviderID, Provider: "claude"},
+			{ID: "cheap", Provider: "openai"},
+		},
+		LayerModels: map[string]llmlayer.LayerModel{
+			llmlayer.DefaultLayer:           {ProviderID: llmlayer.DefaultProviderID, Model: "claude-sonnet-4-6"},
+			llmlayer.LayerTableDescriptions: {ProviderID: "cheap", Model: "gpt-4.1-nano"},
+		},
+		LLMConfigVersion: llmlayer.ConfigVersion,
+	}}
+	secrets := &stubSecretProvider{values: map[string]string{
+		"llm-credentials":       "sk-llm",
+		"blurb-llm-credentials": "sk-blurb",
+	}}
+	h := NewProvidersHandlerWithProject(repo, secrets)
+
+	w := callForProject(t, h, "p", `{"slot":"blurb_llm"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	// The entry's OWN key, which is the whole point: a named entry has no
+	// share of the blurb or default credential, and reading either would be
+	// the "it works because the primary's key was lying around" failure the
+	// per-entry chain exists to prevent.
+	want := llmlayer.CredentialsKey("cheap")
+	for _, k := range secrets.requests {
+		if k == "llm-credentials" || k == "blurb-llm-credentials" {
+			t.Errorf("read %q — the layer is on entry \"cheap\", whose credential is its own", k)
+		}
+	}
+	if len(secrets.requests) == 0 || secrets.requests[0] != want {
+		t.Errorf("requests = %v, want %q first", secrets.requests, want)
 	}
 }

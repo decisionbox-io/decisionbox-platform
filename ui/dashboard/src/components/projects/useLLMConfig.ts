@@ -23,7 +23,8 @@ import {
   LiveModel, SecretEntryResponse, api, isValidLLMProviderId,
 } from '@/lib/api';
 import {
-  ProviderEntryForm, entriesFrom, entryFormsFrom, pendingCredentialWrites,
+  ProviderEntryForm, entriesFrom, entryFormsFrom, materialiseEntrySettings,
+  pendingCredentialWrites,
 } from './LLMProvidersPanel';
 import { DEFAULT_LAYER } from './LayerModelsPanel';
 
@@ -133,7 +134,11 @@ export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void):
         // needs its sole auth method pre-selected, or its credential input
         // never renders.
         setEntryForms(entryFormsFrom(cfg.providers, provs));
-        setLayerModels(cfg.layer_models || {});
+        // Model-scoped settings an API client put on an ENTRY move onto the
+        // rows that use it, before entriesFrom strips them from the entry on
+        // the next save. Otherwise saving anything at all silently dropped a
+        // token limit or a wire override that was live.
+        setLayerModels(materialiseEntrySettings(cfg.providers, cfg.layer_models || {}));
         // Every entry the server just described is one it can answer about,
         // SEEDED INCLUDED. A seeded entry is synthesised from project.llm
         // and project.blurb_llm, which are persisted — ProviderByID resolves
