@@ -734,3 +734,67 @@ func TestAnEmptyModelLayerDoesNotShareAProviderWithANamedModel(t *testing.T) {
 		t.Errorf("the endpoint layer was built with model %q", endpointLayer.Config["model"])
 	}
 }
+
+// Reasoning is requested PER CALL, so two layers that differ only by it are
+// still one connection. Treating it as part of the connection identity cost
+// a second HTTP client, a second credential initialisation and a second
+// live model probe — seconds each — for a setting the connection does not
+// carry. Prompt caching is the opposite and must still split them: it is
+// read when the provider is built.
+func TestReasoningDoesNotSplitAConnectionButCachingDoes(t *testing.T) {
+	p := singleModelProject()
+	// The seeded default row carries prompt_cache, and an override row
+	// REPLACES rather than merges — so the override has to repeat it for
+	// reasoning to be the only difference between the two connections.
+	defaultCfg := p.LayerModels[llmlayer.DefaultLayer].Config
+	explore := map[string]string{"reasoning_enabled": "true"}
+	for k, v := range defaultCfg {
+		if k != "reasoning_enabled" {
+			explore[k] = v
+		}
+	}
+	p.LayerModels[llmlayer.LayerExploration] = llmlayer.LayerModel{
+		ProviderID: llmlayer.DefaultProviderID, Model: "opus", Config: explore,
+	}
+	c := &counters{}
+	set, err := buildLayerSet(context.Background(), layerSetInput{
+		project: p, projectID: "p1",
+		layers: []string{llmlayer.LayerExploration, llmlayer.LayerAnalysis},
+		deps:   c.deps(),
+	})
+	if err != nil {
+		t.Fatalf("buildLayerSet: %v", err)
+	}
+	if c.providerBuilds != 1 {
+		t.Errorf("built %d providers for one connection, want 1", c.providerBuilds)
+	}
+	// The layers still differ where it counts: the per-layer client.
+	if !set.For(llmlayer.LayerExploration).Reasoning {
+		t.Error("the exploration layer lost its reasoning opt-in")
+	}
+	if set.For(llmlayer.LayerAnalysis).Reasoning {
+		t.Error("the analysis layer inherited another layer's reasoning")
+	}
+
+	// Caching IS construction-time, so it still splits them.
+	p2 := singleModelProject()
+	cacheOff := map[string]string{}
+	for k, v := range p2.LayerModels[llmlayer.DefaultLayer].Config {
+		cacheOff[k] = v
+	}
+	cacheOff["prompt_cache"] = "false"
+	p2.LayerModels[llmlayer.LayerExploration] = llmlayer.LayerModel{
+		ProviderID: llmlayer.DefaultProviderID, Model: "opus", Config: cacheOff,
+	}
+	c2 := &counters{}
+	if _, err := buildLayerSet(context.Background(), layerSetInput{
+		project: p2, projectID: "p1",
+		layers: []string{llmlayer.LayerExploration, llmlayer.LayerAnalysis},
+		deps:   c2.deps(),
+	}); err != nil {
+		t.Fatalf("buildLayerSet: %v", err)
+	}
+	if c2.providerBuilds != 2 {
+		t.Errorf("built %d providers for two caching settings, want 2", c2.providerBuilds)
+	}
+}

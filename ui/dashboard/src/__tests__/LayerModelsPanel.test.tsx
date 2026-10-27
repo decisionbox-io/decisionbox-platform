@@ -427,3 +427,42 @@ describe('LayerModelsPanel — an edited connection has no model list yet', () =
     });
   });
 });
+
+// A toggle an override row does not set resolves to the DEFAULT row's value
+// on the backend, not to the switch's own default. A seeded
+// table-description row with no entries of its own therefore showed caching
+// on while the saved default had it off — a control reporting the opposite
+// of what runs.
+describe('LayerModelsPanel — inherited toggles show what will run', () => {
+  it('reflects the default row when an override sets neither', async () => {
+    renderPanel({
+      [DEFAULT_LAYER]: {
+        provider_id: 'default', model: 'opus',
+        config: { prompt_cache: 'false', reasoning_enabled: 'true' },
+      },
+      // An override with its own model and nothing else — what seeding
+      // produces for a migrated blurb pair.
+      analysis: { provider_id: 'cheap', model: 'haiku' },
+    });
+    await screen.findByText('Main layers');
+
+    const caching = screen.getAllByRole('switch', { name: /Prompt caching/ });
+    const reasoning = screen.getAllByRole('switch', { name: /Reasoning/ });
+    // [0] is the default card; [1] is the override row below it.
+    expect(caching[0]).not.toBeChecked();
+    expect(caching[1]).not.toBeChecked();
+    expect(reasoning[0]).toBeChecked();
+    expect(reasoning[1]).toBeChecked();
+  });
+
+  it('still shows an override that sets its own', async () => {
+    renderPanel({
+      [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus', config: { prompt_cache: 'false' } },
+      analysis: { provider_id: 'cheap', model: 'haiku', config: { prompt_cache: 'true' } },
+    });
+    await screen.findByText('Main layers');
+    const caching = screen.getAllByRole('switch', { name: /Prompt caching/ });
+    expect(caching[0]).not.toBeChecked();
+    expect(caching[1]).toBeChecked();
+  });
+});

@@ -311,7 +311,10 @@ func BuildProviderWith(spec LayerSpec, cred Credential, opts BuildOptions) (goll
 // fallback only and ai.Client sets ChatRequest.Model on every call.
 //
 // The model is deliberately NOT part of it, because gollm providers treat the
-// construction-time model as a fallback only.
+// construction-time model as a fallback only — and neither is reasoning,
+// which is requested per call. prompt_cache IS part of it: that one is read
+// when the provider is built, which is why two layers disagreeing about
+// caching really are two connections.
 //
 // Neither is the credential, which is NOT derived from the entry alone: the
 // chain depends on the LAYER (table descriptions tries the blurb secret
@@ -320,7 +323,14 @@ func BuildProviderWith(spec LayerSpec, cred Credential, opts BuildOptions) (goll
 func ConfigKey(cfg gollm.ProviderConfig) string {
 	keys := make([]string, 0, len(cfg))
 	for k := range cfg {
-		if k == "model" {
+		// `model` is set per call, and reasoning is requested per call
+		// (ai.Client.SetReasoning / ChatRequest.ReasoningEffort) — no
+		// provider reads either at construction. Including reasoning split
+		// two otherwise identical layers into two HTTP clients, two
+		// credential initialisations and two live model probes, each of
+		// which can take seconds, for a setting the connection does not
+		// carry.
+		if k == "model" || k == gollm.ReasoningEnabledKey {
 			continue
 		}
 		keys = append(keys, k)

@@ -851,7 +851,7 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	// upstream error, or context-cancelled → silently fall through
 	// and let provider report any overflow as a typed 413 via
 	// classifyLLMError below.
-	if overflow, ok := verifyExactPromptFits(ctx, llmProvider, askSpec.Model, systemPrompt, messages, modelMaxInput); ok && overflow != nil {
+	if overflow, ok := verifyExactPromptFits(ctx, llmProvider, askSpec.Model, systemPrompt, messages, modelMaxInput, askOutput); ok && overflow != nil {
 		writeErrorCode(w, http.StatusRequestEntityTooLarge,
 			ErrCodeContextOverflow,
 			"the assembled prompt exceeds the model's input window (verified via exact counter)",

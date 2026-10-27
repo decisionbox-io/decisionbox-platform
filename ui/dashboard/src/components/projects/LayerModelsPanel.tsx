@@ -148,6 +148,19 @@ export function LayerModelsPanel({
   // override but not on the default is a control a project that runs one
   // model everywhere cannot reach at all — which is how the token caps and
   // wire_override went missing from settings.
+  // What a toggle this row does not set will actually RESOLVE to.
+  //
+  // The backend falls back to the default row (through the project-level
+  // mirror the default row is dual-written to), not to the switch's own
+  // default — so a seeded table-description row with no entries of its own
+  // showed caching on while the saved default had it off, and reasoning off
+  // while it actually ran on. A control that reports the opposite of what
+  // runs is worse than no control.
+  const inheritedToggle = (row: LayerModel, key: string, fallback: boolean): boolean => {
+    if (row.config?.[key] !== undefined) return boolFrom(row.config, key, fallback);
+    return boolFrom(value[DEFAULT_LAYER]?.config, key, fallback);
+  };
+
   const renderModelSettings = (
     row: LayerModel,
     meta: ProviderMeta | null,
@@ -186,14 +199,14 @@ export function LayerModelsPanel({
           <Switch
             size="xs"
             label="Reasoning"
-            checked={boolFrom(row.config, REASONING_KEY, false)}
+            checked={inheritedToggle(row, REASONING_KEY, false)}
             onChange={(e) => setCfg(REASONING_KEY, e.currentTarget.checked ? 'true' : 'false')}
           />
           <Switch
             size="xs"
             label="Prompt caching"
             description="Turning this off for one layer alone opens a second connection to that provider — caching is applied when the connection is built, not per request."
-            checked={boolFrom(row.config, PROMPT_CACHE_KEY, true)}
+            checked={inheritedToggle(row, PROMPT_CACHE_KEY, true)}
             onChange={(e) => setCfg(PROMPT_CACHE_KEY, e.currentTarget.checked ? 'true' : 'false')}
           />
         </Group>
@@ -222,6 +235,18 @@ export function LayerModelsPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [selectedEntryIds, stored],
   );
+
+  // A save is the one event that can change what the server would answer
+  // without changing the connection key — a credential-only save leaves
+  // provider and config untouched, so a list discovered with the old key
+  // (or a live_error from a bad one) would otherwise survive the fix with
+  // no way back but a page reload. savedEntries is replaced on every save,
+  // so its identity is the signal.
+  const savedIdentityRef = useRef(stored);
+  if (savedIdentityRef.current !== stored) {
+    savedIdentityRef.current = stored;
+    requestedRef.current.clear();
+  }
 
   useEffect(() => {
     for (const id of selectedEntryIds) {
@@ -421,12 +446,23 @@ export function LayerModelsPanel({
               value={defaultEntry?.label || defaultEntry?.provider || DEFAULT_PROVIDER_ID}
               readOnly
             />
-            <LiveModelCombobox
-              providerMeta={defaultMeta}
-              liveModels={modelsFor(defaultEntryId)}
-              value={defaultRow.model || ''}
-              onChange={(val) => writeDefaultRow({ ...defaultRow, model: val })}
-            />
+            <Stack gap={4}>
+              <LiveModelCombobox
+                providerMeta={defaultMeta}
+                liveModels={modelsFor(defaultEntryId)}
+                value={defaultRow.model || ''}
+                onChange={(val) => writeDefaultRow({ ...defaultRow, model: val })}
+              />
+              {(modelsFor(defaultEntryId)?.length ?? 0) === 0 && defaultEntryId && (
+                <Button
+                  variant="subtle"
+                  size="compact-xs"
+                  onClick={() => { void reloadModelsFor(defaultEntryId); }}
+                >
+                  Reload models
+                </Button>
+              )}
+            </Stack>
           </Group>
           {renderModelSettings(defaultRow, defaultMeta, setDefaultConfig)}
           <TestConnectionButton projectId={projectId} target="llm" label="Test default model" />

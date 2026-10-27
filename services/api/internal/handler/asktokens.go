@@ -87,7 +87,12 @@ const askMinRAGItems = 1
 // on the upstream-billed tokens (chat-template overhead adds a few
 // per message) — the askMaxOutputTokens + askReservedSystemTokens
 // reserves cover that gap.
-func verifyExactPromptFits(ctx context.Context, llmProvider gollm.Provider, model, systemPrompt string, messages []gollm.Message, modelMaxInput int) (error, bool) {
+// maxOutput is the generation reserve THIS request will actually ask for —
+// the ask layer's resolved ceiling, which may be below askMaxOutputTokens.
+// Reserving the fixed value instead rejected requests that fit: a
+// 4,096-token window with a 512-token cap and a 2,500-token prompt is
+// comfortable, and was answered with a 413.
+func verifyExactPromptFits(ctx context.Context, llmProvider gollm.Provider, model, systemPrompt string, messages []gollm.Message, modelMaxInput, maxOutput int) (error, bool) {
 	if llmProvider == nil {
 		return nil, false
 	}
@@ -122,9 +127,12 @@ func verifyExactPromptFits(ctx context.Context, llmProvider gollm.Provider, mode
 	// reserve already lives in askReservedSystemTokens; we don't
 	// double-subtract it here because the flattened text already
 	// includes the system prompt.
-	if exactTokens+askMaxOutputTokens > modelMaxInput {
+	if maxOutput <= 0 {
+		maxOutput = askMaxOutputTokens
+	}
+	if exactTokens+maxOutput > modelMaxInput {
 		return fmt.Errorf("model=%s window=%d exact_tokens=%d max_output=%d",
-			model, modelMaxInput, exactTokens, askMaxOutputTokens), true
+			model, modelMaxInput, exactTokens, maxOutput), true
 	}
 	return nil, true
 }
