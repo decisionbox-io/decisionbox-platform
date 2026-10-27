@@ -42,6 +42,16 @@ export interface UseLLMConfig {
   secrets: SecretEntryResponse[];
   /** Entry ids already persisted, so only those offer a connection test. */
   savedIds: string[];
+  /**
+   * The entries AS STORED, which is what the server answers about.
+   *
+   * Separate from `entries` (the in-flight form) because the live-model
+   * endpoint reads the persisted connection: a list fetched while the form
+   * said something else describes the stored entry, not the edited one, and
+   * caching it against the edited values is how a repointed entry kept
+   * offering its old provider's models.
+   */
+  savedEntries: LLMProviderEntry[];
   /** Layer keys per entry id, for the in-use removal guard. */
   layersByProviderId: Record<string, string[]>;
   /** A user-facing reason the configuration cannot be saved yet, or null. */
@@ -74,6 +84,7 @@ export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void):
   const [layerModels, setLayerModels] = useState<Record<string, LayerModel>>({});
   const [secrets, setSecrets] = useState<SecretEntryResponse[]>([]);
   const [savedIds, setSavedIds] = useState<string[]>([]);
+  const [savedEntries, setSavedEntries] = useState<LLMProviderEntry[]>([]);
 
   const loadOnce = useRef(false);
   useEffect(() => {
@@ -92,6 +103,7 @@ export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void):
         // Only a PERSISTED entry can be connection-tested: the test reads
         // stored config and the stored secret, not in-flight form state.
         setSavedIds(cfg.seeded ? [] : cfg.providers.map((e) => e.id || DEFAULT_LLM_PROVIDER_ID));
+        setSavedEntries(cfg.seeded ? [] : cfg.providers);
         api.listSecrets(projectId).then((s) => setSecrets(s || [])).catch(() => {});
       })
       .catch((e) => setError((e as Error).message))
@@ -163,6 +175,7 @@ export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void):
       );
       setEntryForms((prev) => prev.map((f) => ({ ...f, apiKey: '', isNew: false })));
       setSavedIds(entries.map((e) => e.id));
+      setSavedEntries(entries);
       setSeeded(false);
       setConfigured(true);
       // Best-effort, and deliberately NOT part of whether the save
@@ -189,6 +202,6 @@ export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void):
   return {
     loading, error, saving, seeded, configured, providers,
     entryForms, setEntryForms, layerModels, setLayerModels,
-    secrets, savedIds, layersByProviderId, validationError, save, entries,
+    secrets, savedIds, savedEntries, layersByProviderId, validationError, save, entries,
   };
 }

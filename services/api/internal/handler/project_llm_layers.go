@@ -583,6 +583,19 @@ func (h *ProjectsHandler) applyLLMLayerUpdate(
 				writeError(w, http.StatusBadRequest, msg)
 				return false, nil
 			}
+			// The entries this path REWROTE are subject to the deployment's
+			// provider allow-list like any others. Without this, a legacy
+			// blurb_llm write was a way around it: it rewrites the shared
+			// reserved blurb entry, so every layer pointing at that entry
+			// moved to a forbidden provider with only a shape check in the
+			// way.
+			if err := checkLLMProviderEntriesAllowed(r.Context(), existing); err != nil {
+				if writePolicyError(w, err) {
+					return false, nil
+				}
+				writeError(w, http.StatusInternalServerError, "policy check failed: "+err.Error())
+				return false, nil
+			}
 			dualWriteLegacyLLM(existing)
 		}
 		return true, nil
@@ -613,6 +626,20 @@ func (h *ProjectsHandler) applyLLMLayerUpdate(
 		}
 		writeError(w, http.StatusInternalServerError, "policy check failed: "+err.Error())
 		return false, nil
+	}
+
+	// Materialise the entries before the mirror is rewritten over the fields
+	// they were synthesised FROM.
+	//
+	// A legacy project sending only layer_models validates against entries
+	// synthesised from llm and blurb_llm, and those entries are real to the
+	// resolver — a row may name the synthesised "blurb" entry. But nothing
+	// had persisted them, and dualWriteLegacyLLM then rewrites blurb_llm
+	// (clearing it when table descriptions match the default), so the entry
+	// that row pointed at stopped existing: the update succeeded and the
+	// layer silently fell back to the default provider.
+	if len(existing.LLMProviders) == 0 {
+		existing.LLMProviders = existing.EffectiveLLMProviders()
 	}
 
 	stampLLMConfigVersion(existing)

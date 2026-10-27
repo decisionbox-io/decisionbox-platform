@@ -380,3 +380,50 @@ describe('LayerModelsPanel — a changed connection invalidates its model list',
     expect((api.listLiveLLMModelsForProvider as jest.Mock).mock.calls.length).toBe(before);
   });
 });
+
+// The live-model endpoint answers about the STORED connection. A list
+// fetched while the form says something else describes the stored entry —
+// so caching it against the edited values left a repointed entry offering
+// its old provider's models, and saving did not clear them because the key
+// was already the new one.
+describe('LayerModelsPanel — an edited connection has no model list yet', () => {
+  const EDITED: LLMProviderEntry[] = [
+    { id: 'default', label: 'Claude', provider: 'claude' },
+    ENTRIES[1],
+  ];
+
+  it('does not ask the server about a connection it has not got', async () => {
+    render(
+      <MantineProvider>
+        <LayerModelsPanel
+          projectId="proj-1" entries={EDITED} savedEntries={ENTRIES}
+          providers={[BEDROCK_META as never]}
+          value={{ [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' } }}
+          onChange={jest.fn()}
+        />
+      </MantineProvider>,
+    );
+    await screen.findByText('Main layers');
+    const askedForDefault = (api.listLiveLLMModelsForProvider as jest.Mock).mock.calls
+      .filter(([, body]) => body.provider_id === 'default');
+    expect(askedForDefault).toHaveLength(0);
+  });
+
+  it('asks once the form matches what was saved', async () => {
+    render(
+      <MantineProvider>
+        <LayerModelsPanel
+          projectId="proj-1" entries={ENTRIES} savedEntries={ENTRIES}
+          providers={[BEDROCK_META as never]}
+          value={{ [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' } }}
+          onChange={jest.fn()}
+        />
+      </MantineProvider>,
+    );
+    await waitFor(() => {
+      const asked = (api.listLiveLLMModelsForProvider as jest.Mock).mock.calls
+        .filter(([, body]) => body.provider_id === 'default');
+      expect(asked.length).toBeGreaterThan(0);
+    });
+  });
+});

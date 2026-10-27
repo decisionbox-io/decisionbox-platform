@@ -3,6 +3,7 @@ package agentserver
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
@@ -209,8 +210,21 @@ func buildLayerSet(ctx context.Context, in layerSetInput) (*layerSet, error) {
 		// value, and on the RESOLVED one rather than the chain — so a
 		// project whose blurb chain falls through to the default key still
 		// shares one provider instance, as it should.
+		// ...and separately for whether the layer HAS a model at all.
+		//
+		// The model itself is deliberately not in the key: ai.Client sets it
+		// on every call, so one instance serves many models. But an
+		// endpoint-backed provider (a user-deployed Vertex endpoint) falls
+		// back to its CONSTRUCTION model when a request leaves the model
+		// empty — which is the whole point of an endpoint layer. Sharing an
+		// instance built with a named model would hand that layer another
+		// layer's model instead of passing the empty value through.
+		modelled := "model"
+		if strings.TrimSpace(spec.Model) == "" {
+			modelled = "endpoint"
+		}
 		providerKey := spec.ProviderID + "\x00" + llmlayer.ConfigKey(gollm.ProviderConfig(spec.Config)) +
-			"\x00" + cred.SecretKey + "\x00" + cred.Source
+			"\x00" + cred.SecretKey + "\x00" + cred.Source + "\x00" + modelled
 		provider, built := providers[providerKey]
 		var mergedCfg gollm.ProviderConfig
 		if built {

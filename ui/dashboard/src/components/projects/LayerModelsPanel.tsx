@@ -37,6 +37,13 @@ export interface LayerModelsPanelProps {
   projectId: string;
   /** The project's provider entries, as currently edited. */
   entries: LLMProviderEntry[];
+  /**
+   * The entries AS STORED. The live-model endpoint answers about the
+   * persisted connection, so this is what a fetched list describes — and
+   * what its cache key has to be. Defaults to `entries` for a caller with
+   * nothing unsaved.
+   */
+  savedEntries?: LLMProviderEntry[];
   providers: ProviderMeta[];
   value: Record<string, LayerModel>;
   onChange: (next: Record<string, LayerModel>) => void;
@@ -50,8 +57,9 @@ function boolFrom(config: Record<string, string> | undefined, key: string, fallb
 }
 
 export function LayerModelsPanel({
-  projectId, entries, providers, value, onChange,
+  projectId, entries, savedEntries, providers, value, onChange,
 }: LayerModelsPanelProps) {
+  const stored = savedEntries ?? entries;
   const [layers, setLayers] = useState<LLMLayerDescriptor[] | null>(null);
   const [layersError, setLayersError] = useState<string | null>(null);
   const [liveByEntry, setLiveByEntry] = useState<Record<string, LiveModel[] | null>>({});
@@ -84,12 +92,28 @@ export function LayerModelsPanel({
   // list against the id alone meant switching the default connection from
   // OpenAI to Claude kept offering OpenAI's models, even after saving.
   const connectionKey = (entryId: string) => {
-    const e = entries.find((x) => x.id === entryId);
+    const e = stored.find((x) => x.id === entryId);
     if (!e) return entryId;
     return `${entryId}\u0000${e.provider}\u0000${JSON.stringify(e.config ?? {})}`;
   };
 
+  // True when the form has moved away from what the server has. A list
+  // fetched now would describe the STORED connection, so there is nothing
+  // honest to show for an edited one until it is saved.
+  const connectionUnsaved = (entryId: string) => {
+    const edited = entries.find((x) => x.id === entryId);
+    const persisted = stored.find((x) => x.id === entryId);
+    if (!edited) return false;
+    if (!persisted) return true;
+    return edited.provider !== persisted.provider
+      || JSON.stringify(edited.config ?? {}) !== JSON.stringify(persisted.config ?? {});
+  };
+
   const loadModelsFor = async (entryId: string) => {
+    // The server can only answer about a connection it has. Asking about an
+    // edited one returns the stored entry's models, which would then be
+    // shown against the new provider.
+    if (connectionUnsaved(entryId)) return;
     const key = connectionKey(entryId);
     if (requestedRef.current.has(key)) return;
     requestedRef.current.add(key);
@@ -113,8 +137,11 @@ export function LayerModelsPanel({
     await loadModelsFor(entryId);
   };
 
-  /** The models currently known for an entry's CURRENT connection. */
-  const modelsFor = (entryId: string) => liveByEntry[connectionKey(entryId)] ?? null;
+  /** The models known for an entry's connection, or none while it is edited. */
+  const modelsFor = (entryId: string) => {
+    if (connectionUnsaved(entryId)) return null;
+    return liveByEntry[connectionKey(entryId)] ?? null;
+  };
 
   // The model-scoped settings, rendered identically for the default row and
   // for a layer's own row. One block on purpose: a control offered on an
@@ -193,7 +220,7 @@ export function LayerModelsPanel({
   const selectedConnections = useMemo(
     () => selectedEntryIds.map(connectionKey).join('\u0001'),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedEntryIds, entries],
+    [selectedEntryIds, stored],
   );
 
   useEffect(() => {

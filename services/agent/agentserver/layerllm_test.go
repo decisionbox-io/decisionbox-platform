@@ -688,3 +688,49 @@ func TestValidationLayersFollowTheRefuterFlag(t *testing.T) {
 		}
 	}
 }
+
+// An endpoint-backed layer leaves its model EMPTY on purpose: the deployment
+// serves its own model, and the provider falls back to its construction
+// model when a request does not name one. Sharing an instance that was built
+// with a named model therefore hands that layer the other layer's model
+// instead of passing the empty value through to the endpoint.
+func TestAnEmptyModelLayerDoesNotShareAProviderWithANamedModel(t *testing.T) {
+	p := &models.Project{}
+	p.LLM = models.LLMConfig{Provider: "vertex-ai", Model: "gemini-2.5-pro"}
+	p.LLMProviders = []llmlayer.ProviderEntry{{
+		ID:       llmlayer.DefaultProviderID,
+		Provider: "vertex-ai",
+		Config:   map[string]string{"project_id": "gcp", "location": "us-central1", "endpoint_id": "ep-1"},
+	}}
+	p.LayerModels = map[string]llmlayer.LayerModel{
+		// A named model on the entry's default row...
+		llmlayer.DefaultLayer: {ProviderID: llmlayer.DefaultProviderID, Model: "gemini-2.5-pro"},
+		// ...and a layer that deliberately names none, served by the endpoint.
+		llmlayer.LayerExploration: {ProviderID: llmlayer.DefaultProviderID, Model: ""},
+	}
+	p.LLMConfigVersion = llmlayer.ConfigVersion
+
+	c := &counters{}
+	set, err := buildLayerSet(context.Background(), layerSetInput{
+		project: p, projectID: "p1",
+		layers: []string{llmlayer.LayerExploration, llmlayer.LayerAnalysis},
+		deps:   c.deps(),
+	})
+	if err != nil {
+		t.Fatalf("buildLayerSet: %v", err)
+	}
+
+	endpointLayer := set.For(llmlayer.LayerExploration)
+	namedLayer := set.For(llmlayer.LayerAnalysis)
+	if endpointLayer.Model != "" {
+		t.Errorf("the endpoint layer's model = %q, want it left empty", endpointLayer.Model)
+	}
+	if endpointLayer.LLM == namedLayer.LLM {
+		t.Error("the endpoint layer shares a provider built with another layer's model")
+	}
+	// The construction config is what the fallback reads, so it must not
+	// carry the other layer's model either.
+	if endpointLayer.Config["model"] != "" {
+		t.Errorf("the endpoint layer was built with model %q", endpointLayer.Config["model"])
+	}
+}

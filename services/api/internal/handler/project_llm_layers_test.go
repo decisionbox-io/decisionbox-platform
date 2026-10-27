@@ -1264,3 +1264,91 @@ func TestAskAppliesItsLayersResolvedRequestSettings(t *testing.T) {
 		t.Errorf("output tokens = %d, want Ask's own %d", got, askMaxOutputTokens)
 	}
 }
+
+// The legacy compatibility path rewrites provider ENTRIES, so the
+// deployment's allow-list applies to it like any other write.
+//
+// Without the check it was a way around the list entirely: a blurb_llm
+// update rewrites the shared reserved blurb entry, so every layer pointing
+// at that entry moved to a forbidden provider with only a shape check in
+// the way.
+func TestUpdate_LegacyBlurbWriteCannotBypassTheProviderAllowList(t *testing.T) {
+	ck := &perProviderChecker{deny: "litellm"}
+	swapChecker(t, ck)
+
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, newMockDomainPackRepo())
+	p := configuredProject(t, repo)
+
+	w := putProject(t, h, p.ID, `{"blurb_llm":{"provider":"litellm","model":"qwen3-32b","config":{"base_url":"http://cheap"}}}`)
+	if w.Code == http.StatusOK {
+		t.Fatalf("a forbidden provider was accepted through the legacy path: %s", w.Body.String())
+	}
+
+	var asked bool
+	for _, provider := range ck.asked {
+		if provider == "litellm" {
+			asked = true
+		}
+	}
+	if !asked {
+		t.Errorf("the allow-list was asked about %v; the rewritten entry must be checked", ck.asked)
+	}
+
+	// And nothing was written: a refused request leaves the project alone.
+	stored, _ := repo.GetByID(context.Background(), p.ID)
+	if stored.BlurbLLM != nil && stored.BlurbLLM.Provider == "litellm" {
+		t.Error("the forbidden provider was persisted anyway")
+	}
+}
+
+// A legacy project sending only layer_models validates against entries
+// SYNTHESISED from llm and blurb_llm — and those entries are real to the
+// resolver, so a row may name the synthesised "blurb" one. Nothing had
+// persisted them, and the mirror is then rewritten over the very fields
+// they came from: the update succeeded and the layer silently fell back to
+// the default provider.
+func TestUpdate_LayersOnlyWriteMaterialisesTheEntriesItWasValidatedAgainst(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, newMockDomainPackRepo())
+	p := configuredProject(t, repo)
+
+	// A legacy-shaped project: both legacy blocks, no stored entries.
+	stored, _ := repo.GetByID(context.Background(), p.ID)
+	stored.LLMProviders = nil
+	stored.LayerModels = nil
+	stored.LLMConfigVersion = 0
+	stored.LLM = models.LLMConfig{Provider: "bedrock", Model: "opus"}
+	stored.BlurbLLM = &models.BlurbLLMConfig{Provider: "litellm", Model: "qwen3-32b", Config: map[string]string{"base_url": "http://cheap"}}
+	if err := repo.Update(context.Background(), p.ID, stored); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Put ANALYSIS on the synthesised blurb entry and leave table
+	// descriptions on the default — so the mirror clears blurb_llm.
+	w := putProject(t, h, p.ID, `{"layer_models":{
+	  "default":{"provider_id":"default","model":"opus"},
+	  "analysis":{"provider_id":"blurb","model":"qwen3-32b"}
+	}}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	got, _ := repo.GetByID(context.Background(), p.ID)
+	entry, ok := got.LLMProviderByID(llmlayer.BlurbProviderID)
+	if !ok {
+		t.Fatalf("the entry the analysis row names was not persisted: %+v", got.LLMProviders)
+	}
+	if entry.Provider != "litellm" {
+		t.Errorf("blurb entry provider = %q, want litellm", entry.Provider)
+	}
+	// And analysis still resolves to it rather than falling back.
+	spec, err := got.LayerSpecUnchecked(llmlayer.LayerAnalysis)
+	if err != nil {
+		t.Fatalf("LayerSpecUnchecked: %v", err)
+	}
+	if spec.Provider != "litellm" || spec.FellBackFromProviderID != "" {
+		t.Errorf("analysis resolved to %q (fell back from %q), want the entry it names",
+			spec.Provider, spec.FellBackFromProviderID)
+	}
+}
