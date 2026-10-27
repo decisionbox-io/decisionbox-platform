@@ -93,6 +93,46 @@ func (s LayerSpec) Target() string {
 	return s.ProviderID + "/" + s.Provider + "/" + s.Model + "/" + ConfigKey(gollm.ProviderConfig(s.Config))
 }
 
+// OutputCeiling is the largest max_tokens this layer's model will accept:
+// the operator's max_output_tokens override when it set one, else the
+// catalog's figure for the model. Returns 0 when neither is known.
+//
+// It exists because a deployment-level budget — the validation agent's, the
+// blurb generator's, Ask's reservation — is a product decision made without
+// knowing which model a layer points at, and a model that accepts less
+// rejects the whole call. Callers clamp DOWN to it; a roomier model does not
+// raise a budget that was chosen for other reasons.
+func (s LayerSpec) OutputCeiling() int {
+	if over := gollm.MaxOutputOverride(gollm.ProviderConfig(s.Config)); over > 0 {
+		return over
+	}
+	return gollm.GetMaxOutputTokens(s.Provider, s.Model)
+}
+
+// ClampOutput lowers a configured budget to this layer's ceiling, leaving it
+// alone when the layer has no known ceiling or accepts more.
+func (s LayerSpec) ClampOutput(configured int) int {
+	ceiling := s.OutputCeiling()
+	if ceiling > 0 && ceiling < configured {
+		return ceiling
+	}
+	return configured
+}
+
+// ReasoningEffort is the per-request reasoning field for this layer.
+//
+// Reasoning is requested on the REQUEST, not configured on the connection:
+// Ollama reads this field to set `think`, and no provider derives it from
+// the config map. Every place that builds a ChatRequest from a spec has to
+// ask for it, so it is one named call rather than a repeated conditional
+// that is easy to leave out — which it was, repeatedly.
+func (s LayerSpec) ReasoningEffort() string {
+	if s.Reasoning {
+		return gollm.ReasoningEffortOn
+	}
+	return gollm.ReasoningEffortDefault
+}
+
 // BuildOptions carries the deployment-level provider defaults and the
 // caller's credential policy.
 //

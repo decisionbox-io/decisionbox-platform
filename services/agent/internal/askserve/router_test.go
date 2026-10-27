@@ -2,8 +2,10 @@ package askserve
 
 import (
 	"context"
+	"sync"
 	"testing"
 
+	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/testutil"
 )
@@ -285,5 +287,61 @@ func TestParseRouteDecision(t *testing.T) {
 	}
 	if _, err := parseRouteDecision("no json here"); err == nil {
 		t.Fatal("expected error on non-JSON")
+	}
+}
+
+// recordingRouteProvider answers like the script but keeps every request, so
+// the budget the router actually asked for is assertable.
+type recordingRouteProvider struct {
+	*scriptedProvider
+	mu       sync.Mutex
+	requests []gollm.ChatRequest
+}
+
+func (p *recordingRouteProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
+	p.mu.Lock()
+	p.requests = append(p.requests, req)
+	p.mu.Unlock()
+	return p.scriptedProvider.Chat(ctx, req)
+}
+
+// The router's reservation is small and fixed, but "small" is relative to
+// the model: a router layer pointed at one that accepts less rejects the
+// call, and a failed route silently costs the turn its datasource decision.
+func TestRouter_RespectsItsLayersOutputCeiling(t *testing.T) {
+	whA := testutil.NewMockWarehouseProvider("sales")
+	whB := testutil.NewMockWarehouseProvider("crm")
+	prov := &recordingRouteProvider{scriptedProvider: &scriptedProvider{responses: []string{
+		`{"datasources":["wh_b"],"reason":"crm","confidence":0.9}`,
+		`{"query":"select 1"}`,
+		`{"answer":"done"}`,
+	}}}
+	rt := twoDatasourceRuntime(prov, whA, whB, nil, nil)
+	rt.RouterOutputCap = 128
+
+	runRouted(t, rt, "how many flagged CRM users?")
+
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+	if len(prov.requests) == 0 {
+		t.Fatal("the router made no call")
+	}
+	if got := prov.requests[0].MaxTokens; got > 128 {
+		t.Errorf("router asked for %d tokens from a layer capped at 128", got)
+	}
+
+	// With no known ceiling the reservation stands, so a layer that accepts
+	// more is not quietly shrunk.
+	prov2 := &recordingRouteProvider{scriptedProvider: &scriptedProvider{responses: []string{
+		`{"datasources":["wh_b"],"reason":"crm","confidence":0.9}`,
+		`{"query":"select 1"}`,
+		`{"answer":"done"}`,
+	}}}
+	rt2 := twoDatasourceRuntime(prov2, testutil.NewMockWarehouseProvider("sales"), testutil.NewMockWarehouseProvider("crm"), nil, nil)
+	runRouted(t, rt2, "how many flagged CRM users?")
+	prov2.mu.Lock()
+	defer prov2.mu.Unlock()
+	if got := prov2.requests[0].MaxTokens; got != routeMaxOutputTokens {
+		t.Errorf("router asked for %d, want the %d reservation when the layer has no ceiling", got, routeMaxOutputTokens)
 	}
 }

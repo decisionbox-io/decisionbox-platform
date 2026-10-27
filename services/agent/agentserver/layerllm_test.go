@@ -637,3 +637,54 @@ func TestADeploymentFlagAlsoKeepsALayerUnbuilt(t *testing.T) {
 		}
 	}
 }
+
+// A layer whose work cannot happen must not have its provider built: that is
+// a credential read and a connection, and a broken override on it used to
+// fail the whole runtime. The Ask router is the sharpest case, because a
+// single-datasource project NEVER routes.
+func TestAskServeBuildsTheRouterOnlyWhenARouteCanHappen(t *testing.T) {
+	if slices.Contains(askServeLayers(false), llmlayer.LayerAskRouter) {
+		t.Error("the router layer is built for a project that cannot route")
+	}
+	if !slices.Contains(askServeLayers(true), llmlayer.LayerAskRouter) {
+		t.Error("the router layer is missing where routing is possible")
+	}
+	// What Ask always needs, either way.
+	for _, routerPossible := range []bool{false, true} {
+		got := askServeLayers(routerPossible)
+		for _, layer := range []string{llmlayer.LayerAsk, llmlayer.LayerSQLRepair} {
+			if !slices.Contains(got, layer) {
+				t.Errorf("%q missing from %v", layer, got)
+			}
+		}
+	}
+
+	// And a broken router override does not fail a runtime that will not use it.
+	c := &countersFailingOn{layer: llmlayer.LayerAskRouter, counters: &counters{}}
+	p := singleModelProject()
+	p.LLMProviders = append(p.LLMProviders, llmlayer.ProviderEntry{
+		ID: "router-box", Provider: "litellm", Config: map[string]string{"base_url": "http://broken"},
+	})
+	p.LayerModels[llmlayer.LayerAskRouter] = llmlayer.LayerModel{ProviderID: "router-box", Model: "qwen3-32b"}
+	if _, err := buildLayerSet(context.Background(), layerSetInput{
+		project: p, projectID: "p1", layers: askServeLayers(false), deps: c.deps(),
+	}); err != nil {
+		t.Fatalf("buildLayerSet = %v; a project that cannot route must not fail on its router layer", err)
+	}
+}
+
+// The standalone validator's refuter gate is the same shape, so it is
+// asserted the same way.
+func TestValidationLayersFollowTheRefuterFlag(t *testing.T) {
+	if slices.Contains(validationLayers(false), llmlayer.LayerValidationRefuter) {
+		t.Error("the refuter layer is built with the refuter disabled")
+	}
+	if !slices.Contains(validationLayers(true), llmlayer.LayerValidationRefuter) {
+		t.Error("the refuter layer is missing with the refuter enabled")
+	}
+	for _, enabled := range []bool{false, true} {
+		if !slices.Contains(validationLayers(enabled), llmlayer.LayerValidationVerifier) {
+			t.Error("the verifier layer must always be built")
+		}
+	}
+}

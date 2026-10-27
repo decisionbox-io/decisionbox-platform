@@ -187,7 +187,14 @@ func (r *runner) decideRoute(ctx context.Context, st *turnState, evidence string
 		fmt.Fprintf(&b, "\nRELEVANT TABLES (semantic search across datasources):\n%s\n", evidence)
 	}
 
-	resp, err := st.routerClientOrAnswer().CreateMessage(ctx, []gollm.Message{{Role: "user", Content: b.String()}}, system, routeMaxOutputTokens)
+	// Clamped to the router layer's own ceiling: the reservation is a product
+	// decision about how much JSON a route needs, and a model that accepts
+	// less rejects the call outright — which costs the turn its routing.
+	budget := routeMaxOutputTokens
+	if cap := st.routerOutputCap; cap > 0 && cap < budget {
+		budget = cap
+	}
+	resp, err := st.routerClientOrAnswer().CreateMessage(ctx, []gollm.Message{{Role: "user", Content: b.String()}}, system, budget)
 	if err != nil {
 		return routeDecision{}, err
 	}

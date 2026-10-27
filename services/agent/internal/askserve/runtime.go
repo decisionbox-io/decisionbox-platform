@@ -35,6 +35,12 @@ type ProjectRuntime struct {
 	// mechanical decision a cheap model makes well. Nil ⇒ the router uses
 	// AIClient, which is today's behaviour.
 	RouterClient *ai.Client
+	// RouterOutputCap is that layer's resolved output ceiling. The router's
+	// own reservation is small and fixed, but "small" is relative to the
+	// model: a layer pointed at one that accepts less rejects the call, and
+	// a failed route silently costs the turn its datasource decision. 0 ⇒ no
+	// known ceiling, so the reservation stands.
+	RouterOutputCap int
 	// OutputCap bounds one assistant message, from the `ask` layer's resolved
 	// budget. 0 ⇒ the package default. It replaced a hardcoded 4096, which
 	// silently truncated a model whose real cap was lower and wasted headroom
@@ -110,6 +116,7 @@ type ProjectRuntimeOptions struct {
 	AIClient          *ai.Client
 	Model             string
 	RouterClient      *ai.Client
+	RouterOutputCap   int
 	OutputCap         int
 	InsightsProvider  ai.InsightsProvider
 	KnowledgeProvider KnowledgeProvider
@@ -134,6 +141,7 @@ func NewProjectRuntime(opts ProjectRuntimeOptions) *ProjectRuntime {
 		AIClient:          opts.AIClient,
 		Model:             opts.Model,
 		RouterClient:      opts.RouterClient,
+		RouterOutputCap:   opts.RouterOutputCap,
 		OutputCap:         opts.OutputCap,
 		InsightsProvider:  opts.InsightsProvider,
 		KnowledgeProvider: opts.KnowledgeProvider,

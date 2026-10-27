@@ -394,11 +394,19 @@ func discoveryLayers(phases discoveryPhases) []string {
 }
 
 // askServeLayers are the layers the ask-serve process resolves: the answer
-// model, the datasource router and the repair model its loop may need.
-var askServeLayers = []string{
-	llmlayer.LayerAsk,
-	llmlayer.LayerAskRouter,
-	llmlayer.LayerSQLRepair,
+// model, the repair model its loop may need, and the datasource router when
+// a route can actually happen.
+//
+// The router runs only on a multi-datasource turn with routing enabled, and
+// building a provider reads a credential and opens a connection — so a
+// single-datasource project with a broken ask_router override used to fail
+// its whole Ask runtime over a layer it would never call.
+func askServeLayers(routerPossible bool) []string {
+	layers := []string{llmlayer.LayerAsk, llmlayer.LayerSQLRepair}
+	if routerPossible {
+		layers = append(layers, llmlayer.LayerAskRouter)
+	}
+	return layers
 }
 
 // validationLayers are the layers the standalone document validator

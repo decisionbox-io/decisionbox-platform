@@ -50,6 +50,9 @@ type runner struct {
 type turnState struct {
 	req    TurnRequest
 	client *ai.Client
+	// routerOutputCap is that layer's resolved output ceiling; 0 means none
+	// is known and the router's own reservation stands.
+	routerOutputCap int
 	// routerClient is the datasource router's own client (the ask_router
 	// layer). Equal to client when the project did not override that layer.
 	routerClient *ai.Client
@@ -346,7 +349,7 @@ func (r *runner) run(ctx context.Context, rt *ProjectRuntime, req TurnRequest) {
 		r.finishFailed(ctx, st, fmt.Sprintf("invalid datasource selection: %v", err))
 		return
 	}
-	st := &turnState{req: req, client: rt.AIClient, routerClient: rt.router(), outputCap: rt.stepOutputCap(), model: rt.Model, routing: routing}
+	st := &turnState{req: req, client: rt.AIClient, routerClient: rt.router(), routerOutputCap: rt.RouterOutputCap, outputCap: rt.stepOutputCap(), model: rt.Model, routing: routing}
 	// Per-turn charting entitlement: the caller's EnableCharts AND the ops
 	// kill-switch. Set here, once, so both loops and the router path agree.
 	st.chartsEnabled = req.EnableCharts && r.cfg.ChartsEnabled

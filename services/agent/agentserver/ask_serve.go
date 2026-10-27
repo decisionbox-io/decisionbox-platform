@@ -110,14 +110,19 @@ func runAskServe(cfg *config.Config) error {
 		}
 		primaryID := warehouseID(project.PrimaryWarehouse())
 
-		// The per-layer LLM set for an Ask turn: the answer model, the
-		// datasource router and the repair model its loop may need (#407).
-		// Built as a set so three layers resolving to the same provider entry
-		// still share one provider instance and one live probe.
+		// The per-layer LLM set for an Ask turn: the answer model, the repair
+		// model its loop may need, and the datasource router when a route can
+		// happen at all (#407). Built as a set so layers resolving to the
+		// same provider entry still share one provider instance and one live
+		// probe.
+		//
+		// The router's own gate is `multi && RouterEnabled`, and both halves
+		// are known here: a single-datasource project never routes.
+		routerPossible := serveCfg.RouterEnabled && len(warehouses) > 1
 		layers, err := buildLayerSet(buildCtx, layerSetInput{
 			project:   project,
 			projectID: projectID,
-			layers:    askServeLayers,
+			layers:    askServeLayers(routerPossible),
 			deps:      newLayerSetDeps(cfg, secretProvider, projectID, nil),
 		})
 		if err != nil {
@@ -351,6 +356,7 @@ func runAskServe(cfg *config.Config) error {
 		return askserve.NewProjectRuntime(askserve.ProjectRuntimeOptions{
 			AIClient:          aiClient,
 			RouterClient:      layers.For(llmlayer.LayerAskRouter).Client,
+			RouterOutputCap:   layers.For(llmlayer.LayerAskRouter).OutputCap,
 			OutputCap:         askLayer.OutputCap,
 			Model:             askLayer.Model,
 			InsightsProvider:  insightsProvider,

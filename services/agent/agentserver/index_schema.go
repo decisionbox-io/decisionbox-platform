@@ -469,7 +469,11 @@ func newBlurbGenerator(ctx context.Context, cfg *config.Config, project *models.
 		Model:        spec.Model,
 		ProviderName: spec.Provider,
 		Workers:      envIntDefault("BLURB_WORKERS", blurb.DefaultWorkers),
-		MaxTokens:    envIntDefault("BLURB_MAX_TOKENS", blurb.DefaultMaxTokens),
+		// Clamped to what the table-description layer's own model accepts:
+		// BLURB_MAX_TOKENS is a deployment figure chosen without knowing
+		// which model the layer points at, and an endpoint that enforces a
+		// smaller limit fails every blurb call — which fails the index.
+		MaxTokens: spec.ClampOutput(envIntDefault("BLURB_MAX_TOKENS", blurb.DefaultMaxTokens)),
 		// A user-deployed endpoint serves its own model, so the model is
 		// empty — let the generator accept that instead of demanding an ID.
 		AllowEmptyModel: spec.HasEndpoint(),
