@@ -7,10 +7,12 @@ import (
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/debug"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/discovery"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
@@ -369,6 +371,26 @@ type discoveryPhases struct {
 	refuter    bool
 	questions  bool
 	reflection bool
+}
+
+// discoveryPhasesFor resolves those phases from EVERY gate each one answers
+// to, because any one of them off means the phase does not run — and a phase
+// that does not run must not have its provider built.
+//
+// Questions and reflection answer to three: the per-project toggle (Layer B),
+// the deployment's availability flag (Layer A), and the sources entitlement
+// the two phases check for themselves. Resolving only the first two left a
+// deployment without that entitlement building providers for two phases it
+// then skipped, so a broken override on either aborted the run before
+// exploration started — the failure this gating exists to prevent.
+func discoveryPhasesFor(ctx context.Context, project *models.Project) discoveryPhases {
+	sources, _ := policy.GetChecker().FeatureEnabled(ctx, "", policy.FeatureSources)
+	return discoveryPhases{
+		validation: project.EffectiveValidationEnabled(),
+		refuter:    refuterEnabled(),
+		questions:  project.EffectiveClarifyingQuestionsEnabled() && discovery.QuestionsAvailable() && sources,
+		reflection: project.EffectiveReflectionEnabled() && discovery.ReflectionAvailable() && sources,
+	}
 }
 
 // discoveryLayers are the layers a DISCOVERY run resolves.

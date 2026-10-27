@@ -90,6 +90,10 @@ export function LayerModelsPanel({
   // several rows can ask for the same entry in one render pass, and reading
   // the state would see the value from before the batch.
   const requestedRef = useRef<Set<string>>(new Set());
+  // Declared here, beside the request cache it guards, because
+  // loadModelsFor reads it to drop a response a save has overtaken. The
+  // generation is bumped lower down, where the save is noticed.
+  const savedGenerationRef = useRef(savedGeneration);
   // The live_error the API returns with a 200 and catalogue-only rows when
   // upstream discovery failed. Kept so the picker can say so and offer a
   // retry rather than looking deliberately empty.
@@ -163,6 +167,12 @@ export function LayerModelsPanel({
     const key = cacheKeyFor(entryId, layer);
     if (requestedRef.current.has(key)) return;
     requestedRef.current.add(key);
+    // The generation this request belongs to. A save does not change the
+    // cache key — the credential is not part of the connection's identity —
+    // so the refresh a save triggers races the request already in flight
+    // against the OLD credential, and that one landing last overwrote the
+    // refreshed list, or its error, with the answer the save replaced.
+    const generation = savedGenerationRef.current;
     try {
       // Both, for the table-description layer: provider_id names the entry
       // the row points at NOW (the server would otherwise resolve the
@@ -171,6 +181,7 @@ export function LayerModelsPanel({
       // listing different from the entry's.
       const body = listsByLayer(layer) ? { layer, provider_id: entryId } : { provider_id: entryId };
       const resp = await api.listLiveLLMModelsForProvider(projectId, body);
+      if (savedGenerationRef.current !== generation) return;
       setLiveByEntry((prev) => ({ ...prev, [key]: resp.models }));
       setLiveErrors((prev) => ({ ...prev, [key]: resp.live_error ?? null }));
     } catch {
@@ -179,7 +190,11 @@ export function LayerModelsPanel({
       // marked as requested meant the picker stayed empty even after the
       // connection was saved and working. Forgetting it lets the next
       // attempt (a save, a re-pick, or Reload) try again.
+      //
+      // Emptying the list is skipped for a request a save has overtaken:
+      // the old credential's failure is not this connection's answer.
       requestedRef.current.delete(key);
+      if (savedGenerationRef.current !== generation) return;
       setLiveByEntry((prev) => ({ ...prev, [key]: [] }));
     }
   };
@@ -340,7 +355,6 @@ export function LayerModelsPanel({
   // change cannot: equal content is exactly what a credential-only save
   // produces, and a new array identity is what any parent re-render
   // produces.
-  const savedGenerationRef = useRef(savedGeneration);
   if (savedGenerationRef.current !== savedGeneration) {
     savedGenerationRef.current = savedGeneration;
     requestedRef.current.clear();

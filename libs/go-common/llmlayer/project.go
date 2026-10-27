@@ -359,11 +359,29 @@ func (c ProjectConfig) SeedFromLegacy() ([]ProviderEntry, map[string]LayerModel)
 	// differs from the default pair.
 	blurb := c.EffectiveLayerModel(LayerTableDescriptions)
 	if blurb.ProviderID != defaultRow.ProviderID || blurb.Model != defaultRow.Model {
-		layers[LayerTableDescriptions] = LayerModel{
+		blurbRow := LayerModel{
 			ProviderID: blurb.ProviderID,
 			Model:      blurb.Model,
 			Config:     modelHalf[blurb.ProviderID],
 		}
+		if blurbRow.Config == nil {
+			blurbRow.Config = map[string]string{}
+		}
+		// Both toggles are MATERIALISED on this row, not left to inherit.
+		//
+		// The blurb slot does not answer to the project-level fields before
+		// migration — schema indexing built its provider from
+		// blurb_llm.config alone — but an absent key on a configured row
+		// does inherit them. So a project with caching off project-wide and
+		// a blurb slot that never mentioned it ran table descriptions WITH
+		// caching, and saving the untouched seed turned it off. Writing
+		// what the layer resolves to right now is the only way the save
+		// changes nothing, which is what "review and confirm" has to mean.
+		if spec, err := c.SpecUnchecked(LayerTableDescriptions); err == nil {
+			blurbRow.Config[gollm.PromptCacheKey] = boolString(spec.PromptCache)
+			blurbRow.Config[gollm.ReasoningEnabledKey] = boolString(spec.Reasoning)
+		}
+		layers[LayerTableDescriptions] = blurbRow
 	}
 
 	return entries, layers

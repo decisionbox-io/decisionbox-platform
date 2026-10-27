@@ -162,13 +162,16 @@ export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void):
    * that does not exist. The row-level picker already clears the model when
    * its entry changes; this is the same rule seen from the Providers tab.
    *
-   * Gaining an ENDPOINT clears those layers' wire_override. An endpoint
-   * serves its own model over its own wire — vertex-ai refuses to build at
-   * all when both are set — and the two now live apart: the endpoint on the
-   * entry, the override on the row. The single-column form used to delete
-   * the override as the endpoint was typed; nothing did after the split, so
-   * a Vertex project with a layer override saved cleanly and then failed to
-   * construct that layer.
+   * Gaining an ENDPOINT clears those layers' wire_override AND their model.
+   * An endpoint serves its own model over its own wire: vertex-ai refuses to
+   * build at all when a wire override is also set, and the OpenAI-compat
+   * wire forwards the model id verbatim, so a leftover publisher id like
+   * gemini-2.5-flash is sent to a serving container that does not know it.
+   * The single-column form deleted the override as the endpoint was typed
+   * and persisted an empty model in endpoint mode; after the split — the
+   * endpoint on the entry, both of those on the row — nothing did either,
+   * so the project saved cleanly and then failed on its next call.
+   * Validation already accepts a blank model where an endpoint is set.
    */
   const editEntries = useCallback((next: ProviderEntryForm[]) => {
     const repointed = new Set<string>();
@@ -191,7 +194,7 @@ export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void):
       for (const [layer, row] of Object.entries(rows)) {
         const id = row.provider_id || DEFAULT_LLM_PROVIDER_ID;
         let edited = row;
-        if (repointed.has(id)) edited = { ...edited, model: '' };
+        if (repointed.has(id) || endpointed.has(id)) edited = { ...edited, model: '' };
         if (endpointed.has(id) && edited.config?.['wire_override']) {
           const config = { ...edited.config };
           delete config['wire_override'];

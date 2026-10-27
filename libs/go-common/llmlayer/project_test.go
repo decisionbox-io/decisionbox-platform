@@ -449,28 +449,52 @@ func TestPerLayerPromptCaching(t *testing.T) {
 		}
 	})
 
-	// And once the project IS configured, the row's own config wins
-	// everywhere — which is the value the seed wrote from that same blurb
-	// config, so the upgrade and the first save agree.
+	// And saving the untouched seed must change nothing — in EITHER
+	// direction. The blurb slot does not answer to the project fields
+	// before migration, but an absent key on a configured row does, so the
+	// seed has to materialise what the layer resolves to today.
+	//
+	// The second case is the one that bites in practice: a project with
+	// caching off project-wide and a blurb slot that never mentioned it ran
+	// table descriptions WITH caching, and the first save turned it off —
+	// a change in indexing cost and latency nobody asked for.
 	t.Run("the seeded row resolves to what the legacy read resolved to", func(t *testing.T) {
-		c := legacyOnly()
-		c.Legacy.PromptCache = boolPtr(true)
-		c.Legacy.Blurb = &LegacyBlurb{
-			Provider: "openai",
-			Model:    "gpt-4.1-nano",
-			Config:   map[string]string{gollm.PromptCacheKey: "false"},
-		}
-		before, _ := c.SpecUnchecked(LayerTableDescriptions)
+		for _, tc := range []struct {
+			name         string
+			projectCache *bool
+			blurbConfig  map[string]string
+		}{
+			{"the blurb slot states its own", boolPtr(true), map[string]string{gollm.PromptCacheKey: "false"}},
+			{"the blurb slot states nothing", boolPtr(false), nil},
+			{"the blurb slot states nothing and the project says on", boolPtr(true), nil},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				c := legacyOnly()
+				c.Legacy.PromptCache = tc.projectCache
+				c.Legacy.Blurb = &LegacyBlurb{
+					Provider: "openai",
+					Model:    "gpt-4.1-nano",
+					Config:   tc.blurbConfig,
+				}
+				before, err := c.SpecUnchecked(LayerTableDescriptions)
+				if err != nil {
+					t.Fatalf("SpecUnchecked before seeding: %v", err)
+				}
 
-		entries, layers := c.SeedFromLegacy()
-		seeded := ProjectConfig{Providers: entries, LayerModels: layers, Legacy: c.Legacy}
-		after, err := seeded.SpecUnchecked(LayerTableDescriptions)
-		if err != nil {
-			t.Fatalf("SpecUnchecked after seeding: %v", err)
-		}
-		if before.PromptCache != after.PromptCache {
-			t.Errorf("caching was %v before the seed and %v after; saving an unchanged seed must not change what runs",
-				before.PromptCache, after.PromptCache)
+				entries, layers := c.SeedFromLegacy()
+				seeded := ProjectConfig{Providers: entries, LayerModels: layers, Legacy: c.Legacy}
+				after, err := seeded.SpecUnchecked(LayerTableDescriptions)
+				if err != nil {
+					t.Fatalf("SpecUnchecked after seeding: %v", err)
+				}
+				if before.PromptCache != after.PromptCache {
+					t.Errorf("caching was %v before the seed and %v after; saving an unchanged seed must not change what runs",
+						before.PromptCache, after.PromptCache)
+				}
+				if before.Reasoning != after.Reasoning {
+					t.Errorf("reasoning was %v before the seed and %v after", before.Reasoning, after.Reasoning)
+				}
+			})
 		}
 	})
 }

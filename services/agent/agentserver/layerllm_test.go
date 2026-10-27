@@ -8,6 +8,7 @@ import (
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/discovery"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
@@ -797,4 +798,57 @@ func TestReasoningDoesNotSplitAConnectionButCachingDoes(t *testing.T) {
 	if c2.providerBuilds != 2 {
 		t.Errorf("built %d providers for two caching settings, want 2", c2.providerBuilds)
 	}
+}
+
+// --- how the phase set itself is resolved ---
+
+// denyChecker refuses every entitlement, as a deployment without the sources
+// licence does.
+type denyChecker struct{ policy.Checker }
+
+func (denyChecker) FeatureEnabled(context.Context, string, string) (bool, error) { return false, nil }
+
+// Questions and reflection check the sources entitlement for themselves and
+// return without doing anything when it is refused. Resolving the phase set
+// from the project toggle and the deployment flag alone therefore built
+// providers for two phases that were then skipped — so a broken override on
+// either aborted the run before exploration, which is exactly the failure
+// the gating exists to prevent.
+func TestDiscoveryPhasesFor_TheSourcesEntitlementCountsAsAGate(t *testing.T) {
+	t.Setenv("DISCOVERY_QUESTIONS_ENABLED", "true")
+	t.Setenv("DISCOVERY_REFLECTION_ENABLED", "true")
+	on := true
+	project := &models.Project{
+		ClarifyingQuestionsEnabled: &on,
+		ReflectionEnabled:          &on,
+	}
+
+	t.Run("entitled", func(t *testing.T) {
+		policy.RegisterChecker(policy.NewNoopChecker())
+		phases := discoveryPhasesFor(context.Background(), project)
+		if !phases.questions || !phases.reflection {
+			t.Fatalf("phases = %+v, want both on — every gate says yes", phases)
+		}
+		got := discoveryLayers(phases)
+		for _, layer := range []string{llmlayer.LayerQuestions, llmlayer.LayerReflection} {
+			if !slices.Contains(got, layer) {
+				t.Errorf("layer %q is not built, so the phase would run on the default model", layer)
+			}
+		}
+	})
+
+	t.Run("not entitled", func(t *testing.T) {
+		policy.RegisterChecker(denyChecker{policy.NewNoopChecker()})
+		t.Cleanup(func() { policy.RegisterChecker(policy.NewNoopChecker()) })
+		phases := discoveryPhasesFor(context.Background(), project)
+		if phases.questions || phases.reflection {
+			t.Fatalf("phases = %+v, want both off — neither phase will do any work", phases)
+		}
+		got := discoveryLayers(phases)
+		for _, layer := range []string{llmlayer.LayerQuestions, llmlayer.LayerReflection} {
+			if slices.Contains(got, layer) {
+				t.Errorf("layer %q is still built for a phase that will not run; a broken override on it aborts the run", layer)
+			}
+		}
+	})
 }

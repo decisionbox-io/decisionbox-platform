@@ -1040,18 +1040,8 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	windowStore := projectModelWindowStore{repo: modelWindowRepo, projectID: projectID}
 
 	// Which optional phases this run will execute, resolved BEFORE the layer
-	// set so a disabled phase's provider is never built. The same values are
-	// handed to RunDiscovery below, so the two cannot disagree.
-	// BOTH layers of each gate, because either one off means the phase does
-	// not run: the per-project toggle (Layer B) and the deployment's own
-	// availability flag (Layer A). Checking only the project's left a
-	// deployment that had switched a phase off still building its provider.
-	phases := discoveryPhases{
-		validation: project.EffectiveValidationEnabled(),
-		refuter:    refuterEnabled(),
-		questions:  project.EffectiveClarifyingQuestionsEnabled() && discovery.QuestionsAvailable(),
-		reflection: project.EffectiveReflectionEnabled() && discovery.ReflectionAvailable(),
-	}
+	// set so a disabled phase's provider is never built.
+	phases := discoveryPhasesFor(ctx, project)
 
 	// Build the per-layer LLM set (#407). One provider per (provider entry,
 	// merged config, resolved credential), one budget resolution and live

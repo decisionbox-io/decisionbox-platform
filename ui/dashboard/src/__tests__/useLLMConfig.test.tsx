@@ -216,6 +216,28 @@ describe('useLLMConfig.setEntryForms — entering endpoint mode', () => {
     expect(hook.result.current.layerModels.ask.config?.wire_override).toBe('anthropic-messages');
   });
 
+  // The endpoint serves its own deployed model, and the OpenAI-compat wire
+  // forwards the model id verbatim — so a leftover publisher id like
+  // gemini-2.5-flash is sent to a serving container that has never heard of
+  // it. The single-column form persisted an empty model in endpoint mode;
+  // after the split nothing did. Validation already accepts a blank model
+  // where an endpoint is set.
+  it('clears the publisher model of every layer on the entry that gained one', async () => {
+    (api.getProjectLLMConfig as jest.Mock).mockResolvedValue(VERTEX);
+    const hook = renderHook(() => useLLMConfig('p1'));
+    await waitFor(() => expect(hook.result.current.loading).toBe(false));
+
+    act(() => {
+      hook.result.current.setEntryForms(hook.result.current.entryForms.map((f) => (
+        f.id === 'default' ? { ...f, config: { ...f.config, endpoint_id: '123456789' } } : f
+      )));
+    });
+
+    expect(hook.result.current.layerModels.default.model).toBe('');
+    // And a layer elsewhere keeps the model it was given.
+    expect(hook.result.current.layerModels.ask.model).toBe('x');
+  });
+
   it('leaves the overrides alone when the entry has no endpoint', async () => {
     (api.getProjectLLMConfig as jest.Mock).mockResolvedValue(VERTEX);
     const hook = renderHook(() => useLLMConfig('p1'));

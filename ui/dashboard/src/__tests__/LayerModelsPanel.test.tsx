@@ -2,7 +2,7 @@
  * @jest-environment jsdom
  */
 import '@testing-library/jest-dom';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { LayerModelsPanel, DEFAULT_LAYER } from '@/components/projects/LayerModelsPanel';
 import { connectionKeyFor } from '@/components/projects/LLMProvidersPanel';
@@ -607,6 +607,47 @@ describe('LayerModelsPanel — a save refetches the model lists', () => {
     await waitFor(() => {
       expect((api.listLiveLLMModelsForProvider as jest.Mock).mock.calls.length).toBeGreaterThan(before);
     });
+  });
+
+  // ...and the request still in flight when the save landed must not win
+  // the race it is now in. The cache key does not move — the credential is
+  // not part of the connection's identity — so the old credential's answer
+  // would overwrite the refreshed one, and the user would fix their key and
+  // watch the same empty list come back.
+  it('discards the answer a save overtook', async () => {
+    let settleOld: (v: unknown) => void = () => {};
+    (api.listLiveLLMModelsForProvider as jest.Mock)
+      // The in-flight request made with the OLD credential: held open.
+      .mockImplementationOnce(() => new Promise((res) => { settleOld = res; }))
+      // Everything the refresh asks for answers with the new credential's
+      // list.
+      .mockResolvedValue({
+        models: [{ id: 'fresh', display_name: 'Fresh', wire: '', source: 'live', dispatchable: true }],
+      });
+
+    const value = { [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' } };
+    const el = (gen: number) => (
+      <MantineProvider>
+        <LayerModelsPanel
+          projectId="proj-1" entries={ENTRIES} savedEntries={ENTRIES} savedGeneration={gen}
+          providers={[BEDROCK_META as never]} value={value} onChange={jest.fn()}
+        />
+      </MantineProvider>
+    );
+    const { rerender } = render(el(0));
+    await waitFor(() => expect(api.listLiveLLMModelsForProvider).toHaveBeenCalled());
+
+    rerender(el(1));
+    await waitFor(() => {
+      expect(screen.getAllByLabelText('Model')[0].getAttribute('data-models')).toBe('fresh');
+    });
+
+    // Now the overtaken request finally answers, with the old credential's
+    // empty list and its error.
+    await act(async () => {
+      settleOld({ models: [], live_error: 'invalid api key' });
+    });
+    expect(screen.getAllByLabelText('Model')[0].getAttribute('data-models')).toBe('fresh');
   });
 
   it('does not ask again on an unrelated re-render', async () => {
