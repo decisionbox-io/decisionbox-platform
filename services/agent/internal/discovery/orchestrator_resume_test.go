@@ -1385,3 +1385,138 @@ func TestRetireSuperseded_NoVectorStoreStillRetiresWhenNothingIsIndexed(t *testi
 		t.Errorf("deleted = %v, want disc-old — no points means no orphans to worry about", disc.deleted)
 	}
 }
+
+// --- the two checkpoint writes, and what each failure must mean -------------
+
+// TestCheckpointExplorationSummary covers the row the whole feature turns on.
+//
+// Its presence is what lets a later attempt skip Phase 3 entirely — zero
+// exploration LLM calls, zero warehouse queries — so the two ways of getting
+// it wrong are opposites and both expensive. Losing it costs a resumed run
+// the whole exploration phase it had already paid for. Writing it while
+// SUPERSEDED is worse: a later resume reads it, believes exploration
+// finished, and runs analysis over a prefix another attempt produced.
+func TestCheckpointExplorationSummary(t *testing.T) {
+	res := &ai.ExplorationResult{Completed: true, CompletionMsg: "done", TotalSteps: 7}
+
+	t.Run("records the summary and makes the run resumable", func(t *testing.T) {
+		cps := &fakeCheckpointStore{}
+		o := &Orchestrator{
+			projectID: "p1", runID: "run-1", checkpointRepo: cps,
+			statusReporter: &StatusReporter{repo: &fakeRunDoc{owns: true}, runStepRepo: &fakeRunStepWriter{}, runID: "run-1", attempt: 2},
+			resume:         &ResumeState{Attempt: 2},
+		}
+		if err := o.checkpointExplorationSummary(context.Background(), res); err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if len(cps.summaries) != 1 {
+			t.Fatalf("summaries = %+v, want exactly one", cps.summaries)
+		}
+		got := cps.summaries[0]
+		if got.RunID != "run-1" || got.Attempt != 2 {
+			t.Errorf("summary written for run %q attempt %d, want run-1 attempt 2", got.RunID, got.Attempt)
+		}
+		if !got.Summary.Completed || got.Summary.TotalSteps != 7 {
+			t.Errorf("summary = %+v, want the exploration result's own completion and step count", got.Summary)
+		}
+		// The per-run vector index must now survive the way out, or a resume
+		// would have a prefix to replay and no index to replay it against.
+		if !o.keepStepIndex {
+			t.Error("keepStepIndex is false; the run is resumable, so its per-run index must not be dropped")
+		}
+	})
+
+	t.Run("refuses to write once another attempt owns the run", func(t *testing.T) {
+		cps := &fakeCheckpointStore{}
+		o := &Orchestrator{
+			projectID: "p1", runID: "run-1", checkpointRepo: cps,
+			statusReporter: &StatusReporter{repo: &fakeRunDoc{owns: false}, runStepRepo: &fakeRunStepWriter{}, runID: "run-1", attempt: 2},
+		}
+		if err := o.checkpointExplorationSummary(context.Background(), res); !errors.Is(err, ai.ErrAttemptSuperseded) {
+			t.Fatalf("err = %v, want ErrAttemptSuperseded", err)
+		}
+		if len(cps.summaries) != 0 {
+			t.Errorf("wrote %+v while superseded; a later resume would skip exploration over another attempt's prefix", cps.summaries)
+		}
+	})
+
+	t.Run("a newer attempt winning the write is a supersession, not a failure", func(t *testing.T) {
+		cps := &fakeCheckpointStore{summaryErr: database.ErrSupersededAttempt}
+		o := &Orchestrator{
+			projectID: "p1", runID: "run-1", checkpointRepo: cps,
+			statusReporter: &StatusReporter{repo: &fakeRunDoc{owns: true}, runStepRepo: &fakeRunStepWriter{}, runID: "run-1", attempt: 2},
+		}
+		// Lost the run between the ownership read and the write — the window
+		// that read cannot close. Analysis must not run on its behalf.
+		if err := o.checkpointExplorationSummary(context.Background(), res); !errors.Is(err, ai.ErrAttemptSuperseded) {
+			t.Fatalf("err = %v, want ErrAttemptSuperseded", err)
+		}
+	})
+
+	t.Run("an ordinary write failure does not stop the run", func(t *testing.T) {
+		cps := &fakeCheckpointStore{summaryErr: errors.New("mongo is down")}
+		o := &Orchestrator{
+			projectID: "p1", runID: "run-1", checkpointRepo: cps,
+			statusReporter: &StatusReporter{repo: &fakeRunDoc{owns: true}, runStepRepo: &fakeRunStepWriter{}, runID: "run-1", attempt: 2},
+		}
+		// The run can still finish; it just will not be resumable straight
+		// into analysis. Aborting here would throw away a completed
+		// exploration over a failed bookkeeping write.
+		if err := o.checkpointExplorationSummary(context.Background(), res); err != nil {
+			t.Fatalf("err = %v, want nil — a failed summary write must not abort the run", err)
+		}
+		if o.keepStepIndex {
+			t.Error("keepStepIndex is true despite the summary never being written; nothing will replay against that index")
+		}
+	})
+
+	t.Run("no-ops without a repository or a result", func(t *testing.T) {
+		o := &Orchestrator{projectID: "p1", runID: "run-1"}
+		if err := o.checkpointExplorationSummary(context.Background(), res); err != nil {
+			t.Errorf("err = %v with no checkpoint repo, want nil", err)
+		}
+		o.checkpointRepo = &fakeCheckpointStore{}
+		if err := o.checkpointExplorationSummary(context.Background(), nil); err != nil {
+			t.Errorf("err = %v with no result, want nil", err)
+		}
+	})
+}
+
+// TestFenceReplayedStep is the replay counterpart: both of its questions, and
+// the fact that it writes no step row of its own.
+func TestFenceReplayedStep(t *testing.T) {
+	t.Run("passes while this attempt still owns the run", func(t *testing.T) {
+		doc := &fakeRunDoc{owns: true, applied: true}
+		o := &Orchestrator{runID: "run-1", statusReporter: &StatusReporter{repo: doc, runStepRepo: &fakeRunStepWriter{}, runID: "run-1", attempt: 2}}
+		if err := o.fenceReplayedStep(context.Background(), 3); err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+	})
+
+	t.Run("stops when the run is no longer this attempt's", func(t *testing.T) {
+		doc := &fakeRunDoc{owns: false}
+		o := &Orchestrator{runID: "run-1", statusReporter: &StatusReporter{repo: doc, runStepRepo: &fakeRunStepWriter{}, runID: "run-1", attempt: 2}}
+		if err := o.fenceReplayedStep(context.Background(), 3); !errors.Is(err, ai.ErrAttemptSuperseded) {
+			t.Fatalf("err = %v, want ErrAttemptSuperseded", err)
+		}
+	})
+
+	t.Run("stops when the marker write does not apply", func(t *testing.T) {
+		// Owns the run by the first read, but the attempt-fenced marker write
+		// does not land — a resume arrived in between. That write is the
+		// stronger fence, and it is what keeps this attempt out of the shared
+		// writes that follow in the engine.
+		doc := &fakeRunDoc{owns: true, applied: false}
+		o := &Orchestrator{runID: "run-1", statusReporter: &StatusReporter{repo: doc, runStepRepo: &fakeRunStepWriter{}, runID: "run-1", attempt: 2}}
+		if err := o.fenceReplayedStep(context.Background(), 3); !errors.Is(err, ai.ErrAttemptSuperseded) {
+			t.Fatalf("err = %v, want ErrAttemptSuperseded", err)
+		}
+	})
+
+	t.Run("no-ops without status reporting", func(t *testing.T) {
+		o := &Orchestrator{runID: "run-1"}
+		if err := o.fenceReplayedStep(context.Background(), 3); err != nil {
+			t.Errorf("err = %v, want nil — a run with no status reporting has no competing attempt", err)
+		}
+	})
+}

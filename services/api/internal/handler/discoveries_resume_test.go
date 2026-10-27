@@ -1,10 +1,10 @@
 package handler
 
 import (
-	"github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -60,12 +60,18 @@ type recordingRunner struct {
 	mu   sync.Mutex
 	opts []runner.RunOptions
 	err  error
+	// onRun fires inside Run, before it returns err — the hook a test uses to
+	// make the run move on while a spawn is still pending.
+	onRun func()
 }
 
 func (r *recordingRunner) Run(_ context.Context, o runner.RunOptions) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.opts = append(r.opts, o)
+	if r.onRun != nil {
+		r.onRun()
+	}
 	return r.err
 }
 func (r *recordingRunner) RunSync(context.Context, runner.RunSyncOptions) (*runner.RunSyncResult, error) {
@@ -1655,5 +1661,246 @@ func TestDiscardRun_RefusesWhenTheResultCheckFails(t *testing.T) {
 	}
 	if f.runs.runs["run-1"].DiscardedAt != nil {
 		t.Error("the run was discarded despite an unknown result state")
+	}
+}
+
+// --- unknown answers must not be read as answers ---------------------------
+
+// Every read on these two routes can fail, and a failure is NOT the same as a
+// negative. Resume is expensive and discard is irreversible, so a read that
+// could not be completed has to stop the request with a 500 and leave the run
+// exactly as it was — never fall through to "no checkpoints", "no project" or
+// "nothing to authorise against", which are answers the operator acts on.
+//
+// Each case asserts the status AND that nothing was mutated, because the
+// status alone would not catch a handler that answered 500 after bumping the
+// attempt or purging the checkpoints.
+func TestResumeRun_AFailedReadStopsTheRequestAndChangesNothing(t *testing.T) {
+	cases := map[string]struct {
+		arrange func(*resumeFixture)
+		code    int
+		wantMsg string
+	}{
+		"the run read fails": {
+			func(f *resumeFixture) { f.runs.getErr = errors.New("mongo is down") },
+			http.StatusInternalServerError, "failed to get run",
+		},
+		"the project read fails": {
+			func(f *resumeFixture) { f.projs.getErr = errors.New("mongo is down") },
+			http.StatusInternalServerError, "failed to look up project",
+		},
+		"the run names a project that is gone": {
+			func(f *resumeFixture) { delete(f.projs.projects, "p1") },
+			http.StatusNotFound, "project not found",
+		},
+		"the checkpoint read fails": {
+			func(f *resumeFixture) { f.cps.stateErr = errors.New("mongo is down") },
+			http.StatusInternalServerError, "failed to read checkpoints",
+		},
+		"the atomic flip fails": {
+			func(f *resumeFixture) { f.runs.beginResumeErr = errors.New("mongo is down") },
+			http.StatusInternalServerError, "failed to begin resume",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newResumeFixture(t)
+			f.runs.runs["run-1"].Status = "failed"
+			f.runs.runs["run-1"].LastCheckpointStep = 42
+			tc.arrange(f)
+
+			w := f.post("run-1")
+
+			if w.Code != tc.code {
+				t.Fatalf("status = %d, want %d; body = %s", w.Code, tc.code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), tc.wantMsg) {
+				t.Errorf("body = %s, want it to mention %q", w.Body.String(), tc.wantMsg)
+			}
+			// Nothing started, and the run is still the failed run it was —
+			// so the operator can try again once the database is back.
+			if n := len(f.runner.calls()); n != 0 {
+				t.Errorf("an agent was spawned (%d calls) despite the request failing", n)
+			}
+			if got := f.runs.runs["run-1"]; got.Attempt > 1 {
+				t.Errorf("attempt was bumped to %d; a resume that could not be completed must leave the run resumable", got.Attempt)
+			}
+			if got := f.runs.runs["run-1"]; got.Status != "failed" {
+				t.Errorf("status = %q, want it left failed", got.Status)
+			}
+			if len(f.cps.deleted) != 0 {
+				t.Errorf("checkpoints were deleted (%v); they are the only thing that makes the run resumable", f.cps.deleted)
+			}
+		})
+	}
+}
+
+// The same rule on the discard route, where getting it wrong is worse: the
+// write is irreversible and the checkpoint purge that follows it is too.
+func TestDiscardRun_AFailedReadStopsTheRequestAndChangesNothing(t *testing.T) {
+	cases := map[string]struct {
+		arrange func(*resumeFixture)
+		code    int
+		wantMsg string
+	}{
+		"the run read fails": {
+			func(f *resumeFixture) { f.runs.getErr = errors.New("mongo is down") },
+			http.StatusInternalServerError, "failed to get run",
+		},
+		"the project read fails": {
+			func(f *resumeFixture) { f.projs.getErr = errors.New("mongo is down") },
+			http.StatusInternalServerError, "failed to look up the run's project",
+		},
+		"the run names a project that is gone": {
+			func(f *resumeFixture) { delete(f.projs.projects, "p1") },
+			http.StatusNotFound, "the run's project no longer exists",
+		},
+		"the discard write fails": {
+			func(f *resumeFixture) { f.runs.discardErr = errors.New("mongo is down") },
+			http.StatusInternalServerError, "failed to discard run",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newResumeFixture(t)
+			f.runs.runs["run-1"].Status = "failed"
+			f.runs.runs["run-1"].LastCheckpointStep = 4
+			tc.arrange(f)
+
+			w := httptest.NewRecorder()
+			f.h.DiscardRun(w, discardReq("run-1"))
+
+			if w.Code != tc.code {
+				t.Fatalf("status = %d, want %d; body = %s", w.Code, tc.code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), tc.wantMsg) {
+				t.Errorf("body = %s, want it to mention %q", w.Body.String(), tc.wantMsg)
+			}
+			if f.runs.runs["run-1"].DiscardedAt != nil {
+				t.Error("the run was discarded despite the request failing")
+			}
+			// And the purge must not run ahead of the write it depends on:
+			// checkpoints deleted for a run that was never discarded would
+			// silently cost the operator the Resume they still have.
+			if len(f.cps.deleted) != 0 {
+				t.Errorf("checkpoints were deleted (%v) for a run that was not discarded", f.cps.deleted)
+			}
+		})
+	}
+}
+
+// TestResumeRun_ASpawnFailureIsFencedOnItsOwnAttempt pins the synchronous half
+// of a guard whose asynchronous half was already there.
+//
+// Spawning is not instantaneous. Another replica's startup sweep can fail this
+// attempt while the spawn is still pending, which frees the operator to resume
+// again — so by the time the spawn returns an error, the run can be a NEWER
+// attempt, alive and working. An unfenced write here would mark that attempt
+// failed and strand a healthy agent.
+//
+// The OnFailure callback above this path has carried that guard, and a comment
+// explaining it, since resume shipped. The synchronous path next to it did not.
+func TestResumeRun_ASpawnFailureIsFencedOnItsOwnAttempt(t *testing.T) {
+	f := newResumeFixture(t)
+	f.runs.runs["run-1"].Status = "failed"
+	f.runs.runs["run-1"].LastCheckpointStep = 42
+
+	// The spawn fails — and while it was pending, the run moved on to a
+	// newer attempt that is running.
+	f.runner.err = errors.New("no capacity")
+	f.runner.onRun = func() {
+		f.runs.mu.Lock()
+		defer f.runs.mu.Unlock()
+		r := f.runs.runs["run-1"]
+		r.Attempt = 3
+		r.Status = "running"
+	}
+
+	w := f.post("run-1")
+
+	// The operator is still told their resume did not start.
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body = %s", w.Code, w.Body.String())
+	}
+	// But the newer attempt is untouched: still running, still attempt 3.
+	got := f.runs.runs["run-1"]
+	if got.Status != "running" {
+		t.Errorf("status = %q, want it left running — this write belonged to an attempt that is no longer the live one, and marking it failed strands a working agent", got.Status)
+	}
+	if got.Attempt != 3 {
+		t.Errorf("attempt = %d, want 3", got.Attempt)
+	}
+	if got.Error != "" {
+		t.Errorf("error = %q, want it left empty on the live attempt", got.Error)
+	}
+}
+
+// Resume applies the same readiness gate a fresh run must clear, and every
+// not-ready state has to name the action that fixes it — a resume refused
+// with "not ready" and no next step leaves the operator with a run they can
+// see, a button they can press, and nothing to do about either. Every branch
+// of the gate is reachable from this route because a resume re-enters
+// exploration.
+func TestResumeRun_RefusesEveryUnreadySchemaIndexWithItsRemedy(t *testing.T) {
+	cases := map[string]struct {
+		status  string
+		wantMsg string
+	}{
+		"still indexing":         {models.SchemaIndexStatusIndexing, "/schema-index/status"},
+		"indexing failed":        {models.SchemaIndexStatusFailed, "Retry indexing"},
+		"needs reindex":          {models.SchemaIndexStatusNeedsReindex, "re-indexing is required"},
+		"indexing was cancelled": {models.SchemaIndexStatusCancelled, "previous schema-indexing run was cancelled"},
+		"never indexed":          {"", "has not been indexed yet"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newResumeFixture(t)
+			f.runs.runs["run-1"].Status = "failed"
+			f.runs.runs["run-1"].LastCheckpointStep = 42
+			f.projs.projects["p1"].SchemaIndexStatus = tc.status
+
+			w := f.post("run-1")
+
+			if w.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want 409; body = %s", w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), tc.wantMsg) {
+				t.Errorf("body = %s, want it to name the remedy (%q)", w.Body.String(), tc.wantMsg)
+			}
+			if n := len(f.runner.calls()); n != 0 {
+				t.Errorf("an agent was spawned for a project whose schema index is %q", tc.status)
+			}
+			if f.runs.runs["run-1"].Attempt > 1 {
+				t.Error("the attempt was bumped for a resume the gate refused")
+			}
+		})
+	}
+}
+
+// A resume refused for having no checkpoints also clears the run's checkpoint
+// marker, because the marker is what makes the dashboard offer Resume at all
+// and it is now known to be wrong. That clear is best-effort: if it fails the
+// operator must still get the real answer, not a 500 — the run genuinely has
+// nothing to resume from either way, and a 500 would invite them to retry a
+// request that can never succeed.
+func TestResumeRun_StillRefusesWhenTheMarkerCannotBeCleared(t *testing.T) {
+	f := newResumeFixture(t)
+	// A run GetByID answers for but that is not in the repo's map, so the
+	// marker clear fails with "run not found" while everything else proceeds.
+	f.runs.defaultRun = &models.DiscoveryRun{
+		ID: "run-ghost", ProjectID: "p1", Status: "failed", LastCheckpointStep: 42, Attempt: 1,
+	}
+	f.cps.prefixLen = 0
+
+	w := f.post("run-ghost")
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body = %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "no checkpoint to resume from") {
+		t.Errorf("body = %s, want the real reason rather than a write failure", w.Body.String())
+	}
+	if n := len(f.runner.calls()); n != 0 {
+		t.Errorf("an agent was spawned (%d calls) for a run with no prefix to replay", n)
 	}
 }
