@@ -133,7 +133,7 @@ func insightResponseSchema() map[string]interface{} {
 			"items": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"id": boundedString("Key the prose references; unique within this insight. Name it for what it "+
+					"id": nonEmptyString("Key the prose references; unique within this insight. Name it for what it "+
 						"holds -- `churn_rate`, `total_revenue` -- not by position", maxSchemaIdentifierRunes),
 					"value": map[string]interface{}{"type": "number", "description": "The number in the units of the step's own column: 8476238553, or 24.66 for a percentage"},
 					// No "days". The closed set in models.Figure deliberately has no unit
@@ -154,13 +154,16 @@ func insightResponseSchema() map[string]interface{} {
 					// because the two read the same two cells and only the sentence tells
 					// them apart. A run offering ratio alone shipped a vouched figure
 					// behind "109.6% more" where the excess is 9.6%.
-					"kind":   label(`One of "cell", "sum", "count", "ratio", "excess", "diff". "ratio" is a/b and "excess" is a/b-1, so a sentence saying one thing is N% MORE than another is an excess`),
+					"kind":   nonEmptyString(`One of "cell", "sum", "count", "ratio", "excess", "diff". "ratio" is a/b and "excess" is a/b-1, so a sentence saying one thing is N% MORE than another is an excess`, maxSchemaLabelRunes),
 					"column": label("Column the arithmetic runs over"),
 					"row":    selector("Terms selecting the single row a cell, a ratio or excess numerator, or a diff's left operand comes from"),
 					"other":  selector("Terms selecting a diff's right operand, or the denominator row of a ratio or an excess"),
 					"scope":  selector("Which rows a sum, a count, or a ratio or excess denominator covers"),
 				},
-				"required": []string{"id", "value", "step", "kind"},
+				// []interface{} like every other required list in this schema. Both
+				// marshal identically, but the mixed form made this list unreadable to
+				// the shared test helper and so silently unpinned.
+				"required": []interface{}{"id", "value", "step", "kind"},
 			},
 		},
 		"quantifier_claims": map[string]interface{}{
@@ -170,8 +173,8 @@ func insightResponseSchema() map[string]interface{} {
 			"items": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"claim":        boundedString("The statement, verbatim as written in name, description or indicators", maxSchemaListItemRunes),
-					"kind":         label(`One of "only", "all", "rank", "monotonic", "cardinality"`),
+					"claim":        nonEmptyString("The statement, verbatim as written in name, description or indicators", maxSchemaListItemRunes),
+					"kind":         nonEmptyString(`One of "only", "all", "rank", "monotonic", "cardinality"`, maxSchemaLabelRunes),
 					"step":         map[string]interface{}{"type": "integer", "description": "Exploration step whose rows settle the claim"},
 					"column":       label("Column the claim ranks by, or whose direction it asserts"),
 					"filter":       selector("Conjunction of `column <op> literal` terms joined by AND"),
@@ -195,6 +198,23 @@ func insightResponseSchema() map[string]interface{} {
 						"enum":        []interface{}{"increasing", "decreasing"},
 						"description": "Required for a monotonic claim. Exactly \"increasing\" or \"decreasing\" — no other word is read"},
 				},
+				// The same defect as the insight object's, one level down, and found by
+				// the same review: this object required nothing, so on a llama.cpp-backed
+				// runner its optional properties were reachable only in Go's alphabetical
+				// serialisation order. Every quantifierContract example opens with claim,
+				// kind, step -- after which the grammar forbade returning to `column`,
+				// `count`, `filter`, `rank` or `scope`, so a model following the examples
+				// could not finish a checkable declaration. EvaluateQuantifierClaims then
+				// marks the incomplete claim undecidable, which does not reach repair.
+				//
+				// Measured over the 439 claims this pipeline has written: claim, kind and
+				// step are present in 439. Nothing else is required, because the rest are
+				// kind-specific -- `column` 62%, `subject` 51%, `rank` 50%, `filter` 37%,
+				// `count` 26%, `trend` and `order_by` under 2% -- and requiring one would
+				// force a model to invent it for the kinds that do not use it. The three
+				// required here are also the three figures.items already requires
+				// alongside `id`, which is the same reasoning applied earlier.
+				"required": []interface{}{"claim", "kind", "step"},
 			},
 		},
 		"source_steps": map[string]interface{}{

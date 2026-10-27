@@ -151,3 +151,42 @@ func TestForwardedEnv_ValidationConcurrency(t *testing.T) {
 	}
 	t.Error("VALIDATION_CONCURRENCY is not forwarded to every runner")
 }
+
+// TestForwardedEnv_AnalysisPhaseKnobs pins that the analysis phase's knobs reach
+// container-spawned agents, ANALYSIS_STRUCTURED_OUTPUT above all.
+//
+// That one is the rollback for sending the insight schema on the first analysis call, and a
+// rollback an operator cannot reach is not a rollback: on Docker and Kubernetes the agent
+// gets only what agentForwardedEnvKeys forwards, so setting it on the API deployment would
+// have changed nothing while appearing to. Subprocess agents inherit the API's environment,
+// which is exactly why the gap is invisible in a local stack.
+func TestForwardedEnv_AnalysisPhaseKnobs(t *testing.T) {
+	knobs := map[string]string{
+		"ANALYSIS_STRUCTURED_OUTPUT": "false",
+		"ANALYSIS_PARSE_MAX_RETRIES": "2",
+	}
+	for k, v := range knobs {
+		t.Setenv(k, v)
+	}
+
+	found := map[string]string{}
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys) {
+		found[kv.Key] = kv.Value
+	}
+	for k, want := range knobs {
+		if found[k] != want {
+			t.Errorf("%s not forwarded to every runner: got %q, want %q; an operator setting it "+
+				"on the API would see no change in a containerised agent", k, found[k], want)
+		}
+	}
+
+	counts := map[string]int{}
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys, dockerAgentExtraEnvKeys) {
+		counts[kv.Key]++
+	}
+	for k := range knobs {
+		if counts[k] != 1 {
+			t.Errorf("%s forwarded %d times by the Docker runner, want 1", k, counts[k])
+		}
+	}
+}
