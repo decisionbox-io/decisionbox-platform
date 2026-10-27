@@ -257,7 +257,13 @@ export function LLMProvidersPanel({
       {value.map((form, index) => {
         const meta = providers.find((p) => p.id === form.provider) || null;
         const inUseBy = layersByProviderId[form.id] || [];
-        const isDefault = form.id === DEFAULT_LLM_PROVIDER_ID;
+        // The RESERVED default entry, which is always one the server sent:
+        // its id is fixed and it cannot be removed. A new card whose id the
+        // user has typed as "default" is not that entry — treating it as one
+        // took away both the id field and the remove button the moment the
+        // word was complete, while duplicate-id validation blocked the save,
+        // leaving a reload as the only way out and every other edit lost.
+        const isDefault = form.id === DEFAULT_LLM_PROVIDER_ID && !form.isNew;
         const secretKey = llmProviderSecretKey(form.id);
         const savedSecret = secrets.find((s) => s.key === secretKey);
         const idInvalid = !isValidLLMProviderId(form.id);

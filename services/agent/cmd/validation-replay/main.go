@@ -170,25 +170,26 @@ func run() error {
 	verifierWillRun, refuterWillRun := replayLayers(fl.mode, cfg.RefuterEnabled)
 
 	var verifierClient, refuterClient *ai.Client
+	var verifierProv, refuterProv *countingProvider
 	var callCounters []*countingProvider
 	if verifierWillRun {
 		c, calls, cerr := replayClient(ctx, secretProvider, fl, verifierSpec)
 		if cerr != nil {
 			return fmt.Errorf("init verifier LLM: %w", cerr)
 		}
-		verifierClient = c
+		verifierClient, verifierProv = c, calls
 		callCounters = append(callCounters, calls)
 	}
 	switch {
 	case !refuterWillRun:
 	case verifierClient != nil && sameReplayClient(verifierSpec, refuterSpec):
-		refuterClient = verifierClient
+		refuterClient, refuterProv = verifierClient, verifierProv
 	default:
 		rc, refuterCalls, rerr := replayClient(ctx, secretProvider, fl, refuterSpec)
 		if rerr != nil {
 			return fmt.Errorf("init refuter LLM: %w", rerr)
 		}
-		refuterClient = rc
+		refuterClient, refuterProv = rc, refuterCalls
 		callCounters = append(callCounters, refuterCalls)
 	}
 
@@ -203,9 +204,9 @@ func run() error {
 	// would have lowered is not reproducing the run: a layer capped below
 	// the deployment default gets its calls rejected here and returns
 	// `unverifiable` where production returned a verdict.
-	cfg.Verifier.MaxOutputTokens = verifierSpec.ClampOutput(cfg.Verifier.MaxOutputTokens)
+	cfg.Verifier.MaxOutputTokens = replayOutputBudget(ctx, verifierProv, verifierSpec, cfg.Verifier.MaxOutputTokens)
 	if cfg.RefuterEnabled {
-		cfg.Refuter.MaxOutputTokens = refuterSpec.ClampOutput(cfg.Refuter.MaxOutputTokens)
+		cfg.Refuter.MaxOutputTokens = replayOutputBudget(ctx, refuterProv, refuterSpec, cfg.Refuter.MaxOutputTokens)
 	}
 
 	// A typed nil in the map would satisfy llmFor's non-nil check and be
@@ -342,6 +343,57 @@ func run() error {
 	}
 	return nil
 }
+
+// replayOutputBudget resolves a layer's output budget the way production
+// does: the configured value, lowered to the layer's own ceiling, then
+// lowered again by what the ENDPOINT says it will accept.
+//
+// The ceiling alone is not production's answer. resolveModelBudget prefers
+// the live ModelInfoResolver reading over the catalogue, so an uncatalogued
+// gateway model reporting 1024 made production ask for 1024 while the replay
+// still asked for the validation default — and the replay returned a
+// rejection, or `unverifiable`, for a verdict production had produced. A
+// tool whose whole job is reproducing a run cannot differ on the budget.
+//
+// Only lowers, which makes it equivalent to production's order: clamping a
+// configured budget by min(ceiling, live) is the same number as clamping it
+// by ClampMaxTokens(live-or-catalogue, override).
+func replayOutputBudget(ctx context.Context, p *countingProvider, spec llmlayer.LayerSpec, configured int) int {
+	out := spec.ClampOutput(configured)
+	if live := liveOutputCeiling(ctx, p, spec.Model); live > 0 && live < out {
+		out = live
+	}
+	return out
+}
+
+// liveOutputCeiling asks the endpoint what it will actually accept, or 0
+// when it cannot say. Best-effort and bounded: a replay must not hang on a
+// gateway that will not answer.
+//
+// countingProvider embeds the interface, so the capability has to be read
+// off the provider it wraps — a type assertion on the wrapper only sees
+// gollm.Provider's own methods and would always miss.
+func liveOutputCeiling(ctx context.Context, p *countingProvider, model string) int {
+	if p == nil {
+		return 0
+	}
+	r, ok := p.Provider.(gollm.ModelInfoResolver)
+	if !ok {
+		return 0
+	}
+	lctx, cancel := context.WithTimeout(ctx, replayModelInfoTimeout)
+	defer cancel()
+	caps, err := r.ResolveModelInfo(lctx, model)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "live model-info lookup failed for %s: %v (using the catalogue ceiling)\n", model, err)
+		return 0
+	}
+	return caps.MaxOutputTokens
+}
+
+// replayModelInfoTimeout bounds the live lookup above, matching the agent's
+// own modelInfoResolveTimeout.
+const replayModelInfoTimeout = 8 * time.Second
 
 // replayLayers reports which validation layers this replay will actually
 // call, which is what decides whether their clients are worth building.

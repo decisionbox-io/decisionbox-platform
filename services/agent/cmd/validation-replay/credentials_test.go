@@ -201,3 +201,70 @@ func TestReplayLayers_OnlyTheLayersThatWillBeCalled(t *testing.T) {
 		})
 	}
 }
+
+// reportingProvider answers the live model-info probe, as a LiteLLM gateway
+// or Ollama does.
+type reportingProvider struct {
+	stubProvider
+	out int
+	err error
+}
+
+func (p reportingProvider) ResolveModelInfo(context.Context, string) (gollm.ModelCapabilities, error) {
+	if p.err != nil {
+		return gollm.ModelCapabilities{}, p.err
+	}
+	return gollm.ModelCapabilities{MaxOutputTokens: p.out}, nil
+}
+
+// Production resolves a layer's output budget through resolveModelBudget,
+// which prefers what the ENDPOINT reports over the catalogue. Clamping only
+// to the catalogue ceiling left an uncatalogued gateway model asking for the
+// validation default where production asked for the 1024 the gateway
+// announced — and the replay returned a rejection, or `unverifiable`, for a
+// verdict production had produced.
+func TestReplayOutputBudget_FollowsWhatTheEndpointReports(t *testing.T) {
+	// Uncatalogued, so the catalogue ceiling cannot lower anything.
+	spec := llmlayer.LayerSpec{
+		ProviderID: llmlayer.DefaultProviderID, Provider: "litellm",
+		Model:  "some-gateway-only-model",
+		Config: map[string]string{"base_url": "https://gw/v1"},
+	}
+
+	t.Run("the endpoint's lower ceiling wins", func(t *testing.T) {
+		p := &countingProvider{Provider: reportingProvider{out: 1024}}
+		if got := replayOutputBudget(context.Background(), p, spec, 4000); got != 1024 {
+			t.Errorf("budget = %d, want the 1024 the endpoint reports — production asks for that", got)
+		}
+	})
+
+	t.Run("a higher one does not raise the configured budget", func(t *testing.T) {
+		p := &countingProvider{Provider: reportingProvider{out: 32000}}
+		if got := replayOutputBudget(context.Background(), p, spec, 4000); got != 4000 {
+			t.Errorf("budget = %d, want the configured 4000 — the endpoint accepting more is not a reason to ask for more", got)
+		}
+	})
+
+	t.Run("an operator override still lowers it", func(t *testing.T) {
+		capped := spec
+		capped.Config = map[string]string{"base_url": "https://gw/v1", "max_output_tokens": "2048"}
+		p := &countingProvider{Provider: reportingProvider{out: 32000}}
+		if got := replayOutputBudget(context.Background(), p, capped, 4000); got != 2048 {
+			t.Errorf("budget = %d, want the operator's 2048", got)
+		}
+	})
+
+	t.Run("a provider that cannot say leaves the ceiling alone", func(t *testing.T) {
+		p := &countingProvider{Provider: stubProvider{}}
+		if got := replayOutputBudget(context.Background(), p, spec, 4000); got != 4000 {
+			t.Errorf("budget = %d, want the configured 4000", got)
+		}
+	})
+
+	t.Run("a failed probe is not a verdict", func(t *testing.T) {
+		p := &countingProvider{Provider: reportingProvider{err: errors.New("502 bad gateway")}}
+		if got := replayOutputBudget(context.Background(), p, spec, 4000); got != 4000 {
+			t.Errorf("budget = %d, want the configured 4000 — a gateway that will not answer must not shrink the budget to zero", got)
+		}
+	})
+}

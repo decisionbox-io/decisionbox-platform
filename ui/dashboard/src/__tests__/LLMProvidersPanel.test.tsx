@@ -345,3 +345,33 @@ describe('LLMProvidersPanel — editing a new entry\'s id', () => {
     expect(after).toBe(before);
   });
 });
+
+// The reserved default entry has no id field and no remove button — it is
+// fixed, and deleting it would leave the project with no entry owning the
+// llm-credentials key an older image reads.
+//
+// A NEW card whose id the user has typed as "default" is not that entry.
+// Treating it as one took both controls away the moment the word was
+// complete, while duplicate-id validation blocked the save — so the only
+// way out was a reload, discarding every other unsaved edit.
+describe('LLMProvidersPanel — typing the reserved id into a new entry', () => {
+  it('keeps the id editable and the entry removable', () => {
+    const forms = [form({ id: 'default' }), form({ id: 'default', isNew: true })];
+    renderPanel(forms);
+
+    // Two id fields would be wrong — the saved default has none — so look
+    // for exactly the new card's.
+    const ids = screen.getAllByLabelText('Id');
+    expect(ids).toHaveLength(1);
+    expect(ids[0]).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Remove default' })).toBeInTheDocument();
+  });
+
+  it('still fixes the saved default entry', () => {
+    renderPanel([form({ id: 'default' }), form({ id: 'cheap' })]);
+    // Only the secondary's id is editable, and only it can be removed.
+    expect(screen.getAllByLabelText('Id')).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Remove default' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove cheap' })).toBeInTheDocument();
+  });
+});
