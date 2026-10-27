@@ -1037,6 +1037,37 @@ export function isValidLLMProviderId(id: string): boolean {
   return id.length > 0 && id.length <= MAX_LLM_PROVIDER_ID_LEN && /^[A-Za-z0-9_-]+$/.test(id);
 }
 
+/**
+ * Derives a provider entry's id from the name the user typed.
+ *
+ * The id is machine identity, not a label: it keys the entry's credential in
+ * the secret backend (llmProviderSecretKey) and it is what each layer row
+ * points at. That is why it is frozen once saved — renaming would orphan a
+ * stored secret the backends have no DELETE for. None of which is a reason
+ * to make someone type it, so it is derived from the name and never shown.
+ *
+ * `taken` keeps two entries whose names slugify alike from colliding, and
+ * covers the reserved ids: an entry a user happens to call "Default" must
+ * not land on the reserved slot an older agent image reads.
+ */
+export function llmProviderIdFromName(name: string, taken: Iterable<string>): string {
+  const base = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, MAX_LLM_PROVIDER_ID_LEN)
+    .replace(/-+$/g, '');
+  if (!base) return '';
+  const used = new Set([...taken, DEFAULT_LLM_PROVIDER_ID, BLURB_LLM_PROVIDER_ID]);
+  if (!used.has(base)) return base;
+  for (let n = 2; n < 1000; n += 1) {
+    const suffix = `-${n}`;
+    const candidate = base.slice(0, MAX_LLM_PROVIDER_ID_LEN - suffix.length).replace(/-+$/g, '') + suffix;
+    if (!used.has(candidate)) return candidate;
+  }
+  return '';
+}
+
 export interface LLMLayersResponse {
   version: number;
   layers: LLMLayerDescriptor[];

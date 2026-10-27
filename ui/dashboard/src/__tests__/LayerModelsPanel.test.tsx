@@ -279,10 +279,33 @@ describe('LayerModelsPanel — the default row is pinned to the reserved entry',
     renderPanel({ [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' } });
     await screen.findByText('Main layers');
 
-    // The default card's Provider control is read-only and names the entry.
-    const provider = screen.getAllByLabelText('Provider')[0] as HTMLInputElement;
-    expect(provider).toHaveAttribute('readonly');
-    expect(provider.value).toBe('Bedrock — Opus');
+    // Not a control at all: a box that looks typeable, or a dropdown that
+    // looks openable, promises a choice the API refuses.
+    expect(screen.queryByLabelText('Provider')).not.toBeInTheDocument();
+    // And it names the entry the way the layer pickers name it, so one
+    // connection is not called two things on one screen.
+    expect(screen.getByText('Bedrock — Opus')).toBeInTheDocument();
+  });
+
+  it('names it exactly as a layer picker would', async () => {
+    render(
+      <MantineProvider>
+        <LayerModelsPanel
+          projectId="proj-1" entries={ENTRIES} savedEntries={ENTRIES}
+          providers={[BEDROCK_META as never]}
+          value={{
+            [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' },
+            analysis: { provider_id: 'default', model: 'opus' },
+          }}
+          onChange={jest.fn()}
+        />
+      </MantineProvider>,
+    );
+    await screen.findByText('Main layers');
+    // The override's picker and the default row's text agree.
+    const picker = screen.getByDisplayValue('Bedrock — Opus');
+    expect(picker).toBeInTheDocument();
+    expect(screen.getAllByText('Bedrock — Opus').length).toBeGreaterThan(0);
   });
 
   it('keeps writing the reserved entry onto the row', async () => {
@@ -798,6 +821,18 @@ describe('LayerModelsPanel — selecting a model records its reported limits', (
   });
 });
 
+// Mantine renders Select options as divs carrying data-combobox-option, not
+// role=option — and the default row now shows its entry's label as text, so
+// matching on the words alone finds two elements. Pick from the dropdown.
+async function pickOption(label: string) {
+  await waitFor(() => expect(document.querySelectorAll('[data-combobox-option]').length)
+    .toBeGreaterThan(0));
+  const option = Array.from(document.querySelectorAll('[data-combobox-option]'))
+    .find((o) => o.textContent === label);
+  if (!option) throw new Error(`no option "${label}" in the open dropdown`);
+  fireEvent.click(option);
+}
+
 // An endpoint serves its own deployed model over the OpenAI
 // chat-completions wire, and vertex-ai refuses to build when anything else
 // is named. Moving a layer onto an endpoint entry carried the override it
@@ -838,7 +873,7 @@ describe('LayerModelsPanel — pointing a layer at an endpoint entry', () => {
     // Move the analysis row onto the deployed-endpoint entry.
     const providerSelects = screen.getAllByRole('textbox', { name: 'Provider' });
     fireEvent.click(providerSelects[providerSelects.length - 1]);
-    fireEvent.click(await screen.findByText('Vertex endpoint'));
+    await pickOption('Vertex endpoint');
 
     const next = onChange.mock.calls.at(-1)![0];
     expect(next.analysis.provider_id).toBe('deployed');
@@ -858,7 +893,7 @@ describe('LayerModelsPanel — pointing a layer at an endpoint entry', () => {
 
     const providerSelects = screen.getAllByRole('textbox', { name: 'Provider' });
     fireEvent.click(providerSelects[providerSelects.length - 1]);
-    fireEvent.click(await screen.findByText('Vertex'));
+    await pickOption('Vertex');
 
     const next = onChange.mock.calls.at(-1)![0];
     expect(next.analysis.provider_id).toBe('default');

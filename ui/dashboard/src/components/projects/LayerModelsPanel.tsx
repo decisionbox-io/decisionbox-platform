@@ -16,8 +16,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Accordion, ActionIcon, Alert, Badge, Button, Card, Group, Loader, Select,
-  Stack, Switch, Text, TextInput, Tooltip,
+  Accordion, ActionIcon, Alert, Badge, Box, Button, Card, Divider, Group, Input,
+  Loader, Select, Stack, Switch, Text, TextInput, Tooltip,
 } from '@mantine/core';
 import { IconAlertCircle, IconRotateClockwise } from '@tabler/icons-react';
 import {
@@ -296,20 +296,27 @@ export function LayerModelsPanel({
       : meta?.config_fields?.find((f) => f.key === 'wire_override');
     return (
       <>
-        <Group grow align="flex-start">
-          <TextInput
-            label="Max input tokens"
-            description="Blank uses the model's own window."
-            value={row.config?.['max_input_tokens'] || ''}
-            onChange={(e) => setCfg('max_input_tokens', e.currentTarget.value || null)}
-          />
-          <TextInput
-            label="Max output tokens"
-            description="Blank uses the model's own ceiling."
-            value={row.config?.['max_output_tokens'] || ''}
-            onChange={(e) => setCfg('max_output_tokens', e.currentTarget.value || null)}
-          />
-        </Group>
+        {/*
+          * One control per row. Side by side, each pair's inputs sat at
+          * whatever height its own description ended at — and these
+          * descriptions are not the same length — so the fields never lined
+          * up. Capped width keeps a number field from stretching the width
+          * of the card now that it has the row to itself.
+          */}
+        <TextInput
+          label="Max input tokens"
+          description="Blank uses the model's own window."
+          maw={320}
+          value={row.config?.['max_input_tokens'] || ''}
+          onChange={(e) => setCfg('max_input_tokens', e.currentTarget.value || null)}
+        />
+        <TextInput
+          label="Max output tokens"
+          description="Blank uses the model's own ceiling."
+          maw={320}
+          value={row.config?.['max_output_tokens'] || ''}
+          onChange={(e) => setCfg('max_output_tokens', e.currentTarget.value || null)}
+        />
         {wireField && (
           <TextInput
             label={wireField.label || 'Wire override'}
@@ -490,8 +497,23 @@ export function LayerModelsPanel({
       setRow(layer.key, { ...effective, config });
     };
 
+    // A ROW, not a card. Each layer used to be its own bordered box inside
+    // the group's bordered box inside the panel — three levels of the same
+    // rounded outline, which read as one undifferentiated block. A plain
+    // row with a divider between leaves the group as the only box, and an
+    // overridden row marks itself instead of relying on the reader
+    // comparing seventeen identical switches.
     return (
-      <Card key={layer.key} withBorder padding="sm" radius="md">
+      <Box
+        key={layer.key}
+        px="sm"
+        py="xs"
+        style={(theme) => ({
+          borderLeft: usesDefault ? '3px solid transparent' : `3px solid ${theme.colors.blue[5]}`,
+          background: usesDefault ? undefined : 'var(--mantine-color-default-hover)',
+          borderRadius: 'var(--mantine-radius-sm)',
+        })}
+      >
         <Stack gap="xs">
           <Group justify="space-between" align="flex-start" wrap="nowrap">
             <Stack gap={0}>
@@ -542,18 +564,18 @@ export function LayerModelsPanel({
 
           {!usesDefault && (
             <Stack gap="xs">
-              <Group grow align="flex-start">
-                <Select
-                  label="Provider"
-                  data={entryOptions}
-                  value={effective.provider_id || null}
-                  onChange={(val) => {
-                    if (!val) return;
-                    void loadModelsFor(val, layer.key);
-                    setRow(layer.key, pointRowAt(effective, val));
-                  }}
-                />
-                <Stack gap={4}>
+              <Select
+                label="Provider"
+                data={entryOptions}
+                maw={420}
+                value={effective.provider_id || null}
+                onChange={(val) => {
+                  if (!val) return;
+                  void loadModelsFor(val, layer.key);
+                  setRow(layer.key, pointRowAt(effective, val));
+                }}
+              />
+              <Stack gap={4}>
                   <LiveModelCombobox
                     providerMeta={meta}
                     liveModels={modelsFor(entryId, layer.key)}
@@ -572,8 +594,7 @@ export function LayerModelsPanel({
                       Reload models
                     </Button>
                   )}
-                </Stack>
-              </Group>
+              </Stack>
               {renderModelSettings(effective, meta, setConfig)}
               <TestConnectionButton
                 projectId={projectId}
@@ -584,7 +605,7 @@ export function LayerModelsPanel({
             </Stack>
           )}
         </Stack>
-      </Card>
+      </Box>
     );
   };
 
@@ -605,6 +626,12 @@ export function LayerModelsPanel({
   const defaultEntryId = DEFAULT_PROVIDER_ID;
   const defaultEntry = entries.find((e) => e.id === defaultEntryId);
   const defaultMeta = providers.find((p) => p.id === defaultEntry?.provider) || null;
+  // Exactly what the layer pickers show for this entry. Derived from the
+  // same options rather than rebuilt, or the default row called it
+  // "bedrock" while every override called it "default — bedrock".
+  const defaultEntryLabel = entryOptions.find((o) => o.value === defaultEntryId)?.label
+    || defaultEntry?.provider
+    || DEFAULT_PROVIDER_ID;
 
   return (
     <Stack gap="md">
@@ -630,47 +657,52 @@ export function LayerModelsPanel({
               Apply to all {overrideCount > 0 ? `(clears ${overrideCount})` : ''}
             </Button>
           </Group>
-          <Group grow align="flex-start">
+          {/*
+            * The default row always uses the reserved entry, so this is a
+            * label rather than a picker. The entry is a SLOT, not a
+            * pointer: the legacy mirror an older agent image reads copies
+            * this row's endpoint into project.llm while the credential it
+            * reads for that is fixed at llm-credentials, so a default row
+            * pointing elsewhere would send one entry's credential to
+            * another's endpoint — which is why the API refuses it. Offering
+            * the choice here only produced a selection that could not be
+            * saved.
+            */}
+          <Input.Wrapper
+            label="Provider"
+            description={entryOptions.length > 1
+              ? 'Every layer inherits this connection. Edit it under Providers, or give a layer its own row below.'
+              : 'Edit this connection under Providers.'}
+          >
             {/*
-              * The default row always uses the reserved entry, so this is a
-              * label rather than a picker. The entry is a SLOT, not a
-              * pointer: the legacy mirror an older agent image reads copies
-              * this row's endpoint into project.llm while the credential it
-              * reads for that is fixed at llm-credentials, so a default row
-              * pointing elsewhere would send one entry's credential to
-              * another's endpoint — which is why the API refuses it. Offering
-              * the choice here only produced a selection that could not be
-              * saved.
+              * Text, not a field. This row cannot be repointed — the API
+              * refuses it — so a box that looks typeable, or a dropdown
+              * that looks openable, promises a choice that does not exist.
+              * The same option label the layer pickers use, so the one
+              * connection is not named two ways on one screen.
               */}
-            <TextInput
-              label="Provider"
-              description={entryOptions.length > 1
-                ? 'Every layer inherits this connection. Edit it under Providers, or give a layer its own row below.'
-                : 'Edit this connection under Providers.'}
-              value={defaultEntry?.label || defaultEntry?.provider || DEFAULT_PROVIDER_ID}
-              readOnly
-            />
-            <Stack gap={4}>
-              <LiveModelCombobox
-                providerMeta={defaultMeta}
-                liveModels={modelsFor(defaultEntryId)}
-                value={defaultRow.model || ''}
-                onChange={(val) => selectModel(
-                  DEFAULT_LAYER, defaultRow, val, modelsFor(defaultEntryId),
-                  writeDefaultRow,
-                )}
-              />
-              {needsReload(defaultEntryId) && defaultEntryId && (
-                <Button
-                  variant="subtle"
-                  size="compact-xs"
-                  onClick={() => { void reloadModelsFor(defaultEntryId); }}
-                >
-                  Reload models
-                </Button>
+            <Text size="sm" fw={500} mt={4}>{defaultEntryLabel}</Text>
+          </Input.Wrapper>
+          <Stack gap={4}>
+            <LiveModelCombobox
+              providerMeta={defaultMeta}
+              liveModels={modelsFor(defaultEntryId)}
+              value={defaultRow.model || ''}
+              onChange={(val) => selectModel(
+                DEFAULT_LAYER, defaultRow, val, modelsFor(defaultEntryId),
+                writeDefaultRow,
               )}
-            </Stack>
-          </Group>
+            />
+            {needsReload(defaultEntryId) && defaultEntryId && (
+              <Button
+                variant="subtle"
+                size="compact-xs"
+                onClick={() => { void reloadModelsFor(defaultEntryId); }}
+              >
+                Reload models
+              </Button>
+            )}
+          </Stack>
           {renderModelSettings(defaultRow, defaultMeta, setDefaultConfig)}
           <TestConnectionButton projectId={projectId} target="llm" label="Test default model" />
         </Stack>
@@ -691,7 +723,14 @@ export function LayerModelsPanel({
                 </Group>
               </Accordion.Control>
               <Accordion.Panel>
-                <Stack gap="sm">{items.map(renderRow)}</Stack>
+                <Stack gap={0}>
+                  {items.map((l, i) => (
+                    <Box key={l.key}>
+                      {i > 0 && <Divider my={4} />}
+                      {renderRow(l)}
+                    </Box>
+                  ))}
+                </Stack>
               </Accordion.Panel>
             </Accordion.Item>
           );

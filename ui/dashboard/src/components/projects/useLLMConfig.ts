@@ -240,10 +240,13 @@ export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void):
     }
     const dupes = ids.filter((id, i) => ids.indexOf(id) !== i);
     if (dupes.length > 0) return `Duplicate provider id: ${dupes.join(', ')}.`;
-    const badId = ids.find((id) => !isValidLLMProviderId(id));
-    if (badId) return `Provider id "${badId}" may only contain letters, digits, underscores and hyphens (max 32).`;
+    // Phrased as the NAME, which is the only half of this the user sees:
+    // the id is derived from it and never shown, so naming an id they did
+    // not type would be telling them about a field that is not on screen.
+    const unnamed = entries.find((e) => !isValidLLMProviderId(e.id));
+    if (unnamed) return 'Give every connection a name — it needs at least one letter or digit.';
     const noProvider = entryForms.find((f) => !f.provider);
-    if (noProvider) return `Choose a provider for "${noProvider.id}".`;
+    if (noProvider) return `Choose a provider for "${noProvider.label.trim() || noProvider.id}".`;
 
     const defaultRow = layerModels[DEFAULT_LAYER];
     if (!defaultRow) return 'Pick a default model — it is what every layer without its own uses.';

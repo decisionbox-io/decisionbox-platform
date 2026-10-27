@@ -28,7 +28,8 @@ import {
 } from '@mantine/core';
 import { IconAlertCircle, IconPlus, IconShieldCheck, IconTrash } from '@tabler/icons-react';
 import {
-  api, DEFAULT_LLM_PROVIDER_ID, LayerModel, LLMProviderEntry, LiveModel, MAX_LLM_PROVIDER_ID_LEN,
+  api, DEFAULT_LLM_PROVIDER_ID, LayerModel, LLMProviderEntry, LiveModel,
+  llmProviderIdFromName,
   ProviderMeta, SecretEntryResponse, isValidLLMProviderId, llmProviderSecretKey,
 } from '@/lib/api';
 import {
@@ -224,15 +225,30 @@ export function LLMProvidersPanel({
   };
 
   const addEntry = () => {
-    // A suggested id the user can rename while it is new. Frozen on save,
-    // because it keys the entry's secret.
-    let n = 2;
-    const taken = new Set(value.map((f) => f.id));
-    while (taken.has(`provider-${n}`)) n += 1;
+    // No id: the NAME decides it. See setName.
     onChange([...value, {
-      id: `provider-${n}`, label: '', provider: '', authMethod: '',
+      id: '', label: '', provider: '', authMethod: '',
       config: {}, apiKey: '', isNew: true,
     }]);
+  };
+
+  /**
+   * Renames an entry, and for a NEW one re-derives its id.
+   *
+   * The id is machine identity — the secret key and what layer rows point
+   * at — so it was being typed by the user purely because it freezes on
+   * save. Deriving it from the name asks for one human thing instead of
+   * two, and a saved entry's id is left exactly as it was: renaming must
+   * not move the credential out from under it.
+   */
+  const setName = (index: number, label: string) => {
+    const form = value[index];
+    if (!form.isNew) {
+      update(index, { label });
+      return;
+    }
+    const taken = value.filter((_, i) => i !== index).map((f) => f.id);
+    update(index, { label, id: llmProviderIdFromName(label, taken) });
   };
 
   const removeEntry = (index: number) => {
@@ -285,7 +301,17 @@ export function LLMProvidersPanel({
                   {isDefault ? (
                     <Badge color="blue" variant="light">default</Badge>
                   ) : (
-                    <Badge variant="outline">{form.id}</Badge>
+                    // The NAME, with the derived id behind a tooltip. The id
+                    // is still what the credential is filed under, so an
+                    // operator looking in the secret store needs a way to
+                    // find it — just not a form field.
+                    <Tooltip
+                      label={form.id
+                        ? `id: ${form.id} · credential: ${llmProviderSecretKey(form.id)}`
+                        : 'Name this connection to create it'}
+                    >
+                      <Badge variant="outline">{form.label.trim() || form.id || 'unnamed'}</Badge>
+                    </Tooltip>
                   )}
                   {inUseBy.length > 0 && (
                     <Tooltip label={inUseBy.join(', ')}>
@@ -315,25 +341,22 @@ export function LLMProvidersPanel({
 
               {!isDefault && (
                 <Group grow align="flex-start">
-                  <TextInput
-                    label="Id"
-                    description={
-                      form.isNew
-                        ? 'Letters, digits, underscores and hyphens. Fixed once saved — it keys this entry’s credential.'
-                        : 'Fixed: it keys this entry’s stored credential.'
-                    }
-                    value={form.id}
-                    disabled={!form.isNew}
-                    maxLength={MAX_LLM_PROVIDER_ID_LEN}
-                    error={form.isNew && idInvalid ? 'Use 1–32 letters, digits, underscores or hyphens' : undefined}
-                    onChange={(e) => update(index, { id: e.currentTarget.value })}
-                  />
+                  {/*
+                    * Name only. The id is derived from it and never shown —
+                    * it is the secret key and the layer rows' reference, not
+                    * something a user should have to invent. The badge above
+                    * carries it in a tooltip for anyone who needs to find
+                    * the credential in the secret store.
+                    */}
                   <TextInput
                     label="Name"
-                    description="Shown in the model pickers."
+                    description="Shown wherever this connection is picked."
                     placeholder="e.g. DeepInfra — open weights"
                     value={form.label}
-                    onChange={(e) => update(index, { label: e.currentTarget.value })}
+                    error={form.isNew && form.label.trim() !== '' && idInvalid
+                      ? 'Use at least one letter or digit'
+                      : undefined}
+                    onChange={(e) => setName(index, e.currentTarget.value)}
                   />
                 </Group>
               )}

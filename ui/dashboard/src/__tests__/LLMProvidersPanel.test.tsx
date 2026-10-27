@@ -106,14 +106,27 @@ describe('LLMProvidersPanel', () => {
     expect(onChange.mock.calls[0][0].map((f: ProviderEntryForm) => f.id)).toEqual(['default']);
   });
 
-  it('freezes a saved entry id, because it keys the stored credential', () => {
-    renderPanel([form({ id: 'default' }), form({ id: 'cheap', isNew: false })]);
-    expect(screen.getByLabelText('Id')).toBeDisabled();
+  // The id is derived from the name and never shown. What it keys — the
+  // stored credential, and every layer row pointing at this entry — is why
+  // renaming a SAVED entry must not move it.
+  it('renaming a saved entry changes the label, not the id', () => {
+    const onChange = renderPanel([form({ id: 'default' }), form({ id: 'cheap', label: 'Cheap' })]);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Cheap and fast' } });
+    const next = onChange.mock.calls.at(-1)![0];
+    expect(next[1].label).toBe('Cheap and fast');
+    expect(next[1].id).toBe('cheap');
   });
 
-  it('refuses an id the secret backends could not store', () => {
-    renderPanel([form({ id: 'default' }), form({ id: 'bad id', isNew: true })]);
-    expect(screen.getByText(/letters, digits, underscores or hyphens/i)).toBeInTheDocument();
+  it('derives a new entry id from the name as it is typed', () => {
+    const onChange = renderPanel([form({ id: 'default' }), form({ id: '', isNew: true })]);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'DeepInfra — open weights' } });
+    const next = onChange.mock.calls.at(-1)![0];
+    expect(next[1].id).toBe('deepinfra-open-weights');
+  });
+
+  it('says so when a name yields nothing the secret backends could store', () => {
+    renderPanel([form({ id: 'default' }), form({ id: '', label: '—', isNew: true })]);
+    expect(screen.getByText(/at least one letter or digit/i)).toBeInTheDocument();
   });
 
   it('reports a duplicate id rather than letting two entries collide', () => {
@@ -322,19 +335,21 @@ describe('LLMProvidersPanel — editing a new entry\'s id', () => {
       <MantineProvider>
         <LLMProvidersPanel
           projectId="proj-1" providers={PROVIDERS}
-          value={[form({ id: 'default' }), form({ id: 'p', isNew: true })]}
+          value={[form({ id: 'default' }), form({ id: 'p', label: 'p', isNew: true })]}
           onChange={onChange} secrets={[]} layersByProviderId={{}} savedIds={['default']}
         />
       </MantineProvider>,
     );
     const before = screen.getByDisplayValue('p');
 
-    // The next keystroke: the panel is re-rendered with the longer id.
+    // The next keystroke: the panel is re-rendered with the longer name,
+    // and the id derived from it moves too — which is exactly what keying
+    // the card on the id would have remounted on.
     rerender(
       <MantineProvider>
         <LLMProvidersPanel
           projectId="proj-1" providers={PROVIDERS}
-          value={[form({ id: 'default' }), form({ id: 'pr', isNew: true })]}
+          value={[form({ id: 'default' }), form({ id: 'pr', label: 'pr', isNew: true })]}
           onChange={onChange} secrets={[]} layersByProviderId={{}} savedIds={['default']}
         />
       </MantineProvider>,
@@ -354,23 +369,29 @@ describe('LLMProvidersPanel — editing a new entry\'s id', () => {
 // Treating it as one took both controls away the moment the word was
 // complete, while duplicate-id validation blocked the save — so the only
 // way out was a reload, discarding every other unsaved edit.
-describe('LLMProvidersPanel — typing the reserved id into a new entry', () => {
-  it('keeps the id editable and the entry removable', () => {
-    const forms = [form({ id: 'default' }), form({ id: 'default', isNew: true })];
-    renderPanel(forms);
-
-    // Two id fields would be wrong — the saved default has none — so look
-    // for exactly the new card's.
-    const ids = screen.getAllByLabelText('Id');
-    expect(ids).toHaveLength(1);
-    expect(ids[0]).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Remove default' })).toBeInTheDocument();
+// The reserved entry is fixed and cannot be removed, and it is the only one
+// with no name of its own to edit. A user naming their own connection
+// "Default" must not land on that slot — the id an older agent image reads
+// credentials from.
+describe('LLMProvidersPanel — the reserved entry', () => {
+  it('does not hand a new entry a reserved id, however it is named', () => {
+    const onChange = renderPanel([form({ id: 'default' }), form({ id: '', isNew: true })]);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Default' } });
+    const next = onChange.mock.calls.at(-1)![0];
+    expect(next[1].id).not.toBe('default');
+    expect(next[1].id).toBe('default-2');
   });
 
-  it('still fixes the saved default entry', () => {
+  it('keeps "blurb" out of reach too', () => {
+    const onChange = renderPanel([form({ id: 'default' }), form({ id: '', isNew: true })]);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Blurb' } });
+    expect(onChange.mock.calls.at(-1)![0][1].id).toBe('blurb-2');
+  });
+
+  it('has no name field of its own, and cannot be removed', () => {
     renderPanel([form({ id: 'default' }), form({ id: 'cheap' })]);
-    // Only the secondary's id is editable, and only it can be removed.
-    expect(screen.getAllByLabelText('Id')).toHaveLength(1);
+    // Only the secondary is nameable, and only it can be removed.
+    expect(screen.getAllByLabelText('Name')).toHaveLength(1);
     expect(screen.queryByRole('button', { name: 'Remove default' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Remove cheap' })).toBeInTheDocument();
   });
