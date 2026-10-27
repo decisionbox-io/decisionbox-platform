@@ -11,6 +11,7 @@ import (
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
+	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
 	"github.com/decisionbox-io/decisionbox/services/api/managedai"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
@@ -1387,5 +1388,33 @@ func TestUpdate_LayersOnlyWriteMaterialisesTheEntriesItWasValidatedAgainst(t *te
 	if spec.Provider != "litellm" || spec.FellBackFromProviderID != "" {
 		t.Errorf("analysis resolved to %q (fell back from %q), want the entry it names",
 			spec.Provider, spec.FellBackFromProviderID)
+	}
+}
+
+// An agent image older than the API does not know --layer and dies in
+// flag.Parse, which reads as an unrelated connection failure. Retrying
+// without the flag would be worse than any message: it would test the
+// DEFAULT layer and report the answer as if it were this layer's.
+func TestTestLLM_AnOlderAgentIsReportedAsSuch(t *testing.T) {
+	older := &runner.RunSyncResult{
+		Error:  "flag provided but not defined: -layer\nUsage of decisionbox-agent:",
+		Output: nil,
+	}
+	if !mentionsUnknownLayerFlag(older) {
+		t.Error("an older agent's flag-parse failure was not recognised")
+	}
+
+	// A real connection failure keeps its own message.
+	real := &runner.RunSyncResult{Error: "dial tcp 10.0.0.1:443: connect: connection refused"}
+	if mentionsUnknownLayerFlag(real) {
+		t.Error("a genuine connection failure was mistaken for an old agent")
+	}
+	if mentionsUnknownLayerFlag(nil) {
+		t.Error("a nil result must not be read as an old agent")
+	}
+	// A different unknown flag is not this.
+	other := &runner.RunSyncResult{Error: "flag provided but not defined: -wombat"}
+	if mentionsUnknownLayerFlag(other) {
+		t.Error("an unrelated unknown flag was reported as the layer problem")
 	}
 }

@@ -251,3 +251,37 @@ describe('entryFormsFrom — the sole auth method', () => {
     expect(forms[0].authMethod).toBe('role');
   });
 });
+
+// A new entry's id is editable, so keying the card on it gave React a
+// different element on every keystroke: the card remounted, the input it
+// replaced was the focused one, and focus was lost after each character.
+describe('LLMProvidersPanel — editing a new entry\'s id', () => {
+  it('keeps the same input element across keystrokes', () => {
+    const onChange = jest.fn();
+    const { rerender } = render(
+      <MantineProvider>
+        <LLMProvidersPanel
+          projectId="proj-1" providers={PROVIDERS}
+          value={[form({ id: 'default' }), form({ id: 'p', isNew: true })]}
+          onChange={onChange} secrets={[]} layersByProviderId={{}} savedIds={['default']}
+        />
+      </MantineProvider>,
+    );
+    const before = screen.getByDisplayValue('p');
+
+    // The next keystroke: the panel is re-rendered with the longer id.
+    rerender(
+      <MantineProvider>
+        <LLMProvidersPanel
+          projectId="proj-1" providers={PROVIDERS}
+          value={[form({ id: 'default' }), form({ id: 'pr', isNew: true })]}
+          onChange={onChange} secrets={[]} layersByProviderId={{}} savedIds={['default']}
+        />
+      </MantineProvider>,
+    );
+    const after = screen.getByDisplayValue('pr');
+
+    // The SAME DOM node, which is what keeps the caret where the user left it.
+    expect(after).toBe(before);
+  });
+});

@@ -173,7 +173,13 @@ export function LLMProvidersPanel({
           : emptyCredentials();
 
         return (
-          <Card key={`${form.id}-${index}`} withBorder padding="md" radius="md">
+          /*
+            * Keyed by POSITION, not by the id. The id of a new entry is
+            * editable, so keying on it gave React a different element on
+            * every keystroke: the card remounted, the input it replaced was
+            * the focused one, and the user lost focus after each character.
+            */
+          <Card key={index} withBorder padding="md" radius="md">
             <Stack gap="sm">
               <Group justify="space-between" align="flex-start">
                 <Group gap="xs">

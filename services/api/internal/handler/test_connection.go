@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
@@ -93,6 +94,9 @@ func (h *TestConnectionHandler) runTest(w http.ResponseWriter, r *http.Request, 
 	// rather than die on an unknown flag. An unknown layer key is refused
 	// here rather than passed through, so the user gets a real message
 	// instead of an agent usage error.
+	// layerRequested records a non-default layer so a flag-parse failure
+	// from an older agent can be reported as what it is.
+	var layerRequested string
 	if target == "llm" {
 		if layer := r.URL.Query().Get("layer"); layer != "" {
 			if !llmlayer.ValidateLayerKey(layer) {
@@ -101,6 +105,7 @@ func (h *TestConnectionHandler) runTest(w http.ResponseWriter, r *http.Request, 
 			}
 			if layer != llmlayer.DefaultLayer {
 				args = append(args, "--layer", layer)
+				layerRequested = layer
 			}
 		}
 	}
@@ -126,6 +131,15 @@ func (h *TestConnectionHandler) runTest(w http.ResponseWriter, r *http.Request, 
 		errMsg := "connection test failed"
 		if result != nil && result.Error != "" {
 			errMsg = result.Error
+		}
+		// An agent image older than the API does not know --layer and dies
+		// in flag.Parse, which reads as an unrelated failure. Retrying
+		// without the flag would be worse than this message: it would test
+		// the DEFAULT layer and report the answer as if it were this
+		// layer's.
+		if layerRequested != "" && mentionsUnknownLayerFlag(result) {
+			errMsg = "this deployment's agent image is older than the API and cannot test one layer on its own. " +
+				"Upgrade the agent, or use the default model's connection test."
 		}
 
 		apilog.WithFields(apilog.Fields{
@@ -163,4 +177,16 @@ func (h *TestConnectionHandler) runTest(w http.ResponseWriter, r *http.Request, 
 	}).Info("Connection test completed")
 
 	writeJSON(w, http.StatusOK, parsed)
+}
+
+// mentionsUnknownLayerFlag reports whether an agent's failure looks like
+// Go's flag package rejecting --layer, which is what an image older than
+// this API does with it.
+func mentionsUnknownLayerFlag(result *runner.RunSyncResult) bool {
+	if result == nil {
+		return false
+	}
+	haystack := strings.ToLower(result.Error + "\n" + string(result.Output))
+	return strings.Contains(haystack, "flag provided but not defined") &&
+		strings.Contains(haystack, "layer")
 }
