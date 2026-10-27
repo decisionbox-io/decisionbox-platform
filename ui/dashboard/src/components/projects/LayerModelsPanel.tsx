@@ -30,6 +30,13 @@ import { TestConnectionButton } from './WarehouseConfigPanel';
 /** The reserved row every layer without one of its own inherits. */
 export const DEFAULT_LAYER = 'default';
 
+/**
+ * The one layer whose CREDENTIAL chain differs from its entry's: it tries
+ * the blurb secret first. Its model list therefore has to be fetched for
+ * the layer, not the entry. The key matches the server's vocabulary.
+ */
+const LAYER_TABLE_DESCRIPTIONS = 'table_descriptions';
+
 const REASONING_KEY = 'reasoning_enabled';
 const PROMPT_CACHE_KEY = 'prompt_cache';
 
@@ -73,6 +80,10 @@ export function LayerModelsPanel({
   // several rows can ask for the same entry in one render pass, and reading
   // the state would see the value from before the batch.
   const requestedRef = useRef<Set<string>>(new Set());
+  // The live_error the API returns with a 200 and catalogue-only rows when
+  // upstream discovery failed. Kept so the picker can say so and offer a
+  // retry rather than looking deliberately empty.
+  const [liveErrors, setLiveErrors] = useState<Record<string, string | null>>({});
 
   useEffect(() => {
     api.listLLMLayers()
@@ -115,17 +126,32 @@ export function LayerModelsPanel({
       || JSON.stringify(edited.config ?? {}) !== JSON.stringify(persisted.config ?? {});
   };
 
-  const loadModelsFor = async (entryId: string) => {
+  /**
+   * Table descriptions resolve a different CREDENTIAL from every other
+   * layer on the same entry: blurb-llm-credentials (and BLURB_LLM_API_KEY)
+   * before the entry's own. So the models reachable for that layer are not
+   * necessarily the entry's, and listing by entry alone could offer models
+   * indexing cannot reach, or hide ones it can. The endpoint takes a layer
+   * for exactly this; every other layer still shares one entry-wide list.
+   */
+  const listsByLayer = (layer: string) => layer === LAYER_TABLE_DESCRIPTIONS;
+
+  const cacheKeyFor = (entryId: string, layer: string) =>
+    (listsByLayer(layer) ? `${layer}\u0002` : '') + connectionKey(entryId);
+
+  const loadModelsFor = async (entryId: string, layer = DEFAULT_LAYER) => {
     // The server can only answer about a connection it has. Asking about an
     // edited one returns the stored entry's models, which would then be
     // shown against the new provider.
     if (connectionUnsaved(entryId)) return;
-    const key = connectionKey(entryId);
+    const key = cacheKeyFor(entryId, layer);
     if (requestedRef.current.has(key)) return;
     requestedRef.current.add(key);
     try {
-      const resp = await api.listLiveLLMModelsForProvider(projectId, { provider_id: entryId });
+      const body = listsByLayer(layer) ? { layer } : { provider_id: entryId };
+      const resp = await api.listLiveLLMModelsForProvider(projectId, body);
       setLiveByEntry((prev) => ({ ...prev, [key]: resp.models }));
+      setLiveErrors((prev) => ({ ...prev, [key]: resp.live_error ?? null }));
     } catch {
       // A failure is not a verdict for the session. An entry the user has
       // just added is not on the server yet, so this 404s — and leaving it
@@ -137,17 +163,28 @@ export function LayerModelsPanel({
     }
   };
 
-  /** Drops what was loaded for an entry and fetches it again. */
-  const reloadModelsFor = async (entryId: string) => {
-    requestedRef.current.delete(connectionKey(entryId));
-    await loadModelsFor(entryId);
+  /** Drops what was loaded for a layer's connection and fetches it again. */
+  const reloadModelsFor = async (entryId: string, layer = DEFAULT_LAYER) => {
+    requestedRef.current.delete(cacheKeyFor(entryId, layer));
+    await loadModelsFor(entryId, layer);
   };
 
-  /** The models known for an entry's connection, or none while it is edited. */
-  const modelsFor = (entryId: string) => {
+  /** The models known for a layer's connection, or none while it is edited. */
+  const modelsFor = (entryId: string, layer = DEFAULT_LAYER) => {
     if (connectionUnsaved(entryId)) return null;
-    return liveByEntry[connectionKey(entryId)] ?? null;
+    return liveByEntry[cacheKeyFor(entryId, layer)] ?? null;
   };
+
+  /**
+   * Whether a reload is worth offering: an empty picker, OR a list the
+   * server could only fill from the catalogue because live discovery
+   * failed. The combobox filters catalogue-only rows out, so without this
+   * a transient upstream failure left an empty picker that looked
+   * deliberately empty.
+   */
+  const needsReload = (entryId: string, layer = DEFAULT_LAYER) =>
+    (modelsFor(entryId, layer)?.length ?? 0) === 0
+    || Boolean(liveErrors[cacheKeyFor(entryId, layer)]);
 
   // The model-scoped settings, rendered identically for the default row and
   // for a layer's own row. One block on purpose: a control offered on an
@@ -268,10 +305,63 @@ export function LayerModelsPanel({
     for (const id of selectedEntryIds) {
       if (id) void loadModelsFor(id);
     }
+    // Table descriptions resolve their own credential, so their list is
+    // fetched separately — and only when that layer has a row to show.
+    const td = value[LAYER_TABLE_DESCRIPTIONS];
+    if (td) {
+      const id = td.provider_id || DEFAULT_PROVIDER_ID;
+      void loadModelsFor(id, LAYER_TABLE_DESCRIPTIONS);
+    }
     // loadModelsFor guards against repeats through requestedRef, so the only
     // dependencies are which entries are selected and what they point at.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedConnections, projectId, savedGeneration]);
+
+  // What this panel auto-filled, per layer, so switching models refreshes a
+  // value it put there and never one the operator typed.
+  const autofilledRef = useRef<Record<string, { max_input_tokens?: string; max_output_tokens?: string }>>({});
+
+  /**
+   * selectModel sets a layer's model and prefills the token limits from what
+   * the upstream endpoint actually REPORTED for it (never a catalogue
+   * estimate).
+   *
+   * Without it an uncatalogued gateway model's real window is recorded
+   * nowhere: the row carries no override, and everything downstream budgets
+   * against the global fallback — so a model advertising 8K is handed
+   * prompts sized for a much larger one. The single-model editor has always
+   * done this; the per-layer rows have to as well.
+   */
+  const selectModel = (layerKey: string, row: LayerModel, model: string, live: LiveModel[] | null, apply: (next: LayerModel) => void) => {
+    const config: Record<string, string> = { ...(row.config || {}) };
+    const previous = (live ?? []).find((m) => m.id === row.model);
+    const chosen = (live ?? []).find((m) => m.id === model);
+    const filled = autofilledRef.current[layerKey] ?? {};
+    const next: { max_input_tokens?: string; max_output_tokens?: string } = {};
+
+    const reported = (m: LiveModel | undefined, key: 'max_input_tokens' | 'max_output_tokens') => {
+      const v = key === 'max_input_tokens' ? m?.live_max_input_tokens : m?.live_max_output_tokens;
+      return (v ?? 0) > 0 ? String(v) : undefined;
+    };
+
+    (['max_input_tokens', 'max_output_tokens'] as const).forEach((key) => {
+      const current = (config[key] ?? '').trim();
+      const ours = current !== '' && (current === filled[key] || current === reported(previous, key));
+      if (current !== '' && !ours) return; // typed by the operator — left alone
+      const detected = reported(chosen, key);
+      if (detected !== undefined) {
+        config[key] = detected;
+        next[key] = detected;
+      } else if (ours) {
+        // The new model reports nothing: clear OUR stale value rather than
+        // leave the previous model's window as this one's override.
+        delete config[key];
+      }
+    });
+
+    autofilledRef.current[layerKey] = next;
+    apply({ ...row, model, config: Object.keys(config).length > 0 ? config : undefined });
+  };
 
   const setRow = (layer: string, next: LayerModel | null) => {
     const copy = { ...value };
@@ -361,7 +451,7 @@ export function LayerModelsPanel({
                   value={effective.provider_id || null}
                   onChange={(val) => {
                     if (!val) return;
-                    void loadModelsFor(val);
+                    void loadModelsFor(val, layer.key);
                     // The model belongs to the entry it was picked from, so
                     // switching entries clears it rather than carrying a
                     // model the new connection may not serve.
@@ -371,15 +461,18 @@ export function LayerModelsPanel({
                 <Stack gap={4}>
                   <LiveModelCombobox
                     providerMeta={meta}
-                    liveModels={modelsFor(entryId)}
+                    liveModels={modelsFor(entryId, layer.key)}
                     value={effective.model || ''}
-                    onChange={(val) => setRow(layer.key, { ...effective, model: val })}
+                    onChange={(val) => selectModel(
+                      layer.key, effective, val, modelsFor(entryId, layer.key),
+                      (next) => setRow(layer.key, next),
+                    )}
                   />
-                  {(modelsFor(entryId)?.length ?? 0) === 0 && entryId && (
+                  {needsReload(entryId, layer.key) && entryId && (
                     <Button
                       variant="subtle"
                       size="compact-xs"
-                      onClick={() => { void reloadModelsFor(entryId); }}
+                      onClick={() => { void reloadModelsFor(entryId, layer.key); }}
                     >
                       Reload models
                     </Button>
@@ -467,9 +560,12 @@ export function LayerModelsPanel({
                 providerMeta={defaultMeta}
                 liveModels={modelsFor(defaultEntryId)}
                 value={defaultRow.model || ''}
-                onChange={(val) => writeDefaultRow({ ...defaultRow, model: val })}
+                onChange={(val) => selectModel(
+                  DEFAULT_LAYER, defaultRow, val, modelsFor(defaultEntryId),
+                  writeDefaultRow,
+                )}
               />
-              {(modelsFor(defaultEntryId)?.length ?? 0) === 0 && defaultEntryId && (
+              {needsReload(defaultEntryId) && defaultEntryId && (
                 <Button
                   variant="subtle"
                   size="compact-xs"

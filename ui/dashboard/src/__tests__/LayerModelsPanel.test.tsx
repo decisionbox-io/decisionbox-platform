@@ -512,3 +512,106 @@ describe('LayerModelsPanel — a save refetches the model lists', () => {
     expect((api.listLiveLLMModelsForProvider as jest.Mock).mock.calls.length).toBe(before);
   });
 });
+
+// Table descriptions resolve blurb-llm-credentials before the entry's own
+// key, so the models reachable for that layer are not necessarily the
+// entry's. Listing by entry alone could offer models indexing cannot reach,
+// or hide ones it can — the endpoint takes a layer for exactly this.
+describe('LayerModelsPanel — table descriptions list under their own credential', () => {
+  it('asks by layer for that row and by entry for the rest', async () => {
+    renderPanel({
+      [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' },
+      table_descriptions: { provider_id: 'default', model: 'haiku' },
+    });
+    await screen.findByText('Main layers');
+
+    await waitFor(() => {
+      const calls = (api.listLiveLLMModelsForProvider as jest.Mock).mock.calls.map(([, body]) => body);
+      expect(calls).toContainEqual({ layer: 'table_descriptions' });
+    });
+    const calls = (api.listLiveLLMModelsForProvider as jest.Mock).mock.calls.map(([, body]) => body);
+    expect(calls).toContainEqual({ provider_id: 'default' });
+  });
+
+  it('does not ask by layer when that row does not exist', async () => {
+    renderPanel({ [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' } });
+    await screen.findByText('Main layers');
+    await waitFor(() => expect(api.listLiveLLMModelsForProvider).toHaveBeenCalled());
+    const calls = (api.listLiveLLMModelsForProvider as jest.Mock).mock.calls.map(([, body]) => body);
+    expect(calls).not.toContainEqual({ layer: 'table_descriptions' });
+  });
+});
+
+// Live discovery that fails comes back as HTTP 200 with a live_error and
+// catalogue-only rows. The combobox filters those out, so the picker looked
+// deliberately empty — and the non-empty row count suppressed the Reload
+// button, leaving no way back short of a page reload.
+describe('LayerModelsPanel — a failed discovery keeps its retry', () => {
+  it('offers Reload when the API reported a live error', async () => {
+    (api.listLiveLLMModelsForProvider as jest.Mock).mockResolvedValue({
+      models: [{ id: 'catalogue-only', name: 'From the catalogue' }],
+      live_error: 'dial tcp: connection refused',
+    });
+    renderPanel({ [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' } });
+    await screen.findByText('Main layers');
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('button', { name: 'Reload models' }).length).toBeGreaterThan(0);
+    });
+  });
+});
+
+// An uncatalogued gateway model's real window is recorded nowhere unless
+// the picker prefills it: the row carries no override and everything
+// downstream budgets against the global fallback, so a model advertising 8K
+// is handed prompts sized for a much larger one. The single-model editor
+// has always prefilled from what the endpoint REPORTED; the per-layer rows
+// have to as well.
+describe('LayerModelsPanel — selecting a model records its reported limits', () => {
+  const LIVE = [
+    { id: 'small-8k', name: 'Small', source: 'live', dispatchable: true, live_max_input_tokens: 8192, live_max_output_tokens: 1024 },
+    { id: 'big-200k', name: 'Big', source: 'live', dispatchable: true, live_max_input_tokens: 200000 },
+    { id: 'unknown', name: 'Unknown', source: 'live', dispatchable: true },
+  ];
+
+  beforeEach(() => {
+    (api.listLiveLLMModelsForProvider as jest.Mock).mockResolvedValue({ models: LIVE });
+  });
+
+  it('prefills the token limits the endpoint reported', async () => {
+    const onChange = renderPanel({ [DEFAULT_LAYER]: { provider_id: 'default', model: '' } });
+    await screen.findByText('Main layers');
+    await waitFor(() => expect(api.listLiveLLMModelsForProvider).toHaveBeenCalled());
+
+    fireEvent.change(screen.getAllByLabelText('Model')[0], { target: { value: 'small-8k' } });
+    const next = onChange.mock.calls[onChange.mock.calls.length - 1][0];
+    expect(next[DEFAULT_LAYER].config.max_input_tokens).toBe('8192');
+    expect(next[DEFAULT_LAYER].config.max_output_tokens).toBe('1024');
+  });
+
+  it('never overwrites a limit the operator typed', async () => {
+    const onChange = renderPanel({
+      [DEFAULT_LAYER]: { provider_id: 'default', model: '', config: { max_input_tokens: '4096' } },
+    });
+    await screen.findByText('Main layers');
+    await waitFor(() => expect(api.listLiveLLMModelsForProvider).toHaveBeenCalled());
+
+    fireEvent.change(screen.getAllByLabelText('Model')[0], { target: { value: 'small-8k' } });
+    const next = onChange.mock.calls[onChange.mock.calls.length - 1][0];
+    expect(next[DEFAULT_LAYER].config.max_input_tokens).toBe('4096');
+  });
+
+  it('clears its own stale value when the new model reports none', async () => {
+    // The row already holds exactly what small-8k reports, so the panel
+    // recognises the value as one it would have filled.
+    const onChange = renderPanel({
+      [DEFAULT_LAYER]: { provider_id: 'default', model: 'small-8k', config: { max_input_tokens: '8192' } },
+    });
+    await screen.findByText('Main layers');
+    await waitFor(() => expect(api.listLiveLLMModelsForProvider).toHaveBeenCalled());
+
+    fireEvent.change(screen.getAllByLabelText('Model')[0], { target: { value: 'unknown' } });
+    const next = onChange.mock.calls[onChange.mock.calls.length - 1][0];
+    expect(next[DEFAULT_LAYER].config?.max_input_tokens).toBeUndefined();
+  });
+});

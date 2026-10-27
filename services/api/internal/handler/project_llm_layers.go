@@ -652,7 +652,14 @@ func (h *ProjectsHandler) applyLLMLayerUpdate(
 	// (clearing it when table descriptions match the default), so the entry
 	// that row pointed at stopped existing: the update succeeded and the
 	// layer silently fell back to the default provider.
-	if len(existing.LLMProviders) == 0 {
+	//
+	// Only when there are ROWS to serve. A PUT clearing both halves is an
+	// explicit reset, and rematerialising entries from the legacy mirror
+	// turned it into "providers with no layer rows" — a state the settings
+	// page will not re-seed, because it seeds only when both halves are
+	// empty, so the user lost their default model with nothing to restore
+	// it from.
+	if len(existing.LLMProviders) == 0 && len(existing.LayerModels) > 0 {
 		existing.LLMProviders = existing.EffectiveLLMProviders()
 	}
 

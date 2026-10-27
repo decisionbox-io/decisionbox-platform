@@ -1468,3 +1468,33 @@ func TestUpdate_TheBlurbMirrorReflectsTheDefaultRowJustSaved(t *testing.T) {
 		t.Errorf("blurb mirror prompt_cache = %q, want false — an older image must not index with the pre-update value", cached)
 	}
 }
+
+// Clearing both halves is an explicit reset and must stay cleared.
+//
+// Rematerialising the entries from the legacy mirror turned it into
+// "providers with no layer rows" — and the settings page re-seeds only when
+// BOTH halves are empty, so the user was left looking at a provider list
+// with no default model and nothing to restore it from.
+func TestUpdate_AnExplicitResetClearsBothHalves(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, newMockDomainPackRepo())
+	p := configuredProject(t, repo)
+
+	w := putProject(t, h, p.ID, `{"llm_providers": [], "layer_models": {}}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	stored, _ := repo.GetByID(context.Background(), p.ID)
+	if len(stored.LLMProviders) != 0 {
+		t.Errorf("llm_providers = %+v after an explicit reset", stored.LLMProviders)
+	}
+	if len(stored.LayerModels) != 0 {
+		t.Errorf("layer_models = %+v after an explicit reset", stored.LayerModels)
+	}
+	// Unconfigured again, so the settings page re-seeds from the legacy
+	// fields and the user gets their values back to review.
+	if stored.LLMConfigured() {
+		t.Error("a project reset to nothing still reports itself configured")
+	}
+}
