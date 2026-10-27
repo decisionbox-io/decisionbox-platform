@@ -317,3 +317,66 @@ describe('LayerModelsPanel — a failed model load can be retried', () => {
     });
   });
 });
+
+// An entry keeps its id when its provider, endpoint or credentials change —
+// that is what an id is for. Caching the model list against the id alone
+// meant switching the default connection from Bedrock to Claude kept
+// offering Bedrock's models, even after saving.
+describe('LayerModelsPanel — a changed connection invalidates its model list', () => {
+  it('asks again when the entry behind an id changes provider', async () => {
+    (api.listLiveLLMModelsForProvider as jest.Mock).mockResolvedValue({
+      models: [{ id: 'anthropic.claude-opus', name: 'Opus' }],
+    });
+    const value = { [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' } };
+    const { rerender } = render(
+      <MantineProvider>
+        <LayerModelsPanel
+          projectId="proj-1" entries={ENTRIES} providers={[BEDROCK_META as never]}
+          value={value} onChange={jest.fn()}
+        />
+      </MantineProvider>,
+    );
+    await waitFor(() => expect(api.listLiveLLMModelsForProvider).toHaveBeenCalled());
+    const before = (api.listLiveLLMModelsForProvider as jest.Mock).mock.calls.length;
+
+    // The same id, a different connection behind it.
+    const edited = [{ id: 'default', label: 'Claude', provider: 'claude' }, ENTRIES[1]];
+    rerender(
+      <MantineProvider>
+        <LayerModelsPanel
+          projectId="proj-1" entries={edited} providers={[BEDROCK_META as never]}
+          value={value} onChange={jest.fn()}
+        />
+      </MantineProvider>,
+    );
+
+    await waitFor(() => {
+      expect((api.listLiveLLMModelsForProvider as jest.Mock).mock.calls.length).toBeGreaterThan(before);
+    });
+  });
+
+  it('does not ask again when nothing about the connection changed', async () => {
+    const value = { [DEFAULT_LAYER]: { provider_id: 'default', model: 'opus' } };
+    const { rerender } = render(
+      <MantineProvider>
+        <LayerModelsPanel
+          projectId="proj-1" entries={ENTRIES} providers={[BEDROCK_META as never]}
+          value={value} onChange={jest.fn()}
+        />
+      </MantineProvider>,
+    );
+    await waitFor(() => expect(api.listLiveLLMModelsForProvider).toHaveBeenCalled());
+    const before = (api.listLiveLLMModelsForProvider as jest.Mock).mock.calls.length;
+
+    rerender(
+      <MantineProvider>
+        <LayerModelsPanel
+          projectId="proj-1" entries={[...ENTRIES]} providers={[BEDROCK_META as never]}
+          value={{ ...value }} onChange={jest.fn()}
+        />
+      </MantineProvider>,
+    );
+    await waitFor(() => expect(api.listLiveLLMModelsForProvider).toHaveBeenCalled());
+    expect((api.listLiveLLMModelsForProvider as jest.Mock).mock.calls.length).toBe(before);
+  });
+});

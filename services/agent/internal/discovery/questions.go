@@ -85,12 +85,23 @@ type uncertaintyItem struct {
 // is logged and swallowed — the run has already succeeded. Gated by the
 // deployment flag (Layer A) and the per-project toggle (Layer B); short-circuits
 // with no LLM call when nothing was genuinely uncertain.
+// QuestionsAvailable reports Layer A of the gate: whether this DEPLOYMENT
+// offers the clarifying-questions phase at all.
+//
+// Exported because the caller that builds the per-layer LLM set has to make
+// the same decision before it builds a provider — a layer whose phase will
+// not run is a credential read and a connection that can only fail work
+// nothing was waiting for.
+func QuestionsAvailable() bool {
+	return goconfig.GetEnvAsBool(discoveryQuestionsEnabledEnv, true)
+}
+
 func (o *Orchestrator) RunPhaseQuestions(ctx context.Context, result *models.DiscoveryResult) {
 	o.setLLMPhase(models.PhaseQuestions)
 	if !o.clarifyingQuestionsEnabled {
 		return // Layer B: per-project Settings toggle is off.
 	}
-	if !goconfig.GetEnvAsBool(discoveryQuestionsEnabledEnv, true) {
+	if !QuestionsAvailable() {
 		return // Layer A: feature not available on this deployment.
 	}
 	if o.aiClient == nil || o.questionRepo == nil || result == nil {

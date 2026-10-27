@@ -78,28 +78,43 @@ export function LayerModelsPanel({
   // Models for an entry are loaded lazily and shared by every layer on it —
   // the same reason the agent builds one provider per entry rather than one
   // per layer.
+  // connectionKey identifies the CONNECTION an entry currently describes, not
+  // just its id. An entry keeps its id when its provider, endpoint or
+  // credentials change — that is what an id is for — so caching the model
+  // list against the id alone meant switching the default connection from
+  // OpenAI to Claude kept offering OpenAI's models, even after saving.
+  const connectionKey = (entryId: string) => {
+    const e = entries.find((x) => x.id === entryId);
+    if (!e) return entryId;
+    return `${entryId}\u0000${e.provider}\u0000${JSON.stringify(e.config ?? {})}`;
+  };
+
   const loadModelsFor = async (entryId: string) => {
-    if (requestedRef.current.has(entryId)) return;
-    requestedRef.current.add(entryId);
+    const key = connectionKey(entryId);
+    if (requestedRef.current.has(key)) return;
+    requestedRef.current.add(key);
     try {
       const resp = await api.listLiveLLMModelsForProvider(projectId, { provider_id: entryId });
-      setLiveByEntry((prev) => ({ ...prev, [entryId]: resp.models }));
+      setLiveByEntry((prev) => ({ ...prev, [key]: resp.models }));
     } catch {
       // A failure is not a verdict for the session. An entry the user has
       // just added is not on the server yet, so this 404s — and leaving it
       // marked as requested meant the picker stayed empty even after the
       // connection was saved and working. Forgetting it lets the next
       // attempt (a save, a re-pick, or Reload) try again.
-      requestedRef.current.delete(entryId);
-      setLiveByEntry((prev) => ({ ...prev, [entryId]: [] }));
+      requestedRef.current.delete(key);
+      setLiveByEntry((prev) => ({ ...prev, [key]: [] }));
     }
   };
 
   /** Drops what was loaded for an entry and fetches it again. */
   const reloadModelsFor = async (entryId: string) => {
-    requestedRef.current.delete(entryId);
+    requestedRef.current.delete(connectionKey(entryId));
     await loadModelsFor(entryId);
   };
+
+  /** The models currently known for an entry's CURRENT connection. */
+  const modelsFor = (entryId: string) => liveByEntry[connectionKey(entryId)] ?? null;
 
   // The model-scoped settings, rendered identically for the default row and
   // for a layer's own row. One block on purpose: a control offered on an
@@ -170,17 +185,25 @@ export function LayerModelsPanel({
     for (const row of Object.values(value)) {
       if (row.provider_id) ids.add(row.provider_id);
     }
-    return Array.from(ids).sort().join(',');
+    return Array.from(ids).sort();
   }, [value, entryOptions]);
 
+  // Depends on the CONNECTIONS, so editing one re-loads its models rather
+  // than leaving the previous provider's list on screen.
+  const selectedConnections = useMemo(
+    () => selectedEntryIds.map(connectionKey).join('\u0001'),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selectedEntryIds, entries],
+  );
+
   useEffect(() => {
-    for (const id of selectedEntryIds.split(',')) {
+    for (const id of selectedEntryIds) {
       if (id) void loadModelsFor(id);
     }
     // loadModelsFor guards against repeats through requestedRef, so the only
-    // dependency is which entries are selected.
+    // dependencies are which entries are selected and what they point at.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedEntryIds, projectId]);
+  }, [selectedConnections, projectId]);
 
   const setRow = (layer: string, next: LayerModel | null) => {
     const copy = { ...value };
@@ -280,11 +303,11 @@ export function LayerModelsPanel({
                 <Stack gap={4}>
                   <LiveModelCombobox
                     providerMeta={meta}
-                    liveModels={liveByEntry[entryId] ?? null}
+                    liveModels={modelsFor(entryId)}
                     value={effective.model || ''}
                     onChange={(val) => setRow(layer.key, { ...effective, model: val })}
                   />
-                  {(liveByEntry[entryId]?.length ?? 0) === 0 && entryId && (
+                  {(modelsFor(entryId)?.length ?? 0) === 0 && entryId && (
                     <Button
                       variant="subtle"
                       size="compact-xs"
@@ -373,7 +396,7 @@ export function LayerModelsPanel({
             />
             <LiveModelCombobox
               providerMeta={defaultMeta}
-              liveModels={liveByEntry[defaultEntryId] ?? null}
+              liveModels={modelsFor(defaultEntryId)}
               value={defaultRow.model || ''}
               onChange={(val) => writeDefaultRow({ ...defaultRow, model: val })}
             />

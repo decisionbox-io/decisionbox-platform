@@ -338,3 +338,34 @@ describe('ProviderCredentialsPhase — a credential that is already stored', () 
     }
   });
 });
+
+// Prompt caching is MODEL-scoped since per-layer models, and the per-layer
+// rows own it. Every Anthropic-wire provider declares it as a config field
+// (PromptCacheConfigFields), so the connection step rendered a SECOND switch
+// — showing the opposite of the per-layer value that overrides it, and
+// saving to a key nothing reads.
+describe('ProviderCredentialsPhase — model-scoped fields stay on the model step', () => {
+  const cachingMeta: ProviderLike = {
+    ...bedrockMeta,
+    config_fields: [
+      ...bedrockMeta.config_fields,
+      { key: 'prompt_cache', label: 'Prompt caching (Claude models)', required: false, type: 'boolean', placeholder: '', description: '', default: 'true', options: [] },
+      { key: 'reasoning_enabled', label: 'Reasoning', required: false, type: 'boolean', placeholder: '', description: '', default: 'false', options: [] },
+    ],
+  };
+
+  it('does not render the caching or reasoning switches on the connection step', () => {
+    render(
+      <Harness
+        providers={[cachingMeta]}
+        onLoad={jest.fn().mockResolvedValue({ ok: true })}
+        initial={{ provider: 'bedrock', authMethod: 'iam_role', config: {}, apiKey: '' }}
+      />,
+    );
+    // The connection's own field is still there, so this is a filter and not
+    // an empty render.
+    expect(screen.getAllByLabelText(/Region/).length).toBeGreaterThan(0);
+    expect(screen.queryByLabelText(/Prompt caching/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Reasoning$/)).not.toBeInTheDocument();
+  });
+});

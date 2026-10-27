@@ -139,23 +139,42 @@ export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void):
     if (!projectId || validationError) return false;
     setSaving(true);
     try {
-      // Credentials first: a layer row may reference an entry whose secret
-      // the user has just typed, and the project write is what makes the
-      // entry real. Writing the secret first means there is never a saved
-      // entry with no credential to read.
-      await Promise.all(
-        pendingCredentialWrites(entryForms).map(({ key, value }) => api.setSecret(projectId, key, value)),
-      );
+      // The CONFIGURATION is written first, and only then the credentials.
+      //
+      // The other order is tempting — it means a saved entry is never
+      // briefly without a credential — but it is wrong where it matters. A
+      // secret write is an unrecoverable upsert over the live value, so if
+      // the project update is then rejected (a reasoning default with no
+      // table-description override is rejected server-side, for one), the
+      // entry still points at its OLD endpoint while holding the key the
+      // user typed for the NEW one: every call then sends that key to a
+      // third party.
+      //
+      // This way a rejected update leaves the project exactly as it was, and
+      // the window this opens is one request long and fails closed — the new
+      // endpoint with the old key is an authentication error, not a
+      // disclosure.
       const saved = await api.updateProject(projectId, {
         llm_providers: entries,
         layer_models: layerModels,
       });
+      await Promise.all(
+        pendingCredentialWrites(entryForms).map(({ key, value }) => api.setSecret(projectId, key, value)),
+      );
       setEntryForms((prev) => prev.map((f) => ({ ...f, apiKey: '', isNew: false })));
       setSavedIds(entries.map((e) => e.id));
       setSeeded(false);
       setConfigured(true);
-      const updated = await api.listSecrets(projectId);
-      setSecrets(updated || []);
+      // Best-effort, and deliberately NOT part of whether the save
+      // succeeded: listing secrets needs admin, while editing the
+      // configuration does not. A member's valid save would otherwise be
+      // reported as failed — and a wizard would refuse to advance past it —
+      // because of a 403 on a metadata refresh that only feeds a badge.
+      try {
+        setSecrets((await api.listSecrets(projectId)) || []);
+      } catch {
+        /* the "credentials saved" badge stays as it was */
+      }
       notifications.show({ title: 'Saved', message: 'LLM configuration updated', color: 'green' });
       onSaved?.(saved);
       return true;

@@ -229,7 +229,16 @@ export function ProviderCredentialsPhase<P extends ProviderLike>({
               <>
                 {/* Non-credential, non-model, non-wire top-level provider config fields.
                     max_input_tokens / max_output_tokens are excluded here: the LLM pickers
-                    render them on the model step (next to the model, with the effective-value hint). */}
+                    render them on the model step (next to the model, with the effective-value hint).
+
+                    prompt_cache and reasoning_enabled are excluded for the same reason since
+                    per-layer models (#407): they are MODEL-scoped and the per-layer rows own
+                    them. A provider that declares prompt_cache (every Anthropic-wire one does,
+                    via PromptCacheConfigFields) would otherwise render a second switch on the
+                    connection step — showing the opposite of the per-layer value that overrides
+                    it, and saving to a key nothing reads. The creation wizard's legacy
+                    single-provider form (LLMFormFields) still renders it, because there it IS
+                    the only control. */}
                 {selected.config_fields
                   .filter(
                     (f) =>
@@ -237,7 +246,9 @@ export function ProviderCredentialsPhase<P extends ProviderLike>({
                       f.key !== 'model' &&
                       f.key !== 'wire_override' &&
                       f.key !== 'max_input_tokens' &&
-                      f.key !== 'max_output_tokens'
+                      f.key !== 'max_output_tokens' &&
+                      f.key !== 'prompt_cache' &&
+                      f.key !== 'reasoning_enabled'
                   )
                   .map((field) => (
                     <CatalogAwareField

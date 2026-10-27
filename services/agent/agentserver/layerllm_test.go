@@ -8,6 +8,7 @@ import (
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/discovery"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -594,5 +595,45 @@ func TestABlurbChainThatFallsThroughStillSharesOneProvider(t *testing.T) {
 	// One read per CHAIN, not per layer: seventeen layers, two chains.
 	if c.credentialReads > 2 {
 		t.Errorf("resolved credentials %d times for two distinct chains", c.credentialReads)
+	}
+}
+
+// Both LAYERS of each phase gate decide whether a provider is built, because
+// either one off means the phase does not run. Checking only the project's
+// toggle left a deployment that had switched a phase off still paying for —
+// and still able to be aborted by — a provider it would never call.
+func TestADeploymentFlagAlsoKeepsALayerUnbuilt(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		env   string
+		layer string
+	}{
+		{"questions off for the deployment", "DISCOVERY_QUESTIONS_ENABLED", llmlayer.LayerQuestions},
+		{"reflection off for the deployment", "DISCOVERY_REFLECTION_ENABLED", llmlayer.LayerReflection},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(tc.env, "false")
+			phases := discoveryPhases{
+				validation: true,
+				refuter:    true,
+				questions:  discovery.QuestionsAvailable(),
+				reflection: discovery.ReflectionAvailable(),
+			}
+			if slices.Contains(discoveryLayers(phases), tc.layer) {
+				t.Errorf("%q is in the layer list though %s=false", tc.layer, tc.env)
+			}
+		})
+	}
+
+	// With both flags at their defaults the phases are available again.
+	phases := discoveryPhases{
+		questions:  discovery.QuestionsAvailable(),
+		reflection: discovery.ReflectionAvailable(),
+	}
+	got := discoveryLayers(phases)
+	for _, layer := range []string{llmlayer.LayerQuestions, llmlayer.LayerReflection} {
+		if !slices.Contains(got, layer) {
+			t.Errorf("%q is missing with the deployment flags at their defaults: %v", layer, got)
+		}
 	}
 }
