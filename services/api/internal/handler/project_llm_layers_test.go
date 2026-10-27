@@ -1174,6 +1174,38 @@ func TestUpdate_LegacyOnlyWritesMoveTheirLayerRows(t *testing.T) {
 		}
 	})
 
+	// A project can be configured on its ROWS while its entries were never
+	// stored: the resolver synthesises them from the legacy fields. Appending
+	// a blurb entry to that empty slice produced a one-entry project with no
+	// reserved default, and a 400 naming an id the user never typed.
+	t.Run("a project whose entries were never stored still accepts one", func(t *testing.T) {
+		repo := newMockProjectRepo()
+		h := NewProjectsHandler(repo, newMockDomainPackRepo())
+		p := configuredProject(t, repo)
+
+		stored, _ := repo.GetByID(context.Background(), p.ID)
+		stored.LLMProviders = nil
+		stored.LayerModels = map[string]llmlayer.LayerModel{
+			llmlayer.DefaultLayer: {ProviderID: llmlayer.DefaultProviderID, Model: "opus"},
+		}
+		stored.LLMConfigVersion = llmlayer.ConfigVersion
+		if err := repo.Update(context.Background(), p.ID, stored); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+
+		w := putProject(t, h, p.ID, `{"blurb_llm":{"provider":"bedrock","model":"haiku"}}`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		got, _ := repo.GetByID(context.Background(), p.ID)
+		if _, ok := got.LLMProviderByID(llmlayer.DefaultProviderID); !ok {
+			t.Errorf("no default entry after the write: %+v", got.LLMProviders)
+		}
+		if got.LayerModels[llmlayer.LayerTableDescriptions].Model != "haiku" {
+			t.Errorf("table_descriptions row = %+v", got.LayerModels[llmlayer.LayerTableDescriptions])
+		}
+	})
+
 	t.Run("the toggles move the default row", func(t *testing.T) {
 		repo := newMockProjectRepo()
 		h := NewProjectsHandler(repo, newMockDomainPackRepo())

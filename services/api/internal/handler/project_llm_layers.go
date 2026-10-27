@@ -343,6 +343,16 @@ func mirrorLegacyBlurbOntoTableDescriptions(p *models.Project) {
 		return
 	}
 
+	// A project can be configured on its ROWS while its entries were never
+	// stored — the resolver synthesises them from the legacy fields. Appending
+	// a blurb entry to that empty slice would produce a one-entry project with
+	// no reserved default, which validation refuses with a message about an id
+	// the user never typed. Materialise what the resolver already resolves to
+	// first, so the append lands beside a real default entry.
+	if len(p.LLMProviders) == 0 {
+		p.LLMProviders = p.EffectiveLLMProviders()
+	}
+
 	// The entry the row will name: the reserved blurb slot, whose credential
 	// key an older image already reads.
 	entry := llmlayer.ProviderEntry{
