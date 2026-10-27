@@ -552,7 +552,14 @@ func unresolvedCauses(declared []models.Figure, refs []string) (lines []string, 
 		byID[f.ID] = f
 	}
 	seen := map[string]struct{}{}
-	for _, ref := range refs {
+	for _, raw := range refs {
+		// The callers pass what the prose still carries, and strayRefs collects whole
+		// matches -- "{{f1}}", braces included -- because it is built on reAnyRef so that
+		// an id the resolving grammar cannot express is still reported. Looking an id up
+		// in that form misses every time, which classified all of one run's references as
+		// undeclared when every one of them was declared with an unreadable value. Both
+		// forms are accepted here rather than relying on which one a caller holds.
+		ref := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(raw), "{{"), "}}"))
 		if _, already := seen[ref]; already {
 			continue
 		}

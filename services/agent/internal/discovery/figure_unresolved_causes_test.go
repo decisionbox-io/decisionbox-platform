@@ -29,7 +29,9 @@ func TestUnresolvedCauses_NamesTheCauseForEachKind(t *testing.T) {
 		{ID: "dup", Unit: "count", Kind: "cell", Value: 2},
 		{ID: "bad-id", Unit: "plain", Kind: "cell", Value: 7},
 	}
-	lines, unreadable := unresolvedCauses(declared, []string{"window", "f3", "dup", "bad-id"})
+	// Brace-wrapped, because that is what strayRefs hands the caller. Passing bare ids
+	// here is what let the classifier ship unable to match any of them.
+	lines, unreadable := unresolvedCauses(declared, []string{"{{window}}", "{{f3}}", "{{dup}}", "{{bad-id}}"})
 
 	if unreadable != 1 {
 		t.Errorf("value-unreadable count = %d, want 1 -- it is the class the fix depends on", unreadable)
@@ -54,7 +56,7 @@ func TestUnresolvedCauses_CarriesTheRawValueItCouldNotRead(t *testing.T) {
 	declared := []models.Figure{
 		{ID: "f4", Unit: "plain", Kind: "cell", ValueMissing: true, ValueRaw: `"ACME HOLDING SANAYI VE TICARET A.S."`},
 	}
-	lines, _ := unresolvedCauses(declared, []string{"f4"})
+	lines, _ := unresolvedCauses(declared, []string{"{{f4}}"})
 	if len(lines) != 1 {
 		t.Fatalf("got %d cause lines, want 1", len(lines))
 	}
@@ -68,7 +70,7 @@ func TestUnresolvedCauses_CarriesTheRawValueItCouldNotRead(t *testing.T) {
 // three, and a log that lists it three times reads as a worse problem than it is.
 func TestUnresolvedCauses_ReportsEachIDOnce(t *testing.T) {
 	declared := []models.Figure{{ID: "f1", Unit: "plain", Kind: "cell", ValueMissing: true, ValueRaw: `"x"`}}
-	lines, unreadable := unresolvedCauses(declared, []string{"f1", "f1", "f1"})
+	lines, unreadable := unresolvedCauses(declared, []string{"{{f1}}", "{{f1}}", "f1"})
 	if len(lines) != 1 {
 		t.Errorf("got %d cause lines for one id referenced three times, want 1: %v", len(lines), lines)
 	}
