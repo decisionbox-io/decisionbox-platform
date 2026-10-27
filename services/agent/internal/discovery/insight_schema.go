@@ -1,6 +1,10 @@
 package discovery
 
-import gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+import (
+	"strings"
+
+	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+)
 
 // insightResponseFormatName is the schema identifier sent to providers that
 // name their structured-output schema (OpenAI json_schema, the forced tool name
@@ -14,6 +18,31 @@ const insightResponseFormatName = "insights"
 // by instruction, and most analysis calls in a run over a warehouse that does not report
 // in dollars left every currency figure unmarked. Pinned by
 // TestNeitherPromptTellsTheModelToOmitTheCurrency.
+// figureReferenceRule is the one sentence every prose-bearing insight field carries, so the
+// rule travels with the field and not only in the prompt.
+//
+// It exists because the two wires disagreed. figureContract tells the model every number it
+// reads lives in `figures`; this schema described the same `description` field as prose
+// "citing the supporting numbers", which is an invitation to type one. A field description
+// is attached to the thing being written and is enforced as a grammar, so where the two
+// disagree this is the one with the shorter path to the model.
+//
+// Deliberately one sentence. These descriptions are sent on every call that carries the
+// schema, so the full argument stays in the contract and only the rule travels here.
+//
+// Known limit while this lands: the insight schema reaches the model on a corrective retry
+// only -- 1 of 189 recorded analysis steps -- so on the analysis phase this is consistency
+// work until the schema is attached to the first call. The recommendation schema is sent on
+// every call, so its copy of the rule is live today. Pinned by
+// TestEveryProseFieldCarriesTheReferenceRule.
+const figureReferenceRule = "Every number you read from the rows belongs in `figures`: " +
+	"declare it there and write {{key}} here, never the number itself."
+
+// repairProseOnlyRule replaces figureReferenceRule in the repair schema, where a reference
+// is not renderable -- see insightRepairResponseFormat.
+const repairProseOnlyRule = "The numbers in this text are already rendered: rewrite the " +
+	"words around them and do not add a {{key}} reference, which nothing will render."
+
 const insightCurrencyFieldDescription = `Currency this amount is in: the symbol it ` +
 	`prints or its ISO code, "₺" or "TRY". Always set it on a currency figure -- the ` +
 	`warehouse's own currency is in the profile above, and a row in another currency is ` +
@@ -53,8 +82,8 @@ func insightResponseSchema() map[string]interface{} {
 	}
 
 	insightProps := map[string]interface{}{
-		"name":           str("Short, specific name for the discovered pattern or finding"),
-		"description":    str("Explanation of the finding, citing the supporting numbers"),
+		"name":           str("Short, specific name for the discovered pattern or finding. " + figureReferenceRule),
+		"description":    str("Explanation of the finding. " + figureReferenceRule),
 		"severity":       str(`One of "critical", "high", "medium", "low"`),
 		"affected_count": map[string]interface{}{"type": "integer", "description": "Number of users/entities affected"},
 		"risk_score":     map[string]interface{}{"type": "number", "description": "Risk score from 0.0 to 1.0"},
@@ -67,7 +96,7 @@ func insightResponseSchema() map[string]interface{} {
 		"indicators": map[string]interface{}{
 			"type":        "array",
 			"description": "Signals/behaviours that characterize this pattern",
-			"items":       str("A single indicator"),
+			"items":       str("A single indicator. " + figureReferenceRule),
 		},
 		"figures": map[string]interface{}{
 			"type": "array",
@@ -76,7 +105,8 @@ func insightResponseSchema() map[string]interface{} {
 			"items": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"id":    str(`Reference the prose uses, e.g. "f1"; unique within this insight`),
+					"id": str("Key the prose references; unique within this insight. Name it for what it " +
+						"holds -- `churn_rate`, `total_revenue` -- not by position"),
 					"value": map[string]interface{}{"type": "number", "description": "The number in the units of the step's own column: 8476238553, or 24.66 for a percentage"},
 					// No "days". The closed set in models.Figure deliberately has no unit
 					// for a word, because a unit here is notation and a word is prose --
@@ -174,16 +204,48 @@ func insightResponseSchema() map[string]interface{} {
 // Removing the key is the fix rather than teaching repair to render, because by that point
 // every number in the insight is already rendered text and a repair that wants to change one
 // is changing prose. There is nothing for it to declare.
+//
+// Deleting the key is no longer enough on its own. Every prose field now carries
+// figureReferenceRule -- "declare it there and write {{key}} here" -- which in this schema
+// would name an array that has just been removed, asking the repair for exactly the
+// placeholder the paragraph above exists to prevent. So each prose field's rule is swapped
+// for repairProseOnlyRule, which tells the repair the numbers are already written.
+// Swapped rather than stripped: a field left saying nothing about numbers is how the first
+// contradiction arrived. Pinned by TestTheRepairSchemaAsksForNoReference.
 func insightRepairResponseFormat() *gollm.ResponseFormat {
 	schema := insightResponseSchema()
 	props, _ := schema["properties"].(map[string]interface{})
 	items, _ := props["insights"].(map[string]interface{})["items"].(map[string]interface{})
 	if itemProps, ok := items["properties"].(map[string]interface{}); ok {
 		delete(itemProps, "figures")
+		swapReferenceRule(itemProps, "name", "description")
+		if ind, ok := itemProps["indicators"].(map[string]interface{}); ok {
+			swapReferenceRule(ind, "items")
+		}
 	}
 	return &gollm.ResponseFormat{
 		Name:   insightResponseFormatName,
 		Schema: schema,
 		Strict: false,
+	}
+}
+
+// swapReferenceRule rewrites the named fields' descriptions from figureReferenceRule to
+// repairProseOnlyRule, in place.
+//
+// Keyed by field name rather than walking every description: the fields that carry the rule
+// are the ones a repair rewrites, and a walk would also reach the figure sub-schema, whose
+// own wording is about declaring a figure and is correct wherever it appears.
+func swapReferenceRule(props map[string]interface{}, fields ...string) {
+	for _, field := range fields {
+		node, ok := props[field].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		desc, ok := node["description"].(string)
+		if !ok || !strings.Contains(desc, figureReferenceRule) {
+			continue
+		}
+		node["description"] = strings.Replace(desc, figureReferenceRule, repairProseOnlyRule, 1)
 	}
 }

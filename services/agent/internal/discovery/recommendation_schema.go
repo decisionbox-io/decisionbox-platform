@@ -7,6 +7,21 @@ import gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 // tool name on the Anthropic wire).
 const recommendationResponseFormatName = "recommendations"
 
+// recommendationReferenceRule is figureReferenceRule's counterpart for this phase, carried
+// on every field that holds prose.
+//
+// Worded differently because the phase is different. An insight reads warehouse rows and
+// declares arithmetic over them; a recommendation is handed the insights and nothing else,
+// so every measured number it reports is already a checked figure in its input and naming
+// one is the whole instruction.
+//
+// This schema is sent on every recommendation call, not only on a retry
+// (generateRecommendations calls ChatWithFormat from attempt 0), so unlike the insight side
+// this copy of the rule reaches the model today. Pinned by
+// TestEveryProseFieldCarriesTheReferenceRule.
+const recommendationReferenceRule = "Every measured number here names a figure an insight " +
+	"already declared: add it to `figures` and write {{key}} in the text, never the number itself."
+
 // recommendationResponseFormat returns the structured-output request for the
 // recommendation phase, or nil when the schema is empty. Attached to the LLM
 // call on providers that support structured output (platform#340) so the model
@@ -38,8 +53,8 @@ func recommendationResponseFormat() *gollm.ResponseFormat {
 func recommendationResponseSchema() map[string]interface{} {
 	recProps := map[string]interface{}{
 		"category":    boundedString("Recommendation category (e.g. churn, engagement, monetization)", maxSchemaLabelRunes),
-		"title":       nonEmptyString("Specific, action-oriented recommendation title. One line, not a paragraph.", maxSchemaTitleRunes),
-		"description": nonEmptyString("Explanation of the recommendation, citing the supporting numbers", maxSchemaDescriptionRunes),
+		"title":       nonEmptyString("Specific, action-oriented recommendation title. One line, not a paragraph. "+recommendationReferenceRule, maxSchemaTitleRunes),
+		"description": nonEmptyString("Explanation of the recommendation. "+recommendationReferenceRule, maxSchemaDescriptionRunes),
 		// Bounded as well as typed. An integer field cannot run away, but it
 		// can arrive outside the scale the reader renders: the packs that get
 		// this right say "emit as an integer, NOT a string", and two of the
@@ -65,9 +80,17 @@ func recommendationResponseSchema() map[string]interface{} {
 			"type":        "object",
 			"description": "Structured expected impact. MUST be an object, never a bare string.",
 			"properties": map[string]interface{}{
-				"metric":                nonEmptyString("Which metric is expected to improve", maxSchemaLabelRunes),
-				"estimated_improvement": nonEmptyString(`Expected improvement, e.g. "+15-20%" or "+$4,975/month"`, maxSchemaLabelRunes),
-				"reasoning":             boundedString("Why this improvement is expected", maxSchemaSentenceRunes),
+				"metric": nonEmptyString("Which metric is expected to improve. A metric is a name, not a number.", maxSchemaLabelRunes),
+				// The mixed form, because this field legitimately carries both. The
+				// contract's carve-out puts a projection here on purpose -- an estimate
+				// is not a measurement -- so a rule against digits would contradict it.
+				// What the old wording did teach was `"+$4,975/month"`: a typed amount
+				// with a hardcoded currency, in the description of a field nothing
+				// checks, on a warehouse that may report in any currency. That is the
+				// same default that left every currency figure unmarked until
+				// insightCurrencyFieldDescription was rewritten.
+				"estimated_improvement": nonEmptyString(`Expected improvement. What you project is yours and stays prose; the measured number it is projected from is a reference, e.g. "5-8% of the {{high_freq_buyers}} buyers"`, maxSchemaLabelRunes),
+				"reasoning":             boundedString("Why this improvement is expected. "+recommendationReferenceRule, maxSchemaSentenceRunes),
 			},
 			// The two this object is worthless without. Requiring the object
 			// and nothing inside it is the same hole one level down: run 16
@@ -79,7 +102,7 @@ func recommendationResponseSchema() map[string]interface{} {
 		"actions": map[string]interface{}{
 			"type":        "array",
 			"description": "Concrete implementation steps",
-			"items":       nonEmptyString("A single implementation step", maxSchemaListItemRunes),
+			"items":       nonEmptyString("A single implementation step. "+recommendationReferenceRule, maxSchemaListItemRunes),
 			"minItems":    1,
 		},
 		"related_insight_ids": map[string]interface{}{
@@ -104,7 +127,7 @@ func recommendationResponseSchema() map[string]interface{} {
 			"items": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"id":       nonEmptyString(`What the prose references, "f1". Unique within this recommendation.`, maxSchemaIdentifierRunes),
+					"id":       nonEmptyString("Key the prose references, named for what it holds -- `band_total`, `win_back_revenue`. Unique within this recommendation.", maxSchemaIdentifierRunes),
 					"kind":     nonEmptyString("`ref` to restate one insight figure, `sum` to total several", maxSchemaLabelRunes),
 					"unit":     boundedString("count, currency, percent, multiple or plain — notation only, never a word like days", maxSchemaLabelRunes),
 					"scale":    boundedString("thousands, millions or billions to abbreviate; omit to write in full", maxSchemaLabelRunes),
@@ -117,7 +140,7 @@ func recommendationResponseSchema() map[string]interface{} {
 							"type": "object",
 							"properties": map[string]interface{}{
 								"insight": nonEmptyString("The insight's id, copied verbatim from the input", maxSchemaIdentifierRunes),
-								"figure":  nonEmptyString(`The figure's id inside that insight's figures array, "f2"`, maxSchemaIdentifierRunes),
+								"figure":  nonEmptyString("The figure's key inside that insight's own figures array, copied verbatim", maxSchemaIdentifierRunes),
 							},
 							"required": []interface{}{"insight", "figure"},
 						},
