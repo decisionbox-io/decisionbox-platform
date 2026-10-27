@@ -20,7 +20,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { notifications } from '@mantine/notifications';
 import {
   DEFAULT_LLM_PROVIDER_ID, LLMProviderEntry, LayerModel, Project, ProviderMeta,
-  SecretEntryResponse, api, isValidLLMProviderId,
+  LiveModel, SecretEntryResponse, api, isValidLLMProviderId,
 } from '@/lib/api';
 import {
   ProviderEntryForm, entriesFrom, entryFormsFrom, pendingCredentialWrites,
@@ -62,6 +62,19 @@ export interface UseLLMConfig {
    * comparing the entries can tell you.
    */
   savedGeneration: number;
+  /**
+   * Models the Providers tab discovered for an entry with the credential
+   * currently in its form, keyed by entry id.
+   *
+   * The Models tab cannot ask the server about a connection that has not
+   * been saved — the server would answer about the stored one — but the
+   * Providers tab's own check CAN, because it posts the in-flight values.
+   * Sharing the answer is what keeps "change a provider, pick its model,
+   * save" possible in one pass: otherwise the model is cleared, the list
+   * cannot load, and the save is blocked until a model is chosen.
+   */
+  discoveredModels: Record<string, LiveModel[]>;
+  reportDiscoveredModels: (entryID: string, models: LiveModel[]) => void;
   /** Layer keys per entry id, for the in-use removal guard. */
   layersByProviderId: Record<string, string[]>;
   /** A user-facing reason the configuration cannot be saved yet, or null. */
@@ -96,6 +109,10 @@ export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void):
   const [savedIds, setSavedIds] = useState<string[]>([]);
   const [savedEntries, setSavedEntries] = useState<LLMProviderEntry[]>([]);
   const [savedGeneration, setSavedGeneration] = useState(0);
+  const [discoveredModels, setDiscoveredModels] = useState<Record<string, LiveModel[]>>({});
+  const reportDiscoveredModels = useCallback((entryID: string, models: LiveModel[]) => {
+    setDiscoveredModels((prev) => ({ ...prev, [entryID]: models }));
+  }, []);
 
   const loadOnce = useRef(false);
   useEffect(() => {
@@ -252,6 +269,7 @@ export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void):
     loading, error, saving, seeded, configured, providers,
     entryForms, setEntryForms: editEntries, layerModels, setLayerModels,
     secrets, savedIds, savedEntries, savedGeneration,
+    discoveredModels, reportDiscoveredModels,
     layersByProviderId, validationError, save, entries,
   };
 }

@@ -704,9 +704,11 @@ func mirrorLegacyLLMOntoDefaultLayer(p *models.Project) {
 	}
 	updated := make([]llmlayer.ProviderEntry, 0, len(entries))
 	sawDefault := false
+	providerChanged := false
 	for _, e := range entries {
 		if llmlayer.NormalizeProviderID(e.ID) == llmlayer.DefaultProviderID {
 			sawDefault = true
+			providerChanged = e.Provider != "" && e.Provider != p.LLM.Provider
 			e.Provider = p.LLM.Provider
 			e.Config = llmlayer.ConnectionConfig(p.LLM.Config)
 		}
@@ -734,6 +736,31 @@ func mirrorLegacyLLMOntoDefaultLayer(p *models.Project) {
 	// that block is the whole truth about the default pair.
 	row.Config = llmlayer.ModelConfig(p.LLM.Config)
 	p.LayerModels[llmlayer.DefaultLayer] = row
+
+	// A legacy PROVIDER change moves every layer on that entry to the new
+	// model too.
+	//
+	// Before per-layer models, `llm` was the whole project's model — so a
+	// legacy client switching provider means "this project now uses this".
+	// Moving only the default row left an override on the same entry
+	// holding the previous provider's model: `claude/gpt-4o-mini`, accepted
+	// with a 200 because validation only asks that a model be non-empty,
+	// and rejected by the provider at run time. A per-layer choice that
+	// cannot survive the switch is better replaced than left invalid; rows
+	// on OTHER entries are explicitly elsewhere and are untouched.
+	if !providerChanged {
+		return
+	}
+	for key, lm := range p.LayerModels {
+		if key == llmlayer.DefaultLayer {
+			continue
+		}
+		if llmlayer.NormalizeProviderID(lm.ProviderID) != llmlayer.DefaultProviderID {
+			continue
+		}
+		lm.Model = p.LLM.Model
+		p.LayerModels[key] = lm
+	}
 }
 
 // stampLLMConfigVersion records that this project has been configured for the

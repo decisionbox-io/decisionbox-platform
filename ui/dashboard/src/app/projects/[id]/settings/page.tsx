@@ -456,6 +456,7 @@ export default function ProjectSettingsPage() {
                 secrets={llmConfig.secrets}
                 layersByProviderId={llmConfig.layersByProviderId}
                 savedIds={llmConfig.savedIds}
+                onModelsDiscovered={llmConfig.reportDiscoveredModels}
               />
               {llmConfig.validationError && (
                 <Alert color="yellow" icon={<IconAlertCircle size={16} />} mt="sm">
@@ -485,6 +486,7 @@ export default function ProjectSettingsPage() {
               entries={llmConfig.entries}
               savedEntries={llmConfig.savedEntries}
               savedGeneration={llmConfig.savedGeneration}
+              discoveredModels={llmConfig.discoveredModels}
               providers={llmConfig.providers}
               value={llmConfig.layerModels}
               onChange={llmConfig.setLayerModels}

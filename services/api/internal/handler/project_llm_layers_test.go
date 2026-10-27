@@ -1554,3 +1554,85 @@ func TestUpdate_ANullBlurbDoesNotRemoveTheTableDescriptionLayer(t *testing.T) {
 		t.Error("an explicit empty-provider clear left the row in place")
 	}
 }
+
+// A legacy PROVIDER change moves every layer on that entry to the new model.
+//
+// Before per-layer models, `llm` was the whole project's model, so a legacy
+// client switching provider means "this project now uses this". Moving only
+// the default row left an override on the same entry holding the previous
+// provider's model — claude/gpt-4o-mini — accepted with a 200 because
+// validation only asks that a model be non-empty, and rejected by the
+// provider at run time.
+func TestUpdate_ALegacyProviderChangeMovesEveryLayerOnThatEntry(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, newMockDomainPackRepo())
+	p := configuredProject(t, repo)
+
+	if w := putProject(t, h, p.ID, `{
+	  "llm_providers": [
+	    {"id": "default", "provider": "openai"},
+	    {"id": "cheap", "provider": "litellm", "config": {"base_url": "http://cheap"}}
+	  ],
+	  "layer_models": {
+	    "default": {"provider_id": "default", "model": "gpt-4o"},
+	    "ask": {"provider_id": "default", "model": "gpt-4o-mini"},
+	    "sql_repair": {"provider_id": "cheap", "model": "qwen3-32b"}
+	  }
+	}`); w.Code != http.StatusOK {
+		t.Fatalf("seed: %s", w.Body.String())
+	}
+
+	// A legacy client switches the project to Claude.
+	w := putProject(t, h, p.ID, `{"llm": {"provider": "claude", "model": "claude-sonnet-4-6"}}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	stored, _ := repo.GetByID(context.Background(), p.ID)
+	ask, err := stored.LayerSpecUnchecked(llmlayer.LayerAsk)
+	if err != nil {
+		t.Fatalf("LayerSpecUnchecked(ask): %v", err)
+	}
+	if ask.Provider != "claude" || ask.Model != "claude-sonnet-4-6" {
+		t.Errorf("ask resolved to %s/%s, want the provider and model the legacy write set", ask.Provider, ask.Model)
+	}
+
+	// A layer on ANOTHER entry is explicitly elsewhere and is untouched.
+	repair, err := stored.LayerSpecUnchecked(llmlayer.LayerSQLRepair)
+	if err != nil {
+		t.Fatalf("LayerSpecUnchecked(sql_repair): %v", err)
+	}
+	if repair.Provider != "litellm" || repair.Model != "qwen3-32b" {
+		t.Errorf("sql_repair resolved to %s/%s, want its own entry untouched", repair.Provider, repair.Model)
+	}
+}
+
+// And a legacy write that does NOT change the provider leaves the overrides
+// alone — only the default pair moves.
+func TestUpdate_ALegacyModelChangeLeavesOverridesAlone(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, newMockDomainPackRepo())
+	p := configuredProject(t, repo)
+
+	if w := putProject(t, h, p.ID, `{
+	  "llm_providers": [{"id": "default", "provider": "openai"}],
+	  "layer_models": {
+	    "default": {"provider_id": "default", "model": "gpt-4o"},
+	    "ask": {"provider_id": "default", "model": "gpt-4o-mini"}
+	  }
+	}`); w.Code != http.StatusOK {
+		t.Fatalf("seed: %s", w.Body.String())
+	}
+
+	if w := putProject(t, h, p.ID, `{"llm": {"provider": "openai", "model": "gpt-4.1"}}`); w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+
+	stored, _ := repo.GetByID(context.Background(), p.ID)
+	if got := stored.LayerModels[llmlayer.LayerAsk].Model; got != "gpt-4o-mini" {
+		t.Errorf("ask model = %q, want the override kept — the provider did not change", got)
+	}
+	if got := stored.LayerModels[llmlayer.DefaultLayer].Model; got != "gpt-4.1" {
+		t.Errorf("default model = %q, want the legacy write", got)
+	}
+}

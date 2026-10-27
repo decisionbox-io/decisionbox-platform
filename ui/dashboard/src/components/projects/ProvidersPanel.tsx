@@ -187,13 +187,24 @@ export default function ProvidersPanel({
             secrets={llmConfig.secrets}
             layersByProviderId={llmConfig.layersByProviderId}
             savedIds={llmConfig.savedIds}
+            onModelsDiscovered={llmConfig.reportDiscoveredModels}
           />
+          {/*
+            * savedEntries/savedGeneration are not optional extras: without
+            * them this panel believes every connection is stored, so an
+            * edited entry gets the SERVER's answer about the connection it
+            * replaced — the previous provider's models, offered against the
+            * new one. The host's own models step passes them; so must this.
+            */}
           <LayerModelsPanel
             projectId={projectId}
             entries={llmConfig.entries}
+            savedEntries={llmConfig.savedEntries}
+            savedGeneration={llmConfig.savedGeneration}
             providers={llmConfig.providers}
             value={llmConfig.layerModels}
             onChange={llmConfig.setLayerModels}
+            discoveredModels={llmConfig.discoveredModels}
           />
           {llmConfig.validationError && (
             <Alert color="yellow" icon={<IconAlertCircle size={16} />}>{llmConfig.validationError}</Alert>

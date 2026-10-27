@@ -16,8 +16,19 @@ jest.mock('@/components/projects/WarehouseConfigPanel', () => ({
   TestConnectionButton: ({ label }: { label?: string }) => <button type="button">{label || 'Test'}</button>,
 }));
 jest.mock('@/components/common/LLMModelField', () => ({
-  LiveModelCombobox: ({ value, onChange }: { value: string; onChange: (v: string) => void }) => (
-    <input aria-label="Model" value={value} onChange={(e) => onChange(e.currentTarget.value)} />
+  // data-models exposes the list the panel handed this picker: the real
+  // combobox is the only thing that renders it, so without it a test cannot
+  // tell an empty picker from a full one.
+  LiveModelCombobox: (
+    { value, onChange, liveModels }:
+    { value: string; onChange: (v: string) => void; liveModels?: { id: string }[] | null },
+  ) => (
+    <input
+      aria-label="Model"
+      value={value}
+      data-models={(liveModels ?? []).map((m) => m.id).join(',')}
+      onChange={(e) => onChange(e.currentTarget.value)}
+    />
   ),
 }));
 // Spread the real module: the panel reads DEFAULT_LLM_PROVIDER_ID from it,
@@ -425,6 +436,57 @@ describe('LayerModelsPanel — an edited connection has no model list yet', () =
         .filter(([, body]) => body.provider_id === 'default');
       expect(asked.length).toBeGreaterThan(0);
     });
+  });
+
+  // ...but refusing to ask is only half an answer. Repointing an entry also
+  // clears its model (it named the old provider), and saving is blocked
+  // until a model is chosen — so a picker with nothing in it and a Reload
+  // that declines to fetch is a dead end reachable in two clicks. The
+  // Providers tab has already authenticated against the NEW connection to
+  // list its models; that list is the one honest thing to offer here.
+  it('offers the models the providers tab discovered for the edited connection', async () => {
+    render(
+      <MantineProvider>
+        <LayerModelsPanel
+          projectId="proj-1" entries={EDITED} savedEntries={ENTRIES}
+          providers={[BEDROCK_META as never]}
+          value={{ [DEFAULT_LAYER]: { provider_id: 'default', model: '' } }}
+          onChange={jest.fn()}
+          discoveredModels={{
+            default: [
+              { id: 'claude-opus-5', display_name: 'Opus 5', wire: 'anthropic', source: 'live', dispatchable: true },
+            ] as never,
+          }}
+        />
+      </MantineProvider>,
+    );
+    await screen.findByText('Main layers');
+    // The default row's picker is the one the repointed entry blocks.
+    const pickers = screen.getAllByLabelText('Model');
+    expect(pickers.some((p) => p.getAttribute('data-models') === 'claude-opus-5')).toBe(true);
+    // Still without asking the server about a connection it has not got.
+    expect((api.listLiveLLMModelsForProvider as jest.Mock).mock.calls
+      .filter(([, body]) => body.provider_id === 'default')).toHaveLength(0);
+  });
+
+  // The guard exists because the server answers about the STORED connection.
+  // Nothing discovered for the edited one is not a licence to fall back to
+  // the stored one's list.
+  it('leaves the picker empty when nothing was discovered for it', async () => {
+    render(
+      <MantineProvider>
+        <LayerModelsPanel
+          projectId="proj-1" entries={EDITED} savedEntries={ENTRIES}
+          providers={[BEDROCK_META as never]}
+          value={{ [DEFAULT_LAYER]: { provider_id: 'default', model: '' } }}
+          onChange={jest.fn()}
+          discoveredModels={{ cheap: [{ id: 'other', display_name: 'Other', wire: '', source: 'live', dispatchable: true }] as never }}
+        />
+      </MantineProvider>,
+    );
+    await screen.findByText('Main layers');
+    const pickers = screen.getAllByLabelText('Model');
+    expect(pickers.every((p) => p.getAttribute('data-models') !== 'other')).toBe(true);
   });
 });
 

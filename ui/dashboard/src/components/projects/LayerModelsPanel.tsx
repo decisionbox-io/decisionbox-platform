@@ -57,6 +57,13 @@ export interface LayerModelsPanelProps {
    * nothing else that this panel can see.
    */
   savedGeneration?: number;
+  /**
+   * Models the Providers tab discovered with the credential in its form,
+   * keyed by entry id. Used for a connection the server has not been given
+   * yet — the only answer available for one, and what keeps "change a
+   * provider, pick its model, save" possible in a single pass.
+   */
+  discoveredModels?: Record<string, LiveModel[]>;
   providers: ProviderMeta[];
   value: Record<string, LayerModel>;
   onChange: (next: Record<string, LayerModel>) => void;
@@ -70,7 +77,8 @@ function boolFrom(config: Record<string, string> | undefined, key: string, fallb
 }
 
 export function LayerModelsPanel({
-  projectId, entries, savedEntries, savedGeneration = 0, providers, value, onChange,
+  projectId, entries, savedEntries, savedGeneration = 0, discoveredModels,
+  providers, value, onChange,
 }: LayerModelsPanelProps) {
   const stored = savedEntries ?? entries;
   const [layers, setLayers] = useState<LLMLayerDescriptor[] | null>(null);
@@ -174,9 +182,18 @@ export function LayerModelsPanel({
     await loadModelsFor(entryId, layer);
   };
 
-  /** The models known for a layer's connection, or none while it is edited. */
+  /**
+   * The models known for a layer's connection.
+   *
+   * For an EDITED connection the server has nothing to say — it would
+   * answer about the stored one — so the only honest source is what the
+   * Providers tab discovered with the credential in its own form. Without
+   * that, changing a provider cleared the model (it belongs to the old
+   * one), left no list to pick from, and blocked the save that needs a
+   * model: a dead end reachable from a two-click edit.
+   */
   const modelsFor = (entryId: string, layer = DEFAULT_LAYER) => {
-    if (connectionUnsaved(entryId)) return null;
+    if (connectionUnsaved(entryId)) return discoveredModels?.[entryId] ?? null;
     return liveByEntry[cacheKeyFor(entryId, layer)] ?? null;
   };
 

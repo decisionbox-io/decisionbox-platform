@@ -139,10 +139,16 @@ export interface LLMProvidersPanelProps {
   layersByProviderId: Record<string, string[]>;
   /** Entry ids the project has already saved — only those can be tested. */
   savedIds: string[];
+  /**
+   * Reports the models a connection check discovered, so the Models tab can
+   * offer them for a connection the server has not been given yet.
+   */
+  onModelsDiscovered?: (entryID: string, models: LiveModel[]) => void;
 }
 
 export function LLMProvidersPanel({
   projectId, providers, value, onChange, secrets, layersByProviderId, savedIds,
+  onModelsDiscovered,
 }: LLMProvidersPanelProps) {
   const [liveModels, setLiveModels] = useState<Record<string, LiveModel[] | null>>({});
 
@@ -308,6 +314,7 @@ export function LLMProvidersPanel({
                       ? await api.listLiveLLMModels(form.provider, cfg)
                       : await api.listLiveLLMModelsForProvider(projectId, { provider_id: form.id });
                     setLiveModels((prev) => ({ ...prev, [form.id]: resp.models }));
+                    onModelsDiscovered?.(form.id, resp.models);
                     return { ok: true, liveError: resp.live_error };
                   } catch (e: unknown) {
                     setLiveModels((prev) => ({ ...prev, [form.id]: null }));
