@@ -244,10 +244,35 @@ type mockDiscoveryRepo struct {
 	mu          sync.Mutex
 	discoveries []*models.DiscoveryResult
 
-	getErr     error
-	getLatErr  error
-	getDateErr error
-	listErr    error
+	getErr       error
+	getLatErr    error
+	getDateErr   error
+	listErr      error
+	hasResultErr error
+	// onHasResultForRun fires inside HasResultForRun — see there.
+	onHasResultForRun func()
+}
+
+// HasResultForRun mirrors the real repo: it asks the stored discoveries, not
+// the run's own pointer, because BeginResume clears that pointer.
+func (m *mockDiscoveryRepo) HasResultForRun(_ context.Context, runID string) (bool, error) {
+	// Fires where the real call sits: after the handler has read the run and
+	// before it writes. The seam a test uses to move the run under a decision
+	// that has already been made.
+	if m.onHasResultForRun != nil {
+		m.onHasResultForRun()
+	}
+	if m.hasResultErr != nil {
+		return false, m.hasResultErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, d := range m.discoveries {
+		if d.RunID == runID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func newMockDiscoveryRepo() *mockDiscoveryRepo {
@@ -341,8 +366,34 @@ type mockRunRepo struct {
 	getErr        error
 	getLatestErr  error
 	getRunningErr error
-	failErr       error
-	cancelErr     error
+	// getRunningErrAfter, when > 0, makes GetOtherRunningByProject succeed
+	// for that many calls and then fail with getRunningErr. The resume path
+	// asks twice — once before its atomic flip and once after — and the two
+	// have to be told apart, because only the second has a half-started
+	// attempt to stand down.
+	getRunningErrAfter int
+	getRunningCalls    int
+	failErr            error
+	cancelErr          error
+	discardErr  error
+
+	// Resume-path state. createdParams records what Create was handed, so a
+	// test can assert the run's own parameters were persisted; beginResume*
+	// control the atomic flip the resume handler depends on.
+	createdParams   []models.RunParams
+	beginResumeErr  error
+	beginResumeRuns []string
+	// onBeginResume fires inside BeginResume, after the flip — the hook a
+	// test uses to make a competing run appear in the window the pre-check
+	// cannot see.
+	onBeginResume func()
+
+	// defaultRun, when set, is what GetByID answers for a run ID that was
+	// never seeded. Nil keeps the strict behaviour every 404 test wants —
+	// an unknown run is nil, nil. The live-feed tests set it because every
+	// one of them invents its own run ID and only cares about the attempt
+	// the handler reads off the run.
+	defaultRun *models.DiscoveryRun
 }
 
 func newMockRunRepo() *mockRunRepo {
@@ -351,12 +402,13 @@ func newMockRunRepo() *mockRunRepo {
 	}
 }
 
-func (m *mockRunRepo) Create(_ context.Context, projectID string) (string, error) {
+func (m *mockRunRepo) Create(_ context.Context, projectID string, params models.RunParams) (string, error) {
 	if m.createErr != nil {
 		return "", m.createErr
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.createdParams = append(m.createdParams, params)
 	m.nextID++
 	id := fmt.Sprintf("run-%d", m.nextID)
 	m.runs[id] = &models.DiscoveryRun{
@@ -366,8 +418,43 @@ func (m *mockRunRepo) Create(_ context.Context, projectID string) (string, error
 		Phase:     "starting",
 		StartedAt: time.Now(),
 		UpdatedAt: time.Now(),
+		Attempt:   1,
+		MaxSteps:  params.MaxSteps,
+		MinSteps:  params.MinSteps,
+		Areas:     params.Areas,
+		Effort:    params.Effort,
 	}
 	return id, nil
+}
+
+// BeginResume mirrors the repository's atomic semantics: only a `failed` run
+// flips, so a second concurrent call sees a running run and is refused —
+// which is the behaviour the double-click test exercises.
+func (m *mockRunRepo) BeginResume(_ context.Context, runID string) (*models.DiscoveryRun, error) {
+	if m.beginResumeErr != nil {
+		return nil, m.beginResumeErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	run, ok := m.runs[runID]
+	if !ok || run.Status != "failed" {
+		return nil, database.ErrNoResumableRun
+	}
+	m.beginResumeRuns = append(m.beginResumeRuns, runID)
+	run.Status = "running"
+	run.Attempt++
+	if run.Attempt < 2 {
+		run.Attempt = 2
+	}
+	now := time.Now()
+	run.LastResumedAt = &now
+	run.Error = ""
+	run.UpdatedAt = now
+	copied := *run
+	if m.onBeginResume != nil {
+		m.onBeginResume()
+	}
+	return &copied, nil
 }
 
 func (m *mockRunRepo) GetByID(_ context.Context, runID string) (*models.DiscoveryRun, error) {
@@ -378,7 +465,11 @@ func (m *mockRunRepo) GetByID(_ context.Context, runID string) (*models.Discover
 	defer m.mu.Unlock()
 	r, ok := m.runs[runID]
 	if !ok {
-		return nil, nil
+		if m.defaultRun == nil {
+			return nil, nil
+		}
+		cp := *m.defaultRun
+		return &cp, nil
 	}
 	cp := *r
 	return &cp, nil
@@ -403,6 +494,31 @@ func (m *mockRunRepo) GetLatestByProject(_ context.Context, projectID string) (*
 	}
 	cp := *latest
 	return &cp, nil
+}
+
+func (m *mockRunRepo) GetOtherRunningByProject(ctx context.Context, projectID, excludeRunID string) (*models.DiscoveryRun, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	m.getRunningCalls++
+	failNow := m.getRunningErr != nil && m.getRunningCalls > m.getRunningErrAfter
+	m.mu.Unlock()
+	if failNow {
+		return nil, m.getRunningErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, r := range m.runs {
+		if r.ID == excludeRunID || r.ProjectID != projectID {
+			continue
+		}
+		if r.Status == "pending" || r.Status == "running" {
+			copied := *r
+			return &copied, nil
+		}
+	}
+	return nil, nil
 }
 
 func (m *mockRunRepo) GetRunningByProject(_ context.Context, projectID string) (*models.DiscoveryRun, error) {
@@ -435,7 +551,50 @@ func (m *mockRunRepo) GetRunningByProject(_ context.Context, projectID string) (
 	return &cp, nil
 }
 
-func (m *mockRunRepo) Fail(_ context.Context, runID string, errMsg string) error {
+// FailAttempt mirrors the repository's semantics: it applies only while the
+// run is non-terminal AND still on the attempt the caller names, so a stale
+// callback from a superseded attempt is a no-op.
+func (m *mockRunRepo) FailAttempt(ctx context.Context, runID string, attempt int, errMsg string) (bool, error) {
+	// A real driver refuses a write on a dead context; the handler's
+	// post-flip cleanup depends on not being handed one.
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if m.failErr != nil {
+		return false, m.failErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.runs[runID]
+	if !ok {
+		return false, fmt.Errorf("run not found: %s", runID)
+	}
+	if r.Status != "pending" && r.Status != "running" {
+		return false, nil
+	}
+	// attempt <= 0 means "unknown, match anything".
+	if attempt > 0 {
+		recorded := r.Attempt
+		if recorded == 0 {
+			// A run with no attempt recorded predates the counter, so it
+			// can only ever be on its first.
+			recorded = 1
+		}
+		if recorded != attempt {
+			return false, nil
+		}
+	}
+	r.Status = "failed"
+	r.Error = errMsg
+	now := time.Now()
+	r.CompletedAt = &now
+	return true, nil
+}
+
+func (m *mockRunRepo) Fail(ctx context.Context, runID string, errMsg string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if m.failErr != nil {
 		return m.failErr
 	}
@@ -468,6 +627,29 @@ func (m *mockRunRepo) Cancel(_ context.Context, runID string) error {
 	return nil
 }
 
+func (m *mockRunRepo) Discard(_ context.Context, runID string, attempt int) error {
+	if m.discardErr != nil {
+		return m.discardErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.runs[runID]
+	if !ok {
+		return fmt.Errorf("run not found: %s", runID)
+	}
+	// Mirror the repo's filter: terminal, resultless, not already discarded,
+	// and still on the attempt the caller read. attemptFence treats 0, 1 and
+	// an absent field as the same unresumed run, so this does too.
+	sameAttempt := r.Attempt == attempt || (attempt <= 1 && r.Attempt <= 1)
+	if (r.Status != "failed" && r.Status != "cancelled") || r.DiscardedAt != nil || !sameAttempt {
+		return database.ErrNotDiscardable
+	}
+	now := time.Now()
+	r.DiscardedAt = &now
+	r.LastCheckpointStep = 0
+	return nil
+}
+
 func (m *mockRunRepo) SetPolicyReservationID(_ context.Context, runID, reservationID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -496,7 +678,10 @@ func (m *mockRunRepo) ListTerminalWithReservation(_ context.Context, limit int) 
 	return out, nil
 }
 
-func (m *mockRunRepo) ClearPolicyReservationID(_ context.Context, runID string) error {
+func (m *mockRunRepo) ClearPolicyReservationID(ctx context.Context, runID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	r, ok := m.runs[runID]
@@ -504,6 +689,52 @@ func (m *mockRunRepo) ClearPolicyReservationID(_ context.Context, runID string) 
 		return fmt.Errorf("run not found: %s", runID)
 	}
 	r.PolicyReservationID = ""
+	r.PolicyReservationOwnerEndedAt = nil
+	return nil
+}
+
+// ClearExplorationCheckpointMarker mirrors the repository's `failed`-only
+// filter, because the handler tests care that a run which has since been
+// resumed keeps its marker.
+func (m *mockRunRepo) ClearExplorationCheckpointMarker(ctx context.Context, runID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.runs[runID]
+	if !ok {
+		return fmt.Errorf("run not found: %s", runID)
+	}
+	if r.Status != "failed" {
+		return nil
+	}
+	r.LastCheckpointStep = 0
+	return nil
+}
+
+// StampReservationOwnerEndedAt mirrors the repository's write-once semantics,
+// because that is the behaviour the resume path depends on: the FIRST resume
+// to find a lingering reservation records the answer and a later one must not
+// overwrite it.
+func (m *mockRunRepo) StampReservationOwnerEndedAt(ctx context.Context, runID string, endedAt time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if endedAt.IsZero() {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.runs[runID]
+	if !ok {
+		return fmt.Errorf("run not found: %s", runID)
+	}
+	if r.PolicyReservationOwnerEndedAt != nil {
+		return nil
+	}
+	at := endedAt
+	r.PolicyReservationOwnerEndedAt = &at
 	return nil
 }
 
@@ -524,7 +755,7 @@ func (m *mockRunRepo) ListTerminalWithoutCompletionHook(_ context.Context, limit
 	return out, nil
 }
 
-func (m *mockRunRepo) MarkCompletionHooksFired(_ context.Context, runID string) error {
+func (m *mockRunRepo) MarkCompletionHooksFired(_ context.Context, runID string, _ int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	r, ok := m.runs[runID]

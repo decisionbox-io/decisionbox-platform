@@ -100,7 +100,31 @@ type runState struct {
 	queriesIssued int
 	lookupsUsed   int
 	stepReadsUsed int
-	startedAt     time.Time
+	// stepReadMaxOffset / stepReadBeyondRetained record how deep the
+	// read_step_rows paging went — see StructuredVerdict for why depth is
+	// a different and more useful question than call count.
+	stepReadMaxOffset      int
+	stepReadBeyondRetained bool
+	startedAt              time.Time
+}
+
+// observeStepRead records the paging depth of one read_step_rows call.
+//
+// Everything it needs is already in the request and the result the loop
+// holds, so measuring costs no extra plumbing: the offset the agent asked
+// for, and whether the tool answered with nothing because the step's
+// retained sample ended before it.
+func (s *runState) observeStepRead(req *StepRowsRequest, res map[string]any) {
+	if req != nil && req.Offset > s.stepReadMaxOffset {
+		s.stepReadMaxOffset = req.Offset
+	}
+	retained, ok := res["rows_retained"].(bool)
+	if !ok || retained {
+		return
+	}
+	if rows, ok := res["rows"].([]map[string]any); ok && len(rows) == 0 {
+		s.stepReadBeyondRetained = true
+	}
 }
 
 // Verify runs the verifier mode. The returned StructuredVerdict's
@@ -199,6 +223,7 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 			s.lookupsUsed++
 		case ActionReadStepRows:
 			s.stepReadsUsed++
+			s.observeStepRead(action.StepRowsReq, res)
 		}
 	}
 
@@ -345,6 +370,8 @@ func (a *Agent) finalise(v valmodels.StructuredVerdict, s *runState) valmodels.S
 	v.LookupsUsed = s.lookupsUsed
 	v.QueriesIssued = s.queriesIssued
 	v.StepReadsUsed = s.stepReadsUsed
+	v.StepReadMaxOffset = s.stepReadMaxOffset
+	v.StepReadBeyondRetained = s.stepReadBeyondRetained
 	v.LLMTokensIn = s.tokensIn
 	v.LLMTokensOut = s.tokensOut
 	v.DurationMillis = time.Since(s.startedAt).Milliseconds()
@@ -535,6 +562,9 @@ func (a *Agent) unverifiable(s *runState, reason string) valmodels.StructuredVer
 		LookupsUsed:    s.lookupsUsed,
 		QueriesIssued:  s.queriesIssued,
 		StepReadsUsed:  s.stepReadsUsed,
+
+		StepReadMaxOffset:      s.stepReadMaxOffset,
+		StepReadBeyondRetained: s.stepReadBeyondRetained,
 		LLMTokensIn:    s.tokensIn,
 		LLMTokensOut:   s.tokensOut,
 		DurationMillis: time.Since(s.startedAt).Milliseconds(),

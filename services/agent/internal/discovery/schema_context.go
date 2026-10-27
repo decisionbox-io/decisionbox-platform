@@ -112,3 +112,43 @@ func (b *SchemaContextBuilder) sortedTableNames() []string {
 	sort.Strings(names)
 	return names
 }
+
+// schemaColumnResolver builds the per-table column lookup the SQL fixer needs
+// from the run's schema cache — the same map BuildCatalog reduces to column
+// COUNTS for the boot catalog.
+//
+// Name matching is forgiving on purpose, and is the same matching lookup_schema
+// already applies: a failed statement may name the table unqualified, under a
+// different case, or — on a cross-project BigQuery run, whose canonical keys
+// are three-part "dataproject.dataset.table" — in the two-part "dataset.table"
+// form the prompts themselves demonstrate. buildRefIndex/resolveRefIn resolve
+// all of those, and resolve an ambiguous short form to nothing rather than to a
+// guess: handing the model another table's columns is worse than none.
+//
+// Reusing that index rather than re-deriving the rules keeps the two paths from
+// disagreeing about what a ref means, which is a bug the model would see as the
+// fixer and lookup_schema contradicting each other.
+//
+// One tier looser than lookup_schema, deliberately: a ref carrying a dataset
+// that does not exist ("public.orders" where the only orders is shop.orders)
+// still resolves on the unambiguous bare name. lookup_schema refuses that on
+// purpose, because its NotFound tells the model the ref is wrong and it gets
+// another turn to correct it. FixSQL is one tool-less completion with no such
+// channel, so refusing here does not teach the model anything — it just returns
+// to the column-less prompt this resolver exists to replace. The unambiguity
+// rule still holds: buildRefIndex only indexes a bare name that exactly one
+// table shortens to.
+func schemaColumnResolver(schemas map[string]models.TableSchema) func(string) []models.ColumnInfo {
+	idx := buildRefIndex(schemas)
+	return func(table string) []models.ColumnInfo {
+		if key, ok := resolveRefIn(idx, table); ok {
+			return schemas[key].Columns
+		}
+		if i := strings.LastIndex(table, "."); i >= 0 {
+			if key, ok := resolveRefIn(idx, table[i+1:]); ok {
+				return schemas[key].Columns
+			}
+		}
+		return nil
+	}
+}

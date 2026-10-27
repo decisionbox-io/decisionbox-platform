@@ -19,7 +19,27 @@ type DiscoveryResult struct {
 	// WarehouseID is the datasource this discovery ran against (multi-warehouse).
 	// Empty for legacy / single-warehouse runs. Mirrors the agent model so the
 	// discovery endpoints don't drop the attribution on decode.
-	WarehouseID    string    `bson:"warehouse_id,omitempty" json:"warehouse_id,omitempty"`
+	WarehouseID string `bson:"warehouse_id,omitempty" json:"warehouse_id,omitempty"`
+
+	// RunID is the discovery run that produced this result — the back-
+	// reference to DiscoveryRun.DiscoveryID. Mirrors the agent model (the
+	// agent writes it); empty on documents written before resume shipped.
+	RunID string `bson:"run_id,omitempty" json:"run_id,omitempty"`
+
+	// Attempt is which attempt of RunID produced this result.
+	//
+	// It bounds retirement. A resumed run's previous attempt may still be
+	// alive and finishing its own cleanup, and that cleanup deletes by
+	// run_id — so without an attempt to compare, an earlier attempt arriving
+	// late deletes the result of the attempt that superseded it. Claiming the
+	// terminal write proves ownership at the write, not at the detached
+	// cleanup that follows it, which can lag arbitrarily.
+	//
+	// Absent on every document written before this existed, which decodes to
+	// 0 and is read as attempt 1 — the same equivalence attemptFilter
+	// encodes, and the right answer for a result produced before resume.
+	Attempt int `bson:"attempt,omitempty" json:"attempt,omitempty"`
+
 	Domain         string    `bson:"domain" json:"domain"`
 	Category       string    `bson:"category" json:"category"`
 	RunType        string    `bson:"run_type" json:"run_type"`

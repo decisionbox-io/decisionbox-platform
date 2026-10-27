@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -119,5 +120,86 @@ func TestPickedToTelemetry_EmptyInput(t *testing.T) {
 func TestDroppedToTelemetry_EmptyInput(t *testing.T) {
 	if got := droppedToTelemetry(nil); len(got) != 0 {
 		t.Errorf("nil input: got %d want 0", len(got))
+	}
+}
+
+// TestRecompactSurvivorsTighter_LeavesAReplayedSamplesDigestAlone pins the
+// distinction the caller's comment already promises — "only steps that still
+// carry their raw rows can be rebuilt" — and that the implementation used to
+// decide on emptiness alone.
+//
+// BuildCompactResultWithLimits derives a digest's population statistics and
+// its head/tail from the rows handed to it, treating any nonempty slice as the
+// complete result. A replayed step breaks that premise: the checkpoint keeps a
+// row SAMPLE with the true total in RowCount, which is the same asymmetry
+// replayedQueryResult depends on to render "Showing 10 of 50000 rows" for a
+// step whose stored rows number 50. Rebuilding from the sample hands the model
+// statistics that describe the sample while claiming to describe the result.
+func TestRecompactSurvivorsTighter_LeavesAReplayedSamplesDigestAlone(t *testing.T) {
+	sample := make([]map[string]interface{}, 0, 3)
+	for i := 0; i < 3; i++ {
+		sample = append(sample, map[string]interface{}{"n": i})
+	}
+	original := gomodels.BuildCompactResult(sample)
+
+	picked := []PickedStep{{
+		Step: models.ExplorationStep{
+			Step:        1,
+			QueryResult: sample,
+			// The query really returned 50 000 rows; these 3 are the
+			// checkpoint's sample of them.
+			RowCount:      50000,
+			CompactResult: &original,
+		},
+	}}
+
+	if changed := recompactSurvivorsTighter(picked); changed {
+		t.Error("recompacted a step whose rows are a checkpoint sample; the rebuilt digest would describe the sample while claiming the result's row total")
+	}
+	if picked[0].Step.CompactResult != &original {
+		t.Error("the replayed step's stored digest was replaced; it was built from the full rows at execution time and is the only accurate one available")
+	}
+}
+
+// And the live path is untouched: a step whose rows ARE the whole result still
+// gets the tighter digest, or smart overflow stops saving anything and every
+// over-budget run goes back to dropping steps.
+func TestRecompactSurvivorsTighter_StillShrinksAFullResult(t *testing.T) {
+	rows := make([]map[string]interface{}, 0, 40)
+	for i := 0; i < 40; i++ {
+		rows = append(rows, map[string]interface{}{"n": i, "pad": "xxxxxxxxxxxxxxxxxxxx"})
+	}
+	full := gomodels.BuildCompactResult(rows)
+
+	picked := []PickedStep{{
+		Step: models.ExplorationStep{
+			Step: 1, QueryResult: rows,
+			// RowCount agrees with the rows in hand: nothing was sampled.
+			RowCount:      len(rows),
+			CompactResult: &full,
+		},
+	}}
+
+	if changed := recompactSurvivorsTighter(picked); !changed {
+		t.Fatal("a full result was not recompacted; smart overflow has nothing left to try before dropping steps")
+	}
+	if picked[0].Step.CompactResult == &full {
+		t.Error("the digest was not replaced")
+	}
+}
+
+// A step that never recorded a RowCount behaves exactly as it did before the
+// sample check existed — the check only fires when RowCount positively
+// contradicts the rows in hand.
+func TestRecompactSurvivorsTighter_NoRowCountIsTreatedAsFullRows(t *testing.T) {
+	rows := make([]map[string]interface{}, 0, 40)
+	for i := 0; i < 40; i++ {
+		rows = append(rows, map[string]interface{}{"n": i, "pad": "xxxxxxxxxxxxxxxxxxxx"})
+	}
+	picked := []PickedStep{{
+		Step: models.ExplorationStep{Step: 1, QueryResult: rows}, // RowCount zero
+	}}
+	if changed := recompactSurvivorsTighter(picked); !changed {
+		t.Error("a step with no RowCount was skipped; that is a behaviour change for every step written before RowCount was recorded")
 	}
 }

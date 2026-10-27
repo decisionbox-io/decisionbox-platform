@@ -3,8 +3,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams } from 'next/navigation';
 import {
-  Checkbox, Collapse, Loader, Menu, NumberInput,
-  ScrollArea, Text,
+  Button, Checkbox, Collapse, Group, Loader, Menu, Modal, NumberInput,
+  ScrollArea, Stack, Text,
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
@@ -61,6 +61,58 @@ export default function ProjectPage() {
   const [project, setProject] = useState<Project | null>(null);
   const [discoveries, setDiscoveries] = useState<DiscoveryResult[]>([]);
   const [run, setRun] = useState<DiscoveryRunStatus | null>(null);
+  // Two counters, because "is this response stale?" has two different
+  // answers and one counter kept getting them confused.
+  //
+  // actionEpoch counts the out-of-band changes to `run` — trigger, cancel,
+  // resume, discard. A poll captures it before its request and drops the
+  // answer if it moved, because such a response describes the world as it
+  // was before the operator acted.
+  //
+  // pollSeq orders the polls against each other. At a 2s interval they
+  // overlap, and the two failures are mirror images: an OLDER answer landing
+  // last used to erase a newer run, and then fencing on "anything changed"
+  // made a NEWER answer get dropped because the older one had already
+  // applied. Neither is fixable by one number. Each poll takes a ticket, and
+  // an answer is applied only if no later-issued poll has already applied —
+  // last request wins, regardless of arrival order.
+  //
+  // This exists because a status response is not only stale, it can be
+  // actively wrong: an answer computed before the operator started a run says
+  // "no run", and applying it hid a live one. Fencing on the run's STATUS was
+  // the first attempt and is not enough — a newly triggered run that fails
+  // fast is terminal by the time the stale answer lands, so a status test
+  // cannot tell it from the run the answer was about. The generation can.
+  const actionEpoch = useRef(0);
+  const pollTicket = useRef(0);
+  const appliedPoll = useRef(0);
+  // runRef mirrors `run` for the async paths that have to act on the run as
+  // it is NOW rather than as it was when their closure was made. A poll's
+  // ticket orders it by when it was ISSUED, which is not the same as how
+  // fresh its view of `run` is: a poll issued before an earlier one answered
+  // carries the higher ticket and the older closure. Acting on that closure
+  // means asking the server about a run that is no longer the installed one.
+  const runRef = useRef<DiscoveryRunStatus | null>(null);
+  // writeRun is the ONLY way `run` is written, which is what lets the mirror
+  // be exact instead of eventual.
+  //
+  // It was an effect on [run] first, and that is a beat too late: two poll
+  // replies can resolve in one microtask drain, so the first queues its
+  // setRun while the second reads a mirror that no commit has reached yet.
+  // The second then decides against the run BEFORE the replacement — which
+  // is the whole class of bug the mirror was added to close, reintroduced
+  // one step further along. Assigned here, every reader after a write sees
+  // the write.
+  const writeRun = useCallback((next: DiscoveryRunStatus | null) => {
+    runRef.current = next;
+    setRun(next);
+  }, []);
+  // installRun is how an ACTION writes `run`: it sets and bumps together, so
+  // no call site can do one without the other.
+  const installRun = useCallback((next: DiscoveryRunStatus | null) => {
+    actionEpoch.current += 1;
+    writeRun(next);
+  }, [writeRun]);
   const [loading, setLoading] = useState(true);
   const [triggering, setTriggering] = useState(false);
   const [analysisAreas, setAnalysisAreas] = useState<{ id: string; name: string }[]>([]);
@@ -82,7 +134,12 @@ export default function ProjectPage() {
   const [estimating, setEstimating] = useState(false);
   const [pendingAreas, setPendingAreas] = useState<string[] | undefined>(undefined);
   const [estimateFirst, setEstimateFirst] = useState(false);
-  const dismissedRunId = useRef<string | null>(null);
+  // Dismissing a finished run hides its panel. State rather than a ref
+  // because visibility is now a render decision: the run itself is KEPT so
+  // polling can carry on, and a dismissal that stopped the poll was the bug —
+  // a resume re-enters the same run id, so dismiss a failed run, have someone
+  // resume it, and this page showed nothing live until a reload.
+  const [dismissedRunId, setDismissedRunId] = useState<string | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -107,27 +164,150 @@ export default function ProjectPage() {
 
   const pollStatus = useCallback(async () => {
     try {
+      const epoch = actionEpoch.current;
+      pollTicket.current += 1;
+      const ticket = pollTicket.current;
       const status = await api.getProjectStatus(id);
+      // An ACTION changed `run` while this was in flight, so this answer is
+      // about the previous state. Drop it whole rather than reasoning about
+      // which parts still apply; the next poll is 2s away.
+      if (actionEpoch.current !== epoch) return;
+      // A later-issued poll already APPLIED, so this one is behind.
+      if (ticket < appliedPoll.current) return;
+      // applyPoll writes a poll's result WITHOUT bumping actionEpoch: a poll
+      // is not an action, and treating it as one is what let an older answer
+      // invalidate a newer request.
+      //
+      // The watermark moves HERE, at the write, not when the request was
+      // issued, because a poll that has written nothing has no claim on
+      // being the latest applied. Claimed up front, an empty status answer
+      // held the claim while its getRun reconcile was still outstanding, so
+      // a newer poll arriving first cancelled that reconcile — and with a
+      // lookup slower than the 2s interval, every one of them.
+      //
+      // Whether that can starve the panel indefinitely I could not
+      // demonstrate: the poll holding the claim is always the newest one,
+      // and its own reconcile completes when its lookup resolves. So this
+      // is the more honest reading of what the watermark means, not a fix
+      // for a reproduced hang.
+      const applyPoll = (next: DiscoveryRunStatus | null) => {
+        if (ticket < appliedPoll.current) return;
+        appliedPoll.current = ticket;
+        writeRun(next);
+      };
+      // claimPoll holds the watermark for an answer that was ACTED ON but
+      // needed no write — one that confirms what is already installed.
+      // Confirming is incorporating: the alternative left the watermark
+      // behind a poll whose answer had been accepted, so an older poll's
+      // still-pending answer could pass the fence afterwards and act on a
+      // view of `run` that the confirmed one had already superseded.
+      const claimPoll = () => {
+        if (ticket < appliedPoll.current) return;
+        appliedPoll.current = ticket;
+      };
+      // A successful read with no run means the project has none to show —
+      // every run discarded, or the last one deleted with its project data.
+      // Clearing is the only way the panel goes away: a terminal run is not
+      // polled, so a stale one would sit there offering Resume and Discard
+      // for ever. Only on a SUCCESSFUL read; a failed one is handled by the
+      // catch below, which deliberately keeps what is on screen.
+      //
+      // Two fences, because there are two different ways an empty answer can
+      // be wrong, and each catches what the other cannot:
+      //
+      //   - the epoch check above: the answer describes an older world,
+      //     because `run` changed while the request was in flight. It covers
+      //     a run of ANY status, which a status test cannot — one that failed
+      //     fast is terminal by the time the stale answer lands.
+      //   - this one: the answer contradicts a run we believe is LIVE. That
+      //     should not happen (a running run has a document), and the cost of
+      //     believing it is high: clearing stops the poll, which is gated on a
+      //     live run, so a wrong clear does not heal. A terminal run is
+      //     cleared, which is the discarded-panel case this branch exists for.
+      if (status && !status.run) {
+        // runRef, not the closure's `run`: this branch asks the server about
+        // one specific run and then acts on the answer, so it has to name the
+        // run that is actually installed. With a closure snapshot it could
+        // ask about a run two polls out of date and then install THAT over a
+        // live one — a worse outcome than the stranded panel the lookup is
+        // here to fix.
+        const cached = runRef.current;
+        const cachedIsLive = !!cached && (cached.status === 'running' || cached.status === 'pending');
+        if (!cachedIsLive) {
+          applyPoll(null);
+          return;
+        }
+        // We believe a run is live and the project reports none. Keeping it
+        // unconditionally was the safe half of the trade, but it strands the
+        // panel: a run the startup sweep failed and another tab then
+        // discarded is legitimately absent here, while this tab's cache still
+        // says `running` — so progress and Cancel stay on screen for ever and
+        // `isRunning` keeps the trigger disabled. Ask about that run directly
+        // rather than guessing from the project-level answer.
+        try {
+          const fresh = await api.getRun(cached.id);
+          // Only the action fence here; applyPoll re-checks the watermark
+          // at the moment of the write.
+          if (actionEpoch.current !== epoch) return;
+          // Gone, or discarded elsewhere: the panel goes. Otherwise adopt
+          // what the server says, terminal or not — that is the truth, and a
+          // terminal panel is a normal thing to show.
+          applyPoll(!fresh || fresh.discarded_at ? null : fresh);
+        } catch {
+          // No information, so no decision: keep what is on screen. The next
+          // poll asks again.
+        }
+        return;
+      }
       if (status?.run) {
         const newRun = status.run as unknown as DiscoveryRunStatus;
-        if (dismissedRunId.current === newRun.id) return;
-        const wasRunning = run && (run.status === 'running' || run.status === 'pending');
+        // A dismissed run that is live again is news, not noise: drop the
+        // dismissal so the panel comes back and so a LATER finish is shown
+        // rather than silently re-hidden. Dismiss means "hide this finished
+        // run", not "hide this run id for ever".
+        if (newRun.status === 'running' || newRun.status === 'pending') {
+          setDismissedRunId((prev) => (prev === newRun.id ? null : prev));
+        }
+        // Both of the comparisons below are against the run that is
+        // INSTALLED, not the one this closure captured. The two diverge
+        // exactly when an overlapping poll installed something in between,
+        // and then the closure answers the wrong question: "is this
+        // different from what I last saw" rather than "is this different
+        // from what is on screen".
+        //
+        // Staleness is not this check's job. The watermark above is the
+        // staleness fence — every accepted answer claims it, so a poll that
+        // gets this far is the newest one that has been acted on, and its
+        // answer is the freshest information available.
+        const installed = runRef.current;
+        const wasRunning = installed && (installed.status === 'running' || installed.status === 'pending');
         const nowDone = newRun.status === 'completed' || newRun.status === 'failed';
         // Only replace `run` when something we render actually changed. The
         // status endpoint answers as fast as we ask and `newRun` is freshly
-        // parsed JSON — never reference-equal to `run` — so an unconditional
-        // setRun would flip `run`'s identity on every response. Because
-        // pollStatus lists `run` as a dependency and an effect below calls
-        // pollStatus, that turned every response into re-render → new
-        // pollStatus → fetch → setRun → …, an unbounded request loop (#405).
+        // parsed JSON — never reference-equal — so an unconditional setRun
+        // would flip `run`'s identity on every response, which used to feed
+        // the unbounded request loop in #405 (re-render → new pollStatus →
+        // fetch → setRun → …). pollStatus no longer depends on `run`, so
+        // that loop cannot form either way; this stays because re-rendering
+        // the panel on every no-op response is still waste.
         // `updated_at` is bumped server-side on every write to the run doc,
         // so comparing it (with id/status) keeps the live progress header
         // ticking during a run while skipping the no-op responses.
-        const runChanged = !run
-          || run.id !== newRun.id
-          || run.status !== newRun.status
-          || run.updated_at !== newRun.updated_at;
-        if (runChanged) setRun(newRun);
+        //
+        // Compared against the installed run, this is also what stops a
+        // superseded run staying on screen: two dismissed-run polls both
+        // capture A, the first installs a newer failed B, and the second
+        // answers A — unchanged against its own closure, so it wrote
+        // nothing and left B up. B is terminal and is not the dismissed
+        // run, so polling stops and B's Resume and Discard sit there
+        // indefinitely, both of them certain to 409 once another tab has
+        // discarded it.
+        const runChanged = !installed
+          || installed.id !== newRun.id
+          || installed.status !== newRun.status
+          || installed.updated_at !== newRun.updated_at;
+        if (runChanged) applyPoll(newRun);
+        else claimPoll();
         if (wasRunning && nowDone) {
           api.listDiscoveries(id).then((d) => setDiscoveries(d || [])).catch(() => {});
           // Nudge the analyst if the run left clarifying questions to answer.
@@ -139,15 +319,33 @@ export default function ProjectPage() {
         }
       }
     } catch { /* ignore */ }
-  }, [id, run]);
+    // No `run` dependency: every read of it in here now goes through runRef,
+    // so this callback is stable — writeRun is itself a useCallback with no
+    // dependencies. That closes #405 at the root rather than by comparison:
+    // the loop was re-render → new pollStatus → fetch → setRun →
+    // re-render, and a pollStatus that does not change identity when `run`
+    // does cannot enter it. The interval effect below still re-arms on
+    // `run`, because the cadence depends on its status.
+  }, [id, writeRun]);
 
-  // The 2s poll is correctly gated on an in-flight run and stays as-is.
+  // The 2s poll is gated on an in-flight run, plus one case that is not in
+  // flight: a run this page has DISMISSED. A resume re-enters the same run id,
+  // so a dismissed failed run can come back to life from another tab, another
+  // user, or the API — and nothing here would notice, because a terminal run
+  // does not poll. Watched at a much slower cadence: the panel is hidden, the
+  // tab may sit open for hours, and all this is waiting for is a status flip.
+  //
+  // The status checks stay inline. isRunning / justFinished are declared
+  // further down, so naming them in the dependency array below would evaluate
+  // them during render before their initialisers have run.
   useEffect(() => {
     if (!run) return;
-    if (run.status !== 'running' && run.status !== 'pending') return;
-    const interval = setInterval(pollStatus, 2000);
+    const live = run.status === 'running' || run.status === 'pending';
+    const watchingDismissed = dismissedRunId === run.id && !live;
+    if (!live && !watchingDismissed) return;
+    const interval = setInterval(pollStatus, live ? 2000 : 15000);
     return () => clearInterval(interval);
-  }, [run, pollStatus]);
+  }, [run, pollStatus, dismissedRunId]);
 
   // Fetch the current run once per project on load. Keying this on `id` (not
   // pollStatus's identity) is what makes it fire once per project: pollStatus
@@ -195,7 +393,7 @@ export default function ProjectPage() {
       const result = await api.triggerDiscovery(id, Object.keys(opts).length > 0 ? opts : undefined);
       if (result.run_id) {
         const newRun = await api.getRun(result.run_id);
-        setRun(newRun);
+        installRun(newRun);
       }
       const floor = minStepsTouched ? minSteps : Math.floor(maxSteps * 0.6);
       notifications.show({
@@ -241,7 +439,12 @@ export default function ProjectPage() {
     : (project.schema_index_status === 'ready' || project.schema_index_status === undefined);
   const triggerDisabled = !!isRunning || !schemaReady;
   const justFinished = run && (run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled');
-  const showRunPanel = isRunning || justFinished;
+  // Hidden while dismissed AND still finished. The moment the run is live
+  // again — a resume re-enters the same id — justFinished goes false and the
+  // panel returns on its own, which is the whole point of keeping the run in
+  // state instead of nulling it.
+  const hiddenByDismissal = !!run && dismissedRunId === run.id && !!justFinished;
+  const showRunPanel = (isRunning || justFinished) && !hiddenByDismissal;
 
   // Aggregate stats
   const totalRuns = discoveries.length;
@@ -431,22 +634,106 @@ export default function ProjectPage() {
         </div>
       )}
 
-      {/* Live Run Panel — keyed on run.id so a new run cleanly remounts
-          the panel (fresh steps state + cursor) instead of needing an
-          in-component reset effect. */}
+      {/* Live Run Panel — keyed on run.id AND run.attempt so a new run, or a
+          new attempt of the same run, cleanly remounts the panel (fresh steps
+          state + cursor) instead of needing an in-component reset effect. A
+          resume re-enters the same run id, and the feed is attempt-scoped
+          server-side, so the attempt belongs in the key. onResume sets it
+          optimistically, which is what makes the remount happen on the click
+          rather than on the next status poll. */}
       {showRunPanel && run && (
-        <LiveRunPanel key={run.id} run={run} onCancel={async () => {
+        <LiveRunPanel key={`${run.id}:${run.attempt ?? 1}`} run={run} onCancel={async () => {
           if (justFinished) {
-            dismissedRunId.current = run.id;
-            setRun(null);
+            // The run stays in state so the poll below can keep watching it;
+            // hiddenByDismissal is what takes the panel off screen.
+            setDismissedRunId(run.id);
             return;
           }
           try {
             await api.cancelRun(run.id);
-            setRun({ ...run, status: 'cancelled' });
+            installRun({ ...run, status: 'cancelled' });
             notifications.show({ title: 'Cancelled', message: 'Discovery cancelled', color: 'orange' });
           } catch (e: unknown) {
             notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
+          }
+        }} onResume={async () => {
+          try {
+            const res = await api.resumeRun(run.id);
+            // Optimistically flip to running so the 2s poll re-arms
+            // immediately — it is gated on the run being live, and waiting
+            // for the next status response would leave the panel looking
+            // dead for a beat after the click.
+            installRun({ ...run, status: 'running', error: '', attempt: res.attempt });
+            notifications.show({
+              title: 'Resuming',
+              message: `Attempt ${res.attempt} — replaying the steps already executed`,
+              color: 'blue',
+            });
+          } catch (e: unknown) {
+            // A 409 here is a real answer (the checkpoint expired, or
+            // another request got there first), so show what the server
+            // said rather than a generic failure.
+            notifications.show({ title: 'Cannot resume', message: (e as Error).message, color: 'red' });
+            // Then re-read the run, because every refusal means the server
+            // knows something this tab does not — most sharply when another
+            // tab or user won the race and the run is ALREADY running. A
+            // terminal run does not poll, so without this the panel would go
+            // on offering Resume for an active run until someone reloaded.
+            try {
+              const fresh = await api.getRun(run.id);
+              // Two conditions, and the second is the one that is easy to
+              // miss. The read must have returned a run — replacing state
+              // with an empty response would blank the panel, a worse
+              // outcome than the stale view this refresh exists to fix. And
+              // the run on screen must still be THIS run: a refusal is a
+              // round-trip, which is plenty of time for a different run to
+              // be started, and installing the old failed one over a live
+              // one would hide its progress and its Cancel button until
+              // somebody reloaded, because a terminal run does not poll.
+              // Same check the discard handler makes, for the same reason.
+              //
+              // The case this refresh exists for still works: when another
+              // tab won the race the run id is unchanged and only its status
+              // is stale, so the guard passes.
+              if (fresh && runRef.current?.id === run.id) installRun(fresh);
+            } catch {
+              // The real error is already on screen; a failed refresh adds
+              // nothing to it.
+            }
+          }
+        }} onDiscard={async () => {
+          try {
+            await api.discardRun(run.id);
+            notifications.show({
+              title: 'Discarded',
+              message: 'This run no longer represents the project and cannot be resumed. Its history stays readable.',
+              color: 'gray',
+            });
+            // Drop the local run and re-read rather than guessing what takes
+            // its place: the server decides which run (if any) represents the
+            // project now, and it is no longer this one. Clearing the
+            // dismissal too, so the replacement is not hidden by a stale one.
+            setDismissedRunId(null);
+            // Only this run. Another discovery can have started while the
+            // request was in flight, and clearing that one would hide a live
+            // run's progress and Cancel with nothing to bring them back.
+            // The mirror is written synchronously with every setRun, so it
+            // already holds what a functional update would have been handed
+            // — and reading it keeps `run` to a single writer. The epoch
+            // bumps either way: the discard landed, so an in-flight poll's
+            // answer describes a world that no longer exists whether or not
+            // this tab's panel is the run that went.
+            const current = runRef.current;
+            actionEpoch.current += 1;
+            if (current && current.id === run.id) writeRun(null);
+            void pollStatus();
+          } catch (e: unknown) {
+            // 409 is a real answer here — the run went active again, or
+            // another tab discarded it first — so show what the server said
+            // and re-read, because the refusal means it knows something this
+            // tab does not.
+            notifications.show({ title: 'Cannot discard', message: (e as Error).message, color: 'red' });
+            void pollStatus();
           }
         }} />
       )}
@@ -604,7 +891,7 @@ function DiscoveryRunCard({ discovery: d, projectId }: { discovery: DiscoveryRes
 
 /* ========== Live Run Panel ========== */
 
-function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: () => void }) {
+function LiveRunPanel({ run, onCancel, onResume, onDiscard }: { run: DiscoveryRunStatus; onCancel: () => void; onResume: () => void; onDiscard: () => void }) {
   // Per-step rows are no longer embedded in the run doc — they live in
   // discovery_run_steps and are streamed via api.listRunSteps with an
   // opaque ObjectID cursor (the last `id` we have). We poll while the
@@ -618,11 +905,20 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
   const userScrolledUp = useRef(false);
   const prevStepCount = useRef(0);
 
-  // The parent renders <LiveRunPanel key={run.id}> so a new run
-  // remounts this component with fresh `steps` / `lastIDRef` state
-  // automatically — no in-component reset effect needed (which the
-  // react-hooks/set-state-in-effect lint rule rightly flags as a
-  // cascading-render anti-pattern).
+  // The parent renders <LiveRunPanel key={`${run.id}:${run.attempt}`}> so a
+  // new run — and a new ATTEMPT of the same run — remounts this component
+  // with fresh `steps` / `lastIDRef` state automatically. No in-component
+  // reset effect needed (which the react-hooks/set-state-in-effect lint rule
+  // rightly flags as a cascading-render anti-pattern).
+  //
+  // The attempt has to be in that key. A resume re-enters the SAME run id,
+  // so keying on the id alone kept this component mounted across it: the
+  // rendered rows and the `since` cursor both survived. The feed is scoped
+  // to the run's current attempt server-side, and the resume re-emits the
+  // replayed prefix under the new attempt — appended to rows this component
+  // was still showing from the old one, the operator would see the prefix
+  // twice. Remounting rebuilds the list from the head of the new attempt's
+  // stream, which is exactly one copy.
 
   useEffect(() => {
     let cancelled = false;
@@ -669,11 +965,84 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
     saving: 'saving', complete: 'complete',
   };
 
-  const elapsed = run.started_at
-    ? Math.round((new Date(run.updated_at || run.started_at).getTime() - new Date(run.started_at).getTime()) / 1000)
-    : 0;
+  // Elapsed time has three cases once a run can be resumed, and the naive
+  // answer is wrong for two of them.
+  //
+  // `active_ms` is cumulative ACTIVE compute, booked by each attempt at its
+  // terminal write. So for a run that has FINISHED it is the whole answer, and
+  // using wall-clock instead would count the hours a failed run sat waiting to
+  // be noticed as work.
+  //
+  // But for an attempt still RUNNING, its own time is not in there yet — so
+  // `active_ms` alone would freeze the label at the previous attempts' total
+  // while the run visibly progresses. For those, add the time since this
+  // attempt started: prior attempts plus this one, excluding the downtime
+  // between them.
+  const elapsed = (() => {
+    const priorActive = run.active_ms && run.active_ms > 0 ? Math.round(run.active_ms / 1000) : 0;
+    const isTerminal = run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled';
+    const since = (from: string) =>
+      Math.max(0, Math.round((new Date(run.updated_at || from).getTime() - new Date(from).getTime()) / 1000));
+
+    // A finished run that booked its time: active_ms is the whole answer.
+    //
+    // It undercounts one case, deliberately: a resumed attempt that was hard
+    // killed before its terminal write books nothing, so a run whose EARLIER
+    // attempt did book shows only that earlier time. Adding the wall-clock
+    // since last_resumed_at here would fix it — and would double-count every
+    // resumed attempt that finished normally, because active_ms already
+    // includes those. Nothing on the document distinguishes the two without
+    // inferring it from the lifecycle log, which is a coupling the display
+    // layer should not carry for a bounded, one-attempt discrepancy. The
+    // run document says as much (DiscoveryRun.ActiveMs): a dead attempt's
+    // compute is not worth counting.
+    if (isTerminal && priorActive > 0) return priorActive;
+
+    // Anything else about a resumed run measures from THIS attempt, never
+    // from started_at. That holds for a live attempt (whose own time is not
+    // booked yet) and for one that reached a terminal state without booking
+    // any — an OOM, a pod eviction, a startup failure right after the
+    // resume. Falling back to started_at there would report all the downtime
+    // before the resume as work, which is the overcount this whole branch
+    // exists to avoid.
+    if (run.last_resumed_at) return priorActive + since(run.last_resumed_at);
+
+    if (priorActive > 0) return priorActive;
+    return run.started_at ? since(run.started_at) : 0;
+  })();
+
+  // Resume is offered only for a FAILED run that actually has a checkpoint
+  // to resume from. A cancelled run is a deliberate hard kill and stays
+  // terminal; a completed one has nothing left; a failed run that died
+  // before its first checkpoint can only be started over.
+  const canResume = run.status === 'failed' && (run.last_checkpoint_step ?? 0) > 0;
+
+  // Discard is offered for a terminal run that produced nothing. A completed
+  // run is excluded because its discovery is the project's history — the
+  // server refuses that too, and offering a button that 409s is worse than
+  // offering none.
+  //
+  // Red and modal-confirmed, which is this dashboard's destructive tier
+  // (Delete project, Delete list, Remove column). The ghost tier its
+  // neighbours use is for the reversible actions, and Dismiss — sitting right
+  // beside it, looking identical — is a per-tab no-op, which is exactly the
+  // confusion colour is there to prevent. Weight matched to consequence: a
+  // plain Cancel/Discard confirm, not Delete project's type-the-name, because
+  // discard destroys resumability rather than data.
+  // !run.discovery_id, not just "not completed": the agent stamps a
+  // discovery on a run that saved a partial result before failing, and
+  // discarding that would orphan it. The server refuses it either way; this
+  // keeps the button from offering a guaranteed 409.
+  // !run.discarded_at as well: after another tab discards this run, the
+  // resume-refusal path refreshes through getRun and gets the archived
+  // document back — still `failed`, still without a discovery — so without
+  // this the button reappears offering a guaranteed 409.
+  const canDiscard = isDone && !run.discovery_id && !run.discarded_at
+    && (run.status === 'failed' || run.status === 'cancelled');
+  const [discardOpen, { open: openDiscard, close: closeDiscard }] = useDisclosure(false);
 
   return (
+    <>
     <div style={{
       background: 'var(--db-bg-white)',
       border: '1px solid var(--db-border-default)',
@@ -721,7 +1090,15 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>{run.progress}%</span>
             {!isDone && <GhostButton onClick={onCancel} small>Cancel</GhostButton>}
+            {canResume && (
+              <GhostButton onClick={onResume} small>
+                Resume from step {run.last_checkpoint_step}
+              </GhostButton>
+            )}
             {isDone && <GhostButton onClick={onCancel} small>Dismiss</GhostButton>}
+            {canDiscard && (
+              <GhostButton small danger onClick={openDiscard}>Discard</GhostButton>
+            )}
           </div>
         </div>
 
@@ -748,6 +1125,7 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
           <span>{run.total_queries} queries</span>
           <span>{run.insights_found} insights</span>
           <span>{formatElapsed(elapsed)}</span>
+          {(run.attempt ?? 0) > 1 && <span>attempt {run.attempt}</span>}
           <span style={{ color: 'var(--db-text-tertiary)' }}>
             Started: {new Date(run.started_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' })}
           </span>
@@ -788,6 +1166,30 @@ function LiveRunPanel({ run, onCancel }: { run: DiscoveryRunStatus; onCancel: ()
           tails every LLM call and SQL execution in near-real time. */}
       <DebugLogsPanel projectId={run.project_id} runId={run.id} isDone={isDone} />
     </div>
+
+    {/* Says what discard actually costs, which a button label cannot. The
+        distinction that matters to the operator is that the run's history
+        survives — people hesitate over Discard because they read it as
+        Delete. */}
+    <Modal
+      opened={discardOpen}
+      onClose={closeDiscard}
+      title={<Text fw={600} c="red">Discard this run?</Text>}
+      centered
+    >
+      <Stack gap="sm">
+        <Text size="sm">
+          This run will stop representing the project and can no longer be resumed
+          {canResume ? ` from step ${run.last_checkpoint_step}` : ''}. Its status, error and
+          step history stay readable.
+        </Text>
+        <Group justify="flex-end" gap="sm">
+          <Button variant="default" onClick={closeDiscard}>Cancel</Button>
+          <Button color="red" onClick={() => { closeDiscard(); onDiscard(); }}>Discard</Button>
+        </Group>
+      </Stack>
+    </Modal>
+    </>
   );
 }
 
@@ -1315,23 +1717,29 @@ function PrimaryButton({ onClick, children, disabled }: { onClick: () => void; c
   );
 }
 
-function GhostButton({ onClick, children, small }: { onClick: () => void; children: React.ReactNode; small?: boolean }) {
+// danger is the destructive variant: same geometry as its neighbours, so a
+// compact toolbar of ghost buttons stays coherent, but carrying the red the
+// rest of the dashboard reserves for actions that cannot be undone. The
+// tokens are the ones this panel already uses for a failed run.
+function GhostButton({ onClick, children, small, danger }: { onClick: () => void; children: React.ReactNode; small?: boolean; danger?: boolean }) {
   return (
     <button onClick={onClick} style={{
       display: 'inline-flex', alignItems: 'center', gap: 6,
-      background: 'transparent', color: 'var(--db-text-secondary)',
-      border: '1px solid var(--db-border-strong)', borderRadius: 6,
+      background: 'transparent', color: danger ? 'var(--db-red-text)' : 'var(--db-text-secondary)',
+      border: `1px solid ${danger ? 'var(--db-red-text)' : 'var(--db-border-strong)'}`, borderRadius: 6,
       padding: small ? '4px 10px' : '6px 14px',
       fontSize: small ? 12 : 13, fontWeight: 500, cursor: 'pointer',
       fontFamily: 'inherit', transition: 'all 120ms ease',
     }}
     onMouseEnter={e => {
-      e.currentTarget.style.background = 'var(--db-bg-muted)';
-      e.currentTarget.style.color = 'var(--db-text-primary)';
+      e.currentTarget.style.background = danger ? 'var(--db-red-bg)' : 'var(--db-bg-muted)';
+      e.currentTarget.style.color = danger ? 'var(--db-red-text)' : 'var(--db-text-primary)';
     }}
     onMouseLeave={e => {
       e.currentTarget.style.background = 'transparent';
-      e.currentTarget.style.color = 'var(--db-text-secondary)';
+      // Back to the variant's own colour, not the neutral one: a danger
+      // button that lost its red after the first hover would read as safe.
+      e.currentTarget.style.color = danger ? 'var(--db-red-text)' : 'var(--db-text-secondary)';
     }}
     >
       {children}

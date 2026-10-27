@@ -100,7 +100,9 @@ func dispatchTerminalRuns(ctx context.Context, runRepo database.RunRepo) {
 			// that already succeeded.
 			continue
 		}
-		if err := runRepo.MarkCompletionHooksFired(ctx, run.ID); err != nil {
+		// run.Attempt is the attempt this dispatch was for. Passing it keeps
+		// the mark from landing on a resumed attempt whose hooks never ran.
+		if err := runRepo.MarkCompletionHooksFired(ctx, run.ID, run.Attempt); err != nil {
 			apilog.WithFields(apilog.Fields{
 				"run_id": run.ID,
 				"error":  err.Error(),
