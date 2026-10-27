@@ -796,3 +796,71 @@ describe('LayerModelsPanel — selecting a model records its reported limits', (
     expect(onChange.mock.calls.at(-1)![0][DEFAULT_LAYER].config.max_input_tokens).toBe('8192');
   });
 });
+
+// An endpoint serves its own deployed model over the OpenAI
+// chat-completions wire, and vertex-ai refuses to build when anything else
+// is named. Moving a layer onto an endpoint entry carried the override it
+// had — and the control is hidden in endpoint mode, so there was nowhere to
+// see it, let alone clear it. The API accepts the save; the next run finds
+// out.
+describe('LayerModelsPanel — pointing a layer at an endpoint entry', () => {
+  const ENDPOINT_ENTRIES: LLMProviderEntry[] = [
+    { id: 'default', label: 'Vertex', provider: 'vertex-ai', config: { project_id: 'p' } },
+    { id: 'deployed', label: 'Vertex endpoint', provider: 'vertex-ai', config: { project_id: 'p', endpoint_id: '123' } },
+  ];
+
+  function renderWithEntries(value: Record<string, LayerModel>) {
+    const onChange = jest.fn();
+    render(
+      <MantineProvider>
+        <LayerModelsPanel
+          projectId="proj-1" entries={ENDPOINT_ENTRIES} savedEntries={ENDPOINT_ENTRIES}
+          providers={[{ ...BEDROCK_META, id: 'vertex-ai' } as never]}
+          value={value}
+          onChange={onChange}
+        />
+      </MantineProvider>,
+    );
+    return onChange;
+  }
+
+  it('drops a wire override the endpoint cannot accept', async () => {
+    const onChange = renderWithEntries({
+      [DEFAULT_LAYER]: { provider_id: 'default', model: 'gemini-2.5-flash' },
+      analysis: {
+        provider_id: 'default', model: 'gemini-2.5-flash',
+        config: { wire_override: 'google-native', max_input_tokens: '4096' },
+      },
+    });
+    await screen.findByText('Main layers');
+
+    // Move the analysis row onto the deployed-endpoint entry.
+    const providerSelects = screen.getAllByRole('textbox', { name: 'Provider' });
+    fireEvent.click(providerSelects[providerSelects.length - 1]);
+    fireEvent.click(await screen.findByText('Vertex endpoint'));
+
+    const next = onChange.mock.calls.at(-1)![0];
+    expect(next.analysis.provider_id).toBe('deployed');
+    expect(next.analysis.config?.wire_override).toBeUndefined();
+    // The model goes too — it belonged to the publisher connection.
+    expect(next.analysis.model).toBe('');
+    // And a setting the endpoint has no quarrel with survives.
+    expect(next.analysis.config?.max_input_tokens).toBe('4096');
+  });
+
+  it('keeps the override when the new entry is not an endpoint', async () => {
+    const onChange = renderWithEntries({
+      [DEFAULT_LAYER]: { provider_id: 'deployed', model: '' },
+      analysis: { provider_id: 'deployed', model: '', config: { wire_override: 'google-native' } },
+    });
+    await screen.findByText('Main layers');
+
+    const providerSelects = screen.getAllByRole('textbox', { name: 'Provider' });
+    fireEvent.click(providerSelects[providerSelects.length - 1]);
+    fireEvent.click(await screen.findByText('Vertex'));
+
+    const next = onChange.mock.calls.at(-1)![0];
+    expect(next.analysis.provider_id).toBe('default');
+    expect(next.analysis.config?.wire_override).toBe('google-native');
+  });
+});

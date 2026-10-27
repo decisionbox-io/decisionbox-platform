@@ -259,6 +259,27 @@ export function LayerModelsPanel({
     return Boolean((row.config?.['endpoint_id'] || entry?.config?.['endpoint_id'] || '').trim());
   };
 
+  /**
+   * Points a row at another entry: the model goes, and so does a wire
+   * override the new connection cannot accept.
+   *
+   * The model belongs to the entry it was picked from. The override is the
+   * same story with a worse ending — an endpoint serves its own model over
+   * the OpenAI chat-completions wire, and vertex-ai refuses to build when
+   * anything else is named, so moving a layer onto an endpoint entry carried
+   * a wire the control is then hidden for. The API accepts it and the next
+   * run or Ask request is the one that finds out.
+   */
+  const pointRowAt = (row: LayerModel, entryID: string) => {
+    const next: LayerModel = { ...row, provider_id: entryID, model: '' };
+    if (next.config?.['wire_override'] && usingEndpoint(next)) {
+      const config = { ...next.config };
+      delete config['wire_override'];
+      next.config = config;
+    }
+    return next;
+  };
+
   const renderModelSettings = (
     row: LayerModel,
     meta: ProviderMeta | null,
@@ -518,10 +539,7 @@ export function LayerModelsPanel({
                   onChange={(val) => {
                     if (!val) return;
                     void loadModelsFor(val, layer.key);
-                    // The model belongs to the entry it was picked from, so
-                    // switching entries clears it rather than carrying a
-                    // model the new connection may not serve.
-                    setRow(layer.key, { ...effective, provider_id: val, model: '' });
+                    setRow(layer.key, pointRowAt(effective, val));
                   }}
                 />
                 <Stack gap={4}>

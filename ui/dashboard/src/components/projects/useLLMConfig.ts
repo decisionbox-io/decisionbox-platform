@@ -134,16 +134,26 @@ export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void):
         // never renders.
         setEntryForms(entryFormsFrom(cfg.providers, provs));
         setLayerModels(cfg.layer_models || {});
-        // Only a PERSISTED entry can be connection-tested: the test reads
-        // stored config and the stored secret, not in-flight form state.
-        setSavedIds(cfg.seeded ? [] : cfg.providers.map((e) => e.id || DEFAULT_LLM_PROVIDER_ID));
+        // Every entry the server just described is one it can answer about,
+        // SEEDED INCLUDED. A seeded entry is synthesised from project.llm
+        // and project.blurb_llm, which are persisted — ProviderByID resolves
+        // it through EffectiveProviders and reads its stored credential, so
+        // both the connection check and the model list work on it.
+        //
+        // Treating a seeded project as having nothing saved broke the one
+        // screen every legacy project has to pass through: no model list
+        // would load for any layer, and the connection check went in flight
+        // without the stored key, so migrating meant retyping a credential
+        // to browse the models the save requires you to pick from. An entry
+        // the user ADDS here is a different thing, and isNew already says so.
+        setSavedIds(cfg.providers.map((e) => e.id || DEFAULT_LLM_PROVIDER_ID));
         // Normalised through the SAME round trip the in-flight entries take,
         // so the two are comparable. entryFormsFrom pre-selects a
         // single-method provider's sole auth_method and entriesFrom writes
         // it into the config, so a raw stored entry differs from an
         // untouched edited one — which made every such connection look
         // unsaved, and its model list never load.
-        setSavedEntries(cfg.seeded ? [] : entriesFrom(entryFormsFrom(cfg.providers, provs)));
+        setSavedEntries(entriesFrom(entryFormsFrom(cfg.providers, provs)));
         api.listSecrets(projectId).then((s) => setSecrets(s || [])).catch(() => {});
       })
       .catch((e) => setError((e as Error).message))

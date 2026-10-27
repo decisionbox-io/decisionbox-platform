@@ -252,3 +252,40 @@ describe('useLLMConfig.setEntryForms — entering endpoint mode', () => {
     expect(hook.result.current.layerModels.default.config?.wire_override).toBe('google-native');
   });
 });
+
+// The migration screen is the one screen every legacy project has to pass
+// through, and it asks the user to pick a model per layer. A seeded entry
+// is synthesised from project.llm / project.blurb_llm, which ARE persisted:
+// the server resolves it through EffectiveProviders and reads its stored
+// credential. Reporting nothing as saved made LayerModelsPanel treat every
+// connection as unsaved — so no model list loaded for any layer — and sent
+// the connection check in flight without the stored, write-only key. The
+// only way through was to retype a credential, to browse the models the
+// save then requires you to choose from.
+describe('useLLMConfig — a seeded project has a saved baseline', () => {
+  const SEEDED = {
+    seeded: true,
+    configured: false,
+    providers: [
+      { id: 'default', provider: 'bedrock', config: { region: 'us-east-1' } },
+      { id: 'blurb', provider: 'openai', config: {} },
+    ],
+    layer_models: {
+      default: { provider_id: 'default', model: 'opus' },
+      table_descriptions: { provider_id: 'blurb', model: 'gpt-4.1-nano' },
+    },
+  };
+
+  it('reports the seeded entries as saved and server-answerable', async () => {
+    (api.getProjectLLMConfig as jest.Mock).mockResolvedValue(SEEDED);
+    const hook = renderHook(() => useLLMConfig('p1'));
+    await waitFor(() => expect(hook.result.current.loading).toBe(false));
+
+    expect(hook.result.current.seeded).toBe(true);
+    expect(hook.result.current.savedIds).toEqual(['default', 'blurb']);
+    // And the baseline is comparable to the in-flight forms, so an
+    // untouched seeded connection does not read as edited.
+    expect(hook.result.current.savedEntries.map((e) => e.id)).toEqual(['default', 'blurb']);
+    expect(hook.result.current.savedEntries).toEqual(hook.result.current.entries);
+  });
+});
