@@ -90,7 +90,23 @@ func (s LayerSpec) Validate() error {
 // would replay one layer's calls against another layer's endpoint and
 // settings. It is the same key agentserver builds a provider under.
 func (s LayerSpec) Target() string {
-	return s.ProviderID + "/" + s.Provider + "/" + s.Model + "/" + ConfigKey(gollm.ProviderConfig(s.Config))
+	return s.ProviderID + "/" + s.Provider + "/" + s.Model + "/" + s.ConnectionKey()
+}
+
+// ConnectionKey is the dedupe identity of this layer's CONNECTION: ConfigKey
+// over the merged config, plus the RESOLVED prompt-cache decision.
+//
+// Resolved rather than raw, because the stored map records what someone typed
+// and not what runs: a row that omits prompt_cache and a row that sets it to
+// the value it would have defaulted to describe the SAME connection. The
+// settings page states both toggles explicitly on the default row so the form
+// shows what is actually running, which means the dashboard saves them — so
+// keying on the raw map charged a project an extra provider instance, an extra
+// credential initialisation and an extra live model probe the first time
+// anyone pressed Save without changing anything.
+func (s LayerSpec) ConnectionKey() string {
+	return ConfigKey(gollm.ProviderConfig(s.Config)) +
+		gollm.PromptCacheKey + "=" + strconv.FormatBool(s.PromptCache) + "\x00"
 }
 
 // OutputCeiling is the largest max_tokens this layer's model will accept:
@@ -312,9 +328,12 @@ func BuildProviderWith(spec LayerSpec, cred Credential, opts BuildOptions) (goll
 //
 // The model is deliberately NOT part of it, because gollm providers treat the
 // construction-time model as a fallback only — and neither is reasoning,
-// which is requested per call. prompt_cache IS part of it: that one is read
-// when the provider is built, which is why two layers disagreeing about
-// caching really are two connections.
+// which is requested per call.
+//
+// prompt_cache is not part of it EITHER, but for the opposite reason: it is
+// read when the provider is built, so it genuinely is part of the connection
+// — it is just that the raw map is the wrong place to read it from. Use
+// LayerSpec.ConnectionKey, which folds in the RESOLVED value.
 //
 // Neither is the credential, which is NOT derived from the entry alone: the
 // chain depends on the LAYER (table descriptions tries the blurb secret
@@ -330,7 +349,7 @@ func ConfigKey(cfg gollm.ProviderConfig) string {
 		// credential initialisations and two live model probes, each of
 		// which can take seconds, for a setting the connection does not
 		// carry.
-		if k == "model" || k == gollm.ReasoningEnabledKey {
+		if k == "model" || k == gollm.ReasoningEnabledKey || k == gollm.PromptCacheKey {
 			continue
 		}
 		keys = append(keys, k)

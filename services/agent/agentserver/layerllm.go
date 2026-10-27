@@ -225,7 +225,7 @@ func buildLayerSet(ctx context.Context, in layerSetInput) (*layerSet, error) {
 		if strings.TrimSpace(spec.Model) == "" {
 			modelled = "endpoint"
 		}
-		providerKey := spec.ProviderID + "\x00" + llmlayer.ConfigKey(gollm.ProviderConfig(spec.Config)) +
+		providerKey := spec.ProviderID + "\x00" + spec.ConnectionKey() +
 			"\x00" + cred.SecretKey + "\x00" + cred.Source + "\x00" + modelled
 		provider, built := providers[providerKey]
 		var mergedCfg gollm.ProviderConfig

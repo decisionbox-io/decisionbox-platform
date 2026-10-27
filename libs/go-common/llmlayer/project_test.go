@@ -386,9 +386,7 @@ func TestPerLayerPromptCaching(t *testing.T) {
 		}
 		// The D2 consequence, pinned: prompt caching is read at CONSTRUCTION,
 		// so these two layers are two provider instances on one entry.
-		offCfg := ProviderConfig(off, Credential{}, BuildOptions{})
-		onCfg := ProviderConfig(on, Credential{}, BuildOptions{})
-		if ConfigKey(offCfg) == ConfigKey(onCfg) {
+		if off.ConnectionKey() == on.ConnectionKey() {
 			t.Error("two layers on one entry with different caching must NOT dedupe to one provider — they would share the wrong construction-time setting")
 		}
 	})

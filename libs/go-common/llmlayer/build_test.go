@@ -399,15 +399,18 @@ func TestConfigKeyIgnoresTheModelSoOneProviderServesEveryModelOnAnEntry(t *testi
 	}
 }
 
-func TestConfigKeyDistinguishesPromptCacheBecauseItIsReadAtConstruction(t *testing.T) {
+func TestConnectionKeyDistinguishesPromptCacheBecauseItIsReadAtConstruction(t *testing.T) {
 	// This is the one difference from per-layer reasoning: prompt caching is
 	// read when the provider is BUILT (the four Anthropic-wire providers), so
 	// two layers on the same entry with different caching settings are two
 	// provider instances. Pinned here so it is a known cost, not a surprise.
-	on := gollm.ProviderConfig{"region": "us-east-1", gollm.PromptCacheKey: "true"}
-	off := gollm.ProviderConfig{"region": "us-east-1", gollm.PromptCacheKey: "false"}
-	if ConfigKey(on) == ConfigKey(off) {
-		t.Error("ConfigKey must distinguish prompt_cache, or a layer with caching off would silently share a cached provider")
+	//
+	// Read off the RESOLVED field rather than the raw map — see ConnectionKey.
+	cfg := map[string]string{"region": "us-east-1"}
+	on := LayerSpec{Provider: "bedrock", Model: "m", Config: cfg, PromptCache: true}
+	off := LayerSpec{Provider: "bedrock", Model: "m", Config: cfg, PromptCache: false}
+	if on.ConnectionKey() == off.ConnectionKey() {
+		t.Error("ConnectionKey must distinguish prompt_cache, or a layer with caching off would silently share a cached provider")
 	}
 }
 
@@ -434,20 +437,28 @@ func TestTargetDistinguishesEntriesSharingAModelAlias(t *testing.T) {
 // the sharpest case: it is applied when the provider is constructed, not per
 // request, so two layers that disagree about it cannot be one client.
 func TestTargetDistinguishesLayersThatDisagreeAboutTheConnection(t *testing.T) {
-	base := LayerSpec{ProviderID: DefaultProviderID, Provider: "litellm", Model: "qwen3-32b"}
+	base := LayerSpec{ProviderID: DefaultProviderID, Provider: "litellm", Model: "qwen3-32b", PromptCache: true}
 	cases := []struct {
 		name string
 		cfg  map[string]string
+		// cacheOff mirrors what SpecUnchecked does: a config that turns
+		// caching off also resolves the field, and ConnectionKey reads the
+		// field. A case that only edited the map would be testing a spec
+		// production never builds.
+		cacheOff bool
 	}{
-		{"a different endpoint", map[string]string{"endpoint_id": "ep-2"}},
-		{"a wire override", map[string]string{"wire_override": "anthropic-messages"}},
-		{"prompt caching off", map[string]string{gollm.PromptCacheKey: "false"}},
-		{"a tighter output cap", map[string]string{"max_output_tokens": "1024"}},
+		{name: "a different endpoint", cfg: map[string]string{"endpoint_id": "ep-2"}},
+		{name: "a wire override", cfg: map[string]string{"wire_override": "anthropic-messages"}},
+		{name: "prompt caching off", cfg: map[string]string{gollm.PromptCacheKey: "false"}, cacheOff: true},
+		{name: "a tighter output cap", cfg: map[string]string{"max_output_tokens": "1024"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			other := base
 			other.Config = c.cfg
+			if c.cacheOff {
+				other.PromptCache = false
+			}
 			if base.Target() == other.Target() {
 				t.Errorf("Target() collapsed two layers differing by %v", c.cfg)
 			}
@@ -532,5 +543,29 @@ func TestClampOutputOnlyEverLowers(t *testing.T) {
 	unknown := LayerSpec{Provider: "litellm", Model: "something-nobody-catalogued"}
 	if got := unknown.ClampOutput(4000); got != 4000 {
 		t.Errorf("clamped = %d with no known ceiling, want 4000", got)
+	}
+}
+// --- red proof for F6, added to libs/go-common/llmlayer/build_test.go ---
+
+func TestConnectionKeyFoldsTheRESOLVEDPromptCacheSoSavingTheFormBuysNoExtraProvider(t *testing.T) {
+	// The settings form states the default row's toggles explicitly so it
+	// shows what actually runs, which means the dashboard SAVES them. A row
+	// that omits prompt_cache and a row that sets it to the value it would
+	// have defaulted to describe the same connection — if the key disagrees,
+	// pressing Save without changing anything costs a second HTTP client, a
+	// second credential initialisation and a second live model probe.
+	entry := map[string]string{"base_url": "https://proxy.internal/v1", "auth_method": "api_key"}
+	saved := LayerSpec{Provider: "litellm", Model: "a", PromptCache: true,
+		Config: map[string]string{"base_url": entry["base_url"], "auth_method": entry["auth_method"], "prompt_cache": "true"}}
+	inherited := LayerSpec{Provider: "litellm", Model: "b", PromptCache: true,
+		Config: map[string]string{"base_url": entry["base_url"], "auth_method": entry["auth_method"]}}
+	if saved.ConnectionKey() != inherited.ConnectionKey() {
+		t.Error("a saved prompt_cache that matches the default must not split the connection pool")
+	}
+
+	off := LayerSpec{Provider: "litellm", Model: "a", PromptCache: false,
+		Config: map[string]string{"base_url": entry["base_url"], "auth_method": entry["auth_method"], "prompt_cache": "false"}}
+	if off.ConnectionKey() == saved.ConnectionKey() {
+		t.Error("caching on and caching off are two connections — prompt_cache is read when the provider is BUILT")
 	}
 }
