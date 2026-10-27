@@ -36,6 +36,16 @@ import {
 } from '@/components/ProviderCredentialsPhase';
 import { TestConnectionButton } from './WarehouseConfigPanel';
 
+/**
+ * Config keys that describe the MODEL rather than the connection, and so
+ * belong on a layer row. Mirrors llmlayer.ModelScopedKeys on the server,
+ * which partitions a legacy config the same way.
+ */
+const MODEL_SCOPED_KEYS = [
+  'max_input_tokens', 'max_output_tokens', 'wire_override',
+  'prompt_cache', 'reasoning_enabled',
+];
+
 /** One entry's form state. `apiKey` is write-only — never read back. */
 export interface ProviderEntryForm {
   id: string;
@@ -95,7 +105,17 @@ export function entriesFrom(forms: ProviderEntryForm[]): LLMProviderEntry[] {
       const config: Record<string, string> = Object.fromEntries(
         // `model` never belongs on an entry — it is the layer's choice — and
         // a credential never belongs in the project document.
-        Object.entries(f.config).filter(([k]) => k !== 'model' && k !== 'credentials_json'),
+        //
+        // Nor do the MODEL-SCOPED settings. The credentials component seeds
+        // a provider's metadata defaults into the form, and every
+        // Anthropic-wire provider declares prompt_cache with a default of
+        // true — so persisting the whole form put an invisible caching
+        // setting on the connection, which the backend then merged UNDER
+        // every row that does not set one. The Models tab showed the
+        // default row's value while the layer ran with the entry's.
+        Object.entries(f.config).filter(
+          ([k]) => k !== 'model' && k !== 'credentials_json' && !MODEL_SCOPED_KEYS.includes(k),
+        ),
       );
       if (f.authMethod) config.auth_method = f.authMethod;
       return { id: f.id, label: f.label || undefined, provider: f.provider, config };

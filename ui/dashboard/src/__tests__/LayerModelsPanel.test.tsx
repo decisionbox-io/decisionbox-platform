@@ -525,9 +525,13 @@ describe('LayerModelsPanel — table descriptions list under their own credentia
     });
     await screen.findByText('Main layers');
 
+    // Both keys: provider_id names the entry the row points at NOW, and
+    // layer keeps the blurb-first credential chain. The server would
+    // otherwise resolve the PERSISTED assignment and answer about whichever
+    // entry that row used to name.
     await waitFor(() => {
       const calls = (api.listLiveLLMModelsForProvider as jest.Mock).mock.calls.map(([, body]) => body);
-      expect(calls).toContainEqual({ layer: 'table_descriptions' });
+      expect(calls).toContainEqual({ layer: 'table_descriptions', provider_id: 'default' });
     });
     const calls = (api.listLiveLLMModelsForProvider as jest.Mock).mock.calls.map(([, body]) => body);
     expect(calls).toContainEqual({ provider_id: 'default' });
@@ -538,7 +542,7 @@ describe('LayerModelsPanel — table descriptions list under their own credentia
     await screen.findByText('Main layers');
     await waitFor(() => expect(api.listLiveLLMModelsForProvider).toHaveBeenCalled());
     const calls = (api.listLiveLLMModelsForProvider as jest.Mock).mock.calls.map(([, body]) => body);
-    expect(calls).not.toContainEqual({ layer: 'table_descriptions' });
+    expect(calls.some((b) => b.layer === 'table_descriptions')).toBe(false);
   });
 });
 

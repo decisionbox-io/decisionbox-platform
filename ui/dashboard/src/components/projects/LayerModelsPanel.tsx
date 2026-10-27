@@ -148,7 +148,12 @@ export function LayerModelsPanel({
     if (requestedRef.current.has(key)) return;
     requestedRef.current.add(key);
     try {
-      const body = listsByLayer(layer) ? { layer } : { provider_id: entryId };
+      // Both, for the table-description layer: provider_id names the entry
+      // the row points at NOW (the server would otherwise resolve the
+      // persisted assignment and answer about the previous one), while
+      // layer keeps the blurb-first credential chain that makes this
+      // listing different from the entry's.
+      const body = listsByLayer(layer) ? { layer, provider_id: entryId } : { provider_id: entryId };
       const resp = await api.listLiveLLMModelsForProvider(projectId, body);
       setLiveByEntry((prev) => ({ ...prev, [key]: resp.models }));
       setLiveErrors((prev) => ({ ...prev, [key]: resp.live_error ?? null }));

@@ -127,6 +127,37 @@ export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void):
       .finally(() => setLoading(false));
   }, [projectId]);
 
+  /**
+   * editEntries replaces the provider-entry forms, clearing the models of
+   * any layer whose entry just changed PROVIDER.
+   *
+   * A model belongs to the provider it was picked from. Repointing an entry
+   * from OpenAI to Claude left every layer on it holding a model the new
+   * provider does not serve — and validation only checks that a model is
+   * non-empty, so the save went through and those layers called a model
+   * that does not exist. The row-level picker already clears the model when
+   * its entry changes; this is the same rule seen from the Providers tab.
+   */
+  const editEntries = useCallback((next: ProviderEntryForm[]) => {
+    const repointed = new Set<string>();
+    for (const f of next) {
+      const before = entryForms.find((p) => p.id === f.id);
+      if (before && before.provider && f.provider && before.provider !== f.provider) {
+        repointed.add(f.id);
+      }
+    }
+    setEntryForms(next);
+    if (repointed.size === 0) return;
+    setLayerModels((rows) => {
+      const out: Record<string, LayerModel> = {};
+      for (const [layer, row] of Object.entries(rows)) {
+        const id = row.provider_id || DEFAULT_LLM_PROVIDER_ID;
+        out[layer] = repointed.has(id) ? { ...row, model: '' } : row;
+      }
+      return out;
+    });
+  }, [entryForms]);
+
   const entries = useMemo(() => entriesFrom(entryForms), [entryForms]);
 
   const layersByProviderId = useMemo(() => {
@@ -219,7 +250,7 @@ export function useLLMConfig(projectId: string, onSaved?: (p: Project) => void):
 
   return {
     loading, error, saving, seeded, configured, providers,
-    entryForms, setEntryForms, layerModels, setLayerModels,
+    entryForms, setEntryForms: editEntries, layerModels, setLayerModels,
     secrets, savedIds, savedEntries, savedGeneration,
     layersByProviderId, validationError, save, entries,
   };

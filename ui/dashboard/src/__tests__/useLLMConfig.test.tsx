@@ -126,3 +126,59 @@ describe('useLLMConfig.savedEntries', () => {
     expect(hook.result.current.savedEntries).toEqual(hook.result.current.entries);
   });
 });
+
+// A model belongs to the provider it was picked from. Repointing an entry
+// from one provider to another left every layer on it holding a model the
+// new provider does not serve — and validation only checks that a model is
+// non-empty, so the save went through and those layers called a model that
+// does not exist.
+describe('useLLMConfig — repointing an entry', () => {
+  it('clears the models of the layers that use it', async () => {
+    (api.getProjectLLMConfig as jest.Mock).mockResolvedValue({
+      seeded: false,
+      configured: true,
+      providers: [
+        { id: 'default', provider: 'openai', config: {} },
+        { id: 'other', provider: 'bedrock', config: {} },
+      ],
+      layer_models: {
+        default: { provider_id: 'default', model: 'gpt-4o' },
+        analysis: { provider_id: 'other', model: 'opus' },
+      },
+    });
+
+    const hook = renderHook(() => useLLMConfig('p1'));
+    await waitFor(() => expect(hook.result.current.loading).toBe(false));
+
+    act(() => {
+      hook.result.current.setEntryForms(
+        hook.result.current.entryForms.map((f) => (f.id === 'default' ? { ...f, provider: 'claude' } : f)),
+      );
+    });
+
+    // The layer on the repointed entry loses its model; the other keeps it.
+    expect(hook.result.current.layerModels.default.model).toBe('');
+    expect(hook.result.current.layerModels.analysis.model).toBe('opus');
+    // And the configuration cannot be saved until the user picks one.
+    expect(hook.result.current.validationError).toMatch(/Pick a model/i);
+  });
+
+  it('leaves the models alone when only the label changes', async () => {
+    (api.getProjectLLMConfig as jest.Mock).mockResolvedValue({
+      seeded: false,
+      configured: true,
+      providers: [{ id: 'default', provider: 'openai', config: {} }],
+      layer_models: { default: { provider_id: 'default', model: 'gpt-4o' } },
+    });
+
+    const hook = renderHook(() => useLLMConfig('p1'));
+    await waitFor(() => expect(hook.result.current.loading).toBe(false));
+
+    act(() => {
+      hook.result.current.setEntryForms(
+        hook.result.current.entryForms.map((f) => ({ ...f, label: 'Renamed' })),
+      );
+    });
+    expect(hook.result.current.layerModels.default.model).toBe('gpt-4o');
+  });
+});

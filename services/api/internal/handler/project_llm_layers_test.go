@@ -1498,3 +1498,59 @@ func TestUpdate_AnExplicitResetClearsBothHalves(t *testing.T) {
 		t.Error("a project reset to nothing still reports itself configured")
 	}
 }
+
+// A NULL blurb_llm means "there is no legacy override", not "remove the
+// layer".
+//
+// It is exactly what this API returns for a project whose table
+// descriptions are on a secondary entry — the mirror is deliberately empty
+// there — so any client that reads a project and writes it back sends it.
+// Treating that round trip as a clear dropped the user's override and sent
+// indexing back to the default model, with a 200.
+func TestUpdate_ANullBlurbDoesNotRemoveTheTableDescriptionLayer(t *testing.T) {
+	repo := newMockProjectRepo()
+	h := NewProjectsHandler(repo, newMockDomainPackRepo())
+	p := configuredProject(t, repo)
+
+	if w := putProject(t, h, p.ID, `{
+	  "llm_providers": [
+	    {"id": "default", "provider": "bedrock"},
+	    {"id": "cheap", "provider": "litellm", "config": {"base_url": "http://cheap"}}
+	  ],
+	  "layer_models": {
+	    "default": {"provider_id": "default", "model": "opus"},
+	    "table_descriptions": {"provider_id": "cheap", "model": "qwen3-32b"}
+	  }
+	}`); w.Code != http.StatusOK {
+		t.Fatalf("seed: %s", w.Body.String())
+	}
+	// The mirror is empty for a secondary entry, which is what the client
+	// reads back and returns.
+	stored, _ := repo.GetByID(context.Background(), p.ID)
+	if stored.BlurbLLM != nil {
+		t.Fatalf("precondition: the mirror should be empty, got %+v", stored.BlurbLLM)
+	}
+
+	w := putProject(t, h, p.ID, `{"name": "renamed", "blurb_llm": null}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	got, _ := repo.GetByID(context.Background(), p.ID)
+	row, ok := got.LayerModels[llmlayer.LayerTableDescriptions]
+	if !ok {
+		t.Fatalf("the table-description override was deleted by a round trip: %+v", got.LayerModels)
+	}
+	if row.ProviderID != "cheap" || row.Model != "qwen3-32b" {
+		t.Errorf("table_descriptions row = %+v, want the user's choice intact", row)
+	}
+
+	// The documented clear — an explicit empty provider — still clears.
+	if w := putProject(t, h, p.ID, `{"blurb_llm": {"provider": "", "model": ""}}`); w.Code != http.StatusOK {
+		t.Fatalf("explicit clear: %s", w.Body.String())
+	}
+	got, _ = repo.GetByID(context.Background(), p.ID)
+	if _, ok := got.LayerModels[llmlayer.LayerTableDescriptions]; ok {
+		t.Error("an explicit empty-provider clear left the row in place")
+	}
+}

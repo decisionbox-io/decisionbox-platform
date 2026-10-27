@@ -334,6 +334,13 @@ func dualWriteLegacyLLM(p *models.Project) {
 	}
 }
 
+// isNonNullJSON reports whether a field was sent with a real value, as
+// opposed to absent or explicitly null.
+func isNonNullJSON(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed != "" && trimmed != "null"
+}
+
 // mirrorLegacyBlurbOntoTableDescriptions moves a legacy blurb_llm write onto
 // the table-description ROW, which is what the product reads.
 //
@@ -577,7 +584,14 @@ func (h *ProjectsHandler) applyLLMLayerUpdate(
 		// now a row setting: blurb_llm is the table-description row, and the
 		// two toggles are config entries on the default row.
 		_, llmSent := sentFields["llm"]
-		_, blurbSent := sentFields["blurb_llm"]
+		// A NULL blurb_llm is "there is no legacy override", not "remove the
+		// layer". It is what this API returns for a project whose table
+		// descriptions are on a secondary entry — the mirror is
+		// deliberately empty there — so any client that reads a project and
+		// writes it back sends it, and treating that as a clear silently
+		// dropped the user's override and sent indexing back to the default
+		// model with a 200.
+		blurbSent := isNonNullJSON(sentFields["blurb_llm"])
 		_, cacheSent := sentFields["prompt_cache_enabled"]
 		_, reasoningSent := sentFields["reasoning_enabled"]
 		if (llmSent || blurbSent || cacheSent || reasoningSent) && existing.LLMConfigured() {
