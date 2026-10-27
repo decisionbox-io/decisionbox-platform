@@ -1068,6 +1068,35 @@ export function llmProviderIdFromName(name: string, taken: Iterable<string>): st
   return '';
 }
 
+/**
+ * What to call a provider entry on screen.
+ *
+ * The NAME the user gave it, else something human derived from what they
+ * actually chose — the provider's registry display name, and for the two
+ * reserved slots the job that slot does. Never the id: that is the secret
+ * key and the layer rows' reference, and a user who was never asked to
+ * type it should not have to read it. The fallback used to be
+ * `${id} — ${provider}`, which showed "default — bedrock" for a connection
+ * whose owner had typed neither word.
+ */
+export function llmEntryDisplayName(
+  entry: { id: string; label?: string; provider?: string },
+  providers: { id: string; name: string }[],
+): string {
+  const named = (entry.label || '').trim();
+  if (named) return named;
+  const provider = providers.find((p) => p.id === entry.provider)?.name
+    || entry.provider
+    || '';
+  if (entry.id === DEFAULT_LLM_PROVIDER_ID) {
+    return provider ? `Default · ${provider}` : 'Default';
+  }
+  if (entry.id === BLURB_LLM_PROVIDER_ID) {
+    return provider ? `Table descriptions · ${provider}` : 'Table descriptions';
+  }
+  return provider || entry.id;
+}
+
 export interface LLMLayersResponse {
   version: number;
   layers: LLMLayerDescriptor[];

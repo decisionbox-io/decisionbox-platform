@@ -23,6 +23,7 @@ import { IconAlertCircle, IconRotateClockwise } from '@tabler/icons-react';
 import {
   DEFAULT_LLM_PROVIDER_ID as DEFAULT_PROVIDER_ID,
   LLMLayerDescriptor, LLMProviderEntry, LayerModel, LiveModel, ProviderMeta, api,
+  llmEntryDisplayName,
 } from '@/lib/api';
 import { LiveModelCombobox } from '@/components/common/LLMModelField';
 import { TestConnectionButton } from './WarehouseConfigPanel';
@@ -108,8 +109,8 @@ export function LayerModelsPanel({
   const entryOptions = useMemo(
     () => entries
       .filter((e) => e.provider)
-      .map((e) => ({ value: e.id, label: e.label || `${e.id} — ${e.provider}` })),
-    [entries],
+      .map((e) => ({ value: e.id, label: llmEntryDisplayName(e, providers) })),
+    [entries, providers],
   );
 
   const defaultRow: LayerModel = value[DEFAULT_LAYER] || {};

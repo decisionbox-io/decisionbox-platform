@@ -29,7 +29,7 @@ import {
 import { IconAlertCircle, IconPlus, IconShieldCheck, IconTrash } from '@tabler/icons-react';
 import {
   api, DEFAULT_LLM_PROVIDER_ID, LayerModel, LLMProviderEntry, LiveModel,
-  llmProviderIdFromName,
+  llmEntryDisplayName, llmProviderIdFromName,
   ProviderMeta, SecretEntryResponse, isValidLLMProviderId, llmProviderSecretKey,
 } from '@/lib/api';
 import {
@@ -310,7 +310,12 @@ export function LLMProvidersPanel({
                         ? `id: ${form.id} · credential: ${llmProviderSecretKey(form.id)}`
                         : 'Name this connection to create it'}
                     >
-                      <Badge variant="outline">{form.label.trim() || form.id || 'unnamed'}</Badge>
+                      <Badge variant="outline">
+                        {form.label.trim()
+                          || (form.provider
+                            ? llmEntryDisplayName({ id: form.id, provider: form.provider }, providers)
+                            : 'unnamed')}
+                      </Badge>
                     </Tooltip>
                   )}
                   {inUseBy.length > 0 && (

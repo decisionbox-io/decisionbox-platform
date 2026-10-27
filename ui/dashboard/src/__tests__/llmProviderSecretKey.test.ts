@@ -1,5 +1,6 @@
 import {
-  MAX_LLM_PROVIDER_ID_LEN, isValidLLMProviderId, llmProviderIdFromName, llmProviderSecretKey,
+  MAX_LLM_PROVIDER_ID_LEN, isValidLLMProviderId, llmEntryDisplayName, llmProviderIdFromName,
+  llmProviderSecretKey,
 } from '@/lib/api';
 
 // The dashboard writes a provider entry's credential directly, so this
@@ -72,5 +73,42 @@ describe('llmProviderIdFromName', () => {
   it('still fits the secret key the backend composes', () => {
     const id = llmProviderIdFromName('A very long connection name for a gateway', []);
     expect(llmProviderSecretKey(id)).toMatch(/^llm-credentials-[0-9a-f]+$/);
+  });
+});
+
+// A connection is named by what its owner chose: the name they typed, else
+// the provider they picked. Never by the id — the fallback used to read
+// "default — bedrock" for an entry whose owner had typed neither word.
+describe('llmEntryDisplayName', () => {
+  const PROVIDERS = [
+    { id: 'bedrock', name: 'Bedrock' },
+    { id: 'vertex-ai', name: 'Vertex AI' },
+  ];
+
+  it('uses the name when there is one', () => {
+    expect(llmEntryDisplayName({ id: 'cheap', label: 'DeepInfra', provider: 'bedrock' }, PROVIDERS))
+      .toBe('DeepInfra');
+  });
+
+  it('names the reserved slots by the job they do, with the chosen provider', () => {
+    expect(llmEntryDisplayName({ id: 'default', provider: 'bedrock' }, PROVIDERS))
+      .toBe('Default · Bedrock');
+    expect(llmEntryDisplayName({ id: 'blurb', provider: 'vertex-ai' }, PROVIDERS))
+      .toBe('Table descriptions · Vertex AI');
+  });
+
+  it('uses the provider display name, not its registry slug', () => {
+    expect(llmEntryDisplayName({ id: 'x', provider: 'vertex-ai' }, PROVIDERS)).toBe('Vertex AI');
+  });
+
+  it('never falls back to the id while there is a provider to name', () => {
+    for (const id of ['default', 'blurb', 'some-entry']) {
+      expect(llmEntryDisplayName({ id, provider: 'bedrock' }, PROVIDERS)).not.toContain(id);
+    }
+  });
+
+  it('still says something for an entry with no provider yet', () => {
+    expect(llmEntryDisplayName({ id: 'default' }, PROVIDERS)).toBe('Default');
+    expect(llmEntryDisplayName({ id: 'half-made' }, PROVIDERS)).toBe('half-made');
   });
 });
