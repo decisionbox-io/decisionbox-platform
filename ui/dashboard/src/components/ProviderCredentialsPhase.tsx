@@ -109,6 +109,17 @@ export interface ProviderCredentialsPhaseProps<P extends ProviderLike> {
   children?: React.ReactNode;
   /** Copy override for the "Load models" button. Default "Load models". */
   loadButtonLabel?: string;
+  /**
+   * True when a credential is ALREADY STORED for this target, so the load
+   * can go ahead with nothing typed.
+   *
+   * The button is otherwise disabled whenever a credential is required and
+   * the field is empty — which is correct for a first-time setup and wrong
+   * for a saved entry, whose key is write-only and therefore always blank
+   * here. Without this a saved secondary connection could not be checked at
+   * all without re-entering its secret.
+   */
+  hasStoredCredential?: boolean;
   /** Message shown when the provider doesn't need an API key. Default wording covers cloud-creds flows. */
   noKeyHint?: string;
   /** Whether to show the full "Back to credentials" button once in model phase. Default true. */
@@ -128,6 +139,7 @@ export function ProviderCredentialsPhase<P extends ProviderLike>({
   onLoad,
   children,
   loadButtonLabel = 'Load models',
+  hasStoredCredential = false,
   noKeyHint = 'This provider uses cloud credentials (IAM / ADC). No API key needed.',
   backable = true,
   phaseOverride,
@@ -296,7 +308,7 @@ export function ProviderCredentialsPhase<P extends ProviderLike>({
                   disabled={
                     !value.provider ||
                     (authMethods.length > 0 && !value.authMethod) ||
-                    (needsCredential && !value.apiKey)
+                    (needsCredential && !value.apiKey && !hasStoredCredential)
                   }
                   style={{ alignSelf: 'flex-start' }}
                 >

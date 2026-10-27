@@ -401,8 +401,14 @@ var askServeLayers = []string{
 	llmlayer.LayerSQLRepair,
 }
 
-// validationLayers are the layers the standalone document validator resolves.
-var validationLayers = []string{
-	llmlayer.LayerValidationVerifier,
-	llmlayer.LayerValidationRefuter,
+// validationLayers are the layers the standalone document validator
+// resolves. The refuter is included only when it is enabled, for the reason
+// discoveryLayers gates its own list: a provider built for a layer this run
+// will never call can only fail work it was not needed for.
+func validationLayers(refuterEnabled bool) []string {
+	layers := []string{llmlayer.LayerValidationVerifier}
+	if refuterEnabled {
+		layers = append(layers, llmlayer.LayerValidationRefuter)
+	}
+	return layers
 }

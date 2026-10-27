@@ -323,7 +323,7 @@ func runAskServe(cfg *config.Config) error {
 			executor := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
 				Warehouse:    wp,
 				ProviderSlug: wh.Provider,
-				SQLFixer:     askQueryFixer(layers.For(llmlayer.LayerSQLRepair).Client, wp, datasets, wh),
+				SQLFixer:     askQueryFixer(layers.For(llmlayer.LayerSQLRepair), wp, datasets, wh),
 				MaxRetries:   5,
 				FilterField:  wh.FilterField,
 				FilterValue:  wh.FilterValue,

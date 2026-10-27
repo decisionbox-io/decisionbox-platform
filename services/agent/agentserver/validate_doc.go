@@ -200,13 +200,20 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 	defer warehouseProvider.Close()
 	docWH, _ := project.WarehouseByID(docWHID)
 
+	// Read the validation configuration BEFORE the layer set, so a disabled
+	// refuter's provider is never built: building one reads a credential and
+	// opens a connection, and a broken refuter override used to abort a
+	// verifier-only validation that would never have called it. Discovery
+	// makes the same decision the same way.
+	vCfg, vCaps := verifier.LoadConfigFromEnv()
+
 	// The two validation layers (#407): the verifier and the refuter can run
 	// on different models, which is the pair where the choice matters most —
 	// swapping it changes what users see as verified.
 	layers, err := buildLayerSet(ctx, layerSetInput{
 		project:   project,
 		projectID: project.ID,
-		layers:    validationLayers,
+		layers:    validationLayers(vCfg.RefuterEnabled),
 		deps:      newLayerSetDeps(cfg, secretProvider, project.ID, nil),
 	})
 	if err != nil {
@@ -228,7 +235,16 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 	// a regression.
 	var schemaProvider ai.SchemaProvider
 
-	vCfg, vCaps := verifier.LoadConfigFromEnv()
+	// The deployment's validation output budget cannot exceed what each
+	// layer's own model accepts: a verifier capped at 1,024 tokens rejects
+	// the 4,000-token request outright, and a rejected call becomes an
+	// `unverifiable` verdict on a document that was fine. RunDiscovery
+	// clamps the same two numbers the same way.
+	vCfg.Verifier.MaxOutputTokens = clampLayerOutput(vCfg.Verifier.MaxOutputTokens, verifierLayer)
+	if vCfg.RefuterEnabled {
+		vCfg.Refuter.MaxOutputTokens = clampLayerOutput(vCfg.Refuter.MaxOutputTokens, refuterLayer)
+	}
+
 	stepByID := indexExplorationSteps(steps)
 
 	exec := &verifier.DefaultExecutor{
@@ -459,4 +475,13 @@ func indexExplorationSteps(steps []models.ExplorationStep) map[int]*models.Explo
 		out[steps[i].Step] = &steps[i]
 	}
 	return out
+}
+
+// clampLayerOutput lowers a configured output budget to the layer model's
+// resolved ceiling, leaving it alone when the layer has none or accepts more.
+func clampLayerOutput(configured int, l *ai.LayerLLM) int {
+	if l == nil || l.OutputCap <= 0 || l.OutputCap >= configured {
+		return configured
+	}
+	return l.OutputCap
 }

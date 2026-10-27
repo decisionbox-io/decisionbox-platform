@@ -761,7 +761,13 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 	// instead of letting the request hit the server's Truncate=false
 	// guard with an oversize prompt.
 	modelMaxInput := gollm.GetEffectiveInputWindow(askSpec.Provider, askSpec.Model, askSpec.Config)
-	budget := gollm.NewBudget(modelMaxInput, askMaxOutputTokens, askReservedSystemTokens, false)
+	// The ask LAYER's own output ceiling, when it is lower than what Ask
+	// reserves. Without this, a row configured with max_output_tokens=512
+	// still asked for 2,048 — the control did nothing, and a model that
+	// really is capped there rejects the request. The same number budgets
+	// the prompt, so the two cannot disagree.
+	askOutput := askLayerOutputTokens(askSpec)
+	budget := gollm.NewBudget(modelMaxInput, askOutput, askReservedSystemTokens, false)
 
 	questionTokens, _ := counter.Count(ctx, req.Question)
 	available := budget.Available() - questionTokens
@@ -861,7 +867,12 @@ func (h *SearchHandler) Ask(w http.ResponseWriter, r *http.Request) {
 		Model:        askSpec.Model,
 		SystemPrompt: systemPrompt,
 		Messages:     messages,
-		MaxTokens:    askMaxOutputTokens,
+		MaxTokens:    askOutput,
+		// Reasoning is requested PER CALL. Putting reasoning_enabled in the
+		// provider config does not ask for it — Ollama reads this field to
+		// set `think` — so without this the per-layer control was inert on
+		// the one layer a user is most likely to set it on.
+		ReasoningEffort: askReasoningEffort(askSpec),
 	})
 	if err != nil {
 		status, code, msg, details := classifyLLMError(err)

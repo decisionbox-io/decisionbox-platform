@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
@@ -327,6 +328,75 @@ func dualWriteLegacyLLM(p *models.Project) {
 	}
 }
 
+// mirrorLegacyBlurbOntoTableDescriptions moves a legacy blurb_llm write onto
+// the table-description ROW, which is what the product reads.
+//
+// An empty provider is the documented CLEAR: it has always meant "use the
+// analysis model for table descriptions", so the row goes with it.
+func mirrorLegacyBlurbOntoTableDescriptions(p *models.Project) {
+	if p.LayerModels == nil {
+		p.LayerModels = map[string]llmlayer.LayerModel{}
+	}
+	b := p.BlurbLLM
+	if b == nil || b.Provider == "" {
+		delete(p.LayerModels, llmlayer.LayerTableDescriptions)
+		return
+	}
+
+	// The entry the row will name: the reserved blurb slot, whose credential
+	// key an older image already reads.
+	entry := llmlayer.ProviderEntry{
+		ID:       llmlayer.BlurbProviderID,
+		Provider: b.Provider,
+		Config:   llmlayer.ConnectionConfig(b.Config),
+	}
+	replaced := false
+	for i := range p.LLMProviders {
+		if llmlayer.NormalizeProviderID(p.LLMProviders[i].ID) == llmlayer.BlurbProviderID {
+			entry.Label = p.LLMProviders[i].Label
+			p.LLMProviders[i] = entry
+			replaced = true
+		}
+	}
+	if !replaced {
+		p.LLMProviders = append(p.LLMProviders, entry)
+	}
+
+	p.LayerModels[llmlayer.LayerTableDescriptions] = llmlayer.LayerModel{
+		ProviderID: llmlayer.BlurbProviderID,
+		Model:      b.Model,
+		Config:     llmlayer.ModelConfig(b.Config),
+	}
+}
+
+// setDefaultRowToggle writes one of the two legacy project toggles onto the
+// default row, where the per-layer resolution reads it. A nil pointer is the
+// field being cleared, which removes the row entry rather than writing a
+// value the user did not choose.
+func setDefaultRowToggle(p *models.Project, key string, value *bool) {
+	if p.LayerModels == nil {
+		p.LayerModels = map[string]llmlayer.LayerModel{}
+	}
+	row := p.LayerModels[llmlayer.DefaultLayer]
+	cfg := map[string]string{}
+	for k, v := range row.Config {
+		cfg[k] = v
+	}
+	if value == nil {
+		delete(cfg, key)
+	} else {
+		cfg[key] = strconv.FormatBool(*value)
+	}
+	if len(cfg) == 0 {
+		cfg = nil
+	}
+	row.Config = cfg
+	if row.ProviderID == "" {
+		row.ProviderID = llmlayer.DefaultProviderID
+	}
+	p.LayerModels[llmlayer.DefaultLayer] = row
+}
+
 // legacyConfigFrom renders a resolved spec's merged config for the legacy
 // mirror.
 //
@@ -478,8 +548,27 @@ func (h *ProjectsHandler) applyLLMLayerUpdate(
 		// too, which is what "set this project's model" has always meant. An
 		// older dashboard build, a script, or a curl keeps working rather
 		// than silently doing nothing.
-		if _, llmSent := sentFields["llm"]; llmSent && existing.LLMConfigured() {
-			mirrorLegacyLLMOntoDefaultLayer(existing)
+		//
+		// The same holds for the other three legacy fields, each of which is
+		// now a row setting: blurb_llm is the table-description row, and the
+		// two toggles are config entries on the default row.
+		_, llmSent := sentFields["llm"]
+		_, blurbSent := sentFields["blurb_llm"]
+		_, cacheSent := sentFields["prompt_cache_enabled"]
+		_, reasoningSent := sentFields["reasoning_enabled"]
+		if (llmSent || blurbSent || cacheSent || reasoningSent) && existing.LLMConfigured() {
+			if llmSent {
+				mirrorLegacyLLMOntoDefaultLayer(existing)
+			}
+			if blurbSent {
+				mirrorLegacyBlurbOntoTableDescriptions(existing)
+			}
+			if cacheSent {
+				setDefaultRowToggle(existing, gollm.PromptCacheKey, existing.PromptCacheEnabled)
+			}
+			if reasoningSent {
+				setDefaultRowToggle(existing, gollm.ReasoningEnabledKey, existing.ReasoningEnabled)
+			}
 			if msg := validateLLMLayerConfig(existing); msg != "" {
 				writeError(w, http.StatusBadRequest, msg)
 				return false, nil

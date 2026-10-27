@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 )
@@ -17,6 +18,35 @@ import (
 // named constant lets the budgeting layer subtract the same value
 // the caller will send.
 const askMaxOutputTokens = 2048
+
+// askLayerOutputTokens is the generation cap for one request: Ask's own
+// reservation, lowered to the ask layer's resolved ceiling when that is
+// smaller.
+//
+// Only lowered. A layer whose model accepts more does not make Ask's answers
+// longer — the reservation is a product decision about answer length, not a
+// model limit — but a layer whose model accepts LESS makes the reservation
+// impossible, and the provider rejects the whole call.
+func askLayerOutputTokens(spec llmlayer.LayerSpec) int {
+	cap := gollm.MaxOutputOverride(gollm.ProviderConfig(spec.Config))
+	if cap <= 0 {
+		cap = gollm.GetMaxOutputTokens(spec.Provider, spec.Model)
+	}
+	if cap > 0 && cap < askMaxOutputTokens {
+		return cap
+	}
+	return askMaxOutputTokens
+}
+
+// askReasoningEffort translates the ask layer's resolved reasoning setting
+// into the per-request field every provider reads. The default ("") is what
+// every provider ignores, so an un-opted layer is byte-identical to before.
+func askReasoningEffort(spec llmlayer.LayerSpec) string {
+	if spec.Reasoning {
+		return gollm.ReasoningEffortOn
+	}
+	return gollm.ReasoningEffortDefault
+}
 
 // askReservedSystemTokens is the flat token estimate the budget
 // reserves for the system prompt and any fixed scaffolding. Set

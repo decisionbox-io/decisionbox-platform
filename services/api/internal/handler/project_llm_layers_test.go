@@ -1109,3 +1109,126 @@ func TestCreate_IsNotBornConfiguredWhenTheSeedWouldBeRefused(t *testing.T) {
 		t.Errorf("llm.model = %q, want the model the user chose", stored.LLM.Model)
 	}
 }
+
+// Every legacy field a client can still send has to move the row that
+// actually drives the product, not just its own mirror.
+//
+// `llm` was handled when the mirror went in; blurb_llm and the two toggles
+// were not. An older dashboard build, a script or a curl setting one of them
+// got a 200 while every layer kept running the old value — and an older
+// agent then read a configuration that disagreed with the one current agents
+// read.
+func TestUpdate_LegacyOnlyWritesMoveTheirLayerRows(t *testing.T) {
+	t.Run("blurb_llm moves the table-description row", func(t *testing.T) {
+		repo := newMockProjectRepo()
+		h := NewProjectsHandler(repo, newMockDomainPackRepo())
+		p := configuredProject(t, repo)
+
+		w := putProject(t, h, p.ID, `{"blurb_llm":{"provider":"bedrock","model":"haiku","config":{"region":"us-east-1","max_output_tokens":"1024"}}}`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		stored, _ := repo.GetByID(context.Background(), p.ID)
+		row, ok := stored.LayerModels[llmlayer.LayerTableDescriptions]
+		if !ok {
+			t.Fatalf("no table_descriptions row after a legacy blurb write: %+v", stored.LayerModels)
+		}
+		if row.Model != "haiku" {
+			t.Errorf("table_descriptions model = %q, want the model the client sent", row.Model)
+		}
+		if row.ProviderID != llmlayer.BlurbProviderID {
+			t.Errorf("table_descriptions provider_id = %q, want the reserved blurb entry", row.ProviderID)
+		}
+		if row.Config["max_output_tokens"] != "1024" {
+			t.Errorf("row config = %+v, want the model-scoped setting", row.Config)
+		}
+		entry, found := stored.LLMProviderByID(llmlayer.BlurbProviderID)
+		if !found || entry.Config["region"] != "us-east-1" {
+			t.Errorf("blurb entry = %+v, want its connection fields", entry)
+		}
+		// And the layer really resolves to it.
+		spec, err := stored.LayerSpecUnchecked(llmlayer.LayerTableDescriptions)
+		if err != nil {
+			t.Fatalf("LayerSpecUnchecked: %v", err)
+		}
+		if spec.Model != "haiku" {
+			t.Errorf("resolved table-description model = %q", spec.Model)
+		}
+	})
+
+	t.Run("an empty blurb provider clears the row", func(t *testing.T) {
+		repo := newMockProjectRepo()
+		h := NewProjectsHandler(repo, newMockDomainPackRepo())
+		p := configuredProject(t, repo)
+		if w := putProject(t, h, p.ID, `{"blurb_llm":{"provider":"bedrock","model":"haiku"}}`); w.Code != http.StatusOK {
+			t.Fatalf("seed: %s", w.Body.String())
+		}
+
+		w := putProject(t, h, p.ID, `{"blurb_llm":{"provider":"","model":""}}`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		stored, _ := repo.GetByID(context.Background(), p.ID)
+		if _, ok := stored.LayerModels[llmlayer.LayerTableDescriptions]; ok {
+			t.Error("the table-description row survived the documented clear")
+		}
+	})
+
+	t.Run("the toggles move the default row", func(t *testing.T) {
+		repo := newMockProjectRepo()
+		h := NewProjectsHandler(repo, newMockDomainPackRepo())
+		p := configuredProject(t, repo)
+
+		w := putProject(t, h, p.ID, `{"prompt_cache_enabled":false,"reasoning_enabled":true}`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		stored, _ := repo.GetByID(context.Background(), p.ID)
+		spec, err := stored.LayerSpecUnchecked(llmlayer.DefaultLayer)
+		if err != nil {
+			t.Fatalf("LayerSpecUnchecked: %v", err)
+		}
+		if spec.PromptCache {
+			t.Error("prompt caching is still on after a legacy write turning it off")
+		}
+		if !spec.Reasoning {
+			t.Error("reasoning is still off after a legacy write turning it on")
+		}
+	})
+}
+
+// Ask's per-layer controls have to reach the request, not just the provider.
+//
+// Reasoning is requested PER CALL — putting reasoning_enabled in a provider
+// config does not ask for it, Ollama reads the request field — and an output
+// ceiling below Ask's own reservation is a hard limit, not a preference: the
+// provider rejects a 2,048-token request from a model capped at 512.
+func TestAskAppliesItsLayersResolvedRequestSettings(t *testing.T) {
+	spec := llmlayer.LayerSpec{
+		Layer: llmlayer.LayerAsk, ProviderID: llmlayer.DefaultProviderID,
+		Provider: "openai", Model: "gpt-4o",
+		Config: map[string]string{"max_output_tokens": "512"},
+	}
+	if got := askLayerOutputTokens(spec); got != 512 {
+		t.Errorf("output tokens = %d, want the layer's own 512", got)
+	}
+	if got := askReasoningEffort(spec); got != gollm.ReasoningEffortDefault {
+		t.Errorf("reasoning effort = %q, want the default for a layer that did not opt in", got)
+	}
+
+	spec.Reasoning = true
+	if got := askReasoningEffort(spec); got != gollm.ReasoningEffortOn {
+		t.Errorf("reasoning effort = %q, want it requested", got)
+	}
+
+	// A roomier model does not make answers longer: the reservation is a
+	// product decision, and only a LOWER ceiling overrides it.
+	roomy := llmlayer.LayerSpec{
+		Layer: llmlayer.LayerAsk, ProviderID: llmlayer.DefaultProviderID,
+		Provider: "openai", Model: "gpt-4o",
+		Config: map[string]string{"max_output_tokens": "32000"},
+	}
+	if got := askLayerOutputTokens(roomy); got != askMaxOutputTokens {
+		t.Errorf("output tokens = %d, want Ask's own %d", got, askMaxOutputTokens)
+	}
+}

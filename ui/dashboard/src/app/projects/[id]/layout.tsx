@@ -33,16 +33,30 @@ import { api } from '@/lib/api';
 /** The settings path a gated project is sent to, anchored on the Models tab. */
 const SETTINGS_ANCHOR = '#models';
 
+/** Project sub-routes that collect the configuration, so cannot require it. */
+const CONFIG_ROUTES = ['/settings', '/generate'];
+
 export default function ProjectLayout({ children }: { children: React.ReactNode }) {
   const params = useParams();
   const pathname = usePathname();
   const router = useRouter();
   const projectId = typeof params?.id === 'string' ? params.id : '';
-  const onSettings = pathname?.includes('/settings') ?? false;
+  // The routes that EXIST to collect this configuration are never gated.
+  //
+  //   settings   gating it would loop: it is where the redirect goes.
+  //   generate   the pack-generation wizard, whose own steps collect the
+  //              providers and the models. A draft created by that flow has
+  //              no LLM yet by construction, so gating the wizard redirected
+  //              it to settings before its provider step could render —
+  //              which is the whole onboarding path, not an edge case. The
+  //              platform build has no such route, so the entry is inert
+  //              there; it lives here because the gate does, and a second
+  //              copy of this guard in the plugin overlay is exactly what
+  //              one implementation was meant to avoid.
+  const onConfigRoute = CONFIG_ROUTES.some((r) => pathname?.includes(r) ?? false);
 
-  // The settings page itself is never gated — gating it would loop — and
-  // neither is a route with no project id, so those need no check at all.
-  const needsCheck = Boolean(projectId) && !onSettings;
+  // A route with no project id needs no check either.
+  const needsCheck = Boolean(projectId) && !onConfigRoute;
   const [result, setResult] = useState<'pending' | 'open' | 'redirecting'>('pending');
 
   useEffect(() => {

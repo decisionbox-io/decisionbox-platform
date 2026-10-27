@@ -573,3 +573,128 @@ func TestValidateLayerKeyAcceptsTheDefaultRowAndRejectsTypos(t *testing.T) {
 		t.Error("the default row must not appear in Layers() — a UI iterating the set would render it twice")
 	}
 }
+
+// Seeding must not lose the model-scoped settings a legacy project already
+// has — on either row.
+//
+// The blurb half is the one that breaks silently: EffectiveLayerModel answers
+// with the table-description PAIR and no config, so partitioning that empty
+// map while also stripping the model-scoped keys off the entry dropped
+// wire_override and the token caps on the floor. A custom Bedrock, Vertex or
+// Azure deployment that needs a wire override stops indexing on its first
+// save, with nothing in the UI to show what went missing.
+func TestSeedFromLegacyKeepsModelSettingsOnBothRows(t *testing.T) {
+	cache := false
+	c := ProjectConfig{
+		Legacy: Legacy{
+			Provider: "bedrock",
+			Model:    "opus",
+			Config: map[string]string{
+				"region":            "eu-west-1",
+				"max_output_tokens": "8000",
+				"wire_override":     "anthropic-messages",
+			},
+			PromptCache: &cache,
+			Blurb: &LegacyBlurb{
+				Provider: "litellm",
+				Model:    "qwen3-32b",
+				Config: map[string]string{
+					"base_url":          "https://cheap/v1",
+					"max_output_tokens": "1024",
+					"wire_override":     "openai-chat",
+				},
+			},
+		},
+	}
+
+	entries, layers := c.SeedFromLegacy()
+
+	byID := map[string]ProviderEntry{}
+	for _, e := range entries {
+		byID[e.ID] = e
+	}
+	// Connection fields stay on the entries.
+	if byID[DefaultProviderID].Config["region"] != "eu-west-1" {
+		t.Errorf("default entry = %+v, want its region", byID[DefaultProviderID].Config)
+	}
+	if byID[BlurbProviderID].Config["base_url"] != "https://cheap/v1" {
+		t.Errorf("blurb entry = %+v, want its base_url", byID[BlurbProviderID].Config)
+	}
+	// Model-scoped fields are on the rows, and on the RIGHT row.
+	def := layers[DefaultLayer]
+	if def.Config["max_output_tokens"] != "8000" || def.Config["wire_override"] != "anthropic-messages" {
+		t.Errorf("default row = %+v, want the analysis model settings", def.Config)
+	}
+	td := layers[LayerTableDescriptions]
+	if td.Config["max_output_tokens"] != "1024" || td.Config["wire_override"] != "openai-chat" {
+		t.Errorf("table-description row = %+v, want the BLURB model settings", td.Config)
+	}
+	// And nothing model-scoped is left behind on an entry, where it would
+	// apply to every layer sharing that connection.
+	for id, e := range byID {
+		for _, k := range ModelScopedKeys {
+			if _, present := e.Config[k]; present {
+				t.Errorf("entry %q kept the model-scoped key %q", id, k)
+			}
+		}
+	}
+	// The resolved pairs still carry the settings, whichever side they came
+	// from — the seed is a reshuffle, not a change.
+	spec, err := c.withSeed(entries, layers).SpecUnchecked(LayerTableDescriptions)
+	if err != nil {
+		t.Fatalf("SpecUnchecked: %v", err)
+	}
+	if spec.Config["wire_override"] != "openai-chat" || spec.Config["base_url"] != "https://cheap/v1" {
+		t.Errorf("resolved table-description config = %+v, want the merged connection and model settings", spec.Config)
+	}
+}
+
+// withSeed returns the configuration a project would have after saving this
+// seed, so a test can resolve against it.
+func (c ProjectConfig) withSeed(entries []ProviderEntry, layers map[string]LayerModel) ProjectConfig {
+	c.Providers = entries
+	c.LayerModels = layers
+	c.Version = ConfigVersion
+	return c
+}
+
+// The two legacy toggles keep the precedence they have always had on a
+// project that has no per-layer configuration: the FIELD is authoritative
+// and llm.config is the fallback.
+//
+// Documents setting both and disagreeing exist, because the two were written
+// by different versions of the settings page. Reading the config map first
+// silently flipped them. On a CONFIGURED project the layer's own config wins
+// — choosing per layer is the point.
+func TestLegacyTogglePrecedenceSurvivesUntilAProjectIsConfigured(t *testing.T) {
+	off := false
+	legacy := ProjectConfig{
+		Legacy: Legacy{
+			Provider:    "bedrock",
+			Model:       "opus",
+			Config:      map[string]string{gollm.PromptCacheKey: "true"},
+			PromptCache: &off,
+		},
+	}
+	spec, err := legacy.SpecUnchecked(LayerAnalysis)
+	if err != nil {
+		t.Fatalf("SpecUnchecked: %v", err)
+	}
+	if spec.PromptCache {
+		t.Error("prompt caching is on; prompt_cache_enabled=false is what this project has always meant")
+	}
+
+	configured := legacy
+	configured.Providers = []ProviderEntry{{ID: DefaultProviderID, Provider: "bedrock"}}
+	configured.LayerModels = map[string]LayerModel{
+		DefaultLayer: {ProviderID: DefaultProviderID, Model: "opus", Config: map[string]string{gollm.PromptCacheKey: "true"}},
+	}
+	configured.Version = ConfigVersion
+	spec, err = configured.SpecUnchecked(LayerAnalysis)
+	if err != nil {
+		t.Fatalf("SpecUnchecked: %v", err)
+	}
+	if !spec.PromptCache {
+		t.Error("a configured project's own row must win over the legacy field")
+	}
+}

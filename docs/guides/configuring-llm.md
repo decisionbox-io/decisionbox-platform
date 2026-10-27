@@ -487,6 +487,10 @@ Table descriptions are the exception that proves the rule: that layer MAY use a 
 
 Table descriptions resolve `blurb-llm-credentials` before the default key, which means a project can have two layers on one provider entry authenticating as different principals. Everything that groups layers by the deployment they reach — the provider instances a run builds, the live probes a support bundle makes — folds the resolved credential into that decision. A project whose blurb chain falls through to the default key still builds one provider instance; a project with a real blurb credential builds two, which is what it had before per-layer models existed.
 
+### The routes that collect the configuration are never gated
+
+The project guard sends an unconfigured project to its settings page before anything else in it can be used — except the two routes whose own steps collect that configuration: **settings** itself, and the **pack-generation wizard**. A draft created by the wizard has no LLM yet by construction, so gating it would redirect the wizard to settings before its provider step could render.
+
 ### Existing projects need one visit to settings
 
 A project created before per-layer models is **not** configured for them, and discovery is refused until someone saves its configuration. The values arrive pre-filled from what the project already uses, so it is a review-and-confirm.

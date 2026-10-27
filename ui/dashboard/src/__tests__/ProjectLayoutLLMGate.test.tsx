@@ -65,6 +65,20 @@ describe('project layout — per-layer LLM configuration gate', () => {
     expect(api.getProject).not.toHaveBeenCalled();
   });
 
+  // The pack-generation wizard collects the providers and the models in its
+  // own steps, and a draft created by that flow has no LLM yet BY
+  // CONSTRUCTION. Gating it redirected the wizard to settings before its
+  // provider step could render — the whole onboarding path, not an edge
+  // case.
+  it('never gates the pack-generation wizard either', async () => {
+    pathname = '/projects/proj-1/generate';
+    (api.getProject as jest.Mock).mockResolvedValue({ id: 'proj-1', llm_config_required: true });
+    renderLayout();
+    expect(await screen.findByText('project page')).toBeInTheDocument();
+    expect(replace).not.toHaveBeenCalled();
+    expect(api.getProject).not.toHaveBeenCalled();
+  });
+
   // A managed deployment hides the whole AI configuration surface, so the API
   // reports the flag false and there is nowhere to send anyone.
   it('does not gate when the API says no configuration is required', async () => {

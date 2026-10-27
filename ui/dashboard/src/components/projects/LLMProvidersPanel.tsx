@@ -252,6 +252,11 @@ export function LLMProvidersPanel({
                   apiKey: next.apiKey,
                 })}
                 loadButtonLabel="Check connection"
+                // A saved entry's key is write-only, so the field is always
+                // blank here — without this the button stayed disabled and a
+                // saved secondary connection could not be checked at all
+                // without re-entering its secret.
+                hasStoredCredential={Boolean(savedSecret)}
                 onLoad={async (cfg) => {
                   // Which endpoint this check actually exercises matters, and
                   // the two routes answer different questions:

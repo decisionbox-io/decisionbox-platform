@@ -57,11 +57,12 @@ const bedrockMeta: ProviderLike = {
   ],
 };
 
-function Harness({ providers, onLoad, initial, modelChild }: {
+function Harness({ providers, onLoad, initial, modelChild, hasStoredCredential }: {
   providers: ProviderLike[];
   onLoad: (cfg: Record<string, string>) => Promise<{ ok: boolean; liveError?: string }>;
   initial?: CredentialsPhaseValue;
   modelChild?: React.ReactNode;
+  hasStoredCredential?: boolean;
 }) {
   const [value, setValue] = useState<CredentialsPhaseValue>(
     initial ?? { provider: '', authMethod: '', config: {}, apiKey: '' }
@@ -74,6 +75,7 @@ function Harness({ providers, onLoad, initial, modelChild }: {
         value={value}
         onChange={setValue}
         onLoad={onLoad}
+        hasStoredCredential={hasStoredCredential}
       >
         {modelChild ?? <div>MODEL-PICKER-CHILD</div>}
       </ProviderCredentialsPhase>
@@ -302,5 +304,37 @@ describe('ProviderCredentialsPhase', () => {
     );
     const btn = await screen.findByRole('button', { name: 'Load models' });
     expect(btn).toBeDisabled();
+  });
+});
+
+// A SAVED entry's credential is write-only: the field is blank every time
+// the form loads. Disabling the load button on an empty field is right for a
+// first-time setup and wrong for a saved connection — it meant a saved
+// secondary LLM entry could not be checked at all without re-entering its
+// secret, which is the one thing the user should not have to do.
+describe('ProviderCredentialsPhase — a credential that is already stored', () => {
+  const stored: CredentialsPhaseValue = {
+    provider: 'openai', authMethod: 'api_key', config: {}, apiKey: '',
+  };
+
+  it('disables the load button when nothing is typed and nothing is stored', () => {
+    render(<Harness providers={[openaiMeta]} onLoad={jest.fn()} initial={stored} />);
+    expect(screen.getByRole('button', { name: /Load models/ })).toBeDisabled();
+  });
+
+  it('enables it when a credential is stored', async () => {
+    const onLoad = jest.fn().mockResolvedValue({ ok: true });
+    render(<Harness providers={[openaiMeta]} onLoad={onLoad} initial={stored} hasStoredCredential />);
+    const button = screen.getByRole('button', { name: /Load models/ });
+    expect(button).toBeEnabled();
+
+    // And the load goes through with no credential in the posted config, so
+    // the server resolves the stored one.
+    fireEvent.click(button);
+    await waitFor(() => expect(onLoad).toHaveBeenCalled());
+    const cfg = onLoad.mock.calls[0][0] as Record<string, string>;
+    if (cfg['credentials_json'] !== undefined) {
+      throw new Error(`a credential was posted for a stored one: ${JSON.stringify(cfg)}`);
+    }
   });
 });

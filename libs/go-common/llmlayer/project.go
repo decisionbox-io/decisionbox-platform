@@ -268,8 +268,8 @@ func (c ProjectConfig) SpecUnchecked(layer string) (LayerSpec, error) {
 		Provider:               entry.Provider,
 		Model:                  lm.Model,
 		Config:                 cfg,
-		PromptCache:            resolveBoolConfig(cfg, gollm.PromptCacheKey, c.Legacy.PromptCache, true),
-		Reasoning:              resolveBoolConfig(cfg, gollm.ReasoningEnabledKey, c.Legacy.Reasoning, false),
+		PromptCache:            resolveBoolConfig(cfg, gollm.PromptCacheKey, c.Legacy.PromptCache, true, len(c.LayerModels) > 0),
+		Reasoning:              resolveBoolConfig(cfg, gollm.ReasoningEnabledKey, c.Legacy.Reasoning, false, len(c.LayerModels) > 0),
 		FellBackFromProviderID: fellBack,
 	}, nil
 }
@@ -307,16 +307,23 @@ func (c ProjectConfig) SeedFromLegacy() ([]ProviderEntry, map[string]LayerModel)
 	// would keep applying while the settings page — which reads the row —
 	// showed the control blank, and clearing that control could not remove
 	// it.
+	//
+	// Each entry's model-scoped half is taken BEFORE the partition, because
+	// the partition is what removes it: the blurb row reads its settings from
+	// the blurb entry, and EffectiveLayerModel answers with the pair alone.
+	// Partitioning first dropped wire_override and the token caps on the
+	// floor — a custom deployment that needs a wire override stopped
+	// indexing on its first save.
+	modelHalf := map[string]map[string]string{}
 	for i := range entries {
-		if entries[i].ID == DefaultProviderID {
-			entries[i].Config = ConnectionConfig(entries[i].Config)
-		}
+		modelHalf[entries[i].ID] = ModelConfig(entries[i].Config)
+		entries[i].Config = ConnectionConfig(entries[i].Config)
 	}
 
 	defaultRow := LayerModel{
 		ProviderID: DefaultProviderID,
 		Model:      c.Legacy.Model,
-		Config:     ModelConfig(c.Legacy.Config),
+		Config:     modelHalf[DefaultProviderID],
 	}
 	if defaultRow.Config == nil {
 		defaultRow.Config = map[string]string{}
@@ -336,18 +343,10 @@ func (c ProjectConfig) SeedFromLegacy() ([]ProviderEntry, map[string]LayerModel)
 	// differs from the default pair.
 	blurb := c.EffectiveLayerModel(LayerTableDescriptions)
 	if blurb.ProviderID != defaultRow.ProviderID || blurb.Model != defaultRow.Model {
-		row := LayerModel{
+		layers[LayerTableDescriptions] = LayerModel{
 			ProviderID: blurb.ProviderID,
 			Model:      blurb.Model,
-			Config:     ModelConfig(blurb.Config),
-		}
-		// A blurb override's own connection fields belong to the entry
-		// EffectiveProviders synthesised for it, not to the row.
-		layers[LayerTableDescriptions] = row
-		for i := range entries {
-			if entries[i].ID == blurb.ProviderID {
-				entries[i].Config = ConnectionConfig(entries[i].Config)
-			}
+			Config:     modelHalf[blurb.ProviderID],
 		}
 	}
 
@@ -398,22 +397,44 @@ func ValidateLayerKey(key string) bool {
 // Presence matters, so this cannot be gollm.ReasoningEnabled alone — that
 // reads absent as false, which would silently switch off a setting the
 // project field had turned on.
-func resolveBoolConfig(cfg map[string]string, key string, projectField *bool, fallback bool) bool {
-	if raw, ok := cfg[key]; ok {
-		switch strings.ToLower(strings.TrimSpace(raw)) {
-		case "true", "1", "on", "yes":
-			return true
-		case "false", "0", "off", "no":
-			return false
-		}
-		// An unrecognised value is treated as if the key were absent rather
-		// than given a third meaning, so a typo falls back to the project
-		// field instead of silently flipping a layer.
+// resolveBoolConfig resolves one of the two per-layer booleans.
+//
+// Which source wins depends on whether the project HAS a per-layer
+// configuration, because the two shapes mean different things:
+//
+//	configured    the layer's own config wins — choosing per layer is the
+//	              whole point — then the project field, then the default.
+//	legacy only   the PROJECT FIELD wins, which is what it has always meant:
+//	              EffectivePromptCacheEnabled read prompt_cache_enabled first
+//	              and fell back to llm.config.prompt_cache. Reading the config
+//	              map first would silently flip an existing document that set
+//	              both and disagreed — and those documents exist, because the
+//	              two were written by different versions of the settings page.
+func resolveBoolConfig(cfg map[string]string, key string, projectField *bool, fallback, configured bool) bool {
+	fromCfg, hasCfg := parseBoolConfig(cfg[key])
+	if configured && hasCfg {
+		return fromCfg
 	}
 	if projectField != nil {
 		return *projectField
 	}
+	if hasCfg {
+		return fromCfg
+	}
 	return fallback
+}
+
+// parseBoolConfig reads a config-map boolean. An unrecognised value is
+// reported as absent rather than given a third meaning, so a typo falls back
+// instead of silently flipping a layer.
+func parseBoolConfig(raw string) (value, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "true", "1", "on", "yes":
+		return true, true
+	case "false", "0", "off", "no":
+		return false, true
+	}
+	return false, false
 }
 
 func boolString(b bool) string {

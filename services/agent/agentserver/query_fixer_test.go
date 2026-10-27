@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -44,7 +45,7 @@ func TestAskQueryFixer_ReadsTheSourceNotTheSQLSurface(t *testing.T) {
 		}
 		wh := models.WarehouseConfig{ID: "wh_1", FilterField: "app_id", FilterValue: "x"}
 
-		fix, err := askQueryFixer(client, wp, []string{"ds"}, wh).
+		fix, err := askQueryFixer(&ai.LayerLLM{Client: client}, wp, []string{"ds"}, wh).
 			FixSQL(context.Background(), query, "boom", 0, queryexec.FixOpts{})
 		if err != nil {
 			t.Fatalf("FixSQL: %v", err)
@@ -74,4 +75,52 @@ func TestAskQueryFixer_ReadsTheSourceNotTheSQLSurface(t *testing.T) {
 			t.Errorf("a source that accepts no SQL was still told to fix SQL:\n%s", got)
 		}
 	})
+}
+
+// The repair budget belongs to the sql_repair LAYER's model. Passing only
+// the client left Window and OutputCap at zero, so a repair against a small
+// or uncatalogued model fell back to the catalog ceiling — 64K for an
+// unknown OpenAI-compatible endpoint — and could exceed what that endpoint
+// accepts. The discovery fixer has always passed both.
+func TestAskQueryFixer_CarriesTheLayersBudget(t *testing.T) {
+	llm := testutil.NewMockLLMProvider()
+	llm.DefaultResponse = &gollm.ChatResponse{Content: "SELECT 1", StopReason: "end_turn"}
+	client, err := ai.New(llm, "mock-model")
+	if err != nil {
+		t.Fatalf("ai.New: %v", err)
+	}
+	layer := &ai.LayerLLM{
+		Layer: llmlayer.LayerSQLRepair, Client: client,
+		Window: 40960, OutputCap: 1024,
+	}
+
+	wh := models.WarehouseConfig{ID: "wh_1"}
+	if _, err := askQueryFixer(layer, askFixerSQLProvider{}, []string{"ds"}, wh).
+		FixSQL(context.Background(), "SELECT boom", "boom", 0, queryexec.FixOpts{}); err != nil {
+		t.Fatalf("FixSQL: %v", err)
+	}
+	if len(llm.Calls) == 0 {
+		t.Fatal("the fixer made no call")
+	}
+	withBudget := llm.Calls[0].Request.MaxTokens
+	if withBudget > layer.OutputCap {
+		t.Errorf("repair asked for %d tokens from a layer capped at %d", withBudget, layer.OutputCap)
+	}
+
+	// Without the layer's budget the same repair asks for the catalog
+	// ceiling, which is the behaviour this guards against.
+	bare := testutil.NewMockLLMProvider()
+	bare.DefaultResponse = &gollm.ChatResponse{Content: "SELECT 1", StopReason: "end_turn"}
+	bareClient, err := ai.New(bare, "mock-model")
+	if err != nil {
+		t.Fatalf("ai.New: %v", err)
+	}
+	if _, err := askQueryFixer(&ai.LayerLLM{Client: bareClient}, askFixerSQLProvider{}, []string{"ds"}, wh).
+		FixSQL(context.Background(), "SELECT boom", "boom", 0, queryexec.FixOpts{}); err != nil {
+		t.Fatalf("FixSQL: %v", err)
+	}
+	if bare.Calls[0].Request.MaxTokens <= withBudget {
+		t.Errorf("budgeted repair asked for %d and unbudgeted for %d; the layer's cap changed nothing",
+			withBudget, bare.Calls[0].Request.MaxTokens)
+	}
 }

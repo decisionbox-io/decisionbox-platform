@@ -487,6 +487,14 @@ func replayClient(ctx context.Context, secretProvider gosecrets.Provider, fl cli
 		return nil, nil, fmt.Errorf("init ai.Client: %w", err)
 	}
 	client.SetProvenance(fl.projectID, fl.discoveryID, spec.Provider)
+	// Reasoning is requested PER CALL, so a layer that opted in needs it set
+	// on the client — the config map does not carry it to the request.
+	// Without this a replay sent the default effort while the production
+	// client sent "on", and a reasoning-capable provider (Ollama reads it to
+	// set `think`) returned different verdicts under supposedly identical
+	// configuration. A replay that does not reproduce the run is worse than
+	// no replay.
+	client.SetReasoning(spec.Reasoning)
 	return client, calls, nil
 }
 
