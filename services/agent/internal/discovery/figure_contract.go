@@ -42,29 +42,44 @@ package discovery
 // declaration. Three of thirteen insights in the first clean run emitted no indicators at
 // all, against four per insight before the contract existed, and "never type a number"
 // read as "say nothing" is the likeliest reason.
-const figureContract = "## Every number is data, not text\n\n" +
-	"**Never type a number into `name`, `description` or `indicators`.** A number in a " +
-	"sentence rather than in `figures` is checked by nothing and reads exactly like one that " +
-	"was checked. Declare each one in a top-level `figures` array and put a reference in the " +
-	"prose; the platform renders it into the text a reader sees, after re-running your " +
-	"arithmetic over the step's **full** rows — which may be more rows than the digest " +
-	"showed you.\n\n" +
+const figureContract = "## Every number you read lives in `figures`\n\n" +
+	"**Every number you read out of the rows lives in `figures`, and the prose names it by " +
+	"its key.** Declare each one in a top-level `figures` array, then write `name`, " +
+	"`description` and `indicators` as ordinary sentences carrying `{{key}}` where the number " +
+	"belongs — *\"churn reaches {{churn_rate}} by day one\"*. The platform writes the checked " +
+	"value into the text a reader sees, after re-running your arithmetic over the step's " +
+	"**full** rows — which may be more rows than the digest showed you.\n\n" +
+	"Never type a number into those three fields instead. A number in a sentence rather than " +
+	"in `figures` is checked by nothing and reads exactly like one that was checked.\n\n" +
 	"Years are the only exception: a period is prose (\"in 1997\", \"across 1992-1997\"), not a " +
 	"measurement. And an indicator with no number in it needs no declaration — write it.\n\n" +
 	"```json\n" +
-	"\"name\": \"Top decile of customers generates {{f1}} of 1997 revenue\",\n" +
-	"\"description\": \"The top decile contributed {{f2}} of {{f3}} in 1997.\",\n" +
+	"\"name\": \"Top decile of customers generates {{top_decile_share}} of 1997 revenue\",\n" +
+	"\"description\": \"The top decile contributed {{top_decile_revenue}} of " +
+	"{{total_revenue}} in 1997.\",\n" +
 	"\"figures\": [\n" +
-	"  {\"id\": \"f1\", \"value\": 24.66, \"unit\": \"percent\", \"decimals\": 2,\n" +
+	"  {\"id\": \"top_decile_share\", \"value\": 24.66, \"unit\": \"percent\", \"decimals\": 2,\n" +
 	"   \"step\": 48, \"kind\": \"ratio\", \"column\": \"revenue\", \"row\": \"decile = 1\"},\n" +
-	"  {\"id\": \"f2\", \"value\": 8476238553, \"unit\": \"currency\", \"scale\": \"billions\", \"decimals\": 2,\n" +
+	"  {\"id\": \"top_decile_revenue\", \"value\": 8476238553, \"unit\": \"currency\", " +
+	"\"scale\": \"billions\", \"decimals\": 2,\n" +
 	"   \"step\": 48, \"kind\": \"cell\", \"column\": \"revenue\", \"row\": \"decile = 1\"},\n" +
-	"  {\"id\": \"f3\", \"value\": 34373633413, \"unit\": \"currency\", \"scale\": \"billions\", \"decimals\": 2,\n" +
+	"  {\"id\": \"total_revenue\", \"value\": 34373633413, \"unit\": \"currency\", " +
+	"\"scale\": \"billions\", \"decimals\": 2,\n" +
 	"   \"step\": 48, \"kind\": \"sum\", \"column\": \"revenue\"}\n" +
 	"]\n" +
 	"```\n\n" +
-	"Each figure's `id` is a letter followed by letters, digits or underscores — `f1`, `f12`, " +
-	"`rev_share`. The prose reference must match it exactly.\n\n" +
+	"Each figure's `id` is a letter followed by letters, digits or underscores — " +
+	"`top_decile_share`, `rev_share`, `f1`. Name it for what it holds: an insight that " +
+	"declares several is far easier to keep straight than one numbering them. The prose " +
+	"reference must match the id exactly.\n\n" +
+	// Measured: the small self-hosted model declared 32 figures across 47 insights that its
+	// own prose never referenced -- 13% of everything it declared -- while the large model
+	// declared none spare. An unreferenced declaration is not inert: it is arithmetic this
+	// layer evaluates and can refute, hung on an insight whose sentences never used it.
+	// Pinned by TestTheContractSaysAnUnreferencedFigureIsADefect.
+	"Declare the figures your sentences use, and reference every figure you declare. A " +
+	"figure nothing references is still checked and can still be refuted, so it can only " +
+	"cost you — if a sentence stops needing a number, drop its figure with it.\n\n" +
 	"### The arithmetic\n\n" +
 	"- `cell` — one cell: `column` plus `row`, which must select exactly **one** row.\n" +
 	"- `sum` — the total of `column`, over `scope` if given, otherwise every row.\n" +
@@ -91,7 +106,7 @@ const figureContract = "## Every number is data, not text\n\n" +
 	"### How it is written\n\n" +
 	"- `unit` is `count`, `currency`, `percent`, `multiple` or `plain`. A unit is part of the " +
 	"number's notation — a currency symbol, a percent sign, thousands separators — **never a " +
-	"word**. Write *days*, *orders*, *lines* in the sentence: `{{f1}} days`.\n" +
+	"word**. Write *days*, *orders*, *lines* in the sentence: `{{cycle_days}} days`.\n" +
 	"- `currency` is the currency the amount is in — the symbol it prints or its ISO code. " +
 	"**Always set it** on a currency figure: `{\"unit\": \"currency\", \"currency\": \"€\"}` " +
 	"writes `€8.48B`, and `\"TRY\"` writes `₺8.48B`. The warehouse's own currency is in the " +
@@ -156,20 +171,21 @@ const recommendationFigureContract = "## Numbers come from the insights, by refe
 	// wire this example is the only thing asking. Pinned by
 	// TestTheWorkedExampleShowsEveryFieldTheContractSaysCarriesAReference.
 	"```json\n" +
-	"\"title\": \"Win back the {{f1}} buyers in the 6+ order bands\",\n" +
-	"\"description\": \"{{f1}} buyers sit in the two highest frequency bands ({{f2}} and {{f3}}).\",\n" +
-	"\"actions\": [\"Add the {{f2}} band to the reminder track\",\n" +
-	"            \"Review the discount floor for the {{f3}} band\"],\n" +
+	"\"title\": \"Win back the {{high_freq_buyers}} buyers in the 6+ order bands\",\n" +
+	"\"description\": \"{{high_freq_buyers}} buyers sit in the two highest frequency bands " +
+	"({{band_6_10}} and {{band_11_plus}}).\",\n" +
+	"\"actions\": [\"Add the {{band_6_10}} band to the reminder track\",\n" +
+	"            \"Review the discount floor for the {{band_11_plus}} band\"],\n" +
 	"\"expected_impact\": {\"metric\": \"repeat orders\", \"estimated_improvement\": " +
-	"\"5-8% of the {{f1}} buyers\"},\n" +
+	"\"5-8% of the {{high_freq_buyers}} buyers\"},\n" +
 	"\"figures\": [\n" +
-	"  {\"id\": \"f1\", \"unit\": \"count\", \"kind\": \"sum\",\n" +
-	"   \"refs\": [{\"insight\": \"<insight id>\", \"figure\": \"f4\"},\n" +
-	"            {\"insight\": \"<insight id>\", \"figure\": \"f5\"}]},\n" +
-	"  {\"id\": \"f2\", \"unit\": \"count\", \"kind\": \"ref\",\n" +
-	"   \"refs\": [{\"insight\": \"<insight id>\", \"figure\": \"f4\"}]},\n" +
-	"  {\"id\": \"f3\", \"unit\": \"count\", \"kind\": \"ref\",\n" +
-	"   \"refs\": [{\"insight\": \"<insight id>\", \"figure\": \"f5\"}]}\n" +
+	"  {\"id\": \"high_freq_buyers\", \"unit\": \"count\", \"kind\": \"sum\",\n" +
+	"   \"refs\": [{\"insight\": \"<insight id>\", \"figure\": \"band_6_10_buyers\"},\n" +
+	"            {\"insight\": \"<insight id>\", \"figure\": \"band_11_plus_buyers\"}]},\n" +
+	"  {\"id\": \"band_6_10\", \"unit\": \"count\", \"kind\": \"ref\",\n" +
+	"   \"refs\": [{\"insight\": \"<insight id>\", \"figure\": \"band_6_10_buyers\"}]},\n" +
+	"  {\"id\": \"band_11_plus\", \"unit\": \"count\", \"kind\": \"ref\",\n" +
+	"   \"refs\": [{\"insight\": \"<insight id>\", \"figure\": \"band_11_plus_buyers\"}]}\n" +
 	"]\n" +
 	"```\n\n" +
 	"- `kind` is `ref` to restate one insight figure, or `sum` to total several.\n" +
