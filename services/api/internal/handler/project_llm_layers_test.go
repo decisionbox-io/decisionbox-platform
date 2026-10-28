@@ -728,7 +728,7 @@ func TestUpdate_DualWritesTheLegacyMirror(t *testing.T) {
 	}
 	stored, _ := repo.GetByID(context.Background(), p.ID)
 
-	// An agent, sources-worker or fileingestion-worker image older than this
+	// An agent or background worker image older than this
 	// release reads these fields and must see a truthful single-provider
 	// setup.
 	if stored.LLM.Provider != "bedrock" || stored.LLM.Model != "opus" {
@@ -989,8 +989,8 @@ func TestUpdate_AcceptsAPrefixedEnvVarFallback(t *testing.T) {
 // The legacy blurb mirror is NOT written when table descriptions are on a
 // secondary entry.
 //
-// The mirror would point an older agent, sources-worker or
-// fileingestion-worker image at that entry's endpoint while the credential it
+// The mirror would point an older agent or worker image at that entry's
+// endpoint while the credential it
 // reads for blurb_llm is fixed: blurb-llm-credentials, then llm-credentials.
 // It has never heard of a namespaced key. So the write would hand a
 // third-party endpoint the primary credential — authentication failure if we

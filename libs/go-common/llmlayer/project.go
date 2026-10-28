@@ -73,7 +73,7 @@ type LegacyBlurb struct {
 // Legacy is a project's single-provider configuration — the fields it carried
 // before per-layer models, which remain the pre-configuration read path, the
 // settings pre-fill, and the dual-write mirror that keeps older agent,
-// sources-worker and fileingestion-worker images truthful.
+// worker images truthful.
 type Legacy struct {
 	// Provider, Model and Config are project.llm.
 	Provider string

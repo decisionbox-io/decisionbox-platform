@@ -328,8 +328,8 @@ export interface Project {
   primary_warehouse_id?: string;
   // llm / blurb_llm are the LEGACY single-provider fields. Since per-layer
   // models (#407) they are the dual-write mirror of the default and
-  // table-description layers, kept so an agent, sources-worker or
-  // fileingestion-worker image older than the API still reads a truthful
+  // table-description layers, kept so an agent or background worker
+  // image older than the API still reads a truthful
   // single-provider setup. Read them for display only; the live values are
   // llm_providers + layer_models (GET /projects/{id}/llm/config).
   llm: LLMConfig;

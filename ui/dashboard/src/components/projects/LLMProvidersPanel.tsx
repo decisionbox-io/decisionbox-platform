@@ -11,7 +11,7 @@
  * provider instance at run time.
  *
  * The reserved "default" entry is a SLOT, not a pointer: "make this the
- * default" rewrites it. An agent, sources-worker or fileingestion-worker
+ * default" rewrites it. An agent or background worker
  * image older than this release resolves its credential from the fixed
  * llm-credentials key, so if any entry could be the default, promoting a
  * secondary would leave those images reading the wrong key — and failing

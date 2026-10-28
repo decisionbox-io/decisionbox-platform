@@ -110,7 +110,7 @@ func validateLLMLayerConfig(p *models.Project) string {
 	}
 	if len(p.LLMProviders) > 0 && !hasDefault {
 		// The default entry is reserved, not a pointer: an older agent,
-		// sources-worker or fileingestion-worker resolves its credential from
+		// or a background worker resolves its credential from
 		// the fixed "llm-credentials" key, so there must always be an entry
 		// that owns it.
 		return fmt.Sprintf("llm_providers: one entry must have the reserved id %q — it is the default every layer inherits and the only entry an older agent image can read credentials for", llmlayer.DefaultProviderID)
@@ -266,7 +266,7 @@ func llmProviderRemovalConflict(existing, incoming *models.Project) string {
 }
 
 // dualWriteLegacyLLM mirrors the resolved layer configuration back onto the
-// legacy fields, so an agent, sources-worker or fileingestion-worker image
+// legacy fields, so an agent or background worker image
 // older than this release keeps reading a truthful single-provider setup.
 //
 //	llm                  <- the default layer's (provider, model, merged config)

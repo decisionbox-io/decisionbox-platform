@@ -15,7 +15,7 @@ const (
 	//
 	// It is reserved, not a pointer: "make this the default" rewrites this
 	// slot rather than re-pointing a primary_llm_provider_id field. An older
-	// agent, sources-worker or fileingestion-worker resolves its credential
+	// agent or background worker resolves its credential
 	// from the fixed key "llm-credentials"; if any entry could be the
 	// default, promoting a secondary would leave those images reading the
 	// wrong key — or none — and failing rather than degrading.

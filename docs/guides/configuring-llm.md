@@ -499,7 +499,7 @@ A project created before per-layer models is **not** configured for them, and di
 
 This applies to **scheduled runs too**: a schedule on an unconfigured project fails until the visit happens, and records why in its run history. There is one gate for every way work starts rather than a second path that runs on a configuration nobody reviewed.
 
-The legacy `llm` and `blurb_llm` fields keep being written as a mirror of the default and table-description layers, so an agent, sources-worker or fileingestion-worker image older than the API keeps reading a truthful single-provider setup.
+The legacy `llm` and `blurb_llm` fields keep being written as a mirror of the default and table-description layers, so an agent or background worker image older than the API keeps reading a truthful single-provider setup.
 
 ### Per-layer rules
 
