@@ -214,28 +214,37 @@ func exampleFigureIDs(t *testing.T, example map[string]json.RawMessage, which st
 	return out
 }
 
-// TestTheContractSaysAHeadlineMayOnlyNameADeclaredFigure covers the sentence that reaches
-// for a number the rest of the finding did not need.
+// TestTheContractSaysAHeadlineMustDeclareItsNumber covers the sentence that reaches for a
+// number the rest of the finding did not need.
 //
 // Measured in run 23, the one token that reached a reader in an otherwise clean round: an
 // insight declared seven figures, referenced all seven, and led its `name` with an overdue
-// total it never declared. Every operand for that sum was present and the sum was not. The
-// contract had a rule about declaring figures the sentences use and a rule about using
-// every figure declared, and neither covers a headline naming something that does not exist.
+// total it never declared. Every operand for that sum was present and the sum was not.
 //
-// Both contracts, because the penalty differs and a model told only the insight-side version
-// has been told the cheaper one: an insight ships its braces to a reader, a recommendation
-// is dropped whole.
-func TestTheContractSaysAHeadlineMayOnlyNameADeclaredFigure(t *testing.T) {
+// The wording is pinned as well as the rule, because the first version of this rule was
+// measured and failed. Written as "a headline may only name a figure you declared" -- a
+// prohibition, remedy in a subordinate clause -- the large model stopped writing headlines
+// that name aggregates instead of starting to declare them: the defect went to zero while
+// `sum` figures halved, 19 to 8, and figures per insight fell 16%. A rule that removes the
+// construct is not a rule that fixes the construct, so this asserts the sentence leads with
+// what to do.
+func TestTheContractSaysAHeadlineMustDeclareItsNumber(t *testing.T) {
 	for name, contract := range map[string]string{
 		"insight contract":        figureContract,
 		"recommendation contract": recommendationFigureContract,
 	} {
 		lower := strings.ToLower(contract)
-		if !strings.Contains(lower, "headline may only name a figure you declared") {
-			t.Errorf("the %s does not say a headline may only name a declared figure, so the one "+
-				"sentence that introduces a number the rest of the finding never needed is "+
+		if !strings.Contains(lower, "names a number, declare that figure") {
+			t.Errorf("the %s does not tell the model to declare the number its headline names, so "+
+				"the one sentence that introduces a number the rest of the finding never needed is "+
 				"ungoverned", name)
+		}
+		// The prohibition form is what was measured to suppress the construct. Keeping it
+		// out is the point of the rewrite, not a style preference.
+		if strings.Contains(lower, "may only name a figure") {
+			t.Errorf("the %s states the headline rule as a prohibition. That exact wording was "+
+				"measured: the model stopped naming aggregates in headlines rather than declaring "+
+				"them, `sum` figures halved and figure usage fell. Lead with the action", name)
 		}
 	}
 	// The insight side has to say where an undeclared reference ends up, because nothing

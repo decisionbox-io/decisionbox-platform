@@ -86,14 +86,22 @@ const figureContract = "## Every number you read lives in `figures`\n\n" +
 	// declared -- the one token that reached a reader in an otherwise clean round. It had
 	// every operand for the sum and no declaration of it.
 	//
-	// Stated as a constraint on what the headline may name, not as a statement about when
-	// it is written. The schema does ask for `name` after `figures`, but telling a model
-	// the order exists invites it to reason about the order instead of about the finding.
-	// Pinned by TestTheContractSaysAHeadlineMayOnlyNameADeclaredFigure.
-	"**A headline may only name a figure you declared.** Every number in `name` is a " +
-	"reference to this insight's own `figures` array. If the headline wants a total, a " +
-	"share or a count that none of your figures holds, declare that figure too — a " +
-	"reference to a key `figures` does not hold reaches the reader as braces.\n\n" +
+	// Phrased as the action to take, which the first version was not, and the first version
+	// was measured: written as "a headline may only name a figure you declared" -- a
+	// prohibition, with the remedy in a subordinate clause -- the large model stopped
+	// writing headlines that name aggregates rather than starting to declare them. The
+	// target defect went to zero and `sum` figures halved, 19 to 8, with figures per
+	// insight down 16%. That is the trade this layer's guard exists to refuse: a defect
+	// that stops because the model stopped using the construct.
+	//
+	// Nothing here says when the headline is written. The schema does ask for `name` after
+	// `figures`, but telling a model the order exists invites it to reason about the order
+	// instead of about the finding.
+	// Pinned by TestTheContractSaysAHeadlineMustDeclareItsNumber.
+	"**If your headline names a number, declare that figure.** A total, a share or a count " +
+	"in `name` is a reference like any other, so put it in `figures` and the platform " +
+	"checks it before anyone reads it. A reference to a key `figures` does not hold " +
+	"reaches the reader as braces.\n\n" +
 	"### The arithmetic\n\n" +
 	"- `cell` — one cell: `column` plus `row`, which must select exactly **one** row.\n" +
 	"- `sum` — the total of `column`, over `scope` if given, otherwise every row.\n" +
@@ -219,10 +227,10 @@ const recommendationFigureContract = "## Numbers come from the insights, by refe
 	// The insight-side rule, restated for this phase because the consequence differs: an
 	// insight ships its braces to a reader, a recommendation is dropped whole. A model
 	// that knows only the first version is being told the cheaper penalty.
-	"- **A headline may only name a figure you declared.** Every number in `title` is a " +
-	"reference to this recommendation's own `figures` array. A title reaching for a number " +
-	"that array does not hold costs the whole recommendation — it is dropped rather than " +
-	"published with a gap in it.\n\n" +
+	"- **If your title names a number, declare that figure.** A total, a share or a count in " +
+	"`title` is a reference like any other, so name it in `figures` alongside the ones the " +
+	"body uses. A title naming a number that array does not hold costs the whole " +
+	"recommendation — it is dropped rather than published with a gap in it.\n\n" +
 	"### What stays as ordinary text\n\n" +
 	"Two kinds of number are yours rather than the warehouse's, and they belong in the " +
 	"prose exactly as you would write them:\n\n" +
