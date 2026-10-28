@@ -3,6 +3,8 @@ package discovery
 import (
 	"reflect"
 	"strings"
+
+	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 )
 
 // Property order is part of the contract, so it is declared rather than left to chance.
@@ -172,33 +174,11 @@ type recFigureRefProperties struct {
 // order must read the marshalled JSON, which is what the schema actually sends --
 // schemaPropertyOrder does that.
 func schemaProperties(node interface{}) map[string]interface{} {
-	switch v := node.(type) {
-	case nil:
-		return nil
-	case map[string]interface{}:
-		return v
-	}
-
-	rv := reflect.ValueOf(node)
-	for rv.Kind() == reflect.Ptr {
-		if rv.IsNil() {
-			return nil
-		}
-		rv = rv.Elem()
-	}
-	if rv.Kind() != reflect.Struct {
-		return nil
-	}
-	rt := rv.Type()
-	out := make(map[string]interface{}, rt.NumField())
-	for i := 0; i < rt.NumField(); i++ {
-		name := jsonTagName(rt.Field(i))
-		if name == "" {
-			continue
-		}
-		out[name] = rv.Field(i).Interface()
-	}
-	return out
+	// Delegated rather than duplicated. libs/go-common/llm owns ResponseFormat.Schema and
+	// has to read both forms itself -- decodeStringifiedValues stopped dead at the first
+	// struct-backed object until it did -- so the reflection lives there and this is the
+	// local name for it.
+	return gollm.SchemaPropertiesOf(node)
 }
 
 // objectProperties is schemaProperties for the common case of an object schema in hand.

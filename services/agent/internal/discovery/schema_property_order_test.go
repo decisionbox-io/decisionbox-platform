@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 )
 
 // What this file pins: the order a model is asked to generate properties in is declared, is
@@ -354,4 +356,78 @@ func itemSchemaUnder(schema map[string]interface{}, key string) map[string]inter
 	arr, _ := props[key].(map[string]interface{})
 	items, _ := arr["items"].(map[string]interface{})
 	return items
+}
+
+// TestAStringifiedNestedArrayIsStillRecoveredInsideAnInsight is the receive side of the
+// ordered-properties change, and it exists because the send side passing cleanly was not
+// enough.
+//
+// Claude 5.x sometimes returns a nested array of objects as one JSON-encoded string inside
+// a forced tool's input ({"figures": "[{...}]"}), which every caller's parser rejects.
+// NormalizeStructuredToolResponse recovers that by walking the schema and decoding any
+// string where the schema says array or object. The walk read `properties` with a type
+// assertion to map[string]interface{} -- so the moment the insight item's properties became
+// a struct, the walk reached the envelope, found the insights array, descended to the item,
+// and stopped. Recovery still "ran" and touched nothing. A response that used to be
+// salvaged would have been dropped instead, on the two wires this pipeline actually uses.
+//
+// Driven through the exported entry point with the real analysis schema, because the bug was
+// in the interaction between the two and a hand-built schema would have missed it.
+func TestAStringifiedNestedArrayIsStillRecoveredInsideAnInsight(t *testing.T) {
+	format := insightResponseFormat()
+	resp := &gollm.ChatResponse{
+		StopReason: "tool_use",
+		ToolCalls: []gollm.ToolCall{{
+			Name: format.Name,
+			Input: map[string]interface{}{
+				"insights": []interface{}{map[string]interface{}{
+					"name":        "a finding",
+					"description": "prose referring to {{total_revenue}}",
+					// The shapes the model stringifies: an array of objects, an array of
+					// strings, and the claims array whose loss is silent.
+					"figures":           `[{"id":"total_revenue","value":12,"step":1,"kind":"sum"}]`,
+					"indicators":        `["one indicator"]`,
+					"quantifier_claims": `[{"claim":"a claim","kind":"only","step":1}]`,
+					"source_steps":      `[1]`,
+				}},
+			},
+		}},
+	}
+	if err := gollm.NormalizeStructuredToolResponse(resp, true, format); err != nil {
+		t.Fatalf("normalising the forced-tool reply failed: %v", err)
+	}
+
+	var env struct {
+		Insights []struct {
+			Figures []struct {
+				ID string `json:"id"`
+			} `json:"figures"`
+			Indicators       []string         `json:"indicators"`
+			SourceSteps      []int            `json:"source_steps"`
+			QuantifierClaims []map[string]any `json:"quantifier_claims"`
+		} `json:"insights"`
+	}
+	if err := json.Unmarshal([]byte(resp.Content), &env); err != nil {
+		t.Fatalf("the normalised content does not parse as an insight envelope, which is the "+
+			"failure this test exists for: %v\n%s", err, resp.Content)
+	}
+	if len(env.Insights) != 1 {
+		t.Fatalf("want 1 insight, got %d", len(env.Insights))
+	}
+	got := env.Insights[0]
+	if len(got.Figures) != 1 || got.Figures[0].ID != "total_revenue" {
+		t.Errorf("the stringified figures array was not decoded, so the insight ships with no "+
+			"declared figure and its reference resolves to nothing: %+v", got.Figures)
+	}
+	if len(got.Indicators) != 1 {
+		t.Errorf("the stringified indicators array was not decoded: %+v", got.Indicators)
+	}
+	if len(got.SourceSteps) != 1 {
+		t.Errorf("the stringified source_steps array was not decoded: %+v", got.SourceSteps)
+	}
+	if len(got.QuantifierClaims) != 1 {
+		t.Errorf("the stringified quantifier_claims array was not decoded, which is the quiet "+
+			"one: the claim is stripped and the sentence it guards ships unchecked: %+v",
+			got.QuantifierClaims)
+	}
 }
