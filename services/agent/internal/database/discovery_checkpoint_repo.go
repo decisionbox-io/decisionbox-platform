@@ -116,10 +116,17 @@ type ExplorationCheckpointDoc struct {
 	RunID      string `bson:"run_id"`
 	ProjectID  string `bson:"project_id"`
 	StepNumber int    `bson:"step_number"`
-	// Attempt records which attempt of the run wrote this row. Purely
-	// observability: a resumed run replaces the rows it replays, so a mixed
-	// set of attempt values across a prefix is how an operator sees where
-	// the previous attempt stopped.
+	// Attempt records which attempt of the run wrote this row, and a
+	// resumed attempt does NOT restamp the rows it replays — the replay
+	// path fences without rewriting them. So a prefix legitimately carries
+	// a mix of attempt values, which is how an operator sees where each
+	// attempt stopped.
+	//
+	// Load-bearing, not just observability: LoadPrefix ends the replayable
+	// prefix at the first row written by an attempt older than the prefix
+	// so far (an older attempt's step sitting on top of a newer one's
+	// answered a question the prefix no longer asks). Restamping replayed
+	// rows would erase exactly that signal.
 	Attempt   int       `bson:"attempt"`
 	Kind      string    `bson:"kind"`
 	CreatedAt time.Time `bson:"created_at"`
