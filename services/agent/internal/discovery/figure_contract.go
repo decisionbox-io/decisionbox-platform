@@ -54,19 +54,19 @@ const figureContract = "## Every number you read lives in `figures`\n\n" +
 	"Years are the only exception: a period is prose (\"in 1997\", \"across 1992-1997\"), not a " +
 	"measurement. And an indicator with no number in it needs no declaration — write it.\n\n" +
 	"```json\n" +
-	"\"name\": \"Top decile of customers generates {{top_decile_share}} of 1997 revenue\",\n" +
+	"\"source_steps\": [48],\n" +
+	"\"figures\": [\n" +
+	"  {\"id\": \"top_decile_share\", \"value\": 24.66, \"step\": 48, \"kind\": \"ratio\",\n" +
+	"   \"column\": \"revenue\", \"row\": \"decile = 1\", \"unit\": \"percent\", \"decimals\": 2},\n" +
+	"  {\"id\": \"top_decile_revenue\", \"value\": 8476238553, \"step\": 48, \"kind\": \"cell\",\n" +
+	"   \"column\": \"revenue\", \"row\": \"decile = 1\", \"unit\": \"currency\",\n" +
+	"   \"scale\": \"billions\", \"decimals\": 2},\n" +
+	"  {\"id\": \"total_revenue\", \"value\": 34373633413, \"step\": 48, \"kind\": \"sum\",\n" +
+	"   \"column\": \"revenue\", \"unit\": \"currency\", \"scale\": \"billions\", \"decimals\": 2}\n" +
+	"],\n" +
 	"\"description\": \"The top decile contributed {{top_decile_revenue}} of " +
 	"{{total_revenue}} in 1997.\",\n" +
-	"\"figures\": [\n" +
-	"  {\"id\": \"top_decile_share\", \"value\": 24.66, \"unit\": \"percent\", \"decimals\": 2,\n" +
-	"   \"step\": 48, \"kind\": \"ratio\", \"column\": \"revenue\", \"row\": \"decile = 1\"},\n" +
-	"  {\"id\": \"top_decile_revenue\", \"value\": 8476238553, \"unit\": \"currency\", " +
-	"\"scale\": \"billions\", \"decimals\": 2,\n" +
-	"   \"step\": 48, \"kind\": \"cell\", \"column\": \"revenue\", \"row\": \"decile = 1\"},\n" +
-	"  {\"id\": \"total_revenue\", \"value\": 34373633413, \"unit\": \"currency\", " +
-	"\"scale\": \"billions\", \"decimals\": 2,\n" +
-	"   \"step\": 48, \"kind\": \"sum\", \"column\": \"revenue\"}\n" +
-	"]\n" +
+	"\"name\": \"Top decile of customers generates {{top_decile_share}} of 1997 revenue\"\n" +
 	"```\n\n" +
 	"Each figure's `id` is a letter followed by letters, digits or underscores — " +
 	"`top_decile_share`, `rev_share`, `f1`. Name it for what it holds: an insight that " +
@@ -171,22 +171,26 @@ const recommendationFigureContract = "## Numbers come from the insights, by refe
 	// wire this example is the only thing asking. Pinned by
 	// TestTheWorkedExampleShowsEveryFieldTheContractSaysCarriesAReference.
 	"```json\n" +
-	"\"title\": \"Win back the {{high_freq_buyers}} buyers in the 6+ order bands\",\n" +
+	"\"related_insight_ids\": [\"<insight id>\"],\n" +
+	"\"figures\": [\n" +
+	"  {\"id\": \"high_freq_buyers\", \"kind\": \"sum\",\n" +
+	"   \"refs\": [{\"insight\": \"<insight id>\", \"figure\": \"band_6_10_buyers\"},\n" +
+	"            {\"insight\": \"<insight id>\", \"figure\": \"band_11_plus_buyers\"}],\n" +
+	"   \"unit\": \"count\"},\n" +
+	"  {\"id\": \"band_6_10\", \"kind\": \"ref\",\n" +
+	"   \"refs\": [{\"insight\": \"<insight id>\", \"figure\": \"band_6_10_buyers\"}],\n" +
+	"   \"unit\": \"count\"},\n" +
+	"  {\"id\": \"band_11_plus\", \"kind\": \"ref\",\n" +
+	"   \"refs\": [{\"insight\": \"<insight id>\", \"figure\": \"band_11_plus_buyers\"}],\n" +
+	"   \"unit\": \"count\"}\n" +
+	"],\n" +
 	"\"description\": \"{{high_freq_buyers}} buyers sit in the two highest frequency bands " +
 	"({{band_6_10}} and {{band_11_plus}}).\",\n" +
 	"\"actions\": [\"Add the {{band_6_10}} band to the reminder track\",\n" +
 	"            \"Review the discount floor for the {{band_11_plus}} band\"],\n" +
 	"\"expected_impact\": {\"metric\": \"repeat orders\", \"estimated_improvement\": " +
 	"\"5-8% of the {{high_freq_buyers}} buyers\"},\n" +
-	"\"figures\": [\n" +
-	"  {\"id\": \"high_freq_buyers\", \"unit\": \"count\", \"kind\": \"sum\",\n" +
-	"   \"refs\": [{\"insight\": \"<insight id>\", \"figure\": \"band_6_10_buyers\"},\n" +
-	"            {\"insight\": \"<insight id>\", \"figure\": \"band_11_plus_buyers\"}]},\n" +
-	"  {\"id\": \"band_6_10\", \"unit\": \"count\", \"kind\": \"ref\",\n" +
-	"   \"refs\": [{\"insight\": \"<insight id>\", \"figure\": \"band_6_10_buyers\"}]},\n" +
-	"  {\"id\": \"band_11_plus\", \"unit\": \"count\", \"kind\": \"ref\",\n" +
-	"   \"refs\": [{\"insight\": \"<insight id>\", \"figure\": \"band_11_plus_buyers\"}]}\n" +
-	"]\n" +
+	"\"title\": \"Win back the {{high_freq_buyers}} buyers in the 6+ order bands\"\n" +
 	"```\n\n" +
 	"- `kind` is `ref` to restate one insight figure, or `sum` to total several.\n" +
 	"- `insight` is the insight's `id`, copied verbatim, the same way you copy it into " +

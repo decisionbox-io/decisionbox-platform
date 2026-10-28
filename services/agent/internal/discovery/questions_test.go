@@ -456,7 +456,7 @@ func TestRunPhaseQuestions_InsertError_Swallowed(t *testing.T) {
 
 func TestQuestionsSchema_Shape(t *testing.T) {
 	schema := questionsResponseSchema()
-	props, _ := schema["properties"].(map[string]interface{})
+	props := schemaProperties(schema["properties"])
 	if _, ok := props["questions"]; !ok {
 		t.Fatalf("schema missing top-level questions property")
 	}

@@ -372,9 +372,9 @@ func TestRecommendationFigures_ProjectionsAreNotCountedAsUndeclaredNumbers(t *te
 // key the prompt asks for in prose and the schema never mentions.
 func TestRecommendationSchema_DescribesEveryArrayTheContractAsksFor(t *testing.T) {
 	schema := recommendationResponseSchema()
-	props := schema["properties"].(map[string]interface{})
+	props := schemaProperties(schema["properties"])
 	items := props["recommendations"].(map[string]interface{})["items"].(map[string]interface{})
-	recProps := items["properties"].(map[string]interface{})
+	recProps := schemaProperties(items["properties"])
 
 	if !strings.Contains(recommendationFigureContract, "figures") {
 		t.Fatal(`the recommendation contract no longer mentions "figures"; this test's premise is stale`)
@@ -385,7 +385,7 @@ func TestRecommendationSchema_DescribesEveryArrayTheContractAsksFor(t *testing.T
 			"so the model is asked in prose and unguided in structure")
 	}
 	// And the refs inside it, which is the only field that carries the reference.
-	figProps := figures.(map[string]interface{})["items"].(map[string]interface{})["properties"].(map[string]interface{})
+	figProps := schemaProperties(figures.(map[string]interface{})["items"].(map[string]interface{})["properties"])
 	if _, ok := figProps["refs"]; !ok {
 		t.Error("the figures schema does not describe `refs`, which is the whole declaration")
 	}
@@ -467,7 +467,7 @@ func TestRecommendationsPrompt_CarriesTheFigureContract(t *testing.T) {
 // Driven off the constants rather than a hand-written list, so adding or removing a unit,
 // scale or kind fails here until the schema is updated too.
 func TestInsightSchema_FigureEnumsMatchTheClosedSets(t *testing.T) {
-	figProps := insightSchemaProperties(t)["figures"].(map[string]interface{})["items"].(map[string]interface{})["properties"].(map[string]interface{})
+	figProps := schemaProperties(insightSchemaProperties(t)["figures"].(map[string]interface{})["items"].(map[string]interface{})["properties"])
 
 	desc := func(field string) string {
 		return figProps[field].(map[string]interface{})["description"].(string)

@@ -230,7 +230,7 @@ func walkSchemaStrings(node interface{}, path string, out map[string]string) {
 		desc, _ := m["description"].(string)
 		out[path] = desc
 	}
-	if props, isMap := m["properties"].(map[string]interface{}); isMap {
+	if props := schemaProperties(m["properties"]); props != nil {
 		for k, v := range props {
 			walkSchemaStrings(v, path+"."+k, out)
 		}

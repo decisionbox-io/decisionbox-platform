@@ -93,10 +93,22 @@ func TestTheInsightSchemaStillDescribesWhatItAsksFor(t *testing.T) {
 //
 // The shares are measured over what this pipeline has actually written -- 562 insights and
 // the 439 quantifier claims inside them -- so a change here has to argue with a number.
+// requiredByDesign is, for each object the insight schema describes, the fields it cannot
+// lack, the fields that may arrive empty, and the fields it must not require.
+//
+// Three categories because `required` is doing two jobs. One is the obvious one: an insight
+// without a description is not a finding. The other is ordering -- a grammar emits every
+// required property before any optional one, so a field that has to reach the model before
+// the prose must be required whatever the struct order says. `figures` is in the set for
+// that reason, and may legitimately be empty.
+//
+// The shares are measured over what this pipeline has written: 562 insights and the 439
+// quantifier claims inside them. A change here has to argue with a number.
 var requiredByDesign = []struct {
-	object    string
-	required  map[string]string // field -> evidence
-	forbidden map[string]string // field -> why requiring it would be wrong
+	object       string
+	required     map[string]string // field -> evidence
+	emptyAllowed map[string]string // required for order, but [] is a legitimate answer
+	forbidden    map[string]string // field -> why requiring it would be wrong
 }{
 	{
 		object: "insight",
@@ -105,16 +117,21 @@ var requiredByDesign = []struct {
 			"description":  "562 of 562",
 			"severity":     "562 of 562",
 			"source_steps": "562 of 562",
+			"figures":      "required to keep it in front of the prose; see emptyAllowed",
+			"indicators":   "561 of 562, and likewise before the prose",
+		},
+		emptyAllowed: map[string]string{
+			"figures":    "a finding that states no number declares no figure; forcing one would be worse than the ordering bug it is here to fix",
+			"indicators": "an indicator with no number in it needs no declaration, and the contract says so",
 		},
 		forbidden: map[string]string{
-			"figures":           "88% -- a finding that states no number declares no figure",
-			"quantifier_claims": "61% -- a claim no quantifier covers needs no entry",
+			"quantifier_claims": "61% -- it quotes prose that does not exist yet when the evidence is written, so optional and last is correct",
 		},
 	},
 	{
-		// The same defect one level down, and the reason it matters is sharper here: an
-		// incomplete claim is marked undecidable by EvaluateQuantifierClaims, which does
-		// not reach repair, so it is lost rather than corrected.
+		// The same defect one level down, and sharper: an incomplete claim is marked
+		// undecidable by EvaluateQuantifierClaims, and undecidable does not reach repair,
+		// so the claim is lost rather than corrected.
 		object: "quantifier_claims",
 		required: map[string]string{
 			"claim": "439 of 439",
@@ -132,8 +149,8 @@ var requiredByDesign = []struct {
 		},
 	},
 	{
-		// Pre-existing and pinned here for the first time: this object got its required
-		// list before the schema was ever attached, which is why it was already right.
+		// Pre-existing: this object had its required list before the schema was ever
+		// attached, which is why it was already right.
 		object: "figures",
 		required: map[string]string{
 			"id":    "the key the prose names",
@@ -188,11 +205,20 @@ func TestEveryRequiredInsightFieldRejectsAnEmptyValue(t *testing.T) {
 	// exactly like the absent field `required` was added to prevent.
 	for _, c := range requiredByDesign {
 		obj := insightObjectSchema(t, c.object)
-		props, _ := obj["properties"].(map[string]interface{})
+		props := schemaProperties(obj["properties"])
 		for _, field := range toStringSlice(obj["required"]) {
 			node, ok := props[field].(map[string]interface{})
 			if !ok {
 				t.Errorf("%s.%s is required but the schema describes no such property", c.object, field)
+				continue
+			}
+			if why, ok := c.emptyAllowed[field]; ok {
+				// Required to hold its position in front of the prose, not because the
+				// model always has something to put in it.
+				if n, _ := node["minItems"].(int); n > 0 {
+					t.Errorf("%s.%s carries minItems %d but is allowed to be empty: %s",
+						c.object, field, n, why)
+				}
 				continue
 			}
 			switch node["type"] {
@@ -215,23 +241,15 @@ func TestEveryRequiredInsightFieldRejectsAnEmptyValue(t *testing.T) {
 // per-insight item itself, or the item of one of its arrays.
 func insightObjectSchema(t *testing.T, object string) map[string]interface{} {
 	t.Helper()
-	props, ok := insightResponseSchema()["properties"].(map[string]interface{})
-	if !ok {
-		t.Fatal("the insight schema has no properties")
-	}
-	arr, ok := props["insights"].(map[string]interface{})
-	if !ok {
-		t.Fatal("the insight schema has no insights array")
-	}
-	items, ok := arr["items"].(map[string]interface{})
-	if !ok {
-		t.Fatal("the insights array describes no item")
+	items := insightItemSchemaFrom(insightResponseSchema())
+	if items == nil {
+		t.Fatal("the insight schema describes no insight item")
 	}
 	if object == "insight" {
 		return items
 	}
-	itemProps, ok := items["properties"].(map[string]interface{})
-	if !ok {
+	itemProps := objectProperties(items)
+	if itemProps == nil {
 		t.Fatal("the insight item has no properties")
 	}
 	nested, ok := itemProps[object].(map[string]interface{})

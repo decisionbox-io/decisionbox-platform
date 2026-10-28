@@ -51,10 +51,10 @@ func recommendationResponseFormat() *gollm.ResponseFormat {
 // kept in lockstep with models.Recommendation / models.Impact json tags by
 // TestRecommendationSchema_MatchesStructTags.
 func recommendationResponseSchema() map[string]interface{} {
-	recProps := map[string]interface{}{
-		"category":    boundedString("Recommendation category (e.g. churn, engagement, monetization)", maxSchemaLabelRunes),
-		"title":       nonEmptyString("Specific, action-oriented recommendation title. One line, not a paragraph. "+recommendationReferenceRule, maxSchemaTitleRunes),
-		"description": nonEmptyString("Explanation of the recommendation. "+recommendationReferenceRule, maxSchemaDescriptionRunes),
+	recProps := recommendationItemProperties{
+		Category:    boundedString("Recommendation category (e.g. churn, engagement, monetization)", maxSchemaLabelRunes),
+		Title:       nonEmptyString("Specific, action-oriented recommendation title. One line, not a paragraph. "+recommendationReferenceRule, maxSchemaTitleRunes),
+		Description: nonEmptyString("Explanation of the recommendation. "+recommendationReferenceRule, maxSchemaDescriptionRunes),
 		// Bounded as well as typed. An integer field cannot run away, but it
 		// can arrive outside the scale the reader renders: the packs that get
 		// this right say "emit as an integer, NOT a string", and two of the
@@ -68,19 +68,19 @@ func recommendationResponseSchema() map[string]interface{} {
 		// integer carrying either keyword through build_min_max_int rather
 		// than the unconstrained integer rule, so the range holds on an
 		// Ollama-backed runner as well as on a json_schema provider.
-		"priority": map[string]interface{}{
+		Priority: map[string]interface{}{
 			"type":        "integer",
 			"description": "1 (highest priority) to 5 (lowest)",
 			"minimum":     1,
 			"maximum":     5,
 		},
-		"target_segment": boundedString("The user segment this recommendation targets", maxSchemaSegmentRunes),
-		"segment_size":   map[string]interface{}{"type": "integer", "description": "Number of users in the target segment"},
-		"expected_impact": map[string]interface{}{
+		TargetSegment: boundedString("The user segment this recommendation targets", maxSchemaSegmentRunes),
+		SegmentSize:   map[string]interface{}{"type": "integer", "description": "Number of users in the target segment"},
+		ExpectedImpact: map[string]interface{}{
 			"type":        "object",
 			"description": "Structured expected impact. MUST be an object, never a bare string.",
-			"properties": map[string]interface{}{
-				"metric": nonEmptyString("Which metric is expected to improve. A metric is a name, not a number.", maxSchemaLabelRunes),
+			"properties": expectedImpactProperties{
+				Metric: nonEmptyString("Which metric is expected to improve. A metric is a name, not a number.", maxSchemaLabelRunes),
 				// The mixed form, because this field legitimately carries both. The
 				// contract's carve-out puts a projection here on purpose -- an estimate
 				// is not a measurement -- so a rule against digits would contradict it.
@@ -89,8 +89,8 @@ func recommendationResponseSchema() map[string]interface{} {
 				// checks, on a warehouse that may report in any currency. That is the
 				// same default that left every currency figure unmarked until
 				// insightCurrencyFieldDescription was rewritten.
-				"estimated_improvement": nonEmptyString(`Expected improvement. What you project is yours and stays prose; the measured number it is projected from is a reference, e.g. "5-8% of the {{high_freq_buyers}} buyers"`, maxSchemaLabelRunes),
-				"reasoning":             boundedString("Why this improvement is expected. "+recommendationReferenceRule, maxSchemaSentenceRunes),
+				EstimatedImprovement: nonEmptyString(`Expected improvement. What you project is yours and stays prose; the measured number it is projected from is a reference, e.g. "5-8% of the {{high_freq_buyers}} buyers"`, maxSchemaLabelRunes),
+				Reasoning:            boundedString("Why this improvement is expected. "+recommendationReferenceRule, maxSchemaSentenceRunes),
 			},
 			// The two this object is worthless without. Requiring the object
 			// and nothing inside it is the same hole one level down: run 16
@@ -99,19 +99,19 @@ func recommendationResponseSchema() map[string]interface{} {
 			// it explains the impact rather than stating it.
 			"required": []interface{}{"metric", "estimated_improvement"},
 		},
-		"actions": map[string]interface{}{
+		Actions: map[string]interface{}{
 			"type":        "array",
 			"description": "Concrete implementation steps",
 			"items":       nonEmptyString("A single implementation step. "+recommendationReferenceRule, maxSchemaListItemRunes),
 			"minItems":    1,
 		},
-		"related_insight_ids": map[string]interface{}{
+		RelatedInsightIDs: map[string]interface{}{
 			"type":        "array",
 			"description": "UUIDs of the insights this recommendation addresses, copied verbatim from the input insights",
 			"items":       nonEmptyString("An insight UUID from the input", maxSchemaIdentifierRunes),
 			"minItems":    1,
 		},
-		"confidence": map[string]interface{}{"type": "number", "description": "Confidence from 0.0 to 1.0"},
+		Confidence: map[string]interface{}{"type": "number", "description": "Confidence from 0.0 to 1.0"},
 		// Described here for the reason the insight schema describes its own
 		// figures array: a contract the prompt asks for and the schema does not
 		// mention is one a decode-constrained provider will not emit, and the
@@ -121,26 +121,26 @@ func recommendationResponseSchema() map[string]interface{} {
 		// No `value` property, deliberately. The platform takes the number from
 		// the figure the refs name, so a value here is one the model would be
 		// inventing where the whole point is that it does not have to.
-		"figures": map[string]interface{}{
+		Figures: map[string]interface{}{
 			"type":        "array",
 			"description": "Numbers this recommendation reports, each naming a figure an insight already declared. The prose carries {{id}} references and the platform renders the checked value into it.",
 			"items": map[string]interface{}{
 				"type": "object",
-				"properties": map[string]interface{}{
-					"id":       nonEmptyString("Key the prose references, named for what it holds -- `band_total`, `win_back_revenue`. Unique within this recommendation.", maxSchemaIdentifierRunes),
-					"kind":     nonEmptyString("`ref` to restate one insight figure, `sum` to total several", maxSchemaLabelRunes),
-					"unit":     boundedString("count, currency, percent, multiple or plain — notation only, never a word like days", maxSchemaLabelRunes),
-					"scale":    boundedString("thousands, millions or billions to abbreviate; omit to write in full", maxSchemaLabelRunes),
-					"decimals": map[string]interface{}{"type": "integer", "description": "Decimal places to print. This is the precision being claimed."},
-					"approx":   map[string]interface{}{"type": "boolean", "description": "Print a leading tilde to mark the number as rounded"},
-					"refs": map[string]interface{}{
+				"properties": recFigureItemProperties{
+					ID:       nonEmptyString("Key the prose references, named for what it holds -- `band_total`, `win_back_revenue`. Unique within this recommendation.", maxSchemaIdentifierRunes),
+					Kind:     nonEmptyString("`ref` to restate one insight figure, `sum` to total several", maxSchemaLabelRunes),
+					Unit:     boundedString("count, currency, percent, multiple or plain — notation only, never a word like days", maxSchemaLabelRunes),
+					Scale:    boundedString("thousands, millions or billions to abbreviate; omit to write in full", maxSchemaLabelRunes),
+					Decimals: map[string]interface{}{"type": "integer", "description": "Decimal places to print. This is the precision being claimed."},
+					Approx:   map[string]interface{}{"type": "boolean", "description": "Print a leading tilde to mark the number as rounded"},
+					Refs: map[string]interface{}{
 						"type":        "array",
 						"description": "The insight figures this number comes from: one for `ref`, several for `sum`",
 						"items": map[string]interface{}{
 							"type": "object",
-							"properties": map[string]interface{}{
-								"insight": nonEmptyString("The insight's id, copied verbatim from the input", maxSchemaIdentifierRunes),
-								"figure":  nonEmptyString("The figure's key inside that insight's own figures array, copied verbatim", maxSchemaIdentifierRunes),
+							"properties": recFigureRefProperties{
+								Insight: nonEmptyString("The insight's id, copied verbatim from the input", maxSchemaIdentifierRunes),
+								Figure:  nonEmptyString("The figure's key inside that insight's own figures array, copied verbatim", maxSchemaIdentifierRunes),
 							},
 							"required": []interface{}{"insight", "figure"},
 						},
@@ -204,8 +204,15 @@ func recommendationResponseSchema() map[string]interface{} {
 					// structured output. Held in lockstep with the reasons in
 					// TestRecommendationItemRequiresTheFieldsARecommendationNeeds.
 					"required": []interface{}{
-						"title", "description", "priority",
-						"expected_impact", "actions", "related_insight_ids",
+						// `figures` joins the list for the ordering reason measured on the
+						// insight side in run 22: a grammar emits every required property
+						// before any optional one, so an optional `figures` is moved behind
+						// the required prose however early the struct declares it, and a model
+						// that has written its prose can no longer reach it. The array may be
+						// empty -- a recommendation that reports no number names no figure --
+						// so this buys the position without forcing a declaration.
+						"related_insight_ids", "figures", "description", "actions",
+						"expected_impact", "title", "priority",
 					},
 				},
 			},

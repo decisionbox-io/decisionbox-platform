@@ -137,7 +137,7 @@ func findUnboundedStrings(node interface{}, path string) []string {
 	// Recurse through the places a schema nests: properties, items, and the
 	// composition keywords. Keyed explicitly rather than over every value, so
 	// a description that happens to be a map cannot be mistaken for a schema.
-	if props, isMap := m["properties"].(map[string]interface{}); isMap {
+	if props := schemaProperties(m["properties"]); props != nil {
 		for k, v := range props {
 			out = append(out, findUnboundedStrings(v, path+"."+k)...)
 		}
@@ -252,7 +252,7 @@ func findOversizedBounds(node interface{}, path string) []string {
 		out = append(out, fmt.Sprintf("%s has maxLength %d, above the %d a llama.cpp grammar honours",
 			path, n, grammarRepetitionCeiling))
 	}
-	if props, isMap := m["properties"].(map[string]interface{}); isMap {
+	if props := schemaProperties(m["properties"]); props != nil {
 		for k, v := range props {
 			out = append(out, findOversizedBounds(v, path+"."+k)...)
 		}

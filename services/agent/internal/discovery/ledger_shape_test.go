@@ -501,7 +501,7 @@ func TestRunPhaseReflection_CubeRunSortsCoverageIntoTheRightNamespace(t *testing
 // model that declined to answer.
 func TestReflectionSchema_MatchesStructTags(t *testing.T) {
 	tags := jsonTagSet(reflect.TypeOf(parsedReflection{}))
-	props := reflectionResponseSchema(agentplugin.EvolutionModeAuto, true, true)["properties"].(map[string]interface{})
+	props := schemaProperties(reflectionResponseSchema(agentplugin.EvolutionModeAuto, true, true)["properties"])
 
 	for name := range props {
 		if !tags[name] {
@@ -564,8 +564,8 @@ func schemaItemProps(t *testing.T, props map[string]interface{}, name string) ma
 	if !ok {
 		t.Fatalf("schema property %q has no items shape", name)
 	}
-	itemProps, ok := item["properties"].(map[string]interface{})
-	if !ok {
+	itemProps := schemaProperties(item["properties"])
+	if itemProps == nil {
 		t.Fatalf("schema property %q.items has no properties", name)
 	}
 	return itemProps

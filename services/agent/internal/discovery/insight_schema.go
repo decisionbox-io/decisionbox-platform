@@ -107,35 +107,35 @@ func insightResponseSchema() map[string]interface{} {
 		return map[string]interface{}{"type": "string", "description": desc, "minLength": 1}
 	}
 
-	insightProps := map[string]interface{}{
-		"name":        nonEmptyString("Short, specific name for the discovered pattern or finding. "+figureReferenceRule, maxSchemaTitleRunes),
-		"description": unboundedProse("Explanation of the finding. " + figureReferenceRule),
+	insightProps := insightItemProperties{
+		Name:        nonEmptyString("Short, specific name for the discovered pattern or finding. "+figureReferenceRule, maxSchemaTitleRunes),
+		Description: unboundedProse("Explanation of the finding. " + figureReferenceRule),
 		// nonEmptyString rather than label because this field is required below, and a
 		// grammar satisfies a required string with "".
-		"severity":       nonEmptyString(`One of "critical", "high", "medium", "low"`, maxSchemaLabelRunes),
-		"affected_count": map[string]interface{}{"type": "integer", "description": "Number of users/entities affected"},
-		"risk_score":     map[string]interface{}{"type": "number", "description": "Risk score from 0.0 to 1.0"},
-		"confidence":     map[string]interface{}{"type": "number", "description": "Confidence from 0.0 to 1.0"},
-		"target_segment": boundedString("The user segment this insight applies to", maxSchemaSegmentRunes),
-		"metrics": map[string]interface{}{
+		Severity:      nonEmptyString(`One of "critical", "high", "medium", "low"`, maxSchemaLabelRunes),
+		AffectedCount: map[string]interface{}{"type": "integer", "description": "Number of users/entities affected"},
+		RiskScore:     map[string]interface{}{"type": "number", "description": "Risk score from 0.0 to 1.0"},
+		Confidence:    map[string]interface{}{"type": "number", "description": "Confidence from 0.0 to 1.0"},
+		TargetSegment: boundedString("The user segment this insight applies to", maxSchemaSegmentRunes),
+		Metrics: map[string]interface{}{
 			"type":        "object",
 			"description": "Free-form domain-specific metrics for this insight",
 		},
-		"indicators": map[string]interface{}{
+		Indicators: map[string]interface{}{
 			"type":        "array",
 			"description": "Signals/behaviours that characterize this pattern",
 			"items":       boundedString("A single indicator. "+figureReferenceRule, maxSchemaListItemRunes),
 		},
-		"figures": map[string]interface{}{
+		Figures: map[string]interface{}{
 			"type": "array",
 			"description": "Every number this insight states, as data. The prose references them " +
 				"as {{id}} and the platform renders the text.",
 			"items": map[string]interface{}{
 				"type": "object",
-				"properties": map[string]interface{}{
-					"id": nonEmptyString("Key the prose references; unique within this insight. Name it for what it "+
+				"properties": figureItemProperties{
+					ID: nonEmptyString("Key the prose references; unique within this insight. Name it for what it "+
 						"holds -- `churn_rate`, `total_revenue` -- not by position", maxSchemaIdentifierRunes),
-					"value": map[string]interface{}{"type": "number", "description": "The number in the units of the step's own column: 8476238553, or 24.66 for a percentage"},
+					Value: map[string]interface{}{"type": "number", "description": "The number in the units of the step's own column: 8476238553, or 24.66 for a percentage"},
 					// No "days". The closed set in models.Figure deliberately has no unit
 					// for a word, because a unit here is notation and a word is prose --
 					// the first live run rendered "{{f1}} days" with a days unit and
@@ -144,21 +144,21 @@ func insightResponseSchema() map[string]interface{} {
 					// mistake the contract forbids in prose; the schema is the stronger
 					// signal, so it was the one being obeyed. Pinned by
 					// TestInsightSchema_FigureEnumsMatchTheClosedSets.
-					"unit":     label(`One of "count", "currency", "percent", "multiple", "plain" -- notation, never a word like days`),
-					"currency": label(insightCurrencyFieldDescription),
-					"scale":    label(`Abbreviation for a large number: "thousands", "millions", "billions"; omit to write it in full`),
-					"decimals": map[string]interface{}{"type": "integer", "description": "Decimal places to print; this is the precision being claimed"},
-					"approx":   map[string]interface{}{"type": "boolean", "description": "Print a tilde to mark the number as rounded"},
-					"step":     map[string]interface{}{"type": "integer", "description": "Exploration step whose rows produced the figure"},
+					Unit:     label(`One of "count", "currency", "percent", "multiple", "plain" -- notation, never a word like days`),
+					Currency: label(insightCurrencyFieldDescription),
+					Scale:    label(`Abbreviation for a large number: "thousands", "millions", "billions"; omit to write it in full`),
+					Decimals: map[string]interface{}{"type": "integer", "description": "Decimal places to print; this is the precision being claimed"},
+					Approx:   map[string]interface{}{"type": "boolean", "description": "Print a tilde to mark the number as rounded"},
+					Step:     map[string]interface{}{"type": "integer", "description": "Exploration step whose rows produced the figure"},
 					// "excess" is listed beside "ratio" with the difference spelled out,
 					// because the two read the same two cells and only the sentence tells
 					// them apart. A run offering ratio alone shipped a vouched figure
 					// behind "109.6% more" where the excess is 9.6%.
-					"kind":   nonEmptyString(`One of "cell", "sum", "count", "ratio", "excess", "diff". "ratio" is a/b and "excess" is a/b-1, so a sentence saying one thing is N% MORE than another is an excess`, maxSchemaLabelRunes),
-					"column": label("Column the arithmetic runs over"),
-					"row":    selector("Terms selecting the single row a cell, a ratio or excess numerator, or a diff's left operand comes from"),
-					"other":  selector("Terms selecting a diff's right operand, or the denominator row of a ratio or an excess"),
-					"scope":  selector("Which rows a sum, a count, or a ratio or excess denominator covers"),
+					Kind:   nonEmptyString(`One of "cell", "sum", "count", "ratio", "excess", "diff". "ratio" is a/b and "excess" is a/b-1, so a sentence saying one thing is N% MORE than another is an excess`, maxSchemaLabelRunes),
+					Column: label("Column the arithmetic runs over"),
+					Row:    selector("Terms selecting the single row a cell, a ratio or excess numerator, or a diff's left operand comes from"),
+					Other:  selector("Terms selecting a diff's right operand, or the denominator row of a ratio or an excess"),
+					Scope:  selector("Which rows a sum, a count, or a ratio or excess denominator covers"),
 				},
 				// []interface{} like every other required list in this schema. Both
 				// marshal identically, but the mixed form made this list unreadable to
@@ -166,35 +166,35 @@ func insightResponseSchema() map[string]interface{} {
 				"required": []interface{}{"id", "value", "step", "kind"},
 			},
 		},
-		"quantifier_claims": map[string]interface{}{
+		QuantifierClaims: map[string]interface{}{
 			"type": "array",
 			"description": "One entry per statement whose truth depends on rows besides those it names " +
 				"(only / every / largest / second largest / top N / improved each year / has N values)",
 			"items": map[string]interface{}{
 				"type": "object",
-				"properties": map[string]interface{}{
-					"claim":        nonEmptyString("The statement, verbatim as written in name, description or indicators", maxSchemaListItemRunes),
-					"kind":         nonEmptyString(`One of "only", "all", "rank", "monotonic", "cardinality"`, maxSchemaLabelRunes),
-					"step":         map[string]interface{}{"type": "integer", "description": "Exploration step whose rows settle the claim"},
-					"column":       label("Column the claim ranks by, or whose direction it asserts"),
-					"filter":       selector("Conjunction of `column <op> literal` terms joined by AND"),
-					"scope":        selector("Which rows the claim is about, same grammar as filter; applied before top_n"),
-					"top_n":        map[string]interface{}{"type": "integer", "description": "Narrow the scope to the top N rows before applying the predicate"},
-					"top_n_column": label("Column the top-N scope is ranked by"),
-					"subject":      selector("Terms selecting the single row a rank claim is about, same grammar as filter"),
-					"rank":         map[string]interface{}{"type": "integer", "description": "1-based rank from the order end"},
-					"count": map[string]interface{}{"type": "integer", "minimum": 1,
+				"properties": claimItemProperties{
+					Claim:      nonEmptyString("The statement, verbatim as written in name, description or indicators", maxSchemaListItemRunes),
+					Kind:       nonEmptyString(`One of "only", "all", "rank", "monotonic", "cardinality"`, maxSchemaLabelRunes),
+					Step:       map[string]interface{}{"type": "integer", "description": "Exploration step whose rows settle the claim"},
+					Column:     label("Column the claim ranks by, or whose direction it asserts"),
+					Filter:     selector("Conjunction of `column <op> literal` terms joined by AND"),
+					Scope:      selector("Which rows the claim is about, same grammar as filter; applied before top_n"),
+					TopN:       map[string]interface{}{"type": "integer", "description": "Narrow the scope to the top N rows before applying the predicate"},
+					TopNColumn: label("Column the top-N scope is ranked by"),
+					Subject:    selector("Terms selecting the single row a rank claim is about, same grammar as filter"),
+					Rank:       map[string]interface{}{"type": "integer", "description": "1-based rank from the order end"},
+					Count: map[string]interface{}{"type": "integer", "minimum": 1,
 						"description": "Asserted number of rows. Required for a cardinality claim, and must be positive: " +
 							"an omitted count cannot be told from an asserted zero, so a cardinality claim without one is not checked"},
-					"order": label(`"desc" (default) or "asc"`),
+					Order: label(`"desc" (default) or "asc"`),
 					// An enum rather than a description, because a trend the evaluator
 					// cannot read is not checked at all. "decrease" or "down" used to be
 					// silently treated as increasing, which refuted correct series.
-					"order_by": label("Required for a monotonic claim: the column that puts the rows in " +
+					OrderBy: label("Required for a monotonic claim: the column that puts the rows in " +
 						"sequence — the year, the decile, the band. The platform sorts by it ascending before " +
 						"checking the trend, so the order your query returned does not matter. It must be a " +
 						"numeric column, and it must not be the same column as `column`"),
-					"trend": map[string]interface{}{"type": "string",
+					Trend: map[string]interface{}{"type": "string",
 						"enum":        []interface{}{"increasing", "decreasing"},
 						"description": "Required for a monotonic claim. Exactly \"increasing\" or \"decreasing\" — no other word is read"},
 				},
@@ -217,7 +217,7 @@ func insightResponseSchema() map[string]interface{} {
 				"required": []interface{}{"claim", "kind", "step"},
 			},
 		},
-		"source_steps": map[string]interface{}{
+		SourceSteps: map[string]interface{}{
 			"type":        "array",
 			"description": "Exploration step numbers this insight is based on",
 			"items":       map[string]interface{}{"type": "integer", "description": "An exploration step number"},
@@ -260,8 +260,25 @@ func insightResponseSchema() map[string]interface{} {
 					// required six fields since platform#340, which is why that phase has
 					// run on this wire without this failure.
 					//
-					// Pinned by TestTheInsightSchemaRequiresWhatAnInsightCannotLack.
-					"required": []interface{}{"name", "description", "severity", "source_steps"},
+					// `figures` and `indicators` are also here for a second reason, and
+					// it is the one run 22 measured. A grammar emits every required
+					// property before any optional one, whatever order the schema
+					// declares -- so an optional `figures` is moved behind the required
+					// prose however early it is declared, and a model that has written
+					// its prose can no longer reach it. On the small model that cost half
+					// its figures. Being required is what keeps them in front.
+					//
+					// Both may be empty. An insight that states no number declares no
+					// figure and `figures: []` says so honestly; the alternative is
+					// forcing a model to invent one, which is worse than the ordering bug.
+					// quantifier_claims stays optional because it quotes prose that does
+					// not exist yet when the evidence is written.
+					//
+					// Pinned by TestTheInsightSchemaRequiresWhatAnInsightCannotLack and
+					// TestSchemaPropertyOrderIsDeclaredNotAlphabetical.
+					"required": []interface{}{
+						"source_steps", "figures", "description", "indicators", "name", "severity",
+					},
 				},
 			},
 		},
@@ -282,29 +299,98 @@ func insightResponseSchema() map[string]interface{} {
 // every number in the insight is already rendered text and a repair that wants to change one
 // is changing prose. There is nothing for it to declare.
 //
-// Deleting the key is no longer enough on its own. Every prose field now carries
+// Deleting the key is no longer enough on its own. Every prose field carries
 // figureReferenceRule -- "declare it there and write {{key}} here" -- which in this schema
-// would name an array that has just been removed, asking the repair for exactly the
-// placeholder the paragraph above exists to prevent. So each prose field's rule is swapped
-// for repairProseOnlyRule, which tells the repair the numbers are already written.
-// Swapped rather than stripped: a field left saying nothing about numbers is how the first
-// contradiction arrived. Pinned by TestTheRepairSchemaAsksForNoReference.
+// would name an array that is not here, asking the repair for exactly the placeholder the
+// paragraph above exists to prevent. So this schema is built from its own properties
+// struct, whose prose fields carry repairProseOnlyRule instead.
+//
+// Built rather than copied-and-edited. It used to clone the analysis schema and delete a
+// map key, which an ordered struct cannot do -- and the clone was never the honest
+// description anyway, because three of its fields have to ask for something different
+// here. Declaring the shape says that out loud. Pinned by
+// TestTheRepairSchemaAsksForNoReference.
 func insightRepairResponseFormat() *gollm.ResponseFormat {
-	schema := insightResponseSchema()
-	props, _ := schema["properties"].(map[string]interface{})
-	items, _ := props["insights"].(map[string]interface{})["items"].(map[string]interface{})
-	if itemProps, ok := items["properties"].(map[string]interface{}); ok {
-		delete(itemProps, "figures")
-		swapReferenceRule(itemProps, "name", "description")
-		if ind, ok := itemProps["indicators"].(map[string]interface{}); ok {
-			swapReferenceRule(ind, "items")
-		}
+	analysis := objectProperties(insightItemSchemaFrom(insightResponseSchema()))
+	keep := func(field string) map[string]interface{} {
+		node, _ := analysis[field].(map[string]interface{})
+		return node
+	}
+	props := insightRepairItemProperties{
+		SourceSteps:      keep("source_steps"),
+		Description:      proseWithoutReference(keep("description")),
+		Indicators:       indicatorsWithoutReference(keep("indicators")),
+		Name:             proseWithoutReference(keep("name")),
+		QuantifierClaims: keep("quantifier_claims"),
+		Severity:         keep("severity"),
+		TargetSegment:    keep("target_segment"),
+		AffectedCount:    keep("affected_count"),
+		RiskScore:        keep("risk_score"),
+		Confidence:       keep("confidence"),
+		Metrics:          keep("metrics"),
 	}
 	return &gollm.ResponseFormat{
-		Name:   insightResponseFormatName,
-		Schema: schema,
+		Name: insightResponseFormatName,
+		Schema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"insights": map[string]interface{}{
+					"type":        "array",
+					"description": "The discovered insights",
+					"items": map[string]interface{}{
+						"type":       "object",
+						"properties": props,
+						// `figures` is gone, so nothing has to precede the prose and the
+						// required set is the measured one minus the two that were there
+						// only to hold the evidence in front of it.
+						"required": []interface{}{"source_steps", "description", "name", "severity"},
+					},
+				},
+			},
+			"required": []interface{}{"insights"},
+		},
 		Strict: false,
 	}
+}
+
+// insightItemSchemaFrom returns the per-insight object out of an envelope.
+func insightItemSchemaFrom(schema map[string]interface{}) map[string]interface{} {
+	props := objectProperties(schema)
+	arr, _ := props["insights"].(map[string]interface{})
+	items, _ := arr["items"].(map[string]interface{})
+	return items
+}
+
+// proseWithoutReference copies a prose field's schema with the reference rule swapped for
+// the repair's own. Copied rather than edited in place, so the two schemas share no state.
+func proseWithoutReference(node map[string]interface{}) map[string]interface{} {
+	if node == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(node))
+	for k, v := range node {
+		out[k] = v
+	}
+	if desc, ok := out["description"].(string); ok {
+		out["description"] = strings.Replace(desc, figureReferenceRule, repairProseOnlyRule, 1)
+	}
+	return out
+}
+
+// indicatorsWithoutReference is proseWithoutReference for the array whose items carry the
+// rule rather than the array itself.
+func indicatorsWithoutReference(node map[string]interface{}) map[string]interface{} {
+	if node == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(node))
+	for k, v := range node {
+		out[k] = v
+	}
+	if items, ok := out["items"].(map[string]interface{}); ok {
+		out["items"] = proseWithoutReference(items)
+	}
+	return out
 }
 
 // swapReferenceRule rewrites the named fields' descriptions from figureReferenceRule to
