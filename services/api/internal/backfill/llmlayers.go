@@ -5,6 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 	"time"
 
 	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
@@ -105,15 +107,15 @@ func runBackfillLLMLayers(projectID string, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("\nprojects scanned=%d stamped=%d already-configured=%d\n",
-		counts.scanned, counts.stamped, counts.skipped)
+	fmt.Printf("\nprojects scanned=%d stamped=%d gateway-host-repaired=%d already-correct=%d\n",
+		counts.scanned, counts.stamped, counts.hostsFixed, counts.skipped)
 	if dryRun && counts.stamped > 0 {
 		fmt.Println("Re-run without -dry-run to apply.")
 	}
 	return nil
 }
 
-type llmLayerCounts struct{ scanned, stamped, skipped int }
+type llmLayerCounts struct{ scanned, stamped, skipped, hostsFixed int }
 
 // projectLayerState is the slice of a project document this backfill reads.
 //
@@ -126,6 +128,44 @@ type projectLayerState struct {
 	Name             string                         `bson:"name"`
 	LayerModels      map[string]llmlayer.LayerModel `bson:"layer_models"`
 	LLMConfigVersion int                            `bson:"llm_config_version"`
+
+	// The three legacy blocks' gateway host. managedai rewrites these on every
+	// project write, so a project not written since the deployment's
+	// AI_GATEWAY_URL last changed still points at the old one.
+	LLM struct {
+		Config map[string]string `bson:"config"`
+	} `bson:"llm"`
+	BlurbLLM struct {
+		Config map[string]string `bson:"config"`
+	} `bson:"blurb_llm"`
+	Embedding struct {
+		Config map[string]string `bson:"config"`
+	} `bson:"embedding"`
+}
+
+// configBaseURLKey is the per-provider config key holding the endpoint.
+const configBaseURLKey = "base_url"
+
+// staleBaseURLs returns the $set entries needed to point this project's legacy
+// AI blocks at the configured gateway, for the blocks that are not already
+// there. Empty when nothing needs moving.
+//
+// Only the base_url KEY is written, never the block. Replacing the embedding
+// block would drop a probed `dimensions`; replacing the llm block would drop
+// provider settings an operator may have set. The host is the one value
+// managedai owns unconditionally.
+func staleBaseURLs(p projectLayerState, want string) bson.M {
+	out := bson.M{}
+	for field, cfg := range map[string]map[string]string{
+		"llm":       p.LLM.Config,
+		"blurb_llm": p.BlurbLLM.Config,
+		"embedding": p.Embedding.Config,
+	} {
+		if have, ok := cfg[configBaseURLKey]; ok && have != "" && have != want {
+			out[field+".config."+configBaseURLKey] = want
+		}
+	}
+	return out
 }
 
 // backfillLLMLayers stamps the per-layer configuration onto projects that
@@ -151,6 +191,12 @@ func backfillLLMLayers(ctx context.Context, col *mongo.Collection, projectID str
 	if len(preset.LayerModels) == 0 || preset.LLMConfigVersion == 0 {
 		return counts, fmt.Errorf("managedai produced no per-layer configuration; refusing to stamp nothing")
 	}
+	// The gateway host managedai would write, taken from the same preset so
+	// there is one source for it.
+	gatewayBaseURL := preset.Embedding.Config[configBaseURLKey]
+	if gatewayBaseURL == "" {
+		return counts, fmt.Errorf("managedai produced no gateway base_url; refusing to repair hosts blindly")
+	}
 
 	cur, err := col.Find(ctx, filter)
 	if err != nil {
@@ -165,14 +211,31 @@ func backfillLLMLayers(ctx context.Context, col *mongo.Collection, projectID str
 		}
 		counts.scanned++
 
-		if !needsLLMLayerStamp(p) {
+		stamp := needsLLMLayerStamp(p)
+		hosts := staleBaseURLs(p, gatewayBaseURL)
+		if !stamp && len(hosts) == 0 {
 			counts.skipped++
 			continue
 		}
 
-		fmt.Printf("  %s  %-40s  -> %d layer rows, %d provider entry, version %d\n",
-			p.ID.Hex(), truncate(p.Name, 40), len(preset.LayerModels), len(preset.LLMProviders), preset.LLMConfigVersion)
-		counts.stamped++
+		what := []string{}
+		if stamp {
+			what = append(what, fmt.Sprintf("%d layer rows, %d provider entry, version %d",
+				len(preset.LayerModels), len(preset.LLMProviders), preset.LLMConfigVersion))
+		}
+		if len(hosts) > 0 {
+			fields := make([]string, 0, len(hosts))
+			for k := range hosts {
+				fields = append(fields, strings.TrimSuffix(k, ".config."+configBaseURLKey))
+			}
+			sort.Strings(fields)
+			what = append(what, "gateway host on "+strings.Join(fields, "+"))
+			counts.hostsFixed++
+		}
+		fmt.Printf("  %s  %-40s  -> %s\n", p.ID.Hex(), truncate(p.Name, 40), strings.Join(what, "; "))
+		if stamp {
+			counts.stamped++
+		}
 		if dryRun {
 			continue
 		}
@@ -186,11 +249,16 @@ func backfillLLMLayers(ctx context.Context, col *mongo.Collection, projectID str
 		// fields risks a re-probe or a mismatch for no benefit. The other
 		// fields need no migration regardless: managedai has written them on
 		// every project write since long before per-layer models.
-		if _, uerr := col.UpdateOne(ctx, bson.M{"_id": p.ID}, bson.M{"$set": bson.M{
-			"llm_providers":      preset.LLMProviders,
-			"layer_models":       preset.LayerModels,
-			"llm_config_version": preset.LLMConfigVersion,
-		}}); uerr != nil {
+		set := bson.M{}
+		if stamp {
+			set["llm_providers"] = preset.LLMProviders
+			set["layer_models"] = preset.LayerModels
+			set["llm_config_version"] = preset.LLMConfigVersion
+		}
+		for k, v := range hosts {
+			set[k] = v
+		}
+		if _, uerr := col.UpdateOne(ctx, bson.M{"_id": p.ID}, bson.M{"$set": set}); uerr != nil {
 			return counts, fmt.Errorf("stamp project %s: %w", p.ID.Hex(), uerr)
 		}
 	}
