@@ -229,8 +229,14 @@ func checkpointPayload(step models.ExplorationStep, sample []map[string]interfac
 // SaveStep writes (or replaces) one step's checkpoint.
 //
 // ReplaceOne with upsert against the unique (run_id, step_number) index, so a
-// retried write — or a resumed run re-checkpointing a step it replayed —
-// replaces the row rather than duplicating it or failing on the index.
+// retried write — or a resumed run re-exploring a step number an older
+// attempt already left a row for, which is what a prefix truncated by a gap
+// or a stale tail produces — replaces the row rather than duplicating it or
+// failing on the index.
+//
+// A REPLAYED step is not one of those cases: replay fences without writing
+// and never reaches here, which is how its rows keep their original attempt
+// (see Attempt above).
 func (r *DiscoveryCheckpointRepository) SaveStep(ctx context.Context, in CheckpointStepInput) error {
 	if in.RunID == "" {
 		return errors.New("checkpoint step: run_id is required")

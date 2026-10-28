@@ -756,8 +756,10 @@ func TestInteg_Checkpoint_PrefixStopsAtAStaleTail(t *testing.T) {
 			t.Fatalf("attempt 1 SaveStep %d: %v", n, err)
 		}
 	}
-	// Attempt 2 replays 1..2 (re-checkpointing them, as replayPrefix does)
-	// and explores its own step 3 before dying.
+	// Attempt 2 then has its own rows at 1..3. Replay does not produce this
+	// shape — it fences without writing, so a replayed row keeps the attempt
+	// that earned it — this is an attempt that EXECUTED 1..3 itself, which
+	// is what an empty prefix leaves it to do.
 	for _, n := range []int{1, 2, 3} {
 		in := checkpointStepInput("run-1", n, 20)
 		in.Attempt = 2
@@ -809,8 +811,9 @@ func TestInteg_Checkpoint_PrefixSpansAttemptsThatOnlyRise(t *testing.T) {
 		t.Fatalf("EnsureIndexes: %v", err)
 	}
 
-	// Attempt 1 stopped at 2; attempt 2 carried on to 4 without replaying
-	// (the shape a crash before replayPrefix's first re-checkpoint leaves).
+	// Attempt 1 stopped at 2; attempt 2 replayed those and carried on to 4.
+	// This is the ORDINARY resume shape, not an anomaly: replay leaves the
+	// prefix on attempt 1 and only the steps this attempt executed carry 2.
 	for _, n := range []int{1, 2} {
 		if err := repo.SaveStep(ctx, checkpointStepInput("run-1", n, 10)); err != nil {
 			t.Fatal(err)

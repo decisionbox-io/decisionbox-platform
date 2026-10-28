@@ -300,8 +300,11 @@ type replayOutcome struct {
 // (discovery.Orchestrator.replayLiveFeedForResume). That separation is the
 // point: rows are per-attempt, the counters are per-run.
 //
-// The persist hook IS called, so a replayed prefix is re-checkpointed under
-// this attempt and a run that dies twice still resumes from the same place.
+// The persist hook is NOT called either. The fence hook takes its place: the
+// checkpoint rows for these steps already exist, written by the attempt that
+// earned them, and they have to KEEP that attempt — see the fence comment in
+// the loop below for why rewriting them makes a twice-killed run throw away
+// valid steps.
 func (e *ExplorationEngine) replayPrefix(ctx context.Context, conversation *Conversation, resume *ResumeState) replayOutcome {
 	out := replayOutcome{}
 	if resume.Len() == 0 {
