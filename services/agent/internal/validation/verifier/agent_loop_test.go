@@ -36,13 +36,13 @@ func (s *stubLLM) Chat(ctx context.Context, user, system string, max int) (*ai.C
 // round-by-round behaviour is testable. Every method records how many
 // times it was called.
 type stubExecutor struct {
-	lookupCalls   int
-	queryCalls    int
-	readCalls     int
-	queryResult   map[string]any
-	readResult    map[string]any
-	lookupResult  map[string]any
-	queryErr      error
+	lookupCalls  int
+	queryCalls   int
+	readCalls    int
+	queryResult  map[string]any
+	readResult   map[string]any
+	lookupResult map[string]any
+	queryErr     error
 }
 
 func (s *stubExecutor) LookupSchema(ctx context.Context, refs []string) (map[string]any, error) {
@@ -79,9 +79,9 @@ func happyVerdictJSON(mode valmodels.AgentMode) string {
 // is insight, source step 1 is referenced.
 func minimalBundle() Bundle {
 	return Bundle{
-		Doc: DocDigest{Kind: valmodels.DocInsight, ID: "d", Headline: "h", SourceStepIDs: []int{1}, Language: "English"},
+		Doc:         DocDigest{Kind: valmodels.DocInsight, ID: "d", Headline: "h", SourceStepIDs: []int{1}, Language: "English"},
 		SourceSteps: []SourceStepDigest{{StepID: 1, SampleRows: []map[string]any{{"x": 1}}}},
-		Warehouse: WarehouseInfo{Dialect: "BigQuery Standard SQL"},
+		Warehouse:   WarehouseInfo{Dialect: "BigQuery Standard SQL"},
 	}
 }
 
@@ -157,10 +157,10 @@ func TestRun_LookupSchemaDoesNotSatisfyRefuterDiscipline(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Refuter.MaxRounds = 3
 	llm := &stubLLM{scripted: []string{
-		`{"lookup_schema": ["demo.t"]}`,                       // r0 — only schema
-		happyVerdictJSON(valmodels.ModeRefuter),               // r1 tool-less — rejected
-		happyVerdictJSON(valmodels.ModeRefuter),               // r2 tool-less — last normal round
-		happyVerdictJSON(valmodels.ModeRefuter),               // forced final — downgrade
+		`{"lookup_schema": ["demo.t"]}`,         // r0 — only schema
+		happyVerdictJSON(valmodels.ModeRefuter), // r1 tool-less — rejected
+		happyVerdictJSON(valmodels.ModeRefuter), // r2 tool-less — last normal round
+		happyVerdictJSON(valmodels.ModeRefuter), // forced final — downgrade
 	}}
 	a, _ := NewAgent(llm, cfg)
 	v, err := a.Refute(context.Background(), minimalBundle(), &stubExecutor{})

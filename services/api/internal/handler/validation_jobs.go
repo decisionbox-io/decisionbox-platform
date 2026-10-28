@@ -32,7 +32,9 @@ import (
 	"errors"
 	"net/http"
 
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
+	"github.com/decisionbox-io/decisionbox/services/api/managedai"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 	"github.com/google/uuid"
 )
@@ -130,6 +132,20 @@ func (h *ValidationJobsHandler) enqueue(w http.ResponseWriter, r *http.Request, 
 	}
 	if !proj.EffectiveValidationEnabled() {
 		writeError(w, http.StatusForbidden, "validation is disabled for this project")
+		return
+	}
+	// The same configuration precondition StartRun and Ask apply (#407).
+	//
+	// This is a third way to spend tokens on a project's models, and the
+	// worker resolves its layers ungated — so without this a self-hosted
+	// project with existing discoveries could validate against a
+	// configuration nobody had reviewed, which is the one thing the gate
+	// exists to prevent. Managed deployments are exempt for the same reason
+	// they are everywhere else: there is no surface to review.
+	if !managedai.Enabled() && !proj.LLMConfigured() {
+		writeErrorCode(w, http.StatusPreconditionFailed, ErrCodeLLMNotConfigured,
+			llmlayer.ErrLLMNotConfigured.Error(),
+			"open project settings at /projects/"+proj.ID+"/settings#models, review the provider and model for each layer, and save")
 		return
 	}
 

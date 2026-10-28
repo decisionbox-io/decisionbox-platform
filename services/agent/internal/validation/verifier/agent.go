@@ -67,21 +67,55 @@ type Tracer interface {
 // reused across Verify/Refute calls; per-call state lives in runState
 // (plan §"Agent loop — per-call spend state").
 type Agent struct {
-	llm    LLMClient
-	cfg    Config
-	system map[valmodels.AgentMode]string
-	tracer Tracer
+	llm LLMClient
+	// llmByMode is the per-mode client set (per-layer models, #407): the
+	// verifier and the refuter are separate layers, so a project can run the
+	// two halves of validation on different models. Empty / a missing entry
+	// falls back to llm, which is what NewAgent gives.
+	//
+	// Keyed by mode because that is the shape this file already has — cfgFor
+	// and the system-prompt map are mode-keyed, and the client was the only
+	// thing that was not.
+	llmByMode map[valmodels.AgentMode]LLMClient
+	cfg       Config
+	system    map[valmodels.AgentMode]string
+	tracer    Tracer
 }
 
-// NewAgent constructs an Agent with loaded system prompts. Returns an
-// error only if the embedded prompt files cannot be read (which
-// should be impossible in a built binary).
+// NewAgent constructs an Agent with loaded system prompts, running both modes
+// on one client. Returns an error only if the embedded prompt files cannot be
+// read (which should be impossible in a built binary).
 func NewAgent(llm LLMClient, cfg Config) (*Agent, error) {
 	system, err := loadSystemPrompts()
 	if err != nil {
 		return nil, err
 	}
 	return &Agent{llm: llm, cfg: cfg, system: system}, nil
+}
+
+// NewAgentPerMode constructs an Agent whose verifier and refuter run on their
+// own clients.
+//
+// fallback is used for a mode with no entry, so a caller that only overrides
+// one half does not have to supply both. This is the layer pair where the
+// model choice matters most: verdicts depend heavily on the model, and
+// swapping it changes what users see as verified.
+func NewAgentPerMode(byMode map[valmodels.AgentMode]LLMClient, fallback LLMClient, cfg Config) (*Agent, error) {
+	a, err := NewAgent(fallback, cfg)
+	if err != nil {
+		return nil, err
+	}
+	a.llmByMode = byMode
+	return a, nil
+}
+
+// llmFor returns the client a mode's calls go through — the mode-keyed
+// counterpart of cfgFor.
+func (a *Agent) llmFor(mode valmodels.AgentMode) LLMClient {
+	if c, ok := a.llmByMode[mode]; ok && c != nil {
+		return c
+	}
+	return a.llm
 }
 
 // WithTracer attaches a Tracer. Returns the same Agent for chaining.
@@ -155,7 +189,7 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 			continue
 		}
 
-		chat, err := a.llm.Chat(ctx, prompt, system, mc.MaxOutputTokens)
+		chat, err := a.llmFor(s.mode).Chat(ctx, prompt, system, mc.MaxOutputTokens)
 		if err != nil {
 			return a.unverifiable(s, "chat failed: "+err.Error()), nil
 		}
@@ -205,7 +239,7 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 	// Forced final round — submit_verdict only.
 	a.aggressiveTruncate(s)
 	forcedPrompt := a.buildPrompt(s, []ActionKind{ActionSubmitVerdict}, true)
-	chat, err := a.llm.Chat(ctx, forcedPrompt, system, mc.MaxOutputTokens)
+	chat, err := a.llmFor(s.mode).Chat(ctx, forcedPrompt, system, mc.MaxOutputTokens)
 	if err != nil {
 		return a.unverifiable(s, "forced chat failed: "+err.Error()), nil
 	}
@@ -324,17 +358,18 @@ func (a *Agent) aggressiveTruncate(s *runState) {
 
 // finalise runs the deterministic coverage checks. Plan §"Hard
 // coverage finaliser":
-//   step 0 — duplicate detection on claims_considered AND on
-//            claim_verdicts.claim_text (case-folded + whitespace-
-//            collapsed)
-//   step 1 — claims_considered must be non-empty
-//   step 2 — headline positional rule (claims_considered[0] ==
-//            unique is_headline=true entry's claim_text)
-//   step 3 — set-equality between claims_considered and claim_text
-//   step 4 — evidence required for confirmed/supported/rejected
-//   step 4.5 — status enum validation
-//   step 5 — unverifiable rules
-//   step 6 — derive Overall when omitted
+//
+//	step 0 — duplicate detection on claims_considered AND on
+//	         claim_verdicts.claim_text (case-folded + whitespace-
+//	         collapsed)
+//	step 1 — claims_considered must be non-empty
+//	step 2 — headline positional rule (claims_considered[0] ==
+//	         unique is_headline=true entry's claim_text)
+//	step 3 — set-equality between claims_considered and claim_text
+//	step 4 — evidence required for confirmed/supported/rejected
+//	step 4.5 — status enum validation
+//	step 5 — unverifiable rules
+//	step 6 — derive Overall when omitted
 //
 // On any failure, Overall is rewritten (usually to partial) and a
 // "coverage:" reason is appended to OverallReason.

@@ -109,6 +109,17 @@ export interface ProviderCredentialsPhaseProps<P extends ProviderLike> {
   children?: React.ReactNode;
   /** Copy override for the "Load models" button. Default "Load models". */
   loadButtonLabel?: string;
+  /**
+   * True when a credential is ALREADY STORED for this target, so the load
+   * can go ahead with nothing typed.
+   *
+   * The button is otherwise disabled whenever a credential is required and
+   * the field is empty — which is correct for a first-time setup and wrong
+   * for a saved entry, whose key is write-only and therefore always blank
+   * here. Without this a saved secondary connection could not be checked at
+   * all without re-entering its secret.
+   */
+  hasStoredCredential?: boolean;
   /** Message shown when the provider doesn't need an API key. Default wording covers cloud-creds flows. */
   noKeyHint?: string;
   /** Whether to show the full "Back to credentials" button once in model phase. Default true. */
@@ -128,6 +139,7 @@ export function ProviderCredentialsPhase<P extends ProviderLike>({
   onLoad,
   children,
   loadButtonLabel = 'Load models',
+  hasStoredCredential = false,
   noKeyHint = 'This provider uses cloud credentials (IAM / ADC). No API key needed.',
   backable = true,
   phaseOverride,
@@ -217,7 +229,16 @@ export function ProviderCredentialsPhase<P extends ProviderLike>({
               <>
                 {/* Non-credential, non-model, non-wire top-level provider config fields.
                     max_input_tokens / max_output_tokens are excluded here: the LLM pickers
-                    render them on the model step (next to the model, with the effective-value hint). */}
+                    render them on the model step (next to the model, with the effective-value hint).
+
+                    prompt_cache and reasoning_enabled are excluded for the same reason since
+                    per-layer models (#407): they are MODEL-scoped and the per-layer rows own
+                    them. A provider that declares prompt_cache (every Anthropic-wire one does,
+                    via PromptCacheConfigFields) would otherwise render a second switch on the
+                    connection step — showing the opposite of the per-layer value that overrides
+                    it, and saving to a key nothing reads. The creation wizard's legacy
+                    single-provider form (LLMFormFields) still renders it, because there it IS
+                    the only control. */}
                 {selected.config_fields
                   .filter(
                     (f) =>
@@ -225,7 +246,9 @@ export function ProviderCredentialsPhase<P extends ProviderLike>({
                       f.key !== 'model' &&
                       f.key !== 'wire_override' &&
                       f.key !== 'max_input_tokens' &&
-                      f.key !== 'max_output_tokens'
+                      f.key !== 'max_output_tokens' &&
+                      f.key !== 'prompt_cache' &&
+                      f.key !== 'reasoning_enabled'
                   )
                   .map((field) => (
                     <CatalogAwareField
@@ -296,7 +319,7 @@ export function ProviderCredentialsPhase<P extends ProviderLike>({
                   disabled={
                     !value.provider ||
                     (authMethods.length > 0 && !value.authMethod) ||
-                    (needsCredential && !value.apiKey)
+                    (needsCredential && !value.apiKey && !hasStoredCredential)
                   }
                   style={{ alignSelf: 'flex-start' }}
                 >

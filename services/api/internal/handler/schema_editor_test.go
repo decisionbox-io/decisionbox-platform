@@ -41,7 +41,7 @@ type fakeEditorCache struct {
 	lastCached       time.Time
 	perDatasourceCat map[string]time.Time // warehouse id -> cached_at (falls back to lastCached)
 	seenDatasource   string               // last warehouse/datasource id a read was scoped to
-	updateCall     *struct {
+	updateCall       *struct {
 		key                          string
 		columns                      []models.ColumnInfo
 		keyCols, metrics, dimensions []string

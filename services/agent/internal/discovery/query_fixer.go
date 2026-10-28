@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 )
@@ -15,12 +16,14 @@ import (
 // repair template but the SQL instruction contradicts itself.
 //
 // The budget is resolved here rather than passed in because it is a property
-// of the run, not of the datasource — every fixer in a run gets the same one,
-// and it is what keeps a fix call inside a small model's real limit.
+// of the SQL-repair LAYER's model, not of the datasource — every fixer in a
+// run gets the same one, and it is what keeps a fix call inside a small
+// model's real limit. Repair is its own layer precisely because a cheap model
+// does it well, and a cheap model's window is not the analysis model's.
 func (o *Orchestrator) newQueryFixer(p gowarehouse.Provider, datasets, filter string) *ai.SQLFixer {
-	window, outputCap := o.resolveModelBudget()
+	window, outputCap := o.budgetFor(llmlayer.LayerSQLRepair)
 	return ai.NewQueryFixerFor(p, ai.SQLFixerOptions{
-		Client:    o.aiClient,
+		Client:    o.ai(llmlayer.LayerSQLRepair),
 		Dataset:   datasets,
 		Filter:    filter,
 		Window:    window,

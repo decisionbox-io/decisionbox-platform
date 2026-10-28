@@ -15,6 +15,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/api/internal/discoverytrigger"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
+	"github.com/decisionbox-io/decisionbox/services/api/managedai"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
@@ -283,6 +284,32 @@ func (h *DiscoveriesHandler) StartRun(ctx context.Context, opts discoverytrigger
 	default:
 		// empty status — pre-existing project not yet migrated
 		return discoverytrigger.Result{}, &discoverytrigger.ConflictError{Message: "project has not been indexed yet — trigger POST /api/v1/projects/" + opts.ProjectID + "/reindex first"}
+	}
+
+	// Gate on the per-layer LLM configuration (#407). A project that has
+	// never been configured for per-layer models is refused and the user is
+	// sent to settings, where the values arrive pre-filled from the fields
+	// the project already has — so it is a review, not a seventeen-row
+	// data-entry exercise.
+	//
+	// Last of the preconditions on purpose: an un-indexed or
+	// plugin-parked project keeps the more specific message it has always
+	// given, and this one is what a ready, indexed project is told.
+	//
+	// This is the SHARED trigger seam (discoverytrigger.Register), so the
+	// manual run button, the API and SCHEDULED runs all hit this one check.
+	// A schedule therefore fails until someone makes that visit, which is
+	// deliberate: it is how the house already treats a not-ready schema
+	// index, and the alternative — running once on a configuration nobody
+	// reviewed — is a second code path with no reviewer. Nobody is present
+	// to read a redirect on a scheduled run, so the conflict message names
+	// the settings route and the run-history row carries this reason rather
+	// than a bare failure.
+	//
+	// Managed deployments are never gated: there is no AI configuration
+	// surface there and nothing for a user to define.
+	if !managedai.Enabled() && !p.LLMConfigured() {
+		return discoverytrigger.Result{}, &discoverytrigger.ConflictError{Message: "this project's LLM models have not been configured — open project settings at /projects/" + opts.ProjectID + "/settings#models, review the provider and model for each layer, and save"}
 	}
 
 	// An effort level (cloud's customer-facing intensity) resolves to a

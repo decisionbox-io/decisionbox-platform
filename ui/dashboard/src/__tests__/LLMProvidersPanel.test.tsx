@@ -1,0 +1,398 @@
+/**
+ * @jest-environment jsdom
+ */
+import '@testing-library/jest-dom';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { MantineProvider } from '@mantine/core';
+import {
+  LLMProvidersPanel, ProviderEntryForm, connectionKeyFor, entriesFrom, entryFormsFrom,
+  pendingCredentialWrites,
+} from '@/components/projects/LLMProvidersPanel';
+
+jest.mock('@/components/projects/WarehouseConfigPanel', () => ({
+  TestConnectionButton: () => <button type="button">Test LLM Connection</button>,
+}));
+// The real component hands onLoad the IN-FLIGHT config, credential included
+// (ProviderCredentialsPhase.handleLoad builds it). The mock does the same, so
+// which endpoint the panel then asks is testable.
+jest.mock('@/components/ProviderCredentialsPhase', () => ({
+  ProviderCredentialsPhase: ({ value, onLoad, children }: {
+    value: { provider: string; authMethod: string; config: Record<string, string>; apiKey: string };
+    onLoad: (cfg: Record<string, string>) => Promise<unknown>;
+    children?: React.ReactNode;
+  }) => (
+    <div>
+      <button
+        type="button"
+        onClick={() => {
+          const cfg: Record<string, string> = { ...value.config };
+          if (value.authMethod) cfg.auth_method = value.authMethod;
+          if (value.apiKey) cfg.api_key = value.apiKey;
+          void onLoad(cfg);
+        }}
+      >
+        Check connection
+      </button>
+      {children}
+    </div>
+  ),
+  emptyCredentials: () => ({ provider: '', authMethod: '', config: {}, apiKey: '' }),
+}));
+jest.mock('@/lib/api', () => {
+  const actual = jest.requireActual('@/lib/api');
+  return {
+    ...actual,
+    api: {
+      listLiveLLMModelsForProvider: jest.fn().mockResolvedValue({ models: [] }),
+      listLiveLLMModels: jest.fn().mockResolvedValue({ models: [] }),
+    },
+  };
+});
+
+import { api } from '@/lib/api';
+
+const PROVIDERS = [
+  { id: 'bedrock', name: 'Bedrock', description: '', config_fields: [], auth_methods: [] },
+] as never[];
+
+function form(partial: Partial<ProviderEntryForm> & { id: string }): ProviderEntryForm {
+  return { label: '', provider: 'bedrock', authMethod: '', config: {}, apiKey: '', isNew: false, ...partial };
+}
+
+function renderPanel(
+  value: ProviderEntryForm[],
+  layersByProviderId: Record<string, string[]> = {},
+  onChange = jest.fn(),
+) {
+  render(
+    <MantineProvider>
+      <LLMProvidersPanel
+        projectId="proj-1"
+        providers={PROVIDERS}
+        value={value}
+        onChange={onChange}
+        secrets={[]}
+        layersByProviderId={layersByProviderId}
+        savedIds={value.map((f) => f.id)}
+      />
+    </MantineProvider>,
+  );
+  return onChange;
+}
+
+describe('LLMProvidersPanel', () => {
+  // The default entry is a SLOT, not a pointer. An older agent image reads
+  // its credential from the fixed llm-credentials key, so it cannot be
+  // removed or renamed.
+  it('does not offer to remove the default entry', () => {
+    renderPanel([form({ id: 'default' }), form({ id: 'cheap' })]);
+    expect(screen.queryByRole('button', { name: /Remove default/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Remove cheap/i })).toBeInTheDocument();
+  });
+
+  it('blocks removing an entry a layer still uses, and names the layers', () => {
+    renderPanel(
+      [form({ id: 'default' }), form({ id: 'cheap' })],
+      { cheap: ['exploration', 'sql_repair'] },
+    );
+    expect(screen.getByRole('button', { name: /Remove cheap/i })).toBeDisabled();
+    expect(screen.getByText(/used by 2 layers/i)).toBeInTheDocument();
+  });
+
+  it('allows removing an entry no layer uses', async () => {
+    const onChange = renderPanel([form({ id: 'default' }), form({ id: 'cheap' })]);
+    fireEvent.click(screen.getByRole('button', { name: /Remove cheap/i }));
+    await waitFor(() => expect(onChange).toHaveBeenCalled());
+    expect(onChange.mock.calls[0][0].map((f: ProviderEntryForm) => f.id)).toEqual(['default']);
+  });
+
+  // The id is derived from the name and never shown. What it keys — the
+  // stored credential, and every layer row pointing at this entry — is why
+  // renaming a SAVED entry must not move it.
+  it('renaming a saved entry changes the label, not the id', () => {
+    const onChange = renderPanel([form({ id: 'default' }), form({ id: 'cheap', label: 'Cheap' })]);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Cheap and fast' } });
+    const next = onChange.mock.calls.at(-1)![0];
+    expect(next[1].label).toBe('Cheap and fast');
+    expect(next[1].id).toBe('cheap');
+  });
+
+  it('derives a new entry id from the name as it is typed', () => {
+    const onChange = renderPanel([form({ id: 'default' }), form({ id: '', isNew: true })]);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'DeepInfra — open weights' } });
+    const next = onChange.mock.calls.at(-1)![0];
+    expect(next[1].id).toBe('deepinfra-open-weights');
+  });
+
+  it('says so when a name yields nothing the secret backends could store', () => {
+    renderPanel([form({ id: 'default' }), form({ id: '', label: '—', isNew: true })]);
+    expect(screen.getByText(/at least one letter or digit/i)).toBeInTheDocument();
+  });
+
+  it('reports a duplicate id rather than letting two entries collide', () => {
+    renderPanel([form({ id: 'default' }), form({ id: 'dup' }), form({ id: 'dup' })]);
+    expect(screen.getByText(/Duplicate provider id: dup/i)).toBeInTheDocument();
+  });
+});
+
+describe('entry form conversion', () => {
+  it('synthesises a default entry for a project that has none', () => {
+    const forms = entryFormsFrom([{ id: 'cheap', provider: 'bedrock' }]);
+    expect(forms[0].id).toBe('default');
+    expect(forms[0].isNew).toBe(true);
+  });
+
+  it('puts the default entry first — it is what every layer inherits', () => {
+    const forms = entryFormsFrom([
+      { id: 'cheap', provider: 'bedrock' },
+      { id: 'default', provider: 'bedrock' },
+    ]);
+    expect(forms[0].id).toBe('default');
+  });
+
+  it('reads an id-less stored entry as the default', () => {
+    const forms = entryFormsFrom([{ id: '', provider: 'bedrock' }]);
+    expect(forms.filter((f) => f.id === 'default')).toHaveLength(1);
+  });
+
+  // A credential never belongs in the project document, and a model is the
+  // layer's choice — not the connection's.
+  it('strips the credential and the model from a saved entry config', () => {
+    const entries = entriesFrom([
+      form({ id: 'default', config: { region: 'us-east-1', model: 'opus', credentials_json: 'sk-leak' }, authMethod: 'iam_role' }),
+    ]);
+    expect(entries[0].config).toEqual({ region: 'us-east-1', auth_method: 'iam_role' });
+  });
+
+  it('drops an entry with no provider chosen rather than saving a blank one', () => {
+    expect(entriesFrom([form({ id: 'default' }), form({ id: 'half', provider: '' })])).toHaveLength(1);
+  });
+
+  it('writes each typed credential under its own entry key', () => {
+    const writes = pendingCredentialWrites([
+      form({ id: 'default', apiKey: 'sk-a' }),
+      form({ id: 'cheap', apiKey: 'sk-b' }),
+      form({ id: 'untouched' }),
+    ]);
+    expect(writes).toEqual([
+      { key: 'llm-credentials', value: 'sk-a' },
+      { key: 'llm-credentials-6368656170', value: 'sk-b' },
+    ]);
+  });
+});
+
+// "Check connection" must exercise the connection the user is looking at.
+//
+// Two ways it did not: an entry the server has never seen was looked up by
+// id and came back not found, and an entry whose credential had just been
+// replaced was checked with the OLD stored one — reporting healthy for a key
+// that would fail the next run.
+describe('LLMProvidersPanel — which connection "Check connection" checks', () => {
+  beforeEach(() => { jest.clearAllMocks(); });
+
+  function clickCheck(index: number) {
+    fireEvent.click(screen.getAllByRole('button', { name: 'Check connection' })[index]);
+  }
+
+  it('checks an unsaved entry with the values in the form', async () => {
+    render(
+      <MantineProvider>
+        <LLMProvidersPanel
+          projectId="proj-1"
+          providers={PROVIDERS}
+          value={[form({ id: 'default' }), form({ id: 'new-one', isNew: true, config: { region: 'eu-west-1' } })]}
+          onChange={jest.fn()}
+          secrets={[]}
+          layersByProviderId={{}}
+          savedIds={['default']}
+        />
+      </MantineProvider>,
+    );
+    clickCheck(1);
+    await waitFor(() => expect(api.listLiveLLMModels).toHaveBeenCalledWith('bedrock', { region: 'eu-west-1' }));
+    expect(api.listLiveLLMModelsForProvider).not.toHaveBeenCalled();
+  });
+
+  it('checks a replaced credential rather than the stored one', async () => {
+    renderPanel([form({ id: 'default', apiKey: 'the-new-key' })]);
+    clickCheck(0);
+    await waitFor(() => expect(api.listLiveLLMModels).toHaveBeenCalledWith('bedrock', { api_key: 'the-new-key' }));
+    expect(api.listLiveLLMModelsForProvider).not.toHaveBeenCalled();
+  });
+
+  it('reads an untouched saved entry through the entry, so no key need be retyped', async () => {
+    const forms = [form({ id: 'default' }), form({ id: 'cheap' })];
+    render(
+      <MantineProvider>
+        <LLMProvidersPanel
+          projectId="proj-1" providers={PROVIDERS} value={forms} onChange={jest.fn()}
+          secrets={[]} layersByProviderId={{}} savedIds={['default', 'cheap']}
+          savedEntries={entriesFrom(forms)}
+        />
+      </MantineProvider>,
+    );
+    clickCheck(1);
+    await waitFor(() => expect(api.listLiveLLMModelsForProvider).toHaveBeenCalledWith('proj-1', { provider_id: 'cheap' }));
+    expect(api.listLiveLLMModels).not.toHaveBeenCalled();
+  });
+
+  // The third way it did not. Switching a SAVED entry to another provider
+  // without typing a key left isNew false and the id saved, so the check
+  // went through the entry and answered about the connection the user had
+  // just left — and its models were then reported as the new connection's,
+  // which the Models tab offers. The stored key is not sent: it belongs to
+  // the provider that was replaced.
+  it('checks a repointed saved entry in flight, with only what the form holds', async () => {
+    const saved = entriesFrom([form({ id: 'default' })]);
+    const repointed = [form({ id: 'default', provider: 'ollama', config: { base_url: 'http://localhost:11434' } })];
+    render(
+      <MantineProvider>
+        <LLMProvidersPanel
+          projectId="proj-1" providers={PROVIDERS} value={repointed} onChange={jest.fn()}
+          secrets={[]} layersByProviderId={{}} savedIds={['default']}
+          savedEntries={saved}
+        />
+      </MantineProvider>,
+    );
+    clickCheck(0);
+    await waitFor(() => expect(api.listLiveLLMModels)
+      .toHaveBeenCalledWith('ollama', { base_url: 'http://localhost:11434' }));
+    expect(api.listLiveLLMModelsForProvider).not.toHaveBeenCalled();
+  });
+
+  it('files what it discovered under the connection it checked', async () => {
+    (api.listLiveLLMModels as jest.Mock).mockResolvedValueOnce({
+      models: [{ id: 'qwen3', display_name: 'Qwen3', wire: '', source: 'live', dispatchable: true }],
+    });
+    const saved = entriesFrom([form({ id: 'default' })]);
+    const repointed = [form({ id: 'default', provider: 'ollama', config: { base_url: 'http://localhost:11434' } })];
+    const discovered = jest.fn();
+    render(
+      <MantineProvider>
+        <LLMProvidersPanel
+          projectId="proj-1" providers={PROVIDERS} value={repointed} onChange={jest.fn()}
+          secrets={[]} layersByProviderId={{}} savedIds={['default']}
+          savedEntries={saved} onModelsDiscovered={discovered}
+        />
+      </MantineProvider>,
+    );
+    clickCheck(0);
+    // Keyed by the OLLAMA connection — filed under the entry id, this list
+    // would still be offered after the entry was repointed again.
+    await waitFor(() => expect(discovered).toHaveBeenCalledWith(
+      connectionKeyFor(entriesFrom(repointed)[0]),
+      [{ id: 'qwen3', display_name: 'Qwen3', wire: '', source: 'live', dispatchable: true }],
+    ));
+    expect(discovered).not.toHaveBeenCalledWith(connectionKeyFor(saved[0]), expect.anything());
+  });
+});
+
+// "Test LLM Connection" tests the project's DEFAULT layer. Rendered inside a
+// secondary entry's card it answered about a different connection entirely,
+// so a broken secondary showed a green tick.
+describe('LLMProvidersPanel — the default-layer test button', () => {
+  it('appears only on the reserved default entry', () => {
+    renderPanel([form({ id: 'default' }), form({ id: 'cheap' })]);
+    expect(screen.getAllByRole('button', { name: 'Test LLM Connection' })).toHaveLength(1);
+  });
+});
+
+// A saved entry on a single-method provider usually has no explicit
+// config.auth_method, and ProviderCredentialsPhase hides the selector for a
+// single-method provider while auto-selecting only when the PROVIDER changes.
+// Left empty, such an entry rendered neither a selector nor a credential
+// input — so its key could not be entered or rotated without switching
+// provider and back. The previous editor pre-selected the sole method.
+describe('entryFormsFrom — the sole auth method', () => {
+  const META = [
+    { id: 'openai', name: 'OpenAI', description: '', config_fields: [], auth_methods: [{ id: 'api_key', label: 'API key', fields: [] }] },
+    { id: 'bedrock', name: 'Bedrock', description: '', config_fields: [], auth_methods: [{ id: 'keys', label: 'Keys', fields: [] }, { id: 'role', label: 'Role', fields: [] }] },
+  ] as never[];
+
+  it('is pre-selected for a stored entry that names none', () => {
+    const forms = entryFormsFrom([{ id: 'default', provider: 'openai' }], META);
+    expect(forms[0].authMethod).toBe('api_key');
+  });
+
+  it('is left for the user to pick when the provider has several', () => {
+    const forms = entryFormsFrom([{ id: 'default', provider: 'bedrock' }], META);
+    expect(forms[0].authMethod).toBe('');
+  });
+
+  it('never overrides a stored choice', () => {
+    const forms = entryFormsFrom([{ id: 'default', provider: 'bedrock', config: { auth_method: 'role' } }], META);
+    expect(forms[0].authMethod).toBe('role');
+  });
+});
+
+// A new entry's id is editable, so keying the card on it gave React a
+// different element on every keystroke: the card remounted, the input it
+// replaced was the focused one, and focus was lost after each character.
+describe('LLMProvidersPanel — editing a new entry\'s id', () => {
+  it('keeps the same input element across keystrokes', () => {
+    const onChange = jest.fn();
+    const { rerender } = render(
+      <MantineProvider>
+        <LLMProvidersPanel
+          projectId="proj-1" providers={PROVIDERS}
+          value={[form({ id: 'default' }), form({ id: 'p', label: 'p', isNew: true })]}
+          onChange={onChange} secrets={[]} layersByProviderId={{}} savedIds={['default']}
+        />
+      </MantineProvider>,
+    );
+    const before = screen.getByDisplayValue('p');
+
+    // The next keystroke: the panel is re-rendered with the longer name,
+    // and the id derived from it moves too — which is exactly what keying
+    // the card on the id would have remounted on.
+    rerender(
+      <MantineProvider>
+        <LLMProvidersPanel
+          projectId="proj-1" providers={PROVIDERS}
+          value={[form({ id: 'default' }), form({ id: 'pr', label: 'pr', isNew: true })]}
+          onChange={onChange} secrets={[]} layersByProviderId={{}} savedIds={['default']}
+        />
+      </MantineProvider>,
+    );
+    const after = screen.getByDisplayValue('pr');
+
+    // The SAME DOM node, which is what keeps the caret where the user left it.
+    expect(after).toBe(before);
+  });
+});
+
+// The reserved default entry has no id field and no remove button — it is
+// fixed, and deleting it would leave the project with no entry owning the
+// llm-credentials key an older image reads.
+//
+// A NEW card whose id the user has typed as "default" is not that entry.
+// Treating it as one took both controls away the moment the word was
+// complete, while duplicate-id validation blocked the save — so the only
+// way out was a reload, discarding every other unsaved edit.
+// The reserved entry is fixed and cannot be removed, and it is the only one
+// with no name of its own to edit. A user naming their own connection
+// "Default" must not land on that slot — the id an older agent image reads
+// credentials from.
+describe('LLMProvidersPanel — the reserved entry', () => {
+  it('does not hand a new entry a reserved id, however it is named', () => {
+    const onChange = renderPanel([form({ id: 'default' }), form({ id: '', isNew: true })]);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Default' } });
+    const next = onChange.mock.calls.at(-1)![0];
+    expect(next[1].id).not.toBe('default');
+    expect(next[1].id).toBe('default-2');
+  });
+
+  it('keeps "blurb" out of reach too', () => {
+    const onChange = renderPanel([form({ id: 'default' }), form({ id: '', isNew: true })]);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Blurb' } });
+    expect(onChange.mock.calls.at(-1)![0][1].id).toBe('blurb-2');
+  });
+
+  it('has no name field of its own, and cannot be removed', () => {
+    renderPanel([form({ id: 'default' }), form({ id: 'cheap' })]);
+    // Only the secondary is nameable, and only it can be removed.
+    expect(screen.getAllByLabelText('Name')).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Remove default' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove cheap' })).toBeInTheDocument();
+  });
+});

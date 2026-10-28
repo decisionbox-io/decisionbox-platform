@@ -18,6 +18,7 @@ import (
 
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/notify"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/oauthreg"
@@ -32,13 +33,12 @@ import (
 	_ "github.com/decisionbox-io/decisionbox/providers/secrets/azure" // registers "azure"
 	_ "github.com/decisionbox-io/decisionbox/providers/secrets/gcp"   // registers "gcp"
 	mongoSecrets "github.com/decisionbox-io/decisionbox/providers/secrets/mongodb"
-	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/discovery"
-	"github.com/decisionbox-io/decisionbox/services/agent/internal/discovery/blurb"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation/verifier"
 
 	// LLM provider registrations
 	_ "github.com/decisionbox-io/decisionbox/providers/llm/azure-foundry" // registers "azure-foundry"
@@ -83,6 +83,7 @@ func Run() {
 		testConnection  = flag.String("test-connection", "", "Test provider connection: 'warehouse', 'llm', 'embedding', or 'blurb-llm'")
 		listTables      = flag.Bool("list-tables", false, "List the warehouse's qualified table names as JSON and exit (cheap, no schema/blurb/embed) — powers the pre-index discovery-scope picker.")
 		testWarehouseID = flag.String("warehouse-id", "", "For --test-connection / --list-tables: the specific datasource id to target. Empty = the project's primary (back-compat).")
+		testLayer       = flag.String("layer", "", "For --test-connection llm: the LLM layer whose provider entry and model to test (e.g. exploration, table_descriptions). Empty = the project's default layer (back-compat).")
 		mode            = flag.String("mode", "", "Alternate run mode: 'index-schema' to build the project's schema retrieval index and exit; 'validate-doc' to run the LLM-native verifier+refuter against one insight or recommendation for the job named by --job-id and exit; 'validate-sql' to compile-check a batch of SQL statements against the project's warehouse for the job named by --job-id and exit; 'ask-serve' to run the always-up ad-hoc data Q&A service (a long-lived multi-project HTTP server; does not take --project-id). Default: run discovery.")
 		jobID           = flag.String("job-id", "", "Job _id when --mode=validate-doc (ValidationJob) or --mode=validate-sql (SQLValidationJob). Ignored in other modes.")
 	)
@@ -174,7 +175,7 @@ func Run() {
 	// Test connection mode runs before logger init — its own logging is minimal
 	if *testConnection != "" {
 		applog.Init(cfg.Service.Name, cfg.Service.LogLevel)
-		if err := runTestConnection(cfg, *projectID, *testConnection, *testWarehouseID); err != nil {
+		if err := runTestConnection(cfg, *projectID, *testConnection, *testWarehouseID, *testLayer); err != nil {
 			applog.WithError(err).Error("Test connection failed")
 			applog.Sync()
 			result, _ := json.Marshal(map[string]interface{}{
@@ -575,60 +576,55 @@ func initEmbeddingProvider(ctx context.Context, project *models.Project, secretP
 	return provider, nil
 }
 
+// initLLMProvider builds the provider for a project's DEFAULT layer.
+//
+// Retained at its original signature because the connection test and the TLS
+// tests call it, and because "the default layer" is what a caller with no
+// layer in mind means. Discovery and ask-serve build a whole layer set
+// instead; this is the single-target entry point.
 func initLLMProvider(ctx context.Context, cfg *config.Config, project *models.Project, secretProvider gosecrets.Provider, projectID string) (gollm.Provider, error) {
-	if project.LLM.Provider == "" {
-		return nil, fmt.Errorf("no LLM provider configured")
-	}
+	return initLayerLLMProvider(ctx, cfg, project, secretProvider, projectID, llmlayer.DefaultLayer)
+}
 
-	credential, source := resolveCredential(ctx, secretProvider, projectID, "llm-credentials", "LLM_API_KEY")
-
-	llmCfg := gollm.ProviderConfig{
-		"credentials_json": credential,
-		"model":            project.LLM.Model,
-		"max_retries":      strconv.Itoa(cfg.LLM.MaxRetries),
-		"timeout_seconds":  strconv.Itoa(int(cfg.LLM.Timeout.Seconds())),
-		"request_delay_ms": strconv.Itoa(cfg.LLM.RequestDelayMs),
+// initLayerLLMProvider builds the provider for ONE layer of a project.
+//
+// A thin wrapper over llmlayer.BuildProvider, which owns the credential chain
+// and the merge order — deployment defaults, then the project's own config
+// (so a long-running on-prem project keeps the timeout it raised), then the
+// layer's resolved prompt-cache setting pinned last.
+//
+// Ungated: the connection test and schema indexing must work on a project
+// that has not yet been through settings. The product paths resolve their
+// layers through buildLayerSet, which gates.
+func initLayerLLMProvider(ctx context.Context, cfg *config.Config, project *models.Project, secretProvider gosecrets.Provider, projectID, layer string) (gollm.Provider, error) {
+	spec, err := project.LayerSpecUnchecked(layer)
+	if err != nil {
+		return nil, err
 	}
-	mergedKeys := make([]string, 0)
-	for k, v := range project.LLM.Config {
-		llmCfg[k] = v
-		mergedKeys = append(mergedKeys, k)
-	}
-	if len(mergedKeys) > 0 {
-		applog.WithFields(applog.Fields{
-			"provider":    project.LLM.Provider,
-			"config_keys": mergedKeys,
-		}).Debug("Merged provider-specific config from project")
-	}
-
-	// Prompt caching is resolved from the project (field, else the legacy
-	// config entry, else on) and written into the config the providers read,
-	// so the four Anthropic-wire providers keep consulting PromptCacheKey
-	// exactly as before. Set after the project-config merge so the resolved
-	// value wins over a stale literal in LLM.Config.
-	llmCfg[gollm.PromptCacheKey] = strconv.FormatBool(project.EffectivePromptCacheEnabled())
-
-	provider, err := gollm.NewProvider(project.LLM.Provider, llmCfg)
+	provider, _, err := llmlayer.BuildProvider(ctx, secretProvider, projectID, spec, llmlayer.BuildOptions{
+		MaxRetries:     cfg.LLM.MaxRetries,
+		TimeoutSeconds: int(cfg.LLM.Timeout.Seconds()),
+		RequestDelayMs: cfg.LLM.RequestDelayMs,
+		// The agent's long-standing policy: log an unexpected secret-store
+		// error and continue on the environment fallback, so an env-only or
+		// managed deployment keeps working through a transient blip.
+		Logf: func(format string, args ...any) { applog.Info(fmt.Sprintf(format, args...)) },
+	})
 	if err != nil {
 		applog.WithFields(applog.Fields{
-			"provider": project.LLM.Provider,
-			"error":    err.Error(),
+			"layer":       layer,
+			"provider_id": spec.ProviderID,
+			"provider":    spec.Provider,
+			"error":       err.Error(),
 		}).Error("Failed to create LLM provider")
-		return nil, fmt.Errorf("failed to create LLM provider (%s): %w", project.LLM.Provider, err)
+		return nil, err
 	}
-
-	applog.WithFields(applog.Fields{
-		"provider":       project.LLM.Provider,
-		"model":          project.LLM.Model,
-		"credential_src": source,
-	}).Info("LLM provider initialized")
-
 	return provider, nil
 }
 
 // --- Test connection ---
 
-func runTestConnection(cfg *config.Config, projectID, target, warehouseID string) error {
+func runTestConnection(cfg *config.Config, projectID, target, warehouseID, layer string) error {
 	switch target {
 	case "warehouse", "llm", "embedding", "blurb-llm":
 	default:
@@ -707,7 +703,20 @@ func runTestConnection(cfg *config.Config, projectID, target, warehouseID string
 		testCfg.LLM.MaxRetries = 1
 		testCfg.LLM.RequestDelayMs = 0
 
-		provider, err := initLLMProvider(ctx, &testCfg, project, secretProvider, projectID)
+		// An empty --layer is the default layer, which is what every shipped
+		// API omitting the flag means and what this target has always tested.
+		testTarget := layer
+		if testTarget == "" {
+			testTarget = llmlayer.DefaultLayer
+		}
+		if !llmlayer.ValidateLayerKey(testTarget) {
+			return fmt.Errorf("unknown LLM layer %q", testTarget)
+		}
+		spec, err := project.LayerSpecUnchecked(testTarget)
+		if err != nil {
+			return err
+		}
+		provider, err := initLayerLLMProvider(ctx, &testCfg, project, secretProvider, projectID, testTarget)
 		if err != nil {
 			return err
 		}
@@ -717,9 +726,11 @@ func runTestConnection(cfg *config.Config, projectID, target, warehouseID string
 		}
 
 		out, err := json.Marshal(map[string]interface{}{
-			"success":  true,
-			"provider": project.LLM.Provider,
-			"model":    project.LLM.Model,
+			"success":     true,
+			"layer":       testTarget,
+			"provider_id": spec.ProviderID,
+			"provider":    spec.Provider,
+			"model":       spec.Model,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to marshal result: %w", err)
@@ -751,51 +762,32 @@ func runTestConnection(cfg *config.Config, projectID, target, warehouseID string
 		fmt.Println(string(out))
 
 	case "blurb-llm":
-		// Resolve the blurb LLM via the same path discovery uses; falls
-		// back to the analysis LLM credential when blurb borrows that
-		// provider's setup.
-		providerName, model, credential, err := resolveBlurbLLM(ctx, cfg, project, secretProvider, projectID)
-		if err != nil {
-			return err
-		}
-		// The same eligibility rule the indexer applies, so a model it would
-		// refuse fails here rather than at the next index run.
-		if err := blurb.CheckModel(providerName, model); err != nil {
-			return err
-		}
+		// Equivalent to --test-connection llm --layer table_descriptions,
+		// kept as its own target because it is a published API the dashboard
+		// and scripts already call. Resolving it through llmlayer means this
+		// test applies the layer's own rule — and reads the same
+		// blurb-first credential chain — as an index run would.
 		testCfg := *cfg
 		testCfg.LLM.MaxRetries = 1
 		testCfg.LLM.RequestDelayMs = 0
-		// Mirror the strict guard in index_schema.go::runIndexSchema —
-		// a non-nil BlurbLLM with an empty Provider field means the
-		// document only carries override config (e.g. legacy/partial
-		// documents) but resolveBlurbLLM has fallen back to the analysis
-		// provider. Without checking Provider too, this branch would
-		// feed the (likely empty) BlurbLLM.Config into the factory
-		// while the resolved provider+model come from project.LLM,
-		// diverging from what the agent does at indexing time.
-		extra := map[string]string{}
-		if project.BlurbLLM != nil && project.BlurbLLM.Provider != "" {
-			for k, v := range project.BlurbLLM.Config {
-				extra[k] = v
-			}
-		} else {
-			for k, v := range project.LLM.Config {
-				extra[k] = v
-			}
-		}
-		llmCfg := buildLLMProviderConfig(&testCfg, extra, credential, model)
-		provider, err := gollm.NewProvider(providerName, llmCfg)
+
+		spec, err := project.LayerSpecUnchecked(llmlayer.LayerTableDescriptions)
 		if err != nil {
-			return fmt.Errorf("failed to create blurb LLM provider (%s): %w", providerName, err)
+			return err
+		}
+		provider, err := initLayerLLMProvider(ctx, &testCfg, project, secretProvider, projectID, llmlayer.LayerTableDescriptions)
+		if err != nil {
+			return err
 		}
 		if err := provider.Validate(ctx); err != nil {
 			return err
 		}
 		out, err := json.Marshal(map[string]interface{}{
-			"success":  true,
-			"provider": providerName,
-			"model":    model,
+			"success":     true,
+			"layer":       llmlayer.LayerTableDescriptions,
+			"provider_id": spec.ProviderID,
+			"provider":    spec.Provider,
+			"model":       spec.Model,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to marshal result: %w", err)
@@ -894,11 +886,6 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		}
 	}
 
-	llm, err := initLLMProvider(ctx, cfg, project, secretProvider, projectID)
-	if err != nil {
-		return err
-	}
-
 	// Initialize Qdrant (optional — nil if not configured)
 	qdrantProvider, closeQdrant, err := initQdrant(ctx, cfg)
 	if err != nil {
@@ -922,16 +909,6 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	if err != nil {
 		applog.WithError(err).Warn("Embedding provider initialization failed — Phase 9 will skip embedding")
 		embeddingProvider = nil
-	}
-
-	// Initialize AI client
-	aiClient, err := ai.New(llm, project.LLM.Model)
-	if err != nil {
-		return fmt.Errorf("failed to create AI client: %w", err)
-	}
-	aiClient.SetProvenance(projectID, runID, project.LLM.Provider)
-	if testMode {
-		aiClient.SetTestMode(true)
 	}
 
 	// Initialize repositories
@@ -1060,21 +1037,36 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	if err := modelWindowRepo.EnsureIndexes(ctx); err != nil {
 		applog.WithError(err).Warn("Failed to ensure llm_model_windows indexes")
 	}
-	// Key by the same identifier the calibration observer writes — the model id,
-	// or the endpoint id for endpoint-based projects whose model is blank.
-	modelWindowKey := discovery.ModelWindowKey(project.LLM.Model, project.LLM.Config)
-	var persistedWindow int
-	if modelWindowKey != "" {
-		persistedWindow, err = modelWindowRepo.GetWindow(ctx, projectID, project.LLM.Provider, modelWindowKey)
-		if err != nil {
-			applog.WithError(err).Debug("Failed to read persisted model window; continuing with live/catalog resolution")
-		}
+	windowStore := projectModelWindowStore{repo: modelWindowRepo, projectID: projectID}
+
+	// Which optional phases this run will execute, resolved BEFORE the layer
+	// set so a disabled phase's provider is never built.
+	phases := discoveryPhasesFor(ctx, project)
+
+	// Build the per-layer LLM set (#407). One provider per (provider entry,
+	// merged config, resolved credential), one budget resolution and live
+	// probe per distinct model, one client per layer — so a project with
+	// every layer on the default still pays for exactly one provider, one
+	// probe and one budget, as it did before this existed.
+	layerSet, err := buildLayerSet(ctx, layerSetInput{
+		project:     project,
+		projectID:   projectID,
+		runID:       runID,
+		layers:      discoveryLayers(phases),
+		testMode:    testMode,
+		debugLogger: nil, // the orchestrator owns the debug logger and attaches it to every client
+		deps:        newLayerSetDeps(cfg, secretProvider, projectID, windowStore),
+	})
+	if err != nil {
+		return err
 	}
-	resolvedWindow, resolvedOutputCap := resolveModelBudget(ctx, llm, project.LLM.Provider, project.LLM.Model, project.LLM.Config, persistedWindow)
+	defaultLayer := layerSet.For(llmlayer.DefaultLayer)
+	resolvedWindow, resolvedOutputCap := defaultLayer.Window, defaultLayer.OutputCap
 
 	// Create orchestrator
 	orchestrator := discovery.NewOrchestrator(discovery.OrchestratorOptions{
-		AIClient:              aiClient,
+		AIClient:              defaultLayer.Client,
+		LayerClients:          layerSet,
 		Warehouse:             warehouseProvider,
 		ContextRepo:           contextRepo,
 		DiscoveryRepo:         discoveryRepo,
@@ -1099,12 +1091,12 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		Datasets:              datasets,
 		FilterField:           primaryWH.FilterField,
 		FilterValue:           primaryWH.FilterValue,
-		LLMProvider:           project.LLM.Provider,
-		LLMModel:              project.LLM.Model,
-		LLMConfig:             project.LLM.Config,
+		LLMProvider:           defaultLayer.Provider,
+		LLMModel:              defaultLayer.Model,
+		LLMConfig:             defaultLayer.Config,
 		LLMInputWindow:        resolvedWindow,
 		LLMOutputCap:          resolvedOutputCap,
-		ModelWindowRepo:       projectModelWindowStore{repo: modelWindowRepo, projectID: projectID},
+		ModelWindowRepo:       windowStore,
 		WarehouseProvider:     primaryWH.Provider,
 		EnableDebugLogs:       enableDebugLogs,
 		VectorStore:           qdrantProvider,
@@ -1469,4 +1461,12 @@ func classifyError(err error) string {
 	default:
 		return "unknown"
 	}
+}
+
+// refuterEnabled mirrors the gate the validation phase itself applies, so the
+// refuter's provider is built exactly when the refuter will be called.
+// Reading it here is env parsing, not I/O.
+func refuterEnabled() bool {
+	cfg, _ := verifier.LoadConfigFromEnv()
+	return cfg.RefuterEnabled
 }

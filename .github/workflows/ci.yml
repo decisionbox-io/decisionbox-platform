@@ -2,14 +2,18 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    # feat/per-layer-models is the bridge branch for #407, whose work spans
+    # four repositories and merges to main in one piece. Without it listed,
+    # a PR based on the bridge runs no CI at all — the base filter matches
+    # the BASE, not the head.
+    branches: [main, feat/per-layer-models]
     # `labeled` is included so adding the `run-integration-tests` label actually
     # starts the label-gated integration-tests job — the default activity types
     # (opened/synchronize/reopened) don't fire on a label change, so without it
     # the label can only take effect on the next push.
     types: [opened, synchronize, reopened, labeled]
   push:
-    branches: [main]
+    branches: [main, feat/per-layer-models]
 
 concurrency:
   group: ci-${{ github.ref }}

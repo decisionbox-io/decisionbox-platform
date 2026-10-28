@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
 )
@@ -17,6 +18,35 @@ import (
 // named constant lets the budgeting layer subtract the same value
 // the caller will send.
 const askMaxOutputTokens = 2048
+
+// askLayerOutputTokens is the generation cap for one request: Ask's own
+// reservation, lowered to the ask layer's resolved ceiling when that is
+// smaller.
+//
+// Only lowered. A layer whose model accepts more does not make Ask's answers
+// longer — the reservation is a product decision about answer length, not a
+// model limit — but a layer whose model accepts LESS makes the reservation
+// impossible, and the provider rejects the whole call.
+func askLayerOutputTokens(spec llmlayer.LayerSpec) int {
+	cap := gollm.MaxOutputOverride(gollm.ProviderConfig(spec.Config))
+	if cap <= 0 {
+		cap = gollm.GetMaxOutputTokens(spec.Provider, spec.Model)
+	}
+	if cap > 0 && cap < askMaxOutputTokens {
+		return cap
+	}
+	return askMaxOutputTokens
+}
+
+// askReasoningEffort translates the ask layer's resolved reasoning setting
+// into the per-request field every provider reads. The default ("") is what
+// every provider ignores, so an un-opted layer is byte-identical to before.
+func askReasoningEffort(spec llmlayer.LayerSpec) string {
+	if spec.Reasoning {
+		return gollm.ReasoningEffortOn
+	}
+	return gollm.ReasoningEffortDefault
+}
 
 // askReservedSystemTokens is the flat token estimate the budget
 // reserves for the system prompt and any fixed scaffolding. Set
@@ -57,7 +87,12 @@ const askMinRAGItems = 1
 // on the upstream-billed tokens (chat-template overhead adds a few
 // per message) — the askMaxOutputTokens + askReservedSystemTokens
 // reserves cover that gap.
-func verifyExactPromptFits(ctx context.Context, llmProvider gollm.Provider, model, systemPrompt string, messages []gollm.Message, modelMaxInput int) (error, bool) {
+// maxOutput is the generation reserve THIS request will actually ask for —
+// the ask layer's resolved ceiling, which may be below askMaxOutputTokens.
+// Reserving the fixed value instead rejected requests that fit: a
+// 4,096-token window with a 512-token cap and a 2,500-token prompt is
+// comfortable, and was answered with a 413.
+func verifyExactPromptFits(ctx context.Context, llmProvider gollm.Provider, model, systemPrompt string, messages []gollm.Message, modelMaxInput, maxOutput int) (error, bool) {
 	if llmProvider == nil {
 		return nil, false
 	}
@@ -92,9 +127,12 @@ func verifyExactPromptFits(ctx context.Context, llmProvider gollm.Provider, mode
 	// reserve already lives in askReservedSystemTokens; we don't
 	// double-subtract it here because the flattened text already
 	// includes the system prompt.
-	if exactTokens+askMaxOutputTokens > modelMaxInput {
+	if maxOutput <= 0 {
+		maxOutput = askMaxOutputTokens
+	}
+	if exactTokens+maxOutput > modelMaxInput {
 		return fmt.Errorf("model=%s window=%d exact_tokens=%d max_output=%d",
-			model, modelMaxInput, exactTokens, askMaxOutputTokens), true
+			model, modelMaxInput, exactTokens, maxOutput), true
 	}
 	return nil, true
 }

@@ -295,7 +295,7 @@ func TestLoopTools_NoToolCallRound1FallsBack(t *testing.T) {
 	wh := testutil.NewMockWarehouseProvider("ds")
 	p := &scriptedToolProvider{responses: []gollm.ChatResponse{
 		{Content: "Sure, let me look into that.", StopReason: "end_turn", Usage: gollm.Usage{InputTokens: 10, OutputTokens: 5}}, // no tool calls → forced tools ignored
-		{Content: `{"query":"SELECT 1 FROM ds.t"}`, Usage: gollm.Usage{InputTokens: 10, OutputTokens: 5}},                        // JSON-text path
+		{Content: `{"query":"SELECT 1 FROM ds.t"}`, Usage: gollm.Usage{InputTokens: 10, OutputTokens: 5}},                       // JSON-text path
 		{Content: `{"answer":"text-path answer"}`, Usage: gollm.Usage{InputTokens: 10, OutputTokens: 5}},
 	}}
 	store := runOnceTools(t, Config{}, p, wh, nil, "")
