@@ -116,10 +116,17 @@ type ExplorationCheckpointDoc struct {
 	RunID      string `bson:"run_id"`
 	ProjectID  string `bson:"project_id"`
 	StepNumber int    `bson:"step_number"`
-	// Attempt records which attempt of the run wrote this row. Purely
-	// observability: a resumed run replaces the rows it replays, so a mixed
-	// set of attempt values across a prefix is how an operator sees where
-	// the previous attempt stopped.
+	// Attempt records which attempt of the run wrote this row, and a
+	// resumed attempt does NOT restamp the rows it replays — the replay
+	// path fences without rewriting them. So a prefix legitimately carries
+	// a mix of attempt values, which is how an operator sees where each
+	// attempt stopped.
+	//
+	// Load-bearing, not just observability: LoadPrefix ends the replayable
+	// prefix at the first row written by an attempt older than the prefix
+	// so far (an older attempt's step sitting on top of a newer one's
+	// answered a question the prefix no longer asks). Restamping replayed
+	// rows would erase exactly that signal.
 	Attempt   int       `bson:"attempt"`
 	Kind      string    `bson:"kind"`
 	CreatedAt time.Time `bson:"created_at"`
@@ -222,8 +229,14 @@ func checkpointPayload(step models.ExplorationStep, sample []map[string]interfac
 // SaveStep writes (or replaces) one step's checkpoint.
 //
 // ReplaceOne with upsert against the unique (run_id, step_number) index, so a
-// retried write — or a resumed run re-checkpointing a step it replayed —
-// replaces the row rather than duplicating it or failing on the index.
+// retried write — or a resumed run re-exploring a step number an older
+// attempt already left a row for, which is what a prefix truncated by a gap
+// or a stale tail produces — replaces the row rather than duplicating it or
+// failing on the index.
+//
+// A REPLAYED step is not one of those cases: replay fences without writing
+// and never reaches here, which is how its rows keep their original attempt
+// (see Attempt above).
 func (r *DiscoveryCheckpointRepository) SaveStep(ctx context.Context, in CheckpointStepInput) error {
 	if in.RunID == "" {
 		return errors.New("checkpoint step: run_id is required")
