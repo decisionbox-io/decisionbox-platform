@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	pb "github.com/qdrant/go-client/qdrant"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/resolver"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 )
@@ -50,18 +52,56 @@ func New(cfg Config) (*Provider, error) {
 		cfg.Port = 6334
 	}
 
-	client, err := pb.NewClient(&pb.Config{
-		Host:   cfg.Host,
-		Port:   cfg.Port,
-		APIKey: cfg.APIKey,
-		UseTLS: cfg.UseTLS,
-	})
+	client, err := pb.NewClient(ClientConfig(cfg.Host, cfg.Port, cfg.APIKey, cfg.UseTLS))
 	if err != nil {
 		return nil, fmt.Errorf("qdrant: failed to create client: %w", err)
 	}
 
 	return &Provider{client: client}, nil
 }
+
+// ClientConfig is the go-client configuration every DecisionBox Qdrant
+// connection is built from.
+//
+// It keeps gRPC's DNS resolver out of the connection: the target goes to the
+// dialer as it is, and the dialer looks the host up the ordinary way. gRPC's
+// resolver also queries a "_grpc_config.<host>" TXT record and — once any
+// linked package registers the grpclb balancer, which the cloud SDKs in the
+// agent do — a "_grpclb._tcp.<host>" SRV record, and on a Docker Compose
+// network those lookups stall: every new connection took 8s there, against
+// 2ms without them. The go-client opens a pool of connections lazily, so the
+// first query on each paid it, and the prompt-context providers (3s budget)
+// timed out on every run. A Qdrant endpoint is one address, so there is no
+// load-balancing or service config to lose.
+func ClientConfig(host string, port int, apiKey string, useTLS bool) *pb.Config {
+	return &pb.Config{
+		Host:   host,
+		Port:   port,
+		APIKey: apiKey,
+		UseTLS: useTLS,
+		GrpcOptions: []grpc.DialOption{
+			grpc.WithResolvers(dialerResolves{}),
+			grpc.WithDisableServiceConfig(),
+		},
+	}
+}
+
+// dialerResolves replaces gRPC's "dns" resolver for one channel: it reports
+// the target itself as the only address, so the host name reaches the dialer
+// unresolved and no TXT or SRV lookup is made.
+type dialerResolves struct{}
+
+func (dialerResolves) Scheme() string { return "dns" }
+
+func (dialerResolves) Build(t resolver.Target, cc resolver.ClientConn, _ resolver.BuildOptions) (resolver.Resolver, error) {
+	if err := cc.UpdateState(resolver.State{Addresses: []resolver.Address{{Addr: t.Endpoint()}}}); err != nil {
+		return nil, err
+	}
+	return dialerResolves{}, nil
+}
+
+func (dialerResolves) ResolveNow(resolver.ResolveNowOptions) {}
+func (dialerResolves) Close()                                {}
 
 // newWithClient creates a Provider with an injected client (for testing).
 func newWithClient(client qdrantClient) *Provider {

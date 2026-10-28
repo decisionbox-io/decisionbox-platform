@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/llm/anthropicwire"
 )
 
 func mockClaudeServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
@@ -317,10 +318,7 @@ func TestChat_Success(t *testing.T) {
 			Model: req.Model,
 			Content: []claudeResponseContent{{Type: "text", Text: "The answer is 42."}},
 			StopReason: "end_turn",
-			Usage: struct {
-				InputTokens  int `json:"input_tokens"`
-				OutputTokens int `json:"output_tokens"`
-			}{
+			Usage: anthropicwire.Usage{
 				InputTokens:  25,
 				OutputTokens: 10,
 			},
@@ -389,10 +387,7 @@ func TestChat_TokenCounting(t *testing.T) {
 			Model: "claude-sonnet-4-20250514",
 			Content: []claudeResponseContent{{Type: "text", Text: "Short response."}},
 			StopReason: "max_tokens",
-			Usage: struct {
-				InputTokens  int `json:"input_tokens"`
-				OutputTokens int `json:"output_tokens"`
-			}{
+			Usage: anthropicwire.Usage{
 				InputTokens:  500,
 				OutputTokens: 200,
 			},

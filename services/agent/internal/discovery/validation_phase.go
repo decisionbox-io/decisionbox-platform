@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"sort"
+	"sync"
 	"time"
 
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
@@ -122,9 +123,14 @@ func (p *validationPhase) validateInsights(ctx context.Context, insights []model
 	}
 
 	// Order by affected_count desc so the run-cap hits the least-
-	// important docs last.
+	// important docs last. The cap is decided here, in order, before any
+	// document is checked; the checks then run with bounded concurrency
+	// (RunCaps.Concurrency) and write into their own result slot, so the
+	// result order and which documents are skipped never depend on timing.
 	order := indicesByAffectedDesc(insights)
-	for _, idx := range order {
+	results = make([]models.ValidationResult, len(order))
+	var jobs []docJob
+	for pos, idx := range order {
 		ins := &insights[idx]
 		vr := models.ValidationResult{
 			InsightID:     ins.ID,
@@ -141,7 +147,7 @@ func (p *validationPhase) validateInsights(ctx context.Context, insights []model
 			}
 			vr.Combined = valmodels.StatusSkippedBudgetCap
 			vr.Status = string(valmodels.StatusSkippedBudgetCap)
-			results = append(results, vr)
+			results[pos] = vr
 			continue
 		}
 
@@ -150,45 +156,33 @@ func (p *validationPhase) validateInsights(ctx context.Context, insights []model
 		dsID := p.datasourceForSteps(ins.SourceSteps, stepByID)
 		wh, ex := p.forDatasource(dsID)
 		vr.WarehouseID = p.stampDatasource(dsID)
-		bundle := verifier.BuildInsightBundle(ins, stepByID, wh, p.disc, p.cfg.Bundle)
-		v, _ := p.agent.Verify(ctx, bundle, ex)
-		vr.Verifier = &v
-		vr.InputTokens += v.LLMTokensIn
-		vr.OutputTokens += v.LLMTokensOut
-		var rPtr *valmodels.StructuredVerdict
-		if p.cfg.RefuterEnabled {
-			refuterBundle := bundle
-			if len(v.ClaimsConsidered) > 0 {
-				refuterBundle.PriorClaims = append([]string(nil), v.ClaimsConsidered...)
-			}
-			r, _ := p.agent.Refute(ctx, refuterBundle, ex)
-			rPtr = &r
-			vr.Refuter = &r
-			vr.InputTokens += r.LLMTokensIn
-			vr.OutputTokens += r.LLMTokensOut
-		}
-		combined, rd := valmodels.Combine(&v, rPtr, !p.cfg.RefuterEnabled)
-		vr.Combined = combined
-		vr.RefuterDisabled = rd
-		vr.Status = string(combined)
+		results[pos] = vr
+		jobs = append(jobs, docJob{pos: pos, idx: idx, wh: wh, ex: ex})
+		runValidated++
+	}
 
+	p.runBounded(len(jobs), func(j int) {
+		job := jobs[j]
+		ins := &insights[job.idx]
+		vr := &results[job.pos]
+		bundle := verifier.BuildInsightBundle(ins, stepByID, job.wh, p.disc, p.cfg.Bundle)
+		d := p.checkDoc(ctx, bundle, job.ex)
+		d.stamp(vr)
 		ins.Validation = &valmodels.InsightValidation{
 			WarehouseID: vr.WarehouseID,
 			// Backfill legacy Status so dashboards / consumers that
 			// still read the old field see the new verdict.
-			Status:          string(combined),
-			Reasoning:       v.OverallReason,
-			Verifier:        &v,
-			Refuter:         rPtr,
-			Combined:        combined,
-			RefuterDisabled: rd,
+			Status:          string(d.combined),
+			Reasoning:       d.verifier.OverallReason,
+			Verifier:        vr.Verifier,
+			Refuter:         vr.Refuter,
+			Combined:        d.combined,
+			RefuterDisabled: d.refuterDisabled,
 			ValidatedAt:     vr.ValidatedAt,
 			InputTokens:     vr.InputTokens,
 			OutputTokens:    vr.OutputTokens,
 		}
-		results = append(results, vr)
-		runValidated++
-	}
+	})
 	applog.WithFields(applog.Fields{
 		"area":     areaID,
 		"insights": len(insights),
@@ -219,6 +213,10 @@ func (p *validationPhase) validateRecommendations(ctx context.Context, recommend
 		insightByID[allInsights[i].ID] = &allInsights[i]
 	}
 
+	// Same shape as validateInsights: the cap is decided in order first,
+	// then the checks run with bounded concurrency into their own slots.
+	results = make([]models.ValidationResult, len(recommendations))
+	var jobs []docJob
 	validated := 0
 	for i := range recommendations {
 		rec := &recommendations[i]
@@ -235,7 +233,7 @@ func (p *validationPhase) validateRecommendations(ctx context.Context, recommend
 			}
 			vr.Combined = valmodels.StatusSkippedBudgetCap
 			vr.Status = string(valmodels.StatusSkippedBudgetCap)
-			results = append(results, vr)
+			results[i] = vr
 			continue
 		}
 		// Verify against the datasource the recommendation is about — the
@@ -249,42 +247,105 @@ func (p *validationPhase) validateRecommendations(ctx context.Context, recommend
 		recDS := p.datasourceForSteps(recSteps, stepByID)
 		wh, ex := p.forDatasource(recDS)
 		vr.WarehouseID = p.stampDatasource(recDS)
-		bundle := verifier.BuildRecommendationBundle(rec, insightByID, stepByID, wh, p.disc, p.cfg.Bundle)
-		v, _ := p.agent.Verify(ctx, bundle, ex)
-		vr.Verifier = &v
-		vr.InputTokens += v.LLMTokensIn
-		vr.OutputTokens += v.LLMTokensOut
-		var rPtr *valmodels.StructuredVerdict
-		if p.cfg.RefuterEnabled {
-			rb := bundle
-			if len(v.ClaimsConsidered) > 0 {
-				rb.PriorClaims = append([]string(nil), v.ClaimsConsidered...)
-			}
-			r, _ := p.agent.Refute(ctx, rb, ex)
-			rPtr = &r
-			vr.Refuter = &r
-			vr.InputTokens += r.LLMTokensIn
-			vr.OutputTokens += r.LLMTokensOut
-		}
-		combined, rd := valmodels.Combine(&v, rPtr, !p.cfg.RefuterEnabled)
-		vr.Combined = combined
-		vr.RefuterDisabled = rd
-		vr.Status = string(combined)
+		results[i] = vr
+		jobs = append(jobs, docJob{pos: i, idx: i, wh: wh, ex: ex})
+		validated++
+	}
+
+	p.runBounded(len(jobs), func(j int) {
+		job := jobs[j]
+		rec := &recommendations[job.idx]
+		vr := &results[job.pos]
+		bundle := verifier.BuildRecommendationBundle(rec, insightByID, stepByID, job.wh, p.disc, p.cfg.Bundle)
+		d := p.checkDoc(ctx, bundle, job.ex)
+		d.stamp(vr)
 		rec.Validation = &valmodels.InsightValidation{
 			WarehouseID:     vr.WarehouseID,
-			Verifier:        &v,
-			Refuter:         rPtr,
-			Combined:        combined,
-			RefuterDisabled: rd,
+			Verifier:        vr.Verifier,
+			Refuter:         vr.Refuter,
+			Combined:        d.combined,
+			RefuterDisabled: d.refuterDisabled,
 			ValidatedAt:     vr.ValidatedAt,
 			InputTokens:     vr.InputTokens,
 			OutputTokens:    vr.OutputTokens,
 		}
-		results = append(results, vr)
-		validated++
-	}
+	})
 	applog.WithField("recommendations", len(recommendations)).Info("Recommendation validation complete")
 	return results
+}
+
+// docJob is one document queued for checking: its result slot, its index
+// in the caller's slice, and the datasource it is verified against.
+type docJob struct {
+	pos, idx int
+	wh       verifier.WarehouseInfo
+	ex       verifier.Executor
+}
+
+// docVerdict is the outcome of checking one document.
+type docVerdict struct {
+	verifier        valmodels.StructuredVerdict
+	refuter         *valmodels.StructuredVerdict
+	combined        valmodels.Status
+	refuterDisabled bool
+}
+
+// checkDoc runs the verifier and, when enabled, the refuter on one bundle
+// and combines their verdicts. Safe to call concurrently: the agent, the
+// executors and the step snapshot are read-only for the whole phase.
+func (p *validationPhase) checkDoc(ctx context.Context, bundle verifier.Bundle, ex verifier.Executor) docVerdict {
+	var d docVerdict
+	d.verifier, _ = p.agent.Verify(ctx, bundle, ex)
+	if p.cfg.RefuterEnabled {
+		rb := bundle
+		if len(d.verifier.ClaimsConsidered) > 0 {
+			rb.PriorClaims = append([]string(nil), d.verifier.ClaimsConsidered...)
+		}
+		r, _ := p.agent.Refute(ctx, rb, ex)
+		d.refuter = &r
+	}
+	d.combined, d.refuterDisabled = valmodels.Combine(&d.verifier, d.refuter, !p.cfg.RefuterEnabled)
+	return d
+}
+
+// stamp writes the verdicts, token counts and combined status into vr.
+func (d *docVerdict) stamp(vr *models.ValidationResult) {
+	v := d.verifier
+	vr.Verifier = &v
+	vr.InputTokens += v.LLMTokensIn
+	vr.OutputTokens += v.LLMTokensOut
+	if d.refuter != nil {
+		vr.Refuter = d.refuter
+		vr.InputTokens += d.refuter.LLMTokensIn
+		vr.OutputTokens += d.refuter.LLMTokensOut
+	}
+	vr.Combined = d.combined
+	vr.RefuterDisabled = d.refuterDisabled
+	vr.Status = string(d.combined)
+}
+
+// runBounded calls fn(0..n-1) with at most RunCaps.Concurrency calls in
+// flight (sequentially when it is 1 or less — the default).
+func (p *validationPhase) runBounded(n int, fn func(i int)) {
+	limit := p.caps.Concurrency
+	if limit <= 1 || n <= 1 {
+		for i := 0; i < n; i++ {
+			fn(i)
+		}
+		return
+	}
+	sem := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			fn(i)
+		}(i)
+	}
+	wg.Wait()
 }
 
 // indicesByAffectedDesc returns indices into the insights slice

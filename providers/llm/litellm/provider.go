@@ -27,6 +27,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -169,19 +171,29 @@ func NewLiteLLMProvider(apiKey, model, baseURL string, client *http.Client) *Lit
 }
 
 // normalizeBaseURL turns a LiteLLM proxy root into the OpenAI-compatible
-// base: it strips a trailing slash and appends /v1 unless the URL
-// already ends in /v1. LiteLLM serves both the /v1-prefixed and bare
-// routes; pinning /v1 matches the OpenAI surface the wire expects.
+// base: it strips a trailing slash and appends /v1 unless the URL path
+// already carries a version segment (/v1, /v2, ...). LiteLLM serves both
+// the /v1-prefixed and bare routes; pinning /v1 matches the OpenAI surface
+// the wire expects. A versioned root with a sub-path — an OpenAI-compatible
+// host such as https://api.example.com/v1/openai — is already complete
+// and is left as given.
 func normalizeBaseURL(raw string) string {
 	b := strings.TrimRight(strings.TrimSpace(raw), "/")
 	if b == "" {
 		return b
 	}
-	if strings.HasSuffix(b, "/v1") {
-		return b
+	if u, err := url.Parse(b); err == nil {
+		for _, seg := range strings.Split(u.Path, "/") {
+			if versionSegment.MatchString(seg) {
+				return b
+			}
+		}
 	}
 	return b + "/v1"
 }
+
+// versionSegment matches an API version path segment ("v1", "v2", ...).
+var versionSegment = regexp.MustCompile(`^v[0-9]+$`)
 
 // setAuth attaches the Bearer key when one is configured.
 func (p *LiteLLMProvider) setAuth(req *http.Request) {

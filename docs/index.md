@@ -18,7 +18,6 @@ DecisionBox is an open-source AI-powered data discovery platform. It connects to
 - Validate findings against actual data (not just LLM hallucination)
 - Generate specific, numbered action steps — not generic advice
 - Learn from your feedback — liked and disliked insights inform the next run
-- Estimate costs before running (LLM tokens + warehouse query costs)
 
 ## Documentation Structure
 

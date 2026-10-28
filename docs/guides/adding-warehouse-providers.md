@@ -41,18 +41,6 @@ type Provider interface {
 | `HealthCheck` | Quick connectivity check | Used by health endpoints |
 | `Close` | Clean up connections | Called on shutdown |
 
-### Optional: Cost Estimation
-
-If your warehouse supports dry-run or EXPLAIN, implement `CostEstimator`:
-
-```go
-type CostEstimator interface {
-    DryRun(ctx context.Context, query string) (*DryRunResult, error)
-}
-```
-
-`DryRunResult` carries `BytesProcessed` — the warehouse's reported scan size in bytes. Providers without a native dry-run skip this interface; the agent falls back to a coarse heuristic when no estimate is available.
-
 ### Return Types
 
 **QueryResult:**

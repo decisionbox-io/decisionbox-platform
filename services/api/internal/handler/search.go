@@ -961,6 +961,10 @@ func (h *SearchHandler) createLLMProvider(ctx context.Context, project *models.P
 	for k, v := range project.LLM.Config {
 		cfg[k] = v
 	}
+	// Resolved from the project, after the merge, for the same reason as the
+	// agent's own construction: the providers read PromptCacheKey and the
+	// project field is the authority over any legacy literal in LLM.Config.
+	cfg[gollm.PromptCacheKey] = strconv.FormatBool(project.EffectivePromptCacheEnabled())
 
 	return gollm.NewProvider(project.LLM.Provider, cfg)
 }

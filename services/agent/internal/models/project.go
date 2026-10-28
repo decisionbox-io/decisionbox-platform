@@ -1,6 +1,7 @@
 package models
 
 import (
+	"strings"
 	"time"
 
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
@@ -118,6 +119,21 @@ type Project struct {
 	// gated — and others ignore).
 	ReasoningEnabled *bool `bson:"reasoning_enabled,omitempty" json:"reasoning_enabled,omitempty"`
 
+	// PromptCacheEnabled is the per-project prompt-caching toggle for the
+	// providers that implement it (the Anthropic wire). Nil means "not set
+	// here", which falls back to the legacy LLM.Config["prompt_cache"] value
+	// and then to on — caching has always been opt-out, and a project that
+	// predates this field must not have it silently switched off.
+	//
+	// It is a project field rather than an LLM.Config entry because Update
+	// replaces the whole LLM block, so a config-only setting cannot be
+	// changed without restating the provider, model and credentials — which
+	// races with anything else editing them. Resolve it with
+	// EffectivePromptCacheEnabled, never by reading the field directly.
+	// The agent reads its own copy via the agent's models.Project — keep the
+	// two definitions in sync.
+	PromptCacheEnabled *bool `bson:"prompt_cache_enabled,omitempty" json:"prompt_cache_enabled,omitempty"`
+
 	// RecommendationVerdicts is the per-project set of validation verdicts
 	// that make an insight eligible for recommendation generation. Empty /
 	// unset means "use the default" ({confirmed, supported} — today's
@@ -197,8 +213,8 @@ type WarehouseConfig struct {
 
 	Datasets []string `bson:"datasets" json:"datasets"`
 
-	FilterField string            `bson:"filter_field,omitempty" json:"filter_field,omitempty"`
-	FilterValue string            `bson:"filter_value,omitempty" json:"filter_value,omitempty"`
+	FilterField string `bson:"filter_field,omitempty" json:"filter_field,omitempty"`
+	FilterValue string `bson:"filter_value,omitempty" json:"filter_value,omitempty"`
 	// Anchoring is the per-datasource override of whether this source may
 	// carry the project by itself. Nil means "not set" — the provider's own
 	// capability decides. It may only DEMOTE: a provider that declares it
@@ -209,8 +225,8 @@ type WarehouseConfig struct {
 	// Deliberately not called "primary": a project's primary datasource is a
 	// selection among the ones connected, which is a different concept already
 	// in use here.
-	Anchoring *bool `bson:"anchoring,omitempty" json:"anchoring,omitempty"`
-	Config      map[string]string `bson:"config,omitempty" json:"config,omitempty"` // provider-specific: workgroup, database, region, cluster_id, etc.
+	Anchoring *bool             `bson:"anchoring,omitempty" json:"anchoring,omitempty"`
+	Config    map[string]string `bson:"config,omitempty" json:"config,omitempty"` // provider-specific: workgroup, database, region, cluster_id, etc.
 }
 
 // WarehouseCard mirrors the API model — the structured routing card.
@@ -307,6 +323,24 @@ func (p *Project) EffectiveSmartOverflowEnabled() bool {
 // EffectiveReasoningEnabled resolves the per-project reasoning toggle. Returns
 // false when unset — reasoning is opt-in, so the default matches today's
 // behaviour (no reasoning param, no exploration headroom).
+// promptCacheConfigKey mirrors gollm.PromptCacheKey. Kept as a literal so
+// this package keeps no dependency on the provider registry; TestPromptCacheKey
+// asserts the two agree.
+const promptCacheConfigKey = "prompt_cache"
+
+// EffectivePromptCacheEnabled resolves prompt caching for this project: the
+// project field when set, else the legacy LLM.Config["prompt_cache"] entry,
+// else on. Mirrors the API-side helper — keep the two in sync.
+func (p *Project) EffectivePromptCacheEnabled() bool {
+	if p == nil {
+		return true
+	}
+	if p.PromptCacheEnabled != nil {
+		return *p.PromptCacheEnabled
+	}
+	return !strings.EqualFold(strings.TrimSpace(p.LLM.Config[promptCacheConfigKey]), "false")
+}
+
 func (p *Project) EffectiveReasoningEnabled() bool {
 	if p.ReasoningEnabled == nil {
 		return false

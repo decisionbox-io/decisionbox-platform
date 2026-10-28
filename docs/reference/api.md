@@ -852,41 +852,6 @@ curl -X PUT http://localhost:8080/api/v1/pricing \
 
 ---
 
-## Cost Estimation
-
-### POST /api/v1/projects/{id}/discover/estimate
-
-Estimate the cost of a discovery run without executing it. Spawns the agent with `--estimate` flag.
-
-```bash
-curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/discover/estimate \
-  -H "Content-Type: application/json" \
-  -d '{"max_steps": 100}'
-```
-
-```json
-{
-  "data": {
-    "llm": {
-      "provider": "claude",
-      "model": "claude-sonnet-4-6",
-      "estimated_input_tokens": 250000,
-      "estimated_output_tokens": 50000,
-      "cost_usd": 0.825
-    },
-    "warehouse": {
-      "provider": "bigquery",
-      "estimated_queries": 100,
-      "estimated_bytes_scanned": 5368709120,
-      "cost_usd": 0.0375
-    },
-    "total_cost_usd": 0.8625
-  }
-}
-```
-
----
-
 ## Connection Testing
 
 ### POST /api/v1/projects/{id}/test/warehouse

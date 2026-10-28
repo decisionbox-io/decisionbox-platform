@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	pb "github.com/qdrant/go-client/qdrant"
+
+	qdrantstore "github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore/qdrant"
 )
 
 // QdrantDropper is the minimal Qdrant surface the API needs: drop the
@@ -33,12 +35,7 @@ func NewQdrantDropper(host string, port int, apiKey string, useTLS bool) (*Qdran
 	if port == 0 {
 		port = 6334
 	}
-	client, err := pb.NewClient(&pb.Config{
-		Host:   host,
-		Port:   port,
-		APIKey: apiKey,
-		UseTLS: useTLS,
-	})
+	client, err := pb.NewClient(qdrantstore.ClientConfig(host, port, apiKey, useTLS))
 	if err != nil {
 		return nil, fmt.Errorf("schemaindex: qdrant connect: %w", err)
 	}

@@ -472,30 +472,6 @@ describe('api.deleteFeedback', () => {
   });
 });
 
-// --- Cost Estimation ---
-
-describe('api.estimateCost', () => {
-  it('sends POST to estimate endpoint', async () => {
-    mockSuccess({ total_cost_usd: 1.5, llm_cost: 1.0, warehouse_cost: 0.5 });
-    const result = await api.estimateCost('proj-1', { areas: ['churn'], max_steps: 10 });
-    expect(result.total_cost_usd).toBe(1.5);
-
-    const [url, opts] = mockFetch.mock.calls[0];
-    expect(url).toContain('/api/v1/projects/proj-1/discover/estimate');
-    expect(opts.method).toBe('POST');
-    expect(JSON.parse(opts.body)).toMatchObject({ areas: ['churn'], max_steps: 10 });
-  });
-
-  it('sends POST without options', async () => {
-    mockSuccess({ total_cost: 2.0 });
-    await api.estimateCost('proj-1');
-
-    const [, opts] = mockFetch.mock.calls[0];
-    expect(opts.method).toBe('POST');
-    expect(opts.body).toBeUndefined();
-  });
-});
-
 // --- Pricing ---
 
 describe('api.getPricing', () => {

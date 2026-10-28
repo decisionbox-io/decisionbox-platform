@@ -43,7 +43,7 @@ type StepRowsRequest struct {
 //  1. Strip code fences, locate the outermost balanced JSON object.
 //  2. The object MUST contain exactly one of the four envelope keys.
 //     More than one is a parse error (NOT first-key-wins).
-//  3. Extra unknown top-level keys (e.g. `{"thinking": "...", "query_warehouse": "..."}`)
+//  3. Extra unknown top-level keys (e.g. `{"notes": "...", "query_warehouse": "..."}`)
 //     are also a parse error when an envelope key is present.
 //  4. Bare-verdict fallback: when no envelope key is found but the
 //     top-level object has `claims_considered` + `claim_verdicts` +

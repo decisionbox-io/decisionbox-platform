@@ -18,15 +18,9 @@ import { SchemaIndexPanel } from '@/components/SchemaIndexPanel';
 import { RunErrorIndicator } from '@/components/common/RunErrorIndicator';
 import { UpcomingInvestigation } from '@/components/projects/UpcomingInvestigation';
 import {
-  api, ApiError, CostEstimate, DebugLogEntry, DiscoveryResult, DiscoveryRunStatus, Project, RunStep, SchemaIndexStatus,
+  api, ApiError, DebugLogEntry, DiscoveryResult, DiscoveryRunStatus, Project, RunStep, SchemaIndexStatus,
   PROJECT_STATE_READY, resolvePrimaryDatasourceId,
 } from '@/lib/api';
-
-// On DecisionBox Cloud, usage is billed in credits (not dollars), so the USD
-// cost-estimate preview is hidden. The cloud tenant sets
-// NEXT_PUBLIC_HIDE_COST_ESTIMATE=1; self-hosted leaves it unset and keeps the
-// dollar estimate.
-const HIDE_COST_ESTIMATE = process.env.NEXT_PUBLIC_HIDE_COST_ESTIMATE === '1';
 
 // pollQuestionsNudge polls for clarifying questions after a run completes and
 // toasts once when some appear. Question generation runs after the status flip
@@ -114,7 +108,6 @@ export default function ProjectPage() {
     writeRun(next);
   }, [writeRun]);
   const [loading, setLoading] = useState(true);
-  const [triggering, setTriggering] = useState(false);
   const [analysisAreas, setAnalysisAreas] = useState<{ id: string; name: string }[]>([]);
   const [selectedAreas, setSelectedAreas] = useState<string[]>([]);
   const [maxSteps, setMaxSteps] = useState(100);
@@ -130,10 +123,6 @@ export default function ProjectPage() {
   // status is not "ready" we disable the Run Discovery button because the
   // agent will 409 anyway (plan §8.4 — discovery is gated on the index).
   const [schemaIndexStatus, setSchemaIndexStatus] = useState<SchemaIndexStatus | null>(null);
-  const [estimate, setEstimate] = useState<CostEstimate | null>(null);
-  const [estimating, setEstimating] = useState(false);
-  const [pendingAreas, setPendingAreas] = useState<string[] | undefined>(undefined);
-  const [estimateFirst, setEstimateFirst] = useState(false);
   // Dismissing a finished run hides its panel. State rather than a ref
   // because visibility is now a render decision: the run itself is KEPT so
   // polling can carry on, and a dismissal that stopped the poll was the bug —
@@ -355,32 +344,7 @@ export default function ProjectPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { pollStatus(); }, [id]);
 
-  const handleRun = (areas?: string[]) => {
-    if (estimateFirst) handleEstimate(areas);
-    else handleTrigger(areas);
-  };
-
-  const handleEstimate = async (areas?: string[]) => {
-    setEstimating(true);
-    setPendingAreas(areas);
-    try {
-      const opts: { areas?: string[]; max_steps?: number } = {};
-      if (areas && areas.length > 0) opts.areas = areas;
-      opts.max_steps = maxSteps;
-      // Cost estimation doesn't care about min_steps — it only depends on
-      // max_steps and selected areas. Keep the call minimal.
-      const est = await api.estimateCost(id, opts);
-      setEstimate(est);
-    } catch (e: unknown) {
-      notifications.show({ title: 'Estimation failed', message: (e as Error).message, color: 'orange' });
-    } finally {
-      setEstimating(false);
-    }
-  };
-
   const handleTrigger = async (areas?: string[]) => {
-    setTriggering(true);
-    setEstimate(null);
     try {
       const opts: { areas?: string[]; max_steps?: number; min_steps?: number } = {};
       if (areas && areas.length > 0) opts.areas = areas;
@@ -404,7 +368,6 @@ export default function ProjectPage() {
     } catch (e: unknown) {
       notifications.show({ title: 'Error', message: (e as Error).message, color: 'red' });
     } finally {
-      setTriggering(false);
       setSelectedAreas([]);
     }
   };
@@ -506,12 +469,8 @@ export default function ProjectPage() {
               ? "Rejects premature done — 0 disables"
               : `Default: 60% of max (${Math.floor(maxSteps * 0.6)})`} />
         </div>
-        <Menu.Item closeMenuOnClick={false}>
-          <Checkbox label="Estimate cost before running" size="xs"
-            checked={estimateFirst} onChange={(e) => setEstimateFirst(e.currentTarget.checked)} />
-        </Menu.Item>
         <Menu.Divider />
-        <Menu.Item onClick={() => handleRun()}>Run All Areas</Menu.Item>
+        <Menu.Item onClick={() => handleTrigger()}>Run All Areas</Menu.Item>
         <Menu.Divider />
         <Menu.Label>Select areas</Menu.Label>
         {analysisAreas.map((area) => (
@@ -526,7 +485,7 @@ export default function ProjectPage() {
         {selectedAreas.length > 0 && (
           <>
             <Menu.Divider />
-            <Menu.Item color="blue" onClick={() => handleRun(selectedAreas)}>
+            <Menu.Item color="blue" onClick={() => handleTrigger(selectedAreas)}>
               Run Selected ({selectedAreas.length})
             </Menu.Item>
           </>
@@ -571,76 +530,9 @@ export default function ProjectPage() {
         refreshKey={run && run.status === 'completed' ? run.id : ''}
       />
 
-      {/* Cost Estimation */}
-      {(estimating || estimate) && (
-        <div style={{
-          background: 'var(--db-bg-white)',
-          border: '1px solid var(--db-border-default)',
-          borderRadius: 'var(--db-radius-lg)',
-          padding: '16px 20px',
-          marginBottom: 20,
-        }}>
-          {estimating ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Loader size="sm" />
-              <span style={{ fontSize: 13, color: 'var(--db-text-secondary)' }}>Estimating cost...</span>
-            </div>
-          ) : estimate && (
-            <>
-              {/* On DecisionBox Cloud usage is billed in credits, not dollars,
-                  so the USD cost estimate is hidden (HIDE_COST_ESTIMATE) — the
-                  managed pricing is the plan's per-operation credit price. */}
-              {HIDE_COST_ESTIMATE ? (
-                <div style={{ fontSize: 13, color: 'var(--db-text-secondary)', marginBottom: 16 }}>
-                  Ready to run discovery for this project.
-                </div>
-              ) : (
-                <>
-                  <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 12 }}>Cost Estimate</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
-                    <div>
-                      <div style={{ fontSize: 11, color: 'var(--db-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>
-                        LLM ({estimate.llm.provider})
-                      </div>
-                      <div style={{ fontSize: 22, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>${estimate.llm.cost_usd.toFixed(4)}</div>
-                      <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>
-                        ~{(estimate.llm.estimated_input_tokens / 1000).toFixed(0)}K in + {(estimate.llm.estimated_output_tokens / 1000).toFixed(0)}K out
-                      </div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 11, color: 'var(--db-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>
-                        Warehouse ({estimate.warehouse.provider})
-                      </div>
-                      <div style={{ fontSize: 22, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>${estimate.warehouse.cost_usd.toFixed(4)}</div>
-                      <div style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>
-                        ~{estimate.warehouse.estimated_queries} queries, {(estimate.warehouse.estimated_bytes_scanned / (1024 * 1024)).toFixed(0)} MB
-                      </div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 11, color: 'var(--db-text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>Total</div>
-                      <div style={{ fontSize: 22, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--db-blue-text)' }}>${estimate.total_cost_usd.toFixed(4)}</div>
-                    </div>
-                  </div>
-                </>
-              )}
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                <GhostButton onClick={() => { setEstimate(null); setPendingAreas(undefined); }}>Cancel</GhostButton>
-                <PrimaryButton onClick={() => handleTrigger(pendingAreas)} disabled={triggering}>
-                  {triggering ? 'Starting...' : 'Confirm & Run'}
-                </PrimaryButton>
-              </div>
-            </>
-          )}
-        </div>
-      )}
-
-      {/* Live Run Panel — keyed on run.id AND run.attempt so a new run, or a
-          new attempt of the same run, cleanly remounts the panel (fresh steps
-          state + cursor) instead of needing an in-component reset effect. A
-          resume re-enters the same run id, and the feed is attempt-scoped
-          server-side, so the attempt belongs in the key. onResume sets it
-          optimistically, which is what makes the remount happen on the click
-          rather than on the next status poll. */}
+      {/* Live Run Panel — keyed on run.id so a new run cleanly remounts
+          the panel (fresh steps state + cursor) instead of needing an
+          in-component reset effect. */}
       {showRunPanel && run && (
         <LiveRunPanel key={`${run.id}:${run.attempt ?? 1}`} run={run} onCancel={async () => {
           if (justFinished) {
@@ -751,7 +643,7 @@ export default function ProjectPage() {
       )}
 
       {/* Empty State */}
-      {!discoveries.length && !isRunning && !estimating && !estimate && (
+      {!discoveries.length && !isRunning && (
         <div style={{
           background: 'var(--db-bg-white)',
           border: '2px dashed var(--db-border-strong)',
@@ -766,7 +658,7 @@ export default function ProjectPage() {
           <div style={{ fontSize: 13, color: 'var(--db-text-tertiary)', marginBottom: 16 }}>
             Run your first discovery to see insights.
           </div>
-          <PrimaryButton onClick={() => handleRun()}>Run your first discovery</PrimaryButton>
+          <PrimaryButton onClick={() => handleTrigger()}>Run your first discovery</PrimaryButton>
         </div>
       )}
     </Shell>

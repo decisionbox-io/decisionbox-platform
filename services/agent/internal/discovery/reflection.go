@@ -230,6 +230,7 @@ func (o *Orchestrator) endReflectionMarker(ctx context.Context) {
 // — the run has already succeeded. Gated by the deployment flag (Layer A), the
 // per-project toggle (Layer B), and the sources entitlement.
 func (o *Orchestrator) RunPhaseReflection(ctx context.Context, result *models.DiscoveryResult) {
+	o.setLLMPhase(models.PhaseReflection)
 	defer func() {
 		if r := recover(); r != nil {
 			applog.WithField("panic", r).Error("Reflection phase panicked; discovery run is unaffected")

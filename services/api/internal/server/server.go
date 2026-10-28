@@ -139,7 +139,6 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	discoverytrigger.Register(discoveries.StartRun)
 	feedback := handler.NewFeedbackHandler(feedbackRepo)
 	pricing := handler.NewPricingHandler(pricingRepo)
-	estimate := handler.NewEstimateHandler(projectRepo)
 	secretsHandler := handler.NewSecretsHandler(secretProvider, projectRepo)
 	testConn := handler.NewTestConnectionHandler(projectRepo, agentRunner)
 	insights := handler.NewInsightsHandler(insightRepo)
@@ -345,9 +344,6 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	// Pricing — viewer for read, admin for update
 	mux.HandleFunc("GET /api/v1/pricing", withRole(viewer, pricing.Get))
 	mux.HandleFunc("PUT /api/v1/pricing", withRole(admin, pricing.Update))
-
-	// Cost estimation — member
-	mux.HandleFunc("POST /api/v1/projects/{id}/discover/estimate", withRole(member, estimate.Estimate))
 
 	// Connection testing — admin
 	mux.HandleFunc("POST /api/v1/projects/{id}/test/warehouse", withRole(admin, testConn.TestWarehouse))

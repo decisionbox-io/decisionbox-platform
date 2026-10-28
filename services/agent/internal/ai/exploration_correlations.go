@@ -101,7 +101,7 @@ func (e *ExplorationEngine) executeGetCorrelations(
 	pair := action.GetCorrelations
 	if pair == nil {
 		step.Error = "get_correlations with no pair"
-		return `get_correlations needs two datasources. Use {"thinking": "...", "get_correlations": {"a": "<datasource_id>", "b": "<datasource_id>"}}.`
+		return `get_correlations needs two datasources. Use {"rationale": "...", "get_correlations": {"a": "<datasource_id>", "b": "<datasource_id>"}}.`
 	}
 
 	a, aOK := e.knownDatasource(pair.A)

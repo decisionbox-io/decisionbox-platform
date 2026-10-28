@@ -32,7 +32,7 @@ Each turn you respond with EXACTLY ONE JSON object. The available actions are:
 
 ```json
 {
-  "thinking": "What I am validating and what result I expect",
+  "rationale": "What I am validating and what result I expect",
   "query": "SELECT ... FROM <dialect-quoted table ref> {{FILTER}} ..."
 }
 ```
@@ -41,7 +41,7 @@ Each turn you respond with EXACTLY ONE JSON object. The available actions are:
 
 ```json
 {
-  "thinking": "Need column metadata for the events table",
+  "rationale": "Need column metadata for the events table",
   "lookup_schema": ["{{DATASET}}.events"]
 }
 ```
@@ -54,7 +54,7 @@ Rules:
 
 ```json
 {
-  "thinking": "Looking for any audit / log tables",
+  "rationale": "Looking for any audit / log tables",
   "search_tables": "audit log event activity"
 }
 ```

@@ -32,7 +32,7 @@ Each turn you respond with EXACTLY ONE JSON object. The available actions are:
 
 ```json
 {
-  "thinking": "What I'm trying to discover and why",
+  "rationale": "What I'm trying to discover and why",
   "query": "SELECT ... FROM <dialect-quoted table ref> {{FILTER}} ..."
 }
 ```
@@ -41,7 +41,7 @@ Each turn you respond with EXACTLY ONE JSON object. The available actions are:
 
 ```json
 {
-  "thinking": "I want to use users + sessions next",
+  "rationale": "I want to use users + sessions next",
   "lookup_schema": ["{{DATASET}}.users", "{{DATASET}}.sessions"]
 }
 ```
@@ -57,7 +57,7 @@ Rules:
 
 ```json
 {
-  "thinking": "I haven't seen a refunds-shaped table — let me search",
+  "rationale": "I haven't seen a refunds-shaped table — let me search",
   "search_tables": "refund returned cancellation"
 }
 ```

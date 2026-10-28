@@ -14,7 +14,7 @@ jest.mock('next/navigation', () => ({ useParams: () => ({ id: 'p1' }) }));
 jest.mock('@mantine/notifications', () => ({ notifications: { show: jest.fn() } }));
 jest.mock('@/components/layout/AppShell', () => ({
   __esModule: true,
-  default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  default: ({ children, actions }: { children: React.ReactNode; actions?: React.ReactNode }) => <div>{actions}{children}</div>,
 }));
 jest.mock('@/components/SchemaIndexPanel', () => ({
   __esModule: true,
@@ -58,7 +58,6 @@ jest.mock('@/lib/api', () => ({
     getDebugLogs: jest.fn().mockResolvedValue([]),
     triggerDiscovery: (...a: unknown[]) => triggerDiscovery(...a),
     getRun: (...a: unknown[]) => getRun(...a),
-    estimateCost: jest.fn(),
     cancelRun: (...a: unknown[]) => cancelRun(...a),
     resumeRun: (...a: unknown[]) => resumeRun(...a),
     discardRun: (...a: unknown[]) => discardRun(...a),

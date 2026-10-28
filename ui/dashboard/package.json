@@ -27,17 +27,17 @@
     "@uiw/react-md-editor": "^4.0.11",
     "@xyflow/react": "^12.12.0",
     "dayjs": "^1.11.19",
-    "next": "16.3.4",
+    "next": "16.4.2",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-markdown": "^10.1.0",
     "recharts": "^3.8.0",
     "remark-gfm": "^4.0.1",
-    "undici": "^7.25.0"
+    "undici": "^7.30.1"
   },
   "overrides": {
-    "brace-expansion": "1.1.18",
-    "handlebars": "4.7.9",
+    "brace-expansion": "1.1.21",
+    "handlebars": "4.7.10",
     "picomatch": "4.0.4"
   },
   "devDependencies": {

@@ -48,7 +48,7 @@ func init() {
 	gollm.RegisterWithMeta(providerName, factory, gollm.ProviderMeta{
 		Name:        "AWS Bedrock",
 		Description: "AWS-managed AI platform — Claude, Qwen, DeepSeek, Mistral, Llama with IAM auth",
-		ConfigFields: []gollm.ConfigField{
+		ConfigFields: append([]gollm.ConfigField{
 			{Key: "region", Label: "AWS Region", Type: "string", Default: "us-east-1"},
 			{
 				Key:         "model",
@@ -72,7 +72,7 @@ func init() {
 					{Value: string(gollm.WireOpenAICompat), Label: "OpenAI Chat Completions"},
 				},
 			},
-		},
+		}, gollm.PromptCacheConfigFields()...),
 		AuthMethods: []gollm.AuthMethod{
 			{
 				ID: awscreds.MethodIAMRole, Name: "IAM Role",
@@ -180,6 +180,7 @@ func factory(cfg gollm.ProviderConfig) (gollm.Provider, error) {
 		model:        model,
 		wireOverride: wireOverride,
 		httpClient:   httpClient,
+		promptCache:  gollm.PromptCacheEnabled(cfg),
 	}, nil
 }
 
@@ -200,6 +201,9 @@ type BedrockProvider struct {
 	model        string
 	wireOverride gollm.Wire
 	httpClient   *http.Client
+	// promptCache places Anthropic cache breakpoints on Claude requests
+	// (project config prompt_cache, on unless "false").
+	promptCache bool
 }
 
 // Validate checks that AWS credentials are valid and the configured model is

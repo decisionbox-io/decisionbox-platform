@@ -39,9 +39,13 @@ import (
 )
 
 const (
-	litellmImage    = "ghcr.io/berriai/litellm:main-stable"
-	litellmMockText = "DecisionBox LiteLLM TLS reply"
-	litellmModel    = "mock-model"
+	// Pinned by digest: main-stable moves under us. The 2026-10-21 build
+	// started refusing to boot without a master key and turned every run of
+	// these tests red with "container exited with code 3". Bump deliberately.
+	litellmImage     = "ghcr.io/berriai/litellm:main-stable@sha256:7294b90f868c5c38c99b83021c7ba46f9b439e95f8e32964c925c7d2563a03f7"
+	litellmMockText  = "DecisionBox LiteLLM TLS reply"
+	litellmModel     = "mock-model"
+	litellmMasterKey = "sk-decisionbox-tls-integration-test"
 )
 
 // genPrivateCA creates a self-signed CA plus a leaf certificate valid for
@@ -122,27 +126,8 @@ func startLiteLLMTLS(t *testing.T, certPEM, keyPEM []byte) (string, func()) {
 	req := testcontainers.ContainerRequest{
 		Image:        litellmImage,
 		ExposedPorts: []string{"4000/tcp"},
-		// Upstream now REFUSES TO START without a master key, rather than
-		// warning: "no master key is set, so every request would be accepted
-		// without authentication". The image tag here floats, so that landed
-		// without any change on our side and the container began exiting
-		// before uvicorn ever served anything — which the readiness wait
-		// below could only report as "container exited with code 3".
-		//
-		// The flag is upstream's own escape hatch for exactly this case, and
-		// it is the right one HERE because these three tests are about custom
-		// TLS — a private CA, a skip-verify, and a deliberate verification
-		// failure. Configuring a master key instead would mean giving the
-		// provider an API key as well, and then an auth rejection and a TLS
-		// rejection would be indistinguishable to the assertions below: a 401
-		// would read as proof that the certificate was accepted.
-		//
-		// Safe in this context and nowhere else: a throwaway container, a
-		// mock model with a fake key, reachable only from this test's own
-		// mapped port for the few seconds it lives.
-		Env: map[string]string{
-			"LITELLM_DANGEROUSLY_PERMIT_WEAK_OR_UNSET_MASTER_KEY": "true",
-		},
+		// Current LiteLLM refuses to start without a master key.
+		Env: map[string]string{"LITELLM_MASTER_KEY": litellmMasterKey},
 		Files: []testcontainers.ContainerFile{
 			{HostFilePath: filepath.Join(dir, "config.yaml"), ContainerFilePath: "/app/config.yaml", FileMode: 0o644},
 			{HostFilePath: filepath.Join(dir, "server.crt"), ContainerFilePath: "/certs/server.crt", FileMode: 0o644},
@@ -159,8 +144,8 @@ func startLiteLLMTLS(t *testing.T, certPEM, keyPEM []byte) (string, func()) {
 		// first handshake still gets EOF — whichever test won the race then
 		// failed with `EOF` instead of a certificate error or a reply.
 		// Wait for a real HTTPS response instead. /health/readiness needs no
-		// auth (no master key is configured) and is served by the same
-		// uvicorn TLS listener the tests then use.
+		// auth (even with a master key set) and is served by the same uvicorn
+		// TLS listener the tests then use.
 		WaitingFor: wait.ForHTTP("/health/readiness").
 			WithPort("4000/tcp").
 			//nolint:gosec // readiness probe against this test's own self-signed leaf
@@ -194,7 +179,7 @@ func writeFile(t *testing.T, path string, data []byte) {
 
 func litellmProvider(t *testing.T, base string, extra map[string]string) gollm.Provider {
 	t.Helper()
-	cfg := gollm.ProviderConfig{"base_url": base, "model": litellmModel}
+	cfg := gollm.ProviderConfig{"base_url": base, "model": litellmModel, "credentials_json": litellmMasterKey}
 	for k, v := range extra {
 		cfg[k] = v
 	}

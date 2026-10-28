@@ -1,6 +1,6 @@
 module github.com/decisionbox-io/decisionbox/providers/embedding/bedrock
 
-go 1.26.8
+go 1.26.10
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.6

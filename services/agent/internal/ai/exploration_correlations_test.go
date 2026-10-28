@@ -409,7 +409,7 @@ func TestGetCorrelations_MultipleAnchorColumnsAreAllNamed(t *testing.T) {
 func TestExplorationRepairNudge_OffersTheActionOnlyWhereItExists(t *testing.T) {
 	err := errors.New("action JSON has no query, lookup_schema, search_tables, get_correlations, done flag")
 
-	with := explorationRepairNudge(err, true)
+	with := explorationRepairNudge(err, true, actionMenuSource{multi: true})
 	if !strings.Contains(with, `"get_correlations"`) {
 		t.Errorf("want the action in the menu:\n%s", with)
 	}
@@ -419,7 +419,7 @@ func TestExplorationRepairNudge_OffersTheActionOnlyWhereItExists(t *testing.T) {
 		t.Errorf("want the lead to match the menu:\n%s", with)
 	}
 
-	without := explorationRepairNudge(err, false)
+	without := explorationRepairNudge(err, false, actionMenuSource{})
 	if strings.Contains(without, "get_correlations") {
 		t.Errorf("a run without the action must not be taught it here:\n%s", without)
 	}
@@ -474,7 +474,7 @@ func TestGetCorrelations_NegativeBudgetActuallyDisablesIt(t *testing.T) {
 	if engine.correlationsOffered() {
 		t.Error("correlationsOffered() = true with the budget switched off")
 	}
-	if nudge := explorationRepairNudge(nil, engine.correlationsOffered()); strings.Contains(nudge, "get_correlations") {
+	if nudge := explorationRepairNudge(nil, engine.correlationsOffered(), engine.menuSource()); strings.Contains(nudge, "get_correlations") {
 		t.Errorf("a switched-off action must not be taught by the repair nudge:\n%s", nudge)
 	}
 }

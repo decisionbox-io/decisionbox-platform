@@ -286,7 +286,15 @@ export default function ProvidersPanel({ projectId, variant, onSaved }: Provider
         </div>
       )}
 
+      {/* hiddenConfigKeys: on the settings page the authoritative prompt-caching
+          control is Settings -> Advanced, which writes the project's
+          prompt_cache_enabled field, and that field overrides this legacy
+          config key. A second switch here would report success while changing
+          nothing, and could show the opposite value. The creation wizard keeps
+          it: no project field exists yet there, and the legacy value it writes
+          is exactly what resolution falls back to. */}
       <LLMFormFields
+        hiddenConfigKeys={variant === 'page' ? ['prompt_cache'] : undefined}
         providers={llmProviders}
         value={llm}
         onChange={setLlm}

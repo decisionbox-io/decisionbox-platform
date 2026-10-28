@@ -650,3 +650,42 @@ func TestReasoningEnabled(t *testing.T) {
 		t.Error("nil cfg should be false")
 	}
 }
+
+func TestPromptCacheEnabled(t *testing.T) {
+	cases := []struct {
+		value string
+		want  bool
+	}{
+		{"", true}, {"true", true}, {"TRUE", true}, {"garbage", true},
+		{"false", false}, {"False", false}, {"  false\t", false},
+	}
+	for _, c := range cases {
+		cfg := ProviderConfig{}
+		if c.value != "" {
+			cfg[PromptCacheKey] = c.value
+		}
+		if got := PromptCacheEnabled(cfg); got != c.want {
+			t.Errorf("PromptCacheEnabled(%q) = %v, want %v", c.value, got, c.want)
+		}
+	}
+	if !PromptCacheEnabled(nil) {
+		t.Error("nil config must leave caching on")
+	}
+}
+
+func TestRejectsForcedToolChoice(t *testing.T) {
+	const name = "test-rejects-forced-tool"
+	RegisterWithMeta(name, func(ProviderConfig) (Provider, error) { return nil, nil }, ProviderMeta{
+		Name: "t",
+		Models: []ModelEntry{
+			{ID: "rejects", Aliases: []string{"rejects-alias"}, MaxOutputTokens: 1, RejectsForcedToolChoice: true},
+			{ID: "accepts", MaxOutputTokens: 1},
+		},
+	})
+	if !RejectsForcedToolChoice(name, "rejects") || !RejectsForcedToolChoice(name, "rejects-alias") {
+		t.Error("flagged model (and its alias) must report true")
+	}
+	if RejectsForcedToolChoice(name, "accepts") || RejectsForcedToolChoice(name, "uncatalogued") || RejectsForcedToolChoice("no-such-provider", "rejects") {
+		t.Error("unflagged / unknown must report false")
+	}
+}
