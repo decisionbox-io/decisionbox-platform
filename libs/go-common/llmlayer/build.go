@@ -209,7 +209,13 @@ func ResolveCredential(ctx context.Context, secrets gosecrets.Provider, projectI
 		value, source, err := gosecrets.ResolveCredential(ctx, secrets, projectID, ref.SecretKey, ref.EnvVar)
 		if err != nil {
 			if opts.FailOnSecretError {
-				return Credential{}, fmt.Errorf("read credential %q: %w", ref.SecretKey, err)
+				// Name the LAYER, not the secret-store key. The key is derived
+				// from the provider entry (llm-credentials-<id>), so it tells
+				// whoever reads the log less than the layer does — settings is
+				// a per-layer screen, and the hex suffix has to be decoded
+				// before it means anything. The chain for a layer is
+				// deterministic, so nothing diagnostic is lost.
+				return Credential{}, fmt.Errorf("read credential for layer %q: %w", spec.Layer, err)
 			}
 			if firstErr == nil {
 				firstErr = err
