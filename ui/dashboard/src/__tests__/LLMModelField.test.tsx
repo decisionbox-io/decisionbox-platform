@@ -5,8 +5,8 @@ import '@testing-library/jest-dom';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { useState } from 'react';
-import { DynamicField } from '@/components/common/LLMModelField';
-import type { ConfigField } from '@/lib/api';
+import { DynamicField, modelWireIsKnown } from '@/components/common/LLMModelField';
+import type { ConfigField, LiveModel } from '@/lib/api';
 
 /**
  * Covers the custom-TLS field types added for #338:
@@ -102,5 +102,37 @@ describe('DynamicField — file (tls_ca_cert)', () => {
     );
     fireEvent.click(screen.getByText(/clear/i));
     expect(onChange).toHaveBeenCalledWith('');
+  });
+});
+
+/**
+ * A provider that dispatches any model id it is given (LiteLLM, Ollama —
+ * `DispatchAnyModelID` in the registry) reports its live models with no wire,
+ * because there is only ever one wire. The API already folds that flag into
+ * each row's `dispatchable`, so "dispatchable, no wire" means "fine", not
+ * "unknown".
+ *
+ * Before this was fixed, every such row told the operator to set a Wire
+ * override. Per-layer models made that eighteen identical warnings on a
+ * configuration that was working.
+ */
+describe('a dispatchable model with no wire needs no override', () => {
+  const live = (over: Partial<LiveModel> = {}): LiveModel =>
+    ({ id: 'deepseek-ai/DeepSeek-V3.2', source: 'live', dispatchable: true, ...over }) as LiveModel;
+
+  it('is treated as known, so wire_override stays out of the way', () => {
+    expect(modelWireIsKnown([live()], null, 'deepseek-ai/DeepSeek-V3.2')).toBe(true);
+  });
+
+  it('still demands an override when the row is NOT dispatchable', () => {
+    expect(
+      modelWireIsKnown([live({ dispatchable: false })], null, 'deepseek-ai/DeepSeek-V3.2'),
+    ).toBe(false);
+  });
+
+  it('keeps honouring a known wire', () => {
+    expect(
+      modelWireIsKnown([live({ wire: 'anthropic-messages' } as Partial<LiveModel>)], null, 'deepseek-ai/DeepSeek-V3.2'),
+    ).toBe(true);
   });
 });

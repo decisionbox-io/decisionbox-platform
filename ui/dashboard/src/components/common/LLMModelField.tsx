@@ -288,7 +288,15 @@ export function LiveModelCombobox({
 //
 // Returns false for free-text model ids that match neither list (the
 // user deserves to see the escape hatch) and for rows the upstream
-// returned without a usable wire (dispatchable=false).
+// returned without a usable wire it cannot dispatch.
+//
+// A dispatchable row with NO wire is known, not unknown: a provider that
+// dispatches any model id it is given (DispatchAnyModelID — LiteLLM, Ollama)
+// has only one wire, so its live rows carry none. The API already folds that
+// flag into `dispatchable`, which is the question being asked here. Treating
+// an empty wire as unknown told the operator to set an override on every model
+// such a provider serves — and per-layer models turned that into one warning
+// per layer on a configuration that works.
 export function modelWireIsKnown(
   liveModels: LiveModel[] | null,
   providerMeta: ProviderMeta | null,
@@ -297,7 +305,7 @@ export function modelWireIsKnown(
   if (!modelID) return false;
   if (liveModels) {
     const hit = liveModels.find((m) => m.id === modelID);
-    if (hit) return !!hit.dispatchable && !!hit.wire;
+    if (hit) return !!hit.dispatchable;
   }
   const cat = providerMeta?.models?.find((m) => m.id === modelID);
   if (cat) return !!cat.wire;
@@ -350,6 +358,12 @@ function LiveModelDetails({
         {match.wire ? (
           <Badge size="xs" variant="light" color={match.dispatchable ? 'blue' : 'orange'}>
             wire: {match.wire}
+          </Badge>
+        ) : match.dispatchable ? (
+          // One wire for everything this provider serves, so there is nothing
+          // to choose and nothing to warn about.
+          <Badge size="xs" variant="light" color="gray">
+            wire: provider default
           </Badge>
         ) : (
           <Badge size="xs" variant="light" color="orange">
