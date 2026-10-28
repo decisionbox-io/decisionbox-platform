@@ -1244,6 +1244,18 @@ func (h *DiscoveriesHandler) CancelRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Canonical from here on, for the reason ResumeRun and DiscardRun each
+	// give at their own assignment: this route mixes two kinds of key.
+	// ObjectIDFromHex accepts uppercase hex, so GetByID resolved "6AE2…"
+	// above — while the runner keys containers by a run-id LABEL and the
+	// checkpoint collection keys run_id as a STRING, both holding the
+	// lowercase form oid.Hex() produces. Left as the path gave it, the
+	// runner's label filter matches nothing so the hard kill never fires,
+	// markCancelled records an id the watcher will never look up, and
+	// DeleteByRun purges nothing — an operator told "cancelled" while the
+	// agent runs on and the checkpoints sit until the retention TTL.
+	runID = run.ID
+
 	if run.Status != "running" && run.Status != "pending" {
 		writeError(w, http.StatusBadRequest, "run is not active (status: "+run.Status+")")
 		return
