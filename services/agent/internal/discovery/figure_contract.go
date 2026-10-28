@@ -80,6 +80,20 @@ const figureContract = "## Every number you read lives in `figures`\n\n" +
 	"Declare the figures your sentences use, and reference every figure you declare. A " +
 	"figure nothing references is still checked and can still be refuted, so it can only " +
 	"cost you — if a sentence stops needing a number, drop its figure with it.\n\n" +
+	// The headline is the one sentence that reaches for a number the rest of the insight
+	// did not need, and nothing said it could not. Measured: an insight declared seven
+	// figures, referenced all seven, and led its `name` with an overdue total it never
+	// declared -- the one token that reached a reader in an otherwise clean round. It had
+	// every operand for the sum and no declaration of it.
+	//
+	// Stated as a constraint on what the headline may name, not as a statement about when
+	// it is written. The schema does ask for `name` after `figures`, but telling a model
+	// the order exists invites it to reason about the order instead of about the finding.
+	// Pinned by TestTheContractSaysAHeadlineMayOnlyNameADeclaredFigure.
+	"**A headline may only name a figure you declared.** Every number in `name` is a " +
+	"reference to this insight's own `figures` array. If the headline wants a total, a " +
+	"share or a count that none of your figures holds, declare that figure too — a " +
+	"reference to a key `figures` does not hold reaches the reader as braces.\n\n" +
 	"### The arithmetic\n\n" +
 	"- `cell` — one cell: `column` plus `row`, which must select exactly **one** row.\n" +
 	"- `sum` — the total of `column`, over `scope` if given, otherwise every row.\n" +
@@ -201,7 +215,14 @@ const recommendationFigureContract = "## Numbers come from the insights, by refe
 	"\"decimals\": 1}` writes `$8.5M` from the same figure the insight wrote in full.\n" +
 	"- Reference the same figure everywhere you mention it. A title and a body that share " +
 	"a reference cannot disagree; one measured run headlined 96,447 buyers while its own " +
-	"body said 96,031.\n\n" +
+	"body said 96,031.\n" +
+	// The insight-side rule, restated for this phase because the consequence differs: an
+	// insight ships its braces to a reader, a recommendation is dropped whole. A model
+	// that knows only the first version is being told the cheaper penalty.
+	"- **A headline may only name a figure you declared.** Every number in `title` is a " +
+	"reference to this recommendation's own `figures` array. A title reaching for a number " +
+	"that array does not hold costs the whole recommendation — it is dropped rather than " +
+	"published with a gap in it.\n\n" +
 	"### What stays as ordinary text\n\n" +
 	"Two kinds of number are yours rather than the warehouse's, and they belong in the " +
 	"prose exactly as you would write them:\n\n" +

@@ -213,3 +213,41 @@ func exampleFigureIDs(t *testing.T, example map[string]json.RawMessage, which st
 	}
 	return out
 }
+
+// TestTheContractSaysAHeadlineMayOnlyNameADeclaredFigure covers the sentence that reaches
+// for a number the rest of the finding did not need.
+//
+// Measured in run 23, the one token that reached a reader in an otherwise clean round: an
+// insight declared seven figures, referenced all seven, and led its `name` with an overdue
+// total it never declared. Every operand for that sum was present and the sum was not. The
+// contract had a rule about declaring figures the sentences use and a rule about using
+// every figure declared, and neither covers a headline naming something that does not exist.
+//
+// Both contracts, because the penalty differs and a model told only the insight-side version
+// has been told the cheaper one: an insight ships its braces to a reader, a recommendation
+// is dropped whole.
+func TestTheContractSaysAHeadlineMayOnlyNameADeclaredFigure(t *testing.T) {
+	for name, contract := range map[string]string{
+		"insight contract":        figureContract,
+		"recommendation contract": recommendationFigureContract,
+	} {
+		lower := strings.ToLower(contract)
+		if !strings.Contains(lower, "headline may only name a figure you declared") {
+			t.Errorf("the %s does not say a headline may only name a declared figure, so the one "+
+				"sentence that introduces a number the rest of the finding never needed is "+
+				"ungoverned", name)
+		}
+	}
+	// The insight side has to say where an undeclared reference ends up, because nothing
+	// drops it: the reader sees the braces. Without that the rule reads as a style note.
+	if !strings.Contains(strings.ToLower(figureContract), "reaches the reader as braces") {
+		t.Error("the insight contract states the headline rule without its consequence; an " +
+			"insight carrying an unresolved reference is not dropped, it ships")
+	}
+	// The recommendation side has to say the opposite consequence for the same reason.
+	if !strings.Contains(strings.ToLower(recommendationFigureContract), "dropped rather than") {
+		t.Error("the recommendation contract states the headline rule without its consequence; " +
+			"a recommendation carrying an unresolved reference is dropped whole, which is a " +
+			"different and larger cost than the insight side's")
+	}
+}
