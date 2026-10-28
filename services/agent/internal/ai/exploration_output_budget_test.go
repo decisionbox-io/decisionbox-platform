@@ -121,3 +121,27 @@ func TestExplorationOutputTokens_OperatorRaisedEnvHonored(t *testing.T) {
 		t.Errorf("non-reasoning ceiling with raised env = %d, want min(64000,32000)=32000", got)
 	}
 }
+
+// A layer's own max_output_tokens bounds the NON-reasoning path too.
+//
+// outputCap was consulted only where reasoning was in play, so a layer
+// capped at 512 still asked for the catalogued ceiling and had the call
+// rejected — with nothing in the UI to explain why a saved limit did
+// nothing. The cap only ever lowers: a roomier model keeps today's figure.
+func TestExplorationOutputTokens_NonReasoningHonoursTheLayerCap(t *testing.T) {
+	small := newBudgetTestEngine(128000, 512, false)
+	if got := small.explorationOutputTokens(0); got != 512 {
+		t.Errorf("non-reasoning ceiling = %d, want the layer's 512", got)
+	}
+
+	// Unchanged where the layer accepts more than the configured ceiling.
+	roomy := newBudgetTestEngine(200000, 64000, false)
+	if got := roomy.explorationOutputTokens(0); got != defaultExplorationMaxOutputTokens {
+		t.Errorf("non-reasoning ceiling = %d, want today's %d", got, defaultExplorationMaxOutputTokens)
+	}
+	// And with no resolved cap at all, also unchanged.
+	none := newBudgetTestEngine(200000, 0, false)
+	if got := none.explorationOutputTokens(0); got != defaultExplorationMaxOutputTokens {
+		t.Errorf("non-reasoning ceiling with no cap = %d, want today's %d", got, defaultExplorationMaxOutputTokens)
+	}
+}

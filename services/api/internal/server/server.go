@@ -209,6 +209,10 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	mux.HandleFunc("POST /api/v1/providers/llm/{id}/models/live", withRole(viewer, providers.ListLiveLLMModels))
 	mux.HandleFunc("POST /api/v1/projects/{id}/providers/llm/models/live", withRole(viewer, providers.ListLiveLLMModelsForProject))
 	mux.HandleFunc("GET /api/v1/projects/{id}/llm/extended-models", withRole(viewer, providers.ListExtendedLLMModels))
+	// The layer vocabulary as data (per-layer models, #407), so the dashboard
+	// holds no copy of the list and a layer added server-side shows up in the
+	// UI without a front-end release.
+	mux.HandleFunc("GET /api/v1/llm/layers", withRole(viewer, providers.ListLLMLayers))
 	mux.HandleFunc("GET /api/v1/providers/warehouse", withRole(viewer, providers.ListWarehouseProviders))
 	mux.HandleFunc("GET /api/v1/providers/embedding", withRole(viewer, providers.ListEmbeddingProviders))
 	mux.HandleFunc("POST /api/v1/providers/embedding/{id}/models/live", withRole(viewer, providers.ListLiveEmbeddingModels))
@@ -233,6 +237,12 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	mux.HandleFunc("POST /api/v1/projects", withRole(member, projects.Create))
 	mux.HandleFunc("GET /api/v1/projects", withRole(viewer, projects.List))
 	mux.HandleFunc("GET /api/v1/projects/{id}", withRole(viewer, projects.Get))
+	// The per-layer LLM configuration for the settings page, seeded from the
+	// legacy fields when the project has never been configured. Separate from
+	// GET /projects/{id} so a client that round-trips the project document
+	// into a PUT cannot silently configure it and skip the review the
+	// configuration gate exists to force.
+	mux.HandleFunc("GET /api/v1/projects/{id}/llm/config", withRole(viewer, projects.GetProjectLLMConfig))
 	mux.HandleFunc("PUT /api/v1/projects/{id}", withRole(member, projects.Update))
 	mux.HandleFunc("DELETE /api/v1/projects/{id}", withRole(admin, projects.Delete))
 

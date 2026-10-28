@@ -3,6 +3,7 @@ package agentserver
 import (
 	"context"
 	"fmt"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -109,16 +110,26 @@ func runAskServe(cfg *config.Config) error {
 		}
 		primaryID := warehouseID(project.PrimaryWarehouse())
 
-		// Shared reasoning LLM (datasource-agnostic).
-		llm, err := initLLMProvider(buildCtx, cfg, project, secretProvider, projectID)
+		// The per-layer LLM set for an Ask turn: the answer model, the repair
+		// model its loop may need, and the datasource router when a route can
+		// happen at all (#407). Built as a set so layers resolving to the
+		// same provider entry still share one provider instance and one live
+		// probe.
+		//
+		// The router's own gate is `multi && RouterEnabled`, and both halves
+		// are known here: a single-datasource project never routes.
+		routerPossible := serveCfg.RouterEnabled && len(warehouses) > 1
+		layers, err := buildLayerSet(buildCtx, layerSetInput{
+			project:   project,
+			projectID: projectID,
+			layers:    askServeLayers(routerPossible),
+			deps:      newLayerSetDeps(cfg, secretProvider, projectID, nil),
+		})
 		if err != nil {
 			return nil, err
 		}
-		aiClient, err := ai.New(llm, project.LLM.Model)
-		if err != nil {
-			return nil, fmt.Errorf("create AI client: %w", err)
-		}
-		aiClient.SetProvenance(projectID, "", project.LLM.Provider)
+		askLayer := layers.For(llmlayer.LayerAsk)
+		aiClient := askLayer.Client
 
 		// One embedder per project, shared by semantic schema search and the
 		// insight search tool. Nil when the project has no embedding provider;
@@ -317,10 +328,10 @@ func runAskServe(cfg *config.Config) error {
 			executor := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{
 				Warehouse:    wp,
 				ProviderSlug: wh.Provider,
-				SQLFixer:     askQueryFixer(aiClient, wp, datasets, wh),
-				MaxRetries:  5,
-				FilterField: wh.FilterField,
-				FilterValue: wh.FilterValue,
+				SQLFixer:     askQueryFixer(layers.For(llmlayer.LayerSQLRepair), wp, datasets, wh),
+				MaxRetries:   5,
+				FilterField:  wh.FilterField,
+				FilterValue:  wh.FilterValue,
 			})
 			return &askserve.WarehouseConn{Executor: executor, Closers: []func() error{wp.Close}}, nil
 		}
@@ -344,7 +355,10 @@ func runAskServe(cfg *config.Config) error {
 
 		return askserve.NewProjectRuntime(askserve.ProjectRuntimeOptions{
 			AIClient:          aiClient,
-			Model:             project.LLM.Model,
+			RouterClient:      layers.For(llmlayer.LayerAskRouter).Client,
+			RouterOutputCap:   layers.For(llmlayer.LayerAskRouter).OutputCap,
+			OutputCap:         askLayer.OutputCap,
+			Model:             askLayer.Model,
 			InsightsProvider:  insightsProvider,
 			KnowledgeProvider: knowledgeProvider,
 			MutationTools:     mutationTools,
@@ -493,4 +507,3 @@ func (a *sourcesKnowledgeAdapter) RetrieveKnowledge(ctx context.Context, query s
 // returns alongside the top-k document matches, so always-include note guidance
 // never crowds out (or is crowded out by) the semantic document results.
 const maxKnowledgeNotes = 5
-

@@ -2,14 +2,19 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    # `feat/**` covers the bridge branches a cross-repo change merges through.
+    # Without the base listed, a PR based on one runs no CI at all — the filter
+    # matches the BASE, not the head. A pattern rather than a branch name so
+    # the next cross-repo change needs no workflow edit, and none of them leave
+    # scaffolding behind in here.
+    branches: [main, 'feat/**']
     # `labeled` is included so adding the `run-integration-tests` label actually
     # starts the label-gated integration-tests job — the default activity types
     # (opened/synchronize/reopened) don't fire on a label change, so without it
     # the label can only take effect on the next push.
     types: [opened, synchronize, reopened, labeled]
   push:
-    branches: [main]
+    branches: [main, 'feat/**']
 
 concurrency:
   group: ci-${{ github.ref }}

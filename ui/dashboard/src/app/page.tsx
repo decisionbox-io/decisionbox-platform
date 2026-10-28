@@ -74,7 +74,7 @@ export default function ProjectsPage() {
 
               <Group gap="xs">
                 <Badge variant="outline" size="sm">{project.warehouse.provider}</Badge>
-                <Badge variant="outline" size="sm">{project.llm.provider}</Badge>
+                {llmBadge(project)}
               </Group>
 
               <ProjectRunStatus
@@ -88,4 +88,30 @@ export default function ProjectsPage() {
       </Stack>
     </Shell>
   );
+}
+
+// llmBadge summarises a project's LLM setup on its card.
+//
+// Three states, because the card is where a user first notices any of them:
+// a project that has not been configured for per-layer models and cannot run
+// until it is; one with several provider entries, where naming a single
+// provider would be a half-truth; and the common single-provider case, which
+// reads as it always has.
+function llmBadge(project: Project) {
+  if (project.llm_config_required) {
+    return (
+      <Badge variant="light" color="orange" size="sm">
+        needs model configuration
+      </Badge>
+    );
+  }
+  const entries = project.llm_providers ?? [];
+  const primary = entries.find((e) => (e.id || 'default') === 'default') ?? entries[0];
+  const label = primary?.label || primary?.provider || project.llm.provider;
+  if (entries.length > 1) {
+    return (
+      <Badge variant="outline" size="sm">{label} +{entries.length - 1}</Badge>
+    );
+  }
+  return <Badge variant="outline" size="sm">{label}</Badge>;
 }

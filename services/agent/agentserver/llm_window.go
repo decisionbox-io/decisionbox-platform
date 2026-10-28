@@ -5,7 +5,9 @@ import (
 	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/discovery"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 )
 
@@ -86,12 +88,34 @@ func resolveModelBudget(ctx context.Context, provider gollm.Provider, providerNa
 
 // projectModelWindowStore binds a project id to the model-window repo so it
 // satisfies the discovery orchestrator's writer interface (which is
-// project-scoped by construction and passes only provider+model).
+// project-scoped by construction and passes the provider entry, provider and
+// model).
 type projectModelWindowStore struct {
 	repo      *database.LLMModelWindowRepository
 	projectID string
 }
 
-func (s projectModelWindowStore) SaveWindow(ctx context.Context, provider, model string, window int) error {
-	return s.repo.SaveWindow(ctx, s.projectID, provider, model, window)
+func (s projectModelWindowStore) SaveWindow(ctx context.Context, providerID, provider, model string, window int) error {
+	return s.repo.SaveWindow(ctx, s.projectID, providerID, provider, model, window)
+}
+
+// window reads a target's persisted self-calibrated context window, keyed by
+// the same identity the observer writes. Satisfies modelWindowReader so
+// buildLayerSet resolves each target's budget against what the project has
+// already learned about THAT entry and model.
+func (s projectModelWindowStore) window(ctx context.Context, spec llmlayer.LayerSpec) int {
+	key := discovery.ModelWindowKey(spec.Model, gollm.ProviderConfig(spec.Config))
+	if key == "" {
+		return 0
+	}
+	w, err := s.repo.GetWindow(ctx, s.projectID, spec.ProviderID, spec.Provider, key)
+	if err != nil {
+		applog.WithFields(applog.Fields{
+			"provider_id": spec.ProviderID,
+			"model":       spec.Model,
+			"error":       err.Error(),
+		}).Debug("Failed to read persisted model window; continuing with live/catalog resolution")
+		return 0
+	}
+	return w
 }

@@ -11,14 +11,14 @@ import (
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/api/internal/runner"
 
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/claude"
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/openai"
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/ollama"
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai"
-	_ "github.com/decisionbox-io/decisionbox/providers/llm/bedrock"
-	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery"
-	_ "github.com/decisionbox-io/decisionbox/providers/embedding/openai"
 	_ "github.com/decisionbox-io/decisionbox/providers/embedding/ollama"
+	_ "github.com/decisionbox-io/decisionbox/providers/embedding/openai"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/bedrock"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/claude"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/ollama"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/openai"
+	_ "github.com/decisionbox-io/decisionbox/providers/llm/vertex-ai"
+	_ "github.com/decisionbox-io/decisionbox/providers/warehouse/bigquery"
 )
 
 func TestHealthCheck(t *testing.T) {

@@ -1,19 +1,22 @@
 package agentserver
 
 import (
-	"context"
-	"strings"
+	"errors"
 	"testing"
 
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
-// TestResolveBlurbLLM_EmptyModel covers the blurb-LLM model guard: an
-// empty model is rejected for a normal provider but accepted when the
-// effective config carries an endpoint_id (a user-deployed endpoint
+// TestTableDescriptionLayerModelGuard covers the table-description layer's
+// model guard: an empty model is rejected for a normal provider but accepted
+// when the effective config carries an endpoint_id (a user-deployed endpoint
 // identifies its own model).
-func TestResolveBlurbLLM_EmptyModel(t *testing.T) {
-	sp := &fakeSecretProvider{}
+//
+// The fixtures are the ones written for resolveBlurbLLM, re-pointed at the
+// layer resolver that replaced it — the three legacy blurb branches have to
+// keep behaving identically, and these are the cases that pin them.
+func TestTableDescriptionLayerModelGuard(t *testing.T) {
 	tests := []struct {
 		name         string
 		project      *models.Project
@@ -72,28 +75,54 @@ func TestResolveBlurbLLM_EmptyModel(t *testing.T) {
 			wantModel:    "served-name",
 			wantProvider: "vertex-ai",
 		},
+		{
+			// A whitespace-only endpoint_id is not an endpoint, so the
+			// non-endpoint branch applies and the analysis model is
+			// inherited rather than the model staying blank.
+			name: "whitespace_endpoint_id_is_not_an_endpoint",
+			project: &models.Project{
+				LLM:      models.LLMConfig{Provider: "openai", Model: "gpt-4o"},
+				BlurbLLM: &models.BlurbLLMConfig{Provider: "vertex-ai", Model: "", Config: map[string]string{"endpoint_id": "   "}},
+			},
+			wantModel:    "gpt-4o",
+			wantProvider: "vertex-ai",
+		},
+		{
+			// A blurb override with no provider is ignored ENTIRELY — not
+			// partially — so its model does not leak into the analysis pair.
+			name: "blurb_override_without_a_provider_is_ignored",
+			project: &models.Project{
+				LLM:      models.LLMConfig{Provider: "openai", Model: "gpt-4o"},
+				BlurbLLM: &models.BlurbLLMConfig{Provider: "", Model: "ignored"},
+			},
+			wantModel: "gpt-4o",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			provider, model, _, err := resolveBlurbLLM(context.Background(), nil, tc.project, sp, "p1")
+			spec, err := tc.project.LayerSpecUnchecked(llmlayer.LayerTableDescriptions)
+			if err != nil {
+				t.Fatalf("resolve the table-description layer: %v", err)
+			}
+			verr := spec.Validate()
 			if tc.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-					t.Fatalf("err = %v, want containing %q", err, tc.wantErr)
+				if !errors.Is(verr, llmlayer.ErrModelMissing) {
+					t.Fatalf("Validate() = %v, want ErrModelMissing", verr)
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
+			if verr != nil {
+				t.Fatalf("unexpected error: %v", verr)
 			}
 			wantProvider := tc.wantProvider
 			if wantProvider == "" {
 				wantProvider = tc.project.LLM.Provider
 			}
-			if provider != wantProvider {
-				t.Errorf("provider = %q, want %q", provider, wantProvider)
+			if spec.Provider != wantProvider {
+				t.Errorf("provider = %q, want %q", spec.Provider, wantProvider)
 			}
-			if model != tc.wantModel {
-				t.Errorf("model = %q, want %q", model, tc.wantModel)
+			if spec.Model != tc.wantModel {
+				t.Errorf("model = %q, want %q", spec.Model, tc.wantModel)
 			}
 		})
 	}

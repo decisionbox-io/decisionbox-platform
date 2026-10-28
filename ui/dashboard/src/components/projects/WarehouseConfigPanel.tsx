@@ -224,9 +224,29 @@ function projectToFormState(proj: Project, providers: ProviderMeta[]): Warehouse
   };
 }
 
+// DEFAULT_LAYER_KEY is the reserved layer_models row every layer inherits.
+// GET /api/v1/llm/layers reports it as default_layer_key; it is a constant
+// here so the test button can tell "the default" from a real layer without
+// waiting on that fetch.
+const DEFAULT_LAYER_KEY = 'default';
+
 export type TestConnectionTarget = 'warehouse' | 'llm' | 'embedding' | 'blurb-llm';
 
-export function TestConnectionButton({ projectId, target }: { projectId: string; target: TestConnectionTarget }) {
+export interface TestConnectionButtonProps {
+  projectId: string;
+  target: TestConnectionTarget;
+  /**
+   * For target="llm": the LLM layer whose provider entry and model to test
+   * (per-layer models, #407). Omitted — or set to the reserved default — tests
+   * the project's default layer, which is what this button has always done
+   * and what every shipped agent image understands.
+   */
+  layer?: string;
+  /** Overrides the button copy; the per-layer rows name their own layer. */
+  label?: string;
+}
+
+export function TestConnectionButton({ projectId, target, layer, label: labelOverride }: TestConnectionButtonProps) {
   const [status, setStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
   const labels: Record<TestConnectionTarget, string> = {
@@ -235,7 +255,7 @@ export function TestConnectionButton({ projectId, target }: { projectId: string;
     embedding: 'Test Embedding Connection',
     'blurb-llm': 'Test Blurb LLM Connection',
   };
-  const label = labels[target];
+  const label = labelOverride || labels[target];
 
   const handleTest = async () => {
     setStatus('testing');
@@ -243,7 +263,13 @@ export function TestConnectionButton({ projectId, target }: { projectId: string;
     try {
       const result: TestConnectionResult = await (
         target === 'warehouse' ? api.testWarehouse(projectId) :
-        target === 'llm' ? api.testLLM(projectId) :
+        target === 'llm' ? (
+          // The default layer goes through the original route with no query
+          // parameter, so an older agent image never sees an unknown flag.
+          layer && layer !== DEFAULT_LAYER_KEY
+            ? api.testLLMLayer(projectId, layer)
+            : api.testLLM(projectId)
+        ) :
         target === 'embedding' ? api.testEmbedding(projectId) :
         api.testBlurbLLM(projectId)
       );

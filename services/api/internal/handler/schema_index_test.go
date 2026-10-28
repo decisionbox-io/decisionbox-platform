@@ -506,8 +506,8 @@ func TestSchemaIndex_Reindex_CacheInvalidateError_500(t *testing.T) {
 // only signals when its preconditions hold (status==indexing,
 // canceller wired, project exists).
 type mockCanceller struct {
-	cancelCalled []string
-	cancelReturn bool
+	cancelCalled  []string
+	cancelReturn  bool
 	runningReturn bool
 }
 

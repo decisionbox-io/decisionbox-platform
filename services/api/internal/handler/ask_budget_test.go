@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -221,10 +222,11 @@ func TestAsk_TrimsHistoryWhenSessionTooLarge(t *testing.T) {
 	insightID := "11111111-1111-4111-8111-111111111111"
 	projectRepo := &mockProjectRepoForSearch{
 		project: &models.Project{
-			ID:        "proj-1",
-			Name:      "Tiny window project",
-			Embedding: goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
-			LLM:       models.LLMConfig{Provider: "test-llm-small-window", Model: "small-llm"},
+			ID:               "proj-1",
+			Name:             "Tiny window project",
+			Embedding:        goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
+			LLM:              models.LLMConfig{Provider: "test-llm-small-window", Model: "small-llm"},
+			LLMConfigVersion: llmlayer.ConfigVersion,
 		},
 	}
 	vs := &mockVectorStoreForSearch{results: []vectorstore.SearchResult{
@@ -283,9 +285,10 @@ func TestAsk_UpstreamOverflowSurfacesAsTyped413(t *testing.T) {
 	insightID := "11111111-1111-4111-8111-111111111111"
 	projectRepo := &mockProjectRepoForSearch{
 		project: &models.Project{
-			ID:        "proj-1",
-			Embedding: goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
-			LLM:       models.LLMConfig{Provider: "test-llm-overflow", Model: "overflow-llm"},
+			ID:               "proj-1",
+			Embedding:        goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
+			LLM:              models.LLMConfig{Provider: "test-llm-overflow", Model: "overflow-llm"},
+			LLMConfigVersion: llmlayer.ConfigVersion,
 		},
 	}
 	vs := &mockVectorStoreForSearch{results: []vectorstore.SearchResult{
@@ -320,9 +323,10 @@ func TestAsk_NoLLMProviderReturns412Typed(t *testing.T) {
 	insightID := "11111111-1111-4111-8111-111111111111"
 	projectRepo := &mockProjectRepoForSearch{
 		project: &models.Project{
-			ID:        "proj-1",
-			Embedding: goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
-			LLM:       models.LLMConfig{Provider: "definitely-not-registered", Model: "x"},
+			ID:               "proj-1",
+			Embedding:        goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
+			LLM:              models.LLMConfig{Provider: "definitely-not-registered", Model: "x"},
+			LLMConfigVersion: llmlayer.ConfigVersion,
 		},
 	}
 	vs := &mockVectorStoreForSearch{results: []vectorstore.SearchResult{
@@ -364,9 +368,10 @@ func TestAsk_QuestionAloneOverflowReturns413(t *testing.T) {
 	insightID := "11111111-1111-4111-8111-111111111111"
 	projectRepo := &mockProjectRepoForSearch{
 		project: &models.Project{
-			ID:        "proj-1",
-			Embedding: goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
-			LLM:       models.LLMConfig{Provider: "test-llm-tiny", Model: "tiny-llm"},
+			ID:               "proj-1",
+			Embedding:        goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
+			LLM:              models.LLMConfig{Provider: "test-llm-tiny", Model: "tiny-llm"},
+			LLMConfigVersion: llmlayer.ConfigVersion,
 		},
 	}
 	vs := &mockVectorStoreForSearch{results: []vectorstore.SearchResult{
@@ -413,9 +418,10 @@ func TestAsk_AssembledPromptOverflowReturns413(t *testing.T) {
 	insightID := "11111111-1111-4111-8111-111111111111"
 	projectRepo := &mockProjectRepoForSearch{
 		project: &models.Project{
-			ID:        "proj-1",
-			Embedding: goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
-			LLM:       models.LLMConfig{Provider: "test-llm-tiny", Model: "tiny-llm"},
+			ID:               "proj-1",
+			Embedding:        goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
+			LLM:              models.LLMConfig{Provider: "test-llm-tiny", Model: "tiny-llm"},
+			LLMConfigVersion: llmlayer.ConfigVersion,
 		},
 	}
 	vs := &mockVectorStoreForSearch{results: []vectorstore.SearchResult{
@@ -458,9 +464,10 @@ func TestAsk_ExactVerifierOverflowReturns413(t *testing.T) {
 	insightID := "11111111-1111-4111-8111-111111111111"
 	projectRepo := &mockProjectRepoForSearch{
 		project: &models.Project{
-			ID:        "proj-1",
-			Embedding: goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
-			LLM:       models.LLMConfig{Provider: "test-llm-huge-exact", Model: "huge-llm"},
+			ID:               "proj-1",
+			Embedding:        goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
+			LLM:              models.LLMConfig{Provider: "test-llm-huge-exact", Model: "huge-llm"},
+			LLMConfigVersion: llmlayer.ConfigVersion,
 		},
 	}
 	vs := &mockVectorStoreForSearch{results: []vectorstore.SearchResult{
@@ -506,9 +513,10 @@ func TestAsk_FlakyExactVerifierIsNonFatal(t *testing.T) {
 	insightID := "11111111-1111-4111-8111-111111111111"
 	projectRepo := &mockProjectRepoForSearch{
 		project: &models.Project{
-			ID:        "proj-1",
-			Embedding: goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
-			LLM:       models.LLMConfig{Provider: "test-llm-flaky-counter", Model: "flaky-llm"},
+			ID:               "proj-1",
+			Embedding:        goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
+			LLM:              models.LLMConfig{Provider: "test-llm-flaky-counter", Model: "flaky-llm"},
+			LLMConfigVersion: llmlayer.ConfigVersion,
 		},
 	}
 	vs := &mockVectorStoreForSearch{results: []vectorstore.SearchResult{

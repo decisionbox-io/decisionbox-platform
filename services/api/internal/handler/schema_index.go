@@ -114,14 +114,14 @@ type WarehouseTableLister interface {
 // SchemaIndexHandler serves the lifecycle endpoints the dashboard uses
 // to observe and drive schema indexing. Plan §8.4.
 type SchemaIndexHandler struct {
-	projects   database.ProjectRepo
-	progress   database.SchemaIndexProgressRepo
-	dropper    CollectionDropper      // nullable — reindex works without it if no prior index exists
-	logs       SchemaIndexLogLister   // nullable — log-tail endpoint returns empty when absent
-	canceller  IndexCanceller         // nullable — cancel endpoint returns 503 when worker isn't wired
-	cacheRepo  SchemaCacheInvalidator // nullable — invalidate-cache endpoint returns 503 when not wired
-	runs       SchemaIndexRunLister   // nullable — /runs endpoint returns empty list when absent
-	lister     WarehouseTableLister   // nullable — pre-index live table listing for the scope picker
+	projects  database.ProjectRepo
+	progress  database.SchemaIndexProgressRepo
+	dropper   CollectionDropper      // nullable — reindex works without it if no prior index exists
+	logs      SchemaIndexLogLister   // nullable — log-tail endpoint returns empty when absent
+	canceller IndexCanceller         // nullable — cancel endpoint returns 503 when worker isn't wired
+	cacheRepo SchemaCacheInvalidator // nullable — invalidate-cache endpoint returns 503 when not wired
+	runs      SchemaIndexRunLister   // nullable — /runs endpoint returns empty list when absent
+	lister    WarehouseTableLister   // nullable — pre-index live table listing for the scope picker
 
 	liveMu    sync.Mutex                // guards liveCache
 	liveCache map[string]liveTableEntry // per-project TTL cache of live table listings (bounds agent spawns)
@@ -230,11 +230,11 @@ type SchemaIndexStatusResponse struct {
 // SchemaIndexProgressView is the subset of
 // models.SchemaIndexProgress the dashboard actually needs.
 type SchemaIndexProgressView struct {
-	Phase       string `json:"phase"`
-	TablesTotal int    `json:"tables_total"`
-	TablesDone  int    `json:"tables_done"`
-	StartedAt   string `json:"started_at,omitempty"`
-	UpdatedAt   string `json:"updated_at,omitempty"`
+	Phase        string `json:"phase"`
+	TablesTotal  int    `json:"tables_total"`
+	TablesDone   int    `json:"tables_done"`
+	StartedAt    string `json:"started_at,omitempty"`
+	UpdatedAt    string `json:"updated_at,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
 }
 
@@ -559,10 +559,10 @@ func (h *SchemaIndexHandler) parkNeedsReindex(ctx context.Context, id string) {
 //
 // Responses:
 //   - 202 Accepted      — cancel signal delivered; final status will
-//                          land once the subprocess finishes unwinding
-//                          (usually <1s; MSSQL can take a few seconds).
+//     land once the subprocess finishes unwinding
+//     (usually <1s; MSSQL can take a few seconds).
 //   - 409 Conflict      — no run is in flight right now (either never
-//                          started or already completed).
+//     started or already completed).
 //   - 503 Unavailable   — worker is not wired (Qdrant-less build).
 //
 // POST /api/v1/projects/{id}/schema-index/cancel
@@ -635,8 +635,8 @@ func (h *SchemaIndexHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 //   - 202 Accepted      — full cleanup successful.
 //   - 409 Conflict      — an indexing run is in flight; cancel first.
 //   - 502 Bad Gateway   — Qdrant unreachable while dropping collection
-//                          (status already flipped — discovery blocked,
-//                          retry is safe).
+//     (status already flipped — discovery blocked,
+//     retry is safe).
 //   - 503 Unavailable   — cache repo is not wired on this build.
 //
 // POST /api/v1/projects/{id}/schema-index/invalidate-cache

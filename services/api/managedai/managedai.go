@@ -31,6 +31,7 @@ import (
 	"sync"
 
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
@@ -65,6 +66,22 @@ var managedSecretKeys = map[string]struct{}{
 	"embedding-credentials": {},
 	"blurb-llm-credentials": {},
 }
+
+// aliasTemplate derives a gateway alias for a layer that has no dedicated
+// environment variable.
+//
+// Derivation rather than one variable per layer, because each alias would
+// otherwise be plumbed through FIVE hops — control-plane env,
+// injectGatewaySettings, the Step Functions provisioning definition,
+// helm-install.sh and api.extraEnv — and seventeen layers times five hops is
+// not maintainable. It also means a layer added in a later release needs no
+// provisioning change at all.
+//
+// The three pre-existing variables stay AUTHORITATIVE for their layers: a
+// provisioned tenant already routes table descriptions to
+// decisionbox-blurb-model, and silently moving it to a derived name would
+// change its behaviour.
+const aliasTemplate = "decisionbox-%s-model"
 
 // config is the resolved, immutable managed-mode configuration for the
 // process. Built once from the environment via load().
@@ -144,6 +161,15 @@ func Apply(p *models.Project) { current().apply(p) }
 // Always false when managed mode is off.
 func IsManagedSecretKey(key string) bool { return current().isManagedSecretKey(key) }
 
+// LayerAlias returns the gateway model alias a layer routes through.
+//
+// The two chat layers that already have an environment variable keep it —
+// analysis (and the default row it mirrors) and table descriptions — and
+// everything else derives its alias by convention. Returns "" when managed
+// mode is off, so a caller cannot accidentally stamp a gateway alias onto a
+// self-hosted project.
+func LayerAlias(layer string) string { return current().layerAlias(layer) }
+
 func (c *config) validate() error {
 	if !c.enabled {
 		return nil
@@ -193,6 +219,23 @@ func (c *config) validate() error {
 	return nil
 }
 
+// layerAlias implements LayerAlias.
+func (c *config) layerAlias(layer string) string {
+	if !c.enabled {
+		return ""
+	}
+	switch layer {
+	case llmlayer.DefaultLayer, llmlayer.LayerAnalysis:
+		return c.analysisModel
+	case llmlayer.LayerTableDescriptions:
+		return c.blurbModel
+	default:
+		// Layer keys are [a-z_]; the aliases in use are hyphen-separated, so
+		// the separator is converted rather than mixed.
+		return fmt.Sprintf(aliasTemplate, strings.ReplaceAll(layer, "_", "-"))
+	}
+}
+
 func (c *config) apply(p *models.Project) {
 	if !c.enabled || p == nil {
 		return
@@ -208,6 +251,33 @@ func (c *config) apply(p *models.Project) {
 		Model:    c.blurbModel,
 		Config:   map[string]string{"base_url": c.baseURL},
 	}
+
+	// The per-layer configuration (#407): ONE gateway provider entry, and a
+	// distinct alias per layer so the gateway routes — and meters — each
+	// layer on its own. Replaced wholesale, like the legacy blocks above, so
+	// a crafted body cannot patch a single layer through.
+	//
+	// A cloud project is configured by construction, so stamping the version
+	// here is what keeps managed deployments out of the forced trip through
+	// settings: there is no AI configuration surface for a user to visit.
+	p.LLMProviders = []llmlayer.ProviderEntry{{
+		ID:       llmlayer.DefaultProviderID,
+		Label:    "DecisionBox AI",
+		Provider: managedProvider,
+		Config:   map[string]string{"base_url": c.baseURL},
+	}}
+	p.LayerModels = make(map[string]llmlayer.LayerModel, len(llmlayer.Keys())+1)
+	p.LayerModels[llmlayer.DefaultLayer] = llmlayer.LayerModel{
+		ProviderID: llmlayer.DefaultProviderID,
+		Model:      c.layerAlias(llmlayer.DefaultLayer),
+	}
+	for _, layer := range llmlayer.Keys() {
+		p.LayerModels[layer] = llmlayer.LayerModel{
+			ProviderID: llmlayer.DefaultProviderID,
+			Model:      c.layerAlias(layer),
+		}
+	}
+	p.LLMConfigVersion = llmlayer.ConfigVersion
 
 	embCfg := map[string]string{"base_url": c.baseURL}
 	// Optional fast-path: pin the vector size so the agent skips the live
@@ -227,6 +297,14 @@ func (c *config) isManagedSecretKey(key string) bool {
 	if !c.enabled {
 		return false
 	}
-	_, ok := managedSecretKeys[key]
-	return ok
+	if _, ok := managedSecretKeys[key]; ok {
+		return true
+	}
+	// Every secondary provider entry's key too (per-layer models, #407).
+	// Without the prefix, a crafted write to llm-credentials-<hex> would
+	// store a per-project credential that shadows the gateway key for
+	// whichever layer names that entry. Apply replaces base_url on every
+	// write, so such a write cannot re-point traffic by itself — but it can
+	// shadow the credential, and that is enough to refuse it.
+	return strings.HasPrefix(key, llmlayer.LegacyCredentialsKey+"-")
 }
