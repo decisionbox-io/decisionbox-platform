@@ -1,9 +1,6 @@
 package discovery
 
 import (
-	"reflect"
-	"strings"
-
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 )
 
@@ -187,42 +184,4 @@ func objectProperties(schema map[string]interface{}) map[string]interface{} {
 		return nil
 	}
 	return schemaProperties(schema["properties"])
-}
-
-// declaredPropertyNames returns a properties struct's field names in declaration order,
-// which is the order encoding/json will marshal them in.
-func declaredPropertyNames(node interface{}) []string {
-	rv := reflect.ValueOf(node)
-	for rv.Kind() == reflect.Ptr {
-		if rv.IsNil() {
-			return nil
-		}
-		rv = rv.Elem()
-	}
-	if rv.Kind() != reflect.Struct {
-		return nil
-	}
-	rt := rv.Type()
-	out := make([]string, 0, rt.NumField())
-	for i := 0; i < rt.NumField(); i++ {
-		if name := jsonTagName(rt.Field(i)); name != "" {
-			out = append(out, name)
-		}
-	}
-	return out
-}
-
-// jsonTagName is the key a field marshals under, or "" when it is skipped.
-func jsonTagName(f reflect.StructField) string {
-	tag := f.Tag.Get("json")
-	if tag == "-" {
-		return ""
-	}
-	if i := strings.IndexByte(tag, ','); i >= 0 {
-		tag = tag[:i]
-	}
-	if tag == "" {
-		return f.Name
-	}
-	return tag
 }

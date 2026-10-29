@@ -392,23 +392,3 @@ func indicatorsWithoutReference(node map[string]interface{}) map[string]interfac
 	}
 	return out
 }
-
-// swapReferenceRule rewrites the named fields' descriptions from figureReferenceRule to
-// repairProseOnlyRule, in place.
-//
-// Keyed by field name rather than walking every description: the fields that carry the rule
-// are the ones a repair rewrites, and a walk would also reach the figure sub-schema, whose
-// own wording is about declaring a figure and is correct wherever it appears.
-func swapReferenceRule(props map[string]interface{}, fields ...string) {
-	for _, field := range fields {
-		node, ok := props[field].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		desc, ok := node["description"].(string)
-		if !ok || !strings.Contains(desc, figureReferenceRule) {
-			continue
-		}
-		node["description"] = strings.Replace(desc, figureReferenceRule, repairProseOnlyRule, 1)
-	}
-}
