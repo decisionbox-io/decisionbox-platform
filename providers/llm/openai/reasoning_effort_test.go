@@ -29,18 +29,20 @@ func TestGatewayAliasKeepsItsResolvedEffort(t *testing.T) {
 	}
 }
 
-// A model this catalog DOES know and does not mark as reasoning must not be
-// sent the field: OpenAI rejects reasoning_effort on those outright, so
-// forwarding it turns a quality setting into a 400 on a request that worked.
-func TestKnownNonReasoningModelLosesTheEffort(t *testing.T) {
-	const model = "gpt-4o"
-	if _, found := catalogEntry(t, model); !found {
-		t.Skipf("%s is not in this catalog; nothing to assert", model)
-	}
-	got := gollm.NormalizeReasoningEffort(providerName, "",
-		gollm.ChatRequest{Model: model, ReasoningEffort: gollm.ReasoningEffortHigh})
-	if got.ReasoningEffort != gollm.ReasoningEffortDefault {
-		t.Errorf("%s: effort = %q, want it dropped — the model rejects the field", model, got.ReasoningEffort)
+// The non-reasoning chat families reject reasoning_effort outright, so
+// forwarding it would turn a quality setting into a 400 on a request that
+// worked. Those rows declare the rejection explicitly.
+func TestDeclaredRejectersLoseTheEffort(t *testing.T) {
+	for _, model := range []string{"gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"} {
+		if _, found := catalogEntry(t, model); !found {
+			t.Errorf("%s is not in this catalog — the premise of this test", model)
+			continue
+		}
+		got := gollm.NormalizeReasoningEffort(providerName, "",
+			gollm.ChatRequest{Model: model, ReasoningEffort: gollm.ReasoningEffortHigh})
+		if got.ReasoningEffort != gollm.ReasoningEffortDefault {
+			t.Errorf("%s: effort = %q, want it dropped — the model rejects the field", model, got.ReasoningEffort)
+		}
 	}
 }
 
@@ -53,4 +55,22 @@ func catalogEntry(t *testing.T, model string) (gollm.ModelEntry, bool) {
 		t.Fatalf("provider %q is not registered", providerName)
 	}
 	return meta.FindModel(model)
+}
+
+// OpenAI's own reasoning families accept reasoning_effort, so the newly wired
+// setting must reach them. They do not set Reasoning in this catalog — most
+// rows never do — which is exactly why a missing flag cannot be read as a
+// rejection.
+func TestNativeReasoningModelsKeepTheirEffort(t *testing.T) {
+	for _, model := range []string{"o3", "o4-mini", "gpt-5", "gpt-5-mini", "gpt-5-nano"} {
+		if _, found := catalogEntry(t, model); !found {
+			t.Errorf("%s is not in this catalog — the premise of this test", model)
+			continue
+		}
+		got := gollm.NormalizeReasoningEffort(providerName, "",
+			gollm.ChatRequest{Model: model, ReasoningEffort: gollm.ReasoningEffortHigh})
+		if got.ReasoningEffort != gollm.ReasoningEffortHigh {
+			t.Errorf("%s: effort = %q, want high — this model accepts the field", model, got.ReasoningEffort)
+		}
+	}
 }

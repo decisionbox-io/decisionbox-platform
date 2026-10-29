@@ -218,18 +218,17 @@ type ModelEntry struct {
 	// the blurb generator accepts the model. Meaningful only with Reasoning.
 	AdaptiveThinking bool
 
-	// ReasoningUnknown declares that this row cannot answer whether the model
-	// reasons, so Reasoning:false on it means "no answer" rather than "does
-	// not reason".
+	// RejectsReasoningEffort declares that the model returns an error for a
+	// reasoning_effort / effort field, so callers must not send one.
 	//
-	// It is for rows that stand in for a target resolved elsewhere — a
-	// managed gateway's alias, whose backend model is chosen per
-	// organisation. Such a row exists to carry token limits and a pricing
-	// estimate, which hold whatever it routes to; reasoning does not. Without
-	// this, a placeholder's silence reads as a denial, and anything deciding
-	// whether to send a reasoning-only field drops it for a model that very
-	// much reasons.
-	ReasoningUnknown bool
+	// Stated positively, like RejectsForcedToolChoice, because the absence of
+	// Reasoning:true is not evidence of rejection. Most rows simply never set
+	// Reasoning — and the rows that stand in for a target resolved elsewhere
+	// (a managed gateway's alias, whose backend is chosen per organisation)
+	// could not answer even if they wanted to. Reading that silence as a
+	// denial strips the field from models that accept it, which is both a
+	// silent quality regression and impossible to notice from the outside.
+	RejectsReasoningEffort bool
 }
 
 // matches reports whether id resolves to this entry. Exact,

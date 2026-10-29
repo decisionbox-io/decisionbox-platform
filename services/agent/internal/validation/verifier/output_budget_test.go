@@ -437,3 +437,36 @@ func TestTruncationSaysSoWhenTheModelCapBinds(t *testing.T) {
 		}
 	}
 }
+
+// Several constraints can land on the same number, and then the remedy has to
+// name the one that is hardest to move: raising an easier one is clamped
+// straight back by the harder one, so the operator deploys, sees no change,
+// and stops trusting the message.
+func TestTiedConstraintsResolveToTheHardestOne(t *testing.T) {
+	// Operator value == model cap: raising VALIDATION_*_MAX_OUTPUT is clamped
+	// back to the model, so the model is what binds.
+	cfg := DefaultConfig()
+	cfg.Refuter.MaxOutputTokens = 1024
+	cfg.ApplyModelOutputCaps(0, 1024)
+	if cfg.Refuter.OutputBound != OutputBoundByModel {
+		t.Errorf("operator value tied with the model cap: bound = %d, want model-bound", cfg.Refuter.OutputBound)
+	}
+
+	// Envelope share == model cap: raising TokenCap grows the share, but the
+	// model cap then binds, so again the model is the honest answer.
+	cfg = DefaultConfig()
+	share := cfg.Refuter.TokenCap / validationOutputShare
+	cfg.ApplyModelOutputCaps(0, share)
+	if cfg.Refuter.OutputBound != OutputBoundByModel {
+		t.Errorf("envelope share tied with the model cap (%d): bound = %d, want model-bound",
+			share, cfg.Refuter.OutputBound)
+	}
+
+	// No tie: the operator's value is below both, and raising it works.
+	cfg = DefaultConfig()
+	cfg.Refuter.MaxOutputTokens = 1200
+	cfg.ApplyModelOutputCaps(0, 128000)
+	if cfg.Refuter.OutputBound != OutputBoundByOperator {
+		t.Errorf("untied operator value: bound = %d, want operator-bound", cfg.Refuter.OutputBound)
+	}
+}

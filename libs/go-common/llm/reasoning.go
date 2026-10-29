@@ -81,18 +81,23 @@ func deploymentReasoningEffort() string {
 	}
 }
 
-// NormalizeReasoningEffort clears ChatRequest.ReasoningEffort when the catalog
-// positively knows the model does not take one. Providers speaking a wire that
-// carries the field call it before serialising.
+// NormalizeReasoningEffort clears ChatRequest.ReasoningEffort for a model the
+// catalog declares rejects one (ModelEntry.RejectsReasoningEffort). Providers
+// speaking a wire that carries the field call it before serialising.
 //
-// The asymmetry is deliberate. A model that predates the field rejects the
-// whole request, so forwarding an effort to a KNOWN non-reasoning model turns
-// a quality setting into a 400 on a request that used to work. But a reasoning
-// model behind a managed gateway is invisible to the catalog — the alias hides
-// it — so dropping the field whenever the catalog cannot answer is exactly how
-// an operator's override silently loses to the gateway's own default. An
-// unknown model is therefore left alone: it is the one case where the caller
-// knows more about the target than the catalog does.
+// The gate is an explicit declaration, not the absence of Reasoning:true.
+// Treating that absence as a denial was wrong twice over: most catalog rows
+// never set Reasoning at all — including OpenAI's own o-series and GPT-5,
+// which accept the field — and the rows standing in for a managed gateway's
+// alias cannot answer, because which backend the alias routes to is decided
+// per organisation. Both read as "does not reason", and both had the effort
+// stripped one line before the wire, silently.
+//
+// So the default is to send what the caller asked for. A caller that set an
+// effort did so because the layer's own resolution — the operator's toggle,
+// the catalog, or live model metadata — said the target reasons, and that is
+// better information than a catalog default.
+//
 // fallbackModel is the model the provider will send when the request names
 // none, so callers pass exactly what they pass to their request builder and
 // the decision is made about the model that actually goes on the wire.
@@ -101,29 +106,23 @@ func NormalizeReasoningEffort(providerName, fallbackModel string, req ChatReques
 	if model == "" {
 		model = fallbackModel
 	}
-	if known, reasoning := catalogReasoning(providerName, model); known && !reasoning {
+	if RejectsReasoningEffort(providerName, model) {
 		req.ReasoningEffort = ReasoningEffortDefault
 	}
 	return req
 }
 
-// catalogReasoning reports what the catalog says about a model's reasoning,
-// and whether it knows the model at all. IsReasoningModel collapses "known
-// and not reasoning" with "never heard of it", which are opposite signals for
-// anything deciding whether to send a reasoning-only field.
-func catalogReasoning(providerName, model string) (known, reasoning bool) {
+// RejectsReasoningEffort reports whether the catalog row for (provider, model)
+// declares that the model errors on a reasoning-effort field. False for a
+// model the catalog does not know — see NormalizeReasoningEffort for why
+// silence is not a denial.
+func RejectsReasoningEffort(providerName, model string) bool {
 	providersMu.RLock()
 	meta, ok := providerMeta[providerName]
 	providersMu.RUnlock()
 	if !ok {
-		return false, false
+		return false
 	}
 	e, found := meta.FindModel(model)
-	if !found || e.ReasoningUnknown {
-		// Not catalogued, or catalogued by a row that stands in for a target
-		// resolved elsewhere. Either way the catalog has no answer, and the
-		// caller's is better.
-		return false, false
-	}
-	return true, e.Reasoning
+	return found && e.RejectsReasoningEffort
 }

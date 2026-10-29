@@ -24,28 +24,6 @@ func registerReasoningCatalog(t *testing.T) {
 	})
 }
 
-// A model the catalog KNOWS is not a reasoning model must not be sent an
-// effort: those reject the field outright, which turns a quality setting into
-// a 400 on a request that used to work.
-func TestNormalizeReasoningEffortDropsItForAKnownNonReasoningModel(t *testing.T) {
-	registerReasoningCatalog(t)
-	got := NormalizeReasoningEffort(reasoningCatalogProvider, "",
-		ChatRequest{Model: "plain-model", ReasoningEffort: ReasoningEffortHigh})
-	if got.ReasoningEffort != ReasoningEffortDefault {
-		t.Errorf("effort = %q, want it dropped for a known non-reasoning model", got.ReasoningEffort)
-	}
-}
-
-// A model the catalog knows DOES reason keeps what the caller asked for.
-func TestNormalizeReasoningEffortKeepsItForAReasoningModel(t *testing.T) {
-	registerReasoningCatalog(t)
-	got := NormalizeReasoningEffort(reasoningCatalogProvider, "",
-		ChatRequest{Model: "thinking-model", ReasoningEffort: ReasoningEffortHigh})
-	if got.ReasoningEffort != ReasoningEffortHigh {
-		t.Errorf("effort = %q, want high", got.ReasoningEffort)
-	}
-}
-
 // An UNKNOWN model keeps it. This is the case that matters behind a managed
 // gateway: the alias hides a reasoning model the catalog cannot see through,
 // and dropping the field whenever the catalog cannot answer is exactly how an
@@ -68,8 +46,8 @@ func TestNormalizeReasoningEffortKeepsItForAnUnknownModel(t *testing.T) {
 // The decision is made about the model that actually goes on the wire: the
 // request's when it names one, the provider's fallback otherwise.
 func TestNormalizeReasoningEffortUsesTheEffectiveModel(t *testing.T) {
-	registerReasoningCatalog(t)
-	got := NormalizeReasoningEffort(reasoningCatalogProvider, "plain-model",
+	registerRejectCatalog(t)
+	got := NormalizeReasoningEffort(rejectCatalogProvider, "legacy-chat",
 		ChatRequest{ReasoningEffort: ReasoningEffortHigh})
 	if got.ReasoningEffort != ReasoningEffortDefault {
 		t.Errorf("effort = %q, want it dropped — the fallback model is the one being sent", got.ReasoningEffort)
@@ -88,4 +66,47 @@ func TestResolveReasoningEffortTurnsTheSentinelIntoALevel(t *testing.T) {
 	if got := ResolveReasoningEffort(ReasoningEffortHigh); got != ReasoningEffortHigh {
 		t.Errorf("an explicit level must survive, got %q", got)
 	}
+}
+
+// Silence is not a denial. Most catalog rows never set Reasoning — OpenAI's
+// own o-series and GPT-5 among them — so a model that merely fails to claim
+// reasoning must still receive the effort the caller asked for. Reading that
+// silence as a rejection stripped the field from models that accept it, with
+// nothing visible but a worse answer.
+func TestNormalizeReasoningEffortKeepsItForAModelThatSimplyDoesNotClaimReasoning(t *testing.T) {
+	registerReasoningCatalog(t)
+	got := NormalizeReasoningEffort(reasoningCatalogProvider, "",
+		ChatRequest{Model: "plain-model", ReasoningEffort: ReasoningEffortHigh})
+	if got.ReasoningEffort != ReasoningEffortHigh {
+		t.Errorf("effort = %q, want it kept — the row does not declare a rejection", got.ReasoningEffort)
+	}
+}
+
+// Only an explicit declaration drops it.
+func TestNormalizeReasoningEffortDropsItForADeclaredRejecter(t *testing.T) {
+	registerRejectCatalog(t)
+	got := NormalizeReasoningEffort(rejectCatalogProvider, "",
+		ChatRequest{Model: "legacy-chat", ReasoningEffort: ReasoningEffortHigh})
+	if got.ReasoningEffort != ReasoningEffortDefault {
+		t.Errorf("effort = %q, want it dropped for a declared rejecter", got.ReasoningEffort)
+	}
+}
+
+var onceRejectCatalog sync.Once
+
+const rejectCatalogProvider = "test-reject-effort"
+
+// registerRejectCatalog registers a provider with one row that declares it
+// rejects a reasoning-effort field — the only thing that drops the effort now.
+func registerRejectCatalog(t *testing.T) {
+	t.Helper()
+	onceRejectCatalog.Do(func() {
+		RegisterWithMeta(rejectCatalogProvider, mockFactory, ProviderMeta{
+			Name: "Reject-effort test",
+			Models: []ModelEntry{
+				{ID: "legacy-chat", Wire: WireOpenAICompat, MaxOutputTokens: 4096, MaxInputTokens: 128000,
+					RejectsReasoningEffort: true},
+			},
+		})
+	})
 }

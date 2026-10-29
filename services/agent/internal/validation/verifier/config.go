@@ -191,25 +191,26 @@ func (c *Config) ApplyModelOutputCaps(verifierModelCap, refuterModelCap int) {
 	c.outputResolved = true
 }
 
-// outputConstraintFor reports which of the three candidates actually set the
-// mode's ceiling, so a truncation message names something that can move it.
+// outputConstraintFor reports which of the three candidates set the mode's
+// ceiling, so a truncation message names something that can actually move it.
 //
-// Checked envelope-first: the share is applied last in the resolution, so
-// whenever it is the binding one it is the only thing that matters — raising
-// either of the others would be re-clamped to the same number.
+// Several candidates can sit on the same number, and then the order matters:
+// raising an easier one is clamped straight back by a harder one, which is the
+// message that costs an operator a deploy and teaches them to distrust the
+// diagnosis. So ties resolve toward the constraint that is hardest to move —
+// the model first (no validation setting raises it), then the envelope (only
+// TokenCap), then the operator's own value.
 func outputConstraintFor(m ModeConfig, modelCap, operatorValue int) OutputConstraint {
-	if share := m.TokenCap / validationOutputShare; share > 0 && m.MaxOutputTokens >= share {
+	switch {
+	case modelCap > 0 && m.MaxOutputTokens == modelCap:
+		return OutputBoundByModel
+	case m.TokenCap/validationOutputShare > 0 && m.MaxOutputTokens == m.TokenCap/validationOutputShare:
 		return OutputBoundByEnvelope
-	}
-	if operatorValue > 0 && m.MaxOutputTokens == operatorValue {
+	default:
+		// The operator's value, or — when neither they nor the model could
+		// answer — the documented fallback, which the output knob replaces.
 		return OutputBoundByOperator
 	}
-	if modelCap > 0 && m.MaxOutputTokens == modelCap {
-		return OutputBoundByModel
-	}
-	// Neither the model nor the operator could answer, so the ceiling is the
-	// documented fallback — which the output knob replaces.
-	return OutputBoundByOperator
 }
 
 // resolveModeOutputTokens implements ApplyModelOutputCaps for one mode.
