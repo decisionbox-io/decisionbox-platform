@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -94,15 +95,19 @@ func doneArea(id string, insights int, at time.Time) models.AnalysisStep {
 		TokensOut: 200,
 	}
 	for i := 0; i < insights; i++ {
+		// A distinct id per insight, as parseInsights produces: it mints a
+		// UUID for each. A fixture that reused one id would make the
+		// remint's old→new mapping look ambiguous when it is not.
+		insightID := fmt.Sprintf("%s-insight-%d", id, i)
 		step.Insights = append(step.Insights, models.Insight{
-			ID:           id + "-insight",
+			ID:           insightID,
 			AnalysisArea: id,
 			Name:         "Finding in " + id,
 			Severity:     "high",
 			DiscoveredAt: at.Add(time.Second),
 		})
 		step.ValidationResults = append(step.ValidationResults, models.ValidationResult{
-			InsightID:     id + "-insight",
+			InsightID:     insightID,
 			AnalysisArea:  id,
 			ClaimedMetric: "Finding in " + id,
 			ClaimedCount:  10,
@@ -775,13 +780,102 @@ func TestRestoreArea_MergesTheUnionThePipelineReadsDownstream(t *testing.T) {
 	if len(insights) != 3 {
 		t.Fatalf("got %d insights, want 3 (1 run here + 2 restored)", len(insights))
 	}
-	if insights[1].ID != "churn-insight" {
-		t.Errorf("restored insight id = %q; Phase 5 resolves related_insight_ids against it", insights[1].ID)
+	// The id is REMINTED, not carried over — see reidentifyRestoredArea. What
+	// has to hold is that the insight is internally consistent under its new
+	// id, which is what Phase 5's related_insight_ids resolve against.
+	if insights[1].ID == "" || insights[1].ID == "churn-insight" {
+		t.Errorf("restored insight id = %q, want a fresh one", insights[1].ID)
+	}
+	if log[1].Insights[0].ID != insights[1].ID {
+		t.Errorf("the analysis log's insight (%q) and the run's insight list (%q) must agree on the id",
+			log[1].Insights[0].ID, insights[1].ID)
+	}
+	if log[1].ValidationResults[0].InsightID != insights[1].ID {
+		t.Errorf("validation result points at %q, want the reminted %q — a dangling InsightID would orphan the evidence",
+			log[1].ValidationResults[0].InsightID, insights[1].ID)
 	}
 	// The budget itself is seeded before the loop rather than accumulated
 	// here — see TestRestoredValidationBudget_IsSeededBeforeAnyAreaRuns.
 	if got := restoredValidationBudget(map[string]models.AnalysisAreaCheckpoint{"churn": restored}); got != 2 {
 		t.Errorf("restored budget = %d, want 2", got)
+	}
+}
+
+// TestReidentifyRestoredArea_GivesTheInsightsFreshIdentitiesAndKeepsThemConsistent
+// is the regression test for three separate failures that all came from one
+// cause: an insight id surviving into a second attempt.
+//
+// The id keys the embedded insight, the standalone row and the Qdrant point,
+// all written by the tail as this attempt's own. A carried-over id may
+// already be in those collections from the attempt that produced the area,
+// which made the standalone insert a duplicate-key error (and that phase is
+// non-fatal, so it logged, returned, and skipped the recommendation rows and
+// the embedding too), made the pre-upsert duplicate check match the surviving
+// point and mark the insight a duplicate of itself, and let a superseded
+// attempt still persisting write the shared ids back under its own discovery.
+func TestReidentifyRestoredArea_GivesTheInsightsFreshIdentitiesAndKeepsThemConsistent(t *testing.T) {
+	stored := doneArea("churn", 2, time.Now())
+	stored.Insights[0].ID = "old-a"
+	stored.Insights[1].ID = "old-b"
+	stored.ValidationResults[0].InsightID = "old-a"
+	stored.ValidationResults[1].InsightID = "old-b"
+
+	got := reidentifyRestoredArea(stored)
+
+	if len(got.Insights) != 2 || len(got.ValidationResults) != 2 {
+		t.Fatalf("got %d insights / %d results, want 2 / 2", len(got.Insights), len(got.ValidationResults))
+	}
+	seen := map[string]bool{}
+	for i, ins := range got.Insights {
+		if ins.ID == "" {
+			t.Fatalf("insight %d has no id", i)
+		}
+		if ins.ID == "old-a" || ins.ID == "old-b" {
+			t.Errorf("insight %d kept its old id %q; the tail writes it as this attempt's own", i, ins.ID)
+		}
+		if seen[ins.ID] {
+			t.Errorf("insight %d reuses id %q — two insights sharing an id would collide in the standalone write", i, ins.ID)
+		}
+		seen[ins.ID] = true
+		// And the remint must not disturb anything else about the finding.
+		if ins.Name == "" || ins.Severity == "" || ins.AnalysisArea != "churn" {
+			t.Errorf("insight %d lost content in the remint: %+v", i, ins)
+		}
+	}
+	// Each result must follow its own insight, in order.
+	for i, vr := range got.ValidationResults {
+		if vr.InsightID != got.Insights[i].ID {
+			t.Errorf("validation result %d points at %q, want %q", i, vr.InsightID, got.Insights[i].ID)
+		}
+	}
+
+	// The CHECKPOINT keeps its own ids: a later attempt remints from the same
+	// baseline, and the live-feed replay has already read these slices.
+	if stored.Insights[0].ID != "old-a" || stored.ValidationResults[0].InsightID != "old-a" {
+		t.Error("the stored step was mutated in place; the checkpoint's own ids must survive the remint")
+	}
+}
+
+// TestReidentifyRestoredArea_EmptyAndUnmatchedCases — an area that produced no
+// insights needs no remint, and a validation result whose insight is gone must
+// be left alone rather than pointed at an unrelated finding.
+func TestReidentifyRestoredArea_EmptyAndUnmatchedCases(t *testing.T) {
+	empty := doneArea("levels", 0, time.Now())
+	if got := reidentifyRestoredArea(empty); len(got.Insights) != 0 {
+		t.Errorf("got %d insights for an empty area", len(got.Insights))
+	}
+
+	orphaned := doneArea("churn", 1, time.Now())
+	orphaned.ValidationResults = append(orphaned.ValidationResults, models.ValidationResult{
+		InsightID: "an-insight-this-area-no-longer-has",
+	})
+	got := reidentifyRestoredArea(orphaned)
+	if got.ValidationResults[1].InsightID != "an-insight-this-area-no-longer-has" {
+		t.Errorf("an unmatched InsightID was rewritten to %q; it must be left as it was rather than re-pointed at some other finding",
+			got.ValidationResults[1].InsightID)
+	}
+	if got.ValidationResults[0].InsightID != got.Insights[0].ID {
+		t.Error("the matched result must still follow its insight")
 	}
 }
 

@@ -85,6 +85,12 @@ func TestInteg_ProjectRepo_DeleteCascade(t *testing.T) {
 				doc["run_id"] = "run-" + projID
 				doc["step_number"] = 1
 			}
+			// Same disambiguation for the per-area analysis checkpoints,
+			// whose unique index is (run_id, area_id).
+			if name == gomongo.CollectionDiscoveryAnalysisCheckpoints {
+				doc["run_id"] = "run-" + projID
+				doc["area_id"] = "churn"
+			}
 			if _, err := col.InsertOne(ctx, doc); err != nil {
 				t.Fatalf("seed %s for %s: %v", name, projID, err)
 			}

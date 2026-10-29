@@ -326,6 +326,8 @@ Not the same thing as `discovery_analysis_steps`, which is the tail-written audi
 | `created_at` | timestamp | TTL anchor |
 | *(inline)* | AnalysisStep | The area itself — prompt, response, token counts, picker telemetry, its insights with their validation verdicts and evidence-quality labels, and its validation results. Nothing is stripped: an area's size is already bounded by the picker's token budget, and this is the same payload Phase 7 writes to `discovery_analysis_steps` |
 
+The stored insight ids are the ones the attempt that produced the area assigned, and a resumed run does **not** reuse them: it mints fresh ids as it merges the area back in, and re-points the area's validation results at them. An insight id keys the embedded insight, the standalone row and the Qdrant point, so an id carried across attempts would collide with what the previous attempt had already written — see [Discovery lifecycle](../concepts/discovery-lifecycle.md#phase-7-save) for the three failures that follow.
+
 Indexes: `(run_id, area_id)` unique — which makes re-analysing an area a replace rather than a duplicate — and a `created_at` TTL named `ttl_discovery_analysis_checkpoint`.
 
 The inlined `AnalysisStep` supplies `area_id`, so there is no separate field for it; the key half of the unique index comes from the step itself.
