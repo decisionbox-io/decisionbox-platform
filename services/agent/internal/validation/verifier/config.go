@@ -183,6 +183,15 @@ func (c *Config) ApplyModelOutputCaps(verifierModelCap, refuterModelCap int) {
 	// floor must not be asked for the floor.
 	c.Verifier.MinOutputTokens = minInt(fallbackVerifierOutputTokens, c.Verifier.MaxOutputTokens)
 	c.Refuter.MinOutputTokens = minInt(fallbackRefuterOutputTokens, c.Refuter.MaxOutputTokens)
+	c.Verifier.OutputBoundByEnvelope = envelopeBoundOutput(c.Verifier)
+	c.Refuter.OutputBoundByEnvelope = envelopeBoundOutput(c.Refuter)
+}
+
+// envelopeBoundOutput reports whether the envelope share is what set the
+// mode's ceiling, so a truncation message can name the knob that will move it.
+func envelopeBoundOutput(m ModeConfig) bool {
+	share := m.TokenCap / validationOutputShare
+	return share > 0 && m.MaxOutputTokens >= share
 }
 
 // resolveModeOutputTokens implements ApplyModelOutputCaps for one mode.

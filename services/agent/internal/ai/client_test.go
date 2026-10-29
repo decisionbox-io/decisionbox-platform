@@ -64,14 +64,19 @@ func TestSetReasoning(t *testing.T) {
 		t.Errorf("default ReasoningEffort = %q, want %q", got, gollm.ReasoningEffortDefault)
 	}
 
-	// Enabled → every request carries ReasoningEffort=on (providers that don't
-	// wire reasoning ignore it; Ollama capability-gates it).
+	// Enabled → every request carries a CONCRETE level, not the "on"
+	// sentinel. "on" means "reason, I don't mind how much" and each provider
+	// resolves it for itself, but the OpenAI-compatible wire cannot express it
+	// and omits the field — so behind a managed gateway the deployment's
+	// effort never left this process and the gateway applied its own default.
+	// A named level travels. Providers whose models do not take one drop it
+	// (gollm.NormalizeReasoningEffort).
 	client.SetReasoning(true)
 	if _, err := client.Chat(context.Background(), "p", "", 100); err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
-	if got := provider.Calls[1].Request.ReasoningEffort; got != gollm.ReasoningEffortOn {
-		t.Errorf("enabled ReasoningEffort = %q, want %q", got, gollm.ReasoningEffortOn)
+	if got := provider.Calls[1].Request.ReasoningEffort; got != gollm.DefaultReasoningEffort {
+		t.Errorf("enabled ReasoningEffort = %q, want the deployment default %q", got, gollm.DefaultReasoningEffort)
 	}
 
 	// Toggling back off returns to the default.
@@ -81,6 +86,21 @@ func TestSetReasoning(t *testing.T) {
 	}
 	if got := provider.Calls[2].Request.ReasoningEffort; got != gollm.ReasoningEffortDefault {
 		t.Errorf("re-disabled ReasoningEffort = %q, want %q", got, gollm.ReasoningEffortDefault)
+	}
+}
+
+// The deployment override has to reach the request, or an operator lowering it
+// to cut cost keeps paying for the default with nothing to explain why.
+func TestSetReasoningCarriesTheDeploymentOverride(t *testing.T) {
+	t.Setenv(gollm.ReasoningEffortEnvVar, "low")
+	provider := testutil.NewMockLLMProvider()
+	client, _ := New(provider, "test-model")
+	client.SetReasoning(true)
+	if _, err := client.Chat(context.Background(), "p", "", 100); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if got := provider.Calls[0].Request.ReasoningEffort; got != gollm.ReasoningEffortLow {
+		t.Errorf("ReasoningEffort = %q, want the operator's low", got)
 	}
 }
 

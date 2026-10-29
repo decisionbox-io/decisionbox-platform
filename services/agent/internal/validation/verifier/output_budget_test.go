@@ -336,3 +336,58 @@ func TestForcedFinalSpendsTheRemainingEnvelope(t *testing.T) {
 		t.Errorf("forced final asked for %d tokens, above its own envelope %d", llm.maxSeen[0], cfg.Refuter.TokenCap)
 	}
 }
+
+// When the ENVELOPE is what caps the verdict, the message must name the
+// envelope knob. Pointing an operator at VALIDATION_*_MAX_OUTPUT there sends
+// them to a knob that cannot move the number — the resolution re-applies the
+// envelope share — so they would raise it, see no change, and conclude the
+// diagnosis was wrong.
+func TestTruncationNamesTheEnvelopeKnobWhenTheEnvelopeBinds(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Refuter.MaxRounds = 1
+	cfg.ApplyModelOutputCaps(0, 128000) // the model allows far more than the envelope
+	if !cfg.Refuter.OutputBoundByEnvelope {
+		t.Fatalf("premise: the envelope should be the binding constraint, ceiling=%d cap=%d",
+			cfg.Refuter.MaxOutputTokens, cfg.Refuter.TokenCap)
+	}
+
+	cut := `{"submit_verdict": {"doc_id": "d1", "claim_verd`
+	llm := &stubBudgetLLM{scripted: []scriptedReply{
+		{content: cut, stopReason: "max_tokens", tokensOut: cfg.Refuter.MaxOutputTokens},
+		{content: cut, stopReason: "max_tokens", tokensOut: cfg.Refuter.MaxOutputTokens},
+	}}
+	a, _ := NewAgent(llm, cfg)
+	v, err := a.Refute(context.Background(), minimalBundle(), &stubExecutor{})
+	if err != nil {
+		t.Fatalf("Refute: %v", err)
+	}
+	if !strings.Contains(v.OverallReason, EnvRefuterTokenCap) {
+		t.Errorf("reason does not name the envelope knob %s: %q", EnvRefuterTokenCap, v.OverallReason)
+	}
+	if strings.Contains(v.OverallReason, EnvRefuterOutput) {
+		t.Errorf("reason names the output knob, which cannot move this number: %q", v.OverallReason)
+	}
+}
+
+// When the operator's own value is what caps the verdict, the output knob IS
+// the one to name — raising the envelope would not help.
+func TestTruncationNamesTheOutputKnobWhenTheOperatorValueBinds(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Refuter.MaxRounds = 1
+	cfg.Refuter.MaxOutputTokens = 1500 // well under the envelope share
+	cfg.ApplyModelOutputCaps(0, 128000)
+	if cfg.Refuter.OutputBoundByEnvelope {
+		t.Fatalf("premise: the operator value should bind, got ceiling=%d", cfg.Refuter.MaxOutputTokens)
+	}
+
+	cut := `{"submit_verdict": {"doc_id": "d1", "claim_verd`
+	llm := &stubBudgetLLM{scripted: []scriptedReply{
+		{content: cut, stopReason: "max_tokens", tokensOut: cfg.Refuter.MaxOutputTokens},
+		{content: cut, stopReason: "max_tokens", tokensOut: cfg.Refuter.MaxOutputTokens},
+	}}
+	a, _ := NewAgent(llm, cfg)
+	v, _ := a.Refute(context.Background(), minimalBundle(), &stubExecutor{})
+	if !strings.Contains(v.OverallReason, EnvRefuterOutput) {
+		t.Errorf("reason does not name the output knob %s: %q", EnvRefuterOutput, v.OverallReason)
+	}
+}

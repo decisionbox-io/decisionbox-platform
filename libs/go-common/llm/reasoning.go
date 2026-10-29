@@ -80,3 +80,47 @@ func deploymentReasoningEffort() string {
 		return DefaultReasoningEffort
 	}
 }
+
+// NormalizeReasoningEffort clears ChatRequest.ReasoningEffort when the catalog
+// positively knows the model does not take one. Providers speaking a wire that
+// carries the field call it before serialising.
+//
+// The asymmetry is deliberate. A model that predates the field rejects the
+// whole request, so forwarding an effort to a KNOWN non-reasoning model turns
+// a quality setting into a 400 on a request that used to work. But a reasoning
+// model behind a managed gateway is invisible to the catalog — the alias hides
+// it — so dropping the field whenever the catalog cannot answer is exactly how
+// an operator's override silently loses to the gateway's own default. An
+// unknown model is therefore left alone: it is the one case where the caller
+// knows more about the target than the catalog does.
+// fallbackModel is the model the provider will send when the request names
+// none, so callers pass exactly what they pass to their request builder and
+// the decision is made about the model that actually goes on the wire.
+func NormalizeReasoningEffort(providerName, fallbackModel string, req ChatRequest) ChatRequest {
+	model := req.Model
+	if model == "" {
+		model = fallbackModel
+	}
+	if known, reasoning := catalogReasoning(providerName, model); known && !reasoning {
+		req.ReasoningEffort = ReasoningEffortDefault
+	}
+	return req
+}
+
+// catalogReasoning reports what the catalog says about a model's reasoning,
+// and whether it knows the model at all. IsReasoningModel collapses "known
+// and not reasoning" with "never heard of it", which are opposite signals for
+// anything deciding whether to send a reasoning-only field.
+func catalogReasoning(providerName, model string) (known, reasoning bool) {
+	providersMu.RLock()
+	meta, ok := providerMeta[providerName]
+	providersMu.RUnlock()
+	if !ok {
+		return false, false
+	}
+	e, found := meta.FindModel(model)
+	if !found {
+		return false, false
+	}
+	return true, e.Reasoning
+}

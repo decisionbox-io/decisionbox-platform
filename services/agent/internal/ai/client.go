@@ -170,12 +170,18 @@ func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, sy
 	}
 
 	// Reasoning is opt-in: default leaves ReasoningEffortDefault (""), which
-	// every provider ignores (byte-identical to today). When the operator
-	// enabled reasoning, request it explicitly — only Ollama acts on it, and
-	// only after confirming the model supports thinking.
+	// every provider ignores.
+	//
+	// When this layer's model does reason, resolve the effort to a CONCRETE
+	// level here rather than sending the "on" sentinel. "on" means "reason, I
+	// don't mind how much", which each provider resolves for itself — but the
+	// OpenAI-compatible wire has no way to express it and omits the field, so
+	// behind a managed gateway the deployment's override never left this
+	// process and the gateway applied its own default instead. A named level
+	// travels.
 	reasoningEffort := gollm.ReasoningEffortDefault
 	if c.reasoning {
-		reasoningEffort = gollm.ReasoningEffortOn
+		reasoningEffort = gollm.ResolveReasoningEffort(gollm.ReasoningEffortOn)
 	}
 
 	req := gollm.ChatRequest{
