@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"strings"
 	"time"
 
@@ -84,12 +85,23 @@ type uncertaintyItem struct {
 // is logged and swallowed — the run has already succeeded. Gated by the
 // deployment flag (Layer A) and the per-project toggle (Layer B); short-circuits
 // with no LLM call when nothing was genuinely uncertain.
+// QuestionsAvailable reports Layer A of the gate: whether this DEPLOYMENT
+// offers the clarifying-questions phase at all.
+//
+// Exported because the caller that builds the per-layer LLM set has to make
+// the same decision before it builds a provider — a layer whose phase will
+// not run is a credential read and a connection that can only fail work
+// nothing was waiting for.
+func QuestionsAvailable() bool {
+	return goconfig.GetEnvAsBool(discoveryQuestionsEnabledEnv, true)
+}
+
 func (o *Orchestrator) RunPhaseQuestions(ctx context.Context, result *models.DiscoveryResult) {
 	o.setLLMPhase(models.PhaseQuestions)
 	if !o.clarifyingQuestionsEnabled {
 		return // Layer B: per-project Settings toggle is off.
 	}
-	if !goconfig.GetEnvAsBool(discoveryQuestionsEnabledEnv, true) {
+	if !QuestionsAvailable() {
 		return // Layer A: feature not available on this deployment.
 	}
 	if o.aiClient == nil || o.questionRepo == nil || result == nil {
@@ -185,7 +197,7 @@ func (o *Orchestrator) generateQuestions(ctx context.Context, items []uncertaint
 	// ambiguities (the answer is now in the KB).
 	prompt = o.injectKnowledgeSources(ctx, prompt, "clarifying questions about "+strings.Join(o.datasets, ", "), knowledgeTopKRecommendations)
 
-	window, modelOutputCap := o.resolveModelBudget()
+	window, modelOutputCap := o.budgetFor(llmlayer.LayerQuestions)
 	// Default to the model's own cap, mirroring the analysis/recommendation
 	// paths; DISCOVERY_QUESTIONS_MAX_OUTPUT stays available as an operator
 	// override and is never allowed above what the model itself accepts (a
@@ -194,7 +206,7 @@ func (o *Orchestrator) generateQuestions(ctx context.Context, items []uncertaint
 	maxTokens := budgetedMaxOutputTokens(window, approxTokens(ctx, prompt), outputCap, analysisMinOutputTokens())
 
 	format := questionsResponseFormat()
-	if o.aiClient.SupportsStructuredOutput() {
+	if o.ai(llmlayer.LayerQuestions).SupportsStructuredOutput() {
 		applog.Info("Clarifying-question generation using schema-constrained output")
 	}
 
@@ -211,7 +223,7 @@ func (o *Orchestrator) generateQuestions(ctx context.Context, items []uncertaint
 			attemptPrompt = prompt + questionsRepairSuffix(lastErr)
 			applog.WithField("attempt", attempt).Warn("Re-prompting for clarifying questions after an unusable response")
 		}
-		chatResult, err := o.aiClient.ChatWithFormat(ctx, attemptPrompt, "", maxTokens, format)
+		chatResult, err := o.ai(llmlayer.LayerQuestions).ChatWithFormat(ctx, attemptPrompt, "", maxTokens, format)
 		if err != nil {
 			return nil, fmt.Errorf("questions llm call: %w", err)
 		}

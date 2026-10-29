@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"sort"
 	"strings"
 
@@ -118,7 +119,7 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 	items := o.runCatalogItems()
 	prompt := o.buildReflectionPrompt(result, prior, tasks, pol, items, demandPriorRejudgement, hasFindingIDs)
 
-	window, modelOutputCap := o.resolveModelBudget()
+	window, modelOutputCap := o.budgetFor(llmlayer.LayerReflection)
 	// Default to the model's own cap, mirroring the analysis and recommendation
 	// paths; DISCOVERY_REFLECTION_MAX_OUTPUT stays available as an operator
 	// override. The response is bounded by the prompt caps
@@ -130,7 +131,7 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 	maxTokens := budgetedMaxOutputTokens(window, approxTokens(ctx, prompt), outputCap, analysisMinOutputTokens())
 
 	format := reflectionResponseFormat(pol.EvolutionMode, demandPriorRejudgement, hasFindingIDs)
-	if o.aiClient.SupportsStructuredOutput() {
+	if o.ai(llmlayer.LayerReflection).SupportsStructuredOutput() {
 		applog.Info("Reflection generation using schema-constrained output")
 	}
 
@@ -146,7 +147,7 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 			attemptPrompt = prompt + reflectionRepairSuffix(lastErr, len(items) > 0)
 			applog.WithField("attempt", attempt).Warn("Re-prompting reflection after an unusable response")
 		}
-		chatResult, cerr := o.aiClient.ChatWithFormat(ctx, attemptPrompt, "", maxTokens, format)
+		chatResult, cerr := o.ai(llmlayer.LayerReflection).ChatWithFormat(ctx, attemptPrompt, "", maxTokens, format)
 		if cerr != nil {
 			return nil, fmt.Errorf("reflection llm call: %w", cerr)
 		}

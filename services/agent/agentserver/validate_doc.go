@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"time"
 
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
@@ -199,14 +200,28 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 	defer warehouseProvider.Close()
 	docWH, _ := project.WarehouseByID(docWHID)
 
-	llmProvider, err := initLLMProvider(ctx, cfg, project, secretProvider, project.ID)
+	// Read the validation configuration BEFORE the layer set, so a disabled
+	// refuter's provider is never built: building one reads a credential and
+	// opens a connection, and a broken refuter override used to abort a
+	// verifier-only validation that would never have called it. Discovery
+	// makes the same decision the same way.
+	vCfg, vCaps := verifier.LoadConfigFromEnv()
+
+	// The two validation layers (#407): the verifier and the refuter can run
+	// on different models, which is the pair where the choice matters most —
+	// swapping it changes what users see as verified.
+	layers, err := buildLayerSet(ctx, layerSetInput{
+		project:   project,
+		projectID: project.ID,
+		layers:    validationLayers(vCfg.RefuterEnabled),
+		deps:      newLayerSetDeps(cfg, secretProvider, project.ID, nil),
+	})
 	if err != nil {
 		return err
 	}
-	aiClient, err := ai.New(llmProvider, project.LLM.Model)
-	if err != nil {
-		return fmt.Errorf("init ai client: %w", err)
-	}
+	verifierLayer := layers.For(llmlayer.LayerValidationVerifier)
+	refuterLayer := layers.For(llmlayer.LayerValidationRefuter)
+	aiClient := verifierLayer.Client
 
 	// Schema provider for the verifier's lookup_schema tool is
 	// deliberately omitted in v1 of the manual-validation path: the
@@ -220,7 +235,16 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 	// a regression.
 	var schemaProvider ai.SchemaProvider
 
-	vCfg, vCaps := verifier.LoadConfigFromEnv()
+	// The deployment's validation output budget cannot exceed what each
+	// layer's own model accepts: a verifier capped at 1,024 tokens rejects
+	// the 4,000-token request outright, and a rejected call becomes an
+	// `unverifiable` verdict on a document that was fine. RunDiscovery
+	// clamps the same two numbers the same way.
+	vCfg.Verifier.MaxOutputTokens = clampLayerOutput(vCfg.Verifier.MaxOutputTokens, verifierLayer)
+	if vCfg.RefuterEnabled {
+		vCfg.Refuter.MaxOutputTokens = clampLayerOutput(vCfg.Refuter.MaxOutputTokens, refuterLayer)
+	}
+
 	stepByID := indexExplorationSteps(steps)
 
 	exec := &verifier.DefaultExecutor{
@@ -232,9 +256,11 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 	}
 
 	input := discovery.ValidateSingleDocInput{
-		AIClient: aiClient,
-		Cfg:      vCfg,
-		Caps:     vCaps,
+		AIClient:       aiClient,
+		VerifierClient: verifierLayer.Client,
+		RefuterClient:  refuterLayer.Client,
+		Cfg:            vCfg,
+		Caps:           vCaps,
 		WH: verifier.WarehouseInfo{
 			Dialect:     warehouseProvider.SQLDialect(),
 			Dataset:     warehouseProvider.GetDataset(),
@@ -451,3 +477,11 @@ func indexExplorationSteps(steps []models.ExplorationStep) map[int]*models.Explo
 	return out
 }
 
+// clampLayerOutput lowers a configured output budget to the layer model's
+// resolved ceiling, leaving it alone when the layer has none or accepts more.
+func clampLayerOutput(configured int, l *ai.LayerLLM) int {
+	if l == nil || l.OutputCap <= 0 || l.OutputCap >= configured {
+		return configured
+	}
+	return l.OutputCap
+}

@@ -282,7 +282,11 @@ Project configuration. Stored in `projects` collection.
 | `domain` | string | Domain (e.g., `gaming`, `social`) |
 | `category` | string | Category (e.g., `match3`, `idle`, `casual`, `content_sharing`) |
 | `warehouse` | WarehouseConfig | Data warehouse configuration |
-| `llm` | LLMConfig | LLM provider configuration |
+| `llm` | LLMConfig | **Legacy** single-provider LLM configuration. Still written, as the mirror of the `default` layer, so an agent image older than the API reads a truthful setup. Resolve the live value through `layer_models`. |
+| `blurb_llm` | LLMConfig | **Legacy** table-description override. The mirror of the `table_descriptions` layer, on the same terms. Cleared when that layer equals the default. |
+| `llm_providers` | LLMProviderEntry[] | The project's named LLM connections. Absent on a project that has never been configured for per-layer models — the accessors then synthesise a `default` entry from `llm` (and a `blurb` entry from `blurb_llm`) at read time, so no backfill is needed to READ an old document. |
+| `layer_models` | map[string]LayerModel | Which connection and model each layer uses, keyed by layer, plus the reserved `default` row every layer without one inherits. Non-empty means **authoritative**: `blurb_llm` is not consulted, so resetting a table-description override cannot rediscover the stale mirror. |
+| `llm_config_version` | int | The per-layer-configuration generation this project has been configured for. 0 (or absent) means never: discovery is refused and the dashboard sends the user to settings. |
 | `profile` | map | Domain-specific profile (from JSON Schema form) |
 | `prompts` | ProjectPrompts | Per-project prompt overrides |
 | `status` | string | Project status |
@@ -310,6 +314,28 @@ Project configuration. Stored in `projects` collection.
 | `provider` | string | Provider ID: `claude`, `openai`, `ollama`, `vertex-ai`, `bedrock` |
 | `model` | string | Model identifier (free text) |
 | `config` | map | Provider-specific key-value config (e.g., `project_id`, `location` for Vertex AI) |
+
+### LLMProviderEntry
+
+One named connection. `config` holds **connection** fields only; model-scoped
+settings live on the `LayerModel` that uses it.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Stable id within the project. The reserved `default` is the entry every layer inherits and the only one an older agent image can read credentials for, so it is a slot that gets rewritten rather than a pointer that gets re-aimed; `blurb` is the table-description entry's reserved id. Letters, digits, underscores and hyphens, at most 32 characters — the composed cloud secret name is length- and charset-limited. |
+| `label` | string | Human-readable name shown in the model pickers |
+| `provider` | string | Provider ID, as in LLMConfig |
+| `config` | map | Connection fields: `region`, `base_url`, `auth_method`, `project_id`, custom TLS, … |
+
+### LayerModel
+
+One layer's choice. `config` is merged **over** the provider entry's config.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `provider_id` | string | The entry this layer uses. Empty is read as `default`. |
+| `model` | string | Model id. May be empty only when an `endpoint_id` is set — an endpoint serves its own model and must never be sent another layer's. |
+| `config` | map | Model-scoped settings: `max_input_tokens`, `max_output_tokens`, `wire_override`, `endpoint_id`, `reasoning_enabled`, `prompt_cache` |
 
 ## Next Steps
 

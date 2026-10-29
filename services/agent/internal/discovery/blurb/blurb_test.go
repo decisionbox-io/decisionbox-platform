@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -152,47 +153,6 @@ func TestNew_DefaultsApplied(t *testing.T) {
 	}
 	if g.maxFailureRate != DefaultMaxFailureRate {
 		t.Errorf("maxFailureRate = %f", g.maxFailureRate)
-	}
-}
-
-// --- IsReasoningClassModel ---
-
-func TestIsReasoningClassModel_Matches(t *testing.T) {
-	reasoning := []string{
-		"deepseek.deepseek-r1-v1:0",
-		"r1-distill-llama",
-		"o1-preview",
-		"o3-mini-high",
-		"o4-mini",
-		"some-model-extended-thinking",
-		"DeepSeek-R1", // case-insensitive
-		// GPT-5 family — reasoning by default, must be rejected for blurb.
-		"gpt-5",
-		"gpt-5-mini",
-		"gpt-5-nano",
-		"gpt-5-2025-08-07",
-		"GPT-5", // case-insensitive
-	}
-	for _, m := range reasoning {
-		if !IsReasoningClassModel(m) {
-			t.Errorf("%q should be reasoning", m)
-		}
-	}
-}
-
-func TestIsReasoningClassModel_NoFalsePositives(t *testing.T) {
-	normal := []string{
-		"gpt-4o",
-		"gpt-4.1-nano",
-		"claude-haiku-4-5",
-		"claude-sonnet-4-6",
-		"qwen.qwen3-32b-v1:0",
-		"ollama3-70b",
-	}
-	for _, m := range normal {
-		if IsReasoningClassModel(m) {
-			t.Errorf("%q should NOT be reasoning", m)
-		}
 	}
 }
 
@@ -895,19 +855,32 @@ func TestNew_AdaptiveThinkersAllowedAlwaysThinkingRejected(t *testing.T) {
 	}
 }
 
-// TestCheckModel is the same rule the blurb-llm connection test applies, so a
-// model the indexer will refuse fails at configuration time, not after an
-// indexing run.
-func TestCheckModel(t *testing.T) {
-	if err := CheckModel("bedrock", "global.anthropic.claude-opus-5-5"); !errors.Is(err, ErrReasoningModelNotSupported) {
+// TestTableDescriptionLayerRule exercises the CATALOG-FLAG half of the rule,
+// which needs real provider metadata and so has to live here rather than in
+// llmlayer — go-common cannot import the provider packages that register it.
+// The substring-pattern half is tested in llmlayer, which owns the list.
+//
+// It is the same rule the per-layer connection test and the API's project-save
+// handler apply, so a model the indexer will refuse fails at configuration
+// time, not after an indexing run.
+func TestTableDescriptionLayerRule(t *testing.T) {
+	check := func(provider, model string) error {
+		return llmlayer.CheckLayerModel(llmlayer.LayerTableDescriptions, provider, model)
+	}
+	if err := check("bedrock", "global.anthropic.claude-opus-5-5"); !errors.Is(err, ErrReasoningModelNotSupported) {
 		t.Errorf("Opus 5.5: %v, want ErrReasoningModelNotSupported", err)
 	}
-	if err := CheckModel("ollama", "deepseek-r1:8b"); !errors.Is(err, ErrReasoningModelNotSupported) {
+	if err := check("ollama", "deepseek-r1:8b"); !errors.Is(err, ErrReasoningModelNotSupported) {
 		t.Errorf("deepseek-r1 (catalog Reasoning, not adaptive): %v, want ErrReasoningModelNotSupported", err)
 	}
 	for _, m := range []string{"global.anthropic.claude-sonnet-5-5", "global.anthropic.claude-haiku-5-5", "us.anthropic.claude-opus-4-8"} {
-		if err := CheckModel("bedrock", m); err != nil {
+		if err := check("bedrock", m); err != nil {
 			t.Errorf("%s: %v, want nil", m, err)
 		}
+	}
+	// And no other layer carries it: a catalog-flagged reasoning model is a
+	// perfectly good analysis model.
+	if err := llmlayer.CheckLayerModel(llmlayer.LayerAnalysis, "bedrock", "global.anthropic.claude-opus-5-5"); err != nil {
+		t.Errorf("analysis must have no pre-flight rule, got %v", err)
 	}
 }

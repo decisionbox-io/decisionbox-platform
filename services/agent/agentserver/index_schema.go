@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	gosources "github.com/decisionbox-io/decisionbox/libs/go-common/sources"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
@@ -215,7 +215,7 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) (retErr error) 
 			Warehouse:    provider,
 			ProviderSlug: wh.Provider,
 			FilterField:  wh.FilterField,
-			FilterValue: wh.FilterValue,
+			FilterValue:  wh.FilterValue,
 		})
 
 		var progress discovery.ProgressReporter
@@ -431,34 +431,34 @@ func projectNeedsBlurbs(project *models.Project) bool {
 	return false
 }
 
-// newBlurbGenerator resolves the blurb LLM and builds the generator, returning
-// it with the "provider/model" label recorded on every indexed point.
+// newBlurbGenerator resolves the table-description layer and builds the
+// generator, returning it with the "provider/model" label recorded on every
+// indexed point.
+//
+// The layer is resolved through llmlayer, which owns the three-branch legacy
+// blurb semantics (no override ⇒ the analysis pair; an override with a blank
+// model and no endpoint ⇒ inherit the analysis model; an endpoint-backed
+// override ⇒ pass its model through verbatim, blank or not) AND the
+// unconditional blurb-first credential chain. Ungated — schema indexing must
+// work on a project that has not yet been through settings.
 func newBlurbGenerator(ctx context.Context, cfg *config.Config, project *models.Project, secretProvider gosecrets.Provider, projectID string) (*blurb.Generator, string, error) {
-	blurbProvider, blurbModel, blurbAPIKey, err := resolveBlurbLLM(ctx, cfg, project, secretProvider, projectID)
+	spec, err := project.LayerSpecUnchecked(llmlayer.LayerTableDescriptions)
 	if err != nil {
 		return nil, "", fmt.Errorf("blurb llm: %w", err)
 	}
-	if blurb.IsReasoningClassModel(blurbModel) {
-		return nil, "", fmt.Errorf("blurb model %q is reasoning-class and cannot be used — pick gpt-4.1-nano, claude-haiku-4-5, or qwen.qwen3-32b-v1:0", blurbModel)
-	}
-
-	// Pick the right config source for the blurb provider — when blurb
-	// is configured separately, its own Config holds the auth_method +
-	// per-method fields. Falling through to project.LLM.Config here was
-	// the legacy behaviour that worked only by accident when blurb and
-	// analysis used the same provider (e.g. Gemini + Gemini); a mixed
-	// setup like Vertex analysis + Bedrock blurb fed GCP auth_method
-	// values into the AWS factory and tripped "unsupported auth method".
-	blurbConfig := project.LLM.Config
-	if project.BlurbLLM != nil && project.BlurbLLM.Provider != "" {
-		blurbConfig = project.BlurbLLM.Config
-	}
-	llmCfg := buildLLMProviderConfig(cfg, blurbConfig, blurbAPIKey, blurbModel)
-	llm, err := gollm.NewProvider(blurbProvider, llmCfg)
+	// Spec.Validate applies this layer's own rule — a reasoning-class model
+	// returns an empty description inside the small blurb budget — so a
+	// misconfigured model fails here with a message naming the layer rather
+	// than thirty minutes into an index run.
+	llm, _, err := llmlayer.BuildProvider(ctx, secretProvider, projectID, spec, llmlayer.BuildOptions{
+		MaxRetries:     cfg.LLM.MaxRetries,
+		TimeoutSeconds: int(cfg.LLM.Timeout.Seconds()),
+		RequestDelayMs: cfg.LLM.RequestDelayMs,
+		Logf:           func(format string, args ...any) { applog.Info(fmt.Sprintf(format, args...)) },
+	})
 	if err != nil {
-		return nil, "", fmt.Errorf("build blurb LLM (%s): %w", blurbProvider, err)
+		return nil, "", fmt.Errorf("build blurb LLM (%s): %w", spec.Provider, err)
 	}
-
 	// BLURB_MAX_TOKENS lets operators bump the per-blurb response
 	// budget without code changes. Defaults to blurb.DefaultMaxTokens
 	// (8192) which fits a thinking-model preamble + a 2-4-sentence
@@ -466,84 +466,22 @@ func newBlurbGenerator(ctx context.Context, cfg *config.Config, project *models.
 	// in practice.
 	gen, err := blurb.New(blurb.Config{
 		LLM:          llm,
-		Model:        blurbModel,
-		ProviderName: blurbProvider,
+		Model:        spec.Model,
+		ProviderName: spec.Provider,
 		Workers:      envIntDefault("BLURB_WORKERS", blurb.DefaultWorkers),
-		MaxTokens:    envIntDefault("BLURB_MAX_TOKENS", blurb.DefaultMaxTokens),
-		// A user-deployed endpoint serves its own model, so blurbModel is
+		// Clamped to what the table-description layer's own model accepts:
+		// BLURB_MAX_TOKENS is a deployment figure chosen without knowing
+		// which model the layer points at, and an endpoint that enforces a
+		// smaller limit fails every blurb call — which fails the index.
+		MaxTokens: spec.ClampOutput(envIntDefault("BLURB_MAX_TOKENS", blurb.DefaultMaxTokens)),
+		// A user-deployed endpoint serves its own model, so the model is
 		// empty — let the generator accept that instead of demanding an ID.
-		AllowEmptyModel: strings.TrimSpace(blurbConfig["endpoint_id"]) != "",
+		AllowEmptyModel: spec.HasEndpoint(),
 	})
 	if err != nil {
 		return nil, "", fmt.Errorf("blurb generator: %w", err)
 	}
-	return gen, blurbProvider + "/" + blurbModel, nil
-}
-
-// resolveBlurbLLM picks the provider + model + credential for blurb
-// generation. Order of resolution for the credential:
-//  1. blurb-llm-credentials secret (project-scoped, blurb-specific).
-//  2. BLURB_LLM_API_KEY env (operator fallback).
-//  3. llm-credentials secret (when blurb provider matches analysis LLM).
-//  4. LLM_API_KEY env.
-//
-// The blurb-specific secret + env always take precedence; the analysis-
-// LLM fallback only fires when the blurb provider is empty or matches
-// the analysis provider — same intent as before, just with the env
-// layer interleaved so operators can configure blurb credentials at the
-// pod level.
-func resolveBlurbLLM(ctx context.Context, _ *config.Config, project *models.Project, secretProvider gosecrets.Provider, projectID string) (providerName, model, credential string, err error) {
-	providerName = project.LLM.Provider
-	model = project.LLM.Model
-	blurbConfig := project.LLM.Config
-	if project.BlurbLLM != nil && project.BlurbLLM.Provider != "" {
-		providerName = project.BlurbLLM.Provider
-		blurbConfig = project.BlurbLLM.Config
-		// Use the blurb override's own model — empty or explicit. Don't
-		// inherit the analysis model into an endpoint override: that would
-		// send an unrelated model the endpoint doesn't serve. The legacy
-		// convenience (a non-endpoint override reusing the analysis model
-		// when its own model is blank) is preserved.
-		model = project.BlurbLLM.Model
-		if model == "" && strings.TrimSpace(blurbConfig["endpoint_id"]) == "" {
-			model = project.LLM.Model
-		}
-	}
-	if providerName == "" {
-		return "", "", "", fmt.Errorf("no LLM provider configured (project.blurb_llm or project.llm)")
-	}
-	// An endpoint-backed config may legitimately run with no model (the
-	// endpoint serves its own) or with an explicit one (strict serving
-	// containers that validate the OpenAI model field) — either is passed
-	// through verbatim. Only a non-endpoint config must supply a model.
-	if model == "" && strings.TrimSpace(blurbConfig["endpoint_id"]) == "" {
-		return "", "", "", fmt.Errorf("no model configured for blurb LLM")
-	}
-
-	// Try the blurb-specific credential first; fall back to the analysis
-	// LLM credential when blurb borrows the analysis provider's setup.
-	credential, _ = resolveCredential(ctx, secretProvider, projectID, "blurb-llm-credentials", "BLURB_LLM_API_KEY")
-	if credential == "" {
-		credential, _ = resolveCredential(ctx, secretProvider, projectID, "llm-credentials", "LLM_API_KEY")
-	}
-	return providerName, model, credential, nil
-}
-
-// buildLLMProviderConfig mirrors what initLLMProvider does but with a
-// caller-supplied credential + model so the shared wiring doesn't have
-// to know about the blurb LLM override.
-func buildLLMProviderConfig(cfg *config.Config, extraConfig map[string]string, credential, model string) gollm.ProviderConfig {
-	out := gollm.ProviderConfig{
-		"credentials_json": credential,
-		"model":            model,
-		"max_retries":      strconv.Itoa(cfg.LLM.MaxRetries),
-		"timeout_seconds":  strconv.Itoa(int(cfg.LLM.Timeout.Seconds())),
-		"request_delay_ms": strconv.Itoa(cfg.LLM.RequestDelayMs),
-	}
-	for k, v := range extraConfig {
-		out[k] = v
-	}
-	return out
+	return gen, spec.Provider + "/" + spec.Model, nil
 }
 
 // newSchemaRetriever opens a Qdrant connection for schema-retrieval.

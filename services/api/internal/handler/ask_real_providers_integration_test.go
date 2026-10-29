@@ -16,6 +16,7 @@ import (
 	goauth "github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
@@ -143,6 +144,16 @@ func askSearchHandlerForProvider(t *testing.T, providerName, model string, confi
 		},
 		SchemaIndexStatus: models.SchemaIndexStatusReady,
 	}
+	// Ask resolves its layer through the configuration gate, so a project
+	// carrying only the legacy fields answers 412 before it reaches the
+	// upstream these tests exist to exercise. Migrated the way the settings
+	// save migrates one — SeedFromLegacy off the same legacy pair, stamped
+	// with the version — so the fixture describes a configured project
+	// rather than switching the gate off for the test.
+	entries, layers := proj.LLMLayerConfig().SeedFromLegacy()
+	proj.LLMProviders = entries
+	proj.LayerModels = layers
+	proj.LLMConfigVersion = llmlayer.ConfigVersion
 	if err := projectRepo.Create(context.Background(), proj); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
