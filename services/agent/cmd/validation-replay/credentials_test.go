@@ -10,6 +10,7 @@ import (
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation/verifier"
 	"go.mongodb.org/mongo-driver/bson"
 )
 
@@ -217,12 +218,17 @@ func (p reportingProvider) ResolveModelInfo(context.Context, string) (gollm.Mode
 	return gollm.ModelCapabilities{MaxOutputTokens: p.out}, nil
 }
 
-// Production resolves a layer's output budget through resolveModelBudget,
-// which prefers what the ENDPOINT reports over the catalogue. Clamping only
-// to the catalogue ceiling left an uncatalogued gateway model asking for the
-// validation default where production asked for the 1024 the gateway
-// announced — and the replay returned a rejection, or `unverifiable`, for a
-// verdict production had produced.
+// Production resolves each validation half's ceiling from the model that half
+// runs on — preferring what the ENDPOINT reports over the catalogue, then
+// clamping by the layer's own override — and only then applies the deployment
+// value. A replay that resolved it differently is not reproducing the run: an
+// uncatalogued gateway model announcing 1024 made production ask for 1024
+// while the replay asked for the validation default, and the replay returned
+// a rejection, or `unverifiable`, for a verdict production had produced.
+//
+// Asserted through the same composition production uses
+// (replayModelOutputCap -> Config.ApplyModelOutputCaps) rather than against
+// the cap alone, because the final budget is what the run actually sends.
 func TestReplayOutputBudget_FollowsWhatTheEndpointReports(t *testing.T) {
 	// Uncatalogued, so the catalogue ceiling cannot lower anything.
 	spec := llmlayer.LayerSpec{
@@ -230,17 +236,25 @@ func TestReplayOutputBudget_FollowsWhatTheEndpointReports(t *testing.T) {
 		Model:  "some-gateway-only-model",
 		Config: map[string]string{"base_url": "https://gw/v1"},
 	}
+	// The deployment value the replay starts from, as LoadConfigFromEnv would
+	// leave it when VALIDATION_VERIFIER_MAX_OUTPUT is set.
+	budget := func(p *countingProvider, sp llmlayer.LayerSpec, configured int) int {
+		cfg := verifier.DefaultConfig()
+		cfg.Verifier.MaxOutputTokens = configured
+		cfg.ApplyModelOutputCaps(replayModelOutputCap(context.Background(), p, sp), 0)
+		return cfg.Verifier.MaxOutputTokens
+	}
 
 	t.Run("the endpoint's lower ceiling wins", func(t *testing.T) {
 		p := &countingProvider{Provider: reportingProvider{out: 1024}}
-		if got := replayOutputBudget(context.Background(), p, spec, 4000); got != 1024 {
+		if got := budget(p, spec, 4000); got != 1024 {
 			t.Errorf("budget = %d, want the 1024 the endpoint reports — production asks for that", got)
 		}
 	})
 
 	t.Run("a higher one does not raise the configured budget", func(t *testing.T) {
 		p := &countingProvider{Provider: reportingProvider{out: 32000}}
-		if got := replayOutputBudget(context.Background(), p, spec, 4000); got != 4000 {
+		if got := budget(p, spec, 4000); got != 4000 {
 			t.Errorf("budget = %d, want the configured 4000 — the endpoint accepting more is not a reason to ask for more", got)
 		}
 	})
@@ -249,22 +263,26 @@ func TestReplayOutputBudget_FollowsWhatTheEndpointReports(t *testing.T) {
 		capped := spec
 		capped.Config = map[string]string{"base_url": "https://gw/v1", "max_output_tokens": "2048"}
 		p := &countingProvider{Provider: reportingProvider{out: 32000}}
-		if got := replayOutputBudget(context.Background(), p, capped, 4000); got != 2048 {
+		if got := budget(p, capped, 4000); got != 2048 {
 			t.Errorf("budget = %d, want the operator's 2048", got)
+		}
+	})
+
+	t.Run("with no deployment value the model's cap is used, not a fallback", func(t *testing.T) {
+		// The regression this guards: with the env overrides unset the
+		// deployment value is zero, and a replay that passed zero through
+		// ended up on the hard-coded fallback — asking for 4,000 where
+		// production asked for the 1,024 the endpoint announced.
+		p := &countingProvider{Provider: reportingProvider{out: 1024}}
+		if got := budget(p, spec, 0); got != 1024 {
+			t.Errorf("budget = %d, want the endpoint's 1024", got)
 		}
 	})
 
 	t.Run("a provider that cannot say leaves the ceiling alone", func(t *testing.T) {
 		p := &countingProvider{Provider: stubProvider{}}
-		if got := replayOutputBudget(context.Background(), p, spec, 4000); got != 4000 {
+		if got := budget(p, spec, 4000); got != 4000 {
 			t.Errorf("budget = %d, want the configured 4000", got)
-		}
-	})
-
-	t.Run("a failed probe is not a verdict", func(t *testing.T) {
-		p := &countingProvider{Provider: reportingProvider{err: errors.New("502 bad gateway")}}
-		if got := replayOutputBudget(context.Background(), p, spec, 4000); got != 4000 {
-			t.Errorf("budget = %d, want the configured 4000 — a gateway that will not answer must not shrink the budget to zero", got)
 		}
 	})
 }

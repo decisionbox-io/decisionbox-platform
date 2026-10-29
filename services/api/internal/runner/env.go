@@ -93,6 +93,12 @@ var agentForwardedEnvKeys = []string{
 	"VALIDATION_REFUTER_MAX_ROUNDS",
 	"VALIDATION_REFUTER_TOKEN_CAP",
 	"VALIDATION_REFUTER_MAX_OUTPUT",
+	// Reasoning effort is resolved inside the agent, by the provider that
+	// talks to the model, so the deployment override has to travel with it:
+	// an operator who lowers it on the API would otherwise keep paying for
+	// high effort on every discovery and validation call, with nothing to
+	// explain why the setting did nothing.
+	"LLM_REASONING_EFFORT",
 	"VALIDATION_BUNDLE_SAMPLE_ROWS",
 	"VALIDATION_MAX_READ_STEP_ROWS",
 	"VALIDATION_NUMERIC_TOLERANCE",

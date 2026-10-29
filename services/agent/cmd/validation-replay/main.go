@@ -199,15 +199,18 @@ func run() error {
 	}
 	defer whProvider.Close()
 
-	// Clamped to each layer's own ceiling, exactly as RunDiscovery and the
-	// standalone validator do. A replay that sends a budget production
-	// would have lowered is not reproducing the run: a layer capped below
-	// the deployment default gets its calls rejected here and returns
-	// `unverifiable` where production returned a verdict.
-	cfg.Verifier.MaxOutputTokens = replayOutputBudget(ctx, verifierProv, verifierSpec, cfg.Verifier.MaxOutputTokens)
+	// Resolved exactly as RunDiscovery resolves it: each half's ceiling comes
+	// from the model that half runs on, with the deployment override clamped
+	// down to it. A replay that sends a budget production would not have sent
+	// is not reproducing the run — a layer capped below the deployment value
+	// gets its calls rejected here and returns `unverifiable` where
+	// production returned a verdict, and a replay that substituted the
+	// no-information fallback would ask for more than production ever did.
+	refuterModelCap := 0
 	if cfg.RefuterEnabled {
-		cfg.Refuter.MaxOutputTokens = replayOutputBudget(ctx, refuterProv, refuterSpec, cfg.Refuter.MaxOutputTokens)
+		refuterModelCap = replayModelOutputCap(ctx, refuterProv, refuterSpec)
 	}
+	cfg.ApplyModelOutputCaps(replayModelOutputCap(ctx, verifierProv, verifierSpec), refuterModelCap)
 
 	// A typed nil in the map would satisfy llmFor's non-nil check and be
 	// called, so only the clients that were actually built go in — and the
@@ -344,9 +347,9 @@ func run() error {
 	return nil
 }
 
-// replayOutputBudget resolves a layer's output budget the way production
-// does: the configured value, lowered to the layer's own ceiling, then
-// lowered again by what the ENDPOINT says it will accept.
+// replayModelOutputCap resolves the model's own output cap the way production
+// does: the endpoint's live answer when it gives one, else the layer's
+// catalogue ceiling.
 //
 // The ceiling alone is not production's answer. resolveModelBudget prefers
 // the live ModelInfoResolver reading over the catalogue, so an uncatalogued
@@ -355,15 +358,19 @@ func run() error {
 // rejection, or `unverifiable`, for a verdict production had produced. A
 // tool whose whole job is reproducing a run cannot differ on the budget.
 //
-// Only lowers, which makes it equivalent to production's order: clamping a
-// configured budget by min(ceiling, live) is the same number as clamping it
-// by ClampMaxTokens(live-or-catalogue, override).
-func replayOutputBudget(ctx context.Context, p *countingProvider, spec llmlayer.LayerSpec, configured int) int {
-	out := spec.ClampOutput(configured)
-	if live := liveOutputCeiling(ctx, p, spec.Model); live > 0 && live < out {
-		out = live
+// It answers the model's cap, not the final budget: the operator override and
+// the clamp against it are Config.ApplyModelOutputCaps's job, the same way
+// production applies them.
+func replayModelOutputCap(ctx context.Context, p *countingProvider, spec llmlayer.LayerSpec) int {
+	base := spec.OutputCeiling()
+	if live := liveOutputCeiling(ctx, p, spec.Model); live > 0 {
+		base = live
 	}
-	return out
+	// The layer's own max_output_tokens is part of what the model will accept
+	// here, exactly as resolveModelBudget treats it: production clamps the
+	// resolved cap by the operator's per-layer override before the validation
+	// budget ever sees it.
+	return gollm.ClampMaxTokens(base, gollm.MaxOutputOverride(gollm.ProviderConfig(spec.Config)))
 }
 
 // liveOutputCeiling asks the endpoint what it will actually accept, or 0

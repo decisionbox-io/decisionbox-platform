@@ -86,3 +86,15 @@ func TestDeploymentDefaultIsHigh(t *testing.T) {
 		t.Errorf("default effort = %q, want high", gollm.DefaultReasoningEffort)
 	}
 }
+
+// An operator who sets the override to "off" means "as little reasoning as
+// possible", which is the same thing a request means by it. Treating it as
+// unrecognised would hand them the HIGHEST effort instead — the opposite of
+// what they asked for, across every layer at once.
+func TestOutputConfigOverrideOffMeansLowest(t *testing.T) {
+	t.Setenv(gollm.ReasoningEffortEnvVar, "off")
+	got := OutputConfig("", true)
+	if got == nil || got["effort"] != gollm.ReasoningEffortLow {
+		t.Errorf("override off gave %v, want %q", got, gollm.ReasoningEffortLow)
+	}
+}

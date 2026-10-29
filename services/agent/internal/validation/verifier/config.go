@@ -176,6 +176,13 @@ const validationOutputShare = 4
 func (c *Config) ApplyModelOutputCaps(verifierModelCap, refuterModelCap int) {
 	c.Verifier.MaxOutputTokens = resolveModeOutputTokens(c.Verifier, verifierModelCap, fallbackVerifierOutputTokens)
 	c.Refuter.MaxOutputTokens = resolveModeOutputTokens(c.Refuter, refuterModelCap, fallbackRefuterOutputTokens)
+	// The reservation floor is the per-mode budget the loop shipped with: it
+	// is what a verdict has always fitted in, so reserving it keeps the round
+	// budgeting exactly as it was while the ceiling above grows with the
+	// model. Never above the ceiling — a model that accepts less than the
+	// floor must not be asked for the floor.
+	c.Verifier.MinOutputTokens = minInt(fallbackVerifierOutputTokens, c.Verifier.MaxOutputTokens)
+	c.Refuter.MinOutputTokens = minInt(fallbackRefuterOutputTokens, c.Refuter.MaxOutputTokens)
 }
 
 // resolveModeOutputTokens implements ApplyModelOutputCaps for one mode.
@@ -198,4 +205,12 @@ func resolveModeOutputTokens(m ModeConfig, modelCap, fallback int) int {
 		out = share
 	}
 	return out
+}
+
+// minInt returns the smaller of two ints.
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

@@ -22,7 +22,8 @@ type LLMClient interface {
 type ModeConfig struct {
 	MaxRounds int
 	TokenCap  int
-	// MaxOutputTokens is the per-round output ceiling.
+	// MaxOutputTokens is the per-round output CEILING — the most this mode
+	// will ever ask for in one call.
 	//
 	// Zero means "resolve from the model's own output cap" — see
 	// Config.ApplyModelOutputCaps. It must not stay zero by the time the loop
@@ -31,6 +32,18 @@ type ModeConfig struct {
 	// reasoning model's verdicts were lost (the response was cut off
 	// mid-JSON, failed to parse, and the document came back unverifiable).
 	MaxOutputTokens int
+	// MinOutputTokens is what the loop RESERVES for the forced-final verdict
+	// out of TokenCap, and the least it will ask for in any one call.
+	//
+	// Deliberately separate from the ceiling. The loop charges its output
+	// budget twice — once for the round it is about to run and once for the
+	// forced final it must still be able to afford — so reserving the ceiling
+	// would make a bigger ceiling buy FEWER rounds: raising it from 3,000 to
+	// 5,000 takes 4,000 off a 20,000 envelope and costs a mid-sized bundle
+	// its only evidence-gathering round. Reserving the floor and requesting
+	// the ceiling keeps both: rounds get the room they always had, and the
+	// verdict gets the room the model allows when it is there.
+	MinOutputTokens int
 }
 
 // Config bundles verifier + refuter knobs and the shared bundle
@@ -188,7 +201,10 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 
 	for round := 0; round < mc.MaxRounds; round++ {
 		reservePrompt := a.buildPrompt(s, []ActionKind{ActionSubmitVerdict}, true)
-		reserveEst := estimateTokens(reservePrompt, a.cfg.Bundle.EstimateRatio) + mc.MaxOutputTokens
+		// Reserve the FLOOR for the forced final, not the ceiling: the forced
+		// final must always be affordable, but reserving the most it could
+		// ever want would cost us rounds.
+		reserveEst := estimateTokens(reservePrompt, a.cfg.Bundle.EstimateRatio) + mc.MinOutputTokens
 		softCap := mc.TokenCap - reserveEst
 		if softCap <= 0 {
 			break
@@ -196,14 +212,22 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 
 		prompt := a.buildPrompt(s, allowed, false)
 		promptEst := estimateTokens(prompt, a.cfg.Bundle.EstimateRatio)
-		if s.tokensIn+s.tokensOut+promptEst+mc.MaxOutputTokens > softCap {
+		// What this round can afford once the forced final is set aside. A
+		// round that cannot afford even the floor drops history and retries;
+		// with nothing left to drop the loop ends and the forced final runs.
+		afford := softCap - (s.tokensIn + s.tokensOut + promptEst)
+		if afford < mc.MinOutputTokens {
 			if !a.truncateHistory(s) {
 				break
 			}
 			continue
 		}
+		roundOutput := mc.MaxOutputTokens
+		if afford < roundOutput {
+			roundOutput = afford
+		}
 
-		chat, err := a.llmFor(s.mode).Chat(ctx, prompt, system, mc.MaxOutputTokens)
+		chat, err := a.llmFor(s.mode).Chat(ctx, prompt, system, roundOutput)
 		if err != nil {
 			return a.unverifiable(s, "chat failed: "+err.Error()), nil
 		}
@@ -212,7 +236,7 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 
 		action, perr := ParseAction(chat.Content, allowed)
 		if perr != nil {
-			detail := parseFailureDetail(chat, mc.MaxOutputTokens, perr)
+			detail := parseFailureDetail(chat, roundOutput, perr)
 			a.trace(s.mode, round, "", "parse-error: "+detail)
 			s.history = append(s.history, toolStep{Error: "parse: " + detail})
 			continue
@@ -254,7 +278,17 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 	// Forced final round — submit_verdict only.
 	a.aggressiveTruncate(s)
 	forcedPrompt := a.buildPrompt(s, []ActionKind{ActionSubmitVerdict}, true)
-	chat, err := a.llmFor(s.mode).Chat(ctx, forcedPrompt, system, mc.MaxOutputTokens)
+	// Nothing follows this call, so it may spend everything left in the
+	// envelope up to the ceiling — and never less than the floor, which is
+	// what every round reserved for exactly this.
+	forcedOutput := mc.MaxOutputTokens
+	if afford := mc.TokenCap - (s.tokensIn + s.tokensOut + estimateTokens(forcedPrompt, a.cfg.Bundle.EstimateRatio)); afford < forcedOutput {
+		forcedOutput = afford
+	}
+	if forcedOutput < mc.MinOutputTokens {
+		forcedOutput = mc.MinOutputTokens
+	}
+	chat, err := a.llmFor(s.mode).Chat(ctx, forcedPrompt, system, forcedOutput)
 	if err != nil {
 		return a.unverifiable(s, "forced chat failed: "+err.Error()), nil
 	}
@@ -264,17 +298,17 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 	action, perr := ParseAction(chat.Content, []ActionKind{ActionSubmitVerdict})
 	if perr != nil || action.Kind != ActionSubmitVerdict {
 		reason := "forced final round produced no verdict"
-		if outputCapHit(chat, mc.MaxOutputTokens) {
+		if outputCapHit(chat, forcedOutput) {
 			// The difference matters: a cut-off verdict is fixed by raising
 			// the ceiling, a malformed one by fixing the prompt. Reported
 			// here because this string is what the dashboard shows and what
 			// an operator has to act on.
 			reason = fmt.Sprintf(
 				"forced final round was cut off at the %d-token output ceiling before it finished the verdict; raise %s or use a model with a larger output cap",
-				mc.MaxOutputTokens, envOutputKeyFor(s.mode))
+				forcedOutput, envOutputKeyFor(s.mode))
 			applog.WithFields(applog.Fields{
 				"mode":        s.mode,
-				"max_tokens":  mc.MaxOutputTokens,
+				"max_tokens":  forcedOutput,
 				"tokens_out":  chat.TokensOut,
 				"stop_reason": chat.StopReason,
 				"env":         envOutputKeyFor(s.mode),

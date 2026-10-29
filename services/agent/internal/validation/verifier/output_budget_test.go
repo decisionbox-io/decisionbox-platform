@@ -251,3 +251,88 @@ func TestNewAgentResolvesAnUnsetCeiling(t *testing.T) {
 		}
 	}
 }
+
+// midSizedBundle is a bundle whose prompt lands around 5,500 tokens — 50 rows
+// of two wide cells, the shape an ordinary insight cites. Big enough that the
+// envelope arithmetic matters, small enough that the loop should still afford
+// a round.
+func midSizedBundle() Bundle {
+	rows := make([]map[string]any, 0, 50)
+	wide := strings.Repeat("x", 180)
+	for i := 0; i < 50; i++ {
+		rows = append(rows, map[string]any{"a": wide, "b": wide, "i": i})
+	}
+	return Bundle{
+		Doc:         DocDigest{Kind: valmodels.DocInsight, ID: "d1", Headline: "h", SourceStepIDs: []int{1}, Language: "English"},
+		SourceSteps: []SourceStepDigest{{StepID: 1, SampleRows: rows}},
+		Warehouse:   WarehouseInfo{Dialect: "BigQuery Standard SQL"},
+	}
+}
+
+// Raising the output ceiling must not cost the loop its evidence round.
+//
+// The loop charges its output budget twice — the round it is about to run,
+// plus the forced final it must still afford — so an implementation that
+// reserved the CEILING made a more generous ceiling buy FEWER rounds: on a
+// mid-sized bundle a 5,000-token ceiling left no room for a round that a
+// 3,000-token one had afforded, and the refuter went straight to its forced
+// final with zero tool calls. Reserving the floor and requesting the ceiling
+// is what keeps both properties.
+func TestRaisingTheCeilingKeepsTheEvidenceRound(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ApplyModelOutputCaps(128000, 128000)
+
+	exec := &stubExecutor{}
+	llm := &stubBudgetLLM{scripted: []scriptedReply{
+		{content: `{"read_step_rows": {"step_id": 1, "offset": 0, "limit": 10}}`, stopReason: "end_turn", tokensOut: 40},
+		{content: happyVerdictJSON(valmodels.ModeRefuter), stopReason: "end_turn", tokensOut: 900},
+	}}
+	a, err := NewAgent(llm, cfg)
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	v, err := a.Refute(context.Background(), midSizedBundle(), exec)
+	if err != nil {
+		t.Fatalf("Refute: %v", err)
+	}
+	if exec.readCalls == 0 {
+		t.Errorf("the refuter gathered no evidence: it went straight to the forced final round")
+	}
+	if v.Overall != valmodels.StatusSupported {
+		t.Errorf("overall = %s (reason %q), want supported from the evidence-backed verdict", v.Overall, v.OverallReason)
+	}
+	// No round may be asked for less than the reservation floor, or the
+	// verdict it is meant to carry cannot fit.
+	for i, got := range llm.maxSeen {
+		if got < cfg.Refuter.MinOutputTokens {
+			t.Errorf("call %d asked for %d tokens, below the %d floor", i, got, cfg.Refuter.MinOutputTokens)
+		}
+	}
+}
+
+// The forced final may spend what the rounds left behind, so a verdict is not
+// capped at the reservation floor when the envelope has room — that headroom
+// is the whole point of resolving the ceiling from the model.
+func TestForcedFinalSpendsTheRemainingEnvelope(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Refuter.MaxRounds = 0 // straight to the forced final, nothing spent yet
+	cfg.ApplyModelOutputCaps(128000, 128000)
+
+	llm := &stubBudgetLLM{scripted: []scriptedReply{
+		{content: happyVerdictJSON(valmodels.ModeRefuter), stopReason: "end_turn", tokensOut: 900},
+	}}
+	a, _ := NewAgent(llm, cfg)
+	if _, err := a.Refute(context.Background(), minimalBundle(), &stubExecutor{}); err != nil {
+		t.Fatalf("Refute: %v", err)
+	}
+	if len(llm.maxSeen) != 1 {
+		t.Fatalf("expected one call, got %d", len(llm.maxSeen))
+	}
+	if llm.maxSeen[0] <= fallbackRefuterOutputTokens {
+		t.Errorf("forced final asked for %d tokens, want more than the old fixed %d now that the model allows it",
+			llm.maxSeen[0], fallbackRefuterOutputTokens)
+	}
+	if llm.maxSeen[0] > cfg.Refuter.TokenCap {
+		t.Errorf("forced final asked for %d tokens, above its own envelope %d", llm.maxSeen[0], cfg.Refuter.TokenCap)
+	}
+}

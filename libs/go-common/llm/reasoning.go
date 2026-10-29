@@ -63,9 +63,14 @@ func ResolveReasoningEffort(requested string) string {
 // DefaultReasoningEffort. An unrecognised override is ignored rather than
 // passed through: an invalid effort is rejected by the provider, and a typo
 // in one env var should not fail every LLM call in the deployment.
+//
+// "off" is accepted and means what it means on a request — the lowest level
+// we can express. The variable documents the request's own values, so an
+// operator who sets it to minimise reasoning must not get the highest effort
+// instead, which is what treating "off" as unrecognised would do.
 func deploymentReasoningEffort() string {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(ReasoningEffortEnvVar))) {
-	case ReasoningEffortLow:
+	case ReasoningEffortLow, ReasoningEffortOff:
 		return ReasoningEffortLow
 	case ReasoningEffortMedium:
 		return ReasoningEffortMedium
