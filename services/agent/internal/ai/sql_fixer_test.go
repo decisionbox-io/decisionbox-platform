@@ -522,7 +522,7 @@ func TestSQLFixer_FixSQL_VerificationContextSectionKept(t *testing.T) {
 	}
 	client, _ := New(provider, "mock-model")
 	fixer := NewSQLFixer(SQLFixerOptions{
-		Client: client,
+		Client:       client,
 		SQLFixPrompt: "Fix {{ORIGINAL_SQL}}{{#VERIFICATION_CONTEXT}}\nEVIDENCE_BLOCK\n{{VERIFICATION_CONTEXT}}\n/EVIDENCE_BLOCK{{/VERIFICATION_CONTEXT}}",
 	})
 
@@ -560,7 +560,7 @@ func TestSQLFixer_FixSQL_VerificationContextSectionStrippedWhenEmpty(t *testing.
 	}
 	client, _ := New(provider, "mock-model")
 	fixer := NewSQLFixer(SQLFixerOptions{
-		Client: client,
+		Client:       client,
 		SQLFixPrompt: "Fix {{ORIGINAL_SQL}}{{#VERIFICATION_CONTEXT}}\nEVIDENCE_BLOCK\n{{VERIFICATION_CONTEXT}}\n/EVIDENCE_BLOCK{{/VERIFICATION_CONTEXT}}",
 	})
 

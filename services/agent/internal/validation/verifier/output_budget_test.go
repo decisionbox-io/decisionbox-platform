@@ -22,6 +22,8 @@ type scriptedReply struct {
 	// which the adaptive context-overflow retry can lower below what the
 	// loop passed in. Zero leaves it unreported.
 	maxTokensAsked int
+	// reducedBy is the limit that made the adaptive retry lower the budget.
+	reducedBy ai.OverflowCause
 }
 
 // stubBudgetLLM scripts replies that carry a stop reason and an output-token
@@ -43,11 +45,12 @@ func (s *stubBudgetLLM) Chat(_ context.Context, _, _ string, max int) (*ai.ChatR
 	r := s.scripted[s.calls]
 	s.calls++
 	return &ai.ChatResult{
-		Content:        r.content,
-		TokensIn:       100,
-		TokensOut:      r.tokensOut,
-		StopReason:     r.stopReason,
-		MaxTokensAsked: r.maxTokensAsked,
+		Content:         r.content,
+		TokensIn:        100,
+		TokensOut:       r.tokensOut,
+		StopReason:      r.stopReason,
+		MaxTokensAsked:  r.maxTokensAsked,
+		BudgetReducedBy: r.reducedBy,
 	}, nil
 }
 
@@ -490,8 +493,8 @@ func TestTruncationReportsTheBudgetActuallyInForce(t *testing.T) {
 
 	cut := `{"submit_verdict": {"doc_id": "d1", "claim_verd`
 	llm := &stubBudgetLLM{scripted: []scriptedReply{
-		{content: cut, stopReason: "max_tokens", tokensOut: retried, maxTokensAsked: retried},
-		{content: cut, stopReason: "max_tokens", tokensOut: retried, maxTokensAsked: retried},
+		{content: cut, stopReason: "max_tokens", tokensOut: retried, maxTokensAsked: retried, reducedBy: ai.OverflowContextWindow},
+		{content: cut, stopReason: "max_tokens", tokensOut: retried, maxTokensAsked: retried, reducedBy: ai.OverflowContextWindow},
 	}}
 	a, _ := NewAgent(llm, cfg)
 	v, err := a.Verify(context.Background(), minimalBundle(), &stubExecutor{})
@@ -511,5 +514,40 @@ func TestTruncationReportsTheBudgetActuallyInForce(t *testing.T) {
 		if strings.Contains(v.OverallReason, knob) {
 			t.Errorf("reason names %s, but the call had already been reduced to fit the model: %q", knob, v.OverallReason)
 		}
+	}
+}
+
+// The two overflow causes have different remedies, and the reduced budget
+// alone cannot tell them apart. Recommending a larger context window for a
+// model whose window was ample — only its output cap was exceeded — points at
+// the wrong model entirely.
+func TestTruncationRemedyFollowsTheOverflowCause(t *testing.T) {
+	run := func(t *testing.T, cause ai.OverflowCause) string {
+		t.Helper()
+		cfg := DefaultConfig()
+		cfg.Verifier.MaxRounds = 1
+		cfg.ApplyModelOutputCaps(128000, 0)
+		const retried = 4015
+		cut := `{"submit_verdict": {"doc_id": "d1", "claim_verd`
+		llm := &stubBudgetLLM{scripted: []scriptedReply{
+			{content: cut, stopReason: "max_tokens", tokensOut: retried, maxTokensAsked: retried, reducedBy: cause},
+			{content: cut, stopReason: "max_tokens", tokensOut: retried, maxTokensAsked: retried, reducedBy: cause},
+		}}
+		a, _ := NewAgent(llm, cfg)
+		v, err := a.Verify(context.Background(), minimalBundle(), &stubExecutor{})
+		if err != nil {
+			t.Fatalf("Verify: %v", err)
+		}
+		return v.OverallReason
+	}
+
+	if reason := run(t, ai.OverflowOutputCap); !strings.Contains(reason, "larger output cap") {
+		t.Errorf("output-cap overflow: reason = %q, want it to name the output cap", reason)
+	} else if strings.Contains(reason, "context window") {
+		t.Errorf("output-cap overflow: reason blames the context window: %q", reason)
+	}
+
+	if reason := run(t, ai.OverflowContextWindow); !strings.Contains(reason, "larger context window") {
+		t.Errorf("window overflow: reason = %q, want it to name the context window", reason)
 	}
 }

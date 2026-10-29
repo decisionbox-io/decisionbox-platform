@@ -232,3 +232,40 @@ func windowFromContextLengthError(err error) int {
 	}
 	return contextWindowFromError(err.Error())
 }
+
+// OverflowCause names which limit forced the adaptive retry to lower
+// max_tokens. A caller diagnosing a truncation on the retried response needs
+// it: the two causes have different remedies, and recommending the wrong one
+// costs a deploy that changes nothing.
+type OverflowCause int
+
+const (
+	// OverflowNone — no overflow retry happened.
+	OverflowNone OverflowCause = iota
+	// OverflowContextWindow — input and output share a window too small for
+	// both. A larger context window is the remedy.
+	OverflowContextWindow
+	// OverflowOutputCap — the model's output cap alone was exceeded; its
+	// context window may be ample. A larger output cap is the remedy.
+	OverflowOutputCap
+)
+
+// overflowCauseFor classifies an over-limit error the same way
+// reducedMaxTokensForContextOverflow does, reading the same two numbers out of
+// the message in the same order. Kept as its own function rather than a third
+// return value so the reducer's signature — and its ten call sites — stay put;
+// TestOverflowCauseMatchesTheReducer pins the two to the same branch.
+func overflowCauseFor(err error) OverflowCause {
+	if err == nil || !isContextLengthError(err) {
+		return OverflowNone
+	}
+	msg := err.Error()
+	switch {
+	case contextWindowFromError(msg) > 0:
+		return OverflowContextWindow
+	case modelMaxOutputFromError(msg) > 0:
+		return OverflowOutputCap
+	default:
+		return OverflowNone
+	}
+}

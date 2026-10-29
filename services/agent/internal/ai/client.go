@@ -103,6 +103,12 @@ type ChatResult struct {
 	// truncation against its own number would name a ceiling that was never
 	// in force, and therefore the wrong remedy.
 	MaxTokensAsked int
+
+	// BudgetReducedBy names the limit that made the adaptive retry lower
+	// MaxTokensAsked, or OverflowNone when no retry happened. The two causes
+	// have different remedies — a larger context window versus a larger
+	// output cap — and the reduced budget alone cannot tell them apart.
+	BudgetReducedBy OverflowCause
 }
 
 // Truncated reports whether generation stopped because it hit the output
@@ -126,17 +132,18 @@ func (r *ChatResult) Truncated() bool {
 func (c *Client) Chat(ctx context.Context, userPrompt string, systemPrompt string, maxTokens int) (*ChatResult, error) {
 	start := time.Now()
 	messages := []gollm.Message{{Role: "user", Content: userPrompt}}
-	resp, effectiveMax, err := c.createMessage(ctx, messages, systemPrompt, maxTokens, nil, "", nil)
+	resp, effectiveMax, reducedBy, err := c.createMessage(ctx, messages, systemPrompt, maxTokens, nil, "", nil)
 	if err != nil {
 		return nil, err
 	}
 	return &ChatResult{
-		Content:        resp.Content,
-		TokensIn:       resp.Usage.InputTokens,
-		TokensOut:      resp.Usage.OutputTokens,
-		DurationMs:     time.Since(start).Milliseconds(),
-		StopReason:     resp.StopReason,
-		MaxTokensAsked: effectiveMax,
+		Content:         resp.Content,
+		TokensIn:        resp.Usage.InputTokens,
+		TokensOut:       resp.Usage.OutputTokens,
+		DurationMs:      time.Since(start).Milliseconds(),
+		StopReason:      resp.StopReason,
+		MaxTokensAsked:  effectiveMax,
+		BudgetReducedBy: reducedBy,
 	}, nil
 }
 
@@ -153,7 +160,7 @@ func (c *Client) CreateMessage(ctx context.Context, messages []gollm.Message, sy
 // is false reject a non-empty tools slice with gollm.ErrToolsNotSupported, so
 // callers must gate on tool support before passing tools.
 func (c *Client) CreateMessageWithTools(ctx context.Context, messages []gollm.Message, systemPrompt string, maxTokens int, tools []gollm.ToolDefinition, toolChoice string) (*gollm.ChatResponse, error) {
-	resp, _, err := c.createMessage(ctx, messages, systemPrompt, maxTokens, tools, toolChoice, nil)
+	resp, _, _, err := c.createMessage(ctx, messages, systemPrompt, maxTokens, tools, toolChoice, nil)
 	return resp, err
 }
 
@@ -166,7 +173,12 @@ func (c *Client) CreateMessageWithTools(ctx context.Context, messages []gollm.Me
 // adaptive context-overflow retry lowers max_tokens mid-call, and a caller
 // diagnosing a truncation against the budget it ASKED for would name the
 // wrong ceiling — and so the wrong remedy.
-func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, systemPrompt string, maxTokens int, tools []gollm.ToolDefinition, toolChoice string, format *gollm.ResponseFormat) (*gollm.ChatResponse, int, error) {
+func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, systemPrompt string, maxTokens int, tools []gollm.ToolDefinition, toolChoice string, format *gollm.ResponseFormat) (*gollm.ChatResponse, int, OverflowCause, error) {
+	// Which limit, if any, made the adaptive retry lower the budget. Recorded
+	// before the retry re-issues, because the error that explains it is the
+	// one we are retrying — the retry's own error, if it fails again, may
+	// name a different limit.
+	budgetReducedBy := OverflowNone
 	startTime := time.Now()
 
 	if c.testMode {
@@ -235,6 +247,7 @@ func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, sy
 				"new_max_tokens": nm,
 			}).Warn("LLM context-length overflow; retrying once with reduced max_tokens")
 			req.MaxTokens = nm
+			budgetReducedBy = overflowCauseFor(err)
 			resp, err = chatWithRetry(ctx, c.provider, req)
 			// The retry may fail with a *different* over-limit shape that finally
 			// names the true window — e.g. an output-cap-only first 400 whose
@@ -268,7 +281,7 @@ func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, sy
 				systemPrompt, promptContent, "", usage.InputTokens, usage.OutputTokens,
 				latencyMs, err)
 		}
-		return nil, req.MaxTokens, err
+		return nil, req.MaxTokens, budgetReducedBy, err
 	}
 
 	logger.WithFields(logger.Fields{
@@ -290,10 +303,10 @@ func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, sy
 	// conversation is refused again, so surface it as an error instead of
 	// an empty reply the caller would re-ask or try to parse.
 	if resp.StopReason == gollm.StopReasonRefusal {
-		return nil, req.MaxTokens, fmt.Errorf("%w (model %s, phase %q)", ErrModelRefused, c.model, c.currentPhase)
+		return nil, req.MaxTokens, budgetReducedBy, fmt.Errorf("%w (model %s, phase %q)", ErrModelRefused, c.model, c.currentPhase)
 	}
 
-	return resp, req.MaxTokens, nil
+	return resp, req.MaxTokens, budgetReducedBy, nil
 }
 
 // SupportsStructuredOutput reports whether the active provider honours
@@ -317,7 +330,7 @@ func (c *Client) CreateMessageWithFormat(ctx context.Context, messages []gollm.M
 	if format != nil && !c.SupportsStructuredOutput() {
 		format = nil
 	}
-	resp, _, err := c.createMessage(ctx, messages, systemPrompt, maxTokens, nil, "", format)
+	resp, _, _, err := c.createMessage(ctx, messages, systemPrompt, maxTokens, nil, "", format)
 	return resp, err
 }
 
@@ -329,17 +342,18 @@ func (c *Client) ChatWithFormat(ctx context.Context, userPrompt string, systemPr
 	if format != nil && !c.SupportsStructuredOutput() {
 		format = nil
 	}
-	resp, effectiveMax, err := c.createMessage(ctx, messages, systemPrompt, maxTokens, nil, "", format)
+	resp, effectiveMax, reducedBy, err := c.createMessage(ctx, messages, systemPrompt, maxTokens, nil, "", format)
 	if err != nil {
 		return nil, err
 	}
 	return &ChatResult{
-		Content:        resp.Content,
-		TokensIn:       resp.Usage.InputTokens,
-		TokensOut:      resp.Usage.OutputTokens,
-		DurationMs:     time.Since(start).Milliseconds(),
-		StopReason:     resp.StopReason,
-		MaxTokensAsked: effectiveMax,
+		Content:         resp.Content,
+		TokensIn:        resp.Usage.InputTokens,
+		TokensOut:       resp.Usage.OutputTokens,
+		DurationMs:      time.Since(start).Milliseconds(),
+		StopReason:      resp.StopReason,
+		MaxTokensAsked:  effectiveMax,
+		BudgetReducedBy: reducedBy,
 	}, nil
 }
 

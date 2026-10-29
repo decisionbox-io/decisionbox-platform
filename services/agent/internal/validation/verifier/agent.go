@@ -342,10 +342,14 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 			ceiling := effectiveCeiling(chat, forcedOutput)
 			remedy := "raise " + envOutputKeyFor(s.mode)
 			switch {
-			case ceiling < forcedOutput:
-				// The call itself lowered the budget to fit the model's
-				// window, so no validation setting was the limit.
+			case chat.BudgetReducedBy == ai.OverflowContextWindow:
+				// The call lowered its own budget to fit the model's window,
+				// so no validation setting was the limit.
 				remedy = "point this layer at a model with a larger context window — the request was already reduced to fit this one"
+			case chat.BudgetReducedBy == ai.OverflowOutputCap:
+				// Only the output cap was exceeded; the window may be ample,
+				// so recommending a bigger window would be the wrong model.
+				remedy = "point this layer at a model with a larger output cap — the request was already reduced to this model's maximum"
 			case forcedOutput < mc.MaxOutputTokens || mc.OutputBound == OutputBoundByEnvelope:
 				// Either the share clipped the ceiling, or the rounds already
 				// spent what the verdict needed. Both are the envelope.
