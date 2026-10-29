@@ -435,7 +435,7 @@ func TestFindDuplicates(t *testing.T) {
 	}
 
 	// Search for duplicates from discovery-2 (should find the existing one)
-	results, err := p.FindDuplicates(ctx, []float64{0.1, 0.2, 0.3}, "proj-1", "insight", "disc-2", 0.5)
+	results, err := p.FindDuplicates(ctx, []float64{0.1, 0.2, 0.3}, "proj-1", "insight", []string{"disc-2"}, 0.5)
 	if err != nil {
 		t.Fatalf("FindDuplicates failed: %v", err)
 	}
@@ -447,7 +447,7 @@ func TestFindDuplicates(t *testing.T) {
 	}
 
 	// Search with same discovery ID (should exclude it)
-	results, err = p.FindDuplicates(ctx, []float64{0.1, 0.2, 0.3}, "proj-1", "insight", "disc-1", 0.5)
+	results, err = p.FindDuplicates(ctx, []float64{0.1, 0.2, 0.3}, "proj-1", "insight", []string{"disc-1"}, 0.5)
 	if err != nil {
 		t.Fatalf("FindDuplicates failed: %v", err)
 	}
@@ -461,7 +461,7 @@ func TestFindDuplicatesEmptyVector(t *testing.T) {
 	mock := newMockClient()
 	p := newWithClient(mock)
 
-	_, err := p.FindDuplicates(ctx, []float64{}, "proj-1", "insight", "disc-2", 0.95)
+	_, err := p.FindDuplicates(ctx, []float64{}, "proj-1", "insight", []string{"disc-2"}, 0.95)
 	if err == nil {
 		t.Fatal("expected error for empty vector")
 	}
