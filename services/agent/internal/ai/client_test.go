@@ -64,14 +64,19 @@ func TestSetReasoning(t *testing.T) {
 		t.Errorf("default ReasoningEffort = %q, want %q", got, gollm.ReasoningEffortDefault)
 	}
 
-	// Enabled → every request carries ReasoningEffort=on (providers that don't
-	// wire reasoning ignore it; Ollama capability-gates it).
+	// Enabled → every request carries a CONCRETE level, not the "on"
+	// sentinel. "on" means "reason, I don't mind how much" and each provider
+	// resolves it for itself, but the OpenAI-compatible wire cannot express it
+	// and omits the field — so behind a managed gateway the deployment's
+	// effort never left this process and the gateway applied its own default.
+	// A named level travels. Providers whose models do not take one drop it
+	// (gollm.NormalizeReasoningEffort).
 	client.SetReasoning(true)
 	if _, err := client.Chat(context.Background(), "p", "", 100); err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
-	if got := provider.Calls[1].Request.ReasoningEffort; got != gollm.ReasoningEffortOn {
-		t.Errorf("enabled ReasoningEffort = %q, want %q", got, gollm.ReasoningEffortOn)
+	if got := provider.Calls[1].Request.ReasoningEffort; got != gollm.DefaultReasoningEffort {
+		t.Errorf("enabled ReasoningEffort = %q, want the deployment default %q", got, gollm.DefaultReasoningEffort)
 	}
 
 	// Toggling back off returns to the default.
@@ -81,6 +86,21 @@ func TestSetReasoning(t *testing.T) {
 	}
 	if got := provider.Calls[2].Request.ReasoningEffort; got != gollm.ReasoningEffortDefault {
 		t.Errorf("re-disabled ReasoningEffort = %q, want %q", got, gollm.ReasoningEffortDefault)
+	}
+}
+
+// The deployment override has to reach the request, or an operator lowering it
+// to cut cost keeps paying for the default with nothing to explain why.
+func TestSetReasoningCarriesTheDeploymentOverride(t *testing.T) {
+	t.Setenv(gollm.ReasoningEffortEnvVar, "low")
+	provider := testutil.NewMockLLMProvider()
+	client, _ := New(provider, "test-model")
+	client.SetReasoning(true)
+	if _, err := client.Chat(context.Background(), "p", "", 100); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if got := provider.Calls[0].Request.ReasoningEffort; got != gollm.ReasoningEffortLow {
+		t.Errorf("ReasoningEffort = %q, want the operator's low", got)
 	}
 }
 
@@ -196,11 +216,18 @@ func TestClient_SetStepAndPhase(t *testing.T) {
 	}
 }
 
-func TestChat_DefaultMaxTokens(t *testing.T) {
+// A caller that names no budget gets as much as the model allows, not a fixed
+// number.
+//
+// It used to be a literal 4,096. A literal default is invisible to the caller
+// and silently truncates whichever model outgrows it — the same shape of bug
+// that lost a run's validation verdicts — so the ceiling is resolved from the
+// model instead. Providers clamp it to the real limit and the adaptive
+// context-overflow retry is the net.
+func TestChat_DefaultMaxTokensComesFromTheModel(t *testing.T) {
 	provider := testutil.NewMockLLMProvider()
 	client, _ := New(provider, "test-model")
 
-	// Call CreateMessage with maxTokens=0, should default to 4096
 	_, err := client.CreateMessage(context.Background(), []gollm.Message{{Role: "user", Content: "test"}}, "", 0)
 	if err != nil {
 		t.Fatalf("CreateMessage error: %v", err)
@@ -209,8 +236,14 @@ func TestChat_DefaultMaxTokens(t *testing.T) {
 	if len(provider.Calls) != 1 {
 		t.Fatalf("expected 1 call, got %d", len(provider.Calls))
 	}
-	if provider.Calls[0].Request.MaxTokens != 4096 {
-		t.Errorf("MaxTokens = %d, want 4096 (default)", provider.Calls[0].Request.MaxTokens)
+	want := gollm.GetMaxOutputTokens(client.providerName, "test-model")
+	if got := provider.Calls[0].Request.MaxTokens; got != want {
+		t.Errorf("MaxTokens = %d, want the model's own cap %d", got, want)
+	}
+	// Whatever the resolution answers, it must never be zero: some providers
+	// read a zero max_tokens as "give me everything you have".
+	if provider.Calls[0].Request.MaxTokens <= 0 {
+		t.Errorf("MaxTokens = %d, want a positive ceiling", provider.Calls[0].Request.MaxTokens)
 	}
 }
 

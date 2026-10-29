@@ -47,6 +47,11 @@ type RequestBody struct {
 	// don't ask for structured output keep exactly the shape they always
 	// had.
 	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
+
+	// ReasoningEffort is populated only when the caller named a concrete
+	// level. See BuildRequestBody for why an unset effort sends nothing
+	// rather than a default.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // ResponseFormat is the OpenAI `response_format` object. Only the
@@ -270,6 +275,7 @@ func BuildRequestBody(model string, req gollm.ChatRequest) RequestBody {
 	if tc := translateToolChoice(req.ToolChoice); tc != nil {
 		body.ToolChoice = tc
 	}
+	body.ReasoningEffort = wireReasoningEffort(req.ReasoningEffort)
 	if rf := req.ResponseFormat; rf != nil && len(rf.Schema) > 0 {
 		name := rf.Name
 		if name == "" {
@@ -397,4 +403,36 @@ func ExtractAPIError(raw []byte) *APIError {
 		return nil
 	}
 	return body.Error
+}
+
+// wireReasoningEffort returns the reasoning_effort value to put on the wire,
+// or "" to omit the field.
+//
+// Only an explicitly named level travels. This wire is shared by every
+// OpenAI-compatible backend — OpenAI itself, LiteLLM, vLLM, and the managed
+// gateway — and OpenAI rejects reasoning_effort outright on its non-reasoning
+// models, so injecting a deployment default here would turn a quality setting
+// into a 400 for backends that never asked for it.
+//
+// The deployment default is therefore resolved one hop later, by whichever
+// provider actually speaks to the model and knows whether it takes an effort
+// setting (anthropicwire.OutputConfig). For the managed gateway that provider
+// is the gateway's own; a request that names no level still reaches the model
+// with the deployment default applied there.
+//
+// ReasoningEffortOn and ReasoningEffortOff are deliberately not translated:
+// they are this codebase's intent sentinels, not wire values, and the nearest
+// OpenAI equivalents ("minimal", or omitting the field) each mean something
+// subtly different on a backend we have not tested them against.
+func wireReasoningEffort(effort string) string {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case gollm.ReasoningEffortLow:
+		return gollm.ReasoningEffortLow
+	case gollm.ReasoningEffortMedium:
+		return gollm.ReasoningEffortMedium
+	case gollm.ReasoningEffortHigh:
+		return gollm.ReasoningEffortHigh
+	default:
+		return ""
+	}
 }

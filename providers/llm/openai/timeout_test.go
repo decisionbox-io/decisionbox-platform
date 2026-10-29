@@ -12,7 +12,7 @@ import (
 func TestOpenAI_FactoryWiresTimeout(t *testing.T) {
 	base := gollm.ProviderConfig{
 		"credentials_json": "sk-test",
-		"model":   "gpt-4o",
+		"model":            "gpt-4o",
 	}
 	tests := []struct {
 		name   string

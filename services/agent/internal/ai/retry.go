@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/config"
+	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	logger "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 )
 

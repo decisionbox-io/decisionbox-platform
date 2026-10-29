@@ -68,7 +68,7 @@ type layerSetDeps struct {
 	buildProvider func(ctx context.Context, spec llmlayer.LayerSpec, cred llmlayer.Credential) (gollm.Provider, gollm.ProviderConfig, error)
 	// resolveBudget resolves (window, outputCap) for one target. Defaults to
 	// resolveModelBudget, which includes the live ModelInfoResolver probe.
-	resolveBudget func(ctx context.Context, provider gollm.Provider, spec llmlayer.LayerSpec, persistedWindow int) (window, outputCap int)
+	resolveBudget func(ctx context.Context, provider gollm.Provider, spec llmlayer.LayerSpec, persistedWindow int) (window, outputCap int, reasoning bool)
 	// persistedWindow reads a target's self-calibrated window. Defaults to a
 	// no-op (0) so callers without a Mongo handle need no stub.
 	persistedWindow func(ctx context.Context, spec llmlayer.LayerSpec) int
@@ -137,7 +137,12 @@ func buildLayerSet(ctx context.Context, in layerSetInput) (*layerSet, error) {
 	// an un-overridden layer resolves to it anyway.
 	want := append([]string{llmlayer.DefaultLayer}, layers...)
 
-	type budget struct{ window, outputCap int }
+	type budget struct {
+		window, outputCap int
+		// reasoning is what live detection reported for this target; it only
+		// ever turns the layer's reasoning setting ON, never off.
+		reasoning bool
+	}
 	providers := map[string]gollm.Provider{}
 	configs := map[string]gollm.ProviderConfig{}
 	budgets := map[string]budget{}
@@ -245,8 +250,8 @@ func buildLayerSet(ctx context.Context, in layerSetInput) (*layerSet, error) {
 		budgetKey := providerKey + "\x00" + spec.Model
 		b, resolved := budgets[budgetKey]
 		if !resolved {
-			window, outputCap := deps.resolveBudget(ctx, provider, spec, deps.persistedWindow(ctx, spec))
-			b = budget{window: window, outputCap: outputCap}
+			window, outputCap, reasoning := deps.resolveBudget(ctx, provider, spec, deps.persistedWindow(ctx, spec))
+			b = budget{window: window, outputCap: outputCap, reasoning: reasoning}
 			budgets[budgetKey] = b
 		}
 
@@ -257,7 +262,11 @@ func buildLayerSet(ctx context.Context, in layerSetInput) (*layerSet, error) {
 		}
 		client.SetProvenance(in.projectID, in.runID, spec.Provider)
 		client.SetPhase(layerPhase(layer))
-		client.SetReasoning(spec.Reasoning)
+		// The layer's own setting, widened by what live detection reported:
+		// behind a managed gateway the catalog cannot see the backend model,
+		// so this is the only signal that the model thinks.
+		layerReasoning := spec.Reasoning || b.reasoning
+		client.SetReasoning(layerReasoning)
 		// Both of these reached only the single client before per-layer
 		// models. Applying them to one client now would switch the feature
 		// off for every other layer.
@@ -278,7 +287,7 @@ func buildLayerSet(ctx context.Context, in layerSetInput) (*layerSet, error) {
 			Client:     client,
 			Window:     b.window,
 			OutputCap:  b.outputCap,
-			Reasoning:  spec.Reasoning,
+			Reasoning:  layerReasoning,
 		}
 	}
 
@@ -347,7 +356,7 @@ func newLayerSetDeps(cfg *config.Config, secretProvider gosecrets.Provider, proj
 		buildProvider: func(_ context.Context, spec llmlayer.LayerSpec, cred llmlayer.Credential) (gollm.Provider, gollm.ProviderConfig, error) {
 			return llmlayer.BuildProviderWith(spec, cred, opts)
 		},
-		resolveBudget: func(ctx context.Context, provider gollm.Provider, spec llmlayer.LayerSpec, persisted int) (int, int) {
+		resolveBudget: func(ctx context.Context, provider gollm.Provider, spec llmlayer.LayerSpec, persisted int) (int, int, bool) {
 			return resolveModelBudget(ctx, provider, spec.Provider, spec.Model, gollm.ProviderConfig(spec.Config), persisted)
 		},
 		persistedWindow: func(ctx context.Context, spec llmlayer.LayerSpec) int {

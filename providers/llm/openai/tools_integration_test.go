@@ -39,7 +39,7 @@ func TestInteg_OpenAI_FunctionCall_EndToEnd(t *testing.T) {
 	key := openAIKey(t)
 	p, err := gollm.NewProvider("openai", gollm.ProviderConfig{
 		"credentials_json": key,
-		"model":   openAIModel(),
+		"model":            openAIModel(),
 	})
 	if err != nil {
 		t.Fatalf("NewProvider: %v", err)
@@ -86,7 +86,7 @@ func TestInteg_OpenAI_FunctionCall_RoundTrip(t *testing.T) {
 	key := openAIKey(t)
 	p, err := gollm.NewProvider("openai", gollm.ProviderConfig{
 		"credentials_json": key,
-		"model":   openAIModel(),
+		"model":            openAIModel(),
 	})
 	if err != nil {
 		t.Fatalf("NewProvider: %v", err)
@@ -105,10 +105,10 @@ func TestInteg_OpenAI_FunctionCall_RoundTrip(t *testing.T) {
 	}
 
 	turn1, err := p.Chat(context.Background(), gollm.ChatRequest{
-		Model:     openAIModel(),
-		MaxTokens: 128,
-		Messages:  []gollm.Message{{Role: "user", Content: "Use inspect_table on 'orders'."}},
-		Tools:     []gollm.ToolDefinition{tool},
+		Model:      openAIModel(),
+		MaxTokens:  128,
+		Messages:   []gollm.Message{{Role: "user", Content: "Use inspect_table on 'orders'."}},
+		Tools:      []gollm.ToolDefinition{tool},
 		ToolChoice: "required",
 	})
 	if err != nil {

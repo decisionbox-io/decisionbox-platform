@@ -60,6 +60,9 @@ func (p *AzureFoundryProvider) claudeChat(ctx context.Context, req gollm.ChatReq
 	if req.Temperature > 0 {
 		body["temperature"] = req.Temperature
 	}
+	if oc := anthropicwire.OutputConfig(req.ReasoningEffort, gollm.IsReasoningModel(providerName, req.Model)); oc != nil {
+		body["output_config"] = oc
+	}
 
 	reqBody, err := json.Marshal(body)
 	if err != nil {

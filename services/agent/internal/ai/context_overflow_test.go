@@ -218,7 +218,7 @@ func (f *recordingOverflowLLM) Validate(_ context.Context) error { return nil }
 // the observer so later areas budget correctly.
 func TestCreateMessage_LearnsWindowFromRetryFailure(t *testing.T) {
 	fake := &recordingOverflowLLM{
-		firstErr:  errors.New(bedrockMaxOutputErr),   // "exceeds model maximum (32768)" — no window
+		firstErr:  errors.New(bedrockMaxOutputErr),     // "exceeds model maximum (32768)" — no window
 		secondErr: errors.New(bedrockCharsOverflowErr), // retry reveals "maximum context length is 32768"
 	}
 	client, _ := New(fake, "qwen3-32b")
@@ -282,5 +282,39 @@ func TestCreateMessage_NonOverflow400_NoRetry(t *testing.T) {
 	}
 	if observerFired {
 		t.Fatal("observer must not fire on a non-overflow error")
+	}
+}
+
+// overflowCauseFor must name the same branch reducedMaxTokensForContextOverflow
+// takes: both read the same two numbers out of the message in the same order.
+// A disagreement would have the verifier recommend a remedy for a limit that
+// was not the one the retry worked around — a larger context window for a
+// model whose window was never the problem.
+//
+// Only the branch is asserted. Whether the reducer then finds a usable number
+// depends on the request's own size, not on the message, and the cause is
+// recorded only when a retry actually happens.
+func TestOverflowCauseMatchesTheReducer(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  string
+		want OverflowCause
+	}{
+		{"total-context overflow", bedrockOverflowErr, OverflowContextWindow},
+		{"output cap only", bedrockMaxOutputErr, OverflowOutputCap},
+		// Names a window, so it is window-bound even though the input arrives
+		// in characters.
+		{"window named, input in characters", bedrockCharsOverflowErr, OverflowContextWindow},
+	}
+	for _, c := range cases {
+		if got := overflowCauseFor(errors.New(c.msg)); got != c.want {
+			t.Errorf("%s: cause = %d, want %d", c.name, got, c.want)
+		}
+	}
+	if got := overflowCauseFor(nil); got != OverflowNone {
+		t.Errorf("nil error: cause = %d, want none", got)
+	}
+	if got := overflowCauseFor(errors.New("some unrelated 500")); got != OverflowNone {
+		t.Errorf("unrelated error: cause = %d, want none", got)
 	}
 }

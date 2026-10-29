@@ -240,6 +240,11 @@ func (p *LiteLLMProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gol
 	// isn't sent an oversized max_tokens (rejected with a 4xx upstream).
 	req.MaxTokens = gollm.ClampMaxTokens(req.MaxTokens, p.maxOutputTokens)
 
+	// A model the catalog knows is not a reasoning model rejects
+	// reasoning_effort outright, so the field is dropped for those rather
+	// than turning a quality setting into a 400. A model the catalog does not
+	// know (a managed gateway's alias) keeps it — see NormalizeReasoningEffort.
+	req = gollm.NormalizeReasoningEffort(providerName, model, req)
 	body := openaicompat.BuildRequestBody(model, req)
 
 	jsonBody, err := json.Marshal(body)

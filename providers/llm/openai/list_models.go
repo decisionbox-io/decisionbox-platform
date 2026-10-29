@@ -45,6 +45,10 @@ func (p *OpenAIProvider) ListModels(ctx context.Context) ([]gollm.RemoteModel, e
 			MaxModelLen     int `json:"max_model_len"`
 			MaxInputTokens  int `json:"max_input_tokens"`
 			MaxOutputTokens int `json:"max_output_tokens"`
+			// Reasoning is non-standard too: a managed gateway reports it so
+			// callers can budget for reasoning tokens behind an alias the
+			// catalog cannot see through.
+			Reasoning bool `json:"reasoning"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &decoded); err != nil {
@@ -62,6 +66,7 @@ func (p *OpenAIProvider) ListModels(ctx context.Context) ([]gollm.RemoteModel, e
 			DisplayName:     m.ID,
 			MaxInputTokens:  window,
 			MaxOutputTokens: m.MaxOutputTokens,
+			Reasoning:       m.Reasoning,
 		})
 	}
 	return out, nil
