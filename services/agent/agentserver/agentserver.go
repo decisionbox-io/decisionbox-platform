@@ -927,6 +927,10 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	// killed mid-flight can be resumed instead of paying for the whole
 	// phase again.
 	discoveryCheckpointRepo := database.NewDiscoveryCheckpointRepository(db)
+	// And one row per COMPLETED analysis area, so a run that dies in or
+	// after Phase 4 re-enters at the areas it had not finished rather than
+	// re-running every area from the top.
+	discoveryAnalysisCheckpointRepo := database.NewDiscoveryAnalysisCheckpointRepository(db)
 
 	// Discovery Ledger repositories (compounding discovery, enterprise#261).
 	ledgerRepo := database.NewLedgerRepository(db)
@@ -953,6 +957,11 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		// and refusing to run discovery over it would trade a working run
 		// for a retention problem.
 		applog.WithError(err).Warn("Failed to ensure discovery checkpoint indexes")
+	}
+	if err := discoveryAnalysisCheckpointRepo.EnsureIndexes(ctx); err != nil {
+		// Same reasoning as the exploration checkpoints above: a warning,
+		// because the writes still work without the indexes.
+		applog.WithError(err).Warn("Failed to ensure discovery analysis checkpoint indexes")
 	}
 	for _, li := range []interface{ EnsureIndexes(context.Context) error }{
 		ledgerRepo, ledgerFindingRepo, ledgerTaskRepo, ledgerLearningRepo, ledgerProposalRepo,
@@ -1121,7 +1130,8 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		VectorStoreConfigured:   cfg.Qdrant.URL != "",
 		EmbeddingProvider:       embeddingProvider,
 		EmbedIndexStore:         discovery.NewMongoEmbedIndexStore(db),
-		DiscoveryCheckpointRepo: discoveryCheckpointRepo,
+		DiscoveryCheckpointRepo:         discoveryCheckpointRepo,
+		DiscoveryAnalysisCheckpointRepo: discoveryAnalysisCheckpointRepo,
 		SchemaRetriever:         schemaRetriever,
 		SchemaCache:             schemaCache,
 		WarehouseHash:           warehouseHash,

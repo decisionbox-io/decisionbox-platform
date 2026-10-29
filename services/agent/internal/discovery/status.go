@@ -364,25 +364,29 @@ func (s *StatusReporter) AddAnalysisStep(ctx context.Context, areaID, areaName s
 	if !s.enabled() {
 		return
 	}
+	step := analysisRunStep(areaName, insightCount, errStr, inputTokens, outputTokens)
+	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, s.attempt, step); err != nil {
+		logger.WithError(err).Warn("failed to add analysis step")
+	}
+}
 
+// analysisRunStep builds the live-feed row for one analysis area. Shared by
+// the live hook and by ReplayAnalysisArea so the two renderings of the same
+// area cannot drift.
+func analysisRunStep(areaName string, insightCount int, errStr string, inputTokens, outputTokens int) models.RunStep {
 	msg := fmt.Sprintf("Analyzed %s: %d insights found", areaName, insightCount)
 	stepType := "analysis"
 	if errStr != "" {
 		msg = fmt.Sprintf("Analysis of %s failed: %s", areaName, errStr)
 		stepType = "error"
 	}
-
-	step := models.RunStep{
+	return models.RunStep{
 		Phase:        models.PhaseAnalysis,
 		Type:         stepType,
 		Message:      msg,
 		Error:        errStr,
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,
-	}
-
-	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, s.attempt, step); err != nil {
-		logger.WithError(err).Warn("failed to add analysis step")
 	}
 }
 
@@ -391,17 +395,20 @@ func (s *StatusReporter) AddInsightStep(ctx context.Context, name, severity, are
 	if !s.enabled() {
 		return
 	}
+	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, s.attempt, insightRunStep(name, severity)); err != nil {
+		logger.WithError(err).Warn("failed to add insight step")
+	}
+}
 
-	step := models.RunStep{
+// insightRunStep builds the live-feed row for one discovered insight.
+// Shared with ReplayAnalysisArea; see analysisRunStep.
+func insightRunStep(name, severity string) models.RunStep {
+	return models.RunStep{
 		Phase:           models.PhaseAnalysis,
 		Type:            "insight",
 		Message:         fmt.Sprintf("Found: %s (%s)", name, severity),
 		InsightName:     name,
 		InsightSeverity: severity,
-	}
-
-	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, s.attempt, step); err != nil {
-		logger.WithError(err).Warn("failed to add insight step")
 	}
 }
 
@@ -456,22 +463,67 @@ func (s *StatusReporter) AddValidationStep(ctx context.Context, insightName, sta
 	if !s.enabled() {
 		return
 	}
+	step := validationRunStep(insightName, status, claimed, verified, inputTokens, outputTokens)
+	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, s.attempt, step); err != nil {
+		logger.WithError(err).Warn("failed to add validation step")
+	}
+}
 
+// validationRunStep builds the live-feed row for one validated document.
+// Shared with ReplayAnalysisArea; see analysisRunStep.
+func validationRunStep(insightName, status string, claimed, verified, inputTokens, outputTokens int) models.RunStep {
 	msg := fmt.Sprintf("Validated \"%s\": %s", insightName, status)
 	if claimed > 0 {
 		msg = fmt.Sprintf("Validated \"%s\": %s (claimed: %d, verified: %d)", insightName, status, claimed, verified)
 	}
-
-	step := models.RunStep{
+	return models.RunStep{
 		Phase:        models.PhaseValidation,
 		Type:         "validation",
 		Message:      msg,
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,
 	}
+}
 
-	if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, s.attempt, step); err != nil {
-		logger.WithError(err).Warn("failed to add validation step")
+// ReplayAnalysisArea re-emits one already-completed analysis area into this
+// attempt's live feed: the area's own row, one row per insight it found, and
+// one row per document it validated.
+//
+// A resume needs this for the reason ReplayExplorationStep exists one phase
+// earlier — the feed is attempt-scoped, so rows written by the attempt that
+// did the work are not served to this one, and a resumed run's log would
+// otherwise show recommendations drawn from insights nobody can see.
+//
+// Rows ONLY. No SetPhase, no analysis counters, no insight tally: those
+// happened on the attempt that produced the area and the run document carries
+// them across attempts, so repeating them would double-count.
+//
+// Each row keeps its original timestamp — the area's RunAt, each insight's
+// DiscoveredAt, each result's ValidatedAt — so the feed shows when the work
+// actually happened rather than when it was restored.
+func (s *StatusReporter) ReplayAnalysisArea(ctx context.Context, step models.AnalysisStep) {
+	if !s.enabled() {
+		return
+	}
+	emit := func(row models.RunStep, what string) {
+		if err := s.runStepRepo.AddStep(ctx, s.runID, s.projectID, s.attempt, row); err != nil {
+			logger.WithError(err).WithField("row", what).Warn("failed to re-emit a restored row into the live feed")
+		}
+	}
+
+	area := analysisRunStep(step.AreaName, len(step.Insights), step.Error, step.TokensIn, step.TokensOut)
+	area.Timestamp = step.RunAt
+	emit(area, "analysis area")
+
+	for _, insight := range step.Insights {
+		row := insightRunStep(insight.Name, insight.Severity)
+		row.Timestamp = insight.DiscoveredAt
+		emit(row, "insight")
+	}
+	for _, vr := range step.ValidationResults {
+		row := validationRunStep(vr.ClaimedMetric, vr.Status, vr.ClaimedCount, vr.VerifiedCount, vr.InputTokens, vr.OutputTokens)
+		row.Timestamp = vr.ValidatedAt
+		emit(row, "validation")
 	}
 }
 

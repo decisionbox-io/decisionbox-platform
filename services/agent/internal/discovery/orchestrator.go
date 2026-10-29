@@ -195,6 +195,24 @@ type Orchestrator struct {
 	// without changing anything else about the run.
 	checkpointRepo explorationCheckpointStore
 
+	// analysisCheckpointRepo durably records each COMPLETED analysis area,
+	// so a run that dies in or after Phase 4 re-enters at the areas it had
+	// not finished. Same interface-for-testability and nil-disables
+	// reasoning as checkpointRepo above.
+	analysisCheckpointRepo analysisCheckpointStore
+
+	// explorationSummaryAttempt is the attempt that wrote THIS run's
+	// exploration summary: this attempt's number when it explored and the
+	// summary write landed, or the previous attempt's when this one skipped
+	// exploration on the strength of it.
+	//
+	// Zero means no durable summary exists, which disables area
+	// checkpointing — correctly, because such a run re-explores on resume
+	// and an area analysed over the exploration it is about to discard must
+	// never be restored. It is the value area rows are stamped and filtered
+	// on; see database.DiscoveryAnalysisCheckpointRepository.LoadAreas.
+	explorationSummaryAttempt int
+
 	// resume is the previous attempts' state when this run is a resume, nil
 	// otherwise. Every read goes through the nil-safe helpers in
 	// orchestrator_resume.go, so a normal run takes exactly today's path.
@@ -444,6 +462,12 @@ type OrchestratorOptions struct {
 	// killed mid-flight can be resumed from it. Nil disables checkpointing.
 	DiscoveryCheckpointRepo *database.DiscoveryCheckpointRepository
 
+	// DiscoveryAnalysisCheckpointRepo persists one row per COMPLETED
+	// analysis area so a resumed run restores those areas instead of
+	// re-running them. Nil disables per-area resume; exploration
+	// checkpointing is unaffected either way.
+	DiscoveryAnalysisCheckpointRepo *database.DiscoveryAnalysisCheckpointRepository
+
 	// SchemaRetriever is the Qdrant-backed top-K schema retriever.
 	// Required — discovery is gated on schema_index_status == "ready",
 	// so the indexer has built the per-project Qdrant collection before
@@ -595,6 +619,12 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		checkpointRepo = opts.DiscoveryCheckpointRepo
 	}
 
+	// And the same for the analysis-area store, for the same reason.
+	var analysisCheckpointRepo analysisCheckpointStore
+	if opts.DiscoveryAnalysisCheckpointRepo != nil {
+		analysisCheckpointRepo = opts.DiscoveryAnalysisCheckpointRepo
+	}
+
 	// Same typed-nil → untyped-nil normalization as discoveryLogRepo so the
 	// `o.questionRepo == nil` guard in runPhaseQuestions is not fooled by a nil
 	// concrete pointer boxed into a non-nil interface.
@@ -628,53 +658,54 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 	}
 
 	return &Orchestrator{
-		aiClient:              opts.AIClient,
-		warehouse:             opts.Warehouse,
-		contextRepo:           opts.ContextRepo,
-		discoveryRepo:         opts.DiscoveryRepo,
-		discoveryLogRepo:      discoveryLogRepo,
-		questionRepo:          questionRepo,
-		ledgerRepo:            ledgerRepo,
-		findingRepo:           findingRepo,
-		taskRepo:              taskRepo,
-		learningRepo:          learningRepo,
-		proposalRepo:          proposalRepo,
-		feedbackRepo:          opts.FeedbackRepo,
-		debugLogRepo:          opts.DebugLogRepo,
-		debugLogger:           debugLogger,
-		statusReporter:        statusReporter,
-		projectID:             opts.ProjectID,
-		domain:                opts.Domain,
-		category:              opts.Category,
-		language:              opts.Language,
-		profile:               opts.Profile,
-		projectPrompts:        opts.ProjectPrompts,
-		datasets:              opts.Datasets,
-		filterField:           opts.FilterField,
-		warehouseProviderSlug: opts.WarehouseProvider,
-		filterValue:           opts.FilterValue,
-		llmProvider:           opts.LLMProvider,
-		llmModel:              opts.LLMModel,
-		llmConfig:             opts.LLMConfig,
-		layers:                opts.LayerClients,
-		calibratedWindows:     map[string]int{},
-		llmInputWindow:        opts.LLMInputWindow,
-		llmOutputCap:          opts.LLMOutputCap,
-		modelWindowRepo:       opts.ModelWindowRepo,
-		vectorStore:           opts.VectorStore,
-		vectorStoreConfigured: opts.VectorStoreConfigured,
-		embeddingProvider:     opts.EmbeddingProvider,
-		embedIndexStore:       opts.EmbedIndexStore,
-		checkpointRepo:        checkpointRepo,
-		embedder:              opts.EmbeddingProvider, // same interface, named differently to avoid ambiguity
-		schemaRetriever:       opts.SchemaRetriever,
-		schemaCache:           opts.SchemaCache,
-		warehouseHash:         opts.WarehouseHash,
-		warehouseID:           opts.WarehouseID,
-		warehouseProviders:    opts.WarehouseProviders,
-		warehouses:            opts.Warehouses,
-		runStepIndex:          opts.RunStepIndex,
-		runID:                 opts.RunID,
+		aiClient:               opts.AIClient,
+		warehouse:              opts.Warehouse,
+		contextRepo:            opts.ContextRepo,
+		discoveryRepo:          opts.DiscoveryRepo,
+		discoveryLogRepo:       discoveryLogRepo,
+		questionRepo:           questionRepo,
+		ledgerRepo:             ledgerRepo,
+		findingRepo:            findingRepo,
+		taskRepo:               taskRepo,
+		learningRepo:           learningRepo,
+		proposalRepo:           proposalRepo,
+		feedbackRepo:           opts.FeedbackRepo,
+		debugLogRepo:           opts.DebugLogRepo,
+		debugLogger:            debugLogger,
+		statusReporter:         statusReporter,
+		projectID:              opts.ProjectID,
+		domain:                 opts.Domain,
+		category:               opts.Category,
+		language:               opts.Language,
+		profile:                opts.Profile,
+		projectPrompts:         opts.ProjectPrompts,
+		datasets:               opts.Datasets,
+		filterField:            opts.FilterField,
+		warehouseProviderSlug:  opts.WarehouseProvider,
+		filterValue:            opts.FilterValue,
+		llmProvider:            opts.LLMProvider,
+		llmModel:               opts.LLMModel,
+		llmConfig:              opts.LLMConfig,
+		layers:                 opts.LayerClients,
+		calibratedWindows:      map[string]int{},
+		llmInputWindow:         opts.LLMInputWindow,
+		llmOutputCap:           opts.LLMOutputCap,
+		modelWindowRepo:        opts.ModelWindowRepo,
+		vectorStore:            opts.VectorStore,
+		vectorStoreConfigured:  opts.VectorStoreConfigured,
+		embeddingProvider:      opts.EmbeddingProvider,
+		embedIndexStore:        opts.EmbedIndexStore,
+		checkpointRepo:         checkpointRepo,
+		analysisCheckpointRepo: analysisCheckpointRepo,
+		embedder:               opts.EmbeddingProvider, // same interface, named differently to avoid ambiguity
+		schemaRetriever:        opts.SchemaRetriever,
+		schemaCache:            opts.SchemaCache,
+		warehouseHash:          opts.WarehouseHash,
+		warehouseID:            opts.WarehouseID,
+		warehouseProviders:     opts.WarehouseProviders,
+		warehouses:             opts.Warehouses,
+		runStepIndex:           opts.RunStepIndex,
+		runID:                  opts.RunID,
 	}
 }
 
@@ -1296,6 +1327,11 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// re-index below is what keeps the analysis picker from ranking
 		// against an empty collection for the whole run.
 		explorationResult = o.explorationFromCheckpoints()
+		// This attempt works over the exploration that summary describes,
+		// so its attempt is what any analysis area this run restores — or
+		// checkpoints — must be stamped with. See
+		// models.ExplorationCheckpointSummary.Attempt.
+		o.explorationSummaryAttempt = o.resume.Checkpoints.Summary.Attempt
 		o.reindexReplayedSteps(ctx, explorationResult.Steps)
 		// This path reads the checkpoints without rewriting them, so their
 		// retention clock would still be running from the previous attempt.
@@ -1391,7 +1427,27 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	if o.ownershipLost(ctx, "analysis") {
 		return nil, ai.ErrAttemptSuperseded
 	}
-	o.statusReporter.SetPhase(ctx, models.PhaseAnalysis, "Analyzing discoveries by category...", 65)
+	// The areas a previous attempt already finished. Empty on every run
+	// that is not a resume, which is what keeps this phase on exactly the
+	// path it always took.
+	completedAreas := o.loadCompletedAreas(ctx)
+	// The feed is attempt-scoped, so this attempt has to own a copy of the
+	// restored areas' rows or its log shows recommendations drawn from
+	// insights the operator cannot see. Once, here, in RunAt order — see
+	// replayAnalysisFeedForResume.
+	o.replayAnalysisFeedForResume(ctx, completedAreas)
+	analysisDetail := "Analyzing discoveries by category..."
+	if restorable := countRestorableAreas(runAreas, completedAreas); restorable > 0 {
+		// Same purpose as resumePhaseDetail one phase earlier: the live
+		// panel explains why this run is doing less work than its area
+		// count suggests, instead of looking like it skipped something.
+		//
+		// Counted against THIS run's areas rather than the row count, which
+		// can legitimately be larger — see countRestorableAreas.
+		analysisDetail = fmt.Sprintf("Analyzing discoveries by category... (%d of %d areas already complete)",
+			restorable, len(runAreas))
+	}
+	o.statusReporter.SetPhase(ctx, models.PhaseAnalysis, analysisDetail, 65)
 	o.setLLMPhase(models.PhaseAnalysis)
 	allInsights := make([]models.Insight, 0)
 	analysisLog := make([]models.AnalysisStep, 0)
@@ -1452,6 +1508,31 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		if o.ownershipLost(ctx, "analysis area "+area.ID) {
 			return nil, ai.ErrAttemptSuperseded
 		}
+
+		// Already analysed on a previous attempt: merge its output back in
+		// and move on. The loop body produces nothing else that outlives
+		// the iteration — the analysis step, its insights, and its slice of
+		// the run's validation budget — so restoring an area is exactly
+		// this, and everything downstream (the validation totals, the
+		// failed-area count and runType, the Phase 7 result, the split
+		// logs, Phase 8) reads the union without knowing the difference.
+		//
+		// Nothing below runs for it, which is the point: no picker search,
+		// no analysis call, no per-insight validation, and no counter bumps
+		// that the run document already carries forward from the attempt
+		// that earned them. Its live-feed rows were re-emitted in one pass
+		// before the loop.
+		if cp, ok := completedAreas[area.ID]; ok {
+			analysisLog, allInsights, insightsValidatedThisRun = restoreArea(
+				cp, analysisLog, allInsights, insightsValidatedThisRun)
+			applog.WithFields(applog.Fields{
+				"area":               area.ID,
+				"insights":           len(cp.Step.Insights),
+				"insights_validated": cp.InsightsValidated,
+			}).Info("Analysis area restored from a previous attempt — not re-run")
+			continue
+		}
+
 		areaPrompt, ok := prompts.AnalysisAreas[area.ID]
 		if !ok {
 			applog.WithField("area", area.ID).Warn("No prompt for analysis area, skipping")
@@ -1614,6 +1695,13 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// across areas), and stamps Validation on each insight in
 		// place. Returns one ValidationResult per insight.
 
+		// validatedBefore measures this area's slice of the run's
+		// validation budget rather than inferring it: the difference is
+		// checkpointed, so a resumed run restores the budget instead of
+		// handing the areas it still has to run a fresh one. See
+		// models.AnalysisAreaCheckpoint.InsightsValidated.
+		validatedBefore := insightsValidatedThisRun
+
 		// Skip validation when the analysis step produced no insights.
 		// The verifier only runs for successfully parsed insights.
 		if len(insights) > 0 {
@@ -1634,6 +1722,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 		analysisLog = append(analysisLog, step)
 		allInsights = append(allInsights, insights...)
+
+		// The area is finished, so record it — before the display rows
+		// below, which is v1's checkpoint-before-shared-writes ordering: an
+		// attempt that has lost the run stops here rather than writing rows
+		// on the owner's behalf.
+		if err := o.checkpointAnalysisArea(ctx, step, insightsValidatedThisRun-validatedBefore); err != nil {
+			return nil, err
+		}
 
 		// Report analysis completion and insights to status
 		o.statusReporter.AddAnalysisStep(ctx, area.ID, area.Name, len(insights), "", step.TokensIn, step.TokensOut)
