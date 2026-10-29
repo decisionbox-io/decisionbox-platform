@@ -211,6 +211,13 @@ func (o *Orchestrator) fenceReplayedStep(ctx context.Context, step int) error {
 // checkpointExplorationSummary records that exploration finished. Its
 // presence is what lets a later attempt go straight to analysis — zero
 // exploration LLM calls, zero warehouse queries.
+//
+// It also sets o.explorationSummaryAttempt, and only on a write that landed.
+// That field is what the per-area analysis checkpoints are stamped with, so
+// a run whose summary write FAILED goes on to analyse without checkpointing
+// any area — which is right, because such a run re-explores on resume and an
+// area analysed over the exploration it is about to discard must never be
+// restored.
 // Returns ErrAttemptSuperseded when this attempt has lost the run, which the
 // caller must propagate rather than carry on: everything after exploration —
 // analysis, recommendations, validation — is expensive, and a superseded
@@ -255,6 +262,9 @@ func (o *Orchestrator) checkpointExplorationSummary(ctx context.Context, res *ai
 		return nil
 	}
 	o.keepStepIndex = true
+	// The summary is durable, so areas analysed from here on can be
+	// checkpointed against it. See the doc comment above.
+	o.explorationSummaryAttempt = o.resume.attemptNumber()
 	return nil
 }
 
@@ -693,6 +703,12 @@ func retireDiscovery(ctx context.Context, runID, discoveryID string, deps retire
 // keeping the whole vector collection alive for them leaked it until some
 // later agent boot.
 func (o *Orchestrator) discardCheckpoints(ctx context.Context, why string) {
+	// The analysis-area rows go with them, and from HERE rather than from a
+	// second call site: this is the one place a terminal-and-not-resumable
+	// run drops what made it resumable, so keeping the pair together is what
+	// stops the two collections drifting apart.
+	o.discardAnalysisCheckpoints(ctx, why)
+
 	if o.checkpointRepo == nil || o.runID == "" {
 		return
 	}
