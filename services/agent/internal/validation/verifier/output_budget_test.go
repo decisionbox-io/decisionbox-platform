@@ -3,6 +3,7 @@ package verifier
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +18,10 @@ type scriptedReply struct {
 	content    string
 	stopReason string
 	tokensOut  int
+	// maxTokensAsked is what the call reports having actually requested,
+	// which the adaptive context-overflow retry can lower below what the
+	// loop passed in. Zero leaves it unreported.
+	maxTokensAsked int
 }
 
 // stubBudgetLLM scripts replies that carry a stop reason and an output-token
@@ -38,10 +43,11 @@ func (s *stubBudgetLLM) Chat(_ context.Context, _, _ string, max int) (*ai.ChatR
 	r := s.scripted[s.calls]
 	s.calls++
 	return &ai.ChatResult{
-		Content:    r.content,
-		TokensIn:   100,
-		TokensOut:  r.tokensOut,
-		StopReason: r.stopReason,
+		Content:        r.content,
+		TokensIn:       100,
+		TokensOut:      r.tokensOut,
+		StopReason:     r.stopReason,
+		MaxTokensAsked: r.maxTokensAsked,
 	}, nil
 }
 
@@ -468,5 +474,42 @@ func TestTiedConstraintsResolveToTheHardestOne(t *testing.T) {
 	cfg.ApplyModelOutputCaps(0, 128000)
 	if cfg.Refuter.OutputBound != OutputBoundByOperator {
 		t.Errorf("untied operator value: bound = %d, want operator-bound", cfg.Refuter.OutputBound)
+	}
+}
+
+// The adaptive context-overflow retry lowers max_tokens mid-call, so the
+// budget the loop asked for was never the one in force. Diagnosing against our
+// own number names a ceiling that never applied — and sends the operator to a
+// validation knob when the model's window was the limit.
+func TestTruncationReportsTheBudgetActuallyInForce(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Verifier.MaxRounds = 1
+	cfg.ApplyModelOutputCaps(128000, 0)
+	asked := cfg.Verifier.MaxOutputTokens
+	const retried = 1004 // what the overflow retry settled on
+
+	cut := `{"submit_verdict": {"doc_id": "d1", "claim_verd`
+	llm := &stubBudgetLLM{scripted: []scriptedReply{
+		{content: cut, stopReason: "max_tokens", tokensOut: retried, maxTokensAsked: retried},
+		{content: cut, stopReason: "max_tokens", tokensOut: retried, maxTokensAsked: retried},
+	}}
+	a, _ := NewAgent(llm, cfg)
+	v, err := a.Verify(context.Background(), minimalBundle(), &stubExecutor{})
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if !strings.Contains(v.OverallReason, strconv.Itoa(retried)) {
+		t.Errorf("reason does not report the %d-token budget that was in force: %q", retried, v.OverallReason)
+	}
+	if strings.Contains(v.OverallReason, strconv.Itoa(asked)) {
+		t.Errorf("reason reports the %d-token budget we asked for, which never applied: %q", asked, v.OverallReason)
+	}
+	if !strings.Contains(v.OverallReason, "context window") {
+		t.Errorf("reason does not blame the model's window: %q", v.OverallReason)
+	}
+	for _, knob := range []string{EnvVerifierOutput, EnvVerifierTokenCap} {
+		if strings.Contains(v.OverallReason, knob) {
+			t.Errorf("reason names %s, but the call had already been reduced to fit the model: %q", knob, v.OverallReason)
+		}
 	}
 }

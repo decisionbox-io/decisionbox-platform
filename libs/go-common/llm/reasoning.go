@@ -81,22 +81,28 @@ func deploymentReasoningEffort() string {
 	}
 }
 
-// NormalizeReasoningEffort clears ChatRequest.ReasoningEffort for a model the
-// catalog declares rejects one (ModelEntry.RejectsReasoningEffort). Providers
-// speaking a wire that carries the field call it before serialising.
+// NormalizeReasoningEffort clears ChatRequest.ReasoningEffort unless the
+// catalog positively identifies the model as a reasoning model. Providers on
+// a wire that carries the field as a plain request key call it before
+// serialising.
 //
-// The gate is an explicit declaration, not the absence of Reasoning:true.
-// Treating that absence as a denial was wrong twice over: most catalog rows
-// never set Reasoning at all — including OpenAI's own o-series and GPT-5,
-// which accept the field — and the rows standing in for a managed gateway's
-// alias cannot answer, because which backend the alias routes to is decided
-// per organisation. Both read as "does not reason", and both had the effort
-// stripped one line before the wire, silently.
+// Positive evidence, not absence of a denial. Two rounds of trying the other
+// way showed why: the field is rejected outright by the chat models that
+// predate it, and the set of targets whose capability we cannot know is open
+// — an Azure deployment id is chosen by the customer, and a managed gateway's
+// alias stands for a backend picked per organisation. A denial list can never
+// cover an open set, so an unknown target would either collect a 400 or be
+// guessed at. Omitting the field there costs nothing: a model that takes an
+// effort setting applies its own default, which is what it did before this
+// existed.
 //
-// So the default is to send what the caller asked for. A caller that set an
-// effort did so because the layer's own resolution — the operator's toggle,
-// the catalog, or live model metadata — said the target reasons, and that is
-// better information than a catalog default.
+// It follows that a deployment override does not cross an opaque hop. Behind
+// the managed gateway the platform omits the field and the gateway applies
+// its own LLM_REASONING_EFFORT — which is where a cloud operator sets it
+// anyway, and which that gateway resolves against the real model id. The
+// Anthropic wire needs none of this: it sends effort through
+// anthropicwire.OutputConfig, gated on the same catalog answer about a model
+// id the catalog knows exactly.
 //
 // fallbackModel is the model the provider will send when the request names
 // none, so callers pass exactly what they pass to their request builder and
@@ -106,23 +112,8 @@ func NormalizeReasoningEffort(providerName, fallbackModel string, req ChatReques
 	if model == "" {
 		model = fallbackModel
 	}
-	if RejectsReasoningEffort(providerName, model) {
+	if !IsReasoningModel(providerName, model) {
 		req.ReasoningEffort = ReasoningEffortDefault
 	}
 	return req
-}
-
-// RejectsReasoningEffort reports whether the catalog row for (provider, model)
-// declares that the model errors on a reasoning-effort field. False for a
-// model the catalog does not know — see NormalizeReasoningEffort for why
-// silence is not a denial.
-func RejectsReasoningEffort(providerName, model string) bool {
-	providersMu.RLock()
-	meta, ok := providerMeta[providerName]
-	providersMu.RUnlock()
-	if !ok {
-		return false
-	}
-	e, found := meta.FindModel(model)
-	return found && e.RejectsReasoningEffort
 }

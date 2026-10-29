@@ -339,8 +339,13 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 		reason := "forced final round produced no verdict"
 		if outputCapHit(chat, forcedOutput) {
 			// Name what can actually move this number.
+			ceiling := effectiveCeiling(chat, forcedOutput)
 			remedy := "raise " + envOutputKeyFor(s.mode)
 			switch {
+			case ceiling < forcedOutput:
+				// The call itself lowered the budget to fit the model's
+				// window, so no validation setting was the limit.
+				remedy = "point this layer at a model with a larger context window — the request was already reduced to fit this one"
 			case forcedOutput < mc.MaxOutputTokens || mc.OutputBound == OutputBoundByEnvelope:
 				// Either the share clipped the ceiling, or the rounds already
 				// spent what the verdict needed. Both are the envelope.
@@ -354,10 +359,10 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 			// an operator has to act on.
 			reason = fmt.Sprintf(
 				"forced final round was cut off at the %d-token output ceiling before it finished the verdict; %s",
-				forcedOutput, remedy)
+				ceiling, remedy)
 			applog.WithFields(applog.Fields{
 				"mode":        s.mode,
-				"max_tokens":  forcedOutput,
+				"max_tokens":  ceiling,
 				"tokens_out":  chat.TokensOut,
 				"stop_reason": chat.StopReason,
 				"remedy":      remedy,
@@ -751,7 +756,22 @@ func outputCapHit(chat *ai.ChatResult, maxTokens int) bool {
 	if chat.Truncated() {
 		return true
 	}
-	return maxTokens > 0 && chat.TokensOut >= maxTokens
+	ceiling := effectiveCeiling(chat, maxTokens)
+	return ceiling > 0 && chat.TokensOut >= ceiling
+}
+
+// effectiveCeiling is the output budget that was actually in force: the one
+// the call reports having asked for, falling back to what we requested when
+// it does not say (a stubbed client, an older path).
+//
+// They differ when the adaptive context-overflow retry lowers max_tokens
+// mid-call. Reporting our own number then names a ceiling that was never in
+// force — and sends the operator to a knob that was not the limit.
+func effectiveCeiling(chat *ai.ChatResult, requested int) int {
+	if chat != nil && chat.MaxTokensAsked > 0 {
+		return chat.MaxTokensAsked
+	}
+	return requested
 }
 
 // parseFailureDetail annotates a mid-loop parse error with the output ceiling
@@ -760,7 +780,8 @@ func outputCapHit(chat *ai.ChatResult, maxTokens int) bool {
 // payload.
 func parseFailureDetail(chat *ai.ChatResult, maxTokens int, perr error) string {
 	if outputCapHit(chat, maxTokens) {
-		return fmt.Sprintf("%s (response was cut off at the %d-token output ceiling — emit a shorter payload)", perr.Error(), maxTokens)
+		return fmt.Sprintf("%s (response was cut off at the %d-token output ceiling — emit a shorter payload)",
+			perr.Error(), effectiveCeiling(chat, maxTokens))
 	}
 	return perr.Error()
 }

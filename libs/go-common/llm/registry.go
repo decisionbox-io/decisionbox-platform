@@ -217,18 +217,6 @@ type ModelEntry struct {
 	// a short task such as a table description gets a plain, fast answer, so
 	// the blurb generator accepts the model. Meaningful only with Reasoning.
 	AdaptiveThinking bool
-
-	// RejectsReasoningEffort declares that the model returns an error for a
-	// reasoning_effort / effort field, so callers must not send one.
-	//
-	// Stated positively, like RejectsForcedToolChoice, because the absence of
-	// Reasoning:true is not evidence of rejection. Most rows simply never set
-	// Reasoning — and the rows that stand in for a target resolved elsewhere
-	// (a managed gateway's alias, whose backend is chosen per organisation)
-	// could not answer even if they wanted to. Reading that silence as a
-	// denial strips the field from models that accept it, which is both a
-	// silent quality regression and impossible to notice from the outside.
-	RejectsReasoningEffort bool
 }
 
 // matches reports whether id resolves to this entry. Exact,
