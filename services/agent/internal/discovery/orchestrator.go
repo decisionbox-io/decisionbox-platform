@@ -1321,6 +1321,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		if rendered := o.figureWriter().renderInsightFigures(insights); rendered.resolved > 0 || rendered.inlined > 0 || rendered.unresolved > 0 {
 			step.FiguresInlined = rendered.inlined
 			step.FigureRefsUnresolved = rendered.unresolved
+			step.FiguresValueUnreadable = rendered.valueUnreadable
 		}
 
 		// Settle every quantifier claim the model declared against the rows of
@@ -2147,7 +2148,27 @@ func (o *Orchestrator) analyzeAreaInsights(ctx context.Context, areaID, prompt s
 			err        error
 		)
 		if attempt == 0 {
-			chatResult, err = o.aiClient.Chat(ctx, prompt, "", maxTokens)
+			// The first call carries the schema too, where the provider supports it.
+			//
+			// It did not, and the reason it did not was measured to be worth nothing: the
+			// schema was attached on a corrective retry alone, and across 189 recorded
+			// analysis steps exactly one ever retried -- none on either arm of any
+			// two-model round, and that one kept zero insights anyway. So every field
+			// description in insightResponseSchema, including the rule that a number read
+			// from the rows is named rather than typed, was text no model saw on the call
+			// that writes the insights. The recommendation phase has sent its schema from
+			// attempt 0 since platform#340.
+			//
+			// ChatWithFormat self-gates on SupportsStructuredOutput, so this stays a no-op
+			// on providers without it and the tolerant per-item parser remains the net
+			// everywhere. Reversible without a rebuild through analysisStructuredOutputEnv,
+			// because this changes the shape of every analysis call rather than its text:
+			// on the Anthropic wire a response format is a forced tool's input schema.
+			if analysisStructuredOutputEnabled() {
+				chatResult, err = o.aiClient.ChatWithFormat(ctx, prompt, "", maxTokens, insightFormat)
+			} else {
+				chatResult, err = o.aiClient.Chat(ctx, prompt, "", maxTokens)
+			}
 		} else {
 			out.parseRetries = attempt
 			attemptPrompt := prompt + analysisRepairSuffix(lastParseErr)
@@ -2388,7 +2409,24 @@ const (
 
 	// analysisParseMaxRetriesEnv overrides defaultAnalysisParseMaxRetries.
 	analysisParseMaxRetriesEnv = "ANALYSIS_PARSE_MAX_RETRIES"
+
+	// analysisStructuredOutputEnv turns off sending the insight schema on the first
+	// analysis call, restoring the plain Chat that attempt 0 used to make.
+	//
+	// A switch rather than a constant because this is the one change in this layer that
+	// alters the shape of a call instead of its text: on the Anthropic wire a response
+	// format is a forced tool's input schema, and the analysis phase is the phase that
+	// was deliberately left byte-identical for models already producing good results. If
+	// a deployment regresses, it has to be recoverable without waiting for an image.
+	analysisStructuredOutputEnv = "ANALYSIS_STRUCTURED_OUTPUT"
 )
+
+// analysisStructuredOutputEnabled reports whether the first analysis call carries the
+// insight schema. Default on: the schema is where the field descriptions live, and a
+// description on a call no model receives is not a contract.
+func analysisStructuredOutputEnabled() bool {
+	return goconfig.GetEnvAsBool(analysisStructuredOutputEnv, true)
+}
 
 // Recommendation-parse tunables (issue #342).
 const (

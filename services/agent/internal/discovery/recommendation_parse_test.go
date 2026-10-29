@@ -364,16 +364,16 @@ func TestRecommendationSchema_MatchesStructTags(t *testing.T) {
 	impTags := jsonTagSet(reflect.TypeOf(models.Impact{}))
 
 	schema := recommendationResponseSchema()
-	props := schema["properties"].(map[string]interface{})
+	props := schemaProperties(schema["properties"])
 	recItems := props["recommendations"].(map[string]interface{})["items"].(map[string]interface{})
-	recProps := recItems["properties"].(map[string]interface{})
+	recProps := schemaProperties(recItems["properties"])
 
 	for k := range recProps {
 		if !recTags[k] {
 			t.Errorf("schema recommendation property %q has no matching json tag on models.Recommendation", k)
 		}
 	}
-	impProps := recProps["expected_impact"].(map[string]interface{})["properties"].(map[string]interface{})
+	impProps := schemaProperties(recProps["expected_impact"].(map[string]interface{})["properties"])
 	for k := range impProps {
 		if !impTags[k] {
 			t.Errorf("schema expected_impact property %q has no matching json tag on models.Impact", k)

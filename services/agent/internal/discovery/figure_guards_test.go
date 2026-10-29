@@ -831,9 +831,9 @@ func TestFigures_NonFiniteArithmeticIsUndecidable(t *testing.T) {
 // quantifier checks, and ship the placeholder to a reader.
 func TestFigures_RepairIsNotOfferedAFiguresArray(t *testing.T) {
 	props := func(format *gollm.ResponseFormat) map[string]interface{} {
-		p := format.Schema["properties"].(map[string]interface{})
+		p := schemaProperties(format.Schema["properties"])
 		items := p["insights"].(map[string]interface{})["items"].(map[string]interface{})
-		return items["properties"].(map[string]interface{})
+		return schemaProperties(items["properties"])
 	}
 	if _, ok := props(insightRepairResponseFormat())["figures"]; ok {
 		t.Error("the repair schema offers a figures array, which nothing downstream of repair renders")

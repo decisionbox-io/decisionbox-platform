@@ -42,29 +42,66 @@ package discovery
 // declaration. Three of thirteen insights in the first clean run emitted no indicators at
 // all, against four per insight before the contract existed, and "never type a number"
 // read as "say nothing" is the likeliest reason.
-const figureContract = "## Every number is data, not text\n\n" +
-	"**Never type a number into `name`, `description` or `indicators`.** A number in a " +
-	"sentence rather than in `figures` is checked by nothing and reads exactly like one that " +
-	"was checked. Declare each one in a top-level `figures` array and put a reference in the " +
-	"prose; the platform renders it into the text a reader sees, after re-running your " +
-	"arithmetic over the step's **full** rows — which may be more rows than the digest " +
-	"showed you.\n\n" +
+const figureContract = "## Every number you read lives in `figures`\n\n" +
+	"**Every number you read out of the rows lives in `figures`, and the prose names it by " +
+	"its key.** Declare each one in a top-level `figures` array, then write `name`, " +
+	"`description` and `indicators` as ordinary sentences carrying `{{key}}` where the number " +
+	"belongs — *\"churn reaches {{churn_rate}} by day one\"*. The platform writes the checked " +
+	"value into the text a reader sees, after re-running your arithmetic over the step's " +
+	"**full** rows — which may be more rows than the digest showed you.\n\n" +
+	"Never type a number into those three fields instead. A number in a sentence rather than " +
+	"in `figures` is checked by nothing and reads exactly like one that was checked.\n\n" +
 	"Years are the only exception: a period is prose (\"in 1997\", \"across 1992-1997\"), not a " +
 	"measurement. And an indicator with no number in it needs no declaration — write it.\n\n" +
 	"```json\n" +
-	"\"name\": \"Top decile of customers generates {{f1}} of 1997 revenue\",\n" +
-	"\"description\": \"The top decile contributed {{f2}} of {{f3}} in 1997.\",\n" +
+	"\"source_steps\": [48],\n" +
 	"\"figures\": [\n" +
-	"  {\"id\": \"f1\", \"value\": 24.66, \"unit\": \"percent\", \"decimals\": 2,\n" +
-	"   \"step\": 48, \"kind\": \"ratio\", \"column\": \"revenue\", \"row\": \"decile = 1\"},\n" +
-	"  {\"id\": \"f2\", \"value\": 8476238553, \"unit\": \"currency\", \"scale\": \"billions\", \"decimals\": 2,\n" +
-	"   \"step\": 48, \"kind\": \"cell\", \"column\": \"revenue\", \"row\": \"decile = 1\"},\n" +
-	"  {\"id\": \"f3\", \"value\": 34373633413, \"unit\": \"currency\", \"scale\": \"billions\", \"decimals\": 2,\n" +
-	"   \"step\": 48, \"kind\": \"sum\", \"column\": \"revenue\"}\n" +
-	"]\n" +
+	"  {\"id\": \"top_decile_share\", \"value\": 24.66, \"step\": 48, \"kind\": \"ratio\",\n" +
+	"   \"column\": \"revenue\", \"row\": \"decile = 1\", \"unit\": \"percent\", \"decimals\": 2},\n" +
+	"  {\"id\": \"top_decile_revenue\", \"value\": 8476238553, \"step\": 48, \"kind\": \"cell\",\n" +
+	"   \"column\": \"revenue\", \"row\": \"decile = 1\", \"unit\": \"currency\",\n" +
+	"   \"scale\": \"billions\", \"decimals\": 2},\n" +
+	"  {\"id\": \"total_revenue\", \"value\": 34373633413, \"step\": 48, \"kind\": \"sum\",\n" +
+	"   \"column\": \"revenue\", \"unit\": \"currency\", \"scale\": \"billions\", \"decimals\": 2}\n" +
+	"],\n" +
+	"\"description\": \"The top decile contributed {{top_decile_revenue}} of " +
+	"{{total_revenue}} in 1997.\",\n" +
+	"\"name\": \"Top decile of customers generates {{top_decile_share}} of 1997 revenue\"\n" +
 	"```\n\n" +
-	"Each figure's `id` is a letter followed by letters, digits or underscores — `f1`, `f12`, " +
-	"`rev_share`. The prose reference must match it exactly.\n\n" +
+	"Each figure's `id` is a letter followed by letters, digits or underscores — " +
+	"`top_decile_share`, `rev_share`, `f1`. Name it for what it holds: an insight that " +
+	"declares several is far easier to keep straight than one numbering them. The prose " +
+	"reference must match the id exactly.\n\n" +
+	// Measured: the small self-hosted model declared 32 figures across 47 insights that its
+	// own prose never referenced -- 13% of everything it declared -- while the large model
+	// declared none spare. An unreferenced declaration is not inert: it is arithmetic this
+	// layer evaluates and can refute, hung on an insight whose sentences never used it.
+	// Pinned by TestTheContractSaysAnUnreferencedFigureIsADefect.
+	"Declare the figures your sentences use, and reference every figure you declare. A " +
+	"figure nothing references is still checked and can still be refuted, so it can only " +
+	"cost you — if a sentence stops needing a number, drop its figure with it.\n\n" +
+	// The headline is the one sentence that reaches for a number the rest of the insight
+	// did not need, and nothing said it could not. Measured: an insight declared seven
+	// figures, referenced all seven, and led its `name` with an overdue total it never
+	// declared -- the one token that reached a reader in an otherwise clean round. It had
+	// every operand for the sum and no declaration of it.
+	//
+	// Phrased as the action to take, which the first version was not, and the first version
+	// was measured: written as "a headline may only name a figure you declared" -- a
+	// prohibition, with the remedy in a subordinate clause -- the large model stopped
+	// writing headlines that name aggregates rather than starting to declare them. The
+	// target defect went to zero and `sum` figures halved, 19 to 8, with figures per
+	// insight down 16%. That is the trade this layer's guard exists to refuse: a defect
+	// that stops because the model stopped using the construct.
+	//
+	// Nothing here says when the headline is written. The schema does ask for `name` after
+	// `figures`, but telling a model the order exists invites it to reason about the order
+	// instead of about the finding.
+	// Pinned by TestTheContractSaysAHeadlineMustDeclareItsNumber.
+	"**If your headline names a number, declare that figure.** A total, a share or a count " +
+	"in `name` is a reference like any other, so put it in `figures` and the platform " +
+	"checks it before anyone reads it. A reference to a key `figures` does not hold " +
+	"reaches the reader as braces.\n\n" +
 	"### The arithmetic\n\n" +
 	"- `cell` — one cell: `column` plus `row`, which must select exactly **one** row.\n" +
 	"- `sum` — the total of `column`, over `scope` if given, otherwise every row.\n" +
@@ -91,7 +128,7 @@ const figureContract = "## Every number is data, not text\n\n" +
 	"### How it is written\n\n" +
 	"- `unit` is `count`, `currency`, `percent`, `multiple` or `plain`. A unit is part of the " +
 	"number's notation — a currency symbol, a percent sign, thousands separators — **never a " +
-	"word**. Write *days*, *orders*, *lines* in the sentence: `{{f1}} days`.\n" +
+	"word**. Write *days*, *orders*, *lines* in the sentence: `{{cycle_days}} days`.\n" +
 	"- `currency` is the currency the amount is in — the symbol it prints or its ISO code. " +
 	"**Always set it** on a currency figure: `{\"unit\": \"currency\", \"currency\": \"€\"}` " +
 	"writes `€8.48B`, and `\"TRY\"` writes `₺8.48B`. The warehouse's own currency is in the " +
@@ -106,7 +143,26 @@ const figureContract = "## Every number is data, not text\n\n" +
 	"and does not loosen the check, so it is not a way to make a figure unrefutable.\n\n" +
 	"**Declare a figure even when you are unsure the arithmetic is right.** A declaration that " +
 	"turns out wrong is corrected for you, from your own evidence, before anyone reads it. A " +
-	"number you type instead ships as written."
+	"number you type instead ships as written.\n\n" +
+	// The carve-out the recommendation contract always had and this one did not. Without
+	// it the instruction above is unqualified, and the insight rules separately require a
+	// superlative claim to name the data window it came from -- so the only way to obey
+	// both was a reference to something no `kind` can declare. Two insights in one run
+	// wrote the literal "{{window}}" into shipped text, reaching for exactly that.
+	// Pinned by TestBothFigureContractsSayWhatStaysAsOrdinaryText.
+	"### What stays as ordinary text\n\n" +
+	"A figure is a number you read out of the rows. Some of what you write is not that, and " +
+	"belongs in the sentence exactly as you would write it:\n\n" +
+	"- **The window, and any threshold or band you are reading against.** " +
+	"*\"in the queried window (2026-03-01 to 2026-05-11)\"*, *\"over 90 days\"*, " +
+	"*\"the top decile\"*. The rules require you to name the window a superlative is " +
+	"derived from; write it out. A date, a date range and a cutoff are not figures and " +
+	"there is no `kind` that declares one — **never write a reference for one.**\n" +
+	"- **Identifiers and labels you are quoting.** An item code, a vendor name, an account " +
+	"number. They are not quantities.\n\n" +
+	"A reference only ever names a figure you declared in this insight's own `figures` " +
+	"array. If you find yourself wanting to reference something you cannot declare, that is " +
+	"the sign it belongs in the prose."
 
 // recommendationFigureContract asks a recommendation to reference the insights' figures
 // rather than retype their numbers.
@@ -137,21 +193,26 @@ const recommendationFigureContract = "## Numbers come from the insights, by refe
 	// wire this example is the only thing asking. Pinned by
 	// TestTheWorkedExampleShowsEveryFieldTheContractSaysCarriesAReference.
 	"```json\n" +
-	"\"title\": \"Win back the {{f1}} buyers in the 6+ order bands\",\n" +
-	"\"description\": \"{{f1}} buyers sit in the two highest frequency bands ({{f2}} and {{f3}}).\",\n" +
-	"\"actions\": [\"Add the {{f2}} band to the reminder track\",\n" +
-	"            \"Review the discount floor for the {{f3}} band\"],\n" +
-	"\"expected_impact\": {\"metric\": \"repeat orders\", \"estimated_improvement\": " +
-	"\"5-8% of the {{f1}} buyers\"},\n" +
+	"\"related_insight_ids\": [\"<insight id>\"],\n" +
 	"\"figures\": [\n" +
-	"  {\"id\": \"f1\", \"unit\": \"count\", \"kind\": \"sum\",\n" +
-	"   \"refs\": [{\"insight\": \"<insight id>\", \"figure\": \"f4\"},\n" +
-	"            {\"insight\": \"<insight id>\", \"figure\": \"f5\"}]},\n" +
-	"  {\"id\": \"f2\", \"unit\": \"count\", \"kind\": \"ref\",\n" +
-	"   \"refs\": [{\"insight\": \"<insight id>\", \"figure\": \"f4\"}]},\n" +
-	"  {\"id\": \"f3\", \"unit\": \"count\", \"kind\": \"ref\",\n" +
-	"   \"refs\": [{\"insight\": \"<insight id>\", \"figure\": \"f5\"}]}\n" +
-	"]\n" +
+	"  {\"id\": \"high_freq_buyers\", \"kind\": \"sum\",\n" +
+	"   \"refs\": [{\"insight\": \"<insight id>\", \"figure\": \"band_6_10_buyers\"},\n" +
+	"            {\"insight\": \"<insight id>\", \"figure\": \"band_11_plus_buyers\"}],\n" +
+	"   \"unit\": \"count\"},\n" +
+	"  {\"id\": \"band_6_10\", \"kind\": \"ref\",\n" +
+	"   \"refs\": [{\"insight\": \"<insight id>\", \"figure\": \"band_6_10_buyers\"}],\n" +
+	"   \"unit\": \"count\"},\n" +
+	"  {\"id\": \"band_11_plus\", \"kind\": \"ref\",\n" +
+	"   \"refs\": [{\"insight\": \"<insight id>\", \"figure\": \"band_11_plus_buyers\"}],\n" +
+	"   \"unit\": \"count\"}\n" +
+	"],\n" +
+	"\"description\": \"{{high_freq_buyers}} buyers sit in the two highest frequency bands " +
+	"({{band_6_10}} and {{band_11_plus}}).\",\n" +
+	"\"actions\": [\"Add the {{band_6_10}} band to the reminder track\",\n" +
+	"            \"Review the discount floor for the {{band_11_plus}} band\"],\n" +
+	"\"expected_impact\": {\"metric\": \"repeat orders\", \"estimated_improvement\": " +
+	"\"5-8% of the {{high_freq_buyers}} buyers\"},\n" +
+	"\"title\": \"Win back the {{high_freq_buyers}} buyers in the 6+ order bands\"\n" +
 	"```\n\n" +
 	"- `kind` is `ref` to restate one insight figure, or `sum` to total several.\n" +
 	"- `insight` is the insight's `id`, copied verbatim, the same way you copy it into " +
@@ -162,7 +223,14 @@ const recommendationFigureContract = "## Numbers come from the insights, by refe
 	"\"decimals\": 1}` writes `$8.5M` from the same figure the insight wrote in full.\n" +
 	"- Reference the same figure everywhere you mention it. A title and a body that share " +
 	"a reference cannot disagree; one measured run headlined 96,447 buyers while its own " +
-	"body said 96,031.\n\n" +
+	"body said 96,031.\n" +
+	// The insight-side rule, restated for this phase because the consequence differs: an
+	// insight ships its braces to a reader, a recommendation is dropped whole. A model
+	// that knows only the first version is being told the cheaper penalty.
+	"- **If your title names a number, declare that figure.** A total, a share or a count in " +
+	"`title` is a reference like any other, so name it in `figures` alongside the ones the " +
+	"body uses. A title naming a number that array does not hold costs the whole " +
+	"recommendation — it is dropped rather than published with a gap in it.\n\n" +
 	"### What stays as ordinary text\n\n" +
 	"Two kinds of number are yours rather than the warehouse's, and they belong in the " +
 	"prose exactly as you would write them:\n\n" +

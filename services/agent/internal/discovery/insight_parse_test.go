@@ -218,16 +218,22 @@ func TestAnalyzeArea_OneBadItemNoRetry(t *testing.T) {
 // --- schema drift guard (R2) ---
 
 func TestInsightSchema_MatchesStructTags(t *testing.T) {
+	// Two struct declarations compared directly, now that the schema's properties are one.
+	// This used to walk the marshalled schema to recover the names; reflecting over
+	// insightItemProperties reads the same names from the place they are written, and
+	// cannot drift from what the schema actually sends.
 	insTags := jsonTagSet(reflect.TypeOf(models.Insight{}))
-
-	schema := insightResponseSchema()
-	props := schema["properties"].(map[string]interface{})
-	insItems := props["insights"].(map[string]interface{})["items"].(map[string]interface{})
-	insProps := insItems["properties"].(map[string]interface{})
+	insProps := jsonTagSet(reflect.TypeOf(insightItemProperties{}))
 
 	for k := range insProps {
 		if !insTags[k] {
 			t.Errorf("schema insight property %q has no matching json tag on models.Insight", k)
+		}
+	}
+	// The repair schema is a second declaration of the same object and drifts the same way.
+	for k := range jsonTagSet(reflect.TypeOf(insightRepairItemProperties{})) {
+		if !insTags[k] {
+			t.Errorf("repair schema property %q has no matching json tag on models.Insight", k)
 		}
 	}
 	// Server-assigned / internal fields must never appear in the generation contract.
@@ -273,7 +279,7 @@ func TestInsightSchema_DescribesEveryArrayTheContractsAskFor(t *testing.T) {
 func insightSchemaProperties(t *testing.T) map[string]interface{} {
 	t.Helper()
 	schema := insightResponseSchema()
-	props := schema["properties"].(map[string]interface{})
+	props := schemaProperties(schema["properties"])
 	items := props["insights"].(map[string]interface{})["items"].(map[string]interface{})
-	return items["properties"].(map[string]interface{})
+	return schemaProperties(items["properties"])
 }

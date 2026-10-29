@@ -101,6 +101,21 @@ var agentForwardedEnvKeys = []string{
 	"VALIDATION_REC_STEPS_TOKEN_BUDGET",
 	"VALIDATION_ESTIMATE_TOKEN_RATIO",
 	"VALIDATION_CONCURRENCY",
+	// ANALYSIS_* knobs for the analysis phase, read by the agent itself
+	// (discovery.analyzeAreaInsights). ANALYSIS_STRUCTURED_OUTPUT is the rollback
+	// for sending the insight schema on the first analysis call, and a rollback an
+	// operator cannot reach is not a rollback: on Docker and Kubernetes the agent
+	// gets only what this list forwards, so setting it on the API would have
+	// changed nothing while appearing to. ANALYSIS_PARSE_MAX_RETRIES has the same
+	// gap and predates it -- its questions-phase counterpart
+	// (DISCOVERY_QUESTIONS_PARSE_MAX_RETRIES) is forwarded below, so the analysis
+	// equivalents were simply missed rather than deliberately withheld.
+	//
+	// Subprocess runs were never affected: the agent inherits the API's
+	// environment there, which is why this is invisible in a local stack and only
+	// shows up in a containerised deployment.
+	"ANALYSIS_STRUCTURED_OUTPUT",
+	"ANALYSIS_PARSE_MAX_RETRIES",
 	// DISCOVERY_QUESTIONS_* knobs for the post-run clarifying-questions hop.
 	// Consumed by the agent (discovery.runPhaseQuestions). Without forwarding
 	// here, the enabled flag set on the API deployment never reaches a

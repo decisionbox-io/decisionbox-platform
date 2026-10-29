@@ -11,7 +11,8 @@ import (
 func recommendationItemSchema(t *testing.T) map[string]interface{} {
 	t.Helper()
 	root := recommendationResponseSchema()
-	props, ok := root["properties"].(map[string]interface{})
+	props := schemaProperties(root["properties"])
+	ok := props != nil
 	if !ok {
 		t.Fatal("recommendation schema has no properties")
 	}
@@ -104,8 +105,30 @@ func TestEveryRequiredFieldIsADeclaredProperty(t *testing.T) {
 // demanding a minimum on one would make omission the cheaper path.
 func TestRequiredFieldsCannotBeSatisfiedEmpty(t *testing.T) {
 	for _, problem := range findEmptySatisfiableRequired(recommendationResponseSchema(), "recommendation") {
+		if _, allowed := requiredForOrderNotForContent[problem.field]; allowed {
+			continue
+		}
 		t.Errorf("%s", problem.message)
 	}
+}
+
+// requiredForOrderNotForContent is the one place a required field may arrive empty, and it
+// is required for a different reason than the rest of the list.
+//
+// A grammar emits every required property before any optional one, whatever order the
+// schema declares. So a field that has to reach the model before the prose must be in
+// `required` to hold that position -- which says nothing about whether the model always has
+// content for it. Run 22 measured what the alternative costs: with `figures` optional, the
+// small model wrote its prose and could no longer reach the field, declaring 1.60 figures
+// per insight against 7.86 on the large model.
+//
+// Empty is a legitimate answer here, measured: of the 145 recommendations this pipeline has
+// written, 18 carry no figures (12.4%) -- a recommendation that reports no number names no
+// figure. A minItems of 1 would force those 18 to invent one, which is the failure mode the
+// exception above this test was removed for protecting against. The difference is that this
+// case is measured to happen and that one could not.
+var requiredForOrderNotForContent = map[string]string{
+	"recommendation.recommendations.items.figures": "12.4% of measured recommendations report no number; required only to keep the field in front of the prose",
 }
 
 // There is deliberately no exception list here, and the first draft of this
@@ -144,7 +167,7 @@ func findEmptySatisfiableRequired(node interface{}, path string) []emptySatisfia
 
 	var out []emptySatisfiable
 	if req, present := m["required"]; present {
-		props, _ := m["properties"].(map[string]interface{})
+		props := schemaProperties(m["properties"])
 		names := toStringSlice(req)
 		sort.Strings(names)
 		for _, name := range names {
@@ -180,7 +203,7 @@ func findEmptySatisfiableRequired(node interface{}, path string) []emptySatisfia
 		}
 	}
 
-	if props, isMap := m["properties"].(map[string]interface{}); isMap {
+	if props := schemaProperties(m["properties"]); props != nil {
 		for k, v := range props {
 			out = append(out, findEmptySatisfiableRequired(v, path+"."+k)...)
 		}
@@ -209,7 +232,7 @@ func findUndeclaredRequired(node interface{}, path string) []string {
 
 	var out []string
 	if req, present := m["required"]; present {
-		props, _ := m["properties"].(map[string]interface{})
+		props := schemaProperties(m["properties"])
 		for _, name := range toStringSlice(req) {
 			if _, declared := props[name]; !declared {
 				out = append(out, fmt.Sprintf("%s: required names %q, which is not a declared property, "+
@@ -218,7 +241,7 @@ func findUndeclaredRequired(node interface{}, path string) []string {
 		}
 	}
 
-	if props, isMap := m["properties"].(map[string]interface{}); isMap {
+	if props := schemaProperties(m["properties"]); props != nil {
 		for k, v := range props {
 			out = append(out, findUndeclaredRequired(v, path+"."+k)...)
 		}
