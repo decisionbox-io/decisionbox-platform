@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -24,8 +25,16 @@ func TestMain(m *testing.M) {
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
 			Image:        "qdrant/qdrant:v1.13.6",
-			ExposedPorts: []string{"6334/tcp"},
-			WaitingFor:   wait.ForListeningPort("6334/tcp"),
+			ExposedPorts: []string{"6334/tcp", "6333/tcp"},
+			// Readiness, not reachability. ForListeningPort only proves the
+			// port accepts a TCP connection, which Qdrant's listener does
+			// before the gRPC service is serving — so the first call raced it
+			// and died reading the HTTP/2 preface ("connection reset by
+			// peer") or writing to it ("broken pipe"). Rare on a fast
+			// machine, reliable on a loaded CI runner. /readyz on the HTTP
+			// port is Qdrant's own answer to "am I serving yet", so 6333 is
+			// exposed solely to ask it.
+			WaitingFor: wait.ForHTTP("/readyz").WithPort("6333/tcp").WithStartupTimeout(90 * time.Second),
 		},
 		Started: true,
 	})
