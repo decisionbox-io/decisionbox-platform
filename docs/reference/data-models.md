@@ -300,11 +300,37 @@ Not the same thing as `discovery_exploration_steps`, which is the tail-written a
 | `reject_reason` | string | Reason class behind a `complete_rejected` step, so the nudge can be re-derived |
 | `completed`, `completion_msg`, `total_steps`, `exploration_duration_ms` | — | Summary document only (`kind` = `exploration_summary`). Its presence is what lets a resumed run skip exploration entirely. |
 
+The summary document's `attempt` carries a second meaning: it identifies the exploration a resumed run is about to work over, and it is the value every `AnalysisAreaCheckpoint` is stamped with and filtered on.
+
 Indexes: `(run_id, step_number)` unique — which makes a retried write a replace rather than a duplicate — and a `created_at` TTL named `ttl_discovery_checkpoint`.
 
 The replay arguments are stored separately because an `ExplorationStep` records what came BACK (rows, counts, errors, digest) but has no field for what was ASKED — there is nowhere on it to put a lookup's table refs or a search's query text, and replay has to rebuild the model's own prior turn.
 
 See [Discovery lifecycle](../concepts/discovery-lifecycle.md#checkpointing-and-resume) for what a checkpoint deliberately does not keep, and why.
+
+## AnalysisAreaCheckpoint
+
+One **completed** analysis area of an in-flight run. Stored in the `discovery_analysis_checkpoints` collection, keyed by `(run_id, area_id)`, and the reason a resumed run analyses only the areas its previous attempt had not finished.
+
+A sibling collection rather than another `kind` inside `discovery_checkpoints`: that collection's unique index is `(run_id, step_number)` and an area has no step number, and both of its readers scan a run's rows in step order and stop the replayable prefix at the first unexpected number.
+
+Not the same thing as `discovery_analysis_steps`, which is the tail-written audit log keyed by `discovery_id` and read by the dashboard. These rows exist only while a run is in flight and are deleted when the run completes or is cancelled — with `DISCOVERY_CHECKPOINT_RETENTION`, the same setting that governs the exploration checkpoints, as the backstop.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `run_id` | string | The run this checkpoint belongs to |
+| `project_id` | string | Project that owns the run |
+| `attempt` | int | Which attempt analysed this area. The upsert is fenced on it, so an orphaned earlier attempt cannot overwrite a newer one's area |
+| `exploration_attempt` | int | The attempt that wrote the exploration summary this area was analysed over. A resumed run restores only the rows matching the exploration it is itself working over — an area's insights cite exploration step numbers, so one analysed over a *different* exploration would attribute its evidence to the wrong queries |
+| `insights_validated` | int | How many of the area's insights were submitted to the verifier, so a resumed run restores the per-run validation budget instead of handing the areas it still has to run a fresh one |
+| `created_at` | timestamp | TTL anchor |
+| *(inline)* | AnalysisStep | The area itself — prompt, response, token counts, picker telemetry, its insights with their validation verdicts and evidence-quality labels, and its validation results. Nothing is stripped: an area's size is already bounded by the picker's token budget, and this is the same payload Phase 7 writes to `discovery_analysis_steps` |
+
+Indexes: `(run_id, area_id)` unique — which makes re-analysing an area a replace rather than a duplicate — and a `created_at` TTL named `ttl_discovery_analysis_checkpoint`.
+
+The inlined `AnalysisStep` supplies `area_id`, so there is no separate field for it; the key half of the unique index comes from the step itself.
+
+A row exists only for an area that produced a parsed result, finished its validation and had its evidence-quality labels attached. An area whose analysis failed carries no row, so a resume retries it — see [Discovery lifecycle](../concepts/discovery-lifecycle.md#what-a-completed-analysis-area-keeps) for why that distinction is what makes a deadline-killed run recoverable.
 
 ## Feedback
 
