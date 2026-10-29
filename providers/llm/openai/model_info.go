@@ -29,7 +29,7 @@ func (p *OpenAIProvider) ResolveModelInfo(ctx context.Context, model string) (go
 		return gollm.ModelCapabilities{}, err
 	}
 	caps := func(m gollm.RemoteModel) gollm.ModelCapabilities {
-		return gollm.ModelCapabilities{MaxInputTokens: m.MaxInputTokens, MaxOutputTokens: m.MaxOutputTokens}
+		return gollm.ModelCapabilities{MaxInputTokens: m.MaxInputTokens, MaxOutputTokens: m.MaxOutputTokens, Reasoning: m.Reasoning}
 	}
 	// Exact match first.
 	for _, m := range models {
@@ -46,7 +46,7 @@ func (p *OpenAIProvider) ResolveModelInfo(ctx context.Context, model string) (go
 	if meta, ok := gollm.GetProviderMeta(providerName); ok {
 		if canonical := canonicalCatalogID(meta, model); canonical != "" {
 			for _, m := range models {
-				if canonicalCatalogID(meta, m.ID) == canonical && (m.MaxInputTokens > 0 || m.MaxOutputTokens > 0) {
+				if canonicalCatalogID(meta, m.ID) == canonical && (m.MaxInputTokens > 0 || m.MaxOutputTokens > 0 || m.Reasoning) {
 					return caps(m), nil
 				}
 			}

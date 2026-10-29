@@ -196,11 +196,18 @@ func TestClient_SetStepAndPhase(t *testing.T) {
 	}
 }
 
-func TestChat_DefaultMaxTokens(t *testing.T) {
+// A caller that names no budget gets as much as the model allows, not a fixed
+// number.
+//
+// It used to be a literal 4,096. A literal default is invisible to the caller
+// and silently truncates whichever model outgrows it — the same shape of bug
+// that lost a run's validation verdicts — so the ceiling is resolved from the
+// model instead. Providers clamp it to the real limit and the adaptive
+// context-overflow retry is the net.
+func TestChat_DefaultMaxTokensComesFromTheModel(t *testing.T) {
 	provider := testutil.NewMockLLMProvider()
 	client, _ := New(provider, "test-model")
 
-	// Call CreateMessage with maxTokens=0, should default to 4096
 	_, err := client.CreateMessage(context.Background(), []gollm.Message{{Role: "user", Content: "test"}}, "", 0)
 	if err != nil {
 		t.Fatalf("CreateMessage error: %v", err)
@@ -209,8 +216,14 @@ func TestChat_DefaultMaxTokens(t *testing.T) {
 	if len(provider.Calls) != 1 {
 		t.Fatalf("expected 1 call, got %d", len(provider.Calls))
 	}
-	if provider.Calls[0].Request.MaxTokens != 4096 {
-		t.Errorf("MaxTokens = %d, want 4096 (default)", provider.Calls[0].Request.MaxTokens)
+	want := gollm.GetMaxOutputTokens(client.providerName, "test-model")
+	if got := provider.Calls[0].Request.MaxTokens; got != want {
+		t.Errorf("MaxTokens = %d, want the model's own cap %d", got, want)
+	}
+	// Whatever the resolution answers, it must never be zero: some providers
+	// read a zero max_tokens as "give me everything you have".
+	if provider.Calls[0].Request.MaxTokens <= 0 {
+		t.Errorf("MaxTokens = %d, want a positive ceiling", provider.Calls[0].Request.MaxTokens)
 	}
 }
 

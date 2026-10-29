@@ -138,3 +138,64 @@ func getEnvBool(k string, fallback bool) bool {
 	}
 	return fallback
 }
+
+// Fallback per-round output ceilings, used only when the model's own output
+// cap is unknown (an uncatalogued model with no live metadata). These are the
+// values the validation loop shipped with; they are kept as the floor of last
+// resort rather than as the default, because as a default they silently
+// truncated the verdicts of any model that needs more.
+const (
+	fallbackVerifierOutputTokens = 4000
+	fallbackRefuterOutputTokens  = 3000
+)
+
+// validationOutputShare bounds the per-round output ceiling to a fraction of
+// the mode's token envelope.
+//
+// The loop reserves `forced-final prompt + MaxOutputTokens` out of TokenCap
+// before each round and stops early when that reserve does not fit. An output
+// ceiling taken straight from a 128K-output model would make the reserve
+// exceed the whole envelope, sending every document to its forced final round
+// with no evidence gathered — trading a truncated verdict for an uninformed
+// one. A quarter leaves the bundle and the tool history three quarters.
+const validationOutputShare = 4
+
+// ApplyModelOutputCaps sizes each mode's per-round output ceiling from the
+// resolved output cap of the model that mode actually runs on (the verifier
+// and the refuter are separate layers and may differ).
+//
+// Precedence per mode, matching how the other bounded phases resolve theirs:
+//
+//  1. an explicit operator value (VALIDATION_*_MAX_OUTPUT, already loaded
+//     into MaxOutputTokens by LoadConfigFromEnv);
+//  2. the model's own output cap;
+//  3. the documented fallback.
+//
+// The result is then bounded by validationOutputShare. Pass 0 for a cap that
+// could not be resolved.
+func (c *Config) ApplyModelOutputCaps(verifierModelCap, refuterModelCap int) {
+	c.Verifier.MaxOutputTokens = resolveModeOutputTokens(c.Verifier, verifierModelCap, fallbackVerifierOutputTokens)
+	c.Refuter.MaxOutputTokens = resolveModeOutputTokens(c.Refuter, refuterModelCap, fallbackRefuterOutputTokens)
+}
+
+// resolveModeOutputTokens implements ApplyModelOutputCaps for one mode.
+func resolveModeOutputTokens(m ModeConfig, modelCap, fallback int) int {
+	out := m.MaxOutputTokens
+	switch {
+	case out <= 0:
+		out = modelCap
+	case modelCap > 0 && out > modelCap:
+		// An operator value above what the model accepts is rejected by the
+		// provider and would fail every validation call on the project, so
+		// the model's cap wins — the clamp-only-lowers rule the window side
+		// follows too.
+		out = modelCap
+	}
+	if out <= 0 {
+		out = fallback
+	}
+	if share := m.TokenCap / validationOutputShare; share > 0 && out > share {
+		out = share
+	}
+	return out
+}

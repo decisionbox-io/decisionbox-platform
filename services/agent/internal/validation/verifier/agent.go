@@ -8,6 +8,7 @@ import (
 
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
+	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 )
 
 // LLMClient is the subset of services/agent/internal/ai.Client the
@@ -19,8 +20,16 @@ type LLMClient interface {
 
 // ModeConfig is the per-mode budget envelope. Plan §"Cost envelope".
 type ModeConfig struct {
-	MaxRounds       int
-	TokenCap        int
+	MaxRounds int
+	TokenCap  int
+	// MaxOutputTokens is the per-round output ceiling.
+	//
+	// Zero means "resolve from the model's own output cap" — see
+	// Config.ApplyModelOutputCaps. It must not stay zero by the time the loop
+	// runs: a fixed ceiling is invisible to the caller and silently truncates
+	// the verdict of whichever model outgrows it, which is exactly how a
+	// reasoning model's verdicts were lost (the response was cut off
+	// mid-JSON, failed to parse, and the document came back unverifiable).
 	MaxOutputTokens int
 }
 
@@ -47,8 +56,8 @@ type Config struct {
 // DefaultConfig returns the plan §"Cost envelope" defaults.
 func DefaultConfig() Config {
 	return Config{
-		Verifier:         ModeConfig{MaxRounds: 8, TokenCap: 30000, MaxOutputTokens: 4000},
-		Refuter:          ModeConfig{MaxRounds: 6, TokenCap: 20000, MaxOutputTokens: 3000},
+		Verifier:         ModeConfig{MaxRounds: 8, TokenCap: 30000},
+		Refuter:          ModeConfig{MaxRounds: 6, TokenCap: 20000},
 		Bundle:           DefaultBundleConfig(),
 		RefuterEnabled:   true,
 		NumericTolerance: 0.20,
@@ -90,6 +99,11 @@ func NewAgent(llm LLMClient, cfg Config) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A caller that never resolved the model's cap (unit tests, a standalone
+	// embedder) must not end up asking for zero output tokens, which some
+	// providers read as "give me everything you have". Resolving with an
+	// unknown model cap falls through to the documented fallbacks.
+	cfg.ApplyModelOutputCaps(0, 0)
 	return &Agent{llm: llm, cfg: cfg, system: system}, nil
 }
 
@@ -198,8 +212,9 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 
 		action, perr := ParseAction(chat.Content, allowed)
 		if perr != nil {
-			a.trace(s.mode, round, "", "parse-error: "+perr.Error())
-			s.history = append(s.history, toolStep{Error: "parse: " + perr.Error()})
+			detail := parseFailureDetail(chat, mc.MaxOutputTokens, perr)
+			a.trace(s.mode, round, "", "parse-error: "+detail)
+			s.history = append(s.history, toolStep{Error: "parse: " + detail})
 			continue
 		}
 		a.trace(s.mode, round, action.Kind, "")
@@ -248,7 +263,24 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 
 	action, perr := ParseAction(chat.Content, []ActionKind{ActionSubmitVerdict})
 	if perr != nil || action.Kind != ActionSubmitVerdict {
-		return a.unverifiable(s, "forced final round produced no verdict"), nil
+		reason := "forced final round produced no verdict"
+		if outputCapHit(chat, mc.MaxOutputTokens) {
+			// The difference matters: a cut-off verdict is fixed by raising
+			// the ceiling, a malformed one by fixing the prompt. Reported
+			// here because this string is what the dashboard shows and what
+			// an operator has to act on.
+			reason = fmt.Sprintf(
+				"forced final round was cut off at the %d-token output ceiling before it finished the verdict; raise %s or use a model with a larger output cap",
+				mc.MaxOutputTokens, envOutputKeyFor(s.mode))
+			applog.WithFields(applog.Fields{
+				"mode":        s.mode,
+				"max_tokens":  mc.MaxOutputTokens,
+				"tokens_out":  chat.TokensOut,
+				"stop_reason": chat.StopReason,
+				"env":         envOutputKeyFor(s.mode),
+			}).Warn("Validation verdict truncated at the output ceiling")
+		}
+		return a.unverifiable(s, reason), nil
 	}
 	final := a.finalise(*action.Verdict, s)
 	// Refuter discipline on forced-final: even on the last round, a
@@ -617,4 +649,44 @@ func appendReason(existing, msg string) string {
 		return msg
 	}
 	return existing + "; " + msg
+}
+
+// outputCapHit reports whether a response stopped because it hit the output
+// ceiling rather than because the model finished.
+//
+// It trusts the provider's stop reason when there is one, and otherwise falls
+// back to "spent the entire budget", which is what the analysis phase already
+// uses (logOutputCapTruncation): a response that both failed to parse and
+// consumed every available token is a truncation, not a malformed answer. The
+// fallback matters because the reason is only as reliable as the longest wire
+// it crossed — a managed gateway that drops it leaves the token count as the
+// only evidence.
+func outputCapHit(chat *ai.ChatResult, maxTokens int) bool {
+	if chat == nil {
+		return false
+	}
+	if chat.Truncated() {
+		return true
+	}
+	return maxTokens > 0 && chat.TokensOut >= maxTokens
+}
+
+// parseFailureDetail annotates a mid-loop parse error with the output ceiling
+// when the response was cut off, so the note the model reads back in its tool
+// history tells it to be briefer rather than to re-emit the same oversized
+// payload.
+func parseFailureDetail(chat *ai.ChatResult, maxTokens int, perr error) string {
+	if outputCapHit(chat, maxTokens) {
+		return fmt.Sprintf("%s (response was cut off at the %d-token output ceiling — emit a shorter payload)", perr.Error(), maxTokens)
+	}
+	return perr.Error()
+}
+
+// envOutputKeyFor names the knob an operator raises for a mode, so the
+// recorded reason is actionable without reading the source.
+func envOutputKeyFor(mode valmodels.AgentMode) string {
+	if mode == valmodels.ModeRefuter {
+		return EnvRefuterOutput
+	}
+	return EnvVerifierOutput
 }

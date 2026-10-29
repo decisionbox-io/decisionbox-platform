@@ -87,6 +87,32 @@ type ChatResult struct {
 	TokensIn   int
 	TokensOut  int
 	DurationMs int64
+
+	// StopReason is why generation ended, as the provider reported it
+	// ("end_turn", "max_tokens", "tool_use", "refusal", ...; "length" on an
+	// OpenAI-compatible wire). Carried because a response cut off at the
+	// output ceiling is otherwise indistinguishable from a model that wrote
+	// malformed output, and the two need opposite fixes — raise the cap vs.
+	// repair the prompt. Callers that parse the content should check
+	// Truncated() before blaming the model.
+	StopReason string
+}
+
+// Truncated reports whether generation stopped because it hit the output
+// ceiling, rather than because the model finished.
+//
+// Both spellings are accepted: the Anthropic wire says "max_tokens", the
+// OpenAI-compatible wire (and the managed gateway, which translates for it)
+// says "length".
+func (r *ChatResult) Truncated() bool {
+	if r == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(r.StopReason)) {
+	case "max_tokens", "length":
+		return true
+	}
+	return false
 }
 
 // Chat sends a user prompt with an optional system prompt and returns the full result.
@@ -102,6 +128,7 @@ func (c *Client) Chat(ctx context.Context, userPrompt string, systemPrompt strin
 		TokensIn:   resp.Usage.InputTokens,
 		TokensOut:  resp.Usage.OutputTokens,
 		DurationMs: time.Since(start).Milliseconds(),
+		StopReason: resp.StopReason,
 	}, nil
 }
 
@@ -133,8 +160,13 @@ func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, sy
 		c.savePrompt(messages, systemPrompt)
 	}
 
-	if maxTokens == 0 {
-		maxTokens = 4096
+	// No budget from the caller means "as much as this model allows", not a
+	// fixed number: a literal default here is invisible to every caller and
+	// silently truncates whichever model outgrows it. Providers clamp this
+	// to the real ceiling, and the adaptive context-overflow retry is the net
+	// if the window cannot hold prompt + output.
+	if maxTokens <= 0 {
+		maxTokens = gollm.GetMaxOutputTokens(c.providerName, c.model)
 	}
 
 	// Reasoning is opt-in: default leaves ReasoningEffortDefault (""), which
@@ -283,6 +315,7 @@ func (c *Client) ChatWithFormat(ctx context.Context, userPrompt string, systemPr
 		TokensIn:   resp.Usage.InputTokens,
 		TokensOut:  resp.Usage.OutputTokens,
 		DurationMs: time.Since(start).Milliseconds(),
+		StopReason: resp.StopReason,
 	}, nil
 }
 

@@ -109,3 +109,28 @@ func ToolChoice(choice string, disableParallel bool) map[string]interface{} {
 	}
 	return tc
 }
+
+// OutputConfig returns the value for the request's "output_config" field, or
+// nil when the request should not carry one.
+//
+// `output_config.effort` is how the Anthropic wire exposes reasoning depth on
+// the models that have it. It is gated on modelTakesEffort — the catalog's
+// Reasoning flag — because a model that predates the field rejects the whole
+// request, so sending it unconditionally would break every older Claude
+// deployment to configure the newer ones.
+//
+// Effort matters more than it reads: on these models thinking cannot be
+// disabled and its tokens are billed inside max_tokens, so effort decides how
+// much of the output budget the answer gets. Raising it without also sizing
+// max_tokens from the model's own cap truncates the answer instead of
+// improving it.
+func OutputConfig(effort string, modelTakesEffort bool) map[string]interface{} {
+	if !modelTakesEffort {
+		return nil
+	}
+	resolved := gollm.ResolveReasoningEffort(effort)
+	if resolved == "" {
+		return nil
+	}
+	return map[string]interface{}{"effort": resolved}
+}

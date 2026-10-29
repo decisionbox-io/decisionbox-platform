@@ -211,6 +211,7 @@ func (p *ClaudeProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*goll
 	if tc := anthropicwire.ToolChoice(req.ToolChoice, req.DisableParallelToolUse); tc != nil {
 		apiReq.ToolChoice = tc
 	}
+	apiReq.OutputConfig = anthropicwire.OutputConfig(req.ReasoningEffort, gollm.IsReasoningModel("claude", model))
 
 	var lastErr error
 	for attempt := 1; attempt <= p.maxRetries; attempt++ {
@@ -427,6 +428,9 @@ type claudeRequest struct {
 	System     interface{}            `json:"system,omitempty"`
 	Tools      []claudeTool           `json:"tools,omitempty"`
 	ToolChoice map[string]interface{} `json:"tool_choice,omitempty"`
+	// OutputConfig carries the reasoning-effort setting on models that take
+	// one (anthropicwire.OutputConfig); nil on every other model.
+	OutputConfig map[string]interface{} `json:"output_config,omitempty"`
 }
 
 type claudeResponseContent struct {
