@@ -322,11 +322,11 @@ func TestRaisingTheCeilingKeepsTheEvidenceRound(t *testing.T) {
 	if v.Overall != valmodels.StatusSupported {
 		t.Errorf("overall = %s (reason %q), want supported from the evidence-backed verdict", v.Overall, v.OverallReason)
 	}
-	// No round may be asked for less than the reservation floor, or the
-	// verdict it is meant to carry cannot fit.
+	// A normal round may be granted less than a verdict needs — it emits one
+	// action, usually a tool call — but never less than an action takes.
 	for i, got := range llm.maxSeen {
-		if got < cfg.Refuter.MinOutputTokens {
-			t.Errorf("call %d asked for %d tokens, below the %d floor", i, got, cfg.Refuter.MinOutputTokens)
+		if got < minRoundOutputTokens {
+			t.Errorf("call %d asked for %d tokens, below the %d action floor", i, got, minRoundOutputTokens)
 		}
 	}
 }
@@ -549,5 +549,78 @@ func TestTruncationRemedyFollowsTheOverflowCause(t *testing.T) {
 
 	if reason := run(t, ai.OverflowContextWindow); !strings.Contains(reason, "larger context window") {
 		t.Errorf("window overflow: reason = %q, want it to name the context window", reason)
+	}
+}
+
+// The forced final now spends what the rounds left behind, so everything a
+// call actually sends has to be counted — including the system frame, which
+// goes out on every one of them. It used to be uncounted and get away with it:
+// nothing tried to spend the envelope down to the last token.
+func TestTheEnvelopeIsNotOverspent(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ApplyModelOutputCaps(128000, 128000)
+
+	// A refuter run that gathers evidence and then submits, so both a normal
+	// round and the forced final draw on the envelope.
+	llm := &stubBudgetLLM{scripted: []scriptedReply{
+		{content: `{"read_step_rows": {"step_id": 1, "offset": 0, "limit": 10}}`, stopReason: "end_turn", tokensOut: 40},
+		{content: `{"query_warehouse": "select 1"}`, stopReason: "end_turn", tokensOut: 40},
+		{content: happyVerdictJSON(valmodels.ModeRefuter), stopReason: "end_turn", tokensOut: 900},
+		{content: happyVerdictJSON(valmodels.ModeRefuter), stopReason: "end_turn", tokensOut: 900},
+	}}
+	a, _ := NewAgent(llm, cfg)
+	v, err := a.Refute(context.Background(), midSizedBundle(), &stubExecutor{})
+	if err != nil {
+		t.Fatalf("Refute: %v", err)
+	}
+
+	// The envelope bounds input + output for the whole document. The stub
+	// reports 100 input tokens per call, so what the loop can be held to is
+	// the budget it ASKED for: no call may be granted more than the envelope
+	// still had room for.
+	spent := 0
+	for i, asked := range llm.maxSeen {
+		spent += 100 + asked
+		if spent > cfg.Refuter.TokenCap {
+			t.Errorf("call %d pushed the committed budget to %d, over the %d envelope (asked: %v)",
+				i, spent, cfg.Refuter.TokenCap, llm.maxSeen)
+			break
+		}
+	}
+	if v.Overall == "" {
+		t.Error("no verdict produced")
+	}
+}
+
+// The forced final is the one call that must always be able to emit a
+// complete verdict, which is what every round reserves for. It must never be
+// squeezed below that floor, however much the rounds spent.
+func TestForcedFinalIsNeverSqueezedBelowTheVerdictFloor(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ApplyModelOutputCaps(128000, 128000)
+
+	// Rounds that keep gathering until the loop runs out, so the forced final
+	// is reached with as little envelope left as the loop allows.
+	replies := make([]scriptedReply, 0, cfg.Refuter.MaxRounds+1)
+	for i := 0; i < cfg.Refuter.MaxRounds; i++ {
+		replies = append(replies, scriptedReply{
+			content: `{"query_warehouse": "select 1"}`, stopReason: "end_turn", tokensOut: 2000,
+		})
+	}
+	replies = append(replies, scriptedReply{
+		content: happyVerdictJSON(valmodels.ModeRefuter), stopReason: "end_turn", tokensOut: 900,
+	})
+	llm := &stubBudgetLLM{scripted: replies}
+	a, _ := NewAgent(llm, cfg)
+	if _, err := a.Refute(context.Background(), midSizedBundle(), &stubExecutor{}); err != nil {
+		t.Fatalf("Refute: %v", err)
+	}
+	if len(llm.maxSeen) == 0 {
+		t.Fatal("no calls were made")
+	}
+	forced := llm.maxSeen[len(llm.maxSeen)-1]
+	if forced < cfg.Refuter.MinOutputTokens {
+		t.Errorf("forced final asked for %d tokens, below the %d verdict floor (all calls: %v)",
+			forced, cfg.Refuter.MinOutputTokens, llm.maxSeen)
 	}
 }

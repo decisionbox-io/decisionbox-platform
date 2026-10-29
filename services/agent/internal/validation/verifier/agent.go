@@ -237,13 +237,20 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 	allowed := []ActionKind{ActionLookupSchema, ActionQueryWarehouse, ActionReadStepRows, ActionSubmitVerdict}
 	systemTemplate := a.system[s.mode]
 	system := renderSystemPrompt(systemTemplate, s.mode, s.bundle, a.cfg.NumericTolerance, a.cfg.MinSampleSize)
+	// Every call sends the system frame as well as the user prompt, so it is
+	// part of what each one costs against the envelope. Rendered once per
+	// run, so estimated once. It used to be uncounted and get away with it:
+	// the forced final asked for a fixed number, so nothing ever tried to
+	// spend the envelope down to the last token. Now that it spends what the
+	// rounds left behind, an uncounted frame is an overspend.
+	systemEst := estimateTokens(system, a.cfg.Bundle.EstimateRatio)
 
 	for round := 0; round < mc.MaxRounds; round++ {
 		reservePrompt := a.buildPrompt(s, []ActionKind{ActionSubmitVerdict}, true)
 		// Reserve the FLOOR for the forced final, not the ceiling: the forced
 		// final must always be affordable, but reserving the most it could
 		// ever want would cost us rounds.
-		reserveEst := estimateTokens(reservePrompt, a.cfg.Bundle.EstimateRatio) + mc.MinOutputTokens
+		reserveEst := estimateTokens(reservePrompt, a.cfg.Bundle.EstimateRatio) + systemEst + mc.MinOutputTokens
 		softCap := mc.TokenCap - reserveEst
 		if softCap <= 0 {
 			break
@@ -252,10 +259,10 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 		prompt := a.buildPrompt(s, allowed, false)
 		promptEst := estimateTokens(prompt, a.cfg.Bundle.EstimateRatio)
 		// What this round can afford once the forced final is set aside. A
-		// round that cannot afford even the floor drops history and retries;
+		// round that cannot afford even an action drops history and retries;
 		// with nothing left to drop the loop ends and the forced final runs.
-		afford := softCap - (s.tokensIn + s.tokensOut + promptEst)
-		if afford < mc.MinOutputTokens {
+		afford := softCap - (s.tokensIn + s.tokensOut + promptEst + systemEst)
+		if afford < minRoundOutputTokens {
 			if !a.truncateHistory(s) {
 				break
 			}
@@ -321,7 +328,7 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 	// envelope up to the ceiling — and never less than the floor, which is
 	// what every round reserved for exactly this.
 	forcedOutput := mc.MaxOutputTokens
-	if afford := mc.TokenCap - (s.tokensIn + s.tokensOut + estimateTokens(forcedPrompt, a.cfg.Bundle.EstimateRatio)); afford < forcedOutput {
+	if afford := mc.TokenCap - (s.tokensIn + s.tokensOut + estimateTokens(forcedPrompt, a.cfg.Bundle.EstimateRatio) + systemEst); afford < forcedOutput {
 		forcedOutput = afford
 	}
 	if forcedOutput < mc.MinOutputTokens {

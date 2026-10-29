@@ -160,6 +160,20 @@ const (
 // one. A quarter leaves the bundle and the tool history three quarters.
 const validationOutputShare = 4
 
+// minRoundOutputTokens is the least a NORMAL round may be granted.
+//
+// It is far below the verdict floor on purpose. A normal round emits one
+// action, which is almost always a tool call of a few dozen tokens; the round
+// that submits the verdict gets whatever the envelope still affords, up to the
+// ceiling. Requiring verdict-sized room on every round instead reserved for
+// the worst case twice over — once in the round, once in the forced final's
+// reservation — and on an ordinary bundle that left no room for the
+// evidence-gathering round at all, which is the whole point of the loop.
+//
+// The forced final keeps the verdict floor: it is the call that must always be
+// able to emit a complete verdict, and it is reserved for separately.
+const minRoundOutputTokens = 512
+
 // ApplyModelOutputCaps sizes each mode's per-round output ceiling from the
 // resolved output cap of the model that mode actually runs on (the verifier
 // and the refuter are separate layers and may differ).
