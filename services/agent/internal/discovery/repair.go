@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	goconfig "github.com/decisionbox-io/decisionbox/libs/go-common/config"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
@@ -332,7 +333,15 @@ func (o *Orchestrator) rewriteInsight(
 	maxTokens int,
 	tally *repairTally,
 ) (models.Insight, error) {
-	if o.aiClient == nil {
+	// The analysis layer's client, because this call belongs to that phase: it
+	// rewrites an insight the analysis phase wrote, and the budget it is handed
+	// was computed for the analysis model. On the default client it would spend
+	// that budget against a different model's provider, reasoning setting and
+	// output ceiling -- which is how it read until main's per-layer clients met
+	// this branch, because this file is newer than that work and so was never
+	// converted with the rest.
+	client := o.ai(llmlayer.LayerAnalysis)
+	if client == nil {
 		// Checked here rather than at the top of the pass: a rewrite needs a
 		// model, and the mechanical repairs -- a count Go computed, a sentence
 		// removed -- do not. Refusing the whole pass would make a missing client
@@ -349,7 +358,7 @@ func (o *Orchestrator) rewriteInsight(
 	// The repair format, not the analysis one: repair rewrites prose that already carries
 	// rendered numbers, so it must not be offered a `figures` array that nothing downstream
 	// of it will render.
-	res, err := o.aiClient.ChatWithFormat(ctx, prompt, "", budget, insightRepairResponseFormat())
+	res, err := client.ChatWithFormat(ctx, prompt, "", budget, insightRepairResponseFormat())
 	if err != nil {
 		return models.Insight{}, err
 	}
