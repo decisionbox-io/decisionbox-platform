@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -59,7 +60,7 @@ func TestDiscoveriesHandler_Trigger_PolicyDeniesStart(t *testing.T) {
 	swapChecker(t, stub)
 
 	projRepo := newMockProjectRepo()
-	projRepo.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
+	projRepo.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady, LLMConfigVersion: llmlayer.ConfigVersion}
 	runRepo := newMockRunRepo()
 	discRepo := newMockDiscoveryRepo()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, quietRunner{})
@@ -89,7 +90,7 @@ func TestDiscoveriesHandler_Trigger_RunnerFailure_ReleasesReservation(t *testing
 	swapChecker(t, stub)
 
 	projRepo := newMockProjectRepo()
-	projRepo.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
+	projRepo.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady, LLMConfigVersion: llmlayer.ConfigVersion}
 	runRepo := newMockRunRepo()
 	discRepo := newMockDiscoveryRepo()
 
@@ -152,7 +153,7 @@ func TestDiscoveriesHandler_Trigger_LimitError_BodyIncludesStructuredFields(t *t
 	swapChecker(t, stub)
 
 	projRepo := newMockProjectRepo()
-	projRepo.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
+	projRepo.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady, LLMConfigVersion: llmlayer.ConfigVersion}
 	runRepo := newMockRunRepo()
 	discRepo := newMockDiscoveryRepo()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, quietRunner{})

@@ -8,7 +8,6 @@ import {
 import { notifications } from '@mantine/notifications';
 import { IconAlertCircle } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
-import { BlurbLLMEditor, BlurbLLMState, emptyBlurbLLMState } from '@/components/BlurbLLMEditor';
 import { EmbeddingEditor, EmbeddingState, emptyEmbeddingState } from '@/components/EmbeddingEditor';
 import { WarehouseFormFields, WarehouseFormState, emptyWarehouseFormState, buildDefaults } from '@/components/projects/WarehouseFormFields';
 import { LLMFormFields, LLMFormState, emptyLLMFormState, AIPhase } from '@/components/projects/LLMFormFields';
@@ -52,10 +51,6 @@ export default function NewProjectPage() {
   const [aiLoading, setAiLoading] = useState(false);
   const [liveModels, setLiveModels] = useState<LiveModel[] | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
-  // Optional per-project blurb LLM override.
-  // Defaults to "use analysis LLM" — when the user turns the switch on,
-  // the component renders a full provider + live-model picker.
-  const [blurb, setBlurb] = useState<BlurbLLMState>(emptyBlurbLLMState);
   // Embedding provider is mandatory — schema indexing will not start
   // without one. We require it up front instead of letting
   // the user finish creation and then immediately hit a "failed" banner
@@ -144,13 +139,19 @@ export default function NewProjectPage() {
   const llmSelectedAuthMethod = llmAuthMethods.find((m) => m.id === llm.authMethod);
   const llmNeedsCredential = (llmSelectedAuthMethod?.fields || []).some((f) => f.type === 'credential');
 
-  // Wizard steps, in order. In managed-inference mode the AI, Embedding,
-  // and Blurb steps drop out — their config is preset server-side. The
-  // set is fixed at load (aiConfigManaged is resolved before the stepper
-  // renders), so `active` indexes a stable list for the whole flow.
+  // Wizard steps, in order. In managed-inference mode the AI and Embedding
+  // steps drop out — their config is preset server-side. The set is fixed at
+  // load (aiConfigManaged is resolved before the stepper renders), so
+  // `active` indexes a stable list for the whole flow.
+  //
+  // There is no blurb step any more: the table-description model is one of
+  // the project's LLM layers (#407), set alongside the others in Settings →
+  // Models. The create call seeds EVERY layer from the model chosen here, so
+  // a new project is configured and runnable from birth, and tuning an
+  // individual layer is a visit to a page the user is taken to anyway.
   const stepIds = aiConfigManaged
     ? ['basics', 'warehouse']
-    : ['basics', 'warehouse', 'ai', 'embedding', 'blurb'];
+    : ['basics', 'warehouse', 'ai', 'embedding'];
 
   // Per-step "can advance" predicate, keyed by step id rather than by
   // position so dropping the AI steps can't shift the wrong guard onto a
@@ -173,9 +174,6 @@ export default function NewProjectPage() {
     // one (OpenAI, Voyage, etc); cloud-creds providers (Bedrock,
     // Vertex) skip that check.
     embedding: () => Boolean(embedding.provider) && Boolean(embedding.model) && (!embNeedsKey || Boolean(embedding.apiKey)),
-    // Blurb step: valid when the user either chose "use analysis LLM"
-    // (blurb.enabled === false) or picked a model.
-    blurb: () => Boolean(!blurb.enabled || (blurb.provider && blurb.model)),
   };
 
   // Monotonic request id so a stale response from an in-flight fetch
@@ -270,22 +268,6 @@ export default function NewProjectPage() {
             ...(embedding.authMethod ? { auth_method: embedding.authMethod } : {}),
           },
         },
-        // Only send blurb_llm when the user explicitly overrode it; otherwise
-        // the agent falls back to the analysis LLM (its own fallback path).
-        ...(blurb.enabled && blurb.provider && blurb.model
-          ? {
-              blurb_llm: {
-                provider: blurb.provider,
-                model: blurb.model,
-                config: {
-                  ...Object.fromEntries(
-                    Object.entries(blurb.config).filter(([k]) => k !== 'model' && k !== 'api_key')
-                  ),
-                  ...(blurb.authMethod ? { auth_method: blurb.authMethod } : {}),
-                },
-              },
-            }
-          : {}),
         }),
       });
       // Save secrets in parallel — sequential awaits left a ~1s race
@@ -307,7 +289,6 @@ export default function NewProjectPage() {
           // Blurb-LLM credentials are stored separately. Only written when
           // the user supplied one — otherwise the agent falls back to
           // `llm-credentials`.
-          if (blurb.enabled && blurb.apiKey) writes.push(api.setSecret(project.id, 'blurb-llm-credentials', blurb.apiKey));
           // Embedding credentials — required by the worker pre-flight if
           // the provider exposes a credential field. Safe to save
           // conditionally on user input (empty → skip, preserves an
@@ -415,23 +396,6 @@ export default function NewProjectPage() {
               </Stepper.Step>
               )}
 
-              {!aiConfigManaged && (
-              <Stepper.Step label="Blurb Model" description="Schema-index LLM">
-                <Card withBorder p="lg" mt="md">
-                  <Stack>
-                    <Text size="sm" c="dimmed">
-                      The blurb model generates per-table descriptions during schema indexing (the ones the retriever embeds in Qdrant). A separate cheap + fast model here usually pays off — spike winners were Bedrock <code>qwen.qwen3-32b-v1:0</code> and OpenAI <code>gpt-4.1-nano</code>. Leave off to reuse the analysis LLM.
-                    </Text>
-                    <BlurbLLMEditor
-                      llmProviders={llmProviders}
-                      value={blurb}
-                      onChange={setBlurb}
-                    />
-                  </Stack>
-                </Card>
-              </Stepper.Step>
-              )}
-
               <Stepper.Completed>
                 <Card withBorder p="lg" mt="md">
                   <Stack>
@@ -440,7 +404,7 @@ export default function NewProjectPage() {
                     <Text><strong>Domain:</strong> {domain} / {category}</Text>
                     <Text><strong>Warehouse:</strong> {selectedWarehouse?.name} / {warehouse.config['dataset']}</Text>
                     {aiConfigManaged ? (
-                      <Text c="dimmed"><strong>AI:</strong> managed by DecisionBox (analysis, blurb, and embedding preset)</Text>
+                      <Text c="dimmed"><strong>AI:</strong> managed by DecisionBox (every layer and the embedding model are preset)</Text>
                     ) : (
                       <>
                         <Text><strong>LLM:</strong> {selectedLLM?.name} / {llm.config['endpoint_id']?.trim() ? `endpoint ${llm.config['endpoint_id']}` : llm.config['model']}</Text>
@@ -448,11 +412,11 @@ export default function NewProjectPage() {
                           <strong>Embedding:</strong>{' '}
                           {embProviderMeta?.name || embedding.provider} / {embedding.model}
                         </Text>
-                        <Text>
-                          <strong>Blurb model:</strong>{' '}
-                          {blurb.enabled && blurb.model
-                            ? `${llmProviders.find((p) => p.id === blurb.provider)?.name || blurb.provider} / ${blurb.model}`
-                            : 'same as analysis LLM'}
+                        <Text c="dimmed" size="sm">
+                          This model is used for every layer — exploration,
+                          analysis, validation, Ask, table descriptions and the
+                          rest. Give any layer its own model afterwards in
+                          Settings → Models.
                         </Text>
                       </>
                     )}

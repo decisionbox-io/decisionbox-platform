@@ -10,8 +10,8 @@ import (
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
-	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
@@ -70,14 +70,14 @@ func (f *fakeLedgerRepo) EndReflection(_ context.Context, _, runID string) error
 }
 
 type fakeFindingRepo struct {
-	findings  []commonmodels.LedgerFinding
-	upserted  []commonmodels.LedgerFinding
-	answered  []answeredCall
+	findings []commonmodels.LedgerFinding
+	upserted []commonmodels.LedgerFinding
+	answered []answeredCall
 	// merged holds each finding as it stood after a Merge, which is what the
 	// repository writes for a finding this run saw again.
 	merged []commonmodels.LedgerFinding
 	// statuses holds each finding after the model's verdict was applied.
-	statuses []commonmodels.LedgerFinding
+	statuses  []commonmodels.LedgerFinding
 	pruneMax  int
 	upsertErr error
 	listErr   error

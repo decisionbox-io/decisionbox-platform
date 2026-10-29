@@ -2,9 +2,9 @@ package discovery
 
 import (
 	"context"
-	"slices"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"

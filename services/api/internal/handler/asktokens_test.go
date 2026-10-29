@@ -483,7 +483,7 @@ func (chatOnlyProvider) Chat(_ context.Context, _ gollm.ChatRequest) (*gollm.Cha
 func (chatOnlyProvider) Validate(_ context.Context) error { return nil }
 
 func TestVerifyExactPromptFits_NoProviderShortCircuits(t *testing.T) {
-	overflow, ok := verifyExactPromptFits(context.Background(), nil, "m", "sys", nil, 200000)
+	overflow, ok := verifyExactPromptFits(context.Background(), nil, "m", "sys", nil, 200000, 0)
 	if ok {
 		t.Fatal("nil provider should report ok=false (no verification possible)")
 	}
@@ -493,7 +493,7 @@ func TestVerifyExactPromptFits_NoProviderShortCircuits(t *testing.T) {
 }
 
 func TestVerifyExactPromptFits_ProviderWithoutTokenCounterShortCircuits(t *testing.T) {
-	_, ok := verifyExactPromptFits(context.Background(), &chatOnlyProvider{}, "m", "sys", nil, 200000)
+	_, ok := verifyExactPromptFits(context.Background(), &chatOnlyProvider{}, "m", "sys", nil, 200000, 0)
 	if ok {
 		t.Fatal("provider without TokenCounter should report ok=false")
 	}
@@ -501,7 +501,7 @@ func TestVerifyExactPromptFits_ProviderWithoutTokenCounterShortCircuits(t *testi
 
 func TestVerifyExactPromptFits_TokenCounterErrorIsNonFatal(t *testing.T) {
 	p := &tcProvider{err: errors.New("encoding load failed")}
-	overflow, ok := verifyExactPromptFits(context.Background(), p, "m", "sys", nil, 200000)
+	overflow, ok := verifyExactPromptFits(context.Background(), p, "m", "sys", nil, 200000, 0)
 	if ok {
 		t.Fatal("TokenCounter() err should yield ok=false")
 	}
@@ -515,7 +515,7 @@ func TestVerifyExactPromptFits_ApproximateCounterIsSkipped(t *testing.T) {
 	// base_url, Claude on Foundry). Re-running the approximation
 	// we already used during the walk would be wasted work.
 	p := &tcProvider{counter: gollm.ApproximateCounter{}}
-	_, ok := verifyExactPromptFits(context.Background(), p, "m", "sys", nil, 200000)
+	_, ok := verifyExactPromptFits(context.Background(), p, "m", "sys", nil, 200000, 0)
 	if ok {
 		t.Fatal("approximate counter returned by provider should short-circuit (ok=false)")
 	}
@@ -527,7 +527,7 @@ func TestVerifyExactPromptFits_CounterErrorIsNonFatal(t *testing.T) {
 	// let the provider report any overflow.
 	stub := errors.New("count_tokens 503")
 	p := &tcProvider{counter: &errorCounter{failOnCall: 1, err: stub}}
-	overflow, ok := verifyExactPromptFits(context.Background(), p, "m", "sys", nil, 200000)
+	overflow, ok := verifyExactPromptFits(context.Background(), p, "m", "sys", nil, 200000, 0)
 	if ok {
 		t.Fatal("Count error should yield ok=false")
 	}
@@ -544,7 +544,7 @@ func TestVerifyExactPromptFits_InWindowReturnsNoOverflow(t *testing.T) {
 	messages := []gollm.Message{
 		{Role: "user", Content: "hi"},
 	}
-	overflow, ok := verifyExactPromptFits(context.Background(), p, "m", "sys", messages, 200000)
+	overflow, ok := verifyExactPromptFits(context.Background(), p, "m", "sys", messages, 200000, 0)
 	if !ok {
 		t.Fatal("exact counter present should yield ok=true")
 	}
@@ -560,7 +560,7 @@ func TestVerifyExactPromptFits_OverflowReportsTypedError(t *testing.T) {
 	messages := []gollm.Message{
 		{Role: "user", Content: "huge"},
 	}
-	overflow, ok := verifyExactPromptFits(context.Background(), p, "test-model", "sys", messages, 200000)
+	overflow, ok := verifyExactPromptFits(context.Background(), p, "test-model", "sys", messages, 200000, 0)
 	if !ok {
 		t.Fatal("exact counter present should yield ok=true")
 	}
@@ -582,12 +582,37 @@ func TestVerifyExactPromptFits_BoundaryExactlyAtBudget(t *testing.T) {
 	// not > 2050.
 	p := &tcProvider{counter: fixedCounter{perCall: 2}}
 	messages := []gollm.Message{{Role: "user", Content: "x"}}
-	overflow, ok := verifyExactPromptFits(context.Background(), p, "m", "", messages, askMaxOutputTokens+2)
+	overflow, ok := verifyExactPromptFits(context.Background(), p, "m", "", messages, askMaxOutputTokens+2, 0)
 	if !ok {
 		t.Fatal("boundary case should yield ok=true")
 	}
 	if overflow != nil {
 		t.Fatalf("boundary case should not overflow; got %v", overflow)
+	}
+}
+
+// The exact-fit check has to reserve what the request will ACTUALLY ask
+// for. A layer that lowered its output ceiling still had the fixed 2,048
+// reserved here, so a prompt that fits comfortably was answered with a 413:
+// a 4,096-token window with a 512-token cap and a 2,500-token prompt needs
+// 3,012 of 4,096.
+func TestVerifyExactPromptFits_ReservesTheLayersOwnOutputBudget(t *testing.T) {
+	p := &tcProvider{counter: fixedCounter{perCall: 2500}}
+	messages := []gollm.Message{{Role: "user", Content: "x"}}
+
+	// With the layer's own 512-token reserve it fits.
+	overflow, ok := verifyExactPromptFits(context.Background(), p, "m", "", messages, 4096, 512)
+	if !ok {
+		t.Fatal("expected the exact counter to be consulted")
+	}
+	if overflow != nil {
+		t.Fatalf("a prompt that fits was refused: %v", overflow)
+	}
+
+	// With the fixed 2,048 it does not — which is what the old code did.
+	overflow, ok = verifyExactPromptFits(context.Background(), p, "m", "", messages, 4096, askMaxOutputTokens)
+	if !ok || overflow == nil {
+		t.Fatal("the larger reserve really should overflow this window; the test proves nothing otherwise")
 	}
 }
 

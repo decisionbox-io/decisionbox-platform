@@ -24,11 +24,17 @@ import (
 // number on the way in; the helper rebuilds the stepByID map.
 type ValidateSingleDocInput struct {
 	AIClient *ai.Client
-	Cfg      verifier.Config
-	Caps     verifier.RunCaps
-	WH       verifier.WarehouseInfo
-	Disc     verifier.DiscoveryContext
-	Executor verifier.Executor
+	// VerifierClient / RefuterClient are the two validation layers' own
+	// clients (#407) — this is the layer pair where the model choice matters
+	// most, because verdicts depend heavily on it. Nil falls back to
+	// AIClient, which is what a caller with one model passes.
+	VerifierClient verifier.LLMClient
+	RefuterClient  verifier.LLMClient
+	Cfg            verifier.Config
+	Caps           verifier.RunCaps
+	WH             verifier.WarehouseInfo
+	Disc           verifier.DiscoveryContext
+	Executor       verifier.Executor
 
 	DocKind  valmodels.DocKind
 	DocID    string
@@ -53,7 +59,14 @@ func ValidateSingleDoc(ctx context.Context, in ValidateSingleDocInput) (models.V
 		return models.ValidationResult{}, errors.New("aiClient is required for single-doc validation")
 	}
 
-	agent, err := verifier.NewAgent(in.AIClient, in.Cfg)
+	byMode := map[valmodels.AgentMode]verifier.LLMClient{}
+	if in.VerifierClient != nil {
+		byMode[valmodels.ModeVerifier] = in.VerifierClient
+	}
+	if in.RefuterClient != nil && in.Cfg.RefuterEnabled {
+		byMode[valmodels.ModeRefuter] = in.RefuterClient
+	}
+	agent, err := verifier.NewAgentPerMode(byMode, in.AIClient, in.Cfg)
 	if err != nil {
 		return models.ValidationResult{}, fmt.Errorf("build verifier agent: %w", err)
 	}

@@ -21,9 +21,15 @@ import (
 // back to the JSON contract instead of stalling the turn.
 const maxParseRetries = 3
 
-// llmMaxOutputTokens caps the model's output per reasoning step. Matches the
-// exploration loop's budget; it bounds one assistant message, not the turn.
-const llmMaxOutputTokens = 4096
+// defaultStepOutputTokens caps the model's output per reasoning step when the
+// runtime carries no resolved budget — a runtime built by a unit test, or by a
+// caller that did not resolve the `ask` layer.
+//
+// A real runtime uses the layer's own cap (ProjectRuntime.stepOutputCap):
+// hardcoding one number truncated a model whose real cap was lower and wasted
+// headroom on one whose cap was higher, which is exactly what per-layer
+// budgets are for.
+const defaultStepOutputTokens = 4096
 
 // turnPersister is the slice of the turn store the loop needs: append a tool
 // event as it completes and write the terminal outcome. An interface so the
@@ -42,8 +48,16 @@ type runner struct {
 
 // turnState is the mutable bookkeeping for one turn.
 type turnState struct {
-	req             TurnRequest
-	client          *ai.Client
+	req    TurnRequest
+	client *ai.Client
+	// routerOutputCap is that layer's resolved output ceiling; 0 means none
+	// is known and the router's own reservation stands.
+	routerOutputCap int
+	// routerClient is the datasource router's own client (the ask_router
+	// layer). Equal to client when the project did not override that layer.
+	routerClient *ai.Client
+	// outputCap bounds one assistant message, from the `ask` layer's budget.
+	outputCap       int
 	model           string
 	events          []commonmodels.ToolEvent
 	round           int
@@ -335,7 +349,7 @@ func (r *runner) run(ctx context.Context, rt *ProjectRuntime, req TurnRequest) {
 		r.finishFailed(ctx, st, fmt.Sprintf("invalid datasource selection: %v", err))
 		return
 	}
-	st := &turnState{req: req, client: rt.AIClient, model: rt.Model, routing: routing}
+	st := &turnState{req: req, client: rt.AIClient, routerClient: rt.router(), routerOutputCap: rt.RouterOutputCap, outputCap: rt.stepOutputCap(), model: rt.Model, routing: routing}
 	// Per-turn charting entitlement: the caller's EnableCharts AND the ops
 	// kill-switch. Set here, once, so both loops and the router path agree.
 	st.chartsEnabled = req.EnableCharts && r.cfg.ChartsEnabled
@@ -591,7 +605,7 @@ func (r *runner) synthesizeFinal(ctx context.Context, conv *ai.Conversation, st 
 
 // callModel issues one LLM call and accumulates token usage onto the state.
 func (st *turnState) callModel(ctx context.Context, conv *ai.Conversation, r *runner) (string, error) {
-	resp, err := st.client.CreateMessage(ctx, conv.GetMessages(), conv.GetSystemPrompt(), llmMaxOutputTokens)
+	resp, err := st.client.CreateMessage(ctx, conv.GetMessages(), conv.GetSystemPrompt(), st.outputCap)
 	if err != nil {
 		return "", err
 	}
@@ -807,7 +821,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 
 // callModelTools issues one tool-enabled LLM call and accumulates token usage.
 func (st *turnState) callModelTools(ctx context.Context, messages []gollm.Message, system string, tools []gollm.ToolDefinition, choice string) (*gollm.ChatResponse, error) {
-	resp, err := st.client.CreateMessageWithTools(ctx, messages, system, llmMaxOutputTokens, tools, choice)
+	resp, err := st.client.CreateMessageWithTools(ctx, messages, system, st.outputCap, tools, choice)
 	if err != nil {
 		return nil, err
 	}

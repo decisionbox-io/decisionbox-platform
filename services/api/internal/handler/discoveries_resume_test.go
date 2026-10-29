@@ -19,6 +19,25 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
+// readyProject is a project that clears every precondition StartRun checks.
+//
+// Since per-layer LLM models (#496) that includes LLMConfigured(), so a
+// fixture carrying only SchemaIndexStatusReady is refused with "this
+// project's LLM models have not been configured" before any of these tests
+// reach what they are actually asserting. The legacy LLM fields are seeded
+// into layer config here the same way a pre-#496 project's stored document
+// is synthesised on read, so these fixtures stay representative of a real
+// project rather than of a shape only the tests have.
+func readyProject(id string) *models.Project {
+	p := &models.Project{
+		ID:                id,
+		SchemaIndexStatus: models.SchemaIndexStatusReady,
+		LLM:               models.LLMConfig{Provider: "openai", Model: "gpt-4o-mini"},
+	}
+	p.SeedLLMLayersFromLegacy()
+	return p
+}
+
 // --- fakes -----------------------------------------------------------------
 
 // mockCheckpointRepo answers "is there anything to resume from" and records
@@ -161,7 +180,7 @@ type resumeFixture struct {
 func newResumeFixture(t *testing.T) *resumeFixture {
 	t.Helper()
 	projs := newMockProjectRepo()
-	projs.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
+	projs.projects["p1"] = readyProject("p1")
 
 	runs := newMockRunRepo()
 	runs.runs["run-1"] = &models.DiscoveryRun{
@@ -571,7 +590,7 @@ func TestResumeRun_FailureCallbackIsScopedToItsOwnAttempt(t *testing.T) {
 // fresh run: its watcher must not be able to kill the first resume.
 func TestStartRun_FailureCallbackIsScopedToAttemptOne(t *testing.T) {
 	projs := newMockProjectRepo()
-	projs.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
+	projs.projects["p1"] = readyProject("p1")
 	runs := newMockRunRepo()
 	rr := &recordingRunner{}
 	cps := &mockCheckpointRepo{prefixLen: 12}
@@ -802,7 +821,7 @@ func discoveryTriggerOptions(projectID string, maxSteps int, minSteps *int, area
 // above: without it there is nothing for a resume to replay.
 func TestStartRun_PersistsTheRunsParameters(t *testing.T) {
 	projs := newMockProjectRepo()
-	projs.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
+	projs.projects["p1"] = readyProject("p1")
 	runs := newMockRunRepo()
 	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projs, runs, nil, nil, nil, quietRunner{})
 
@@ -833,7 +852,7 @@ func TestStartRun_PersistsTheRunsParameters(t *testing.T) {
 // silently drop the floor on every resumed run.
 func TestStartRun_PersistsTheComputedMinStepsFloor(t *testing.T) {
 	projs := newMockProjectRepo()
-	projs.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
+	projs.projects["p1"] = readyProject("p1")
 	runs := newMockRunRepo()
 	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projs, runs, nil, nil, nil, quietRunner{})
 
@@ -928,7 +947,7 @@ func TestStartRun_FailureCallbackConfirmsTheReservationEvenWhenTheStatusWriteNoO
 	swapChecker(t, ck)
 
 	projs := newMockProjectRepo()
-	projs.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
+	projs.projects["p1"] = readyProject("p1")
 	runs := newMockRunRepo()
 	rr := &recordingRunner{}
 	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projs, runs, nil, nil, nil, rr)
@@ -1117,7 +1136,7 @@ func TestCancelRun_DoesNotRecordACancelAgainstASupersededAttempt(t *testing.T) {
 	swapChecker(t, ck)
 
 	projs := newMockProjectRepo()
-	projs.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
+	projs.projects["p1"] = readyProject("p1")
 	runs := newMockRunRepo()
 	// A resumed run still carrying the previous attempt's reservation.
 	resumedAt := time.Now().UTC().Add(-3 * time.Hour)
@@ -1164,7 +1183,7 @@ func TestCancelRun_RecordsACancelForTheRunsOwnReservation(t *testing.T) {
 	swapChecker(t, ck)
 
 	projs := newMockProjectRepo()
-	projs.projects["p1"] = &models.Project{ID: "p1", SchemaIndexStatus: models.SchemaIndexStatusReady}
+	projs.projects["p1"] = readyProject("p1")
 	runs := newMockRunRepo()
 	runs.runs["run-1"] = &models.DiscoveryRun{
 		ID: "run-1", ProjectID: "p1", Status: "running",

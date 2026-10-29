@@ -17,14 +17,15 @@ var promptFS embed.FS
 // instructions) changes between rounds.
 //
 // Placeholders handled:
-//   {{DIALECT}}                       — warehouse SQL dialect name
-//   {{LANGUAGE}}                      — discovery output language (defaults to "English" when empty)
-//   {{FILTER_CLAUSE}}                 — rendered SQL predicate (or empty)
-//   {{FILTER_FIELD}}                  — name of the filter column
-//   {{FILTER_VALUE}}                  — value of the filter
-//   {{SOURCE_STEPS_TRUNCATION_NOTICE}} — non-empty only when SourceStepsTruncated
-//   {{NUMERIC_TOLERANCE_PCT}}         — relative tolerance as an integer percentage (e.g. "20")
-//   {{MIN_SAMPLE_SIZE}}               — min row population for refuter counter-evidence (e.g. "30")
+//
+//	{{DIALECT}}                       — warehouse SQL dialect name
+//	{{LANGUAGE}}                      — discovery output language (defaults to "English" when empty)
+//	{{FILTER_CLAUSE}}                 — rendered SQL predicate (or empty)
+//	{{FILTER_FIELD}}                  — name of the filter column
+//	{{FILTER_VALUE}}                  — value of the filter
+//	{{SOURCE_STEPS_TRUNCATION_NOTICE}} — non-empty only when SourceStepsTruncated
+//	{{NUMERIC_TOLERANCE_PCT}}         — relative tolerance as an integer percentage (e.g. "20")
+//	{{MIN_SAMPLE_SIZE}}               — min row population for refuter counter-evidence (e.g. "30")
 func renderSystemPrompt(template string, mode valmodels.AgentMode, b Bundle, numericTolerance float64, minSampleSize int) string {
 	language := b.Discovery.Language
 	if language == "" {

@@ -76,6 +76,73 @@ The Dashboard surfaces this inventory on its **System** page, adding its own bui
 
 ## Providers
 
+### GET /api/v1/llm/layers
+
+List the LLM layers a project configures a model for. The dashboard reads this
+rather than holding a copy of the list, so a layer added server-side appears in
+the UI with no front-end release.
+
+```bash
+curl http://localhost:8080/api/v1/llm/layers
+```
+
+```json
+{
+  "data": {
+    "version": 1,
+    "default_layer_key": "default",
+    "layers": [
+      {
+        "key": "exploration",
+        "label": "Exploration",
+        "description": "The discovery agent's autonomous exploration of the warehouse.",
+        "group": "main",
+        "refuses_reasoning_models": false
+      },
+      {
+        "key": "table_descriptions",
+        "label": "Table descriptions",
+        "description": "The searchable description written for each table during schema indexing.",
+        "group": "small",
+        "refuses_reasoning_models": true
+      }
+    ]
+  }
+}
+```
+
+`version` is the configuration generation a project must be configured at.
+`refuses_reasoning_models` is the layer's pre-flight rule, sent as data so the
+model picker can warn before a save the API would reject.
+
+### GET /api/v1/projects/{id}/llm/config
+
+The project's per-layer configuration, as the settings page should render it.
+
+For a project that has never been configured, the values are **seeded** from
+its legacy `llm` / `blurb_llm` fields and `seeded` is `true` — which is what
+makes the forced trip through settings a review rather than a seventeen-row
+data-entry exercise. The seed lives here rather than in the project document
+so a client that round-trips `GET /projects/{id}` into a `PUT` cannot silently
+configure the project and skip that review.
+
+```bash
+curl http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/llm/config
+```
+
+```json
+{
+  "data": {
+    "configured": false,
+    "version": 0,
+    "required_version": 1,
+    "seeded": true,
+    "providers": [{"id": "default", "provider": "bedrock", "config": {"region": "us-east-1"}}],
+    "layer_models": {"default": {"provider_id": "default", "model": "us.anthropic.claude-opus-4-8-v1", "config": {"prompt_cache": "true"}}}
+  }
+}
+```
+
 ### GET /api/v1/providers/llm
 
 List registered LLM providers with metadata and config fields.
@@ -561,6 +628,12 @@ Request body (all fields optional):
 | `max_steps` | `int` | `100` | Maximum exploration steps. |
 | `min_steps` | `int` | `floor(0.6 * max_steps)` | Floor on exploration steps before the agent will accept a `done` signal from the LLM. `0` disables the floor. Recommended for reasoning models (Qwen3, DeepSeek-R1, GPT-OSS) that tend to terminate exploration too early. Must be in `[0, max_steps]` — values outside that range return `400`. |
 
+Returns `409` when the project's LLM models have not been configured, with a
+message naming its settings page. This is the shared trigger seam, so the run
+button, this endpoint and scheduled runs all hit the same check — a schedule on
+an unconfigured project fails until someone visits settings, and records that
+reason in its run history. Managed deployments are never gated.
+
 ```bash
 # Run all areas with default steps and the 60%-of-max_steps floor
 curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/discover
@@ -884,21 +957,34 @@ On failure:
 }
 ```
 
-### POST /api/v1/projects/{id}/test/llm
+### POST /api/v1/projects/{id}/test/llm[?layer=<key>]
 
-Test the LLM provider connection for a project.
+Test an LLM connection for a project.
 Spawns the agent with `--test-connection llm` to validate credentials and model access.
 
+`layer` picks one layer's provider entry and model. Omitted — or set to
+`default` — tests the project's default layer, which is what this endpoint has
+always done. The `--layer` flag is then **omitted** from the agent invocation,
+so a per-layer test against an agent image older than the API degrades to the
+default rather than failing on an unknown flag. An unknown layer key returns
+`400` here rather than reaching the agent.
+
 ```bash
+# the default layer
 curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/test/llm
+
+# one layer's own entry and model
+curl -X POST 'http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/test/llm?layer=exploration'
 ```
 
 ```json
 {
   "data": {
     "success": true,
-    "provider": "claude",
-    "model": "claude-sonnet-4-6"
+    "layer": "exploration",
+    "provider_id": "deepinfra",
+    "provider": "litellm",
+    "model": "deepseek-v4.1-flash"
   }
 }
 ```

@@ -37,9 +37,9 @@ type toolStep struct {
 // DefaultExecutor wires the three production dependencies:
 //   - schemaProv: ai.SchemaProvider — Qdrant-backed schema retrieval
 //   - executor:   *queryexec.QueryExecutor — the same self-healing,
-//                 filter-enforcing executor exploration uses
+//     filter-enforcing executor exploration uses
 //   - stepByID:   in-memory snapshot of the discovery's exploration
-//                 steps (passed from the orchestrator after Phase 3)
+//     steps (passed from the orchestrator after Phase 3)
 //
 // The snapshot must be populated BEFORE the agent runs — that's why
 // the validation phase lives at orchestrator.go:Phase 4.5, after

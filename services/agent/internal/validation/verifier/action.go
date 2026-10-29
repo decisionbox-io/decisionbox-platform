@@ -22,11 +22,11 @@ const (
 // Action is one parsed agent turn. Exactly one of LookupSchemaRefs /
 // Sql / StepRowsReq / Verdict is non-zero, discriminated by Kind.
 type Action struct {
-	Kind             ActionKind                    `json:"-"`
-	LookupSchemaRefs []string                      `json:"lookup_schema,omitempty"`
-	Sql              string                        `json:"query_warehouse,omitempty"`
-	StepRowsReq      *StepRowsRequest              `json:"read_step_rows,omitempty"`
-	Verdict          *valmodels.StructuredVerdict  `json:"submit_verdict,omitempty"`
+	Kind             ActionKind                   `json:"-"`
+	LookupSchemaRefs []string                     `json:"lookup_schema,omitempty"`
+	Sql              string                       `json:"query_warehouse,omitempty"`
+	StepRowsReq      *StepRowsRequest             `json:"read_step_rows,omitempty"`
+	Verdict          *valmodels.StructuredVerdict `json:"submit_verdict,omitempty"`
 }
 
 // StepRowsRequest is the body of read_step_rows. Limit<=0 is treated

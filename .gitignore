@@ -10,6 +10,11 @@ bin/
 vendor/
 *.test
 *.out
+# `go build ./cmd/<x>/` drops the binary in the working directory, which is
+# how a 97 MB artifact nearly landed in a commit.
+/services/agent/validation-replay
+/services/agent/agent
+/services/api/api
 coverage.txt
 coverage.html
 

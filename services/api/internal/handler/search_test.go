@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -296,6 +297,7 @@ func TestSearchHandler_Search(t *testing.T) {
 				Provider: "test-embedding",
 				Model:    "test-model",
 			},
+			LLMConfigVersion: llmlayer.ConfigVersion,
 		},
 	}
 
@@ -386,6 +388,7 @@ func TestSearchHandler_Search_IncludesValidation(t *testing.T) {
 				Provider: "test-embedding",
 				Model:    "test-model",
 			},
+			LLMConfigVersion: llmlayer.ConfigVersion,
 		},
 	}
 
@@ -469,9 +472,10 @@ func TestSearchHandler_Search_OmitsValidationWhenUnvalidated(t *testing.T) {
 
 	projectRepo := &mockProjectRepoForSearch{
 		project: &models.Project{
-			ID:        "proj-1",
-			Name:      "Test Project",
-			Embedding: goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
+			ID:               "proj-1",
+			Name:             "Test Project",
+			Embedding:        goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
+			LLMConfigVersion: llmlayer.ConfigVersion,
 		},
 	}
 	insightRepo := &mockInsightRepo{
@@ -542,8 +546,9 @@ func TestSearchHandler_EmptyQuery(t *testing.T) {
 func TestSearchHandler_NoEmbeddingConfig(t *testing.T) {
 	projectRepo := &mockProjectRepoForSearch{
 		project: &models.Project{
-			ID:   "proj-1",
-			Name: "No Embedding",
+			ID:               "proj-1",
+			Name:             "No Embedding",
+			LLMConfigVersion: llmlayer.ConfigVersion,
 		},
 	}
 
@@ -796,7 +801,7 @@ func TestAsk_EmptyQuestion(t *testing.T) {
 
 func TestAsk_NoEmbeddingConfig(t *testing.T) {
 	projectRepo := &mockProjectRepoForSearch{
-		project: &models.Project{ID: "proj-1", Name: "No Embedding"},
+		project: &models.Project{ID: "proj-1", Name: "No Embedding", LLMConfigVersion: llmlayer.ConfigVersion},
 	}
 	h := NewSearchHandler(projectRepo, nil, nil, nil, nil, nil, &mockVectorStoreForSearch{})
 	body, _ := json.Marshal(askRequest{Question: "test"})
@@ -822,8 +827,9 @@ func TestAsk_NoResults(t *testing.T) {
 	projectRepo := &mockProjectRepoForSearch{
 		project: &models.Project{
 			ID: "proj-1", Name: "Test",
-			Embedding: goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
-			LLM:       models.LLMConfig{Provider: "test-llm", Model: "test-llm-model"},
+			Embedding:        goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
+			LLM:              models.LLMConfig{Provider: "test-llm", Model: "test-llm-model"},
+			LLMConfigVersion: llmlayer.ConfigVersion,
 		},
 	}
 	vs := &mockVectorStoreForSearch{results: nil} // no results
@@ -849,8 +855,9 @@ func TestAsk_Success(t *testing.T) {
 	projectRepo := &mockProjectRepoForSearch{
 		project: &models.Project{
 			ID: "proj-1", Name: "Test",
-			Embedding: goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
-			LLM:       models.LLMConfig{Provider: "test-llm", Model: "test-llm-model"},
+			Embedding:        goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
+			LLM:              models.LLMConfig{Provider: "test-llm", Model: "test-llm-model"},
+			LLMConfigVersion: llmlayer.ConfigVersion,
 		},
 	}
 	vs := &mockVectorStoreForSearch{results: []vectorstore.SearchResult{
@@ -890,8 +897,9 @@ func TestAsk_SessionProjectMismatch(t *testing.T) {
 	projectRepo := &mockProjectRepoForSearch{
 		project: &models.Project{
 			ID: "proj-1", Name: "Test",
-			Embedding: goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
-			LLM:       models.LLMConfig{Provider: "test-llm", Model: "test-llm-model"},
+			Embedding:        goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
+			LLM:              models.LLMConfig{Provider: "test-llm", Model: "test-llm-model"},
+			LLMConfigVersion: llmlayer.ConfigVersion,
 		},
 	}
 	vs := &mockVectorStoreForSearch{results: []vectorstore.SearchResult{
@@ -944,8 +952,9 @@ func TestAsk_SystemPromptIncludesLanguageDirective(t *testing.T) {
 			projectRepo := &mockProjectRepoForSearch{
 				project: &models.Project{
 					ID: "proj-1", Name: "Test", Language: tc.language,
-					Embedding: goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
-					LLM:       models.LLMConfig{Provider: "test-llm", Model: "test-llm-model"},
+					Embedding:        goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
+					LLM:              models.LLMConfig{Provider: "test-llm", Model: "test-llm-model"},
+					LLMConfigVersion: llmlayer.ConfigVersion,
 				},
 			}
 			vs := &mockVectorStoreForSearch{results: []vectorstore.SearchResult{
@@ -1143,8 +1152,9 @@ func askOwnershipHandler(repo *mockAskSessionRepo) *SearchHandler {
 	projectRepo := &mockProjectRepoForSearch{
 		project: &models.Project{
 			ID: "p1", Name: "Test",
-			Embedding: goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
-			LLM:       models.LLMConfig{Provider: "test-llm", Model: "test-llm-model"},
+			Embedding:        goembedding.ProjectConfig{Provider: "test-embedding", Model: "test-model"},
+			LLM:              models.LLMConfig{Provider: "test-llm", Model: "test-llm-model"},
+			LLMConfigVersion: llmlayer.ConfigVersion,
 		},
 	}
 	vs := &mockVectorStoreForSearch{results: []vectorstore.SearchResult{

@@ -50,6 +50,12 @@ type SchemaIndexRun struct {
 
 // BlurbLLMConfig picks the LLM used to generate per-table natural-language
 // descriptions during schema indexing.
+//
+// Since per-layer models (#407) this block is the DUAL-WRITE MIRROR of the
+// `table_descriptions` layer, kept so an older agent image still indexes with
+// the model the user chose. The live value is
+// Project.EffectiveLayerModel(llmlayer.LayerTableDescriptions); read this
+// field only through the accessors, and never when layer_models is non-empty.
 type BlurbLLMConfig struct {
 	Provider string            `bson:"provider" json:"provider"`
 	Model    string            `bson:"model" json:"model"`

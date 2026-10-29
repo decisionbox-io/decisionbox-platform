@@ -24,6 +24,7 @@ import (
 	"time"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -167,15 +168,12 @@ type Generator struct {
 
 // Errors the generator can return upfront from New.
 var (
-	// Reasoning-class models stay rejected for blurb generation
-	// regardless of whether the provider surfaces their chain-of-
-	// thought separately: a 2,000-table warehouse runs 2,000 parallel
-	// small blurb calls, and the per-call wall-clock dominates total
-	// indexing time. Reasoning models burn hundreds of hidden tokens
-	// per call before producing the visible answer, blowing the
-	// throughput budget. Operators should pick a fast non-reasoning
-	// model (Haiku-class, gpt-4o-mini, gemini-2.5-flash) for blurbs.
-	ErrReasoningModelNotSupported = errors.New("reasoning-class models are too slow for blurb generation — pick a fast non-reasoning model (Haiku-class, gpt-4o-mini, gemini-2.5-flash, qwen2.5)")
+	// ErrReasoningModelNotSupported is re-exported from llmlayer, which now
+	// owns the rule: the API's project-save handler, the dashboard's model
+	// picker and the per-layer connection test all apply the same one, and
+	// three copies of a pattern list is how they drift apart. Kept as an
+	// alias so this package's callers and tests keep matching on it.
+	ErrReasoningModelNotSupported = llmlayer.ErrReasoningModelNotSupported
 	ErrLLMMissing                 = errors.New("LLM provider is required")
 	ErrModelMissing               = errors.New("model is required")
 )
@@ -190,7 +188,7 @@ func New(cfg Config) (*Generator, error) {
 	if cfg.Model == "" && !cfg.AllowEmptyModel {
 		return nil, ErrModelMissing
 	}
-	if err := CheckModel(cfg.ProviderName, cfg.Model); err != nil {
+	if err := llmlayer.CheckLayerModel(llmlayer.LayerTableDescriptions, cfg.ProviderName, cfg.Model); err != nil {
 		return nil, err
 	}
 	workers := cfg.Workers
@@ -669,56 +667,4 @@ func nonEmpty(s, fallback string) string {
 		return fallback
 	}
 	return s
-}
-
-// reasoningClassPatterns lists the model-ID substrings that our blurb
-// pipeline cannot use because their output is routed through a <think>
-// channel that Converse / Chat Completions don't expose as text
-// (FINDINGS.md §4). Catch-all patterns — we'd rather reject a non-
-// reasoning match by accident than let a reasoning model silently emit
-// empty blurbs.
-var reasoningClassPatterns = []string{
-	"deepseek-r1",
-	"r1-", // DeepSeek R1 variants (r1-distill, r1-lite, ...)
-	"o1-",
-	"o3",
-	"o4-mini",
-	// GPT-5 family — reasoning by default. Burns max_completion_tokens
-	// on hidden reasoning before producing visible content, so a 512-token
-	// blurb budget yields content="". Matches "gpt-5", "gpt-5-mini",
-	// "gpt-5-nano", and dated snapshots (gpt-5-2025-08-07).
-	"gpt-5",
-	"extended-thinking",
-}
-
-// CheckModel reports whether (provider, model) may write table descriptions.
-// Two independent reasoning signals: the substring patterns (families with no
-// shared catalog flag: OpenAI o-series, GPT-5, extended-thinking Claude) and
-// the registry's catalog flag (Ollama models declared Reasoning: gemma4 /
-// gemma3 / qwen3 / deepseek-r1). A catalog Reasoning model that thinks only
-// adaptively (gollm.IsAdaptiveThinkingModel — Claude Haiku 5.5, Sonnet 5.5)
-// answers a short prompt without thinking and is accepted. The blurb-llm
-// connection test applies the same rule, so a refused model fails when it is
-// configured rather than when an index run starts.
-func CheckModel(providerName, model string) error {
-	if IsReasoningClassModel(model) ||
-		(gollm.IsReasoningModel(providerName, model) && !gollm.IsAdaptiveThinkingModel(providerName, model)) {
-		return fmt.Errorf("blurb: %w (model=%q)", ErrReasoningModelNotSupported, model)
-	}
-	return nil
-}
-
-// IsReasoningClassModel returns true for models whose output channel
-// does not carry the user-visible text on OpenAI / Bedrock Converse /
-// Anthropic Messages APIs. Used by New() and exposed for the API
-// project-save handler to block misconfiguration at the earliest point.
-// Matching is case-insensitive.
-func IsReasoningClassModel(model string) bool {
-	lc := strings.ToLower(model)
-	for _, p := range reasoningClassPatterns {
-		if strings.Contains(lc, p) {
-			return true
-		}
-	}
-	return false
 }

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
@@ -101,10 +102,18 @@ func setupHandler(t *testing.T, validationEnabled bool) (*ValidationJobsHandler,
 	projects := newMockProjectRepo()
 	discoveries := newMockDiscoveryRepo()
 
-	// Seed a project with the requested validation toggle.
+	// Seed a project with the requested validation toggle — and with its
+	// models configured, because validation spends tokens and now meets the
+	// same precondition StartRun and Ask do. Migrated the way a real project
+	// is, rather than by switching the gate off for the test.
 	proj := &models.Project{Name: "p", Domain: "gaming", Category: "match3"}
 	flag := validationEnabled
 	proj.ValidationEnabled = &flag
+	proj.LLM = models.LLMConfig{Provider: "bedrock", Model: "opus"}
+	entries, layers := proj.LLMLayerConfig().SeedFromLegacy()
+	proj.LLMProviders = entries
+	proj.LayerModels = layers
+	proj.LLMConfigVersion = llmlayer.ConfigVersion
 	if err := projects.Create(context.Background(), proj); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
@@ -399,5 +408,41 @@ func TestValidationJobsHandler_ListByDoc_400OnBadDocKind(t *testing.T) {
 	h.ListByDoc(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+// Validation is a third way to spend a project's LLM budget, and the worker
+// resolves its layers ungated — so a self-hosted project with existing
+// discoveries could validate against a configuration nobody had reviewed,
+// which is the one thing #407's gate exists to prevent. StartRun and Ask
+// both refuse; so does this.
+func TestValidationJobsHandler_412WhenTheModelsAreNotConfigured(t *testing.T) {
+	h, jobs, projects, _, projectID, discoveryID, insightID, _ := setupHandler(t, true)
+
+	// Back to a project that predates the per-layer configuration and has
+	// never been through settings.
+	proj, _ := projects.GetByID(context.Background(), projectID)
+	proj.LLMProviders = nil
+	proj.LayerModels = nil
+	proj.LLMConfigVersion = 0
+	if err := projects.Update(context.Background(), proj.ID, proj); err != nil {
+		t.Fatalf("update project: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost,
+		"/api/v1/discoveries/"+discoveryID+"/insights/"+insightID+"/validate", nil)
+	r.SetPathValue("did", discoveryID)
+	r.SetPathValue("iid", insightID)
+	h.ValidateInsight(w, r)
+
+	if w.Code != http.StatusPreconditionFailed {
+		t.Errorf("status = %d, want 412: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "llm_not_configured") {
+		t.Errorf("body = %s, want the llm_not_configured code the dashboard routes on", w.Body.String())
+	}
+	if len(jobs.jobs) != 0 {
+		t.Errorf("enqueued %d jobs on an unconfigured project", len(jobs.jobs))
 	}
 }

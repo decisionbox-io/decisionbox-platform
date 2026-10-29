@@ -326,9 +326,24 @@ export interface Project {
   // mirrors the backend's fallback (first warehouse, or the reserved default for
   // a legacy project). Index runs are stamped under the resolved id.
   primary_warehouse_id?: string;
+  // llm / blurb_llm are the LEGACY single-provider fields. Since per-layer
+  // models (#407) they are the dual-write mirror of the default and
+  // table-description layers, kept so an agent or background worker
+  // image older than the API still reads a truthful
+  // single-provider setup. Read them for display only; the live values are
+  // llm_providers + layer_models (GET /projects/{id}/llm/config).
   llm: LLMConfig;
   embedding: EmbeddingConfig;
   blurb_llm?: BlurbLLMConfig;
+  // The project's named LLM provider entries and the (entry, model) pair each
+  // layer uses. Absent on a project that has never been configured.
+  llm_providers?: LLMProviderEntry[];
+  layer_models?: Record<string, LayerModel>;
+  llm_config_version?: number;
+  // Read-time flag: this project has not been configured for per-layer models
+  // and must be sent to settings before it can run. Always false on a managed
+  // deployment, which has no AI configuration surface.
+  llm_config_required?: boolean;
   profile: Record<string, unknown>;
   // Output language for narrative fields (insight names/descriptions,
   // recommendation titles, /ask answers). Empty = legacy project,
@@ -937,6 +952,171 @@ export interface LiveModel extends ModelInfo {
   // is never pinned as a manual override.
   live_max_input_tokens?: number;
   live_max_output_tokens?: number;
+}
+
+// LLMProviderEntry is one named provider entry on a project. Config holds
+// CONNECTION fields (region, base_url, auth_method, …); model-scoped settings
+// live on the LayerModel.
+export interface LLMProviderEntry {
+  // The reserved id "default" is the entry every layer inherits, and the only
+  // one an older agent image can read credentials for. "blurb" is the
+  // table-description entry's reserved id.
+  id: string;
+  label?: string;
+  provider: string;
+  config?: Record<string, string>;
+}
+
+// LayerModel is one layer's (provider entry, model) choice. Config holds
+// model-scoped settings merged OVER the entry's config: max_input_tokens,
+// max_output_tokens, wire_override, endpoint_id, reasoning_enabled,
+// prompt_cache.
+export interface LayerModel {
+  provider_id?: string;
+  model?: string;
+  config?: Record<string, string>;
+}
+
+// LLMLayerDescriptor is one layer's metadata, served by GET /api/v1/llm/layers
+// so the dashboard holds no copy of the layer list and a layer added
+// server-side appears here without a front-end release.
+export interface LLMLayerDescriptor {
+  key: string;
+  label: string;
+  description: string;
+  // "main" — the layers whose model choice changes what users see.
+  // "small" — the cheap, high-volume or mechanical ones.
+  group: 'main' | 'small';
+  // This layer refuses reasoning-class models (table descriptions do: a
+  // thinking model returns an empty description inside the small budget).
+  // Surfaced so the picker can warn before a save the API would reject.
+  refuses_reasoning_models: boolean;
+}
+
+// llmProviderSecretKey derives the secret-store key holding one provider
+// entry's credential.
+//
+// It mirrors llmlayer.CredentialsKey in libs/go-common — the reserved ids map
+// to the legacy keys so an existing project's secrets stay where they are, and
+// any other id is hex-encoded because the cloud secret backends restrict the
+// provider-side secret name's charset (GCP allows [A-Za-z0-9_-], Azure Key
+// Vault only [A-Za-z0-9-]).
+//
+// Duplicated here rather than fetched because the dashboard writes the secret
+// directly through PUT /projects/{id}/secrets/{key}. A drift would show up as
+// a credential the agent cannot find, so llmProviderSecretKey has its own
+// test pinning the same values the Go side pins.
+export function llmProviderSecretKey(entryId: string): string {
+  const id = entryId || 'default';
+  if (id === 'default') return 'llm-credentials';
+  if (id === 'blurb') return 'blurb-llm-credentials';
+  // An entry id is validated to [A-Za-z0-9_-] on both sides, so every
+  // character is one ASCII byte and charCodeAt gives the same bytes Go's
+  // hex.EncodeToString does. isValidLLMProviderId is what keeps that true.
+  let hex = '';
+  for (let i = 0; i < id.length; i += 1) {
+    hex += id.charCodeAt(i).toString(16).padStart(2, '0');
+  }
+  return `llm-credentials-${hex}`;
+}
+
+// The reserved provider-entry ids. "default" is the entry every layer
+// inherits and the only one an older agent image can read credentials for, so
+// it is a slot that gets rewritten rather than a pointer that gets re-aimed.
+export const DEFAULT_LLM_PROVIDER_ID = 'default';
+export const BLURB_LLM_PROVIDER_ID = 'blurb';
+// Azure Key Vault validates the COMPOSED secret name at 127 characters, and
+// the key hex-encodes the id at two characters each — so the id is capped.
+export const MAX_LLM_PROVIDER_ID_LEN = 32;
+
+// isValidLLMProviderId mirrors llmlayer.ValidateProviderID: the charset the
+// secret backends can store, and the length cap the composed Azure name
+// imposes. Checked in the form so the user is told at the input rather than
+// by a 400 on save.
+export function isValidLLMProviderId(id: string): boolean {
+  return id.length > 0 && id.length <= MAX_LLM_PROVIDER_ID_LEN && /^[A-Za-z0-9_-]+$/.test(id);
+}
+
+/**
+ * Derives a provider entry's id from the name the user typed.
+ *
+ * The id is machine identity, not a label: it keys the entry's credential in
+ * the secret backend (llmProviderSecretKey) and it is what each layer row
+ * points at. That is why it is frozen once saved — renaming would orphan a
+ * stored secret the backends have no DELETE for. None of which is a reason
+ * to make someone type it, so it is derived from the name and never shown.
+ *
+ * `taken` keeps two entries whose names slugify alike from colliding, and
+ * covers the reserved ids: an entry a user happens to call "Default" must
+ * not land on the reserved slot an older agent image reads.
+ */
+export function llmProviderIdFromName(name: string, taken: Iterable<string>): string {
+  const base = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, MAX_LLM_PROVIDER_ID_LEN)
+    .replace(/-+$/g, '');
+  if (!base) return '';
+  const used = new Set([...taken, DEFAULT_LLM_PROVIDER_ID, BLURB_LLM_PROVIDER_ID]);
+  if (!used.has(base)) return base;
+  for (let n = 2; n < 1000; n += 1) {
+    const suffix = `-${n}`;
+    const candidate = base.slice(0, MAX_LLM_PROVIDER_ID_LEN - suffix.length).replace(/-+$/g, '') + suffix;
+    if (!used.has(candidate)) return candidate;
+  }
+  return '';
+}
+
+/**
+ * What to call a provider entry on screen.
+ *
+ * The NAME the user gave it, else something human derived from what they
+ * actually chose — the provider's registry display name, and for the two
+ * reserved slots the job that slot does. Never the id: that is the secret
+ * key and the layer rows' reference, and a user who was never asked to
+ * type it should not have to read it. The fallback used to be
+ * `${id} — ${provider}`, which showed "default — bedrock" for a connection
+ * whose owner had typed neither word.
+ */
+export function llmEntryDisplayName(
+  entry: { id: string; label?: string; provider?: string },
+  providers: { id: string; name: string }[],
+): string {
+  const named = (entry.label || '').trim();
+  if (named) return named;
+  const provider = providers.find((p) => p.id === entry.provider)?.name
+    || entry.provider
+    || '';
+  if (entry.id === DEFAULT_LLM_PROVIDER_ID) {
+    return provider ? `Default · ${provider}` : 'Default';
+  }
+  if (entry.id === BLURB_LLM_PROVIDER_ID) {
+    return provider ? `Table descriptions · ${provider}` : 'Table descriptions';
+  }
+  return provider || entry.id;
+}
+
+export interface LLMLayersResponse {
+  version: number;
+  layers: LLMLayerDescriptor[];
+  // The reserved layer_models key holding the pair every layer without its
+  // own row inherits.
+  default_layer_key: string;
+}
+
+// ProjectLLMConfigResponse is the settings page's view of a project's
+// per-layer configuration. For a project that has never been configured the
+// values are SEEDED from its legacy fields and `seeded` is true — which is
+// what makes the forced trip through settings a review rather than a
+// seventeen-row data-entry exercise.
+export interface ProjectLLMConfigResponse {
+  configured: boolean;
+  version: number;
+  required_version: number;
+  providers: LLMProviderEntry[];
+  layer_models: Record<string, LayerModel>;
+  seeded: boolean;
 }
 
 export interface LiveModelsResponse {
@@ -1763,6 +1943,25 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(slot ? { slot } : {}),
     }),
+  // Models reachable on one NAMED provider entry, or on the entry a given
+  // layer resolves to. The server reads that entry's own config and
+  // credential chain, so a secondary entry with no secret of its own fails
+  // here exactly as it would fail a run — rather than appearing to work
+  // because the default entry's key was in the environment.
+  listLiveLLMModelsForProvider: (
+    projectID: string,
+    body: { provider_id?: string; layer?: string },
+  ) =>
+    request<LiveModelsResponse>(`/api/v1/projects/${encodeURIComponent(projectID)}/providers/llm/models/live`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  // The layer vocabulary, as data.
+  listLLMLayers: () => request<LLMLayersResponse>('/api/v1/llm/layers'),
+  // A project's per-layer configuration for the settings page, seeded from
+  // the legacy fields when it has never been configured.
+  getProjectLLMConfig: (projectID: string) =>
+    request<ProjectLLMConfigResponse>(`/api/v1/projects/${encodeURIComponent(projectID)}/llm/config`),
   listWarehouseProviders: () => request<ProviderMeta[]>('/api/v1/providers/warehouse'),
 
   // System inventory — component + worker versions (System page)
@@ -2113,6 +2312,15 @@ export const api = {
     request<TestConnectionResult>(`/api/v1/projects/${projectId}/test/warehouse`, { method: 'POST' }),
   testLLM: (projectId: string) =>
     request<TestConnectionResult>(`/api/v1/projects/${projectId}/test/llm`, { method: 'POST' }),
+  // Tests ONE layer's provider entry and model. The layer is omitted for the
+  // default, which is what every shipped agent image understands — a
+  // per-layer test against an older image degrades to the default rather
+  // than failing on an unknown flag.
+  testLLMLayer: (projectId: string, layer: string) =>
+    request<TestConnectionResult>(
+      `/api/v1/projects/${projectId}/test/llm?layer=${encodeURIComponent(layer)}`,
+      { method: 'POST' },
+    ),
   testEmbedding: (projectId: string) =>
     request<TestConnectionResult>(`/api/v1/projects/${projectId}/test/embedding`, { method: 'POST' }),
   testBlurbLLM: (projectId: string) =>

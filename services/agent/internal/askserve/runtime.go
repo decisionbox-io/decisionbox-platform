@@ -30,6 +30,22 @@ type ProjectRuntime struct {
 	AIClient *ai.Client
 	// Model is the project's configured model id (for the transcript record).
 	Model string
+	// RouterClient drives the datasource router — its own layer
+	// (llmlayer.LayerAskRouter), because picking a datasource is a small,
+	// mechanical decision a cheap model makes well. Nil ⇒ the router uses
+	// AIClient, which is today's behaviour.
+	RouterClient *ai.Client
+	// RouterOutputCap is that layer's resolved output ceiling. The router's
+	// own reservation is small and fixed, but "small" is relative to the
+	// model: a layer pointed at one that accepts less rejects the call, and
+	// a failed route silently costs the turn its datasource decision. 0 ⇒ no
+	// known ceiling, so the reservation stands.
+	RouterOutputCap int
+	// OutputCap bounds one assistant message, from the `ask` layer's resolved
+	// budget. 0 ⇒ the package default. It replaced a hardcoded 4096, which
+	// silently truncated a model whose real cap was lower and wasted headroom
+	// on one whose cap was higher.
+	OutputCap int
 	// InsightsProvider serves search_insights (semantic search over the
 	// project's discovered insights). Project-level and datasource-agnostic.
 	// May be nil when the project has no embedder / vector store.
@@ -99,6 +115,9 @@ type connEntry struct {
 type ProjectRuntimeOptions struct {
 	AIClient          *ai.Client
 	Model             string
+	RouterClient      *ai.Client
+	RouterOutputCap   int
+	OutputCap         int
 	InsightsProvider  ai.InsightsProvider
 	KnowledgeProvider KnowledgeProvider
 	MutationTools     []MutationTool
@@ -121,6 +140,9 @@ func NewProjectRuntime(opts ProjectRuntimeOptions) *ProjectRuntime {
 	return &ProjectRuntime{
 		AIClient:          opts.AIClient,
 		Model:             opts.Model,
+		RouterClient:      opts.RouterClient,
+		RouterOutputCap:   opts.RouterOutputCap,
+		OutputCap:         opts.OutputCap,
 		InsightsProvider:  opts.InsightsProvider,
 		KnowledgeProvider: opts.KnowledgeProvider,
 		MutationTools:     opts.MutationTools,
@@ -129,9 +151,9 @@ func NewProjectRuntime(opts ProjectRuntimeOptions) *ProjectRuntime {
 		PrimaryID:         opts.PrimaryID,
 		BusinessSummary:   opts.BusinessSummary,
 		build:             opts.Build,
-		maxWarm:          maxWarm,
-		warm:             make(map[string]*connEntry),
-		sharedClosers:    opts.SharedClosers,
+		maxWarm:           maxWarm,
+		warm:              make(map[string]*connEntry),
+		sharedClosers:     opts.SharedClosers,
 	}
 }
 
@@ -322,4 +344,34 @@ func closeConn(conn *WarehouseConn) {
 			_ = c()
 		}
 	}
+}
+
+// router returns the client the datasource router's call goes through: the
+// ask_router layer's own client when the project configured one, else the
+// answer client.
+func (r *ProjectRuntime) router() *ai.Client {
+	if r != nil && r.RouterClient != nil {
+		return r.RouterClient
+	}
+	if r == nil {
+		return nil
+	}
+	return r.AIClient
+}
+
+// stepOutputCap bounds ONE assistant message.
+//
+// The ask layer's resolved cap only ever LOWERS the package default. The
+// resolved cap is the model's whole output ceiling, and for a model with no
+// catalogued ceiling that is the global fallback — 64K — which is not a
+// sane reservation for one step of a multi-step loop: it replaces a 4,096
+// request with an oversized one on every step and pushes turns that used to
+// fit into overflow retries. What the layer's cap is good for is the
+// opposite case, a model that accepts LESS than the default and would
+// reject it.
+func (r *ProjectRuntime) stepOutputCap() int {
+	if r != nil && r.OutputCap > 0 && r.OutputCap < defaultStepOutputTokens {
+		return r.OutputCap
+	}
+	return defaultStepOutputTokens
 }

@@ -80,7 +80,7 @@ const (
 	// already been tried.
 	ledgerDedupSearchTimeout = 15 * time.Second
 	// ledgerDedupSearchBudget is the ceiling on all of them together.
-	ledgerDedupSearchBudget = 45 * time.Second
+	ledgerDedupSearchBudget              = 45 * time.Second
 	defaultDiscoveryReflectionMaxOutput  = 3000
 	defaultDiscoveryReflectionParseRetry = 1
 	defaultDiscoveryLedgerMaxFindings    = 500
@@ -167,11 +167,18 @@ func reflectionContext(parent context.Context) (context.Context, context.CancelF
 // work, in one place, because markReflectionPending has to ask exactly the same
 // question: an update announced for a run whose reflection is gated off is a
 // label that never goes away.
+// ReflectionAvailable reports Layer A of the gate: whether this DEPLOYMENT
+// offers the ledger-reflection phase at all. Exported for the same reason as
+// QuestionsAvailable.
+func ReflectionAvailable() bool {
+	return goconfig.GetEnvAsBool(discoveryReflectionEnabledEnv, true)
+}
+
 func (o *Orchestrator) reflectionWillRun(ctx context.Context) bool {
 	if !o.reflectionEnabled {
 		return false // Layer B: per-project Settings toggle is off.
 	}
-	if !goconfig.GetEnvAsBool(discoveryReflectionEnabledEnv, true) {
+	if !ReflectionAvailable() {
 		return false // Layer A: feature not available on this deployment.
 	}
 	if o.aiClient == nil || o.ledgerRepo == nil || o.findingRepo == nil {

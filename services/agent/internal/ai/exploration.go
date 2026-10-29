@@ -246,11 +246,18 @@ func (e *ExplorationEngine) explorationOutputTokens(inputEst int) int {
 		return ceiling
 	}
 
-	// Non-reasoning path (today, byte-identical): catalogued cap bounded by the
-	// configurable ceiling.
+	// Non-reasoning path: catalogued cap bounded by the configurable
+	// ceiling — and by the LAYER's own resolved cap, which is the operator's
+	// max_output_tokens for this layer's model. Consulting outputCap only on
+	// the reasoning path meant a layer capped at 512 still asked for the
+	// catalogued 4096 and had the call rejected, with nothing in the UI to
+	// explain why a saved limit did nothing.
 	maxTokens := catalogCap
 	if envCeiling > 0 && maxTokens > envCeiling {
 		maxTokens = envCeiling
+	}
+	if e.outputCap > 0 && maxTokens > e.outputCap {
+		maxTokens = e.outputCap
 	}
 	return maxTokens
 }
