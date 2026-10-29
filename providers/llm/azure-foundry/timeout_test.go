@@ -11,9 +11,9 @@ import (
 // wired through the registered factory for every resolution branch.
 func TestAzureFoundry_FactoryWiresTimeout(t *testing.T) {
 	base := gollm.ProviderConfig{
-		"endpoint": "https://example.services.ai.azure.com",
-		"credentials_json":  "key",
-		"model":    "claude-sonnet-4-6",
+		"endpoint":         "https://example.services.ai.azure.com",
+		"credentials_json": "key",
+		"model":            "claude-sonnet-4-6",
 	}
 	tests := []struct {
 		name   string
