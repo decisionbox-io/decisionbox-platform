@@ -78,6 +78,31 @@ var schema = []struct {
 		},
 	},
 	{
+		// Analysis-area checkpoints — the agent writes one row per
+		// COMPLETED analysis area of an in-flight run so a resumed run
+		// restores those areas instead of re-running them; the API only
+		// purges the rows when a run is cancelled or discarded.
+		//
+		// The unique index is what makes re-analysing an area a replace
+		// rather than a duplicate.
+		//
+		// The retention TTL is NOT created here, for the same reason it is
+		// not created for discovery_checkpoints above: its expiry comes from
+		// DISCOVERY_CHECKPOINT_RETENTION — which governs both collections —
+		// and the agent's EnsureIndexes owns the drop-and-recreate dance a
+		// changed expiry needs.
+		Name: "discovery_analysis_checkpoints",
+		Indexes: []mongo.IndexModel{
+			{
+				Keys: bson.D{
+					{Key: "run_id", Value: 1},
+					{Key: "area_id", Value: 1},
+				},
+				Options: options.Index().SetUnique(true).SetName("uq_run_area"),
+			},
+		},
+	},
+	{
 		Name: "project_context",
 		Indexes: []mongo.IndexModel{
 			{
