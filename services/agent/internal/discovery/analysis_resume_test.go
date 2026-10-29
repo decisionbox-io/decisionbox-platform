@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
@@ -1043,5 +1044,66 @@ func TestReplayAnalysisArea_IsANoOpWithoutStatusReporting(t *testing.T) {
 	noRun.ReplayAnalysisArea(context.Background(), doneArea("churn", 1, time.Now()))
 	if len(feed.rows) != 0 {
 		t.Errorf("emitted %d rows with status reporting disabled", len(feed.rows))
+	}
+}
+
+// --- duplicate detection across a run's attempts ---------------------------
+
+// TestEmbedAndIndex_ExcludesEveryDiscoveryItIsGiven proves the exclusion set
+// actually reaches the duplicate search, for insights and recommendations
+// alike.
+//
+// A resumed run's superseded attempts each left a discovery behind, and
+// those are retired at THIS attempt's tail — after this check runs. Matching
+// against them stamps the live result `duplicate_of` a row that is deleted a
+// few lines later.
+func TestEmbedAndIndex_ExcludesEveryDiscoveryItIsGiven(t *testing.T) {
+	vs := &mockVectorStore{}
+	o := &Orchestrator{
+		vectorStore:       vs,
+		embeddingProvider: &mockEmbeddingProvider{dims: 3, model: "test-model"},
+		embedIndexStore:   &mockEmbedIndexStore{},
+	}
+	excludes := []string{"discovery-3", "discovery-1", "discovery-2"}
+
+	err := o.embedAndIndex(context.Background(),
+		[]*commonmodels.StandaloneInsight{{ID: "i1", ProjectID: "p", DiscoveryID: "discovery-3"}},
+		[]*commonmodels.StandaloneRecommendation{{ID: "r1", ProjectID: "p", DiscoveryID: "discovery-3"}},
+		excludes)
+	if err != nil {
+		t.Fatalf("embedAndIndex: %v", err)
+	}
+
+	if len(vs.dupExcludes) != 2 {
+		t.Fatalf("made %d duplicate searches, want 2 (one insight, one recommendation)", len(vs.dupExcludes))
+	}
+	for i, got := range vs.dupExcludes {
+		if len(got) != len(excludes) {
+			t.Errorf("search %d excluded %v, want all of %v — the superseded attempts' rows are about to be retired", i, got, excludes)
+			continue
+		}
+		for j := range excludes {
+			if got[j] != excludes[j] {
+				t.Errorf("search %d exclusion %d = %q, want %q", i, j, got[j], excludes[j])
+			}
+		}
+	}
+}
+
+// TestDedupExclusions_FallsBackToThisDiscoveryAlone — the run-wide exclusion
+// is best-effort. Without a discovery store, or without a run id (an agent
+// run with no API), the set is exactly what the duplicate check always
+// excluded, which is the behaviour this replaced.
+func TestDedupExclusions_FallsBackToThisDiscoveryAlone(t *testing.T) {
+	ctx := context.Background()
+
+	for _, o := range []*Orchestrator{
+		{runID: "run-1"},                // no discovery store
+		{discoveryRepo: nil, runID: ""}, // no run id either
+	} {
+		got := o.dedupExclusions(ctx, "discovery-2")
+		if len(got) != 1 || got[0] != "discovery-2" {
+			t.Errorf("exclusions = %v, want just this discovery", got)
+		}
 	}
 }

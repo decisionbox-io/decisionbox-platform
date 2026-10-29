@@ -75,7 +75,7 @@ func (m *mockVectorStoreForSearch) Upsert(_ context.Context, _ []vectorstore.Poi
 func (m *mockVectorStoreForSearch) Search(_ context.Context, _ []float64, _ vectorstore.SearchOpts) ([]vectorstore.SearchResult, error) {
 	return m.results, nil
 }
-func (m *mockVectorStoreForSearch) FindDuplicates(_ context.Context, _ []float64, _, _, _ string, _ float64) ([]vectorstore.SearchResult, error) {
+func (m *mockVectorStoreForSearch) FindDuplicates(_ context.Context, _ []float64, _, _ string, _ []string, _ float64) ([]vectorstore.SearchResult, error) {
 	return nil, nil
 }
 func (m *mockVectorStoreForSearch) Delete(_ context.Context, _ []string) error      { return nil }

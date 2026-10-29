@@ -15,6 +15,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // Per-area analysis resume against a real MongoDB.
@@ -482,5 +483,74 @@ func TestInteg_AnalysisResume_AFreshRunsStandaloneWriteIsUnchanged(t *testing.T)
 	}
 	if n != 3 {
 		t.Errorf("%d rows, want 3 — three distinct insights must all land", n)
+	}
+}
+
+// TestInteg_AnalysisResume_DedupExcludesThisRunsSupersededAttempts closes the
+// last way a resumed run could carry a wrong reference into a successful
+// result.
+//
+// The duplicate check runs BEFORE the new vectors are upserted and the
+// superseded attempts are retired, so a predecessor's indexed findings are
+// live while it runs. A restored area's insights carry identical text, so
+// they match at 1.0 — and the row they would be stamped a duplicate of is
+// deleted at this attempt's tail. The exclusion set is therefore every
+// discovery this RUN produced, not just this one.
+func TestInteg_AnalysisResume_DedupExcludesThisRunsSupersededAttempts(t *testing.T) {
+	db, cleanup := analysisResumeMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	repo := database.NewDiscoveryRepository(db)
+	o := &Orchestrator{discoveryRepo: repo, runID: "run-dedup"}
+
+	// Two earlier attempts of this run each left a discovery behind, and an
+	// unrelated run's discovery must NOT be excluded — deduplicating against
+	// other runs is the whole point of the feature. Real ObjectId `_id`s,
+	// because that is what the repository decodes.
+	ids := map[string]string{}
+	for _, d := range []struct {
+		label   string
+		runID   string
+		attempt int
+	}{
+		{"attempt-1", "run-dedup", 1},
+		{"attempt-2", "run-dedup", 2},
+		{"other-run", "run-elsewhere", 1},
+	} {
+		oid := primitive.NewObjectID()
+		ids[d.label] = oid.Hex()
+		if _, err := db.Collection(database.CollectionDiscoveries).InsertOne(ctx, bson.M{
+			"_id":            oid,
+			"project_id":     "proj",
+			"run_id":         d.runID,
+			"attempt":        d.attempt,
+			"discovery_date": time.Now(),
+			"created_at":     time.Now(),
+		}); err != nil {
+			t.Fatalf("seed %s: %v", d.label, err)
+		}
+	}
+	thisAttempt := primitive.NewObjectID().Hex()
+
+	got := o.dedupExclusions(ctx, thisAttempt)
+	excluded := map[string]bool{}
+	for _, id := range got {
+		excluded[id] = true
+	}
+
+	if !excluded[thisAttempt] {
+		t.Error("this attempt's own discovery must be excluded, as it always was")
+	}
+	for _, label := range []string{"attempt-1", "attempt-2"} {
+		if !excluded[ids[label]] {
+			t.Errorf("%s belongs to this run and is retired at this attempt's tail; matching it would stamp duplicate_of on a row that is about to be deleted", label)
+		}
+	}
+	if excluded[ids["other-run"]] {
+		t.Error("another run's discovery must stay in scope — deduplicating against other runs is what the check is for")
+	}
+	if len(got) != 3 {
+		t.Errorf("exclusions = %v, want exactly this attempt's and its run's two predecessors", got)
 	}
 }

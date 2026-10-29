@@ -70,7 +70,7 @@ func (m *askMockVectorStore) Search(_ context.Context, _ []float64, _ vectorstor
 	return m.results, nil
 }
 func (m *askMockVectorStore) Upsert(_ context.Context, _ []vectorstore.Point) error { return nil }
-func (m *askMockVectorStore) FindDuplicates(_ context.Context, _ []float64, _, _, _ string, _ float64) ([]vectorstore.SearchResult, error) {
+func (m *askMockVectorStore) FindDuplicates(_ context.Context, _ []float64, _, _ string, _ []string, _ float64) ([]vectorstore.SearchResult, error) {
 	return nil, nil
 }
 func (m *askMockVectorStore) Delete(_ context.Context, _ []string) error      { return nil }
