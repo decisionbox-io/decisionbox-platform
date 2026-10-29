@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Dashboard sidebar logo replaced with a single combined logo image** — `ui/dashboard/src/components/layout/AppShell.tsx`, `ui/dashboard/public/logo.svg` (new), `ui/dashboard/public/logo-icon.png` (removed). The top-left sidebar header previously rendered two pieces — a square `logo-icon.png` icon plus a `<span>DecisionBox</span>` wordmark. Both are now a single combined logo (`public/logo.svg`, icon + wordmark baked into one file) rendered through a plain `<img>` at `height: 24px` / `width: auto`, so it stays vector-sharp at any DPI and fits inside the 220px sidebar without clipping. Using a plain `<img>` for the SVG avoids enabling `dangerouslyAllowSVG` in `next/image`; the now-unused `next/image` import and the orphaned `logo-icon.png` asset were removed. `alt="DecisionBox"` is preserved.
+
 ### Added
 
 - **Several LLM providers per project, and a provider and model for each layer ([#407](https://github.com/decisionbox-io/decisionbox-platform/issues/407)).** A project now holds a set of named provider entries — connections, each with its own credentials — and chooses a `(provider entry, model)` pair for each of the seventeen **layers** DecisionBox calls a model from: exploration, analysis, the verifier and the refuter separately, recommendations, Ask, clarifying questions, ledger reflection, SQL repair, Ask routing, Ask suggestions, table descriptions, the knowledge-source summary, Playbook generation, file ingestion, the executive summary, and report style.
