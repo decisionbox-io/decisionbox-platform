@@ -105,9 +105,20 @@ func doneArea(id string, insights int, at time.Time) models.AnalysisStep {
 			Name:         "Finding in " + id,
 			Severity:     "high",
 			DiscoveredAt: at.Add(time.Second),
+			Validation: &valmodels.InsightValidation{
+				Status:      string(valmodels.StatusConfirmed),
+				Combined:    valmodels.StatusConfirmed,
+				ValidatedAt: at.Add(2 * time.Second),
+				// The verdicts name the document they judged, which is
+				// what the remint has to restamp.
+				Verifier: &valmodels.StructuredVerdict{DocID: insightID, Overall: valmodels.StatusConfirmed},
+				Refuter:  &valmodels.StructuredVerdict{DocID: insightID, Overall: valmodels.StatusConfirmed},
+			},
 		})
 		step.ValidationResults = append(step.ValidationResults, models.ValidationResult{
 			InsightID:     insightID,
+			Verifier:      &valmodels.StructuredVerdict{DocID: insightID, Overall: valmodels.StatusConfirmed},
+			Refuter:       &valmodels.StructuredVerdict{DocID: insightID, Overall: valmodels.StatusConfirmed},
 			AnalysisArea:  id,
 			ClaimedMetric: "Finding in " + id,
 			ClaimedCount:  10,
@@ -815,10 +826,14 @@ func TestRestoreArea_MergesTheUnionThePipelineReadsDownstream(t *testing.T) {
 // attempt still persisting write the shared ids back under its own discovery.
 func TestReidentifyRestoredArea_GivesTheInsightsFreshIdentitiesAndKeepsThemConsistent(t *testing.T) {
 	stored := doneArea("churn", 2, time.Now())
-	stored.Insights[0].ID = "old-a"
-	stored.Insights[1].ID = "old-b"
-	stored.ValidationResults[0].InsightID = "old-a"
-	stored.ValidationResults[1].InsightID = "old-b"
+	for i, id := range []string{"old-a", "old-b"} {
+		stored.Insights[i].ID = id
+		stored.Insights[i].Validation.Verifier.DocID = id
+		stored.Insights[i].Validation.Refuter.DocID = id
+		stored.ValidationResults[i].InsightID = id
+		stored.ValidationResults[i].Verifier.DocID = id
+		stored.ValidationResults[i].Refuter.DocID = id
+	}
 
 	got := reidentifyRestoredArea(stored)
 
@@ -849,10 +864,50 @@ func TestReidentifyRestoredArea_GivesTheInsightsFreshIdentitiesAndKeepsThemConsi
 		}
 	}
 
-	// The CHECKPOINT keeps its own ids: a later attempt remints from the same
-	// baseline, and the live-feed replay has already read these slices.
+	// The nested verdicts name the document they judged, separately from the
+	// outer id and behind a POINTER the slice copy alone would share. Left
+	// alone, this attempt persists evidence identifying an insight that is
+	// not in its result — and naming one the retire step deletes.
+	for i, ins := range got.Insights {
+		if ins.Validation == nil {
+			t.Fatalf("insight %d lost its validation in the remint", i)
+		}
+		if ins.Validation.Verifier == nil || ins.Validation.Refuter == nil {
+			t.Fatalf("insight %d lost a verdict in the remint", i)
+		}
+		if ins.Validation.Verifier.DocID != ins.ID {
+			t.Errorf("insight %d verifier judges %q, want the reminted %q", i, ins.Validation.Verifier.DocID, ins.ID)
+		}
+		if ins.Validation.Refuter.DocID != ins.ID {
+			t.Errorf("insight %d refuter judges %q, want the reminted %q", i, ins.Validation.Refuter.DocID, ins.ID)
+		}
+		if ins.Validation.Combined != valmodels.StatusConfirmed {
+			t.Errorf("insight %d lost its verdict status: %q", i, ins.Validation.Combined)
+		}
+	}
+	for i, vr := range got.ValidationResults {
+		if vr.Verifier == nil || vr.Refuter == nil {
+			t.Fatalf("validation result %d lost a verdict", i)
+		}
+		if vr.Verifier.DocID != vr.InsightID || vr.Refuter.DocID != vr.InsightID {
+			t.Errorf("validation result %d verdicts judge %q/%q, want %q",
+				i, vr.Verifier.DocID, vr.Refuter.DocID, vr.InsightID)
+		}
+	}
+
+	// The CHECKPOINT keeps its own ids, all the way down: a later attempt
+	// remints from the same baseline, and the live-feed replay has already
+	// read these slices. The Validation pointer is the one that makes this
+	// a real risk rather than a formality.
 	if stored.Insights[0].ID != "old-a" || stored.ValidationResults[0].InsightID != "old-a" {
 		t.Error("the stored step was mutated in place; the checkpoint's own ids must survive the remint")
+	}
+	if stored.Insights[0].Validation.Verifier.DocID != "old-a" {
+		t.Errorf("the stored verdict was mutated through its shared pointer: now judges %q",
+			stored.Insights[0].Validation.Verifier.DocID)
+	}
+	if got.Insights[0].Validation == stored.Insights[0].Validation {
+		t.Error("the restored insight shares the checkpoint's Validation pointer; a later write through it would corrupt the stored row")
 	}
 }
 
@@ -863,6 +918,21 @@ func TestReidentifyRestoredArea_EmptyAndUnmatchedCases(t *testing.T) {
 	empty := doneArea("levels", 0, time.Now())
 	if got := reidentifyRestoredArea(empty); len(got.Insights) != 0 {
 		t.Errorf("got %d insights for an empty area", len(got.Insights))
+	}
+
+	noVerdicts := doneArea("churn", 1, time.Now())
+	noVerdicts.Insights[0].Validation = nil
+	noVerdicts.ValidationResults[0].Verifier = nil
+	noVerdicts.ValidationResults[0].Refuter = nil
+	got2 := reidentifyRestoredArea(noVerdicts)
+	if got2.Insights[0].Validation != nil {
+		t.Error("an insight with no validation must come back with none rather than an empty one")
+	}
+	if got2.ValidationResults[0].Verifier != nil || got2.ValidationResults[0].Refuter != nil {
+		t.Error("absent verdicts must stay absent — a refuter is legitimately nil when it is disabled")
+	}
+	if got2.ValidationResults[0].InsightID != got2.Insights[0].ID {
+		t.Error("the outer reference must still be remapped when the verdicts are absent")
 	}
 
 	orphaned := doneArea("churn", 1, time.Now())
