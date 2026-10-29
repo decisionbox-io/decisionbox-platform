@@ -7,6 +7,7 @@ import (
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -20,15 +21,47 @@ func NewMongoEmbedIndexStore(db *database.DB) *MongoEmbedIndexStore {
 	return &MongoEmbedIndexStore{db: db}
 }
 
+// InsertInsights writes the standalone insight rows, replacing any row that
+// already carries the same `_id`.
+//
+// An upsert rather than an insert, because an insight's id is NOT unique to
+// one attempt of a run. Per-area analysis resume restores a completed area's
+// insights with the ids the attempt that produced them assigned, so a run
+// that died after this phase had written them — the window between here and
+// the terminal status write, which the API's startup sweep reaches routinely
+// — resumes carrying ids that are already in the collection.
+//
+// With a plain InsertMany that is an E11000 on `_id`, and the damage is out
+// of all proportion to the cause: this phase is non-fatal, so the caller logs
+// and returns, skipping the recommendation rows and the embedding with it,
+// and the retire step then deletes the previous attempt's rows and vectors.
+// The run finishes successfully with no standalone findings and nothing in
+// search at all.
+//
+// Replacing is the right resolution rather than a workaround: the row's
+// content is the same finding, re-stamped with the attempt's own
+// discovery_id, which is exactly what the retire step would otherwise have to
+// reconcile. On a run that is not a resume every id is a fresh UUID, so this
+// behaves exactly as the insert did.
+//
+// Unordered, so one unexpected failure cannot silently drop the rest of the
+// batch the way an ordered write does.
+//
+// The recommendation rows below deliberately keep their plain insert: Phase 5
+// regenerates recommendations on every attempt with new ids, so no identity
+// of theirs ever survives into a second attempt to collide.
 func (s *MongoEmbedIndexStore) InsertInsights(ctx context.Context, insights []*commonmodels.StandaloneInsight) error {
 	if len(insights) == 0 {
 		return nil
 	}
-	docs := make([]interface{}, len(insights))
-	for i, ins := range insights {
-		docs[i] = ins
+	writes := make([]mongo.WriteModel, 0, len(insights))
+	for _, ins := range insights {
+		writes = append(writes, mongo.NewReplaceOneModel().
+			SetFilter(bson.M{"_id": ins.ID}).
+			SetReplacement(ins).
+			SetUpsert(true))
 	}
-	_, err := s.db.Collection("insights").InsertMany(ctx, docs)
+	_, err := s.db.Collection("insights").BulkWrite(ctx, writes, options.BulkWrite().SetOrdered(false))
 	if err != nil {
 		return fmt.Errorf("insert insights: %w", err)
 	}

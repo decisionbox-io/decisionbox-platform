@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -154,8 +155,13 @@ func TestCheckpointAnalysisArea_WritesWhatARestoreNeeds(t *testing.T) {
 	if in.Step.AreaID != "churn" || len(in.Step.Insights) != 2 {
 		t.Errorf("the area's own output must be stored whole, got %q with %d insights", in.Step.AreaID, len(in.Step.Insights))
 	}
-	if !o.keepStepIndex {
-		t.Error("a run with a restorable area is resumable, so its per-run step index must survive a failure")
+	// keepStepIndex is not this function's to set, and the test pins the
+	// boundary: an area can only be checkpointed once a durable exploration
+	// summary exists, and both paths to one have already set the flag. A
+	// setter here could never change the value, so it would read as
+	// load-bearing while doing nothing.
+	if o.keepStepIndex {
+		t.Error("checkpointAnalysisArea must not set keepStepIndex; the exploration paths own it")
 	}
 }
 
@@ -505,6 +511,35 @@ func TestReplayAnalysisFeedForResume_BumpsNoCounters(t *testing.T) {
 	}
 }
 
+// TestReplayAnalysisFeedForResume_OnlyEmitsAreasThisRunRestores — the
+// narrowing in restorableAreas is what keeps the feed honest. An area the run
+// is not running is never merged into the result, so emitting its rows would
+// show the operator analysis of an area the finished discovery does not
+// contain.
+func TestReplayAnalysisFeedForResume_OnlyEmitsAreasThisRunRestores(t *testing.T) {
+	feed := &rowRecordingStepWriter{}
+	reporter := newStatusReporter(newFakeRunDoc(), feed, "proj", "run-1", 100)
+	reporter.attempt = 2
+	o := &Orchestrator{runID: "run-1", statusReporter: reporter, resume: &ResumeState{Attempt: 2}}
+
+	loaded := map[string]models.AnalysisAreaCheckpoint{
+		"churn":   {Step: doneArea("churn", 1, time.Now())},
+		"retired": {Step: doneArea("retired", 2, time.Now())},
+	}
+	o.replayAnalysisFeedForResume(context.Background(),
+		restorableAreas([]AnalysisArea{{ID: "churn"}}, loaded))
+
+	// churn alone: 1 area row + 1 insight + 1 validation.
+	if len(feed.rows) != 3 {
+		t.Fatalf("emitted %d rows, want 3 — only churn is restored", len(feed.rows))
+	}
+	for _, row := range feed.rows {
+		if strings.Contains(row.Message, "retired") {
+			t.Errorf("emitted a row for an area this run is not running: %q", row.Message)
+		}
+	}
+}
+
 func TestReplayAnalysisFeedForResume_NoOpWithoutRestoredAreas(t *testing.T) {
 	feed := &rowRecordingStepWriter{}
 	reporter := newStatusReporter(newFakeRunDoc(), feed, "proj", "run-1", 100)
@@ -525,26 +560,95 @@ func TestReplayAnalysisFeedForResume_NoOpWithoutRestoredAreas(t *testing.T) {
 
 // --- the restorable count the live panel shows -----------------------------
 
-// TestCountRestorableAreas_CountsOnlyWhatThisRunWouldSkip. The checkpoint set
-// can legitimately name an area this run is not running — the domain pack was
-// edited between attempts, or the operator resumed with a narrower selection
-// — and counting those would claim progress on work the run was never going
-// to do.
-func TestCountRestorableAreas_CountsOnlyWhatThisRunWouldSkip(t *testing.T) {
+// TestRestorableAreas_DropsAreasThisRunIsNotRunning. The checkpoint set can
+// legitimately name an area the run is not running — the domain pack was
+// edited between attempts, or the operator resumed with a narrower selection.
+// Narrowing once keeps the loop, the live panel and the feed replay looking
+// at the same set: an un-narrowed row would be counted as progress on work
+// the run was never going to do, and re-emitted into the feed as analysis of
+// an area the finished discovery does not contain.
+func TestRestorableAreas_DropsAreasThisRunIsNotRunning(t *testing.T) {
 	runAreas := []AnalysisArea{{ID: "churn"}, {ID: "engagement"}, {ID: "levels"}}
 	completed := map[string]models.AnalysisAreaCheckpoint{
-		"churn":   {Step: doneArea("churn", 1, time.Now())},
-		"retired": {Step: doneArea("retired", 1, time.Now())},
+		"churn":   {Step: doneArea("churn", 1, time.Now()), InsightsValidated: 1},
+		"retired": {Step: doneArea("retired", 1, time.Now()), InsightsValidated: 4},
 	}
 
-	if got := countRestorableAreas(runAreas, completed); got != 1 {
-		t.Errorf("count = %d, want 1 — only churn is both checkpointed and in this run", got)
+	got := restorableAreas(runAreas, completed)
+	if len(got) != 1 {
+		t.Fatalf("narrowed to %d areas, want 1 — only churn is both checkpointed and in this run", len(got))
 	}
-	if got := countRestorableAreas(nil, completed); got != 0 {
-		t.Errorf("count = %d, want 0", got)
+	if _, ok := got["churn"]; !ok {
+		t.Error("churn is in this run and checkpointed; it must survive")
 	}
-	if got := countRestorableAreas(runAreas, nil); got != 0 {
-		t.Errorf("count = %d, want 0", got)
+	if _, ok := got["retired"]; ok {
+		t.Error("retired is not in this run; it must be dropped before anything reads it")
+	}
+	// And the budget is charged over the narrowed set, so an area the run is
+	// not running cannot shrink the budget nothing is spending.
+	if b := restoredValidationBudget(got); b != 1 {
+		t.Errorf("restored budget = %d, want 1 — the dropped area's 4 must not be charged", b)
+	}
+
+	if got := restorableAreas(nil, completed); got != nil {
+		t.Errorf("got %v, want nil when the run has no areas", got)
+	}
+	if got := restorableAreas(runAreas, nil); got != nil {
+		t.Errorf("got %v, want nil when nothing is checkpointed", got)
+	}
+	if got := restorableAreas([]AnalysisArea{{ID: "levels"}}, completed); got != nil {
+		t.Errorf("got %v, want nil when no checkpoint matches this run's areas", got)
+	}
+}
+
+// TestRestoredValidationBudget_IsSeededBeforeAnyAreaRuns is the regression
+// test for the ordering bug.
+//
+// The area list comes from ranging over a map, so an area this attempt still
+// has to run can be processed BEFORE a restored one. If the restored budget
+// were added per area instead of seeded up front, that first area would
+// validate against a budget of zero and push the run past the project's cap —
+// and the restore would then top the counter up to a number already exceeded.
+func TestRestoredValidationBudget_IsSeededBeforeAnyAreaRuns(t *testing.T) {
+	completed := map[string]models.AnalysisAreaCheckpoint{
+		"churn":      {Step: doneArea("churn", 1, time.Now()), InsightsValidated: 2},
+		"engagement": {Step: doneArea("engagement", 1, time.Now()), InsightsValidated: 1},
+	}
+	if got := restoredValidationBudget(completed); got != 3 {
+		t.Fatalf("budget = %d, want 3", got)
+	}
+
+	// Simulate the hostile order: the unfinished area first, the restored
+	// ones after. With the budget seeded, a cap of 3 is already spent before
+	// the unfinished area asks for any of it.
+	const cap = 3
+	spent := restoredValidationBudget(completed)
+	runAreas := []AnalysisArea{{ID: "levels"}, {ID: "churn"}, {ID: "engagement"}}
+	var log []models.AnalysisStep
+	var insights []models.Insight
+	validatedHere := 0
+	for _, area := range runAreas {
+		if cp, ok := completed[area.ID]; ok {
+			log, insights = restoreArea(cp, log, insights)
+			continue
+		}
+		if spent < cap {
+			spent++
+			validatedHere++
+		}
+	}
+	if validatedHere != 0 {
+		t.Errorf("validated %d insights in the unfinished area; the restored areas had already spent the whole cap", validatedHere)
+	}
+	if spent != cap {
+		t.Errorf("spent = %d, want %d — the budget must never exceed the cap", spent, cap)
+	}
+	if len(log) != 2 || len(insights) != 2 {
+		t.Errorf("restored %d areas / %d insights, want 2 / 2", len(log), len(insights))
+	}
+
+	if got := restoredValidationBudget(nil); got != 0 {
+		t.Errorf("budget = %d, want 0 for a run with nothing restored", got)
 	}
 }
 
@@ -656,9 +760,8 @@ func TestRestoreArea_MergesTheUnionThePipelineReadsDownstream(t *testing.T) {
 	// insight; now it restores a checkpointed one.
 	log := []models.AnalysisStep{ranHere}
 	insights := append([]models.Insight{}, ranHere.Insights...)
-	validated := 1
 
-	log, insights, validated = restoreArea(restored, log, insights, validated)
+	log, insights = restoreArea(restored, log, insights)
 
 	if len(log) != 2 {
 		t.Fatalf("analysis log has %d entries, want 2 — the restored area must appear in the split logs and the failed-area denominator", len(log))
@@ -675,8 +778,10 @@ func TestRestoreArea_MergesTheUnionThePipelineReadsDownstream(t *testing.T) {
 	if insights[1].ID != "churn-insight" {
 		t.Errorf("restored insight id = %q; Phase 5 resolves related_insight_ids against it", insights[1].ID)
 	}
-	if validated != 3 {
-		t.Errorf("validation budget = %d, want 3 — the restored area's 2 plus the 1 this attempt spent; a reset budget would let the remaining areas validate past the per-run cap", validated)
+	// The budget itself is seeded before the loop rather than accumulated
+	// here — see TestRestoredValidationBudget_IsSeededBeforeAnyAreaRuns.
+	if got := restoredValidationBudget(map[string]models.AnalysisAreaCheckpoint{"churn": restored}); got != 2 {
+		t.Errorf("restored budget = %d, want 2", got)
 	}
 }
 
@@ -687,15 +792,12 @@ func TestRestoreArea_MergesTheUnionThePipelineReadsDownstream(t *testing.T) {
 func TestRestoreArea_AnEmptyAreaStillCounts(t *testing.T) {
 	empty := models.AnalysisAreaCheckpoint{Step: doneArea("levels", 0, time.Now())}
 
-	log, insights, validated := restoreArea(empty, nil, nil, 0)
+	log, insights := restoreArea(empty, nil, nil)
 	if len(log) != 1 {
 		t.Errorf("analysis log has %d entries, want 1", len(log))
 	}
 	if len(insights) != 0 {
 		t.Errorf("got %d insights, want none", len(insights))
-	}
-	if validated != 0 {
-		t.Errorf("validation budget = %d, want 0 — nothing was validated", validated)
 	}
 }
 
@@ -706,7 +808,7 @@ func TestRestoreArea_DoesNotAliasTheCaller(t *testing.T) {
 	cp := models.AnalysisAreaCheckpoint{Step: doneArea("churn", 2, time.Now()), InsightsValidated: 2}
 	before := len(cp.Step.Insights)
 
-	_, insights, _ := restoreArea(cp, nil, nil, 0)
+	_, insights := restoreArea(cp, nil, nil)
 	insights[0].Name = "mutated by a later phase"
 
 	if cp.Step.Insights[0].Name == "mutated by a later phase" {

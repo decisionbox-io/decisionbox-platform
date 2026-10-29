@@ -110,12 +110,11 @@ func (o *Orchestrator) checkpointAnalysisArea(ctx context.Context, step models.A
 		}).Warn("failed to checkpoint a completed analysis area; a resumed run would analyse it again")
 		return nil
 	}
-	// The run is now resumable past this area, so its per-run vector index
-	// must survive a failure rather than being dropped on the way out. By
-	// this point exploration already set the flag — an area can only be
-	// checkpointed once a summary exists — so this is belt and braces
-	// rather than the first setter.
-	o.keepStepIndex = true
+	// keepStepIndex is deliberately NOT set here. An area can only be
+	// checkpointed once a durable exploration summary exists, and both paths
+	// to one have already set it — the explore path in
+	// checkpointExplorationSummary, the resume path at the top of
+	// RunDiscovery — so a setter here could never change the value.
 	return nil
 }
 
@@ -207,22 +206,23 @@ func (o *Orchestrator) discardAnalysisCheckpoints(ctx context.Context, why strin
 }
 
 // restoreArea merges one completed area's checkpointed output back into the
-// run's accumulators, and is the whole of what restoring an area means.
+// run's accumulators, and with restoredValidationBudget below is the whole of
+// what restoring an area means.
 //
-// Three values because the Phase 4 loop body produces exactly three things
-// that outlive the iteration, and everything downstream is derived from them:
+// Two values because the Phase 4 loop body produces exactly three things that
+// outlive the iteration, and the third — the validation budget — is restored
+// up front rather than here. See restoredValidationBudget for why it cannot
+// be done per area.
 //
-//   - the analysis step, which Phase 7 turns into the run's analysis log and
+//   - The analysis step, which Phase 7 turns into the run's analysis log and
 //     its split-log rows, and from which the failed-area count and so the
 //     run's partial/full/failed classification are computed. A restored area
 //     always carries an empty Error — only completed areas are checkpointed
 //     — so it contributes to the denominator without ever being counted as a
-//     failure;
-//   - its insights, which flow into the result, into the recommendation
+//     failure.
+//   - Its insights, which flow into the result, into the recommendation
 //     phase's eligibility filter, and into Phase 8's embedding, carrying the
-//     ids that Phase 5's related_insight_ids resolve against;
-//   - its slice of the run's validation budget, so the areas this attempt
-//     still has to run are not handed a fresh one.
+//     ids that Phase 5's related_insight_ids resolve against.
 //
 // A pure function so the arithmetic is testable on its own: RunDiscovery
 // needs a warehouse, an LLM and a schema cache, so the loop it lives in
@@ -231,30 +231,60 @@ func restoreArea(
 	cp models.AnalysisAreaCheckpoint,
 	analysisLog []models.AnalysisStep,
 	allInsights []models.Insight,
-	insightsValidated int,
-) ([]models.AnalysisStep, []models.Insight, int) {
-	return append(analysisLog, cp.Step),
-		append(allInsights, cp.Step.Insights...),
-		insightsValidated + cp.InsightsValidated
+) ([]models.AnalysisStep, []models.Insight) {
+	return append(analysisLog, cp.Step), append(allInsights, cp.Step.Insights...)
 }
 
-// countRestorableAreas reports how many of THIS run's areas the checkpoint
-// set actually covers.
+// restoredValidationBudget totals what the restored areas already spent of
+// the run's per-insight validation cap.
 //
-// Not len(completed): the two sets can legitimately differ. A checkpoint can
-// name an area this run is not running — the project's domain pack was edited
-// between attempts, or the operator resumed with a narrower area selection —
-// and such a row is simply never read. Reporting the raw row count in the
-// live panel would then claim progress on areas the run was never going to
-// touch, and could even exceed its own total.
-func countRestorableAreas(runAreas []AnalysisArea, completed map[string]models.AnalysisAreaCheckpoint) int {
-	n := 0
+// Summed BEFORE the area loop rather than added as each area is restored,
+// and that ordering is the whole correctness of it. The orchestrator builds
+// its area list by ranging over a map of prompts, so the order is
+// nondeterministic: an area this attempt still has to run can come first, be
+// validated against a budget that has not yet absorbed what the previous
+// attempt spent, and push the run past the cap the project set — after which
+// the restore would quietly top the counter up to a number that was already
+// exceeded.
+//
+// Only this run's own areas count. A checkpoint can name an area the run is
+// not running, and that area's insights are not in its result, so charging
+// the run for validating them would shrink a budget nothing is spending.
+func restoredValidationBudget(completed map[string]models.AnalysisAreaCheckpoint) int {
+	total := 0
+	for _, cp := range completed {
+		total += cp.InsightsValidated
+	}
+	return total
+}
+
+// restorableAreas narrows the checkpoint set to the areas THIS run is
+// actually going to restore.
+//
+// The two sets can legitimately differ: a checkpoint can name an area the run
+// is not running, because the project's domain pack was edited between
+// attempts or the resume used a narrower area selection. Such a row is never
+// read by the loop, so it must not reach anything else either — counted in
+// the live panel it would claim progress on work the run was never going to
+// do, and re-emitted into the feed it would show the operator analysis rows
+// for an area the finished discovery does not contain.
+//
+// Narrowing once, here, is what keeps those three readers — the loop, the
+// panel and the feed — looking at the same set.
+func restorableAreas(runAreas []AnalysisArea, completed map[string]models.AnalysisAreaCheckpoint) map[string]models.AnalysisAreaCheckpoint {
+	if len(completed) == 0 {
+		return nil
+	}
+	out := make(map[string]models.AnalysisAreaCheckpoint, len(completed))
 	for _, area := range runAreas {
-		if _, ok := completed[area.ID]; ok {
-			n++
+		if cp, ok := completed[area.ID]; ok {
+			out[area.ID] = cp
 		}
 	}
-	return n
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // replayAnalysisFeedForResume re-emits the restored areas' rows into this

@@ -13,6 +13,7 @@ import (
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 // Per-area analysis resume against a real MongoDB.
@@ -145,7 +146,7 @@ func TestInteg_AnalysisResume_KOfNAreasAreRestoredAndTheRestAreNot(t *testing.T)
 	// Attempt 2 resumes. Exploration is complete from attempt 1, so this
 	// attempt takes the skip path and may restore.
 	second, _ := resumedOrchestrator(t, db, "run-k-of-n", 2, 1, 12)
-	completed := second.loadCompletedAreas(ctx)
+	completed := restorableAreas(runAreas, second.loadCompletedAreas(ctx))
 	if len(completed) != 3 {
 		t.Fatalf("restored %d areas, want 3", len(completed))
 	}
@@ -159,18 +160,20 @@ func TestInteg_AnalysisResume_KOfNAreasAreRestoredAndTheRestAreNot(t *testing.T)
 			t.Errorf("%s was never analysed and must NOT be restored", id)
 		}
 	}
-	if got := countRestorableAreas(runAreas, completed); got != 3 {
-		t.Errorf("restorable count = %d, want 3 — this is what the live panel shows", got)
-	}
-
-	// What the loop then does with them, in runAreas order.
+	// What the loop then does with them, in runAreas order. The validation
+	// budget is seeded from the restored areas BEFORE the loop, which is
+	// what keeps an unfinished area that happens to come first from spending
+	// a budget the previous attempt had already used.
 	var analysisLog []models.AnalysisStep
 	var allInsights []models.Insight
-	validated := 0
+	validated := restoredValidationBudget(completed)
+	if validated != 3 {
+		t.Fatalf("seeded budget = %d, want 3 (2 + 1 + 0 from the restored areas)", validated)
+	}
 	analysed := 0
 	for _, area := range runAreas {
 		if cp, ok := completed[area.ID]; ok {
-			analysisLog, allInsights, validated = restoreArea(cp, analysisLog, allInsights, validated)
+			analysisLog, allInsights = restoreArea(cp, analysisLog, allInsights)
 			continue
 		}
 		analysed++
@@ -357,5 +360,115 @@ func TestInteg_AnalysisResume_DiscardingTakesBothCollections(t *testing.T) {
 	}
 	if o.keepStepIndex {
 		t.Error("a run that cannot be resumed must let its per-run vector collection go")
+	}
+}
+
+// TestInteg_AnalysisResume_RestoredInsightIDsSurviveTheStandaloneWrite is the
+// regression test for the one way per-area resume could lose a successful
+// run's findings outright.
+//
+// A restored area keeps the insight ids the attempt that produced them
+// assigned — that is what makes Phase 5's related_insight_ids resolve. So a
+// previous attempt that got as far as writing the standalone rows and then
+// died before its terminal status, which the API's startup sweep reaches
+// routinely, leaves those ids already in the `insights` collection. Phase 8
+// is non-fatal, so an E11000 there is logged and the phase RETURNS: no
+// standalone recommendation rows, no embedding, nothing in search. The retire
+// step then removes the previous attempt's rows, and the run finishes
+// successfully with no standalone findings at all.
+//
+// The write therefore has to be safe for an id it has seen before.
+func TestInteg_AnalysisResume_RestoredInsightIDsSurviveTheStandaloneWrite(t *testing.T) {
+	db, cleanup := analysisResumeMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	store := NewMongoEmbedIndexStore(db)
+
+	restored := completedArea("churn", 1, time.Now().UTC().Truncate(time.Millisecond))
+	insightID := restored.Insights[0].ID
+
+	// Attempt 1 reached Phase 8 and wrote the row under its own discovery.
+	first := &models.DiscoveryResult{
+		ID: "discovery-1", ProjectID: "proj", Domain: "gaming", Category: "match3",
+		Insights: restored.Insights,
+	}
+	o := &Orchestrator{embedIndexStore: store}
+	if err := store.InsertInsights(ctx, o.denormalizeInsights(first)); err != nil {
+		t.Fatalf("attempt 1 standalone write: %v", err)
+	}
+
+	// Attempt 2 restores that area, so the same insight id reaches the
+	// standalone write again — under a new discovery id.
+	second := &models.DiscoveryResult{
+		ID: "discovery-2", ProjectID: "proj", Domain: "gaming", Category: "match3",
+		Insights: restored.Insights,
+	}
+	if err := store.InsertInsights(ctx, o.denormalizeInsights(second)); err != nil {
+		t.Fatalf("attempt 2 standalone write with a restored id: %v — Phase 8 would have returned here, skipping the recommendation rows and the embedding entirely", err)
+	}
+
+	// Exactly one row, carrying the LIVE attempt's discovery id.
+	col := db.Collection("insights")
+	n, err := col.CountDocuments(ctx, bson.M{"_id": insightID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("%d rows for one insight id, want 1", n)
+	}
+	var row struct {
+		DiscoveryID string `bson:"discovery_id"`
+	}
+	if err := col.FindOne(ctx, bson.M{"_id": insightID}).Decode(&row); err != nil {
+		t.Fatal(err)
+	}
+	if row.DiscoveryID != "discovery-2" {
+		t.Errorf("discovery_id = %q, want discovery-2 — the row must follow the attempt that owns the run", row.DiscoveryID)
+	}
+
+	// And that is what makes the retire step safe: listing attempt 1's
+	// discovery no longer finds the row, so retiring it cannot take the live
+	// attempt's finding and its vector with it.
+	insightIDs, recIDs, err := store.PointIDsByDiscovery(ctx, "discovery-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(insightIDs) != 0 || len(recIDs) != 0 {
+		t.Errorf("retiring discovery-1 would delete %v / %v — the restored finding now belongs to discovery-2", insightIDs, recIDs)
+	}
+	insightIDs, _, err = store.PointIDsByDiscovery(ctx, "discovery-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(insightIDs) != 1 || insightIDs[0] != insightID {
+		t.Errorf("discovery-2 lists %v, want the restored insight id", insightIDs)
+	}
+}
+
+// TestInteg_AnalysisResume_AFreshRunsStandaloneWriteIsUnchanged — the write
+// above became an upsert for the resume case, so the ordinary case has to be
+// pinned too: distinct ids all land, and nothing is silently collapsed.
+func TestInteg_AnalysisResume_AFreshRunsStandaloneWriteIsUnchanged(t *testing.T) {
+	db, cleanup := analysisResumeMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	store := NewMongoEmbedIndexStore(db)
+	o := &Orchestrator{embedIndexStore: store}
+
+	result := &models.DiscoveryResult{
+		ID: "discovery-1", ProjectID: "proj", Domain: "gaming", Category: "match3",
+	}
+	for _, area := range []string{"churn", "engagement", "levels"} {
+		result.Insights = append(result.Insights, completedArea(area, 1, time.Now()).Insights...)
+	}
+	if err := store.InsertInsights(ctx, o.denormalizeInsights(result)); err != nil {
+		t.Fatalf("fresh standalone write: %v", err)
+	}
+	n, err := db.Collection("insights").CountDocuments(ctx, bson.M{"discovery_id": "discovery-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Errorf("%d rows, want 3 — three distinct insights must all land", n)
 	}
 }
