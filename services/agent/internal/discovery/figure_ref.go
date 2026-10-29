@@ -62,8 +62,8 @@ type refValue struct {
 	// raw field. The insight is the only place a symbol is ever stated: a recommendation
 	// figure has no currency field, by the same reasoning that gives it no value field.
 	// Carrying the value and the unit without it meant Symbol fell through to its dollar
-	// default, so a Turkish run wrote ₺ in all 29 insights and $ in 7 of 8
-	// recommendations -- for the same amounts.
+	// default, so a live run on a book that is not in dollars wrote the right symbol in
+	// every insight and $ in almost every recommendation -- for the same amounts.
 	//
 	// The printed symbol rather than the declared string, because the schema says "omit
 	// for dollars" and a model may do that on one figure and write "$" on the next.
@@ -300,7 +300,7 @@ func (w figureWriter) evaluateRecommendationFigure(f models.Figure, ix figureRef
 	coarsest, drift := 0.0, 0.0
 	// A sum's operands have to be the same kind of money before they can be added, and
 	// until now nothing asked: sameNotation compares the unit, and lira and euro are both
-	// "currency". A live run declared 90 figures in lira and 6 in euro, so a total across
+	// "currency". A live run declared figures in two currencies at once, so a total across
 	// them was reachable, would have been rendered under one symbol, and would have read
 	// as holds -- a checked number that is the sum of two different currencies. Refused
 	// rather than converted, for the reason a unit mismatch is: a rate is an operation
