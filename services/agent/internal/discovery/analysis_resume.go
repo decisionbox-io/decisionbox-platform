@@ -13,6 +13,8 @@ import (
 	"errors"
 	"sort"
 
+	"github.com/google/uuid"
+
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
@@ -232,7 +234,72 @@ func restoreArea(
 	analysisLog []models.AnalysisStep,
 	allInsights []models.Insight,
 ) ([]models.AnalysisStep, []models.Insight) {
-	return append(analysisLog, cp.Step), append(allInsights, cp.Step.Insights...)
+	step := reidentifyRestoredArea(cp.Step)
+	return append(analysisLog, step), append(allInsights, step.Insights...)
+}
+
+// reidentifyRestoredArea gives a restored area's insights fresh ids, and
+// re-points its validation results at them.
+//
+// An insight id is the key of three things: the embedded insight in the
+// discovery document, the standalone row in the `insights` collection, and
+// the Qdrant point. All three are written by the tail as this attempt's own,
+// under a freshly minted discovery_id — so an id carried over from the
+// attempt that produced the area is an id that may ALREADY be in those
+// collections, written by that attempt before it died. Three separate
+// failures follow from that, and they are why the ids are reminted rather
+// than preserved:
+//
+//   - The standalone write is an insert, so a surviving row is an E11000 on
+//     `_id`. That phase is non-fatal, so it logs and returns — dropping the
+//     standalone recommendation rows and the embedding with them — and the
+//     retire step then removes the previous attempt's rows. A run that
+//     finished successfully ends up with no findings in search at all.
+//   - The duplicate check runs BEFORE the vectors are upserted, and excludes
+//     only this discovery's own points. A surviving point carrying the same
+//     id is therefore returned as a ~1.0 match, and the insight is marked a
+//     duplicate of itself.
+//   - A superseded attempt that is still persisting could write those shared
+//     ids back under its own discovery_id; when its terminal claim is then
+//     refused, its own cleanup deletes what are by then the live attempt's
+//     findings.
+//
+// Reminting removes the shared identity those three need. It is also not a
+// change in observable behaviour: before per-area resume a resumed run
+// re-ran analysis from scratch and minted new ids for every insight anyway,
+// so no consumer can have been relying on an id surviving a resume.
+//
+// Copies rather than rewriting in place: the slices belong to the loaded
+// checkpoint, which the live-feed replay has already read, and the stored row
+// must keep its own ids so a later attempt remints from the same baseline.
+func reidentifyRestoredArea(step models.AnalysisStep) models.AnalysisStep {
+	if len(step.Insights) == 0 {
+		return step
+	}
+	insights := make([]models.Insight, len(step.Insights))
+	copy(insights, step.Insights)
+	freshByOld := make(map[string]string, len(insights))
+	for i := range insights {
+		old := insights[i].ID
+		fresh := uuid.New().String()
+		insights[i].ID = fresh
+		if old != "" {
+			freshByOld[old] = fresh
+		}
+	}
+	step.Insights = insights
+
+	if len(step.ValidationResults) > 0 {
+		results := make([]models.ValidationResult, len(step.ValidationResults))
+		copy(results, step.ValidationResults)
+		for i := range results {
+			if fresh, ok := freshByOld[results[i].InsightID]; ok {
+				results[i].InsightID = fresh
+			}
+		}
+		step.ValidationResults = results
+	}
+	return step
 }
 
 // restoredValidationBudget totals what the restored areas already spent of

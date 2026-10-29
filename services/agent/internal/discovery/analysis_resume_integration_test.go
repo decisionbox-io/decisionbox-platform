@@ -4,6 +4,7 @@ package discovery
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -66,7 +67,7 @@ func completedArea(id string, insights int, at time.Time) models.AnalysisStep {
 	}
 	for i := 0; i < insights; i++ {
 		step.Insights = append(step.Insights, models.Insight{
-			ID:           id + "-insight",
+			ID:           fmt.Sprintf("%s-insight-%d", id, i),
 			AnalysisArea: id,
 			Name:         "Finding in " + id,
 			Severity:     "high",
@@ -363,85 +364,96 @@ func TestInteg_AnalysisResume_DiscardingTakesBothCollections(t *testing.T) {
 	}
 }
 
-// TestInteg_AnalysisResume_RestoredInsightIDsSurviveTheStandaloneWrite is the
-// regression test for the one way per-area resume could lose a successful
-// run's findings outright.
+// TestInteg_AnalysisResume_ARestoredAreaDoesNotCollideWithThePreviousAttempt
+// is the regression test for the three failures that all came from one cause:
+// an insight id surviving into a second attempt.
 //
-// A restored area keeps the insight ids the attempt that produced them
-// assigned — that is what makes Phase 5's related_insight_ids resolve. So a
-// previous attempt that got as far as writing the standalone rows and then
-// died before its terminal status, which the API's startup sweep reaches
-// routinely, leaves those ids already in the `insights` collection. Phase 8
-// is non-fatal, so an E11000 there is logged and the phase RETURNS: no
-// standalone recommendation rows, no embedding, nothing in search. The retire
-// step then removes the previous attempt's rows, and the run finishes
-// successfully with no standalone findings at all.
-//
-// The write therefore has to be safe for an id it has seen before.
-func TestInteg_AnalysisResume_RestoredInsightIDsSurviveTheStandaloneWrite(t *testing.T) {
+// An insight id keys the embedded insight, the standalone row and the Qdrant
+// point, all written by the tail as this attempt's own under a fresh
+// discovery_id. The previous attempt may already have written those rows
+// before it died — the window between the standalone write and the terminal
+// status, which the API's startup sweep reaches routinely. Carrying its ids
+// over made the standalone insert a duplicate key, and because that phase is
+// non-fatal it logged, returned, and skipped the standalone recommendations
+// and the embedding too, leaving a successful run with nothing in search.
+func TestInteg_AnalysisResume_ARestoredAreaDoesNotCollideWithThePreviousAttempt(t *testing.T) {
 	db, cleanup := analysisResumeMongo(t)
 	defer cleanup()
 	ctx := context.Background()
 	store := NewMongoEmbedIndexStore(db)
+	o := &Orchestrator{embedIndexStore: store}
 
-	restored := completedArea("churn", 1, time.Now().UTC().Truncate(time.Millisecond))
-	insightID := restored.Insights[0].ID
+	stored := completedArea("churn", 2, time.Now().UTC().Truncate(time.Millisecond))
 
-	// Attempt 1 reached Phase 8 and wrote the row under its own discovery.
+	// Attempt 1 reached the standalone write and persisted its findings.
 	first := &models.DiscoveryResult{
 		ID: "discovery-1", ProjectID: "proj", Domain: "gaming", Category: "match3",
-		Insights: restored.Insights,
+		Insights: stored.Insights,
 	}
-	o := &Orchestrator{embedIndexStore: store}
 	if err := store.InsertInsights(ctx, o.denormalizeInsights(first)); err != nil {
 		t.Fatalf("attempt 1 standalone write: %v", err)
 	}
 
-	// Attempt 2 restores that area, so the same insight id reaches the
-	// standalone write again — under a new discovery id.
+	// Attempt 2 restores that area. The merge remints the ids, so the tail's
+	// insert-only write cannot collide with what attempt 1 left behind.
+	_, restoredInsights := restoreArea(
+		models.AnalysisAreaCheckpoint{Step: stored, InsightsValidated: 2}, nil, nil)
 	second := &models.DiscoveryResult{
 		ID: "discovery-2", ProjectID: "proj", Domain: "gaming", Category: "match3",
-		Insights: restored.Insights,
+		Insights: restoredInsights,
 	}
 	if err := store.InsertInsights(ctx, o.denormalizeInsights(second)); err != nil {
-		t.Fatalf("attempt 2 standalone write with a restored id: %v — Phase 8 would have returned here, skipping the recommendation rows and the embedding entirely", err)
+		t.Fatalf("attempt 2 standalone write after restoring an area: %v — Phase 8 would have returned here, skipping the recommendation rows and the embedding entirely", err)
 	}
 
-	// Exactly one row, carrying the LIVE attempt's discovery id.
 	col := db.Collection("insights")
-	n, err := col.CountDocuments(ctx, bson.M{"_id": insightID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != 1 {
-		t.Fatalf("%d rows for one insight id, want 1", n)
-	}
-	var row struct {
-		DiscoveryID string `bson:"discovery_id"`
-	}
-	if err := col.FindOne(ctx, bson.M{"_id": insightID}).Decode(&row); err != nil {
-		t.Fatal(err)
-	}
-	if row.DiscoveryID != "discovery-2" {
-		t.Errorf("discovery_id = %q, want discovery-2 — the row must follow the attempt that owns the run", row.DiscoveryID)
+	// Both attempts' rows coexist, under their own discovery ids and their
+	// own identities. Attempt 1's are the retire step's to remove.
+	for _, tc := range []struct {
+		discoveryID string
+		want        int64
+	}{{"discovery-1", 2}, {"discovery-2", 2}} {
+		n, err := col.CountDocuments(ctx, bson.M{"discovery_id": tc.discoveryID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != tc.want {
+			t.Errorf("%s has %d standalone rows, want %d", tc.discoveryID, n, tc.want)
+		}
 	}
 
-	// And that is what makes the retire step safe: listing attempt 1's
-	// discovery no longer finds the row, so retiring it cannot take the live
-	// attempt's finding and its vector with it.
-	insightIDs, recIDs, err := store.PointIDsByDiscovery(ctx, "discovery-1")
+	// No id is shared, which is what makes the retire step safe: listing
+	// attempt 1's discovery cannot name a row the live attempt owns.
+	oldIDs, _, err := store.PointIDsByDiscovery(ctx, "discovery-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(insightIDs) != 0 || len(recIDs) != 0 {
-		t.Errorf("retiring discovery-1 would delete %v / %v — the restored finding now belongs to discovery-2", insightIDs, recIDs)
-	}
-	insightIDs, _, err = store.PointIDsByDiscovery(ctx, "discovery-2")
+	newIDs, _, err := store.PointIDsByDiscovery(ctx, "discovery-2")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(insightIDs) != 1 || insightIDs[0] != insightID {
-		t.Errorf("discovery-2 lists %v, want the restored insight id", insightIDs)
+	if len(oldIDs) != 2 || len(newIDs) != 2 {
+		t.Fatalf("listed %d old / %d new ids, want 2 / 2", len(oldIDs), len(newIDs))
+	}
+	live := map[string]bool{}
+	for _, id := range newIDs {
+		live[id] = true
+	}
+	for _, id := range oldIDs {
+		if live[id] {
+			t.Errorf("id %q belongs to both attempts; retiring the older one would delete the live attempt's finding and its vector", id)
+		}
+	}
+
+	// And the restored findings are the same findings, under new ids: the
+	// remint must not have disturbed their content.
+	for i, ins := range restoredInsights {
+		if ins.Name != stored.Insights[i].Name || ins.Severity != stored.Insights[i].Severity {
+			t.Errorf("restored insight %d lost content: %+v", i, ins)
+		}
+		if ins.ID == stored.Insights[i].ID {
+			t.Errorf("restored insight %d kept the stored id %q", i, ins.ID)
+		}
 	}
 }
 

@@ -282,6 +282,12 @@ var projectChildCollections = []string{
 	// run's per-run Qdrant collection open too, for a project that no
 	// longer exists.
 	"discovery_checkpoints",
+	// Per-area analysis checkpoints, the sibling of the exploration rows
+	// above. They leak for the same reason and one worse: an area checkpoint
+	// holds the area's whole analysis prompt and response and its validation
+	// evidence, so leaving them until the retention TTL keeps a deleted
+	// project's reasoning on disk long after the project is gone.
+	"discovery_analysis_checkpoints",
 	// The Discovery Ledger. All of these are keyed by project_id and none of
 	// them were in this list, so deleting a project left its whole
 	// investigation behind — the coverage map, every durable finding, every
