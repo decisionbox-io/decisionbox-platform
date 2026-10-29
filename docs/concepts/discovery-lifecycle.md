@@ -414,6 +414,8 @@ A **resumed** run writes its new result first and retires the superseded one aft
 
 This is also why restoring an analysis area does not write anything into the result collections. A restored area is merged back into the run's in-memory analysis log and insight list, and the tail then writes the union exactly as it writes a run that did everything in one go: one clean insert, one `discovery_recommendation_log` row, one pass of embedding. Per-area durability lives entirely in the checkpoint collection, so there is no partial result to upsert and no re-embed to make idempotent.
 
+One identity does cross attempts, though, and the tail accounts for it: a restored area keeps its insights' ids, because that is what the recommendation phase's citations resolve against. So the standalone insight write **replaces** a row carrying an id it has seen before rather than insisting on inserting it. Without that, an attempt that died in the window between writing those rows and recording its terminal status would leave ids behind that the next attempt could not insert — and because the indexing phase is non-fatal, it would log the duplicate key, return, and skip the standalone recommendations and the embedding too, leaving a successful run with no findings in search at all.
+
 ## Error Handling
 
 | Error | What happens |

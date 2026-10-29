@@ -1427,25 +1427,22 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	if o.ownershipLost(ctx, "analysis") {
 		return nil, ai.ErrAttemptSuperseded
 	}
-	// The areas a previous attempt already finished. Empty on every run
-	// that is not a resume, which is what keeps this phase on exactly the
-	// path it always took.
-	completedAreas := o.loadCompletedAreas(ctx)
+	// The areas a previous attempt already finished, narrowed to the ones
+	// THIS run is going to restore. Empty on every run that is not a resume,
+	// which is what keeps this phase on exactly the path it always took.
+	completedAreas := restorableAreas(runAreas, o.loadCompletedAreas(ctx))
 	// The feed is attempt-scoped, so this attempt has to own a copy of the
 	// restored areas' rows or its log shows recommendations drawn from
 	// insights the operator cannot see. Once, here, in RunAt order — see
 	// replayAnalysisFeedForResume.
 	o.replayAnalysisFeedForResume(ctx, completedAreas)
 	analysisDetail := "Analyzing discoveries by category..."
-	if restorable := countRestorableAreas(runAreas, completedAreas); restorable > 0 {
+	if len(completedAreas) > 0 {
 		// Same purpose as resumePhaseDetail one phase earlier: the live
 		// panel explains why this run is doing less work than its area
 		// count suggests, instead of looking like it skipped something.
-		//
-		// Counted against THIS run's areas rather than the row count, which
-		// can legitimately be larger — see countRestorableAreas.
 		analysisDetail = fmt.Sprintf("Analyzing discoveries by category... (%d of %d areas already complete)",
-			restorable, len(runAreas))
+			len(completedAreas), len(runAreas))
 	}
 	o.statusReporter.SetPhase(ctx, models.PhaseAnalysis, analysisDetail, 65)
 	o.setLLMPhase(models.PhaseAnalysis)
@@ -1486,7 +1483,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// datasource it is about, not always the primary (a secondary-derived
 	// insight validated on the primary fails / mis-verifies).
 	valPhase.whByDS, valPhase.executorByDS = o.buildValidationRouting(dc, validationSchemaProvider, stepByID, o.validationCfg, o.validationCaps)
-	insightsValidatedThisRun := 0
+	// Seeded with what the restored areas already spent, BEFORE the loop:
+	// the area order is nondeterministic, so an area this attempt still has
+	// to run can come first and would otherwise validate against a budget
+	// that has not yet absorbed the previous attempt's spend. See
+	// restoredValidationBudget.
+	insightsValidatedThisRun := restoredValidationBudget(completedAreas)
 
 	// Vector-ranked step picker for the analysis phase. The closure
 	// over runStepIndex.Search keeps the picker decoupled from the
@@ -1511,9 +1513,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 
 		// Already analysed on a previous attempt: merge its output back in
 		// and move on. The loop body produces nothing else that outlives
-		// the iteration — the analysis step, its insights, and its slice of
-		// the run's validation budget — so restoring an area is exactly
-		// this, and everything downstream (the validation totals, the
+		// the iteration — the analysis step and its insights, both merged
+		// here, and its slice of the validation budget, already seeded
+		// above — so everything downstream (the validation totals, the
 		// failed-area count and runType, the Phase 7 result, the split
 		// logs, Phase 8) reads the union without knowing the difference.
 		//
@@ -1523,8 +1525,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// that earned them. Its live-feed rows were re-emitted in one pass
 		// before the loop.
 		if cp, ok := completedAreas[area.ID]; ok {
-			analysisLog, allInsights, insightsValidatedThisRun = restoreArea(
-				cp, analysisLog, allInsights, insightsValidatedThisRun)
+			analysisLog, allInsights = restoreArea(cp, analysisLog, allInsights)
 			applog.WithFields(applog.Fields{
 				"area":               area.ID,
 				"insights":           len(cp.Step.Insights),
