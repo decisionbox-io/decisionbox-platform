@@ -344,6 +344,42 @@ The API re-creates MongoDB indexes on startup (idempotent) and runs idempotent s
 
 The API pod ships with `terminationGracePeriodSeconds: 45` so a SIGTERM can drain in-flight HTTP requests (10 s) plus plugin-spawned background goroutines (15 s — they own their cleanup writes back to Mongo) before Kubernetes sends SIGKILL. Lower the value via `terminationGracePeriodSeconds` in your values file only when no plugin extends the shutdown drain — otherwise an in-flight terminal write can race the Mongo disconnect on rollout.
 
+## Local Development (kind / minikube)
+
+For local testing on kind or minikube, use these overrides:
+
+```bash
+# Create a kind cluster
+kind create cluster --name decisionbox
+
+# Create namespace
+kubectl create namespace decisionbox
+
+# Install API (single replica, no anti-affinity conflicts on single node)
+helm upgrade --install decisionbox-api decisionbox/decisionbox-api \
+  --set replicaCount=1 \
+  --set env.LOG_LEVEL=info \
+  --set env.ENV=dev \
+  -n decisionbox
+
+# Install Dashboard (single replica, no ingress — use port-forward instead)
+helm upgrade --install decisionbox-dashboard decisionbox/decisionbox-dashboard \
+  --set replicaCount=1 \
+  --set ingress.enabled=false \
+  -n decisionbox
+
+# Access the dashboard
+kubectl port-forward svc/decisionbox-dashboard-service 3000:3000 -n decisionbox
+# Open http://localhost:3000
+```
+
+Key differences from production:
+- `replicaCount=1` — single-node clusters can't schedule anti-affinity replicas
+- `ingress.enabled=false` — local clusters don't have an ingress controller by default
+- The dashboard may restart once during initial startup while waiting for the API and MongoDB
+
+Multi-arch images (amd64 + arm64) are published to GHCR, so this works on both Intel and Apple Silicon.
+
 ## Uninstalling
 
 ```bash
