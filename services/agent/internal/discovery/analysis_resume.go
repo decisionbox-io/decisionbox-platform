@@ -15,6 +15,8 @@ import (
 
 	"github.com/google/uuid"
 
+	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
+
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
@@ -286,6 +288,15 @@ func reidentifyRestoredArea(step models.AnalysisStep) models.AnalysisStep {
 		if old != "" {
 			freshByOld[old] = fresh
 		}
+		// The verdict names the document it judged, twice over and
+		// separately from the outer id: Validation is a POINTER, so the
+		// shallow copy above still shares the checkpoint's struct, and the
+		// verifier and refuter verdicts inside it each carry their own
+		// doc_id. Left alone, this attempt would persist evidence — in the
+		// discovery document, the standalone row and the split validation
+		// log — identifying an insight that does not exist in its result,
+		// and naming one the retire step is about to delete.
+		insights[i].Validation = reidentifyInsightValidation(insights[i].Validation, fresh)
 	}
 	step.Insights = insights
 
@@ -293,13 +304,47 @@ func reidentifyRestoredArea(step models.AnalysisStep) models.AnalysisStep {
 		results := make([]models.ValidationResult, len(step.ValidationResults))
 		copy(results, step.ValidationResults)
 		for i := range results {
-			if fresh, ok := freshByOld[results[i].InsightID]; ok {
-				results[i].InsightID = fresh
+			fresh, ok := freshByOld[results[i].InsightID]
+			if !ok {
+				// A result whose insight this area no longer carries. Left
+				// exactly as it was rather than re-pointed at some other
+				// finding.
+				continue
 			}
+			results[i].InsightID = fresh
+			results[i].Verifier = reidentifyVerdict(results[i].Verifier, fresh)
+			results[i].Refuter = reidentifyVerdict(results[i].Refuter, fresh)
 		}
 		step.ValidationResults = results
 	}
 	return step
+}
+
+// reidentifyInsightValidation deep-copies an insight's validation and points
+// it, and the verdicts inside it, at the insight's new id. Nil in, nil out.
+func reidentifyInsightValidation(v *valmodels.InsightValidation, docID string) *valmodels.InsightValidation {
+	if v == nil {
+		return nil
+	}
+	out := *v
+	out.Verifier = reidentifyVerdict(v.Verifier, docID)
+	out.Refuter = reidentifyVerdict(v.Refuter, docID)
+	return &out
+}
+
+// reidentifyVerdict deep-copies one structured verdict and restamps the
+// document it judged. Nil in, nil out — a refuter is legitimately absent.
+//
+// A copy rather than a mutation because the verdict belongs to the loaded
+// checkpoint, which must keep its own ids: a later attempt remints from that
+// same baseline, and the live-feed replay has already read it.
+func reidentifyVerdict(v *valmodels.StructuredVerdict, docID string) *valmodels.StructuredVerdict {
+	if v == nil {
+		return nil
+	}
+	out := *v
+	out.DocID = docID
+	return &out
 }
 
 // restoredValidationBudget totals what the restored areas already spent of
