@@ -174,6 +174,9 @@ const validationOutputShare = 4
 // The result is then bounded by validationOutputShare. Pass 0 for a cap that
 // could not be resolved.
 func (c *Config) ApplyModelOutputCaps(verifierModelCap, refuterModelCap int) {
+	// Captured before the resolution overwrites the field, so the binding
+	// constraint can be told apart afterwards.
+	operatorVerifier, operatorRefuter := c.Verifier.MaxOutputTokens, c.Refuter.MaxOutputTokens
 	c.Verifier.MaxOutputTokens = resolveModeOutputTokens(c.Verifier, verifierModelCap, fallbackVerifierOutputTokens)
 	c.Refuter.MaxOutputTokens = resolveModeOutputTokens(c.Refuter, refuterModelCap, fallbackRefuterOutputTokens)
 	// The reservation floor is the per-mode budget the loop shipped with: it
@@ -183,15 +186,30 @@ func (c *Config) ApplyModelOutputCaps(verifierModelCap, refuterModelCap int) {
 	// floor must not be asked for the floor.
 	c.Verifier.MinOutputTokens = minInt(fallbackVerifierOutputTokens, c.Verifier.MaxOutputTokens)
 	c.Refuter.MinOutputTokens = minInt(fallbackRefuterOutputTokens, c.Refuter.MaxOutputTokens)
-	c.Verifier.OutputBoundByEnvelope = envelopeBoundOutput(c.Verifier)
-	c.Refuter.OutputBoundByEnvelope = envelopeBoundOutput(c.Refuter)
+	c.Verifier.OutputBound = outputConstraintFor(c.Verifier, verifierModelCap, operatorVerifier)
+	c.Refuter.OutputBound = outputConstraintFor(c.Refuter, refuterModelCap, operatorRefuter)
+	c.outputResolved = true
 }
 
-// envelopeBoundOutput reports whether the envelope share is what set the
-// mode's ceiling, so a truncation message can name the knob that will move it.
-func envelopeBoundOutput(m ModeConfig) bool {
-	share := m.TokenCap / validationOutputShare
-	return share > 0 && m.MaxOutputTokens >= share
+// outputConstraintFor reports which of the three candidates actually set the
+// mode's ceiling, so a truncation message names something that can move it.
+//
+// Checked envelope-first: the share is applied last in the resolution, so
+// whenever it is the binding one it is the only thing that matters — raising
+// either of the others would be re-clamped to the same number.
+func outputConstraintFor(m ModeConfig, modelCap, operatorValue int) OutputConstraint {
+	if share := m.TokenCap / validationOutputShare; share > 0 && m.MaxOutputTokens >= share {
+		return OutputBoundByEnvelope
+	}
+	if operatorValue > 0 && m.MaxOutputTokens == operatorValue {
+		return OutputBoundByOperator
+	}
+	if modelCap > 0 && m.MaxOutputTokens == modelCap {
+		return OutputBoundByModel
+	}
+	// Neither the model nor the operator could answer, so the ceiling is the
+	// documented fallback — which the output knob replaces.
+	return OutputBoundByOperator
 }
 
 // resolveModeOutputTokens implements ApplyModelOutputCaps for one mode.

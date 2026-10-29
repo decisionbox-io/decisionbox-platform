@@ -149,23 +149,32 @@ func buildOpenAICatalog() []gollm.ModelEntry {
 		// GetMaxOutputTokens, and a 16K cap truncated large generations.
 		// Pricing/encoding are standard-routing estimates for local budgeting;
 		// the gateway is the billing authority and returns real usage.
+		//
+		// ReasoningUnknown for the same reason: which backend an alias routes
+		// to is per-organisation, so this row cannot say whether the model
+		// reasons. Token limits and a pricing estimate hold across the
+		// plausible backends; reasoning does not, and a row answering "false"
+		// would have callers strip the effort from a reasoning model. Live
+		// detection (GET /v1/models reports it) is the authority.
 		{
-			ID:              "decisionbox-analysis-model",
-			DisplayName:     "DecisionBox Analysis (Opus)",
-			Wire:            gollm.WireOpenAICompat,
-			MaxOutputTokens: 128000,
-			MaxInputTokens:  decisionboxGatewayInputWindow,
-			Encoding:        encO200KBase,
-			Pricing:         gollm.TokenPricing{InputPerMillion: 5.0, OutputPerMillion: 25.0},
+			ID:               "decisionbox-analysis-model",
+			ReasoningUnknown: true,
+			DisplayName:      "DecisionBox Analysis (Opus)",
+			Wire:             gollm.WireOpenAICompat,
+			MaxOutputTokens:  128000,
+			MaxInputTokens:   decisionboxGatewayInputWindow,
+			Encoding:         encO200KBase,
+			Pricing:          gollm.TokenPricing{InputPerMillion: 5.0, OutputPerMillion: 25.0},
 		},
 		{
-			ID:              "decisionbox-blurb-model",
-			DisplayName:     "DecisionBox Blurb (Haiku/Sonnet)",
-			Wire:            gollm.WireOpenAICompat,
-			MaxOutputTokens: 64000,
-			MaxInputTokens:  decisionboxGatewayInputWindow,
-			Encoding:        encO200KBase,
-			Pricing:         gollm.TokenPricing{InputPerMillion: 1.0, OutputPerMillion: 5.0},
+			ID:               "decisionbox-blurb-model",
+			ReasoningUnknown: true,
+			DisplayName:      "DecisionBox Blurb (Haiku/Sonnet)",
+			Wire:             gollm.WireOpenAICompat,
+			MaxOutputTokens:  64000,
+			MaxInputTokens:   decisionboxGatewayInputWindow,
+			Encoding:         encO200KBase,
+			Pricing:          gollm.TokenPricing{InputPerMillion: 1.0, OutputPerMillion: 5.0},
 		},
 	}
 }

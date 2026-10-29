@@ -119,7 +119,10 @@ func catalogReasoning(providerName, model string) (known, reasoning bool) {
 		return false, false
 	}
 	e, found := meta.FindModel(model)
-	if !found {
+	if !found || e.ReasoningUnknown {
+		// Not catalogued, or catalogued by a row that stands in for a target
+		// resolved elsewhere. Either way the catalog has no answer, and the
+		// caller's is better.
 		return false, false
 	}
 	return true, e.Reasoning

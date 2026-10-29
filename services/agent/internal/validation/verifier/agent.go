@@ -44,21 +44,43 @@ type ModeConfig struct {
 	// the ceiling keeps both: rounds get the room they always had, and the
 	// verdict gets the room the model allows when it is there.
 	MinOutputTokens int
-	// OutputBoundByEnvelope records that TokenCap, not the model and not the
-	// operator's output value, is what set MaxOutputTokens.
+	// OutputBound records WHICH constraint set MaxOutputTokens.
 	//
-	// It exists for the truncation message. Telling an operator to raise
-	// VALIDATION_*_MAX_OUTPUT when the envelope share is the binding
-	// constraint sends them to a knob that cannot move the number — the
-	// resolution would just re-apply the share — so the message has to name
-	// VALIDATION_*_TOKEN_CAP instead.
-	OutputBoundByEnvelope bool
+	// It exists for the truncation message. Every candidate remedy is wrong
+	// for two of the three cases: raising VALIDATION_*_MAX_OUTPUT does
+	// nothing when the envelope share re-clamps it, and nothing when the
+	// model's own cap re-clamps it either — the operator raises the value,
+	// sees no change, and concludes the diagnosis was wrong. Naming the
+	// binding constraint is the difference between an actionable message and
+	// a misleading one.
+	OutputBound OutputConstraint
 }
+
+// OutputConstraint names what set a mode's output ceiling.
+type OutputConstraint int
+
+const (
+	// OutputBoundByOperator — VALIDATION_*_MAX_OUTPUT set it, and raising
+	// that value raises the ceiling.
+	OutputBoundByOperator OutputConstraint = iota
+	// OutputBoundByEnvelope — the share of TokenCap set it; only
+	// VALIDATION_*_TOKEN_CAP moves it.
+	OutputBoundByEnvelope
+	// OutputBoundByModel — the model's own output cap (or the layer's
+	// max_output_tokens override) set it. No validation env var can raise
+	// it: the resolution clamps straight back to the model.
+	OutputBoundByModel
+)
 
 // Config bundles verifier + refuter knobs and the shared bundle
 // truncation settings. Defaults are exposed via DefaultConfig so
 // callers can override only the env-bound knobs.
 type Config struct {
+	// outputResolved records that ApplyModelOutputCaps has run, so NewAgent's
+	// safety net does not re-resolve — and reclassify — a config a caller
+	// already resolved against real model caps.
+	outputResolved bool
+
 	Verifier       ModeConfig
 	Refuter        ModeConfig
 	Bundle         BundleConfig
@@ -125,7 +147,15 @@ func NewAgent(llm LLMClient, cfg Config) (*Agent, error) {
 	// embedder) must not end up asking for zero output tokens, which some
 	// providers read as "give me everything you have". Resolving with an
 	// unknown model cap falls through to the documented fallbacks.
-	cfg.ApplyModelOutputCaps(0, 0)
+	//
+	// Only when it has not already been resolved: re-running the resolution
+	// would reclassify OutputBound, because an operator's value and a
+	// resolved ceiling are indistinguishable once both sit in the same field
+	// — and a ceiling that came from a small model would then be reported as
+	// something VALIDATION_*_MAX_OUTPUT could raise.
+	if !cfg.outputResolved {
+		cfg.ApplyModelOutputCaps(0, 0)
+	}
 	return &Agent{llm: llm, cfg: cfg, system: system}, nil
 }
 
@@ -308,26 +338,29 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 	if perr != nil || action.Kind != ActionSubmitVerdict {
 		reason := "forced final round produced no verdict"
 		if outputCapHit(chat, forcedOutput) {
-			// Name the knob that can actually move this number. The envelope
-			// binds either because it clipped the ceiling at resolution time
-			// or because the rounds already spent what the verdict needed.
-			key := envOutputKeyFor(s.mode)
-			if mc.OutputBoundByEnvelope || forcedOutput < mc.MaxOutputTokens {
-				key = envTokenCapKeyFor(s.mode)
+			// Name what can actually move this number.
+			remedy := "raise " + envOutputKeyFor(s.mode)
+			switch {
+			case forcedOutput < mc.MaxOutputTokens || mc.OutputBound == OutputBoundByEnvelope:
+				// Either the share clipped the ceiling, or the rounds already
+				// spent what the verdict needed. Both are the envelope.
+				remedy = "raise " + envTokenCapKeyFor(s.mode)
+			case mc.OutputBound == OutputBoundByModel:
+				remedy = "point this layer at a model with a larger output cap, or raise its max_output_tokens — no validation setting can raise it past the model"
 			}
 			// The difference matters: a cut-off verdict is fixed by raising
 			// the ceiling, a malformed one by fixing the prompt. Reported
 			// here because this string is what the dashboard shows and what
 			// an operator has to act on.
 			reason = fmt.Sprintf(
-				"forced final round was cut off at the %d-token output ceiling before it finished the verdict; raise %s",
-				forcedOutput, key)
+				"forced final round was cut off at the %d-token output ceiling before it finished the verdict; %s",
+				forcedOutput, remedy)
 			applog.WithFields(applog.Fields{
 				"mode":        s.mode,
 				"max_tokens":  forcedOutput,
 				"tokens_out":  chat.TokensOut,
 				"stop_reason": chat.StopReason,
-				"env":         key,
+				"remedy":      remedy,
 			}).Warn("Validation verdict truncated at the output ceiling")
 		}
 		return a.unverifiable(s, reason), nil

@@ -303,16 +303,16 @@ func TestProviderRegistered(t *testing.T) {
 		t.Fatal("catalog is empty")
 	}
 	caps := map[string]int{
-		"gpt-5":              16384,
-		"gpt-5-mini":         16384,
-		"gpt-4.1":            32768,
-		"gpt-4.1-mini":       32768,
-		"gpt-4o":             16384,
-		"gpt-4o-2024-08-06":  16384, // alias of gpt-4o
-		"gpt-4o-mini":        16384,
-		"o3":                 100000,
-		"o3-2025-04-16":      100000, // alias
-		"o4-mini":            100000,
+		"gpt-5":             16384,
+		"gpt-5-mini":        16384,
+		"gpt-4.1":           32768,
+		"gpt-4.1-mini":      32768,
+		"gpt-4o":            16384,
+		"gpt-4o-2024-08-06": 16384, // alias of gpt-4o
+		"gpt-4o-mini":       16384,
+		"o3":                100000,
+		"o3-2025-04-16":     100000, // alias
+		"o4-mini":           100000,
 	}
 	for model, want := range caps {
 		if got := gollm.GetMaxOutputTokens("openai", model); got != want {
@@ -380,8 +380,8 @@ func TestProviderFactory_DefaultModel(t *testing.T) {
 	// Can't fully test without actual API, but verify factory doesn't error.
 	// Use a bad base_url to avoid real API calls.
 	p, err := gollm.NewProvider("openai", gollm.ProviderConfig{
-		"credentials_json":  "test",
-		"base_url": "http://127.0.0.1:1",
+		"credentials_json": "test",
+		"base_url":         "http://127.0.0.1:1",
 	})
 	if err != nil {
 		t.Fatalf("factory error: %v", err)

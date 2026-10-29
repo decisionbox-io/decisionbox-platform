@@ -57,8 +57,14 @@ func TestForcedFinalTruncationIsAttributedToTheOutputCeiling(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Verifier.MaxRounds = 1
 	cfg.Verifier.TokenCap = 50000
-	cfg.ApplyModelOutputCaps(8000, 8000)
+	// An operator value, below both the model's cap and the envelope share,
+	// so VALIDATION_VERIFIER_MAX_OUTPUT really is the knob that would move it.
+	cfg.Verifier.MaxOutputTokens = 8000
+	cfg.ApplyModelOutputCaps(128000, 128000)
 	ceiling := cfg.Verifier.MaxOutputTokens
+	if cfg.Verifier.OutputBound != OutputBoundByOperator {
+		t.Fatalf("premise: the operator value should bind, got ceiling=%d bound=%d", ceiling, cfg.Verifier.OutputBound)
+	}
 
 	// Both rounds come back cut off at the ceiling, mid-object.
 	halfWritten := `{"submit_verdict": {"doc_id": "d1", "claims_considered": ["a"], "claim_verdicts": [{"claim_text": "a", "status": "supp`
@@ -95,7 +101,11 @@ func TestForcedFinalTruncationNamesTheRefutersKnob(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Refuter.MaxRounds = 1
 	cfg.Refuter.TokenCap = 50000
-	cfg.ApplyModelOutputCaps(8000, 8000)
+	cfg.Refuter.MaxOutputTokens = 8000
+	cfg.ApplyModelOutputCaps(128000, 128000)
+	if cfg.Refuter.OutputBound != OutputBoundByOperator {
+		t.Fatalf("premise: the operator value should bind, got bound=%d", cfg.Refuter.OutputBound)
+	}
 
 	cut := `{"submit_verdict": {"doc_id": "d1", "claim_verd`
 	llm := &stubBudgetLLM{scripted: []scriptedReply{
@@ -119,7 +129,8 @@ func TestTruncationDetectedFromTheTokenCountAlone(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Verifier.MaxRounds = 1
 	cfg.Verifier.TokenCap = 50000
-	cfg.ApplyModelOutputCaps(8000, 8000)
+	cfg.Verifier.MaxOutputTokens = 8000
+	cfg.ApplyModelOutputCaps(128000, 128000)
 	ceiling := cfg.Verifier.MaxOutputTokens
 
 	cut := `{"submit_verdict": {"doc_id": "d1", "claim_verd`
@@ -140,7 +151,8 @@ func TestMalformedButCompleteAnswerIsNotCalledTruncation(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Verifier.MaxRounds = 1
 	cfg.Verifier.TokenCap = 50000
-	cfg.ApplyModelOutputCaps(8000, 8000)
+	cfg.Verifier.MaxOutputTokens = 8000
+	cfg.ApplyModelOutputCaps(128000, 128000)
 
 	llm := &stubBudgetLLM{scripted: []scriptedReply{
 		{content: "I am afraid I cannot help with that.", stopReason: "end_turn", tokensOut: 12},
@@ -346,9 +358,9 @@ func TestTruncationNamesTheEnvelopeKnobWhenTheEnvelopeBinds(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Refuter.MaxRounds = 1
 	cfg.ApplyModelOutputCaps(0, 128000) // the model allows far more than the envelope
-	if !cfg.Refuter.OutputBoundByEnvelope {
-		t.Fatalf("premise: the envelope should be the binding constraint, ceiling=%d cap=%d",
-			cfg.Refuter.MaxOutputTokens, cfg.Refuter.TokenCap)
+	if cfg.Refuter.OutputBound != OutputBoundByEnvelope {
+		t.Fatalf("premise: the envelope should be the binding constraint, ceiling=%d cap=%d bound=%d",
+			cfg.Refuter.MaxOutputTokens, cfg.Refuter.TokenCap, cfg.Refuter.OutputBound)
 	}
 
 	cut := `{"submit_verdict": {"doc_id": "d1", "claim_verd`
@@ -376,8 +388,9 @@ func TestTruncationNamesTheOutputKnobWhenTheOperatorValueBinds(t *testing.T) {
 	cfg.Refuter.MaxRounds = 1
 	cfg.Refuter.MaxOutputTokens = 1500 // well under the envelope share
 	cfg.ApplyModelOutputCaps(0, 128000)
-	if cfg.Refuter.OutputBoundByEnvelope {
-		t.Fatalf("premise: the operator value should bind, got ceiling=%d", cfg.Refuter.MaxOutputTokens)
+	if cfg.Refuter.OutputBound != OutputBoundByOperator {
+		t.Fatalf("premise: the operator value should bind, got ceiling=%d bound=%d",
+			cfg.Refuter.MaxOutputTokens, cfg.Refuter.OutputBound)
 	}
 
 	cut := `{"submit_verdict": {"doc_id": "d1", "claim_verd`
@@ -389,5 +402,38 @@ func TestTruncationNamesTheOutputKnobWhenTheOperatorValueBinds(t *testing.T) {
 	v, _ := a.Refute(context.Background(), minimalBundle(), &stubExecutor{})
 	if !strings.Contains(v.OverallReason, EnvRefuterOutput) {
 		t.Errorf("reason does not name the output knob %s: %q", EnvRefuterOutput, v.OverallReason)
+	}
+}
+
+// When the MODEL's own cap is what limits the verdict, no validation setting
+// can raise it — the resolution clamps straight back to the model. Sending an
+// operator to VALIDATION_*_MAX_OUTPUT there costs them a deploy and teaches
+// them to distrust the message.
+func TestTruncationSaysSoWhenTheModelCapBinds(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Refuter.MaxRounds = 1
+	cfg.ApplyModelOutputCaps(0, 1024) // a small model, well under the envelope share
+	if cfg.Refuter.OutputBound != OutputBoundByModel {
+		t.Fatalf("premise: the model cap should bind, got ceiling=%d bound=%d",
+			cfg.Refuter.MaxOutputTokens, cfg.Refuter.OutputBound)
+	}
+
+	cut := `{"submit_verdict": {"doc_id": "d1", "claim_verd`
+	llm := &stubBudgetLLM{scripted: []scriptedReply{
+		{content: cut, stopReason: "max_tokens", tokensOut: cfg.Refuter.MaxOutputTokens},
+		{content: cut, stopReason: "max_tokens", tokensOut: cfg.Refuter.MaxOutputTokens},
+	}}
+	a, _ := NewAgent(llm, cfg)
+	v, err := a.Refute(context.Background(), minimalBundle(), &stubExecutor{})
+	if err != nil {
+		t.Fatalf("Refute: %v", err)
+	}
+	if !strings.Contains(v.OverallReason, "larger output cap") {
+		t.Errorf("reason does not point at the model: %q", v.OverallReason)
+	}
+	for _, knob := range []string{EnvRefuterOutput, EnvRefuterTokenCap} {
+		if strings.Contains(v.OverallReason, knob) {
+			t.Errorf("reason names %s, which cannot raise a model-bound ceiling: %q", knob, v.OverallReason)
+		}
 	}
 }

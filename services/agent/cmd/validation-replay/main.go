@@ -206,11 +206,23 @@ func run() error {
 	// gets its calls rejected here and returns `unverifiable` where
 	// production returned a verdict, and a replay that substituted the
 	// no-information fallback would ask for more than production ever did.
+	verifierModelCap, verifierLiveReasoning := replayModelCaps(ctx, verifierProv, verifierSpec)
 	refuterModelCap := 0
+	refuterLiveReasoning := false
 	if cfg.RefuterEnabled {
-		refuterModelCap = replayModelOutputCap(ctx, refuterProv, refuterSpec)
+		refuterModelCap, refuterLiveReasoning = replayModelCaps(ctx, refuterProv, refuterSpec)
 	}
-	cfg.ApplyModelOutputCaps(replayModelOutputCap(ctx, verifierProv, verifierSpec), refuterModelCap)
+	cfg.ApplyModelOutputCaps(verifierModelCap, refuterModelCap)
+	// Live detection only ever widens, exactly as buildLayerSet applies it:
+	// an uncatalogued gateway alias that reports reasoning makes production
+	// request an effort even with the project toggle off, and a replay that
+	// did not would send a different request than the run it is reproducing.
+	if verifierLiveReasoning && verifierClient != nil {
+		verifierClient.SetReasoning(true)
+	}
+	if refuterLiveReasoning && refuterClient != nil {
+		refuterClient.SetReasoning(true)
+	}
 
 	// A typed nil in the map would satisfy llmFor's non-nil check and be
 	// called, so only the clients that were actually built go in — and the
@@ -361,41 +373,45 @@ func run() error {
 // It answers the model's cap, not the final budget: the operator override and
 // the clamp against it are Config.ApplyModelOutputCaps's job, the same way
 // production applies them.
-func replayModelOutputCap(ctx context.Context, p *countingProvider, spec llmlayer.LayerSpec) int {
-	base := spec.OutputCeiling()
-	if live := liveOutputCeiling(ctx, p, spec.Model); live > 0 {
+func replayModelCaps(ctx context.Context, p *countingProvider, spec llmlayer.LayerSpec) (outputCap int, reasoning bool) {
+	// Start from the CATALOG cap, then clamp by the layer's override — the
+	// order resolveModelBudget uses. LayerSpec.OutputCeiling returns the
+	// override in preference to the catalog, which is right for a caller
+	// clamping a product budget down but wrong here: a 8,000 override on a
+	// model whose catalog cap is 4,096 would have the replay ask for 8,000
+	// where production asks for 4,096, and collect a rejection for a run that
+	// succeeded.
+	base := gollm.GetMaxOutputTokens(spec.Provider, spec.Model)
+	live, liveReasoning := liveModelCaps(ctx, p, spec.Model)
+	if live > 0 {
 		base = live
 	}
-	// The layer's own max_output_tokens is part of what the model will accept
-	// here, exactly as resolveModelBudget treats it: production clamps the
-	// resolved cap by the operator's per-layer override before the validation
-	// budget ever sees it.
-	return gollm.ClampMaxTokens(base, gollm.MaxOutputOverride(gollm.ProviderConfig(spec.Config)))
+	return gollm.ClampMaxTokens(base, gollm.MaxOutputOverride(gollm.ProviderConfig(spec.Config))), liveReasoning
 }
 
-// liveOutputCeiling asks the endpoint what it will actually accept, or 0
-// when it cannot say. Best-effort and bounded: a replay must not hang on a
+// liveModelCaps asks the endpoint what it will actually accept and whether it
+// reasons, or zero values when it cannot say. Best-effort and bounded: a replay must not hang on a
 // gateway that will not answer.
 //
 // countingProvider embeds the interface, so the capability has to be read
 // off the provider it wraps — a type assertion on the wrapper only sees
 // gollm.Provider's own methods and would always miss.
-func liveOutputCeiling(ctx context.Context, p *countingProvider, model string) int {
+func liveModelCaps(ctx context.Context, p *countingProvider, model string) (outputCap int, reasoning bool) {
 	if p == nil {
-		return 0
+		return 0, false
 	}
 	r, ok := p.Provider.(gollm.ModelInfoResolver)
 	if !ok {
-		return 0
+		return 0, false
 	}
 	lctx, cancel := context.WithTimeout(ctx, replayModelInfoTimeout)
 	defer cancel()
 	caps, err := r.ResolveModelInfo(lctx, model)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "live model-info lookup failed for %s: %v (using the catalogue ceiling)\n", model, err)
-		return 0
+		return 0, false
 	}
-	return caps.MaxOutputTokens
+	return caps.MaxOutputTokens, caps.Reasoning
 }
 
 // replayModelInfoTimeout bounds the live lookup above, matching the agent's

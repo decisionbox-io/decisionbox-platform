@@ -217,6 +217,19 @@ type ModelEntry struct {
 	// a short task such as a table description gets a plain, fast answer, so
 	// the blurb generator accepts the model. Meaningful only with Reasoning.
 	AdaptiveThinking bool
+
+	// ReasoningUnknown declares that this row cannot answer whether the model
+	// reasons, so Reasoning:false on it means "no answer" rather than "does
+	// not reason".
+	//
+	// It is for rows that stand in for a target resolved elsewhere — a
+	// managed gateway's alias, whose backend model is chosen per
+	// organisation. Such a row exists to carry token limits and a pricing
+	// estimate, which hold whatever it routes to; reasoning does not. Without
+	// this, a placeholder's silence reads as a denial, and anything deciding
+	// whether to send a reasoning-only field drops it for a model that very
+	// much reasons.
+	ReasoningUnknown bool
 }
 
 // matches reports whether id resolves to this entry. Exact,
