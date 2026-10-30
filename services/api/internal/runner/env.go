@@ -117,11 +117,25 @@ var agentForwardedEnvKeys = []string{
 	// (DISCOVERY_QUESTIONS_PARSE_MAX_RETRIES) is forwarded below, so the analysis
 	// equivalents were simply missed rather than deliberately withheld.
 	//
+	// ANALYSIS_REPAIR_MAX_ROUNDS is the third of the same kind. It bounds the
+	// corrective re-prompts an insight gets when its own cited rows refute a claim
+	// it declared, and `0` is documented as the way to switch that rewrite off --
+	// so an operator who sets it is either tuning spend or disabling a model call
+	// they do not want made, and on Docker or Kubernetes neither took effect.
+	//
 	// Subprocess runs were never affected: the agent inherits the API's
 	// environment there, which is why this is invisible in a local stack and only
 	// shows up in a containerised deployment.
 	"ANALYSIS_STRUCTURED_OUTPUT",
 	"ANALYSIS_PARSE_MAX_RETRIES",
+	"ANALYSIS_REPAIR_MAX_ROUNDS",
+	// DISCOVERY_TRACE gates the evidence-chain log lines behind every shipped
+	// claim, read once at package init in the agent (discovery/trace.go). It is
+	// the switch an operator reaches for precisely when a finding turned out to be
+	// wrong and the question is which rows it rested on -- so a deployment where
+	// it emits nothing is one where that question cannot be answered at all. With
+	// it unset nothing is built, so forwarding it costs an unset variable nothing.
+	"DISCOVERY_TRACE",
 	// DISCOVERY_QUESTIONS_* knobs for the post-run clarifying-questions hop.
 	// Consumed by the agent (discovery.runPhaseQuestions). Without forwarding
 	// here, the enabled flag set on the API deployment never reaches a
