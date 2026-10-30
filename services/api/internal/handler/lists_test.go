@@ -56,6 +56,10 @@ func (m *mockDiscoveryRepoForLists) GetLatest(_ context.Context, _ string) (*mod
 func (m *mockDiscoveryRepoForLists) GetByDate(_ context.Context, _ string, _ time.Time) (*models.DiscoveryResult, error) {
 	return nil, nil
 }
+func (m *mockDiscoveryRepoForLists) HasResultForRun(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+
 func (m *mockDiscoveryRepoForLists) List(_ context.Context, _ string, _ int) ([]*models.DiscoveryResult, error) {
 	return nil, nil
 }

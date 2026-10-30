@@ -28,7 +28,36 @@ type DiscoveryResult struct {
 	// Empty for legacy / single-warehouse runs. The originating warehouse of
 	// every insight + SQL example flows from here (fine-tuning routes its SQL
 	// validation to the right datasource by it).
-	WarehouseID   string    `bson:"warehouse_id,omitempty" json:"warehouse_id,omitempty"`
+	WarehouseID string `bson:"warehouse_id,omitempty" json:"warehouse_id,omitempty"`
+
+	// RunID is the discovery run that produced this result.
+	//
+	// The link used to be one-way — DiscoveryRun.DiscoveryID points here,
+	// nothing pointed back — so "which discoveries did this run produce"
+	// had no answer. A resumed run needs it twice over: to retire the
+	// partial result its previous attempt left behind, and to keep that
+	// partial result out of its own "previously discovered, do not
+	// re-tread" context.
+	//
+	// Empty on every document written before resume shipped, which every
+	// reader treats as "not this run" — the correct answer for a historical
+	// result.
+	RunID string `bson:"run_id,omitempty" json:"run_id,omitempty"`
+
+	// Attempt is which attempt of RunID produced this result.
+	//
+	// It bounds retirement. A resumed run's previous attempt may still be
+	// alive and finishing its own cleanup, and that cleanup deletes by
+	// run_id — so without an attempt to compare, an earlier attempt arriving
+	// late deletes the result of the attempt that superseded it. Claiming the
+	// terminal write proves ownership at the write, not at the detached
+	// cleanup that follows it, which can lag arbitrarily.
+	//
+	// Absent on every document written before this existed, which decodes to
+	// 0 and is read as attempt 1 — the same equivalence attemptFilter
+	// encodes, and the right answer for a result produced before resume.
+	Attempt int `bson:"attempt,omitempty" json:"attempt,omitempty"`
+
 	Domain        string    `bson:"domain" json:"domain"`
 	Category      string    `bson:"category" json:"category"`
 	DiscoveryDate time.Time `bson:"discovery_date" json:"discovery_date"`

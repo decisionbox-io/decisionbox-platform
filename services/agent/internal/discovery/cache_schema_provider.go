@@ -325,11 +325,19 @@ func (p *CacheSchemaProvider) Search(ctx context.Context, query string, k int) (
 // table by that name. Returns (canonicalKey, true) on a hit, ("", false)
 // when the ref can't be resolved unambiguously.
 func (p *CacheSchemaProvider) resolveRef(raw string) (string, bool) {
+	return resolveRefIn(p.refIndex, raw)
+}
+
+// resolveRefIn is resolveRef against an arbitrary index, so a caller that
+// needs the same name matching without a CacheSchemaProvider (the SQL
+// fixer's column resolver) gets identical semantics instead of its own
+// approximation of them.
+func resolveRefIn(idx map[string]string, raw string) (string, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", false
 	}
-	if k, ok := p.refIndex[raw]; ok {
+	if k, ok := idx[raw]; ok {
 		return k, true
 	}
 	// Fallback: the LLM may have lowercased the dataset (BigQuery is
@@ -339,9 +347,9 @@ func (p *CacheSchemaProvider) resolveRef(raw string) (string, bool) {
 	// than silently pick the wrong table.
 	lc := strings.ToLower(raw)
 	var matches []string
-	for k := range p.refIndex {
+	for k := range idx {
 		if strings.ToLower(k) == lc {
-			matches = append(matches, p.refIndex[k])
+			matches = append(matches, idx[k])
 		}
 	}
 	if len(matches) == 1 {

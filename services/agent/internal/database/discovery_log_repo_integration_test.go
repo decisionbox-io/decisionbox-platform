@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 // TestDiscoveryLogRepository_RoundTrip exercises every Save method against a
@@ -342,5 +343,159 @@ func TestDiscoveryLogRepository_FixHistoryRoundTrip(t *testing.T) {
 	}
 	if len(second.FixHistory) != 0 {
 		t.Errorf("FixHistory should be empty for a step that ran cleanly, got %d entries", len(second.FixHistory))
+	}
+}
+
+// TestDiscoveryLogRepository_DeleteByDiscoveryIsDiscoveryScoped covers the
+// retire step of a resumed run, and the one thing it must not get wrong.
+//
+// Keyed on discovery_id, NOT run_id, and that distinction is load-bearing: a
+// resumed run writes its new attempt's rows under the SAME run_id, so
+// deleting by run would take the rows that were just written along with the
+// superseded ones — and the retire step runs AFTER they land.
+func TestDiscoveryLogRepository_DeleteByDiscoveryIsDiscoveryScoped(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	repo := NewDiscoveryLogRepository(db)
+	if err := repo.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("EnsureIndexes: %v", err)
+	}
+
+	// Two attempts of ONE run: the superseded result and the one that just
+	// landed. Both carry the same run_id, which is the trap.
+	const runID = "run-1"
+	for _, discID := range []string{"disc-old", "disc-new"} {
+		if err := repo.SaveExplorationSteps(ctx, "proj-1", discID, runID, []models.ExplorationStep{
+			{Step: 1, Action: "query_data", Query: "SELECT 1"},
+			{Step: 2, Action: "query_data", Query: "SELECT 2"},
+		}); err != nil {
+			t.Fatalf("SaveExplorationSteps %s: %v", discID, err)
+		}
+		if err := repo.SaveAnalysisSteps(ctx, "proj-1", discID, runID, []models.AnalysisStep{
+			{AreaID: "churn", RunAt: time.Now()},
+		}); err != nil {
+			t.Fatalf("SaveAnalysisSteps %s: %v", discID, err)
+		}
+		if err := repo.SaveValidationResults(ctx, "proj-1", discID, runID, []models.ValidationResult{
+			{InsightID: "i1", ValidatedAt: time.Now()},
+		}); err != nil {
+			t.Fatalf("SaveValidationResults %s: %v", discID, err)
+		}
+		if err := repo.SaveRecommendationLog(ctx, "proj-1", discID, runID, &models.RecommendationStep{
+			RunAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("SaveRecommendationLog %s: %v", discID, err)
+		}
+	}
+
+	deleted, err := repo.DeleteByDiscovery(ctx, "disc-old")
+	if err != nil {
+		t.Fatalf("DeleteByDiscovery: %v", err)
+	}
+	// 2 exploration + 1 analysis + 1 validation + 1 recommendation.
+	if deleted != 5 {
+		t.Errorf("deleted = %d, want 5", deleted)
+	}
+
+	// The superseded attempt is gone from all four collections.
+	if steps, _ := repo.ListExplorationStepsByDiscovery(ctx, "disc-old", 0); len(steps) != 0 {
+		t.Errorf("disc-old still has %d exploration steps", len(steps))
+	}
+	if areas, _ := repo.ListAnalysisStepsByDiscovery(ctx, "disc-old"); len(areas) != 0 {
+		t.Errorf("disc-old still has %d analysis steps", len(areas))
+	}
+	if vals, _ := repo.ListValidationResultsByDiscovery(ctx, "disc-old"); len(vals) != 0 {
+		t.Errorf("disc-old still has %d validation results", len(vals))
+	}
+	if rec, _ := repo.GetRecommendationLogByDiscovery(ctx, "disc-old"); rec != nil {
+		t.Error("disc-old still has a recommendation log")
+	}
+
+	// And the attempt that just landed is untouched — this is the assertion
+	// that would fail if the delete were keyed on run_id.
+	if steps, _ := repo.ListExplorationStepsByDiscovery(ctx, "disc-new", 0); len(steps) != 2 {
+		t.Errorf("disc-new has %d exploration steps, want 2 — the new attempt's rows must survive", len(steps))
+	}
+	if areas, _ := repo.ListAnalysisStepsByDiscovery(ctx, "disc-new"); len(areas) != 1 {
+		t.Errorf("disc-new has %d analysis steps, want 1", len(areas))
+	}
+	if vals, _ := repo.ListValidationResultsByDiscovery(ctx, "disc-new"); len(vals) != 1 {
+		t.Errorf("disc-new has %d validation results, want 1", len(vals))
+	}
+	if rec, _ := repo.GetRecommendationLogByDiscovery(ctx, "disc-new"); rec == nil {
+		t.Error("disc-new lost its recommendation log")
+	}
+}
+
+// TestDiscoveryLogRepository_ResumedRunReSaveDoesNotHitTheUniqueIndex is the
+// exact crash the issue names.
+//
+// discovery_recommendation_log has a UNIQUE index on discovery_id. A resumed
+// run reaching Phase 7 for the second time under the same run would, on a
+// naive in-place upsert design, try to write a second row for the same
+// discovery and die on the index — not merely duplicate, crash.
+//
+// The write-new-then-retire-superseded order makes that structurally
+// impossible rather than ordering-dependent: the new attempt's rows are a
+// clean insert under a FRESH discovery_id, and the old ones are deleted
+// afterwards. This test walks that order twice to prove it.
+func TestDiscoveryLogRepository_ResumedRunReSaveDoesNotHitTheUniqueIndex(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	repo := NewDiscoveryLogRepository(db)
+	if err := repo.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("EnsureIndexes: %v", err)
+	}
+
+	const runID = "run-resumed"
+	save := func(discID string) error {
+		return repo.SaveRecommendationLog(ctx, "proj-1", discID, runID, &models.RecommendationStep{
+			RunAt: time.Now(),
+		})
+	}
+
+	// Attempt 1 completes its tail.
+	if err := save("disc-attempt-1"); err != nil {
+		t.Fatalf("attempt 1: %v", err)
+	}
+
+	// The run is resumed and reaches its tail again. New discovery id, so a
+	// clean insert — the unique index is on discovery_id, not run_id.
+	if err := save("disc-attempt-2"); err != nil {
+		t.Fatalf("attempt 2's re-save must not violate the unique index: %v", err)
+	}
+
+	// Then the superseded attempt is retired, leaving exactly one result.
+	if _, err := repo.DeleteByDiscovery(ctx, "disc-attempt-1"); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	n, err := db.Collection(CollectionDiscoveryRecommendationLog).CountDocuments(ctx, bson.M{"run_id": runID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("recommendation logs for the run = %d, want exactly 1", n)
+	}
+
+	// And a third attempt still works — resume is not a one-shot.
+	if err := save("disc-attempt-3"); err != nil {
+		t.Fatalf("attempt 3: %v", err)
+	}
+	if _, err := repo.DeleteByDiscovery(ctx, "disc-attempt-2"); err != nil {
+		t.Fatalf("retire attempt 2: %v", err)
+	}
+	n, _ = db.Collection(CollectionDiscoveryRecommendationLog).CountDocuments(ctx, bson.M{"run_id": runID})
+	if n != 1 {
+		t.Errorf("after a second resume, logs = %d, want 1", n)
+	}
+
+	// Retrying a retire is a no-op, not an error — the orchestrator's retire
+	// step is best-effort and may run again.
+	if deleted, err := repo.DeleteByDiscovery(ctx, "disc-attempt-1"); err != nil || deleted != 0 {
+		t.Errorf("re-retiring an already-retired attempt = (%d, %v), want (0, nil)", deleted, err)
 	}
 }

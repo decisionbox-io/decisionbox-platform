@@ -1115,3 +1115,125 @@ func TestDiscoveriesHandler_CancelRun_PendingStatus_MockRepo(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (pending runs are active)", w.Code)
 	}
 }
+
+// CancelRun is documented as a hard kill, and whether it kills at all used to
+// depend on the CASE of the id in the URL.
+//
+// ObjectIDFromHex accepts uppercase hex, so GetByID resolves "6AE2…" and the
+// handler proceeds — but the runner keys containers by a run-id LABEL and the
+// checkpoint collection keys run_id as a STRING, both holding the lowercase
+// form oid.Hex() produces. An exact-match label filter then finds no
+// container and DeleteByRun purges no rows, while the operator is answered
+// 200 "cancelled". Resume and discard both canonicalize to run.ID for this
+// reason; cancel did not.
+//
+// defaultRun is what makes this reproducible without a real Mongo: a key miss
+// falls back to it, exactly as the real GetByID resolves an uppercase id and
+// hands back a document whose _id is canonical.
+func TestDiscoveriesHandler_CancelRun_UsesTheCanonicalRunID(t *testing.T) {
+	const canonical = "6ae21946bb73e106493b573c"
+	upper := strings.ToUpper(canonical)
+
+	for _, tc := range []struct {
+		name  string
+		runID string
+	}{
+		{"canonical", canonical},
+		{"uppercase", upper},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			projRepo := newMockProjectRepo()
+			discRepo := newMockDiscoveryRepo()
+			runRepo := newMockRunRepo()
+			mockRun := newMockRunner()
+			cps := &mockCheckpointRepo{prefixLen: 2}
+			// Keyed canonically, as the agent writes it; the uppercase
+			// request misses the map and resolves through defaultRun.
+			runRepo.defaultRun = &models.DiscoveryRun{
+				ID:        canonical,
+				ProjectID: "proj-1",
+				Status:    "running",
+				Phase:     "exploration",
+				StartedAt: time.Now(),
+			}
+			h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, mockRun).
+				WithCheckpoints(cps)
+
+			req := httptest.NewRequest("DELETE", "/api/v1/runs/"+tc.runID, nil)
+			req.SetPathValue("runId", tc.runID)
+			w := httptest.NewRecorder()
+
+			h.CancelRun(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
+			}
+			// The hard kill: the runner must be asked for the id its
+			// container label actually carries, or it stops nothing.
+			if len(mockRun.canceled) != 1 {
+				t.Fatalf("runner cancel called %d times, want 1", len(mockRun.canceled))
+			}
+			if mockRun.canceled[0] != canonical {
+				t.Errorf("runner asked to cancel %q, want the canonical %q — an exact-match label filter finds no container, so the hard kill never fires",
+					mockRun.canceled[0], canonical)
+			}
+			// The purge: DeleteByRun matches the string run_id field.
+			if len(cps.deleted) != 1 {
+				t.Fatalf("checkpoint purge called %d times, want 1", len(cps.deleted))
+			}
+			if cps.deleted[0] != canonical {
+				t.Errorf("purged checkpoints of %q, want the canonical %q — otherwise the rows survive to the retention TTL and the boot sweep keeps the run's vector collection alive",
+					cps.deleted[0], canonical)
+			}
+		})
+	}
+}
+
+// A 200 with no `run` used to mean two different things: this project has no
+// run, or the run query failed — the error was discarded. That was survivable
+// while the dashboard ignored the empty case, and stopped being survivable
+// the moment it started clearing its panel on it (it has to, or a discarded
+// run's panel never goes away). A transient Mongo error would then wipe a
+// LIVE run off the page, and a terminal panel is not polled, so Progress and
+// Cancel would not come back when the database did.
+func TestDiscoveriesHandler_GetStatus_RunQueryFailureIsNotReportedAsNoRun(t *testing.T) {
+	projRepo := newMockProjectRepo()
+	runRepo := newMockRunRepo()
+	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projRepo, runRepo, nil, nil, nil, newMockRunner())
+
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	if err := projRepo.Create(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
+	runRepo.getLatestErr = errors.New("mongo: connection refused")
+
+	req := httptest.NewRequest("GET", "/api/v1/projects/"+p.ID+"/status", nil)
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+	h.GetStatus(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 — a failed run query must not read as an absent run; body = %s", w.Code, w.Body.String())
+	}
+}
+
+// The other half: a project that genuinely has no run must still answer 200
+// with no run, because that is the response the dashboard clears on.
+func TestDiscoveriesHandler_GetStatus_NoRunsIsStillTwoHundred(t *testing.T) {
+	projRepo := newMockProjectRepo()
+	h := NewDiscoveriesHandler(newMockDiscoveryRepo(), projRepo, newMockRunRepo(), nil, nil, nil, newMockRunner())
+
+	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3"}
+	if err := projRepo.Create(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/projects/"+p.ID+"/status", nil)
+	req.SetPathValue("id", p.ID)
+	w := httptest.NewRecorder()
+	h.GetStatus(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
+	}
+}

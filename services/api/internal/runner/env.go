@@ -56,6 +56,18 @@ var agentForwardedEnvKeys = []string{
 	// agent side (not the API), so it has to be forwarded for container
 	// runs. Subprocess runs already inherit it from the API process env.
 	"DISCOVERY_MAX_DURATION",
+	// DISCOVERY_CHECKPOINT_RETENTION is the TTL on a run's exploration
+	// checkpoints, and the agent is what creates that index — so without
+	// forwarding it, an operator who raises DISCOVERY_MAX_DURATION above the
+	// 48h default and raises retention to match would find retention
+	// silently unchanged on exactly the runners that matter in production.
+	// The checkpoints of a long run would then expire while it was still
+	// running, and the resume it was raised for would re-explore.
+	//
+	// It belongs next to DISCOVERY_MAX_DURATION for the same reason and with
+	// the same constraint: the two have to be raised together, so they have
+	// to reach the agent together.
+	"DISCOVERY_CHECKPOINT_RETENTION",
 	// LLM behaviour knobs, read by the agent itself, so every runner must
 	// forward them for an agent to match the API's tuning. Without them a
 	// Kubernetes agent Job fell back to the provider's own HTTP timeout (five
