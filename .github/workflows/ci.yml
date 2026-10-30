@@ -2,26 +2,19 @@ name: CI
 
 on:
   pull_request:
-    # Both patterns beyond main, for the same underlying reason: the filter
-    # matches the BASE, so a PR against an unlisted base matches no trigger at
-    # all and every job is skipped — which reads as a green PR that was never
-    # tested.
-    #
-    # `epic/**` — an epic branch collects a feature's PRs and merges to main as
-    # one unit, so the PRs that build it need the gates a PR to main would run.
-    # `feat/**` — the bridge branches a cross-repo change merges through.
-    # Patterns rather than branch names so neither case needs a workflow edit
-    # next time, and none of them leave scaffolding behind in here.
-    branches: [main, 'epic/**', 'feat/**']
+    # main only. The filter matches the BASE, so a PR against any other base
+    # matches no trigger and every job is SKIPPED — green-looking but never
+    # tested. Add a base here deliberately and temporarily if a feature ever
+    # needs to collect its PRs somewhere other than main, and take it out
+    # again when that base is gone.
+    branches: [main]
     # `labeled` is included so adding the `run-integration-tests` label actually
     # starts the label-gated integration-tests job — the default activity types
     # (opened/synchronize/reopened) don't fire on a label change, so without it
     # the label can only take effect on the next push.
     types: [opened, synchronize, reopened, labeled]
   push:
-    # Same reason on push: these branches are what finally merge to main, so
-    # they are verified as they accumulate rather than only once at the end.
-    branches: [main, 'epic/**', 'feat/**']
+    branches: [main]
 
 concurrency:
   group: ci-${{ github.ref }}
