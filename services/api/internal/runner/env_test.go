@@ -1,6 +1,10 @@
 package runner
 
-import "testing"
+import (
+	"testing"
+
+	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
+)
 
 // TestForwardedEnv_InferenceCredentials pins that the managed-inference
 // gateway credential env vars are forwarded to spawned agents when set —
@@ -188,5 +192,24 @@ func TestForwardedEnv_AnalysisPhaseKnobs(t *testing.T) {
 		if counts[k] != 1 {
 			t.Errorf("%s forwarded %d times by the Docker runner, want 1", k, counts[k])
 		}
+	}
+}
+
+// TestForwardedEnv_ReasoningEffort pins that the deployment's reasoning-effort
+// override reaches agent containers.
+//
+// Effort is resolved inside the agent, by the provider that talks to the
+// model, so a value set only on the API process does nothing: an operator who
+// lowered it to cut cost would keep paying for high effort on every discovery
+// and validation call, with nothing to explain why the setting had no effect.
+func TestForwardedEnv_ReasoningEffort(t *testing.T) {
+	t.Setenv(gollm.ReasoningEffortEnvVar, "low")
+
+	found := map[string]string{}
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys) {
+		found[kv.Key] = kv.Value
+	}
+	if found[gollm.ReasoningEffortEnvVar] != "low" {
+		t.Errorf("%s not forwarded: %q", gollm.ReasoningEffortEnvVar, found[gollm.ReasoningEffortEnvVar])
 	}
 }

@@ -32,6 +32,11 @@ func (p *BedrockProvider) chatOpenAICompat(ctx context.Context, req gollm.ChatRe
 	// structured output a safe no-op for these models rather than a
 	// response-mangling one. Mirrors vertex-ai / azure-foundry.
 	req.ResponseFormat = nil
+	// A model the catalog knows is not a reasoning model rejects
+	// reasoning_effort outright, so the field is dropped for those rather
+	// than turning a quality setting into a 400. A model the catalog does not
+	// know (a managed gateway's alias) keeps it — see NormalizeReasoningEffort.
+	req = gollm.NormalizeReasoningEffort(providerName, req.Model, req)
 	body := openaicompat.BuildRequestBody(req.Model, req)
 
 	reqBody, err := json.Marshal(body)

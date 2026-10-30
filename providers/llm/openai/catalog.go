@@ -149,6 +149,12 @@ func buildOpenAICatalog() []gollm.ModelEntry {
 		// GetMaxOutputTokens, and a 16K cap truncated large generations.
 		// Pricing/encoding are standard-routing estimates for local budgeting;
 		// the gateway is the billing authority and returns real usage.
+		//
+		// Reasoning is deliberately not claimed: which backend an alias routes
+		// to is per-organisation, so this row cannot say whether the model
+		// takes an effort setting. Token limits and a pricing estimate hold
+		// across the plausible backends; reasoning does not. The gateway
+		// resolves effort itself against the real model id.
 		{
 			ID:              "decisionbox-analysis-model",
 			DisplayName:     "DecisionBox Analysis (Opus)",

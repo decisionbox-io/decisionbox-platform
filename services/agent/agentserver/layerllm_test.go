@@ -56,12 +56,12 @@ func (c *counters) deps() layerSetDeps {
 			c.specs = append(c.specs, spec)
 			return &countingProviderStub{id: c.providerBuilds}, llmlayer.ProviderConfig(spec, cred, llmlayer.BuildOptions{}), nil
 		},
-		resolveBudget: func(_ context.Context, _ gollm.Provider, spec llmlayer.LayerSpec, persisted int) (int, int) {
+		resolveBudget: func(_ context.Context, _ gollm.Provider, spec llmlayer.LayerSpec, persisted int) (int, int, bool) {
 			c.budgetResolves++
 			if persisted > 0 {
-				return persisted, 8000
+				return persisted, 8000, false
 			}
-			return 100000, 8000
+			return 100000, 8000, false
 		},
 		persistedWindow: func(_ context.Context, _ llmlayer.LayerSpec) int {
 			c.windowReads++

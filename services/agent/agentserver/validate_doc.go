@@ -235,15 +235,17 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 	// a regression.
 	var schemaProvider ai.SchemaProvider
 
-	// The deployment's validation output budget cannot exceed what each
-	// layer's own model accepts: a verifier capped at 1,024 tokens rejects
-	// the 4,000-token request outright, and a rejected call becomes an
-	// `unverifiable` verdict on a document that was fine. RunDiscovery
-	// clamps the same two numbers the same way.
-	vCfg.Verifier.MaxOutputTokens = clampLayerOutput(vCfg.Verifier.MaxOutputTokens, verifierLayer)
+	// Each half's per-round output ceiling comes from the model it runs on:
+	// an unset deployment value means "as much as this model allows", and an
+	// explicit one is clamped to what the model accepts — a verifier capped
+	// at 1,024 tokens rejects a 4,000-token request outright, and a rejected
+	// call becomes an `unverifiable` verdict on a document that was fine.
+	// RunDiscovery resolves the same two numbers the same way.
+	refuterModelCap := 0
 	if vCfg.RefuterEnabled {
-		vCfg.Refuter.MaxOutputTokens = clampLayerOutput(vCfg.Refuter.MaxOutputTokens, refuterLayer)
+		refuterModelCap = layerOutputCap(refuterLayer)
 	}
+	vCfg.ApplyModelOutputCaps(layerOutputCap(verifierLayer), refuterModelCap)
 
 	stepByID := indexExplorationSteps(steps)
 
@@ -477,11 +479,12 @@ func indexExplorationSteps(steps []models.ExplorationStep) map[int]*models.Explo
 	return out
 }
 
-// clampLayerOutput lowers a configured output budget to the layer model's
-// resolved ceiling, leaving it alone when the layer has none or accepts more.
-func clampLayerOutput(configured int, l *ai.LayerLLM) int {
-	if l == nil || l.OutputCap <= 0 || l.OutputCap >= configured {
-		return configured
+// layerOutputCap returns a layer's resolved model output cap, or 0 when the
+// layer is unknown or its cap could not be resolved — which the verifier's
+// resolver reads as "unknown model", falling through to its own fallback.
+func layerOutputCap(l *ai.LayerLLM) int {
+	if l == nil || l.OutputCap <= 0 {
+		return 0
 	}
 	return l.OutputCap
 }

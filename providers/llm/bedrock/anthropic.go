@@ -67,6 +67,9 @@ func (p *BedrockProvider) chatAnthropic(ctx context.Context, req gollm.ChatReque
 	if tc := anthropicwire.ToolChoice(req.ToolChoice, req.DisableParallelToolUse); tc != nil {
 		body["tool_choice"] = tc
 	}
+	if oc := anthropicwire.OutputConfig(req.ReasoningEffort, gollm.IsReasoningModel(providerName, req.Model)); oc != nil {
+		body["output_config"] = oc
+	}
 
 	reqBody, err := json.Marshal(body)
 	if err != nil {

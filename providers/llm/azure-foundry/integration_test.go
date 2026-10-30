@@ -12,8 +12,8 @@ import (
 )
 
 var (
-	testEndpoint   string
-	testAPIKey     string
+	testEndpoint    string
+	testAPIKey      string
 	testClaudeModel string
 	testOpenAIModel string
 )
@@ -41,9 +41,9 @@ func TestMain(m *testing.M) {
 
 func TestIntegration_ClaudeChat(t *testing.T) {
 	p, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
-		"endpoint": testEndpoint,
-		"credentials_json":  testAPIKey,
-		"model":    testClaudeModel,
+		"endpoint":         testEndpoint,
+		"credentials_json": testAPIKey,
+		"model":            testClaudeModel,
 	})
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
@@ -70,9 +70,9 @@ func TestIntegration_ClaudeChat(t *testing.T) {
 
 func TestIntegration_ClaudeSystemPrompt(t *testing.T) {
 	p, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
-		"endpoint": testEndpoint,
-		"credentials_json":  testAPIKey,
-		"model":    testClaudeModel,
+		"endpoint":         testEndpoint,
+		"credentials_json": testAPIKey,
+		"model":            testClaudeModel,
 	})
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
@@ -94,9 +94,9 @@ func TestIntegration_ClaudeSystemPrompt(t *testing.T) {
 
 func TestIntegration_OpenAIChat(t *testing.T) {
 	p, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
-		"endpoint": testEndpoint,
-		"credentials_json":  testAPIKey,
-		"model":    testOpenAIModel,
+		"endpoint":         testEndpoint,
+		"credentials_json": testAPIKey,
+		"model":            testOpenAIModel,
 	})
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
@@ -120,9 +120,9 @@ func TestIntegration_OpenAIChat(t *testing.T) {
 
 func TestIntegration_OpenAISystemPrompt(t *testing.T) {
 	p, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
-		"endpoint": testEndpoint,
-		"credentials_json":  testAPIKey,
-		"model":    testOpenAIModel,
+		"endpoint":         testEndpoint,
+		"credentials_json": testAPIKey,
+		"model":            testOpenAIModel,
 	})
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
@@ -144,9 +144,9 @@ func TestIntegration_OpenAISystemPrompt(t *testing.T) {
 
 func TestIntegration_ContextCancellation(t *testing.T) {
 	p, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
-		"endpoint": testEndpoint,
-		"credentials_json":  testAPIKey,
-		"model":    testClaudeModel,
+		"endpoint":         testEndpoint,
+		"credentials_json": testAPIKey,
+		"model":            testClaudeModel,
 	})
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
@@ -167,9 +167,9 @@ func TestIntegration_ContextCancellation(t *testing.T) {
 
 func TestIntegration_Validate_Claude(t *testing.T) {
 	p, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
-		"endpoint": testEndpoint,
-		"credentials_json":  testAPIKey,
-		"model":    testClaudeModel,
+		"endpoint":         testEndpoint,
+		"credentials_json": testAPIKey,
+		"model":            testClaudeModel,
 	})
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)
@@ -181,9 +181,9 @@ func TestIntegration_Validate_Claude(t *testing.T) {
 
 func TestIntegration_Validate_OpenAI(t *testing.T) {
 	p, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
-		"endpoint": testEndpoint,
-		"credentials_json":  testAPIKey,
-		"model":    testOpenAIModel,
+		"endpoint":         testEndpoint,
+		"credentials_json": testAPIKey,
+		"model":            testOpenAIModel,
 	})
 	if err != nil {
 		t.Fatalf("failed to create provider: %v", err)

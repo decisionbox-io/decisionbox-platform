@@ -25,7 +25,12 @@ const modelInfoResolveTimeout = 8 * time.Second
 //
 // Output precedence:  live auto-detection → catalog / default, then capped by
 // the operator max_output_tokens override.
-func resolveModelBudget(ctx context.Context, provider gollm.Provider, providerName, model string, cfg gollm.ProviderConfig, persistedWindow int) (window, outputCap int) {
+//
+// reasoning is what live detection reported, and is only ever additive: the
+// caller ORs it with the layer's own setting. It matters behind a managed
+// gateway, where the alias hides the backend model from the catalog and every
+// catalog-keyed reasoning decision would otherwise read false.
+func resolveModelBudget(ctx context.Context, provider gollm.Provider, providerName, model string, cfg gollm.ProviderConfig, persistedWindow int) (window, outputCap int, reasoning bool) {
 	// Live auto-detection: one best-effort call. Providers without the
 	// capability (or that don't report the numbers) leave live zero-valued.
 	var live gollm.ModelCapabilities
@@ -76,14 +81,15 @@ func resolveModelBudget(ctx context.Context, provider gollm.Provider, providerNa
 	outputCap = gollm.ClampMaxTokens(base, gollm.MaxOutputOverride(cfg))
 
 	applog.WithFields(applog.Fields{
-		"provider":      providerName,
-		"model":         model,
-		"window":        window,
-		"window_source": windowSource,
-		"output_cap":    outputCap,
+		"provider":       providerName,
+		"model":          model,
+		"window":         window,
+		"window_source":  windowSource,
+		"output_cap":     outputCap,
+		"live_reasoning": live.Reasoning,
 	}).Info("Resolved model context budget")
 
-	return window, outputCap
+	return window, outputCap, live.Reasoning
 }
 
 // projectModelWindowStore binds a project id to the model-window repo so it

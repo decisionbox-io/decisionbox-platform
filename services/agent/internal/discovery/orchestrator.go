@@ -770,6 +770,21 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// legacy Status field.
 	if o.aiClient != nil && opts.ValidationEnabled {
 		o.validationCfg, o.validationCaps = verifier.LoadConfigFromEnv()
+		// The per-round output ceiling is resolved from the model each half
+		// actually runs on, not from a literal: an unset deployment value
+		// means "as much as this model allows", bounded by the loop's own
+		// envelope. A fixed ceiling silently truncated the verdict JSON of
+		// any model that needed more, which cost the whole document — and,
+		// through Combine, the confirmed verdict and the recommendation phase
+		// with it. VALIDATION_*_MAX_OUTPUT still wins where set, and is still
+		// clamped to what the layer's model accepts.
+		_, verifierModelCap := o.budgetFor(llmlayer.LayerValidationVerifier)
+		refuterModelCap := 0
+		if o.validationCfg.RefuterEnabled {
+			_, refuterModelCap = o.budgetFor(llmlayer.LayerValidationRefuter)
+		}
+		o.validationCfg.ApplyModelOutputCaps(verifierModelCap, refuterModelCap)
+
 		// The verifier and the refuter are separate layers, so a project can
 		// run the two halves on different models. The mode-keyed client set is
 		// built only when this run has one; otherwise both modes share the one
@@ -787,20 +802,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			if o.validationCfg.RefuterEnabled {
 				byMode[valmodels.ModeRefuter] = o.ai(llmlayer.LayerValidationRefuter)
 			}
-			// The validation output budget is a DEPLOYMENT setting (its
-			// defaults, or VALIDATION_*_OUTPUT), but it cannot exceed what
-			// the layer's own model accepts: a layer capped at 1,024 tokens
-			// 4xx-rejects a 4,000-token request, which would fail every
-			// validation call on that project. Clamping here is also what
-			// makes a per-layer max_output_tokens mean something for
-			// validation; the deployment setting still wins when it is the
-			// lower of the two.
-			cfg := o.validationCfg
-			cfg.Verifier.MaxOutputTokens = clampToLayerCap(cfg.Verifier.MaxOutputTokens, o.layer(llmlayer.LayerValidationVerifier))
-			if o.validationCfg.RefuterEnabled {
-				cfg.Refuter.MaxOutputTokens = clampToLayerCap(cfg.Refuter.MaxOutputTokens, o.layer(llmlayer.LayerValidationRefuter))
-			}
-			va, vErr = verifier.NewAgentPerMode(byMode, o.ai(llmlayer.LayerValidationVerifier), cfg)
+			va, vErr = verifier.NewAgentPerMode(byMode, o.ai(llmlayer.LayerValidationVerifier), o.validationCfg)
 		} else {
 			va, vErr = verifier.NewAgent(o.aiClient, o.validationCfg)
 		}
@@ -3637,14 +3639,4 @@ func (o *Orchestrator) recommendationsKnowledgeQuery(insights []models.Insight) 
 // notation -- there is one writer and everything that prints a number goes through it.
 func (o *Orchestrator) figureWriter() figureWriter {
 	return newFigureWriter(o.language)
-}
-
-// clampToLayerCap lowers a configured output budget to the layer model's
-// resolved ceiling. Leaves it alone when the layer is unknown or its ceiling
-// is not lower, so a deployment that tuned the budget down keeps its value.
-func clampToLayerCap(configured int, l *ai.LayerLLM) int {
-	if l == nil || l.OutputCap <= 0 || l.OutputCap >= configured {
-		return configured
-	}
-	return l.OutputCap
 }

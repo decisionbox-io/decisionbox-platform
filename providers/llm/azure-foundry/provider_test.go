@@ -213,7 +213,7 @@ func TestAzureFoundryProvider_ConfigFields(t *testing.T) {
 func TestAzureFoundryProvider_Factory_MissingEndpoint(t *testing.T) {
 	_, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
 		"credentials_json": "test-key",
-		"model":   "claude-sonnet-4-6",
+		"model":            "claude-sonnet-4-6",
 	})
 	if err == nil {
 		t.Fatal("expected error for missing endpoint")
@@ -277,9 +277,9 @@ func TestAzureFoundryProvider_Chat_RefusesListOnly(t *testing.T) {
 
 func TestAzureFoundryProvider_Factory_StripsTrailingSlash(t *testing.T) {
 	provider, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
-		"endpoint": "https://test.services.ai.azure.com/",
-		"credentials_json":  "test-key",
-		"model":    "claude-sonnet-4-6",
+		"endpoint":         "https://test.services.ai.azure.com/",
+		"credentials_json": "test-key",
+		"model":            "claude-sonnet-4-6",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -292,9 +292,9 @@ func TestAzureFoundryProvider_Factory_StripsTrailingSlash(t *testing.T) {
 
 func TestAzureFoundryProvider_Factory_DefaultTimeout(t *testing.T) {
 	provider, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
-		"endpoint": "https://test.services.ai.azure.com",
-		"credentials_json":  "test-key",
-		"model":    "claude-sonnet-4-6",
+		"endpoint":         "https://test.services.ai.azure.com",
+		"credentials_json": "test-key",
+		"model":            "claude-sonnet-4-6",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -308,10 +308,10 @@ func TestAzureFoundryProvider_Factory_DefaultTimeout(t *testing.T) {
 
 func TestAzureFoundryProvider_Factory_CustomTimeout(t *testing.T) {
 	provider, err := gollm.NewProvider("azure-foundry", gollm.ProviderConfig{
-		"endpoint":        "https://test.services.ai.azure.com",
-		"credentials_json":         "test-key",
-		"model":           "claude-sonnet-4-6",
-		"timeout_seconds": "60",
+		"endpoint":         "https://test.services.ai.azure.com",
+		"credentials_json": "test-key",
+		"model":            "claude-sonnet-4-6",
+		"timeout_seconds":  "60",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

@@ -313,6 +313,12 @@ type RemoteModel struct {
 	// the dashboard prefills the operator's context-window / output-cap fields.
 	MaxInputTokens  int
 	MaxOutputTokens int
+
+	// Reasoning reports that the upstream considers this model a reasoning
+	// model. False means "not reported or not reasoning" — the two are
+	// indistinguishable on this wire, so callers OR it with what they already
+	// know rather than treating it as authoritative.
+	Reasoning bool
 }
 
 // ModelCapabilities is what a provider can self-report about a model from its
@@ -323,6 +329,15 @@ type ModelCapabilities struct {
 	MaxInputTokens int
 	// MaxOutputTokens is the model's max generation cap in tokens.
 	MaxOutputTokens int
+	// Reasoning reports that the upstream considers this model a reasoning
+	// model.
+	//
+	// It exists because the catalog is keyed on (provider, model) and a
+	// managed gateway deliberately hides the backend model behind an opaque
+	// alias: every catalog-keyed reasoning decision therefore takes its
+	// not-a-reasoning-model branch for a model that very much is one, which
+	// is how a thinking model ended up budgeted as though it never thinks.
+	Reasoning bool
 }
 
 // ModelInfoResolver is an optional capability interface: providers that expose

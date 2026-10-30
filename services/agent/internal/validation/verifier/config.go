@@ -138,3 +138,121 @@ func getEnvBool(k string, fallback bool) bool {
 	}
 	return fallback
 }
+
+// Fallback per-round output ceilings, used only when the model's own output
+// cap is unknown (an uncatalogued model with no live metadata). These are the
+// values the validation loop shipped with; they are kept as the floor of last
+// resort rather than as the default, because as a default they silently
+// truncated the verdicts of any model that needs more.
+const (
+	fallbackVerifierOutputTokens = 4000
+	fallbackRefuterOutputTokens  = 3000
+)
+
+// validationOutputShare bounds the per-round output ceiling to a fraction of
+// the mode's token envelope.
+//
+// The loop reserves `forced-final prompt + MaxOutputTokens` out of TokenCap
+// before each round and stops early when that reserve does not fit. An output
+// ceiling taken straight from a 128K-output model would make the reserve
+// exceed the whole envelope, sending every document to its forced final round
+// with no evidence gathered — trading a truncated verdict for an uninformed
+// one. A quarter leaves the bundle and the tool history three quarters.
+const validationOutputShare = 4
+
+// minRoundOutputTokens is the least a NORMAL round may be granted.
+//
+// It is far below the verdict floor on purpose. A normal round emits one
+// action, which is almost always a tool call of a few dozen tokens; the round
+// that submits the verdict gets whatever the envelope still affords, up to the
+// ceiling. Requiring verdict-sized room on every round instead reserved for
+// the worst case twice over — once in the round, once in the forced final's
+// reservation — and on an ordinary bundle that left no room for the
+// evidence-gathering round at all, which is the whole point of the loop.
+//
+// The forced final keeps the verdict floor: it is the call that must always be
+// able to emit a complete verdict, and it is reserved for separately.
+const minRoundOutputTokens = 512
+
+// ApplyModelOutputCaps sizes each mode's per-round output ceiling from the
+// resolved output cap of the model that mode actually runs on (the verifier
+// and the refuter are separate layers and may differ).
+//
+// Precedence per mode, matching how the other bounded phases resolve theirs:
+//
+//  1. an explicit operator value (VALIDATION_*_MAX_OUTPUT, already loaded
+//     into MaxOutputTokens by LoadConfigFromEnv);
+//  2. the model's own output cap;
+//  3. the documented fallback.
+//
+// The result is then bounded by validationOutputShare. Pass 0 for a cap that
+// could not be resolved.
+func (c *Config) ApplyModelOutputCaps(verifierModelCap, refuterModelCap int) {
+	// Captured before the resolution overwrites the field, so the binding
+	// constraint can be told apart afterwards.
+	operatorVerifier, operatorRefuter := c.Verifier.MaxOutputTokens, c.Refuter.MaxOutputTokens
+	c.Verifier.MaxOutputTokens = resolveModeOutputTokens(c.Verifier, verifierModelCap, fallbackVerifierOutputTokens)
+	c.Refuter.MaxOutputTokens = resolveModeOutputTokens(c.Refuter, refuterModelCap, fallbackRefuterOutputTokens)
+	// The reservation floor is the per-mode budget the loop shipped with: it
+	// is what a verdict has always fitted in, so reserving it keeps the round
+	// budgeting exactly as it was while the ceiling above grows with the
+	// model. Never above the ceiling — a model that accepts less than the
+	// floor must not be asked for the floor.
+	c.Verifier.MinOutputTokens = minInt(fallbackVerifierOutputTokens, c.Verifier.MaxOutputTokens)
+	c.Refuter.MinOutputTokens = minInt(fallbackRefuterOutputTokens, c.Refuter.MaxOutputTokens)
+	c.Verifier.OutputBound = outputConstraintFor(c.Verifier, verifierModelCap, operatorVerifier)
+	c.Refuter.OutputBound = outputConstraintFor(c.Refuter, refuterModelCap, operatorRefuter)
+	c.outputResolved = true
+}
+
+// outputConstraintFor reports which of the three candidates set the mode's
+// ceiling, so a truncation message names something that can actually move it.
+//
+// Several candidates can sit on the same number, and then the order matters:
+// raising an easier one is clamped straight back by a harder one, which is the
+// message that costs an operator a deploy and teaches them to distrust the
+// diagnosis. So ties resolve toward the constraint that is hardest to move —
+// the model first (no validation setting raises it), then the envelope (only
+// TokenCap), then the operator's own value.
+func outputConstraintFor(m ModeConfig, modelCap, operatorValue int) OutputConstraint {
+	switch {
+	case modelCap > 0 && m.MaxOutputTokens == modelCap:
+		return OutputBoundByModel
+	case m.TokenCap/validationOutputShare > 0 && m.MaxOutputTokens == m.TokenCap/validationOutputShare:
+		return OutputBoundByEnvelope
+	default:
+		// The operator's value, or — when neither they nor the model could
+		// answer — the documented fallback, which the output knob replaces.
+		return OutputBoundByOperator
+	}
+}
+
+// resolveModeOutputTokens implements ApplyModelOutputCaps for one mode.
+func resolveModeOutputTokens(m ModeConfig, modelCap, fallback int) int {
+	out := m.MaxOutputTokens
+	switch {
+	case out <= 0:
+		out = modelCap
+	case modelCap > 0 && out > modelCap:
+		// An operator value above what the model accepts is rejected by the
+		// provider and would fail every validation call on the project, so
+		// the model's cap wins — the clamp-only-lowers rule the window side
+		// follows too.
+		out = modelCap
+	}
+	if out <= 0 {
+		out = fallback
+	}
+	if share := m.TokenCap / validationOutputShare; share > 0 && out > share {
+		out = share
+	}
+	return out
+}
+
+// minInt returns the smaller of two ints.
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

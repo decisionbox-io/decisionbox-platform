@@ -87,21 +87,63 @@ type ChatResult struct {
 	TokensIn   int
 	TokensOut  int
 	DurationMs int64
+
+	// StopReason is why generation ended, as the provider reported it
+	// ("end_turn", "max_tokens", "tool_use", "refusal", ...; "length" on an
+	// OpenAI-compatible wire). Carried because a response cut off at the
+	// output ceiling is otherwise indistinguishable from a model that wrote
+	// malformed output, and the two need opposite fixes — raise the cap vs.
+	// repair the prompt. Callers that parse the content should check
+	// Truncated() before blaming the model.
+	StopReason string
+
+	// MaxTokensAsked is the output budget the call actually requested, which
+	// is not always the one the caller passed: the adaptive
+	// context-overflow retry lowers it mid-call. A caller diagnosing a
+	// truncation against its own number would name a ceiling that was never
+	// in force, and therefore the wrong remedy.
+	MaxTokensAsked int
+
+	// BudgetReducedBy names the limit that made the adaptive retry lower
+	// MaxTokensAsked, or OverflowNone when no retry happened. The two causes
+	// have different remedies — a larger context window versus a larger
+	// output cap — and the reduced budget alone cannot tell them apart.
+	BudgetReducedBy OverflowCause
+}
+
+// Truncated reports whether generation stopped because it hit the output
+// ceiling, rather than because the model finished.
+//
+// Both spellings are accepted: the Anthropic wire says "max_tokens", the
+// OpenAI-compatible wire (and the managed gateway, which translates for it)
+// says "length".
+func (r *ChatResult) Truncated() bool {
+	if r == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(r.StopReason)) {
+	case "max_tokens", "length":
+		return true
+	}
+	return false
 }
 
 // Chat sends a user prompt with an optional system prompt and returns the full result.
 func (c *Client) Chat(ctx context.Context, userPrompt string, systemPrompt string, maxTokens int) (*ChatResult, error) {
 	start := time.Now()
 	messages := []gollm.Message{{Role: "user", Content: userPrompt}}
-	resp, err := c.CreateMessage(ctx, messages, systemPrompt, maxTokens)
+	resp, effectiveMax, reducedBy, err := c.createMessage(ctx, messages, systemPrompt, maxTokens, nil, "", nil)
 	if err != nil {
 		return nil, err
 	}
 	return &ChatResult{
-		Content:    resp.Content,
-		TokensIn:   resp.Usage.InputTokens,
-		TokensOut:  resp.Usage.OutputTokens,
-		DurationMs: time.Since(start).Milliseconds(),
+		Content:         resp.Content,
+		TokensIn:        resp.Usage.InputTokens,
+		TokensOut:       resp.Usage.OutputTokens,
+		DurationMs:      time.Since(start).Milliseconds(),
+		StopReason:      resp.StopReason,
+		MaxTokensAsked:  effectiveMax,
+		BudgetReducedBy: reducedBy,
 	}, nil
 }
 
@@ -118,7 +160,8 @@ func (c *Client) CreateMessage(ctx context.Context, messages []gollm.Message, sy
 // is false reject a non-empty tools slice with gollm.ErrToolsNotSupported, so
 // callers must gate on tool support before passing tools.
 func (c *Client) CreateMessageWithTools(ctx context.Context, messages []gollm.Message, systemPrompt string, maxTokens int, tools []gollm.ToolDefinition, toolChoice string) (*gollm.ChatResponse, error) {
-	return c.createMessage(ctx, messages, systemPrompt, maxTokens, tools, toolChoice, nil)
+	resp, _, _, err := c.createMessage(ctx, messages, systemPrompt, maxTokens, tools, toolChoice, nil)
+	return resp, err
 }
 
 // createMessage is the single low-level LLM call: it builds the request
@@ -126,24 +169,44 @@ func (c *Client) CreateMessageWithTools(ctx context.Context, messages []gollm.Me
 // transient upstream failures, and records observability. All public Chat /
 // CreateMessage* helpers funnel through here so retry, usage accounting, and
 // debug logging behave identically regardless of tools or structured output.
-func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, systemPrompt string, maxTokens int, tools []gollm.ToolDefinition, toolChoice string, format *gollm.ResponseFormat) (*gollm.ChatResponse, error) {
+// Returns the budget it actually requested alongside the response: the
+// adaptive context-overflow retry lowers max_tokens mid-call, and a caller
+// diagnosing a truncation against the budget it ASKED for would name the
+// wrong ceiling — and so the wrong remedy.
+func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, systemPrompt string, maxTokens int, tools []gollm.ToolDefinition, toolChoice string, format *gollm.ResponseFormat) (*gollm.ChatResponse, int, OverflowCause, error) {
+	// Which limit, if any, made the adaptive retry lower the budget. Recorded
+	// before the retry re-issues, because the error that explains it is the
+	// one we are retrying — the retry's own error, if it fails again, may
+	// name a different limit.
+	budgetReducedBy := OverflowNone
 	startTime := time.Now()
 
 	if c.testMode {
 		c.savePrompt(messages, systemPrompt)
 	}
 
-	if maxTokens == 0 {
-		maxTokens = 4096
+	// No budget from the caller means "as much as this model allows", not a
+	// fixed number: a literal default here is invisible to every caller and
+	// silently truncates whichever model outgrows it. Providers clamp this
+	// to the real ceiling, and the adaptive context-overflow retry is the net
+	// if the window cannot hold prompt + output.
+	if maxTokens <= 0 {
+		maxTokens = gollm.GetMaxOutputTokens(c.providerName, c.model)
 	}
 
 	// Reasoning is opt-in: default leaves ReasoningEffortDefault (""), which
-	// every provider ignores (byte-identical to today). When the operator
-	// enabled reasoning, request it explicitly — only Ollama acts on it, and
-	// only after confirming the model supports thinking.
+	// every provider ignores.
+	//
+	// When this layer's model does reason, resolve the effort to a CONCRETE
+	// level here rather than sending the "on" sentinel. "on" means "reason, I
+	// don't mind how much", which each provider resolves for itself — but the
+	// OpenAI-compatible wire has no way to express it and omits the field, so
+	// behind a managed gateway the deployment's override never left this
+	// process and the gateway applied its own default instead. A named level
+	// travels.
 	reasoningEffort := gollm.ReasoningEffortDefault
 	if c.reasoning {
-		reasoningEffort = gollm.ReasoningEffortOn
+		reasoningEffort = gollm.ResolveReasoningEffort(gollm.ReasoningEffortOn)
 	}
 
 	req := gollm.ChatRequest{
@@ -184,6 +247,7 @@ func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, sy
 				"new_max_tokens": nm,
 			}).Warn("LLM context-length overflow; retrying once with reduced max_tokens")
 			req.MaxTokens = nm
+			budgetReducedBy = overflowCauseFor(err)
 			resp, err = chatWithRetry(ctx, c.provider, req)
 			// The retry may fail with a *different* over-limit shape that finally
 			// names the true window — e.g. an output-cap-only first 400 whose
@@ -217,7 +281,7 @@ func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, sy
 				systemPrompt, promptContent, "", usage.InputTokens, usage.OutputTokens,
 				latencyMs, err)
 		}
-		return nil, err
+		return nil, req.MaxTokens, budgetReducedBy, err
 	}
 
 	logger.WithFields(logger.Fields{
@@ -239,10 +303,10 @@ func (c *Client) createMessage(ctx context.Context, messages []gollm.Message, sy
 	// conversation is refused again, so surface it as an error instead of
 	// an empty reply the caller would re-ask or try to parse.
 	if resp.StopReason == gollm.StopReasonRefusal {
-		return nil, fmt.Errorf("%w (model %s, phase %q)", ErrModelRefused, c.model, c.currentPhase)
+		return nil, req.MaxTokens, budgetReducedBy, fmt.Errorf("%w (model %s, phase %q)", ErrModelRefused, c.model, c.currentPhase)
 	}
 
-	return resp, nil
+	return resp, req.MaxTokens, budgetReducedBy, nil
 }
 
 // SupportsStructuredOutput reports whether the active provider honours
@@ -266,7 +330,8 @@ func (c *Client) CreateMessageWithFormat(ctx context.Context, messages []gollm.M
 	if format != nil && !c.SupportsStructuredOutput() {
 		format = nil
 	}
-	return c.createMessage(ctx, messages, systemPrompt, maxTokens, nil, "", format)
+	resp, _, _, err := c.createMessage(ctx, messages, systemPrompt, maxTokens, nil, "", format)
+	return resp, err
 }
 
 // ChatWithFormat is Chat with structured output — the single-prompt convenience
@@ -274,15 +339,21 @@ func (c *Client) CreateMessageWithFormat(ctx context.Context, messages []gollm.M
 func (c *Client) ChatWithFormat(ctx context.Context, userPrompt string, systemPrompt string, maxTokens int, format *gollm.ResponseFormat) (*ChatResult, error) {
 	start := time.Now()
 	messages := []gollm.Message{{Role: "user", Content: userPrompt}}
-	resp, err := c.CreateMessageWithFormat(ctx, messages, systemPrompt, maxTokens, format)
+	if format != nil && !c.SupportsStructuredOutput() {
+		format = nil
+	}
+	resp, effectiveMax, reducedBy, err := c.createMessage(ctx, messages, systemPrompt, maxTokens, nil, "", format)
 	if err != nil {
 		return nil, err
 	}
 	return &ChatResult{
-		Content:    resp.Content,
-		TokensIn:   resp.Usage.InputTokens,
-		TokensOut:  resp.Usage.OutputTokens,
-		DurationMs: time.Since(start).Milliseconds(),
+		Content:         resp.Content,
+		TokensIn:        resp.Usage.InputTokens,
+		TokensOut:       resp.Usage.OutputTokens,
+		DurationMs:      time.Since(start).Milliseconds(),
+		StopReason:      resp.StopReason,
+		MaxTokensAsked:  effectiveMax,
+		BudgetReducedBy: reducedBy,
 	}, nil
 }
 

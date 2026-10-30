@@ -161,6 +161,11 @@ func (p *OpenAIProvider) Validate(ctx context.Context) error {
 
 // Chat sends a conversation to OpenAI and returns the response.
 func (p *OpenAIProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gollm.ChatResponse, error) {
+	// A model the catalog knows is not a reasoning model rejects
+	// reasoning_effort outright, so the field is dropped for those rather
+	// than turning a quality setting into a 400. A model the catalog does not
+	// know (a managed gateway's alias) keeps it — see NormalizeReasoningEffort.
+	req = gollm.NormalizeReasoningEffort(providerName, p.model, req)
 	body := openaicompat.BuildRequestBody(p.model, req)
 
 	jsonBody, err := json.Marshal(body)
