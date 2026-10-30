@@ -667,7 +667,7 @@ func TestKubernetesRunner_Run_OmitsQdrantEnvWhenUnset(t *testing.T) {
 }
 
 // TestKubernetesRunner_WatchJob_ExitsSilentlyOnExhaustion pins the
-// design rationale codex review rounds 10-13 surfaced: the watcher
+// design rationale review surfaced: the watcher
 // MUST exit silently when its window expires without observing a
 // terminal Job condition. Calling OnFailure from this exhaustion
 // path was found to corrupt already-completed and already-cancelled
@@ -718,7 +718,7 @@ func TestKubernetesRunner_WatchJob_ExitsSilentlyOnExhaustion(t *testing.T) {
 }
 
 // TestKubernetesRunner_Run_SetsActiveDeadlineSecondsFromJobTimeout verifies
-// the codex r8 [P2] fix: discovery Jobs now carry
+// a review fix: discovery Jobs now carry
 // ActiveDeadlineSeconds, so K8s actually enforces the documented
 // AGENT_JOB_TIMEOUT_HOURS wall-clock kill. Without this, the API's
 // watchJob() polls for the configured window and stops, but the pod

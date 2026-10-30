@@ -50,7 +50,8 @@ func requiredSet(t *testing.T, schema map[string]interface{}) map[string]bool {
 // minItemsOf returns a property's minItems, or 0 when it has none.
 func minItemsOf(t *testing.T, schema map[string]interface{}, name string) int {
 	t.Helper()
-	props, ok := schema["properties"].(map[string]interface{})
+	props := schemaProperties(schema["properties"])
+	ok := props != nil
 	if !ok {
 		t.Fatal("schema has no properties object")
 	}
@@ -143,7 +144,7 @@ func TestReflectionSchema_DemandIsAlsoInTheDescription(t *testing.T) {
 
 func descriptionOf(t *testing.T, schema map[string]interface{}, name string) string {
 	t.Helper()
-	props := schema["properties"].(map[string]interface{})
+	props := schemaProperties(schema["properties"])
 	prop, ok := props[name].(map[string]interface{})
 	if !ok {
 		t.Fatalf("schema has no property %q", name)
@@ -612,7 +613,7 @@ func TestReflectionSchema_OriginFindingIDsDemandedOnlyWithIDsToCopy(t *testing.T
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			schema := reflectionResponseSchema(agentplugin.EvolutionModeAuto, true, tc.hasFindingIDs)
-			props := schema["properties"].(map[string]interface{})
+			props := schemaProperties(schema["properties"])
 			item := schemaItemProps(t, props, "next_tasks")
 			if _, ok := item["origin_finding_ids"]; !ok {
 				t.Fatal("origin_finding_ids must always be declared, demanded or not")
@@ -634,7 +635,7 @@ func TestReflectionSchema_OriginFindingIDsDemandedOnlyWithIDsToCopy(t *testing.T
 // answer to a question that has none — so the requirement is a two-branch
 // condition on the item, not a blanket `required`.
 func TestReflectionSchema_ResolvedByOnlyAlongsideDone(t *testing.T) {
-	props := reflectionResponseSchema(agentplugin.EvolutionModeAuto, true, true)["properties"].(map[string]interface{})
+	props := schemaProperties(reflectionResponseSchema(agentplugin.EvolutionModeAuto, true, true)["properties"])
 	prop := props["task_status_updates"].(map[string]interface{})
 	item := prop["items"].(map[string]interface{})
 
@@ -654,7 +655,7 @@ func TestReflectionSchema_ResolvedByOnlyAlongsideDone(t *testing.T) {
 	var sawDoneDemand, sawDroppedExemption bool
 	for _, b := range branches {
 		branch := b.(map[string]interface{})
-		bp := branch["properties"].(map[string]interface{})
+		bp := schemaProperties(branch["properties"])
 		status := bp["status"].(map[string]interface{})["const"]
 		switch status {
 		case "done":
@@ -705,7 +706,7 @@ func TestReflectionSchema_ResolvedByOnlyAlongsideDone(t *testing.T) {
 // prompt there is nothing to point at on a `done` either, so the branch is left
 // out entirely rather than demanding an id the model would have to invent.
 func TestReflectionSchema_NoConditionWithoutIDsToCopy(t *testing.T) {
-	props := reflectionResponseSchema(agentplugin.EvolutionModeAuto, true, false)["properties"].(map[string]interface{})
+	props := schemaProperties(reflectionResponseSchema(agentplugin.EvolutionModeAuto, true, false)["properties"])
 	item := props["task_status_updates"].(map[string]interface{})["items"].(map[string]interface{})
 	if _, ok := item["oneOf"]; ok {
 		t.Error("a run with no finding ids must not carry the done/dropped condition")

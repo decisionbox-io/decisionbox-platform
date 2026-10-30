@@ -156,6 +156,81 @@ func TestForwardedEnv_ValidationConcurrency(t *testing.T) {
 	t.Error("VALIDATION_CONCURRENCY is not forwarded to every runner")
 }
 
+// TestForwardedEnv_AnalysisPhaseKnobs pins that the analysis phase's knobs reach
+// container-spawned agents, ANALYSIS_STRUCTURED_OUTPUT above all.
+//
+// That one is the rollback for sending the insight schema on the first analysis call, and a
+// rollback an operator cannot reach is not a rollback: on Docker and Kubernetes the agent
+// gets only what agentForwardedEnvKeys forwards, so setting it on the API deployment would
+// have changed nothing while appearing to. Subprocess agents inherit the API's environment,
+// which is exactly why the gap is invisible in a local stack.
+func TestForwardedEnv_AnalysisPhaseKnobs(t *testing.T) {
+	knobs := map[string]string{
+		"ANALYSIS_STRUCTURED_OUTPUT": "false",
+		"ANALYSIS_PARSE_MAX_RETRIES": "2",
+		// The third of the same kind, and the one with the sharpest consequence:
+		// `0` is the documented way to switch the corrective rewrite off, so an
+		// operator who does not want that model call made was still having it made.
+		"ANALYSIS_REPAIR_MAX_ROUNDS": "0",
+	}
+	for k, v := range knobs {
+		t.Setenv(k, v)
+	}
+
+	found := map[string]string{}
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys) {
+		found[kv.Key] = kv.Value
+	}
+	for k, want := range knobs {
+		if found[k] != want {
+			t.Errorf("%s not forwarded to every runner: got %q, want %q; an operator setting it "+
+				"on the API would see no change in a containerised agent", k, found[k], want)
+		}
+	}
+
+	counts := map[string]int{}
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys, dockerAgentExtraEnvKeys) {
+		counts[kv.Key]++
+	}
+	for k := range knobs {
+		if counts[k] != 1 {
+			t.Errorf("%s forwarded %d times by the Docker runner, want 1", k, counts[k])
+		}
+	}
+}
+
+// TestForwardedEnv_DiscoveryTrace pins that the evidence-chain switch reaches agent
+// containers.
+//
+// DISCOVERY_TRACE is read once at package init inside the agent, and it is what an operator
+// turns on after a shipped finding turns out to be wrong -- to see which rows each claim
+// rested on. Unforwarded, the one deployment shape where that question gets asked in anger
+// is the one where the answer is silence, and the variable looks set from the API's side.
+//
+// Asserted separately from the analysis knobs because it is not one: it gates diagnostics
+// across every phase, and filing it under a map named for the analysis phase would make the
+// next person look for it in the wrong place.
+func TestForwardedEnv_DiscoveryTrace(t *testing.T) {
+	t.Setenv("DISCOVERY_TRACE", "true")
+
+	found := map[string]string{}
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys) {
+		found[kv.Key] = kv.Value
+	}
+	if found["DISCOVERY_TRACE"] != "true" {
+		t.Errorf("DISCOVERY_TRACE not forwarded to every runner: got %q; a containerised agent "+
+			"would emit no evidence chain however the API is configured", found["DISCOVERY_TRACE"])
+	}
+
+	counts := map[string]int{}
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys, dockerAgentExtraEnvKeys) {
+		counts[kv.Key]++
+	}
+	if counts["DISCOVERY_TRACE"] != 1 {
+		t.Errorf("DISCOVERY_TRACE forwarded %d times by the Docker runner, want 1", counts["DISCOVERY_TRACE"])
+	}
+}
+
 // TestForwardedEnv_ReasoningEffort pins that the deployment's reasoning-effort
 // override reaches agent containers.
 //

@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
@@ -543,5 +544,142 @@ func TestBuildRefIndex_HandlesKeysWithoutDot(t *testing.T) {
 	idx := buildRefIndex(schemas)
 	if got := idx["singleton"]; got != "singleton" {
 		t.Errorf("dot-less key should index to itself, got %q", got)
+	}
+}
+
+// wideTableSchemas builds one table with `n` columns whose sample rows carry a
+// value for every column — the shape every SAP / Dynamics style warehouse
+// produces, where a document table has 300-450 columns.
+func wideTableSchemas(n int) map[string]models.TableSchema {
+	cols := make([]models.ColumnInfo, 0, n)
+	row := make(map[string]interface{}, n)
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("col_%03d", i)
+		cols = append(cols, models.ColumnInfo{Name: name, Type: "NVARCHAR"})
+		row[name] = i
+	}
+	return map[string]models.TableSchema{
+		"dbo.wide": {
+			TableName:  "dbo.wide",
+			RowCount:   42,
+			Columns:    cols,
+			SampleData: []map[string]interface{}{row, row, row},
+		},
+	}
+}
+
+// A lookup caps the columns it returns; the sample rows must describe that same
+// column set. Before this was enforced, formatLookupRow re-emitted every column
+// name once per row, which was ~90% of the rendered result on a 441-column table
+// and handed the model values for columns it was never shown.
+func TestCacheSchemaProvider_Lookup_SampleRowsProjectedOntoShownColumns(t *testing.T) {
+	p, err := NewCacheSchemaProvider(CacheSchemaProviderOptions{
+		Schemas:     wideTableSchemas(120),
+		ColumnLimit: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := p.Lookup(context.Background(), []string{"dbo.wide"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Tables) != 1 {
+		t.Fatalf("got %d tables, want 1", len(res.Tables))
+	}
+	tbl := res.Tables[0]
+	if len(tbl.Columns) != 10 {
+		t.Fatalf("Columns = %d, want 10 (the cap)", len(tbl.Columns))
+	}
+	shown := make(map[string]struct{}, len(tbl.Columns))
+	for _, c := range tbl.Columns {
+		shown[c.Name] = struct{}{}
+	}
+	if len(tbl.SampleRows) != 3 {
+		t.Fatalf("SampleRows = %d, want 3", len(tbl.SampleRows))
+	}
+	for i, r := range tbl.SampleRows {
+		if len(r) != len(shown) {
+			t.Errorf("SampleRows[%d] carries %d keys, want %d — a row must not "+
+				"re-emit columns the lookup did not return", i, len(r), len(shown))
+		}
+		for k := range r {
+			if _, ok := shown[k]; !ok {
+				t.Errorf("SampleRows[%d] has key %q, which is not among the returned columns", i, k)
+			}
+		}
+	}
+}
+
+// A table with no column metadata still shows its rows: the formatter has its
+// own "(no column metadata available)" branch and prints the samples beneath it,
+// so projecting onto an empty column set must not blank them.
+func TestCacheSchemaProvider_Lookup_SampleRowsKeptWithoutColumnMetadata(t *testing.T) {
+	p, _ := NewCacheSchemaProvider(CacheSchemaProviderOptions{
+		Schemas: map[string]models.TableSchema{
+			"dbo.nocols": {
+				TableName:  "dbo.nocols",
+				RowCount:   7,
+				SampleData: []map[string]interface{}{{"a": 1, "b": 2}},
+			},
+		},
+	})
+	res, _ := p.Lookup(context.Background(), []string{"dbo.nocols"})
+	if len(res.Tables) != 1 {
+		t.Fatalf("got %d tables, want 1", len(res.Tables))
+	}
+	if got := len(res.Tables[0].SampleRows); got != 1 {
+		t.Fatalf("SampleRows = %d, want 1", got)
+	}
+	if got := len(res.Tables[0].SampleRows[0]); got != 2 {
+		t.Errorf("row carries %d keys, want 2 — rows must survive a table with no declared columns", got)
+	}
+}
+
+// A provider whose sample keys do not correspond to its column names (no
+// overlap at all) keeps today's behaviour rather than showing an empty row.
+func TestCacheSchemaProvider_Lookup_SampleRowsKeptWhenNoKeyOverlap(t *testing.T) {
+	p, _ := NewCacheSchemaProvider(CacheSchemaProviderOptions{
+		Schemas: map[string]models.TableSchema{
+			"dbo.mismatch": {
+				TableName:  "dbo.mismatch",
+				Columns:    []models.ColumnInfo{{Name: "a", Type: "INT"}},
+				SampleData: []map[string]interface{}{{"x": 1, "y": 2}},
+			},
+		},
+	})
+	res, _ := p.Lookup(context.Background(), []string{"dbo.mismatch"})
+	if got := len(res.Tables[0].SampleRows[0]); got != 2 {
+		t.Errorf("row carries %d keys, want 2 — a no-overlap row must not be blanked", got)
+	}
+}
+
+// Sample keys that differ from the declared column only by case are the same
+// column (BigQuery/Snowflake casing differences reach us this way), so they are
+// kept rather than dropped as unknown.
+func TestCacheSchemaProvider_Lookup_SampleRowKeyCaseInsensitive(t *testing.T) {
+	p, _ := NewCacheSchemaProvider(CacheSchemaProviderOptions{
+		Schemas: map[string]models.TableSchema{
+			"dbo.cased": {
+				TableName: "dbo.cased",
+				Columns: []models.ColumnInfo{
+					{Name: "DocNum", Type: "INT"},
+					{Name: "CardCode", Type: "NVARCHAR"},
+				},
+				SampleData: []map[string]interface{}{{"docnum": 5, "CARDCODE": "C1", "Dropped": 9}},
+			},
+		},
+		ColumnLimit: 2,
+	})
+	res, _ := p.Lookup(context.Background(), []string{"dbo.cased"})
+	row := res.Tables[0].SampleRows[0]
+	if len(row) != 2 {
+		t.Fatalf("row carries %d keys, want 2 (case-insensitive match, unknown key dropped): %v", len(row), row)
+	}
+	if _, ok := row["docnum"]; !ok {
+		t.Errorf("lowercase key for DocNum should be kept, got %v", row)
+	}
+	if _, ok := row["Dropped"]; ok {
+		t.Errorf("key not matching any returned column should be dropped, got %v", row)
 	}
 }
