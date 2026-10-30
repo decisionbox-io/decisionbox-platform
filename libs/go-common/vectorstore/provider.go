@@ -12,10 +12,18 @@ type Provider interface {
 	// Search finds vectors similar to the query vector, with optional filters.
 	Search(ctx context.Context, vector []float64, opts SearchOpts) ([]SearchResult, error)
 
-	// FindDuplicates searches for existing vectors above the similarity threshold.
+	// FindDuplicates searches for existing vectors above the similarity
+	// threshold.
+	//
+	// excludeDiscoveryIDs is a SET rather than a single id because a run can
+	// produce more than one discovery: a resumed run's superseded attempts
+	// each left one behind, and those are retired at the new attempt's tail —
+	// after this check runs. Matching against them would mark the live
+	// result a duplicate of a row that is about to be deleted. A run with one
+	// attempt passes its own id alone, which is what this always did.
 	// Used during indexing to flag near-duplicate insights/recommendations across discovery runs.
 	// Filters by projectID and docType ("insight"/"recommendation"), excludes current discoveryID.
-	FindDuplicates(ctx context.Context, vector []float64, projectID string, docType string, excludeDiscoveryID string, threshold float64) ([]SearchResult, error)
+	FindDuplicates(ctx context.Context, vector []float64, projectID string, docType string, excludeDiscoveryIDs []string, threshold float64) ([]SearchResult, error)
 
 	// Delete removes vectors by ID.
 	Delete(ctx context.Context, ids []string) error

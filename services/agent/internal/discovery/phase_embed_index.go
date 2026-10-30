@@ -39,9 +39,43 @@ func (o *Orchestrator) runPhaseEmbedIndex(ctx context.Context, result *models.Di
 		return
 	}
 
-	if err := o.embedAndIndex(ctx, insights, recs); err != nil {
+	if err := o.embedAndIndex(ctx, insights, recs, o.dedupExclusions(ctx, result.ID)); err != nil {
 		applog.WithError(err).Error("Phase 9: Embedding/indexing failed (non-fatal)")
 	}
+}
+
+// dedupExclusions is the set of discovery ids the duplicate check must
+// ignore: this discovery, and every other one this RUN produced.
+//
+// The second half is what a resumed run needs. Its superseded attempts each
+// left a discovery behind, and those are retired at THIS attempt's tail —
+// after the duplicate check has already run, because the retire step
+// deliberately writes the new result before removing the old one. Without
+// the exclusion a restored finding matches its own predecessor (identical
+// text, so a score of 1.0) and is stamped `duplicate_of` a row that is
+// deleted a few lines later.
+//
+// A no-op on a run with one attempt: ListByRun returns that run's single
+// discovery, which is the id being excluded anyway. Best-effort — a failed
+// read falls back to excluding this discovery alone, which is exactly the
+// behaviour this replaced.
+func (o *Orchestrator) dedupExclusions(ctx context.Context, discoveryID string) []string {
+	exclusions := []string{discoveryID}
+	if o.discoveryRepo == nil || o.runID == "" {
+		return exclusions
+	}
+	refs, err := o.discoveryRepo.ListByRun(ctx, o.runID)
+	if err != nil {
+		applog.WithError(err).WithField("run_id", o.runID).
+			Warn("could not list this run's discoveries; a restored finding may be marked a duplicate of a superseded attempt's row")
+		return exclusions
+	}
+	for _, ref := range refs {
+		if ref.ID != "" && ref.ID != discoveryID {
+			exclusions = append(exclusions, ref.ID)
+		}
+	}
+	return exclusions
 }
 
 // denormalizeInsights converts discovery result insights to standalone documents.
@@ -142,7 +176,7 @@ func (o *Orchestrator) saveStandaloneDocuments(ctx context.Context, insights []*
 }
 
 // embedAndIndex embeds documents and upserts vectors to Qdrant.
-func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmodels.StandaloneInsight, recs []*commonmodels.StandaloneRecommendation) error {
+func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmodels.StandaloneInsight, recs []*commonmodels.StandaloneRecommendation, dedupExcludes []string) error {
 	// Resolve the dimension robustly — the provider's declared size when it
 	// knows it, else a probe embedding — so a model the catalog doesn't know
 	// (e.g. the decisionbox-embed-model gateway alias, which reports 0) sizes
@@ -207,7 +241,7 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 		}
 
 		// Deduplication check
-		o.checkAndMarkDuplicate(ctx, ins.ID, vec, ins.ProjectID, "insight", ins.DiscoveryID)
+		o.checkAndMarkDuplicate(ctx, ins.ID, vec, ins.ProjectID, "insight", dedupExcludes)
 
 		points = append(points, vectorstore.Point{
 			ID:     ins.ID,
@@ -235,7 +269,7 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 		}
 
 		// Deduplication check
-		o.checkAndMarkDuplicate(ctx, rec.ID, vec, rec.ProjectID, "recommendation", rec.DiscoveryID)
+		o.checkAndMarkDuplicate(ctx, rec.ID, vec, rec.ProjectID, "recommendation", dedupExcludes)
 
 		points = append(points, vectorstore.Point{
 			ID:     rec.ID,
@@ -267,8 +301,8 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 }
 
 // checkAndMarkDuplicate searches for near-duplicate vectors and marks the document.
-func (o *Orchestrator) checkAndMarkDuplicate(ctx context.Context, docID string, vec []float64, projectID, docType, discoveryID string) {
-	results, err := o.vectorStore.FindDuplicates(ctx, vec, projectID, docType, discoveryID, 0.95)
+func (o *Orchestrator) checkAndMarkDuplicate(ctx context.Context, docID string, vec []float64, projectID, docType string, excludeDiscoveryIDs []string) {
+	results, err := o.vectorStore.FindDuplicates(ctx, vec, projectID, docType, excludeDiscoveryIDs, 0.95)
 	if err != nil {
 		applog.WithError(err).WithField("id", docID).Warn("Duplicate check failed")
 		return

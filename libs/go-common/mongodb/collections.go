@@ -44,6 +44,32 @@ const (
 	// a resumable prefix and deletes the rows on cancel.
 	CollectionDiscoveryCheckpoints = "discovery_checkpoints"
 
+	// CollectionDiscoveryAnalysisCheckpoints holds one document per
+	// COMPLETED analysis area of an in-flight run: the area's whole
+	// analysis step, insights and validation results. It is the sibling of
+	// CollectionDiscoveryCheckpoints one phase further on — exploration
+	// durability lets a resumed run skip Phase 3, and these rows let it
+	// skip the analysis areas a previous attempt already finished.
+	//
+	// A separate collection rather than another `kind` in
+	// discovery_checkpoints, because that collection's unique index is
+	// (run_id, step_number) and an area has no step number — and because
+	// both of its readers scan every row of a run in step order and end
+	// the replayable prefix at the first unexpected number. Mixing a
+	// second row kind into that scan would put those invariants at risk
+	// for nothing; a sibling collection reuses the pattern and leaves
+	// them alone.
+	//
+	// Deliberately NOT discovery_analysis_steps, which is the
+	// tail-written audit log keyed by discovery_id and read by the
+	// dashboard. These rows are keyed by (run_id, area_id), exist only
+	// while a run is in flight, and are deleted once the run reaches a
+	// terminal-and-not-resumable outcome (a TTL is the backstop).
+	//
+	// The agent (writer) owns the shape; the api only purges the rows
+	// when a run is cancelled or discarded.
+	CollectionDiscoveryAnalysisCheckpoints = "discovery_analysis_checkpoints"
+
 	// CollectionDiscoveryQuestions holds the clarifying questions the agent
 	// generates at the end of a run when it was uncertain about something a
 	// business analyst could resolve. The agent (writer) inserts rows; the
@@ -80,4 +106,3 @@ const (
 // Shared here rather than in either module, because two modules agreeing on a
 // field name by copying it is how they come to disagree on it.
 const ReflectingKey = "reflecting"
-

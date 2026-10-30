@@ -231,7 +231,7 @@ func (p *Provider) Search(ctx context.Context, vector []float64, opts vectorstor
 }
 
 // FindDuplicates searches for existing vectors above the similarity threshold.
-func (p *Provider) FindDuplicates(ctx context.Context, vector []float64, projectID string, docType string, excludeDiscoveryID string, threshold float64) ([]vectorstore.SearchResult, error) {
+func (p *Provider) FindDuplicates(ctx context.Context, vector []float64, projectID string, docType string, excludeDiscoveryIDs []string, threshold float64) ([]vectorstore.SearchResult, error) {
 	if len(vector) == 0 {
 		return nil, fmt.Errorf("qdrant: duplicate search vector is empty")
 	}
@@ -239,14 +239,23 @@ func (p *Provider) FindDuplicates(ctx context.Context, vector []float64, project
 	name := collectionName(len(vector))
 	scoreThreshold := float32(threshold)
 
+	// Excluded in the FILTER rather than by discarding matches afterwards:
+	// the query asks for a single best match, so a post-filter would turn an
+	// excluded hit into no hit at all instead of the next genuine duplicate.
+	mustNot := make([]*pb.Condition, 0, len(excludeDiscoveryIDs))
+	for _, id := range excludeDiscoveryIDs {
+		if id == "" {
+			continue
+		}
+		mustNot = append(mustNot, pb.NewMatch("discovery_id", id))
+	}
+
 	filter := &pb.Filter{
 		Must: []*pb.Condition{
 			pb.NewMatch("project_id", projectID),
 			pb.NewMatch("type", docType),
 		},
-		MustNot: []*pb.Condition{
-			pb.NewMatch("discovery_id", excludeDiscoveryID),
-		},
+		MustNot: mustNot,
 	}
 
 	dupLimit := uint64(1)

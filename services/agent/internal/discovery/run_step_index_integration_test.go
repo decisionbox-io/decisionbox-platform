@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	pb "github.com/qdrant/go-client/qdrant"
 	"github.com/testcontainers/testcontainers-go"
@@ -23,6 +24,21 @@ import (
 
 // startRunStepQdrant boots a fresh Qdrant testcontainer and returns
 // a pb.Client wired to it. Cleanup is registered via t.Cleanup.
+//
+// The readiness check is a real gRPC call, not just the open port, and the
+// difference is the whole reason this helper has one.
+//
+// Qdrant BINDS 6334 before its gRPC service can serve on it, so
+// wait.ForListeningPort returns while a dialling client still gets
+// "error reading server preface: connection reset by peer" — a handshake
+// failure, not a refused connection, which is why it surfaces as an opaque
+// Unavailable from whatever call the test happens to make first. It is
+// timing-dependent, so it hits a different test each run and reads like a
+// bug in whichever one lost. Seen on roughly a third of CI runs once this
+// package's integration tests started running there.
+//
+// Same lesson as #425 ("wait for LiteLLM's TLS listener, not just its open
+// port"): wait for the protocol you are about to speak.
 func startRunStepQdrant(t *testing.T) *pb.Client {
 	t.Helper()
 	ctx := context.Background()
@@ -46,8 +62,42 @@ func startRunStepQdrant(t *testing.T) *pb.Client {
 		t.Fatalf("pb.NewClient: %v", err)
 	}
 	t.Cleanup(func() { _ = client.Close() })
+
+	waitForQdrantGRPC(t, client)
 	return client
 }
+
+// waitForQdrantGRPC blocks until the server answers a real gRPC call, or
+// fails the test. See startRunStepQdrant for why the open port is not
+// enough.
+func waitForQdrantGRPC(t *testing.T, client *pb.Client) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), qdrantReadyTimeout)
+	defer cancel()
+
+	var lastErr error
+	for {
+		if _, err := client.HealthCheck(ctx); err == nil {
+			return
+		} else {
+			lastErr = err
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("qdrant gRPC never became ready within %s: %v", qdrantReadyTimeout, lastErr)
+		case <-time.After(qdrantReadyPoll):
+		}
+	}
+}
+
+const (
+	// qdrantReadyTimeout bounds the wait for the gRPC service. Generous
+	// because a cold CI runner pulling and booting the image is slow, and
+	// the cost of being wrong in this direction is a slower failure rather
+	// than a flaky pass.
+	qdrantReadyTimeout = 60 * time.Second
+	qdrantReadyPoll    = 100 * time.Millisecond
+)
 
 // fixedDimEmbedder hashes the input text into a deterministic
 // unit vector. Two identical texts hash to the same vector;

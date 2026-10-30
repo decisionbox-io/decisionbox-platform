@@ -307,7 +307,7 @@ func TestIntegrationFindDuplicates(t *testing.T) {
 	}
 
 	// Search for duplicates from discovery-2 with same vector
-	results, err := testProvider.FindDuplicates(ctx, vec, projID, "insight", "disc-2", 0.95)
+	results, err := testProvider.FindDuplicates(ctx, vec, projID, "insight", []string{"disc-2"}, 0.95)
 	if err != nil {
 		t.Fatalf("FindDuplicates failed: %v", err)
 	}
@@ -322,7 +322,7 @@ func TestIntegrationFindDuplicates(t *testing.T) {
 	}
 
 	// Same discovery should be excluded
-	results, err = testProvider.FindDuplicates(ctx, vec, projID, "insight", "disc-1", 0.95)
+	results, err = testProvider.FindDuplicates(ctx, vec, projID, "insight", []string{"disc-1"}, 0.95)
 	if err != nil {
 		t.Fatalf("FindDuplicates with exclusion failed: %v", err)
 	}
@@ -330,8 +330,40 @@ func TestIntegrationFindDuplicates(t *testing.T) {
 		t.Fatalf("expected 0 results (same discovery excluded), got %d", len(results))
 	}
 
+	// Several discoveries excluded at once — what a resumed run passes, so
+	// its own superseded attempts cannot come back as duplicates of the
+	// result it is about to save.
+	results, err = testProvider.FindDuplicates(ctx, vec, projID, "insight",
+		[]string{"disc-2", "disc-1", "disc-3"}, 0.95)
+	if err != nil {
+		t.Fatalf("FindDuplicates with several exclusions failed: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results when the matching discovery is one of several excluded, got %d", len(results))
+	}
+
+	// And an exclusion set that does NOT name the match still finds it, so
+	// the widening cannot quietly suppress genuine duplicates.
+	results, err = testProvider.FindDuplicates(ctx, vec, projID, "insight",
+		[]string{"disc-2", "disc-3"}, 0.95)
+	if err != nil {
+		t.Fatalf("FindDuplicates with unrelated exclusions failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result when the match is not excluded, got %d", len(results))
+	}
+
+	// An empty set excludes nothing rather than everything.
+	results, err = testProvider.FindDuplicates(ctx, vec, projID, "insight", nil, 0.95)
+	if err != nil {
+		t.Fatalf("FindDuplicates with no exclusions failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result with no exclusions, got %d", len(results))
+	}
+
 	// Different project should not match
-	results, err = testProvider.FindDuplicates(ctx, vec, "proj-other", "insight", "disc-2", 0.95)
+	results, err = testProvider.FindDuplicates(ctx, vec, "proj-other", "insight", []string{"disc-2"}, 0.95)
 	if err != nil {
 		t.Fatalf("FindDuplicates for different project failed: %v", err)
 	}
@@ -340,7 +372,7 @@ func TestIntegrationFindDuplicates(t *testing.T) {
 	}
 
 	// Different type should not match
-	results, err = testProvider.FindDuplicates(ctx, vec, projID, "recommendation", "disc-2", 0.95)
+	results, err = testProvider.FindDuplicates(ctx, vec, projID, "recommendation", []string{"disc-2"}, 0.95)
 	if err != nil {
 		t.Fatalf("FindDuplicates for different type failed: %v", err)
 	}
@@ -350,7 +382,7 @@ func TestIntegrationFindDuplicates(t *testing.T) {
 
 	// Dissimilar vector should not exceed threshold
 	dissimilarVec := makeVector(dims, -0.5)
-	results, err = testProvider.FindDuplicates(ctx, dissimilarVec, projID, "insight", "disc-2", 0.95)
+	results, err = testProvider.FindDuplicates(ctx, dissimilarVec, projID, "insight", []string{"disc-2"}, 0.95)
 	if err != nil {
 		t.Fatalf("FindDuplicates with dissimilar vector failed: %v", err)
 	}

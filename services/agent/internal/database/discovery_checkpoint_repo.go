@@ -402,6 +402,11 @@ func (r *DiscoveryCheckpointRepository) LoadPrefix(ctx context.Context, runID st
 				CompletionMsg: doc.CompletionMsg,
 				TotalSteps:    doc.TotalSteps,
 				Duration:      time.Duration(doc.DurationMs) * time.Millisecond,
+				// Carried out of the loop so a resumed run can say WHICH
+				// exploration it is about to analyse over. The per-area
+				// analysis checkpoints are filtered on it; see
+				// models.AnalysisAreaCheckpoint.
+				Attempt: doc.Attempt,
 			}
 			summaryAttempt = doc.Attempt
 			continue
