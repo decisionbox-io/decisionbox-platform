@@ -126,7 +126,13 @@ func TestNewAgentStillRunsBothModesOnOneClient(t *testing.T) {
 func TestCfgForIsUntouchedByTheClientSplit(t *testing.T) {
 	// The split touches client selection only: the per-mode spend envelope,
 	// the prompts and the loop are the same.
+	//
+	// The expectation is resolved the way the constructor resolves it: a
+	// DefaultConfig leaves the output ceilings at zero for the caller to fill
+	// from the model, and NewAgent falls back for a caller that does not. The
+	// comparison is against that resolved envelope, not the literal zeros.
 	cfg := DefaultConfig()
+	cfg.ApplyModelOutputCaps(0, 0)
 	a, err := NewAgentPerMode(nil, &namedLLM{reply: submitVerdict}, cfg)
 	if err != nil {
 		t.Fatalf("NewAgentPerMode: %v", err)

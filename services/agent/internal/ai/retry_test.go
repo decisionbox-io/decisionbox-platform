@@ -601,10 +601,10 @@ func TestIsRetryableLLMError_5xxRange(t *testing.T) {
 // the message (timeouts, byte counts, etc.).
 func TestExtractHTTPStatus(t *testing.T) {
 	cases := []struct {
-		name    string
-		msg     string
-		want    int
-		wantOK  bool
+		name   string
+		msg    string
+		want   int
+		wantOK bool
 	}{
 		{"status_form", "vertex-ai/google-native: API error (status 499): cancelled", 499, true},
 		{"paren_form", "openai: API error (429): rate limit", 429, true},
@@ -782,8 +782,8 @@ func TestBackoffDuration_OverflowProtection(t *testing.T) {
 // Caught by Codex round 3 of PR #234's review.
 func TestBackoffDuration_FirstAttemptApproximatesBase(t *testing.T) {
 	const base = 5 * time.Second
-	low := base * 3 / 4         // 3.75s — inclusive lower bound
-	high := base + base/4 - 1   // 6.25s minus one ns — exclusive upper
+	low := base * 3 / 4       // 3.75s — inclusive lower bound
+	high := base + base/4 - 1 // 6.25s minus one ns — exclusive upper
 
 	// Run several times so the jitter distribution is actually
 	// exercised. A single sample could happen to land near the

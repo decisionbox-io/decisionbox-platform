@@ -40,6 +40,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.41.0
 	go.mongodb.org/mongo-driver v1.17.9
 	go.uber.org/zap v1.27.1
+	golang.org/x/text v0.42.0
 	google.golang.org/api v0.265.0
 	google.golang.org/grpc v1.83.2
 )
@@ -198,7 +199,6 @@ require (
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260811182544-a038080d80e5 // indirect
 	golang.org/x/term v0.46.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 	golang.org/x/tools v0.49.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect

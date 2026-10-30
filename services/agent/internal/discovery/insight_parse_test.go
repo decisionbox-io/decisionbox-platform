@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
@@ -217,16 +218,22 @@ func TestAnalyzeArea_OneBadItemNoRetry(t *testing.T) {
 // --- schema drift guard (R2) ---
 
 func TestInsightSchema_MatchesStructTags(t *testing.T) {
+	// Two struct declarations compared directly, now that the schema's properties are one.
+	// This used to walk the marshalled schema to recover the names; reflecting over
+	// insightItemProperties reads the same names from the place they are written, and
+	// cannot drift from what the schema actually sends.
 	insTags := jsonTagSet(reflect.TypeOf(models.Insight{}))
-
-	schema := insightResponseSchema()
-	props := schema["properties"].(map[string]interface{})
-	insItems := props["insights"].(map[string]interface{})["items"].(map[string]interface{})
-	insProps := insItems["properties"].(map[string]interface{})
+	insProps := jsonTagSet(reflect.TypeOf(insightItemProperties{}))
 
 	for k := range insProps {
 		if !insTags[k] {
 			t.Errorf("schema insight property %q has no matching json tag on models.Insight", k)
+		}
+	}
+	// The repair schema is a second declaration of the same object and drifts the same way.
+	for k := range jsonTagSet(reflect.TypeOf(insightRepairItemProperties{})) {
+		if !insTags[k] {
+			t.Errorf("repair schema property %q has no matching json tag on models.Insight", k)
 		}
 	}
 	// Server-assigned / internal fields must never appear in the generation contract.
@@ -235,4 +242,44 @@ func TestInsightSchema_MatchesStructTags(t *testing.T) {
 			t.Errorf("schema must not expose internal field %q to the model", internal)
 		}
 	}
+}
+
+// TestInsightSchema_DescribesEveryArrayTheContractsAskFor closes the direction
+// TestInsightSchema_MatchesStructTags does not check.
+//
+// That test walks schema properties and asserts each one exists on the struct, so it
+// catches a schema describing a field the model must not author. It cannot catch the
+// reverse, and the reverse happened: `figure_claims` was added to models.Insight, asked
+// for by name in a prose contract appended to every analysis prompt, and never
+// described in the JSON schema. With Strict false the model could still emit it, and
+// did -- but the schema is the strongest shape signal it gets, and a key asked for in
+// prose alone is a key it will under-produce.
+//
+// Driven off the contract text rather than a hand-written list, so a future contract
+// that asks for a new array fails here until the schema describes it.
+func TestInsightSchema_DescribesEveryArrayTheContractsAskFor(t *testing.T) {
+	insProps := insightSchemaProperties(t)
+
+	// Every top-level key a contract instructs the model to add to an insight.
+	asked := map[string]string{
+		"quantifier_claims": quantifierContract,
+		"figures":           figureContract,
+	}
+	for key, contract := range asked {
+		if !strings.Contains(contract, key) {
+			t.Fatalf("contract for %q no longer mentions it; this test's premise is stale", key)
+		}
+		if _, ok := insProps[key]; !ok {
+			t.Errorf("the analysis prompt asks the model for %q but the response schema does not describe it, "+
+				"so the model is asked in prose and unguided in structure", key)
+		}
+	}
+}
+
+func insightSchemaProperties(t *testing.T) map[string]interface{} {
+	t.Helper()
+	schema := insightResponseSchema()
+	props := schemaProperties(schema["properties"])
+	items := props["insights"].(map[string]interface{})["items"].(map[string]interface{})
+	return schemaProperties(items["properties"])
 }

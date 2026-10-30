@@ -371,8 +371,11 @@ func digestStep(s *agentmodels.ExplorationStep, cfg BundleConfig) SourceStepDige
 		sampled = append(sampled, normaliseRow(r, cfg.CellCharCap))
 	}
 	return SourceStepDigest{
-		StepID:       s.Step,
-		SQL:          s.Query,
+		StepID: s.Step,
+		// The statement that produced these rows. A repaired step
+		// kept the model's rejected proposal in Query, and pairing that with rows
+		// it never produced is what this bundle exists to prevent.
+		SQL:          s.EffectiveQuery(),
 		Reasoning:    s.Thinking,
 		Schema:       inferSchema(rows),
 		SampleRows:   sampled,

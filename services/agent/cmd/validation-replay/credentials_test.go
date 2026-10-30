@@ -10,6 +10,7 @@ import (
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation/verifier"
 	"go.mongodb.org/mongo-driver/bson"
 )
 
@@ -206,23 +207,29 @@ func TestReplayLayers_OnlyTheLayersThatWillBeCalled(t *testing.T) {
 // or Ollama does.
 type reportingProvider struct {
 	stubProvider
-	out int
-	err error
+	out       int
+	reasoning bool
+	err       error
 }
 
 func (p reportingProvider) ResolveModelInfo(context.Context, string) (gollm.ModelCapabilities, error) {
 	if p.err != nil {
 		return gollm.ModelCapabilities{}, p.err
 	}
-	return gollm.ModelCapabilities{MaxOutputTokens: p.out}, nil
+	return gollm.ModelCapabilities{MaxOutputTokens: p.out, Reasoning: p.reasoning}, nil
 }
 
-// Production resolves a layer's output budget through resolveModelBudget,
-// which prefers what the ENDPOINT reports over the catalogue. Clamping only
-// to the catalogue ceiling left an uncatalogued gateway model asking for the
-// validation default where production asked for the 1024 the gateway
-// announced — and the replay returned a rejection, or `unverifiable`, for a
-// verdict production had produced.
+// Production resolves each validation half's ceiling from the model that half
+// runs on — preferring what the ENDPOINT reports over the catalogue, then
+// clamping by the layer's own override — and only then applies the deployment
+// value. A replay that resolved it differently is not reproducing the run: an
+// uncatalogued gateway model announcing 1024 made production ask for 1024
+// while the replay asked for the validation default, and the replay returned
+// a rejection, or `unverifiable`, for a verdict production had produced.
+//
+// Asserted through the same composition production uses
+// (replayModelOutputCap -> Config.ApplyModelOutputCaps) rather than against
+// the cap alone, because the final budget is what the run actually sends.
 func TestReplayOutputBudget_FollowsWhatTheEndpointReports(t *testing.T) {
 	// Uncatalogued, so the catalogue ceiling cannot lower anything.
 	spec := llmlayer.LayerSpec{
@@ -230,17 +237,26 @@ func TestReplayOutputBudget_FollowsWhatTheEndpointReports(t *testing.T) {
 		Model:  "some-gateway-only-model",
 		Config: map[string]string{"base_url": "https://gw/v1"},
 	}
+	// The deployment value the replay starts from, as LoadConfigFromEnv would
+	// leave it when VALIDATION_VERIFIER_MAX_OUTPUT is set.
+	budget := func(p *countingProvider, sp llmlayer.LayerSpec, configured int) int {
+		cfg := verifier.DefaultConfig()
+		cfg.Verifier.MaxOutputTokens = configured
+		cap, _ := replayModelCaps(context.Background(), p, sp)
+		cfg.ApplyModelOutputCaps(cap, 0)
+		return cfg.Verifier.MaxOutputTokens
+	}
 
 	t.Run("the endpoint's lower ceiling wins", func(t *testing.T) {
 		p := &countingProvider{Provider: reportingProvider{out: 1024}}
-		if got := replayOutputBudget(context.Background(), p, spec, 4000); got != 1024 {
+		if got := budget(p, spec, 4000); got != 1024 {
 			t.Errorf("budget = %d, want the 1024 the endpoint reports — production asks for that", got)
 		}
 	})
 
 	t.Run("a higher one does not raise the configured budget", func(t *testing.T) {
 		p := &countingProvider{Provider: reportingProvider{out: 32000}}
-		if got := replayOutputBudget(context.Background(), p, spec, 4000); got != 4000 {
+		if got := budget(p, spec, 4000); got != 4000 {
 			t.Errorf("budget = %d, want the configured 4000 — the endpoint accepting more is not a reason to ask for more", got)
 		}
 	})
@@ -249,22 +265,77 @@ func TestReplayOutputBudget_FollowsWhatTheEndpointReports(t *testing.T) {
 		capped := spec
 		capped.Config = map[string]string{"base_url": "https://gw/v1", "max_output_tokens": "2048"}
 		p := &countingProvider{Provider: reportingProvider{out: 32000}}
-		if got := replayOutputBudget(context.Background(), p, capped, 4000); got != 2048 {
+		if got := budget(p, capped, 4000); got != 2048 {
 			t.Errorf("budget = %d, want the operator's 2048", got)
+		}
+	})
+
+	t.Run("with no deployment value the model's cap is used, not a fallback", func(t *testing.T) {
+		// The regression this guards: with the env overrides unset the
+		// deployment value is zero, and a replay that passed zero through
+		// ended up on the hard-coded fallback — asking for 4,000 where
+		// production asked for the 1,024 the endpoint announced.
+		p := &countingProvider{Provider: reportingProvider{out: 1024}}
+		if got := budget(p, spec, 0); got != 1024 {
+			t.Errorf("budget = %d, want the endpoint's 1024", got)
 		}
 	})
 
 	t.Run("a provider that cannot say leaves the ceiling alone", func(t *testing.T) {
 		p := &countingProvider{Provider: stubProvider{}}
-		if got := replayOutputBudget(context.Background(), p, spec, 4000); got != 4000 {
+		if got := budget(p, spec, 4000); got != 4000 {
 			t.Errorf("budget = %d, want the configured 4000", got)
 		}
 	})
+}
 
-	t.Run("a failed probe is not a verdict", func(t *testing.T) {
-		p := &countingProvider{Provider: reportingProvider{err: errors.New("502 bad gateway")}}
-		if got := replayOutputBudget(context.Background(), p, spec, 4000); got != 4000 {
-			t.Errorf("budget = %d, want the configured 4000 — a gateway that will not answer must not shrink the budget to zero", got)
+// The replay must reproduce production's reasoning decision too, not just its
+// token budget. Production widens a layer's reasoning from live metadata, so
+// an uncatalogued gateway alias reporting reasoning makes production request
+// an effort even with the project toggle off — and a replay that did not
+// would send a different request than the run it is reproducing.
+func TestReplayModelCaps_CarriesLiveReasoning(t *testing.T) {
+	spec := llmlayer.LayerSpec{
+		ProviderID: llmlayer.DefaultProviderID, Provider: "litellm",
+		Model:  "some-gateway-only-model",
+		Config: map[string]string{"base_url": "https://gw/v1"},
+	}
+
+	t.Run("a reporting endpoint's reasoning flag is carried", func(t *testing.T) {
+		p := &countingProvider{Provider: reportingProvider{out: 64000, reasoning: true}}
+		if _, reasoning := replayModelCaps(context.Background(), p, spec); !reasoning {
+			t.Error("live reasoning was not carried through")
 		}
 	})
+
+	t.Run("an endpoint that cannot say reports nothing", func(t *testing.T) {
+		p := &countingProvider{Provider: stubProvider{}}
+		if _, reasoning := replayModelCaps(context.Background(), p, spec); reasoning {
+			t.Error("reasoning claimed for a provider that cannot answer")
+		}
+	})
+}
+
+// The catalog cap must be the starting point, clamped by the override — the
+// order production uses. LayerSpec.OutputCeiling prefers the override, which
+// would have the replay ask for more than production: an 8,000 override on a
+// model whose catalogue cap is 4,096 made the replay request 8,000 and
+// collect a rejection for a run that succeeded.
+func TestReplayModelCaps_ClampsTheOverrideToTheCatalogue(t *testing.T) {
+	// A catalogued Bedrock model whose output cap is below the override.
+	spec := llmlayer.LayerSpec{
+		ProviderID: llmlayer.DefaultProviderID, Provider: "bedrock",
+		Model:  "mistral.mistral-large-2407-v1:0",
+		Config: map[string]string{"max_output_tokens": "8000"},
+	}
+	catalogCap := gollm.GetMaxOutputTokens(spec.Provider, spec.Model)
+	if catalogCap <= 0 || catalogCap >= 8000 {
+		t.Skipf("premise: need a catalogued cap below the 8000 override, got %d", catalogCap)
+	}
+	// No live metadata (Bedrock does not report any), so the catalogue answers.
+	p := &countingProvider{Provider: stubProvider{}}
+	got, _ := replayModelCaps(context.Background(), p, spec)
+	if got != catalogCap {
+		t.Errorf("cap = %d, want the catalogue's %d — production would not ask for the 8000 override", got, catalogCap)
+	}
 }

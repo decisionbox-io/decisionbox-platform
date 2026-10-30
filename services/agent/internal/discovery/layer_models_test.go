@@ -306,34 +306,6 @@ func TestCalibrationIsScopedToTheEndpointThatLearnedIt(t *testing.T) {
 	}
 }
 
-// The validation output budget is a deployment setting, but it cannot exceed
-// what the layer's model will accept.
-//
-// Per-layer models made this reachable: a validation layer can now be pointed
-// at a small model, and a 4,000-token request to a model that accepts 1,024 is
-// a 4xx on every validation call. The deployment setting still wins when it is
-// the lower of the two — tuning the budget down is a legitimate thing to do.
-func TestValidationOutputBudgetIsClampedToTheLayerModel(t *testing.T) {
-	small := layerLLM(llmlayer.LayerValidationVerifier, "cheap", "litellm", "qwen3-32b", 128000, 1024)
-	big := layerLLM(llmlayer.LayerValidationRefuter, llmlayer.DefaultProviderID, "bedrock", "opus", 200000, 32000)
-
-	if got := clampToLayerCap(4000, small); got != 1024 {
-		t.Errorf("clamped budget = %d, want the layer's 1024", got)
-	}
-	if got := clampToLayerCap(3000, big); got != 3000 {
-		t.Errorf("budget = %d, want the deployment's 3000 — the layer accepts more", got)
-	}
-	// An unresolved layer, or one with no cap, leaves the budget alone rather
-	// than collapsing it to zero.
-	if got := clampToLayerCap(4000, nil); got != 4000 {
-		t.Errorf("budget with no layer = %d, want 4000", got)
-	}
-	noCap := layerLLM(llmlayer.LayerValidationVerifier, llmlayer.DefaultProviderID, "bedrock", "opus", 200000, 0)
-	if got := clampToLayerCap(4000, noCap); got != 4000 {
-		t.Errorf("budget with no resolved cap = %d, want 4000", got)
-	}
-}
-
 // Calibration is keyed by the CONNECTION, which is right — the real window
 // belongs to the endpoint and two layers on one connection should share
 // what either learns. But an explicit max_input_tokens is a ceiling, so

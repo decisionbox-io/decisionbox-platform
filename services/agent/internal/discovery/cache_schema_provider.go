@@ -381,6 +381,7 @@ func (p *CacheSchemaProvider) toLookupTable(canonical string, ts models.TableSch
 	if len(samples) > p.sampleLimit {
 		samples = samples[:p.sampleLimit]
 	}
+	samples = projectSampleRows(samples, cols)
 
 	return ai.LookupTable{
 		Table: canonical,
@@ -392,6 +393,58 @@ func (p *CacheSchemaProvider) toLookupTable(canonical string, ts models.TableSch
 		Columns:    cols,
 		SampleRows: samples,
 	}
+}
+
+// projectSampleRows restricts each sample row to the columns the lookup
+// actually returns, so both halves of a lookup result describe the same column
+// set.
+//
+// Without this the column cap applies to the columns *list* only:
+// formatLookupRow renders key=value for every key present in a row, so a wide
+// table re-emits every one of its column names once per row. Measured on a real
+// SAP Business One warehouse (issue #446): one 10-table lookup was 148K
+// characters, 85% of it sample rows, and 79% of those bytes were repeated column
+// names — on 441-column OINV the model was shown 50 columns and then handed
+// values for all 441, i.e. values for columns whose type and nullability it
+// never saw. The cap above exists to stop exactly that ("emitting all of them
+// overshadows the schema and explodes prompt tokens"); the rows bypassed it.
+//
+// Keys are matched case-insensitively because a warehouse can hand back sample
+// keys cased differently from its declared column names (BigQuery datasets,
+// Snowflake tables), and those are the same column.
+//
+// Two cases deliberately keep the previous behaviour rather than show less than
+// before:
+//   - no column metadata at all — the formatter has its own
+//     "(no column metadata available)" branch and still prints the rows beneath
+//     it, so projecting onto an empty set would blank them;
+//   - a row sharing no key with the declared columns — a provider whose sample
+//     keys do not correspond to its column names. Projecting would leave an
+//     empty row, which says less than the unprojected one.
+func projectSampleRows(rows []map[string]interface{}, cols []ai.LookupColumn) []map[string]interface{} {
+	if len(rows) == 0 || len(cols) == 0 {
+		return rows
+	}
+
+	allowed := make(map[string]struct{}, len(cols))
+	for _, c := range cols {
+		allowed[strings.ToLower(c.Name)] = struct{}{}
+	}
+
+	out := make([]map[string]interface{}, 0, len(rows))
+	for _, row := range rows {
+		kept := make(map[string]interface{}, len(cols))
+		for k, v := range row {
+			if _, ok := allowed[strings.ToLower(k)]; ok {
+				kept[k] = v
+			}
+		}
+		if len(kept) == 0 && len(row) > 0 {
+			kept = row
+		}
+		out = append(out, kept)
+	}
+	return out
 }
 
 // buildRefIndex maps the shortened ref forms an LLM might use back to the

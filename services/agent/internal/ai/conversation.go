@@ -1,8 +1,8 @@
 package ai
 
 import (
-	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	"fmt"
+	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	"time"
 
 	logger "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
@@ -10,10 +10,10 @@ import (
 
 // Conversation manages the conversation state with Claude
 type Conversation struct {
-	messages      []gollm.Message
-	systemPrompt  string
-	startTime     time.Time
-	maxMessages   int // Limit conversation history to prevent token overflow
+	messages     []gollm.Message
+	systemPrompt string
+	startTime    time.Time
+	maxMessages  int // Limit conversation history to prevent token overflow
 }
 
 // ConversationOptions configure conversation behavior

@@ -13,15 +13,15 @@ import (
 // field on the stub corresponds to one observable behaviour the
 // registry must respect.
 type stubExtender struct {
-	name            string
-	extendEntries   []gollm.ModelEntry
-	extendErr       error
-	resolveEntry    *gollm.ModelEntry
-	resolveErr      error
-	extendCalls     int
-	resolveCalls    int
-	lastProjectID   string
-	lastModelID     string
+	name          string
+	extendEntries []gollm.ModelEntry
+	extendErr     error
+	resolveEntry  *gollm.ModelEntry
+	resolveErr    error
+	extendCalls   int
+	resolveCalls  int
+	lastProjectID string
+	lastModelID   string
 }
 
 func (s *stubExtender) Extend(_ context.Context, projectID string) ([]gollm.ModelEntry, error) {

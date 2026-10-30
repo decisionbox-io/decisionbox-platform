@@ -107,7 +107,7 @@ func TestIntegration_ViaFactory(t *testing.T) {
 
 	provider, err := gollm.NewProvider("openai", gollm.ProviderConfig{
 		"credentials_json": apiKey,
-		"model":   "gpt-4o-mini",
+		"model":            "gpt-4o-mini",
 	})
 	if err != nil {
 		t.Fatalf("Factory error: %v", err)
@@ -207,7 +207,7 @@ func TestIntegration_Validate_ViaFactory(t *testing.T) {
 
 	provider, err := gollm.NewProvider("openai", gollm.ProviderConfig{
 		"credentials_json": apiKey,
-		"model":   "gpt-4o-mini",
+		"model":            "gpt-4o-mini",
 	})
 	if err != nil {
 		t.Fatalf("Factory error: %v", err)

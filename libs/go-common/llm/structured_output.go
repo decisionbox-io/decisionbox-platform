@@ -3,6 +3,7 @@ package llm
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -130,12 +131,69 @@ func NormalizeStructuredToolResponse(resp *ChatResponse, injected bool, rf *Resp
 // rejects. A string that does not decode, or decodes to another type, is left
 // as the model sent it.
 func decodeStringifiedValues(obj, schema map[string]interface{}) {
-	props, _ := schema["properties"].(map[string]interface{})
+	props := SchemaPropertiesOf(schema["properties"])
 	for key, val := range obj {
 		if ps, ok := props[key].(map[string]interface{}); ok {
 			obj[key] = decodeStringified(val, ps)
 		}
 	}
+}
+
+// SchemaPropertiesOf reads a JSON Schema object's `properties` whether the caller built it
+// as a map or as a struct whose field declaration order encodes the order the model is asked
+// to generate the fields in.
+//
+// The struct form exists because encoding/json sorts map keys, so a map cannot express an
+// order -- and on a wire that compiles the schema into a grammar the order decides which
+// fields a model can still reach after writing the earlier ones. Callers that build a
+// schema are free to use either form, which means every caller that *reads* a schema has to
+// accept both. This is that reader, and it lives here because this package owns
+// ResponseFormat.Schema.
+//
+// It was added after a straight type assertion on `properties` silently stopped
+// decodeStringifiedValues at the first struct-backed object: the recovery still ran on the
+// envelope and reached no field inside it, so a Claude or Bedrock response carrying a
+// nested array as a JSON-encoded string became unparseable rather than recovered. Order is
+// not preserved here, because a map cannot carry it and a reader looking a field up does
+// not need it.
+func SchemaPropertiesOf(node interface{}) map[string]interface{} {
+	switch v := node.(type) {
+	case nil:
+		return nil
+	case map[string]interface{}:
+		return v
+	}
+
+	rv := reflect.ValueOf(node)
+	for rv.Kind() == reflect.Ptr {
+		if rv.IsNil() {
+			return nil
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Struct {
+		return nil
+	}
+	rt := rv.Type()
+	out := make(map[string]interface{}, rt.NumField())
+	for i := 0; i < rt.NumField(); i++ {
+		f := rt.Field(i)
+		if f.PkgPath != "" {
+			continue // unexported
+		}
+		name := f.Tag.Get("json")
+		if name == "-" {
+			continue
+		}
+		if i := strings.IndexByte(name, ','); i >= 0 {
+			name = name[:i]
+		}
+		if name == "" {
+			name = f.Name
+		}
+		out[name] = rv.Field(i).Interface()
+	}
+	return out
 }
 
 func decodeStringified(val interface{}, schema map[string]interface{}) interface{} {

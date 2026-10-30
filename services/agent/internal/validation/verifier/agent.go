@@ -8,6 +8,7 @@ import (
 
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
+	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 )
 
 // LLMClient is the subset of services/agent/internal/ai.Client the
@@ -19,15 +20,67 @@ type LLMClient interface {
 
 // ModeConfig is the per-mode budget envelope. Plan §"Cost envelope".
 type ModeConfig struct {
-	MaxRounds       int
-	TokenCap        int
+	MaxRounds int
+	TokenCap  int
+	// MaxOutputTokens is the per-round output CEILING — the most this mode
+	// will ever ask for in one call.
+	//
+	// Zero means "resolve from the model's own output cap" — see
+	// Config.ApplyModelOutputCaps. It must not stay zero by the time the loop
+	// runs: a fixed ceiling is invisible to the caller and silently truncates
+	// the verdict of whichever model outgrows it, which is exactly how a
+	// reasoning model's verdicts were lost (the response was cut off
+	// mid-JSON, failed to parse, and the document came back unverifiable).
 	MaxOutputTokens int
+	// MinOutputTokens is what the loop RESERVES for the forced-final verdict
+	// out of TokenCap, and the least it will ask for in any one call.
+	//
+	// Deliberately separate from the ceiling. The loop charges its output
+	// budget twice — once for the round it is about to run and once for the
+	// forced final it must still be able to afford — so reserving the ceiling
+	// would make a bigger ceiling buy FEWER rounds: raising it from 3,000 to
+	// 5,000 takes 4,000 off a 20,000 envelope and costs a mid-sized bundle
+	// its only evidence-gathering round. Reserving the floor and requesting
+	// the ceiling keeps both: rounds get the room they always had, and the
+	// verdict gets the room the model allows when it is there.
+	MinOutputTokens int
+	// OutputBound records WHICH constraint set MaxOutputTokens.
+	//
+	// It exists for the truncation message. Every candidate remedy is wrong
+	// for two of the three cases: raising VALIDATION_*_MAX_OUTPUT does
+	// nothing when the envelope share re-clamps it, and nothing when the
+	// model's own cap re-clamps it either — the operator raises the value,
+	// sees no change, and concludes the diagnosis was wrong. Naming the
+	// binding constraint is the difference between an actionable message and
+	// a misleading one.
+	OutputBound OutputConstraint
 }
+
+// OutputConstraint names what set a mode's output ceiling.
+type OutputConstraint int
+
+const (
+	// OutputBoundByOperator — VALIDATION_*_MAX_OUTPUT set it, and raising
+	// that value raises the ceiling.
+	OutputBoundByOperator OutputConstraint = iota
+	// OutputBoundByEnvelope — the share of TokenCap set it; only
+	// VALIDATION_*_TOKEN_CAP moves it.
+	OutputBoundByEnvelope
+	// OutputBoundByModel — the model's own output cap (or the layer's
+	// max_output_tokens override) set it. No validation env var can raise
+	// it: the resolution clamps straight back to the model.
+	OutputBoundByModel
+)
 
 // Config bundles verifier + refuter knobs and the shared bundle
 // truncation settings. Defaults are exposed via DefaultConfig so
 // callers can override only the env-bound knobs.
 type Config struct {
+	// outputResolved records that ApplyModelOutputCaps has run, so NewAgent's
+	// safety net does not re-resolve — and reclassify — a config a caller
+	// already resolved against real model caps.
+	outputResolved bool
+
 	Verifier       ModeConfig
 	Refuter        ModeConfig
 	Bundle         BundleConfig
@@ -47,8 +100,8 @@ type Config struct {
 // DefaultConfig returns the plan §"Cost envelope" defaults.
 func DefaultConfig() Config {
 	return Config{
-		Verifier:         ModeConfig{MaxRounds: 8, TokenCap: 30000, MaxOutputTokens: 4000},
-		Refuter:          ModeConfig{MaxRounds: 6, TokenCap: 20000, MaxOutputTokens: 3000},
+		Verifier:         ModeConfig{MaxRounds: 8, TokenCap: 30000},
+		Refuter:          ModeConfig{MaxRounds: 6, TokenCap: 20000},
 		Bundle:           DefaultBundleConfig(),
 		RefuterEnabled:   true,
 		NumericTolerance: 0.20,
@@ -89,6 +142,19 @@ func NewAgent(llm LLMClient, cfg Config) (*Agent, error) {
 	system, err := loadSystemPrompts()
 	if err != nil {
 		return nil, err
+	}
+	// A caller that never resolved the model's cap (unit tests, a standalone
+	// embedder) must not end up asking for zero output tokens, which some
+	// providers read as "give me everything you have". Resolving with an
+	// unknown model cap falls through to the documented fallbacks.
+	//
+	// Only when it has not already been resolved: re-running the resolution
+	// would reclassify OutputBound, because an operator's value and a
+	// resolved ceiling are indistinguishable once both sit in the same field
+	// — and a ceiling that came from a small model would then be reported as
+	// something VALIDATION_*_MAX_OUTPUT could raise.
+	if !cfg.outputResolved {
+		cfg.ApplyModelOutputCaps(0, 0)
 	}
 	return &Agent{llm: llm, cfg: cfg, system: system}, nil
 }
@@ -195,10 +261,20 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 	allowed := []ActionKind{ActionLookupSchema, ActionQueryWarehouse, ActionReadStepRows, ActionSubmitVerdict}
 	systemTemplate := a.system[s.mode]
 	system := renderSystemPrompt(systemTemplate, s.mode, s.bundle, a.cfg.NumericTolerance, a.cfg.MinSampleSize)
+	// Every call sends the system frame as well as the user prompt, so it is
+	// part of what each one costs against the envelope. Rendered once per
+	// run, so estimated once. It used to be uncounted and get away with it:
+	// the forced final asked for a fixed number, so nothing ever tried to
+	// spend the envelope down to the last token. Now that it spends what the
+	// rounds left behind, an uncounted frame is an overspend.
+	systemEst := estimateTokens(system, a.cfg.Bundle.EstimateRatio)
 
 	for round := 0; round < mc.MaxRounds; round++ {
 		reservePrompt := a.buildPrompt(s, []ActionKind{ActionSubmitVerdict}, true)
-		reserveEst := estimateTokens(reservePrompt, a.cfg.Bundle.EstimateRatio) + mc.MaxOutputTokens
+		// Reserve the FLOOR for the forced final, not the ceiling: the forced
+		// final must always be affordable, but reserving the most it could
+		// ever want would cost us rounds.
+		reserveEst := estimateTokens(reservePrompt, a.cfg.Bundle.EstimateRatio) + systemEst + mc.MinOutputTokens
 		softCap := mc.TokenCap - reserveEst
 		if softCap <= 0 {
 			break
@@ -206,14 +282,22 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 
 		prompt := a.buildPrompt(s, allowed, false)
 		promptEst := estimateTokens(prompt, a.cfg.Bundle.EstimateRatio)
-		if s.tokensIn+s.tokensOut+promptEst+mc.MaxOutputTokens > softCap {
+		// What this round can afford once the forced final is set aside. A
+		// round that cannot afford even an action drops history and retries;
+		// with nothing left to drop the loop ends and the forced final runs.
+		afford := softCap - (s.tokensIn + s.tokensOut + promptEst + systemEst)
+		if afford < minRoundOutputTokens {
 			if !a.truncateHistory(s) {
 				break
 			}
 			continue
 		}
+		roundOutput := mc.MaxOutputTokens
+		if afford < roundOutput {
+			roundOutput = afford
+		}
 
-		chat, err := a.llmFor(s.mode).Chat(ctx, prompt, system, mc.MaxOutputTokens)
+		chat, err := a.llmFor(s.mode).Chat(ctx, prompt, system, roundOutput)
 		if err != nil {
 			return a.unverifiable(s, "chat failed: "+err.Error()), nil
 		}
@@ -222,8 +306,9 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 
 		action, perr := ParseAction(chat.Content, allowed)
 		if perr != nil {
-			a.trace(s.mode, round, "", "parse-error: "+perr.Error())
-			s.history = append(s.history, toolStep{Error: "parse: " + perr.Error()})
+			detail := parseFailureDetail(chat, roundOutput, perr)
+			a.trace(s.mode, round, "", "parse-error: "+detail)
+			s.history = append(s.history, toolStep{Error: "parse: " + detail})
 			continue
 		}
 		a.trace(s.mode, round, action.Kind, "")
@@ -264,7 +349,17 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 	// Forced final round — submit_verdict only.
 	a.aggressiveTruncate(s)
 	forcedPrompt := a.buildPrompt(s, []ActionKind{ActionSubmitVerdict}, true)
-	chat, err := a.llmFor(s.mode).Chat(ctx, forcedPrompt, system, mc.MaxOutputTokens)
+	// Nothing follows this call, so it may spend everything left in the
+	// envelope up to the ceiling — and never less than the floor, which is
+	// what every round reserved for exactly this.
+	forcedOutput := mc.MaxOutputTokens
+	if afford := mc.TokenCap - (s.tokensIn + s.tokensOut + estimateTokens(forcedPrompt, a.cfg.Bundle.EstimateRatio) + systemEst); afford < forcedOutput {
+		forcedOutput = afford
+	}
+	if forcedOutput < mc.MinOutputTokens {
+		forcedOutput = mc.MinOutputTokens
+	}
+	chat, err := a.llmFor(s.mode).Chat(ctx, forcedPrompt, system, forcedOutput)
 	if err != nil {
 		return a.unverifiable(s, "forced chat failed: "+err.Error()), nil
 	}
@@ -273,7 +368,43 @@ func (a *Agent) run(ctx context.Context, s *runState) (valmodels.StructuredVerdi
 
 	action, perr := ParseAction(chat.Content, []ActionKind{ActionSubmitVerdict})
 	if perr != nil || action.Kind != ActionSubmitVerdict {
-		return a.unverifiable(s, "forced final round produced no verdict"), nil
+		reason := "forced final round produced no verdict"
+		if outputCapHit(chat, forcedOutput) {
+			// Name what can actually move this number.
+			ceiling := effectiveCeiling(chat, forcedOutput)
+			remedy := "raise " + envOutputKeyFor(s.mode)
+			switch {
+			case chat.BudgetReducedBy == ai.OverflowContextWindow:
+				// The call lowered its own budget to fit the model's window,
+				// so no validation setting was the limit.
+				remedy = "point this layer at a model with a larger context window — the request was already reduced to fit this one"
+			case chat.BudgetReducedBy == ai.OverflowOutputCap:
+				// Only the output cap was exceeded; the window may be ample,
+				// so recommending a bigger window would be the wrong model.
+				remedy = "point this layer at a model with a larger output cap — the request was already reduced to this model's maximum"
+			case forcedOutput < mc.MaxOutputTokens || mc.OutputBound == OutputBoundByEnvelope:
+				// Either the share clipped the ceiling, or the rounds already
+				// spent what the verdict needed. Both are the envelope.
+				remedy = "raise " + envTokenCapKeyFor(s.mode)
+			case mc.OutputBound == OutputBoundByModel:
+				remedy = "point this layer at a model with a larger output cap, or raise its max_output_tokens — no validation setting can raise it past the model"
+			}
+			// The difference matters: a cut-off verdict is fixed by raising
+			// the ceiling, a malformed one by fixing the prompt. Reported
+			// here because this string is what the dashboard shows and what
+			// an operator has to act on.
+			reason = fmt.Sprintf(
+				"forced final round was cut off at the %d-token output ceiling before it finished the verdict; %s",
+				ceiling, remedy)
+			applog.WithFields(applog.Fields{
+				"mode":        s.mode,
+				"max_tokens":  ceiling,
+				"tokens_out":  chat.TokensOut,
+				"stop_reason": chat.StopReason,
+				"remedy":      remedy,
+			}).Warn("Validation verdict truncated at the output ceiling")
+		}
+		return a.unverifiable(s, reason), nil
 	}
 	final := a.finalise(*action.Verdict, s)
 	// Refuter discipline on forced-final: even on the last round, a
@@ -647,4 +778,70 @@ func appendReason(existing, msg string) string {
 		return msg
 	}
 	return existing + "; " + msg
+}
+
+// outputCapHit reports whether a response stopped because it hit the output
+// ceiling rather than because the model finished.
+//
+// It trusts the provider's stop reason when there is one, and otherwise falls
+// back to "spent the entire budget", which is what the analysis phase already
+// uses (logOutputCapTruncation): a response that both failed to parse and
+// consumed every available token is a truncation, not a malformed answer. The
+// fallback matters because the reason is only as reliable as the longest wire
+// it crossed — a managed gateway that drops it leaves the token count as the
+// only evidence.
+func outputCapHit(chat *ai.ChatResult, maxTokens int) bool {
+	if chat == nil {
+		return false
+	}
+	if chat.Truncated() {
+		return true
+	}
+	ceiling := effectiveCeiling(chat, maxTokens)
+	return ceiling > 0 && chat.TokensOut >= ceiling
+}
+
+// effectiveCeiling is the output budget that was actually in force: the one
+// the call reports having asked for, falling back to what we requested when
+// it does not say (a stubbed client, an older path).
+//
+// They differ when the adaptive context-overflow retry lowers max_tokens
+// mid-call. Reporting our own number then names a ceiling that was never in
+// force — and sends the operator to a knob that was not the limit.
+func effectiveCeiling(chat *ai.ChatResult, requested int) int {
+	if chat != nil && chat.MaxTokensAsked > 0 {
+		return chat.MaxTokensAsked
+	}
+	return requested
+}
+
+// parseFailureDetail annotates a mid-loop parse error with the output ceiling
+// when the response was cut off, so the note the model reads back in its tool
+// history tells it to be briefer rather than to re-emit the same oversized
+// payload.
+func parseFailureDetail(chat *ai.ChatResult, maxTokens int, perr error) string {
+	if outputCapHit(chat, maxTokens) {
+		return fmt.Sprintf("%s (response was cut off at the %d-token output ceiling — emit a shorter payload)",
+			perr.Error(), effectiveCeiling(chat, maxTokens))
+	}
+	return perr.Error()
+}
+
+// envOutputKeyFor names the per-mode output knob, so the recorded reason is
+// actionable without reading the source.
+func envOutputKeyFor(mode valmodels.AgentMode) string {
+	if mode == valmodels.ModeRefuter {
+		return EnvRefuterOutput
+	}
+	return EnvVerifierOutput
+}
+
+// envTokenCapKeyFor names the per-mode ENVELOPE knob, for the case where the
+// envelope — not the model and not the output knob — is what the verdict ran
+// out of.
+func envTokenCapKeyFor(mode valmodels.AgentMode) string {
+	if mode == valmodels.ModeRefuter {
+		return EnvRefuterTokenCap
+	}
+	return EnvVerifierTokenCap
 }
