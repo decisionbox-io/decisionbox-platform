@@ -10,7 +10,6 @@ import (
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	logger "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
-	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
 )
 
@@ -26,11 +25,6 @@ type SQLFixer struct {
 	dataset      string
 	filter       string
 	schemaCtx    string
-
-	// tableColumns resolves one table's columns for the fix prompt. See
-	// SetTableColumnResolver — nil keeps the pre-existing behaviour of
-	// substituting the lean catalog alone.
-	tableColumns func(table string) []models.ColumnInfo
 
 	// language names what the model is being asked to write, when that is not
 	// SQL. Empty means SQL — what every warehouse caller passes, and what
@@ -118,7 +112,7 @@ func (f *SQLFixer) FixSQL(ctx context.Context, query string, errorMsg string, at
 	systemPrompt = applySection(systemPrompt, "VERIFICATION_CONTEXT", opts.VerificationContext)
 	systemPrompt = strings.ReplaceAll(systemPrompt, "{{DATASET}}", f.dataset)
 	systemPrompt = strings.ReplaceAll(systemPrompt, "{{FILTER}}", f.filter)
-	systemPrompt = strings.ReplaceAll(systemPrompt, "{{SCHEMA_INFO}}", f.schemaInfoFor(query))
+	systemPrompt = strings.ReplaceAll(systemPrompt, "{{SCHEMA_INFO}}", f.schemaCtx)
 	systemPrompt = strings.ReplaceAll(systemPrompt, "{{ORIGINAL_SQL}}", query)
 	systemPrompt = strings.ReplaceAll(systemPrompt, "{{ERROR_MESSAGE}}", errorMsg)
 	systemPrompt = strings.ReplaceAll(systemPrompt, "{{VERIFICATION_CONTEXT}}", opts.VerificationContext)
@@ -232,12 +226,9 @@ func renderFixPrompt(system, user string) string {
 	return b.String()
 }
 
-// SetSchemaContext sets the whole-warehouse catalog line block — table
-// names with column COUNTS, not column names. It is the backdrop; the
-// columns of the tables a failed statement references come from
-// SetTableColumnResolver.
-func (f *SQLFixer) SetSchemaContext(catalog string) {
-	f.schemaCtx = catalog
+// SetSchemaContext updates the schema context.
+func (f *SQLFixer) SetSchemaContext(schemaJSON string) {
+	f.schemaCtx = schemaJSON
 }
 
 // applySection processes a mustache-style {{#NAME}}…{{/NAME}} conditional
