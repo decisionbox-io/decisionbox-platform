@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import {
@@ -65,8 +65,25 @@ describe('recommendationEmptyReason', () => {
 // noticed, and `recommendation_figures_unresolved` shipped stamped and
 // unhandled -- the producer written, the consumer not -- which is what this
 // test would have caught.
-describe('every recommendation status the agent can stamp is handled here', () => {
-  const orchestrator = resolve(process.cwd(), '../../services/agent/internal/discovery/orchestrator.go');
+const orchestrator = resolve(process.cwd(), '../../services/agent/internal/discovery/orchestrator.go');
+
+// This block reads the Go agent source, so it only works where that source is
+// a sibling of the dashboard — i.e. inside this repo, which is where it earns
+// its keep and where CI runs it.
+//
+// The enterprise dashboard is composed by copying this app and then the
+// enterprise overlay over it, into a directory whose parent holds no Go
+// module, so the path above resolves outside the workspace and readFileSync
+// throws ENOENT. Skipping there rather than teaching this test the overlay's
+// layout: the mirror it guards is platform-to-platform, so platform CI is the
+// only place the check means anything, and a path that has to know about a
+// second repo is the kind of coupling that breaks the next time either moves.
+//
+// Same shape as seed_packs_drift_test.go, which skips a pack with no authored
+// source rather than failing on it.
+const describeWithAgentSource = existsSync(orchestrator) ? describe : describe.skip;
+
+describeWithAgentSource('every recommendation status the agent can stamp is handled here', () => {
 
   it('reads the agent source it is asserting against', () => {
     const src = readFileSync(orchestrator, 'utf8');
