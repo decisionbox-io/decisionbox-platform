@@ -41,21 +41,67 @@ type DiscoveryRepo interface {
 	GetLatest(ctx context.Context, projectID string) (*models.DiscoveryResult, error)
 	GetByDate(ctx context.Context, projectID string, date time.Time) (*models.DiscoveryResult, error)
 	List(ctx context.Context, projectID string, limit int) ([]*models.DiscoveryResult, error)
+	// HasResultForRun reports whether a discovery is stored for this run.
+	//
+	// Needed because a run's own discovery_id is not a reliable answer:
+	// BeginResume clears it, so a run that saved a partial result and was
+	// then resumed carries an empty pointer while the earlier discovery is
+	// still stored against its run_id.
+	HasResultForRun(ctx context.Context, runID string) (bool, error)
 }
 
 // RunRepo abstracts discovery run operations for handler unit testing.
 type RunRepo interface {
-	Create(ctx context.Context, projectID string) (string, error)
+	Create(ctx context.Context, projectID string, params models.RunParams) (string, error)
+	// BeginResume atomically flips a failed run back to running for a new
+	// attempt. Returns ErrNoResumableRun when the run was not in `failed`
+	// — which is what the losing side of a double-clicked Resume sees.
+	BeginResume(ctx context.Context, runID string) (*models.DiscoveryRun, error)
 	GetByID(ctx context.Context, runID string) (*models.DiscoveryRun, error)
 	GetLatestByProject(ctx context.Context, projectID string) (*models.DiscoveryRun, error)
+	// Discard takes the attempt the caller read, so a resume racing the
+	// decision makes the write match nothing rather than apply to an
+	// attempt nobody evaluated.
+	Discard(ctx context.Context, runID string, attempt int) error
 	GetRunningByProject(ctx context.Context, projectID string) (*models.DiscoveryRun, error)
+	// GetOtherRunningByProject answers "is another run active for this
+	// project", excluding one. The resume path needs the exclusion: by the
+	// time it re-checks, its own run is already `running`.
+	GetOtherRunningByProject(ctx context.Context, projectID, excludeRunID string) (*models.DiscoveryRun, error)
 	Fail(ctx context.Context, runID string, errMsg string) error
+	// FailAttempt marks a run failed only if it is still on the given
+	// attempt, and reports whether it applied. Used by the runner's
+	// asynchronous OnFailure callback, which can outlive the attempt it
+	// belongs to once a run can be resumed.
+	FailAttempt(ctx context.Context, runID string, attempt int, errMsg string) (bool, error)
 	Cancel(ctx context.Context, runID string) error
 	SetPolicyReservationID(ctx context.Context, runID, reservationID string) error
 	ListTerminalWithReservation(ctx context.Context, limit int) ([]*models.DiscoveryRun, error)
 	ClearPolicyReservationID(ctx context.Context, runID string) error
+	// ClearExplorationCheckpointMarker zeroes the field the dashboard reads
+	// to offer Resume, for a failed run proven to have nothing to replay.
+	ClearExplorationCheckpointMarker(ctx context.Context, runID string) error
+	// StampReservationOwnerEndedAt preserves when the attempt holding the
+	// run's reservation stopped, written once so later resumes cannot
+	// overwrite it with their own time.
+	StampReservationOwnerEndedAt(ctx context.Context, runID string, endedAt time.Time) error
 	ListTerminalWithoutCompletionHook(ctx context.Context, limit int) ([]*models.DiscoveryRun, error)
-	MarkCompletionHooksFired(ctx context.Context, runID string) error
+	// MarkCompletionHooksFired stamps the hook marker, fenced on the
+	// terminal status AND the attempt the caller selected — a resume between
+	// the dispatcher's read and its mark would otherwise stamp an attempt
+	// whose hooks never fired.
+	MarkCompletionHooksFired(ctx context.Context, runID string, attempt int) error
+}
+
+// CheckpointRepo abstracts the exploration-checkpoint read / purge paths the
+// discovery handlers use: whether a failed run has something to resume from,
+// and discarding the rows when a run is cancelled. Backed by
+// DiscoveryCheckpointRepository. Nil disables the resume endpoint (it then
+// refuses with "no checkpoint"), which is what a build without the agent's
+// checkpoint collection wants.
+type CheckpointRepo interface {
+	ResumeState(ctx context.Context, runID string) (prefixLen int, explorationComplete bool, err error)
+	DeleteByRun(ctx context.Context, runID string) (int64, error)
 }
 
 // DebugLogRepo abstracts debug log read operations for handler unit testing.
@@ -76,7 +122,7 @@ type DiscoveryLogRepo interface {
 // testing. Backed by RunStepRepository. The cursor (sinceID) is the
 // last RunStepDoc.IDHex the caller has — empty for the first poll.
 type RunStepRepo interface {
-	ListByRun(ctx context.Context, runID, sinceID string, limit int) ([]RunStepDoc, error)
+	ListByRun(ctx context.Context, runID, sinceID string, limit, attempt int) ([]RunStepDoc, error)
 }
 
 // FeedbackRepo abstracts feedback operations for handler unit testing.

@@ -422,6 +422,10 @@ func TestSQLFixPrompt(t *testing.T) {
 		"date_trunc", "INTERVAL", "COALESCE",
 		"LATERAL", "FILTER", "RETURNING", "NOT EXISTS", "NULLIF",
 		"HAVING", "Recursive", "ON CONFLICT", "string_agg", "array_agg", "unnest",
+		// The `column … does not exist` case. Its absence is what made a run
+		// die after six repair attempts that each guessed a conventional name
+		// instead of reading the one in Table Schemas.
+		"Column Does Not Exist",
 	} {
 		if !strings.Contains(prompt, required) {
 			t.Errorf("SQL fix prompt should contain %q", required)

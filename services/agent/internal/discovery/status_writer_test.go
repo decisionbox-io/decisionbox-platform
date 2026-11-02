@@ -19,7 +19,7 @@ type fakeRunStepWriter struct {
 	err   error
 }
 
-func (f *fakeRunStepWriter) AddStep(_ context.Context, _, _ string, step models.RunStep) error {
+func (f *fakeRunStepWriter) AddStep(_ context.Context, _, _ string, _ int, step models.RunStep) error {
 	f.steps = append(f.steps, step)
 	return f.err
 }

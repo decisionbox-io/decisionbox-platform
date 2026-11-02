@@ -211,7 +211,22 @@ COALESCE(a, b, 'default')                 -- first non-NULL value
 -- RIGHT:  SELECT * FROM {{DATASET}}."user"
 ```
 
-### 2. Ambiguous Column Names
+### 2. Column Does Not Exist
+
+**Error**: `column "event_name" does not exist` or `column e.created_at does not exist`
+
+**Fix**: Use only the columns listed in **Table Schemas** above — do not substitute a conventional name for the real one. PostgreSQL folds unquoted identifiers to lowercase, so a column created with mixed case in quotes must also be quoted here. When the name is qualified (`e.created_at`), check the alias points at the table that actually holds the column.
+
+A SELECT alias is not visible to WHERE, which reports the same error:
+```sql
+-- WRONG:  SELECT SUM(amount) AS total FROM {{DATASET}}.orders
+--         WHERE total > 100          -- column "total" does not exist
+-- RIGHT:  SELECT SUM(amount) AS total FROM {{DATASET}}.orders
+--         HAVING SUM(amount) > 100
+-- Aliases ARE visible to GROUP BY and ORDER BY, just not WHERE/HAVING.
+```
+
+### 3. Ambiguous Column Names
 
 **Error**: `column reference "user_id" is ambiguous`
 
@@ -221,7 +236,7 @@ COALESCE(a, b, 'default')                 -- first non-NULL value
 -- RIGHT:  SELECT a.user_id FROM {{DATASET}}.a a JOIN {{DATASET}}.b b ON a.id = b.id
 ```
 
-### 3. Column Not in GROUP BY
+### 4. Column Not in GROUP BY
 
 **Error**: `column "name" must appear in the GROUP BY clause or be used in an aggregate function`
 
@@ -237,7 +252,7 @@ SELECT DISTINCT ON (user_id) user_id, name, COUNT(*) OVER (PARTITION BY user_id)
 FROM {{DATASET}}.events ORDER BY user_id
 ```
 
-### 4. Aggregate in WHERE (Use HAVING)
+### 5. Aggregate in WHERE (Use HAVING)
 
 **Error**: `aggregate functions are not allowed in WHERE`
 
@@ -249,7 +264,7 @@ FROM {{DATASET}}.events ORDER BY user_id
 --         GROUP BY user_id HAVING COUNT(*) > 5
 ```
 
-### 5. Type Mismatch
+### 6. Type Mismatch
 
 **Error**: `operator does not exist: integer = text`
 
@@ -260,7 +275,7 @@ FROM {{DATASET}}.events ORDER BY user_id
 -- OR:     WHERE user_id = '123'::integer
 ```
 
-### 6. NOT IN Returns No Rows (NULL Trap)
+### 7. NOT IN Returns No Rows (NULL Trap)
 
 **Error**: Query returns 0 rows unexpectedly when using `NOT IN` with a subquery
 
@@ -275,7 +290,7 @@ SELECT * FROM {{DATASET}}.foo f
 WHERE NOT EXISTS (SELECT 1 FROM {{DATASET}}.bar b WHERE b.x = f.col)
 ```
 
-### 7. BETWEEN with Timestamps (Double-Counting Midnight)
+### 8. BETWEEN with Timestamps (Double-Counting Midnight)
 
 **Error**: Rows at midnight boundaries are double-counted or missed
 
@@ -287,7 +302,7 @@ WHERE NOT EXISTS (SELECT 1 FROM {{DATASET}}.bar b WHERE b.x = f.col)
 -- RIGHT:  WHERE created_at >= '2026-01-01' AND created_at < '2026-01-08'
 ```
 
-### 8. Invalid JSON Access
+### 9. Invalid JSON Access
 
 **Error**: `operator does not exist: text -> text` or `cannot extract element from a scalar`
 
@@ -299,7 +314,7 @@ WHERE NOT EXISTS (SELECT 1 FROM {{DATASET}}.bar b WHERE b.x = f.col)
 -- RIGHT:  SELECT data->>'key' FROM {{DATASET}}.events WHERE data IS NOT NULL
 ```
 
-### 9. Window Function in WHERE
+### 10. Window Function in WHERE
 
 **Error**: `window functions are not allowed in WHERE`
 
@@ -314,7 +329,7 @@ WITH ranked AS (
 SELECT * FROM ranked WHERE rn = 1
 ```
 
-### 10. NULL Comparison
+### 11. NULL Comparison
 
 **Error**: Unexpected empty results when filtering NULLs
 
@@ -325,7 +340,7 @@ SELECT * FROM ranked WHERE rn = 1
 -- For defaults:  COALESCE(col, 'default')
 ```
 
-### 11. Division by Zero
+### 12. Division by Zero
 
 **Error**: `division by zero`
 
@@ -335,7 +350,7 @@ SELECT * FROM ranked WHERE rn = 1
 -- RIGHT:  SELECT total / NULLIF(count, 0) AS avg
 ```
 
-### 12. Syntax Error at Reserved Keyword
+### 13. Syntax Error at Reserved Keyword
 
 **Error**: `syntax error at or near "user"` or `"order"` or `"group"`
 
@@ -347,7 +362,7 @@ SELECT * FROM ranked WHERE rn = 1
 -- RIGHT:  SELECT "order" FROM {{DATASET}}.events
 ```
 
-### 13. Subquery Must Have Alias
+### 14. Subquery Must Have Alias
 
 **Error**: `subquery in FROM must have an alias`
 

@@ -429,6 +429,26 @@ func recompactSurvivorsTighter(picked []PickedStep) bool {
 		if len(rows) == 0 {
 			continue
 		}
+		// Only steps that still carry their RAW rows, which is what the
+		// caller's comment promises and what BuildCompactResultWithLimits
+		// assumes: it derives the digest's population statistics and its
+		// head/tail from the rows it is given, treating any nonempty slice as
+		// the whole result.
+		//
+		// A replayed step does not satisfy that. The checkpoint keeps a row
+		// SAMPLE (≤ the verifier's SampleRows, 50 by default) with the true
+		// total in RowCount — the same asymmetry replayedQueryResult relies
+		// on when it renders "Showing 10 of 50000 rows" for a step whose
+		// stored rows number 50. Rebuilding from the sample would hand the
+		// model a digest whose statistics describe 50 rows while claiming to
+		// describe 50 000, and whose tail rows are the sample's tail rather
+		// than the result's.
+		//
+		// RowCount is only trusted when it positively contradicts the rows in
+		// hand, so a step that never recorded one behaves exactly as before.
+		if picked[i].Step.RowCount > len(rows) {
+			continue
+		}
 		tight := gomodels.BuildCompactResultWithLimits(rows, limits)
 		picked[i].Step.CompactResult = &tight
 		changed = true

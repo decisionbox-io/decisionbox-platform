@@ -27,6 +27,23 @@ const (
 	CollectionDiscoveryRecommendationLog = "discovery_recommendation_log"
 	CollectionDiscoveryRunSteps          = "discovery_run_steps"
 
+	// CollectionDiscoveryCheckpoints holds one small document per
+	// exploration step of an in-flight run, plus one summary document
+	// (step_number 0) once exploration ends. It is the durability seam
+	// that makes a crashed run resumable: the agent writes a row as each
+	// step completes, a resumed run replays the contiguous prefix instead
+	// of re-querying it, and the rows are deleted once the run reaches a
+	// terminal-and-not-resumable outcome (a TTL is the backstop).
+	//
+	// One row per step rather than an array on the run document, for the
+	// same reason the log collections above were split out: an embedded
+	// array grows with run length and a long run hits the 16MB BSON limit
+	// exactly when the checkpoint matters most.
+	//
+	// The agent (writer) owns the shape; the api reads whether a run has
+	// a resumable prefix and deletes the rows on cancel.
+	CollectionDiscoveryCheckpoints = "discovery_checkpoints"
+
 	// CollectionDiscoveryQuestions holds the clarifying questions the agent
 	// generates at the end of a run when it was uncertain about something a
 	// business analyst could resolve. The agent (writer) inserts rows; the

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 	"go.mongodb.org/mongo-driver/bson"
 )
@@ -74,6 +75,15 @@ func TestInteg_ProjectRepo_DeleteCascade(t *testing.T) {
 			// generated ObjectIDs.
 			if name == "discoveries" {
 				doc["_id"] = discoveryID
+			}
+			// discovery_checkpoints carries a unique (run_id, step_number)
+			// index, so the two projects' rows need distinct run ids — the
+			// same disambiguation list_id / target_id do above. Without it
+			// both rows key on (null, null) and the second insert
+			// dup-keys.
+			if name == gomongo.CollectionDiscoveryCheckpoints {
+				doc["run_id"] = "run-" + projID
+				doc["step_number"] = 1
 			}
 			if _, err := col.InsertOne(ctx, doc); err != nil {
 				t.Fatalf("seed %s for %s: %v", name, projID, err)

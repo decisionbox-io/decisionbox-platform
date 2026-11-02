@@ -34,6 +34,7 @@ const (
 	CollectionDiscoveryValidationResults = gomongo.CollectionDiscoveryValidationResults
 	CollectionDiscoveryRecommendationLog = gomongo.CollectionDiscoveryRecommendationLog
 	CollectionDiscoveryRunSteps          = gomongo.CollectionDiscoveryRunSteps
+	CollectionDiscoveryCheckpoints       = gomongo.CollectionDiscoveryCheckpoints
 	CollectionDiscoveryQuestions         = gomongo.CollectionDiscoveryQuestions
 	CollectionDiscoveryLedger            = gomongo.CollectionDiscoveryLedger
 	CollectionDiscoveryLedgerFindings    = gomongo.CollectionDiscoveryLedgerFindings

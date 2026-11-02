@@ -49,6 +49,32 @@ var schema = []struct {
 			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "discovery_date", Value: -1}}},
 			{Keys: bson.D{{Key: "project_id", Value: 1}}},
 			{Keys: bson.D{{Key: "created_at", Value: -1}}},
+			// Answers "which discoveries did this run produce" — the
+			// retire step of a resumed run, and the filter that keeps a
+			// run's own partial result out of its previous-discovery
+			// context. Absent on documents written before resume shipped.
+			{Keys: bson.D{{Key: "run_id", Value: 1}}},
+		},
+	},
+	{
+		// Exploration checkpoints — the agent writes one row per step of an
+		// in-flight run so a crashed run can be resumed; the API reads
+		// whether a prefix exists and purges the rows on cancel.
+		//
+		// The retention TTL is NOT created here: its expiry comes from
+		// DISCOVERY_CHECKPOINT_RETENTION, and the agent's EnsureIndexes owns
+		// it because it also owns the drop-and-recreate dance a changed
+		// expiry needs (expireAfterSeconds cannot be mutated in place).
+		// Two creators with two values would conflict on every boot.
+		Name: "discovery_checkpoints",
+		Indexes: []mongo.IndexModel{
+			{
+				Keys: bson.D{
+					{Key: "run_id", Value: 1},
+					{Key: "step_number", Value: 1},
+				},
+				Options: options.Index().SetUnique(true).SetName("uq_run_step"),
+			},
 		},
 	},
 	{
@@ -65,6 +91,47 @@ var schema = []struct {
 		Name: "discovery_runs",
 		Indexes: []mongo.IndexModel{
 			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "started_at", Value: -1}}},
+			// Same keys, restricted to runs that have not been discarded.
+			//
+			// The latest-run readers filter on `discarded_at: nil`, and that
+			// predicate is enough to lose the DISTINCT_SCAN the plain index
+			// gives their $group-$first aggregation: measured on Mongo 7 with
+			// three projects of 1,000 runs, examined documents went from 3 to
+			// 3,000 — a full-history fetch on every project-list request,
+			// which the review rules reject on a hot path. The partial index
+			// restores the scan (3 documents, DISTINCT_SCAN, and the
+			// discarded runs still correctly excluded).
+			//
+			// `discarded_at: nil` in a partialFilterExpression covers the
+			// missing field as well as an explicit null, which is what makes
+			// it match every run that was never discarded.
+			{
+				Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "started_at", Value: -1}},
+				Options: options.Index().
+					SetName("project_started_not_discarded").
+					SetPartialFilterExpression(bson.M{"discarded_at": nil}),
+			},
+			// The resumed-run pass of the same readers, which sorts on
+			// last_resumed_at instead of started_at: a resumed run keeps its
+			// original started_at, so the pass above hides it behind any
+			// newer run once it is no longer active.
+			//
+			// Needs its own index for exactly the reason the one above does.
+			// LatestByProjects depends on streaming each $group-$first off an
+			// index rather than doing a blocking in-memory sort, and
+			// last_resumed_at appeared in no index at all — so that pass
+			// fetched every historical run of every project on the list,
+			// measured at the same 3,000 examined documents for three
+			// projects of 1,000 runs, and with ZERO resumed runs among them.
+			//
+			// Same partial expression, so the discarded filter does not throw
+			// the scan away again.
+			{
+				Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "last_resumed_at", Value: -1}},
+				Options: options.Index().
+					SetName("project_resumed_not_discarded").
+					SetPartialFilterExpression(bson.M{"discarded_at": nil}),
+			},
 			{Keys: bson.D{{Key: "status", Value: 1}}},
 			// Supports the run-completion dispatcher's FIFO scan
 			// (status terminal, completion_hooks_fired_at unset,

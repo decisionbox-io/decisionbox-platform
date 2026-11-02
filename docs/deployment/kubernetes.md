@@ -198,6 +198,18 @@ env:
   #   AGENT_JOB_TIMEOUT_HOURS: "25"
   #   DISCOVERY_MAX_DURATION: "24h"
   DISCOVERY_MAX_DURATION: "24h"
+  # TTL on a run's exploration checkpoints — what makes a crashed or
+  # timed-out run resumable (POST /api/v1/runs/{runId}/resume). Forwarded to
+  # the agent Job by the API, which on this runner is the only way it reaches
+  # the agent at all. MUST exceed DISCOVERY_MAX_DURATION above, or a long
+  # run's early checkpoints expire while it is still running and the resume
+  # re-explores the steps they covered. Raise the two together:
+  #   DISCOVERY_MAX_DURATION: "168h" + DISCOVERY_CHECKPOINT_RETENTION: "192h"
+  # The default below leaves roughly a day after a 24h run for an operator to
+  # notice the failure and resume it. Checkpoints are deleted eagerly when a
+  # run completes or is cancelled, so the TTL only reclaims rows nobody came
+  # back to.
+  DISCOVERY_CHECKPOINT_RETENTION: "48h"
 ```
 
 The chart includes RBAC rules that grant the API service account permission to create and manage Jobs in its namespace.

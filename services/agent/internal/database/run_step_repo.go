@@ -48,11 +48,20 @@ func NewRunStepRepository(db *DB) *RunStepRepository {
 // inline so the existing field BSON/JSON tags stay stable. The `id`
 // field is the doc's ObjectID rendered as hex — the dashboard treats
 // it as an opaque cursor (see the package header).
+//
+// `attempt` is which attempt of the run wrote the row. A resume starts a new
+// attempt while the superseded agent may still be inside an LLM call, so
+// without it the two attempts' rows are indistinguishable and a reader
+// cannot tell the live feed from a dead attempt's tail. It is omitted when
+// zero, so rows written before the field existed — and rows from a writer
+// whose attempt is unknown — read back as "no attempt", which the API's
+// reader treats as attempt 1.
 type RunStepDoc struct {
 	ID        primitive.ObjectID `bson:"_id,omitempty" json:"-"`
 	IDHex     string             `bson:"-" json:"id"`
 	RunID     string             `bson:"run_id" json:"run_id"`
 	ProjectID string             `bson:"project_id,omitempty" json:"project_id,omitempty"`
+	Attempt   int                `bson:"attempt,omitempty" json:"attempt,omitempty"`
 	CreatedAt time.Time          `bson:"created_at" json:"created_at"`
 
 	models.RunStep `bson:",inline" json:",inline"`
@@ -62,13 +71,17 @@ type RunStepDoc struct {
 // now if the caller left it zero. projectID is optional — when empty,
 // the doc still works (the dashboard queries by run_id) but lean
 // per-project filters require it.
-func (r *RunStepRepository) AddStep(ctx context.Context, runID, projectID string, step models.RunStep) error {
+//
+// attempt is the writer's own attempt number; pass 0 when it is unknown,
+// which stores no attempt and so reads back as attempt 1.
+func (r *RunStepRepository) AddStep(ctx context.Context, runID, projectID string, attempt int, step models.RunStep) error {
 	if step.Timestamp.IsZero() {
 		step.Timestamp = time.Now()
 	}
 	doc := RunStepDoc{
 		RunID:     runID,
 		ProjectID: projectID,
+		Attempt:   attempt,
 		CreatedAt: time.Now(),
 		RunStep:   step,
 	}
@@ -84,6 +97,11 @@ func (r *RunStepRepository) AddStep(ctx context.Context, runID, projectID string
 // caller has — passing "" returns the head of the stream. limit <= 0
 // means "all". Each returned RunStepDoc has IDHex populated for the
 // caller to feed back as the next cursor.
+//
+// Deliberately NOT attempt-filtered. This is the writer-side repository; the
+// live feed's only production reader is the API's own RunStepRepository,
+// which does filter. Here, seeing every attempt's rows is what the writer's
+// round-trip tests need.
 func (r *RunStepRepository) ListByRun(ctx context.Context, runID, sinceID string, limit int) ([]RunStepDoc, error) {
 	filter := bson.M{"run_id": runID}
 	if sinceID != "" {
