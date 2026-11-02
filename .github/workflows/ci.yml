@@ -7,12 +7,7 @@ on:
     # tested. Add a base here deliberately and temporarily if a feature ever
     # needs to collect its PRs somewhere other than main, and take it out
     # again when that base is gone.
-    #
-    # !!! TEMPORARY — REVERT BEFORE MERGING THIS PR !!!
-    # `epic/**` is here only so this PR, whose base IS the epic branch, gets
-    # tested at all. It must come out in the last commit before merge; the
-    # whole point of the preceding commit was to stop carrying it.
-    branches: [main, 'epic/**']
+    branches: [main]
     # `labeled` is included so adding the `run-integration-tests` label actually
     # starts the label-gated integration-tests job — the default activity types
     # (opened/synchronize/reopened) don't fire on a label change, so without it
