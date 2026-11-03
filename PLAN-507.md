@@ -25,43 +25,103 @@ checkpoint at all: a death there re-pays the generation call and 2 calls per rec
 
 ## 2. Design
 
-### 2.1 Area draft: a `stage` on the existing collection
+### 2.1 Area drafts: their own collection
 
-`discovery_analysis_checkpoints` is already keyed `(run_id, area_id)` unique with the attempt
-fence, the staleness fence, the TTL and four purge sites. A draft is the same key at an
-earlier stage, so it goes in the same collection with a `Stage` field tagged
-`bson:"stage,omitempty"` (`"draft"` / `"completed"`). Read rule: **draft, or else
-completed** — so pre-v3 rows read as completed, which they are.
+**The problem.** A draft and a completed area are read differently: a completed area is
+restored *and skipped*, a draft is restored *and finished*. If a reader cannot tell them
+apart, a draft gets restored as completed — its insights enter the result with no verdicts,
+`filterEligibleInsights` fails open on a nil `Validation`, and unvalidated findings reach the
+recommender. So any design that puts both under `discovery_analysis_checkpoints`' existing
+`(run_id, area_id)` key needs a discriminator, and every reader of that collection — now and
+later, in this version and the previous one — has to honour it.
 
-Three things then come free from the existing index: `SaveArea`'s `ReplaceOne` upsert makes
-the completed write **replace** the draft (markers included — no orphans, no precedence
-puzzle), the `attempt: {$lte: n}` fence already escalates a superseded attempt's draft write
-to `ErrSupersededAttempt`, and purge/TTL/cascade are untouched.
+So drafts get their own collection, `discovery_analysis_drafts`, unique on
+`(run_id, area_id)`, same TTL setting, same attempt and exploration-attempt fences.
+`discovery_analysis_checkpoints` and its repository are then **not modified at all**, which
+is the main thing this buys: v2's storage layer cannot regress, and no v2 reader can
+misinterpret a v3 row because it has never heard of the collection (see §6). The
+`missingValueFigures` / `applyMissingValueFigures` helpers are in the same Go package, so the
+draft repo reuses them for the `bson:"-"` `ValueMissing` flag without touching their file.
+
+Two rules replace what a shared key would have given for free:
+
+- **A completed row wins.** At load, drop any draft whose area also has a
+  `discovery_analysis_checkpoints` row. Three lines, and it makes a stale draft harmless.
+- **Delete the draft when the area completes**, best-effort, with the TTL as the backstop and
+  the rule above as the correctness guarantee — v1/v2's discipline everywhere else.
+
+It also gives an operational lever a shared key cannot: dropping `discovery_analysis_drafts`
+degrades every in-flight run to exactly v2 behaviour. Dropping
+`discovery_analysis_checkpoints` would take v2 down with it.
+
+**Alternatives.**
+
+- **A `stage: "draft"|"completed"` field on the shared row** — my first choice, now rejected.
+  It reads well (`SaveArea`'s existing `ReplaceOne` upsert makes the completed write *replace*
+  the draft, markers included, so no delete and no precedence rule) but those benefits come
+  from reusing the collection, not from the field; the field is the *cost* of the reuse. And
+  it is the version-skew hazard in §6: a v2 agent does not know `stage` and restores the
+  draft as a finished area. I also overstated the alternative's price — "precedence logic"
+  turned out to be the three-line rule above.
+- **Derive the state instead of storing a flag** — an area is finished iff every insight it
+  carries has a verdict or was cap-skipped, which is readable off the row and would collapse
+  v2's restore and v3's into one path. Genuinely tidier than `stage`, and still rejected,
+  because it shares `stage`'s actual defect: a v2 agent applies v2's meaning to the row
+  regardless of what a v3 agent could have derived from it.
+- **A sentinel `area_id`** (`"draft:<id>"`) on the shared row. Rejected: it makes the draft
+  and the completed row two different keys, which loses the replace that was the whole
+  argument for sharing the collection, and leaves a row a v2 reader would key as an area
+  named `draft:conversion`.
 
 ### 2.2 Per-insight markers
 
+**The problem.** Once the area's insights are durable, each insight's verifier+refuter verdict
+(2 LLM calls) has to become durable *as it lands*, keyed so a later attempt can tell which
+insights still need validating — and the writes come from `runBounded`'s workers, so they
+have to be safe concurrently.
+
 ```go
-// AnalysisAreaCheckpointDoc, draft rows only
+// AnalysisAreaDraftDoc
 InsightVerdicts map[string]models.ValidationResult `bson:"insight_verdicts,omitempty"`
 
-func (r *DiscoveryAnalysisCheckpointRepository) SaveInsightVerdict(ctx, in InsightVerdictInput) error
-// filter: {run_id, area_id, stage: "draft", attempt: {$lte: n}}
+func (r *DiscoveryAnalysisDraftRepository) SaveInsightVerdict(ctx, in InsightVerdictInput) error
+// filter: {run_id, area_id, attempt: {$lte: n}}
 // update: {$set: {"insight_verdicts.<insight_id>": vr}}
 ```
 
-`ValidationResult` is fully BSON-tagged and carries both `StructuredVerdict`s; insight ids are
-UUIDs, so legal BSON field names.
+A map of distinct dotted paths on the draft's own document. `ValidationResult` is fully
+BSON-tagged and carries both `StructuredVerdict`s; insight ids are UUIDs, so legal BSON field
+names. `runBounded` joins before returning, so no marker can land after the area completes. A
+failed write is logged and swallowed (cost: one re-validated insight); the
+`ErrSupersededAttempt` escalation stays on the area-level write, next to the existing
+`ownershipLost` gate at `orchestrator.go:1674`.
 
 A marker is stored **only for an insight actually submitted to the verifier**, never for one
 stamped `skipped_budget_cap` — so `len(InsightVerdicts)` is an exact budget count and a draft
 needs no `insights_validated` field. The opposite of v2's choice for completed areas, whose
 `ValidationResults` *do* include cap-skipped entries, which is why v2 records the number.
 
-Markers are written from `runBounded`'s workers: distinct dotted paths on one document are
-safe, and `runBounded` joins before returning, so none can land after the completed row. A
-failed write is logged and swallowed (cost: one re-validated insight); the
-`ErrSupersededAttempt` escalation stays on the area-level write, next to the existing
-`ownershipLost` gate at `orchestrator.go:1674`.
+**Alternatives.**
+
+- **A third collection keyed `(run_id, area_id, insight_id)`** — the issue's literal spec.
+  Rejected: its own index, TTL and purge entries, orphan rows to reason about, and a second
+  read on a path that already reads the draft. Embedding gets the issue's logical key and
+  dies with the row it describes.
+- **Re-write the whole draft row after each verdict** (`ReplaceOne` with the updated step) —
+  no map, no dotted paths, the row simply *is* the current state. Rejected on correctness,
+  not cost: two workers each replacing the document with their own copy of the verdict set
+  lose one of the two. Latent at the default `VALIDATION_CONCURRENCY=1`, real on any
+  deployment that raises it. The per-field `$set` is what makes concurrent verdict writes
+  safe without a lock.
+- **An array with `$push`** — also concurrency-safe, but not idempotent: a retried write
+  appends a second entry, and the reader needs a scan plus a dedup. A map keyed by id is
+  idempotent by construction.
+- **Keying on the insight's ordinal in the draft's list** rather than its id. Viable, and
+  strictly safer in one respect: an ordinal survives reminting with no bookkeeping. Id chosen
+  because §2.4 defers the remint to the merge boundary, which makes the id stable for the
+  area's whole in-flight life, and because it is the key the issue asks for. The two
+  decisions are coupled — if the remint ever moves to restore time, this key must become the
+  ordinal.
 
 ### 2.3 When the draft is written
 
@@ -94,12 +154,14 @@ restoring the same immutable draft finds every marker under one set of keys. The
 happens once, before the `analysisLog` / `allInsights` appends, reusing v2's
 `reidentifyRestoredArea` verbatim. A freshly-analysed area is not reminted.
 
-### 2.5 Recommendation checkpoint: a new collection
+### 2.5 Recommendation checkpoint: the second new collection
 
-Run-scoped, different payload — so neither `discovery_analysis_checkpoints` (keyed by
-`area_id`, inlines `AnalysisStep`) nor `discovery_checkpoints` (both readers scan in
-`step_number` order) fits. New collection `discovery_recommendation_checkpoints`, unique on
-`run_id`, TTL from the same `DISCOVERY_CHECKPOINT_RETENTION` with the same drop-and-recreate
+Run-scoped, different payload — so neither `discovery_analysis_drafts` (keyed by `area_id`,
+inlines `AnalysisStep`) nor `discovery_checkpoints` (both readers scan in `step_number`
+order) fits. Kept separate from the area drafts rather than discriminated by a `kind` field,
+for §2.1's reason: each then gets its natural unique index and its own inlined payload, and
+the marginal cost of the second collection is one more entry in lists this PR already edits.
+`discovery_recommendation_checkpoints`, unique on `run_id`, TTL from the same `DISCOVERY_CHECKPOINT_RETENTION` with the same drop-and-recreate
 dance. `SaveDraft` is an attempt-fenced `ReplaceOne` upsert; `SaveRecVerdict` is a `$set` on
 `rec_verdicts.<rec_id>`.
 
@@ -209,30 +271,40 @@ draft is written — `BuildRecommendationBundle` ignores figures, Phase 7 drops 
 
 **New**
 
+- `services/agent/internal/database/discovery_analysis_draft_repo.go` — `SaveDraft`,
+  `SaveInsightVerdict`, `LoadDrafts`, `DeleteByArea`, `DeleteByRun`, `TouchByRun`,
+  `EnsureIndexes`, `Retention`. Reuses the package's existing `missingValueFigures` /
+  `applyMissingValueFigures` and `isIndexOptionsConflict`.
 - `services/agent/internal/database/discovery_recommendation_checkpoint_repo.go` —
   `SaveDraft`, `SaveRecVerdict`, `Load`, `DeleteByRun`, `TouchByRun`, `EnsureIndexes`,
   `Retention`.
+- `services/agent/internal/discovery/analysis_draft_resume.go` — `checkpointAreaDraft`,
+  `checkpointInsightVerdict`, `loadAreaDrafts` (with the completed-row-wins narrowing),
+  `restoreAreaDraft`, `discardAreaDrafts`, `refreshAreaDraftTTL`.
 - `services/agent/internal/discovery/recommendation_resume.go` —
   `checkpointRecommendationDraft`, `checkpointRecommendationVerdict`,
   `loadRecommendationDraft`, the §2.6 gate + citation remap,
   `reidentifyRestoredRecommendations`, `refreshRecommendationCheckpointTTL`,
   `discardRecommendationCheckpoint`.
 
+**Not touched:** `discovery_analysis_checkpoint_repo.go` and `analysis_resume.go`'s existing
+restore path. v2's storage layer and semantics are unchanged, which is §2.1's point. The only
+edit near them is exporting `reidentifyRestoredArea`'s old→new id map for `storedIDByLive`.
+
 **Edited**
 
 | File | Change |
 |---|---|
-| `libs/go-common/mongodb/collections.go` + `services/agent/internal/database/mongodb.go` | the collection constant and its alias |
-| `database/discovery_analysis_checkpoint_repo.go` | `Stage` + `InsightVerdicts`; `SaveAreaDraft`; `SaveInsightVerdict`; `LoadAreas` splits completed vs. draft; `SaveArea` stamps `completed` |
+| `libs/go-common/mongodb/collections.go` + `services/agent/internal/database/mongodb.go` | two collection constants and their aliases |
 | `models/checkpoint.go` | `AnalysisAreaDraft`, `RecommendationCheckpoint` |
-| `discovery/analysis_resume.go` | `checkpointAreaDraft`, `checkpointInsightVerdict`, the draft half of the load/narrow/restore path, expose `reidentifyRestoredArea`'s old→new map |
+| `discovery/analysis_resume.go` | return `reidentifyRestoredArea`'s old→new map so §2.6 can build `storedIDByLive` |
 | `discovery/validation_phase.go` | extract `insightValidationFrom`; a `perItemCheckpoint` param (`done` map + concurrency-safe `save` hook) on `validateInsights` / `validateRecommendations`; restored-marker branches |
-| `discovery/orchestrator.go` | §4 step 2's head extraction + draft branch; per-item wiring; remint at the merge boundary; `storedIDByLive`; Phase 5 restore branch; Phase 5.5 wiring + rec remint; repo field, `Opts` field, typed-nil normalization |
-| `discovery/orchestrator_resume.go` | `discardCheckpoints` also drops the rec checkpoint |
-| `agentserver/agentserver.go` | construct (~:933), `EnsureIndexes` (~:961), `Opts` (~:1134) |
-| `api/database/discovery_checkpoint_repo.go`, `database.go`, `init.go` | purge the third collection; cascade list; unique `run_id` index (not the TTL) |
-| `docs/concepts/discovery-lifecycle.md`, `docs/reference/data-models.md` | what a draft and a marker keep; `stage` / `insight_verdicts`; a `RecommendationCheckpoint` section |
-| `docs/reference/configuration.md`, `docs/reference/helm-values.md`, `helm-charts/decisionbox-api/values.yaml` | the retention TTL now covers three collections (helm-values.md still says exploration only — v2's omission) |
+| `discovery/orchestrator.go` | §4 step 2's head extraction + draft branch; per-item wiring; remint at the merge boundary; `storedIDByLive`; Phase 5 restore branch; Phase 5.5 wiring + rec remint; two repo fields, two `Opts` fields, typed-nil normalization |
+| `discovery/orchestrator_resume.go` | `discardCheckpoints` also drops the area drafts and the rec checkpoint |
+| `agentserver/agentserver.go` | construct both repos (~:933), `EnsureIndexes` (~:961), `Opts` (~:1134) |
+| `api/database/discovery_checkpoint_repo.go`, `database.go`, `init.go` | purge both new collections; two cascade-list entries; two index blocks (not the TTLs — the agent owns that dance) |
+| `docs/concepts/discovery-lifecycle.md`, `docs/reference/data-models.md` | what a draft and a marker keep; `AnalysisAreaDraft` and `RecommendationCheckpoint` sections; the completed-row-wins rule |
+| `docs/reference/configuration.md`, `docs/reference/helm-values.md`, `helm-charts/decisionbox-api/values.yaml` | the retention TTL now covers four collections (helm-values.md still says exploration only — v2's omission) |
 | `CHANGELOG.md` | Unreleased entry |
 
 ## 4. Build steps
@@ -288,12 +360,13 @@ draft is written — `BuildRecommendationBundle` ignores figures, Phase 7 drops 
 
 ## 5. Tests
 
-**Repositories (unit).** `SaveAreaDraft` input validation and the `"draft"` stamp;
+**Repositories (unit).** `SaveDraft` input validation on both new repos;
 `SaveInsightVerdict`'s dotted path and its `$set`-only update (no `attempt`,
-`exploration_attempt`, `created_at`); disjoint-tags tests for both docs — live for
+`exploration_attempt`, `created_at`); disjoint-tags tests for both new docs — live for
 `RecommendationCheckpointDoc`, which inlines a struct already owning
-`bson:"recommendations"`; `Load`'s exploration-attempt fence both ways, and a missing row
-returning nil not an error.
+`bson:"recommendations"`; each loader's exploration-attempt fence both ways, and a missing
+row returning nil not an error; and an assertion that no test touches
+`discovery_analysis_checkpoint_repo.go`'s behaviour, since §2.1 leaves it unmodified.
 
 **Orchestrator seams (fakes, no Mongo).** `checkpointAreaDraft`'s five no-ops and both
 superseded paths; a swallowed write failure; `restoreAreaDraft` returning step, insights and
@@ -310,11 +383,11 @@ same for `validateRecommendations`; a cap-skipped insight storing no marker; `Co
 asserting one `save` per submitted doc, all landed before return.
 
 **Integration (real Mongo + Qdrant, testcontainers).** Round trip of a fat draft and a fat
-rec checkpoint; **a draft replaced by its completed row leaving one document with the markers
-gone** (§2.1's structural claim); markers accumulating across three attempts on one immutable
+rec checkpoint; **completed-row-wins**: an area with both a draft and a completed row loads
+as completed, including when the delete-on-complete is made to fail; markers accumulating across three attempts on one immutable
 draft; the attempt fence on both writes, both directions; the staleness fence as the real
 three-attempt TTL sequence; `TouchByRun` moving only `created_at`; `EnsureIndexes` including
-the TTL drop-and-recreate; a purge and a project cascade taking all three collections;
+the TTL drop-and-recreate; a purge and a project cascade taking all four collections;
 **J-of-M end to end** (exactly M−J verifier calls, no duplicated `ValidationResult`);
 **the `E11000` regression proven by reverting the remint** for insight and rec ids; a
 restored-and-reminted insight not self-matching in the duplicate check.
@@ -341,8 +414,15 @@ PRs, so that vet is the only pre-merge compile check those files get.
 | The head extraction changes behaviour in the hottest loop in the product | Pure move, no reorder; `continue`s stay at the call site; its own commit so the diff reads as a move. The `else` variant is the fallback. |
 | A restored draft's ids collide in the tail — silent, since Phase 8 is non-fatal, ending with a successful run that has nothing in search | Remint on both sides, with the regression test proven by reverting the fix. The defect class v3 is most likely to introduce. |
 | The rec gate is too permissive → recs about findings the run no longer has | §2.6's exact set comparison, with `recoverRelatedInsightIDs` off the restored path so a broken remap fails loudly; `validateRelatedInsightIDs` is the net. |
-| Three collections to keep purged | Added to all five wiring sites in one commit, cascade test extended — the same miss v2's review caught. |
-| **Backward version skew.** A pre-v3 agent resuming a run a v3 agent drafted does not know `stage`, so it restores the draft as a completed area with no verdicts; `filterEligibleInsights` fails open on a nil `Validation`, so those findings reach the recommender unvalidated. | Needs a rollback *between* the crash and the resume, and releases are lockstep. Stated in the PR body rather than papered over. The one thing a separate draft collection would make impossible — §7. |
+| Four collections to keep purged | Both new ones added to all five wiring sites in one commit, cascade test extended — the same miss v2's review caught. |
+| A stale draft outliving its area (the delete-on-complete is best-effort) | Correctness does not depend on it: a completed `discovery_analysis_checkpoints` row wins at load (§2.1), and the TTL reclaims the row. Covered by an integration test that completes an area with the delete made to fail. |
+
+**Version skew is designed out rather than mitigated,** which is why it is no longer a row
+here. Backward: a v2 agent cannot misread a v3 draft, because drafts live in collections it
+never queries — it resumes such a run exactly as it does today, re-analysing the drafted area
+from scratch. Forward: a v3 agent reads v2's rows unchanged, since v2's collection and
+loader are untouched. Dropping the two new collections returns any deployment to v2
+behaviour.
 
 Lower-order risks are handled where they arise and not restated here: the validation cap
 under changed config (§2.8), draft document growth and concurrent marker writes (§2.2), and
@@ -350,19 +430,11 @@ under changed config (§2.8), draft document growth and concurrent marker writes
 
 ## 7. Alternatives
 
-- **A third collection for the per-insight markers,** as the issue literally specifies.
-  Rejected: its own index, TTL dance and five purge sites, orphan rows when an area completes,
-  and a second read on a path that already reads the area rows. Embedding gets the issue's
-  logical key, free cleanup and no new infrastructure.
-- **A separate collection for the area drafts** instead of `stage` — the closest call here. It
-  kills the version-skew row in §6 (an old agent cannot misread a collection it has never
-  heard of) for a new index, a new TTL dance, two more purge sites, an explicit
-  delete-on-complete write (so orphan drafts become a state to reason about) and
-  draft-vs-completed precedence. If you would rather pay for the immunity, only §2.1 and §3's
-  storage rows change.
-- **A sentinel `area_id` row for the rec draft** in `discovery_analysis_checkpoints`.
-  Rejected: that doc inlines `AnalysisStep`, so every reader would decode rows into the wrong
-  shape.
+The per-section alternatives are in §2.1 (where the draft rows live: a `stage` field on the
+shared row, deriving the state, a sentinel `area_id`) and §2.2 (how a marker is stored: a
+third collection, re-writing the row per verdict, a `$push` array, an ordinal key). The
+remaining cross-cutting ones:
+
 - **Idempotent per-item writes into the live collections** (the issue's design). Rejected for
   the reason v2 rejected it: an upsert lets a superseded attempt reclaim shared-id rows under
   its own `discovery_id`, and its cleanup then deletes what are by then the live attempt's
