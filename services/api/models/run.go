@@ -280,7 +280,7 @@ func (r *DiscoveryRun) ReservationBelongsToASupersededAttempt() bool {
 // noticed. Both are "when did this reservation's work stop", so the resume
 // timestamp is preferred and the completion timestamp is the fallback.
 //
-// Zero when neither exists, and callers pass that through as "unknown"
+// Zero when none exists, and callers pass that through as "unknown"
 // rather than substituting a later clock reading. The reservation's recorded
 // duration is accounting, and the gap between an attempt stopping and
 // whatever closes its reservation later can be hours.
@@ -297,6 +297,17 @@ func (r *DiscoveryRun) ReservationOwnerEndedAt() time.Time {
 	// not the one holding this reservation.
 	if r.PolicyReservationOwnerEndedAt != nil {
 		return *r.PolicyReservationOwnerEndedAt
+	}
+	// Before last_resumed_at, because a PAUSED attempt stopped when it paused
+	// and the resume that replaced it came afterwards — by however long the
+	// operator took to come back, which is the whole point of pausing. Added
+	// with #508: a paused first attempt sets neither completed_at (it has not
+	// completed) nor last_resumed_at (it has not been resumed yet), so without
+	// this the chain fell through to the zero time and a resume reported a
+	// year-one EndedAt for a reservation it was closing — and preserved that
+	// zero as the owner's end time, so every later retry inherited it.
+	if r.LastPausedAt != nil {
+		return *r.LastPausedAt
 	}
 	if r.LastResumedAt != nil {
 		return *r.LastResumedAt

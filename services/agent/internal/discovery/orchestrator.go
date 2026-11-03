@@ -1382,14 +1382,24 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			if errors.Is(err, ai.ErrAttemptSuperseded) {
 				return nil, err
 			}
-			// A cooperative pause is not a failure either. The engine has
-			// already stopped on a checkpointed step and pauseAttempt has
-			// written `paused`; returning before the persistence tail is the
-			// point — a paused run saves no discovery, so there is nothing for
-			// a later resume to retire, and its checkpoints survive because
+			// A cooperative pause is not a failure either, and THIS is where
+			// the status write happens — the engine only signals.
+			//
+			// Here rather than in the hook that discovered it, because the
+			// engine goes on to record the interrupted step's counters and
+			// live-feed row, and that recording writes progress through
+			// UpdateStatus, whose filter excludes only a cancelled run. A
+			// pause written inside the hook would therefore be overwritten
+			// with `running` by the very next line of the engine's own
+			// iteration, leaving a run nobody is working on looking live. By
+			// the time Explore has returned, nothing further will write.
+			//
+			// Returning before the persistence tail is the other half: a
+			// paused run saves no discovery, so there is nothing for a later
+			// resume to retire, and its checkpoints survive because
 			// discardCheckpoints only runs on a claimed terminal success.
 			if errors.Is(err, ai.ErrPauseRequested) {
-				return nil, err
+				return nil, o.pauseAttempt(ctx, o.pauseDetailFor(explorationResult))
 			}
 			return nil, fmt.Errorf("exploration failed: %w", err)
 		}

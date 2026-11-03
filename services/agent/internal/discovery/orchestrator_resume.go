@@ -183,13 +183,20 @@ func (o *Orchestrator) checkpointStep(ctx context.Context, step models.Explorati
 		return ai.ErrAttemptSuperseded
 	}
 
-	// Everything this step owed is now durable, so this is the clean stop the
-	// operator asked for. Taken here rather than at the top of the next
-	// iteration so the pause lands on the step boundary itself — the next
-	// iteration begins with an LLM call, and a pause that waited for it would
-	// pay for a step it then threw away.
+	// The step is durable, so this is the clean stop the operator asked for —
+	// SIGNALLED here and performed by the caller, which is not a detail.
+	//
+	// This hook runs BEFORE the engine records the step's bookkeeping, and
+	// that bookkeeping includes StatusReporter.AddExplorationStep, which
+	// writes progress through UpdateStatus — a write whose filter excludes
+	// only a cancelled run. So flipping the run to `paused` here and letting
+	// the engine carry on would have the very next write put `running` back
+	// on it, leaving a run nothing is working on in a status that says
+	// otherwise. Signalling instead lets the engine finish the step's
+	// accounting and the orchestrator take the stop afterwards, once nothing
+	// further will write.
 	if pauseRequested {
-		return o.pauseAttempt(ctx, fmt.Sprintf("Paused after exploration step %d — resume to continue", step.Step))
+		return ai.ErrPauseRequested
 	}
 	return nil
 }
@@ -231,8 +238,11 @@ func (o *Orchestrator) fenceReplayedStep(ctx context.Context, step int) error {
 	// written by the attempt that earned them and are untouched here, so
 	// stopping leaves the run exactly as resumable as it was, having spent
 	// nothing. The next resume replays the same prefix.
+	//
+	// Signalled, not performed — same reason as checkpointStep above: the
+	// status write belongs after the engine has stopped writing.
 	if standing == standingPauseRequested {
-		return o.pauseAttempt(ctx, fmt.Sprintf("Paused while replaying step %d — resume to continue", step))
+		return ai.ErrPauseRequested
 	}
 	return nil
 }
@@ -941,11 +951,6 @@ func (o *Orchestrator) pauseAttempt(ctx context.Context, detail string) error {
 		return ai.ErrPauseRequested
 	}
 
-	// Booked BEFORE the status flip, the same order recordAttemptOutcome
-	// uses: this attempt really did spend that compute, and a pause must not
-	// lose it or the resumed run reports less work than it was charged for.
-	o.statusReporter.AddActiveTime(ctx, time.Since(o.attemptStartedAt))
-
 	applied, err := o.statusReporter.Pause(ctx, detail)
 	if err != nil {
 		applog.WithFields(applog.Fields{
@@ -960,6 +965,18 @@ func (o *Orchestrator) pauseAttempt(ctx context.Context, detail string) error {
 		return ai.ErrAttemptSuperseded
 	}
 
+	// Booked AFTER the write applied, which is the opposite of
+	// recordAttemptOutcome's order and deliberately so. A terminal write
+	// happens once; a pause can be attempted at every seam until one lands,
+	// and AddActiveTime adds time.Since(attemptStartedAt) — the attempt's
+	// WHOLE duration, not a delta. Booked first, a pause write that failed
+	// would leave the run going and bank the full duration again at the next
+	// seam, inflating active_ms once per attempt. Booking after means a
+	// failed pause books nothing, which matches the rule the field already
+	// documents: an attempt that did not reach its terminal write contributes
+	// nothing.
+	o.statusReporter.AddActiveTime(ctx, time.Since(o.attemptStartedAt))
+
 	// One row in the live feed, so the log the operator is watching explains
 	// why it stops rather than just ending.
 	o.statusReporter.AddStep(ctx, models.RunStep{
@@ -972,6 +989,21 @@ func (o *Orchestrator) pauseAttempt(ctx context.Context, detail string) error {
 		"run_id": o.runID, "attempt": o.resume.attemptNumber(), "detail": detail,
 	}).Info("Discovery run paused at an operator's request; its checkpoints are kept, so it can be resumed")
 	return ai.ErrPauseRequested
+}
+
+// pauseDetailFor is the phase detail a paused exploration run shows, which is
+// also the reason recorded on its lifecycle event.
+//
+// Reads the step count off the result the engine returned rather than being
+// passed a number, so the replay and the live-step seams — which stop at
+// different places and know different things — produce one consistent line.
+// A nil or empty result means the pause landed during replay before any step
+// was re-emitted, and naming no step is better than naming step 0.
+func (o *Orchestrator) pauseDetailFor(res *ai.ExplorationResult) string {
+	if res == nil || res.TotalSteps <= 0 {
+		return "Paused during exploration — resume to continue"
+	}
+	return fmt.Sprintf("Paused after exploration step %d — resume to continue", res.TotalSteps)
 }
 
 // stopBefore is the gate for the phase boundaries where a cooperative pause is

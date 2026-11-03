@@ -37,6 +37,7 @@ const getRun = jest.fn();
 const triggerDiscovery = jest.fn();
 const cancelRun = jest.fn();
 const pauseRun = jest.fn();
+const getDebugLogs = jest.fn();
 
 jest.mock('@/lib/api', () => ({
   __esModule: true,
@@ -56,7 +57,7 @@ jest.mock('@/lib/api', () => ({
     getProjectStatus: (...a: unknown[]) => getProjectStatus(...a),
     listProjectQuestions: (...a: unknown[]) => listProjectQuestions(...a),
     listRunSteps: (...a: unknown[]) => listRunSteps(...a),
-    getDebugLogs: jest.fn().mockResolvedValue([]),
+    getDebugLogs: (...a: unknown[]) => getDebugLogs(...a),
     triggerDiscovery: (...a: unknown[]) => triggerDiscovery(...a),
     getRun: (...a: unknown[]) => getRun(...a),
     cancelRun: (...a: unknown[]) => cancelRun(...a),
@@ -110,6 +111,7 @@ beforeEach(() => {
   listDiscoveries.mockResolvedValue([]);
   listProjectQuestions.mockResolvedValue([]);
   listRunSteps.mockResolvedValue([]);
+  getDebugLogs.mockResolvedValue([]);
 });
 
 describe('ProjectPage status polling (#405)', () => {
@@ -1440,6 +1442,50 @@ describe('Operator pause (#508)', () => {
     expect(cancelRun).not.toHaveBeenCalled();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(screen.queryByText('Discovery complete')).not.toBeInTheDocument();
+  });
+
+  it('keeps watching a paused run, so a resume elsewhere is noticed', async () => {
+    // A paused run is the state a run sits in longest and the one most
+    // likely to be acted on from another tab. Without a slow watcher the
+    // panel shows Resume and Cancel for a run somebody else already resumed,
+    // indefinitely — a non-live run does not poll, so nothing brings it back.
+    // Reported by a Codex review round.
+    jest.useFakeTimers();
+    try {
+      getProjectStatus.mockResolvedValue(status(makeRun({ status: 'paused', last_checkpoint_step: 12 })));
+      renderPage();
+      await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+      const afterFirst = getProjectStatus.mock.calls.length;
+
+      // The slow cadence is 15s.
+      await act(async () => { await jest.advanceTimersByTimeAsync(16_000); });
+
+      expect(getProjectStatus.mock.calls.length).toBeGreaterThan(afterFirst);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('stops tailing debug logs for a paused run', async () => {
+    // The tail polls every two seconds while a run is live, and a paused run
+    // has no agent writing anything. The panel cannot be dismissed either, so
+    // a tab left open would query the API and Mongo indefinitely for rows
+    // that cannot arrive. Reported by a Codex review round.
+    jest.useFakeTimers();
+    window.localStorage.setItem('db:showDebugLogs:p1', '1');
+    try {
+      getProjectStatus.mockResolvedValue(status(makeRun({ status: 'paused', last_checkpoint_step: 12 })));
+      renderPage();
+      await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+      const afterFirst = getDebugLogs.mock.calls.length;
+
+      await act(async () => { await jest.advanceTimersByTimeAsync(10_000); });
+
+      expect(getDebugLogs.mock.calls.length).toBe(afterFirst);
+    } finally {
+      window.localStorage.removeItem('db:showDebugLogs:p1');
+      jest.useRealTimers();
+    }
   });
 
   it('does not double-count a paused run’s elapsed time', async () => {

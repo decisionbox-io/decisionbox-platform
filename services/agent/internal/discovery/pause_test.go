@@ -9,6 +9,7 @@ package discovery
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -344,8 +345,13 @@ func TestCheckpointStep_PauseStopsAFTERTheStepIsDurable(t *testing.T) {
 		if len(doc.markers) == 0 || doc.markers[len(doc.markers)-1] != 7 {
 			t.Errorf("markers = %v, want the run marked resumable at step 7", doc.markers)
 		}
-		if len(doc.pauses) != 1 {
-			t.Errorf("pause writes = %d, want 1", len(doc.pauses))
+		// SIGNALS, and must not write the status itself. The engine goes on
+		// to record this step's counters, and that recording writes progress
+		// through UpdateStatus — which would put `running` straight back over
+		// a `paused` written here, leaving a run nobody is working on looking
+		// live. The orchestrator takes the stop once the engine has finished.
+		if len(doc.pauses) != 0 {
+			t.Errorf("the hook wrote the pause itself (%v); the engine's next write would overwrite it with `running`", doc.pauses)
 		}
 	})
 
@@ -397,8 +403,9 @@ func TestFenceReplayedStep_PausesWithoutWritingRows(t *testing.T) {
 	if len(store.steps) != 0 {
 		t.Errorf("replay wrote %d checkpoint rows; the prefix must keep the attempt that earned it", len(store.steps))
 	}
-	if len(doc.pauses) != 1 {
-		t.Errorf("pause writes = %d, want 1", len(doc.pauses))
+	// Signals only, like checkpointStep.
+	if len(doc.pauses) != 0 {
+		t.Errorf("the replay fence wrote the pause itself (%v)", doc.pauses)
 	}
 }
 
@@ -542,4 +549,69 @@ func TestCheckpointAnalysisArea_PauseStopsAFTERTheAreaIsDurable(t *testing.T) {
 			t.Error("paused on an area whose checkpoint write failed; the resume would re-analyse it")
 		}
 	})
+}
+
+// TestPauseAttempt_BooksNoComputeWhenTheWriteFails is the second half of a
+// Codex finding, and the subtler half.
+//
+// A pause can be attempted at every seam until one lands, and AddActiveTime
+// adds time.Since(attemptStartedAt) — the attempt's WHOLE duration, not a
+// delta since the last call. Booked before the write, a pause that failed
+// would leave the run going and bank that full duration again at the next
+// seam, so active_ms would inflate once per attempt and the dashboard would
+// report a run as having spent several times the compute it did.
+func TestPauseAttempt_BooksNoComputeWhenTheWriteFails(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("a failed write books nothing", func(t *testing.T) {
+		doc := newFakeRunDoc()
+		doc.pauseErr = errors.New("mongo is down")
+		o := &Orchestrator{
+			runID:            "run-1",
+			statusReporter:   reporterFor(doc, 1),
+			attemptStartedAt: time.Now().Add(-time.Minute),
+		}
+		if err := o.pauseAttempt(ctx, "detail"); err == nil {
+			t.Fatal("a failed pause write produced no error")
+		}
+		if len(doc.active) != 0 {
+			t.Errorf("active-time bookings = %d, want 0 — an attempt that did not reach its terminal write contributes nothing", len(doc.active))
+		}
+	})
+
+	t.Run("a write that did not apply books nothing either", func(t *testing.T) {
+		doc := newFakeRunDoc()
+		doc.pauseApplied = false
+		o := &Orchestrator{
+			runID:            "run-1",
+			statusReporter:   reporterFor(doc, 1),
+			attemptStartedAt: time.Now().Add(-time.Minute),
+		}
+		if err := o.pauseAttempt(ctx, "detail"); !errors.Is(err, ai.ErrAttemptSuperseded) {
+			t.Fatalf("pauseAttempt() = %v, want ErrAttemptSuperseded", err)
+		}
+		if len(doc.active) != 0 {
+			t.Errorf("active-time bookings = %d, want 0 — the run moved on, so this attempt claims nothing", len(doc.active))
+		}
+	})
+}
+
+// TestPauseDetailFor_NamesTheStepItStoppedAfter pins the phase detail, which
+// is both what the dashboard shows and the reason on the lifecycle event.
+func TestPauseDetailFor_NamesTheStepItStoppedAfter(t *testing.T) {
+	o := &Orchestrator{}
+	if got := o.pauseDetailFor(&ai.ExplorationResult{TotalSteps: 42}); !strings.Contains(got, "42") {
+		t.Errorf("detail = %q, want it to name step 42", got)
+	}
+	// A pause during replay, before any step was re-emitted: naming no step
+	// beats naming step 0.
+	for _, res := range []*ai.ExplorationResult{nil, {TotalSteps: 0}} {
+		got := o.pauseDetailFor(res)
+		if strings.Contains(got, "0") {
+			t.Errorf("detail = %q, want no step number when none is known", got)
+		}
+		if got == "" {
+			t.Error("detail is empty; the dashboard would show a paused run with no explanation")
+		}
+	}
 }

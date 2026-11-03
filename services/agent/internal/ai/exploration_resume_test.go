@@ -1175,6 +1175,18 @@ func TestPauseStopsTheRunAfterTheStepIsCheckpointed(t *testing.T) {
 	if len(h.llm.Calls) != 2 {
 		t.Errorf("LLM calls = %d, want 2 — the run kept spending after the pause", len(h.llm.Calls))
 	}
+	// The interrupted step is in the RESULT and was reported through onStep.
+	// Both matter, and the second is the one a pause could silently lose: the
+	// onStep hook is where the step's query and schema-action counters are
+	// recorded, and resume replays rows WITHOUT re-incrementing them — so a
+	// step skipped here is missing from the run's totals for good. Reported by
+	// a Codex review round.
+	if res.TotalSteps != 2 || len(res.Steps) != 2 {
+		t.Errorf("TotalSteps = %d, Steps = %d, want 2 and 2 — the interrupted step is part of the run", res.TotalSteps, len(res.Steps))
+	}
+	if len(h.onSteps) != 2 || h.onSteps[1] != 2 {
+		t.Errorf("onStep calls = %v, want [1 2] — step 2's counters were never recorded", h.onSteps)
+	}
 }
 
 // TestPauseDuringReplayStopsWithoutExploring pins the cheapest pause there is.
@@ -1240,6 +1252,10 @@ func TestPauseOnARejectedCompletionIsCheckpointedToo(t *testing.T) {
 	}
 	if persisted[0].Action != "complete_rejected" {
 		t.Errorf("checkpointed action = %q, want complete_rejected — the rejection must be recorded or a resume renumbers every later step", persisted[0].Action)
+	}
+	// Reported through onStep before the pause, like an executed step.
+	if len(h.onSteps) != 1 {
+		t.Errorf("onStep calls = %v, want one for the rejected step", h.onSteps)
 	}
 }
 

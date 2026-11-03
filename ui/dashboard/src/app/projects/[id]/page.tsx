@@ -221,7 +221,13 @@ export default function ProjectPage() {
         // live one — a worse outcome than the stranded panel the lookup is
         // here to fix.
         const cached = runRef.current;
-        const cachedIsLive = !!cached && (cached.status === 'running' || cached.status === 'pending');
+        // `paused` counts as believable here alongside the live statuses: a
+        // paused run has a document, so a project-level answer of "no run"
+        // contradicts it, and clearing on that answer would take away the
+        // Resume button with nothing to bring it back — the poll is gated on
+        // the run existing. The direct getRun below settles it instead.
+        const cachedIsLive = !!cached
+          && (cached.status === 'running' || cached.status === 'pending' || cached.status === 'paused');
         if (!cachedIsLive) {
           applyPoll(null);
           return;
@@ -331,7 +337,15 @@ export default function ProjectPage() {
     if (!run) return;
     const live = run.status === 'running' || run.status === 'pending';
     const watchingDismissed = dismissedRunId === run.id && !live;
-    if (!live && !watchingDismissed) return;
+    // A PAUSED run is watched on the slow cadence too, for a sharper version
+    // of the dismissed-run reason above: it is the state a run sits in
+    // longest, and the one most likely to be acted on from somewhere else —
+    // another tab, another operator, or the API. Without this the panel would
+    // show Resume and Cancel for a run that had already been resumed
+    // elsewhere, indefinitely, because a non-live run does not poll and
+    // nothing would bring it back.
+    const watchingPaused = run.status === 'paused';
+    if (!live && !watchingDismissed && !watchingPaused) return;
     const interval = setInterval(pollStatus, live ? 2000 : 15000);
     return () => clearInterval(interval);
   }, [run, pollStatus, dismissedRunId]);
@@ -1184,7 +1198,13 @@ function LiveRunPanel({ run, onPause, onCancel, onDismiss, onResume, onDiscard }
           list above only advances when the agent finishes a macro step,
           which can be minutes apart during schema discovery; this panel
           tails every LLM call and SQL execution in near-real time. */}
-      <DebugLogsPanel projectId={run.project_id} runId={run.id} isDone={isDone} />
+      {/* isDone || isPaused, not isDone: the tail polls every two seconds
+          while a run is live, and a paused run has no agent writing anything.
+          The panel cannot be dismissed either, so a tab left open on a paused
+          run would query the API and Mongo indefinitely for rows that cannot
+          arrive. The button state deliberately stays separate — a paused run
+          is not "done" for anything the operator can press. */}
+      <DebugLogsPanel projectId={run.project_id} runId={run.id} isDone={isDone || isPaused} />
     </div>
 
     {/* Says what discard actually costs, which a button label cannot. The
