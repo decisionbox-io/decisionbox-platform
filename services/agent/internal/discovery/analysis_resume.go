@@ -145,8 +145,14 @@ func (o *Orchestrator) checkpointAnalysisArea(ctx context.Context, step models.A
 	// iteration's gate, and the difference is not cosmetic: there is no next
 	// iteration after the last area, so a gate-based pause would sail past it
 	// into the recommendation phase and never be honoured at all.
+	//
+	// SIGNALLED, not performed — the same split the exploration seam uses.
+	// The caller still has this area's feed rows to write (its analysis step,
+	// its insights and their validations), and stopping here would leave the
+	// paused attempt's log missing the very area it stopped after until a
+	// resume replayed it. The caller emits them and then pauses.
 	if pauseRequested {
-		return o.pauseAttempt(ctx, "Paused after analysing "+step.AreaID+" — resume to continue")
+		return ai.ErrPauseRequested
 	}
 	return nil
 }

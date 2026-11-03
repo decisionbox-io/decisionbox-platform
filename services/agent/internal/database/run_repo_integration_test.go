@@ -1207,7 +1207,7 @@ func TestRunRepository_Pause(t *testing.T) {
 			"pause_requested_attempt": 2, "pause_deadline_at": now.Add(time.Hour),
 		})
 
-		applied, err := repo.Pause(ctx, runID, 2, "Paused after exploration step 7 — resume to continue")
+		applied, err := repo.Pause(ctx, runID, 2, "Paused after exploration step 7 — resume to continue", 90_000)
 		if err != nil || !applied {
 			t.Fatalf("Pause() = (%v, %v), want (true, nil)", applied, err)
 		}
@@ -1228,6 +1228,14 @@ func TestRunRepository_Pause(t *testing.T) {
 				t.Errorf("%s survived the pause; the dashboard reads its presence as still-pausing", k)
 			}
 		}
+		// The attempt's compute is booked by the SAME update, so there is no
+		// window in which the run is visibly `paused` and the increment has
+		// not landed — an immediate resume in that window would bump the
+		// attempt and an attempt-fenced increment would then match nothing,
+		// losing the whole attempt's compute. Reported by a Codex round.
+		if got, _ := doc["active_ms"].(int64); got != 90_000 {
+			t.Errorf("active_ms = %v, want 90000 booked atomically with the status", doc["active_ms"])
+		}
 		// The lifecycle event is in the same update, because BeginResume
 		// clears the scalar fields and this is the only record that survives
 		// a later resume.
@@ -1246,7 +1254,7 @@ func TestRunRepository_Pause(t *testing.T) {
 
 	t.Run("refused for an attempt that no longer owns the run", func(t *testing.T) {
 		runID := seedRunDoc(t, ctx, db, bson.M{"attempt": 3})
-		applied, err := repo.Pause(ctx, runID, 2, "detail")
+		applied, err := repo.Pause(ctx, runID, 2, "detail", 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1261,7 +1269,7 @@ func TestRunRepository_Pause(t *testing.T) {
 			models.RunStatusCancelled, models.RunStatusPending,
 		} {
 			runID := seedRunDoc(t, ctx, db, bson.M{"status": status, "attempt": 1})
-			applied, err := repo.Pause(ctx, runID, 1, "detail")
+			applied, err := repo.Pause(ctx, runID, 1, "detail", 0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1273,7 +1281,7 @@ func TestRunRepository_Pause(t *testing.T) {
 
 	t.Run("refused on a discarded run", func(t *testing.T) {
 		runID := seedRunDoc(t, ctx, db, bson.M{"attempt": 1, "discarded_at": time.Now()})
-		applied, err := repo.Pause(ctx, runID, 1, "detail")
+		applied, err := repo.Pause(ctx, runID, 1, "detail", 0)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -552,7 +552,7 @@ func pauseIsHonourable(requestedAt, deadlineAt *time.Time, requestedAttempt, cur
 // the reason the API's FailAttempt gives for doing the same — BeginResume
 // clears the scalar fields on the next resume, so the appended event is the
 // only record of this pause that survives it.
-func (r *RunRepository) Pause(ctx context.Context, runID string, attempt int, reason string) (bool, error) {
+func (r *RunRepository) Pause(ctx context.Context, runID string, attempt int, reason string, activeMs int64) (bool, error) {
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {
 		return false, fmt.Errorf("invalid run ID: %w", err)
@@ -566,7 +566,7 @@ func (r *RunRepository) Pause(ctx context.Context, runID string, attempt int, re
 	if reason != "" {
 		detail = reason
 	}
-	res, err := r.col.UpdateOne(ctx, filter, bson.M{
+	update := bson.M{
 		"$set": bson.M{
 			"status":         models.RunStatusPaused,
 			"phase_detail":   detail,
@@ -587,7 +587,24 @@ func (r *RunRepository) Pause(ctx context.Context, runID string, attempt int, re
 			Reason:  detail,
 			Attempt: attempt,
 		}},
-	})
+	}
+	// This attempt's compute, booked in the SAME fenced update as the status.
+	//
+	// Not a separate AddActiveTime call afterwards, and the reason is a race
+	// with no safe side to stand on. Booked BEFORE the status write, a pause
+	// that failed to apply leaves the run going and the next seam books the
+	// attempt's whole duration again — AddActiveTime adds
+	// time.Since(attemptStartedAt), not a delta — so active_ms inflates once
+	// per attempted seam. Booked AFTER, the run is already visibly `paused`,
+	// so an operator can resume instantly, bump the attempt, and the
+	// attempt-fenced increment then matches nothing and the whole attempt's
+	// compute is lost from the run's total. One atomic update has neither
+	// window: the pause lands with its time, or neither happens.
+	if activeMs > 0 {
+		update["$inc"] = bson.M{"active_ms": activeMs}
+	}
+
+	res, err := r.col.UpdateOne(ctx, filter, update)
 	if err != nil {
 		return false, err
 	}

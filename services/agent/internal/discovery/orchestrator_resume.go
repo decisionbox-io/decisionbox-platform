@@ -167,6 +167,13 @@ func (o *Orchestrator) checkpointStep(ctx context.Context, step models.Explorati
 	// The run is now resumable, so its per-run vector index must survive a
 	// failure rather than being dropped on the way out.
 	o.keepStepIndex = true
+	// And the replayable prefix grows only if THIS step is the next one in an
+	// unbroken sequence. A write that failed earlier leaves a gap LoadPrefix
+	// stops at, so a later success does not make the run replayable — see
+	// Orchestrator.contiguousCheckpointThrough.
+	if step.Step == o.contiguousCheckpointThrough+1 {
+		o.contiguousCheckpointThrough = step.Step
+	}
 
 	// Only now: the row is durable, so the marker is true. This is what the
 	// dashboard reads to offer Resume, and it must never advertise a
@@ -907,20 +914,31 @@ func (o *Orchestrator) rebuildStepIndexForResume(ctx context.Context) {
 // the exploration summary, the terminal status, the discovery itself.
 // hasResumePoint reports whether this run has anything durable to resume from.
 //
-// One field answers two questions, deliberately rather than by coincidence:
-// keepStepIndex is set the moment the first checkpoint lands, set at
-// construction for a resumed run, and cleared only when the checkpoints are
-// discarded — which is exactly "there is something to resume from". Keeping a
-// second flag alongside it would be two names for one fact, free to drift.
-//
 // The pause path needs it because `paused` with no checkpoint is a dead end:
 // ResumeRun refuses a run with no replayable prefix and no exploration
 // summary, so a pause honoured before the first step completed would strand
 // the run in a status nothing can leave. A request that arrives that early
 // therefore waits for step 1 — which is literally "finish the current step,
 // then stop".
+//
+// "Has a checkpoint" is not the test, and an earlier version of this made
+// that mistake by reading keepStepIndex: checkpoint writes are best-effort so
+// they can never abort a run, so a step-1 failure followed by a step-2
+// success leaves a row behind with no replayable prefix — LoadPrefix stops at
+// the gap and the resume is refused. Pausing on that would have stopped a
+// working run into an unresumable state, which is the one thing pause must
+// never do.
 func (o *Orchestrator) hasResumePoint() bool {
-	return o.keepStepIndex
+	// Exploration already finished on an earlier attempt, so the resume skips
+	// Phase 3 entirely and needs no prefix.
+	if o.resume.explorationComplete() {
+		return true
+	}
+	// Otherwise it needs steps it can actually replay, which means
+	// CONTIGUOUS ones. keepStepIndex is deliberately not consulted: it is
+	// true of any single saved row, and a run whose step-1 write failed has
+	// one of those and nothing a resume can use.
+	return o.contiguousCheckpointThrough > 0
 }
 
 // pauseAttempt performs the cooperative stop: books this attempt's compute,
@@ -951,7 +969,7 @@ func (o *Orchestrator) pauseAttempt(ctx context.Context, detail string) error {
 		return ai.ErrPauseRequested
 	}
 
-	applied, err := o.statusReporter.Pause(ctx, detail)
+	applied, err := o.statusReporter.Pause(ctx, detail, time.Since(o.attemptStartedAt))
 	if err != nil {
 		applog.WithFields(applog.Fields{
 			"run_id": o.runID, "error": err.Error(),
@@ -964,18 +982,6 @@ func (o *Orchestrator) pauseAttempt(ctx context.Context, detail string) error {
 		}).Warn("the run was no longer running when this attempt tried to pause it; exiting without claiming anything")
 		return ai.ErrAttemptSuperseded
 	}
-
-	// Booked AFTER the write applied, which is the opposite of
-	// recordAttemptOutcome's order and deliberately so. A terminal write
-	// happens once; a pause can be attempted at every seam until one lands,
-	// and AddActiveTime adds time.Since(attemptStartedAt) — the attempt's
-	// WHOLE duration, not a delta. Booked first, a pause write that failed
-	// would leave the run going and bank the full duration again at the next
-	// seam, inflating active_ms once per attempt. Booking after means a
-	// failed pause books nothing, which matches the rule the field already
-	// documents: an attempt that did not reach its terminal write contributes
-	// nothing.
-	o.statusReporter.AddActiveTime(ctx, time.Since(o.attemptStartedAt))
 
 	// One row in the live feed, so the log the operator is watching explains
 	// why it stops rather than just ending.

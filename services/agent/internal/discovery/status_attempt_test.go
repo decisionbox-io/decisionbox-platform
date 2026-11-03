@@ -37,8 +37,11 @@ type fakeRunDoc struct {
 	// outright, which must become a failed run rather than a silent exit.
 	pauseApplied bool
 	pauseErr     error
-	// pauses records the reason of each Pause write attempted.
-	pauses []string
+	// pauses records the reason of each Pause write attempted, and
+	// pauseActiveMs the compute booked with it — booked in the SAME update as
+	// the status, so there is no window for a resume to orphan it.
+	pauses        []string
+	pauseActiveMs []int64
 	// writeErr fails every write, which is how a Mongo hiccup reaches the
 	// reporter. None of them may take the run down with them.
 	writeErr error
@@ -96,9 +99,10 @@ func (f *fakeRunDoc) Ownership(_ context.Context, _ string, attempt int) (databa
 	}
 	return database.RunOwnedByThisAttempt, nil
 }
-func (f *fakeRunDoc) Pause(_ context.Context, _ string, attempt int, reason string) (bool, error) {
+func (f *fakeRunDoc) Pause(_ context.Context, _ string, attempt int, reason string, activeMs int64) (bool, error) {
 	f.attempts = append(f.attempts, attempt)
 	f.pauses = append(f.pauses, reason)
+	f.pauseActiveMs = append(f.pauseActiveMs, activeMs)
 	if f.pauseErr != nil {
 		return false, f.pauseErr
 	}

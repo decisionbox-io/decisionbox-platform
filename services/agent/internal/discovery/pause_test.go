@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -136,7 +137,7 @@ func TestStatusReporterPause_ReportsApplicationAndErrorSeparately(t *testing.T) 
 	t.Run("applied", func(t *testing.T) {
 		doc := newFakeRunDoc()
 		r := reporterFor(doc, 2)
-		applied, err := r.Pause(ctx, "Paused after exploration step 7 — resume to continue")
+		applied, err := r.Pause(ctx, "Paused after exploration step 7 — resume to continue", 90*time.Second)
 		if err != nil || !applied {
 			t.Fatalf("Pause() = (%v, %v), want (true, nil)", applied, err)
 		}
@@ -163,7 +164,7 @@ func TestStatusReporterPause_ReportsApplicationAndErrorSeparately(t *testing.T) 
 		doc := newFakeRunDoc()
 		doc.pauseApplied = false
 		r := reporterFor(doc, 1)
-		applied, err := r.Pause(ctx, "whatever")
+		applied, err := r.Pause(ctx, "whatever", time.Minute)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -176,14 +177,14 @@ func TestStatusReporterPause_ReportsApplicationAndErrorSeparately(t *testing.T) 
 		doc := newFakeRunDoc()
 		doc.pauseErr = errors.New("mongo is down")
 		r := reporterFor(doc, 1)
-		if _, err := r.Pause(ctx, "whatever"); err == nil {
+		if _, err := r.Pause(ctx, "whatever", time.Minute); err == nil {
 			t.Fatal("a failed pause write reported no error; the caller would exit 0 and strand the run as running with no agent")
 		}
 	})
 
 	t.Run("no run document — nothing to pause", func(t *testing.T) {
 		r := newStatusReporter(nil, nil, "proj", "", 100)
-		applied, err := r.Pause(ctx, "whatever")
+		applied, err := r.Pause(ctx, "whatever", time.Minute)
 		if applied || err != nil {
 			t.Errorf("Pause() = (%v, %v) with reporting disabled, want (false, nil)", applied, err)
 		}
@@ -210,11 +211,19 @@ func TestPauseAttempt_BooksCompute(t *testing.T) {
 	if !errors.Is(err, ai.ErrPauseRequested) {
 		t.Fatalf("pauseAttempt() = %v, want ErrPauseRequested", err)
 	}
-	if len(doc.active) != 1 {
-		t.Fatalf("active-time bookings = %d, want exactly 1", len(doc.active))
+	// Booked IN the pause write, not by a separate AddActiveTime call: the
+	// run is visibly `paused` the moment that write lands, so an operator can
+	// resume instantly and bump the attempt — and a separate, attempt-fenced
+	// increment would then match nothing and lose the whole attempt's
+	// compute. Reported by a Codex round.
+	if len(doc.active) != 0 {
+		t.Errorf("a separate AddActiveTime call was made (%v); an immediate resume would orphan it", doc.active)
 	}
-	if doc.active[0] < 80*time.Second {
-		t.Errorf("booked %v, want roughly the 90s this attempt ran", doc.active[0])
+	if len(doc.pauseActiveMs) != 1 {
+		t.Fatalf("pause writes = %d, want exactly 1", len(doc.pauseActiveMs))
+	}
+	if doc.pauseActiveMs[0] < 80_000 {
+		t.Errorf("booked %dms with the pause, want roughly the 90s this attempt ran", doc.pauseActiveMs[0])
 	}
 	// One row in the live feed, so the log the operator is watching explains
 	// why it stops instead of just ending.
@@ -277,13 +286,50 @@ func TestStopBefore_OnlyPausesWhenThereIsSomethingToResumeFrom(t *testing.T) {
 		}
 	})
 
-	t.Run("resume point present — pauses", func(t *testing.T) {
+	t.Run("a contiguous prefix — pauses", func(t *testing.T) {
 		doc := newFakeRunDoc()
 		doc.pauseRequested = true
 		o := &Orchestrator{runID: "run-1", statusReporter: reporterFor(doc, 1), attemptStartedAt: time.Now()}
-		o.keepStepIndex = true
+		o.contiguousCheckpointThrough = 6
 		if err := o.stopBefore(ctx, "analysis"); !errors.Is(err, ai.ErrPauseRequested) {
 			t.Fatalf("stopBefore() = %v, want ErrPauseRequested", err)
+		}
+	})
+
+	t.Run("exploration already complete — pauses with no prefix of its own", func(t *testing.T) {
+		// The resume skips Phase 3 entirely, so it needs no replayable steps.
+		doc := newFakeRunDoc()
+		doc.pauseRequested = true
+		o := &Orchestrator{
+			runID: "run-1", statusReporter: reporterFor(doc, 1), attemptStartedAt: time.Now(),
+			resume: &ResumeState{Attempt: 2, Checkpoints: &database.CheckpointSet{
+				Summary: &models.ExplorationCheckpointSummary{Completed: true},
+			}},
+		}
+		if err := o.stopBefore(ctx, "analysis"); !errors.Is(err, ai.ErrPauseRequested) {
+			t.Fatalf("stopBefore() = %v, want ErrPauseRequested", err)
+		}
+	})
+
+	t.Run("checkpoints exist but NOT contiguously — carries on", func(t *testing.T) {
+		// The regression a Codex round found. Checkpoint writes are
+		// best-effort so they can never abort a run, so step 1's write can
+		// fail and step 2's succeed. keepStepIndex is then true — there IS a
+		// row — but LoadPrefix stops at the gap, so the resume endpoint
+		// refuses the run. Pausing on that would strand a working run in a
+		// status nothing can leave, which is the one thing pause must never
+		// do.
+		doc := newFakeRunDoc()
+		doc.pauseRequested = true
+		o := &Orchestrator{runID: "run-1", statusReporter: reporterFor(doc, 1), attemptStartedAt: time.Now()}
+		o.keepStepIndex = true            // a row was saved...
+		o.contiguousCheckpointThrough = 0 // ...but step 1's was not
+
+		if err := o.stopBefore(ctx, "analysis"); err != nil {
+			t.Fatalf("stopBefore() = %v, want nil — the run has nothing a resume could replay", err)
+		}
+		if len(doc.pauses) != 0 {
+			t.Error("paused a run with no replayable prefix; the resume endpoint would refuse it and the run could only be cancelled")
 		}
 	})
 
@@ -292,7 +338,7 @@ func TestStopBefore_OnlyPausesWhenThereIsSomethingToResumeFrom(t *testing.T) {
 		doc.pauseRequested = true
 		doc.owns = false
 		o := &Orchestrator{runID: "run-1", statusReporter: reporterFor(doc, 1), attemptStartedAt: time.Now()}
-		o.keepStepIndex = true
+		o.contiguousCheckpointThrough = 6
 		if err := o.stopBefore(ctx, "analysis"); !errors.Is(err, ai.ErrAttemptSuperseded) {
 			t.Fatalf("stopBefore() = %v, want ErrAttemptSuperseded", err)
 		}
@@ -304,7 +350,7 @@ func TestStopBefore_OnlyPausesWhenThereIsSomethingToResumeFrom(t *testing.T) {
 	t.Run("nothing requested — carries on", func(t *testing.T) {
 		doc := newFakeRunDoc()
 		o := &Orchestrator{runID: "run-1", statusReporter: reporterFor(doc, 1), attemptStartedAt: time.Now()}
-		o.keepStepIndex = true
+		o.contiguousCheckpointThrough = 6
 		if err := o.stopBefore(ctx, "analysis"); err != nil {
 			t.Fatalf("stopBefore() = %v, want nil", err)
 		}
@@ -465,8 +511,11 @@ func TestCheckpointAnalysisArea_PauseStopsAFTERTheAreaIsDurable(t *testing.T) {
 		if len(store.saved) != 1 || store.saved[0].Step.AreaID != "churn" {
 			t.Fatalf("saved areas = %+v, want one row for churn: the area the operator interrupted must be durable before anything stops", store.saved)
 		}
-		if len(doc.pauses) != 1 {
-			t.Errorf("pause writes = %d, want 1", len(doc.pauses))
+		// Signals only — the caller still has this area's analysis, insight
+		// and validation feed rows to write, and stopping here would leave
+		// the paused attempt's log missing the area it stopped after.
+		if len(doc.pauses) != 0 {
+			t.Errorf("the hook wrote the pause itself (%v); the area's feed rows come first", doc.pauses)
 		}
 	})
 
@@ -574,8 +623,10 @@ func TestPauseAttempt_BooksNoComputeWhenTheWriteFails(t *testing.T) {
 		if err := o.pauseAttempt(ctx, "detail"); err == nil {
 			t.Fatal("a failed pause write produced no error")
 		}
+		// Atomic with the status, so a write that failed books nothing by
+		// construction — which is the rule active_ms already documents.
 		if len(doc.active) != 0 {
-			t.Errorf("active-time bookings = %d, want 0 — an attempt that did not reach its terminal write contributes nothing", len(doc.active))
+			t.Errorf("a separate active-time write was made (%v)", doc.active)
 		}
 	})
 
@@ -591,7 +642,7 @@ func TestPauseAttempt_BooksNoComputeWhenTheWriteFails(t *testing.T) {
 			t.Fatalf("pauseAttempt() = %v, want ErrAttemptSuperseded", err)
 		}
 		if len(doc.active) != 0 {
-			t.Errorf("active-time bookings = %d, want 0 — the run moved on, so this attempt claims nothing", len(doc.active))
+			t.Errorf("a separate active-time write was made (%v); the run moved on, so this attempt claims nothing", doc.active)
 		}
 	})
 }
@@ -614,4 +665,80 @@ func TestPauseDetailFor_NamesTheStepItStoppedAfter(t *testing.T) {
 			t.Error("detail is empty; the dashboard would show a paused run with no explanation")
 		}
 	}
+}
+
+// TestCheckpointStep_ContiguityTracksGapsNotRows is the read-side of the same
+// Codex finding: the counter the pause gate consults must only advance on an
+// unbroken sequence.
+//
+// Checkpoint writes are best-effort — a Mongo hiccup must never abort a
+// working run — so gaps are a normal, if rare, outcome. LoadPrefix stops at
+// the first one, so a row beyond a gap buys a resume nothing.
+func TestCheckpointStep_ContiguityTracksGapsNotRows(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("a clean sequence advances", func(t *testing.T) {
+		o := &Orchestrator{runID: "run-1", statusReporter: reporterFor(newFakeRunDoc(), 1), checkpointRepo: &fakeCheckpointStore{}}
+		for step := 1; step <= 3; step++ {
+			if err := o.checkpointStep(ctx, models.ExplorationStep{Step: step}, models.CheckpointArgs{}); err != nil {
+				t.Fatalf("step %d: %v", step, err)
+			}
+		}
+		if o.contiguousCheckpointThrough != 3 {
+			t.Errorf("contiguousCheckpointThrough = %d, want 3", o.contiguousCheckpointThrough)
+		}
+		if !o.hasResumePoint() {
+			t.Error("hasResumePoint() = false after three clean checkpoints")
+		}
+	})
+
+	t.Run("a failed first write leaves nothing replayable", func(t *testing.T) {
+		store := &fakeCheckpointStore{stepErr: errors.New("mongo is down")}
+		o := &Orchestrator{runID: "run-1", statusReporter: reporterFor(newFakeRunDoc(), 1), checkpointRepo: store}
+		// Step 1's write fails. The hook reports it; ExplorationEngine's own
+		// checkpoint wrapper is what swallows an ordinary failure so the run
+		// is never aborted over a Mongo hiccup — asserted in
+		// TestCheckpointFailureDoesNotAbortTheRun. What matters here is what
+		// it leaves behind.
+		if err := o.checkpointStep(ctx, models.ExplorationStep{Step: 1}, models.CheckpointArgs{}); err == nil {
+			t.Fatal("a failed SaveStep reported no error")
+		}
+		if o.contiguousCheckpointThrough != 0 {
+			t.Fatalf("contiguousCheckpointThrough = %d after a failed write, want 0", o.contiguousCheckpointThrough)
+		}
+		// Step 2 succeeds, so a row exists and the index is worth keeping...
+		store.stepErr = nil
+		if err := o.checkpointStep(ctx, models.ExplorationStep{Step: 2}, models.CheckpointArgs{}); err != nil {
+			t.Fatal(err)
+		}
+		if !o.keepStepIndex {
+			t.Error("keepStepIndex = false though a row was saved")
+		}
+		// ...but there is still no prefix a resume could replay.
+		if o.contiguousCheckpointThrough != 0 {
+			t.Errorf("contiguousCheckpointThrough = %d, want 0 — step 1 is missing, so LoadPrefix stops at the gap", o.contiguousCheckpointThrough)
+		}
+		if o.hasResumePoint() {
+			t.Error("hasResumePoint() = true with a gap at step 1; a pause here would strand the run in `paused` with a resume the API refuses")
+		}
+	})
+
+	t.Run("a resumed run continues the prefix it was handed", func(t *testing.T) {
+		o := &Orchestrator{
+			runID: "run-1", statusReporter: reporterFor(newFakeRunDoc(), 2),
+			checkpointRepo: &fakeCheckpointStore{},
+			resume: &ResumeState{Attempt: 2, Checkpoints: &database.CheckpointSet{
+				Steps: []models.ExplorationCheckpoint{{Step: models.ExplorationStep{Step: 1}}, {Step: models.ExplorationStep{Step: 2}}},
+			}},
+		}
+		// What RunDiscovery does at the top: a replayable prefix is contiguous
+		// by construction, so it is where this attempt's own contiguity starts.
+		o.contiguousCheckpointThrough = o.resume.prefixLen()
+		if err := o.checkpointStep(ctx, models.ExplorationStep{Step: 3}, models.CheckpointArgs{}); err != nil {
+			t.Fatal(err)
+		}
+		if o.contiguousCheckpointThrough != 3 {
+			t.Errorf("contiguousCheckpointThrough = %d, want 3", o.contiguousCheckpointThrough)
+		}
+	})
 }

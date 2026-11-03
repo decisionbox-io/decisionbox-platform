@@ -70,7 +70,7 @@ type runDocWriter interface {
 	Fail(ctx context.Context, runID, discoveryID, errMsg string, attempt int) (bool, error)
 	Ownership(ctx context.Context, runID string, attempt int) (database.RunOwnership, error)
 	MarkExplorationCheckpoint(ctx context.Context, runID string, step int, attempt int) (bool, error)
-	Pause(ctx context.Context, runID string, attempt int, reason string) (bool, error)
+	Pause(ctx context.Context, runID string, attempt int, reason string, activeMs int64) (bool, error)
 	AddActiveTime(ctx context.Context, runID string, d time.Duration, attempt int) error
 	AppendLifecycle(ctx context.Context, runID string, ev models.RunLifecycleEvent, attempt int) error
 	IncrementQueryCount(ctx context.Context, runID string, success bool, attempt int) error
@@ -744,14 +744,17 @@ func (s *StatusReporter) OwnsRun(ctx context.Context) bool {
 // behind it and a zero exit status the runner reports nothing for: a zombie
 // until the next API restart. The caller turns that one into a failed run,
 // which is honest and still resumable.
-func (s *StatusReporter) Pause(ctx context.Context, reason string) (bool, error) {
+// active is this attempt's compute, booked in the same fenced update as the
+// status rather than by a separate AddActiveTime call — see
+// RunRepository.Pause for the race that leaves no safe side otherwise.
+func (s *StatusReporter) Pause(ctx context.Context, reason string, active time.Duration) (bool, error) {
 	if !s.enabled() {
 		// No run document, so nothing to pause and nothing to record. The
 		// agent is being run without the API; there is no operator to have
 		// asked.
 		return false, nil
 	}
-	applied, err := s.repo.Pause(ctx, s.runID, s.attempt, reason)
+	applied, err := s.repo.Pause(ctx, s.runID, s.attempt, reason, active.Milliseconds())
 	if err != nil {
 		return false, err
 	}
