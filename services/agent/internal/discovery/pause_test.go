@@ -821,6 +821,46 @@ func TestCheckpointStep_PausesOnceTheFirstStepLands(t *testing.T) {
 	}
 }
 
+// TestHasResumePoint_AFailedFinalCheckpointIsAGapToo is round six of the same
+// family, on the one hole the previous fix could not see.
+//
+// checkpointGapSeen was inferred from a LATER step landing beyond the hole,
+// so a failure on the final exploration step left nothing to notice it — and
+// a pause pending at the Phase 4 gate was honoured over a prefix one step
+// short of the summary, which a resume has to re-execute. Steps arrive in
+// sequence, so a failed write is the only way a hole appears; recording it at
+// the failure is both simpler and complete.
+func TestHasResumePoint_AFailedFinalCheckpointIsAGapToo(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeCheckpointStore{}
+	o := &Orchestrator{
+		runID: "run-1", statusReporter: reporterFor(newFakeRunDoc(), 1),
+		checkpointRepo: store,
+	}
+
+	for step := 1; step <= 3; step++ {
+		if err := o.checkpointStep(ctx, models.ExplorationStep{Step: step}, models.CheckpointArgs{}); err != nil {
+			t.Fatalf("step %d: %v", step, err)
+		}
+	}
+	if !o.hasResumePoint() {
+		t.Fatal("three clean checkpoints should be a resume point")
+	}
+
+	// The LAST step's write fails, and nothing follows it.
+	store.stepErr = errors.New("mongo is down")
+	if err := o.checkpointStep(ctx, models.ExplorationStep{Step: 4}, models.CheckpointArgs{}); err == nil {
+		t.Fatal("a failed SaveStep reported no error")
+	}
+
+	if !o.checkpointGapSeen {
+		t.Error("the failed final write was not recorded as a gap")
+	}
+	if o.hasResumePoint() {
+		t.Error("approved a pause over a prefix that is one step short of what the run executed; the resume must re-run that step")
+	}
+}
+
 // TestPauseSignalIfResumable_IsTheOneGateEverySeamUses is the structural
 // assertion behind three rounds of the same finding.
 //

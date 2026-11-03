@@ -1507,3 +1507,30 @@ describe('Operator pause (#508)', () => {
     expect(screen.getByText('2m 0s elapsed')).toBeInTheDocument();
   });
 });
+
+// A watched paused run that finishes elsewhere must still refresh the page's
+// results. The slow watcher for paused runs was added without extending the
+// completion-transition handling, so `paused` → `completed` skipped the
+// discovery refresh — and polling then stops, because the run is terminal,
+// leaving the new discovery missing until a reload. Reported by a Codex round.
+it('refreshes discoveries when a watched paused run completes elsewhere', async () => {
+  jest.useFakeTimers();
+  try {
+    getProjectStatus.mockResolvedValueOnce(status(makeRun({ status: 'paused', last_checkpoint_step: 12 })));
+    renderPage();
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    await waitFor(() => expect(screen.getByText('Discovery paused')).toBeInTheDocument());
+    const before = listDiscoveries.mock.calls.length;
+
+    // Another tab resumes it and it finishes before the next 15s poll, so
+    // this page sees paused → completed with no running state in between.
+    getProjectStatus.mockResolvedValue(status(makeRun({
+      status: 'completed', updated_at: '2026-01-01T09:00:00Z',
+    })));
+    await act(async () => { await jest.advanceTimersByTimeAsync(16_000); });
+
+    expect(listDiscoveries.mock.calls.length).toBeGreaterThan(before);
+  } finally {
+    jest.useRealTimers();
+  }
+});

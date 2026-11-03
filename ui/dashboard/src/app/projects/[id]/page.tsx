@@ -275,7 +275,15 @@ export default function ProjectPage() {
         // gets this far is the newest one that has been acted on, and its
         // answer is the freshest information available.
         const installed = runRef.current;
-        const wasRunning = installed && (installed.status === 'running' || installed.status === 'pending');
+        // `paused` is in here because this page WATCHES paused runs (another
+        // tab can resume them), so `paused` → `completed` is a transition it
+        // really observes. Left out, the completion side-effects below never
+        // fire for it: polling then stops, because the run is terminal, and
+        // the discovery it just produced is missing from the list until
+        // somebody reloads. The slow watcher was added without extending
+        // this, which is what made the gap.
+        const wasRunning = installed
+          && (installed.status === 'running' || installed.status === 'pending' || installed.status === 'paused');
         const nowDone = newRun.status === 'completed' || newRun.status === 'failed';
         // Only replace `run` when something we render actually changed. The
         // status endpoint answers as fast as we ask and `newRun` is freshly

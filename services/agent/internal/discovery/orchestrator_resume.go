@@ -148,6 +148,17 @@ func (o *Orchestrator) checkpointStep(ctx context.Context, step models.Explorati
 		}
 	}
 
+	// A failed write is the gap, recorded here rather than inferred later.
+	//
+	// The inference was incomplete: checkpointGapSeen was only set when a
+	// SUBSEQUENT step landed beyond the hole, so a failure on the FINAL
+	// exploration step left no later call to notice it — and a pause pending
+	// at the Phase 4 gate was then honoured over a prefix one step short of
+	// the summary, which a resume has to re-execute. Steps arrive strictly in
+	// sequence, so a failed write is the only way a hole appears; marking it
+	// at the failure is both simpler and complete.
+	markGap := func() { o.checkpointGapSeen = true }
+
 	err := o.checkpointRepo.SaveStep(ctx, database.CheckpointStepInput{
 		ProjectID: o.projectID,
 		RunID:     o.runID,
@@ -162,6 +173,10 @@ func (o *Orchestrator) checkpointStep(ctx context.Context, step models.Explorati
 		if errors.Is(err, database.ErrSupersededAttempt) {
 			return ai.ErrAttemptSuperseded
 		}
+		// Any other failure means this step has no row, so the prefix can
+		// never reach it. The run carries on — the caller swallows this — but
+		// it is no longer losslessly pausable.
+		markGap()
 		return err
 	}
 	// The run is now resumable, so its per-run vector index must survive a
@@ -174,9 +189,10 @@ func (o *Orchestrator) checkpointStep(ctx context.Context, step models.Explorati
 	if step.Step == o.contiguousCheckpointThrough+1 {
 		o.contiguousCheckpointThrough = step.Step
 	} else if step.Step > o.contiguousCheckpointThrough+1 {
-		// This row sits beyond a hole, so the prefix can never reach it. See
-		// Orchestrator.checkpointGapSeen.
-		o.checkpointGapSeen = true
+		// Defensive: a row beyond a hole. Steps arrive in sequence, so the
+		// failure path above is what actually records a gap; this catches a
+		// caller that ever skipped one.
+		markGap()
 	}
 
 	// Only now: the row is durable, so the marker is true. This is what the
