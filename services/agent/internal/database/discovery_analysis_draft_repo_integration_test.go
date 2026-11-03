@@ -592,3 +592,98 @@ func TestInteg_AnalysisDraft_ConcurrentMarkerWritesAllLand(t *testing.T) {
 		}
 	}
 }
+
+// TestInteg_AnalysisDraft_ADottedIdNeitherNestsNorCorruptsTheBudget is the
+// end-to-end form of the regression, against real MongoDB.
+//
+// A model-supplied id containing a dot used to be concatenated straight into
+// the `$set` path, so Mongo created a nested field instead of a marker. The
+// row then came back carrying a zero-valued marker under the prefix: the
+// budget charged it while the restore could not match it, which at the cap
+// turns an already-verified insight into one skipped for budget.
+func TestInteg_AnalysisDraft_ADottedIdNeitherNestsNorCorruptsTheBudget(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := draftRepo(t, db, 48*time.Hour)
+
+	step := fatDraft("churn")
+	step.Insights[0].ID = "finding.1"
+	if err := repo.SaveDraft(ctx, AnalysisAreaDraftInput{
+		ProjectID: "p1", RunID: "run-1", Attempt: 1, ExplorationAttempt: 1, Step: step,
+	}); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	err := repo.SaveInsightVerdict(ctx, InsightVerdictInput{
+		RunID: "run-1", AreaID: "churn", Attempt: 1, InsightID: "finding.1",
+		Verdict: verdictFor("finding.1"),
+	})
+	if !errors.Is(err, ErrUnsafeMarkerKey) {
+		t.Fatalf("want ErrUnsafeMarkerKey, got %v", err)
+	}
+
+	// Nothing was written, so the budget charges nothing and the insight is
+	// simply validated again — a cost, not a corruption.
+	set, err := repo.LoadDrafts(ctx, "run-1", 1)
+	if err != nil {
+		t.Fatalf("LoadDrafts: %v", err)
+	}
+	got := set.Drafts["churn"]
+	if len(got.InsightVerdicts) != 0 {
+		t.Fatalf("%d markers landed for a refused id: %v", len(got.InsightVerdicts), got.InsightVerdicts)
+	}
+	var raw bson.M
+	if err := db.Collection(CollectionDiscoveryAnalysisDrafts).
+		FindOne(ctx, bson.M{"run_id": "run-1"}).Decode(&raw); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if _, nested := raw["insight_verdicts"]; nested {
+		t.Error("a nested insight_verdicts field was created on the document")
+	}
+
+	// And a safe id alongside it still works.
+	if err := repo.SaveInsightVerdict(ctx, InsightVerdictInput{
+		RunID: "run-1", AreaID: "churn", Attempt: 1, InsightID: "insight-2",
+		Verdict: verdictFor("insight-2"),
+	}); err != nil {
+		t.Fatalf("SaveInsightVerdict for a safe id: %v", err)
+	}
+	set, _ = repo.LoadDrafts(ctx, "run-1", 1)
+	if len(set.Drafts["churn"].InsightVerdicts) != 1 {
+		t.Error("the safe marker did not land")
+	}
+}
+
+// TestInteg_AnalysisDraft_IgnoresAMarkerNamingNothingInTheDraft — the load-side
+// guard, written straight into the document so it does not depend on the write
+// path having a hole in it.
+func TestInteg_AnalysisDraft_IgnoresAMarkerNamingNothingInTheDraft(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := draftRepo(t, db, 48*time.Hour)
+
+	if _, err := db.Collection(CollectionDiscoveryAnalysisDrafts).InsertOne(ctx, AnalysisAreaDraftDoc{
+		RunID: "run-1", ProjectID: "p1", Attempt: 1, ExplorationAttempt: 1,
+		CreatedAt: time.Now(), AnalysisStep: fatDraft("churn"),
+		InsightVerdicts: map[string]models.ValidationResult{
+			"insight-1": verdictFor("insight-1"),
+			"ghost":     verdictFor("ghost"),
+		},
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	set, err := repo.LoadDrafts(ctx, "run-1", 1)
+	if err != nil {
+		t.Fatalf("LoadDrafts: %v", err)
+	}
+	got := set.Drafts["churn"].InsightVerdicts
+	if len(got) != 1 {
+		t.Fatalf("kept %d markers, want 1 — a marker no insight can claim would charge the cap for nothing", len(got))
+	}
+	if _, ok := got["insight-1"]; !ok {
+		t.Error("dropped the marker for an insight the draft carries")
+	}
+}

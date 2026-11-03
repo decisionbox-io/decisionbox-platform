@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -104,5 +105,18 @@ func TestRecommendationCheckpointLoad_NoDurableSummaryReturnsNilWithoutQuerying(
 	}
 	if cp != nil {
 		t.Error("expected nil for a run with no durable exploration summary")
+	}
+}
+
+// TestSaveRecVerdict_RefusesAnIdThatWouldNestInsteadOfKey — the same hazard on
+// the recommendation side, reachable the same way: the parser mints an id only
+// when the model supplied none.
+func TestSaveRecVerdict_RefusesAnIdThatWouldNestInsteadOfKey(t *testing.T) {
+	repo := &DiscoveryRecommendationCheckpointRepository{}
+	err := repo.SaveRecVerdict(context.Background(), RecommendationVerdictInput{
+		RunID: "run-1", RecommendationID: "rec.1",
+	})
+	if !errors.Is(err, ErrUnsafeMarkerKey) {
+		t.Fatalf("want ErrUnsafeMarkerKey, got %v", err)
 	}
 }

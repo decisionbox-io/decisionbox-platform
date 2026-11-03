@@ -182,6 +182,9 @@ func (r *DiscoveryRecommendationCheckpointRepository) SaveRecVerdict(ctx context
 	if in.RecommendationID == "" {
 		return errors.New("checkpoint recommendation verdict: recommendation_id is required")
 	}
+	if !safeMarkerKey(in.RecommendationID) {
+		return fmt.Errorf("checkpoint verdict for recommendation %q of run %s: %w", in.RecommendationID, in.RunID, ErrUnsafeMarkerKey)
+	}
 	res, err := r.col.UpdateOne(ctx,
 		bson.M{
 			"run_id":  in.RunID,

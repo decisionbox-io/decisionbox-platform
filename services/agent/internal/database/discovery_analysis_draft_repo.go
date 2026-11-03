@@ -40,6 +40,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/config"
@@ -55,6 +56,34 @@ import (
 // SAME index with different options, which is what lets EnsureIndexes recreate
 // it rather than failing forever.
 const analysisDraftTTLIndexName = "ttl_discovery_analysis_draft"
+
+// ErrUnsafeMarkerKey means a document id cannot be used as a BSON field name,
+// so no per-item completion marker can be keyed on it.
+//
+// The ids are normally minted UUIDs, but a model that supplies its own id for
+// an insight or a recommendation keeps it — the analysis parser only mints one
+// when the field is absent. An id containing a dot would silently become a
+// NESTED field rather than a marker: the row would come back carrying a
+// zero-valued marker under the prefix, which the budget counts while the
+// restore cannot match, so an insight that was already verified ends up
+// skipped on the cap instead of restored.
+//
+// Refusing to write it degrades exactly the way a failed marker write does —
+// the document is validated again on a later resume — which is a cost rather
+// than a corruption. (Such an id is already a hazard outside this package:
+// the embedded id is reused as the Qdrant point id, and Qdrant accepts only
+// UUIDs and uint64s.)
+var ErrUnsafeMarkerKey = errors.New("document id cannot be a BSON field name, so no completion marker can be keyed on it")
+
+// safeMarkerKey reports whether an id can be a BSON field name. A dot would
+// create a nested path, a leading "$" reads as an operator, and a NUL is
+// invalid outright.
+func safeMarkerKey(id string) bool {
+	return id != "" &&
+		!strings.Contains(id, ".") &&
+		!strings.HasPrefix(id, "$") &&
+		!strings.ContainsRune(id, 0)
+}
 
 // DiscoveryAnalysisDraftRepository persists and reads in-flight analysis
 // areas and their per-insight validation markers.
@@ -260,6 +289,9 @@ func (r *DiscoveryAnalysisDraftRepository) SaveInsightVerdict(ctx context.Contex
 	if in.InsightID == "" {
 		return errors.New("checkpoint insight verdict: insight_id is required")
 	}
+	if !safeMarkerKey(in.InsightID) {
+		return fmt.Errorf("checkpoint verdict for insight %q of run %s: %w", in.InsightID, in.RunID, ErrUnsafeMarkerKey)
+	}
 	res, err := r.col.UpdateOne(ctx,
 		bson.M{
 			"run_id":  in.RunID,
@@ -349,7 +381,7 @@ func (r *DiscoveryAnalysisDraftRepository) LoadDrafts(ctx context.Context, runID
 		applyMissingValueFigures(doc.Insights, doc.MissingValueFigures)
 		set.Drafts[doc.AreaID] = models.AnalysisAreaDraft{
 			Step:            doc.AnalysisStep,
-			InsightVerdicts: doc.InsightVerdicts,
+			InsightVerdicts: markersForInsights(doc.Insights, doc.InsightVerdicts, runID, doc.AreaID),
 		}
 	}
 	if err := cur.Err(); err != nil {
@@ -364,6 +396,44 @@ func (r *DiscoveryAnalysisDraftRepository) LoadDrafts(ctx context.Context, runID
 		}).Info("ignored analysis drafts from a superseded exploration; those areas will be analysed again")
 	}
 	return set, nil
+}
+
+// markersForInsights narrows a draft's markers to the insights it actually
+// carries.
+//
+// A marker that names nothing in the draft can be neither restored nor
+// skipped, so counting it would charge the run's validation cap for work no
+// document can claim — and at the cap that turns an insight the previous
+// attempt verified into one skipped for budget. The same rule
+// restoredRecommendationBudget applies on the recommendation side, here so the
+// budget arithmetic is sound regardless of how a key reached the document.
+//
+// Nothing the writer accepts can produce such a marker; this is the guard that
+// keeps that true rather than assumed.
+func markersForInsights(insights []models.Insight, markers map[string]models.ValidationResult, runID, areaID string) map[string]models.ValidationResult {
+	if len(markers) == 0 {
+		return nil
+	}
+	carried := make(map[string]bool, len(insights))
+	for i := range insights {
+		carried[insights[i].ID] = true
+	}
+	out := make(map[string]models.ValidationResult, len(markers))
+	for id, vr := range markers {
+		if carried[id] {
+			out[id] = vr
+			continue
+		}
+		applog.WithFields(applog.Fields{
+			"run_id":  runID,
+			"area":    areaID,
+			"insight": id,
+		}).Warn("ignoring an analysis draft marker that names no insight in the draft; that insight will be validated again")
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // DeleteByArea removes one area's draft, because the area has finished and its

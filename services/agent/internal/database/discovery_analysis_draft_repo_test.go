@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -161,5 +162,77 @@ func TestAnalysisDraftSetLenIsNilSafe(t *testing.T) {
 	var set *AnalysisDraftSet
 	if set.Len() != 0 {
 		t.Error("nil AnalysisDraftSet should report zero drafts")
+	}
+}
+
+// TestSafeMarkerKey_RejectsIdsThatCannotBeBSONFieldNames — the ids are
+// normally minted UUIDs, but a model that supplies its own id for an insight
+// keeps it: the analysis parser only mints one when the field is absent.
+func TestSafeMarkerKey_RejectsIdsThatCannotBeBSONFieldNames(t *testing.T) {
+	for _, ok := range []string{
+		"6f1b2c3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d",
+		"insight-1",
+		"a$b", // a "$" is only a problem at the start
+	} {
+		if !safeMarkerKey(ok) {
+			t.Errorf("%q should be usable as a marker key", ok)
+		}
+	}
+	for _, bad := range []string{
+		"",
+		"finding.1",   // becomes a NESTED field, not a marker
+		"$set",        // reads as an operator
+		"a\x00b",      // invalid outright
+		"cohort.7.id", // several
+	} {
+		if safeMarkerKey(bad) {
+			t.Errorf("%q must be refused as a marker key", bad)
+		}
+	}
+}
+
+// TestSaveInsightVerdict_RefusesAnIdThatWouldNestInsteadOfKey is the
+// regression. A dotted id silently became a nested field, so the row came
+// back carrying a zero-valued marker under the prefix: the budget counted it
+// while the restore could not match it, and at the cap an insight the previous
+// attempt had verified ended up skipped for budget instead of restored.
+//
+// Refusing it degrades the way a failed marker write already does — the
+// insight is validated again — which is a cost rather than a corruption.
+func TestSaveInsightVerdict_RefusesAnIdThatWouldNestInsteadOfKey(t *testing.T) {
+	repo := &DiscoveryAnalysisDraftRepository{}
+	err := repo.SaveInsightVerdict(context.Background(), InsightVerdictInput{
+		RunID: "run-1", AreaID: "churn", InsightID: "finding.1",
+	})
+	if !errors.Is(err, ErrUnsafeMarkerKey) {
+		t.Fatalf("want ErrUnsafeMarkerKey, got %v", err)
+	}
+}
+
+// TestMarkersForInsights_DropsAMarkerNamingNothingInTheDraft keeps the budget
+// arithmetic sound regardless of how a key reached the document: a marker no
+// insight can claim would charge the cap for work nobody restores.
+func TestMarkersForInsights_DropsAMarkerNamingNothingInTheDraft(t *testing.T) {
+	insights := []models.Insight{{ID: "i1"}, {ID: "i2"}}
+	markers := map[string]models.ValidationResult{
+		"i1":    {InsightID: "i1"},
+		"ghost": {InsightID: "ghost"},
+	}
+	got := markersForInsights(insights, markers, "run-1", "churn")
+	if len(got) != 1 {
+		t.Fatalf("kept %d markers, want 1", len(got))
+	}
+	if _, ok := got["i1"]; !ok {
+		t.Error("dropped a marker for an insight the draft carries")
+	}
+	if _, ok := got["ghost"]; ok {
+		t.Error("kept a marker no insight can claim; the cap would be charged for it")
+	}
+
+	if markersForInsights(insights, nil, "r", "a") != nil {
+		t.Error("no markers should yield nil")
+	}
+	if markersForInsights(nil, markers, "r", "a") != nil {
+		t.Error("a draft carrying no insights can claim no marker")
 	}
 }
