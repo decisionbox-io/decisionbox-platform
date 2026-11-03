@@ -336,6 +336,54 @@ The inlined `AnalysisStep` supplies `area_id`, so there is no separate field for
 
 A row exists only for an area that produced a parsed result, finished its validation and had its evidence-quality labels attached. An area whose analysis failed carries no row, so a resume retries it — see [Discovery lifecycle](../concepts/discovery-lifecycle.md#what-a-completed-analysis-area-keeps) for why that distinction is what makes a deadline-killed run recoverable.
 
+## AnalysisAreaDraft
+
+One analysis area of an in-flight run that has been **analysed but has not finished validating its insights**. Stored in the `discovery_analysis_drafts` collection, keyed by `(run_id, area_id)`, and the reason a resumed run finishes such an area rather than re-analysing it.
+
+A separate collection from `discovery_analysis_checkpoints` rather than a flag on the same row, because the two are read differently: a completed area is restored and *skipped*, a draft is restored and *finished*. A reader that could not tell them apart would admit insights carrying no validation verdict into the run's result, and a flag on a shared row is honoured only by readers that know about it — so an older agent resuming the same run would apply the older meaning to it.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `run_id` | string | The run this draft belongs to |
+| `project_id` | string | Project that owns the run |
+| `attempt` | int | Which attempt analysed this area. The upsert is fenced on it, so an orphaned earlier attempt cannot overwrite a newer one's draft |
+| `exploration_attempt` | int | The attempt that wrote the exploration summary this area was analysed over. The same staleness fence the completed-area rows carry, for the same reason: the insights cite exploration step numbers |
+| `insight_verdicts` | object | One validation verdict per insight already submitted to the verifier, keyed by the insight id as this document holds it. Written one field at a time rather than by re-writing the row, because the verdicts are produced concurrently and two document replaces would lose one of them |
+| `missing_value_figures` | object | Per insight id, which of its figures the model declared no readable value for — `Figure.ValueMissing` is `bson:"-"`, and a restored figure without the flag reads as a real zero |
+| `created_at` | timestamp | TTL anchor |
+| *(inline)* | AnalysisStep | The area as the phase left it just before validation — prompt, response, token counts, picker and repair telemetry, and its insights with their figures settled and rendered. Deliberately **not** its validation results or its evidence-quality labels: both are produced after validation, by whichever attempt finishes the area |
+
+A marker exists only for an insight the verifier actually ran on. One the per-run validation cap skipped cost nothing and carries none, which is what makes the marker count an exact record of what the area spent of that cap — unlike a completed area, whose `ValidationResults` include the cap-skipped entries and so needs `insights_validated` recorded separately.
+
+The stored insight ids stay live for the whole of the area's in-flight life, so every attempt's markers key on the one set of ids the next attempt reads back. They are reminted when the area is merged into the run's result, which is the point at which they would otherwise collide with what a previous attempt had already persisted.
+
+A draft is superseded by the `AnalysisAreaCheckpoint` for the same area and is deleted when that area finishes — but correctness rests on the reader preferring the completed row, not on the delete, which can be lost to a crash between the two writes.
+
+Indexes: `(run_id, area_id)` unique and a `created_at` TTL named `ttl_discovery_analysis_draft`.
+
+## RecommendationCheckpoint
+
+One in-flight run's **finished Phase 5**. Stored in the `discovery_recommendation_checkpoints` collection, keyed by `run_id`, and the reason a resumed run validates the recommendations a previous attempt generated rather than generating them again.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `run_id` | string | The run this checkpoint belongs to (one row per run) |
+| `project_id` | string | Project that owns the run |
+| `attempt` | int | Which attempt generated these recommendations; the upsert is fenced on it |
+| `exploration_attempt` | int | The attempt that wrote the exploration summary the insights behind them were analysed over — the same staleness fence |
+| `eligible_insight_ids` | string[] | The insight set Phase 5 was generated over, in the ids the run's analysis checkpoints hold for them. The restore gate |
+| `rec_verdicts` | object | One validation verdict per recommendation already submitted to the verifier, keyed by the recommendation id as this document holds it. Written one field at a time, for the reason `insight_verdicts` is |
+| `created_at` | timestamp | TTL anchor |
+| *(inline)* | RecommendationStep | The whole phase — prompt, response, token counts, the parse / citation / figure drop counters, and the surviving recommendations. There is no separate recommendation list, because the step already carries one and the phase resyncs it as recommendations are dropped |
+
+A row exists only for a phase that banked something. A generation call that failed, or a response that could not be parsed, carries none, so a resume retries it. A phase that legitimately produced **no** recommendations does get a row: re-running it costs a real call and the answer is still none, and the step's `status` carries the reason the dashboard renders.
+
+Restoring it is conditional. A recommendation cites insights by id, and a resumed run mints fresh ids for everything it restores, so `eligible_insight_ids` is compared against the insight set this attempt is actually giving the recommender and every citation is translated through the same mapping. If any of them no longer resolves — an area was re-analysed, or the project's `recommendation_verdicts` changed between attempts — the whole row is refused and the recommendations are generated again, because reusing them would describe findings the run no longer has.
+
+The stored recommendation ids stay live until Phase 5.5 returns, so the per-recommendation markers key on one set of ids across attempts, and are reminted before the result is persisted — a recommendation id keys the standalone row and the Qdrant point the tail inserts.
+
+Indexes: `run_id` unique and a `created_at` TTL named `ttl_discovery_recommendation_checkpoint`.
+
 ## Feedback
 
 User feedback on insights, recommendations, or exploration steps.
