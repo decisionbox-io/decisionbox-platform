@@ -201,6 +201,18 @@ type Orchestrator struct {
 	// reasoning as checkpointRepo above.
 	analysisCheckpointRepo analysisCheckpointStore
 
+	// analysisDraftRepo durably records an analysis area that has been
+	// analysed but not yet validated, plus one marker per insight already
+	// validated, so a run that dies mid-area finishes it instead of
+	// re-analysing it. Same interface-for-testability and nil-disables
+	// reasoning as the two stores above.
+	analysisDraftRepo analysisDraftStore
+
+	// recommendationCheckpointRepo durably records a finished Phase 5 and the
+	// per-recommendation verdicts of Phase 5.5, so a run that dies in or
+	// after recommendation validation re-pays for neither.
+	recommendationCheckpointRepo recommendationCheckpointStore
+
 	// explorationSummaryAttempt is the attempt that wrote THIS run's
 	// exploration summary: this attempt's number when it explored and the
 	// summary write landed, or the previous attempt's when this one skipped
@@ -468,6 +480,17 @@ type OrchestratorOptions struct {
 	// checkpointing is unaffected either way.
 	DiscoveryAnalysisCheckpointRepo *database.DiscoveryAnalysisCheckpointRepository
 
+	// DiscoveryAnalysisDraftRepo persists an analysis area that has been
+	// analysed but not yet validated, so a resumed run finishes it rather
+	// than re-analysing and re-validating it. Nil disables per-insight
+	// resume; per-area resume and exploration checkpointing are unaffected.
+	DiscoveryAnalysisDraftRepo *database.DiscoveryAnalysisDraftRepository
+
+	// DiscoveryRecommendationCheckpointRepo persists a finished Phase 5 and
+	// its per-recommendation validation verdicts. Nil disables recommendation
+	// resume; every other checkpoint seam is unaffected.
+	DiscoveryRecommendationCheckpointRepo *database.DiscoveryRecommendationCheckpointRepository
+
 	// SchemaRetriever is the Qdrant-backed top-K schema retriever.
 	// Required — discovery is gated on schema_index_status == "ready",
 	// so the indexer has built the per-project Qdrant collection before
@@ -625,6 +648,16 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		analysisCheckpointRepo = opts.DiscoveryAnalysisCheckpointRepo
 	}
 
+	// And for the two finer checkpoint seams, for the same reason again.
+	var analysisDraftRepo analysisDraftStore
+	if opts.DiscoveryAnalysisDraftRepo != nil {
+		analysisDraftRepo = opts.DiscoveryAnalysisDraftRepo
+	}
+	var recommendationCheckpointRepo recommendationCheckpointStore
+	if opts.DiscoveryRecommendationCheckpointRepo != nil {
+		recommendationCheckpointRepo = opts.DiscoveryRecommendationCheckpointRepo
+	}
+
 	// Same typed-nil → untyped-nil normalization as discoveryLogRepo so the
 	// `o.questionRepo == nil` guard in runPhaseQuestions is not fooled by a nil
 	// concrete pointer boxed into a non-nil interface.
@@ -697,6 +730,9 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		embedIndexStore:        opts.EmbedIndexStore,
 		checkpointRepo:         checkpointRepo,
 		analysisCheckpointRepo: analysisCheckpointRepo,
+		analysisDraftRepo:      analysisDraftRepo,
+
+		recommendationCheckpointRepo: recommendationCheckpointRepo,
 		embedder:               opts.EmbeddingProvider, // same interface, named differently to avoid ambiguity
 		schemaRetriever:        opts.SchemaRetriever,
 		schemaCache:            opts.SchemaCache,
@@ -1433,6 +1469,15 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// THIS run is going to restore. Empty on every run that is not a resume,
 	// which is what keeps this phase on exactly the path it always took.
 	completedAreas := restorableAreas(runAreas, o.loadCompletedAreas(ctx))
+	// And the areas a previous attempt analysed but did not finish validating.
+	// Narrowed against the completed set first: a completed checkpoint
+	// describes the same area with its validation done, so it supersedes the
+	// draft. See loadAreaDrafts.
+	areaDrafts := restorableDrafts(runAreas, o.loadAreaDrafts(ctx, completedAreas))
+	// Which of this attempt's insight ids the run's checkpoints hold under a
+	// different id. Empty on a run that restores nothing, which is what keeps
+	// Phase 5 on the path it always took. See storedInsightIDs.
+	storedIDByLive := make(map[string]string)
 	// The feed is attempt-scoped, so this attempt has to own a copy of the
 	// restored areas' rows or its log shows recommendations drawn from
 	// insights the operator cannot see. Once, here, in RunAt order — see
@@ -1529,7 +1574,16 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// that earned them. Its live-feed rows were re-emitted in one pass
 		// before the loop.
 		if cp, ok := completedAreas[area.ID]; ok {
-			analysisLog, allInsights = restoreArea(cp, analysisLog, allInsights)
+			var remapped map[string]string
+			analysisLog, allInsights, remapped = restoreArea(cp, analysisLog, allInsights)
+			// The ids this attempt minted for the restored insights, against
+			// the ones the checkpoint holds. Phase 5 needs the mapping to
+			// decide whether a stored recommendation set still describes the
+			// findings this run produced, and to re-point its citations. See
+			// storedInsightIDs.
+			for fresh, stored := range remapped {
+				storedIDByLive[fresh] = stored
+			}
 			applog.WithFields(applog.Fields{
 				"area":               area.ID,
 				"insights":           len(cp.Step.Insights),
@@ -1538,174 +1592,47 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			continue
 		}
 
-		areaPrompt, ok := prompts.AnalysisAreas[area.ID]
-		if !ok {
-			applog.WithField("area", area.ID).Warn("No prompt for analysis area, skipping")
-			continue
-		}
-
-		// Couple the picker's query-results budget to the model window so an
-		// area's input can never grow past what the window can hold once the
-		// output cap + safety margin are reserved. Recomputed per area so a
-		// window calibrated mid-run (from an overflow 400) tightens the
-		// remaining areas too.
-		areaWindow, areaOutputCap := o.budgetFor(llmlayer.LayerAnalysis)
-		picker.BudgetTokens = analysisPickerBudgetTokens(AnalysisQueryResultsBudgetTokens, areaWindow, areaOutputCap)
-
-		pickResult, pickErr := picker.Pick(ctx, area, explorationResult.Steps)
-		// Skip the area if step retrieval fails so the remaining areas
-		// can continue processing.
-		if pickErr != nil {
-			applog.WithFields(applog.Fields{"area": area.ID, "error": pickErr.Error()}).Warn("Step picker failed; skipping area")
-			continue
-		}
-
-		// Track analysis-phase metrics so the live status UI can show
-		// step retrieval activity and dropped-step counts.
-		o.statusReporter.IncrementAnalysisCounter(ctx, "step_index_search_calls", 1)
-		if len(pickResult.Dropped) > 0 {
-			o.statusReporter.IncrementAnalysisCounter(ctx, "steps_dropped", len(pickResult.Dropped))
-		}
-
-		// Skip the area when no relevant exploration steps were found.
-		// This avoids sending empty or low-signal prompts to the LLM.
-		if len(pickResult.Picked) == 0 {
-			applog.WithFields(applog.Fields{
-				"area":    area.ID,
-				"dropped": len(pickResult.Dropped),
-			}).Info("No relevant queries found, skipping")
-			continue
-		}
-		relevantSteps := stepsFromPickResult(pickResult)
-
-		// Per-area picked-step debug log — useful for diagnosing why
-		// the LLM produced (or didn't produce) insights for an area.
-		var pickedSummary []map[string]any
-		for _, p := range pickResult.Picked {
-			pickedSummary = append(pickedSummary, map[string]any{
-				"step":   p.Step.Step,
-				"score":  p.Score,
-				"source": string(p.Source),
+		// Analysed but not finished on a previous attempt: take its output
+		// and the per-insight verdicts it already paid for, and re-enter at
+		// validation. Everything analyseArea does — the picker search, the
+		// analysis call, the figure passes and the repair rounds — is work
+		// this attempt does not repeat.
+		//
+		// A draft's insights keep the ids the draft holds for the whole of
+		// the area's in-flight life, so this attempt's own verdict markers
+		// key on the same ids a third attempt would read. They are reminted
+		// where the area is merged into the run's result, below.
+		step, insights, draftVerdicts, fromDraft := restoreAreaDraft(areaDrafts, area.ID)
+		if !fromDraft {
+			out := o.analyseArea(ctx, areaAnalysisInput{
+				area:             area,
+				prompts:          prompts,
+				baseContext:      baseContext,
+				datasetsStr:      datasetsStr,
+				refDataset:       refDataset,
+				picker:           picker,
+				explorationSteps: explorationResult.Steps,
+				stepByID:         stepByID,
+				currencies:       currencies,
 			})
+			switch out.disposition {
+			case areaSuperseded:
+				return nil, ai.ErrAttemptSuperseded
+			case areaSkipped:
+				continue
+			case areaFailed:
+				analysisLog = append(analysisLog, out.step)
+				continue
+			}
+			step, insights = out.step, out.insights
+			// The area is analysed and repaired but not yet validated, which
+			// is the one point in its life where a crash loses the most for
+			// the least reason. Recorded before the per-insight calls start,
+			// so a resume re-enters at the first insight without a verdict.
+			if err := o.checkpointAreaDraft(ctx, step, valPhase.agent != nil); err != nil {
+				return nil, err
+			}
 		}
-		applog.WithFields(applog.Fields{
-			"area":          area.ID,
-			"area_name":     area.Name,
-			"picked_count":  len(relevantSteps),
-			"dropped_count": len(pickResult.Dropped),
-			"picked":        pickedSummary,
-		}).Debug("Analysis area: picked steps")
-
-		applog.WithFields(applog.Fields{
-			"area":    area.ID,
-			"queries": len(relevantSteps),
-			"dropped": len(pickResult.Dropped),
-		}).Info("Analyzing area")
-
-		// How much of each cited step's result this area's prompt will show.
-		// A no-op unless DISCOVERY_TRACE is set.
-		traceExposure(area.ID, relevantSteps)
-
-		// Render the compacted view into the prompt. This replaces
-		// the old json.MarshalIndent of the full ExplorationStep,
-		// which on ERP-scale runs grew to >1M tokens.
-		queryResultsJSON := RenderCompactedSteps(relevantSteps)
-		applog.WithFields(applog.Fields{
-			"area":          area.ID,
-			"queries":       len(relevantSteps),
-			"results_chars": len(queryResultsJSON),
-			"prompt_chars":  len(baseContext) + len(areaPrompt) + len(queryResultsJSON),
-		}).Debug("Analysis area: rendered prompt sizing")
-		prompt := o.buildAnalysisAreaPrompt(baseContext, areaPrompt, datasetsStr, len(relevantSteps), queryResultsJSON, refDataset)
-
-		// Smart-overflow breadcrumb (R5): when the picker trimmed steps for
-		// budget, tell the model what evidence exists but wasn't shown, so it
-		// doesn't conclude the un-shown angles were never examined. Empty (and
-		// thus a no-op) on any run that fit without trimming — i.e. every
-		// big-window run.
-		if bc := formatAlsoExamined(pickResult.AlsoExamined); bc != "" {
-			prompt += bc
-		}
-
-		// Inject project knowledge sources relevant to this analysis area.
-		areaQuery := fmt.Sprintf("%s: %s", area.Name, area.Description)
-		prompt = o.injectKnowledgeSources(ctx, prompt, areaQuery, knowledgeTopKAnalysis)
-
-		// Create analysis step to capture full dialog
-		step := models.AnalysisStep{
-			AreaID:            area.ID,
-			AreaName:          area.Name,
-			RunAt:             time.Now(),
-			Prompt:            prompt,
-			RelevantQueries:   len(relevantSteps),
-			QueryResultsChars: len(queryResultsJSON),
-			SelectedSteps:     pickedToTelemetry(pickResult.Picked),
-			DroppedSteps:      droppedToTelemetry(pickResult.Dropped),
-		}
-
-		// Budget the requested output against the measured input so
-		// input + output stays inside the model window (issue #347). The
-		// adaptive context-overflow retry in the ai client is the net if the
-		// estimate still overshoots on an uncatalogued model.
-		inputTokens := approxTokens(ctx, prompt)
-		maxTokens := budgetedMaxOutputTokens(areaWindow, inputTokens, areaOutputCap, analysisMinOutputTokens())
-		applog.WithFields(applog.Fields{
-			"area":         area.ID,
-			"window":       areaWindow,
-			"input_tokens": inputTokens,
-			"output_cap":   areaOutputCap,
-			"max_tokens":   maxTokens,
-		}).Debug("Analysis area: budgeted output tokens")
-
-		// Send the selected exploration evidence to the LLM and generate
-		// structured insights for the current analysis area. The first call is
-		// a plain Chat (byte-identical for big models); the self-heal retry
-		// fires only when it yields zero parseable insights from a response that
-		// wasn't a legitimately empty area (see analyzeAreaInsights).
-		outcome := o.analyzeAreaInsights(ctx, area.ID, prompt, maxTokens)
-
-		// Again, now that the call has returned. The guard at the top of the
-		// loop was true when the area started, and an analysis call is long
-		// enough for a resume to land inside it — after which this attempt
-		// would validate the insights it just got (more LLM calls) and
-		// append analysis, insight and validation run-step rows. Those rows
-		// are keyed on run_id ALONE, not on attempt, so they would show up
-		// in the resumed run's live log as its own work.
-		if o.ownershipLost(ctx, "validating area "+area.ID) {
-			return nil, ai.ErrAttemptSuperseded
-		}
-		step.Response = outcome.response
-		step.TokensIn = outcome.tokensIn
-		step.TokensOut = outcome.tokensOut
-		step.DurationMs = outcome.durationMs
-		step.AnalysisParseRetries = outcome.parseRetries
-		step.InsightsDroppedParse = outcome.droppedParse
-
-		if outcome.chatErr != nil {
-			step.Error = outcome.chatErr.Error()
-			analysisLog = append(analysisLog, step)
-			applog.WithFields(applog.Fields{"area": area.ID, "error": outcome.chatErr.Error()}).Warn("Analysis failed")
-			continue
-		}
-
-		if len(outcome.insights) == 0 && outcome.parseErr != nil {
-			step.Error = fmt.Sprintf("parse error: %s", outcome.parseErr.Error())
-			analysisLog = append(analysisLog, step)
-			applog.WithFields(applog.Fields{"area": area.ID, "error": outcome.parseErr.Error()}).Warn("Failed to parse insights")
-			continue
-		}
-
-		insights := outcome.insights
-		step.Insights = insights
-
-		// Which currency each amount is in, before anything reads a figure. Figure.Symbol
-		// answers "$" for a figure that states none, so an unmarked amount in any other
-		// currency printed a dollar sign -- in one shipped sentence, next to the currency
-		// the model had written as a word. Settled here rather than at each print site so
-		// a stored figure says what it is in, and per datasource rather than per run,
-		// because a figure read from a secondary warehouse is in that warehouse's
-		// currency: see figure_currency.go.
-		settleInsightFigureCurrencies(insights, currencies, stepByID)
 
 		// Phase 4.5: Validate insights via the LLM-native verifier
 		// agent. Walks insights in affected_count-desc order,
@@ -1720,78 +1647,20 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// models.AnalysisAreaCheckpoint.InsightsValidated.
 		validatedBefore := insightsValidatedThisRun
 
-		// Skip validation when the analysis step produced no insights.
-		// The verifier only runs for successfully parsed insights.
-		// Settle the figures first, then render them into the prose.
-		//
-		// Before the quantifier pass and before repair, because until the references are
-		// rendered the prose is a template: a smoke run showed the repair prompt being
-		// handed sentences reading "{{f1}} of customers placed 11+ orders" and asked to
-		// rewrite them. Repair edits prose and has no notion of this format, so it has to
-		// be given ordinary text -- which also means its behaviour is unchanged from
-		// before figures existed.
-		//
-		// Settling first costs nothing, because a figure is checked against the step's
-		// rows rather than against the prose. Nothing here needs the text.
-		o.figureWriter().attachFigureVerdicts(insights, stepByID)
-
-		// A refuted figure needs no model to fix: the arithmetic that refuted it already
-		// produced the right number, and the prose holds a reference rather than the
-		// number, so correcting it is assigning a field.
-		if corrected := o.figureWriter().correctRefutedFigures(area.ID, insights, stepByID); corrected > 0 {
-			step.FiguresCorrected = corrected
-		}
-
-		// Render the references. From here on the insight carries ordinary sentences, and
-		// every later phase -- the quantifier pass, repair, validation, the API, the
-		// dashboard, the exec summary -- reads them without knowing this format exists.
-		// Unresolved counts too. Gating on resolved-or-inlined discarded the tally in the
-		// one case it mattered most -- an area where every reference failed to resolve
-		// reported FigureRefsUnresolved as zero, which reads as nothing went wrong.
-		if rendered := o.figureWriter().renderInsightFigures(insights); rendered.resolved > 0 || rendered.inlined > 0 || rendered.unresolved > 0 {
-			step.FiguresInlined = rendered.inlined
-			step.FigureRefsUnresolved = rendered.unresolved
-			step.FiguresValueUnreadable = rendered.valueUnreadable
-		}
-
-		// Settle every quantifier claim the model declared against the rows of
-		// the step it cited, before anything downstream reads the insight. The
-		// rows are already here and already correct; what was missing was the
-		// check.
-		attachQuantifierVerdicts(insights, stepByID)
-
-		// Bounded repair before discard (E5). Every insight whose own cited rows
-		// contradict a claim it declared gets the evaluator's reason handed back
-		// and up to ANALYSIS_REPAIR_MAX_ROUNDS attempts to say something true;
-		// whatever is still refuted loses the sentence rather than the finding.
-		// Runs before validation so the verifier judges the text that ships.
-		// A no-op on every insight that agreed with its evidence, which is
-		// almost all of them.
-		repair := o.repairRefutedInsights(ctx, area.ID, insights, stepByID, maxTokens)
-		step.InsightsRepaired = repair.repaired
-		step.InsightsClaimsDropped = repair.claimsDropped
-		step.InsightsUnrepaired = repair.unrepaired
-		step.AnalysisRepairRounds = repair.rounds
-		// Repair calls are LLM calls, so their cost belongs in this area's
-		// totals rather than disappearing into an untracked side channel.
-		step.TokensIn += repair.tokensIn
-		step.TokensOut += repair.tokensOut
-		step.DurationMs += repair.durationMs
-		if repair.rounds > 0 || repair.substituted > 0 {
-			applog.WithFields(applog.Fields{
-				"area":          area.ID,
-				"rounds":        repair.rounds,
-				"substituted":   repair.substituted,
-				"repaired":      repair.repaired,
-				"claim_dropped": repair.claimsDropped,
-				"unrepaired":    repair.unrepaired,
-			}).Info("Repaired insights whose declared claims their own evidence contradicted")
-		}
-
 		if len(insights) > 0 {
 			var areaResults []models.ValidationResult
 			o.setLLMPhase(models.PhaseValidation)
-			areaResults, insightsValidatedThisRun = valPhase.validateInsights(ctx, insights, stepByID, area.ID, insightsValidatedThisRun)
+			// The verdicts a previous attempt already paid for, and where
+			// this attempt's own land as they are produced. Nil `done` on a
+			// freshly analysed area, so it validates everything; nil `save`
+			// never happens here, because the draft write above is what
+			// gives a marker somewhere to go.
+			areaResults, insightsValidatedThisRun = valPhase.validateInsights(ctx, insights, stepByID, area.ID, insightsValidatedThisRun, &perItemCheckpoint{
+				done: draftVerdicts,
+				save: func(vr models.ValidationResult) {
+					o.checkpointInsightVerdict(ctx, area.ID, vr)
+				},
+			})
 			o.setLLMPhase(models.PhaseAnalysis)
 			step.ValidationResults = areaResults
 		}
@@ -1817,6 +1686,29 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			traceInsight(area.ID, insights[i])
 		}
 
+		// A draft-restored area's insights still carry the ids the draft
+		// holds, which is what kept this attempt's verdict markers keyed as a
+		// third attempt would read them. Those ids stop being safe the moment
+		// the area joins this attempt's result: a previous attempt may
+		// already have persisted them, and the tail's writes are inserts. So
+		// the remint happens here, at the merge, and nowhere earlier.
+		//
+		// An area this attempt analysed itself is NOT reminted — its ids were
+		// minted here and nothing has written them.
+		if fromDraft {
+			step, _ = reidentifyRestoredArea(step)
+			insights = step.Insights
+			// And the remap is deliberately NOT recorded in storedIDByLive,
+			// which is the subtle half. That map answers "which id do this
+			// run's checkpoints hold for this insight", and the checkpoint
+			// written three lines below holds the ids this attempt just
+			// minted — so for a draft-restored area the stored id IS the live
+			// id, and recording the draft's id would make Phase 5 compare its
+			// insight set against ids no row carries. Only an area restored
+			// from a COMPLETED checkpoint has a stored id that differs,
+			// because that row is never rewritten.
+		}
+
 		analysisLog = append(analysisLog, step)
 		allInsights = append(allInsights, insights...)
 
@@ -1827,6 +1719,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		if err := o.checkpointAnalysisArea(ctx, step, insightsValidatedThisRun-validatedBefore); err != nil {
 			return nil, err
 		}
+
+		// The area's checkpoint now describes this work with its validation
+		// done, so its draft is spent. Best-effort: loadAreaDrafts prefers
+		// the checkpoint over a draft for the same area, so a surviving row
+		// is ignored rather than restored.
+		o.discardAreaDraft(ctx, area.ID)
 
 		// Report analysis completion and insights to status
 		o.statusReporter.AddAnalysisStep(ctx, area.ID, area.Name, len(insights), "", step.TokensIn, step.TokensOut)
@@ -1870,7 +1768,6 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	if o.ownershipLost(ctx, "recommendations") {
 		return nil, ai.ErrAttemptSuperseded
 	}
-	o.statusReporter.SetPhase(ctx, models.PhaseRecommendations, "Generating actionable recommendations...", 85)
 	o.setLLMPhase(models.PhaseRecommendations)
 	recommenderInput := filterEligibleInsights(allInsights, o.recommendationVerdicts)
 	applog.WithFields(applog.Fields{
@@ -1878,16 +1775,56 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		"eligible_insights": len(recommenderInput),
 	}).Info("Filtered insights for recommendation generation")
 
+	// The ids this attempt's insights are held under by the run's analysis
+	// checkpoints, and the translation back. Both are the identity mapping on
+	// a run that restored nothing. See storedInsightIDs.
+	eligibleStoredIDs, liveByStored := storedInsightIDs(recommenderInput, storedIDByLive)
+
 	var recommendations []models.Recommendation
 	var recStep *models.RecommendationStep
 
+	// Generated on a previous attempt, over the insight set this attempt is
+	// holding: take them, and pay only for the verdicts Phase 5.5 has not
+	// reached. The checkpoint is refused outright unless every insight it was
+	// reasoned from is still here — see restorableRecommendations.
+	restoredRecs, recsRestored := restorableRecommendations(o.loadRecommendationCheckpoint(ctx), recommenderInput, liveByStored)
+	recDetail := "Generating actionable recommendations..."
+	if recsRestored {
+		// Same purpose as the analysis phase's detail string: the live panel
+		// explains why this run is doing less work than it looks like it
+		// should, rather than appearing to skip a phase.
+		recDetail = fmt.Sprintf("Validating %d recommendations restored from a previous attempt...",
+			len(restoredRecs.Step.Recommendations))
+	}
+	o.statusReporter.SetPhase(ctx, models.PhaseRecommendations, recDetail, 85)
+
+	// recVerdictsDone is what Phase 5.5 must not pay for again.
+	var recVerdictsDone map[string]models.ValidationResult
+
+	switch {
+	case recsRestored:
+		// recStep points INTO the restored checkpoint, and
+		// recStep.Recommendations shares its backing array with
+		// recommendations — the same aliasing the live path has, and what
+		// keeps the recommendation log consistent with the result once
+		// Phase 5.5 stamps verdicts and the ids are reminted.
+		recStep = &restoredRecs.Step
+		recommendations = recStep.Recommendations
+		recVerdictsDone = restoredRecommendationBudget(restoredRecs)
+		applog.WithFields(applog.Fields{
+			"recommendations":   len(recommendations),
+			"already_validated": len(recVerdictsDone),
+			"still_to_validate": recommendationsPendingValidation(recommendations, recVerdictsDone),
+		}).Info("Phase 5 restored from a previous attempt — no generation call")
+
 	// Skip recommendation generation when no insights passed validation.
 	// Recommendations are only created from validated insights.
-	if len(recommenderInput) == 0 {
+	case len(recommenderInput) == 0:
 		applog.Warn("No eligible insights for recommendation generation; skipping")
 		recommendations = []models.Recommendation{}
-		recStep = &models.RecommendationStep{Status: "skipped_no_eligible_insights", RunAt: time.Now(), InsightCount: 0}
-	} else {
+		recStep = &models.RecommendationStep{Status: statusRecommendationSkippedNoEligible, RunAt: time.Now(), InsightCount: 0}
+
+	default:
 		recommendations, recStep = o.generateRecommendations(ctx, prompts.Recommendations, recommenderInput, baseContext, datasetsStr)
 		// Citation recovery (#347): salvage valid ids + fail-open backfill so a
 		// small/open model that omits or slug-ifies related_insight_ids doesn't
@@ -1944,6 +1881,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		var figDropped int
 		recommendations, figDropped = dropRecommendationsWithUnresolvedFigures(recommendations)
 		applyUnresolvedFigureDropStats(recStep, recommendations, figDropped)
+
+		// The phase is finished, so record it — before the live row below,
+		// which is the checkpoint-before-shared-writes ordering every other
+		// seam uses. Only a phase that banked something is recorded; see
+		// checkpointRecommendations.
+		if err := o.checkpointRecommendations(ctx, recStep, eligibleStoredIDs); err != nil {
+			return nil, err
+		}
 	}
 
 	// Emit a per-call RunStep so the live UI carries the recommendation
@@ -1975,8 +1920,24 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// Validation is only meaningful when there are recommendations to verify.
 	if len(recommendations) > 0 {
 		o.setLLMPhase(models.PhaseValidation)
-		recValidationResults = valPhase.validateRecommendations(ctx, recommendations, allInsights, stepByID)
+		recValidationResults = valPhase.validateRecommendations(ctx, recommendations, allInsights, stepByID, &perItemCheckpoint{
+			done: recVerdictsDone,
+			save: func(vr models.ValidationResult) {
+				o.checkpointRecommendationVerdict(ctx, vr)
+			},
+		})
 		o.setLLMPhase(models.PhaseRecommendations)
+
+		// Restored recommendations still carry the ids the checkpoint holds,
+		// which is what kept this attempt's verdict markers keyed as a third
+		// attempt would read them. Those ids stop being safe now: the tail
+		// writes them as `recommendations._id` and as Qdrant point ids under a
+		// freshly minted discovery_id, and a previous attempt may already
+		// have persisted them. Reminted here, after the last phase that needs
+		// the stored ids and before the first that would collide on them.
+		if recsRestored {
+			reidentifyRestoredRecommendations(recommendations, recValidationResults)
+		}
 	}
 
 	// Phase 6: Update project context with discovered patterns
@@ -3071,6 +3032,12 @@ const (
 	// as "none found"; that is indistinguishable from a model that had nothing
 	// to say.
 	statusRecommendationFiguresUnresolved = "recommendation_figures_unresolved"
+
+	// statusRecommendationSkippedNoEligible marks a Phase 5 that never ran
+	// because no insight survived the eligibility filter. Named rather than
+	// written twice because the recommendation checkpoint has to recognise it:
+	// the phase made no LLM call, so there is nothing to protect.
+	statusRecommendationSkippedNoEligible = "skipped_no_eligible_insights"
 
 	// defaultRecommendationParseMaxRetries bounds how many corrective
 	// re-prompts the recommendation phase issues when a response yields zero

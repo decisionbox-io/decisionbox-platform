@@ -103,6 +103,43 @@ var schema = []struct {
 		},
 	},
 	{
+		// In-flight analysis drafts — the agent writes one row per analysis
+		// area that has been analysed but has not finished its per-insight
+		// validation, so a resumed run finishes the area rather than
+		// re-analysing it. A separate collection from the checkpoints above
+		// precisely so no reader can mistake an unfinished area for a
+		// finished one; the api only purges the rows.
+		//
+		// The retention TTL is NOT created here, for the same reason it is
+		// not created for the two collections above: its expiry comes from
+		// DISCOVERY_CHECKPOINT_RETENTION — which governs all of them — and
+		// the agent's EnsureIndexes owns the drop-and-recreate dance a
+		// changed expiry needs.
+		Name: "discovery_analysis_drafts",
+		Indexes: []mongo.IndexModel{
+			{
+				Keys: bson.D{
+					{Key: "run_id", Value: 1},
+					{Key: "area_id", Value: 1},
+				},
+				Options: options.Index().SetUnique(true).SetName("uq_run_area"),
+			},
+		},
+	},
+	{
+		// The per-run recommendation checkpoint — the agent writes one row
+		// per run whose Phase 5 generation finished, so a resumed run
+		// validates those recommendations rather than generating them again.
+		// Same TTL reasoning as above; the api only purges the rows.
+		Name: "discovery_recommendation_checkpoints",
+		Indexes: []mongo.IndexModel{
+			{
+				Keys:    bson.D{{Key: "run_id", Value: 1}},
+				Options: options.Index().SetUnique(true).SetName("uq_run"),
+			},
+		},
+	},
+	{
 		Name: "project_context",
 		Indexes: []mongo.IndexModel{
 			{

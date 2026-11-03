@@ -646,7 +646,7 @@ func TestRestoredValidationBudget_IsSeededBeforeAnyAreaRuns(t *testing.T) {
 	validatedHere := 0
 	for _, area := range runAreas {
 		if cp, ok := completed[area.ID]; ok {
-			log, insights = restoreArea(cp, log, insights)
+			log, insights, _ = restoreArea(cp, log, insights)
 			continue
 		}
 		if spent < cap {
@@ -778,7 +778,7 @@ func TestRestoreArea_MergesTheUnionThePipelineReadsDownstream(t *testing.T) {
 	log := []models.AnalysisStep{ranHere}
 	insights := append([]models.Insight{}, ranHere.Insights...)
 
-	log, insights = restoreArea(restored, log, insights)
+	log, insights, _ = restoreArea(restored, log, insights)
 
 	if len(log) != 2 {
 		t.Fatalf("analysis log has %d entries, want 2 — the restored area must appear in the split logs and the failed-area denominator", len(log))
@@ -836,7 +836,7 @@ func TestReidentifyRestoredArea_GivesTheInsightsFreshIdentitiesAndKeepsThemConsi
 		stored.ValidationResults[i].Refuter.DocID = id
 	}
 
-	got := reidentifyRestoredArea(stored)
+	got, _ := reidentifyRestoredArea(stored)
 
 	if len(got.Insights) != 2 || len(got.ValidationResults) != 2 {
 		t.Fatalf("got %d insights / %d results, want 2 / 2", len(got.Insights), len(got.ValidationResults))
@@ -917,7 +917,7 @@ func TestReidentifyRestoredArea_GivesTheInsightsFreshIdentitiesAndKeepsThemConsi
 // be left alone rather than pointed at an unrelated finding.
 func TestReidentifyRestoredArea_EmptyAndUnmatchedCases(t *testing.T) {
 	empty := doneArea("levels", 0, time.Now())
-	if got := reidentifyRestoredArea(empty); len(got.Insights) != 0 {
+	if got, _ := reidentifyRestoredArea(empty); len(got.Insights) != 0 {
 		t.Errorf("got %d insights for an empty area", len(got.Insights))
 	}
 
@@ -925,7 +925,7 @@ func TestReidentifyRestoredArea_EmptyAndUnmatchedCases(t *testing.T) {
 	noVerdicts.Insights[0].Validation = nil
 	noVerdicts.ValidationResults[0].Verifier = nil
 	noVerdicts.ValidationResults[0].Refuter = nil
-	got2 := reidentifyRestoredArea(noVerdicts)
+	got2, _ := reidentifyRestoredArea(noVerdicts)
 	if got2.Insights[0].Validation != nil {
 		t.Error("an insight with no validation must come back with none rather than an empty one")
 	}
@@ -940,7 +940,7 @@ func TestReidentifyRestoredArea_EmptyAndUnmatchedCases(t *testing.T) {
 	orphaned.ValidationResults = append(orphaned.ValidationResults, models.ValidationResult{
 		InsightID: "an-insight-this-area-no-longer-has",
 	})
-	got := reidentifyRestoredArea(orphaned)
+	got, _ := reidentifyRestoredArea(orphaned)
 	if got.ValidationResults[1].InsightID != "an-insight-this-area-no-longer-has" {
 		t.Errorf("an unmatched InsightID was rewritten to %q; it must be left as it was rather than re-pointed at some other finding",
 			got.ValidationResults[1].InsightID)
@@ -957,7 +957,7 @@ func TestReidentifyRestoredArea_EmptyAndUnmatchedCases(t *testing.T) {
 func TestRestoreArea_AnEmptyAreaStillCounts(t *testing.T) {
 	empty := models.AnalysisAreaCheckpoint{Step: doneArea("levels", 0, time.Now())}
 
-	log, insights := restoreArea(empty, nil, nil)
+	log, insights, _ := restoreArea(empty, nil, nil)
 	if len(log) != 1 {
 		t.Errorf("analysis log has %d entries, want 1", len(log))
 	}
@@ -973,7 +973,7 @@ func TestRestoreArea_DoesNotAliasTheCaller(t *testing.T) {
 	cp := models.AnalysisAreaCheckpoint{Step: doneArea("churn", 2, time.Now()), InsightsValidated: 2}
 	before := len(cp.Step.Insights)
 
-	_, insights := restoreArea(cp, nil, nil)
+	_, insights, _ := restoreArea(cp, nil, nil)
 	insights[0].Name = "mutated by a later phase"
 
 	if cp.Step.Insights[0].Name == "mutated by a later phase" {

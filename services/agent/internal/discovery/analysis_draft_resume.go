@@ -1,0 +1,367 @@
+package discovery
+
+// Per-insight analysis resume: the draft written as an area finishes analysing
+// and before it starts validating, the per-insight completion markers written
+// as each verdict lands, and the restore that lets a resumed run finish an
+// area instead of re-analysing it.
+//
+// A sibling of analysis_resume.go rather than part of it: that file is the
+// story of an area that COMPLETED, and this is the story of one that did not.
+//
+// The two are read together and the order matters. A completed area's
+// checkpoint describes the same work as its draft with the validation done, so
+// a loader holding both must prefer the checkpoint — see loadAreaDrafts, which
+// is the only place that rule lives.
+
+import (
+	"context"
+	"errors"
+
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
+	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
+)
+
+// analysisDraftStore is the slice of
+// *database.DiscoveryAnalysisDraftRepository the orchestrator calls. An
+// interface so a unit test can inject a fake without MongoDB, and so a nil
+// store cleanly disables per-insight resume.
+type analysisDraftStore interface {
+	SaveDraft(ctx context.Context, in database.AnalysisAreaDraftInput) error
+	SaveInsightVerdict(ctx context.Context, in database.InsightVerdictInput) error
+	LoadDrafts(ctx context.Context, runID string, explorationAttempt int) (*database.AnalysisDraftSet, error)
+	DeleteByArea(ctx context.Context, runID, areaID string) error
+	DeleteByRun(ctx context.Context, runID string) (int64, error)
+	TouchByRun(ctx context.Context, runID string) (int64, error)
+}
+
+// checkpointAreaDraft records an area that has been analysed and repaired but
+// not yet validated, so a resumed run re-enters at its first unvalidated
+// insight instead of paying for the whole area again.
+//
+// Written at the one point in an area's life where a crash costs the most for
+// the least reason: the analysis call and the repair rounds are done, and the
+// per-insight verifier/refuter calls — the largest number of LLM calls the
+// area will make — are about to start.
+//
+// validationEnabled is the caller's answer to "can the phase this protects
+// actually cost anything". With no validation agent the area goes from here to
+// its completed checkpoint through two in-memory passes, so a draft would
+// protect nothing and be superseded seconds later. This is the one gate that
+// differs from the recommendation checkpoint's, which has a persistence tail
+// behind it either way.
+//
+// Ownership is asked BEFORE writing, for the reason checkpointStep gives at
+// length: the row-level attempt fence in SaveDraft only refuses a write where
+// a higher-attempt row ALREADY exists, so a superseded attempt running ahead
+// of the live one would otherwise plant a draft the live attempt has not
+// reached and have it restored as though the live attempt had produced it.
+//
+// Returns ai.ErrAttemptSuperseded when this attempt has lost the run. Every
+// other failure is logged and swallowed, like every checkpoint write: the cost
+// is that the area is analysed again on a later resume, and a checkpoint must
+// never be able to abort a working run.
+func (o *Orchestrator) checkpointAreaDraft(ctx context.Context, step models.AnalysisStep, validationEnabled bool) error {
+	if o.analysisDraftRepo == nil || !validationEnabled {
+		return nil
+	}
+	if o.explorationSummaryAttempt <= 0 {
+		// No durable exploration summary, so this run re-explores on resume
+		// and nothing analysed over the current exploration could be restored
+		// against the next one. Writing a row would be writing one LoadDrafts
+		// is obliged to ignore.
+		return nil
+	}
+	if len(step.Insights) == 0 {
+		// Nothing to validate, so nothing to resume. The area is moments from
+		// its completed checkpoint.
+		return nil
+	}
+	if step.AreaID == "" {
+		applog.WithField("run_id", o.runID).Warn("analysis area drafted with no area id; not checkpointing it")
+		return nil
+	}
+	if o.statusReporter != nil && !o.statusReporter.OwnsRun(ctx) {
+		return ai.ErrAttemptSuperseded
+	}
+
+	err := o.analysisDraftRepo.SaveDraft(ctx, database.AnalysisAreaDraftInput{
+		ProjectID:          o.projectID,
+		RunID:              o.runID,
+		Attempt:            o.resume.attemptNumber(),
+		ExplorationAttempt: o.explorationSummaryAttempt,
+		Step:               step,
+	})
+	if err != nil {
+		if errors.Is(err, database.ErrSupersededAttempt) {
+			applog.WithFields(applog.Fields{
+				"run_id": o.runID,
+				"area":   step.AreaID,
+			}).Warn("a newer attempt of this run owns this analysis area; stopping rather than spending its per-insight validation on a result that will be discarded")
+			return ai.ErrAttemptSuperseded
+		}
+		applog.WithFields(applog.Fields{
+			"run_id": o.runID,
+			"area":   step.AreaID,
+			"error":  err.Error(),
+		}).Warn("failed to draft an analysed area; a resumed run would analyse and re-validate it in full")
+		return nil
+	}
+	return nil
+}
+
+// checkpointInsightVerdict records that one insight has been validated.
+//
+// Called from validationPhase's bounded workers as each verdict lands, so it
+// must stay safe to call concurrently — which is why the repository writes one
+// field rather than replacing the document.
+//
+// insightID is the id the DRAFT holds, which is the id live in memory until
+// the area is merged into the run's result. Every failure is swallowed: a lost
+// marker costs one re-validated insight on a later resume. No ownership
+// question here either — the area-level write already asked, moments ago, and
+// asking once per insight would add a Mongo read next to every verifier call
+// to narrow a window the area-level gate already bounds.
+func (o *Orchestrator) checkpointInsightVerdict(ctx context.Context, areaID string, vr models.ValidationResult) {
+	if o.analysisDraftRepo == nil || areaID == "" || vr.InsightID == "" {
+		return
+	}
+	if o.explorationSummaryAttempt <= 0 {
+		return
+	}
+	err := o.analysisDraftRepo.SaveInsightVerdict(ctx, database.InsightVerdictInput{
+		RunID:     o.runID,
+		AreaID:    areaID,
+		Attempt:   o.resume.attemptNumber(),
+		InsightID: vr.InsightID,
+		Verdict:   vr,
+	})
+	if err != nil {
+		applog.WithFields(applog.Fields{
+			"run_id":  o.runID,
+			"area":    areaID,
+			"insight": vr.InsightID,
+			"error":   err.Error(),
+		}).Warn("failed to record a validated insight; it would be validated again on a later resume")
+	}
+}
+
+// loadAreaDrafts reads back the in-flight analysis areas this run may restore
+// and finish.
+//
+// The gates are loadCompletedAreas', for the same three reasons, plus the one
+// this function exists to apply: an area with a COMPLETED checkpoint is not a
+// draft any more. The completed row describes the same analysis with its
+// validation done, so restoring the draft instead would re-validate work
+// already paid for — and, worse, hand Phase 5 an area whose insights carry no
+// verdict.
+//
+// The draft is deleted when its area completes, so this usually finds nothing
+// to drop. It is still the guarantee rather than the delete: that delete is
+// best-effort, and a draft also outlives its area whenever the delete is lost
+// to a crash between the two writes.
+//
+// A read failure costs money (the areas are analysed again), never
+// correctness, so it is logged and swallowed.
+func (o *Orchestrator) loadAreaDrafts(ctx context.Context, completed map[string]models.AnalysisAreaCheckpoint) map[string]models.AnalysisAreaDraft {
+	if o.analysisDraftRepo == nil || !o.resume.active() || !o.resume.explorationComplete() {
+		return nil
+	}
+	set, err := o.analysisDraftRepo.LoadDrafts(ctx, o.runID, o.explorationSummaryAttempt)
+	if err != nil {
+		applog.WithFields(applog.Fields{
+			"run_id": o.runID,
+			"error":  err.Error(),
+		}).Warn("could not load this run's in-flight analysis areas; any area a previous attempt left unvalidated will be analysed again in full")
+		return nil
+	}
+	if set.Len() == 0 {
+		return nil
+	}
+	drafts := make(map[string]models.AnalysisAreaDraft, set.Len())
+	superseded := 0
+	for areaID, draft := range set.Drafts {
+		if _, done := completed[areaID]; done {
+			superseded++
+			continue
+		}
+		drafts[areaID] = draft
+	}
+	if superseded > 0 {
+		applog.WithFields(applog.Fields{
+			"run_id": o.runID,
+			"areas":  superseded,
+		}).Debug("ignored analysis drafts whose areas have since completed")
+	}
+	if len(drafts) == 0 {
+		return nil
+	}
+	// Reading them without rewriting them leaves their retention clock running
+	// from the attempt that wrote them, exactly as the exploration prefix and
+	// the area checkpoints do.
+	o.refreshAreaDraftTTL(ctx)
+	markers := 0
+	for _, draft := range drafts {
+		markers += len(draft.InsightVerdicts)
+	}
+	applog.WithFields(applog.Fields{
+		"run_id":              o.runID,
+		"areas":               len(drafts),
+		"validated_insights":  markers,
+		"from_attempt":        set.Attempt,
+		"exploration_attempt": o.explorationSummaryAttempt,
+	}).Info("resume: finishing analysis areas a previous attempt analysed but did not validate")
+	return drafts
+}
+
+// restorableDrafts narrows the draft set to the areas THIS run is going to
+// run, for the reason restorableAreas does it one rung up: the two sets can
+// legitimately differ when the project's domain pack was edited between
+// attempts or the resume used a narrower area selection, and a row the loop
+// never reads must not reach anything else either.
+func restorableDrafts(runAreas []AnalysisArea, drafts map[string]models.AnalysisAreaDraft) map[string]models.AnalysisAreaDraft {
+	if len(drafts) == 0 {
+		return nil
+	}
+	out := make(map[string]models.AnalysisAreaDraft, len(drafts))
+	for _, area := range runAreas {
+		if d, ok := drafts[area.ID]; ok {
+			out[area.ID] = d
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// restoreAreaDraft hands the Phase 4 loop one area's draft: the step and
+// insights as the previous attempt left them, and the verdicts it already
+// paid for.
+//
+// The step is returned as stored, ids and all. A draft's insight ids are
+// deliberately NOT reminted here — they stay live for the whole of the area's
+// in-flight life, so this attempt's own verdict markers key on the same ids a
+// third attempt would read back. The remint happens where the area is merged
+// into the run's result, which is the point at which those ids would otherwise
+// collide with what a previous attempt already persisted.
+//
+// A pure function, reporting whether there was a draft at all, so the caller
+// reads as one decision rather than a branch over a map lookup.
+func restoreAreaDraft(drafts map[string]models.AnalysisAreaDraft, areaID string) (models.AnalysisStep, []models.Insight, map[string]models.ValidationResult, bool) {
+	draft, ok := drafts[areaID]
+	if !ok {
+		return models.AnalysisStep{}, nil, nil, false
+	}
+	applog.WithFields(applog.Fields{
+		"area":              areaID,
+		"insights":          len(draft.Step.Insights),
+		"already_validated": len(draft.InsightVerdicts),
+		"still_to_validate": len(draft.Step.Insights) - len(draft.InsightVerdicts),
+	}).Info("Analysis area restored mid-validation from a previous attempt — not re-analysed")
+	return draft.Step, draft.Step.Insights, draft.InsightVerdicts, true
+}
+
+// refreshAreaDraftTTL re-anchors the retention clock on a run's analysis
+// drafts. Best-effort: losing it costs resumability on a later attempt, not
+// this run.
+func (o *Orchestrator) refreshAreaDraftTTL(ctx context.Context) {
+	if o.analysisDraftRepo == nil || o.runID == "" {
+		return
+	}
+	touched, err := o.analysisDraftRepo.TouchByRun(ctx, o.runID)
+	if err != nil {
+		applog.WithFields(applog.Fields{
+			"run_id": o.runID,
+			"error":  err.Error(),
+		}).Warn("could not re-anchor the analysis draft retention clock; these rows may expire while this attempt is still running")
+		return
+	}
+	applog.WithFields(applog.Fields{
+		"run_id":  o.runID,
+		"touched": touched,
+	}).Debug("re-anchored the analysis draft retention clock for the resumed attempt")
+}
+
+// discardAreaDraft drops one area's draft because the area has finished and
+// its completed checkpoint now describes the same work with its validation
+// done.
+//
+// Best-effort by design, and safe to lose: loadAreaDrafts prefers the
+// completed row over a draft for the same area, so a surviving draft is
+// ignored rather than restored, and the TTL reclaims it.
+func (o *Orchestrator) discardAreaDraft(ctx context.Context, areaID string) {
+	if o.analysisDraftRepo == nil || o.runID == "" || areaID == "" {
+		return
+	}
+	if err := o.analysisDraftRepo.DeleteByArea(ctx, o.runID, areaID); err != nil {
+		applog.WithFields(applog.Fields{
+			"run_id": o.runID,
+			"area":   areaID,
+			"error":  err.Error(),
+		}).Debug("could not delete a finished area's draft; it is superseded by the area's checkpoint either way")
+	}
+}
+
+// discardAreaDrafts deletes the run's analysis drafts, because the run has
+// reached an outcome it cannot be resumed from. Best-effort with the TTL as
+// the backstop, like its two counterparts.
+func (o *Orchestrator) discardAreaDrafts(ctx context.Context, why string) {
+	if o.analysisDraftRepo == nil || o.runID == "" {
+		return
+	}
+	deleted, err := o.analysisDraftRepo.DeleteByRun(ctx, o.runID)
+	if err != nil {
+		applog.WithFields(applog.Fields{
+			"run_id": o.runID,
+			"reason": why,
+			"error":  err.Error(),
+		}).Warn("failed to delete analysis drafts; the retention TTL will reclaim them")
+		return
+	}
+	applog.WithFields(applog.Fields{
+		"run_id":  o.runID,
+		"reason":  why,
+		"deleted": deleted,
+	}).Debug("deleted this run's analysis drafts")
+}
+
+// storedInsightIDs maps a set of this attempt's insights onto the ids the
+// run's analysis checkpoints hold for them.
+//
+// The whole of the recommendation restore gate rests on one invariant, which
+// this function is: an insight's STORED id is the id carried by the checkpoint
+// row that currently holds its area.
+//
+//   - An area this attempt analysed itself — freshly, or by finishing a draft
+//     — is written to its completed checkpoint with the ids this attempt has,
+//     so stored and live are the same id and the insight is absent from
+//     storedByLive.
+//   - An area restored from a completed checkpoint is never rewritten, so that
+//     row still holds the previous attempt's ids, and storedByLive maps this
+//     attempt's reminted id back to it.
+//
+// Because of that, the list is the same on every attempt of a run whose area
+// checkpoints have not changed — which is what makes comparing it to a stored
+// list a meaningful question rather than a coincidence.
+//
+// The second return is the inverse, stored id to live id, which is what
+// re-points a restored recommendation's citations.
+func storedInsightIDs(insights []models.Insight, storedByLive map[string]string) ([]string, map[string]string) {
+	ids := make([]string, 0, len(insights))
+	liveByStored := make(map[string]string, len(insights))
+	for i := range insights {
+		live := insights[i].ID
+		if live == "" {
+			continue
+		}
+		stored := live
+		if s, ok := storedByLive[live]; ok && s != "" {
+			stored = s
+		}
+		ids = append(ids, stored)
+		liveByStored[stored] = live
+	}
+	return ids, liveByStored
+}

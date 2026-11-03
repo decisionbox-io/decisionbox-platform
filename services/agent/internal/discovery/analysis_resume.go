@@ -228,6 +228,12 @@ func (o *Orchestrator) discardAnalysisCheckpoints(ctx context.Context, why strin
 //     phase's eligibility filter, and into Phase 8's embedding, carrying the
 //     ids that Phase 5's related_insight_ids resolve against.
 //
+// The third return is the id remap reidentifyRestoredArea performed, fresh id
+// to stored id. Phase 5 needs it: a stored recommendation cites insights by
+// the ids the checkpoints hold, so deciding whether such a set is still
+// restorable — and re-pointing its citations if it is — is only possible with
+// the mapping each restore produced. See storedInsightIDs.
+//
 // A pure function so the arithmetic is testable on its own: RunDiscovery
 // needs a warehouse, an LLM and a schema cache, so the loop it lives in
 // cannot be driven from a unit test.
@@ -235,9 +241,9 @@ func restoreArea(
 	cp models.AnalysisAreaCheckpoint,
 	analysisLog []models.AnalysisStep,
 	allInsights []models.Insight,
-) ([]models.AnalysisStep, []models.Insight) {
-	step := reidentifyRestoredArea(cp.Step)
-	return append(analysisLog, step), append(allInsights, step.Insights...)
+) ([]models.AnalysisStep, []models.Insight, map[string]string) {
+	step, storedByFresh := reidentifyRestoredArea(cp.Step)
+	return append(analysisLog, step), append(allInsights, step.Insights...), storedByFresh
 }
 
 // reidentifyRestoredArea gives a restored area's insights fresh ids, and
@@ -274,19 +280,24 @@ func restoreArea(
 // Copies rather than rewriting in place: the slices belong to the loaded
 // checkpoint, which the live-feed replay has already read, and the stored row
 // must keep its own ids so a later attempt remints from the same baseline.
-func reidentifyRestoredArea(step models.AnalysisStep) models.AnalysisStep {
+// Returns the remapped step and the inverse mapping, fresh id to stored id,
+// which is what lets a later phase recognise a restored insight by the id the
+// checkpoint holds for it.
+func reidentifyRestoredArea(step models.AnalysisStep) (models.AnalysisStep, map[string]string) {
 	if len(step.Insights) == 0 {
-		return step
+		return step, nil
 	}
 	insights := make([]models.Insight, len(step.Insights))
 	copy(insights, step.Insights)
 	freshByOld := make(map[string]string, len(insights))
+	storedByFresh := make(map[string]string, len(insights))
 	for i := range insights {
 		old := insights[i].ID
 		fresh := uuid.New().String()
 		insights[i].ID = fresh
 		if old != "" {
 			freshByOld[old] = fresh
+			storedByFresh[fresh] = old
 		}
 		// The verdict names the document it judged, twice over and
 		// separately from the outer id: Validation is a POINTER, so the
@@ -317,7 +328,7 @@ func reidentifyRestoredArea(step models.AnalysisStep) models.AnalysisStep {
 		}
 		step.ValidationResults = results
 	}
-	return step
+	return step, storedByFresh
 }
 
 // reidentifyInsightValidation deep-copies an insight's validation and points

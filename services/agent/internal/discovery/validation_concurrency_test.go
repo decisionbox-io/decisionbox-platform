@@ -83,7 +83,7 @@ func concurrencyFixture(t *testing.T, concurrency int) (*validationPhase, *inFli
 // exactly as in the sequential path (the 2 least-affected are skipped).
 func TestValidateInsights_Concurrency(t *testing.T) {
 	p, llm, insights, steps := concurrencyFixture(t, 3)
-	results, validated := p.validateInsights(context.Background(), insights, steps, "a", 0)
+	results, validated := p.validateInsights(context.Background(), insights, steps, "a", 0, nil)
 
 	if llm.peak < 2 || llm.peak > 3 {
 		t.Errorf("peak concurrent LLM calls = %d, want 2..3", llm.peak)
@@ -118,7 +118,7 @@ func TestValidateInsights_Concurrency(t *testing.T) {
 // today's one-at-a-time behaviour.
 func TestValidateInsights_DefaultIsSequential(t *testing.T) {
 	p, llm, insights, steps := concurrencyFixture(t, 0)
-	p.validateInsights(context.Background(), insights, steps, "a", 0)
+	p.validateInsights(context.Background(), insights, steps, "a", 0, nil)
 	if llm.peak != 1 {
 		t.Errorf("peak concurrent LLM calls = %d, want 1", llm.peak)
 	}
@@ -130,7 +130,7 @@ func TestValidateRecommendations_Concurrency(t *testing.T) {
 	for i := range recs {
 		recs[i] = models.Recommendation{ID: fmt.Sprintf("r%d", i), Title: fmt.Sprintf("rec %d", i), RelatedInsightIDs: []string{"i0"}}
 	}
-	results := p.validateRecommendations(context.Background(), recs, insights, steps)
+	results := p.validateRecommendations(context.Background(), recs, insights, steps, nil)
 	if llm.peak < 2 || llm.peak > 3 {
 		t.Errorf("peak concurrent LLM calls = %d, want 2..3", llm.peak)
 	}

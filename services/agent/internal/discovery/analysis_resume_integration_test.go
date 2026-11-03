@@ -175,7 +175,7 @@ func TestInteg_AnalysisResume_KOfNAreasAreRestoredAndTheRestAreNot(t *testing.T)
 	analysed := 0
 	for _, area := range runAreas {
 		if cp, ok := completed[area.ID]; ok {
-			analysisLog, allInsights = restoreArea(cp, analysisLog, allInsights)
+			analysisLog, allInsights, _ = restoreArea(cp, analysisLog, allInsights)
 			continue
 		}
 		analysed++
@@ -397,7 +397,7 @@ func TestInteg_AnalysisResume_ARestoredAreaDoesNotCollideWithThePreviousAttempt(
 
 	// Attempt 2 restores that area. The merge remints the ids, so the tail's
 	// insert-only write cannot collide with what attempt 1 left behind.
-	_, restoredInsights := restoreArea(
+	_, restoredInsights, _ := restoreArea(
 		models.AnalysisAreaCheckpoint{Step: stored, InsightsValidated: 2}, nil, nil)
 	second := &models.DiscoveryResult{
 		ID: "discovery-2", ProjectID: "proj", Domain: "gaming", Category: "match3",

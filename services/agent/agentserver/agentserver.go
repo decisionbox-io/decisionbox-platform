@@ -932,6 +932,13 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	// re-running every area from the top.
 	discoveryAnalysisCheckpointRepo := database.NewDiscoveryAnalysisCheckpointRepository(db)
 
+	// And, one rung finer, the area a run was in the middle of validating and
+	// the recommendations it had already generated — so a run that dies inside
+	// Phase 4.5 or in Phase 5 / 5.5 re-pays for neither the analysis call nor
+	// the per-item verdicts a previous attempt already produced.
+	discoveryAnalysisDraftRepo := database.NewDiscoveryAnalysisDraftRepository(db)
+	discoveryRecommendationCheckpointRepo := database.NewDiscoveryRecommendationCheckpointRepository(db)
+
 	// Discovery Ledger repositories (compounding discovery, enterprise#261).
 	ledgerRepo := database.NewLedgerRepository(db)
 	ledgerFindingRepo := database.NewLedgerFindingRepository(db)
@@ -962,6 +969,12 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		// Same reasoning as the exploration checkpoints above: a warning,
 		// because the writes still work without the indexes.
 		applog.WithError(err).Warn("Failed to ensure discovery analysis checkpoint indexes")
+	}
+	if err := discoveryAnalysisDraftRepo.EnsureIndexes(ctx); err != nil {
+		applog.WithError(err).Warn("Failed to ensure discovery analysis draft indexes")
+	}
+	if err := discoveryRecommendationCheckpointRepo.EnsureIndexes(ctx); err != nil {
+		applog.WithError(err).Warn("Failed to ensure discovery recommendation checkpoint indexes")
 	}
 	for _, li := range []interface{ EnsureIndexes(context.Context) error }{
 		ledgerRepo, ledgerFindingRepo, ledgerTaskRepo, ledgerLearningRepo, ledgerProposalRepo,
@@ -1127,18 +1140,21 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		// does not say: initQdrant returns nil for an unset QDRANT_URL and
 		// for a failed health check alike, and the failure is logged and
 		// carried past. Retirement has to tell them apart.
-		VectorStoreConfigured:   cfg.Qdrant.URL != "",
-		EmbeddingProvider:       embeddingProvider,
-		EmbedIndexStore:         discovery.NewMongoEmbedIndexStore(db),
+		VectorStoreConfigured:           cfg.Qdrant.URL != "",
+		EmbeddingProvider:               embeddingProvider,
+		EmbedIndexStore:                 discovery.NewMongoEmbedIndexStore(db),
 		DiscoveryCheckpointRepo:         discoveryCheckpointRepo,
 		DiscoveryAnalysisCheckpointRepo: discoveryAnalysisCheckpointRepo,
-		SchemaRetriever:         schemaRetriever,
-		SchemaCache:             schemaCache,
-		WarehouseHash:           warehouseHash,
-		WarehouseID:             warehouseIDOrDefault(primaryWH),
-		WarehouseProviders:      warehouseProviders,
-		Warehouses:              effectiveWarehouses,
-		RunStepIndex:            runStepIndex,
+		DiscoveryAnalysisDraftRepo:      discoveryAnalysisDraftRepo,
+
+		DiscoveryRecommendationCheckpointRepo: discoveryRecommendationCheckpointRepo,
+		SchemaRetriever:                       schemaRetriever,
+		SchemaCache:                           schemaCache,
+		WarehouseHash:                         warehouseHash,
+		WarehouseID:                           warehouseIDOrDefault(primaryWH),
+		WarehouseProviders:                    warehouseProviders,
+		Warehouses:                            effectiveWarehouses,
+		RunStepIndex:                          runStepIndex,
 	})
 
 	// Load the resume state before entering the run. The API checks that a
