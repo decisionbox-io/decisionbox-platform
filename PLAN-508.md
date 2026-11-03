@@ -182,7 +182,8 @@ which is what makes it one rule instead of two. §11 has the dependency detail.
 | Phase 4 entry, `ownershipLost(ctx, "analysis")` (`orchestrator.go:1393`) | **yes** | exploration's summary is checkpointed, so the resume skips Phase 3 entirely — a genuinely free pause point, and the common "let exploration finish, then stop" case |
 | per-area, after `checkpointAnalysisArea` (v2, `analysis_resume.go:69`) | **yes** | the area and its validation are durable, so a resume restores them; the exact twin of the exploration-step seam |
 | per-area ENTRY and `"validating area X"` gates | **no** | mid-area: this area's analysis call has happened and is not yet checkpointed. Its own checkpoint seam, a few lines later, is the free point — and catches the LAST area too, which a next-iteration gate would miss |
-| recommendations, "saving the result" | **no** | Phases 5–7 are not resumable until v3; pausing there discards them for nothing |
+| recommendations (Phase 5 / 5.5) | **no** | nothing is checkpointed between the last area and the save, so a pause discards the generation and its validation. v3 would add the seam — see §12 |
+| "saving the result" (Phases 6–8) | **no, and never** | the persist tail. By here the expensive work is done and owed durability; pausing would turn a run seconds from `completed` into one that re-pays Phases 5–5.5. Outside the window by design, at any granularity — see §12 |
 
 Two further preconditions on honouring, both load-bearing:
 
@@ -610,10 +611,11 @@ targets (CI skips Integration Tests on PRs). All prefixed `GOTOOLCHAIN=auto`.
 
 ## 9. Out of scope / follow-ups
 
-- Per-**insight** (v3) resume granularity. v2 is a *dependency* now rather than
-  a follow-up — see §11 — so a pause mid-analysis keeps the areas already done;
-  what it still re-pays is the single area in flight, and Phases 5–7 in full.
-  v3 would shrink both, and needs nothing from v4 to do so.
+- Per-**insight / per-recommendation** (v3) resume granularity. v2 is a
+  *dependency* now rather than a follow-up (§11), so a pause mid-analysis keeps
+  the areas already done; what it still re-pays is the single area in flight and
+  Phases 5 / 5.5. v3 would shrink both and needs nothing from v4 to do so — but
+  it would **not** open Phases 6–8 to a pause, and nothing should. §12.
 - **Concurrency-at-resume policy** — a paused run holds its concurrent-run
   reservation, and a fresh run can start alongside it (then blocking the resume),
   which is today's behaviour for a `failed` run. Flagged in the issue as a
@@ -680,8 +682,8 @@ rather than a follow-up: the pause window reflecting what resume can actually
 re-use *is* the feature.
 
 What stays declined is everything with no checkpoint behind it: the mid-area
-gates, and Phases 5–7. v3 would make those cheap too, one rung finer, and the
-same per-seam rule absorbs it with no v4 redesign. v3 is not started.
+gates, and Phases 5 / 5.5. §12 is what v3 would and would not change about
+that.
 
 ### Sequencing
 
@@ -698,6 +700,62 @@ v4's new fields live.
 If #510 is somehow reverted or held, v4 still ships — the per-area rows in §4's
 table simply have no seam to attach to, and the window reverts to closing at the
 Phase 4 entry gate. Nothing else in the plan depends on it.
+
+---
+
+## 12. What v3 would change about Phases 5–8 — less than the shorthand suggests
+
+v3 (#507) is unblocked now that v2 is ready, so it is worth being exact about
+what it would and would not open to a pause. Nothing in v4 changes either way;
+this section exists so "Phases 5–7 are not pausable until v3" is not read as a
+promise v3 does not make.
+
+**Today: nothing changes.** v3 is unbuilt. No per-item markers exist, so no seam
+exists, so the window is exactly as §4 states.
+
+**What v3 would add — two seams, not a phase range.** #507 defines per-item
+completion markers for *insight validated* (Phase 4.5), *recommendation
+generated* (Phase 5) and *recommendation validated* (Phase 5.5). So it would make
+pausable:
+
+1. the mid-area `"validating area X"` gate — the one gate §4 declines *inside*
+   an area; and
+2. a post-generation / per-recommendation-validation seam in Phases 5 and 5.5.
+
+Both slot into §4's existing rule — "a pause is honoured at every seam where a
+checkpoint has just landed" — with no v4 redesign. That phrasing was chosen for
+exactly this reason: the rule names seams, not phases, so a new rung adds rows to
+the table rather than rewriting it.
+
+**One limit v3 cannot remove.** Phase 5 generation is a **single** LLM call that
+produces every recommendation at once (`generateRecommendations` returns
+`[]Recommendation` plus one `RecommendationStep`). There is no seam *inside* it
+at any granularity, so a pause can only land before or after it. v3's
+"recommendation generated" marker is what would make "after" free; "during"
+stays impossible by construction.
+
+**What v3 would NOT open, and what nothing should: Phases 6–8.** #507 does not
+mention them, and that is right rather than an oversight:
+
+- **Phase 6** is already hollow. Its one durable act — merging this run's
+  findings into the project's long-term pattern memory — was deliberately moved
+  out to the terminal section, "where ownership is DECIDED rather than sampled",
+  because it is the one write nothing can undo. What remains at the Phase 6
+  boundary is a log line, and the gate standing there is already labelled
+  `"saving the result"`.
+- **Phases 7–8** are the persist tail. They run on a `WithoutCancel` context
+  with their own 10-minute budget precisely *because* the compute is finished and
+  durability is owed — losing a completed discovery to a cancellation signal is
+  called out in the code as a data-loss bug. A pause there has nothing to save
+  and something to lose: it would convert a run seconds from `completed` into one
+  that re-pays Phases 5 / 5.5 on resume, and a pause landing mid-tail could leave
+  a saved discovery attached to a `paused` run, which is the orphan state the
+  discard path already goes to some length to avoid.
+
+So the honest shape of the roadmap for Pause is: v1 made exploration pausable,
+v2 makes per-area analysis pausable, v3 would make per-insight validation and
+the recommendation phases pausable — and the persist tail is permanently outside
+the window, by design, however fine the granularity gets.
 
 ---
 
