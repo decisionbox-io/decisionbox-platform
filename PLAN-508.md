@@ -173,7 +173,7 @@ a pause right after one lands costs nothing. The window is therefore a property
 of the seam — "a checkpoint just landed here" — rather than a phase boundary,
 which is what makes it one rule instead of two. §11 has the dependency detail.
 
-| Gate (file:line today) | Honours pause? | Why |
+| Gate (file:line; the per-area row is on #510's branch) | Honours pause? | Why |
 |---|---|---|
 | exploration step, after `checkpointStep` (`ai/exploration.go:836`) | **yes** | the step is finished and durable; nothing is lost |
 | `complete_rejected` step checkpoint (`ai/exploration.go:790`) | **yes** | same seam, same guarantee |
