@@ -404,26 +404,23 @@ render a lowercase grey "paused".
 
 **Not in this repo:** `app/projects/[id]/page.tsx` is one of the dashboard files
 a deployment overlay replaces *wholesale* rather than patching, so the same
-change must land there too or half the deployments silently get no Pause CTA.
-**A paired plan PR is open on an identically-named branch** (`jale/issue-508`);
-the API and agent halves are shared and need nothing, and `src/lib/api.ts` and
+change must land there too or those deployments get no Pause CTA. **A paired
+plan PR is open on an identically-named branch** (`jale/issue-508`); the API and
+agent halves are shared and need nothing, and `src/lib/api.ts` and
 `ProjectRunStatus.tsx` are not overlaid, so the overlay work is one file.
 
-That pairing raises one decision for this repo, because the usual safety net
-does not catch this feature. The overlay's drift guard compares what makes a
-feature *reachable* — a rendered first-party component and a linked route — and
-Pause adds neither: its buttons live **inside `LiveRunPanel`, which is defined
-inside `page.tsx` itself**. So a missed sync is invisible to CI, which is how
-#438's Resume button had to be caught by hand.
+That pairing needs nothing from this plan beyond the tests §6 already specifies.
+The composed build is tested with the overlay applied, and the suite it runs is
+**this repo's** — `ProjectPage.test.tsx` imports `@/app/projects/[id]/page` and
+renders it, so with the overlay in place it asserts the overlay's copy. The test
+file is not itself overlaid, which is what keeps that true. So the Pause,
+Cancel-confirm and paused-Resume assertions written here are also what catches a
+missed sync over there, and nothing extra is owed.
 
-**Proposed, for sign-off rather than assumed:** extract `LiveRunPanel` into
-`src/components/projects/LiveRunPanel.tsx` and have the page import it. The
-overlay then imports the same component instead of carrying a copy, so every
-future change to the run panel reaches every deployment automatically *and*
-falls under the drift guard. It is a pure move — ~300 lines, no behaviour, and
-the two copies already agree apart from three trimmed comments. It is also a
-structural change rather than part of the reported work, so it is @abacigil's
-call; without it the sync stays correct but hand-maintained.
+Worth knowing while writing them: a button that only the overlay could get wrong
+is still asserted by a test that lives here, so §6's run-panel cases should
+assert visible text and behaviour rather than internals — which is how they are
+already written.
 
 ### 5.4 Docs (Rule 4)
 
