@@ -762,10 +762,13 @@ func (h *DiscoveriesHandler) standDownResume(parent context.Context, runID strin
 // in a shared interface, and a pricing decision, because it would make a
 // resume refusable on plan grounds for a run that is already paid for.
 //
-// Reviewed and deliberately left as it stands, to be revisited with the v4
-// (operator Pause) increment. `attempt` is persisted so a future per-attempt
-// price can key on runID:attempt rather than silently no-op'ing against the
-// original charge, and the seam above is where it goes.
+// Revisited with the v4 operator-Pause increment (#508) and deliberately left
+// as it stands: pause adds one more case — a paused run keeps the reservation
+// its first attempt opened, because it is not terminal — without changing the
+// trade. Tracked as #517, which also has the two questions the decision needs
+// to answer. `attempt` is persisted so a future per-attempt price can key on
+// runID:attempt rather than silently no-op'ing against the original charge,
+// and the seam above is where it goes.
 func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("runId")
 	ctx := r.Context()
@@ -1146,7 +1149,7 @@ func pauseDrainTimeout() time.Duration {
 // goes on holding its concurrent-run slot. That is the conservative answer (a
 // resume opens no reservation of its own, so there would be nothing to
 // reopen), and the broader concurrency-at-resume policy is the follow-up
-// decision #508 flags rather than settles.
+// decision #508 flags rather than settles — tracked as #517.
 func (h *DiscoveriesHandler) PauseRun(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("runId")
 	ctx := r.Context()
