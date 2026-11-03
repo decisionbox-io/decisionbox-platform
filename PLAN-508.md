@@ -162,12 +162,16 @@ before Phase 7 throws away a complete analysis, validation and recommendation
 pass that the resume would re-pay in full, seconds before the run would have
 finished anyway.
 
-**Rule: a pause is honoured while the run is in exploration, and at the Phase 4
-entry gate. Past that it is declined and the run finishes.**
+**Rule: a pause is honoured at every seam where a checkpoint has just landed,
+and declined everywhere else. Concretely: anywhere in exploration, at the
+Phase 4 entry gate, and at each per-area analysis checkpoint. Past the last
+area's checkpoint it is declined and the run finishes.**
 
-That rule is a function of what resume can re-use, which v2 changes — so the
-window is implemented as a **named property of the gate** rather than as
-scattered conditionals, and widening it is additive. See §11.
+The per-area half of that rule exists because **v2 (#510) is ready to merge**,
+so v4 is built on top of it: v2 makes each completed analysis area durable, and
+a pause right after one lands costs nothing. The window is therefore a property
+of the seam — "a checkpoint just landed here" — rather than a phase boundary,
+which is what makes it one rule instead of two. §11 has the dependency detail.
 
 | Gate (file:line today) | Honours pause? | Why |
 |---|---|---|
@@ -176,7 +180,9 @@ scattered conditionals, and widening it is additive. See §11.
 | replayed step (`fenceReplayedStep`, `exploration_resume.go:346`) | **yes** | the rows already exist; stopping costs nothing |
 | "rebuilding the step index" (`orchestrator.go:1273`) | **yes, if a resume point exists** | pre-exploration on a resume; nothing spent yet |
 | Phase 4 entry, `ownershipLost(ctx, "analysis")` (`orchestrator.go:1393`) | **yes** | exploration's summary is checkpointed, so the resume skips Phase 3 entirely — a genuinely free pause point, and the common "let exploration finish, then stop" case |
-| per-area, validation, recommendations, "saving the result" | **no** | each would discard this attempt's analysis work for nothing |
+| per-area, after `checkpointAnalysisArea` (v2, `analysis_resume.go:69`) | **yes** | the area and its validation are durable, so a resume restores them; the exact twin of the exploration-step seam |
+| per-area ENTRY and `"validating area X"` gates | **no** | mid-area: this area's analysis call has happened and is not yet checkpointed. Its own checkpoint seam, a few lines later, is the free point — and catches the LAST area too, which a next-iteration gate would miss |
+| recommendations, "saving the result" | **no** | Phases 5–7 are not resumable until v3; pausing there discards them for nothing |
 
 Two further preconditions on honouring, both load-bearing:
 
@@ -195,8 +201,12 @@ Two further preconditions on honouring, both load-bearing:
    `Ownership`.
 
 The operator is told about the window **synchronously**, not by silence:
-`PauseRun` refuses with 409 when the run's `phase` is already past exploration,
-naming the phase and pointing at Cancel. The residual race — the run moves to
+`PauseRun` refuses with 409 when the run's `phase` is already past analysis,
+naming the phase and pointing at Cancel. The run document's `phase` is set only
+by `SetPhase`, so it reads `analysis` for the whole of Phase 4 — per-insight
+validation included, since `setLLMPhase` is layer attribution and does not touch
+it. So the API's gate and the agent's seams agree without either having to know
+about the other's internals. The residual race — the run moves to
 analysis between that check and the agent's next gate — ends with the agent
 declining the request and logging why; the marker is then cleared by the terminal
 write.
@@ -281,6 +291,12 @@ write.
   *is* the acceptance criterion ("stops after the current step with a clean
   checkpoint"). Supersession still short-circuits before the write, unchanged.
 - `fenceReplayedStep`: same, minus any write.
+- `checkpointAnalysisArea` (v2's, in `analysis_resume.go`): the same change as
+  `checkpointStep`, and it is the same five lines — its pre-write probe becomes
+  `Standing`, the area checkpoint is written regardless, and it returns
+  `ErrPauseRequested` afterwards. The symmetry is not a coincidence: v2 built it
+  as v1's twin, with the same `OwnsRun` probe, the same write-before-shared-writes
+  ordering and the same `ErrAttemptSuperseded` return.
 - `pauseAttempt(ctx) error` — the single owner of the transition: book this
   attempt's active time (`AddActiveTime`, so elapsed stays honest across the
   pause), call `statusReporter.Pause`, and return `ErrPauseRequested` when it
@@ -315,9 +331,10 @@ write.
 **`services/api/models/run.go`**
 - The four fields (JSON for all but `pause_requested_attempt`).
 - `RunPhaseAcceptsPause(phase string) bool` over `{"", "init",
-  "schema_discovery", "exploration"}`, with a keep-in-sync note pointing at the
-  agent's `models.Phase*` constants (the same pattern as
+  "schema_discovery", "exploration", "analysis"}`, with a keep-in-sync note
+  pointing at the agent's `models.Phase*` constants (the same pattern as
   `agentDefaultDiscoveryMaxDuration`) and a test pinning the strings.
+  `analysis` is in the set because v2 makes each area durable — see §4.
 
 **`services/api/database/run_repo.go`**
 - `RequestPause(ctx, runID, attempt, deadline) (*models.DiscoveryRun, error)` —
@@ -462,6 +479,13 @@ already written.
   on the `complete_rejected` path; supersession still beats a pause.
 - `stopBefore`: pauses at a pausable gate, carries on when `hasResumePoint()` is
   false, returns `ErrAttemptSuperseded` when the pause write does not apply.
+- The per-area seam: a pause returns `ErrPauseRequested` **after**
+  `checkpointAnalysisArea` has written the area (the same ordering assertion as
+  the exploration seam); a pause on the LAST area is honoured rather than
+  falling through to Phase 5; the mid-area `"validating area X"` gate declines
+  it; and the run then resumes restoring the K completed areas and analysing
+  only the remainder — v2's own acceptance, re-asserted through a pause instead
+  of a kill.
 - `pauseAttempt` books active time exactly once.
 
 ### Agent integration (testcontainers, Mongo)
@@ -471,7 +495,8 @@ already written.
   `completed_at` **unset**.
 - `Ownership` against really-written documents for each precedence case.
 - Checkpoints and the per-run vector index survive a pause (the run is still in
-  `ResumableOrActiveIDs`).
+  `ResumableOrActiveIDs`) — **both** collections, exploration and per-area, since
+  v2 is underneath.
 
 ### API unit (handler)
 - `PauseRun`: 202 happy path; 404 unknown run / missing project; 403 without
@@ -523,8 +548,12 @@ creation), extending `verify-ac.sh` with a `pause` mode:
    itself;
 5. a second pass pausing at the Phase 4 entry gate, asserting
    `skipping Phase 3 entirely` on the resume;
-6. cancel a paused run and assert it is terminal, its checkpoints purged, and a
-   re-resume 409s.
+6. a third pass pausing MID-ANALYSIS, asserting `Analysis area restored from a
+   previous attempt — not re-run` for the areas that were already checkpointed
+   and an analysis call for only the rest — the v2 seam, which is the one a
+   composition test cannot prove either;
+7. cancel a paused run and assert it is terminal, both checkpoint sets purged,
+   and a re-resume 409s.
 
 Capture the agent log **before** cancelling — cancel reaps the container
 immediately and the log is gone for good.
@@ -581,10 +610,10 @@ targets (CI skips Integration Tests on PRs). All prefixed `GOTOOLCHAIN=auto`.
 
 ## 9. Out of scope / follow-ups
 
-- Per-area (v2) and per-insight (v3) resume granularity — a pause after
-  exploration still re-pays analysis from the top, exactly as v1's crash
-  recovery does. The interaction with the v2 work that is **already in review**
-  is §11, not a hand-wave: it is the one place v2 changes a v4 decision.
+- Per-**insight** (v3) resume granularity. v2 is a *dependency* now rather than
+  a follow-up — see §11 — so a pause mid-analysis keeps the areas already done;
+  what it still re-pays is the single area in flight, and Phases 5–7 in full.
+  v3 would shrink both, and needs nothing from v4 to do so.
 - **Concurrency-at-resume policy** — a paused run holds its concurrent-run
   reservation, and a fresh run can start alongside it (then blocking the resume),
   which is today's behaviour for a `failed` run. Flagged in the issue as a
@@ -602,81 +631,73 @@ targets (CI skips Integration Tests on PRs). All prefixed `GOTOOLCHAIN=auto`.
 | AC | Evidence |
 |---|---|
 | An operator can Pause a running discovery; it stops after the current step with a clean checkpoint and lands in `paused` | live `verify-ac.sh pause`: `paused` + `last_paused_at` + highest checkpoint ≥ the in-flight step; unit test pinning that `PersistStep` is called **before** `ErrPauseRequested` is returned |
-| A `paused` run can be resumed and completes, re-using work up to the pause point (no re-paid exploration) | live resume: zero `Exploration step starting` / `Executing exploration action` over the replayed prefix; a second pass pausing at Phase 4 entry logs `skipping Phase 3 entirely` |
+| A `paused` run can be resumed and completes, re-using work up to the pause point (no re-paid exploration) | live resume: zero `Exploration step starting` / `Executing exploration action` over the replayed prefix; a second pass pausing at Phase 4 entry logs `skipping Phase 3 entirely`; a third pausing mid-analysis logs `Analysis area restored from a previous attempt` for the areas already done |
 | Cancel remains a terminal hard-kill, now with a confirmation dialog; Pause and Cancel are distinct CTAs | handler tests (cancel on running and on paused); dashboard tests for both CTAs and the modal; live cancel of a paused run → terminal, checkpoints purged, re-resume 409 |
 | Same `runID` across pause/resume; lifecycle metadata records the pause/resume events | integration test on the `lifecycle` array (`paused` by the agent, `running` by `BeginResume`) plus `last_paused_at` / `last_resumed_at`; live run asserts one `run_id` throughout |
 
 ---
 
-## 11. Interaction with v2 (#506 / PR #510) and v3 (#507)
+## 11. v2 (#506 / PR #510) is a dependency, not a neighbour
 
-Checked against the actual v2 branch rather than against the issue text, because
-**v2 is not hypothetical: PR #510 is open, out of draft, 34 files, last pushed
-today.** It will almost certainly be on `main` before v4's build step starts, so
-v4 rebases onto v2, not the reverse.
+The issue says v4 is independent of v2, and as a *dependency* statement that is
+still true — v4 needs only v1's plumbing. But **#510 is ready to merge**, so in
+practice v4 is built on top of it, and that changes one v4 decision rather than
+none. Checked against the branch, not the issue text.
 
-### What does not interact
+### What v2 does not disturb
 
-Both v2 (#506) and v3 (#507) state, and #510 confirms, that they add **no new run
-control and no new status**. #510 touches none of the machinery v4 extends:
-`RunOwnership`, `Ownership`, `OwnsRun` and `classifyUnappliedTerminal` are
-untouched. So nothing contends for the status field, the pause marker or the
-ownership probe, and v4's dependency on v1 alone is correct as the issue states.
+#510 touches none of the machinery v4 extends: `RunOwnership`, `Ownership`,
+`OwnsRun` and `classifyUnappliedTerminal` are untouched, and both v2 and v3 add
+no run control and no new status — so nothing contends for the status field, the
+pause marker or the ownership probe. Two things come out free:
 
-Two things also verified as needing nothing from v4:
-
-- v2 extends `CheckpointRepo.DeleteByRun` to purge the per-area analysis rows
-  alongside the exploration rows, so v4's cancel-a-paused-run path picks that up
-  for free — the handler already calls `DeleteByRun`.
+- v2 extends `CheckpointRepo.DeleteByRun` to purge the per-area rows alongside
+  the exploration rows, so v4's cancel-a-paused-run path picks that up with no
+  change — the handler already calls `DeleteByRun`.
 - v2's `discardAnalysisCheckpoints` is the twin of `discardCheckpoints`, and
   v4's pause path returns before the terminal section, so neither runs. A paused
-  run keeps both sets, which is what makes it resumable. The integration test for
-  "a paused run keeps what makes it resumable" should assert the analysis rows
-  too, once they exist.
+  run keeps both sets, which is what makes it resumable, and both are bounded by
+  the same retention.
 
-### What does interact — the pause window
+`ResumeState` is also unchanged: v2's API-side use of the analysis collection is
+purge-only, so resumability is still decided by the exploration prefix or
+summary — which a run paused mid-analysis has.
 
-This is the one real consequence, and §4 would be left stating something untrue
-if it were ignored.
+### What v2 changes — the pause window, now in scope
 
-§4 closes the pause window after the Phase 4 entry gate **because under v1 alone
-a pause mid-analysis discards every area already analysed**. v2 removes that
-reason: `checkpointAnalysisArea` writes a durable per-area checkpoint at the end
-of each area's iteration, *before* the shared display writes — the exact
-structural twin of v1's `checkpointStep`, with the same `OwnsRun` probe and the
-same `ErrAttemptSuperseded` return. Under v2 the per-area seam is therefore a
-**free** pause point: at most the single area in flight is re-paid.
+An earlier draft of this plan closed the window after the Phase 4 entry gate,
+**because under v1 alone a mid-analysis pause discards every area already
+analysed**. v2 removes that reason: `checkpointAnalysisArea` writes a durable
+per-area checkpoint — the area, its insights and its validation — at the end of
+each area's iteration, before the shared display writes. It is the exact
+structural twin of v1's `checkpointStep`: same `OwnsRun` probe, same ordering,
+same `ErrAttemptSuperseded` return.
 
-So the window widens, and the widening is deliberately shaped to be five lines:
-convert `checkpointAnalysisArea`'s probe to `Standing` and return
-`ErrPauseRequested` after its write — identical to what §5.1 does to
-`checkpointStep`. That symmetry is why §4's window is a property of the gate
-(`stopBefore` vs `ownershipLost`) rather than a conditional sprinkled through
-`RunDiscovery`.
+So the window includes the per-area seam, and §4 and §5.1 now say so. It is five
+lines against that twin, and leaving it out would have Pause decline
+mid-analysis for a reason that was no longer true — which is why it is in scope
+rather than a follow-up: the pause window reflecting what resume can actually
+re-use *is* the feature.
 
-**Recommendation, for sign-off with the plan:** if #510 is on `main` when the
-build step starts, widen the window to the per-area seam **in that same PR**.
-Not gold-plating — leaving it out would have Pause decline mid-analysis for a
-reason that is no longer true, and the pause window reflecting what resume can
-actually re-use *is* the feature. If #510 has not merged, ship v4 exactly as
-planned; the widening is then a small follow-up on top of v2, and v4 blocks on
-nothing.
+What stays declined is everything with no checkpoint behind it: the mid-area
+gates, and Phases 5–7. v3 would make those cheap too, one rung finer, and the
+same per-seam rule absorbs it with no v4 redesign. v3 is not started.
 
-v3 extends the same logic one rung finer — per-insight / per-recommendation
-markers make the validation and recommendation gates cheap too — and the same
-gate property absorbs it with no v4 redesign. v3 is not started and depends on
-v2, so nothing is owed to it now.
+### Sequencing
 
-### Conflict surface, for whoever rebases
+v4's build step starts from a `main` that has #510, and rebases if it lands
+mid-flight. The conflict surface is textual, not semantic: #510 inserts ~20
+lines immediately after the `ownershipLost(ctx, "analysis")` gate that v4
+converts to `stopBefore`, and ~25 lines at the head of the per-area loop; both
+add helpers to `orchestrator_resume.go` and `status.go`; both edit
+`models/checkpoint.go`, `agentserver.go` and the same sections of
+`discovery-lifecycle.md`, `api.md`, `data-models.md`, `configuration.md`, the
+API chart values and `CHANGELOG.md`. Neither touches `models/run.go`, where
+v4's new fields live.
 
-All textual, none semantic. #510 inserts ~20 lines immediately after the
-`ownershipLost(ctx, "analysis")` gate that v4 converts to `stopBefore`, and ~25
-lines at the head of the per-area loop right after the
-`ownershipLost(ctx, "analysis area …")` gate. Both PRs add helpers to
-`orchestrator_resume.go` and `status.go`, and both edit `models/checkpoint.go`,
-`agentserver.go`, the same sections of `discovery-lifecycle.md`, `api.md`,
-`data-models.md`, `configuration.md`, the API chart values and `CHANGELOG.md`.
-Neither touches `models/run.go`, where v4's new fields live.
+If #510 is somehow reverted or held, v4 still ships — the per-area rows in §4's
+table simply have no seam to attach to, and the window reverts to closing at the
+Phase 4 entry gate. Nothing else in the plan depends on it.
 
 ---
 
