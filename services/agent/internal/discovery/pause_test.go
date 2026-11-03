@@ -905,3 +905,62 @@ func TestPauseEventCarriesModelProvenance(t *testing.T) {
 		t.Errorf("provenance = %q, want the attempt's provider/model", doc.pauseProvenance[0])
 	}
 }
+
+// TestHasResumePoint_RefusesALossyPause is the fifth round's finding, and a
+// different failure from the one the contiguity counter was added for.
+//
+// A run whose step-2 write failed still has a contiguous prefix of one, so
+// "is the prefix non-empty" approves a pause — and LoadPrefix then truncates
+// at the hole, so the resume discards every step after it and pays the
+// warehouse and the model for them again. Resumable, but LOSSY, which breaks
+// the same promise as unresumable: no re-paid exploration.
+//
+// A gap therefore disqualifies a pause for the rest of the attempt. It cannot
+// heal — nothing backfills a missed step — so the honest outcome is that the
+// request lapses and the operator is told, rather than a stop that quietly
+// throws work away.
+func TestHasResumePoint_RefusesALossyPause(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeCheckpointStore{}
+	o := &Orchestrator{
+		runID: "run-1", statusReporter: reporterFor(newFakeRunDoc(), 1),
+		checkpointRepo: store,
+	}
+
+	// Step 1 lands.
+	if err := o.checkpointStep(ctx, models.ExplorationStep{Step: 1}, models.CheckpointArgs{}); err != nil {
+		t.Fatal(err)
+	}
+	if !o.hasResumePoint() {
+		t.Fatal("a one-step prefix should be a resume point")
+	}
+
+	// Step 2's write fails.
+	store.stepErr = errors.New("mongo is down")
+	if err := o.checkpointStep(ctx, models.ExplorationStep{Step: 2}, models.CheckpointArgs{}); err == nil {
+		t.Fatal("a failed SaveStep reported no error")
+	}
+	store.stepErr = nil
+
+	// Step 3 lands, beyond the hole.
+	if err := o.checkpointStep(ctx, models.ExplorationStep{Step: 3}, models.CheckpointArgs{}); err != nil {
+		t.Fatal(err)
+	}
+	if !o.checkpointGapSeen {
+		t.Error("the hole at step 2 was not noticed")
+	}
+	if o.contiguousCheckpointThrough != 1 {
+		t.Errorf("contiguousCheckpointThrough = %d, want 1 — the prefix stops at the hole", o.contiguousCheckpointThrough)
+	}
+	if o.hasResumePoint() {
+		t.Error("approved a pause that would discard step 3's work on resume")
+	}
+
+	// And a later step does not rehabilitate it: the hole is still there.
+	if err := o.checkpointStep(ctx, models.ExplorationStep{Step: 4}, models.CheckpointArgs{}); err != nil {
+		t.Fatal(err)
+	}
+	if o.hasResumePoint() {
+		t.Error("a gap healed itself; nothing backfills a missed step")
+	}
+}

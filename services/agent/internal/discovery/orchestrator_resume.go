@@ -173,6 +173,10 @@ func (o *Orchestrator) checkpointStep(ctx context.Context, step models.Explorati
 	// Orchestrator.contiguousCheckpointThrough.
 	if step.Step == o.contiguousCheckpointThrough+1 {
 		o.contiguousCheckpointThrough = step.Step
+	} else if step.Step > o.contiguousCheckpointThrough+1 {
+		// This row sits beyond a hole, so the prefix can never reach it. See
+		// Orchestrator.checkpointGapSeen.
+		o.checkpointGapSeen = true
 	}
 
 	// Only now: the row is durable, so the marker is true. This is what the
@@ -934,6 +938,13 @@ func (o *Orchestrator) hasResumePoint() bool {
 	if o.resume.explorationComplete() {
 		return true
 	}
+	// A hole anywhere disqualifies it. LoadPrefix truncates there, so a
+	// resume would discard every step past the hole and pay for them again —
+	// a pause that loses work rather than one that cannot resume, and both
+	// break the promise.
+	if o.checkpointGapSeen {
+		return false
+	}
 	// Otherwise it needs steps it can actually replay, which means
 	// CONTIGUOUS ones. keepStepIndex is deliberately not consulted: it is
 	// true of any single saved row, and a run whose step-1 write failed has
@@ -992,6 +1003,26 @@ func (o *Orchestrator) pauseAttempt(ctx context.Context, detail string) error {
 		return ai.ErrPauseRequested
 	}
 
+	// NOT re-validated against the deadline here, and the reason is worth
+	// recording because a review asked for it.
+	//
+	// By the time this runs the seam has already stopped the work — the
+	// exploration loop has returned, or the analysis loop is unwinding — so
+	// "the request lapsed, carry on" has nowhere to carry on to. Returning
+	// nil would hand RunDiscovery a nil result AND a nil error, which its
+	// caller dereferences; the alternatives are to write `failed` for a run
+	// that is fine, or to exit leaving it `running` with no agent. Writing
+	// `paused` is plainly the best of the four: the run is resumable and no
+	// work is lost.
+	//
+	// What the deadline governs is the DECISION, which is taken at the seam,
+	// and the gap between that and this write is one step's tail — a few
+	// writes and an embedding call, seconds — not the tens of minutes the
+	// deadline is about. A request would have to arrive within seconds of
+	// expiring for the two to disagree, and the disagreement is brief: the
+	// dashboard's "timed out" line is derived from a PENDING request on a
+	// running run, so the moment this write lands it says "Discovery paused"
+	// instead.
 	applied, err := o.statusReporter.Pause(ctx, detail, time.Since(o.attemptStartedAt), o.llmProvider, o.llmModel)
 	if err != nil {
 		applog.WithFields(applog.Fields{

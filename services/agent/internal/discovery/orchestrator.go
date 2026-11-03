@@ -229,6 +229,23 @@ type Orchestrator struct {
 	// advanced only by a checkpoint write that landed for the very next step.
 	contiguousCheckpointThrough int
 
+	// checkpointGapSeen records that a checkpoint write failed and left a
+	// HOLE in this run's step sequence.
+	//
+	// Separate from the counter because the counter alone says too little. A
+	// run whose step-2 write failed still has a contiguous prefix of one, so
+	// "is the prefix non-empty" approves a pause — and LoadPrefix then
+	// truncates at the hole, so the resume throws away every step after it
+	// and pays the warehouse and the model for them again. That is a LOSSY
+	// pause, which is a different failure from the unresumable one the
+	// counter guards, and it breaks the same promise: no re-paid exploration.
+	//
+	// So a gap disqualifies a pause for the rest of the attempt. It does not
+	// heal — nothing backfills a missed step — and the honest outcome is that
+	// the request lapses at its deadline and the operator is told, rather
+	// than a stop that silently discards work.
+	checkpointGapSeen bool
+
 	// attemptStartedAt is when THIS attempt's compute began. Held on the
 	// orchestrator because a cooperative pause books the attempt's active time
 	// from a seam deep inside the pipeline, where RunDiscovery's own startTime
