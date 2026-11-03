@@ -446,3 +446,39 @@ func TestInteg_RecommendationCheckpoint_ConcurrentMarkerWritesAllLand(t *testing
 		t.Fatalf("%d markers landed out of %d concurrent writes — a verdict was lost", len(cp.RecVerdicts), len(ids))
 	}
 }
+
+// TestInteg_RecommendationCheckpoint_IgnoresRecommendationsSharingAnId — the
+// load-side half on the recommendation side, same reasoning.
+func TestInteg_RecommendationCheckpoint_IgnoresRecommendationsSharingAnId(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := recRepo(t, db, 48*time.Hour)
+
+	step := fatRecStep()
+	step.Recommendations[1].ID = step.Recommendations[0].ID
+	if _, err := db.Collection(CollectionDiscoveryRecommendationCheckpoints).InsertOne(ctx, RecommendationCheckpointDoc{
+		RunID: "run-1", ProjectID: "p1", Attempt: 1, ExplorationAttempt: 1,
+		CreatedAt: time.Now(), RecommendationStep: step,
+		RecVerdicts: map[string]models.ValidationResult{
+			step.Recommendations[0].ID: recVerdictFor(step.Recommendations[0].ID),
+		},
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	cp, err := repo.Load(ctx, "run-1", 1)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cp != nil {
+		t.Error("restored a checkpoint whose marker cannot say which of two recommendations it describes")
+	}
+	n, err := db.Collection(CollectionDiscoveryRecommendationCheckpoints).CountDocuments(ctx, bson.M{"run_id": "run-1"})
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Error("the refused row was deleted")
+	}
+}

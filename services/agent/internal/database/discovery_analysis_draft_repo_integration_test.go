@@ -601,6 +601,10 @@ func TestInteg_AnalysisDraft_ConcurrentMarkerWritesAllLand(t *testing.T) {
 // row then came back carrying a zero-valued marker under the prefix: the
 // budget charged it while the restore could not match it, which at the cap
 // turns an already-verified insight into one skipped for budget.
+//
+// It is refused at the DRAFT write now, which is earlier and stronger — no row
+// exists whose markers could be partial — and refused again at the marker
+// write, which is what the unit tests cover.
 func TestInteg_AnalysisDraft_ADottedIdNeitherNestsNorCorruptsTheBudget(t *testing.T) {
 	db, cleanup := setupMongoDB(t)
 	defer cleanup()
@@ -609,48 +613,52 @@ func TestInteg_AnalysisDraft_ADottedIdNeitherNestsNorCorruptsTheBudget(t *testin
 
 	step := fatDraft("churn")
 	step.Insights[0].ID = "finding.1"
-	if err := repo.SaveDraft(ctx, AnalysisAreaDraftInput{
+	err := repo.SaveDraft(ctx, AnalysisAreaDraftInput{
 		ProjectID: "p1", RunID: "run-1", Attempt: 1, ExplorationAttempt: 1, Step: step,
-	}); err != nil {
-		t.Fatalf("SaveDraft: %v", err)
-	}
-
-	err := repo.SaveInsightVerdict(ctx, InsightVerdictInput{
-		RunID: "run-1", AreaID: "churn", Attempt: 1, InsightID: "finding.1",
-		Verdict: verdictFor("finding.1"),
 	})
 	if !errors.Is(err, ErrUnsafeMarkerKey) {
 		t.Fatalf("want ErrUnsafeMarkerKey, got %v", err)
 	}
-
-	// Nothing was written, so the budget charges nothing and the insight is
-	// simply validated again — a cost, not a corruption.
-	set, err := repo.LoadDrafts(ctx, "run-1", 1)
+	n, err := db.Collection(CollectionDiscoveryAnalysisDrafts).CountDocuments(ctx, bson.M{"run_id": "run-1"})
 	if err != nil {
-		t.Fatalf("LoadDrafts: %v", err)
+		t.Fatalf("count: %v", err)
 	}
-	got := set.Drafts["churn"]
-	if len(got.InsightVerdicts) != 0 {
-		t.Fatalf("%d markers landed for a refused id: %v", len(got.InsightVerdicts), got.InsightVerdicts)
+	if n != 0 {
+		t.Fatalf("%d rows written for a refused area, want none", n)
+	}
+
+	// A marker write for such an id is refused too, so a row that somehow
+	// carried one could not gain a nested field either.
+	safe := fatDraft("revenue")
+	if err := repo.SaveDraft(ctx, AnalysisAreaDraftInput{
+		ProjectID: "p1", RunID: "run-1", Attempt: 1, ExplorationAttempt: 1, Step: safe,
+	}); err != nil {
+		t.Fatalf("SaveDraft(safe): %v", err)
+	}
+	if err := repo.SaveInsightVerdict(ctx, InsightVerdictInput{
+		RunID: "run-1", AreaID: "revenue", Attempt: 1, InsightID: "finding.1",
+		Verdict: verdictFor("finding.1"),
+	}); !errors.Is(err, ErrUnsafeMarkerKey) {
+		t.Fatalf("want ErrUnsafeMarkerKey from the marker write, got %v", err)
 	}
 	var raw bson.M
 	if err := db.Collection(CollectionDiscoveryAnalysisDrafts).
-		FindOne(ctx, bson.M{"run_id": "run-1"}).Decode(&raw); err != nil {
+		FindOne(ctx, bson.M{"run_id": "run-1", "area_id": "revenue"}).Decode(&raw); err != nil {
 		t.Fatalf("read back: %v", err)
 	}
 	if _, nested := raw["insight_verdicts"]; nested {
 		t.Error("a nested insight_verdicts field was created on the document")
 	}
 
-	// And a safe id alongside it still works.
+	// And a safe id still works.
 	if err := repo.SaveInsightVerdict(ctx, InsightVerdictInput{
-		RunID: "run-1", AreaID: "churn", Attempt: 1, InsightID: "insight-2",
+		RunID: "run-1", AreaID: "revenue", Attempt: 1, InsightID: "insight-2",
 		Verdict: verdictFor("insight-2"),
 	}); err != nil {
 		t.Fatalf("SaveInsightVerdict for a safe id: %v", err)
 	}
-	set, _ = repo.LoadDrafts(ctx, "run-1", 1)
-	if len(set.Drafts["churn"].InsightVerdicts) != 1 {
+	set, _ := repo.LoadDrafts(ctx, "run-1", 1)
+	if len(set.Drafts["revenue"].InsightVerdicts) != 1 {
 		t.Error("the safe marker did not land")
 	}
 }
@@ -685,5 +693,49 @@ func TestInteg_AnalysisDraft_IgnoresAMarkerNamingNothingInTheDraft(t *testing.T)
 	}
 	if _, ok := got["insight-1"]; !ok {
 		t.Error("dropped the marker for an insight the draft carries")
+	}
+}
+
+// TestInteg_AnalysisDraft_IgnoresADraftWhoseInsightsShareAnId is the load-side
+// half of the validation-bypass guard, written straight into the document so
+// it does not rest on the writer refusing it.
+//
+// One marker restored onto two findings means the second skips the verifier
+// and can carry a verdict an unrelated finding earned — the one failure in
+// this family that is a bypass rather than a cost, which is why it is checked
+// on both sides.
+func TestInteg_AnalysisDraft_IgnoresADraftWhoseInsightsShareAnId(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := draftRepo(t, db, 48*time.Hour)
+
+	step := fatDraft("churn")
+	step.Insights[1].ID = step.Insights[0].ID
+	if _, err := db.Collection(CollectionDiscoveryAnalysisDrafts).InsertOne(ctx, AnalysisAreaDraftDoc{
+		RunID: "run-1", ProjectID: "p1", Attempt: 1, ExplorationAttempt: 1,
+		CreatedAt: time.Now(), AnalysisStep: step,
+		InsightVerdicts: map[string]models.ValidationResult{
+			step.Insights[0].ID: verdictFor(step.Insights[0].ID),
+		},
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	set, err := repo.LoadDrafts(ctx, "run-1", 1)
+	if err != nil {
+		t.Fatalf("LoadDrafts: %v", err)
+	}
+	if set.Len() != 0 {
+		t.Error("restored a draft whose marker cannot say which of two findings it describes")
+	}
+
+	// Ignored, not deleted, like every other refused row.
+	n, err := db.Collection(CollectionDiscoveryAnalysisDrafts).CountDocuments(ctx, bson.M{"run_id": "run-1"})
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Error("the refused row was deleted")
 	}
 }

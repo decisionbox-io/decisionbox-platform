@@ -236,3 +236,63 @@ func TestMarkersForInsights_DropsAMarkerNamingNothingInTheDraft(t *testing.T) {
 		t.Error("a draft carrying no insights can claim no marker")
 	}
 }
+
+// TestMarkerKeysUsable_RefusesUnsafeAndAmbiguousIds — a checkpoint can carry
+// per-item markers only if every document is nameable by exactly one of them.
+func TestMarkerKeysUsable_RefusesUnsafeAndAmbiguousIds(t *testing.T) {
+	if err := markerKeysUsable([]string{"i1", "i2", "i3"}); err != nil {
+		t.Errorf("distinct safe ids must be usable, got %v", err)
+	}
+	if err := markerKeysUsable(nil); err != nil {
+		t.Errorf("no documents means nothing to key, got %v", err)
+	}
+	if err := markerKeysUsable([]string{"i1", "finding.2"}); !errors.Is(err, ErrUnsafeMarkerKey) {
+		t.Errorf("want ErrUnsafeMarkerKey, got %v", err)
+	}
+	if err := markerKeysUsable([]string{"i1", "i2", "i1"}); !errors.Is(err, ErrAmbiguousMarkerKey) {
+		t.Errorf("want ErrAmbiguousMarkerKey, got %v", err)
+	}
+}
+
+// TestSaveDraft_RefusesAnAreaWhoseInsightsShareAnId is the regression, and the
+// most serious of the id-shape family because the consequence is a validation
+// BYPASS rather than a lost marker.
+//
+// A model that supplies its own ids can repeat one. With two insights sharing
+// an id, the single marker written for the first would be restored onto both —
+// so the second skipped the verifier and could reach the recommender carrying
+// a `confirmed` verdict an unrelated finding earned, and the late remint would
+// then hand them distinct ids without correcting either verdict.
+func TestSaveDraft_RefusesAnAreaWhoseInsightsShareAnId(t *testing.T) {
+	repo := &DiscoveryAnalysisDraftRepository{}
+	step := models.AnalysisStep{
+		AreaID: "churn",
+		Insights: []models.Insight{
+			{ID: "i1", Name: "first finding"},
+			{ID: "i1", Name: "a different finding the model gave the same id"},
+		},
+	}
+	err := repo.SaveDraft(context.Background(), AnalysisAreaDraftInput{
+		ProjectID: "p1", RunID: "run-1", Attempt: 1, ExplorationAttempt: 1, Step: step,
+	})
+	if !errors.Is(err, ErrAmbiguousMarkerKey) {
+		t.Fatalf("want ErrAmbiguousMarkerKey, got %v", err)
+	}
+}
+
+// TestSaveDraft_RefusesAnAreaWithAnUnsafeInsightId — refused at the draft
+// write too, not only at the marker write, so no row exists whose markers
+// could be partial in a way the budget would miscount.
+func TestSaveDraft_RefusesAnAreaWithAnUnsafeInsightId(t *testing.T) {
+	repo := &DiscoveryAnalysisDraftRepository{}
+	step := models.AnalysisStep{
+		AreaID:   "churn",
+		Insights: []models.Insight{{ID: "finding.1"}},
+	}
+	err := repo.SaveDraft(context.Background(), AnalysisAreaDraftInput{
+		ProjectID: "p1", RunID: "run-1", Attempt: 1, ExplorationAttempt: 1, Step: step,
+	})
+	if !errors.Is(err, ErrUnsafeMarkerKey) {
+		t.Fatalf("want ErrUnsafeMarkerKey, got %v", err)
+	}
+}

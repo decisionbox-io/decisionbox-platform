@@ -75,6 +75,23 @@ const analysisDraftTTLIndexName = "ttl_discovery_analysis_draft"
 // UUIDs and uint64s.)
 var ErrUnsafeMarkerKey = errors.New("document id cannot be a BSON field name, so no completion marker can be keyed on it")
 
+// ErrAmbiguousMarkerKey means two documents of one checkpoint share an id, so
+// a per-item marker cannot say which of them it describes.
+//
+// Reachable for the same reason ErrUnsafeMarkerKey is: a model that supplies
+// its own ids can repeat one. The consequence is worse than a lost marker — it
+// is a validation BYPASS. One marker would be restored onto both documents, so
+// the second would skip the verifier and could enter the recommender carrying
+// a `confirmed` verdict earned by an unrelated finding, and the late remint
+// would then give the two distinct ids without correcting the verdict either
+// of them carries.
+//
+// So a checkpoint is refused rather than written ambiguously, and the
+// documents are validated again on a later resume. (Duplicate ids are already
+// a hazard outside this package — the tail inserts each id as a standalone
+// `_id` — but that is no reason to add a silent one here.)
+var ErrAmbiguousMarkerKey = errors.New("two documents share an id, so a completion marker cannot say which it describes")
+
 // safeMarkerKey reports whether an id can be a BSON field name. A dot would
 // create a nested path, a leading "$" reads as an operator, and a NUL is
 // invalid outright.
@@ -83,6 +100,33 @@ func safeMarkerKey(id string) bool {
 		!strings.Contains(id, ".") &&
 		!strings.HasPrefix(id, "$") &&
 		!strings.ContainsRune(id, 0)
+}
+
+// markerKeysUsable reports whether a checkpoint's documents can carry per-item
+// markers at all: every id must be a legal BSON field name and no two may be
+// the same. Named rather than inlined because both checkpoint repositories
+// apply it, on the way in AND on the way out.
+func markerKeysUsable(ids []string) error {
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if !safeMarkerKey(id) {
+			return fmt.Errorf("id %q: %w", id, ErrUnsafeMarkerKey)
+		}
+		if seen[id] {
+			return fmt.Errorf("id %q: %w", id, ErrAmbiguousMarkerKey)
+		}
+		seen[id] = true
+	}
+	return nil
+}
+
+// insightIDs is the ids of a step's insights, in order.
+func insightIDs(insights []models.Insight) []string {
+	out := make([]string, len(insights))
+	for i := range insights {
+		out[i] = insights[i].ID
+	}
+	return out
 }
 
 // DiscoveryAnalysisDraftRepository persists and reads in-flight analysis
@@ -227,6 +271,12 @@ func (r *DiscoveryAnalysisDraftRepository) SaveDraft(ctx context.Context, in Ana
 			in.Step.AreaID, in.ExplorationAttempt,
 		)
 	}
+	// Refused rather than written ambiguously: a draft whose insights cannot
+	// each be named by exactly one marker would restore one verdict onto two
+	// findings. The area is analysed again on a later resume instead.
+	if err := markerKeysUsable(insightIDs(in.Step.Insights)); err != nil {
+		return fmt.Errorf("draft analysis area %s of run %s: %w", in.Step.AreaID, in.RunID, err)
+	}
 	doc := AnalysisAreaDraftDoc{
 		RunID:               in.RunID,
 		ProjectID:           in.ProjectID,
@@ -359,6 +409,18 @@ func (r *DiscoveryAnalysisDraftRepository) LoadDrafts(ctx context.Context, runID
 			// hand-edited or corrupted document. Skipped rather than keyed
 			// under "", which would look like an area and suppress a real one.
 			applog.WithField("run_id", runID).Warn("analysis draft row has no area id; ignoring it")
+			continue
+		}
+		if err := markerKeysUsable(insightIDs(doc.Insights)); err != nil {
+			// The writer refuses such a row, so this is defence in depth
+			// rather than a reachable state — and it is the one guard whose
+			// absence would be a validation bypass rather than a cost, so it
+			// does not rest on the writer alone.
+			applog.WithFields(applog.Fields{
+				"run_id": runID,
+				"area":   doc.AreaID,
+				"error":  err.Error(),
+			}).Warn("ignoring an analysis draft whose insights cannot each be named by one marker; the area will be analysed again")
 			continue
 		}
 		if len(doc.Insights) == 0 {

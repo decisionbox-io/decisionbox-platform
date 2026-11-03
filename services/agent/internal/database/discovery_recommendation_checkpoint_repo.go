@@ -139,6 +139,12 @@ func (r *DiscoveryRecommendationCheckpointRepository) SaveDraft(ctx context.Cont
 			in.RunID, in.ExplorationAttempt,
 		)
 	}
+	// Same rule the analysis drafts apply, and for the same reason: a row
+	// whose recommendations cannot each be named by exactly one marker would
+	// restore one verdict onto two of them.
+	if err := markerKeysUsable(recommendationIDs(in.Step.Recommendations)); err != nil {
+		return fmt.Errorf("checkpoint recommendations of run %s: %w", in.RunID, err)
+	}
 	doc := RecommendationCheckpointDoc{
 		RunID:              in.RunID,
 		ProjectID:          in.ProjectID,
@@ -238,11 +244,30 @@ func (r *DiscoveryRecommendationCheckpointRepository) Load(ctx context.Context, 
 		}).Info("ignored a recommendation checkpoint from a superseded exploration; recommendations will be generated again")
 		return nil, nil
 	}
+	if err := markerKeysUsable(recommendationIDs(doc.Recommendations)); err != nil {
+		// Defence in depth, like its counterpart in LoadDrafts: the writer
+		// refuses such a row, and the cost of trusting that alone would be a
+		// validation bypass rather than a lost saving.
+		applog.WithFields(applog.Fields{
+			"run_id": runID,
+			"error":  err.Error(),
+		}).Warn("ignoring a recommendation checkpoint whose recommendations cannot each be named by one marker; they will be generated again")
+		return nil, nil
+	}
 	return &models.RecommendationCheckpoint{
 		Step:               doc.RecommendationStep,
 		EligibleInsightIDs: doc.EligibleInsightIDs,
 		RecVerdicts:        doc.RecVerdicts,
 	}, nil
+}
+
+// recommendationIDs is the ids of a step's recommendations, in order.
+func recommendationIDs(recs []models.Recommendation) []string {
+	out := make([]string, len(recs))
+	for i := range recs {
+		out[i] = recs[i].ID
+	}
+	return out
 }
 
 // DeleteByRun removes the run's recommendation checkpoint and reports how many

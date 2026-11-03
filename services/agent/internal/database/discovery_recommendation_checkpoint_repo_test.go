@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
 // TestRecommendationCheckpointDocTagsAreDisjoint is the guard the doc comment
@@ -118,5 +120,21 @@ func TestSaveRecVerdict_RefusesAnIdThatWouldNestInsteadOfKey(t *testing.T) {
 	})
 	if !errors.Is(err, ErrUnsafeMarkerKey) {
 		t.Fatalf("want ErrUnsafeMarkerKey, got %v", err)
+	}
+}
+
+// TestRecommendationCheckpointSaveDraft_RefusesRecommendationsSharingAnId —
+// the same validation bypass on the recommendation side.
+func TestRecommendationCheckpointSaveDraft_RefusesRecommendationsSharingAnId(t *testing.T) {
+	repo := &DiscoveryRecommendationCheckpointRepository{}
+	step := models.RecommendationStep{Recommendations: []models.Recommendation{
+		{ID: "r1", Title: "first"},
+		{ID: "r1", Title: "a different one the model gave the same id"},
+	}}
+	err := repo.SaveDraft(context.Background(), RecommendationCheckpointInput{
+		ProjectID: "p1", RunID: "run-1", Attempt: 1, ExplorationAttempt: 1, Step: step,
+	})
+	if !errors.Is(err, ErrAmbiguousMarkerKey) {
+		t.Fatalf("want ErrAmbiguousMarkerKey, got %v", err)
 	}
 }
