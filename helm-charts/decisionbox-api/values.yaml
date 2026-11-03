@@ -70,10 +70,11 @@ env:
   # in-agent cap fires first and the agent fails gracefully rather than
   # being killed mid-write.
   # DISCOVERY_MAX_DURATION: "24h"
-  # DISCOVERY_CHECKPOINT_RETENTION — how long a run's exploration
-  # checkpoints survive, as a TTL on the discovery_checkpoints
-  # collection. Go duration format. These are what make a crashed run
-  # resumable (POST /api/v1/runs/{runId}/resume), so this MUST exceed
+  # DISCOVERY_CHECKPOINT_RETENTION — how long a run's checkpoints
+  # survive, as a TTL on the discovery_checkpoints collection and on
+  # the per-completed-area discovery_analysis_checkpoints beside it
+  # (one setting for both). Go duration format. These are what make a
+  # crashed run resumable (POST /api/v1/runs/{runId}/resume), so this MUST exceed
   # DISCOVERY_MAX_DURATION above — otherwise a long run's early
   # checkpoints expire while it is still running and a resume would
   # re-explore the steps they covered. Raise the two together:

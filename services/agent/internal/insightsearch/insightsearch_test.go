@@ -24,7 +24,7 @@ func (f *fakeVS) Search(ctx context.Context, vector []float64, opts vectorstore.
 	return f.results, f.err
 }
 func (f *fakeVS) Upsert(context.Context, []vectorstore.Point) error { return nil }
-func (f *fakeVS) FindDuplicates(context.Context, []float64, string, string, string, float64) ([]vectorstore.SearchResult, error) {
+func (f *fakeVS) FindDuplicates(context.Context, []float64, string, string, []string, float64) ([]vectorstore.SearchResult, error) {
 	return nil, nil
 }
 func (f *fakeVS) Delete(context.Context, []string) error             { return nil }

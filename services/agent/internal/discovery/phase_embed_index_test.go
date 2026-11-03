@@ -45,6 +45,10 @@ type mockVectorStore struct {
 	// searches counts Search calls, so a test can hold the line that semantic
 	// dedup is only asked about candidates no key already matched.
 	searches int
+	// dupExcludes records the exclusion set of each duplicate search, which
+	// is what proves a resumed run does not dedup against its own
+	// superseded attempts.
+	dupExcludes [][]string
 }
 
 func (m *mockVectorStore) Upsert(_ context.Context, points []vectorstore.Point) error {
@@ -57,7 +61,8 @@ func (m *mockVectorStore) Search(_ context.Context, _ []float64, _ vectorstore.S
 	return nil, nil
 }
 
-func (m *mockVectorStore) FindDuplicates(_ context.Context, _ []float64, _ string, _ string, _ string, _ float64) ([]vectorstore.SearchResult, error) {
+func (m *mockVectorStore) FindDuplicates(_ context.Context, _ []float64, _ string, _ string, excludeDiscoveryIDs []string, _ float64) ([]vectorstore.SearchResult, error) {
+	m.dupExcludes = append(m.dupExcludes, excludeDiscoveryIDs)
 	return m.dupes, nil
 }
 
@@ -321,7 +326,7 @@ func TestEmbedAndIndex_Success(t *testing.T) {
 			Confidence: 0.78, CreatedAt: time.Now()},
 	}
 
-	err := o.embedAndIndex(context.Background(), insights, recs)
+	err := o.embedAndIndex(context.Background(), insights, recs, []string{"disc-1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -358,7 +363,7 @@ func TestEmbedAndIndex_EmptyDocuments(t *testing.T) {
 		vectorStore:       mockVS,
 	}
 
-	err := o.embedAndIndex(context.Background(), nil, nil)
+	err := o.embedAndIndex(context.Background(), nil, nil, []string{"disc-1"})
 	if err != nil {
 		t.Fatalf("unexpected error for empty docs: %v", err)
 	}
@@ -384,7 +389,7 @@ func TestCheckAndMarkDuplicate_Found(t *testing.T) {
 		vectorStore:     mockVS,
 	}
 
-	o.checkAndMarkDuplicate(context.Background(), "new-1", []float64{0.1, 0.2}, "proj-1", "insight", "disc-2")
+	o.checkAndMarkDuplicate(context.Background(), "new-1", []float64{0.1, 0.2}, "proj-1", "insight", []string{"disc-2"})
 
 	if len(store.dupUpdates) != 1 {
 		t.Fatalf("expected 1 duplicate update, got %d", len(store.dupUpdates))
@@ -409,7 +414,7 @@ func TestCheckAndMarkDuplicate_NotFound(t *testing.T) {
 		vectorStore:     mockVS,
 	}
 
-	o.checkAndMarkDuplicate(context.Background(), "new-1", []float64{0.1, 0.2}, "proj-1", "insight", "disc-2")
+	o.checkAndMarkDuplicate(context.Background(), "new-1", []float64{0.1, 0.2}, "proj-1", "insight", []string{"disc-2"})
 
 	if len(store.dupUpdates) != 0 {
 		t.Errorf("expected 0 duplicate updates, got %d", len(store.dupUpdates))
@@ -429,7 +434,7 @@ func TestCheckAndMarkDuplicate_Recommendation(t *testing.T) {
 		vectorStore:     mockVS,
 	}
 
-	o.checkAndMarkDuplicate(context.Background(), "new-rec", []float64{0.1, 0.2}, "proj-1", "recommendation", "disc-2")
+	o.checkAndMarkDuplicate(context.Background(), "new-rec", []float64{0.1, 0.2}, "proj-1", "recommendation", []string{"disc-2"})
 
 	if len(store.dupUpdates) != 1 {
 		t.Fatalf("expected 1 duplicate update, got %d", len(store.dupUpdates))

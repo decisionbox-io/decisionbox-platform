@@ -61,4 +61,46 @@ type ExplorationCheckpointSummary struct {
 	CompletionMsg string
 	TotalSteps    int
 	Duration      time.Duration
+
+	// Attempt is the attempt that WROTE this summary, which is not
+	// necessarily the newest attempt in the checkpoint set.
+	//
+	// It identifies the exploration a resumed run is about to work over,
+	// and that is what the per-area analysis checkpoints are stamped and
+	// filtered on: an area's insights cite exploration step numbers, so a
+	// row analysed over a DIFFERENT exploration must not be restored. A
+	// run that had to re-explore writes its summary under a higher
+	// attempt, so the stale rows simply stop matching. See
+	// AnalysisAreaCheckpoint.
+	Attempt int
+}
+
+// AnalysisAreaCheckpoint is one COMPLETED analysis area, as a resumed run
+// reads it back: everything the Phase 4 loop body produced for that area,
+// so the loop can restore it instead of paying for it again.
+//
+// Only a completed area is ever checkpointed. An area whose analysis call
+// failed is deliberately left unmarked so a resumed run retries it — see
+// Orchestrator.checkpointAnalysisArea for why that distinction is what
+// makes a run killed by DISCOVERY_MAX_DURATION recoverable at all.
+type AnalysisAreaCheckpoint struct {
+	// Step is the area's analysis step: its prompt and response, the
+	// insights with their validation verdicts and evidence-quality labels
+	// already stamped on, the validation results, and the picker
+	// telemetry. It is everything the orchestrator appends to its
+	// analysisLog and allInsights for that area, which — because the loop
+	// body produces nothing else that outlives it — is the whole of what
+	// restoring an area means.
+	Step AnalysisStep
+
+	// InsightsValidated is how many of this area's insights were actually
+	// submitted to the verifier, so a resumed run restores the per-run
+	// validation budget rather than handing the areas it still has to run
+	// a fresh one.
+	//
+	// Recorded rather than derived from Step.ValidationResults: the count
+	// comes straight from the counter validateInsights threads across
+	// areas, so it cannot drift from the cap rule the way a second
+	// implementation of that rule would.
+	InsightsValidated int
 }

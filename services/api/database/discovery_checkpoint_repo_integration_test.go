@@ -27,13 +27,49 @@ func mustOID(t *testing.T, hex string) primitive.ObjectID {
 	return oid
 }
 
-// dropCheckpoints wipes the checkpoint collection between tests. The
+// dropCheckpoints wipes both checkpoint collections between tests. The
 // package-level testcontainer is shared across the suite.
 func dropCheckpoints(t *testing.T, ctx context.Context) {
 	t.Helper()
-	if _, err := testDB.Collection(gomongo.CollectionDiscoveryCheckpoints).DeleteMany(ctx, bson.M{}); err != nil {
-		t.Fatalf("drop checkpoints: %v", err)
+	for _, col := range []string{
+		gomongo.CollectionDiscoveryCheckpoints,
+		gomongo.CollectionDiscoveryAnalysisCheckpoints,
+	} {
+		if _, err := testDB.Collection(col).DeleteMany(ctx, bson.M{}); err != nil {
+			t.Fatalf("drop %s: %v", col, err)
+		}
 	}
+}
+
+// seedAnalysisAreaCheckpoint writes one completed-area row the way the agent
+// would. The API never writes these; it only purges them, which is what the
+// test below is about.
+func seedAnalysisAreaCheckpoint(t *testing.T, ctx context.Context, runID, areaID string) {
+	t.Helper()
+	_, err := testDB.Collection(gomongo.CollectionDiscoveryAnalysisCheckpoints).InsertOne(ctx, bson.M{
+		"run_id":              runID,
+		"project_id":          "proj",
+		"area_id":             areaID,
+		"area_name":           "Area " + areaID,
+		"attempt":             1,
+		"exploration_attempt": 1,
+		"insights_validated":  1,
+		"created_at":          time.Now(),
+		"run_at":              time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("seed analysis checkpoint %s/%s: %v", runID, areaID, err)
+	}
+}
+
+func countAnalysisAreaCheckpoints(t *testing.T, ctx context.Context, runID string) int64 {
+	t.Helper()
+	n, err := testDB.Collection(gomongo.CollectionDiscoveryAnalysisCheckpoints).
+		CountDocuments(ctx, bson.M{"run_id": runID})
+	if err != nil {
+		t.Fatalf("count analysis checkpoints for %s: %v", runID, err)
+	}
+	return n
 }
 
 // seedCheckpointStep writes one checkpoint row the way the agent would, for
@@ -170,6 +206,13 @@ func TestInteg_CheckpointRepo_IsRunScoped(t *testing.T) {
 	for _, run := range []string{"run-a", "run-b"} {
 		seedCheckpointStep(t, ctx, run, 1)
 		seedCheckpointStep(t, ctx, run, 2)
+		// And the per-area analysis rows the agent writes alongside them.
+		// The purge spans both collections, because an area checkpoint is
+		// only ever usable next to an exploration prefix the run can
+		// replay — so leaving them behind would leak rows for a run that
+		// can never read them again.
+		seedAnalysisAreaCheckpoint(t, ctx, run, "churn")
+		seedAnalysisAreaCheckpoint(t, ctx, run, "engagement")
 	}
 
 	if prefix, _, _ := repo.ResumeState(ctx, "run-a"); prefix != 2 {
@@ -180,14 +223,40 @@ func TestInteg_CheckpointRepo_IsRunScoped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DeleteByRun: %v", err)
 	}
-	if deleted != 2 {
-		t.Errorf("deleted = %d, want 2", deleted)
+	if deleted != 4 {
+		t.Errorf("deleted = %d, want 4 — two exploration rows and two analysis areas", deleted)
 	}
 	if prefix, _, _ := repo.ResumeState(ctx, "run-a"); prefix != 0 {
 		t.Errorf("run-a still has a prefix of %d", prefix)
 	}
+	if n := countAnalysisAreaCheckpoints(t, ctx, "run-a"); n != 0 {
+		t.Errorf("run-a kept %d analysis checkpoints; half a purge leaks the rows nothing will read again", n)
+	}
 	if prefix, _, _ := repo.ResumeState(ctx, "run-b"); prefix != 2 {
 		t.Errorf("run-b lost checkpoints: prefix = %d, want 2", prefix)
+	}
+	if n := countAnalysisAreaCheckpoints(t, ctx, "run-b"); n != 2 {
+		t.Errorf("run-b lost %d of its analysis checkpoints — the purge must be scoped to one run", 2-n)
+	}
+}
+
+// TestInteg_CheckpointRepo_ResumabilityStillComesFromExplorationAlone — area
+// rows must not make a run look resumable on their own. A run whose
+// exploration rows have gone has nothing to replay, so skipping to analysis
+// would analyse nothing and bill the operator for an empty discovery.
+func TestInteg_CheckpointRepo_ResumabilityStillComesFromExplorationAlone(t *testing.T) {
+	ctx := context.Background()
+	dropCheckpoints(t, ctx)
+	repo := NewDiscoveryCheckpointRepository(testDB)
+
+	seedAnalysisAreaCheckpoint(t, ctx, "run-areas-only", "churn")
+
+	prefix, complete, err := repo.ResumeState(ctx, "run-areas-only")
+	if err != nil {
+		t.Fatalf("ResumeState: %v", err)
+	}
+	if prefix != 0 || complete {
+		t.Errorf("prefix = %d, explorationComplete = %v; want 0/false — analysis rows alone are not a resumable run", prefix, complete)
 	}
 }
 

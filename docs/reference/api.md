@@ -802,7 +802,7 @@ The resume-related fields are all optional and absent on runs that predate check
 
 ### POST /api/v1/runs/{runId}/resume
 
-Resume a **failed** discovery run from its last exploration checkpoint, re-entering the same run id. The agent replays the steps already executed — no warehouse re-queries and no exploration LLM calls for them — and continues from the next one. A run that died after exploration finished goes straight to analysis.
+Resume a **failed** discovery run from its last exploration checkpoint, re-entering the same run id. The agent replays the steps already executed — no warehouse re-queries and no exploration LLM calls for them — and continues from the next one. A run that died after exploration finished goes straight to analysis, and restores the analysis areas it had already completed rather than re-running them; an area whose analysis had failed is retried.
 
 Requires the `member` role, matching `POST /api/v1/projects/{id}/discover`.
 

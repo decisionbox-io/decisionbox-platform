@@ -27,20 +27,21 @@ const (
 	// the agent module (database/discovery_repo.go, run_repo.go,
 	// discovery_log_repo.go, run_step_repo.go) keep using the same
 	// `database.Collection*` namespace they always have.
-	CollectionDiscoveries                = gomongo.CollectionDiscoveries
-	CollectionDiscoveryRuns              = gomongo.CollectionDiscoveryRuns
-	CollectionDiscoveryExplorationSteps  = gomongo.CollectionDiscoveryExplorationSteps
-	CollectionDiscoveryAnalysisSteps     = gomongo.CollectionDiscoveryAnalysisSteps
-	CollectionDiscoveryValidationResults = gomongo.CollectionDiscoveryValidationResults
-	CollectionDiscoveryRecommendationLog = gomongo.CollectionDiscoveryRecommendationLog
-	CollectionDiscoveryRunSteps          = gomongo.CollectionDiscoveryRunSteps
-	CollectionDiscoveryCheckpoints       = gomongo.CollectionDiscoveryCheckpoints
-	CollectionDiscoveryQuestions         = gomongo.CollectionDiscoveryQuestions
-	CollectionDiscoveryLedger            = gomongo.CollectionDiscoveryLedger
-	CollectionDiscoveryLedgerFindings    = gomongo.CollectionDiscoveryLedgerFindings
-	CollectionDiscoveryLedgerTasks       = gomongo.CollectionDiscoveryLedgerTasks
-	CollectionDiscoveryLedgerLearnings   = gomongo.CollectionDiscoveryLedgerLearnings
-	CollectionDiscoveryPackProposals     = gomongo.CollectionDiscoveryPackProposals
+	CollectionDiscoveries                  = gomongo.CollectionDiscoveries
+	CollectionDiscoveryRuns                = gomongo.CollectionDiscoveryRuns
+	CollectionDiscoveryExplorationSteps    = gomongo.CollectionDiscoveryExplorationSteps
+	CollectionDiscoveryAnalysisSteps       = gomongo.CollectionDiscoveryAnalysisSteps
+	CollectionDiscoveryValidationResults   = gomongo.CollectionDiscoveryValidationResults
+	CollectionDiscoveryRecommendationLog   = gomongo.CollectionDiscoveryRecommendationLog
+	CollectionDiscoveryRunSteps            = gomongo.CollectionDiscoveryRunSteps
+	CollectionDiscoveryCheckpoints         = gomongo.CollectionDiscoveryCheckpoints
+	CollectionDiscoveryAnalysisCheckpoints = gomongo.CollectionDiscoveryAnalysisCheckpoints
+	CollectionDiscoveryQuestions           = gomongo.CollectionDiscoveryQuestions
+	CollectionDiscoveryLedger              = gomongo.CollectionDiscoveryLedger
+	CollectionDiscoveryLedgerFindings      = gomongo.CollectionDiscoveryLedgerFindings
+	CollectionDiscoveryLedgerTasks         = gomongo.CollectionDiscoveryLedgerTasks
+	CollectionDiscoveryLedgerLearnings     = gomongo.CollectionDiscoveryLedgerLearnings
+	CollectionDiscoveryPackProposals       = gomongo.CollectionDiscoveryPackProposals
 )
 
 // DB wraps go-common's MongoDB client.

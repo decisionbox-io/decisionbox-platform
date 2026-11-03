@@ -20,12 +20,25 @@ import (
 // away, this run is over for good" — so it has no business decoding the
 // steps, and keeping the replay shape out of this module means there is one
 // definition of it rather than two that can drift.
+//
+// It spans BOTH checkpoint collections: the exploration rows and the
+// per-area analysis rows the agent writes alongside them. Only the purge
+// needs the second one — resumability is still decided entirely by the
+// exploration prefix, and a run that died in analysis has a complete one —
+// and it lives here rather than in a repository of its own so a caller that
+// ends a run cannot throw away half the feature's rows.
 type DiscoveryCheckpointRepository struct {
 	col *mongo.Collection
+	// analysisCol holds one row per completed analysis area. Purge-only
+	// from the API side; the agent owns reading and writing it.
+	analysisCol *mongo.Collection
 }
 
 func NewDiscoveryCheckpointRepository(db *DB) *DiscoveryCheckpointRepository {
-	return &DiscoveryCheckpointRepository{col: db.Collection(gomongo.CollectionDiscoveryCheckpoints)}
+	return &DiscoveryCheckpointRepository{
+		col:         db.Collection(gomongo.CollectionDiscoveryCheckpoints),
+		analysisCol: db.Collection(gomongo.CollectionDiscoveryAnalysisCheckpoints),
+	}
 }
 
 // ResumeState reports how many exploration steps a run can replay and
@@ -129,15 +142,33 @@ func (r *DiscoveryCheckpointRepository) ResumeState(ctx context.Context, runID s
 	return prefixLen, explorationComplete, nil
 }
 
-// DeleteByRun removes a run's checkpoints. Called on cancellation, which is
-// terminal and explicitly not resumable.
+// DeleteByRun removes a run's checkpoints — exploration rows AND the
+// per-area analysis rows — and reports the combined count. Called on
+// cancellation and on discard, both of which are terminal and explicitly not
+// resumable.
+//
+// Both collections, from one call, because they are one feature: an area
+// checkpoint is only ever usable alongside an exploration prefix the run can
+// replay, so leaving the area rows behind would leak rows for a run that can
+// never read them again. The analysis rows go FIRST — they are the ones
+// nothing else would reclaim early, since the exploration delete is what the
+// callers log and act on, so a failure there is reported with the rows that
+// matter most already gone.
 func (r *DiscoveryCheckpointRepository) DeleteByRun(ctx context.Context, runID string) (int64, error) {
 	if runID == "" {
 		return 0, errors.New("delete checkpoints: run_id is required")
 	}
+	var deleted int64
+	if r.analysisCol != nil {
+		res, err := r.analysisCol.DeleteMany(ctx, bson.M{"run_id": runID})
+		if err != nil {
+			return 0, fmt.Errorf("delete analysis checkpoints for run %s: %w", runID, err)
+		}
+		deleted += res.DeletedCount
+	}
 	res, err := r.col.DeleteMany(ctx, bson.M{"run_id": runID})
 	if err != nil {
-		return 0, fmt.Errorf("delete checkpoints for run %s: %w", runID, err)
+		return deleted, fmt.Errorf("delete checkpoints for run %s: %w", runID, err)
 	}
-	return res.DeletedCount, nil
+	return deleted + res.DeletedCount, nil
 }
