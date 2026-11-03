@@ -86,6 +86,43 @@ type DiscoveryRun struct {
 	// Lifecycle is the append-only transition log. See RunLifecycleEvent.
 	Lifecycle []RunLifecycleEvent `bson:"lifecycle,omitempty" json:"lifecycle,omitempty"`
 
+	// --- Operator pause (issue #508) ---------------------------------------
+	//
+	// Mirrors the agent-side model. The cooperative stop travels through this
+	// document rather than through a signal: the agent already reads its own
+	// run at every phase boundary, so that read is the seam. This side stamps
+	// the request; the agent honours it and writes `paused`.
+	//
+	// Nothing in internal/runner changes for pause — no new signal path, no
+	// agent-side SIGTERM handling, and identical behaviour in all three
+	// runner modes.
+
+	// PauseRequestedAt is when an operator asked for a cooperative stop. Its
+	// presence IS the signal the agent polls for.
+	//
+	// Deliberately not a status. While the run drains, an agent is alive and
+	// querying the warehouse, so every predicate that means "this run is
+	// active" must keep saying yes — GetRunningByProject,
+	// GetOtherRunningByProject, GetLatestByProject's active pass,
+	// CleanupStaleRuns, Fail and FailAttempt are all spelled as explicit
+	// status lists, and a `pausing` status would have to be added to each,
+	// with every miss leaving two agents on one project.
+	PauseRequestedAt *time.Time `bson:"pause_requested_at,omitempty" json:"pause_requested_at,omitempty"`
+
+	// PauseRequestedAttempt is the attempt the request was made against, so a
+	// request aimed at one attempt cannot stop the next.
+	PauseRequestedAttempt int `bson:"pause_requested_attempt,omitempty" json:"-"`
+
+	// PauseDeadlineAt is when an unhonoured request LAPSES — stamped here as
+	// an absolute instant so DISCOVERY_PAUSE_DRAIN_TIMEOUT has exactly one
+	// reader and the agent needs no copy of it to disagree with. Nil means the
+	// operator disabled the deadline.
+	PauseDeadlineAt *time.Time `bson:"pause_deadline_at,omitempty" json:"pause_deadline_at,omitempty"`
+
+	// LastPausedAt is when the run actually entered `paused`, as opposed to
+	// when the pause was asked for. Kept across a later resume.
+	LastPausedAt *time.Time `bson:"last_paused_at,omitempty" json:"last_paused_at,omitempty"`
+
 	// --- The run's own parameters ------------------------------------------
 	//
 	// Persisted because nothing recorded them before: the run document knew
@@ -151,6 +188,52 @@ type DiscoveryRun struct {
 	// (status in {completed, failed, cancelled}) but still need hook
 	// dispatch, so the work is idempotent across API restarts and ticks.
 	CompletionHooksFiredAt *time.Time `bson:"completion_hooks_fired_at,omitempty" json:"-"`
+}
+
+// RunStatusPaused is a run an operator stopped cooperatively: not running, not
+// terminal, and resumable. Written by the AGENT, because only it knows it
+// reached a clean stop with its checkpoint written.
+//
+// A constant although the older statuses in this package are written as
+// literals, and the reason is the failure mode rather than taste: this one is
+// named inside several Mongo FILTERS — the resume flip, the checkpoint-marker
+// clear, and the handler gates — and a mistyped status in a filter does not
+// error, it silently matches nothing. That is the exact shape of bug the
+// attempt fences in this file keep documenting.
+const RunStatusPaused = "paused"
+
+// pausablePhases are the run phases during which a cooperative stop can still
+// be honoured, keyed by the `phase` field the agent stamps.
+//
+// The list mirrors the agent's models.Phase* constants and has to be kept in
+// sync with them by hand, the same way agentDefaultDiscoveryMaxDuration mirrors
+// the agent's own default — the API cannot import the agent package.
+// TestRunPhaseAcceptsPause pins the strings so a rename there fails here.
+//
+// Why these four and not more: a pause is only free where a checkpoint has
+// just landed. `init` and `schema_discovery` precede exploration, so a request
+// made then takes effect after the first checkpointed step. `exploration`
+// checkpoints every step. `analysis` checkpoints every completed area, so a
+// pause there keeps the areas already done. Past that — recommendations and
+// the save — nothing is checkpointed and the run is minutes from finishing, so
+// pausing would discard that work for nothing; the persist tail is outside the
+// window permanently, by design.
+//
+// Note the whole of Phase 4 reports `analysis`, per-insight validation
+// included: the run document's phase is written only by SetPhase, and the
+// agent's setLLMPhase is layer attribution that does not touch it.
+var pausablePhases = map[string]bool{
+	"":                 true, // a run that has not stamped a phase yet
+	"init":             true,
+	"schema_discovery": true,
+	"exploration":      true,
+	"analysis":         true,
+}
+
+// RunPhaseAcceptsPause reports whether a run reporting this phase can still be
+// paused. See pausablePhases.
+func RunPhaseAcceptsPause(phase string) bool {
+	return pausablePhases[phase]
 }
 
 // SupersededByResumeReason is the outcome recorded against a plan reservation
@@ -257,7 +340,7 @@ type RunParams struct {
 // a run automatically.
 type RunLifecycleEvent struct {
 	// Status is the status the run entered: pending, running, completed,
-	// failed or cancelled.
+	// failed, cancelled or paused.
 	Status string    `bson:"status" json:"status"`
 	At     time.Time `bson:"at" json:"at"`
 	// Reason is free text explaining the transition (the failure message, or

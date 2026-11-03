@@ -762,9 +762,15 @@ it('ignores a status response that was issued before run state changed', async (
     await act(async () => { await jest.advanceTimersByTimeAsync(2000); });
 
     // While it is in flight, the operator cancels — an out-of-band change.
+    // Cancel is modal-confirmed since #508, so the click opens the dialog and
+    // the confirm button is what calls the API.
     cancelRun.mockResolvedValue({ status: 'cancelled', message: 'ok' });
-    const cancelBtn = screen.getByText('Cancel');
-    await act(async () => { cancelBtn.click(); await jest.advanceTimersByTimeAsync(0); });
+    await act(async () => { screen.getByText('Cancel').click(); await jest.advanceTimersByTimeAsync(400); });
+    const cancelDialog = await waitFor(() => screen.getByRole('dialog'));
+    await act(async () => {
+      within(cancelDialog).getByRole('button', { name: 'Cancel run' }).click();
+      await jest.advanceTimersByTimeAsync(0);
+    });
     await waitFor(() => expect(screen.getByText('Discovery cancelled')).toBeInTheDocument());
 
     // Now the stale answer lands. It must not take the cancelled run away.

@@ -213,6 +213,12 @@ type Orchestrator struct {
 	// on; see database.DiscoveryAnalysisCheckpointRepository.LoadAreas.
 	explorationSummaryAttempt int
 
+	// attemptStartedAt is when THIS attempt's compute began. Held on the
+	// orchestrator because a cooperative pause books the attempt's active time
+	// from a seam deep inside the pipeline, where RunDiscovery's own startTime
+	// local is out of reach. Set once, at the top of RunDiscovery.
+	attemptStartedAt time.Time
+
 	// resume is the previous attempts' state when this run is a resume, nil
 	// otherwise. Every read goes through the nil-safe helpers in
 	// orchestrator_resume.go, so a normal run takes exactly today's path.
@@ -866,6 +872,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	}
 
 	startTime := time.Now()
+	// Same instant, reachable from the pause seams deep in the pipeline — see
+	// Orchestrator.attemptStartedAt.
+	o.attemptStartedAt = startTime
 
 	// Get prompts from project configuration (fully seeded at project creation)
 	prompts, analysisAreas := o.resolvePrompts()
@@ -1301,8 +1310,13 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// Unlike the per-write gates declined above, one check fully covers this
 	// one: the drop happens once, at a known point, so there is no window
 	// left behind it.
-	if o.ownershipLost(ctx, "rebuilding the step index") {
-		return nil, ai.ErrAttemptSuperseded
+	//
+	// stopBefore rather than ownershipLost, because this boundary can also
+	// honour a cooperative pause: on a resume everything behind it is already
+	// checkpointed, so stopping here spends nothing. On a fresh run there is
+	// no resume point yet and the gate carries on — see stopBefore.
+	if err := o.stopBefore(ctx, "rebuilding the step index"); err != nil {
+		return nil, err
 	}
 	o.rebuildStepIndexForResume(ctx)
 
@@ -1368,6 +1382,15 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			if errors.Is(err, ai.ErrAttemptSuperseded) {
 				return nil, err
 			}
+			// A cooperative pause is not a failure either. The engine has
+			// already stopped on a checkpointed step and pauseAttempt has
+			// written `paused`; returning before the persistence tail is the
+			// point — a paused run saves no discovery, so there is nothing for
+			// a later resume to retire, and its checkpoints survive because
+			// discardCheckpoints only runs on a claimed terminal success.
+			if errors.Is(err, ai.ErrPauseRequested) {
+				return nil, err
+			}
 			return nil, fmt.Errorf("exploration failed: %w", err)
 		}
 		// Record that exploration is done BEFORE analysis starts. A run
@@ -1426,8 +1449,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	}
 
 	applog.Info("Phase 4: Running analysis by area")
-	if o.ownershipLost(ctx, "analysis") {
-		return nil, ai.ErrAttemptSuperseded
+	// The last free pause point today: exploration's summary is checkpointed
+	// by now, so a run paused here resumes straight into analysis without a
+	// single warehouse query. Past this the per-area work is not yet durable,
+	// so the gates below stay ownershipLost — see stopBefore.
+	if err := o.stopBefore(ctx, "analysis"); err != nil {
+		return nil, err
 	}
 	// The areas a previous attempt already finished, narrowed to the ones
 	// THIS run is going to restore. Empty on every run that is not a resume,

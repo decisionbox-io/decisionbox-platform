@@ -432,6 +432,9 @@ type ExplorationEngineOptions struct {
 // failure: a checkpoint write must never abort a run that is otherwise
 // working. A missing row is handled on the read side, which replays only the
 // contiguous prefix and re-explores from the first gap.
+// It returns ErrAttemptSuperseded when this attempt has lost the run, and
+// ErrPauseRequested when an operator asked for a cooperative stop — the latter
+// only AFTER the step's checkpoint has landed, so the pause is free.
 type StepPersister func(ctx context.Context, step models.ExplorationStep, args models.CheckpointArgs) error
 
 // StepFence reports whether this attempt may still act on the run, without
@@ -439,6 +442,8 @@ type StepPersister func(ctx context.Context, step models.ExplorationStep, args m
 // when the attempt has lost the run, and the caller must stop rather than
 // carry on into the writes that are shared between attempts — the per-run
 // vector index and the live step feed.
+// Returns ErrPauseRequested too, for the same reason: replayed rows are
+// already durable, so a pause during replay costs nothing.
 type StepFence func(ctx context.Context, step int) error
 
 // ResumeState is the prefix of a previous attempt that this run replays
@@ -715,6 +720,14 @@ func (e *ExplorationEngine) Explore(
 		result.Duration = time.Since(startTime)
 		return result, ErrAttemptSuperseded
 	}
+	if replayed.Paused {
+		// An operator paused the run mid-replay. The replayed rows are
+		// another attempt's and already durable, so this costs nothing and
+		// the next resume replays the same prefix again.
+		result.Error = ErrPauseRequested
+		result.Duration = time.Since(startTime)
+		return result, ErrPauseRequested
+	}
 	if replayed.Completed {
 		// The replayed prefix ends with a completion the engine already
 		// accepted, so there is nothing left to explore. Reachable when the
@@ -787,10 +800,10 @@ func (e *ExplorationEngine) Explore(
 				// Before the live feed, for the same reason as the executed
 				// step above: the row it writes is keyed on run_id alone, so
 				// a superseded attempt must not add one.
-				if e.checkpoint(ctx, result.Steps[len(result.Steps)-1], models.CheckpointArgs{RejectReason: reason}) {
-					result.Error = ErrAttemptSuperseded
+				if stop := e.checkpoint(ctx, result.Steps[len(result.Steps)-1], models.CheckpointArgs{RejectReason: reason}); stop != nil {
+					result.Error = stop
 					result.Duration = time.Since(startTime)
-					return result, ErrAttemptSuperseded
+					return result, stop
 				}
 
 				if e.onStep != nil {
@@ -833,10 +846,14 @@ func (e *ExplorationEngine) Explore(
 		// Nothing is lost by checkpointing first: executeAction has
 		// returned, so the step is complete, and the checkpoint is the
 		// durable record the other two are derived from.
-		if e.checkpoint(ctx, explorationStep, checkpointArgsFor(action)) {
-			result.Error = ErrAttemptSuperseded
+		// A pause is taken HERE and nowhere earlier in the iteration, which is
+		// what "stops after the current step with a clean checkpoint" means:
+		// executeAction has returned and the row above is durable, so the
+		// operator loses nothing and the resume re-enters at step+1.
+		if stop := e.checkpoint(ctx, explorationStep, checkpointArgsFor(action)); stop != nil {
+			result.Error = stop
 			result.Duration = time.Since(startTime)
-			return result, ErrAttemptSuperseded
+			return result, stop
 		}
 
 		// Index the completed step into the per-run vector index so

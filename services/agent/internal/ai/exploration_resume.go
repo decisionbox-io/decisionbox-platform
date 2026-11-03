@@ -284,6 +284,11 @@ type replayOutcome struct {
 	// Superseded is true when another attempt took the run over mid-replay,
 	// so this process must stop without exploring.
 	Superseded bool
+	// Paused is true when an operator asked for a cooperative stop during
+	// replay. Replay is the cheapest possible place to honour one: the rows
+	// being replayed are already durable, so stopping leaves the run exactly
+	// as resumable as it was, having spent nothing. (#508)
+	Paused bool
 }
 
 // replayPrefix rebuilds the conversation for an already-executed prefix and
@@ -349,6 +354,13 @@ func (e *ExplorationEngine) replayPrefix(ctx context.Context, conversation *Conv
 						"step": step.Step,
 					}).Warn("exploration: another attempt of this run has taken over during replay; stopping so this one writes nothing further")
 					out.Superseded = true
+					return out
+				}
+				if errors.Is(err, ErrPauseRequested) {
+					logger.WithFields(logger.Fields{
+						"step": step.Step, "replayed": len(steps),
+					}).Info("exploration: an operator asked for a pause during replay; stopping here, with the replayed rows already durable")
+					out.Paused = true
 					return out
 				}
 				// Anything else is not evidence of being superseded. Replay is
@@ -427,30 +439,52 @@ func (e *ExplorationEngine) replayPrefix(ctx context.Context, conversation *Conv
 // error from the hook is logged and swallowed.
 var ErrAttemptSuperseded = errors.New("another attempt of this run has taken over")
 
-// checkpoint durably records one completed step, and reports whether the run
-// may continue.
+// ErrPauseRequested means an operator asked for a cooperative stop and this
+// step was the clean place to take it (issue #508).
+//
+// Not a failure, and the difference matters all the way up: the run is
+// resumable, its checkpoints are kept, and the process exits 0 having written
+// `paused`. Reported as an error only because that is how the engine's hooks
+// signal "stop here" — the same channel ErrAttemptSuperseded uses.
+//
+// Where it comes from is the whole design: the hook that writes a step's
+// checkpoint returns it AFTER the write lands, so the step the operator
+// interrupted is finished and durable before anything stops. That ordering is
+// the acceptance criterion, not an implementation detail.
+var ErrPauseRequested = errors.New("an operator asked for a cooperative pause")
+
+// checkpoint durably records one completed step, and reports why the run must
+// stop, or nil to carry on.
 //
 // An ordinary failure is logged and swallowed: the run is working, and losing
 // the ability to resume it is strictly better than killing it over a Mongo
-// hiccup. ErrAttemptSuperseded is the one exception — it does not mean the
-// write failed, it means this process is no longer the run.
-func (e *ExplorationEngine) checkpoint(ctx context.Context, step models.ExplorationStep, args models.CheckpointArgs) (superseded bool) {
+// hiccup. The two sentinels are the exceptions, and neither means the write
+// failed — ErrAttemptSuperseded means this process is no longer the run, and
+// ErrPauseRequested means the operator asked it to stop here, with this step's
+// checkpoint already written.
+func (e *ExplorationEngine) checkpoint(ctx context.Context, step models.ExplorationStep, args models.CheckpointArgs) error {
 	if e.persistStep == nil {
-		return false
+		return nil
 	}
 	err := e.persistStep(ctx, step, args)
 	if err == nil {
-		return false
+		return nil
 	}
 	if errors.Is(err, ErrAttemptSuperseded) {
 		logger.WithFields(logger.Fields{
 			"step": step.Step,
 		}).Warn("exploration: another attempt of this run has taken over; stopping so this one writes nothing further")
-		return true
+		return ErrAttemptSuperseded
+	}
+	if errors.Is(err, ErrPauseRequested) {
+		logger.WithFields(logger.Fields{
+			"step": step.Step,
+		}).Info("exploration: an operator asked for a pause; this step is checkpointed, so stopping here costs nothing")
+		return ErrPauseRequested
 	}
 	logger.WithFields(logger.Fields{
 		"step":  step.Step,
 		"error": err.Error(),
 	}).Warn("exploration: checkpoint write failed; this step will be re-explored if the run is resumed")
-	return false
+	return nil
 }

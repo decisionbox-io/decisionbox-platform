@@ -1186,7 +1186,7 @@ export interface ConfigOption {
 export interface DiscoveryRunStatus {
   id: string;
   project_id: string;
-  status: string; // pending, running, completed, failed
+  status: string; // pending, running, paused, completed, failed, cancelled
   // Set once the run has saved a result. Present on a COMPLETED run, and
   // also on a failed one that saved a partial discovery before dying — which
   // is why "can this be discarded" cannot be answered from status alone.
@@ -1237,6 +1237,27 @@ export interface DiscoveryRunStatus {
   // attempt books its time at its terminal write), so a live resumed run's
   // elapsed is active_ms plus the time since this attempt began.
   last_resumed_at?: string;
+
+  // Operator pause (issue #508). `status` gains "paused": not running, not
+  // terminal, and resumable.
+  //
+  // pause_requested_at is set while a run is DRAINING — the operator has
+  // asked, and the agent stops at its next checkpointed seam. The status
+  // stays "running" through that window, because an agent is alive and
+  // querying the warehouse, so this field is the only way to render
+  // "Pausing…". Read it together with the status: a request can still be on
+  // a run that finished or was cancelled before the agent reached a seam.
+  //
+  // pause_deadline_at is when an unhonoured request LAPSES. Past it the
+  // agent ignores the request, so the UI must stop claiming the run is
+  // pausing. Absent when the deployment disabled the deadline, in which case
+  // the request stands until something acts on it.
+  //
+  // last_paused_at is when the run actually entered "paused". Kept across a
+  // later resume, so it explains a gap in the middle of a run's history.
+  pause_requested_at?: string;
+  pause_deadline_at?: string;
+  last_paused_at?: string;
 }
 
 // RunStep is one row in the live run-step stream. `id` is the opaque
@@ -2157,6 +2178,25 @@ export const api = {
     request<{ status: string; run_id: string; attempt: number }>(`/api/v1/runs/${runId}/resume`, {
       method: 'POST',
     }),
+  // pauseRun asks a running discovery to stop cooperatively so it can be
+  // resumed later. The counterpart to cancelRun, not a variant of it: cancel
+  // is a terminal hard kill that deletes the run's checkpoints, while this
+  // lets the run finish its current step, keep that step's checkpoint and
+  // land in "paused".
+  //
+  // 202 means the request was RECORDED, not that the run has stopped — the
+  // agent honours it at its next checkpointed seam, which can be minutes
+  // away while an LLM call or a warehouse query finishes. The run stays
+  // "running" until then, with pause_requested_at set.
+  //
+  // 409 is a real answer: the run is not active, it is already past the point
+  // where stopping is free (the phase is named in the message), or a pause is
+  // already pending. Surface the server's message verbatim.
+  pauseRun: (runId: string) =>
+    request<{ status: string; run_id: string; attempt: number; pause_deadline_at?: string }>(
+      `/api/v1/runs/${runId}/pause`,
+      { method: 'POST' },
+    ),
   // discardRun throws away a terminal run an operator is done with: it stops
   // representing the project (the status endpoint answers with the newest run
   // whatever its status, so a failed one stayed pinned there) and can no

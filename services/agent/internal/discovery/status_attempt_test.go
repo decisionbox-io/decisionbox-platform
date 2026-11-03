@@ -28,6 +28,17 @@ type fakeRunDoc struct {
 	cancelled bool
 	ownsErr   error
 	applied   bool
+	// pauseRequested is an operator's cooperative-stop request standing
+	// against this attempt. It does NOT make Ownership report a loss — that
+	// distinction is what the gates rest on.
+	pauseRequested bool
+	// pauseApplied is what the Pause write reports; false is a run that moved
+	// on while the attempt was finishing its step. pauseErr fails the write
+	// outright, which must become a failed run rather than a silent exit.
+	pauseApplied bool
+	pauseErr     error
+	// pauses records the reason of each Pause write attempted.
+	pauses []string
 	// writeErr fails every write, which is how a Mongo hiccup reaches the
 	// reporter. None of them may take the run down with them.
 	writeErr error
@@ -38,7 +49,9 @@ type fakeRunDoc struct {
 	attempts []int
 }
 
-func newFakeRunDoc() *fakeRunDoc { return &fakeRunDoc{owns: true, applied: true} }
+func newFakeRunDoc() *fakeRunDoc {
+	return &fakeRunDoc{owns: true, applied: true, pauseApplied: true}
+}
 
 func (f *fakeRunDoc) UpdateStatus(_ context.Context, _ string, status, _, _ string, _ int, attempt int) error {
 	f.statuses = append(f.statuses, status)
@@ -75,7 +88,21 @@ func (f *fakeRunDoc) Ownership(_ context.Context, _ string, attempt int) (databa
 	if !f.owns {
 		return database.RunTakenOverByAnotherAttempt, nil
 	}
+	// Checked last, mirroring the repository: supersession and cancellation
+	// outrank a pause request, because each means the run is not this
+	// attempt's to pause.
+	if f.pauseRequested {
+		return database.RunPauseRequested, nil
+	}
 	return database.RunOwnedByThisAttempt, nil
+}
+func (f *fakeRunDoc) Pause(_ context.Context, _ string, attempt int, reason string) (bool, error) {
+	f.attempts = append(f.attempts, attempt)
+	f.pauses = append(f.pauses, reason)
+	if f.pauseErr != nil {
+		return false, f.pauseErr
+	}
+	return f.pauseApplied, nil
 }
 func (f *fakeRunDoc) MarkExplorationCheckpoint(_ context.Context, _ string, step int, attempt int) (bool, error) {
 	f.markers = append(f.markers, step)

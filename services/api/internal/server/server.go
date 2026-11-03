@@ -296,6 +296,12 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	// member, matching POST .../discover: resume starts work rather than
 	// destroying it. Cancel stays admin.
 	mux.HandleFunc("POST /api/v1/runs/{runId}/resume", withRole(member, discoveries.ResumeRun))
+	// member as well, and for the sharper half of the same reason: pause
+	// PRESERVES work. It is the non-destructive stop — the run keeps its
+	// checkpoints and can be resumed — so gating it behind admin while cancel
+	// is also admin would leave a member with no way to stop a run except the
+	// one that throws it away.
+	mux.HandleFunc("POST /api/v1/runs/{runId}/pause", withRole(member, discoveries.PauseRun))
 	mux.HandleFunc("DELETE /api/v1/runs/{runId}", withRole(admin, discoveries.CancelRun))
 	// admin, matching cancel: discard throws away the checkpoints an operator
 	// could still have resumed from, and nothing undoes it.

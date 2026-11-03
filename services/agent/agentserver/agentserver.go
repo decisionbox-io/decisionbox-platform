@@ -1204,6 +1204,23 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 			}).Warn("another attempt of this run has taken over; exiting without reporting a failure")
 			return nil
 		}
+		// An operator paused the run. Not a failure, and must not be reported
+		// as one: the run is `paused` — written by the orchestrator at the
+		// seam it stopped on — its checkpoints are kept, and it is waiting to
+		// be resumed. Announcing a failure here would notify the operator
+		// that the run they just paused had broken, and bank a failure in
+		// telemetry for an outcome that has not happened.
+		//
+		// Exiting 0 is deliberate and load-bearing: every runner treats a
+		// clean exit as "the agent's own terminal write is authoritative" and
+		// fires no OnFailure callback, so nothing overwrites `paused`.
+		if errors.Is(err, ai.ErrPauseRequested) {
+			applog.WithFields(applog.Fields{
+				"project_id": projectID,
+				"run_id":     runID,
+			}).Info("discovery run paused at an operator's request; exiting cleanly so the run stays resumable")
+			return nil
+		}
 		notify.NotifyAll(ctx, notify.Event{
 			Type:        notify.EventDiscoveryFailed,
 			ProjectID:   projectID,
