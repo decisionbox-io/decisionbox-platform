@@ -132,6 +132,10 @@ func (o *Orchestrator) checkpointAnalysisArea(ctx context.Context, step models.A
 			"area":   step.AreaID,
 			"error":  err.Error(),
 		}).Warn("failed to checkpoint a completed analysis area; a resumed run would analyse it again")
+		// Swallowed deliberately — a checkpoint write must never abort a
+		// working run. The cost is that this area is analysed again on any
+		// resume, by a crash or a pause alike; hardening the write itself is
+		// #518.
 		return nil
 	}
 	// keepStepIndex is deliberately NOT set here. An area can only be

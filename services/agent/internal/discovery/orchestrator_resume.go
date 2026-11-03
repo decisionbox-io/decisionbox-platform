@@ -1039,7 +1039,7 @@ func (o *Orchestrator) pauseAttempt(ctx context.Context, detail string) error {
 	// dashboard's "timed out" line is derived from a PENDING request on a
 	// running run, so the moment this write lands it says "Discovery paused"
 	// instead.
-	applied, err := o.statusReporter.Pause(ctx, detail, time.Since(o.attemptStartedAt), o.llmProvider, o.llmModel)
+	applied, err := o.statusReporter.Pause(ctx, detail, time.Since(o.attemptStartedAt), o.contiguousCheckpointThrough, o.llmProvider, o.llmModel)
 	if err != nil {
 		applog.WithFields(applog.Fields{
 			"run_id": o.runID, "error": err.Error(),

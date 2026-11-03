@@ -46,6 +46,10 @@ type fakeRunDoc struct {
 	// A paused attempt never reaches recordAttemptOutcome, so this event is
 	// the only place its model is recorded.
 	pauseProvenance []string
+	// pauseMarkers records the last_checkpoint_step each pause stamped. The
+	// pause stamps it itself because the per-step marker write is
+	// best-effort and reports success even when it errors.
+	pauseMarkers []int
 	// writeErr fails every write, which is how a Mongo hiccup reaches the
 	// reporter. None of them may take the run down with them.
 	writeErr error
@@ -103,11 +107,12 @@ func (f *fakeRunDoc) Ownership(_ context.Context, _ string, attempt int) (databa
 	}
 	return database.RunOwnedByThisAttempt, nil
 }
-func (f *fakeRunDoc) Pause(_ context.Context, _ string, attempt int, reason string, activeMs int64, llmProvider, llmModel string) (bool, error) {
+func (f *fakeRunDoc) Pause(_ context.Context, _ string, attempt int, reason string, activeMs int64, lastCheckpointStep int, llmProvider, llmModel string) (bool, error) {
 	f.attempts = append(f.attempts, attempt)
 	f.pauses = append(f.pauses, reason)
 	f.pauseActiveMs = append(f.pauseActiveMs, activeMs)
 	f.pauseProvenance = append(f.pauseProvenance, llmProvider+"/"+llmModel)
+	f.pauseMarkers = append(f.pauseMarkers, lastCheckpointStep)
 	if f.pauseErr != nil {
 		return false, f.pauseErr
 	}

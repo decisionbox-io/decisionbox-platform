@@ -552,7 +552,7 @@ func pauseIsHonourable(requestedAt, deadlineAt *time.Time, requestedAttempt, cur
 // the reason the API's FailAttempt gives for doing the same — BeginResume
 // clears the scalar fields on the next resume, so the appended event is the
 // only record of this pause that survives it.
-func (r *RunRepository) Pause(ctx context.Context, runID string, attempt int, reason string, activeMs int64, llmProvider, llmModel string) (bool, error) {
+func (r *RunRepository) Pause(ctx context.Context, runID string, attempt int, reason string, activeMs int64, lastCheckpointStep int, llmProvider, llmModel string) (bool, error) {
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {
 		return false, fmt.Errorf("invalid run ID: %w", err)
@@ -611,6 +611,23 @@ func (r *RunRepository) Pause(ctx context.Context, runID string, attempt int, re
 	// window: the pause lands with its time, or neither happens.
 	if activeMs > 0 {
 		update["$inc"] = bson.M{"active_ms": activeMs}
+	}
+	// The resume marker, stamped by the pause itself rather than relied upon
+	// from the per-step write.
+	//
+	// That write is best-effort and, by design, reports success even when it
+	// errors — losing the marker is documented as costing the dashboard's
+	// Resume affordance rather than the run. For a FAILED run that trade is
+	// right. For a paused one it is not: the dashboard gates Resume on this
+	// field, so a Mongo blip on the step that the operator paused at would
+	// leave a perfectly resumable run showing only Cancel, and the only way
+	// back in would be the API. A pause knows exactly how far its replayable
+	// prefix reaches, so it stamps the value itself.
+	//
+	// $max, so it can only ever move forward — it must not walk back a marker
+	// a later step already advanced.
+	if lastCheckpointStep > 0 {
+		update["$max"] = bson.M{"last_checkpoint_step": lastCheckpointStep}
 	}
 
 	res, err := r.col.UpdateOne(ctx, filter, update)

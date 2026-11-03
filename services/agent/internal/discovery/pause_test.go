@@ -138,7 +138,7 @@ func TestStatusReporterPause_ReportsApplicationAndErrorSeparately(t *testing.T) 
 	t.Run("applied", func(t *testing.T) {
 		doc := newFakeRunDoc()
 		r := reporterFor(doc, 2)
-		applied, err := r.Pause(ctx, "Paused after exploration step 7 — resume to continue", 90*time.Second, "bedrock", "claude-sonnet-4-6")
+		applied, err := r.Pause(ctx, "Paused after exploration step 7 — resume to continue", 90*time.Second, 6, "bedrock", "claude-sonnet-4-6")
 		if err != nil || !applied {
 			t.Fatalf("Pause() = (%v, %v), want (true, nil)", applied, err)
 		}
@@ -165,7 +165,7 @@ func TestStatusReporterPause_ReportsApplicationAndErrorSeparately(t *testing.T) 
 		doc := newFakeRunDoc()
 		doc.pauseApplied = false
 		r := reporterFor(doc, 1)
-		applied, err := r.Pause(ctx, "whatever", time.Minute, "bedrock", "m")
+		applied, err := r.Pause(ctx, "whatever", time.Minute, 6, "bedrock", "m")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -178,14 +178,14 @@ func TestStatusReporterPause_ReportsApplicationAndErrorSeparately(t *testing.T) 
 		doc := newFakeRunDoc()
 		doc.pauseErr = errors.New("mongo is down")
 		r := reporterFor(doc, 1)
-		if _, err := r.Pause(ctx, "whatever", time.Minute, "bedrock", "m"); err == nil {
+		if _, err := r.Pause(ctx, "whatever", time.Minute, 6, "bedrock", "m"); err == nil {
 			t.Fatal("a failed pause write reported no error; the caller would exit 0 and strand the run as running with no agent")
 		}
 	})
 
 	t.Run("no run document — nothing to pause", func(t *testing.T) {
 		r := newStatusReporter(nil, nil, "proj", "", 100)
-		applied, err := r.Pause(ctx, "whatever", time.Minute, "bedrock", "m")
+		applied, err := r.Pause(ctx, "whatever", time.Minute, 6, "bedrock", "m")
 		if applied || err != nil {
 			t.Errorf("Pause() = (%v, %v) with reporting disabled, want (false, nil)", applied, err)
 		}
@@ -1002,5 +1002,67 @@ func TestHasResumePoint_RefusesALossyPause(t *testing.T) {
 	}
 	if o.hasResumePoint() {
 		t.Error("a gap healed itself; nothing backfills a missed step")
+	}
+}
+
+// TestPauseStampsItsOwnResumeMarker is round seven's finding, and the
+// user-visible dead end it describes.
+//
+// MarkExplorationCheckpoint deliberately returns true when its write ERRORS —
+// documented as costing the dashboard's Resume affordance rather than the
+// run, which is the right trade for a failed run. For a paused one it is not:
+// the dashboard gates Resume on last_checkpoint_step, so a Mongo blip on the
+// very step an operator paused at would leave a perfectly resumable run
+// showing only Cancel, with the API as the only way back in.
+//
+// So the pause stamps the marker itself, from the prefix it knows it has.
+func TestPauseStampsItsOwnResumeMarker(t *testing.T) {
+	doc := newFakeRunDoc()
+	o := &Orchestrator{
+		runID: "run-1", statusReporter: reporterFor(doc, 1),
+		attemptStartedAt: time.Now(),
+	}
+	o.contiguousCheckpointThrough = 6
+
+	if err := o.pauseAttempt(context.Background(), "detail"); !errors.Is(err, ai.ErrPauseRequested) {
+		t.Fatalf("pauseAttempt() = %v, want ErrPauseRequested", err)
+	}
+	if len(doc.pauseMarkers) != 1 {
+		t.Fatalf("pause writes = %d, want 1", len(doc.pauseMarkers))
+	}
+	if doc.pauseMarkers[0] != 6 {
+		t.Errorf("stamped marker = %d, want 6 — the dashboard gates Resume on this, so a paused run without it offers only Cancel", doc.pauseMarkers[0])
+	}
+}
+
+// TestPauseMarker_SurvivesAFailedPerStepMarkerWrite is the same finding from
+// the other end: the per-step marker write failing must not cost the paused
+// run its Resume button, because the pause no longer depends on it.
+func TestPauseMarker_SurvivesAFailedPerStepMarkerWrite(t *testing.T) {
+	doc := newFakeRunDoc()
+	doc.pauseRequested = true
+	// writeErr makes every run-document write fail, which is how a Mongo
+	// hiccup reaches the reporter — MarkExplorationCheckpoint still answers
+	// "carry on", by design.
+	doc.writeErr = errors.New("mongo is down")
+	store := &fakeCheckpointStore{}
+	o := &Orchestrator{
+		runID: "run-1", projectID: "proj",
+		statusReporter:   reporterFor(doc, 1),
+		checkpointRepo:   store,
+		attemptStartedAt: time.Now(),
+	}
+
+	// Step 1's checkpoint ROW lands even though the marker write errors.
+	err := o.checkpointStep(context.Background(), models.ExplorationStep{Step: 1}, models.CheckpointArgs{})
+	if !errors.Is(err, ai.ErrPauseRequested) {
+		t.Fatalf("checkpointStep() = %v, want ErrPauseRequested — a failed marker write must not cost the pause", err)
+	}
+	if len(store.steps) != 1 {
+		t.Fatalf("checkpoint rows = %d, want 1", len(store.steps))
+	}
+	// And the contiguity the pause will stamp reflects the row that landed.
+	if o.contiguousCheckpointThrough != 1 {
+		t.Errorf("contiguousCheckpointThrough = %d, want 1", o.contiguousCheckpointThrough)
 	}
 }

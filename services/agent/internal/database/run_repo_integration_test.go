@@ -1207,7 +1207,7 @@ func TestRunRepository_Pause(t *testing.T) {
 			"pause_requested_attempt": 2, "pause_deadline_at": now.Add(time.Hour),
 		})
 
-		applied, err := repo.Pause(ctx, runID, 2, "Paused after exploration step 7 — resume to continue", 90_000, "bedrock", "us.anthropic.claude-sonnet-4-6")
+		applied, err := repo.Pause(ctx, runID, 2, "Paused after exploration step 7 — resume to continue", 90_000, 7, "bedrock", "us.anthropic.claude-sonnet-4-6")
 		if err != nil || !applied {
 			t.Fatalf("Pause() = (%v, %v), want (true, nil)", applied, err)
 		}
@@ -1218,6 +1218,13 @@ func TestRunRepository_Pause(t *testing.T) {
 		}
 		if doc["last_paused_at"] == nil {
 			t.Error("last_paused_at was not stamped")
+		}
+		// The pause stamps the resume marker itself, because the per-step
+		// write is best-effort and reports success even when it errors — and
+		// the dashboard gates Resume on this field, so losing it would leave
+		// a resumable run showing only Cancel.
+		if got, _ := doc["last_checkpoint_step"].(int32); got != 7 {
+			t.Errorf("last_checkpoint_step = %v, want 7 stamped by the pause", doc["last_checkpoint_step"])
 		}
 		if _, ok := doc["completed_at"]; ok {
 			t.Error("completed_at was set on a paused run; GetLatestByProject and the dashboard's elapsed label both read it as an ending")
@@ -1261,7 +1268,7 @@ func TestRunRepository_Pause(t *testing.T) {
 
 	t.Run("refused for an attempt that no longer owns the run", func(t *testing.T) {
 		runID := seedRunDoc(t, ctx, db, bson.M{"attempt": 3})
-		applied, err := repo.Pause(ctx, runID, 2, "detail", 0, "", "")
+		applied, err := repo.Pause(ctx, runID, 2, "detail", 0, 0, "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1276,7 +1283,7 @@ func TestRunRepository_Pause(t *testing.T) {
 			models.RunStatusCancelled, models.RunStatusPending,
 		} {
 			runID := seedRunDoc(t, ctx, db, bson.M{"status": status, "attempt": 1})
-			applied, err := repo.Pause(ctx, runID, 1, "detail", 0, "", "")
+			applied, err := repo.Pause(ctx, runID, 1, "detail", 0, 0, "", "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1288,7 +1295,7 @@ func TestRunRepository_Pause(t *testing.T) {
 
 	t.Run("refused on a discarded run", func(t *testing.T) {
 		runID := seedRunDoc(t, ctx, db, bson.M{"attempt": 1, "discarded_at": time.Now()})
-		applied, err := repo.Pause(ctx, runID, 1, "detail", 0, "", "")
+		applied, err := repo.Pause(ctx, runID, 1, "detail", 0, 0, "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
