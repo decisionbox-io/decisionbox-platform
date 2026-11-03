@@ -150,7 +150,7 @@ func TestCheckpointAnalysisArea_WritesWhatARestoreNeeds(t *testing.T) {
 	}
 
 	step := doneArea("churn", 2, time.Now())
-	if err := o.checkpointAnalysisArea(context.Background(), step, 2); err != nil {
+	if _, err := o.checkpointAnalysisArea(context.Background(), step, 2); err != nil {
 		t.Fatalf("checkpointAnalysisArea: %v", err)
 	}
 	if len(store.saved) != 1 {
@@ -207,7 +207,7 @@ func TestCheckpointAnalysisArea_DoesNotMarkAFailedArea(t *testing.T) {
 		step := doneArea("churn", 0, time.Now())
 		step.Error = errText
 
-		if err := o.checkpointAnalysisArea(ctx, step, 0); err != nil {
+		if _, err := o.checkpointAnalysisArea(ctx, step, 0); err != nil {
 			t.Fatalf("%q: a failed area must be a quiet no-op, got %v", errText, err)
 		}
 		if len(store.saved) != 0 {
@@ -224,7 +224,7 @@ func TestCheckpointAnalysisArea_NoOpsThatProtectTheFence(t *testing.T) {
 
 	t.Run("nil store disables per-area resume", func(t *testing.T) {
 		o := &Orchestrator{projectID: "p", runID: "r", explorationSummaryAttempt: 1}
-		if err := o.checkpointAnalysisArea(ctx, step, 1); err != nil {
+		if _, err := o.checkpointAnalysisArea(ctx, step, 1); err != nil {
 			t.Fatalf("want a no-op, got %v", err)
 		}
 	})
@@ -240,7 +240,7 @@ func TestCheckpointAnalysisArea_NoOpsThatProtectTheFence(t *testing.T) {
 			analysisCheckpointRepo: store,
 			statusReporter:         reporterFor(newFakeRunDoc(), 1),
 		}
-		if err := o.checkpointAnalysisArea(ctx, step, 1); err != nil {
+		if _, err := o.checkpointAnalysisArea(ctx, step, 1); err != nil {
 			t.Fatalf("want a no-op, got %v", err)
 		}
 		if len(store.saved) != 0 {
@@ -257,7 +257,7 @@ func TestCheckpointAnalysisArea_NoOpsThatProtectTheFence(t *testing.T) {
 			statusReporter:            reporterFor(newFakeRunDoc(), 1),
 		}
 		anon := doneArea("", 1, time.Now())
-		if err := o.checkpointAnalysisArea(ctx, anon, 1); err != nil {
+		if _, err := o.checkpointAnalysisArea(ctx, anon, 1); err != nil {
 			t.Fatalf("want a no-op, got %v", err)
 		}
 		if len(store.saved) != 0 {
@@ -283,7 +283,7 @@ func TestCheckpointAnalysisArea_StopsWhenTheRunHasBeenTakenOver(t *testing.T) {
 			explorationSummaryAttempt: 1,
 			statusReporter:            reporterFor(doc, 2),
 		}
-		if err := o.checkpointAnalysisArea(ctx, step, 1); !errors.Is(err, ai.ErrAttemptSuperseded) {
+		if _, err := o.checkpointAnalysisArea(ctx, step, 1); !errors.Is(err, ai.ErrAttemptSuperseded) {
 			t.Fatalf("error = %v, want ai.ErrAttemptSuperseded", err)
 		}
 		if len(store.saved) != 0 {
@@ -304,7 +304,7 @@ func TestCheckpointAnalysisArea_StopsWhenTheRunHasBeenTakenOver(t *testing.T) {
 			explorationSummaryAttempt: 1,
 			statusReporter:            reporterFor(doc, 1),
 		}
-		if err := o.checkpointAnalysisArea(ctx, step, 1); !errors.Is(err, ai.ErrAttemptSuperseded) {
+		if _, err := o.checkpointAnalysisArea(ctx, step, 1); !errors.Is(err, ai.ErrAttemptSuperseded) {
 			t.Fatalf("error = %v, want ai.ErrAttemptSuperseded — a cancel leaves the attempt untouched, so only a status-aware probe sees it", err)
 		}
 	})
@@ -316,7 +316,7 @@ func TestCheckpointAnalysisArea_StopsWhenTheRunHasBeenTakenOver(t *testing.T) {
 			explorationSummaryAttempt: 1,
 			statusReporter:            reporterFor(newFakeRunDoc(), 1),
 		}
-		if err := o.checkpointAnalysisArea(ctx, step, 1); !errors.Is(err, ai.ErrAttemptSuperseded) {
+		if _, err := o.checkpointAnalysisArea(ctx, step, 1); !errors.Is(err, ai.ErrAttemptSuperseded) {
 			t.Fatalf("error = %v, want the store's ErrSupersededAttempt translated into the pipeline's stop signal", err)
 		}
 	})
@@ -332,7 +332,7 @@ func TestCheckpointAnalysisArea_AWriteFailureDoesNotAbortTheRun(t *testing.T) {
 		explorationSummaryAttempt: 1,
 		statusReporter:            reporterFor(newFakeRunDoc(), 1),
 	}
-	if err := o.checkpointAnalysisArea(context.Background(), doneArea("churn", 1, time.Now()), 1); err != nil {
+	if _, err := o.checkpointAnalysisArea(context.Background(), doneArea("churn", 1, time.Now()), 1); err != nil {
 		t.Fatalf("a failed checkpoint write must be swallowed, got %v", err)
 	}
 }
@@ -750,7 +750,7 @@ func TestNewOrchestrator_TypedNilAnalysisCheckpointRepoNormalizes(t *testing.T) 
 	}
 	// Sanity: every guarded path is a clean no-op rather than a panic.
 	ctx := context.Background()
-	if err := o.checkpointAnalysisArea(ctx, doneArea("churn", 1, time.Now()), 1); err != nil {
+	if _, err := o.checkpointAnalysisArea(ctx, doneArea("churn", 1, time.Now()), 1); err != nil {
 		t.Errorf("checkpointAnalysisArea: %v", err)
 	}
 	if got := o.loadCompletedAreas(ctx); got != nil {

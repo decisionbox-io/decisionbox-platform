@@ -66,29 +66,36 @@ type analysisCheckpointStore interface {
 // attempt's behalf. Every other failure is logged and swallowed, like every
 // checkpoint write: the cost is that the area is analysed again on a later
 // resume, and a checkpoint must never be able to abort a working run.
-func (o *Orchestrator) checkpointAnalysisArea(ctx context.Context, step models.AnalysisStep, insightsValidated int) error {
+//
+// The bool says whether a row for this area is actually on disk. It is not
+// decoration: the caller deletes the area's DRAFT once the area is finished,
+// and a swallowed write failure here would otherwise leave that delete
+// removing the only recoverable copy of work this attempt had already paid
+// for. False with a nil error means exactly that — nothing landed, carry on
+// anyway, and keep whatever is still recoverable.
+func (o *Orchestrator) checkpointAnalysisArea(ctx context.Context, step models.AnalysisStep, insightsValidated int) (bool, error) {
 	if o.analysisCheckpointRepo == nil {
-		return nil
+		return false, nil
 	}
 	if o.explorationSummaryAttempt <= 0 {
 		// No durable exploration summary, so this run re-explores on resume
 		// and nothing analysed over the current exploration could be
 		// restored against the next one. Writing a row would be writing one
 		// that LoadAreas is obliged to ignore.
-		return nil
+		return false, nil
 	}
 	if step.Error != "" {
-		return nil
+		return false, nil
 	}
 	if step.AreaID == "" {
 		// The loop always has an area id here; a row without one is
 		// unrestorable, so refuse it rather than storing a key nothing can
 		// match.
 		applog.WithField("run_id", o.runID).Warn("analysis area finished with no area id; not checkpointing it")
-		return nil
+		return false, nil
 	}
 	if o.statusReporter != nil && !o.statusReporter.OwnsRun(ctx) {
-		return ai.ErrAttemptSuperseded
+		return false, ai.ErrAttemptSuperseded
 	}
 
 	err := o.analysisCheckpointRepo.SaveArea(ctx, database.AnalysisAreaCheckpointInput{
@@ -105,21 +112,21 @@ func (o *Orchestrator) checkpointAnalysisArea(ctx context.Context, step models.A
 				"run_id": o.runID,
 				"area":   step.AreaID,
 			}).Warn("a newer attempt of this run owns this analysis area; stopping rather than spending the rest of the pipeline on a result that will be discarded")
-			return ai.ErrAttemptSuperseded
+			return false, ai.ErrAttemptSuperseded
 		}
 		applog.WithFields(applog.Fields{
 			"run_id": o.runID,
 			"area":   step.AreaID,
 			"error":  err.Error(),
 		}).Warn("failed to checkpoint a completed analysis area; a resumed run would analyse it again")
-		return nil
+		return false, nil
 	}
 	// keepStepIndex is deliberately NOT set here. An area can only be
 	// checkpointed once a durable exploration summary exists, and both paths
 	// to one have already set it — the explore path in
 	// checkpointExplorationSummary, the resume path at the top of
 	// RunDiscovery — so a setter here could never change the value.
-	return nil
+	return true, nil
 }
 
 // loadCompletedAreas reads back the analysis areas this run may restore.

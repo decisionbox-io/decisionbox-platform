@@ -327,6 +327,27 @@ func (o *Orchestrator) discardAreaDrafts(ctx context.Context, why string) {
 	}).Debug("deleted this run's analysis drafts")
 }
 
+// restoredDraftBudget totals what the restored drafts have already spent of
+// the run's per-insight validation cap.
+//
+// Summed BEFORE the area loop, for the reason restoredValidationBudget is:
+// the orchestrator builds its area list by ranging over a map of prompts, so
+// the order is nondeterministic. An area this attempt still has to analyse
+// from scratch can come first, be validated against a budget that has not yet
+// absorbed a draft's prior spend, and push the run past the cap the project
+// set — after which restoring the draft would top the counter up to a number
+// that was already exceeded.
+//
+// Every marker counts exactly once, because a marker exists only for an
+// insight actually submitted to the verifier.
+func restoredDraftBudget(drafts map[string]models.AnalysisAreaDraft) int {
+	total := 0
+	for _, draft := range drafts {
+		total += len(draft.InsightVerdicts)
+	}
+	return total
+}
+
 // storedInsightIDs maps a set of this attempt's insights onto the ids the
 // run's analysis checkpoints hold for them.
 //

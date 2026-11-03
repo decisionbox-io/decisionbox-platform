@@ -96,6 +96,47 @@ func (o *Orchestrator) checkpointRecommendations(ctx context.Context, step *mode
 	return nil
 }
 
+// recommendationStepInStoredIDs returns a copy of a finished Phase 5 whose
+// insight citations are expressed in the ids the run's analysis checkpoints
+// hold, rather than in this attempt's live ids.
+//
+// Without it the stored row mixes two id spaces and defeats its own gate. An
+// attempt that restored a completed area reasons over REMINTED insight ids, so
+// the recommender cites those — while EligibleInsightIDs is recorded in the
+// checkpoints' ids, because that is the only id space stable across attempts.
+// The next resume then passes the eligible-set check and fails to translate a
+// single citation, refusing a row that describes exactly the insights it holds.
+//
+// A copy, because the live recommendations must keep their live ids: Phase 5.5
+// validates them, the result persists them, and only the stored row speaks the
+// checkpoints' language. Identity, and so a no-op, on an attempt that restored
+// nothing.
+func recommendationStepInStoredIDs(step models.RecommendationStep, storedByLive map[string]string) models.RecommendationStep {
+	if len(storedByLive) == 0 || len(step.Recommendations) == 0 {
+		return step
+	}
+	recs := make([]models.Recommendation, len(step.Recommendations))
+	copy(recs, step.Recommendations)
+	for i := range recs {
+		if len(recs[i].RelatedInsightIDs) == 0 {
+			continue
+		}
+		ids := make([]string, len(recs[i].RelatedInsightIDs))
+		for j, live := range recs[i].RelatedInsightIDs {
+			if stored, ok := storedByLive[live]; ok && stored != "" {
+				ids[j] = stored
+				continue
+			}
+			// An insight this attempt analysed itself: its live id IS the id
+			// its checkpoint holds.
+			ids[j] = live
+		}
+		recs[i].RelatedInsightIDs = ids
+	}
+	step.Recommendations = recs
+	return step
+}
+
 // checkpointRecommendationVerdict records that one recommendation has been
 // validated. Called from validationPhase's bounded workers, so it must stay
 // safe to call concurrently. Failures are swallowed: a lost marker costs one

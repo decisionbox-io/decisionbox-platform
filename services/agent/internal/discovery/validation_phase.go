@@ -171,7 +171,10 @@ func (p *validationPhase) datasourceForSteps(steps []int, stepByID map[int]*mode
 // nil (no aiClient or no schemaProvider), Combined=validation_disabled.
 //
 // `runValidated` tracks how many insights have been validated so far
-// across all areas; the caller must thread it through area loops.
+// across all areas; the caller must thread it through area loops, and must
+// have already added every RESTORED marker of every area it is going to
+// restore — see restoredDraftBudget. A restored marker found in cp.done is
+// therefore stamped without being charged again.
 //
 // Returns the new runValidated count (so callers can keep their
 // running total in sync).
@@ -212,14 +215,13 @@ func (p *validationPhase) validateInsights(ctx context.Context, insights []model
 			DocKind:       valmodels.DocInsight,
 		}
 		// Already validated on a previous attempt of this run. Restored
-		// rather than re-derived, and counted against the budget rather than
-		// counted again: the previous attempt spent that slice of the cap,
-		// and a resume that reset it would validate past the number the
-		// project set.
+		// rather than re-derived, and NOT charged here: runValidated arrives
+		// already carrying every restored marker of every area this run is
+		// going to restore. See restoredDraftBudget for why that has to
+		// happen before the area loop rather than per area.
 		if prior, ok := cp.restored(ins.ID); ok {
 			results[pos] = prior
 			ins.Validation = insightValidationFrom(prior)
-			runValidated++
 			continue
 		}
 		if runValidated >= p.caps.MaxInsightsPerRun {
@@ -290,7 +292,21 @@ func (p *validationPhase) validateRecommendations(ctx context.Context, recommend
 	// then the checks run with bounded concurrency into their own slots.
 	results = make([]models.ValidationResult, len(recommendations))
 	var jobs []docJob
+
+	// Charge every restored verdict BEFORE the cap is applied to anything,
+	// which is the whole correctness of the cap under a resume. Counting a
+	// restored verdict only when the loop reaches it lets the documents ahead
+	// of it consume cap slots first: with one verdict restored for the third
+	// recommendation and the cap lowered to two between attempts, the first
+	// two would be queued and the third then charged, validating three
+	// documents against a cap of two.
 	validated := 0
+	for i := range recommendations {
+		if _, ok := cp.restored(recommendations[i].ID); ok {
+			validated++
+		}
+	}
+
 	for i := range recommendations {
 		rec := &recommendations[i]
 		vr := models.ValidationResult{
@@ -299,12 +315,12 @@ func (p *validationPhase) validateRecommendations(ctx context.Context, recommend
 			ValidatedAt:   time.Now(),
 			DocKind:       valmodels.DocRecommendation,
 		}
-		// Already validated on a previous attempt — same rule as the insight
-		// side, including counting it against the cap.
+		// Already validated on a previous attempt. Restored rather than
+		// re-derived, and NOT charged here: its slice of the cap was counted
+		// above, before any document was selected.
 		if prior, ok := cp.restored(rec.ID); ok {
 			results[i] = prior
 			rec.Validation = insightValidationFrom(prior)
-			validated++
 			continue
 		}
 		if validated >= p.caps.MaxRecommendationsPerRun {

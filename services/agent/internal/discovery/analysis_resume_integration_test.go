@@ -140,7 +140,7 @@ func TestInteg_AnalysisResume_KOfNAreasAreRestoredAndTheRestAreNot(t *testing.T)
 	validatedPerArea := map[string]int{"churn": 2, "engagement": 1, "levels": 0}
 	for i, id := range []string{"churn", "engagement", "levels"} {
 		step := completedArea(id, validatedPerArea[id], at.Add(time.Duration(i)*time.Minute))
-		if err := first.checkpointAnalysisArea(ctx, step, validatedPerArea[id]); err != nil {
+		if _, err := first.checkpointAnalysisArea(ctx, step, validatedPerArea[id]); err != nil {
 			t.Fatalf("checkpoint %s: %v", id, err)
 		}
 	}
@@ -184,7 +184,7 @@ func TestInteg_AnalysisResume_KOfNAreasAreRestoredAndTheRestAreNot(t *testing.T)
 		analysisLog = append(analysisLog, step)
 		allInsights = append(allInsights, step.Insights...)
 		validated++
-		if err := second.checkpointAnalysisArea(ctx, step, 1); err != nil {
+		if _, err := second.checkpointAnalysisArea(ctx, step, 1); err != nil {
 			t.Fatalf("checkpoint %s on attempt 2: %v", area.ID, err)
 		}
 	}
@@ -244,13 +244,13 @@ func TestInteg_AnalysisResume_AFailedAreaIsRetriedNotRestored(t *testing.T) {
 
 	// One area got through before the cap expired; the remaining three
 	// returned context.DeadlineExceeded.
-	if err := o.checkpointAnalysisArea(ctx, completedArea("churn", 2, at), 2); err != nil {
+	if _, err := o.checkpointAnalysisArea(ctx, completedArea("churn", 2, at), 2); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"engagement", "levels", "retention"} {
 		step := completedArea(id, 0, at)
 		step.Error = "context deadline exceeded"
-		if err := o.checkpointAnalysisArea(ctx, step, 0); err != nil {
+		if _, err := o.checkpointAnalysisArea(ctx, step, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -285,7 +285,7 @@ func TestInteg_AnalysisResume_AreasFromASupersededExplorationAreNotRestored(t *t
 	if err := repo.EnsureIndexes(ctx); err != nil {
 		t.Fatalf("EnsureIndexes: %v", err)
 	}
-	if err := first.checkpointAnalysisArea(ctx, completedArea("churn", 1, time.Now()), 1); err != nil {
+	if _, err := first.checkpointAnalysisArea(ctx, completedArea("churn", 1, time.Now()), 1); err != nil {
 		t.Fatal(err)
 	}
 
@@ -296,7 +296,7 @@ func TestInteg_AnalysisResume_AreasFromASupersededExplorationAreNotRestored(t *t
 		t.Errorf("restored %v over a re-exploration; those insights cite step numbers that no longer mean anything", got)
 	}
 	// And this attempt's own area is stamped against ITS exploration.
-	if err := second.checkpointAnalysisArea(ctx, completedArea("engagement", 1, time.Now()), 1); err != nil {
+	if _, err := second.checkpointAnalysisArea(ctx, completedArea("engagement", 1, time.Now()), 1); err != nil {
 		t.Fatal(err)
 	}
 	third, _ := resumedOrchestrator(t, db, "run-reexplored", 3, 2, 45)
@@ -340,7 +340,7 @@ func TestInteg_AnalysisResume_DiscardingTakesBothCollections(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := o.checkpointAnalysisArea(ctx, completedArea("churn", 1, time.Now()), 1); err != nil {
+	if _, err := o.checkpointAnalysisArea(ctx, completedArea("churn", 1, time.Now()), 1); err != nil {
 		t.Fatal(err)
 	}
 

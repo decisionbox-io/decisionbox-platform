@@ -659,3 +659,79 @@ func resumedOrchestratorWithRecCheckpoint(store recommendationCheckpointStore, e
 		statusReporter: reporterFor(newFakeRunDoc(), 2),
 	}
 }
+
+// --- regressions ------------------------------------------------------------
+
+// TestRecommendationStepInStoredIDs_KeepsTheCheckpointInOneIdSpace is the
+// regression for a checkpoint that defeated its own gate.
+//
+// An attempt that restored a completed area reasons over REMINTED insight ids,
+// so the recommender cites those — while the eligible set is recorded in the
+// ids the checkpoints hold, because that is the only id space stable across
+// attempts. Storing the citations unchanged mixed the two: the next resume
+// passed the eligible-set check and then could not translate a single
+// citation, refusing a row that described exactly the insights it held and
+// re-paying for the generation call and every recommendation's validation.
+func TestRecommendationStepInStoredIDs_KeepsTheCheckpointInOneIdSpace(t *testing.T) {
+	// live-1 came from a restored completed area (stored as attempt1-id-1);
+	// live-2 this attempt analysed itself, so its live id IS its stored id.
+	storedByLive := map[string]string{"live-1": "attempt1-id-1"}
+	step := recStepWith(
+		rec("r1", "live-1"),
+		rec("r2", "live-1", "live-2"),
+		rec("r3"),
+	)
+
+	got := recommendationStepInStoredIDs(step, storedByLive)
+
+	want := [][]string{{"attempt1-id-1"}, {"attempt1-id-1", "live-2"}, nil}
+	for i, w := range want {
+		gotIDs := got.Recommendations[i].RelatedInsightIDs
+		if len(gotIDs) != len(w) {
+			t.Fatalf("rec %d stored as %v, want %v", i, gotIDs, w)
+		}
+		for j := range w {
+			if gotIDs[j] != w[j] {
+				t.Errorf("rec %d citation %d = %q, want %q", i, j, gotIDs[j], w[j])
+			}
+		}
+	}
+
+	// The live recommendations must keep their live ids: Phase 5.5 validates
+	// them and the result persists them.
+	if step.Recommendations[0].RelatedInsightIDs[0] != "live-1" {
+		t.Error("rewrote the live recommendations; the result would cite ids it does not contain")
+	}
+
+	// And a run that restored nothing is untouched, which is what keeps a
+	// first attempt on exactly the path it always took.
+	plain := recStepWith(rec("r1", "a"))
+	if out := recommendationStepInStoredIDs(plain, nil); out.Recommendations[0].RelatedInsightIDs[0] != "a" {
+		t.Error("an attempt that restored nothing must store its citations unchanged")
+	}
+}
+
+// TestRecommendationCheckpoint_SurvivesTwoSuccessiveResumes closes the loop on
+// the id-space regression end to end: a row written by an attempt that
+// restored an area must still be restorable by the attempt after it.
+func TestRecommendationCheckpoint_SurvivesTwoSuccessiveResumes(t *testing.T) {
+	// Attempt 2 restored a completed area: stored "a1", live "a2".
+	stored := recommendationStepInStoredIDs(
+		recStepWith(rec("r1", "a2")),
+		map[string]string{"a2": "a1"},
+	)
+	cp := &models.RecommendationCheckpoint{
+		Step:               stored,
+		EligibleInsightIDs: []string{"a1"},
+	}
+
+	// Attempt 3 restores the same area from the same untouched row: stored
+	// "a1" again, live "a3" this time.
+	got, ok := restorableRecommendations(cp, []models.Insight{{ID: "a3"}}, map[string]string{"a1": "a3"})
+	if !ok {
+		t.Fatal("attempt 3 refused a checkpoint whose insight it is holding — the id spaces are still mixed")
+	}
+	if got.Step.Recommendations[0].RelatedInsightIDs[0] != "a3" {
+		t.Errorf("citation = %q, want this attempt's live id a3", got.Step.Recommendations[0].RelatedInsightIDs[0])
+	}
+}

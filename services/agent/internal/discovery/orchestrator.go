@@ -1537,7 +1537,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// to run can come first and would otherwise validate against a budget
 	// that has not yet absorbed the previous attempt's spend. See
 	// restoredValidationBudget.
-	insightsValidatedThisRun := restoredValidationBudget(completedAreas)
+	// Both halves of what previous attempts already spent, and both BEFORE the
+	// loop. The area order comes from a map range, so an area this attempt
+	// still has to analyse can run first — against a budget that has not yet
+	// absorbed a restored draft's verdicts, which is how a run exceeds the cap
+	// and then has the counter topped up past it. See restoredDraftBudget.
+	insightsValidatedThisRun := restoredValidationBudget(completedAreas) + restoredDraftBudget(areaDrafts)
 
 	// Vector-ranked step picker for the analysis phase. The closure
 	// over runStepIndex.Search keeps the picker decoupled from the
@@ -1716,15 +1721,28 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// below, which is v1's checkpoint-before-shared-writes ordering: an
 		// attempt that has lost the run stops here rather than writing rows
 		// on the owner's behalf.
-		if err := o.checkpointAnalysisArea(ctx, step, insightsValidatedThisRun-validatedBefore); err != nil {
+		//
+		// The area's spend is the fresh checks plus whatever its draft had
+		// already paid for: the run counter arrived with the draft's markers
+		// already in it, so the delta alone would under-report what this area
+		// took out of the cap and a later attempt would hand the areas it
+		// still has to run a budget that is too generous.
+		areaSpend := insightsValidatedThisRun - validatedBefore + len(draftVerdicts)
+		checkpointed, err := o.checkpointAnalysisArea(ctx, step, areaSpend)
+		if err != nil {
 			return nil, err
 		}
 
 		// The area's checkpoint now describes this work with its validation
-		// done, so its draft is spent. Best-effort: loadAreaDrafts prefers
-		// the checkpoint over a draft for the same area, so a surviving row
-		// is ignored rather than restored.
-		o.discardAreaDraft(ctx, area.ID)
+		// done, so its draft is spent — but ONLY if that row actually landed.
+		// A checkpoint write failure is swallowed by design, and deleting the
+		// draft anyway would throw away the one recoverable copy of an area
+		// this attempt has already paid to validate. Left in place, it is
+		// superseded by the checkpoint whenever that write eventually
+		// succeeds, and reclaimed by the TTL if it never does.
+		if checkpointed {
+			o.discardAreaDraft(ctx, area.ID)
+		}
 
 		// Report analysis completion and insights to status
 		o.statusReporter.AddAnalysisStep(ctx, area.ID, area.Name, len(insights), "", step.TokensIn, step.TokensOut)
@@ -1886,7 +1904,11 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// which is the checkpoint-before-shared-writes ordering every other
 		// seam uses. Only a phase that banked something is recorded; see
 		// checkpointRecommendations.
-		if err := o.checkpointRecommendations(ctx, recStep, eligibleStoredIDs); err != nil {
+		// In the checkpoints' id space, not this attempt's: the recommender
+		// cited the live ids, and only the stored ones are stable across
+		// attempts. See recommendationStepInStoredIDs.
+		stored := recommendationStepInStoredIDs(*recStep, storedIDByLive)
+		if err := o.checkpointRecommendations(ctx, &stored, eligibleStoredIDs); err != nil {
 			return nil, err
 		}
 	}

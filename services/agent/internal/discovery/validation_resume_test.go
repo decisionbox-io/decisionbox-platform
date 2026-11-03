@@ -84,7 +84,10 @@ func TestValidateInsights_SkipsTheInsightsAPreviousAttemptAlreadyValidated(t *te
 		"i4": priorVerdict("i4", "a", at),
 	}}
 
-	results, validated := p.validateInsights(context.Background(), insights, steps, "a", 0, cp.hook())
+	// The caller arrives having already charged the restored markers against
+	// the run's budget — see restoredDraftBudget for why that happens before
+	// the area loop rather than here.
+	results, validated := p.validateInsights(context.Background(), insights, steps, "a", len(cp.done), cp.hook())
 
 	if len(results) != 6 {
 		t.Fatalf("want a result per insight, got %d", len(results))
@@ -104,7 +107,7 @@ func TestValidateInsights_SkipsTheInsightsAPreviousAttemptAlreadyValidated(t *te
 	// slice of the cap, and a resume that reset it would validate past the
 	// number the project set.
 	if validated != 6 {
-		t.Errorf("runValidated = %d, want 6 (2 restored + 4 checked)", validated)
+		t.Errorf("runValidated = %d, want 6 (2 restored, charged by the caller, + 4 checked here)", validated)
 	}
 
 	// The restored verdicts come back verbatim, in their own slots, and are
@@ -162,7 +165,7 @@ func TestValidateInsights_RestoredMarkersSpendTheCapSoItIsNeverExceeded(t *testi
 		"i4": priorVerdict("i4", "a", at),
 		"i3": priorVerdict("i3", "a", at),
 	}}
-	results, validated := p.validateInsights(context.Background(), insights, steps, "a", 0, cp.hook())
+	results, validated := p.validateInsights(context.Background(), insights, steps, "a", len(cp.done), cp.hook())
 
 	if validated != 4 {
 		t.Errorf("runValidated = %d, want exactly the cap of 4", validated)
@@ -196,7 +199,7 @@ func TestValidateInsights_ARaisedCapValidatesWhatThePreviousAttemptSkipped(t *te
 		"i3": priorVerdict("i3", "a", at),
 		"i2": priorVerdict("i2", "a", at),
 	}}
-	results, validated := p.validateInsights(context.Background(), insights, steps, "a", 0, cp.hook())
+	results, validated := p.validateInsights(context.Background(), insights, steps, "a", len(cp.done), cp.hook())
 
 	if validated != 6 {
 		t.Errorf("runValidated = %d, want 6", validated)
@@ -425,5 +428,83 @@ func TestValidateInsights_ValidationDisabledIgnoresTheCheckpoint(t *testing.T) {
 	}
 	if len(cp.savedIDs()) != 0 {
 		t.Error("recorded a marker for a phase that made no calls")
+	}
+}
+
+// --- regressions ------------------------------------------------------------
+
+// TestValidateRecommendations_ALoweredCapCannotBeExceededByARestoredMarker is
+// a cap regression.
+//
+// Charging a restored marker only when the planning loop reached it let the
+// documents AHEAD of it consume cap slots first. With one verdict restored for
+// the third recommendation and the cap lowered to two between attempts, the
+// first two were queued and the third then charged — three validated
+// documents against a cap of two.
+func TestValidateRecommendations_ALoweredCapCannotBeExceededByARestoredMarker(t *testing.T) {
+	p, _, insights, steps := concurrencyFixture(t, 1)
+	p.caps.MaxRecommendationsPerRun = 2
+
+	recs := make([]models.Recommendation, 3)
+	for i := range recs {
+		recs[i] = models.Recommendation{
+			ID: fmt.Sprintf("r%d", i), Title: fmt.Sprintf("do thing %d", i),
+			RelatedInsightIDs: []string{insights[0].ID},
+		}
+	}
+	at := time.Now().Add(-time.Hour)
+	prior := priorVerdict("r2", "", at)
+	prior.DocKind = valmodels.DocRecommendation
+	cp := &recordingCheckpoint{done: map[string]models.ValidationResult{"r2": prior}}
+
+	results := p.validateRecommendations(context.Background(), recs, insights, steps, cp.hook())
+
+	checked := len(cp.savedIDs())
+	restored := 0
+	skipped := 0
+	for _, r := range results {
+		switch {
+		case r.Combined == valmodels.StatusSkippedBudgetCap:
+			skipped++
+		case r.InsightID == "r2":
+			restored++
+		}
+	}
+	if restored != 1 {
+		t.Errorf("the restored verdict did not come back (restored = %d)", restored)
+	}
+	if checked+restored > p.caps.MaxRecommendationsPerRun {
+		t.Errorf("validated %d documents (%d checked + %d restored) against a cap of %d",
+			checked+restored, checked, restored, p.caps.MaxRecommendationsPerRun)
+	}
+	if skipped != 1 {
+		t.Errorf("%d recommendations skipped on the cap, want 1", skipped)
+	}
+}
+
+// TestValidateInsights_DoesNotChargeARestoredMarkerTwice pins the division of
+// labour the cap now depends on: the CALLER adds every restored marker of
+// every area it is going to restore, before the area loop, because the area
+// order is nondeterministic. So the phase must stamp a restored verdict
+// without charging it again.
+func TestValidateInsights_DoesNotChargeARestoredMarkerTwice(t *testing.T) {
+	p, _, insights, steps := concurrencyFixture(t, 1)
+	p.caps.MaxInsightsPerRun = 6
+
+	at := time.Now().Add(-time.Hour)
+	cp := &recordingCheckpoint{done: map[string]models.ValidationResult{
+		"i5": priorVerdict("i5", "a", at),
+		"i4": priorVerdict("i4", "a", at),
+	}}
+
+	// The caller arrives having already charged the two restored markers.
+	_, validated := p.validateInsights(context.Background(), insights, steps, "a", 2, cp.hook())
+
+	if validated != 6 {
+		t.Errorf("runValidated = %d, want 6 (2 already charged by the caller + 4 checked here); %d means the restored markers were charged twice",
+			validated, 8)
+	}
+	if got := len(cp.savedIDs()); got != 4 {
+		t.Errorf("checked %d insights, want 4", got)
 	}
 }

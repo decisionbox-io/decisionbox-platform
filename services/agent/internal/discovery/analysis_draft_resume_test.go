@@ -715,3 +715,106 @@ func TestStoredInsightIDs_SkipsAnInsightWithNoId(t *testing.T) {
 		t.Error("mapped the empty id")
 	}
 }
+
+// --- regressions ------------------------------------------------------------
+
+// TestRestoredDraftBudget_IsSummedForEveryDraftBeforeTheLoop is a cap
+// regression, and it is the same defect per-area resume had one rung up.
+//
+// The orchestrator builds its area list by ranging over a map of prompts, so
+// the order is nondeterministic: an area this attempt has to analyse from
+// scratch can run FIRST, against a budget that has not yet absorbed a restored
+// draft's verdicts. Charging a draft's markers only when its own area is
+// reached let the run validate past the cap and then top the counter up past
+// it — with a cap of four and two restored markers, the fresh area got four
+// checks and the run finished on six.
+func TestRestoredDraftBudget_IsSummedForEveryDraftBeforeTheLoop(t *testing.T) {
+	drafts := map[string]models.AnalysisAreaDraft{
+		"churn": {Step: draftArea("churn", 3, time.Now()), InsightVerdicts: map[string]models.ValidationResult{
+			"churn-insight-0": {InsightID: "churn-insight-0"},
+			"churn-insight-1": {InsightID: "churn-insight-1"},
+		}},
+		"revenue": {Step: draftArea("revenue", 2, time.Now()), InsightVerdicts: map[string]models.ValidationResult{
+			"revenue-insight-0": {InsightID: "revenue-insight-0"},
+		}},
+		// A draft with nothing validated yet contributes nothing.
+		"retention": {Step: draftArea("retention", 2, time.Now())},
+	}
+	if got := restoredDraftBudget(drafts); got != 3 {
+		t.Errorf("restored draft budget = %d, want 3 — every marker of every draft, counted once", got)
+	}
+	if got := restoredDraftBudget(nil); got != 0 {
+		t.Errorf("no drafts should spend nothing, got %d", got)
+	}
+}
+
+// TestCheckpointAnalysisArea_ReportsWhetherTheRowLanded is the signal the
+// draft delete depends on.
+//
+// A checkpoint write failure is swallowed by design, so a caller that read
+// only the error would delete the area's draft anyway — throwing away the one
+// recoverable copy of an area it had already paid to validate, and forcing a
+// later resume to re-analyse and re-validate all of it.
+func TestCheckpointAnalysisArea_ReportsWhetherTheRowLanded(t *testing.T) {
+	ctx := context.Background()
+	step := doneArea("churn", 2, time.Now())
+
+	t.Run("a landed write reports true", func(t *testing.T) {
+		o := &Orchestrator{
+			projectID: "p", runID: "r",
+			analysisCheckpointRepo:    &fakeAnalysisCheckpointStore{},
+			explorationSummaryAttempt: 1,
+			statusReporter:            reporterFor(newFakeRunDoc(), 1),
+		}
+		got, err := o.checkpointAnalysisArea(ctx, step, 2)
+		if err != nil {
+			t.Fatalf("checkpointAnalysisArea: %v", err)
+		}
+		if !got {
+			t.Error("reported no row for a write that succeeded, so the area's draft would be kept forever")
+		}
+	})
+
+	t.Run("a swallowed failure reports false", func(t *testing.T) {
+		o := &Orchestrator{
+			projectID: "p", runID: "r",
+			analysisCheckpointRepo:    &fakeAnalysisCheckpointStore{saveErr: errors.New("mongo down")},
+			explorationSummaryAttempt: 1,
+			statusReporter:            reporterFor(newFakeRunDoc(), 1),
+		}
+		got, err := o.checkpointAnalysisArea(ctx, step, 2)
+		if err != nil {
+			t.Fatalf("a failed checkpoint must not abort the run, got %v", err)
+		}
+		if got {
+			t.Error("reported a row that is not on disk; the caller would delete the draft and leave nothing recoverable")
+		}
+	})
+
+	t.Run("every other no-op reports false", func(t *testing.T) {
+		failed := doneArea("churn", 2, time.Now())
+		failed.Error = "context deadline exceeded"
+		for name, o := range map[string]*Orchestrator{
+			"nil store": {projectID: "p", runID: "r", explorationSummaryAttempt: 1},
+			"no durable exploration summary": {
+				projectID: "p", runID: "r",
+				analysisCheckpointRepo: &fakeAnalysisCheckpointStore{},
+				statusReporter:         reporterFor(newFakeRunDoc(), 1),
+			},
+		} {
+			got, err := o.checkpointAnalysisArea(ctx, step, 2)
+			if err != nil || got {
+				t.Errorf("%s: got (%v, %v), want (false, nil)", name, got, err)
+			}
+		}
+		o := &Orchestrator{
+			projectID: "p", runID: "r",
+			analysisCheckpointRepo:    &fakeAnalysisCheckpointStore{},
+			explorationSummaryAttempt: 1,
+			statusReporter:            reporterFor(newFakeRunDoc(), 1),
+		}
+		if got, err := o.checkpointAnalysisArea(ctx, failed, 0); err != nil || got {
+			t.Errorf("a failed area: got (%v, %v), want (false, nil)", got, err)
+		}
+	})
+}
