@@ -138,7 +138,9 @@ type Project struct {
 	// are empty/nil for a project that has never started a run.
 	//
 	//   - LastRunStatus: the run's lifecycle status — "pending",
-	//     "running", "completed", "failed", or "cancelled".
+	//     "running", "paused", "completed", "failed", or "cancelled".
+	//     "paused" is neither active nor terminal: an operator stopped the
+	//     run cooperatively and it can be resumed.
 	//   - LastRunAt: when the most recent run started. The dashboard
 	//     project cards count "Running — <elapsed>" up from this.
 	//   - LastRunCompletedAt: when it finished; nil while it is still

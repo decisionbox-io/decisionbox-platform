@@ -1083,3 +1083,236 @@ func TestRunRepository_ListActiveRecent_ExcludesDiscarded(t *testing.T) {
 		t.Error("a discarded run was listed as active, which keeps its vector collection alive for the lookback window")
 	}
 }
+
+// TestRunRepository_OwnershipAnswersPauseRequested is the probe half of
+// operator pause (#508), against real documents.
+//
+// The ordering is the part worth pinning: a pause request is checked LAST,
+// after cancellation, discard and the attempt comparison, because each of
+// those means the run is not this attempt's to pause. Get the order wrong and
+// a cancelled run's agent would write `paused` over the operator's cancel.
+func TestRunRepository_OwnershipAnswersPauseRequested(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewRunRepository(db)
+
+	now := time.Now()
+	future := now.Add(30 * time.Minute)
+	past := now.Add(-time.Minute)
+
+	t.Run("a live request on this attempt", func(t *testing.T) {
+		runID := seedRunDoc(t, ctx, db, bson.M{
+			"attempt": 2, "pause_requested_at": now,
+			"pause_requested_attempt": 2, "pause_deadline_at": future,
+		})
+		got, err := repo.Ownership(ctx, runID, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != RunPauseRequested {
+			t.Errorf("Ownership = %v, want RunPauseRequested", got)
+		}
+	})
+
+	t.Run("a lapsed request reads as plain ownership", func(t *testing.T) {
+		// The run simply carries on. This is what stops a request the agent
+		// could never honour from pausing it hours later, unattended.
+		runID := seedRunDoc(t, ctx, db, bson.M{
+			"attempt": 2, "pause_requested_at": past,
+			"pause_requested_attempt": 2, "pause_deadline_at": past,
+		})
+		got, err := repo.Ownership(ctx, runID, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != RunOwnedByThisAttempt {
+			t.Errorf("Ownership = %v, want RunOwnedByThisAttempt for a lapsed request", got)
+		}
+	})
+
+	t.Run("a request aimed at another attempt is ignored", func(t *testing.T) {
+		runID := seedRunDoc(t, ctx, db, bson.M{
+			"attempt": 3, "pause_requested_at": now,
+			"pause_requested_attempt": 2, "pause_deadline_at": future,
+		})
+		got, err := repo.Ownership(ctx, runID, 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != RunOwnedByThisAttempt {
+			t.Errorf("Ownership = %v, want RunOwnedByThisAttempt", got)
+		}
+	})
+
+	t.Run("cancellation outranks a pause request", func(t *testing.T) {
+		runID := seedRunDoc(t, ctx, db, bson.M{
+			"status": models.RunStatusCancelled, "attempt": 2,
+			"pause_requested_at": now, "pause_requested_attempt": 2,
+			"pause_deadline_at": future,
+		})
+		got, err := repo.Ownership(ctx, runID, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != RunCancelled {
+			t.Errorf("Ownership = %v, want RunCancelled — a cancel is a hard kill and the agent must not write `paused` over it", got)
+		}
+	})
+
+	t.Run("supersession outranks a pause request", func(t *testing.T) {
+		runID := seedRunDoc(t, ctx, db, bson.M{
+			"attempt": 3, "pause_requested_at": now,
+			"pause_requested_attempt": 3, "pause_deadline_at": future,
+		})
+		got, err := repo.Ownership(ctx, runID, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != RunTakenOverByAnotherAttempt {
+			t.Errorf("Ownership = %v, want RunTakenOverByAnotherAttempt", got)
+		}
+	})
+
+	t.Run("a discard outranks a pause request", func(t *testing.T) {
+		runID := seedRunDoc(t, ctx, db, bson.M{
+			"attempt": 2, "discarded_at": now,
+			"pause_requested_at": now, "pause_requested_attempt": 2,
+			"pause_deadline_at": future,
+		})
+		got, err := repo.Ownership(ctx, runID, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != RunDiscarded {
+			t.Errorf("Ownership = %v, want RunDiscarded", got)
+		}
+	})
+}
+
+// TestRunRepository_Pause pins the write that ends a paused attempt: fenced
+// like every other terminal-ish write, and deliberately NOT setting
+// completed_at, because a paused run has not completed and two readers depend
+// on that field meaning what it says.
+func TestRunRepository_Pause(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewRunRepository(db)
+
+	t.Run("applies and records the pause", func(t *testing.T) {
+		now := time.Now()
+		runID := seedRunDoc(t, ctx, db, bson.M{
+			"attempt": 2, "pause_requested_at": now,
+			"pause_requested_attempt": 2, "pause_deadline_at": now.Add(time.Hour),
+		})
+
+		applied, err := repo.Pause(ctx, runID, 2, "Paused after exploration step 7 — resume to continue")
+		if err != nil || !applied {
+			t.Fatalf("Pause() = (%v, %v), want (true, nil)", applied, err)
+		}
+
+		doc := readRunDoc(t, ctx, db, runID)
+		if doc["status"] != models.RunStatusPaused {
+			t.Errorf("status = %v, want paused", doc["status"])
+		}
+		if doc["last_paused_at"] == nil {
+			t.Error("last_paused_at was not stamped")
+		}
+		if _, ok := doc["completed_at"]; ok {
+			t.Error("completed_at was set on a paused run; GetLatestByProject and the dashboard's elapsed label both read it as an ending")
+		}
+		// The request is served, so it stops being pending.
+		for _, k := range []string{"pause_requested_at", "pause_requested_attempt", "pause_deadline_at"} {
+			if _, ok := doc[k]; ok {
+				t.Errorf("%s survived the pause; the dashboard reads its presence as still-pausing", k)
+			}
+		}
+		// The lifecycle event is in the same update, because BeginResume
+		// clears the scalar fields and this is the only record that survives
+		// a later resume.
+		events, _ := doc["lifecycle"].(bson.A)
+		if len(events) != 1 {
+			t.Fatalf("lifecycle events = %d, want 1", len(events))
+		}
+		ev, _ := events[0].(bson.M)
+		if ev["status"] != models.RunStatusPaused {
+			t.Errorf("lifecycle event status = %v, want paused", ev["status"])
+		}
+		if ev["attempt"] != int32(2) {
+			t.Errorf("lifecycle event attempt = %v, want 2", ev["attempt"])
+		}
+	})
+
+	t.Run("refused for an attempt that no longer owns the run", func(t *testing.T) {
+		runID := seedRunDoc(t, ctx, db, bson.M{"attempt": 3})
+		applied, err := repo.Pause(ctx, runID, 2, "detail")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if applied {
+			t.Error("a superseded attempt paused a run it does not own")
+		}
+	})
+
+	t.Run("refused on a run that is not running", func(t *testing.T) {
+		for _, status := range []string{
+			models.RunStatusCompleted, models.RunStatusFailed,
+			models.RunStatusCancelled, models.RunStatusPending,
+		} {
+			runID := seedRunDoc(t, ctx, db, bson.M{"status": status, "attempt": 1})
+			applied, err := repo.Pause(ctx, runID, 1, "detail")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if applied {
+				t.Errorf("status %s: a pause was written over it", status)
+			}
+		}
+	})
+
+	t.Run("refused on a discarded run", func(t *testing.T) {
+		runID := seedRunDoc(t, ctx, db, bson.M{"attempt": 1, "discarded_at": time.Now()})
+		applied, err := repo.Pause(ctx, runID, 1, "detail")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if applied {
+			t.Error("a discarded run was written back to a resumable status")
+		}
+	})
+}
+
+// TestRunRepository_ResumableOrActiveIDsKeepsAPausedRun. A paused run is
+// resumable, so the agent's boot-time orphan sweep must keep its per-run
+// vector collection — dropping it would make the resume pay to re-embed every
+// step it replays.
+func TestRunRepository_ResumableOrActiveIDsKeepsAPausedRun(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewRunRepository(db)
+
+	paused := seedRunDoc(t, ctx, db, bson.M{"status": models.RunStatusPaused, "attempt": 1})
+	cancelled := seedRunDoc(t, ctx, db, bson.M{"status": models.RunStatusCancelled, "attempt": 1})
+
+	ids, err := repo.ResumableOrActiveIDs(ctx, []string{paused, cancelled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keptPaused, keptCancelled bool
+	for _, id := range ids {
+		if id == paused {
+			keptPaused = true
+		}
+		if id == cancelled {
+			keptCancelled = true
+		}
+	}
+	if !keptPaused {
+		t.Error("a paused run was dropped from the keep set; its resume would re-embed every replayed step")
+	}
+	if keptCancelled {
+		t.Error("a cancelled run was kept; it can never be resumed")
+	}
+}
