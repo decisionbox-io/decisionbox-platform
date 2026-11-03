@@ -97,7 +97,82 @@ type AnalysisAreaCheckpointDoc struct {
 	InsightsValidated int       `bson:"insights_validated,omitempty"`
 	CreatedAt         time.Time `bson:"created_at"`
 
+	// MissingValueFigures records, per insight id, which of its figures the
+	// model declared no readable value for.
+	//
+	// It exists because models.Figure.ValueMissing is `bson:"-"` — set
+	// when a response is decoded, deliberately neither stored nor served,
+	// because "a figure read back from the database has a real value by
+	// construction". This checkpoint is the one place that breaks that
+	// assumption: it persists an insight mid-run and restores it back into
+	// Phase 5, so a flag dropped on the way through is a flag Phase 5 then
+	// lacks.
+	//
+	// The consequence is not cosmetic. usableFigures withholds a
+	// value-missing figure from the recommender prompt, and
+	// buildFigureRefIndex refuses to resolve it — both reading the flag. A
+	// restored figure with the flag lost reads as Value=0 instead, so the
+	// recommender is offered a figure it should never see and resolves it as
+	// a real zero, printing a fabricated measurement that an uninterrupted
+	// run withholds. That is the defect #428 exists to prevent; a resumed
+	// run must not reintroduce it.
+	//
+	// Keyed by the insight id as STORED, so it is applied before the restore
+	// remints ids. Only ValueMissing is carried: ValueRaw is also `bson:"-"`
+	// but losing it costs a diagnostic's detail, not a number in the prose.
+	MissingValueFigures map[string][]string `bson:"missing_value_figures,omitempty"`
+
 	models.AnalysisStep `bson:",inline"`
+}
+
+// missingValueFigures collects the value-missing figure ids of each insight,
+// so the flag BSON drops can be restored. Nil when there are none, which is
+// the normal case.
+func missingValueFigures(insights []models.Insight) map[string][]string {
+	var out map[string][]string
+	for _, ins := range insights {
+		var ids []string
+		for _, f := range ins.Figures {
+			if f.ValueMissing {
+				ids = append(ids, f.ID)
+			}
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		if out == nil {
+			out = make(map[string][]string, 1)
+		}
+		out[ins.ID] = ids
+	}
+	return out
+}
+
+// applyMissingValueFigures puts back the flags missingValueFigures recorded.
+func applyMissingValueFigures(insights []models.Insight, missing map[string][]string) {
+	if len(missing) == 0 {
+		return
+	}
+	for i := range insights {
+		// Through a pointer rather than insights[i].Figures[j]: the nested
+		// index reads to gosec as an unchecked bound (G602) even though i
+		// comes from ranging insights.
+		ins := &insights[i]
+		ids := missing[ins.ID]
+		if len(ids) == 0 {
+			continue
+		}
+		flagged := make(map[string]bool, len(ids))
+		for _, id := range ids {
+			flagged[id] = true
+		}
+		figures := ins.Figures
+		for j := range figures {
+			if flagged[figures[j].ID] {
+				figures[j].ValueMissing = true
+			}
+		}
+	}
 }
 
 // AnalysisAreaCheckpointInput is one completed area to checkpoint.
@@ -164,13 +239,14 @@ func (r *DiscoveryAnalysisCheckpointRepository) SaveArea(ctx context.Context, in
 		)
 	}
 	doc := AnalysisAreaCheckpointDoc{
-		RunID:              in.RunID,
-		ProjectID:          in.ProjectID,
-		Attempt:            in.Attempt,
-		ExplorationAttempt: in.ExplorationAttempt,
-		InsightsValidated:  in.InsightsValidated,
-		CreatedAt:          time.Now(),
-		AnalysisStep:       in.Step,
+		RunID:               in.RunID,
+		ProjectID:           in.ProjectID,
+		Attempt:             in.Attempt,
+		ExplorationAttempt:  in.ExplorationAttempt,
+		InsightsValidated:   in.InsightsValidated,
+		CreatedAt:           time.Now(),
+		MissingValueFigures: missingValueFigures(in.Step.Insights),
+		AnalysisStep:        in.Step,
 	}
 	filter := bson.M{
 		"run_id":  in.RunID,
@@ -258,6 +334,9 @@ func (r *DiscoveryAnalysisCheckpointRepository) LoadAreas(ctx context.Context, r
 		if doc.Attempt > set.Attempt {
 			set.Attempt = doc.Attempt
 		}
+		// Before anything reads the step: BSON dropped these flags on the
+		// way in, and Phase 5 depends on them. See MissingValueFigures.
+		applyMissingValueFigures(doc.Insights, doc.MissingValueFigures)
 		set.Areas[doc.AreaID] = models.AnalysisAreaCheckpoint{
 			Step:              doc.AnalysisStep,
 			InsightsValidated: doc.InsightsValidated,

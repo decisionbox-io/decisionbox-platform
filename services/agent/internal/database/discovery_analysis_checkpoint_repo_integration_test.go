@@ -518,3 +518,95 @@ func TestInteg_AnalysisCheckpoint_SummaryAttemptIsReadableFromTheExplorationPref
 		t.Errorf("summary attempt = %d, want 2 — this is the value analysis checkpoints are fenced on", set.Summary.Attempt)
 	}
 }
+
+// TestInteg_AnalysisCheckpoint_ValueMissingSurvivesRealBSON is the wired-up
+// version of the unit test, and the one that can actually fail if the
+// helpers are not called.
+//
+// models.Figure.ValueMissing is `bson:"-"`, so a real save/load is the only
+// way to prove the flag is carried: a unit test calling the helpers directly
+// passes whether or not SaveArea and LoadAreas use them.
+func TestInteg_AnalysisCheckpoint_ValueMissingSurvivesRealBSON(t *testing.T) {
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := analysisRepo(t, db, 48*time.Hour)
+
+	step := completedAreaWithFigures()
+	if err := repo.SaveArea(ctx, AnalysisAreaCheckpointInput{
+		ProjectID: "p1", RunID: "run-fig", Attempt: 1, ExplorationAttempt: 1,
+		Step: step, InsightsValidated: 1,
+	}); err != nil {
+		t.Fatalf("SaveArea: %v", err)
+	}
+
+	// Prove the collection really did drop the flag, so the test is testing
+	// the restore rather than an accident of serialisation.
+	var raw struct {
+		Insights []struct {
+			ID      string `bson:"id"`
+			Figures []struct {
+				ID           string `bson:"id"`
+				ValueMissing bool   `bson:"value_missing"`
+			} `bson:"figures"`
+		} `bson:"insights"`
+	}
+	if err := repo.col.FindOne(ctx, bson.M{"run_id": "run-fig"}).Decode(&raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, ins := range raw.Insights {
+		for _, f := range ins.Figures {
+			if f.ValueMissing {
+				t.Fatalf("figure %s stored value_missing=true; the bson:\"-\" tag is supposed to drop it, so this test is not proving what it claims", f.ID)
+			}
+		}
+	}
+
+	set, err := repo.LoadAreas(ctx, "run-fig", 1)
+	if err != nil {
+		t.Fatalf("LoadAreas: %v", err)
+	}
+	restored := set.Areas["churn"].Step
+	if len(restored.Insights) != 1 {
+		t.Fatalf("restored %d insights, want 1", len(restored.Insights))
+	}
+	byID := map[string]bool{}
+	for _, f := range restored.Insights[0].Figures {
+		byID[f.ID] = f.ValueMissing
+	}
+	if !byID["f_unreadable"] {
+		t.Error("the value-missing figure came back readable: Phase 5 would advertise it to the recommender and resolve it as a real zero, printing a figure an uninterrupted run withholds")
+	}
+	if byID["f_real_zero"] {
+		t.Error("a figure declaring zero was restored as value-missing; zero and absent are different claims")
+	}
+	if byID["f_total"] {
+		t.Error("a figure with a real value was restored as value-missing")
+	}
+}
+
+// completedAreaWithFigures is an area whose insight carries one figure the
+// model gave no readable value for, one declaring a real zero, and one
+// ordinary figure.
+func completedAreaWithFigures() models.AnalysisStep {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	return models.AnalysisStep{
+		AreaID:   "churn",
+		AreaName: "Churn Risks",
+		RunAt:    now,
+		Prompt:   "p",
+		Response: "r",
+		Insights: []models.Insight{{
+			ID:           "ins-fig",
+			AnalysisArea: "churn",
+			Name:         "Cohort churn",
+			Severity:     "high",
+			DiscoveredAt: now,
+			Figures: []models.Figure{
+				{ID: "f_total", Value: 412},
+				{ID: "f_unreadable", ValueMissing: true},
+				{ID: "f_real_zero", Value: 0},
+			},
+		}},
+	}
+}
