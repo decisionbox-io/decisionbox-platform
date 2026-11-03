@@ -176,6 +176,20 @@ type RecommendationCheckpoint struct {
 	// run no longer holds.
 	EligibleInsightIDs []string
 
+	// AnalysisGeneration identifies the analysis those insights came from,
+	// independently of the ids they carry: one entry per contributing area,
+	// naming the moment that area's analysis ran.
+	//
+	// EligibleInsightIDs alone cannot carry that meaning. The ids are the only
+	// handle a stored recommendation has on its insights, but a model-supplied
+	// id survives re-analysis — so "the same ids are eligible" does not imply
+	// "the same findings are eligible", and a recommendation reasoned over the
+	// content an area used to hold would be restored over the content that
+	// replaced it, keeping the validation verdict the old finding earned.
+	//
+	// See discovery.analysisGenerationFingerprint.
+	AnalysisGeneration []string
+
 	// RecVerdicts is one completion marker per recommendation already
 	// validated, keyed by the recommendation id as the checkpoint holds it.
 	// Same rule as AnalysisAreaDraft.InsightVerdicts: submitted documents

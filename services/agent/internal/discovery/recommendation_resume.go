@@ -61,7 +61,7 @@ type recommendationCheckpointStore interface {
 // a marker write is filtered on `attempt <= this attempt`, so with no row of
 // its own it can land on an earlier attempt's, where a reused model-supplied
 // id would overwrite a marker describing a different recommendation.
-func (o *Orchestrator) checkpointRecommendations(ctx context.Context, step *models.RecommendationStep, eligibleIDs []string) (bool, error) {
+func (o *Orchestrator) checkpointRecommendations(ctx context.Context, step *models.RecommendationStep, eligibleIDs, generation []string) (bool, error) {
 	if o.recommendationCheckpointRepo == nil || step == nil {
 		return false, nil
 	}
@@ -88,6 +88,7 @@ func (o *Orchestrator) checkpointRecommendations(ctx context.Context, step *mode
 		ExplorationAttempt: o.explorationSummaryAttempt,
 		Step:               *step,
 		EligibleInsightIDs: eligibleIDs,
+		AnalysisGeneration: generation,
 	})
 	if err != nil {
 		if errors.Is(err, database.ErrSupersededAttempt) {
@@ -343,8 +344,20 @@ func restorableRecommendations(
 	cp *models.RecommendationCheckpoint,
 	eligible []models.Insight,
 	liveByStored map[string]string,
+	generation []string,
 ) (*models.RecommendationCheckpoint, bool) {
 	if cp == nil {
+		return nil, false
+	}
+	// First, and independently of every id: were these recommendations
+	// reasoned over the analysis this attempt is holding? An id cannot answer
+	// that — a model-supplied one survives re-analysis — so the generation
+	// fingerprint is checked before anything that trusts an id.
+	if !sameAnalysisGeneration(cp.AnalysisGeneration, generation) {
+		applog.WithFields(applog.Fields{
+			"stored": cp.AnalysisGeneration,
+			"now":    generation,
+		}).Info("not restoring this run's stored recommendations: they were reasoned over a different analysis of at least one area")
 		return nil, false
 	}
 	if len(cp.EligibleInsightIDs) != len(eligible) {

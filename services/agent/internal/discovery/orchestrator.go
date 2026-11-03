@@ -1806,6 +1806,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// checkpoints, and the translation back. Both are the identity mapping on
 	// a run that restored nothing. See storedInsightIDs.
 	eligibleStoredIDs, liveByStored := storedInsightIDs(recommenderInput, storedIDByLive)
+	// And which ANALYSIS those insights came from, which is the half an id
+	// cannot carry. See analysisGenerationFingerprint.
+	analysisGeneration := analysisGenerationFingerprint(recommenderInput, analysisLog)
 
 	var recommendations []models.Recommendation
 	var recStep *models.RecommendationStep
@@ -1814,7 +1817,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// holding: take them, and pay only for the verdicts Phase 5.5 has not
 	// reached. The checkpoint is refused outright unless every insight it was
 	// reasoned from is still here — see restorableRecommendations.
-	restoredRecs, recsRestored := restorableRecommendations(o.loadRecommendationCheckpoint(ctx), recommenderInput, liveByStored)
+	restoredRecs, recsRestored := restorableRecommendations(o.loadRecommendationCheckpoint(ctx), recommenderInput, liveByStored, analysisGeneration)
 	recDetail := "Generating actionable recommendations..."
 	if recsRestored {
 		// Same purpose as the analysis phase's detail string: the live panel
@@ -1921,7 +1924,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// cited the live ids, and only the stored ones are stable across
 		// attempts. See recommendationStepInStoredIDs.
 		stored := recommendationStepInStoredIDs(*recStep, storedIDByLive)
-		landed, err := o.checkpointRecommendations(ctx, &stored, eligibleStoredIDs)
+		landed, err := o.checkpointRecommendations(ctx, &stored, eligibleStoredIDs, analysisGeneration)
 		if err != nil {
 			return nil, err
 		}

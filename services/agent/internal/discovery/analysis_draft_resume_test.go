@@ -940,7 +940,121 @@ func TestRecommendationGate_RefusesASetCoveringAReAnalysedArea(t *testing.T) {
 	eligible := []models.Insight{{ID: "live-1"}, {ID: "i2"}}
 	_, liveByStored := storedInsightIDs(eligible, map[string]string{"live-1": "i1"})
 
-	if _, ok := restorableRecommendations(cp, eligible, liveByStored); ok {
+	if _, ok := restorableRecommendations(cp, eligible, liveByStored, nil); ok {
 		t.Error("restored recommendations reasoned over a finding this attempt re-analysed; only a checkpoint can vouch for an id")
+	}
+}
+
+// TestStoredInsightIDs_VouchesForNeitherOfTwoInsightsSharingAStoredId is a
+// mistranslation regression.
+//
+// Separate areas can return the same model-supplied insight id, and restoring
+// them mints two distinct live ids — so one mapping entry under the shared
+// stored id would translate a citation, or a figure ref, to whichever of the
+// two happened to be written last, while the recommendation kept the
+// validation verdict it earned against the other.
+func TestStoredInsightIDs_VouchesForNeitherOfTwoInsightsSharingAStoredId(t *testing.T) {
+	insights := []models.Insight{
+		{ID: "live-a", AnalysisArea: "churn"},
+		{ID: "live-b", AnalysisArea: "revenue"},
+		{ID: "live-c", AnalysisArea: "retention"},
+	}
+	// Two areas handed back the same model id, so both restore from it.
+	storedByLive := map[string]string{
+		"live-a": "shared",
+		"live-b": "shared",
+		"live-c": "unique",
+	}
+	ids, liveByStored := storedInsightIDs(insights, storedByLive)
+
+	if len(ids) != 3 {
+		t.Fatalf("stored ids = %v, want one per eligible insight", ids)
+	}
+	if _, ok := liveByStored["shared"]; ok {
+		t.Error("vouched for an ambiguous stored id; a citation would be translated to whichever insight was written last")
+	}
+	if liveByStored["unique"] != "live-c" {
+		t.Error("dropped an unambiguous mapping alongside the ambiguous one")
+	}
+}
+
+// TestAnalysisGenerationFingerprint_ChangesWhenAnAreaIsReAnalysed is the root
+// fix for a family of findings that all reduced to one thing: an insight id
+// cannot say which analysis it came from, because a model-supplied id survives
+// re-analysis.
+//
+// The fingerprint names each contributing area and when its analysis ran — a
+// value carried verbatim through a restore and freshly set by a re-analysis —
+// so it distinguishes generations that the ids cannot.
+func TestAnalysisGenerationFingerprint_ChangesWhenAnAreaIsReAnalysed(t *testing.T) {
+	t1 := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
+	t2 := t1.Add(time.Hour)
+
+	eligible := []models.Insight{
+		{ID: "i1", AnalysisArea: "churn"},
+		{ID: "i2", AnalysisArea: "churn"}, // the same area counts once
+		{ID: "i3", AnalysisArea: "revenue"},
+	}
+	first := analysisGenerationFingerprint(eligible, []models.AnalysisStep{
+		{AreaID: "churn", RunAt: t1},
+		{AreaID: "revenue", RunAt: t1},
+		// An area that contributed no eligible insight is not part of it:
+		// the recommendations never saw it, and a failed area re-stamped on
+		// every attempt would otherwise refuse every restore.
+		{AreaID: "ignored", RunAt: t2, Error: "llm provider 503"},
+	})
+	if len(first) != 2 {
+		t.Fatalf("fingerprint = %v, want one entry per contributing area", first)
+	}
+
+	// Restoring both areas carries their RunAt verbatim, so the generation is
+	// the same and the recommendations stay restorable.
+	again := analysisGenerationFingerprint(eligible, []models.AnalysisStep{
+		{AreaID: "revenue", RunAt: t1},
+		{AreaID: "churn", RunAt: t1},
+	})
+	if !sameAnalysisGeneration(first, again) {
+		t.Errorf("a restored analysis changed its fingerprint (%v vs %v); the motivating case would never restore", first, again)
+	}
+
+	// Re-analysing one of them does change it, even though every id is the same.
+	reanalysed := analysisGenerationFingerprint(eligible, []models.AnalysisStep{
+		{AreaID: "churn", RunAt: t1},
+		{AreaID: "revenue", RunAt: t2},
+	})
+	if sameAnalysisGeneration(first, reanalysed) {
+		t.Error("a re-analysed area kept its fingerprint; recommendations would be restored over content that replaced what they were reasoned from")
+	}
+}
+
+// TestAnalysisGenerationFingerprint_SurvivesTheMillisecondBSONKeeps — the
+// stored RunAt comes back truncated to milliseconds, so the fingerprint has to
+// be computed at that precision on both sides or an attempt's own value would
+// never match the one the next attempt reads back.
+func TestAnalysisGenerationFingerprint_SurvivesTheMillisecondBSONKeeps(t *testing.T) {
+	inMemory := time.Date(2026, 3, 1, 10, 0, 0, 123_456_789, time.UTC)
+	readBack := inMemory.Truncate(time.Millisecond)
+
+	eligible := []models.Insight{{ID: "i1", AnalysisArea: "churn"}}
+	a := analysisGenerationFingerprint(eligible, []models.AnalysisStep{{AreaID: "churn", RunAt: inMemory}})
+	b := analysisGenerationFingerprint(eligible, []models.AnalysisStep{{AreaID: "churn", RunAt: readBack}})
+	if !sameAnalysisGeneration(a, b) {
+		t.Errorf("nanosecond and millisecond forms disagree (%v vs %v); no checkpoint would ever be restorable", a, b)
+	}
+}
+
+// TestSameAnalysisGeneration_EdgeCases
+func TestSameAnalysisGeneration_EdgeCases(t *testing.T) {
+	if !sameAnalysisGeneration(nil, nil) {
+		t.Error("two empty fingerprints should match — a run with no eligible insights has no generation")
+	}
+	if sameAnalysisGeneration([]string{"a@1"}, nil) {
+		t.Error("a fingerprint should not match an absent one")
+	}
+	if sameAnalysisGeneration([]string{"a@1"}, []string{"a@1", "b@1"}) {
+		t.Error("a shorter fingerprint matched a longer one")
+	}
+	if sameAnalysisGeneration([]string{"a@1"}, []string{"a@2"}) {
+		t.Error("different generations of one area matched")
 	}
 }

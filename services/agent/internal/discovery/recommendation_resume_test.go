@@ -148,7 +148,7 @@ func TestCheckpointRecommendations_DoesNotMarkAPhaseThatBankedNothing(t *testing
 				explorationSummaryAttempt:    1,
 				statusReporter:               reporterFor(newFakeRunDoc(), 1),
 			}
-			if _, err := o.checkpointRecommendations(ctx, tc.step, []string{"i1"}); err != nil {
+			if _, err := o.checkpointRecommendations(ctx, tc.step, []string{"i1"}, nil); err != nil {
 				t.Fatalf("want a quiet no-op, got %v", err)
 			}
 			if len(store.saved) != 0 {
@@ -173,7 +173,7 @@ func TestCheckpointRecommendations_RecordsACleanEmptyResult(t *testing.T) {
 	step.Status = statusRecommendationFiguresUnresolved
 	step.RecommendationsDroppedUnresolvedFigures = 3
 
-	if _, err := o.checkpointRecommendations(context.Background(), &step, []string{"i1"}); err != nil {
+	if _, err := o.checkpointRecommendations(context.Background(), &step, []string{"i1"}, nil); err != nil {
 		t.Fatalf("checkpointRecommendations: %v", err)
 	}
 	if len(store.saved) != 1 {
@@ -192,7 +192,7 @@ func TestCheckpointRecommendations_NoOpsAndOwnership(t *testing.T) {
 
 	t.Run("nil store", func(t *testing.T) {
 		o := &Orchestrator{runID: "r", explorationSummaryAttempt: 1}
-		if _, err := o.checkpointRecommendations(ctx, &step, nil); err != nil {
+		if _, err := o.checkpointRecommendations(ctx, &step, nil, nil); err != nil {
 			t.Fatalf("want a no-op, got %v", err)
 		}
 	})
@@ -203,7 +203,7 @@ func TestCheckpointRecommendations_NoOpsAndOwnership(t *testing.T) {
 			runID: "r", recommendationCheckpointRepo: store,
 			statusReporter: reporterFor(newFakeRunDoc(), 1),
 		}
-		if _, err := o.checkpointRecommendations(ctx, &step, nil); err != nil {
+		if _, err := o.checkpointRecommendations(ctx, &step, nil, nil); err != nil {
 			t.Fatalf("want a no-op, got %v", err)
 		}
 		if len(store.saved) != 0 {
@@ -220,7 +220,7 @@ func TestCheckpointRecommendations_NoOpsAndOwnership(t *testing.T) {
 			explorationSummaryAttempt: 1,
 			statusReporter:            reporterFor(doc, 2),
 		}
-		if _, err := o.checkpointRecommendations(ctx, &step, nil); !errors.Is(err, ai.ErrAttemptSuperseded) {
+		if _, err := o.checkpointRecommendations(ctx, &step, nil, nil); !errors.Is(err, ai.ErrAttemptSuperseded) {
 			t.Fatalf("want ai.ErrAttemptSuperseded, got %v", err)
 		}
 		if len(store.saved) != 0 {
@@ -235,7 +235,7 @@ func TestCheckpointRecommendations_NoOpsAndOwnership(t *testing.T) {
 			explorationSummaryAttempt: 1,
 			statusReporter:            reporterFor(newFakeRunDoc(), 1),
 		}
-		if _, err := o.checkpointRecommendations(ctx, &step, nil); !errors.Is(err, ai.ErrAttemptSuperseded) {
+		if _, err := o.checkpointRecommendations(ctx, &step, nil, nil); !errors.Is(err, ai.ErrAttemptSuperseded) {
 			t.Fatalf("want ai.ErrAttemptSuperseded, got %v", err)
 		}
 	})
@@ -247,7 +247,7 @@ func TestCheckpointRecommendations_NoOpsAndOwnership(t *testing.T) {
 			explorationSummaryAttempt: 1,
 			statusReporter:            reporterFor(newFakeRunDoc(), 1),
 		}
-		if _, err := o.checkpointRecommendations(ctx, &step, nil); err != nil {
+		if _, err := o.checkpointRecommendations(ctx, &step, nil, nil); err != nil {
 			t.Fatalf("a failed checkpoint must not abort the run, got %v", err)
 		}
 	})
@@ -266,7 +266,7 @@ func TestCheckpointRecommendations_StoresTheEligibleSetAndBothFences(t *testing.
 		statusReporter:               reporterFor(newFakeRunDoc(), 3),
 	}
 	step := recStepWith(rec("r1", "i1"), rec("r2", "i2"))
-	if _, err := o.checkpointRecommendations(context.Background(), &step, []string{"i1", "i2"}); err != nil {
+	if _, err := o.checkpointRecommendations(context.Background(), &step, []string{"i1", "i2"}, nil); err != nil {
 		t.Fatalf("checkpointRecommendations: %v", err)
 	}
 	got := store.saved[0]
@@ -331,7 +331,7 @@ func TestRestorableRecommendations_AcceptsAndTranslates(t *testing.T) {
 	eligible := []models.Insight{{ID: "live-1"}, {ID: "live-2"}}
 	liveByStored := map[string]string{"stored-1": "live-1", "stored-2": "live-2"}
 
-	got, ok := restorableRecommendations(cp, eligible, liveByStored)
+	got, ok := restorableRecommendations(cp, eligible, liveByStored, nil)
 	if !ok {
 		t.Fatal("refused a checkpoint whose every insight is still present")
 	}
@@ -371,7 +371,7 @@ func TestRestorableRecommendations_RefusesWhenTheInsightSetChanged(t *testing.T)
 	t.Run("a different number of eligible insights", func(t *testing.T) {
 		// One area was re-analysed, so it contributed different findings.
 		eligible := []models.Insight{{ID: "live-1"}}
-		if _, ok := restorableRecommendations(base(), eligible, map[string]string{"stored-1": "live-1"}); ok {
+		if _, ok := restorableRecommendations(base(), eligible, map[string]string{"stored-1": "live-1"}, nil); ok {
 			t.Error("restored recommendations reasoned over a different number of insights")
 		}
 	})
@@ -380,7 +380,7 @@ func TestRestorableRecommendations_RefusesWhenTheInsightSetChanged(t *testing.T)
 		// Same size, but one of this attempt's insights was analysed fresh —
 		// so no stored id maps onto it.
 		eligible := []models.Insight{{ID: "live-1"}, {ID: "fresh-2"}}
-		if _, ok := restorableRecommendations(base(), eligible, map[string]string{"stored-1": "live-1"}); ok {
+		if _, ok := restorableRecommendations(base(), eligible, map[string]string{"stored-1": "live-1"}, nil); ok {
 			t.Error("restored recommendations whose insight set is not the one this attempt has")
 		}
 	})
@@ -391,7 +391,7 @@ func TestRestorableRecommendations_RefusesWhenTheInsightSetChanged(t *testing.T)
 		// out of the recommender's input.
 		eligible := []models.Insight{{ID: "live-1"}, {ID: "live-3"}}
 		liveByStored := map[string]string{"stored-1": "live-1", "stored-2": "live-2"}
-		if _, ok := restorableRecommendations(base(), eligible, liveByStored); ok {
+		if _, ok := restorableRecommendations(base(), eligible, liveByStored, nil); ok {
 			t.Error("restored recommendations citing an insight the operator has excluded")
 		}
 	})
@@ -404,13 +404,13 @@ func TestRestorableRecommendations_RefusesWhenTheInsightSetChanged(t *testing.T)
 			EligibleInsightIDs: []string{"stored-1"},
 		}
 		eligible := []models.Insight{{ID: "live-1"}}
-		if _, ok := restorableRecommendations(cp, eligible, map[string]string{"stored-1": "live-1"}); ok {
+		if _, ok := restorableRecommendations(cp, eligible, map[string]string{"stored-1": "live-1"}, nil); ok {
 			t.Error("restored a recommendation citing an insight this attempt does not have — it would be fail-open backfilled or dropped downstream")
 		}
 	})
 
 	t.Run("nil checkpoint", func(t *testing.T) {
-		if _, ok := restorableRecommendations(nil, nil, nil); ok {
+		if _, ok := restorableRecommendations(nil, nil, nil, nil); ok {
 			t.Error("restored something from nothing")
 		}
 	})
@@ -424,7 +424,7 @@ func TestRestorableRecommendations_RefusesTheWholeSetOrNone(t *testing.T) {
 		Step:               recStepWith(rec("good", "stored-1"), rec("bad", "ghost")),
 		EligibleInsightIDs: []string{"stored-1"},
 	}
-	got, ok := restorableRecommendations(cp, []models.Insight{{ID: "live-1"}}, map[string]string{"stored-1": "live-1"})
+	got, ok := restorableRecommendations(cp, []models.Insight{{ID: "live-1"}}, map[string]string{"stored-1": "live-1"}, nil)
 	if ok || got != nil {
 		t.Fatal("accepted a set containing one untranslatable recommendation; it must be all or nothing")
 	}
@@ -439,7 +439,7 @@ func TestRestorableRecommendations_AcceptsARecommendationThatCitesNothing(t *tes
 		Step:               recStepWith(rec("r1")),
 		EligibleInsightIDs: []string{"stored-1"},
 	}
-	if _, ok := restorableRecommendations(cp, []models.Insight{{ID: "live-1"}}, map[string]string{"stored-1": "live-1"}); !ok {
+	if _, ok := restorableRecommendations(cp, []models.Insight{{ID: "live-1"}}, map[string]string{"stored-1": "live-1"}, nil); !ok {
 		t.Error("refused a checkpoint over a recommendation with no citations, which the generating attempt already adjudicated")
 	}
 }
@@ -728,7 +728,7 @@ func TestRecommendationCheckpoint_SurvivesTwoSuccessiveResumes(t *testing.T) {
 
 	// Attempt 3 restores the same area from the same untouched row: stored
 	// "a1" again, live "a3" this time.
-	got, ok := restorableRecommendations(cp, []models.Insight{{ID: "a3"}}, map[string]string{"a1": "a3"})
+	got, ok := restorableRecommendations(cp, []models.Insight{{ID: "a3"}}, map[string]string{"a1": "a3"}, nil)
 	if !ok {
 		t.Fatal("attempt 3 refused a checkpoint whose insight it is holding — the id spaces are still mixed")
 	}
@@ -843,7 +843,7 @@ func TestRestorableRecommendations_RefusesAnUntranslatableFigureRef(t *testing.T
 	}
 	cp := &models.RecommendationCheckpoint{Step: step, EligibleInsightIDs: []string{"stored-1"}}
 
-	if _, ok := restorableRecommendations(cp, []models.Insight{{ID: "live-1"}}, map[string]string{"stored-1": "live-1"}); ok {
+	if _, ok := restorableRecommendations(cp, []models.Insight{{ID: "live-1"}}, map[string]string{"stored-1": "live-1"}, nil); ok {
 		t.Error("restored a recommendation whose figure restates an insight this attempt does not have")
 	}
 }
@@ -856,7 +856,7 @@ func TestRestorableRecommendations_TranslatesFigureRefsOnTheAcceptPath(t *testin
 	}
 	cp := &models.RecommendationCheckpoint{Step: step, EligibleInsightIDs: []string{"stored-1"}}
 
-	got, ok := restorableRecommendations(cp, []models.Insight{{ID: "live-1"}}, map[string]string{"stored-1": "live-1"})
+	got, ok := restorableRecommendations(cp, []models.Insight{{ID: "live-1"}}, map[string]string{"stored-1": "live-1"}, nil)
 	if !ok {
 		t.Fatal("refused a checkpoint whose every reference resolves")
 	}
@@ -903,7 +903,7 @@ func TestCheckpointRecommendations_ReportsWhetherTheRowLanded(t *testing.T) {
 			explorationSummaryAttempt:    1,
 			statusReporter:               reporterFor(newFakeRunDoc(), 1),
 		}
-		got, err := o.checkpointRecommendations(ctx, &step, []string{"i1"})
+		got, err := o.checkpointRecommendations(ctx, &step, []string{"i1"}, nil)
 		if err != nil {
 			t.Fatalf("checkpointRecommendations: %v", err)
 		}
@@ -919,7 +919,7 @@ func TestCheckpointRecommendations_ReportsWhetherTheRowLanded(t *testing.T) {
 			explorationSummaryAttempt:    1,
 			statusReporter:               reporterFor(newFakeRunDoc(), 1),
 		}
-		got, err := o.checkpointRecommendations(ctx, &step, []string{"i1"})
+		got, err := o.checkpointRecommendations(ctx, &step, []string{"i1"}, nil)
 		if err != nil {
 			t.Fatalf("a failed checkpoint must not abort the run, got %v", err)
 		}
@@ -936,8 +936,41 @@ func TestCheckpointRecommendations_ReportsWhetherTheRowLanded(t *testing.T) {
 			statusReporter:               reporterFor(newFakeRunDoc(), 1),
 		}
 		failed := models.RecommendationStep{Error: "llm provider 503"}
-		if got, err := o.checkpointRecommendations(ctx, &failed, nil); err != nil || got {
+		if got, err := o.checkpointRecommendations(ctx, &failed, nil, nil); err != nil || got {
 			t.Errorf("got (%v, %v), want (false, nil)", got, err)
 		}
 	})
+}
+
+// TestRestorableRecommendations_RefusesADifferentAnalysisGeneration is the
+// regression the fingerprint exists for, in the shape that defeated every
+// id-based check: a re-analysis replaces the area's checkpoint, so a LATER
+// attempt sees a checkpoint-backed id matching a recommendation set reasoned
+// over the content that re-analysis replaced.
+func TestRestorableRecommendations_RefusesADifferentAnalysisGeneration(t *testing.T) {
+	cp := &models.RecommendationCheckpoint{
+		Step:               recStepWith(rec("r1", "stored-1")),
+		EligibleInsightIDs: []string{"stored-1"},
+		AnalysisGeneration: []string{"churn@1000"},
+	}
+	eligible := []models.Insight{{ID: "live-1", AnalysisArea: "churn"}}
+	liveByStored := map[string]string{"stored-1": "live-1"}
+
+	// Every id lines up — and the analysis behind them does not.
+	if _, ok := restorableRecommendations(cp, eligible, liveByStored, []string{"churn@2000"}); ok {
+		t.Error("restored recommendations reasoned over a different analysis of the same area")
+	}
+	// The same generation restores.
+	if _, ok := restorableRecommendations(cp, eligible, liveByStored, []string{"churn@1000"}); !ok {
+		t.Error("refused a checkpoint whose analysis generation matches")
+	}
+	// And a row written before the fingerprint existed carries none, so it is
+	// refused rather than trusted.
+	legacy := &models.RecommendationCheckpoint{
+		Step:               recStepWith(rec("r1", "stored-1")),
+		EligibleInsightIDs: []string{"stored-1"},
+	}
+	if _, ok := restorableRecommendations(legacy, eligible, liveByStored, []string{"churn@1000"}); ok {
+		t.Error("restored a checkpoint that cannot say which analysis it came from")
+	}
 }

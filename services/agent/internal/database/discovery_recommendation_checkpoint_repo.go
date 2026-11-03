@@ -87,6 +87,10 @@ type RecommendationCheckpointDoc struct {
 	// restore gate; see models.RecommendationCheckpoint.
 	EligibleInsightIDs []string `bson:"eligible_insight_ids"`
 
+	// AnalysisGeneration identifies the analysis those insights came from,
+	// independently of their ids. See models.RecommendationCheckpoint.
+	AnalysisGeneration []string `bson:"analysis_generation,omitempty"`
+
 	// RecVerdicts is one Phase 5.5 completion marker per recommendation
 	// already submitted to the verifier, keyed by the recommendation id as
 	// THIS document holds it. Written one field at a time by SaveRecVerdict
@@ -109,6 +113,7 @@ type RecommendationCheckpointInput struct {
 	ExplorationAttempt int
 	Step               models.RecommendationStep
 	EligibleInsightIDs []string
+	AnalysisGeneration []string
 }
 
 // RecommendationVerdictInput is one per-recommendation completion marker.
@@ -151,6 +156,7 @@ func (r *DiscoveryRecommendationCheckpointRepository) SaveDraft(ctx context.Cont
 		Attempt:            in.Attempt,
 		ExplorationAttempt: in.ExplorationAttempt,
 		EligibleInsightIDs: in.EligibleInsightIDs,
+		AnalysisGeneration: in.AnalysisGeneration,
 		CreatedAt:          time.Now(),
 		RecommendationStep: in.Step,
 	}
@@ -257,6 +263,7 @@ func (r *DiscoveryRecommendationCheckpointRepository) Load(ctx context.Context, 
 	return &models.RecommendationCheckpoint{
 		Step:               doc.RecommendationStep,
 		EligibleInsightIDs: doc.EligibleInsightIDs,
+		AnalysisGeneration: doc.AnalysisGeneration,
 		RecVerdicts:        doc.RecVerdicts,
 	}, nil
 }

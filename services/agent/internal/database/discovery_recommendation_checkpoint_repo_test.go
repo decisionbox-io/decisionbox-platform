@@ -37,7 +37,10 @@ func TestRecommendationCheckpointDocTagsAreDisjoint(t *testing.T) {
 		t.Error("RecommendationCheckpointDoc must supply run_id — the key of uq_run")
 	}
 	if !own["eligible_insight_ids"] {
-		t.Error("RecommendationCheckpointDoc must supply eligible_insight_ids — the restore gate")
+		t.Error("RecommendationCheckpointDoc must supply eligible_insight_ids — half the restore gate")
+	}
+	if !own["analysis_generation"] {
+		t.Error("RecommendationCheckpointDoc must supply analysis_generation — the half an insight id cannot carry")
 	}
 	if !own["rec_verdicts"] {
 		t.Error("RecommendationCheckpointDoc must supply rec_verdicts — the per-recommendation completion markers")

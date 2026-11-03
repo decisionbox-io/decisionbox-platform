@@ -16,6 +16,9 @@ package discovery
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sort"
+	"time"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
@@ -397,6 +400,7 @@ func restoredDraftBudget(drafts map[string]models.AnalysisAreaDraft) int {
 func storedInsightIDs(insights []models.Insight, storedByLive map[string]string) ([]string, map[string]string) {
 	ids := make([]string, 0, len(insights))
 	liveByStored := make(map[string]string, len(insights))
+	ambiguous := make(map[string]bool)
 	for i := range insights {
 		live := insights[i].ID
 		if live == "" {
@@ -411,7 +415,71 @@ func storedInsightIDs(insights []models.Insight, storedByLive map[string]string)
 			continue
 		}
 		ids = append(ids, stored)
+		if _, seen := liveByStored[stored]; seen || ambiguous[stored] {
+			// Two eligible insights under one stored id. Separate areas can
+			// return the same model-supplied id, and restoring them mints two
+			// distinct live ids — so a single mapping entry would translate a
+			// citation to whichever of them happened to be written last.
+			// Vouching for neither is the only answer that cannot mistranslate.
+			delete(liveByStored, stored)
+			ambiguous[stored] = true
+			continue
+		}
 		liveByStored[stored] = live
 	}
 	return ids, liveByStored
+}
+
+// analysisGenerationFingerprint identifies the analysis a set of eligible
+// insights came from, independently of the ids those insights carry.
+//
+// It exists because an insight id cannot carry that meaning. The ids are the
+// only handle a stored recommendation has on its insights, but a model-supplied
+// id survives re-analysis, so "the same ids are eligible" does not imply "the
+// same findings are eligible" — and the gap is reachable in both directions:
+// an area re-analysed on THIS attempt (whose checkpoint expired or could not
+// be read) may hand back ids a previous attempt used for different content,
+// and once that re-analysis has replaced the area's checkpoint, a LATER
+// attempt restoring it sees a checkpoint-backed id that matches a
+// recommendation set reasoned over the content it replaced.
+//
+// Each contributing area's analysis RunAt is what distinguishes one generation
+// from another: it is stamped when the analysis step is built, carried verbatim
+// through a restore, and freshly set by a re-analysis. Rendered as a sorted
+// list of "area@millis" rather than a map so the stored shape needs no
+// assumption about area ids being legal field names, and truncated to
+// milliseconds because that is the precision BSON keeps — without it an
+// attempt's in-memory value would never match the value the next attempt reads
+// back.
+func analysisGenerationFingerprint(eligible []models.Insight, analysisLog []models.AnalysisStep) []string {
+	runAt := make(map[string]time.Time, len(analysisLog))
+	for i := range analysisLog {
+		runAt[analysisLog[i].AreaID] = analysisLog[i].RunAt
+	}
+	seen := make(map[string]bool, len(eligible))
+	out := make([]string, 0, len(eligible))
+	for i := range eligible {
+		area := eligible[i].AnalysisArea
+		if seen[area] {
+			continue
+		}
+		seen[area] = true
+		out = append(out, fmt.Sprintf("%s@%d", area, runAt[area].Truncate(time.Millisecond).UnixMilli()))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// sameAnalysisGeneration compares two fingerprints. Both are sorted, so this
+// is an element-wise comparison.
+func sameAnalysisGeneration(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

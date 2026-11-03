@@ -94,6 +94,7 @@ func TestInteg_RecommendationCheckpoint_RoundTripKeepsThePhaseWhole(t *testing.T
 	if err := repo.SaveDraft(ctx, RecommendationCheckpointInput{
 		ProjectID: "p1", RunID: "run-1", Attempt: 1, ExplorationAttempt: 1,
 		Step: in, EligibleInsightIDs: []string{"insight-1", "insight-2"},
+		AnalysisGeneration: []string{"churn@1700000000000", "revenue@1700000000001"},
 	}); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
@@ -106,7 +107,14 @@ func TestInteg_RecommendationCheckpoint_RoundTripKeepsThePhaseWhole(t *testing.T
 		t.Fatal("nothing came back")
 	}
 	if len(cp.EligibleInsightIDs) != 2 {
-		t.Fatalf("eligible ids = %v, want 2 — they are the restore gate", cp.EligibleInsightIDs)
+		t.Fatalf("eligible ids = %v, want 2 — they are half the restore gate", cp.EligibleInsightIDs)
+	}
+	// The other half, and the one an id cannot carry: which analysis those
+	// insights came from. Lost, every restore would trust a model-supplied id.
+	if len(cp.AnalysisGeneration) != 2 ||
+		cp.AnalysisGeneration[0] != "churn@1700000000000" ||
+		cp.AnalysisGeneration[1] != "revenue@1700000000001" {
+		t.Errorf("analysis generation = %v, want it round-tripped verbatim", cp.AnalysisGeneration)
 	}
 	s := cp.Step
 	if s.Prompt != in.Prompt || s.Response != in.Response {
