@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
@@ -733,5 +734,155 @@ func TestRecommendationCheckpoint_SurvivesTwoSuccessiveResumes(t *testing.T) {
 	}
 	if got.Step.Recommendations[0].RelatedInsightIDs[0] != "a3" {
 		t.Errorf("citation = %q, want this attempt's live id a3", got.Step.Recommendations[0].RelatedInsightIDs[0])
+	}
+}
+
+// TestTranslateRecommendationInsightIDs_CoversFigureRefsNotJustCitations is
+// the regression for the second place a recommendation names an insight.
+//
+// A recommendation's figures are its one grammar for numbers, and each ref
+// names the insight whose figure it restates — the same id space
+// related_insight_ids uses. Translating only the citations left the figure
+// evidence pointing at the previous attempt's insights, so the result shipped
+// provenance naming documents its own discovery did not contain, with the
+// original verdicts still attached.
+func TestTranslateRecommendationInsightIDs_CoversFigureRefsNotJustCitations(t *testing.T) {
+	in := []models.Recommendation{
+		{
+			ID:                "r1",
+			RelatedInsightIDs: []string{"stored-1"},
+			Figures: []commonmodels.Figure{
+				{ID: "f1", Refs: []commonmodels.FigureRef{
+					{Insight: "stored-1", Figure: "f3"},
+					{Insight: "stored-2", Figure: "f1"},
+				}},
+				{ID: "f2"}, // no refs
+			},
+		},
+		{ID: "r2"}, // no citations, no figures
+	}
+	to := map[string]string{"stored-1": "live-1", "stored-2": "live-2"}
+
+	out, missing := translateRecommendationInsightIDs(in, to)
+	if len(missing) != 0 {
+		t.Fatalf("missing = %v, want none", missing)
+	}
+	if out[0].RelatedInsightIDs[0] != "live-1" {
+		t.Errorf("citation = %q, want live-1", out[0].RelatedInsightIDs[0])
+	}
+	refs := out[0].Figures[0].Refs
+	if refs[0].Insight != "live-1" || refs[1].Insight != "live-2" {
+		t.Errorf("figure refs = %q/%q, want live-1/live-2", refs[0].Insight, refs[1].Insight)
+	}
+	if refs[0].Figure != "f3" {
+		t.Error("rewrote the figure id within the insight; only the insight id is translated")
+	}
+
+	// Deep copy: nothing the caller handed over may be touched. A shallow
+	// copy of the recommendation shares the Figures array, and a copy of a
+	// Figure shares its Refs array.
+	if in[0].RelatedInsightIDs[0] != "stored-1" {
+		t.Error("rewrote the input's citations in place")
+	}
+	if in[0].Figures[0].Refs[0].Insight != "stored-1" {
+		t.Error("rewrote the input's figure refs in place — a later attempt would translate from a moved baseline")
+	}
+}
+
+// TestTranslateRecommendationInsightIDs_ReportsWhatItCouldNotTranslate — the
+// signal the restore gate refuses on.
+func TestTranslateRecommendationInsightIDs_ReportsWhatItCouldNotTranslate(t *testing.T) {
+	in := []models.Recommendation{{
+		ID:                "r1",
+		RelatedInsightIDs: []string{"known", "ghost-cite"},
+		Figures: []commonmodels.Figure{{ID: "f1", Refs: []commonmodels.FigureRef{
+			{Insight: "ghost-ref"},
+			{Insight: ""}, // an empty ref names nothing and is left alone
+		}}},
+	}}
+	_, missing := translateRecommendationInsightIDs(in, map[string]string{"known": "live"})
+
+	got := map[string]bool{}
+	for _, id := range missing {
+		got[id] = true
+	}
+	if !got["ghost-cite"] || !got["ghost-ref"] {
+		t.Errorf("missing = %v, want both the untranslatable citation and the untranslatable figure ref", missing)
+	}
+	if got[""] {
+		t.Error("reported an empty ref as missing")
+	}
+}
+
+// TestTranslateRecommendationInsightIDs_IdentityOnAnEmptyMapping — a run that
+// restored nothing names the ids its own checkpoints hold, so an empty
+// mapping must pass every id through and report nothing missing.
+func TestTranslateRecommendationInsightIDs_IdentityOnAnEmptyMapping(t *testing.T) {
+	in := []models.Recommendation{{
+		ID:                "r1",
+		RelatedInsightIDs: []string{"a"},
+		Figures:           []commonmodels.Figure{{ID: "f1", Refs: []commonmodels.FigureRef{{Insight: "b"}}}},
+	}}
+	out, missing := translateRecommendationInsightIDs(in, nil)
+	if len(missing) != 0 {
+		t.Fatalf("missing = %v, want none on the identity mapping", missing)
+	}
+	if out[0].RelatedInsightIDs[0] != "a" || out[0].Figures[0].Refs[0].Insight != "b" {
+		t.Error("the identity mapping changed an id")
+	}
+}
+
+// TestRestorableRecommendations_RefusesAnUntranslatableFigureRef — a figure
+// ref that cannot be translated is exactly as broken as a citation that
+// cannot: its `holds` verdict would vouch for evidence the result does not
+// contain, so the whole checkpoint is refused.
+func TestRestorableRecommendations_RefusesAnUntranslatableFigureRef(t *testing.T) {
+	step := recStepWith(rec("r1", "stored-1"))
+	step.Recommendations[0].Figures = []commonmodels.Figure{
+		{ID: "f1", Refs: []commonmodels.FigureRef{{Insight: "a-dropped-insight", Figure: "f2"}}},
+	}
+	cp := &models.RecommendationCheckpoint{Step: step, EligibleInsightIDs: []string{"stored-1"}}
+
+	if _, ok := restorableRecommendations(cp, []models.Insight{{ID: "live-1"}}, map[string]string{"stored-1": "live-1"}); ok {
+		t.Error("restored a recommendation whose figure restates an insight this attempt does not have")
+	}
+}
+
+// TestRestorableRecommendations_TranslatesFigureRefsOnTheAcceptPath
+func TestRestorableRecommendations_TranslatesFigureRefsOnTheAcceptPath(t *testing.T) {
+	step := recStepWith(rec("r1", "stored-1"))
+	step.Recommendations[0].Figures = []commonmodels.Figure{
+		{ID: "f1", Refs: []commonmodels.FigureRef{{Insight: "stored-1", Figure: "f2"}}},
+	}
+	cp := &models.RecommendationCheckpoint{Step: step, EligibleInsightIDs: []string{"stored-1"}}
+
+	got, ok := restorableRecommendations(cp, []models.Insight{{ID: "live-1"}}, map[string]string{"stored-1": "live-1"})
+	if !ok {
+		t.Fatal("refused a checkpoint whose every reference resolves")
+	}
+	if ref := got.Step.Recommendations[0].Figures[0].Refs[0].Insight; ref != "live-1" {
+		t.Errorf("figure ref = %q, want this attempt's live-1", ref)
+	}
+	// And the loaded row keeps its own baseline.
+	if cp.Step.Recommendations[0].Figures[0].Refs[0].Insight != "stored-1" {
+		t.Error("mutated the loaded checkpoint's figure refs")
+	}
+}
+
+// TestRecommendationStepInStoredIDs_NormalizesFigureRefsToo — the other
+// direction: what gets written has to be in one id space throughout, or the
+// next resume refuses it.
+func TestRecommendationStepInStoredIDs_NormalizesFigureRefsToo(t *testing.T) {
+	step := recStepWith(rec("r1", "live-1"))
+	step.Recommendations[0].Figures = []commonmodels.Figure{
+		{ID: "f1", Refs: []commonmodels.FigureRef{{Insight: "live-1", Figure: "f2"}}},
+	}
+	got := recommendationStepInStoredIDs(step, map[string]string{"live-1": "attempt1-id-1"})
+
+	if ref := got.Recommendations[0].Figures[0].Refs[0].Insight; ref != "attempt1-id-1" {
+		t.Errorf("stored figure ref = %q, want the checkpoint's id", ref)
+	}
+	if step.Recommendations[0].Figures[0].Refs[0].Insight != "live-1" {
+		t.Error("rewrote the live recommendation's figure refs; the result would cite ids it does not contain")
 	}
 }

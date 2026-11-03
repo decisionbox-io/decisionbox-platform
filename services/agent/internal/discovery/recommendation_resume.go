@@ -15,6 +15,8 @@ import (
 
 	"github.com/google/uuid"
 
+	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
@@ -96,6 +98,84 @@ func (o *Orchestrator) checkpointRecommendations(ctx context.Context, step *mode
 	return nil
 }
 
+// translateRecommendationInsightIDs rewrites every insight id a slice of
+// recommendations names, through `to`, onto a deep copy — and reports a ref it
+// could not translate rather than leaving it pointing at the wrong document.
+//
+// A recommendation names insights in TWO places, and missing the second one is
+// subtle because it is still persisted and still carries a verdict.
+// RelatedInsightIDs is the citation list everything downstream resolves; but a
+// recommendation's figures are the one grammar it has for numbers, and each
+// ref names the insight whose figure it restates (models.FigureRef.Insight —
+// "the same id related_insight_ids carries"). Left in the previous attempt's
+// id space, the result ships figure evidence naming insights its own discovery
+// does not contain, with the original `holds` verdicts still attached, so the
+// provenance reads as checked when nothing in the result can be checked
+// against it.
+//
+// Deep copies down to each figure's own Refs slice: a shallow copy of the
+// recommendation shares the Figures array, and a copy of a Figure shares its
+// Refs array, so rewriting either in place would reach back into whatever the
+// caller handed over — this attempt's live recommendations in one direction,
+// the loaded checkpoint in the other.
+//
+// `missing` is left empty when `to` is nil or empty, which is the identity
+// case: a run that restored nothing names the ids its own checkpoints hold.
+func translateRecommendationInsightIDs(recs []models.Recommendation, to map[string]string) (out []models.Recommendation, missing []string) {
+	out = make([]models.Recommendation, len(recs))
+	copy(out, recs)
+	identity := len(to) == 0
+
+	translate := func(id string) (string, bool) {
+		if identity {
+			return id, true
+		}
+		if mapped, ok := to[id]; ok && mapped != "" {
+			return mapped, true
+		}
+		return id, false
+	}
+
+	for i := range out {
+		if len(out[i].RelatedInsightIDs) > 0 {
+			ids := make([]string, len(out[i].RelatedInsightIDs))
+			for j, id := range out[i].RelatedInsightIDs {
+				mapped, ok := translate(id)
+				if !ok {
+					missing = append(missing, id)
+				}
+				ids[j] = mapped
+			}
+			out[i].RelatedInsightIDs = ids
+		}
+		if len(out[i].Figures) == 0 {
+			continue
+		}
+		figures := make([]commonmodels.Figure, len(out[i].Figures))
+		copy(figures, out[i].Figures)
+		for j := range figures {
+			if len(figures[j].Refs) == 0 {
+				continue
+			}
+			refs := make([]commonmodels.FigureRef, len(figures[j].Refs))
+			copy(refs, figures[j].Refs)
+			for k := range refs {
+				if refs[k].Insight == "" {
+					continue
+				}
+				mapped, ok := translate(refs[k].Insight)
+				if !ok {
+					missing = append(missing, refs[k].Insight)
+				}
+				refs[k].Insight = mapped
+			}
+			figures[j].Refs = refs
+		}
+		out[i].Figures = figures
+	}
+	return out, missing
+}
+
 // recommendationStepInStoredIDs returns a copy of a finished Phase 5 whose
 // insight citations are expressed in the ids the run's analysis checkpoints
 // hold, rather than in this attempt's live ids.
@@ -115,24 +195,12 @@ func recommendationStepInStoredIDs(step models.RecommendationStep, storedByLive 
 	if len(storedByLive) == 0 || len(step.Recommendations) == 0 {
 		return step
 	}
-	recs := make([]models.Recommendation, len(step.Recommendations))
-	copy(recs, step.Recommendations)
-	for i := range recs {
-		if len(recs[i].RelatedInsightIDs) == 0 {
-			continue
-		}
-		ids := make([]string, len(recs[i].RelatedInsightIDs))
-		for j, live := range recs[i].RelatedInsightIDs {
-			if stored, ok := storedByLive[live]; ok && stored != "" {
-				ids[j] = stored
-				continue
-			}
-			// An insight this attempt analysed itself: its live id IS the id
-			// its checkpoint holds.
-			ids[j] = live
-		}
-		recs[i].RelatedInsightIDs = ids
-	}
+	// An id this attempt analysed itself is absent from storedByLive, and its
+	// live id IS the id its checkpoint holds — so an untranslated id is
+	// correct here and the missing list is deliberately ignored. It only
+	// means something in the other direction, where a stored id with no live
+	// counterpart is an insight this attempt does not have.
+	recs, _ := translateRecommendationInsightIDs(step.Recommendations, storedByLive)
 	step.Recommendations = recs
 	return step
 }
@@ -293,29 +361,41 @@ func restorableRecommendations(
 		}
 	}
 
-	// Translate every citation before accepting the set, so a checkpoint is
-	// either wholly usable or wholly refused. A copy, because the loaded
-	// document must keep its own ids: a later attempt translates from the same
-	// baseline.
-	recs := make([]models.Recommendation, len(cp.Step.Recommendations))
-	copy(recs, cp.Step.Recommendations)
+	// Translate every insight a recommendation names — its citations AND its
+	// figure refs — before accepting the set, so a checkpoint is either wholly
+	// usable or wholly refused. A deep copy, because the loaded document must
+	// keep its own ids: a later attempt translates from the same baseline.
+	recs, missing := translateRecommendationInsightIDs(cp.Step.Recommendations, liveByStored)
+	if len(missing) > 0 {
+		applog.WithFields(applog.Fields{
+			"insight": missing[0],
+			"count":   len(missing),
+		}).Info("not restoring this run's stored recommendations: one names an insight this attempt does not have")
+		return nil, false
+	}
+	// And every translated id has to land on an insight that is still
+	// eligible, not merely on one this run produced.
 	for i := range recs {
-		if len(recs[i].RelatedInsightIDs) == 0 {
-			continue
-		}
-		translated := make([]string, 0, len(recs[i].RelatedInsightIDs))
-		for _, stored := range recs[i].RelatedInsightIDs {
-			fresh, ok := liveByStored[stored]
-			if !ok || !live[fresh] {
+		for _, id := range recs[i].RelatedInsightIDs {
+			if !live[id] {
 				applog.WithFields(applog.Fields{
 					"recommendation": recs[i].ID,
-					"insight":        stored,
-				}).Info("not restoring this run's stored recommendations: one cites an insight this attempt does not have")
+					"insight":        id,
+				}).Info("not restoring this run's stored recommendations: one cites an insight that is no longer eligible")
 				return nil, false
 			}
-			translated = append(translated, fresh)
 		}
-		recs[i].RelatedInsightIDs = translated
+		for _, f := range recs[i].Figures {
+			for _, ref := range f.Refs {
+				if ref.Insight != "" && !live[ref.Insight] {
+					applog.WithFields(applog.Fields{
+						"recommendation": recs[i].ID,
+						"insight":        ref.Insight,
+					}).Info("not restoring this run's stored recommendations: one restates a figure from an insight that is no longer eligible")
+					return nil, false
+				}
+			}
+		}
 	}
 
 	out := *cp
