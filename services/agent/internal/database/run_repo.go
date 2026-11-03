@@ -552,7 +552,7 @@ func pauseIsHonourable(requestedAt, deadlineAt *time.Time, requestedAttempt, cur
 // the reason the API's FailAttempt gives for doing the same — BeginResume
 // clears the scalar fields on the next resume, so the appended event is the
 // only record of this pause that survives it.
-func (r *RunRepository) Pause(ctx context.Context, runID string, attempt int, reason string, activeMs int64) (bool, error) {
+func (r *RunRepository) Pause(ctx context.Context, runID string, attempt int, reason string, activeMs int64, llmProvider, llmModel string) (bool, error) {
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {
 		return false, fmt.Errorf("invalid run ID: %w", err)
@@ -581,11 +581,20 @@ func (r *RunRepository) Pause(ctx context.Context, runID string, attempt int, re
 			"pause_requested_attempt": "",
 			"pause_deadline_at":       "",
 		},
+		// Provenance travels with the event, as it does on the terminal ones
+		// recordAttemptOutcome writes. A paused attempt never reaches that
+		// function — it returns before the persistence tail — so without this
+		// the one attempt whose model is MOST likely to differ from its
+		// neighbours' records none: an operator who pauses a run, changes its
+		// model and resumes is exactly the case "which model ran which
+		// attempt" exists to answer.
 		"$push": bson.M{"lifecycle": models.RunLifecycleEvent{
-			Status:  models.RunStatusPaused,
-			At:      now,
-			Reason:  detail,
-			Attempt: attempt,
+			Status:      models.RunStatusPaused,
+			At:          now,
+			Reason:      detail,
+			Attempt:     attempt,
+			LLMProvider: llmProvider,
+			LLMModel:    llmModel,
 		}},
 	}
 	// This attempt's compute, booked in the SAME fenced update as the status.

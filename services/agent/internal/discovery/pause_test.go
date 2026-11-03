@@ -9,6 +9,7 @@ package discovery
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -137,7 +138,7 @@ func TestStatusReporterPause_ReportsApplicationAndErrorSeparately(t *testing.T) 
 	t.Run("applied", func(t *testing.T) {
 		doc := newFakeRunDoc()
 		r := reporterFor(doc, 2)
-		applied, err := r.Pause(ctx, "Paused after exploration step 7 — resume to continue", 90*time.Second)
+		applied, err := r.Pause(ctx, "Paused after exploration step 7 — resume to continue", 90*time.Second, "bedrock", "claude-sonnet-4-6")
 		if err != nil || !applied {
 			t.Fatalf("Pause() = (%v, %v), want (true, nil)", applied, err)
 		}
@@ -164,7 +165,7 @@ func TestStatusReporterPause_ReportsApplicationAndErrorSeparately(t *testing.T) 
 		doc := newFakeRunDoc()
 		doc.pauseApplied = false
 		r := reporterFor(doc, 1)
-		applied, err := r.Pause(ctx, "whatever", time.Minute)
+		applied, err := r.Pause(ctx, "whatever", time.Minute, "bedrock", "m")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -177,14 +178,14 @@ func TestStatusReporterPause_ReportsApplicationAndErrorSeparately(t *testing.T) 
 		doc := newFakeRunDoc()
 		doc.pauseErr = errors.New("mongo is down")
 		r := reporterFor(doc, 1)
-		if _, err := r.Pause(ctx, "whatever", time.Minute); err == nil {
+		if _, err := r.Pause(ctx, "whatever", time.Minute, "bedrock", "m"); err == nil {
 			t.Fatal("a failed pause write reported no error; the caller would exit 0 and strand the run as running with no agent")
 		}
 	})
 
 	t.Run("no run document — nothing to pause", func(t *testing.T) {
 		r := newStatusReporter(nil, nil, "proj", "", 100)
-		applied, err := r.Pause(ctx, "whatever", time.Minute)
+		applied, err := r.Pause(ctx, "whatever", time.Minute, "bedrock", "m")
 		if applied || err != nil {
 			t.Errorf("Pause() = (%v, %v) with reporting disabled, want (false, nil)", applied, err)
 		}
@@ -445,6 +446,10 @@ func TestFenceReplayedStep_PausesWithoutWritingRows(t *testing.T) {
 		checkpointRepo:   store,
 		attemptStartedAt: time.Now(),
 	}
+	// A replay always has a prefix — that is what it is replaying — so the
+	// contiguity this attempt inherited is where it starts. Without it the
+	// shared guard would (correctly) refuse to pause.
+	o.contiguousCheckpointThrough = 3
 
 	err := o.fenceReplayedStep(context.Background(), 3)
 	if !errors.Is(err, ai.ErrPauseRequested) {
@@ -507,6 +512,11 @@ func TestCheckpointAnalysisArea_PauseStopsAFTERTheAreaIsDurable(t *testing.T) {
 			explorationSummaryAttempt: 1,
 			attemptStartedAt:          time.Now(),
 		}
+		// An attempt that reached analysis explored its way there, so it has
+		// a contiguous prefix behind it. The shared guard needs that: a run
+		// whose step-1 write failed is not resumable even with a summary,
+		// because ResumeRun refuses an empty prefix.
+		o.contiguousCheckpointThrough = 12
 
 		err := o.checkpointAnalysisArea(ctx, models.AnalysisStep{AreaID: "churn"}, 4)
 		if !errors.Is(err, ai.ErrPauseRequested) {
@@ -808,5 +818,90 @@ func TestCheckpointStep_PausesOnceTheFirstStepLands(t *testing.T) {
 	err := o.checkpointStep(context.Background(), models.ExplorationStep{Step: 1}, models.CheckpointArgs{})
 	if !errors.Is(err, ai.ErrPauseRequested) {
 		t.Fatalf("checkpointStep() = %v, want ErrPauseRequested — step 1 is a replayable prefix of one", err)
+	}
+}
+
+// TestPauseSignalIfResumable_IsTheOneGateEverySeamUses is the structural
+// assertion behind three rounds of the same finding.
+//
+// Reviews found the replayability precondition missing at the phase gates,
+// then at the exploration step seam, then at the completed-analysis-area
+// seam — the same bug three times, because the decision was duplicated per
+// seam. It now lives in one function; this pins that every seam routes
+// through it, so a fourth seam cannot quietly reintroduce the class.
+func TestPauseSignalIfResumable_IsTheOneGateEverySeamUses(t *testing.T) {
+	src := func(f string) string {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		return string(b)
+	}
+	resume := src("orchestrator_resume.go")
+	analysis := src("analysis_resume.go")
+
+	// Every seam asks the shared helper.
+	for _, want := range []string{
+		`o.pauseSignalIfResumable(fmt.Sprintf("exploration step %d", step.Step))`,
+		`o.pauseSignalIfResumable(fmt.Sprintf("replay of step %d", step))`,
+	} {
+		if !strings.Contains(resume, want) {
+			t.Errorf("orchestrator_resume.go does not route through the shared pause guard: %s", want)
+		}
+	}
+	if !strings.Contains(analysis, `o.pauseSignalIfResumable("analysis area " + step.AreaID)`) {
+		t.Error("the analysis seam does not route through the shared pause guard")
+	}
+	// And no SEAM returns the sentinel directly, which is how the class got
+	// in three times. Scoped to the seam functions on purpose:
+	// pauseSignalIfResumable and pauseAttempt own the sentinel and return it
+	// by design, so a file-wide check would forbid the very thing it is
+	// asking for.
+	body := func(src, fn string) string {
+		start := strings.Index(src, "func (o *Orchestrator) "+fn+"(")
+		if start < 0 {
+			t.Fatalf("cannot find %s", fn)
+		}
+		rest := src[start:]
+		if end := strings.Index(rest, "\n}\n"); end >= 0 {
+			return rest[:end]
+		}
+		return rest
+	}
+	for _, seam := range []struct{ src, fn string }{
+		{resume, "checkpointStep"},
+		{resume, "fenceReplayedStep"},
+		{analysis, "checkpointAnalysisArea"},
+	} {
+		for _, line := range strings.Split(body(seam.src, seam.fn), "\n") {
+			if strings.TrimSpace(line) == "return ai.ErrPauseRequested" {
+				t.Errorf("%s returns ai.ErrPauseRequested directly; it must go through pauseSignalIfResumable, or a run with a checkpoint gap can be paused into an unresumable state", seam.fn)
+			}
+		}
+	}
+}
+
+// TestPauseEventCarriesModelProvenance — a paused attempt never reaches
+// recordAttemptOutcome, which is where the terminal events get their
+// provider/model. So the pause event is the only record of which model ran
+// the attempt, and the case that matters is an operator who pauses, changes
+// the model, and resumes.
+func TestPauseEventCarriesModelProvenance(t *testing.T) {
+	doc := newFakeRunDoc()
+	o := &Orchestrator{
+		runID: "run-1", statusReporter: reporterFor(doc, 2),
+		attemptStartedAt: time.Now(),
+		llmProvider:      "bedrock",
+		llmModel:         "us.anthropic.claude-sonnet-4-6",
+	}
+
+	if err := o.pauseAttempt(context.Background(), "detail"); !errors.Is(err, ai.ErrPauseRequested) {
+		t.Fatalf("pauseAttempt() = %v, want ErrPauseRequested", err)
+	}
+	if len(doc.pauseProvenance) != 1 {
+		t.Fatalf("pause writes = %d, want 1", len(doc.pauseProvenance))
+	}
+	if doc.pauseProvenance[0] != "bedrock/us.anthropic.claude-sonnet-4-6" {
+		t.Errorf("provenance = %q, want the attempt's provider/model", doc.pauseProvenance[0])
 	}
 }

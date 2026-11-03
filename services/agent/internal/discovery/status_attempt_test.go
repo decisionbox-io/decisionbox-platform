@@ -42,6 +42,10 @@ type fakeRunDoc struct {
 	// the status, so there is no window for a resume to orphan it.
 	pauses        []string
 	pauseActiveMs []int64
+	// pauseProvenance records the provider/model each pause event carried.
+	// A paused attempt never reaches recordAttemptOutcome, so this event is
+	// the only place its model is recorded.
+	pauseProvenance []string
 	// writeErr fails every write, which is how a Mongo hiccup reaches the
 	// reporter. None of them may take the run down with them.
 	writeErr error
@@ -99,10 +103,11 @@ func (f *fakeRunDoc) Ownership(_ context.Context, _ string, attempt int) (databa
 	}
 	return database.RunOwnedByThisAttempt, nil
 }
-func (f *fakeRunDoc) Pause(_ context.Context, _ string, attempt int, reason string, activeMs int64) (bool, error) {
+func (f *fakeRunDoc) Pause(_ context.Context, _ string, attempt int, reason string, activeMs int64, llmProvider, llmModel string) (bool, error) {
 	f.attempts = append(f.attempts, attempt)
 	f.pauses = append(f.pauses, reason)
 	f.pauseActiveMs = append(f.pauseActiveMs, activeMs)
+	f.pauseProvenance = append(f.pauseProvenance, llmProvider+"/"+llmModel)
 	if f.pauseErr != nil {
 		return false, f.pauseErr
 	}

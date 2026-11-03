@@ -203,27 +203,7 @@ func (o *Orchestrator) checkpointStep(ctx context.Context, step models.Explorati
 	// accounting and the orchestrator take the stop afterwards, once nothing
 	// further will write.
 	if pauseRequested {
-		// The same replayability precondition stopBefore applies, and it has
-		// to be repeated here rather than relied on there: this seam is
-		// reached directly from the engine, so the gate never sees it.
-		//
-		// The case it catches is the one the counter above exists for. Step
-		// 1's write failing and step 2's landing leaves a row and a GAP, so
-		// the counter has not advanced and LoadPrefix would find nothing to
-		// replay — signalling a pause on that would have the orchestrator
-		// write `paused` for a run the resume endpoint then refuses, which is
-		// a working run stranded with no way out but cancel.
-		//
-		// Carrying on is right rather than conservative: the request stands,
-		// and the next step whose write lands contiguously honours it.
-		if !o.hasResumePoint() {
-			applog.WithFields(applog.Fields{
-				"run_id": o.runID, "step": step.Step,
-				"contiguous_through": o.contiguousCheckpointThrough,
-			}).Warn("an operator asked for a pause, but an earlier checkpoint write left a gap, so there is nothing a resume could replay yet; continuing until the prefix is unbroken")
-			return nil
-		}
-		return ai.ErrPauseRequested
+		return o.pauseSignalIfResumable(fmt.Sprintf("exploration step %d", step.Step))
 	}
 	return nil
 }
@@ -269,7 +249,7 @@ func (o *Orchestrator) fenceReplayedStep(ctx context.Context, step int) error {
 	// Signalled, not performed — same reason as checkpointStep above: the
 	// status write belongs after the engine has stopped writing.
 	if standing == standingPauseRequested {
-		return ai.ErrPauseRequested
+		return o.pauseSignalIfResumable(fmt.Sprintf("replay of step %d", step))
 	}
 	return nil
 }
@@ -961,6 +941,29 @@ func (o *Orchestrator) hasResumePoint() bool {
 	return o.contiguousCheckpointThrough > 0
 }
 
+// pauseSignalIfResumable decides whether a seam may signal the operator's
+// pause, and is the ONE place that decision lives.
+//
+// Centralised after three review rounds found the same precondition missing
+// at three different seams — the phase gates, the exploration step, and the
+// completed analysis area. Each was the same bug: a pause honoured where no
+// replayable prefix exists writes `paused` for a run ResumeRun then refuses,
+// stranding a working run with no way out but cancel. Patching the third
+// instance would have invited a fourth, so every seam now asks here.
+//
+// Returns ai.ErrPauseRequested to stop, or nil to carry on with the request
+// still standing — the next seam that has something to resume from honours it.
+func (o *Orchestrator) pauseSignalIfResumable(what string) error {
+	if o.hasResumePoint() {
+		return ai.ErrPauseRequested
+	}
+	applog.WithFields(applog.Fields{
+		"run_id": o.runID, "at": what,
+		"contiguous_through": o.contiguousCheckpointThrough,
+	}).Warn("an operator asked for a pause, but an earlier checkpoint write left a gap, so there is nothing a resume could replay yet; continuing until the prefix is unbroken")
+	return nil
+}
+
 // pauseAttempt performs the cooperative stop: books this attempt's compute,
 // writes `paused`, and reports the control signal the caller must propagate.
 //
@@ -989,7 +992,7 @@ func (o *Orchestrator) pauseAttempt(ctx context.Context, detail string) error {
 		return ai.ErrPauseRequested
 	}
 
-	applied, err := o.statusReporter.Pause(ctx, detail, time.Since(o.attemptStartedAt))
+	applied, err := o.statusReporter.Pause(ctx, detail, time.Since(o.attemptStartedAt), o.llmProvider, o.llmModel)
 	if err != nil {
 		applog.WithFields(applog.Fields{
 			"run_id": o.runID, "error": err.Error(),
@@ -1055,13 +1058,7 @@ func (o *Orchestrator) stopBefore(ctx context.Context, what string) error {
 		}).Warn("another attempt of this run has taken over; stopping rather than spending this phase on a result that will be discarded")
 		return ai.ErrAttemptSuperseded
 	case standingPauseRequested:
-		if !o.hasResumePoint() {
-			// Nothing durable yet, so pausing here would strand the run in a
-			// status it cannot leave. Carry on; the first checkpoint is a few
-			// seconds away and the request is still standing when it lands.
-			applog.WithFields(applog.Fields{
-				"run_id": o.runID, "before": what,
-			}).Info("an operator asked for a pause before this run had anything to resume from; continuing until the first checkpoint lands")
+		if err := o.pauseSignalIfResumable(what); err == nil {
 			return nil
 		}
 		return o.pauseAttempt(ctx, "Paused before "+what+" — resume to continue")

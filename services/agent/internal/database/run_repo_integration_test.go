@@ -1207,7 +1207,7 @@ func TestRunRepository_Pause(t *testing.T) {
 			"pause_requested_attempt": 2, "pause_deadline_at": now.Add(time.Hour),
 		})
 
-		applied, err := repo.Pause(ctx, runID, 2, "Paused after exploration step 7 — resume to continue", 90_000)
+		applied, err := repo.Pause(ctx, runID, 2, "Paused after exploration step 7 — resume to continue", 90_000, "bedrock", "us.anthropic.claude-sonnet-4-6")
 		if err != nil || !applied {
 			t.Fatalf("Pause() = (%v, %v), want (true, nil)", applied, err)
 		}
@@ -1250,11 +1250,18 @@ func TestRunRepository_Pause(t *testing.T) {
 		if ev["attempt"] != int32(2) {
 			t.Errorf("lifecycle event attempt = %v, want 2", ev["attempt"])
 		}
+		// Provenance, because a paused attempt never reaches
+		// recordAttemptOutcome and this event is the only record of which
+		// model ran it — the case the field exists for is precisely an
+		// operator who pauses, changes the model, and resumes.
+		if ev["llm_provider"] != "bedrock" || ev["llm_model"] != "us.anthropic.claude-sonnet-4-6" {
+			t.Errorf("lifecycle event provenance = %v/%v, want bedrock/us.anthropic.claude-sonnet-4-6", ev["llm_provider"], ev["llm_model"])
+		}
 	})
 
 	t.Run("refused for an attempt that no longer owns the run", func(t *testing.T) {
 		runID := seedRunDoc(t, ctx, db, bson.M{"attempt": 3})
-		applied, err := repo.Pause(ctx, runID, 2, "detail", 0)
+		applied, err := repo.Pause(ctx, runID, 2, "detail", 0, "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1269,7 +1276,7 @@ func TestRunRepository_Pause(t *testing.T) {
 			models.RunStatusCancelled, models.RunStatusPending,
 		} {
 			runID := seedRunDoc(t, ctx, db, bson.M{"status": status, "attempt": 1})
-			applied, err := repo.Pause(ctx, runID, 1, "detail", 0)
+			applied, err := repo.Pause(ctx, runID, 1, "detail", 0, "", "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1281,7 +1288,7 @@ func TestRunRepository_Pause(t *testing.T) {
 
 	t.Run("refused on a discarded run", func(t *testing.T) {
 		runID := seedRunDoc(t, ctx, db, bson.M{"attempt": 1, "discarded_at": time.Now()})
-		applied, err := repo.Pause(ctx, runID, 1, "detail", 0)
+		applied, err := repo.Pause(ctx, runID, 1, "detail", 0, "", "")
 		if err != nil {
 			t.Fatal(err)
 		}

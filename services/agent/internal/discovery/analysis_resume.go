@@ -152,7 +152,13 @@ func (o *Orchestrator) checkpointAnalysisArea(ctx context.Context, step models.A
 	// paused attempt's log missing the very area it stopped after until a
 	// resume replayed it. The caller emits them and then pauses.
 	if pauseRequested {
-		return ai.ErrPauseRequested
+		// Through the shared guard, which this seam needed as much as the
+		// exploration ones: a completed analysis area is durable, but an
+		// exploration prefix with a gap in it is not replayable — and
+		// ResumeRun refuses a run with no replayable prefix even when its
+		// exploration summary survived. So a pause taken here on a run whose
+		// step-1 write failed would strand it.
+		return o.pauseSignalIfResumable("analysis area " + step.AreaID)
 	}
 	return nil
 }
