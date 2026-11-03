@@ -56,24 +56,29 @@ type recommendationCheckpointStore interface {
 // asks: the row-level fence only refuses a write where a higher-attempt row
 // already exists, so a superseded attempt running ahead of the live one would
 // otherwise plant recommendations the live attempt has not generated.
-func (o *Orchestrator) checkpointRecommendations(ctx context.Context, step *models.RecommendationStep, eligibleIDs []string) error {
+// The bool says whether the row is actually on disk, and it GATES the
+// per-recommendation marker writes for the reason checkpointAreaDraft's does:
+// a marker write is filtered on `attempt <= this attempt`, so with no row of
+// its own it can land on an earlier attempt's, where a reused model-supplied
+// id would overwrite a marker describing a different recommendation.
+func (o *Orchestrator) checkpointRecommendations(ctx context.Context, step *models.RecommendationStep, eligibleIDs []string) (bool, error) {
 	if o.recommendationCheckpointRepo == nil || step == nil {
-		return nil
+		return false, nil
 	}
 	if o.explorationSummaryAttempt <= 0 {
-		return nil
+		return false, nil
 	}
 	if step.Error != "" || step.Status == statusRecommendationParseError {
-		return nil
+		return false, nil
 	}
 	if step.Status == statusRecommendationSkippedNoEligible {
 		// The phase made no LLM call, so there is nothing to protect — and
 		// the eligible set was empty, which a later attempt could satisfy
 		// trivially without the recommendations being right for it.
-		return nil
+		return false, nil
 	}
 	if o.statusReporter != nil && !o.statusReporter.OwnsRun(ctx) {
-		return ai.ErrAttemptSuperseded
+		return false, ai.ErrAttemptSuperseded
 	}
 
 	err := o.recommendationCheckpointRepo.SaveDraft(ctx, database.RecommendationCheckpointInput{
@@ -87,15 +92,15 @@ func (o *Orchestrator) checkpointRecommendations(ctx context.Context, step *mode
 	if err != nil {
 		if errors.Is(err, database.ErrSupersededAttempt) {
 			applog.WithField("run_id", o.runID).Warn("a newer attempt of this run owns its recommendations; stopping rather than spending the persistence tail on a result that will be discarded")
-			return ai.ErrAttemptSuperseded
+			return false, ai.ErrAttemptSuperseded
 		}
 		applog.WithFields(applog.Fields{
 			"run_id": o.runID,
 			"error":  err.Error(),
 		}).Warn("failed to checkpoint this run's recommendations; a resumed run would generate and re-validate them")
-		return nil
+		return false, nil
 	}
-	return nil
+	return true, nil
 }
 
 // translateRecommendationInsightIDs rewrites every insight id a slice of

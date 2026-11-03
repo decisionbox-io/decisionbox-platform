@@ -200,7 +200,7 @@ func TestCheckpointAreaDraft_NoOpsThatProtectTheFence(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := tc.o.checkpointAreaDraft(ctx, tc.step, tc.val); err != nil {
+			if _, err := tc.o.checkpointAreaDraft(ctx, tc.step, tc.val); err != nil {
 				t.Fatalf("want a quiet no-op (%s), got %v", tc.why, err)
 			}
 			if store, ok := tc.o.analysisDraftRepo.(*fakeAnalysisDraftStore); ok && len(store.saved) != 0 {
@@ -231,7 +231,7 @@ func TestCheckpointAreaDraft_StopsWhenTheRunHasBeenTakenOver(t *testing.T) {
 			explorationSummaryAttempt: 1,
 			statusReporter:            reporterFor(doc, 2),
 		}
-		if err := o.checkpointAreaDraft(ctx, step, true); !errors.Is(err, ai.ErrAttemptSuperseded) {
+		if _, err := o.checkpointAreaDraft(ctx, step, true); !errors.Is(err, ai.ErrAttemptSuperseded) {
 			t.Fatalf("want ai.ErrAttemptSuperseded, got %v", err)
 		}
 		if len(store.saved) != 0 {
@@ -247,7 +247,7 @@ func TestCheckpointAreaDraft_StopsWhenTheRunHasBeenTakenOver(t *testing.T) {
 			explorationSummaryAttempt: 1,
 			statusReporter:            reporterFor(newFakeRunDoc(), 1),
 		}
-		if err := o.checkpointAreaDraft(ctx, step, true); !errors.Is(err, ai.ErrAttemptSuperseded) {
+		if _, err := o.checkpointAreaDraft(ctx, step, true); !errors.Is(err, ai.ErrAttemptSuperseded) {
 			t.Fatalf("want ai.ErrAttemptSuperseded, got %v", err)
 		}
 	})
@@ -264,7 +264,7 @@ func TestCheckpointAreaDraft_SwallowsAnOrdinaryWriteFailure(t *testing.T) {
 		explorationSummaryAttempt: 1,
 		statusReporter:            reporterFor(newFakeRunDoc(), 1),
 	}
-	if err := o.checkpointAreaDraft(context.Background(), draftArea("churn", 2, time.Now()), true); err != nil {
+	if _, err := o.checkpointAreaDraft(context.Background(), draftArea("churn", 2, time.Now()), true); err != nil {
 		t.Fatalf("a failed checkpoint write must not abort the run, got %v", err)
 	}
 }
@@ -282,7 +282,7 @@ func TestCheckpointAreaDraft_WritesTheWholeStepUnderBothFences(t *testing.T) {
 		statusReporter:            reporterFor(newFakeRunDoc(), 3),
 	}
 	step := draftArea("churn", 3, time.Now())
-	if err := o.checkpointAreaDraft(context.Background(), step, true); err != nil {
+	if _, err := o.checkpointAreaDraft(context.Background(), step, true); err != nil {
 		t.Fatalf("checkpointAreaDraft: %v", err)
 	}
 	if len(store.saved) != 1 {
@@ -678,28 +678,35 @@ func TestStoredInsightIDs_IsTheIdTheCheckpointsActuallyHold(t *testing.T) {
 			t.Errorf("stored id %d = %q, want %q", i, ids[i], want[i])
 		}
 	}
-	for stored, live := range map[string]string{
-		"fresh-1":          "fresh-1",
-		"attempt1-id-2":    "reminted-2",
-		"draft-finished-3": "draft-finished-3",
-	} {
-		if liveByStored[stored] != live {
-			t.Errorf("liveByStored[%q] = %q, want %q", stored, liveByStored[stored], live)
+	// The gate's mapping admits only the ids a CHECKPOINT vouches for. The
+	// other two are this attempt's own work, and a model-supplied id matching
+	// a previous attempt's is not proof that the finding behind it is the
+	// same — see TestStoredInsightIDs_OnlyACheckpointVouchesForAnIdentity.
+	if liveByStored["attempt1-id-2"] != "reminted-2" {
+		t.Errorf("liveByStored[attempt1-id-2] = %q, want reminted-2", liveByStored["attempt1-id-2"])
+	}
+	for _, own := range []string{"fresh-1", "draft-finished-3"} {
+		if _, ok := liveByStored[own]; ok {
+			t.Errorf("%q is in the gate's mapping, but only this attempt's own analysis vouches for it", own)
 		}
 	}
 }
 
-// TestStoredInsightIDs_IsTheIdentityOnARunThatRestoredNothing — the ordinary
-// first attempt, where the mapping must be a no-op or every later attempt
-// would refuse its own recommendations.
-func TestStoredInsightIDs_IsTheIdentityOnARunThatRestoredNothing(t *testing.T) {
+// TestStoredInsightIDs_AFirstAttemptNamesItsIdsButVouchesForNone — the
+// ordinary first attempt. The LIST is its own live ids, because that is what
+// its checkpoints will hold and therefore what the next attempt recognises;
+// the gate's mapping is empty, because nothing has vouched for any of them
+// yet. So a first attempt's recommendation checkpoint becomes restorable only
+// once a later attempt restores its areas from those checkpoints — which is
+// the case the feature exists for.
+func TestStoredInsightIDs_AFirstAttemptNamesItsIdsButVouchesForNone(t *testing.T) {
 	insights := []models.Insight{{ID: "a"}, {ID: "b"}}
 	ids, liveByStored := storedInsightIDs(insights, nil)
 	if len(ids) != 2 || ids[0] != "a" || ids[1] != "b" {
-		t.Errorf("got %v, want [a b]", ids)
+		t.Errorf("stored ids = %v, want [a b]", ids)
 	}
-	if liveByStored["a"] != "a" || liveByStored["b"] != "b" {
-		t.Errorf("mapping is not the identity: %v", liveByStored)
+	if len(liveByStored) != 0 {
+		t.Errorf("the gate's mapping should be empty on a first attempt, got %v", liveByStored)
 	}
 }
 
@@ -817,4 +824,123 @@ func TestCheckpointAnalysisArea_ReportsWhetherTheRowLanded(t *testing.T) {
 			t.Errorf("a failed area: got (%v, %v), want (false, nil)", got, err)
 		}
 	})
+}
+
+// TestCheckpointAreaDraft_ReportsWhetherTheDraftLanded — the bool gates the
+// per-insight marker writes rather than merely informing them.
+//
+// A marker write is filtered on `attempt <= this attempt`, so with no draft of
+// its own it can land on an EARLIER attempt's row for the same area. An
+// insight id can be model-supplied rather than minted, so a reused id would
+// then overwrite a marker describing a different finding, and a later resume
+// would restore that finding as validated without ever verifying it. No draft,
+// no markers.
+func TestCheckpointAreaDraft_ReportsWhetherTheDraftLanded(t *testing.T) {
+	ctx := context.Background()
+	step := draftArea("churn", 2, time.Now())
+
+	t.Run("a landed write reports true", func(t *testing.T) {
+		o := &Orchestrator{
+			projectID: "p", runID: "r",
+			analysisDraftRepo:         &fakeAnalysisDraftStore{},
+			explorationSummaryAttempt: 1,
+			statusReporter:            reporterFor(newFakeRunDoc(), 1),
+		}
+		got, err := o.checkpointAreaDraft(ctx, step, true)
+		if err != nil {
+			t.Fatalf("checkpointAreaDraft: %v", err)
+		}
+		if !got {
+			t.Error("reported no draft for a write that succeeded, so this area's markers would never be written")
+		}
+	})
+
+	t.Run("a swallowed failure reports false", func(t *testing.T) {
+		o := &Orchestrator{
+			projectID: "p", runID: "r",
+			analysisDraftRepo:         &fakeAnalysisDraftStore{saveErr: errors.New("mongo down")},
+			explorationSummaryAttempt: 1,
+			statusReporter:            reporterFor(newFakeRunDoc(), 1),
+		}
+		got, err := o.checkpointAreaDraft(ctx, step, true)
+		if err != nil {
+			t.Fatalf("a failed draft write must not abort the run, got %v", err)
+		}
+		if got {
+			t.Error("reported a draft that is not on disk; its markers could land on an earlier attempt's row")
+		}
+	})
+
+	t.Run("every no-op reports false", func(t *testing.T) {
+		cases := map[string]struct {
+			o    *Orchestrator
+			step models.AnalysisStep
+			val  bool
+		}{
+			"nil store":     {&Orchestrator{projectID: "p", runID: "r", explorationSummaryAttempt: 1}, step, true},
+			"no summary":    {&Orchestrator{projectID: "p", runID: "r", analysisDraftRepo: &fakeAnalysisDraftStore{}, statusReporter: reporterFor(newFakeRunDoc(), 1)}, step, true},
+			"no validation": {&Orchestrator{projectID: "p", runID: "r", analysisDraftRepo: &fakeAnalysisDraftStore{}, explorationSummaryAttempt: 1, statusReporter: reporterFor(newFakeRunDoc(), 1)}, step, false},
+			"no insights":   {&Orchestrator{projectID: "p", runID: "r", analysisDraftRepo: &fakeAnalysisDraftStore{}, explorationSummaryAttempt: 1, statusReporter: reporterFor(newFakeRunDoc(), 1)}, draftArea("churn", 0, time.Now()), true},
+		}
+		for name, tc := range cases {
+			got, err := tc.o.checkpointAreaDraft(ctx, tc.step, tc.val)
+			if err != nil || got {
+				t.Errorf("%s: got (%v, %v), want (false, nil)", name, got, err)
+			}
+		}
+	})
+}
+
+// TestStoredInsightIDs_OnlyACheckpointVouchesForAnIdentity is the regression
+// for a gate that trusted a model's word.
+//
+// An insight id is not always server-minted: the analysis parser keeps a
+// model-supplied one. So an area this attempt analysed ITSELF can carry an id
+// a previous attempt used for a DIFFERENT finding — reachable whenever an area
+// is re-analysed because its checkpoint expired or could not be read. Treating
+// the matching id as proof of matching content let a stored recommendation set
+// be restored over findings it was never reasoned from, carrying validation
+// verdicts another finding earned.
+//
+// The list still names every eligible insight, because that is what the next
+// attempt will recognise once this attempt's own checkpoints hold them; the
+// gate's mapping admits only the ones a checkpoint already holds.
+func TestStoredInsightIDs_OnlyACheckpointVouchesForAnIdentity(t *testing.T) {
+	insights := []models.Insight{
+		{ID: "restored-live"}, // from a completed checkpoint
+		{ID: "i1"},            // analysed here, and the model chose this id
+	}
+	storedByLive := map[string]string{"restored-live": "attempt1-id"}
+
+	ids, liveByStored := storedInsightIDs(insights, storedByLive)
+
+	if len(ids) != 2 || ids[0] != "attempt1-id" || ids[1] != "i1" {
+		t.Fatalf("stored ids = %v, want [attempt1-id i1] — both, so the next attempt recognises them", ids)
+	}
+	if liveByStored["attempt1-id"] != "restored-live" {
+		t.Error("a checkpoint-backed insight must be in the gate's mapping")
+	}
+	if _, ok := liveByStored["i1"]; ok {
+		t.Error("a freshly analysed insight is in the gate's mapping; a model reusing an id would then look like proof of unchanged content")
+	}
+}
+
+// TestRecommendationGate_RefusesASetCoveringAReAnalysedArea closes the loop:
+// an attempt that re-analysed an area cannot restore recommendations reasoned
+// over the previous attempt's findings, even when the model handed back the
+// same ids.
+func TestRecommendationGate_RefusesASetCoveringAReAnalysedArea(t *testing.T) {
+	// Attempt 1 generated over two insights with model ids i1 and i2.
+	cp := &models.RecommendationCheckpoint{
+		Step:               recStepWith(rec("r1", "i1")),
+		EligibleInsightIDs: []string{"i1", "i2"},
+	}
+	// Attempt 2 restored one area (i1) and RE-ANALYSED the other, whose model
+	// emitted i2 again for a changed finding.
+	eligible := []models.Insight{{ID: "live-1"}, {ID: "i2"}}
+	_, liveByStored := storedInsightIDs(eligible, map[string]string{"live-1": "i1"})
+
+	if _, ok := restorableRecommendations(cp, eligible, liveByStored); ok {
+		t.Error("restored recommendations reasoned over a finding this attempt re-analysed; only a checkpoint can vouch for an id")
+	}
 }

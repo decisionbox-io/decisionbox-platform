@@ -62,28 +62,37 @@ type analysisDraftStore interface {
 // other failure is logged and swallowed, like every checkpoint write: the cost
 // is that the area is analysed again on a later resume, and a checkpoint must
 // never be able to abort a working run.
-func (o *Orchestrator) checkpointAreaDraft(ctx context.Context, step models.AnalysisStep, validationEnabled bool) error {
+//
+// The bool says whether a draft for this area is actually on disk, and it
+// GATES the per-insight marker writes rather than merely informing them. A
+// marker write is filtered on `attempt <= this attempt`, so with no draft of
+// its own it can land on an EARLIER attempt's row for the same area — and
+// since an insight id can be model-supplied rather than minted, a reused id
+// would then overwrite a marker describing a different finding, which a later
+// resume would restore as validated without ever verifying it. No draft, no
+// markers.
+func (o *Orchestrator) checkpointAreaDraft(ctx context.Context, step models.AnalysisStep, validationEnabled bool) (bool, error) {
 	if o.analysisDraftRepo == nil || !validationEnabled {
-		return nil
+		return false, nil
 	}
 	if o.explorationSummaryAttempt <= 0 {
 		// No durable exploration summary, so this run re-explores on resume
 		// and nothing analysed over the current exploration could be restored
 		// against the next one. Writing a row would be writing one LoadDrafts
 		// is obliged to ignore.
-		return nil
+		return false, nil
 	}
 	if len(step.Insights) == 0 {
 		// Nothing to validate, so nothing to resume. The area is moments from
 		// its completed checkpoint.
-		return nil
+		return false, nil
 	}
 	if step.AreaID == "" {
 		applog.WithField("run_id", o.runID).Warn("analysis area drafted with no area id; not checkpointing it")
-		return nil
+		return false, nil
 	}
 	if o.statusReporter != nil && !o.statusReporter.OwnsRun(ctx) {
-		return ai.ErrAttemptSuperseded
+		return false, ai.ErrAttemptSuperseded
 	}
 
 	err := o.analysisDraftRepo.SaveDraft(ctx, database.AnalysisAreaDraftInput{
@@ -99,16 +108,16 @@ func (o *Orchestrator) checkpointAreaDraft(ctx context.Context, step models.Anal
 				"run_id": o.runID,
 				"area":   step.AreaID,
 			}).Warn("a newer attempt of this run owns this analysis area; stopping rather than spending its per-insight validation on a result that will be discarded")
-			return ai.ErrAttemptSuperseded
+			return false, ai.ErrAttemptSuperseded
 		}
 		applog.WithFields(applog.Fields{
 			"run_id": o.runID,
 			"area":   step.AreaID,
 			"error":  err.Error(),
 		}).Warn("failed to draft an analysed area; a resumed run would analyse and re-validate it in full")
-		return nil
+		return false, nil
 	}
-	return nil
+	return true, nil
 }
 
 // checkpointInsightVerdict records that one insight has been validated.
@@ -367,8 +376,24 @@ func restoredDraftBudget(drafts map[string]models.AnalysisAreaDraft) int {
 // checkpoints have not changed — which is what makes comparing it to a stored
 // list a meaningful question rather than a coincidence.
 //
-// The second return is the inverse, stored id to live id, which is what
-// re-points a restored recommendation's citations.
+// The second return is the inverse — stored id to live id — and it is
+// deliberately NOT the whole of the first. It carries an entry only for an
+// insight whose identity a CHECKPOINT vouches for, which is what makes it safe
+// to use as a restore gate.
+//
+// The reason is that an insight id is not always server-minted. The analysis
+// parser keeps a model-supplied id, so an area this attempt analysed itself
+// can produce an id a previous attempt also used for a DIFFERENT finding —
+// reachable whenever an area is re-analysed because its checkpoint expired or
+// could not be read. Treating a matching id as proof of matching content would
+// let a stored recommendation set be restored over findings it was never
+// reasoned from, carrying validation verdicts another finding earned.
+//
+// So the first return names every eligible insight, because that list is what
+// the next attempt will recognise once this attempt's own checkpoints hold
+// them; the second admits only the ones a checkpoint already holds. An attempt
+// that re-analysed an area therefore cannot satisfy the gate on it, and loses
+// a saving rather than correctness.
 func storedInsightIDs(insights []models.Insight, storedByLive map[string]string) ([]string, map[string]string) {
 	ids := make([]string, 0, len(insights))
 	liveByStored := make(map[string]string, len(insights))
@@ -377,9 +402,13 @@ func storedInsightIDs(insights []models.Insight, storedByLive map[string]string)
 		if live == "" {
 			continue
 		}
-		stored := live
-		if s, ok := storedByLive[live]; ok && s != "" {
-			stored = s
+		stored, checkpointed := storedByLive[live]
+		if !checkpointed || stored == "" {
+			// Analysed by this attempt: its live id is what its own
+			// checkpoint will hold, so it belongs in the list — but nothing
+			// yet vouches for it, so it stays out of the gate's mapping.
+			ids = append(ids, live)
+			continue
 		}
 		ids = append(ids, stored)
 		liveByStored[stored] = live

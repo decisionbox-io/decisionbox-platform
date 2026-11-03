@@ -148,7 +148,7 @@ func TestCheckpointRecommendations_DoesNotMarkAPhaseThatBankedNothing(t *testing
 				explorationSummaryAttempt:    1,
 				statusReporter:               reporterFor(newFakeRunDoc(), 1),
 			}
-			if err := o.checkpointRecommendations(ctx, tc.step, []string{"i1"}); err != nil {
+			if _, err := o.checkpointRecommendations(ctx, tc.step, []string{"i1"}); err != nil {
 				t.Fatalf("want a quiet no-op, got %v", err)
 			}
 			if len(store.saved) != 0 {
@@ -173,7 +173,7 @@ func TestCheckpointRecommendations_RecordsACleanEmptyResult(t *testing.T) {
 	step.Status = statusRecommendationFiguresUnresolved
 	step.RecommendationsDroppedUnresolvedFigures = 3
 
-	if err := o.checkpointRecommendations(context.Background(), &step, []string{"i1"}); err != nil {
+	if _, err := o.checkpointRecommendations(context.Background(), &step, []string{"i1"}); err != nil {
 		t.Fatalf("checkpointRecommendations: %v", err)
 	}
 	if len(store.saved) != 1 {
@@ -192,7 +192,7 @@ func TestCheckpointRecommendations_NoOpsAndOwnership(t *testing.T) {
 
 	t.Run("nil store", func(t *testing.T) {
 		o := &Orchestrator{runID: "r", explorationSummaryAttempt: 1}
-		if err := o.checkpointRecommendations(ctx, &step, nil); err != nil {
+		if _, err := o.checkpointRecommendations(ctx, &step, nil); err != nil {
 			t.Fatalf("want a no-op, got %v", err)
 		}
 	})
@@ -203,7 +203,7 @@ func TestCheckpointRecommendations_NoOpsAndOwnership(t *testing.T) {
 			runID: "r", recommendationCheckpointRepo: store,
 			statusReporter: reporterFor(newFakeRunDoc(), 1),
 		}
-		if err := o.checkpointRecommendations(ctx, &step, nil); err != nil {
+		if _, err := o.checkpointRecommendations(ctx, &step, nil); err != nil {
 			t.Fatalf("want a no-op, got %v", err)
 		}
 		if len(store.saved) != 0 {
@@ -220,7 +220,7 @@ func TestCheckpointRecommendations_NoOpsAndOwnership(t *testing.T) {
 			explorationSummaryAttempt: 1,
 			statusReporter:            reporterFor(doc, 2),
 		}
-		if err := o.checkpointRecommendations(ctx, &step, nil); !errors.Is(err, ai.ErrAttemptSuperseded) {
+		if _, err := o.checkpointRecommendations(ctx, &step, nil); !errors.Is(err, ai.ErrAttemptSuperseded) {
 			t.Fatalf("want ai.ErrAttemptSuperseded, got %v", err)
 		}
 		if len(store.saved) != 0 {
@@ -235,7 +235,7 @@ func TestCheckpointRecommendations_NoOpsAndOwnership(t *testing.T) {
 			explorationSummaryAttempt: 1,
 			statusReporter:            reporterFor(newFakeRunDoc(), 1),
 		}
-		if err := o.checkpointRecommendations(ctx, &step, nil); !errors.Is(err, ai.ErrAttemptSuperseded) {
+		if _, err := o.checkpointRecommendations(ctx, &step, nil); !errors.Is(err, ai.ErrAttemptSuperseded) {
 			t.Fatalf("want ai.ErrAttemptSuperseded, got %v", err)
 		}
 	})
@@ -247,7 +247,7 @@ func TestCheckpointRecommendations_NoOpsAndOwnership(t *testing.T) {
 			explorationSummaryAttempt: 1,
 			statusReporter:            reporterFor(newFakeRunDoc(), 1),
 		}
-		if err := o.checkpointRecommendations(ctx, &step, nil); err != nil {
+		if _, err := o.checkpointRecommendations(ctx, &step, nil); err != nil {
 			t.Fatalf("a failed checkpoint must not abort the run, got %v", err)
 		}
 	})
@@ -266,7 +266,7 @@ func TestCheckpointRecommendations_StoresTheEligibleSetAndBothFences(t *testing.
 		statusReporter:               reporterFor(newFakeRunDoc(), 3),
 	}
 	step := recStepWith(rec("r1", "i1"), rec("r2", "i2"))
-	if err := o.checkpointRecommendations(context.Background(), &step, []string{"i1", "i2"}); err != nil {
+	if _, err := o.checkpointRecommendations(context.Background(), &step, []string{"i1", "i2"}); err != nil {
 		t.Fatalf("checkpointRecommendations: %v", err)
 	}
 	got := store.saved[0]
@@ -885,4 +885,59 @@ func TestRecommendationStepInStoredIDs_NormalizesFigureRefsToo(t *testing.T) {
 	if step.Recommendations[0].Figures[0].Refs[0].Insight != "live-1" {
 		t.Error("rewrote the live recommendation's figure refs; the result would cite ids it does not contain")
 	}
+}
+
+// TestCheckpointRecommendations_ReportsWhetherTheRowLanded — the bool gates
+// the per-recommendation marker writes, for the reason the draft's does: a
+// marker with no row of its own can land on an earlier attempt's, where a
+// reused model-supplied id would overwrite a marker describing a different
+// recommendation.
+func TestCheckpointRecommendations_ReportsWhetherTheRowLanded(t *testing.T) {
+	ctx := context.Background()
+	step := recStepWith(rec("r1", "i1"))
+
+	t.Run("a landed write reports true", func(t *testing.T) {
+		o := &Orchestrator{
+			projectID: "p", runID: "r",
+			recommendationCheckpointRepo: &fakeRecommendationCheckpointStore{},
+			explorationSummaryAttempt:    1,
+			statusReporter:               reporterFor(newFakeRunDoc(), 1),
+		}
+		got, err := o.checkpointRecommendations(ctx, &step, []string{"i1"})
+		if err != nil {
+			t.Fatalf("checkpointRecommendations: %v", err)
+		}
+		if !got {
+			t.Error("reported no row for a write that succeeded, so Phase 5.5's markers would never be written")
+		}
+	})
+
+	t.Run("a swallowed failure reports false", func(t *testing.T) {
+		o := &Orchestrator{
+			projectID: "p", runID: "r",
+			recommendationCheckpointRepo: &fakeRecommendationCheckpointStore{saveErr: errors.New("mongo down")},
+			explorationSummaryAttempt:    1,
+			statusReporter:               reporterFor(newFakeRunDoc(), 1),
+		}
+		got, err := o.checkpointRecommendations(ctx, &step, []string{"i1"})
+		if err != nil {
+			t.Fatalf("a failed checkpoint must not abort the run, got %v", err)
+		}
+		if got {
+			t.Error("reported a row that is not on disk; its markers could land on an earlier attempt's")
+		}
+	})
+
+	t.Run("a phase that banked nothing reports false", func(t *testing.T) {
+		o := &Orchestrator{
+			projectID: "p", runID: "r",
+			recommendationCheckpointRepo: &fakeRecommendationCheckpointStore{},
+			explorationSummaryAttempt:    1,
+			statusReporter:               reporterFor(newFakeRunDoc(), 1),
+		}
+		failed := models.RecommendationStep{Error: "llm provider 503"}
+		if got, err := o.checkpointRecommendations(ctx, &failed, nil); err != nil || got {
+			t.Errorf("got (%v, %v), want (false, nil)", got, err)
+		}
+	})
 }

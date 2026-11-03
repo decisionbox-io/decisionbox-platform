@@ -1608,6 +1608,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// key on the same ids a third attempt would read. They are reminted
 		// where the area is merged into the run's result, below.
 		step, insights, draftVerdicts, fromDraft := restoreAreaDraft(areaDrafts, area.ID)
+		// Whether a draft for this area is on disk, which is what the
+		// per-insight markers are allowed to be written against. A restored
+		// draft is on disk by definition; a freshly analysed area only if its
+		// own write landed. See checkpointAreaDraft for why a marker with no
+		// draft of its own is worse than no marker at all.
+		draftOnDisk := fromDraft
 		if !fromDraft {
 			out := o.analyseArea(ctx, areaAnalysisInput{
 				area:             area,
@@ -1634,9 +1640,11 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			// is the one point in its life where a crash loses the most for
 			// the least reason. Recorded before the per-insight calls start,
 			// so a resume re-enters at the first insight without a verdict.
-			if err := o.checkpointAreaDraft(ctx, step, valPhase.agent != nil); err != nil {
+			landed, err := o.checkpointAreaDraft(ctx, step, valPhase.agent != nil)
+			if err != nil {
 				return nil, err
 			}
+			draftOnDisk = landed
 		}
 
 		// Phase 4.5: Validate insights via the LLM-native verifier
@@ -1660,12 +1668,13 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			// freshly analysed area, so it validates everything; nil `save`
 			// never happens here, because the draft write above is what
 			// gives a marker somewhere to go.
-			areaResults, insightsValidatedThisRun = valPhase.validateInsights(ctx, insights, stepByID, area.ID, insightsValidatedThisRun, &perItemCheckpoint{
-				done: draftVerdicts,
-				save: func(vr models.ValidationResult) {
+			itemCheckpoint := &perItemCheckpoint{done: draftVerdicts}
+			if draftOnDisk {
+				itemCheckpoint.save = func(vr models.ValidationResult) {
 					o.checkpointInsightVerdict(ctx, area.ID, vr)
-				},
-			})
+				}
+			}
+			areaResults, insightsValidatedThisRun = valPhase.validateInsights(ctx, insights, stepByID, area.ID, insightsValidatedThisRun, itemCheckpoint)
 			o.setLLMPhase(models.PhaseAnalysis)
 			step.ValidationResults = areaResults
 		}
@@ -1816,8 +1825,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	}
 	o.statusReporter.SetPhase(ctx, models.PhaseRecommendations, recDetail, 85)
 
-	// recVerdictsDone is what Phase 5.5 must not pay for again.
+	// recVerdictsDone is what Phase 5.5 must not pay for again, and
+	// recCheckpointOnDisk whether its verdicts have a row of their own to be
+	// written to — see checkpointRecommendations for why a marker without one
+	// is worse than no marker.
 	var recVerdictsDone map[string]models.ValidationResult
+	recCheckpointOnDisk := recsRestored
 
 	switch {
 	case recsRestored:
@@ -1908,9 +1921,11 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// cited the live ids, and only the stored ones are stable across
 		// attempts. See recommendationStepInStoredIDs.
 		stored := recommendationStepInStoredIDs(*recStep, storedIDByLive)
-		if err := o.checkpointRecommendations(ctx, &stored, eligibleStoredIDs); err != nil {
+		landed, err := o.checkpointRecommendations(ctx, &stored, eligibleStoredIDs)
+		if err != nil {
 			return nil, err
 		}
+		recCheckpointOnDisk = landed
 	}
 
 	// Emit a per-call RunStep so the live UI carries the recommendation
@@ -1942,12 +1957,13 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// Validation is only meaningful when there are recommendations to verify.
 	if len(recommendations) > 0 {
 		o.setLLMPhase(models.PhaseValidation)
-		recValidationResults = valPhase.validateRecommendations(ctx, recommendations, allInsights, stepByID, &perItemCheckpoint{
-			done: recVerdictsDone,
-			save: func(vr models.ValidationResult) {
+		recCheckpoint := &perItemCheckpoint{done: recVerdictsDone}
+		if recCheckpointOnDisk {
+			recCheckpoint.save = func(vr models.ValidationResult) {
 				o.checkpointRecommendationVerdict(ctx, vr)
-			},
-		})
+			}
+		}
+		recValidationResults = valPhase.validateRecommendations(ctx, recommendations, allInsights, stepByID, recCheckpoint)
 		o.setLLMPhase(models.PhaseRecommendations)
 
 		// Restored recommendations still carry the ids the checkpoint holds,
