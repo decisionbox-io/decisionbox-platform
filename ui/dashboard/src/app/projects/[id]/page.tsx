@@ -916,8 +916,29 @@ function LiveRunPanel({ run, onPause, onCancel, onDismiss, onResume, onDiscard }
   // must stop claiming the run is pausing and say what happened instead.
   // Without a deadline the deployment disabled the lapse, so the request
   // stands indefinitely.
+  //
+  // Held as state and armed by a timer rather than compared against the clock
+  // during render, for two reasons. Reading Date.now() in a render body is
+  // impure (react-hooks/purity), and the honest behaviour needs a timer
+  // anyway: a lapsed request has to become visible WHEN it lapses, and the
+  // status poll cannot be relied on to notice — a wedged agent, which is the
+  // case the deadline exists for, stops writing to the run entirely.
+  //
+  // The state stores the deadline it lapsed against, so a fresh request with
+  // a new deadline resets it by comparison instead of needing a setState in
+  // an effect body.
+  const [lapsedDeadline, setLapsedDeadline] = useState<string | null>(null);
+  useEffect(() => {
+    const deadline = run.pause_deadline_at;
+    if (!run.pause_requested_at || !deadline) return;
+    const ms = new Date(deadline).getTime() - Date.now();
+    // Max(0) so a deadline that is already past arms on the next tick rather
+    // than never — the setState stays in the timer callback either way.
+    const t = setTimeout(() => setLapsedDeadline(deadline), Math.max(0, ms));
+    return () => clearTimeout(t);
+  }, [run.pause_requested_at, run.pause_deadline_at]);
   const pauseLapsed = pauseRequested && !!run.pause_deadline_at
-    && new Date(run.pause_deadline_at).getTime() <= Date.now();
+    && lapsedDeadline === run.pause_deadline_at;
   const pausing = pauseRequested && !pauseLapsed;
   const phaseLabel: Record<string, string> = {
     init: 'Initializing', schema_discovery: 'schema_discovery',

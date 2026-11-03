@@ -424,3 +424,122 @@ func TestRunStatusPaused_IsNeitherActiveNorTerminal(t *testing.T) {
 		t.Errorf("RunStatusPaused = %q; the API writes the same literal into its filters", models.RunStatusPaused)
 	}
 }
+
+// --- the per-area analysis seam (v2's checkpoints, #510) --------------------
+
+// TestCheckpointAnalysisArea_PauseStopsAFTERTheAreaIsDurable is the analysis
+// twin of TestCheckpointStep_PauseStopsAFTERTheStepIsDurable, and it exists
+// because v2 made the per-area seam a free pause point: a completed area is
+// checkpointed, so a resume restores it instead of re-analysing it.
+//
+// Same ordering, same reason. The probe runs before the write so a superseded
+// attempt cannot plant an area the live attempt has not reached; the pause is
+// therefore remembered and taken afterwards, once the area is durable.
+func TestCheckpointAnalysisArea_PauseStopsAFTERTheAreaIsDurable(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("the area is written, then the pause is signalled", func(t *testing.T) {
+		doc := newFakeRunDoc()
+		doc.pauseRequested = true
+		store := &fakeAnalysisCheckpointStore{}
+		o := &Orchestrator{
+			runID:                     "run-1",
+			projectID:                 "proj",
+			statusReporter:            reporterFor(doc, 1),
+			analysisCheckpointRepo:    store,
+			explorationSummaryAttempt: 1,
+			attemptStartedAt:          time.Now(),
+		}
+
+		err := o.checkpointAnalysisArea(ctx, models.AnalysisStep{AreaID: "churn"}, 4)
+		if !errors.Is(err, ai.ErrPauseRequested) {
+			t.Fatalf("checkpointAnalysisArea() = %v, want ErrPauseRequested", err)
+		}
+		if len(store.saved) != 1 || store.saved[0].Step.AreaID != "churn" {
+			t.Fatalf("saved areas = %+v, want one row for churn: the area the operator interrupted must be durable before anything stops", store.saved)
+		}
+		if len(doc.pauses) != 1 {
+			t.Errorf("pause writes = %d, want 1", len(doc.pauses))
+		}
+	})
+
+	t.Run("supersession skips the write entirely", func(t *testing.T) {
+		doc := newFakeRunDoc()
+		doc.owns = false
+		store := &fakeAnalysisCheckpointStore{}
+		o := &Orchestrator{
+			runID:                     "run-1",
+			statusReporter:            reporterFor(doc, 1),
+			analysisCheckpointRepo:    store,
+			explorationSummaryAttempt: 1,
+		}
+		err := o.checkpointAnalysisArea(ctx, models.AnalysisStep{AreaID: "churn"}, 0)
+		if !errors.Is(err, ai.ErrAttemptSuperseded) {
+			t.Fatalf("checkpointAnalysisArea() = %v, want ErrAttemptSuperseded", err)
+		}
+		if len(store.saved) != 0 {
+			t.Errorf("a superseded attempt wrote %d area rows", len(store.saved))
+		}
+	})
+
+	t.Run("no pause where nothing durable lands", func(t *testing.T) {
+		// Each of these returns before the write. A pause taken here would
+		// stop the run having checkpointed nothing for this area — the work
+		// would be re-analysed, which is the opposite of what a pause
+		// promises — so the request has to keep standing instead.
+		for _, tc := range []struct {
+			name string
+			set  func(*Orchestrator)
+			step models.AnalysisStep
+		}{
+			{"no durable exploration summary", func(o *Orchestrator) { o.explorationSummaryAttempt = 0 }, models.AnalysisStep{AreaID: "churn"}},
+			{"the area errored", func(*Orchestrator) {}, models.AnalysisStep{AreaID: "churn", Error: "llm timeout"}},
+			{"no area id", func(*Orchestrator) {}, models.AnalysisStep{}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				doc := newFakeRunDoc()
+				doc.pauseRequested = true
+				store := &fakeAnalysisCheckpointStore{}
+				o := &Orchestrator{
+					runID:                     "run-1",
+					statusReporter:            reporterFor(doc, 1),
+					analysisCheckpointRepo:    store,
+					explorationSummaryAttempt: 1,
+					attemptStartedAt:          time.Now(),
+				}
+				tc.set(o)
+
+				if err := o.checkpointAnalysisArea(ctx, tc.step, 0); err != nil {
+					t.Fatalf("checkpointAnalysisArea() = %v, want nil so the run carries on to a real pause point", err)
+				}
+				if len(doc.pauses) != 0 {
+					t.Errorf("paused with nothing checkpointed for this area; the work would be re-analysed on resume")
+				}
+			})
+		}
+	})
+
+	t.Run("a failed area write does not pause either", func(t *testing.T) {
+		// The write is best-effort — a checkpoint must never abort a working
+		// run — so a failure is swallowed. But the pause must be swallowed
+		// with it: stopping now would claim an area is durable when the write
+		// that was meant to make it so just failed.
+		doc := newFakeRunDoc()
+		doc.pauseRequested = true
+		store := &fakeAnalysisCheckpointStore{saveErr: errors.New("mongo is down")}
+		o := &Orchestrator{
+			runID:                     "run-1",
+			statusReporter:            reporterFor(doc, 1),
+			analysisCheckpointRepo:    store,
+			explorationSummaryAttempt: 1,
+			attemptStartedAt:          time.Now(),
+		}
+
+		if err := o.checkpointAnalysisArea(ctx, models.AnalysisStep{AreaID: "churn"}, 0); err != nil {
+			t.Fatalf("checkpointAnalysisArea() = %v, want nil — a failed checkpoint must not abort the run", err)
+		}
+		if len(doc.pauses) != 0 {
+			t.Error("paused on an area whose checkpoint write failed; the resume would re-analyse it")
+		}
+	})
+}

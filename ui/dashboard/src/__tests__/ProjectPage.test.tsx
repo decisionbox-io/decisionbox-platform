@@ -36,6 +36,7 @@ const discardRun = jest.fn();
 const getRun = jest.fn();
 const triggerDiscovery = jest.fn();
 const cancelRun = jest.fn();
+const pauseRun = jest.fn();
 
 jest.mock('@/lib/api', () => ({
   __esModule: true,
@@ -59,6 +60,7 @@ jest.mock('@/lib/api', () => ({
     triggerDiscovery: (...a: unknown[]) => triggerDiscovery(...a),
     getRun: (...a: unknown[]) => getRun(...a),
     cancelRun: (...a: unknown[]) => cancelRun(...a),
+    pauseRun: (...a: unknown[]) => pauseRun(...a),
     resumeRun: (...a: unknown[]) => resumeRun(...a),
     discardRun: (...a: unknown[]) => discardRun(...a),
   },
@@ -1247,4 +1249,215 @@ it('withholds Discard from a run that is already discarded', async () => {
   // resume from either.
   expect(screen.queryByText(/Resume from step/)).not.toBeInTheDocument();
 });
+});
+
+// Operator pause (#508). The run panel is the only place a pause can be
+// asked for or seen, and it is also the file a deployment overlay replaces
+// wholesale — so these assertions are what catch a sync that missed the CTAs.
+describe('Operator pause (#508)', () => {
+  beforeEach(() => {
+    pauseRun.mockResolvedValue({ status: 'pause_requested', run_id: 'r1', attempt: 1 });
+  });
+
+  it('offers Pause beside Cancel while a run is live', async () => {
+    getProjectStatus.mockResolvedValue(status(makeRun({ status: 'running' })));
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('Pause')).toBeInTheDocument());
+    expect(screen.getByText('Cancel')).toBeInTheDocument();
+    // Not Resume — the run has not stopped.
+    expect(screen.queryByText(/Resume from step/)).not.toBeInTheDocument();
+  });
+
+  it('requests the pause and says the run will stop after its current step', async () => {
+    getProjectStatus.mockResolvedValue(status(makeRun({ status: 'running' })));
+    renderPage();
+    const btn = await waitFor(() => screen.getByText('Pause'));
+
+    await act(async () => { btn.click(); });
+    await flush();
+
+    expect(pauseRun).toHaveBeenCalledWith('r1');
+    // The panel flips to "Pausing…" straight away rather than waiting for the
+    // next poll: the request is recorded, but the run is still working.
+    await waitFor(() => expect(screen.getByText(/Pausing/)).toBeInTheDocument());
+    // And Pause is gone, so a second click cannot look like it will make the
+    // run stop any sooner.
+    expect(screen.queryByText('Pause')).not.toBeInTheDocument();
+  });
+
+  it('shows the server message when a pause is refused, and re-reads the run', async () => {
+    // A 409 here is a real answer — most usefully "this run is past the point
+    // where it can be paused" — so the operator must see it rather than a
+    // generic failure, and the panel must catch up with what the server knows.
+    getProjectStatus.mockResolvedValue(status(makeRun({ status: 'running' })));
+    pauseRun.mockRejectedValue(new Error('run is past the point where it can be paused (phase: recommendations)'));
+    getRun.mockResolvedValue(makeRun({ status: 'running', phase: 'recommendations' }));
+    renderPage();
+    const btn = await waitFor(() => screen.getByText('Pause'));
+
+    await act(async () => { btn.click(); });
+    await flush();
+
+    expect(pauseRun).toHaveBeenCalledWith('r1');
+    expect(getRun).toHaveBeenCalledWith('r1');
+    // The panel did not pretend the run is pausing.
+    expect(screen.queryByText(/Pausing/)).not.toBeInTheDocument();
+  });
+
+  it('keeps the panel up for a paused run, with Resume and Cancel', async () => {
+    // The regression that would hide the feature entirely: the panel used to
+    // be gated on live-or-finished, and a paused run is neither — so without
+    // the paused case it vanishes the moment the agent honours the pause,
+    // taking the Resume button with it.
+    getProjectStatus.mockResolvedValue(
+      status(makeRun({ status: 'paused', last_checkpoint_step: 12, progress: 40 })),
+    );
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('Discovery paused')).toBeInTheDocument());
+    expect(screen.getByText('Resume from step 12')).toBeInTheDocument();
+    expect(screen.getByText('Cancel')).toBeInTheDocument();
+    // Not finished, so neither of the finished-run affordances is offered.
+    expect(screen.queryByText('Dismiss')).not.toBeInTheDocument();
+    expect(screen.queryByText('Discard')).not.toBeInTheDocument();
+    // And no Pause: it has already stopped.
+    expect(screen.queryByText('Pause')).not.toBeInTheDocument();
+  });
+
+  it('resumes a paused run', async () => {
+    getProjectStatus.mockResolvedValue(
+      status(makeRun({ status: 'paused', last_checkpoint_step: 12 })),
+    );
+    resumeRun.mockResolvedValue({ status: 'resumed', run_id: 'r1', attempt: 2 });
+    renderPage();
+    const btn = await waitFor(() => screen.getByText('Resume from step 12'));
+
+    await act(async () => { btn.click(); });
+    await flush();
+
+    expect(resumeRun).toHaveBeenCalledWith('r1');
+  });
+
+  it('stops polling steps for a paused run', async () => {
+    // There is no agent behind a paused run, so there are no new rows. The
+    // poll is self-scheduling and gated on the run being unsettled; leaving
+    // `paused` out of that set would poll a dead run every 1.5s for as long
+    // as the tab stays open.
+    jest.useFakeTimers();
+    try {
+      getProjectStatus.mockResolvedValue(status(makeRun({ status: 'paused', last_checkpoint_step: 12 })));
+      renderPage();
+      await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+      const afterFirst = listRunSteps.mock.calls.length;
+
+      await act(async () => { await jest.advanceTimersByTimeAsync(10_000); });
+
+      expect(listRunSteps.mock.calls.length).toBe(afterFirst);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('says the pause request timed out once its deadline has passed', async () => {
+    // The deadline is only worth storing if the UI acts on it: past it the
+    // agent ignores the request, so claiming the run is still pausing would
+    // leave the operator waiting for something that will not happen.
+    getProjectStatus.mockResolvedValue(status(makeRun({
+      status: 'running',
+      pause_requested_at: '2026-01-01T00:00:00Z',
+      pause_deadline_at: '2026-01-01T00:30:00Z',
+    })));
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText(/Pause request timed out/)).toBeInTheDocument());
+    // And Pause comes back, because asking again is the actionable response.
+    expect(screen.getByText('Pause')).toBeInTheDocument();
+  });
+
+  it('does not claim a finished run is pausing', async () => {
+    // A request stamped a second before the agent's terminal write stays on
+    // the document. The status is what settles it.
+    getProjectStatus.mockResolvedValue(status(makeRun({
+      status: 'completed',
+      pause_requested_at: '2099-01-01T00:00:00Z',
+      pause_deadline_at: '2099-01-01T00:30:00Z',
+    })));
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('Discovery complete')).toBeInTheDocument());
+    expect(screen.queryByText(/Pausing/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Pause request timed out/)).not.toBeInTheDocument();
+  });
+
+  it('confirms before cancelling, and says what cancel costs that pause does not', async () => {
+    getProjectStatus.mockResolvedValue(status(makeRun({ status: 'running' })));
+    cancelRun.mockResolvedValue({ status: 'cancelled', message: 'ok' });
+    renderPage();
+    const btn = await waitFor(() => screen.getByText('Cancel'));
+
+    await act(async () => { btn.click(); });
+    await flush();
+    // The dialog gates the call — the whole point of adding one now that a
+    // non-destructive stop sits next to it.
+    expect(cancelRun).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByText(/Stop this run and discard its progress/)).toBeInTheDocument());
+    expect(screen.getByText(/deletes this run's exploration/)).toBeInTheDocument();
+    // And it points at the reversible alternative, which is the reason the
+    // dialog exists at all now that Pause sits one button away.
+    expect(screen.getByText(/can be resumed later/)).toBeInTheDocument();
+
+    const dialog = await waitFor(() => screen.getByRole('dialog'));
+    await act(async () => { within(dialog).getByRole('button', { name: 'Cancel run' }).click(); });
+    await flush();
+    expect(cancelRun).toHaveBeenCalledWith('r1');
+  });
+
+  it('does not cancel when the confirmation is backed out of', async () => {
+    getProjectStatus.mockResolvedValue(status(makeRun({ status: 'running' })));
+    renderPage();
+    const btn = await waitFor(() => screen.getByText('Cancel'));
+
+    await act(async () => { btn.click(); });
+    await flush();
+    const dialog = await waitFor(() => screen.getByRole('dialog'));
+    await act(async () => { within(dialog).getByRole('button', { name: 'Keep running' }).click(); });
+    await flush();
+
+    expect(cancelRun).not.toHaveBeenCalled();
+  });
+
+  it('dismisses a finished run without a dialog', async () => {
+    // Dismiss is a per-tab hide, not a server call, so it must not inherit
+    // the cancel confirmation — the two used to share one handler.
+    getProjectStatus.mockResolvedValue(status(makeRun({ status: 'completed' })));
+    renderPage();
+    const dismiss = await waitFor(() => screen.getByText('Dismiss'));
+
+    await act(async () => { dismiss.click(); });
+    await flush();
+
+    expect(cancelRun).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByText('Discovery complete')).not.toBeInTheDocument();
+  });
+
+  it('does not double-count a paused run’s elapsed time', async () => {
+    // A paused attempt books its compute into active_ms on the way out. If
+    // `paused` were missing from the settled set, the live-attempt branch
+    // would add the same stretch again from last_resumed_at and the label
+    // would keep climbing for a run that has stopped.
+    getProjectStatus.mockResolvedValue(status(makeRun({
+      status: 'paused',
+      last_checkpoint_step: 12,
+      active_ms: 120_000,
+      last_resumed_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T02:00:00Z',
+    })));
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('Discovery paused')).toBeInTheDocument());
+    // 120s of booked compute, not 120s + the two hours since the resume.
+    expect(screen.getByText('2m 0s elapsed')).toBeInTheDocument();
+  });
 });

@@ -1194,6 +1194,38 @@ describe('api.listSchemaEdits', () => {
 
 // --- Resume (#438) ---
 
+describe('api.pauseRun', () => {
+  it('POSTs to the run-scoped pause endpoint and returns the deadline', async () => {
+    mockSuccess({
+      status: 'pause_requested', run_id: 'run-1', attempt: 1,
+      pause_deadline_at: '2026-01-01T00:30:00Z',
+    });
+
+    const result = await api.pauseRun('run-1');
+
+    // "pause_requested", not "paused": the agent writes the status when it
+    // reaches a clean seam, which can be minutes later.
+    expect(result.status).toBe('pause_requested');
+    expect(result.pause_deadline_at).toBe('2026-01-01T00:30:00Z');
+
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toContain('/api/v1/runs/run-1/pause');
+    expect(opts.method).toBe('POST');
+  });
+
+  it('surfaces a 409 as an ApiError carrying the server message', async () => {
+    // The most useful refusal names the phase — the run is past the point
+    // where stopping is free — so the UI has to be able to show it verbatim
+    // rather than a generic failure.
+    mockError(409, 'run is past the point where it can be paused (phase: recommendations)');
+
+    const err = await api.pauseRun('run-1').catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(409);
+    expect(err.message).toContain('phase: recommendations');
+  });
+});
+
 describe('api.resumeRun', () => {
   it('POSTs to the run-scoped resume endpoint and returns the attempt', async () => {
     mockSuccess({ status: 'resumed', run_id: 'run-1', attempt: 2 });

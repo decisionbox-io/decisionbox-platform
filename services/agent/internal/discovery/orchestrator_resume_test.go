@@ -1002,11 +1002,12 @@ func TestOwnershipGates_CoverEverySpendAndSideEffectAfterExploration(t *testing.
 			t.Errorf("missing pausable gate: %s", want)
 		}
 	}
-	// not pausable: mid-area and later, where this attempt's analysis,
-	// validation and recommendation work is not checkpointed. A pause here
-	// would discard it for a run that is minutes from finishing, and the
-	// persist tail is outside the pause window permanently — it owes
-	// durability for work already done.
+	// not pausable: the gates that sit MID-area, and everything after the last
+	// area. A pause at one of these would discard work this attempt has done
+	// and not checkpointed — and the per-area seam a few lines later is the
+	// free point, which is also the only one that catches the LAST area
+	// (there is no next iteration after it). The persist tail is outside the
+	// pause window permanently: it owes durability for work already done.
 	for _, want := range []string{
 		`o.ownershipLost(ctx, "analysis area "+area.ID)`,
 		`o.ownershipLost(ctx, "validating area "+area.ID)`,
@@ -1031,6 +1032,15 @@ func TestOwnershipGates_CoverEverySpendAndSideEffectAfterExploration(t *testing.
 		if strings.Contains(string(src), forbidden) {
 			t.Errorf("gate past the pause window became pausable: %s — a pause there discards this attempt's unsaved analysis", forbidden)
 		}
+	}
+	// And the per-area CHECKPOINT seam is where the analysis pause actually
+	// lives, so the call that reaches it has to still be there. Asserted here
+	// rather than only in analysis_resume.go's own tests because this is the
+	// file that decides the pause window, and a seam silently dropped from the
+	// loop would leave a mid-analysis Pause accepted by the API and honoured
+	// by nothing.
+	if !strings.Contains(string(src), "o.checkpointAnalysisArea(ctx, step,") {
+		t.Error("the per-area checkpoint call is gone from the analysis loop; a mid-analysis pause would never be honoured")
 	}
 }
 

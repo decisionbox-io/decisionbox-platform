@@ -87,8 +87,28 @@ func (o *Orchestrator) checkpointAnalysisArea(ctx context.Context, step models.A
 		applog.WithField("run_id", o.runID).Warn("analysis area finished with no area id; not checkpointing it")
 		return nil
 	}
-	if o.statusReporter != nil && !o.statusReporter.OwnsRun(ctx) {
-		return ai.ErrAttemptSuperseded
+	//
+	// A PAUSE request is handled the other way round — remembered, not acted
+	// on, so the write below still happens. This is the analysis twin of the
+	// exploration-step seam (#508): the area the operator interrupted is
+	// finished, so letting its row land first makes the pause free, and
+	// stopping before it would throw the area away and re-analyse it on
+	// resume. See the tail of this function.
+	//
+	// Note what the early returns above already guarantee: every path that
+	// reaches here is one where a row is actually about to be written. A run
+	// with no durable exploration summary, or an area that errored, returns
+	// nil further up and is NOT a pause point — correctly, because nothing
+	// durable lands there and a pause would strand work the resume cannot
+	// restore.
+	pauseRequested := false
+	if o.statusReporter != nil {
+		switch o.statusReporter.Standing(ctx) {
+		case standingLost:
+			return ai.ErrAttemptSuperseded
+		case standingPauseRequested:
+			pauseRequested = true
+		}
 	}
 
 	err := o.analysisCheckpointRepo.SaveArea(ctx, database.AnalysisAreaCheckpointInput{
@@ -119,6 +139,15 @@ func (o *Orchestrator) checkpointAnalysisArea(ctx context.Context, step models.A
 	// to one have already set it — the explore path in
 	// checkpointExplorationSummary, the resume path at the top of
 	// RunDiscovery — so a setter here could never change the value.
+
+	// This area is durable, so this is the clean stop the operator asked for
+	// (#508). Taken on the CHECKPOINT seam rather than at the next
+	// iteration's gate, and the difference is not cosmetic: there is no next
+	// iteration after the last area, so a gate-based pause would sail past it
+	// into the recommendation phase and never be honoured at all.
+	if pauseRequested {
+		return o.pauseAttempt(ctx, "Paused after analysing "+step.AreaID+" — resume to continue")
+	}
 	return nil
 }
 
