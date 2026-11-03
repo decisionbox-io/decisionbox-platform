@@ -380,6 +380,10 @@ func TestCheckpointStep_PauseStopsAFTERTheStepIsDurable(t *testing.T) {
 			checkpointRepo:   store,
 			attemptStartedAt: time.Now(),
 		}
+		// Step 7 arrives with six contiguous checkpoints behind it, as it
+		// does on a real run. Without that the seam correctly refuses to
+		// pause — see TestCheckpointStep_WillNotPauseOntoAGap.
+		o.contiguousCheckpointThrough = 6
 
 		err := o.checkpointStep(ctx, models.ExplorationStep{Step: 7, Action: "query_data"}, models.CheckpointArgs{})
 		if !errors.Is(err, ai.ErrPauseRequested) {
@@ -741,4 +745,68 @@ func TestCheckpointStep_ContiguityTracksGapsNotRows(t *testing.T) {
 			t.Errorf("contiguousCheckpointThrough = %d, want 3", o.contiguousCheckpointThrough)
 		}
 	})
+}
+
+// TestCheckpointStep_WillNotPauseOntoAGap is the third round of the same
+// finding, on the path the second round's fix did not cover.
+//
+// stopBefore guards the phase gates, but this seam is reached straight from
+// the engine, so the gate never sees it. A transient step-1 write failure
+// followed by a successful step-2 write therefore signalled a pause with no
+// replayable prefix, and the orchestrator wrote `paused` for a run the resume
+// endpoint then refuses — a working run stranded with no way out but cancel.
+func TestCheckpointStep_WillNotPauseOntoAGap(t *testing.T) {
+	ctx := context.Background()
+	doc := newFakeRunDoc()
+	doc.pauseRequested = true
+	store := &fakeCheckpointStore{stepErr: errors.New("mongo is down")}
+	o := &Orchestrator{
+		runID: "run-1", projectID: "proj",
+		statusReporter:   reporterFor(doc, 1),
+		checkpointRepo:   store,
+		attemptStartedAt: time.Now(),
+	}
+
+	// Step 1's write fails. Swallowed one layer up, so the run continues.
+	if err := o.checkpointStep(ctx, models.ExplorationStep{Step: 1}, models.CheckpointArgs{}); err == nil {
+		t.Fatal("a failed SaveStep reported no error")
+	}
+
+	// Step 2's lands, so a row now exists — but the prefix has a hole in it.
+	store.stepErr = nil
+	err := o.checkpointStep(ctx, models.ExplorationStep{Step: 2}, models.CheckpointArgs{})
+	if err != nil {
+		t.Fatalf("checkpointStep() = %v, want nil: there is nothing a resume could replay, so the pause must wait", err)
+	}
+	if errors.Is(err, ai.ErrPauseRequested) {
+		t.Error("signalled a pause onto a gap; the run would land in `paused` with a resume the API refuses")
+	}
+
+	// And the request still stands, so the next contiguous step honours it.
+	// Step 3 does not close the gap at step 1, so it must not pause either.
+	if err := o.checkpointStep(ctx, models.ExplorationStep{Step: 3}, models.CheckpointArgs{}); err != nil {
+		t.Fatalf("step 3: %v, want nil — the gap at step 1 is still there", err)
+	}
+	if len(doc.pauses) != 0 {
+		t.Errorf("wrote %d pauses onto an unresumable run", len(doc.pauses))
+	}
+}
+
+// TestCheckpointStep_PausesOnceTheFirstStepLands is the other side of it: the
+// precondition must not withhold a pause for ever. A run whose first write
+// lands has a replayable prefix and pauses at that very step.
+func TestCheckpointStep_PausesOnceTheFirstStepLands(t *testing.T) {
+	doc := newFakeRunDoc()
+	doc.pauseRequested = true
+	o := &Orchestrator{
+		runID: "run-1", projectID: "proj",
+		statusReporter:   reporterFor(doc, 1),
+		checkpointRepo:   &fakeCheckpointStore{},
+		attemptStartedAt: time.Now(),
+	}
+
+	err := o.checkpointStep(context.Background(), models.ExplorationStep{Step: 1}, models.CheckpointArgs{})
+	if !errors.Is(err, ai.ErrPauseRequested) {
+		t.Fatalf("checkpointStep() = %v, want ErrPauseRequested — step 1 is a replayable prefix of one", err)
+	}
 }

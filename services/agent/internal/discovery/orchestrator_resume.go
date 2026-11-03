@@ -203,6 +203,26 @@ func (o *Orchestrator) checkpointStep(ctx context.Context, step models.Explorati
 	// accounting and the orchestrator take the stop afterwards, once nothing
 	// further will write.
 	if pauseRequested {
+		// The same replayability precondition stopBefore applies, and it has
+		// to be repeated here rather than relied on there: this seam is
+		// reached directly from the engine, so the gate never sees it.
+		//
+		// The case it catches is the one the counter above exists for. Step
+		// 1's write failing and step 2's landing leaves a row and a GAP, so
+		// the counter has not advanced and LoadPrefix would find nothing to
+		// replay — signalling a pause on that would have the orchestrator
+		// write `paused` for a run the resume endpoint then refuses, which is
+		// a working run stranded with no way out but cancel.
+		//
+		// Carrying on is right rather than conservative: the request stands,
+		// and the next step whose write lands contiguously honours it.
+		if !o.hasResumePoint() {
+			applog.WithFields(applog.Fields{
+				"run_id": o.runID, "step": step.Step,
+				"contiguous_through": o.contiguousCheckpointThrough,
+			}).Warn("an operator asked for a pause, but an earlier checkpoint write left a gap, so there is nothing a resume could replay yet; continuing until the prefix is unbroken")
+			return nil
+		}
 		return ai.ErrPauseRequested
 	}
 	return nil
