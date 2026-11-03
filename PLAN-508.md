@@ -165,6 +165,10 @@ finished anyway.
 **Rule: a pause is honoured while the run is in exploration, and at the Phase 4
 entry gate. Past that it is declined and the run finishes.**
 
+That rule is a function of what resume can re-use, which v2 changes — so the
+window is implemented as a **named property of the gate** rather than as
+scattered conditionals, and widening it is additive. See §11.
+
 | Gate (file:line today) | Honours pause? | Why |
 |---|---|---|
 | exploration step, after `checkpointStep` (`ai/exploration.go:836`) | **yes** | the step is finished and durable; nothing is lost |
@@ -400,9 +404,26 @@ render a lowercase grey "paused".
 
 **Not in this repo:** `app/projects/[id]/page.tsx` is one of the dashboard files
 a deployment overlay replaces *wholesale* rather than patching, so the same
-change must land there in a parallel PR on an identically-named branch or half
-the deployments silently get no Pause CTA. Flagged to @abacigil at plan time;
-the API and agent halves are shared and need nothing. (#438 hit exactly this.)
+change must land there too or half the deployments silently get no Pause CTA.
+**A paired plan PR is open on an identically-named branch** (`jale/issue-508`);
+the API and agent halves are shared and need nothing, and `src/lib/api.ts` and
+`ProjectRunStatus.tsx` are not overlaid, so the overlay work is one file.
+
+That pairing raises one decision for this repo, because the usual safety net
+does not catch this feature. The overlay's drift guard compares what makes a
+feature *reachable* — a rendered first-party component and a linked route — and
+Pause adds neither: its buttons live **inside `LiveRunPanel`, which is defined
+inside `page.tsx` itself**. So a missed sync is invisible to CI, which is how
+#438's Resume button had to be caught by hand.
+
+**Proposed, for sign-off rather than assumed:** extract `LiveRunPanel` into
+`src/components/projects/LiveRunPanel.tsx` and have the page import it. The
+overlay then imports the same component instead of carrying a copy, so every
+future change to the run panel reaches every deployment automatically *and*
+falls under the drift guard. It is a pure move — ~300 lines, no behaviour, and
+the two copies already agree apart from three trimmed comments. It is also a
+structural change rather than part of the reported work, so it is @abacigil's
+call; without it the sync stays correct but hand-maintained.
 
 ### 5.4 Docs (Rule 4)
 
@@ -565,7 +586,8 @@ targets (CI skips Integration Tests on PRs). All prefixed `GOTOOLCHAIN=auto`.
 
 - Per-area (v2) and per-insight (v3) resume granularity — a pause after
   exploration still re-pays analysis from the top, exactly as v1's crash
-  recovery does.
+  recovery does. The interaction with the v2 work that is **already in review**
+  is §11, not a hand-wave: it is the one place v2 changes a v4 decision.
 - **Concurrency-at-resume policy** — a paused run holds its concurrent-run
   reservation, and a fresh run can start alongside it (then blocking the resume),
   which is today's behaviour for a `failed` run. Flagged in the issue as a
@@ -586,6 +608,78 @@ targets (CI skips Integration Tests on PRs). All prefixed `GOTOOLCHAIN=auto`.
 | A `paused` run can be resumed and completes, re-using work up to the pause point (no re-paid exploration) | live resume: zero `Exploration step starting` / `Executing exploration action` over the replayed prefix; a second pass pausing at Phase 4 entry logs `skipping Phase 3 entirely` |
 | Cancel remains a terminal hard-kill, now with a confirmation dialog; Pause and Cancel are distinct CTAs | handler tests (cancel on running and on paused); dashboard tests for both CTAs and the modal; live cancel of a paused run → terminal, checkpoints purged, re-resume 409 |
 | Same `runID` across pause/resume; lifecycle metadata records the pause/resume events | integration test on the `lifecycle` array (`paused` by the agent, `running` by `BeginResume`) plus `last_paused_at` / `last_resumed_at`; live run asserts one `run_id` throughout |
+
+---
+
+## 11. Interaction with v2 (#506 / PR #510) and v3 (#507)
+
+Checked against the actual v2 branch rather than against the issue text, because
+**v2 is not hypothetical: PR #510 is open, out of draft, 34 files, last pushed
+today.** It will almost certainly be on `main` before v4's build step starts, so
+v4 rebases onto v2, not the reverse.
+
+### What does not interact
+
+Both v2 (#506) and v3 (#507) state, and #510 confirms, that they add **no new run
+control and no new status**. #510 touches none of the machinery v4 extends:
+`RunOwnership`, `Ownership`, `OwnsRun` and `classifyUnappliedTerminal` are
+untouched. So nothing contends for the status field, the pause marker or the
+ownership probe, and v4's dependency on v1 alone is correct as the issue states.
+
+Two things also verified as needing nothing from v4:
+
+- v2 extends `CheckpointRepo.DeleteByRun` to purge the per-area analysis rows
+  alongside the exploration rows, so v4's cancel-a-paused-run path picks that up
+  for free — the handler already calls `DeleteByRun`.
+- v2's `discardAnalysisCheckpoints` is the twin of `discardCheckpoints`, and
+  v4's pause path returns before the terminal section, so neither runs. A paused
+  run keeps both sets, which is what makes it resumable. The integration test for
+  "a paused run keeps what makes it resumable" should assert the analysis rows
+  too, once they exist.
+
+### What does interact — the pause window
+
+This is the one real consequence, and §4 would be left stating something untrue
+if it were ignored.
+
+§4 closes the pause window after the Phase 4 entry gate **because under v1 alone
+a pause mid-analysis discards every area already analysed**. v2 removes that
+reason: `checkpointAnalysisArea` writes a durable per-area checkpoint at the end
+of each area's iteration, *before* the shared display writes — the exact
+structural twin of v1's `checkpointStep`, with the same `OwnsRun` probe and the
+same `ErrAttemptSuperseded` return. Under v2 the per-area seam is therefore a
+**free** pause point: at most the single area in flight is re-paid.
+
+So the window widens, and the widening is deliberately shaped to be five lines:
+convert `checkpointAnalysisArea`'s probe to `Standing` and return
+`ErrPauseRequested` after its write — identical to what §5.1 does to
+`checkpointStep`. That symmetry is why §4's window is a property of the gate
+(`stopBefore` vs `ownershipLost`) rather than a conditional sprinkled through
+`RunDiscovery`.
+
+**Recommendation, for sign-off with the plan:** if #510 is on `main` when the
+build step starts, widen the window to the per-area seam **in that same PR**.
+Not gold-plating — leaving it out would have Pause decline mid-analysis for a
+reason that is no longer true, and the pause window reflecting what resume can
+actually re-use *is* the feature. If #510 has not merged, ship v4 exactly as
+planned; the widening is then a small follow-up on top of v2, and v4 blocks on
+nothing.
+
+v3 extends the same logic one rung finer — per-insight / per-recommendation
+markers make the validation and recommendation gates cheap too — and the same
+gate property absorbs it with no v4 redesign. v3 is not started and depends on
+v2, so nothing is owed to it now.
+
+### Conflict surface, for whoever rebases
+
+All textual, none semantic. #510 inserts ~20 lines immediately after the
+`ownershipLost(ctx, "analysis")` gate that v4 converts to `stopBefore`, and ~25
+lines at the head of the per-area loop right after the
+`ownershipLost(ctx, "analysis area …")` gate. Both PRs add helpers to
+`orchestrator_resume.go` and `status.go`, and both edit `models/checkpoint.go`,
+`agentserver.go`, the same sections of `discovery-lifecycle.md`, `api.md`,
+`data-models.md`, `configuration.md`, the API chart values and `CHANGELOG.md`.
+Neither touches `models/run.go`, where v4's new fields live.
 
 ---
 
