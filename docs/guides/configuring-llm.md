@@ -1,3 +1,9 @@
+---
+title: "LLM Providers: Claude, OpenAI, Bedrock, Ollama and More"
+sidebar_label: Configuring LLM Providers
+description: "Set up DecisionBox with Claude, OpenAI, Ollama, Vertex AI, AWS Bedrock, Azure AI Foundry or a LiteLLM gateway: auth, model names and the best fit for each provider."
+---
+
 # Configuring LLM Providers
 
 A project can use **several providers at once** and pick a **provider and model for each layer** of the product. See [Providers and models per layer](#providers-and-models-per-layer) below; everything after it is per-provider setup, unchanged.
