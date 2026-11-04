@@ -560,17 +560,26 @@ func TestInteg_AnalysisResume_DedupExcludesThisRunsSupersededAttempts(t *testing
 // duplicate-key criterion, and it proves itself in both directions rather
 // than relying on someone reverting the fix by hand.
 //
-// The hazard is reachable through the deadline path. When DISCOVERY_MAX_DURATION
-// expires the Phase 4 loop does not stop: the area reaches allInsights, its
-// checkpoint write fails on the dead context and is swallowed — so the area
-// stays UNMARKED — and Phase 7 then saves a partial result under its own
-// persistence budget, writing those insight and recommendation ids into the
-// standalone collections. A later attempt that restored that work and reused
-// the ids would insert them again, and `InsertMany` is an insert: the
-// duplicate key aborts Phase 8, which is non-fatal, so it logs and returns,
-// dropping the standalone recommendation rows and the embedding with them —
-// after which the retire step deletes the predecessor's. A run that finished
-// SUCCESSFULLY ends with nothing in search.
+// The hazard is reachable through a death in or after Phase 8, which is the
+// only thing that writes the standalone rows. The shape: an area finishes its
+// loop body, so its insights reach allInsights, but its checkpoint write
+// fails transiently and is swallowed — leaving the area UNMARKED with its
+// draft retained. The attempt then finishes its compute cleanly, and Phase 8
+// denormalises and inserts those ids into `insights` and `recommendations`.
+// It dies before its terminal claim, which the API's startup sweep reaches
+// routinely, since it marks in-flight runs failed without reaping their
+// workloads. A later attempt that restored that draft and reused the ids
+// would insert them again, and `InsertMany` is an insert: the duplicate key
+// aborts Phase 8, which is non-fatal, so it logs and returns, dropping the
+// standalone recommendation rows and the embedding with them — after which
+// the retire step deletes the predecessor's. A run that finished SUCCESSFULLY
+// ends with nothing in search.
+//
+// Deliberately NOT the DISCOVERY_MAX_DURATION path: that leaves computeErr
+// non-nil and Phase 8 is gated on computeErr == nil, so a deadline-killed
+// attempt saves its partial result and never reaches the standalone writes.
+// The state below is therefore built directly rather than described as the
+// deadline's doing.
 //
 // So the test does both halves against the real collections and the real `_id`
 // uniqueness:

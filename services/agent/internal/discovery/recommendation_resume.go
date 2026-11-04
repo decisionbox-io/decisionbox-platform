@@ -434,9 +434,20 @@ func restorableRecommendations(
 // the `recommendations` collection and its Qdrant point, all written by the
 // tail under a freshly minted discovery_id — so an id carried over from the
 // attempt that generated it is an id that may ALREADY be in those
-// collections, written by that attempt before it died. (It is reachable the
-// same way: when DISCOVERY_MAX_DURATION expires the loop does not stop, and
-// Phase 7 saves a partial result under its own persistence budget.)
+// collections, written by that attempt before it died.
+//
+// What makes that reachable is a death in or after Phase 8, which is the only
+// thing that writes those rows: an attempt that finished its compute, saved,
+// denormalised and inserted, and then died before its terminal claim — the
+// window the API's startup sweep reaches routinely, since it marks in-flight
+// runs failed without reaping their workloads.
+//
+// NOT the DISCOVERY_MAX_DURATION path, which an earlier version of this
+// comment claimed. That path leaves computeErr non-nil, and Phase 8 is gated
+// on computeErr == nil, so a deadline-killed attempt never reaches the
+// standalone writes at all — it saves its partial result and stops. The
+// remint is still required; the trigger is the post-Phase-8 death, not the
+// deadline.
 //
 // Called AFTER Phase 5.5 returns, not at restore: the stored ids stay live for
 // the whole of that phase, so this attempt's verdict markers key on the ids
