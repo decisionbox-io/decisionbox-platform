@@ -35,16 +35,17 @@ func TestInteg_BackfillLLMLayers_StampsAndLeavesEverythingElseAlone(t *testing.T
 	t.Setenv("EMBEDDING_API_KEY", "k")
 
 	// A project exactly as a managed deployment left it before per-layer
-	// models: AI config stamped by the old managedai, no per-layer fields,
-	// and — the part that matters — a probed embedding dimension.
+	// models: AI config stamped by the old managedai, no per-layer fields, a
+	// probed embedding dimension, and a gateway host from back when
+	// AI_GATEWAY_URL pointed somewhere else. All three matter.
 	legacy := primitive.NewObjectID()
 	if _, err := col.InsertOne(ctx, bson.M{
 		"_id":  legacy,
 		"name": "legacy managed project",
 		"llm": bson.M{"provider": "openai", "model": "decisionbox-analysis-model",
-			"config": bson.M{"base_url": "https://ai.example.test/v1"}},
+			"config": bson.M{"base_url": "https://ai.STALE.example.test/v1"}},
 		"embedding": bson.M{"provider": "openai", "model": "decisionbox-embed-model",
-			"config": bson.M{"base_url": "https://ai.example.test/v1", "dimensions": "1536"}},
+			"config": bson.M{"base_url": "https://ai.STALE.example.test/v1", "dimensions": "1536"}},
 	}); err != nil {
 		t.Fatalf("seed legacy: %v", err)
 	}
@@ -115,9 +116,17 @@ func TestInteg_BackfillLLMLayers_StampsAndLeavesEverythingElseAlone(t *testing.T
 	if !ok {
 		t.Fatalf("embedding.config missing: %T", emb["config"])
 	}
+	if embCfg["base_url"] != "https://ai.example.test/v1" {
+		t.Errorf("embedding base_url = %v, want the configured gateway — a project last written against a "+
+			"different AI_GATEWAY_URL keeps pointing at it, and embeddings 401 against a gateway that does "+
+			"not know the tenant's key", embCfg["base_url"])
+	}
 	if embCfg["dimensions"] != "1536" {
 		t.Errorf("embedding dimensions = %v, want \"1536\" preserved — a whole-document write would have dropped it, "+
 			"forcing a re-probe or mismatching the existing vector collection", embCfg["dimensions"])
+	}
+	if llmCfg, ok := got["llm"].(bson.M)["config"].(bson.M); !ok || llmCfg["base_url"] != "https://ai.example.test/v1" {
+		t.Errorf("llm base_url not repaired: %v", got["llm"])
 	}
 	if got["name"] != "legacy managed project" {
 		t.Errorf("name = %v, want untouched", got["name"])
