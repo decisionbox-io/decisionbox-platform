@@ -70,6 +70,55 @@ const (
 	// when a run is cancelled or discarded.
 	CollectionDiscoveryAnalysisCheckpoints = "discovery_analysis_checkpoints"
 
+	// CollectionDiscoveryAnalysisDrafts holds one document per analysis area
+	// of an in-flight run that has been analysed but has NOT finished its
+	// per-insight validation: the area's step as the loop body left it before
+	// Phase 4.5, plus one completion marker per insight already validated.
+	//
+	// It is what makes per-insight resume possible at all. An area's insights
+	// are the output of a single LLM call that produces all of them at once,
+	// so there is no re-entering at insight 5 of 6 unless insights 1..6 are
+	// themselves durable.
+	//
+	// A SEPARATE collection from CollectionDiscoveryAnalysisCheckpoints rather
+	// than a stage field on the same (run_id, area_id) row, and the reason is
+	// not tidiness. The two rows are read differently — a completed area is
+	// restored and skipped, a draft is restored and FINISHED — and a reader
+	// that cannot tell them apart restores a draft as finished, admitting
+	// insights with no validation verdict into the result. Any discriminator
+	// on the shared row is honoured only by readers that know about it, so an
+	// older agent resuming the same run would apply the older meaning. A
+	// reader cannot misread a collection it never queries.
+	//
+	// A draft is superseded by, never merged with, the completed row for the
+	// same area: whoever loads both must prefer the completed one. The draft
+	// is deleted when its area finishes, with the retention TTL as the
+	// backstop, so that preference is what guarantees correctness rather than
+	// the delete.
+	//
+	// The agent (writer) owns the shape; the api only purges the rows when a
+	// run is cancelled or discarded.
+	CollectionDiscoveryAnalysisDrafts = "discovery_analysis_drafts"
+
+	// CollectionDiscoveryRecommendationCheckpoints holds one document per
+	// in-flight run whose Phase 5 recommendation generation finished: the
+	// recommendation step as the phase left it, the insight set it was
+	// generated over, and one completion marker per recommendation already
+	// validated in Phase 5.5.
+	//
+	// Run-scoped rather than area-scoped, which is why it is neither another
+	// row in CollectionDiscoveryAnalysisDrafts (keyed by area) nor in
+	// CollectionDiscoveryCheckpoints (whose readers scan a run's rows in step
+	// order and end the replayable prefix at the first unexpected number).
+	//
+	// Restoring it is gated on the run having produced the SAME insight set
+	// the recommendations were generated over, because a recommendation cites
+	// insights by id and a re-analysed area produces different ones.
+	//
+	// The agent (writer) owns the shape; the api only purges the rows when a
+	// run is cancelled or discarded.
+	CollectionDiscoveryRecommendationCheckpoints = "discovery_recommendation_checkpoints"
+
 	// CollectionDiscoveryQuestions holds the clarifying questions the agent
 	// generates at the end of a run when it was uncertain about something a
 	// business analyst could resolve. The agent (writer) inserts rows; the

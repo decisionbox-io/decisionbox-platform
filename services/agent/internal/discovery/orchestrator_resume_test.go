@@ -975,9 +975,17 @@ func TestOwnershipLost_GatesSpendOnPositiveEvidence(t *testing.T) {
 // section where ownership is DECIDED — see
 // TestProjectLearning_OnlyRecordedWhenTheResultSurvives.
 func TestOwnershipGates_CoverEverySpendAndSideEffectAfterExploration(t *testing.T) {
-	src, err := os.ReadFile("orchestrator.go")
-	if err != nil {
-		t.Fatalf("read orchestrator.go: %v", err)
+	// Two files, because the Phase 4 loop's analysis half lives in
+	// analysis_area.go: the loop has to choose between running it and
+	// restoring a draft of it, and the gate that sits between the analysis
+	// call and the validation calls went with the call it guards.
+	var src []byte
+	for _, name := range []string{"orchestrator.go", "analysis_area.go"} {
+		b, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		src = append(src, b...)
 	}
 	for _, want := range []string{
 		`o.ownershipLost(ctx, "rebuilding the step index")`,

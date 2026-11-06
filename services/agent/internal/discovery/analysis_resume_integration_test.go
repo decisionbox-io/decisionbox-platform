@@ -5,6 +5,7 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,7 +141,7 @@ func TestInteg_AnalysisResume_KOfNAreasAreRestoredAndTheRestAreNot(t *testing.T)
 	validatedPerArea := map[string]int{"churn": 2, "engagement": 1, "levels": 0}
 	for i, id := range []string{"churn", "engagement", "levels"} {
 		step := completedArea(id, validatedPerArea[id], at.Add(time.Duration(i)*time.Minute))
-		if err := first.checkpointAnalysisArea(ctx, step, validatedPerArea[id]); err != nil {
+		if _, err := first.checkpointAnalysisArea(ctx, step, validatedPerArea[id]); err != nil {
 			t.Fatalf("checkpoint %s: %v", id, err)
 		}
 	}
@@ -175,7 +176,7 @@ func TestInteg_AnalysisResume_KOfNAreasAreRestoredAndTheRestAreNot(t *testing.T)
 	analysed := 0
 	for _, area := range runAreas {
 		if cp, ok := completed[area.ID]; ok {
-			analysisLog, allInsights = restoreArea(cp, analysisLog, allInsights)
+			analysisLog, allInsights, _ = restoreArea(cp, analysisLog, allInsights)
 			continue
 		}
 		analysed++
@@ -184,7 +185,7 @@ func TestInteg_AnalysisResume_KOfNAreasAreRestoredAndTheRestAreNot(t *testing.T)
 		analysisLog = append(analysisLog, step)
 		allInsights = append(allInsights, step.Insights...)
 		validated++
-		if err := second.checkpointAnalysisArea(ctx, step, 1); err != nil {
+		if _, err := second.checkpointAnalysisArea(ctx, step, 1); err != nil {
 			t.Fatalf("checkpoint %s on attempt 2: %v", area.ID, err)
 		}
 	}
@@ -244,13 +245,13 @@ func TestInteg_AnalysisResume_AFailedAreaIsRetriedNotRestored(t *testing.T) {
 
 	// One area got through before the cap expired; the remaining three
 	// returned context.DeadlineExceeded.
-	if err := o.checkpointAnalysisArea(ctx, completedArea("churn", 2, at), 2); err != nil {
+	if _, err := o.checkpointAnalysisArea(ctx, completedArea("churn", 2, at), 2); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"engagement", "levels", "retention"} {
 		step := completedArea(id, 0, at)
 		step.Error = "context deadline exceeded"
-		if err := o.checkpointAnalysisArea(ctx, step, 0); err != nil {
+		if _, err := o.checkpointAnalysisArea(ctx, step, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -285,7 +286,7 @@ func TestInteg_AnalysisResume_AreasFromASupersededExplorationAreNotRestored(t *t
 	if err := repo.EnsureIndexes(ctx); err != nil {
 		t.Fatalf("EnsureIndexes: %v", err)
 	}
-	if err := first.checkpointAnalysisArea(ctx, completedArea("churn", 1, time.Now()), 1); err != nil {
+	if _, err := first.checkpointAnalysisArea(ctx, completedArea("churn", 1, time.Now()), 1); err != nil {
 		t.Fatal(err)
 	}
 
@@ -296,7 +297,7 @@ func TestInteg_AnalysisResume_AreasFromASupersededExplorationAreNotRestored(t *t
 		t.Errorf("restored %v over a re-exploration; those insights cite step numbers that no longer mean anything", got)
 	}
 	// And this attempt's own area is stamped against ITS exploration.
-	if err := second.checkpointAnalysisArea(ctx, completedArea("engagement", 1, time.Now()), 1); err != nil {
+	if _, err := second.checkpointAnalysisArea(ctx, completedArea("engagement", 1, time.Now()), 1); err != nil {
 		t.Fatal(err)
 	}
 	third, _ := resumedOrchestrator(t, db, "run-reexplored", 3, 2, 45)
@@ -340,7 +341,7 @@ func TestInteg_AnalysisResume_DiscardingTakesBothCollections(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := o.checkpointAnalysisArea(ctx, completedArea("churn", 1, time.Now()), 1); err != nil {
+	if _, err := o.checkpointAnalysisArea(ctx, completedArea("churn", 1, time.Now()), 1); err != nil {
 		t.Fatal(err)
 	}
 
@@ -397,7 +398,7 @@ func TestInteg_AnalysisResume_ARestoredAreaDoesNotCollideWithThePreviousAttempt(
 
 	// Attempt 2 restores that area. The merge remints the ids, so the tail's
 	// insert-only write cannot collide with what attempt 1 left behind.
-	_, restoredInsights := restoreArea(
+	_, restoredInsights, _ := restoreArea(
 		models.AnalysisAreaCheckpoint{Step: stored, InsightsValidated: 2}, nil, nil)
 	second := &models.DiscoveryResult{
 		ID: "discovery-2", ProjectID: "proj", Domain: "gaming", Category: "match3",
@@ -552,5 +553,223 @@ func TestInteg_AnalysisResume_DedupExcludesThisRunsSupersededAttempts(t *testing
 	}
 	if len(got) != 3 {
 		t.Errorf("exclusions = %v, want exactly this attempt's and its run's two predecessors", got)
+	}
+}
+
+// TestInteg_Remint_IsWhatKeepsTheTailFromCollidingOnItsOwnPredecessor is the
+// duplicate-key criterion, and it proves itself in both directions rather
+// than relying on someone reverting the fix by hand.
+//
+// The hazard is reachable through a death in or after Phase 8, which is the
+// only thing that writes the standalone rows. The shape: an area finishes its
+// loop body, so its insights reach allInsights, but its checkpoint write
+// fails transiently and is swallowed — leaving the area UNMARKED with its
+// draft retained. The attempt then finishes its compute cleanly, and Phase 8
+// denormalises and inserts those ids into `insights` and `recommendations`.
+// It dies before its terminal claim, which the API's startup sweep reaches
+// routinely, since it marks in-flight runs failed without reaping their
+// workloads. A later attempt that restored that draft and reused the ids
+// would insert them again, and `InsertMany` is an insert: the duplicate key
+// aborts Phase 8, which is non-fatal, so it logs and returns, dropping the
+// standalone recommendation rows and the embedding with them — after which
+// the retire step deletes the predecessor's. A run that finished SUCCESSFULLY
+// ends with nothing in search.
+//
+// Deliberately NOT the DISCOVERY_MAX_DURATION path: that leaves computeErr
+// non-nil and Phase 8 is gated on computeErr == nil, so a deadline-killed
+// attempt saves its partial result and never reaches the standalone writes.
+// The state below is therefore built directly rather than described as the
+// deadline's doing.
+//
+// So the test does both halves against the real collections and the real `_id`
+// uniqueness:
+//
+//   - reusing the stored ids DOES produce a duplicate key, which is what makes
+//     the second half meaningful rather than vacuous;
+//   - going through the remint first does not, and leaves both generations
+//     addressable until the retire step runs.
+func TestInteg_Remint_IsWhatKeepsTheTailFromCollidingOnItsOwnPredecessor(t *testing.T) {
+	db, cleanup := analysisResumeMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	store := NewMongoEmbedIndexStore(db)
+	o := &Orchestrator{embedIndexStore: store}
+
+	// What a previous attempt got as far as persisting before it died.
+	predecessor := "discovery-attempt-1"
+	storedArea := completedArea("churn", 3, time.Now())
+	storedRecs := []models.Recommendation{
+		{ID: "rec-1", Title: "Win back cohort 7", RelatedInsightIDs: []string{"churn-insight-0"}},
+		{ID: "rec-2", Title: "Fix the weekend funnel", RelatedInsightIDs: []string{"churn-insight-1"}},
+	}
+	seeded := &models.DiscoveryResult{
+		ID: predecessor, ProjectID: "proj", RunID: "run-1",
+		Insights: storedArea.Insights, Recommendations: storedRecs,
+	}
+	if err := store.InsertInsights(ctx, o.denormalizeInsights(seeded)); err != nil {
+		t.Fatalf("seed the predecessor's insights: %v", err)
+	}
+	if err := store.InsertRecommendations(ctx, o.denormalizeRecommendations(seeded)); err != nil {
+		t.Fatalf("seed the predecessor's recommendations: %v", err)
+	}
+
+	// Half one: the defect. This attempt reuses the ids it restored.
+	reused := &models.DiscoveryResult{
+		ID: "discovery-attempt-2", ProjectID: "proj", RunID: "run-1",
+		Insights: storedArea.Insights, Recommendations: storedRecs,
+	}
+	insErr := store.InsertInsights(ctx, o.denormalizeInsights(reused))
+	if insErr == nil {
+		t.Fatal("reusing a restored insight id did NOT collide; this test cannot see the defect it exists for, so its other half proves nothing")
+	}
+	if !strings.Contains(insErr.Error(), "E11000") && !strings.Contains(insErr.Error(), "duplicate key") {
+		t.Fatalf("expected a duplicate-key error, got %v", insErr)
+	}
+	recErr := store.InsertRecommendations(ctx, o.denormalizeRecommendations(reused))
+	if recErr == nil {
+		t.Fatal("reusing a restored recommendation id did NOT collide; the remint on that side would be unfalsifiable")
+	}
+
+	// Half two: the fix. The same restored work, reminted the way the loop
+	// remints it — the area at its merge boundary, the recommendations after
+	// Phase 5.5 returns.
+	restoredArea, _ := reidentifyRestoredArea(storedArea)
+	restoredRecs := make([]models.Recommendation, len(storedRecs))
+	copy(restoredRecs, storedRecs)
+	reidentifyRestoredRecommendations(restoredRecs, nil)
+
+	fresh := &models.DiscoveryResult{
+		ID: "discovery-attempt-3", ProjectID: "proj", RunID: "run-1",
+		Insights: restoredArea.Insights, Recommendations: restoredRecs,
+	}
+	if err := store.InsertInsights(ctx, o.denormalizeInsights(fresh)); err != nil {
+		t.Fatalf("reminted insights still collided with the predecessor's: %v", err)
+	}
+	if err := store.InsertRecommendations(ctx, o.denormalizeRecommendations(fresh)); err != nil {
+		t.Fatalf("reminted recommendations still collided with the predecessor's: %v", err)
+	}
+
+	// Both generations are addressable until the retire step removes the
+	// predecessor's — which is the ordering that makes the tail safe to run
+	// before the cleanup rather than after it.
+	for _, c := range []struct {
+		collection string
+		want       int64
+	}{{"insights", 6}, {"recommendations", 4}} {
+		n, err := db.Collection(c.collection).CountDocuments(ctx, bson.M{"project_id": "proj"})
+		if err != nil {
+			t.Fatalf("count %s: %v", c.collection, err)
+		}
+		if n != c.want {
+			t.Errorf("%s holds %d rows, want %d — the predecessor's and this attempt's", c.collection, n, c.want)
+		}
+	}
+	for _, id := range restoredArea.Insights {
+		if id.ID == "" {
+			t.Error("a reminted insight has no id")
+		}
+		for _, old := range storedArea.Insights {
+			if id.ID == old.ID {
+				t.Errorf("insight %q was not reminted", id.ID)
+			}
+		}
+	}
+}
+
+// TestInteg_AnalysisGeneration_SurvivesARealRestoreAndRoundTrip is the keystone
+// of the recommendation half, and the one chain whose failure would be SILENT.
+//
+// A stored Phase 5 is restorable only if its analysis-generation fingerprint
+// still matches, and the fingerprint is built from each contributing area's
+// RunAt. Every other test of it constructs that value by hand. What is checked
+// here is the real chain — the one that actually has to hold:
+//
+//	attempt 1 computes the fingerprint from its live analysisLog
+//	  → SaveArea puts the step through BSON, which keeps milliseconds
+//	    → attempt 2 loads it, restoreArea merges and remints
+//	      → attempt 2 recomputes the fingerprint
+//
+// If RunAt does not survive that exactly, the recommendation checkpoint never
+// restores on any run, for anyone — and nothing fails, nothing logs an error,
+// and every hand-built test still passes. A silent no-op is the worst failure
+// mode this feature can have, so it gets the one test that cannot be fooled by
+// a fixture.
+func TestInteg_AnalysisGeneration_SurvivesARealRestoreAndRoundTrip(t *testing.T) {
+	db, cleanup := analysisResumeMongo(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := database.NewDiscoveryAnalysisCheckpointRepository(db)
+
+	// Nanosecond precision, as time.Now() hands it to the loop and as BSON
+	// will NOT give it back.
+	t1 := time.Now().Add(-2 * time.Hour)
+	if t1.Nanosecond()%int(time.Millisecond) == 0 {
+		t1 = t1.Add(123456 * time.Nanosecond)
+	}
+	t2 := t1.Add(7 * time.Minute)
+
+	churn := completedArea("churn", 2, t1)
+	revenue := completedArea("revenue", 1, t2)
+	attempt1Log := []models.AnalysisStep{churn, revenue}
+	var attempt1Insights []models.Insight
+	attempt1Insights = append(attempt1Insights, churn.Insights...)
+	attempt1Insights = append(attempt1Insights, revenue.Insights...)
+
+	// What attempt 1 records on its recommendation checkpoint.
+	attempt1 := analysisGenerationFingerprint(attempt1Insights, attempt1Log)
+	if len(attempt1) != 2 {
+		t.Fatalf("fingerprint = %v, want one entry per contributing area", attempt1)
+	}
+
+	for _, step := range attempt1Log {
+		if err := repo.SaveArea(ctx, database.AnalysisAreaCheckpointInput{
+			ProjectID: "proj", RunID: "run-1", Attempt: 1, ExplorationAttempt: 1,
+			Step: step, InsightsValidated: len(step.Insights),
+		}); err != nil {
+			t.Fatalf("SaveArea(%s): %v", step.AreaID, err)
+		}
+	}
+
+	// Attempt 2 restores both areas exactly as the Phase 4 loop does.
+	set, err := repo.LoadAreas(ctx, "run-1", 1)
+	if err != nil {
+		t.Fatalf("LoadAreas: %v", err)
+	}
+	if set.Len() != 2 {
+		t.Fatalf("restored %d areas, want 2", set.Len())
+	}
+	var attempt2Log []models.AnalysisStep
+	var attempt2Insights []models.Insight
+	for _, areaID := range []string{"churn", "revenue"} {
+		cp, ok := set.Areas[areaID]
+		if !ok {
+			t.Fatalf("%s did not come back", areaID)
+		}
+		attempt2Log, attempt2Insights, _ = restoreArea(cp, attempt2Log, attempt2Insights)
+	}
+
+	attempt2 := analysisGenerationFingerprint(attempt2Insights, attempt2Log)
+	if !sameAnalysisGeneration(attempt1, attempt2) {
+		t.Fatalf("the fingerprint did not survive the round trip: attempt 1 computed %v, attempt 2 recomputed %v.\n"+
+			"No recommendation checkpoint would ever be restorable, and nothing would report it.", attempt1, attempt2)
+	}
+
+	// The restore reminted every insight id, so the match above cannot have
+	// come from the ids — which is the whole point of having a fingerprint.
+	for i := range attempt2Insights {
+		for j := range attempt1Insights {
+			if attempt2Insights[i].ID == attempt1Insights[j].ID {
+				t.Errorf("insight %q was not reminted; this test would pass for the wrong reason", attempt2Insights[i].ID)
+			}
+		}
+	}
+
+	// And the negative: re-analysing one area changes the fingerprint, so a
+	// stored Phase 5 is refused rather than restored over changed findings.
+	reanalysed := completedArea("revenue", 1, time.Now())
+	reanalysedLog := []models.AnalysisStep{attempt2Log[0], reanalysed}
+	reanalysedInsights := append(append([]models.Insight{}, attempt2Log[0].Insights...), reanalysed.Insights...)
+	if sameAnalysisGeneration(attempt1, analysisGenerationFingerprint(reanalysedInsights, reanalysedLog)) {
+		t.Error("a re-analysed area kept its fingerprint; recommendations would be restored over content that replaced what they were reasoned from")
 	}
 }

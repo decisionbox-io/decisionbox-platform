@@ -703,11 +703,13 @@ func retireDiscovery(ctx context.Context, runID, discoveryID string, deps retire
 // keeping the whole vector collection alive for them leaked it until some
 // later agent boot.
 func (o *Orchestrator) discardCheckpoints(ctx context.Context, why string) {
-	// The analysis-area rows go with them, and from HERE rather than from a
-	// second call site: this is the one place a terminal-and-not-resumable
-	// run drops what made it resumable, so keeping the pair together is what
-	// stops the two collections drifting apart.
+	// The analysis rows go with them, and from HERE rather than from four
+	// call sites: this is the one place a terminal-and-not-resumable run
+	// drops what made it resumable, so keeping the set together is what stops
+	// the collections drifting apart.
 	o.discardAnalysisCheckpoints(ctx, why)
+	o.discardAreaDrafts(ctx, why)
+	o.discardRecommendationCheckpoint(ctx, why)
 
 	if o.checkpointRepo == nil || o.runID == "" {
 		return

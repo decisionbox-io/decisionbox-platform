@@ -150,7 +150,7 @@ func TestCheckpointAnalysisArea_WritesWhatARestoreNeeds(t *testing.T) {
 	}
 
 	step := doneArea("churn", 2, time.Now())
-	if err := o.checkpointAnalysisArea(context.Background(), step, 2); err != nil {
+	if _, err := o.checkpointAnalysisArea(context.Background(), step, 2); err != nil {
 		t.Fatalf("checkpointAnalysisArea: %v", err)
 	}
 	if len(store.saved) != 1 {
@@ -207,7 +207,7 @@ func TestCheckpointAnalysisArea_DoesNotMarkAFailedArea(t *testing.T) {
 		step := doneArea("churn", 0, time.Now())
 		step.Error = errText
 
-		if err := o.checkpointAnalysisArea(ctx, step, 0); err != nil {
+		if _, err := o.checkpointAnalysisArea(ctx, step, 0); err != nil {
 			t.Fatalf("%q: a failed area must be a quiet no-op, got %v", errText, err)
 		}
 		if len(store.saved) != 0 {
@@ -224,7 +224,7 @@ func TestCheckpointAnalysisArea_NoOpsThatProtectTheFence(t *testing.T) {
 
 	t.Run("nil store disables per-area resume", func(t *testing.T) {
 		o := &Orchestrator{projectID: "p", runID: "r", explorationSummaryAttempt: 1}
-		if err := o.checkpointAnalysisArea(ctx, step, 1); err != nil {
+		if _, err := o.checkpointAnalysisArea(ctx, step, 1); err != nil {
 			t.Fatalf("want a no-op, got %v", err)
 		}
 	})
@@ -240,7 +240,7 @@ func TestCheckpointAnalysisArea_NoOpsThatProtectTheFence(t *testing.T) {
 			analysisCheckpointRepo: store,
 			statusReporter:         reporterFor(newFakeRunDoc(), 1),
 		}
-		if err := o.checkpointAnalysisArea(ctx, step, 1); err != nil {
+		if _, err := o.checkpointAnalysisArea(ctx, step, 1); err != nil {
 			t.Fatalf("want a no-op, got %v", err)
 		}
 		if len(store.saved) != 0 {
@@ -257,7 +257,7 @@ func TestCheckpointAnalysisArea_NoOpsThatProtectTheFence(t *testing.T) {
 			statusReporter:            reporterFor(newFakeRunDoc(), 1),
 		}
 		anon := doneArea("", 1, time.Now())
-		if err := o.checkpointAnalysisArea(ctx, anon, 1); err != nil {
+		if _, err := o.checkpointAnalysisArea(ctx, anon, 1); err != nil {
 			t.Fatalf("want a no-op, got %v", err)
 		}
 		if len(store.saved) != 0 {
@@ -283,7 +283,7 @@ func TestCheckpointAnalysisArea_StopsWhenTheRunHasBeenTakenOver(t *testing.T) {
 			explorationSummaryAttempt: 1,
 			statusReporter:            reporterFor(doc, 2),
 		}
-		if err := o.checkpointAnalysisArea(ctx, step, 1); !errors.Is(err, ai.ErrAttemptSuperseded) {
+		if _, err := o.checkpointAnalysisArea(ctx, step, 1); !errors.Is(err, ai.ErrAttemptSuperseded) {
 			t.Fatalf("error = %v, want ai.ErrAttemptSuperseded", err)
 		}
 		if len(store.saved) != 0 {
@@ -304,7 +304,7 @@ func TestCheckpointAnalysisArea_StopsWhenTheRunHasBeenTakenOver(t *testing.T) {
 			explorationSummaryAttempt: 1,
 			statusReporter:            reporterFor(doc, 1),
 		}
-		if err := o.checkpointAnalysisArea(ctx, step, 1); !errors.Is(err, ai.ErrAttemptSuperseded) {
+		if _, err := o.checkpointAnalysisArea(ctx, step, 1); !errors.Is(err, ai.ErrAttemptSuperseded) {
 			t.Fatalf("error = %v, want ai.ErrAttemptSuperseded — a cancel leaves the attempt untouched, so only a status-aware probe sees it", err)
 		}
 	})
@@ -316,7 +316,7 @@ func TestCheckpointAnalysisArea_StopsWhenTheRunHasBeenTakenOver(t *testing.T) {
 			explorationSummaryAttempt: 1,
 			statusReporter:            reporterFor(newFakeRunDoc(), 1),
 		}
-		if err := o.checkpointAnalysisArea(ctx, step, 1); !errors.Is(err, ai.ErrAttemptSuperseded) {
+		if _, err := o.checkpointAnalysisArea(ctx, step, 1); !errors.Is(err, ai.ErrAttemptSuperseded) {
 			t.Fatalf("error = %v, want the store's ErrSupersededAttempt translated into the pipeline's stop signal", err)
 		}
 	})
@@ -332,7 +332,7 @@ func TestCheckpointAnalysisArea_AWriteFailureDoesNotAbortTheRun(t *testing.T) {
 		explorationSummaryAttempt: 1,
 		statusReporter:            reporterFor(newFakeRunDoc(), 1),
 	}
-	if err := o.checkpointAnalysisArea(context.Background(), doneArea("churn", 1, time.Now()), 1); err != nil {
+	if _, err := o.checkpointAnalysisArea(context.Background(), doneArea("churn", 1, time.Now()), 1); err != nil {
 		t.Fatalf("a failed checkpoint write must be swallowed, got %v", err)
 	}
 }
@@ -646,7 +646,7 @@ func TestRestoredValidationBudget_IsSeededBeforeAnyAreaRuns(t *testing.T) {
 	validatedHere := 0
 	for _, area := range runAreas {
 		if cp, ok := completed[area.ID]; ok {
-			log, insights = restoreArea(cp, log, insights)
+			log, insights, _ = restoreArea(cp, log, insights)
 			continue
 		}
 		if spent < cap {
@@ -750,7 +750,7 @@ func TestNewOrchestrator_TypedNilAnalysisCheckpointRepoNormalizes(t *testing.T) 
 	}
 	// Sanity: every guarded path is a clean no-op rather than a panic.
 	ctx := context.Background()
-	if err := o.checkpointAnalysisArea(ctx, doneArea("churn", 1, time.Now()), 1); err != nil {
+	if _, err := o.checkpointAnalysisArea(ctx, doneArea("churn", 1, time.Now()), 1); err != nil {
 		t.Errorf("checkpointAnalysisArea: %v", err)
 	}
 	if got := o.loadCompletedAreas(ctx); got != nil {
@@ -778,7 +778,7 @@ func TestRestoreArea_MergesTheUnionThePipelineReadsDownstream(t *testing.T) {
 	log := []models.AnalysisStep{ranHere}
 	insights := append([]models.Insight{}, ranHere.Insights...)
 
-	log, insights = restoreArea(restored, log, insights)
+	log, insights, _ = restoreArea(restored, log, insights)
 
 	if len(log) != 2 {
 		t.Fatalf("analysis log has %d entries, want 2 — the restored area must appear in the split logs and the failed-area denominator", len(log))
@@ -836,7 +836,7 @@ func TestReidentifyRestoredArea_GivesTheInsightsFreshIdentitiesAndKeepsThemConsi
 		stored.ValidationResults[i].Refuter.DocID = id
 	}
 
-	got := reidentifyRestoredArea(stored)
+	got, _ := reidentifyRestoredArea(stored)
 
 	if len(got.Insights) != 2 || len(got.ValidationResults) != 2 {
 		t.Fatalf("got %d insights / %d results, want 2 / 2", len(got.Insights), len(got.ValidationResults))
@@ -917,7 +917,7 @@ func TestReidentifyRestoredArea_GivesTheInsightsFreshIdentitiesAndKeepsThemConsi
 // be left alone rather than pointed at an unrelated finding.
 func TestReidentifyRestoredArea_EmptyAndUnmatchedCases(t *testing.T) {
 	empty := doneArea("levels", 0, time.Now())
-	if got := reidentifyRestoredArea(empty); len(got.Insights) != 0 {
+	if got, _ := reidentifyRestoredArea(empty); len(got.Insights) != 0 {
 		t.Errorf("got %d insights for an empty area", len(got.Insights))
 	}
 
@@ -925,7 +925,7 @@ func TestReidentifyRestoredArea_EmptyAndUnmatchedCases(t *testing.T) {
 	noVerdicts.Insights[0].Validation = nil
 	noVerdicts.ValidationResults[0].Verifier = nil
 	noVerdicts.ValidationResults[0].Refuter = nil
-	got2 := reidentifyRestoredArea(noVerdicts)
+	got2, _ := reidentifyRestoredArea(noVerdicts)
 	if got2.Insights[0].Validation != nil {
 		t.Error("an insight with no validation must come back with none rather than an empty one")
 	}
@@ -940,7 +940,7 @@ func TestReidentifyRestoredArea_EmptyAndUnmatchedCases(t *testing.T) {
 	orphaned.ValidationResults = append(orphaned.ValidationResults, models.ValidationResult{
 		InsightID: "an-insight-this-area-no-longer-has",
 	})
-	got := reidentifyRestoredArea(orphaned)
+	got, _ := reidentifyRestoredArea(orphaned)
 	if got.ValidationResults[1].InsightID != "an-insight-this-area-no-longer-has" {
 		t.Errorf("an unmatched InsightID was rewritten to %q; it must be left as it was rather than re-pointed at some other finding",
 			got.ValidationResults[1].InsightID)
@@ -957,7 +957,7 @@ func TestReidentifyRestoredArea_EmptyAndUnmatchedCases(t *testing.T) {
 func TestRestoreArea_AnEmptyAreaStillCounts(t *testing.T) {
 	empty := models.AnalysisAreaCheckpoint{Step: doneArea("levels", 0, time.Now())}
 
-	log, insights := restoreArea(empty, nil, nil)
+	log, insights, _ := restoreArea(empty, nil, nil)
 	if len(log) != 1 {
 		t.Errorf("analysis log has %d entries, want 1", len(log))
 	}
@@ -973,7 +973,7 @@ func TestRestoreArea_DoesNotAliasTheCaller(t *testing.T) {
 	cp := models.AnalysisAreaCheckpoint{Step: doneArea("churn", 2, time.Now()), InsightsValidated: 2}
 	before := len(cp.Step.Insights)
 
-	_, insights := restoreArea(cp, nil, nil)
+	_, insights, _ := restoreArea(cp, nil, nil)
 	insights[0].Name = "mutated by a later phase"
 
 	if cp.Step.Insights[0].Name == "mutated by a later phase" {

@@ -288,6 +288,12 @@ var projectChildCollections = []string{
 	// evidence, so leaving them until the retention TTL keeps a deleted
 	// project's reasoning on disk long after the project is gone.
 	"discovery_analysis_checkpoints",
+	// The two finer checkpoint seams, which leak for the same reasons: a
+	// draft holds an unfinished area's whole analysis prompt, response and
+	// insights, and the recommendation checkpoint holds the run's generated
+	// recommendations and their validation evidence.
+	"discovery_analysis_drafts",
+	"discovery_recommendation_checkpoints",
 	// The Discovery Ledger. All of these are keyed by project_id and none of
 	// them were in this list, so deleting a project left its whole
 	// investigation behind — the coverage map, every durable finding, every

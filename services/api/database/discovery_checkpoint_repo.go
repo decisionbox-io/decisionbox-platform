@@ -21,23 +21,30 @@ import (
 // steps, and keeping the replay shape out of this module means there is one
 // definition of it rather than two that can drift.
 //
-// It spans BOTH checkpoint collections: the exploration rows and the
-// per-area analysis rows the agent writes alongside them. Only the purge
-// needs the second one — resumability is still decided entirely by the
-// exploration prefix, and a run that died in analysis has a complete one —
-// and it lives here rather than in a repository of its own so a caller that
-// ends a run cannot throw away half the feature's rows.
+// It spans ALL FOUR checkpoint collections: the exploration rows, the per-area
+// analysis rows, the in-flight analysis drafts and the per-run recommendation
+// checkpoint the agent writes alongside them. Only the purge needs the latter
+// three — resumability is still decided entirely by the exploration prefix,
+// and a run that died in analysis or recommendations has a complete one — and
+// they live here rather than in repositories of their own so a caller that
+// ends a run cannot throw away part of the feature's rows.
 type DiscoveryCheckpointRepository struct {
 	col *mongo.Collection
-	// analysisCol holds one row per completed analysis area. Purge-only
-	// from the API side; the agent owns reading and writing it.
-	analysisCol *mongo.Collection
+	// The three collections the API only ever purges; the agent owns reading
+	// and writing them. analysisCol holds one row per completed analysis
+	// area, draftCol one per area analysed but not yet validated, and
+	// recommendationCol one per run whose Phase 5 finished.
+	analysisCol       *mongo.Collection
+	draftCol          *mongo.Collection
+	recommendationCol *mongo.Collection
 }
 
 func NewDiscoveryCheckpointRepository(db *DB) *DiscoveryCheckpointRepository {
 	return &DiscoveryCheckpointRepository{
-		col:         db.Collection(gomongo.CollectionDiscoveryCheckpoints),
-		analysisCol: db.Collection(gomongo.CollectionDiscoveryAnalysisCheckpoints),
+		col:               db.Collection(gomongo.CollectionDiscoveryCheckpoints),
+		analysisCol:       db.Collection(gomongo.CollectionDiscoveryAnalysisCheckpoints),
+		draftCol:          db.Collection(gomongo.CollectionDiscoveryAnalysisDrafts),
+		recommendationCol: db.Collection(gomongo.CollectionDiscoveryRecommendationCheckpoints),
 	}
 }
 
@@ -142,14 +149,14 @@ func (r *DiscoveryCheckpointRepository) ResumeState(ctx context.Context, runID s
 	return prefixLen, explorationComplete, nil
 }
 
-// DeleteByRun removes a run's checkpoints — exploration rows AND the
-// per-area analysis rows — and reports the combined count. Called on
-// cancellation and on discard, both of which are terminal and explicitly not
-// resumable.
+// DeleteByRun removes a run's checkpoints — the exploration rows AND the three
+// analysis / recommendation collections beside them — and reports the combined
+// count. Called on cancellation and on discard, both of which are terminal and
+// explicitly not resumable.
 //
-// Both collections, from one call, because they are one feature: an area
-// checkpoint is only ever usable alongside an exploration prefix the run can
-// replay, so leaving the area rows behind would leak rows for a run that can
+// All of them from one call, because they are one feature: every row in the
+// other three is only ever usable alongside an exploration prefix the run can
+// replay, so leaving any of them behind would leak rows for a run that can
 // never read them again. The analysis rows go FIRST — they are the ones
 // nothing else would reclaim early, since the exploration delete is what the
 // callers log and act on, so a failure there is reported with the rows that
@@ -159,10 +166,20 @@ func (r *DiscoveryCheckpointRepository) DeleteByRun(ctx context.Context, runID s
 		return 0, errors.New("delete checkpoints: run_id is required")
 	}
 	var deleted int64
-	if r.analysisCol != nil {
-		res, err := r.analysisCol.DeleteMany(ctx, bson.M{"run_id": runID})
+	for _, c := range []struct {
+		col  *mongo.Collection
+		what string
+	}{
+		{r.analysisCol, "analysis checkpoints"},
+		{r.draftCol, "analysis drafts"},
+		{r.recommendationCol, "recommendation checkpoint"},
+	} {
+		if c.col == nil {
+			continue
+		}
+		res, err := c.col.DeleteMany(ctx, bson.M{"run_id": runID})
 		if err != nil {
-			return 0, fmt.Errorf("delete analysis checkpoints for run %s: %w", runID, err)
+			return deleted, fmt.Errorf("delete %s for run %s: %w", c.what, runID, err)
 		}
 		deleted += res.DeletedCount
 	}
