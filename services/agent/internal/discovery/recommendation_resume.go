@@ -29,7 +29,7 @@ import (
 // a nil store cleanly disables recommendation resume.
 type recommendationCheckpointStore interface {
 	SaveDraft(ctx context.Context, in database.RecommendationCheckpointInput) error
-	SaveRecVerdict(ctx context.Context, in database.RecommendationVerdictInput) error
+	SaveRecVerdict(ctx context.Context, in database.RecommendationVerdictInput) (bool, error)
 	Load(ctx context.Context, runID string, explorationAttempt int) (*models.RecommendationCheckpoint, error)
 	DeleteByRun(ctx context.Context, runID string) (int64, error)
 	TouchByRun(ctx context.Context, runID string) (int64, error)
@@ -247,7 +247,7 @@ func (o *Orchestrator) checkpointRecommendationVerdict(ctx context.Context, vr m
 		return nil
 	}
 	pauseRequested := o.statusReporter != nil && o.statusReporter.Standing(ctx) == standingPauseRequested
-	err := o.recommendationCheckpointRepo.SaveRecVerdict(ctx, database.RecommendationVerdictInput{
+	landed, err := o.recommendationCheckpointRepo.SaveRecVerdict(ctx, database.RecommendationVerdictInput{
 		RunID:            o.runID,
 		Attempt:          o.resume.attemptNumber(),
 		RecommendationID: vr.InsightID,
@@ -259,6 +259,15 @@ func (o *Orchestrator) checkpointRecommendationVerdict(ctx context.Context, vr m
 			"recommendation": vr.InsightID,
 			"error":          err.Error(),
 		}).Warn("failed to record a validated recommendation; it would be validated again on a later resume")
+		return nil
+	}
+	if !landed {
+		// Nothing took the marker — same three causes as the insight seam's,
+		// same conclusion: no row, no free stop.
+		applog.WithFields(applog.Fields{
+			"run_id":         o.runID,
+			"recommendation": vr.InsightID,
+		}).Warn("no recommendation checkpoint took this verdict, so it is not durable; not pausing on it")
 		return nil
 	}
 	if pauseRequested {

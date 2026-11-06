@@ -541,3 +541,55 @@ func TestRunBounded_RechecksTheStopAfterAcquiringASlot(t *testing.T) {
 		t.Errorf("dispatched %d documents, want 2; the stop was re-checked too late and paid for %d extra verifier+refuter pair(s)", dispatched, dispatched-2)
 	}
 }
+
+// Codex round 2. The invariant the whole design rests on is "the row is what
+// makes the stop free" — and both verdict seams were reading `err == nil` as
+// "the row landed". They are not the same fact: the marker write is an
+// UpdateOne, so if the draft has been swept by the retention TTL, deleted when
+// its area completed, or fenced out because a newer attempt owns it, Mongo
+// reports MatchedCount 0 and no error at all.
+//
+// Pausing on that would stop the run on a verdict that is NOT on disk, forcing
+// the resumed attempt to re-analyse the area — stranding precisely the work the
+// cooperative pause exists to preserve.
+func TestCheckpointInsightVerdict_DoesNotPauseOnAWriteThatMatchedNothing(t *testing.T) {
+	ctx := t.Context()
+	doc := newFakeRunDoc()
+	doc.pauseRequested = true
+	// The write succeeds and matches no row.
+	store := &fakeAnalysisDraftStore{verdictNoRow: true}
+	o := &Orchestrator{
+		runID:                     "run-1",
+		statusReporter:            reporterFor(doc, 1),
+		analysisDraftRepo:         store,
+		explorationSummaryAttempt: 1,
+		attemptStartedAt:          time.Now(),
+	}
+	o.contiguousCheckpointThrough = 9
+
+	if err := o.checkpointInsightVerdict(ctx, "churn", models.ValidationResult{InsightID: "i1"}); err != nil {
+		t.Fatalf("checkpointInsightVerdict() = %v, want nil — the verdict never landed, so stopping on it would discard the area", err)
+	}
+	if len(store.verdicts) != 0 {
+		t.Errorf("the fake recorded %d verdicts though it reported no matching row", len(store.verdicts))
+	}
+}
+
+func TestCheckpointRecommendationVerdict_DoesNotPauseOnAWriteThatMatchedNothing(t *testing.T) {
+	ctx := t.Context()
+	doc := newFakeRunDoc()
+	doc.pauseRequested = true
+	store := &fakeRecommendationCheckpointStore{verdictNoRow: true}
+	o := &Orchestrator{
+		runID:                        "run-1",
+		statusReporter:               reporterFor(doc, 1),
+		recommendationCheckpointRepo: store,
+		explorationSummaryAttempt:    1,
+		attemptStartedAt:             time.Now(),
+	}
+	o.contiguousCheckpointThrough = 9
+
+	if err := o.checkpointRecommendationVerdict(ctx, models.ValidationResult{InsightID: "r1"}); err != nil {
+		t.Fatalf("checkpointRecommendationVerdict() = %v, want nil — the verdict never landed, so stopping would discard Phase 5", err)
+	}
+}

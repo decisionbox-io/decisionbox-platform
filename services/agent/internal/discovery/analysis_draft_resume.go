@@ -32,7 +32,7 @@ import (
 // store cleanly disables per-insight resume.
 type analysisDraftStore interface {
 	SaveDraft(ctx context.Context, in database.AnalysisAreaDraftInput) error
-	SaveInsightVerdict(ctx context.Context, in database.InsightVerdictInput) error
+	SaveInsightVerdict(ctx context.Context, in database.InsightVerdictInput) (bool, error)
 	LoadDrafts(ctx context.Context, runID string, explorationAttempt int) (*database.AnalysisDraftSet, error)
 	DeleteByArea(ctx context.Context, runID, areaID string) error
 	DeleteByRun(ctx context.Context, runID string) (int64, error)
@@ -182,7 +182,7 @@ func (o *Orchestrator) checkpointInsightVerdict(ctx context.Context, areaID stri
 	// Read BEFORE the write, like every other seam, so the answer cannot be
 	// influenced by how long the write took.
 	pauseRequested := o.statusReporter != nil && o.statusReporter.Standing(ctx) == standingPauseRequested
-	err := o.analysisDraftRepo.SaveInsightVerdict(ctx, database.InsightVerdictInput{
+	landed, err := o.analysisDraftRepo.SaveInsightVerdict(ctx, database.InsightVerdictInput{
 		RunID:     o.runID,
 		AreaID:    areaID,
 		Attempt:   o.resume.attemptNumber(),
@@ -196,9 +196,21 @@ func (o *Orchestrator) checkpointInsightVerdict(ctx context.Context, areaID stri
 			"insight": vr.InsightID,
 			"error":   err.Error(),
 		}).Warn("failed to record a validated insight; it would be validated again on a later resume")
-		// No marker, so no free stop for THIS verdict: pausing now would make
-		// the resumed attempt pay for it again. The request still stands and
-		// the next verdict to land honours it.
+		return nil
+	}
+	if !landed {
+		// The write SUCCEEDED and matched nothing: the draft was swept by the
+		// retention TTL, or deleted when the area completed, or the attempt
+		// fence excluded it because a newer attempt owns the row. No error,
+		// and no marker either — which is why the bool exists and why reading
+		// `err == nil` as "the verdict is durable" was wrong. Pausing here
+		// would stop the run on work it cannot restore, stranding exactly what
+		// the pause was meant to preserve.
+		applog.WithFields(applog.Fields{
+			"run_id":  o.runID,
+			"area":    areaID,
+			"insight": vr.InsightID,
+		}).Warn("no draft row took this insight verdict, so it is not durable; not pausing on it")
 		return nil
 	}
 	if pauseRequested {

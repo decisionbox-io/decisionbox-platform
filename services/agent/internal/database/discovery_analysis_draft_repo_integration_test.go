@@ -211,13 +211,13 @@ func TestInteg_AnalysisDraft_MarkersAccumulateAcrossAttemptsOnOneImmutableDraft(
 	}
 
 	// Attempt 1 validates one insight and dies.
-	if err := repo.SaveInsightVerdict(ctx, InsightVerdictInput{
+	if _, err := repo.SaveInsightVerdict(ctx, InsightVerdictInput{
 		RunID: "run-1", AreaID: "churn", Attempt: 1, InsightID: "insight-1", Verdict: verdictFor("insight-1"),
 	}); err != nil {
 		t.Fatalf("SaveInsightVerdict: %v", err)
 	}
 	// Attempt 2 restores the draft, validates a second, and dies.
-	if err := repo.SaveInsightVerdict(ctx, InsightVerdictInput{
+	if _, err := repo.SaveInsightVerdict(ctx, InsightVerdictInput{
 		RunID: "run-1", AreaID: "churn", Attempt: 2, InsightID: "insight-2", Verdict: verdictFor("insight-2"),
 	}); err != nil {
 		t.Fatalf("SaveInsightVerdict: %v", err)
@@ -294,7 +294,7 @@ func TestInteg_AnalysisDraft_AttemptFenceInBothDirections(t *testing.T) {
 	}
 
 	// A marker from the orphan must not land either.
-	if err := repo.SaveInsightVerdict(ctx, InsightVerdictInput{
+	if _, err := repo.SaveInsightVerdict(ctx, InsightVerdictInput{
 		RunID: "run-1", AreaID: "churn", Attempt: 1, InsightID: "insight-1", Verdict: verdictFor("insight-1"),
 	}); err != nil {
 		t.Fatalf("SaveInsightVerdict must not error on a fenced no-op, got %v", err)
@@ -565,7 +565,7 @@ func TestInteg_AnalysisDraft_ConcurrentMarkerWritesAllLand(t *testing.T) {
 		wg.Add(1)
 		go func(id string) {
 			defer wg.Done()
-			if err := repo.SaveInsightVerdict(ctx, InsightVerdictInput{
+			if _, err := repo.SaveInsightVerdict(ctx, InsightVerdictInput{
 				RunID: "run-1", AreaID: "churn", Attempt: 1, InsightID: id, Verdict: verdictFor(id),
 			}); err != nil {
 				errs <- err
@@ -635,7 +635,7 @@ func TestInteg_AnalysisDraft_ADottedIdNeitherNestsNorCorruptsTheBudget(t *testin
 	}); err != nil {
 		t.Fatalf("SaveDraft(safe): %v", err)
 	}
-	if err := repo.SaveInsightVerdict(ctx, InsightVerdictInput{
+	if _, err := repo.SaveInsightVerdict(ctx, InsightVerdictInput{
 		RunID: "run-1", AreaID: "revenue", Attempt: 1, InsightID: "finding.1",
 		Verdict: verdictFor("finding.1"),
 	}); !errors.Is(err, ErrUnsafeMarkerKey) {
@@ -651,7 +651,7 @@ func TestInteg_AnalysisDraft_ADottedIdNeitherNestsNorCorruptsTheBudget(t *testin
 	}
 
 	// And a safe id still works.
-	if err := repo.SaveInsightVerdict(ctx, InsightVerdictInput{
+	if _, err := repo.SaveInsightVerdict(ctx, InsightVerdictInput{
 		RunID: "run-1", AreaID: "revenue", Attempt: 1, InsightID: "insight-2",
 		Verdict: verdictFor("insight-2"),
 	}); err != nil {
