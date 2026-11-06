@@ -1000,6 +1000,33 @@ func (o *Orchestrator) hasResumePoint() bool {
 //
 // Returns ai.ErrPauseRequested to stop, or nil to carry on with the request
 // still standing — the next seam that has something to resume from honours it.
+// pauseIfSignalled is the caller-side half of the pause split, and the mirror
+// of pauseSignalIfResumable: that one decides whether a seam MAY signal, this
+// one decides what the loop does with a signal it got.
+//
+// Centralised for the reason the other one was. Five seams now hand back an
+// error that is either a real failure or the operator's stop, and the
+// discrimination between them is one `errors.Is` that reads like boilerplate
+// and is not: treating ErrPauseRequested as a failure turns a clean pause into
+// a failed run, and treating a failure as a pause writes `paused` over a run
+// that actually broke. Written out five times, those are five chances to get it
+// backwards.
+//
+// Returns nil to carry on, or the error the caller propagates unchanged —
+// ai.ErrPauseRequested once the stop has been performed, or the seam's own
+// failure untouched.
+func (o *Orchestrator) pauseIfSignalled(ctx context.Context, signal error, detail string) error {
+	if signal == nil {
+		return nil
+	}
+	if !errors.Is(signal, ai.ErrPauseRequested) {
+		// A real failure from the seam — a lost attempt, usually. Propagated
+		// as-is; it is not this function's to interpret.
+		return signal
+	}
+	return o.pauseAttempt(ctx, detail)
+}
+
 func (o *Orchestrator) pauseSignalIfResumable(what string) error {
 	if o.hasResumePoint() {
 		return ai.ErrPauseRequested

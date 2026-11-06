@@ -1484,16 +1484,16 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// the pipeline: everything after this — analysis, recommendations,
 		// validation — would otherwise be spent by a superseded attempt on
 		// a result it deletes at the tail.
-		if err := o.checkpointExplorationSummary(ctx, explorationResult); err != nil {
-			if !errors.Is(err, ai.ErrPauseRequested) {
-				return nil, err
-			}
-			// The summary is durable and exploration's own rows are already
-			// out, so the stop is taken right here.
-			applog.WithField("steps", explorationResult.TotalSteps).Info("Exploration completed")
-			return nil, o.pauseAttempt(ctx, "Paused after exploration, before analysis — resume to continue")
+		summarySignal := o.checkpointExplorationSummary(ctx, explorationResult)
+		if summarySignal != nil && !errors.Is(summarySignal, ai.ErrPauseRequested) {
+			return nil, summarySignal
 		}
 		applog.WithField("steps", explorationResult.TotalSteps).Info("Exploration completed")
+		// The summary is durable and exploration's own rows are already out,
+		// so a signalled stop is taken right here.
+		if err := o.pauseIfSignalled(ctx, summarySignal, "Paused after exploration, before analysis — resume to continue"); err != nil {
+			return nil, err
+		}
 	}
 
 	// One line per executed step: the SQL, the row count, any fidelity caveat,
@@ -1721,19 +1721,16 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			// the least reason. Recorded before the per-insight calls start,
 			// so a resume re-enters at the first insight without a verdict.
 			landed, stopAfterDraft := o.checkpointAreaDraft(ctx, step, valPhase.agent != nil)
-			if stopAfterDraft != nil && !errors.Is(stopAfterDraft, ai.ErrPauseRequested) {
-				return nil, stopAfterDraft
-			}
 			draftOnDisk = landed
 			// A pause asked for while this area was being analysed, taken now
-			// that the draft is down. Taken HERE rather than deferred
-			// to the end of the iteration like the completed-area seam's,
-			// because the whole point is to skip what comes next: the
-			// per-insight validation calls. There are no feed rows for this
-			// area yet — a crash at this exact point would leave the same
-			// state — so there is nothing to emit first.
-			if stopAfterDraft != nil {
-				return nil, o.pauseAttempt(ctx, "Paused after analysing "+area.ID+", before validating it — resume to continue")
+			// that the draft is down. Taken HERE rather than deferred to the
+			// end of the iteration like the completed-area seam's, because the
+			// whole point is to skip what comes next: the per-insight
+			// validation calls. There are no feed rows for this area yet — a
+			// crash at this exact point would leave the same state — so there
+			// is nothing to emit first.
+			if err := o.pauseIfSignalled(ctx, stopAfterDraft, "Paused after analysing "+area.ID+", before validating it — resume to continue"); err != nil {
+				return nil, err
 			}
 		}
 
@@ -1954,10 +1951,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// is worse than no marker.
 	var recVerdictsDone map[string]models.ValidationResult
 	recCheckpointOnDisk := recsRestored
-	// Set when the Phase 5 checkpoint seam found a pause standing. Deferred to
-	// just past the phase's live row rather than taken at the write, so the
-	// paused attempt's log is not missing the phase it stopped after.
-	pauseAfterRecommendations := false
+	// Carries the Phase 5 checkpoint seam's pause signal to just past the
+	// phase's live row, rather than taking it at the write, so the paused
+	// attempt's log is not missing the phase it stopped after.
+	var recPauseSignal error
 
 	switch {
 	case recsRestored:
@@ -2053,10 +2050,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			return nil, stopAfterRecCheckpoint
 		}
 		recCheckpointOnDisk = landed
-		// Deferred to just past the live row below, which is the same split
-		// the completed-area seam uses: the paused attempt's log must not be
-		// missing the phase it stopped after.
-		pauseAfterRecommendations = stopAfterRecCheckpoint != nil
+		// Carried, not taken: deferred to just past the live row below, which
+		// is the same split the completed-area seam uses — the paused
+		// attempt's log must not be missing the phase it stopped after.
+		recPauseSignal = stopAfterRecCheckpoint
 	}
 
 	// Emit a per-call RunStep so the live UI carries the recommendation
@@ -2081,8 +2078,8 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// pause can be taken. Before Phase 5.5, which is the point of it: a
 	// resumed attempt restores these recommendations and validates them without
 	// re-generating anything.
-	if pauseAfterRecommendations {
-		return nil, o.pauseAttempt(ctx, "Paused after generating recommendations, before validating them — resume to continue")
+	if err := o.pauseIfSignalled(ctx, recPauseSignal, "Paused after generating recommendations, before validating them — resume to continue"); err != nil {
+		return nil, err
 	}
 
 	// Phase 5.5: Validate recommendations via the LLM-native verifier

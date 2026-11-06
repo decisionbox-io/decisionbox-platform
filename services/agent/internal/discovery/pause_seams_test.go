@@ -593,3 +593,63 @@ func TestCheckpointRecommendationVerdict_DoesNotPauseOnAWriteThatMatchedNothing(
 		t.Fatalf("checkpointRecommendationVerdict() = %v, want nil — the verdict never landed, so stopping would discard Phase 5", err)
 	}
 }
+
+// pauseIfSignalled is the caller-side half of the split, and the one piece of
+// the loop's pause wiring that unit tests can reach — nothing in this
+// repository drives RunDiscovery, which needs a warehouse provider, an LLM
+// client, a schema cache and a prompt set. So the discrimination it makes is
+// pinned here rather than left to the five call sites.
+//
+// Getting it backwards either way is a specific, nasty bug: a pause read as a
+// failure turns a clean cooperative stop into a `failed` run, and a failure
+// read as a pause writes `paused` over a run that actually broke.
+func TestPauseIfSignalled(t *testing.T) {
+	ctx := t.Context()
+
+	t.Run("nil signal carries on", func(t *testing.T) {
+		o := &Orchestrator{runID: "run-1"}
+		if err := o.pauseIfSignalled(ctx, nil, "unused"); err != nil {
+			t.Fatalf("pauseIfSignalled(nil) = %v, want nil", err)
+		}
+	})
+
+	t.Run("a real failure is propagated untouched, and nothing is paused", func(t *testing.T) {
+		doc := newFakeRunDoc()
+		o := &Orchestrator{runID: "run-1", statusReporter: reporterFor(doc, 1), attemptStartedAt: time.Now()}
+		boom := errors.New("the attempt lost the run")
+		if err := o.pauseIfSignalled(ctx, boom, "should not be used"); !errors.Is(err, boom) {
+			t.Fatalf("pauseIfSignalled(boom) = %v, want the error itself", err)
+		}
+		if len(doc.pauses) != 0 {
+			t.Errorf("a failure was turned into a pause: %v", doc.pauses)
+		}
+	})
+
+	t.Run("ErrAttemptSuperseded is a failure, not a pause", func(t *testing.T) {
+		doc := newFakeRunDoc()
+		o := &Orchestrator{runID: "run-1", statusReporter: reporterFor(doc, 1), attemptStartedAt: time.Now()}
+		if err := o.pauseIfSignalled(ctx, ai.ErrAttemptSuperseded, "should not be used"); !errors.Is(err, ai.ErrAttemptSuperseded) {
+			t.Fatalf("pauseIfSignalled(superseded) = %v, want ErrAttemptSuperseded", err)
+		}
+		if len(doc.pauses) != 0 {
+			t.Errorf("a superseded attempt wrote a pause: %v", doc.pauses)
+		}
+	})
+
+	t.Run("a pause signal performs the stop with the caller's detail", func(t *testing.T) {
+		doc := newFakeRunDoc()
+		o := &Orchestrator{runID: "run-1", statusReporter: reporterFor(doc, 1), attemptStartedAt: time.Now()}
+		err := o.pauseIfSignalled(ctx, ai.ErrPauseRequested, "Paused after X — resume to continue")
+		if !errors.Is(err, ai.ErrPauseRequested) {
+			t.Fatalf("pauseIfSignalled(pause) = %v, want ErrPauseRequested back", err)
+		}
+		if len(doc.pauses) != 1 {
+			t.Fatalf("wrote %d pauses, want 1", len(doc.pauses))
+		}
+		// The detail is what the operator reads in the dashboard, so each seam
+		// passing its own is the point of threading it through.
+		if doc.pauses[0] != "Paused after X — resume to continue" {
+			t.Errorf("pause detail = %q, want the caller's", doc.pauses[0])
+		}
+	})
+}
