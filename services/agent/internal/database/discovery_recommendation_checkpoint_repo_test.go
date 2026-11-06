@@ -71,11 +71,11 @@ func TestSaveRecVerdict_RejectsUnaddressableMarkers(t *testing.T) {
 	repo := &DiscoveryRecommendationCheckpointRepository{}
 	ctx := context.Background()
 
-	if err := repo.SaveRecVerdict(ctx, RecommendationVerdictInput{RecommendationID: "r1"}); err == nil ||
+	if _, err := repo.SaveRecVerdict(ctx, RecommendationVerdictInput{RecommendationID: "r1"}); err == nil ||
 		!strings.Contains(err.Error(), "run_id is required") {
 		t.Errorf("expected a run_id refusal, got %v", err)
 	}
-	if err := repo.SaveRecVerdict(ctx, RecommendationVerdictInput{RunID: "run-1"}); err == nil ||
+	if _, err := repo.SaveRecVerdict(ctx, RecommendationVerdictInput{RunID: "run-1"}); err == nil ||
 		!strings.Contains(err.Error(), "recommendation_id is required") {
 		t.Errorf("expected a recommendation_id refusal, got %v", err)
 	}
@@ -118,7 +118,7 @@ func TestRecommendationCheckpointLoad_NoDurableSummaryReturnsNilWithoutQuerying(
 // when the model supplied none.
 func TestSaveRecVerdict_RefusesAnIdThatWouldNestInsteadOfKey(t *testing.T) {
 	repo := &DiscoveryRecommendationCheckpointRepository{}
-	err := repo.SaveRecVerdict(context.Background(), RecommendationVerdictInput{
+	_, err := repo.SaveRecVerdict(context.Background(), RecommendationVerdictInput{
 		RunID: "run-1", RecommendationID: "rec.1",
 	})
 	if !errors.Is(err, ErrUnsafeMarkerKey) {

@@ -29,7 +29,7 @@ import (
 // a nil store cleanly disables recommendation resume.
 type recommendationCheckpointStore interface {
 	SaveDraft(ctx context.Context, in database.RecommendationCheckpointInput) error
-	SaveRecVerdict(ctx context.Context, in database.RecommendationVerdictInput) error
+	SaveRecVerdict(ctx context.Context, in database.RecommendationVerdictInput) (bool, error)
 	Load(ctx context.Context, runID string, explorationAttempt int) (*models.RecommendationCheckpoint, error)
 	DeleteByRun(ctx context.Context, runID string) (int64, error)
 	TouchByRun(ctx context.Context, runID string) (int64, error)
@@ -61,6 +61,9 @@ type recommendationCheckpointStore interface {
 // a marker write is filtered on `attempt <= this attempt`, so with no row of
 // its own it can land on an earlier attempt's, where a reused model-supplied
 // id would overwrite a marker describing a different recommendation.
+// Also a PAUSE seam, under the uniform rule: once this row is down, Phase 5 is paid for and a
+// stop costs nothing while saving the operator every per-recommendation
+// verifier call in Phase 5.5. Found before the write, taken after.
 func (o *Orchestrator) checkpointRecommendations(ctx context.Context, step *models.RecommendationStep, eligibleIDs, generation []string) (bool, error) {
 	if o.recommendationCheckpointRepo == nil || step == nil {
 		return false, nil
@@ -77,8 +80,16 @@ func (o *Orchestrator) checkpointRecommendations(ctx context.Context, step *mode
 		// trivially without the recommendations being right for it.
 		return false, nil
 	}
-	if o.statusReporter != nil && !o.statusReporter.OwnsRun(ctx) {
-		return false, ai.ErrAttemptSuperseded
+	// Standing rather than OwnsRun: one read, both questions, and the pause
+	// half remembered rather than acted on so the write below still happens.
+	pauseRequested := false
+	if o.statusReporter != nil {
+		switch o.statusReporter.Standing(ctx) {
+		case standingLost:
+			return false, ai.ErrAttemptSuperseded
+		case standingPauseRequested:
+			pauseRequested = true
+		}
 	}
 
 	err := o.recommendationCheckpointRepo.SaveDraft(ctx, database.RecommendationCheckpointInput{
@@ -99,7 +110,16 @@ func (o *Orchestrator) checkpointRecommendations(ctx context.Context, step *mode
 			"run_id": o.runID,
 			"error":  err.Error(),
 		}).Warn("failed to checkpoint this run's recommendations; a resumed run would generate and re-validate them")
+		// No row, so no free stop: pausing here would discard the generation
+		// call. The request stands for the next seam that has something
+		// durable behind it.
 		return false, nil
+	}
+	// Phase 5 is durable, so a stop here is free and saves the operator the
+	// whole of Phase 5.5. Signalled, not performed — the caller still has this
+	// phase's live row to emit.
+	if pauseRequested {
+		return true, o.pauseSignalIfResumable("recommendation checkpoint")
 	}
 	return true, nil
 }
@@ -215,14 +235,19 @@ func recommendationStepInStoredIDs(step models.RecommendationStep, storedByLive 
 // validated. Called from validationPhase's bounded workers, so it must stay
 // safe to call concurrently. Failures are swallowed: a lost marker costs one
 // re-validated recommendation.
-func (o *Orchestrator) checkpointRecommendationVerdict(ctx context.Context, vr models.ValidationResult) {
+// Also a per-item PAUSE seam, on the same contract as
+// checkpointInsightVerdict: ai.ErrPauseRequested means this verdict is durable
+// and an operator is waiting, and supersession is left to the row-level
+// attempt fence in SaveRecVerdict for the same reason.
+func (o *Orchestrator) checkpointRecommendationVerdict(ctx context.Context, vr models.ValidationResult) error {
 	if o.recommendationCheckpointRepo == nil || vr.InsightID == "" {
-		return
+		return nil
 	}
 	if o.explorationSummaryAttempt <= 0 {
-		return
+		return nil
 	}
-	err := o.recommendationCheckpointRepo.SaveRecVerdict(ctx, database.RecommendationVerdictInput{
+	pauseRequested := o.statusReporter != nil && o.statusReporter.Standing(ctx) == standingPauseRequested
+	landed, err := o.recommendationCheckpointRepo.SaveRecVerdict(ctx, database.RecommendationVerdictInput{
 		RunID:            o.runID,
 		Attempt:          o.resume.attemptNumber(),
 		RecommendationID: vr.InsightID,
@@ -234,7 +259,21 @@ func (o *Orchestrator) checkpointRecommendationVerdict(ctx context.Context, vr m
 			"recommendation": vr.InsightID,
 			"error":          err.Error(),
 		}).Warn("failed to record a validated recommendation; it would be validated again on a later resume")
+		return nil
 	}
+	if !landed {
+		// Nothing took the marker — same three causes as the insight seam's,
+		// same conclusion: no row, no free stop.
+		applog.WithFields(applog.Fields{
+			"run_id":         o.runID,
+			"recommendation": vr.InsightID,
+		}).Warn("no recommendation checkpoint took this verdict, so it is not durable; not pausing on it")
+		return nil
+	}
+	if pauseRequested {
+		return o.pauseSignalIfResumable("recommendation verdict")
+	}
+	return nil
 }
 
 // loadRecommendationCheckpoint reads back this run's stored Phase 5, if any.

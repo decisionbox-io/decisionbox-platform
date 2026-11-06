@@ -165,13 +165,13 @@ func TestInteg_RecommendationCheckpoint_MarkersAccumulateAndSurviveReload(t *tes
 	}); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
-	if err := repo.SaveRecVerdict(ctx, RecommendationVerdictInput{
+	if _, err := repo.SaveRecVerdict(ctx, RecommendationVerdictInput{
 		RunID: "run-1", Attempt: 1, RecommendationID: "rec-1", Verdict: recVerdictFor("rec-1"),
 	}); err != nil {
 		t.Fatalf("SaveRecVerdict(attempt 1): %v", err)
 	}
 	// Attempt 2 restores the row and validates the second.
-	if err := repo.SaveRecVerdict(ctx, RecommendationVerdictInput{
+	if _, err := repo.SaveRecVerdict(ctx, RecommendationVerdictInput{
 		RunID: "run-1", Attempt: 2, RecommendationID: "rec-2", Verdict: recVerdictFor("rec-2"),
 	}); err != nil {
 		t.Fatalf("SaveRecVerdict(attempt 2): %v", err)
@@ -244,7 +244,7 @@ func TestInteg_RecommendationCheckpoint_AttemptFenceInBothDirections(t *testing.
 	}
 
 	// A marker from the orphan must not land.
-	if err := repo.SaveRecVerdict(ctx, RecommendationVerdictInput{
+	if _, err := repo.SaveRecVerdict(ctx, RecommendationVerdictInput{
 		RunID: "run-1", Attempt: 1, RecommendationID: "rec-1", Verdict: recVerdictFor("rec-1"),
 	}); err != nil {
 		t.Fatalf("SaveRecVerdict must not error on a fenced no-op, got %v", err)
@@ -433,7 +433,7 @@ func TestInteg_RecommendationCheckpoint_ConcurrentMarkerWritesAllLand(t *testing
 		wg.Add(1)
 		go func(id string) {
 			defer wg.Done()
-			if err := repo.SaveRecVerdict(ctx, RecommendationVerdictInput{
+			if _, err := repo.SaveRecVerdict(ctx, RecommendationVerdictInput{
 				RunID: "run-1", Attempt: 1, RecommendationID: id, Verdict: recVerdictFor(id),
 			}); err != nil {
 				errs <- err

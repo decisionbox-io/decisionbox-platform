@@ -104,7 +104,7 @@ func TestSaveInsightVerdict_RejectsUnaddressableMarkers(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := repo.SaveInsightVerdict(ctx, tc.in)
+			_, err := repo.SaveInsightVerdict(ctx, tc.in)
 			if err == nil {
 				t.Fatal("expected a refusal, got nil")
 			}
@@ -201,7 +201,7 @@ func TestSafeMarkerKey_RejectsIdsThatCannotBeBSONFieldNames(t *testing.T) {
 // insight is validated again — which is a cost rather than a corruption.
 func TestSaveInsightVerdict_RefusesAnIdThatWouldNestInsteadOfKey(t *testing.T) {
 	repo := &DiscoveryAnalysisDraftRepository{}
-	err := repo.SaveInsightVerdict(context.Background(), InsightVerdictInput{
+	_, err := repo.SaveInsightVerdict(context.Background(), InsightVerdictInput{
 		RunID: "run-1", AreaID: "churn", InsightID: "finding.1",
 	})
 	if !errors.Is(err, ErrUnsafeMarkerKey) {

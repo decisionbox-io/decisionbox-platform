@@ -2,11 +2,14 @@ package discovery
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation/verifier"
@@ -52,7 +55,17 @@ type perItemCheckpoint struct {
 
 	// save persists one freshly produced verdict. Called from the bounded
 	// worker that produced it, so it must be safe to call concurrently.
-	save func(vr models.ValidationResult)
+	//
+	// Returns ai.ErrPauseRequested when the verdict landed AND an operator's
+	// pause is standing — the finest-grained application of the uniform pause rule. It is a signal, not
+	// a failure: this verdict is durable either way, and the phase decides
+	// what to do about it.
+	save func(vr models.ValidationResult) error
+
+	// pauseSeen is set when a save reported a standing pause. Atomic because
+	// the workers that set it run concurrently, and read by the dispatch loop
+	// to stop queueing documents this attempt is not going to pay for.
+	pauseSeen atomic.Bool
 }
 
 // restored returns the verdict a previous attempt produced for a document, if
@@ -66,11 +79,25 @@ func (c *perItemCheckpoint) restored(docID string) (models.ValidationResult, boo
 }
 
 // record persists a verdict this attempt produced. Safe on nil.
+//
+// A pause reported by the seam is remembered rather than returned: this runs
+// inside a bounded worker, where there is nothing to return an error TO. The
+// dispatch loop reads it and stops queueing; the workers already in flight
+// finish and bank their own verdicts, because a verdict half-paid-for is the
+// one thing a pause must never create.
 func (c *perItemCheckpoint) record(vr models.ValidationResult) {
 	if c == nil || c.save == nil {
 		return
 	}
-	c.save(vr)
+	if errors.Is(c.save(vr), ai.ErrPauseRequested) {
+		c.pauseSeen.Store(true)
+	}
+}
+
+// pauseRequested reports whether any worker has seen a standing pause behind a
+// landed verdict. Safe on nil.
+func (c *perItemCheckpoint) pauseRequested() bool {
+	return c != nil && c.pauseSeen.Load()
 }
 
 // insightValidationFrom renders the Validation an insight or recommendation
@@ -178,7 +205,7 @@ func (p *validationPhase) datasourceForSteps(steps []int, stepByID map[int]*mode
 //
 // Returns the new runValidated count (so callers can keep their
 // running total in sync).
-func (p *validationPhase) validateInsights(ctx context.Context, insights []models.Insight, stepByID map[int]*models.ExplorationStep, areaID string, runValidated int, cp *perItemCheckpoint) ([]models.ValidationResult, int) {
+func (p *validationPhase) validateInsights(ctx context.Context, insights []models.Insight, stepByID map[int]*models.ExplorationStep, areaID string, runValidated int, cp *perItemCheckpoint) ([]models.ValidationResult, int, bool) {
 	results := make([]models.ValidationResult, 0, len(insights))
 	if p.agent == nil {
 		// Validation is disabled (project setting off, or no aiClient
@@ -193,7 +220,8 @@ func (p *validationPhase) validateInsights(ctx context.Context, insights []model
 				ValidatedAt: now,
 			}
 		}
-		return results, runValidated
+		// No agent, so no verdicts and no seam to pause at.
+		return results, runValidated, false
 	}
 
 	// Order by affected_count desc so the run-cap hits the least-
@@ -245,7 +273,7 @@ func (p *validationPhase) validateInsights(ctx context.Context, insights []model
 		runValidated++
 	}
 
-	p.runBounded(len(jobs), func(j int) {
+	dispatched := p.runBounded(len(jobs), func(j int) {
 		job := jobs[j]
 		ins := &insights[job.idx]
 		vr := &results[job.pos]
@@ -257,19 +285,63 @@ func (p *validationPhase) validateInsights(ctx context.Context, insights []model
 		// verdict rather than the whole area's. Called from the worker, which
 		// is why the store writes one field instead of the document.
 		cp.record(*vr)
-	})
+	}, cp.pauseRequested)
+
+	// Stopped short of the queue, so the operator's pause is honoured here.
+	// Every document that ran banked its verdict and every one that did not
+	// has no marker at all, which is exactly the state a crash at this point
+	// would leave — so the resumed attempt re-enters at the first insight
+	// without a verdict and re-analyses nothing.
+	// Two separate questions, and conflating them dropped the pause whenever
+	// the queue happened to drain: `stoppedShort` is "is there anything to
+	// trim", `paused` is "must the caller stop". A pause reported by the LAST
+	// verdict — or seen only after every job had been dispatched — leaves
+	// nothing to trim and still has to be honoured, or the run sails on into
+	// the save with the operator's request silently dropped.
+	stoppedShort := dispatched < len(jobs)
+	paused := stoppedShort || cp.pauseRequested()
+	if stoppedShort {
+		// Drop the slots whose check never ran. They hold a pre-filled
+		// ValidationResult with no verdict stamped, and persisting one would
+		// read downstream as a document that WAS checked and came back empty.
+		// Only queued-but-undispatched slots are dropped: a slot filled by a
+		// restored verdict or by the budget cap is already final.
+		undispatched := make(map[int]bool, len(jobs)-dispatched)
+		for j := dispatched; j < len(jobs); j++ {
+			undispatched[jobs[j].pos] = true
+		}
+		kept := make([]models.ValidationResult, 0, dispatched)
+		for pos := range results {
+			if !undispatched[pos] {
+				kept = append(kept, results[pos])
+			}
+		}
+		results = kept
+		// Give back the budget the undispatched jobs reserved. runValidated is
+		// charged when a document is QUEUED, not when its check returns —
+		// which is right while the queue always drains, and wrong the moment a
+		// pause can stop it. Left inflated, the count would claim this attempt
+		// spent validations it never made, and a caller that carried on rather
+		// than pausing would hand the remaining areas a budget that is too
+		// small.
+		runValidated -= len(jobs) - dispatched
+		applog.WithFields(applog.Fields{
+			"area": areaID, "validated": dispatched, "queued": len(jobs),
+			"dropped": len(undispatched), "budget_returned": len(jobs) - dispatched,
+		}).Info("validation: an operator's pause was honoured mid-area; the verdicts already paid for are on disk")
+	}
 	applog.WithFields(applog.Fields{
 		"area":     areaID,
 		"insights": len(insights),
 		"verdicts": len(results),
 	}).Info("Insight validation complete")
-	return results, runValidated
+	return results, runValidated, paused
 }
 
 // validateRecommendations runs Phase 5.5 — same shape as
 // validateInsights but for recommendations, which build their bundles
 // from the union of their related insights' source steps.
-func (p *validationPhase) validateRecommendations(ctx context.Context, recommendations []models.Recommendation, allInsights []models.Insight, stepByID map[int]*models.ExplorationStep, cp *perItemCheckpoint) []models.ValidationResult {
+func (p *validationPhase) validateRecommendations(ctx context.Context, recommendations []models.Recommendation, allInsights []models.Insight, stepByID map[int]*models.ExplorationStep, cp *perItemCheckpoint) ([]models.ValidationResult, bool) {
 	results := make([]models.ValidationResult, 0, len(recommendations))
 	if p.agent == nil {
 		// Same legacy-Status backfill as the insight nil-agent branch.
@@ -281,7 +353,7 @@ func (p *validationPhase) validateRecommendations(ctx context.Context, recommend
 				ValidatedAt: now,
 			}
 		}
-		return results
+		return results, false
 	}
 	insightByID := make(map[string]*models.Insight, len(allInsights))
 	for i := range allInsights {
@@ -349,7 +421,7 @@ func (p *validationPhase) validateRecommendations(ctx context.Context, recommend
 		validated++
 	}
 
-	p.runBounded(len(jobs), func(j int) {
+	dispatched := p.runBounded(len(jobs), func(j int) {
 		job := jobs[j]
 		rec := &recommendations[job.idx]
 		vr := &results[job.pos]
@@ -358,9 +430,31 @@ func (p *validationPhase) validateRecommendations(ctx context.Context, recommend
 		d.stamp(vr)
 		rec.Validation = insightValidationFrom(*vr)
 		cp.record(*vr)
-	})
+	}, cp.pauseRequested)
+
+	// Same per-item pause seam as the insight half: the recommendations
+	// and the verdicts already produced are both on disk, so a resumed attempt
+	// regenerates nothing and re-validates only what is left.
+	stoppedShort := dispatched < len(jobs)
+	paused := stoppedShort || cp.pauseRequested()
+	if stoppedShort {
+		undispatched := make(map[int]bool, len(jobs)-dispatched)
+		for j := dispatched; j < len(jobs); j++ {
+			undispatched[jobs[j].pos] = true
+		}
+		kept := make([]models.ValidationResult, 0, dispatched)
+		for pos := range results {
+			if !undispatched[pos] {
+				kept = append(kept, results[pos])
+			}
+		}
+		results = kept
+		applog.WithFields(applog.Fields{
+			"validated": dispatched, "queued": len(jobs), "dropped": len(undispatched),
+		}).Info("validation: an operator's pause was honoured mid-Phase-5.5; the verdicts already paid for are on disk")
+	}
 	applog.WithField("recommendations", len(recommendations)).Info("Recommendation validation complete")
-	return results
+	return results, paused
 }
 
 // docJob is one document queued for checking: its result slot, its index
@@ -414,20 +508,44 @@ func (d *docVerdict) stamp(vr *models.ValidationResult) {
 }
 
 // runBounded calls fn(0..n-1) with at most RunCaps.Concurrency calls in
-// flight (sequentially when it is 1 or less — the default).
-func (p *validationPhase) runBounded(n int, fn func(i int)) {
+// flight (sequentially when it is 1 or less — the default), and reports how
+// many calls it actually made.
+//
+// `stop` is consulted BEFORE each dispatch and nowhere else. That placement is
+// the whole contract: a document is either never started or runs to completion
+// and banks its verdict, so a cooperative stop can never leave a half-paid
+// check. Work already in flight is always waited for.
+func (p *validationPhase) runBounded(n int, fn func(i int), stop func() bool) int {
+	dispatched := 0
 	limit := p.caps.Concurrency
 	if limit <= 1 || n <= 1 {
 		for i := 0; i < n; i++ {
+			if stop != nil && stop() {
+				return dispatched
+			}
 			fn(i)
+			dispatched++
 		}
-		return
+		return dispatched
 	}
 	sem := make(chan struct{}, limit)
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
+		if stop != nil && stop() {
+			break
+		}
 		sem <- struct{}{}
+		// Asked AGAIN, after the wait for a slot. That wait is precisely when
+		// a worker is most likely to report the pause — it blocks until one
+		// finishes, and finishing is what banks a verdict and reads standing.
+		// Checking only before the wait would spend one more whole
+		// verifier+refuter pair on a stop that had already been signalled.
+		if stop != nil && stop() {
+			<-sem
+			break
+		}
 		wg.Add(1)
+		dispatched++
 		go func(i int) {
 			defer wg.Done()
 			defer func() { <-sem }()
@@ -435,6 +553,7 @@ func (p *validationPhase) runBounded(n int, fn func(i int)) {
 		}(i)
 	}
 	wg.Wait()
+	return dispatched
 }
 
 // indicesByAffectedDesc returns indices into the insights slice

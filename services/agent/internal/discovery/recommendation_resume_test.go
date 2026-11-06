@@ -30,6 +30,7 @@ type fakeRecommendationCheckpointStore struct {
 
 	saveErr    error
 	verdictErr error
+	verdictNoRow bool
 	loadErr    error
 	deleteErr  error
 	touchErr   error
@@ -45,14 +46,17 @@ func (f *fakeRecommendationCheckpointStore) SaveDraft(_ context.Context, in data
 	return nil
 }
 
-func (f *fakeRecommendationCheckpointStore) SaveRecVerdict(_ context.Context, in database.RecommendationVerdictInput) error {
+func (f *fakeRecommendationCheckpointStore) SaveRecVerdict(_ context.Context, in database.RecommendationVerdictInput) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.verdictErr != nil {
-		return f.verdictErr
+		return false, f.verdictErr
+	}
+	if f.verdictNoRow {
+		return false, nil
 	}
 	f.verdicts = append(f.verdicts, in)
-	return nil
+	return true, nil
 }
 
 func (f *fakeRecommendationCheckpointStore) Load(_ context.Context, _ string, explorationAttempt int) (*models.RecommendationCheckpoint, error) {

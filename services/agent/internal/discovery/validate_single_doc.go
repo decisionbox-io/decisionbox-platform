@@ -99,7 +99,7 @@ func ValidateSingleDoc(ctx context.Context, in ValidateSingleDocInput) (models.V
 		one := []models.Insight{*target}
 		// No per-item checkpoint: this is an operator re-validating one
 		// document of a FINISHED discovery, not a run that can be resumed.
-		results, _ := phase.validateInsights(ctx, one, stepByID, target.AnalysisArea, 0, nil)
+		results, _, _ := phase.validateInsights(ctx, one, stepByID, target.AnalysisArea, 0, nil)
 		if len(results) != 1 {
 			return models.ValidationResult{}, fmt.Errorf("validateInsights returned %d results, expected 1", len(results))
 		}
@@ -121,7 +121,10 @@ func ValidateSingleDoc(ctx context.Context, in ValidateSingleDocInput) (models.V
 		// validateRecommendations needs the FULL insight set (for the
 		// related_insight_ids fan-out) so we pass in.Insights unchanged. No
 		// per-item checkpoint, for the reason the insight branch gives.
-		results := phase.validateRecommendations(ctx, one, in.Insights, stepByID, nil)
+		// The pause flag is discarded on purpose: this path validates ONE
+		// document on request from the API, outside any run, so there is no
+		// attempt to pause and nil cp can never report one.
+		results, _ := phase.validateRecommendations(ctx, one, in.Insights, stepByID, nil)
 		if len(results) != 1 {
 			return models.ValidationResult{}, fmt.Errorf("validateRecommendations returned %d results, expected 1", len(results))
 		}
