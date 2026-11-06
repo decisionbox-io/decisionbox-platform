@@ -210,24 +210,39 @@ const RunStatusPaused = "paused"
 // the agent's own default — the API cannot import the agent package.
 // TestRunPhaseAcceptsPause pins the strings so a rename there fails here.
 //
-// Why these four and not more: a pause is only free where a checkpoint has
+// Why these five and not more: a pause is only free where a checkpoint has
 // just landed. `init` and `schema_discovery` precede exploration, so a request
 // made then takes effect after the first checkpointed step. `exploration`
-// checkpoints every step. `analysis` checkpoints every completed area, so a
-// pause there keeps the areas already done. Past that — recommendations and
-// the save — nothing is checkpointed and the run is minutes from finishing, so
-// pausing would discard that work for nothing; the persist tail is outside the
-// window permanently, by design.
+// checkpoints every step. `analysis` checkpoints every completed area, and
+// also every analysed-but-unvalidated area and every single insight verdict,
+// so a pause there keeps all of it. `recommendations` checkpoints the
+// generated set and then every single recommendation verdict, so a pause
+// between Phase 5 and 5.5 — or between two verdicts inside 5.5 — keeps the
+// generation call.
+//
+// `recommendations` was excluded while nothing in that phase was checkpointed.
+// Per-recommendation resume changed the fact, not the rule: the rule is that a
+// pause stops wherever a crash would have left a resumable run, and the agent
+// now has durable seams there. Leaving it out made those seams unreachable —
+// the API answered 409 and only a request carried over from `analysis` could
+// ever reach them.
+//
+// Still outside the window, permanently: `saving` and `embed_index`. The run is
+// seconds from finishing and the persist tail owes durability for work already
+// done, so there is nothing to save by stopping and a partial tail to clean up
+// if you do.
 //
 // Note the whole of Phase 4 reports `analysis`, per-insight validation
-// included: the run document's phase is written only by SetPhase, and the
-// agent's setLLMPhase is layer attribution that does not touch it.
+// included, and the whole of Phase 5 + 5.5 reports `recommendations`: the run
+// document's phase is written only by SetPhase, and the agent's setLLMPhase is
+// layer attribution that does not touch it.
 var pausablePhases = map[string]bool{
 	"":                 true, // a run that has not stamped a phase yet
 	"init":             true,
 	"schema_discovery": true,
 	"exploration":      true,
 	"analysis":         true,
+	"recommendations":  true,
 }
 
 // RunPhaseAcceptsPause reports whether a run reporting this phase can still be

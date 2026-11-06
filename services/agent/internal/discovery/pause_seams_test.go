@@ -433,3 +433,111 @@ func TestValidateRecommendations_HonoursAPauseBetweenTwoVerdicts(t *testing.T) {
 		t.Errorf("%d results but %d verdicts persisted", len(results), len(saved))
 	}
 }
+
+// Codex round 1, finding 2. A pause reported by the LAST verdict leaves
+// nothing to trim, so a phase that inferred "paused" from "stopped short of
+// the queue" dropped it — and the run sailed on into the save with the
+// operator's request silently discarded. The one-item case is the sharpest
+// version: the only verdict is also the last.
+func TestValidateRecommendations_APauseOnTheLastVerdictStillStopsTheRun(t *testing.T) {
+	p, _, insights, steps := concurrencyFixture(t, 1)
+	p.caps.MaxRecommendationsPerRun = 15
+
+	recs := []models.Recommendation{{
+		ID: "r0", Title: "the only one", RelatedInsightIDs: []string{insights[0].ID},
+	}}
+	// Reports the pause on the first — and therefore last — verdict.
+	cp := &recordingCheckpoint{pauseAfter: 1}
+
+	results, paused := p.validateRecommendations(context.Background(), recs, insights, steps, cp.hook())
+
+	if !paused {
+		t.Fatal("paused = false after the last verdict reported a pause; the run would carry on to the save and drop the operator's request")
+	}
+	// Nothing was trimmed, and nothing should have been: the queue drained.
+	if len(results) != 1 {
+		t.Errorf("got %d results, want 1 — the verdict that ran must still be returned", len(results))
+	}
+	if n := len(cp.savedIDs()); n != 1 {
+		t.Errorf("persisted %d verdicts, want 1", n)
+	}
+}
+
+// The same shape on the insight side, which had the identical calculation.
+func TestValidateInsights_APauseOnTheLastVerdictStillStopsTheRun(t *testing.T) {
+	p, _, insights, steps := concurrencyFixture(t, 1)
+	p.caps.MaxInsightsPerRun = 6
+
+	cp := &recordingCheckpoint{pauseAfter: 6} // all six, so the queue drains
+
+	results, validated, paused := p.validateInsights(context.Background(), insights, steps, "a", 0, cp.hook())
+
+	if !paused {
+		t.Fatal("paused = false after the final verdict reported a pause; the area would be checkpointed and the run would continue")
+	}
+	if len(results) != 6 || validated != 6 {
+		t.Errorf("results = %d, validated = %d; want 6 and 6 — a drained queue trims nothing and returns no budget", len(results), validated)
+	}
+}
+
+// Codex round 1, finding 3. With concurrency > 1 the dispatcher blocks on the
+// semaphore, and that wait is exactly when a finishing worker reports a pause.
+// Checking `stop` only before the wait spends one more complete
+// verifier+refuter pair on a stop that was already signalled.
+//
+// Built so the pause appears only WHILE the dispatcher is blocked: the slots
+// are all occupied by workers that do not return until released, and the first
+// to be released is the one that flips the flag.
+func TestRunBounded_RechecksTheStopAfterAcquiringASlot(t *testing.T) {
+	p := &validationPhase{}
+	p.caps.Concurrency = 2
+
+	var mu sync.Mutex
+	started := 0
+	paused := false
+	release := make(chan struct{})
+	// Released on a timer rather than after runBounded returns: runBounded
+	// waits for its workers, so freeing them afterwards would deadlock the
+	// test against the very wait it is trying to observe.
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		close(release)
+	}()
+
+	dispatched := p.runBounded(8, func(int) {
+		mu.Lock()
+		started++
+		first := started == 1
+		mu.Unlock()
+		if first {
+			// Finishes immediately and reports a pause, freeing the slot the
+			// dispatcher is about to wait on.
+			mu.Lock()
+			paused = true
+			mu.Unlock()
+			return
+		}
+		// Everyone else holds their slot for a while, so the dispatcher is
+		// blocked on the semaphore at the moment the flag flips.
+		<-release
+	}, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return paused
+	})
+
+	// The count is deterministic, which is what makes this a regression test
+	// rather than a coin flip. Workers 1 and 2 start while nothing is paused.
+	// Worker 2 holds its slot, so the only slot that can free up is worker
+	// 1's — and worker 1 sets the pause BEFORE returning, so the slot is
+	// released strictly after the flag is set. The dispatcher therefore always
+	// wakes from the semaphore with the pause already standing:
+	//
+	//   with the re-check    it releases the slot and breaks  -> 2
+	//   without the re-check it launches one more document    -> 3
+	//
+	// So 2 passes, 3 fails, and the boundary is exactly the bug.
+	if dispatched > 2 {
+		t.Errorf("dispatched %d documents, want 2; the stop was re-checked too late and paid for %d extra verifier+refuter pair(s)", dispatched, dispatched-2)
+	}
+}

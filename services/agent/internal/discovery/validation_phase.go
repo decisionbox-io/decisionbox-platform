@@ -292,8 +292,15 @@ func (p *validationPhase) validateInsights(ctx context.Context, insights []model
 	// has no marker at all, which is exactly the state a crash at this point
 	// would leave — so the resumed attempt re-enters at the first insight
 	// without a verdict and re-analyses nothing.
-	pausedEarly := dispatched < len(jobs)
-	if pausedEarly {
+	// Two separate questions, and conflating them dropped the pause whenever
+	// the queue happened to drain: `stoppedShort` is "is there anything to
+	// trim", `paused` is "must the caller stop". A pause reported by the LAST
+	// verdict — or seen only after every job had been dispatched — leaves
+	// nothing to trim and still has to be honoured, or the run sails on into
+	// the save with the operator's request silently dropped.
+	stoppedShort := dispatched < len(jobs)
+	paused := stoppedShort || cp.pauseRequested()
+	if stoppedShort {
 		// Drop the slots whose check never ran. They hold a pre-filled
 		// ValidationResult with no verdict stamped, and persisting one would
 		// read downstream as a document that WAS checked and came back empty.
@@ -328,7 +335,7 @@ func (p *validationPhase) validateInsights(ctx context.Context, insights []model
 		"insights": len(insights),
 		"verdicts": len(results),
 	}).Info("Insight validation complete")
-	return results, runValidated, pausedEarly
+	return results, runValidated, paused
 }
 
 // validateRecommendations runs Phase 5.5 — same shape as
@@ -428,8 +435,9 @@ func (p *validationPhase) validateRecommendations(ctx context.Context, recommend
 	// Same per-item pause seam as the insight half: the recommendations
 	// and the verdicts already produced are both on disk, so a resumed attempt
 	// regenerates nothing and re-validates only what is left.
-	pausedEarly := dispatched < len(jobs)
-	if pausedEarly {
+	stoppedShort := dispatched < len(jobs)
+	paused := stoppedShort || cp.pauseRequested()
+	if stoppedShort {
 		undispatched := make(map[int]bool, len(jobs)-dispatched)
 		for j := dispatched; j < len(jobs); j++ {
 			undispatched[jobs[j].pos] = true
@@ -446,7 +454,7 @@ func (p *validationPhase) validateRecommendations(ctx context.Context, recommend
 		}).Info("validation: an operator's pause was honoured mid-Phase-5.5; the verdicts already paid for are on disk")
 	}
 	applog.WithField("recommendations", len(recommendations)).Info("Recommendation validation complete")
-	return results, pausedEarly
+	return results, paused
 }
 
 // docJob is one document queued for checking: its result slot, its index
@@ -527,6 +535,15 @@ func (p *validationPhase) runBounded(n int, fn func(i int), stop func() bool) in
 			break
 		}
 		sem <- struct{}{}
+		// Asked AGAIN, after the wait for a slot. That wait is precisely when
+		// a worker is most likely to report the pause — it blocks until one
+		// finishes, and finishing is what banks a verdict and reads standing.
+		// Checking only before the wait would spend one more whole
+		// verifier+refuter pair on a stop that had already been signalled.
+		if stop != nil && stop() {
+			<-sem
+			break
+		}
 		wg.Add(1)
 		dispatched++
 		go func(i int) {
