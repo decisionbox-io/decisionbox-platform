@@ -37,6 +37,77 @@ type validationPhase struct {
 	primaryDS    string
 }
 
+// perItemCheckpoint is how a run makes one document's validation verdict
+// durable as it lands, and skips the ones a previous attempt already paid for.
+//
+// Nil on a deployment with no checkpoint store, which is what keeps the
+// validation phase on exactly the path it always took.
+type perItemCheckpoint struct {
+	// done holds the verdicts a previous attempt produced, by document id as
+	// the checkpoint holds it. A document found here is not re-checked: its
+	// verdict is restored verbatim, because it describes the same document
+	// (the draft it came from is immutable) and re-deriving it would be two
+	// LLM calls for an answer already paid for.
+	done map[string]models.ValidationResult
+
+	// save persists one freshly produced verdict. Called from the bounded
+	// worker that produced it, so it must be safe to call concurrently.
+	save func(vr models.ValidationResult)
+}
+
+// restored returns the verdict a previous attempt produced for a document, if
+// any. Safe on nil.
+func (c *perItemCheckpoint) restored(docID string) (models.ValidationResult, bool) {
+	if c == nil || docID == "" {
+		return models.ValidationResult{}, false
+	}
+	vr, ok := c.done[docID]
+	return vr, ok
+}
+
+// record persists a verdict this attempt produced. Safe on nil.
+func (c *perItemCheckpoint) record(vr models.ValidationResult) {
+	if c == nil || c.save == nil {
+		return
+	}
+	c.save(vr)
+}
+
+// insightValidationFrom renders the Validation an insight or recommendation
+// carries from the ValidationResult the phase produced for it.
+//
+// Extracted so the live path and the restore path cannot drift: the
+// ValidationResult is what gets checkpointed, so a second construction of this
+// struct somewhere else would be a second definition of what a stored verdict
+// means. Every field is derivable from vr, including Reasoning, which lives on
+// the verifier verdict inside it.
+//
+// The legacy Status / Reasoning pair is backfilled for insights only, which is
+// not a style choice: insight validations have always carried it for consumers
+// still reading the old shape, and recommendation validations never have.
+// Deciding it from vr.DocKind rather than from a parameter keeps that
+// difference a property of the verdict, so a restored verdict renders exactly
+// as the live one did.
+func insightValidationFrom(vr models.ValidationResult) *valmodels.InsightValidation {
+	out := &valmodels.InsightValidation{
+		WarehouseID:     vr.WarehouseID,
+		Verifier:        vr.Verifier,
+		Refuter:         vr.Refuter,
+		Combined:        vr.Combined,
+		RefuterDisabled: vr.RefuterDisabled,
+		ValidatedAt:     vr.ValidatedAt,
+		InputTokens:     vr.InputTokens,
+		OutputTokens:    vr.OutputTokens,
+	}
+	if vr.DocKind == valmodels.DocInsight {
+		out.Status = string(vr.Combined)
+		if vr.Verifier != nil {
+			out.Reasoning = vr.Verifier.OverallReason
+		}
+	}
+	return out
+}
+
 // forDatasource returns the WarehouseInfo + Executor for a datasource id,
 // falling back to the primary wh / executor when the run is single-warehouse
 // or the id has no per-datasource wiring.
@@ -100,11 +171,14 @@ func (p *validationPhase) datasourceForSteps(steps []int, stepByID map[int]*mode
 // nil (no aiClient or no schemaProvider), Combined=validation_disabled.
 //
 // `runValidated` tracks how many insights have been validated so far
-// across all areas; the caller must thread it through area loops.
+// across all areas; the caller must thread it through area loops, and must
+// have already added every RESTORED marker of every area it is going to
+// restore — see restoredDraftBudget. A restored marker found in cp.done is
+// therefore stamped without being charged again.
 //
 // Returns the new runValidated count (so callers can keep their
 // running total in sync).
-func (p *validationPhase) validateInsights(ctx context.Context, insights []models.Insight, stepByID map[int]*models.ExplorationStep, areaID string, runValidated int) ([]models.ValidationResult, int) {
+func (p *validationPhase) validateInsights(ctx context.Context, insights []models.Insight, stepByID map[int]*models.ExplorationStep, areaID string, runValidated int, cp *perItemCheckpoint) ([]models.ValidationResult, int) {
 	results := make([]models.ValidationResult, 0, len(insights))
 	if p.agent == nil {
 		// Validation is disabled (project setting off, or no aiClient
@@ -140,6 +214,16 @@ func (p *validationPhase) validateInsights(ctx context.Context, insights []model
 			ValidatedAt:   time.Now(),
 			DocKind:       valmodels.DocInsight,
 		}
+		// Already validated on a previous attempt of this run. Restored
+		// rather than re-derived, and NOT charged here: runValidated arrives
+		// already carrying every restored marker of every area this run is
+		// going to restore. See restoredDraftBudget for why that has to
+		// happen before the area loop rather than per area.
+		if prior, ok := cp.restored(ins.ID); ok {
+			results[pos] = prior
+			ins.Validation = insightValidationFrom(prior)
+			continue
+		}
 		if runValidated >= p.caps.MaxInsightsPerRun {
 			ins.Validation = &valmodels.InsightValidation{
 				Combined:    valmodels.StatusSkippedBudgetCap,
@@ -168,20 +252,11 @@ func (p *validationPhase) validateInsights(ctx context.Context, insights []model
 		bundle := verifier.BuildInsightBundle(ins, stepByID, job.wh, p.disc, p.cfg.Bundle)
 		d := p.checkDoc(ctx, bundle, job.ex)
 		d.stamp(vr)
-		ins.Validation = &valmodels.InsightValidation{
-			WarehouseID: vr.WarehouseID,
-			// Backfill legacy Status so dashboards / consumers that
-			// still read the old field see the new verdict.
-			Status:          string(d.combined),
-			Reasoning:       d.verifier.OverallReason,
-			Verifier:        vr.Verifier,
-			Refuter:         vr.Refuter,
-			Combined:        d.combined,
-			RefuterDisabled: d.refuterDisabled,
-			ValidatedAt:     vr.ValidatedAt,
-			InputTokens:     vr.InputTokens,
-			OutputTokens:    vr.OutputTokens,
-		}
+		ins.Validation = insightValidationFrom(*vr)
+		// Durable before the next insight starts, so a crash costs this one
+		// verdict rather than the whole area's. Called from the worker, which
+		// is why the store writes one field instead of the document.
+		cp.record(*vr)
 	})
 	applog.WithFields(applog.Fields{
 		"area":     areaID,
@@ -194,7 +269,7 @@ func (p *validationPhase) validateInsights(ctx context.Context, insights []model
 // validateRecommendations runs Phase 5.5 — same shape as
 // validateInsights but for recommendations, which build their bundles
 // from the union of their related insights' source steps.
-func (p *validationPhase) validateRecommendations(ctx context.Context, recommendations []models.Recommendation, allInsights []models.Insight, stepByID map[int]*models.ExplorationStep) []models.ValidationResult {
+func (p *validationPhase) validateRecommendations(ctx context.Context, recommendations []models.Recommendation, allInsights []models.Insight, stepByID map[int]*models.ExplorationStep, cp *perItemCheckpoint) []models.ValidationResult {
 	results := make([]models.ValidationResult, 0, len(recommendations))
 	if p.agent == nil {
 		// Same legacy-Status backfill as the insight nil-agent branch.
@@ -217,7 +292,21 @@ func (p *validationPhase) validateRecommendations(ctx context.Context, recommend
 	// then the checks run with bounded concurrency into their own slots.
 	results = make([]models.ValidationResult, len(recommendations))
 	var jobs []docJob
+
+	// Charge every restored verdict BEFORE the cap is applied to anything,
+	// which is the whole correctness of the cap under a resume. Counting a
+	// restored verdict only when the loop reaches it lets the documents ahead
+	// of it consume cap slots first: with one verdict restored for the third
+	// recommendation and the cap lowered to two between attempts, the first
+	// two would be queued and the third then charged, validating three
+	// documents against a cap of two.
 	validated := 0
+	for i := range recommendations {
+		if _, ok := cp.restored(recommendations[i].ID); ok {
+			validated++
+		}
+	}
+
 	for i := range recommendations {
 		rec := &recommendations[i]
 		vr := models.ValidationResult{
@@ -225,6 +314,14 @@ func (p *validationPhase) validateRecommendations(ctx context.Context, recommend
 			ClaimedMetric: rec.Title, // display label for the run-log step
 			ValidatedAt:   time.Now(),
 			DocKind:       valmodels.DocRecommendation,
+		}
+		// Already validated on a previous attempt. Restored rather than
+		// re-derived, and NOT charged here: its slice of the cap was counted
+		// above, before any document was selected.
+		if prior, ok := cp.restored(rec.ID); ok {
+			results[i] = prior
+			rec.Validation = insightValidationFrom(prior)
+			continue
 		}
 		if validated >= p.caps.MaxRecommendationsPerRun {
 			rec.Validation = &valmodels.InsightValidation{
@@ -259,16 +356,8 @@ func (p *validationPhase) validateRecommendations(ctx context.Context, recommend
 		bundle := verifier.BuildRecommendationBundle(rec, insightByID, stepByID, job.wh, p.disc, p.cfg.Bundle)
 		d := p.checkDoc(ctx, bundle, job.ex)
 		d.stamp(vr)
-		rec.Validation = &valmodels.InsightValidation{
-			WarehouseID:     vr.WarehouseID,
-			Verifier:        vr.Verifier,
-			Refuter:         vr.Refuter,
-			Combined:        d.combined,
-			RefuterDisabled: d.refuterDisabled,
-			ValidatedAt:     vr.ValidatedAt,
-			InputTokens:     vr.InputTokens,
-			OutputTokens:    vr.OutputTokens,
-		}
+		rec.Validation = insightValidationFrom(*vr)
+		cp.record(*vr)
 	})
 	applog.WithField("recommendations", len(recommendations)).Info("Recommendation validation complete")
 	return results

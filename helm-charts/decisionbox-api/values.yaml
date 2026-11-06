@@ -71,9 +71,12 @@ env:
   # being killed mid-write.
   # DISCOVERY_MAX_DURATION: "24h"
   # DISCOVERY_CHECKPOINT_RETENTION — how long a run's checkpoints
-  # survive, as a TTL on the discovery_checkpoints collection and on
-  # the per-completed-area discovery_analysis_checkpoints beside it
-  # (one setting for both). Go duration format. These are what make a
+  # survive, as a TTL on the discovery_checkpoints collection and on the
+  # three beside it: discovery_analysis_checkpoints (one per completed
+  # analysis area), discovery_analysis_drafts (one per area analysed but
+  # not yet validated) and discovery_recommendation_checkpoints (one per
+  # run whose recommendation generation finished). One setting for all
+  # four. Go duration format. These are what make a
   # crashed run resumable (POST /api/v1/runs/{runId}/resume), so this MUST exceed
   # DISCOVERY_MAX_DURATION above — otherwise a long run's early
   # checkpoints expire while it is still running and a resume would

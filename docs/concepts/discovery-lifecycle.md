@@ -172,6 +172,16 @@ Each completed exploration step now lands in its own `discovery_checkpoints` doc
 
 Analysis is checkpointed too, one document per **completed area** in `discovery_analysis_checkpoints`. A run that died with some areas finished restores those and analyses only the rest, so a resumed run re-pays for neither exploration nor the areas already done. The saving is smaller than exploration's — an area reasons over the cached exploration digests rather than querying the warehouse — but it covers the per-insight validation calls each area makes, and it is what lets a run killed by `DISCOVERY_MAX_DURATION` make progress on resume instead of starting the same areas again in the same order.
 
+Two finer seams cover the work that happens *inside* an area and after them all.
+An area that was analysed but has not finished validating its insights lands in `discovery_analysis_drafts`, with one completion marker per insight already checked.
+A resumed run **finishes** such an area rather than re-analysing it: it re-enters at the first insight without a marker, so a run killed after validating four of six insights pays for two.
+The analysis call and any repair rounds behind those insights are not repeated either, which is the larger part of what the row saves.
+A finished Phase 5 lands in `discovery_recommendation_checkpoints`, with one marker per recommendation already validated, so a run that died in or after recommendation validation generates nothing again and validates only what is left.
+
+Both are separate collections rather than a flag on the completed-area row, because the two kinds of row are read differently: a completed area is restored and skipped, a draft is restored and finished.
+A reader that could not tell them apart would admit insights carrying no validation verdict into the result — and a flag on a shared row is only honoured by readers that know about it, so an older agent resuming the same run would apply the older meaning to it.
+Keeping them apart also means dropping the two collections returns a deployment to per-area resume, with nothing else changed.
+
 Resume is operator-initiated — the dashboard shows a **Resume from step N** button on a failed run that has a checkpoint, and the same thing is available as `POST /api/v1/runs/{runId}/resume`. Nothing retries automatically.
 
 ### What a checkpoint keeps
@@ -200,6 +210,24 @@ Alongside it, two numbers that cannot be recomputed later:
 | Which exploration the area was analysed over | Insights cite exploration step numbers. An area restored into a *different* exploration would attribute its evidence to the wrong queries, so a run that had to re-explore restores nothing. |
 
 Only a **completed** area is checkpointed. An area whose analysis call failed — a provider error, a parse failure, a context deadline — is deliberately left unmarked so a resume retries it. This is what makes the deadline case work: when `DISCOVERY_MAX_DURATION` expires mid-analysis the loop does not stop, it error-marks every area it has left, and if those counted as done the resume would restore them all, re-run nothing, and reproduce the same near-empty discovery.
+
+### What an unfinished area keeps
+
+The area's analysis step as the phase left it just before validation: its prompt and response, its token and duration accounting, its picker and repair telemetry, and its insights with their figures settled, corrected and rendered.
+Not its validation results, and not its evidence-quality labels — those are produced after validation, by whichever attempt finishes the area.
+
+Alongside it, one marker per insight **actually submitted to the verifier**.
+An insight the per-run validation cap skipped cost nothing and carries no marker, which is what makes the marker count an exact record of what the area spent of that cap.
+
+A draft is superseded by, never merged with, the completed row for the same area.
+It is deleted when its area finishes, but correctness rests on the reader preferring the completed row rather than on that delete — which can be lost to a crash between the two writes.
+
+The same rule that leaves a failed area unmarked applies here: a recommendation phase whose generation call failed, or whose response could not be parsed, carries no row, so a resume retries it.
+A phase that legitimately produced **no** recommendations is checkpointed, because re-running it costs a real call and the answer is still none.
+
+Reusing a stored Phase 5 is conditional on the resumed run holding the same insight set those recommendations were reasoned from.
+A recommendation cites insights by id, and a resumed run mints fresh ids for everything it restores, so the stored citations are translated through the ids the checkpoints hold.
+If any of them no longer resolves — because an area was re-analysed, or the project's recommendation eligibility verdicts changed between attempts — the whole checkpoint is refused and the recommendations are generated again, since reusing them would describe findings the run no longer has.
 
 ### What replay re-executes
 

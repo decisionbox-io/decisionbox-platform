@@ -66,26 +66,44 @@ type analysisCheckpointStore interface {
 // attempt's behalf. Every other failure is logged and swallowed, like every
 // checkpoint write: the cost is that the area is analysed again on a later
 // resume, and a checkpoint must never be able to abort a working run.
-func (o *Orchestrator) checkpointAnalysisArea(ctx context.Context, step models.AnalysisStep, insightsValidated int) error {
+//
+// The bool says whether a row for this area is actually on disk. It is not
+// decoration: the caller deletes the area's DRAFT once the area is finished,
+// and a swallowed write failure here would otherwise leave that delete
+// removing the only recoverable copy of work this attempt had already paid
+// for. False with a nil error means exactly that — nothing landed, carry on
+// anyway, and keep whatever is still recoverable.
+//
+// The two returns are independent, and the pause path is where that matters:
+// it comes back (true, ErrPauseRequested). The error is not a failure — it is
+// the operator's stop, to be taken by the caller at the end of the iteration —
+// and the bool is TRUE because the row landed before the pause was signalled,
+// so the draft it supersedes is spent and the caller still discards it. The
+// alternative, returning false to mean "we are stopping", would keep a draft
+// that the restored completed-area row makes unreachable anyway: rows no
+// resume would ever read, held until the retention TTL swept them. Read the
+// bool as "is there a row" and nothing else; whether to continue is the
+// error's business.
+func (o *Orchestrator) checkpointAnalysisArea(ctx context.Context, step models.AnalysisStep, insightsValidated int) (bool, error) {
 	if o.analysisCheckpointRepo == nil {
-		return nil
+		return false, nil
 	}
 	if o.explorationSummaryAttempt <= 0 {
 		// No durable exploration summary, so this run re-explores on resume
 		// and nothing analysed over the current exploration could be
 		// restored against the next one. Writing a row would be writing one
 		// that LoadAreas is obliged to ignore.
-		return nil
+		return false, nil
 	}
 	if step.Error != "" {
-		return nil
+		return false, nil
 	}
 	if step.AreaID == "" {
 		// The loop always has an area id here; a row without one is
 		// unrestorable, so refuse it rather than storing a key nothing can
 		// match.
 		applog.WithField("run_id", o.runID).Warn("analysis area finished with no area id; not checkpointing it")
-		return nil
+		return false, nil
 	}
 	//
 	// A PAUSE request is handled the other way round — remembered, not acted
@@ -98,14 +116,14 @@ func (o *Orchestrator) checkpointAnalysisArea(ctx context.Context, step models.A
 	// Note what the early returns above already guarantee: every path that
 	// reaches here is one where a row is actually about to be written. A run
 	// with no durable exploration summary, or an area that errored, returns
-	// nil further up and is NOT a pause point — correctly, because nothing
+	// false further up and is NOT a pause point — correctly, because nothing
 	// durable lands there and a pause would strand work the resume cannot
 	// restore.
 	pauseRequested := false
 	if o.statusReporter != nil {
 		switch o.statusReporter.Standing(ctx) {
 		case standingLost:
-			return ai.ErrAttemptSuperseded
+			return false, ai.ErrAttemptSuperseded
 		case standingPauseRequested:
 			pauseRequested = true
 		}
@@ -125,7 +143,7 @@ func (o *Orchestrator) checkpointAnalysisArea(ctx context.Context, step models.A
 				"run_id": o.runID,
 				"area":   step.AreaID,
 			}).Warn("a newer attempt of this run owns this analysis area; stopping rather than spending the rest of the pipeline on a result that will be discarded")
-			return ai.ErrAttemptSuperseded
+			return false, ai.ErrAttemptSuperseded
 		}
 		applog.WithFields(applog.Fields{
 			"run_id": o.runID,
@@ -136,7 +154,12 @@ func (o *Orchestrator) checkpointAnalysisArea(ctx context.Context, step models.A
 		// working run. The cost is that this area is analysed again on any
 		// resume, by a crash or a pause alike; hardening the write itself is
 		// #518.
-		return nil
+		//
+		// FALSE, and that is the half of the bool that earns its keep: nothing
+		// landed, so the caller must KEEP this area's draft. Discarding it here
+		// would delete the only recoverable copy of validation this attempt had
+		// already paid for, with no checkpoint row to restore it from.
+		return false, nil
 	}
 	// keepStepIndex is deliberately NOT set here. An area can only be
 	// checkpointed once a durable exploration summary exists, and both paths
@@ -162,9 +185,16 @@ func (o *Orchestrator) checkpointAnalysisArea(ctx context.Context, step models.A
 		// ResumeRun refuses a run with no replayable prefix even when its
 		// exploration summary survived. So a pause taken here on a run whose
 		// step-1 write failed would strand it.
-		return o.pauseSignalIfResumable("analysis area " + step.AreaID)
+		//
+		// TRUE alongside the pause signal, which is the one place the two
+		// features actually have to agree: the row LANDED, so the draft it
+		// supersedes is spent and the caller still discards it. Returning
+		// false here would keep a draft that the restored completed-area row
+		// makes unreachable anyway — dead rows a resume would never read,
+		// kept alive until the retention TTL swept them.
+		return true, o.pauseSignalIfResumable("analysis area " + step.AreaID)
 	}
-	return nil
+	return true, nil
 }
 
 // loadCompletedAreas reads back the analysis areas this run may restore.
@@ -273,6 +303,12 @@ func (o *Orchestrator) discardAnalysisCheckpoints(ctx context.Context, why strin
 //     phase's eligibility filter, and into Phase 8's embedding, carrying the
 //     ids that Phase 5's related_insight_ids resolve against.
 //
+// The third return is the id remap reidentifyRestoredArea performed, fresh id
+// to stored id. Phase 5 needs it: a stored recommendation cites insights by
+// the ids the checkpoints hold, so deciding whether such a set is still
+// restorable — and re-pointing its citations if it is — is only possible with
+// the mapping each restore produced. See storedInsightIDs.
+//
 // A pure function so the arithmetic is testable on its own: RunDiscovery
 // needs a warehouse, an LLM and a schema cache, so the loop it lives in
 // cannot be driven from a unit test.
@@ -280,9 +316,9 @@ func restoreArea(
 	cp models.AnalysisAreaCheckpoint,
 	analysisLog []models.AnalysisStep,
 	allInsights []models.Insight,
-) ([]models.AnalysisStep, []models.Insight) {
-	step := reidentifyRestoredArea(cp.Step)
-	return append(analysisLog, step), append(allInsights, step.Insights...)
+) ([]models.AnalysisStep, []models.Insight, map[string]string) {
+	step, storedByFresh := reidentifyRestoredArea(cp.Step)
+	return append(analysisLog, step), append(allInsights, step.Insights...), storedByFresh
 }
 
 // reidentifyRestoredArea gives a restored area's insights fresh ids, and
@@ -319,19 +355,24 @@ func restoreArea(
 // Copies rather than rewriting in place: the slices belong to the loaded
 // checkpoint, which the live-feed replay has already read, and the stored row
 // must keep its own ids so a later attempt remints from the same baseline.
-func reidentifyRestoredArea(step models.AnalysisStep) models.AnalysisStep {
+// Returns the remapped step and the inverse mapping, fresh id to stored id,
+// which is what lets a later phase recognise a restored insight by the id the
+// checkpoint holds for it.
+func reidentifyRestoredArea(step models.AnalysisStep) (models.AnalysisStep, map[string]string) {
 	if len(step.Insights) == 0 {
-		return step
+		return step, nil
 	}
 	insights := make([]models.Insight, len(step.Insights))
 	copy(insights, step.Insights)
 	freshByOld := make(map[string]string, len(insights))
+	storedByFresh := make(map[string]string, len(insights))
 	for i := range insights {
 		old := insights[i].ID
 		fresh := uuid.New().String()
 		insights[i].ID = fresh
 		if old != "" {
 			freshByOld[old] = fresh
+			storedByFresh[fresh] = old
 		}
 		// The verdict names the document it judged, twice over and
 		// separately from the outer id: Validation is a POINTER, so the
@@ -362,7 +403,7 @@ func reidentifyRestoredArea(step models.AnalysisStep) models.AnalysisStep {
 		}
 		step.ValidationResults = results
 	}
-	return step
+	return step, storedByFresh
 }
 
 // reidentifyInsightValidation deep-copies an insight's validation and points

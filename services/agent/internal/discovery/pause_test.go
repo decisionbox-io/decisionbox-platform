@@ -518,9 +518,17 @@ func TestCheckpointAnalysisArea_PauseStopsAFTERTheAreaIsDurable(t *testing.T) {
 		// because ResumeRun refuses an empty prefix.
 		o.contiguousCheckpointThrough = 12
 
-		err := o.checkpointAnalysisArea(ctx, models.AnalysisStep{AreaID: "churn"}, 4)
+		checkpointed, err := o.checkpointAnalysisArea(ctx, models.AnalysisStep{AreaID: "churn"}, 4)
 		if !errors.Is(err, ai.ErrPauseRequested) {
 			t.Fatalf("checkpointAnalysisArea() = %v, want ErrPauseRequested", err)
+		}
+		// TRUE on the pause path, and this is the assertion that pins the
+		// #515/#516 interaction down: the row landed before the pause was
+		// signalled, so the draft it supersedes is spent and the caller must
+		// still discard it. False here would leave a draft the restored
+		// completed-area row makes unreachable, kept until the TTL swept it.
+		if !checkpointed {
+			t.Error("checkpointed = false on the pause path; the row landed, so the caller must still discard the draft")
 		}
 		if len(store.saved) != 1 || store.saved[0].Step.AreaID != "churn" {
 			t.Fatalf("saved areas = %+v, want one row for churn: the area the operator interrupted must be durable before anything stops", store.saved)
@@ -543,9 +551,12 @@ func TestCheckpointAnalysisArea_PauseStopsAFTERTheAreaIsDurable(t *testing.T) {
 			analysisCheckpointRepo:    store,
 			explorationSummaryAttempt: 1,
 		}
-		err := o.checkpointAnalysisArea(ctx, models.AnalysisStep{AreaID: "churn"}, 0)
+		checkpointed, err := o.checkpointAnalysisArea(ctx, models.AnalysisStep{AreaID: "churn"}, 0)
 		if !errors.Is(err, ai.ErrAttemptSuperseded) {
 			t.Fatalf("checkpointAnalysisArea() = %v, want ErrAttemptSuperseded", err)
+		}
+		if checkpointed {
+			t.Error("checkpointed = true for a superseded attempt that never wrote a row")
 		}
 		if len(store.saved) != 0 {
 			t.Errorf("a superseded attempt wrote %d area rows", len(store.saved))
@@ -579,8 +590,12 @@ func TestCheckpointAnalysisArea_PauseStopsAFTERTheAreaIsDurable(t *testing.T) {
 				}
 				tc.set(o)
 
-				if err := o.checkpointAnalysisArea(ctx, tc.step, 0); err != nil {
+				checkpointed, err := o.checkpointAnalysisArea(ctx, tc.step, 0)
+				if err != nil {
 					t.Fatalf("checkpointAnalysisArea() = %v, want nil so the run carries on to a real pause point", err)
+				}
+				if checkpointed {
+					t.Error("checkpointed = true on a path that returns before the write")
 				}
 				if len(doc.pauses) != 0 {
 					t.Errorf("paused with nothing checkpointed for this area; the work would be re-analysed on resume")
@@ -605,8 +620,15 @@ func TestCheckpointAnalysisArea_PauseStopsAFTERTheAreaIsDurable(t *testing.T) {
 			attemptStartedAt:          time.Now(),
 		}
 
-		if err := o.checkpointAnalysisArea(ctx, models.AnalysisStep{AreaID: "churn"}, 0); err != nil {
+		checkpointed, err := o.checkpointAnalysisArea(ctx, models.AnalysisStep{AreaID: "churn"}, 0)
+		if err != nil {
 			t.Fatalf("checkpointAnalysisArea() = %v, want nil — a failed checkpoint must not abort the run", err)
+		}
+		// FALSE, so the caller KEEPS the draft: the write that was meant to
+		// make this area durable just failed, and the draft is now the only
+		// recoverable copy of validation this attempt paid for.
+		if checkpointed {
+			t.Error("checkpointed = true after the area write failed; the caller would discard the only recoverable copy")
 		}
 		if len(doc.pauses) != 0 {
 			t.Error("paused on an area whose checkpoint write failed; the resume would re-analyse it")

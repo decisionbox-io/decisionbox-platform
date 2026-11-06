@@ -104,3 +104,95 @@ type AnalysisAreaCheckpoint struct {
 	// implementation of that rule would.
 	InsightsValidated int
 }
+
+// AnalysisAreaDraft is one analysis area that has been analysed but has NOT
+// finished its per-insight validation, as a resumed run reads it back.
+//
+// It exists because per-item validation cannot be resumed without the item.
+// An area's insights are the output of a single LLM call that produces all of
+// them at once, so "re-enter at insight 5 of 6" is only meaningful if
+// insights 1..6 are durable — and the same call is the expensive part of the
+// area, so persisting it is what makes the whole area's spend recoverable
+// rather than just its tail.
+//
+// A draft is always superseded by the AnalysisAreaCheckpoint for the same
+// area: the completed row is written as the area finishes and describes the
+// same work with its validation done, so a loader holding both must prefer
+// it. See database.DiscoveryAnalysisDraftRepository.
+type AnalysisAreaDraft struct {
+	// Step is the area's analysis step as the loop body left it just before
+	// Phase 4.5: prompt, response, token counts, picker telemetry, figure and
+	// repair counters, and the insights with their figures settled, rendered
+	// and repaired.
+	//
+	// Two things it does NOT carry, because neither has happened yet:
+	// ValidationResults (filled by Phase 4.5) and each insight's Quality
+	// label (attached after Phase 4.5). A restored draft re-enters the loop
+	// ahead of both, so both are produced by the attempt that finishes the
+	// area.
+	Step AnalysisStep
+
+	// InsightVerdicts is one completion marker per insight this or an earlier
+	// attempt already submitted to the verifier, keyed by the insight id as
+	// the draft holds it.
+	//
+	// Only a submitted insight is recorded — never one the per-run cap
+	// skipped, which cost nothing — so len(InsightVerdicts) is exactly this
+	// draft's slice of the run's validation budget. That is the opposite of
+	// AnalysisAreaCheckpoint.InsightsValidated, which has to be recorded
+	// because a completed area's ValidationResults DO include the
+	// cap-skipped entries and so cannot be counted.
+	InsightVerdicts map[string]ValidationResult
+}
+
+// RecommendationCheckpoint is an in-flight run's finished Phase 5, as a
+// resumed run reads it back: the recommendation step the phase produced, the
+// insight set it was generated over, and one completion marker per
+// recommendation already validated in Phase 5.5.
+//
+// Only a run whose Phase 5 actually banked something is checkpointed. A
+// generation call that failed, or whose response could not be parsed, carries
+// no row — the same rule that keeps a failed analysis area unmarked, and for
+// the same reason: marking it would make a resume restore the failure instead
+// of retrying it.
+type RecommendationCheckpoint struct {
+	// Step is the whole RecommendationStep, which already carries the kept
+	// recommendations under its own Recommendations field: both
+	// applyRecommendationDropStats and applyUnresolvedFigureDropStats resync
+	// it to the surviving slice, so there is one list rather than two that
+	// can disagree.
+	Step RecommendationStep
+
+	// EligibleInsightIDs is the insight set Phase 5 was generated over, in
+	// the ids the run's analysis checkpoints hold for those insights.
+	//
+	// It is the restore gate. A recommendation cites insights by id through
+	// RelatedInsightIDs, and a resumed run mints fresh ids for every insight
+	// it restores, so a stored recommendation is only usable if every id it
+	// cites can be mapped onto an insight this attempt actually has. An
+	// attempt that re-analysed an area produces insights no checkpoint names,
+	// so the sets stop matching and the recommendations are regenerated —
+	// which is correct, because they would otherwise describe findings the
+	// run no longer holds.
+	EligibleInsightIDs []string
+
+	// AnalysisGeneration identifies the analysis those insights came from,
+	// independently of the ids they carry: one entry per contributing area,
+	// naming the moment that area's analysis ran.
+	//
+	// EligibleInsightIDs alone cannot carry that meaning. The ids are the only
+	// handle a stored recommendation has on its insights, but a model-supplied
+	// id survives re-analysis — so "the same ids are eligible" does not imply
+	// "the same findings are eligible", and a recommendation reasoned over the
+	// content an area used to hold would be restored over the content that
+	// replaced it, keeping the validation verdict the old finding earned.
+	//
+	// See discovery.analysisGenerationFingerprint.
+	AnalysisGeneration []string
+
+	// RecVerdicts is one completion marker per recommendation already
+	// validated, keyed by the recommendation id as the checkpoint holds it.
+	// Same rule as AnalysisAreaDraft.InsightVerdicts: submitted documents
+	// only, so the length is the budget.
+	RecVerdicts map[string]ValidationResult
+}

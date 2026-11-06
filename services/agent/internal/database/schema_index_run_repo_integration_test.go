@@ -106,9 +106,9 @@ func TestAgentInteg_SchemaIndexRun_Validation(t *testing.T) {
 
 	cases := []*models.SchemaIndexRun{
 		nil,
-		{DatasourceID: "d", RunID: "r"},                 // no project
-		{ProjectID: "p", RunID: "r"},                    // no datasource
-		{ProjectID: "p", DatasourceID: "d"},             // no run
+		{DatasourceID: "d", RunID: "r"},     // no project
+		{ProjectID: "p", RunID: "r"},        // no datasource
+		{ProjectID: "p", DatasourceID: "d"}, // no run
 	}
 	for i, c := range cases {
 		if err := r.Record(ctx, c); err == nil {

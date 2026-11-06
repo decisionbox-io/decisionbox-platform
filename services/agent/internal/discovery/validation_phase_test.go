@@ -22,7 +22,7 @@ func TestValidateInsights_NilAgentStampsValidationDisabledWithLegacyBackfill(t *
 		{ID: "i2", AffectedCount: 50},
 	}
 
-	results, validated := p.validateInsights(context.Background(), insights, nil, "area-1", 0)
+	results, validated := p.validateInsights(context.Background(), insights, nil, "area-1", 0, nil)
 
 	if len(results) != 0 {
 		t.Errorf("nil-agent path should emit zero ValidationResults, got %d", len(results))
@@ -56,7 +56,7 @@ func TestValidateRecommendations_NilAgentStampsValidationDisabledWithLegacyBackf
 		{ID: "r2"},
 	}
 
-	results := p.validateRecommendations(context.Background(), recs, nil, nil)
+	results := p.validateRecommendations(context.Background(), recs, nil, nil, nil)
 
 	if len(results) != 0 {
 		t.Errorf("nil-agent path should emit zero ValidationResults, got %d", len(results))
@@ -362,7 +362,7 @@ func TestValidateInsights_PopulatesClaimedMetricLabel(t *testing.T) {
 		{ID: "i1", Name: "Office Furniture Category: Single Dominant Seller", AffectedCount: 609},
 	}
 
-	results, _ := p.validateInsights(context.Background(), insights, nil, "area-1", 0)
+	results, _ := p.validateInsights(context.Background(), insights, nil, "area-1", 0, nil)
 
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
@@ -386,7 +386,7 @@ func TestValidateRecommendations_PopulatesClaimedMetricLabel(t *testing.T) {
 		{ID: "r1", Title: "Reduce checkout funnel friction"},
 	}
 
-	results := p.validateRecommendations(context.Background(), recs, nil, nil)
+	results := p.validateRecommendations(context.Background(), recs, nil, nil, nil)
 
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))

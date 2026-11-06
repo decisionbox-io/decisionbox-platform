@@ -979,9 +979,17 @@ func TestOwnershipLost_GatesSpendOnPositiveEvidence(t *testing.T) {
 // because the choice decides where an operator can pause a run — see the
 // comments inside.
 func TestOwnershipGates_CoverEverySpendAndSideEffectAfterExploration(t *testing.T) {
-	src, err := os.ReadFile("orchestrator.go")
-	if err != nil {
-		t.Fatalf("read orchestrator.go: %v", err)
+	// Two files, because the Phase 4 loop's analysis half lives in
+	// analysis_area.go: the loop has to choose between running it and
+	// restoring a draft of it, and the gate that sits between the analysis
+	// call and the validation calls went with the call it guards.
+	var src []byte
+	for _, name := range []string{"orchestrator.go", "analysis_area.go"} {
+		b, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		src = append(src, b...)
 	}
 	// Two helpers, and which one a seam uses is itself the thing being pinned.
 	// Both stop a superseded attempt identically; stopBefore ALSO honours an
