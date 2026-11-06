@@ -273,16 +273,22 @@ The dashboard therefore offers two stops on a live run. **Pause** keeps the run'
 
 `POST /api/v1/runs/{runId}/pause` records a *request*, and answers `202` for that — not for the run having stopped. The signal travels through the run document, because the agent already reads its own run at every phase boundary; nothing signals the agent and no deployment mode differs. So the run stays `running`, with `pause_requested_at` set, until the agent reaches a seam where stopping is free. That is deliberate: an agent is alive and querying the warehouse in that window, so everything that asks "is this run active" must keep answering yes.
 
-**Where a pause takes effect.** A pause is honoured where a checkpoint has just landed, so that stopping costs nothing:
+**Where a pause takes effect.** One rule, and it is worth stating as a rule rather than a list: **a pause stops wherever a crash would have left a resumable run.** Every durable checkpoint write is therefore a pause seam — the run stops as soon as stopping is free, and never waits for a boundary a crash would not have waited for.
 
 | Seam | Honoured | What a resume re-uses |
 |---|---|---|
 | after any exploration step | yes | every step up to the pause; the run re-enters at the next one |
 | while replaying a prefix on a resumed run | yes | the whole prefix — nothing was spent |
-| entering the analysis phase | yes | all of exploration; the resume makes zero warehouse queries |
+| after the exploration summary | yes | all of exploration; the resume makes zero warehouse queries |
+| after an area is analysed, before it is validated | yes | exploration and the analysis call; the whole per-insight bill is still ahead |
+| after any single insight verdict | yes | exploration, the analysis, and every verdict already paid for |
 | after any completed analysis area | yes | exploration, plus every area already finished |
-| mid-area, and in the recommendation phases | no | that work is not checkpointed, so a pause would discard it |
+| after the recommendations are generated | yes | everything, including the generation call; only Phase 5.5 is left |
+| after any single recommendation verdict | yes | as above, plus the verdicts already produced |
+| mid-analysis call, before its draft lands | no | the call's output is not durable yet, so a pause would discard it |
 | the save and the embedding pass | no, permanently | the run is seconds from finishing and owes durability for work already done |
+
+Two consequences worth knowing. A pause requested while an area is being validated stops after the verdict in flight, not at the end of the area — so the wait is one verifier call, not however many insights the area happened to produce. And a pause is never honoured at a seam whose write *failed*: the row is what makes the stop free, so a swallowed write failure leaves the request standing for the next seam that does land one.
 
 Past the pausable phases the API refuses the request outright, naming the phase, rather than accepting one that nothing will act on. A request made before the run's first checkpoint simply waits for it, which is what "finish the current step" means.
 

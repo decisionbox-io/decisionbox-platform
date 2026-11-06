@@ -297,9 +297,21 @@ func (o *Orchestrator) checkpointExplorationSummary(ctx context.Context, res *ai
 	// superseded attempt: a later resume reads it, believes exploration
 	// finished, and skips Phase 3 over work another attempt did. Once per
 	// run, against an indexed _id.
-	if o.statusReporter != nil && !o.statusReporter.OwnsRun(ctx) {
-		applog.WithField("run_id", o.runID).Warn("another attempt of this run has taken over; stopping before analysis rather than spending it on a result that will be discarded")
-		return ai.ErrAttemptSuperseded
+	// Standing rather than OwnsRun: one read answers ownership and the
+	// operator's pause together, and the pause half is remembered so the
+	// summary still lands. Without it this seam would be the only durable
+	// write in the run that a pause could not stop at — the gate eight lines
+	// downstream would catch it, but the rule is "every durable write", not
+	// "every durable write that happens to sit next to a gate".
+	pauseRequested := false
+	if o.statusReporter != nil {
+		switch o.statusReporter.Standing(ctx) {
+		case standingLost:
+			applog.WithField("run_id", o.runID).Warn("another attempt of this run has taken over; stopping before analysis rather than spending it on a result that will be discarded")
+			return ai.ErrAttemptSuperseded
+		case standingPauseRequested:
+			pauseRequested = true
+		}
 	}
 	err := o.checkpointRepo.SaveExplorationSummary(ctx, database.CheckpointSummaryInput{
 		ProjectID: o.projectID,
@@ -331,6 +343,12 @@ func (o *Orchestrator) checkpointExplorationSummary(ctx context.Context, res *ai
 	// The summary is durable, so areas analysed from here on can be
 	// checkpointed against it. See the doc comment above.
 	o.explorationSummaryAttempt = o.resume.attemptNumber()
+	// Exploration is banked, so a stop is free and saves the operator the
+	// whole analysis phase. Set AFTER explorationSummaryAttempt, so a resume
+	// of this pause restores against the summary rather than re-exploring.
+	if pauseRequested {
+		return o.pauseSignalIfResumable("exploration summary")
+	}
 	return nil
 }
 

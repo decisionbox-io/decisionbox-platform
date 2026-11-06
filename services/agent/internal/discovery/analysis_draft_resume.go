@@ -66,6 +66,13 @@ type analysisDraftStore interface {
 // is that the area is analysed again on a later resume, and a checkpoint must
 // never be able to abort a working run.
 //
+// Also a PAUSE seam, under the uniform rule. A pause is free exactly where a crash would have
+// left a resumable run, and this write is the clearest case of that in the
+// whole area: once the draft is down, a stop here costs the operator nothing
+// and saves them the area's entire per-insight validation bill — the largest
+// number of LLM calls the area will make. Found before the write, taken after,
+// so the pause never discards the analysis call that just paid for this row.
+//
 // The bool says whether a draft for this area is actually on disk, and it
 // GATES the per-insight marker writes rather than merely informing them. A
 // marker write is filtered on `attempt <= this attempt`, so with no draft of
@@ -94,8 +101,17 @@ func (o *Orchestrator) checkpointAreaDraft(ctx context.Context, step models.Anal
 		applog.WithField("run_id", o.runID).Warn("analysis area drafted with no area id; not checkpointing it")
 		return false, nil
 	}
-	if o.statusReporter != nil && !o.statusReporter.OwnsRun(ctx) {
-		return false, ai.ErrAttemptSuperseded
+	// Standing rather than OwnsRun: one read answers both "is this still my
+	// run" and "has an operator asked me to stop", and the pause half is
+	// remembered rather than acted on so the write below still happens.
+	pauseRequested := false
+	if o.statusReporter != nil {
+		switch o.statusReporter.Standing(ctx) {
+		case standingLost:
+			return false, ai.ErrAttemptSuperseded
+		case standingPauseRequested:
+			pauseRequested = true
+		}
 	}
 
 	err := o.analysisDraftRepo.SaveDraft(ctx, database.AnalysisAreaDraftInput{
@@ -118,7 +134,18 @@ func (o *Orchestrator) checkpointAreaDraft(ctx context.Context, step models.Anal
 			"area":   step.AreaID,
 			"error":  err.Error(),
 		}).Warn("failed to draft an analysed area; a resumed run would analyse and re-validate it in full")
+		// False keeps the pause unhonoured too: with no draft on disk there is
+		// nothing for a resume to re-enter, so stopping here would throw the
+		// analysis call away. The request stands and the next seam with
+		// something durable behind it takes it.
 		return false, nil
+	}
+	// The draft is durable, so this is a free stop. SIGNALLED, not performed:
+	// the caller is the only thing that knows this area has no feed rows out
+	// yet, and it is the caller that must skip validation rather than start
+	// per-insight calls it is about to abandon.
+	if pauseRequested {
+		return true, o.pauseSignalIfResumable("analysis area draft " + step.AreaID)
 	}
 	return true, nil
 }
@@ -135,13 +162,26 @@ func (o *Orchestrator) checkpointAreaDraft(ctx context.Context, step models.Anal
 // question here either — the area-level write already asked, moments ago, and
 // asking once per insight would add a Mongo read next to every verifier call
 // to narrow a window the area-level gate already bounds.
-func (o *Orchestrator) checkpointInsightVerdict(ctx context.Context, areaID string, vr models.ValidationResult) {
+// It is also the finest PAUSE seam in the run. Returns
+// ai.ErrPauseRequested when this verdict landed and an operator's pause is
+// standing — a signal to the validation phase, never a failure, and never a
+// reason not to have written the row.
+//
+// Supersession is deliberately NOT read here, unlike at the coarser seams.
+// This runs inside a bounded worker, where an ErrAttemptSuperseded has nothing
+// to abort, and the row-level attempt fence in SaveInsightVerdict already
+// refuses a write a newer attempt has overtaken. One Mongo read per verdict to
+// re-answer a question the write itself answers would be the wrong trade.
+func (o *Orchestrator) checkpointInsightVerdict(ctx context.Context, areaID string, vr models.ValidationResult) error {
 	if o.analysisDraftRepo == nil || areaID == "" || vr.InsightID == "" {
-		return
+		return nil
 	}
 	if o.explorationSummaryAttempt <= 0 {
-		return
+		return nil
 	}
+	// Read BEFORE the write, like every other seam, so the answer cannot be
+	// influenced by how long the write took.
+	pauseRequested := o.statusReporter != nil && o.statusReporter.Standing(ctx) == standingPauseRequested
 	err := o.analysisDraftRepo.SaveInsightVerdict(ctx, database.InsightVerdictInput{
 		RunID:     o.runID,
 		AreaID:    areaID,
@@ -156,7 +196,15 @@ func (o *Orchestrator) checkpointInsightVerdict(ctx context.Context, areaID stri
 			"insight": vr.InsightID,
 			"error":   err.Error(),
 		}).Warn("failed to record a validated insight; it would be validated again on a later resume")
+		// No marker, so no free stop for THIS verdict: pausing now would make
+		// the resumed attempt pay for it again. The request still stands and
+		// the next verdict to land honours it.
+		return nil
 	}
+	if pauseRequested {
+		return o.pauseSignalIfResumable("insight verdict in area " + areaID)
+	}
+	return nil
 }
 
 // loadAreaDrafts reads back the in-flight analysis areas this run may restore

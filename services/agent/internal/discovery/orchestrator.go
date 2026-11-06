@@ -1485,7 +1485,13 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// validation — would otherwise be spent by a superseded attempt on
 		// a result it deletes at the tail.
 		if err := o.checkpointExplorationSummary(ctx, explorationResult); err != nil {
-			return nil, err
+			if !errors.Is(err, ai.ErrPauseRequested) {
+				return nil, err
+			}
+			// The summary is durable and exploration's own rows are already
+			// out, so the stop is taken right here.
+			applog.WithField("steps", explorationResult.TotalSteps).Info("Exploration completed")
+			return nil, o.pauseAttempt(ctx, "Paused after exploration, before analysis — resume to continue")
 		}
 		applog.WithField("steps", explorationResult.TotalSteps).Info("Exploration completed")
 	}
@@ -1714,11 +1720,21 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			// is the one point in its life where a crash loses the most for
 			// the least reason. Recorded before the per-insight calls start,
 			// so a resume re-enters at the first insight without a verdict.
-			landed, err := o.checkpointAreaDraft(ctx, step, valPhase.agent != nil)
-			if err != nil {
-				return nil, err
+			landed, stopAfterDraft := o.checkpointAreaDraft(ctx, step, valPhase.agent != nil)
+			if stopAfterDraft != nil && !errors.Is(stopAfterDraft, ai.ErrPauseRequested) {
+				return nil, stopAfterDraft
 			}
 			draftOnDisk = landed
+			// A pause asked for while this area was being analysed, taken now
+			// that the draft is down. Taken HERE rather than deferred
+			// to the end of the iteration like the completed-area seam's,
+			// because the whole point is to skip what comes next: the
+			// per-insight validation calls. There are no feed rows for this
+			// area yet — a crash at this exact point would leave the same
+			// state — so there is nothing to emit first.
+			if stopAfterDraft != nil {
+				return nil, o.pauseAttempt(ctx, "Paused after analysing "+area.ID+", before validating it — resume to continue")
+			}
 		}
 
 		// Phase 4.5: Validate insights via the LLM-native verifier
@@ -1744,13 +1760,23 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			// gives a marker somewhere to go.
 			itemCheckpoint := &perItemCheckpoint{done: draftVerdicts}
 			if draftOnDisk {
-				itemCheckpoint.save = func(vr models.ValidationResult) {
-					o.checkpointInsightVerdict(ctx, area.ID, vr)
+				itemCheckpoint.save = func(vr models.ValidationResult) error {
+					return o.checkpointInsightVerdict(ctx, area.ID, vr)
 				}
 			}
-			areaResults, insightsValidatedThisRun = valPhase.validateInsights(ctx, insights, stepByID, area.ID, insightsValidatedThisRun, itemCheckpoint)
+			var pausedMidValidation bool
+			areaResults, insightsValidatedThisRun, pausedMidValidation = valPhase.validateInsights(ctx, insights, stepByID, area.ID, insightsValidatedThisRun, itemCheckpoint)
 			o.setLLMPhase(models.PhaseAnalysis)
 			step.ValidationResults = areaResults
+			// An operator's pause honoured between two verdicts. The
+			// area is NOT finished, so it deliberately gets no completed-area
+			// checkpoint and its draft is deliberately kept: the draft plus the
+			// verdicts already banked are what let the resumed attempt validate
+			// only the remainder. Returning here is what skips both — the same
+			// state a crash between two verdicts would have left.
+			if pausedMidValidation {
+				return nil, o.pauseAttempt(ctx, "Paused while validating "+area.ID+" — resume to continue")
+			}
 		}
 
 		// Label every insight with what its evidence was worth. Derived from
@@ -1928,6 +1954,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// is worse than no marker.
 	var recVerdictsDone map[string]models.ValidationResult
 	recCheckpointOnDisk := recsRestored
+	// Set when the Phase 5 checkpoint seam found a pause standing. Deferred to
+	// just past the phase's live row rather than taken at the write, so the
+	// paused attempt's log is not missing the phase it stopped after.
+	pauseAfterRecommendations := false
 
 	switch {
 	case recsRestored:
@@ -2018,11 +2048,15 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// cited the live ids, and only the stored ones are stable across
 		// attempts. See recommendationStepInStoredIDs.
 		stored := recommendationStepInStoredIDs(*recStep, storedIDByLive)
-		landed, err := o.checkpointRecommendations(ctx, &stored, eligibleStoredIDs, analysisGeneration)
-		if err != nil {
-			return nil, err
+		landed, stopAfterRecCheckpoint := o.checkpointRecommendations(ctx, &stored, eligibleStoredIDs, analysisGeneration)
+		if stopAfterRecCheckpoint != nil && !errors.Is(stopAfterRecCheckpoint, ai.ErrPauseRequested) {
+			return nil, stopAfterRecCheckpoint
 		}
 		recCheckpointOnDisk = landed
+		// Deferred to just past the live row below, which is the same split
+		// the completed-area seam uses: the paused attempt's log must not be
+		// missing the phase it stopped after.
+		pauseAfterRecommendations = stopAfterRecCheckpoint != nil
 	}
 
 	// Emit a per-call RunStep so the live UI carries the recommendation
@@ -2043,6 +2077,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		o.statusReporter.AddRecommendationStep(ctx, len(recommendations), relatedIDDrops, recStep.Error, recStep.TokensIn, recStep.TokensOut)
 	}
 
+	// The checkpoint is down and the phase's live row is out, so the operator's
+	// pause can be taken. Before Phase 5.5, which is the point of it: a
+	// resumed attempt restores these recommendations and validates them without
+	// re-generating anything.
+	if pauseAfterRecommendations {
+		return nil, o.pauseAttempt(ctx, "Paused after generating recommendations, before validating them — resume to continue")
+	}
+
 	// Phase 5.5: Validate recommendations via the LLM-native verifier
 	// agent. Bundle's source-steps are the token-budgeted union of
 	// related insights' source_steps; the agent runs verifier +
@@ -2056,12 +2098,20 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		o.setLLMPhase(models.PhaseValidation)
 		recCheckpoint := &perItemCheckpoint{done: recVerdictsDone}
 		if recCheckpointOnDisk {
-			recCheckpoint.save = func(vr models.ValidationResult) {
-				o.checkpointRecommendationVerdict(ctx, vr)
+			recCheckpoint.save = func(vr models.ValidationResult) error {
+				return o.checkpointRecommendationVerdict(ctx, vr)
 			}
 		}
-		recValidationResults = valPhase.validateRecommendations(ctx, recommendations, allInsights, stepByID, recCheckpoint)
+		var pausedMidRecValidation bool
+		recValidationResults, pausedMidRecValidation = valPhase.validateRecommendations(ctx, recommendations, allInsights, stepByID, recCheckpoint)
 		o.setLLMPhase(models.PhaseRecommendations)
+		// Same seam on the recommendation side. Phase 5's checkpoint and
+		// the verdicts already produced are on disk, so the resumed attempt
+		// regenerates nothing — it picks up at the first recommendation without
+		// a verdict.
+		if pausedMidRecValidation {
+			return nil, o.pauseAttempt(ctx, "Paused while validating recommendations — resume to continue")
+		}
 
 		// Restored recommendations still carry the ids the checkpoint holds,
 		// which is what kept this attempt's verdict markers keyed as a third
