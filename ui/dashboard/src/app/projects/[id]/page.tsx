@@ -1195,7 +1195,13 @@ function LiveRunPanel({ run, onPause, onCancel, onDismiss, onResume, onDiscard }
             }}>
             {steps.map((step, idx) => (
               <StepRow key={idx} step={step} index={idx + 1} isLast={idx === steps.length - 1}
-                isActive={!isDone && idx === steps.length - 1} />
+                // !isPaused as well as !isDone: a paused run is deliberately
+                // not folded into isDone (it still gets Resume, so the panel
+                // has to stay), and without this the last step keeps its
+                // spinner and its "Querying data warehouse…" caption for as
+                // long as the run sits paused — telling the operator the step
+                // is running when the agent has exited.
+                isActive={!isDone && !isPaused && idx === steps.length - 1} />
             ))}
           </ScrollArea>
         </div>

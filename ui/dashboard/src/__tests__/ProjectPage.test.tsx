@@ -1327,6 +1327,48 @@ describe('Operator pause (#508)', () => {
     expect(screen.queryByText('Pause')).not.toBeInTheDocument();
   });
 
+  it('stops showing the last step as running once the run is paused', async () => {
+    // Found by the v1-v4 acceptance pass: pausing mid-exploration left the
+    // last row with its spinner, its "Running…" badge and "Querying data
+    // warehouse…" beneath it, for as long as the run stayed paused. The agent
+    // has exited by then, so the row was claiming work that nobody was doing.
+    //
+    // The cause is that `paused` is deliberately NOT part of isDone — a paused
+    // run keeps its panel because that is where Resume lives — so the active-row
+    // test had to exclude it explicitly rather than inherit it.
+    getProjectStatus.mockResolvedValue(
+      status(makeRun({ status: 'paused', last_checkpoint_step: 12, progress: 40 })),
+    );
+    listRunSteps.mockResolvedValue([
+      { id: 's1', step_num: 1, type: 'query', message: 'first step' },
+      { id: 's2', step_num: 2, type: 'query', message: 'last step' },
+    ]);
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('last step')).toBeInTheDocument());
+
+    expect(screen.queryByText('Querying data warehouse…')).not.toBeInTheDocument();
+    expect(screen.queryByText('Running…')).not.toBeInTheDocument();
+  });
+
+  it('still shows the last step as running while the run is live', async () => {
+    // The other half of the same guard: adding !isPaused must not stop a
+    // genuinely running run from marking its newest row active.
+    getProjectStatus.mockResolvedValue(
+      status(makeRun({ status: 'running', progress: 40 })),
+    );
+    listRunSteps.mockResolvedValue([
+      { id: 's1', step_num: 1, type: 'query', message: 'first step' },
+      { id: 's2', step_num: 2, type: 'query', message: 'last step' },
+    ]);
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('last step')).toBeInTheDocument());
+
+    expect(screen.getByText('Querying data warehouse…')).toBeInTheDocument();
+    expect(screen.getByText('Running…')).toBeInTheDocument();
+  });
+
   it('resumes a paused run', async () => {
     getProjectStatus.mockResolvedValue(
       status(makeRun({ status: 'paused', last_checkpoint_step: 12 })),
