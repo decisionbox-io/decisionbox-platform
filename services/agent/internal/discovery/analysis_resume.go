@@ -73,6 +73,17 @@ type analysisCheckpointStore interface {
 // removing the only recoverable copy of work this attempt had already paid
 // for. False with a nil error means exactly that — nothing landed, carry on
 // anyway, and keep whatever is still recoverable.
+//
+// The two returns are independent, and the pause path is where that matters:
+// it comes back (true, ErrPauseRequested). The error is not a failure — it is
+// the operator's stop, to be taken by the caller at the end of the iteration —
+// and the bool is TRUE because the row landed before the pause was signalled,
+// so the draft it supersedes is spent and the caller still discards it. The
+// alternative, returning false to mean "we are stopping", would keep a draft
+// that the restored completed-area row makes unreachable anyway: rows no
+// resume would ever read, held until the retention TTL swept them. Read the
+// bool as "is there a row" and nothing else; whether to continue is the
+// error's business.
 func (o *Orchestrator) checkpointAnalysisArea(ctx context.Context, step models.AnalysisStep, insightsValidated int) (bool, error) {
 	if o.analysisCheckpointRepo == nil {
 		return false, nil
@@ -94,8 +105,28 @@ func (o *Orchestrator) checkpointAnalysisArea(ctx context.Context, step models.A
 		applog.WithField("run_id", o.runID).Warn("analysis area finished with no area id; not checkpointing it")
 		return false, nil
 	}
-	if o.statusReporter != nil && !o.statusReporter.OwnsRun(ctx) {
-		return false, ai.ErrAttemptSuperseded
+	//
+	// A PAUSE request is handled the other way round — remembered, not acted
+	// on, so the write below still happens. This is the analysis twin of the
+	// exploration-step seam (#508): the area the operator interrupted is
+	// finished, so letting its row land first makes the pause free, and
+	// stopping before it would throw the area away and re-analyse it on
+	// resume. See the tail of this function.
+	//
+	// Note what the early returns above already guarantee: every path that
+	// reaches here is one where a row is actually about to be written. A run
+	// with no durable exploration summary, or an area that errored, returns
+	// false further up and is NOT a pause point — correctly, because nothing
+	// durable lands there and a pause would strand work the resume cannot
+	// restore.
+	pauseRequested := false
+	if o.statusReporter != nil {
+		switch o.statusReporter.Standing(ctx) {
+		case standingLost:
+			return false, ai.ErrAttemptSuperseded
+		case standingPauseRequested:
+			pauseRequested = true
+		}
 	}
 
 	err := o.analysisCheckpointRepo.SaveArea(ctx, database.AnalysisAreaCheckpointInput{
@@ -119,6 +150,15 @@ func (o *Orchestrator) checkpointAnalysisArea(ctx context.Context, step models.A
 			"area":   step.AreaID,
 			"error":  err.Error(),
 		}).Warn("failed to checkpoint a completed analysis area; a resumed run would analyse it again")
+		// Swallowed deliberately — a checkpoint write must never abort a
+		// working run. The cost is that this area is analysed again on any
+		// resume, by a crash or a pause alike; hardening the write itself is
+		// #518.
+		//
+		// FALSE, and that is the half of the bool that earns its keep: nothing
+		// landed, so the caller must KEEP this area's draft. Discarding it here
+		// would delete the only recoverable copy of validation this attempt had
+		// already paid for, with no checkpoint row to restore it from.
 		return false, nil
 	}
 	// keepStepIndex is deliberately NOT set here. An area can only be
@@ -126,6 +166,34 @@ func (o *Orchestrator) checkpointAnalysisArea(ctx context.Context, step models.A
 	// to one have already set it — the explore path in
 	// checkpointExplorationSummary, the resume path at the top of
 	// RunDiscovery — so a setter here could never change the value.
+
+	// This area is durable, so this is the clean stop the operator asked for
+	// (#508). Taken on the CHECKPOINT seam rather than at the next
+	// iteration's gate, and the difference is not cosmetic: there is no next
+	// iteration after the last area, so a gate-based pause would sail past it
+	// into the recommendation phase and never be honoured at all.
+	//
+	// SIGNALLED, not performed — the same split the exploration seam uses.
+	// The caller still has this area's feed rows to write (its analysis step,
+	// its insights and their validations), and stopping here would leave the
+	// paused attempt's log missing the very area it stopped after until a
+	// resume replayed it. The caller emits them and then pauses.
+	if pauseRequested {
+		// Through the shared guard, which this seam needed as much as the
+		// exploration ones: a completed analysis area is durable, but an
+		// exploration prefix with a gap in it is not replayable — and
+		// ResumeRun refuses a run with no replayable prefix even when its
+		// exploration summary survived. So a pause taken here on a run whose
+		// step-1 write failed would strand it.
+		//
+		// TRUE alongside the pause signal, which is the one place the two
+		// features actually have to agree: the row LANDED, so the draft it
+		// supersedes is spent and the caller still discards it. Returning
+		// false here would keep a draft that the restored completed-area row
+		// makes unreachable anyway — dead rows a resume would never read,
+		// kept alive until the retention TTL swept them.
+		return true, o.pauseSignalIfResumable("analysis area " + step.AreaID)
+	}
 	return true, nil
 }
 

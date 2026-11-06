@@ -221,7 +221,7 @@ Live status of a running discovery. Stored in `discovery_runs` collection, updat
 |-------|------|-------------|
 | `id` | string | Run ID |
 | `project_id` | string | Project being discovered |
-| `status` | string | `pending`, `running`, `completed`, `failed`, `cancelled` |
+| `status` | string | `pending`, `running`, `paused`, `completed`, `failed`, `cancelled`. `paused` is neither active nor terminal: an operator stopped the run cooperatively and it can be resumed. |
 | `phase` | string | Current phase: `init`, `schema_discovery`, `exploration`, `analysis`, `validation`, `recommendations`, `saving`, `complete` |
 | `phase_detail` | string | Human-readable phase description |
 | `progress` | int | 0 to 100 percentage |
@@ -236,6 +236,9 @@ Live status of a running discovery. Stored in `discovery_runs` collection, updat
 | `insights_found` | int | Insights generated so far |
 | `attempt` | int | How many times the run has been started: 1 on create, incremented by each resume. |
 | `last_resumed_at` | timestamp | When the latest attempt was requested. |
+| `last_paused_at` | timestamp | When the run last entered `paused`. Kept across a later resume, because it is what explains a gap in the middle of a run's timeline. |
+| `pause_requested_at` | timestamp | Set while a pause is DRAINING — the operator has asked, and the agent stops at its next seam where a checkpoint has just landed. The status stays `running` through that window, because an agent is alive and querying the warehouse. Cleared by the pause itself and by every terminal write. |
+| `pause_deadline_at` | timestamp | When an unhonoured pause request lapses (`DISCOVERY_PAUSE_DRAIN_TIMEOUT` past the request). Past it the agent ignores the request. Absent when the deadline is disabled. |
 | `last_checkpoint_step` | int | Highest exploration step with a checkpoint. `> 0` on a `failed` run is what makes it resumable; zeroed on completion. Stamped only after the checkpoint row is durably written, so it never advertises a checkpoint that does not exist. It can still exceed the *replayable* prefix if an earlier write failed and a later one succeeded — replay then stops at the gap, and a resume with nothing left to replay is refused rather than silently re-exploring. |
 | `active_ms` | int64 | Cumulative **active** compute across attempts, so elapsed time excludes the hours a failed run sat waiting to be noticed. Recorded at each attempt's terminal write, so an attempt killed before reaching it contributes nothing — a slight undercount on hard crashes. |
 | `lifecycle` | RunLifecycleEvent[] | Append-only transition log. |

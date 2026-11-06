@@ -10,7 +10,7 @@ import { useDisclosure } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
 import {
   IconAlertTriangle, IconBulb, IconChartBar, IconCheck,
-  IconDatabase, IconPlayerPlay, IconShieldCheck, IconStack2, IconX,
+  IconDatabase, IconPlayerPause, IconPlayerPlay, IconShieldCheck, IconStack2, IconX,
 } from '@tabler/icons-react';
 import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
@@ -221,7 +221,13 @@ export default function ProjectPage() {
         // live one — a worse outcome than the stranded panel the lookup is
         // here to fix.
         const cached = runRef.current;
-        const cachedIsLive = !!cached && (cached.status === 'running' || cached.status === 'pending');
+        // `paused` counts as believable here alongside the live statuses: a
+        // paused run has a document, so a project-level answer of "no run"
+        // contradicts it, and clearing on that answer would take away the
+        // Resume button with nothing to bring it back — the poll is gated on
+        // the run existing. The direct getRun below settles it instead.
+        const cachedIsLive = !!cached
+          && (cached.status === 'running' || cached.status === 'pending' || cached.status === 'paused');
         if (!cachedIsLive) {
           applyPoll(null);
           return;
@@ -269,7 +275,15 @@ export default function ProjectPage() {
         // gets this far is the newest one that has been acted on, and its
         // answer is the freshest information available.
         const installed = runRef.current;
-        const wasRunning = installed && (installed.status === 'running' || installed.status === 'pending');
+        // `paused` is in here because this page WATCHES paused runs (another
+        // tab can resume them), so `paused` → `completed` is a transition it
+        // really observes. Left out, the completion side-effects below never
+        // fire for it: polling then stops, because the run is terminal, and
+        // the discovery it just produced is missing from the list until
+        // somebody reloads. The slow watcher was added without extending
+        // this, which is what made the gap.
+        const wasRunning = installed
+          && (installed.status === 'running' || installed.status === 'pending' || installed.status === 'paused');
         const nowDone = newRun.status === 'completed' || newRun.status === 'failed';
         // Only replace `run` when something we render actually changed. The
         // status endpoint answers as fast as we ask and `newRun` is freshly
@@ -331,7 +345,15 @@ export default function ProjectPage() {
     if (!run) return;
     const live = run.status === 'running' || run.status === 'pending';
     const watchingDismissed = dismissedRunId === run.id && !live;
-    if (!live && !watchingDismissed) return;
+    // A PAUSED run is watched on the slow cadence too, for a sharper version
+    // of the dismissed-run reason above: it is the state a run sits in
+    // longest, and the one most likely to be acted on from somewhere else —
+    // another tab, another operator, or the API. Without this the panel would
+    // show Resume and Cancel for a run that had already been resumed
+    // elsewhere, indefinitely, because a non-live run does not poll and
+    // nothing would bring it back.
+    const watchingPaused = run.status === 'paused';
+    if (!live && !watchingDismissed && !watchingPaused) return;
     const interval = setInterval(pollStatus, live ? 2000 : 15000);
     return () => clearInterval(interval);
   }, [run, pollStatus, dismissedRunId]);
@@ -393,6 +415,11 @@ export default function ProjectPage() {
   }
 
   const isRunning = run && (run.status === 'running' || run.status === 'pending');
+  // A paused run is neither live nor finished, so it needs naming separately:
+  // it keeps its panel (that is where Resume lives), gets no Dismiss and no
+  // Discard, and does not block the next run — the server does not count it as
+  // active either.
+  const isPaused = run && run.status === 'paused';
   // Schema index must be "ready" (or legacy ready-by-default with a
   // warehouse configured) before discovery can proceed. Block the Run
   // button otherwise so users see the gate reason in the banner instead
@@ -407,7 +434,11 @@ export default function ProjectPage() {
   // panel returns on its own, which is the whole point of keeping the run in
   // state instead of nulling it.
   const hiddenByDismissal = !!run && dismissedRunId === run.id && !!justFinished;
-  const showRunPanel = (isRunning || justFinished) && !hiddenByDismissal;
+  // isPaused is in here because a paused run is the one case where the panel
+  // must stay up for a run that is NOT live and NOT finished — it is where
+  // Resume lives, and without this the panel (and the button) vanish the
+  // moment the agent honours a pause.
+  const showRunPanel = (isRunning || isPaused || justFinished) && !hiddenByDismissal;
 
   // Aggregate stats
   const totalRuns = discoveries.length;
@@ -534,13 +565,52 @@ export default function ProjectPage() {
           the panel (fresh steps state + cursor) instead of needing an
           in-component reset effect. */}
       {showRunPanel && run && (
-        <LiveRunPanel key={`${run.id}:${run.attempt ?? 1}`} run={run} onCancel={async () => {
-          if (justFinished) {
-            // The run stays in state so the poll below can keep watching it;
-            // hiddenByDismissal is what takes the panel off screen.
-            setDismissedRunId(run.id);
-            return;
+        <LiveRunPanel key={`${run.id}:${run.attempt ?? 1}`} run={run} onDismiss={() => {
+          // Per-tab hide of a finished run, not a server call. The run stays
+          // in state so the poll below can keep watching it — a resume
+          // elsewhere brings the panel back — and hiddenByDismissal is what
+          // takes it off screen.
+          //
+          // Split out of onCancel, which used to do both jobs depending on
+          // the run's status. Once Cancel grew a confirmation dialog that
+          // overloading would have put one in front of a local no-op.
+          setDismissedRunId(run.id);
+        }} onPause={async () => {
+          try {
+            const res = await api.pauseRun(run.id);
+            // Optimistically stamp the request so the panel says "Pausing…"
+            // on the next frame rather than after the 2s poll. The run stays
+            // `running`, which is also what the server did: an agent is alive
+            // and finishing its step, so the poll must keep running — it is
+            // what will show the flip to `paused` when the agent lands it.
+            installRun({
+              ...run,
+              pause_requested_at: new Date().toISOString(),
+              pause_deadline_at: res.pause_deadline_at,
+            });
+            notifications.show({
+              title: 'Pausing',
+              message: 'The run will stop after the step it is on, keeping its progress. Resume it when you are ready.',
+              color: 'blue',
+            });
+          } catch (e: unknown) {
+            // A 409 is a real answer — the run is past the point where
+            // stopping is free, it already has a pause pending, or it
+            // finished while the click was in flight — so show what the
+            // server said rather than a generic failure.
+            notifications.show({ title: 'Cannot pause', message: (e as Error).message, color: 'red' });
+            // And re-read, because every refusal means the server knows
+            // something this tab does not. Same guards as the resume path:
+            // never install an empty response over a live run, and never
+            // install this run over a different one that started meanwhile.
+            try {
+              const fresh = await api.getRun(run.id);
+              if (fresh && runRef.current?.id === run.id) installRun(fresh);
+            } catch {
+              // The real error is already on screen.
+            }
           }
+        }} onCancel={async () => {
           try {
             await api.cancelRun(run.id);
             installRun({ ...run, status: 'cancelled' });
@@ -783,7 +853,7 @@ function DiscoveryRunCard({ discovery: d, projectId }: { discovery: DiscoveryRes
 
 /* ========== Live Run Panel ========== */
 
-function LiveRunPanel({ run, onCancel, onResume, onDiscard }: { run: DiscoveryRunStatus; onCancel: () => void; onResume: () => void; onDiscard: () => void }) {
+function LiveRunPanel({ run, onPause, onCancel, onDismiss, onResume, onDiscard }: { run: DiscoveryRunStatus; onPause: () => void; onCancel: () => void; onDismiss: () => void; onResume: () => void; onDiscard: () => void }) {
   // Per-step rows are no longer embedded in the run doc — they live in
   // discovery_run_steps and are streamed via api.listRunSteps with an
   // opaque ObjectID cursor (the last `id` we have). We poll while the
@@ -815,7 +885,11 @@ function LiveRunPanel({ run, onCancel, onResume, onDiscard }: { run: DiscoveryRu
   useEffect(() => {
     let cancelled = false;
     let timer: number | null = null;
-    const isTerminal = (s: string) => s === 'completed' || s === 'failed' || s === 'cancelled';
+    // `paused` counts as settled here even though it is not terminal: there is
+    // no agent behind a paused run, so there are no new rows to poll for. The
+    // parent re-arms the status poll when a resume flips it back to running.
+    const isTerminal = (s: string) =>
+      s === 'completed' || s === 'failed' || s === 'cancelled' || s === 'paused';
     const tick = async () => {
       try {
         const next = await api.listRunSteps(run.id, lastIDRef.current || undefined);
@@ -850,6 +924,44 @@ function LiveRunPanel({ run, onCancel, onResume, onDiscard }: { run: DiscoveryRu
   }, [steps.length]);
 
   const isDone = run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled';
+  // Paused is its own state, and deliberately not folded into isDone: the run
+  // is not finished, so it gets no Dismiss and no Discard — only Resume and
+  // Cancel, the two things that can actually end it.
+  const isPaused = run.status === 'paused';
+  // Draining: the operator has asked, and the agent stops at its next
+  // checkpointed seam. Gated on the run still being live, because a request
+  // can outlive the run — one stamped a second before the agent's terminal
+  // write stays on a `completed` document, and "Pausing…" on a finished run
+  // would be a lie.
+  const pauseRequested = !isDone && !isPaused && !!run.pause_requested_at;
+  // A request past its deadline has LAPSED: the agent ignores it, so the UI
+  // must stop claiming the run is pausing and say what happened instead.
+  // Without a deadline the deployment disabled the lapse, so the request
+  // stands indefinitely.
+  //
+  // Held as state and armed by a timer rather than compared against the clock
+  // during render, for two reasons. Reading Date.now() in a render body is
+  // impure (react-hooks/purity), and the honest behaviour needs a timer
+  // anyway: a lapsed request has to become visible WHEN it lapses, and the
+  // status poll cannot be relied on to notice — a wedged agent, which is the
+  // case the deadline exists for, stops writing to the run entirely.
+  //
+  // The state stores the deadline it lapsed against, so a fresh request with
+  // a new deadline resets it by comparison instead of needing a setState in
+  // an effect body.
+  const [lapsedDeadline, setLapsedDeadline] = useState<string | null>(null);
+  useEffect(() => {
+    const deadline = run.pause_deadline_at;
+    if (!run.pause_requested_at || !deadline) return;
+    const ms = new Date(deadline).getTime() - Date.now();
+    // Max(0) so a deadline that is already past arms on the next tick rather
+    // than never — the setState stays in the timer callback either way.
+    const t = setTimeout(() => setLapsedDeadline(deadline), Math.max(0, ms));
+    return () => clearTimeout(t);
+  }, [run.pause_requested_at, run.pause_deadline_at]);
+  const pauseLapsed = pauseRequested && !!run.pause_deadline_at
+    && lapsedDeadline === run.pause_deadline_at;
+  const pausing = pauseRequested && !pauseLapsed;
   const phaseLabel: Record<string, string> = {
     init: 'Initializing', schema_discovery: 'schema_discovery',
     exploration: 'exploration', analysis: 'analysis',
@@ -872,7 +984,14 @@ function LiveRunPanel({ run, onCancel, onResume, onDiscard }: { run: DiscoveryRu
   // between them.
   const elapsed = (() => {
     const priorActive = run.active_ms && run.active_ms > 0 ? Math.round(run.active_ms / 1000) : 0;
-    const isTerminal = run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled';
+    // `paused` belongs with the terminal statuses for this calculation, and
+    // leaving it out is a visible bug rather than a nicety: a paused attempt
+    // books its compute into active_ms on the way out, so the
+    // since(last_resumed_at) branch below would add that same stretch a
+    // second time and the panel would keep counting up for a run that has
+    // stopped.
+    const isTerminal = run.status === 'completed' || run.status === 'failed'
+      || run.status === 'cancelled' || run.status === 'paused';
     const since = (from: string) =>
       Math.max(0, Math.round((new Date(run.updated_at || from).getTime() - new Date(from).getTime()) / 1000));
 
@@ -903,11 +1022,24 @@ function LiveRunPanel({ run, onCancel, onResume, onDiscard }: { run: DiscoveryRu
     return run.started_at ? since(run.started_at) : 0;
   })();
 
-  // Resume is offered only for a FAILED run that actually has a checkpoint
-  // to resume from. A cancelled run is a deliberate hard kill and stays
-  // terminal; a completed one has nothing left; a failed run that died
+  // Resume is offered for a FAILED or PAUSED run that actually has a
+  // checkpoint to resume from. A cancelled run is a deliberate hard kill and
+  // stays terminal; a completed one has nothing left; a failed run that died
   // before its first checkpoint can only be started over.
-  const canResume = run.status === 'failed' && (run.last_checkpoint_step ?? 0) > 0;
+  //
+  // A paused run always has a checkpoint — the agent refuses to pause before
+  // one lands, precisely so `paused` is never a dead end — but the same
+  // condition is applied to it anyway, because its checkpoints can still
+  // EXPIRE while it sits paused, and the server then refuses the resume. The
+  // marker is what the server clears when it does.
+  const canResume = (run.status === 'failed' || isPaused) && (run.last_checkpoint_step ?? 0) > 0;
+
+  // Pause is offered while the run is live and no request is already pending.
+  // Hidden once a request is in flight — the panel says "Pausing…" instead, so
+  // a second click cannot look like it will make it stop any sooner. Offered
+  // again if the request lapses, which is the only thing that makes the
+  // deadline actionable rather than informational.
+  const canPause = !isDone && !isPaused && !pausing;
 
   // Discard is offered for a terminal run that produced nothing. A completed
   // run is excluded because its discovery is the project's history — the
@@ -932,6 +1064,7 @@ function LiveRunPanel({ run, onCancel, onResume, onDiscard }: { run: DiscoveryRu
   const canDiscard = isDone && !run.discovery_id && !run.discarded_at
     && (run.status === 'failed' || run.status === 'cancelled');
   const [discardOpen, { open: openDiscard, close: closeDiscard }] = useDisclosure(false);
+  const [cancelOpen, { open: openCancel, close: closeCancel }] = useDisclosure(false);
 
   return (
     <>
@@ -946,19 +1079,25 @@ function LiveRunPanel({ run, onCancel, onResume, onDiscard }: { run: DiscoveryRu
       <div style={{ padding: '16px 20px 0' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {!isDone && (
+            {!isDone && !isPaused && (
               <span style={{
                 width: 8, height: 8, borderRadius: '50%',
-                background: 'var(--db-green-text)',
+                // Amber while draining: the run is still working, but on its
+                // way to a stop the operator asked for.
+                background: pausing ? 'var(--db-amber-text)' : 'var(--db-green-text)',
                 animation: 'pulse-dot 1.5s ease-in-out infinite',
               }} />
             )}
             {isDone && run.status === 'completed' && <IconCheck size={16} color="var(--db-green-text)" />}
             {isDone && run.status === 'failed' && <IconX size={16} color="var(--db-red-text)" />}
             {isDone && run.status === 'cancelled' && <IconAlertTriangle size={16} color="var(--db-amber-text)" />}
+            {isPaused && <IconPlayerPause size={16} color="var(--db-amber-text)" />}
             <span style={{ fontSize: 14, fontWeight: 500 }}>
               {isDone
                 ? (run.status === 'completed' ? 'Discovery complete' : run.status === 'failed' ? 'Discovery failed' : 'Discovery cancelled')
+                : isPaused ? 'Discovery paused'
+                : pausing ? 'Pausing — finishing the current step'
+                : pauseLapsed ? 'Pause request timed out — the run is still going'
                 : 'Discovery running'}
             </span>
             <span style={{
@@ -981,13 +1120,24 @@ function LiveRunPanel({ run, onCancel, onResume, onDiscard }: { run: DiscoveryRu
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>{run.progress}%</span>
-            {!isDone && <GhostButton onClick={onCancel} small>Cancel</GhostButton>}
+            {canPause && <GhostButton onClick={onPause} small>Pause</GhostButton>}
             {canResume && (
               <GhostButton onClick={onResume} small>
                 Resume from step {run.last_checkpoint_step}
               </GhostButton>
             )}
-            {isDone && <GhostButton onClick={onCancel} small>Dismiss</GhostButton>}
+            {/* Cancel is red and modal-confirmed, which is the whole point of
+                putting it next to Pause: the two now look as different as they
+                are. Pause keeps the run's checkpoints and can be undone by
+                resuming; cancel deletes them and cannot be undone at all.
+                Before Pause existed, Cancel was the only stop and a ghost
+                button was fair; beside a reversible neighbour it is not. */}
+            {(!isDone || isPaused) && (
+              <GhostButton small danger onClick={openCancel}>Cancel</GhostButton>
+            )}
+            {/* Dismiss is a per-tab hide of a finished run — a local no-op, not
+                a server call — so it keeps the ghost tier and gets no dialog. */}
+            {isDone && <GhostButton onClick={onDismiss} small>Dismiss</GhostButton>}
             {canDiscard && (
               <GhostButton small danger onClick={openDiscard}>Discard</GhostButton>
             )}
@@ -1045,7 +1195,13 @@ function LiveRunPanel({ run, onCancel, onResume, onDiscard }: { run: DiscoveryRu
             }}>
             {steps.map((step, idx) => (
               <StepRow key={idx} step={step} index={idx + 1} isLast={idx === steps.length - 1}
-                isActive={!isDone && idx === steps.length - 1} />
+                // !isPaused as well as !isDone: a paused run is deliberately
+                // not folded into isDone (it still gets Resume, so the panel
+                // has to stay), and without this the last step keeps its
+                // spinner and its "Querying data warehouse…" caption for as
+                // long as the run sits paused — telling the operator the step
+                // is running when the agent has exited.
+                isActive={!isDone && !isPaused && idx === steps.length - 1} />
             ))}
           </ScrollArea>
         </div>
@@ -1056,7 +1212,13 @@ function LiveRunPanel({ run, onCancel, onResume, onDiscard }: { run: DiscoveryRu
           list above only advances when the agent finishes a macro step,
           which can be minutes apart during schema discovery; this panel
           tails every LLM call and SQL execution in near-real time. */}
-      <DebugLogsPanel projectId={run.project_id} runId={run.id} isDone={isDone} />
+      {/* isDone || isPaused, not isDone: the tail polls every two seconds
+          while a run is live, and a paused run has no agent writing anything.
+          The panel cannot be dismissed either, so a tab left open on a paused
+          run would query the API and Mongo indefinitely for rows that cannot
+          arrive. The button state deliberately stays separate — a paused run
+          is not "done" for anything the operator can press. */}
+      <DebugLogsPanel projectId={run.project_id} runId={run.id} isDone={isDone || isPaused} />
     </div>
 
     {/* Says what discard actually costs, which a button label cannot. The
@@ -1078,6 +1240,36 @@ function LiveRunPanel({ run, onCancel, onResume, onDiscard }: { run: DiscoveryRu
         <Group justify="flex-end" gap="sm">
           <Button variant="default" onClick={closeDiscard}>Cancel</Button>
           <Button color="red" onClick={() => { closeDiscard(); onDiscard(); }}>Discard</Button>
+        </Group>
+      </Stack>
+    </Modal>
+
+    {/* Says what cancel costs, which matters far more now that Pause sits
+        beside it. The two are one click apart and read almost the same, and
+        only one of them throws away the exploration the run has already paid
+        for — so the dialog leads with the checkpoints rather than with the
+        run. */}
+    <Modal
+      opened={cancelOpen}
+      onClose={closeCancel}
+      title={<Text fw={600} c="red">Stop this run and discard its progress?</Text>}
+      centered
+    >
+      <Stack gap="sm">
+        <Text size="sm">
+          Cancelling stops the agent immediately and deletes this run&apos;s exploration
+          checkpoints, so it cannot be resumed. The warehouse queries and model calls it
+          has already paid for are lost.
+        </Text>
+        {!isPaused && (
+          <Text size="sm">
+            To stop it and keep that work, use <b>Pause</b> instead — the run finishes its
+            current step and can be resumed later.
+          </Text>
+        )}
+        <Group justify="flex-end" gap="sm">
+          <Button variant="default" onClick={closeCancel}>Keep running</Button>
+          <Button color="red" onClick={() => { closeCancel(); onCancel(); }}>Cancel run</Button>
         </Group>
       </Stack>
     </Modal>

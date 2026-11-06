@@ -138,3 +138,20 @@ describe('ProjectRunStatus', () => {
     expect(screen.getByText('archiving')).toBeInTheDocument();
   });
 });
+
+// A paused run is waiting for someone, which is not the same as one that is
+// over — so it gets its own branch ahead of the forward-compatible fallback,
+// which would have rendered a lowercase grey "paused" that reads as finished.
+describe('paused runs (#508)', () => {
+  it('renders an amber Paused badge', () => {
+    mount({ status: 'paused', startedAt: '2026-05-29T14:00:00' });
+    expect(screen.getByText('Paused')).toBeInTheDocument();
+  });
+
+  it('does not tick an elapsed timer for a paused run', () => {
+    // The timer is for runs that are still spending. A paused run is not.
+    mount({ status: 'paused', startedAt: '2026-05-29T14:00:00' });
+    expect(screen.queryByText(/elapsed/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Running')).not.toBeInTheDocument();
+  });
+});

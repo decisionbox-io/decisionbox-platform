@@ -11,6 +11,8 @@ import { useEffect, useState } from 'react';
 //     (date + time).
 //   - failed            → "Failed" badge.
 //   - cancelled         → "Cancelled" badge.
+//   - paused            → "Paused" badge (an operator stopped it; it can be
+//     resumed from the project page).
 //   - "" (never run)    → nothing (the card simply omits the line).
 //
 // The status + timestamps are derived server-side and arrive on the
@@ -118,6 +120,18 @@ export function ProjectRunStatus({ status, startedAt, completedAt }: ProjectRunS
     return (
       <Group gap="xs" mt="sm">
         <Badge color="gray" variant="light" size="sm">Cancelled</Badge>
+      </Group>
+    );
+  }
+
+  // Amber rather than grey, and ahead of the fallback below: a paused run is
+  // waiting for someone, which is not the same as one that is over. The
+  // forward-compatible fallback would have rendered a lowercase grey "paused"
+  // that reads like a finished state.
+  if (status === 'paused') {
+    return (
+      <Group gap="xs" mt="sm">
+        <Badge color="yellow" variant="light" size="sm">Paused</Badge>
       </Group>
     );
   }

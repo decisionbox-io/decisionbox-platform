@@ -18,6 +18,11 @@ import (
 // out of `failed` — which is exactly what a second, racing Resume looks like.
 var ErrNoResumableRun = errors.New("run is not resumable")
 
+// ErrNoPausableRun means the run could not be asked to pause: it is not
+// active, it was discarded, it moved to another attempt, or a pause is
+// already pending on it. See RunRepository.RequestPause.
+var ErrNoPausableRun = errors.New("run cannot be paused")
+
 // RunRepository manages DiscoveryRun documents.
 type RunRepository struct {
 	col *mongo.Collection
@@ -80,9 +85,15 @@ func (r *RunRepository) Create(ctx context.Context, projectID string, params mod
 // one run's checkpoints and results. Here the second caller matches nothing
 // and gets ErrNoResumableRun, which the handler renders as a 409.
 //
-// Status, not a lock: `failed` is the only status a run may be resumed from.
-// `cancelled` is a deliberate hard kill and stays terminal; `completed` has
-// nothing to resume; `running` and `pending` already have an agent.
+// Status, not a lock: `failed` and `paused` are the statuses a run may be
+// resumed from. `cancelled` is a deliberate hard kill and stays terminal;
+// `completed` has nothing to resume; `running` and `pending` already have an
+// agent.
+//
+// `paused` joins `failed` rather than needing a second entry point, which is
+// the whole economy of the operator-pause feature: a cooperatively stopped run
+// is a crashed run that stopped tidily, so it re-enters by exactly the path
+// crash recovery already uses (issue #508).
 func (r *RunRepository) BeginResume(ctx context.Context, runID string) (*models.DiscoveryRun, error) {
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {
@@ -159,6 +170,17 @@ func (r *RunRepository) BeginResume(ctx context.Context, runID string) (*models.
 			// nothing now reads as having produced nothing, which is both
 			// honest and what a fresh run that failed early looks like.
 			"discovery_id": "",
+			// Any pending pause request goes with the previous attempt. Left
+			// in place, a request stamped moments before this resume would
+			// stop the attempt it is about to start — the operator asked the
+			// OLD attempt to pause, and it did, or it died trying.
+			//
+			// last_paused_at is deliberately NOT cleared: it is history, like
+			// the lifecycle log, and the dashboard reads it to explain why a
+			// run has a gap in the middle.
+			"pause_requested_at":      "",
+			"pause_requested_attempt": "",
+			"pause_deadline_at":       "",
 		},
 		"$push": bson.M{"lifecycle": models.RunLifecycleEvent{
 			Status:  "running",
@@ -182,7 +204,11 @@ func (r *RunRepository) BeginResume(ctx context.Context, runID string) (*models.
 	// only place that can be enforced without a race. The dashboard already
 	// hides the button (Discard unsets last_checkpoint_step), but a direct
 	// POST would otherwise resurrect a run the operator threw away.
-	filter := bson.M{"_id": oid, "status": "failed", "discarded_at": nil}
+	filter := bson.M{
+		"_id":          oid,
+		"status":       bson.M{"$in": []string{"failed", models.RunStatusPaused}},
+		"discarded_at": nil,
+	}
 	if current.Attempt == 0 {
 		filter["attempt"] = bson.M{"$in": []any{0, nil}}
 	} else {
@@ -597,9 +623,12 @@ func (r *RunRepository) ClearPolicyReservationID(ctx context.Context, runID stri
 // Same reasoning as the zeroing in the agent's Complete: an offered-but-
 // impossible Resume is worse than none.
 //
-// Filtered on `failed` so this can never strip the marker from a run that has
-// since been resumed — a replay re-persists the prefix and re-stamps the
-// field as it goes.
+// Filtered on the resumable statuses so this can never strip the marker from a
+// run that has since been resumed — a replay re-persists the prefix and
+// re-stamps the field as it goes. `paused` is in that set for the same reason
+// `failed` is: ResumeRun refuses either of them when the checkpoints have
+// expired, and leaving the marker behind would keep offering a Resume that can
+// only answer 409.
 func (r *RunRepository) ClearExplorationCheckpointMarker(ctx context.Context, runID string) error {
 	oid, err := primitive.ObjectIDFromHex(runID)
 	if err != nil {
@@ -607,9 +636,10 @@ func (r *RunRepository) ClearExplorationCheckpointMarker(ctx context.Context, ru
 	}
 	_, err = r.col.UpdateOne(ctx, bson.M{
 		"_id": oid,
-		// Literal, like BeginResume's own precondition above — this package
-		// has no status constants.
-		"status": "failed",
+		// `failed` stays a literal, like BeginResume's own precondition above;
+		// RunStatusPaused is a constant because it is named in several filters
+		// and a typo in one matches nothing silently.
+		"status": bson.M{"$in": []string{"failed", models.RunStatusPaused}},
 	}, bson.M{
 		"$unset": bson.M{"last_checkpoint_step": ""},
 		"$set":   bson.M{"updated_at": time.Now()},
@@ -693,6 +723,14 @@ func (r *RunRepository) Fail(ctx context.Context, runID string, errMsg string) e
 			"completed_at": now,
 			"updated_at":   now,
 		},
+		"$unset": bson.M{
+			// A pause request cannot outlive the run it was made against.
+			// Left behind it would describe a stop that can never happen, and
+			// the dashboard reads its presence as "pausing".
+			"pause_requested_at":      "",
+			"pause_requested_attempt": "",
+			"pause_deadline_at":       "",
+		},
 	}
 
 	filter := bson.M{
@@ -759,6 +797,14 @@ func (r *RunRepository) FailAttempt(ctx context.Context, runID string, attempt i
 			Reason:  errMsg,
 			Attempt: attempt,
 		}},
+		"$unset": bson.M{
+			// A pause request cannot outlive the run it was made against.
+			// Left behind it would describe a stop that can never happen, and
+			// the dashboard reads its presence as "pausing".
+			"pause_requested_at":      "",
+			"pause_requested_attempt": "",
+			"pause_deadline_at":       "",
+		},
 	}
 	filter := bson.M{
 		"_id":    oid,
@@ -794,6 +840,83 @@ func attemptFence(filter bson.M, attempt int) {
 	}
 }
 
+// RequestPause asks a live run to stop cooperatively, and returns the updated
+// document (issue #508).
+//
+// It writes a REQUEST, not a status. The agent reads its own run document at
+// every phase boundary already — that probe is what v1 built to stop a
+// superseded or cancelled attempt spending money — so stamping the request
+// here is the whole transport: no signal, no new network path, and nothing in
+// internal/runner changes. The agent honours it at its next seam where a
+// checkpoint has just landed, writes `paused` itself, and exits 0.
+//
+// The status stays `running` while the run drains, deliberately. An agent is
+// alive and querying the warehouse in that window, so every predicate meaning
+// "this run is active" has to keep saying yes; a `pausing` status would have to
+// be added to each of them and every miss would leave two agents on one
+// project.
+//
+// The filter carries four things, and the last is the only one that is not
+// obvious:
+//
+//   - the active statuses, so a finished run answers "not active" rather than
+//     accepting a request nothing will ever read;
+//   - not discarded;
+//   - the attempt the CALLER read, so a resume between its read and this write
+//     makes this match nothing instead of pausing an attempt nobody evaluated
+//     — the same fence Discard and BeginResume use;
+//   - no pause already pending, UNLESS the pending one has lapsed. A duplicate
+//     request is refused so a second click cannot quietly extend the drain
+//     window, while a lapsed one must not block a fresh attempt at pausing
+//     for ever.
+//
+// deadline is when an unhonoured request lapses; the zero time means the
+// operator disabled the deadline, and then any stale one from an earlier
+// request is removed rather than left to expire this one early.
+func (r *RunRepository) RequestPause(ctx context.Context, runID string, attempt int, deadline time.Time) (*models.DiscoveryRun, error) {
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid run ID: %w", err)
+	}
+	now := time.Now()
+
+	filter := bson.M{
+		"_id":          oid,
+		"status":       bson.M{"$in": []string{"pending", "running"}},
+		"discarded_at": nil,
+		"$or": []bson.M{
+			{"pause_requested_at": nil},
+			{"pause_deadline_at": bson.M{"$lt": now}},
+		},
+	}
+	attemptFence(filter, attempt)
+
+	set := bson.M{
+		"pause_requested_at":      now,
+		"pause_requested_attempt": attempt,
+		"updated_at":              now,
+	}
+	update := bson.M{"$set": set}
+	if deadline.IsZero() {
+		// No deadline wanted. Remove any stale one rather than leaving it:
+		// an expired instant from a previous request would make the agent
+		// treat this brand-new request as already lapsed.
+		update["$unset"] = bson.M{"pause_deadline_at": ""}
+	} else {
+		set["pause_deadline_at"] = deadline
+	}
+
+	var run models.DiscoveryRun
+	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
+	if err := r.col.FindOneAndUpdate(ctx, filter, update, opts).Decode(&run); err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, ErrNoPausableRun
+		}
+		return nil, fmt.Errorf("request pause of run %s: %w", runID, err)
+	}
+	return &run, nil
+}
+
 // Cancel marks a run as cancelled.
 func (r *RunRepository) Cancel(ctx context.Context, runID string) error {
 	oid, err := primitive.ObjectIDFromHex(runID)
@@ -808,6 +931,14 @@ func (r *RunRepository) Cancel(ctx context.Context, runID string) error {
 			"phase_detail": "Cancelled by user",
 			"completed_at": now,
 			"updated_at":   now,
+		},
+		"$unset": bson.M{
+			// A pause request cannot outlive the run it was made against.
+			// Left behind it would describe a stop that can never happen, and
+			// the dashboard reads its presence as "pausing".
+			"pause_requested_at":      "",
+			"pause_requested_attempt": "",
+			"pause_deadline_at":       "",
 		},
 	}
 
@@ -830,6 +961,14 @@ func (r *RunRepository) CleanupStaleRuns(ctx context.Context) (int, error) {
 			"phase_detail": "Failed: API restarted during discovery",
 			"completed_at": now,
 			"updated_at":   now,
+		},
+		"$unset": bson.M{
+			// A pause request cannot outlive the run it was made against.
+			// Left behind it would describe a stop that can never happen, and
+			// the dashboard reads its presence as "pausing".
+			"pause_requested_at":      "",
+			"pause_requested_attempt": "",
+			"pause_deadline_at":       "",
 		},
 	}
 

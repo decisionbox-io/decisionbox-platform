@@ -132,9 +132,32 @@ func (o *Orchestrator) checkpointStep(ctx context.Context, step models.Explorati
 	// consecutive operations wide rather than the whole remaining run, and
 	// the row-level fence catches it whenever the live attempt has already
 	// written that step.
-	if o.statusReporter != nil && !o.statusReporter.OwnsRun(ctx) {
-		return ai.ErrAttemptSuperseded
+	//
+	// A PAUSE request read here is handled the other way round: remembered,
+	// not acted on, so the write below still happens. "Stops after the current
+	// step with a clean checkpoint" is the acceptance criterion, and the only
+	// way to honour it is to let the step's row land first and stop
+	// afterwards. See the tail of this function.
+	pauseRequested := false
+	if o.statusReporter != nil {
+		switch o.statusReporter.Standing(ctx) {
+		case standingLost:
+			return ai.ErrAttemptSuperseded
+		case standingPauseRequested:
+			pauseRequested = true
+		}
 	}
+
+	// A failed write is the gap, recorded here rather than inferred later.
+	//
+	// The inference was incomplete: checkpointGapSeen was only set when a
+	// SUBSEQUENT step landed beyond the hole, so a failure on the FINAL
+	// exploration step left no later call to notice it — and a pause pending
+	// at the Phase 4 gate was then honoured over a prefix one step short of
+	// the summary, which a resume has to re-execute. Steps arrive strictly in
+	// sequence, so a failed write is the only way a hole appears; marking it
+	// at the failure is both simpler and complete.
+	markGap := func() { o.checkpointGapSeen = true }
 
 	err := o.checkpointRepo.SaveStep(ctx, database.CheckpointStepInput{
 		ProjectID: o.projectID,
@@ -150,11 +173,27 @@ func (o *Orchestrator) checkpointStep(ctx context.Context, step models.Explorati
 		if errors.Is(err, database.ErrSupersededAttempt) {
 			return ai.ErrAttemptSuperseded
 		}
+		// Any other failure means this step has no row, so the prefix can
+		// never reach it. The run carries on — the caller swallows this — but
+		// it is no longer losslessly pausable.
+		markGap()
 		return err
 	}
 	// The run is now resumable, so its per-run vector index must survive a
 	// failure rather than being dropped on the way out.
 	o.keepStepIndex = true
+	// And the replayable prefix grows only if THIS step is the next one in an
+	// unbroken sequence. A write that failed earlier leaves a gap LoadPrefix
+	// stops at, so a later success does not make the run replayable — see
+	// Orchestrator.contiguousCheckpointThrough.
+	if step.Step == o.contiguousCheckpointThrough+1 {
+		o.contiguousCheckpointThrough = step.Step
+	} else if step.Step > o.contiguousCheckpointThrough+1 {
+		// Defensive: a row beyond a hole. Steps arrive in sequence, so the
+		// failure path above is what actually records a gap; this catches a
+		// caller that ever skipped one.
+		markGap()
+	}
 
 	// Only now: the row is durable, so the marker is true. This is what the
 	// dashboard reads to offer Resume, and it must never advertise a
@@ -169,6 +208,22 @@ func (o *Orchestrator) checkpointStep(ctx context.Context, step models.Explorati
 	// itself is already written by then; that is the documented residual.
 	if o.statusReporter != nil && !o.statusReporter.MarkExplorationCheckpoint(ctx, step.Step) {
 		return ai.ErrAttemptSuperseded
+	}
+
+	// The step is durable, so this is the clean stop the operator asked for —
+	// SIGNALLED here and performed by the caller, which is not a detail.
+	//
+	// This hook runs BEFORE the engine records the step's bookkeeping, and
+	// that bookkeeping includes StatusReporter.AddExplorationStep, which
+	// writes progress through UpdateStatus — a write whose filter excludes
+	// only a cancelled run. So flipping the run to `paused` here and letting
+	// the engine carry on would have the very next write put `running` back
+	// on it, leaving a run nothing is working on in a status that says
+	// otherwise. Signalling instead lets the engine finish the step's
+	// accounting and the orchestrator take the stop afterwards, once nothing
+	// further will write.
+	if pauseRequested {
+		return o.pauseSignalIfResumable(fmt.Sprintf("exploration step %d", step.Step))
 	}
 	return nil
 }
@@ -199,11 +254,22 @@ func (o *Orchestrator) fenceReplayedStep(ctx context.Context, step int) error {
 	if o.statusReporter == nil {
 		return nil
 	}
-	if !o.statusReporter.OwnsRun(ctx) {
+	standing := o.statusReporter.Standing(ctx)
+	if standing == standingLost {
 		return ai.ErrAttemptSuperseded
 	}
 	if !o.statusReporter.MarkExplorationCheckpoint(ctx, step) {
 		return ai.ErrAttemptSuperseded
+	}
+	// Replay is the cheapest place there is to honour a pause: these rows were
+	// written by the attempt that earned them and are untouched here, so
+	// stopping leaves the run exactly as resumable as it was, having spent
+	// nothing. The next resume replays the same prefix.
+	//
+	// Signalled, not performed — same reason as checkpointStep above: the
+	// status write belongs after the engine has stopped writing.
+	if standing == standingPauseRequested {
+		return o.pauseSignalIfResumable(fmt.Sprintf("replay of step %d", step))
 	}
 	return nil
 }
@@ -868,6 +934,187 @@ func (o *Orchestrator) rebuildStepIndexForResume(ctx context.Context) {
 // else can undo — the project context. Everything that decides a run's
 // OUTCOME is already fenced by attempt or retired at the tail: checkpoints,
 // the exploration summary, the terminal status, the discovery itself.
+// hasResumePoint reports whether this run has anything durable to resume from.
+//
+// The pause path needs it because `paused` with no checkpoint is a dead end:
+// ResumeRun refuses a run with no replayable prefix and no exploration
+// summary, so a pause honoured before the first step completed would strand
+// the run in a status nothing can leave. A request that arrives that early
+// therefore waits for step 1 — which is literally "finish the current step,
+// then stop".
+//
+// "Has a checkpoint" is not the test, and an earlier version of this made
+// that mistake by reading keepStepIndex: checkpoint writes are best-effort so
+// they can never abort a run, so a step-1 failure followed by a step-2
+// success leaves a row behind with no replayable prefix — LoadPrefix stops at
+// the gap and the resume is refused. Pausing on that would have stopped a
+// working run into an unresumable state, which is the one thing pause must
+// never do.
+func (o *Orchestrator) hasResumePoint() bool {
+	// Exploration already finished on an earlier attempt, so the resume skips
+	// Phase 3 entirely and needs no prefix.
+	if o.resume.explorationComplete() {
+		return true
+	}
+	// A hole anywhere disqualifies it. LoadPrefix truncates there, so a
+	// resume would discard every step past the hole and pay for them again —
+	// a pause that loses work rather than one that cannot resume, and both
+	// break the promise.
+	if o.checkpointGapSeen {
+		return false
+	}
+	// Otherwise it needs steps it can actually replay, which means
+	// CONTIGUOUS ones. keepStepIndex is deliberately not consulted: it is
+	// true of any single saved row, and a run whose step-1 write failed has
+	// one of those and nothing a resume can use.
+	return o.contiguousCheckpointThrough > 0
+}
+
+// pauseSignalIfResumable decides whether a seam may signal the operator's
+// pause, and is the ONE place that decision lives.
+//
+// Centralised after three review rounds found the same precondition missing
+// at three different seams — the phase gates, the exploration step, and the
+// completed analysis area. Each was the same bug: a pause honoured where no
+// replayable prefix exists writes `paused` for a run ResumeRun then refuses,
+// stranding a working run with no way out but cancel. Patching the third
+// instance would have invited a fourth, so every seam now asks here.
+//
+// Returns ai.ErrPauseRequested to stop, or nil to carry on with the request
+// still standing — the next seam that has something to resume from honours it.
+func (o *Orchestrator) pauseSignalIfResumable(what string) error {
+	if o.hasResumePoint() {
+		return ai.ErrPauseRequested
+	}
+	applog.WithFields(applog.Fields{
+		"run_id": o.runID, "at": what,
+		"contiguous_through": o.contiguousCheckpointThrough,
+	}).Warn("an operator asked for a pause, but an earlier checkpoint write left a gap, so there is nothing a resume could replay yet; continuing until the prefix is unbroken")
+	return nil
+}
+
+// pauseAttempt performs the cooperative stop: books this attempt's compute,
+// writes `paused`, and reports the control signal the caller must propagate.
+//
+// The single owner of the transition, so the status write, the active-time
+// booking and the live-feed row cannot drift between the seams that can pause
+// (the exploration step hook, the replay fence, and the phase gates).
+//
+// Returns, and each return means something different upstream:
+//
+//   - ai.ErrPauseRequested — paused cleanly. agentserver exits 0 without
+//     announcing a failure.
+//   - ai.ErrAttemptSuperseded — the write did not apply, so the run moved on
+//     while this attempt was finishing its step (cancelled, swept to `failed`,
+//     or taken over). Exit quietly and claim nothing.
+//   - any other error — the write could not be made at all. Propagated as a
+//     real failure ON PURPOSE: a clean exit would leave the run `running` with
+//     no agent behind it, and a zero exit status is the one thing no runner
+//     reports, so the run would sit there until an API restart. A failed run
+//     is honest and still resumable, because its checkpoints are kept.
+func (o *Orchestrator) pauseAttempt(ctx context.Context, detail string) error {
+	if o.statusReporter == nil {
+		// Unreachable in practice: Standing answers standingCarryOn when
+		// status reporting is disabled, so nothing asks for a pause. Guarded
+		// rather than assumed, because the cost of being wrong is a nil
+		// dereference on a path that only runs when an operator is watching.
+		return ai.ErrPauseRequested
+	}
+
+	// NOT re-validated against the deadline here, and the reason is worth
+	// recording because a review asked for it.
+	//
+	// By the time this runs the seam has already stopped the work — the
+	// exploration loop has returned, or the analysis loop is unwinding — so
+	// "the request lapsed, carry on" has nowhere to carry on to. Returning
+	// nil would hand RunDiscovery a nil result AND a nil error, which its
+	// caller dereferences; the alternatives are to write `failed` for a run
+	// that is fine, or to exit leaving it `running` with no agent. Writing
+	// `paused` is plainly the best of the four: the run is resumable and no
+	// work is lost.
+	//
+	// What the deadline governs is the DECISION, which is taken at the seam,
+	// and the gap between that and this write is one step's tail — a few
+	// writes and an embedding call, seconds — not the tens of minutes the
+	// deadline is about. A request would have to arrive within seconds of
+	// expiring for the two to disagree, and the disagreement is brief: the
+	// dashboard's "timed out" line is derived from a PENDING request on a
+	// running run, so the moment this write lands it says "Discovery paused"
+	// instead.
+	applied, err := o.statusReporter.Pause(ctx, detail, time.Since(o.attemptStartedAt), o.contiguousCheckpointThrough, o.llmProvider, o.llmModel)
+	if err != nil {
+		applog.WithFields(applog.Fields{
+			"run_id": o.runID, "error": err.Error(),
+		}).Error("could not record the operator's pause; failing the run instead of exiting silently, which would leave it running with no agent")
+		return fmt.Errorf("record operator pause for run %s: %w", o.runID, err)
+	}
+	if !applied {
+		applog.WithFields(applog.Fields{
+			"run_id": o.runID, "attempt": o.resume.attemptNumber(),
+		}).Warn("the run was no longer running when this attempt tried to pause it; exiting without claiming anything")
+		return ai.ErrAttemptSuperseded
+	}
+
+	// One row in the live feed, so the log the operator is watching explains
+	// why it stops rather than just ending.
+	o.statusReporter.AddStep(ctx, models.RunStep{
+		Phase:     models.PhaseExploration,
+		Type:      "info",
+		Message:   detail,
+		Timestamp: time.Now(),
+	})
+	applog.WithFields(applog.Fields{
+		"run_id": o.runID, "attempt": o.resume.attemptNumber(), "detail": detail,
+	}).Info("Discovery run paused at an operator's request; its checkpoints are kept, so it can be resumed")
+	return ai.ErrPauseRequested
+}
+
+// pauseDetailFor is the phase detail a paused exploration run shows, which is
+// also the reason recorded on its lifecycle event.
+//
+// Reads the step count off the result the engine returned rather than being
+// passed a number, so the replay and the live-step seams — which stop at
+// different places and know different things — produce one consistent line.
+// A nil or empty result means the pause landed during replay before any step
+// was re-emitted, and naming no step is better than naming step 0.
+func (o *Orchestrator) pauseDetailFor(res *ai.ExplorationResult) string {
+	if res == nil || res.TotalSteps <= 0 {
+		return "Paused during exploration — resume to continue"
+	}
+	return fmt.Sprintf("Paused after exploration step %d — resume to continue", res.TotalSteps)
+}
+
+// stopBefore is the gate for the phase boundaries where a cooperative pause is
+// still free, as opposed to ownershipLost, which guards the ones where it is
+// not.
+//
+// The distinction is a property of the SEAM, not of the phase: a pause is free
+// exactly where a checkpoint has just landed, so the gates that sit on such a
+// boundary use this and the rest use ownershipLost. Writing it as two named
+// helpers rather than a flag threaded through one is what keeps a later rung of
+// the resume roadmap (finer-grained analysis or validation markers) additive —
+// such a seam switches which helper it calls and nothing else moves.
+//
+// Returns nil to carry on, or the error the caller propagates unchanged.
+func (o *Orchestrator) stopBefore(ctx context.Context, what string) error {
+	if o.statusReporter == nil {
+		return nil
+	}
+	switch o.statusReporter.Standing(ctx) {
+	case standingLost:
+		applog.WithFields(applog.Fields{
+			"run_id": o.runID, "before": what,
+		}).Warn("another attempt of this run has taken over; stopping rather than spending this phase on a result that will be discarded")
+		return ai.ErrAttemptSuperseded
+	case standingPauseRequested:
+		if err := o.pauseSignalIfResumable(what); err == nil {
+			return nil
+		}
+		return o.pauseAttempt(ctx, "Paused before "+what+" — resume to continue")
+	}
+	return nil
+}
+
 func (o *Orchestrator) ownershipLost(ctx context.Context, what string) bool {
 	if o.statusReporter == nil || o.statusReporter.OwnsRun(ctx) {
 		return false

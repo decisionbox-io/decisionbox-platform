@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -432,6 +433,9 @@ type ExplorationEngineOptions struct {
 // failure: a checkpoint write must never abort a run that is otherwise
 // working. A missing row is handled on the read side, which replays only the
 // contiguous prefix and re-explores from the first gap.
+// It returns ErrAttemptSuperseded when this attempt has lost the run, and
+// ErrPauseRequested when an operator asked for a cooperative stop — the latter
+// only AFTER the step's checkpoint has landed, so the pause is free.
 type StepPersister func(ctx context.Context, step models.ExplorationStep, args models.CheckpointArgs) error
 
 // StepFence reports whether this attempt may still act on the run, without
@@ -439,6 +443,8 @@ type StepPersister func(ctx context.Context, step models.ExplorationStep, args m
 // when the attempt has lost the run, and the caller must stop rather than
 // carry on into the writes that are shared between attempts — the per-run
 // vector index and the live step feed.
+// Returns ErrPauseRequested too, for the same reason: replayed rows are
+// already durable, so a pause during replay costs nothing.
 type StepFence func(ctx context.Context, step int) error
 
 // ResumeState is the prefix of a previous attempt that this run replays
@@ -715,6 +721,14 @@ func (e *ExplorationEngine) Explore(
 		result.Duration = time.Since(startTime)
 		return result, ErrAttemptSuperseded
 	}
+	if replayed.Paused {
+		// An operator paused the run mid-replay. The replayed rows are
+		// another attempt's and already durable, so this costs nothing and
+		// the next resume replays the same prefix again.
+		result.Error = ErrPauseRequested
+		result.Duration = time.Since(startTime)
+		return result, ErrPauseRequested
+	}
 	if replayed.Completed {
 		// The replayed prefix ends with a completion the engine already
 		// accepted, so there is nothing left to explore. Reachable when the
@@ -787,14 +801,22 @@ func (e *ExplorationEngine) Explore(
 				// Before the live feed, for the same reason as the executed
 				// step above: the row it writes is keyed on run_id alone, so
 				// a superseded attempt must not add one.
-				if e.checkpoint(ctx, result.Steps[len(result.Steps)-1], models.CheckpointArgs{RejectReason: reason}) {
-					result.Error = ErrAttemptSuperseded
+				stopAfterRejection := e.checkpoint(ctx, result.Steps[len(result.Steps)-1], models.CheckpointArgs{RejectReason: reason})
+				if stopAfterRejection != nil && !errors.Is(stopAfterRejection, ErrPauseRequested) {
+					result.Error = stopAfterRejection
 					result.Duration = time.Since(startTime)
-					return result, ErrAttemptSuperseded
+					return result, stopAfterRejection
 				}
 
 				if e.onStep != nil {
 					e.onStep(step, "complete_rejected", action.Thinking, "", 0, 0, false, why, inputTokens, outputTokens, "")
+				}
+				// Same ordering as the executed-step seam below: the rejected
+				// step is recorded, then the pause is taken.
+				if stopAfterRejection != nil {
+					result.Error = stopAfterRejection
+					result.Duration = time.Since(startTime)
+					return result, stopAfterRejection
 				}
 				continue
 			}
@@ -833,10 +855,24 @@ func (e *ExplorationEngine) Explore(
 		// Nothing is lost by checkpointing first: executeAction has
 		// returned, so the step is complete, and the checkpoint is the
 		// durable record the other two are derived from.
-		if e.checkpoint(ctx, explorationStep, checkpointArgsFor(action)) {
-			result.Error = ErrAttemptSuperseded
+		// A pause is DISCOVERED here — executeAction has returned and the row
+		// above is durable, so "stops after the current step with a clean
+		// checkpoint" is true from this point on — but it is not acted on
+		// until the bottom of the iteration.
+		//
+		// Supersession is different and leaves immediately: a dead attempt
+		// must not reach the writes below, which are keyed on run_id alone.
+		// A pause is this attempt's own, so it is entitled to finish the
+		// step's accounting first — and has to, because that accounting is
+		// where the step's query and schema-action counters are recorded.
+		// Resume deliberately replays rows WITHOUT re-incrementing those
+		// counters, so a step skipped here is missing from the run's totals
+		// for good.
+		stopAfterThisStep := e.checkpoint(ctx, explorationStep, checkpointArgsFor(action))
+		if stopAfterThisStep != nil && !errors.Is(stopAfterThisStep, ErrPauseRequested) {
+			result.Error = stopAfterThisStep
 			result.Duration = time.Since(startTime)
-			return result, ErrAttemptSuperseded
+			return result, stopAfterThisStep
 		}
 
 		// Index the completed step into the per-run vector index so
@@ -882,6 +918,16 @@ func (e *ExplorationEngine) Explore(
 		if e.onStep != nil {
 			errMsg := explorationStep.Error
 			e.onStep(step, action.Action, action.Thinking, explorationStep.EffectiveQuery(), explorationStep.RowCount, explorationStep.ExecutionTimeMs, explorationStep.Fixed, errMsg, inputTokens, outputTokens, explorationStep.WarehouseID)
+		}
+
+		// The step is fully accounted for now, so the operator's pause can be
+		// taken. The caller performs the status write; doing it any earlier
+		// would have the progress update inside e.onStep above put `running`
+		// straight back onto a paused run.
+		if stopAfterThisStep != nil {
+			result.Error = stopAfterThisStep
+			result.Duration = time.Since(startTime)
+			return result, stopAfterThisStep
 		}
 
 		// Check if exploration is complete

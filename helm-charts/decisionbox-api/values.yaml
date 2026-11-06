@@ -89,6 +89,20 @@ env:
   # eagerly when a run completes or is cancelled, so the TTL only
   # reclaims the rows of runs nobody came back to.
   # DISCOVERY_CHECKPOINT_RETENTION: "48h"
+  # DISCOVERY_PAUSE_DRAIN_TIMEOUT — how long an operator's pause request
+  # (POST /api/v1/runs/{runId}/pause) stands before it LAPSES. Go duration
+  # format. A pause is cooperative: the run finishes the step it is on, keeps
+  # that step's checkpoint and exits into `paused`, which can be resumed. The
+  # deadline bounds the wait, because a request an agent can never honour —
+  # one wedged in a long warehouse scan, or a dead process — would otherwise
+  # stop the run hours later, unattended. Past it the agent ignores the
+  # request and the operator can ask again. Default when unset: 30m, sized so
+  # a legitimately slow step (an LLM call at LLM_TIMEOUT plus its retries,
+  # then a warehouse query) cannot trip it. Set to "0" to disable the
+  # deadline, for deployments that would rather wait out a multi-hour query
+  # than have the request lapse. Read by the API only — it stamps the
+  # deadline on the run, so the agent needs no copy of this value.
+  # DISCOVERY_PAUSE_DRAIN_TIMEOUT: "30m"
   # LLM_TIMEOUT — HTTP timeout per LLM API call. Go duration format (e.g. "5m", "15m").
   # Set this when long-form generations (executive summary on Opus, large ask responses)
   # need more than the provider default of 5 minutes. Per-project timeout_seconds

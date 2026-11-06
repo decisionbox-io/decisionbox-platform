@@ -1,13 +1,14 @@
 package handler
 
 import (
-	"github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	"context"
 	"errors"
 	"fmt"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
@@ -761,10 +762,13 @@ func (h *DiscoveriesHandler) standDownResume(parent context.Context, runID strin
 // in a shared interface, and a pricing decision, because it would make a
 // resume refusable on plan grounds for a run that is already paid for.
 //
-// Reviewed and deliberately left as it stands, to be revisited with the v4
-// (operator Pause) increment. `attempt` is persisted so a future per-attempt
-// price can key on runID:attempt rather than silently no-op'ing against the
-// original charge, and the seam above is where it goes.
+// Revisited with the v4 operator-Pause increment (#508) and deliberately left
+// as it stands: pause adds one more case — a paused run keeps the reservation
+// its first attempt opened, because it is not terminal — without changing the
+// trade. Tracked as #517, which also has the two questions the decision needs
+// to answer. `attempt` is persisted so a future per-attempt price can key on
+// runID:attempt rather than silently no-op'ing against the original charge,
+// and the seam above is where it goes.
 func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("runId")
 	ctx := r.Context()
@@ -779,11 +783,16 @@ func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// `failed` is the only resumable status, and the message says what the
-	// run actually is so a stale dashboard's user is not left guessing.
-	// `cancelled` is a deliberate hard kill and stays terminal.
-	if run.Status != "failed" {
-		writeError(w, http.StatusConflict, "run is not resumable (status: "+run.Status+") — only a failed run can be resumed")
+	// `failed` and `paused` are the resumable statuses, and the message says
+	// what the run actually is so a stale dashboard's user is not left
+	// guessing. `cancelled` is a deliberate hard kill and stays terminal.
+	//
+	// `paused` needs no second entry point, which is the economy of operator
+	// pause (#508): a cooperatively stopped run is a crashed run that stopped
+	// tidily, so it re-enters by exactly the path crash recovery already uses
+	// — same flip, same replay, same fences.
+	if run.Status != "failed" && run.Status != models.RunStatusPaused {
+		writeError(w, http.StatusConflict, "run is not resumable (status: "+run.Status+") — only a failed or paused run can be resumed")
 		return
 	}
 
@@ -1077,6 +1086,176 @@ func (h *DiscoveriesHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// defaultPauseDrainTimeout bounds how long an unhonoured pause request stands
+// before it LAPSES.
+//
+// Generous on purpose. The unit a cooperative stop waits for is one
+// exploration step — an LLM call bounded by LLM_TIMEOUT (300s by default)
+// times its retry budget, plus a warehouse query — so a legitimately slow step
+// must not trip this. The deadline is not a performance target; it is there so
+// a request the agent can never honour (a wedged or dead process) does not
+// stand indefinitely.
+const defaultPauseDrainTimeout = 30 * time.Minute
+
+// pauseDrainTimeout resolves DISCOVERY_PAUSE_DRAIN_TIMEOUT.
+//
+// Zero means the operator disabled the deadline: the request then stands until
+// something acts on it, which is a deliberate choice for deployments that would
+// rather wait out a multi-hour warehouse scan than have the request lapse. An
+// unparseable or negative value falls back to the default with a warning, the
+// same way the runner's own duration knobs do — a typo must not silently turn
+// the deadline off.
+func pauseDrainTimeout() time.Duration {
+	raw := strings.TrimSpace(getEnvOrDefault("DISCOVERY_PAUSE_DRAIN_TIMEOUT", ""))
+	if raw == "" {
+		return defaultPauseDrainTimeout
+	}
+	d, err := time.ParseDuration(raw)
+	switch {
+	case err != nil:
+		apilog.WithFields(apilog.Fields{"value": raw, "default": defaultPauseDrainTimeout.String()}).
+			Warn("DISCOVERY_PAUSE_DRAIN_TIMEOUT is not a valid Go duration; using the default")
+		return defaultPauseDrainTimeout
+	case d < 0:
+		apilog.WithFields(apilog.Fields{"value": raw, "default": defaultPauseDrainTimeout.String()}).
+			Warn("DISCOVERY_PAUSE_DRAIN_TIMEOUT is negative; using the default")
+		return defaultPauseDrainTimeout
+	}
+	return d
+}
+
+// PauseRun asks a running discovery to stop cooperatively, so it can be
+// resumed later.
+// POST /api/v1/runs/{runId}/pause
+//
+// This is the counterpart to cancel, not a variant of it. Cancel is a terminal
+// hard kill: it reaps the workload, writes `cancelled` and PURGES the
+// checkpoints, so a "graceful cancel" would just be the crash case with the
+// recovery material deleted. Pause instead lets the run finish the step it is
+// in, land that step's checkpoint, and exit on its own into `paused` — a status
+// ResumeRun accepts.
+//
+// What this handler does is stamp a request and return. It does not signal the
+// agent, call the runner, or write a status, and the reason is worth stating:
+// the agent already reads its own run document at every phase boundary (v1
+// built that probe so a superseded or cancelled attempt stops spending money),
+// so the document IS the channel. Nothing in internal/runner changes, the
+// agent needs no SIGTERM handling — it has none — and the behaviour is
+// identical under subprocess, Docker and Kubernetes.
+//
+// Like resume, it neither meters nor charges: the run's charge is keyed on its
+// runID and pausing does not start a new run. Unlike resume it closes no
+// reservation either, because the run is not over — which means a paused run
+// goes on holding its concurrent-run slot. That is the conservative answer (a
+// resume opens no reservation of its own, so there would be nothing to
+// reopen), and the broader concurrency-at-resume policy is the follow-up
+// decision #508 flags rather than settles — tracked as #517.
+func (h *DiscoveriesHandler) PauseRun(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("runId")
+	ctx := r.Context()
+
+	run, err := h.runRepo.GetByID(ctx, runID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get run: "+err.Error())
+		return
+	}
+	if run == nil {
+		writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+	// Canonical from here on, for the reason ResumeRun, DiscardRun and
+	// CancelRun each give at their own assignment: ObjectIDFromHex accepts
+	// uppercase hex, so GetByID resolves an uppercased id perfectly well
+	// while anything keyed on run_id as a STRING holds the lowercase form.
+	// RequestPause is keyed by _id so it would work either way, but the id is
+	// echoed back to the caller and logged, and two spellings of one run is
+	// how the bugs in the three handlers above started.
+	runID = run.ID
+
+	p, err := h.projectRepo.GetByID(ctx, run.ProjectID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to look up the run's project: "+err.Error())
+		return
+	}
+	if p == nil {
+		writeError(w, http.StatusNotFound, "the run's project no longer exists")
+		return
+	}
+	// Authorised against the run's PROJECT, like resume and discard: this
+	// route is keyed by run id so it sits outside ProjectACLMiddleware, and
+	// pausing changes what a project's run is doing. Safe where auth is
+	// disabled — NoAuthProvider injects an admin principal and
+	// CanAccessProject admits admin outright.
+	if principal, ok := auth.FromContext(ctx); !ok || !auth.CanAccessProject(principal, p.OrgID, p.AllowedRoles) {
+		writeError(w, http.StatusForbidden, "you do not have access to this run's project")
+		return
+	}
+
+	if run.Status != "running" && run.Status != "pending" {
+		writeError(w, http.StatusConflict,
+			"run is not active (status: "+run.Status+") — only a running run can be paused")
+		return
+	}
+
+	// Refused up front when the run is past the point where stopping is free,
+	// rather than letting the request sit unhonoured and leaving the operator
+	// watching a "Pausing…" that never resolves.
+	//
+	// A pause only costs nothing where a checkpoint has just landed, and past
+	// analysis nothing is checkpointed: pausing in the recommendation phase or
+	// the persistence tail would discard that work entirely for a run that is
+	// minutes from finishing. See models.RunPhaseAcceptsPause.
+	//
+	// The residual race — the run leaves analysis between this check and the
+	// agent's next seam — ends with the agent simply not pausing, and the
+	// request cleared by its terminal write.
+	if !models.RunPhaseAcceptsPause(run.Phase) {
+		writeError(w, http.StatusConflict,
+			"run is past the point where it can be paused (phase: "+run.Phase+
+				") — it will finish shortly; cancel it instead if it has to stop now")
+		return
+	}
+
+	var deadline time.Time
+	if drain := pauseDrainTimeout(); drain > 0 {
+		deadline = time.Now().Add(drain)
+	}
+
+	paused, err := h.runRepo.RequestPause(ctx, runID, run.Attempt, deadline)
+	if err != nil {
+		if errors.Is(err, database.ErrNoPausableRun) {
+			// One refusal covering several causes, because the filter is
+			// atomic and cannot report which it was: the run finished, was
+			// discarded or resumed between the read above and this write, or
+			// a pause is already pending on it. The first three are all "it
+			// changed under you"; the last is the common one, so it leads.
+			writeError(w, http.StatusConflict,
+				"a pause is already pending for this run, or the run changed while this request was in flight")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to request a pause: "+err.Error())
+		return
+	}
+
+	apilog.WithFields(apilog.Fields{
+		"project_id": run.ProjectID, "run_id": runID,
+		"attempt": paused.Attempt, "phase": run.Phase,
+	}).Info("Pause requested for a discovery run")
+
+	body := map[string]interface{}{
+		"status":  "pause_requested",
+		"run_id":  runID,
+		"attempt": paused.Attempt,
+	}
+	// Reported so the dashboard can say how long it will wait before telling
+	// the operator the request lapsed, rather than hard-coding a duration the
+	// deployment may have changed.
+	if paused.PauseDeadlineAt != nil {
+		body["pause_deadline_at"] = paused.PauseDeadlineAt
+	}
+	writeJSON(w, http.StatusAccepted, body)
+}
+
 // DiscardRun throws away a terminal run that produced nothing.
 // POST /api/v1/runs/{runId}/discard
 //
@@ -1149,6 +1328,17 @@ func (h *DiscoveriesHandler) DiscardRun(w http.ResponseWriter, r *http.Request) 
 	case run.Status == "pending" || run.Status == "running":
 		writeError(w, http.StatusConflict,
 			"run is still active (status: "+run.Status+") — cancel it first, then discard it")
+		return
+	case run.Status == models.RunStatusPaused:
+		// Refused, and not merely for tidiness. Discard leaves the STATUS
+		// alone — that is its whole design, so a failed run keeps its error —
+		// and a paused run's status is not terminal. So a discarded-while-
+		// paused run would never appear in ListTerminalWithReservation and
+		// would hold its concurrent-run reservation open for ever, with
+		// nothing left to reconcile from. Cancel is the verb that makes a
+		// paused run terminal, and it closes the reservation on the way.
+		writeError(w, http.StatusConflict,
+			"this run is paused, not finished — resume it, or cancel it to throw it away")
 		return
 	case run.Status == "completed":
 		writeError(w, http.StatusConflict,
@@ -1283,7 +1473,17 @@ func (h *DiscoveriesHandler) CancelRun(w http.ResponseWriter, r *http.Request) {
 	// agent runs on and the checkpoints sit until the retention TTL.
 	runID = run.ID
 
-	if run.Status != "running" && run.Status != "pending" {
+	// `paused` is cancellable as well as active runs, and it is the reason
+	// DiscardRun refuses a paused run (see there): a paused run is not
+	// terminal, so nothing else would ever close its plan reservation. Cancel
+	// is the one verb that makes it terminal, purges its checkpoints and
+	// confirms the reservation — all of which the body below already does.
+	//
+	// There is normally no workload left to kill, so the runner call below is
+	// a no-op. It is still made, deliberately: a superseded attempt's agent
+	// can outlive the attempt that paused the run, and cancel is documented
+	// as a hard kill of the RUN rather than of one of its attempts.
+	if run.Status != "running" && run.Status != "pending" && run.Status != models.RunStatusPaused {
 		writeError(w, http.StatusBadRequest, "run is not active (status: "+run.Status+")")
 		return
 	}

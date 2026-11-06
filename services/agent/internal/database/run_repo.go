@@ -411,6 +411,21 @@ const (
 	// telling an operator their run was cancelled when they discarded it
 	// sends them looking for a cancel nobody performed.
 	RunDiscarded
+
+	// RunPauseRequested: the run is STILL THIS ATTEMPT'S, and an operator has
+	// asked for a cooperative stop (issue #508).
+	//
+	// Read that first clause carefully, because getting it wrong aborts
+	// healthy runs: a pause request is not a loss of ownership. Gates that
+	// only ask "may I spend the next phase" must treat this as yes —
+	// StatusReporter.OwnsRun does — and only the gates that can stop at a
+	// clean checkpoint act on it. Folding it in with the three above would
+	// make every gate past the pause window abort the run as superseded.
+	//
+	// Only returned for a request that is still honourable: within its
+	// deadline, and aimed at this attempt. A lapsed or stale one reads as
+	// RunOwnedByThisAttempt, so the run simply carries on.
+	RunPauseRequested
 )
 
 // Ownership reports where this attempt stands with the run.
@@ -438,11 +453,20 @@ func (r *RunRepository) Ownership(ctx context.Context, runID string, attempt int
 		Status      string     `bson:"status"`
 		Attempt     int        `bson:"attempt"`
 		DiscardedAt *time.Time `bson:"discarded_at"`
+		// Pause request (#508). Projected alongside the rest so the
+		// cooperative stop costs no extra read: this probe already runs at
+		// every gate, which is why it is the seam the pause travels through.
+		PauseRequestedAt      *time.Time `bson:"pause_requested_at"`
+		PauseRequestedAttempt int        `bson:"pause_requested_attempt"`
+		PauseDeadlineAt       *time.Time `bson:"pause_deadline_at"`
 	}
 	err = r.col.FindOne(ctx, bson.M{"_id": oid}, options.FindOne().SetProjection(bson.M{
-		"status":       1,
-		"attempt":      1,
-		"discarded_at": 1,
+		"status":                  1,
+		"attempt":                 1,
+		"discarded_at":            1,
+		"pause_requested_at":      1,
+		"pause_requested_attempt": 1,
+		"pause_deadline_at":       1,
 	})).Decode(&doc)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
@@ -462,19 +486,155 @@ func (r *RunRepository) Ownership(ctx context.Context, runID string, attempt int
 	if doc.DiscardedAt != nil {
 		return RunDiscarded, nil
 	}
-	if attempt <= 0 {
-		return RunOwnedByThisAttempt, nil
-	}
 	// A run created before the counter existed reads as 0 and can only be
 	// its first attempt — the same equivalence attemptFilter encodes.
 	current := doc.Attempt
 	if current == 0 {
 		current = 1
 	}
-	if current != attempt {
+	// attempt <= 0 is "the spawner did not say", which owns everything that is
+	// not cancelled — the behaviour before attempts existed.
+	if attempt > 0 && current != attempt {
 		return RunTakenOverByAnotherAttempt, nil
 	}
+	// Ownership is settled by here, so the only question left is whether the
+	// operator has asked this attempt to stop. Checked LAST deliberately:
+	// supersession, cancellation and discard all outrank a pause, because each
+	// of them means the run is not this attempt's to pause.
+	if pauseIsHonourable(doc.PauseRequestedAt, doc.PauseDeadlineAt, doc.PauseRequestedAttempt, current) {
+		return RunPauseRequested, nil
+	}
 	return RunOwnedByThisAttempt, nil
+}
+
+// pauseIsHonourable reports whether a stamped pause request still binds.
+//
+// Three ways it does not. There is no request. It has LAPSED — the deadline is
+// what stops an un-honoured request pausing a run hours later, unattended,
+// long after the operator gave up; a nil deadline means the operator disabled
+// that, so the request stands until something acts on it. Or it names a
+// different attempt, which a resume landing concurrently with the request can
+// produce.
+//
+// Compared against the RUN's current attempt rather than against the agent's
+// own, because by this point the two are equal whenever the agent was told
+// which attempt it is, and when it was not, the run document's is the only
+// answer available.
+//
+// A request with no attempt recorded matches, so a stamp written by an older
+// API build is still honoured rather than silently ignored.
+func pauseIsHonourable(requestedAt, deadlineAt *time.Time, requestedAttempt, currentAttempt int) bool {
+	if requestedAt == nil {
+		return false
+	}
+	if deadlineAt != nil && !time.Now().Before(*deadlineAt) {
+		return false
+	}
+	return requestedAttempt == 0 || requestedAttempt == currentAttempt
+}
+
+// Pause records a cooperative stop: the run leaves `running` for `paused`,
+// which is resumable (issue #508).
+//
+// Written by the AGENT, not the API, because only the agent knows it reached a
+// clean stop with its checkpoint already durable. The API's job ends at
+// stamping the request.
+//
+// Fenced like every other terminal-ish write: this attempt, and a run that is
+// still `running`. So a pause cannot resurrect a cancelled run, cannot
+// overwrite a `completed` one that won the race, and cannot be written by a
+// superseded attempt. Reports whether it applied, so the caller can exit
+// quietly rather than announcing a pause that did not happen.
+//
+// Deliberately does NOT set completed_at: a paused run has not completed, and
+// both GetLatestByProject and the dashboard's elapsed-time calculation read
+// that field. The lifecycle event goes in the SAME update as the status, for
+// the reason the API's FailAttempt gives for doing the same — BeginResume
+// clears the scalar fields on the next resume, so the appended event is the
+// only record of this pause that survives it.
+func (r *RunRepository) Pause(ctx context.Context, runID string, attempt int, reason string, activeMs int64, lastCheckpointStep int, llmProvider, llmModel string) (bool, error) {
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		return false, fmt.Errorf("invalid run ID: %w", err)
+	}
+	now := time.Now()
+	filter := attemptFilter(oid, attempt)
+	filter["status"] = models.RunStatusRunning
+	filter["discarded_at"] = nil
+
+	detail := "Paused by an operator — resume to continue"
+	if reason != "" {
+		detail = reason
+	}
+	update := bson.M{
+		"$set": bson.M{
+			"status":         models.RunStatusPaused,
+			"phase_detail":   detail,
+			"last_paused_at": now,
+			"updated_at":     now,
+		},
+		// The request has been served, so it stops being pending. Left in
+		// place it would describe a stop that already happened, and the
+		// dashboard reads its presence as "pausing".
+		"$unset": bson.M{
+			"pause_requested_at":      "",
+			"pause_requested_attempt": "",
+			"pause_deadline_at":       "",
+		},
+		// Provenance travels with the event, as it does on the terminal ones
+		// recordAttemptOutcome writes. A paused attempt never reaches that
+		// function — it returns before the persistence tail — so without this
+		// the one attempt whose model is MOST likely to differ from its
+		// neighbours' records none: an operator who pauses a run, changes its
+		// model and resumes is exactly the case "which model ran which
+		// attempt" exists to answer.
+		"$push": bson.M{"lifecycle": models.RunLifecycleEvent{
+			Status:      models.RunStatusPaused,
+			At:          now,
+			Reason:      detail,
+			Attempt:     attempt,
+			LLMProvider: llmProvider,
+			LLMModel:    llmModel,
+		}},
+	}
+	// This attempt's compute, booked in the SAME fenced update as the status.
+	//
+	// Not a separate AddActiveTime call afterwards, and the reason is a race
+	// with no safe side to stand on. Booked BEFORE the status write, a pause
+	// that failed to apply leaves the run going and the next seam books the
+	// attempt's whole duration again — AddActiveTime adds
+	// time.Since(attemptStartedAt), not a delta — so active_ms inflates once
+	// per attempted seam. Booked AFTER, the run is already visibly `paused`,
+	// so an operator can resume instantly, bump the attempt, and the
+	// attempt-fenced increment then matches nothing and the whole attempt's
+	// compute is lost from the run's total. One atomic update has neither
+	// window: the pause lands with its time, or neither happens.
+	if activeMs > 0 {
+		update["$inc"] = bson.M{"active_ms": activeMs}
+	}
+	// The resume marker, stamped by the pause itself rather than relied upon
+	// from the per-step write.
+	//
+	// That write is best-effort and, by design, reports success even when it
+	// errors — losing the marker is documented as costing the dashboard's
+	// Resume affordance rather than the run. For a FAILED run that trade is
+	// right. For a paused one it is not: the dashboard gates Resume on this
+	// field, so a Mongo blip on the step that the operator paused at would
+	// leave a perfectly resumable run showing only Cancel, and the only way
+	// back in would be the API. A pause knows exactly how far its replayable
+	// prefix reaches, so it stamps the value itself.
+	//
+	// $max, so it can only ever move forward — it must not walk back a marker
+	// a later step already advanced.
+	if lastCheckpointStep > 0 {
+		update["$max"] = bson.M{"last_checkpoint_step": lastCheckpointStep}
+	}
+
+	res, err := r.col.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount > 0, nil
 }
 
 // AddActiveTime adds this attempt's elapsed compute time to the run's

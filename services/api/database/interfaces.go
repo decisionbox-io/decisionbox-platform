@@ -57,6 +57,12 @@ type RunRepo interface {
 	// attempt. Returns ErrNoResumableRun when the run was not in `failed`
 	// — which is what the losing side of a double-clicked Resume sees.
 	BeginResume(ctx context.Context, runID string) (*models.DiscoveryRun, error)
+	// RequestPause stamps an operator's cooperative-stop request on a live
+	// run and returns the updated document. Returns ErrNoPausableRun when the
+	// run is not active, was discarded, has moved to another attempt, or
+	// already has a pause pending that has not lapsed. The agent reads the
+	// request at its next checkpointed seam and writes `paused` itself.
+	RequestPause(ctx context.Context, runID string, attempt int, deadline time.Time) (*models.DiscoveryRun, error)
 	GetByID(ctx context.Context, runID string) (*models.DiscoveryRun, error)
 	GetLatestByProject(ctx context.Context, projectID string) (*models.DiscoveryRun, error)
 	// Discard takes the attempt the caller read, so a resume racing the

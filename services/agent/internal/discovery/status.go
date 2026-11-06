@@ -70,6 +70,7 @@ type runDocWriter interface {
 	Fail(ctx context.Context, runID, discoveryID, errMsg string, attempt int) (bool, error)
 	Ownership(ctx context.Context, runID string, attempt int) (database.RunOwnership, error)
 	MarkExplorationCheckpoint(ctx context.Context, runID string, step int, attempt int) (bool, error)
+	Pause(ctx context.Context, runID string, attempt int, reason string, activeMs int64, lastCheckpointStep int, llmProvider, llmModel string) (bool, error)
 	AddActiveTime(ctx context.Context, runID string, d time.Duration, attempt int) error
 	AppendLifecycle(ctx context.Context, runID string, ev models.RunLifecycleEvent, attempt int) error
 	IncrementQueryCount(ctx context.Context, runID string, success bool, attempt int) error
@@ -574,7 +575,13 @@ func (s *StatusReporter) classifyUnappliedTerminal(ctx context.Context, what str
 		return terminalUnknown
 	}
 	switch standing {
-	case database.RunOwnedByThisAttempt:
+	// A pause REQUEST does not take the run away from this attempt, so it
+	// belongs in the still-ours arm. Left to fall through to the default it
+	// would read as supersession, and the default arm's caller DELETES this
+	// attempt's result — a complete discovery destroyed because somebody
+	// clicked Pause while the terminal write was in flight. See
+	// database.RunPauseRequested.
+	case database.RunOwnedByThisAttempt, database.RunPauseRequested:
 		// Still ours, so there is no newer attempt to defer to and nothing
 		// to retire. The run document is already terminal — our own outcome
 		// is the one that did not get recorded, which is worth saying
@@ -655,6 +662,58 @@ func (s *StatusReporter) MarkExplorationCheckpoint(ctx context.Context, step int
 	return applied
 }
 
+// runStanding is what one ownership read tells a gate: carry on, stop because
+// the operator asked for a cooperative pause, or stop because the run is no
+// longer this attempt's.
+//
+// Three values rather than a bool because a pause and a loss of ownership
+// demand opposite endings — a pause writes `paused` and exits 0, a loss exits
+// quietly claiming nothing — and because the gates PAST the pause window must
+// treat a pause request as "carry on". One read answers all of it, so the
+// cooperative stop adds no Mongo round-trip to a path that already runs at
+// every phase boundary.
+type runStanding int
+
+const (
+	// standingCarryOn: the run is this attempt's and nobody has asked it to
+	// stop.
+	standingCarryOn runStanding = iota
+	// standingPauseRequested: still this attempt's, and an operator has asked
+	// for a cooperative stop. Only the gates that can stop at a clean
+	// checkpoint act on it; see Orchestrator.stopBefore.
+	standingPauseRequested
+	// standingLost: cancelled, discarded, or taken over by a newer attempt.
+	standingLost
+)
+
+// Standing reports where this attempt stands with the run, in one read.
+//
+// Fails OPEN, like the OwnsRun it replaces: a read that could not complete
+// answers standingCarryOn. That asymmetry is deliberate and now covers two
+// things. A Mongo blip must not abort a run that is working — the cost of a
+// wasted phase is money, the cost of a wrong abort is a discovery paid for
+// twice. And it must not pause a run either: a pause the operator did not get
+// is a button they press again, while a pause invented out of a failed read is
+// a run that stops for no reason the operator can see.
+func (s *StatusReporter) Standing(ctx context.Context) runStanding {
+	if !s.enabled() {
+		return standingCarryOn
+	}
+	standing, err := s.repo.Ownership(ctx, s.runID, s.attempt)
+	if err != nil {
+		logger.WithError(err).Warn("could not confirm this attempt still owns the run")
+		return standingCarryOn
+	}
+	switch standing {
+	case database.RunPauseRequested:
+		return standingPauseRequested
+	case database.RunOwnedByThisAttempt:
+		return standingCarryOn
+	default:
+		return standingLost
+	}
+}
+
 // OwnsRun reports whether this attempt may still do work on the run.
 //
 // False for a run that was CANCELLED as well as one taken over by a newer
@@ -662,18 +721,44 @@ func (s *StatusReporter) MarkExplorationCheckpoint(ctx context.Context, step int
 // phase", and the answer for a cancelled run is no — the attempt number is
 // untouched by a cancel, so an attempt-only comparison used to say yes and
 // let a killed run's agent spend its whole remaining budget.
+//
+// A pause REQUEST answers true. It is not a loss of ownership: the run is
+// still this attempt's, and the gates that cannot stop at a clean checkpoint
+// must carry it to one that can. Reading it as false here would abort a
+// healthy run as superseded the moment anyone clicked Pause.
 func (s *StatusReporter) OwnsRun(ctx context.Context) bool {
+	return s.Standing(ctx) != standingLost
+}
+
+// Pause records the cooperative stop: `running` → `paused`, resumable.
+//
+// Reports whether the write applied. It does not when the run moved on while
+// this attempt was finishing its step — cancelled, swept to `failed`, or taken
+// over — and the caller must then exit quietly rather than announcing a pause
+// that never happened.
+// Reports applied-ness and the error SEPARATELY, because the two demand
+// opposite endings and collapsing them strands runs. A write that did not
+// apply means the run moved on — cancelled, swept to `failed`, taken over —
+// and the attempt should exit quietly. A write that ERRORED means nothing was
+// recorded, so exiting quietly would leave the run `running` with no agent
+// behind it and a zero exit status the runner reports nothing for: a zombie
+// until the next API restart. The caller turns that one into a failed run,
+// which is honest and still resumable.
+// active is this attempt's compute, booked in the same fenced update as the
+// status rather than by a separate AddActiveTime call — see
+// RunRepository.Pause for the race that leaves no safe side otherwise.
+func (s *StatusReporter) Pause(ctx context.Context, reason string, active time.Duration, lastCheckpointStep int, llmProvider, llmModel string) (bool, error) {
 	if !s.enabled() {
-		return true
+		// No run document, so nothing to pause and nothing to record. The
+		// agent is being run without the API; there is no operator to have
+		// asked.
+		return false, nil
 	}
-	standing, err := s.repo.Ownership(ctx, s.runID, s.attempt)
+	applied, err := s.repo.Pause(ctx, s.runID, s.attempt, reason, active.Milliseconds(), lastCheckpointStep, llmProvider, llmModel)
 	if err != nil {
-		// Same reasoning as above: a failed read is not evidence of being
-		// superseded.
-		logger.WithError(err).Warn("could not confirm this attempt still owns the run")
-		return true
+		return false, err
 	}
-	return standing == database.RunOwnedByThisAttempt
+	return applied, nil
 }
 
 // AddActiveTime adds one attempt's elapsed compute time to the run's

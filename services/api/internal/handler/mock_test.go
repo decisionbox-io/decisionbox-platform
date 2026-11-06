@@ -375,7 +375,7 @@ type mockRunRepo struct {
 	getRunningCalls    int
 	failErr            error
 	cancelErr          error
-	discardErr  error
+	discardErr         error
 
 	// Resume-path state. createdParams records what Create was handed, so a
 	// test can assert the run's own parameters were persisted; beginResume*
@@ -383,6 +383,13 @@ type mockRunRepo struct {
 	createdParams   []models.RunParams
 	beginResumeErr  error
 	beginResumeRuns []string
+	// requestPauseErr forces RequestPause to fail, so the handler's 500 path
+	// can be exercised separately from its ErrNoPausableRun 409.
+	requestPauseErr error
+	// requestPauseCalls records (runID, attempt, deadline) per call, so a test
+	// can assert the attempt the handler fenced on and whether a deadline was
+	// stamped at all.
+	requestPauseCalls []pauseCall
 	// onBeginResume fires inside BeginResume, after the flip — the hook a
 	// test uses to make a competing run appear in the window the pre-check
 	// cannot see.
@@ -427,9 +434,9 @@ func (m *mockRunRepo) Create(_ context.Context, projectID string, params models.
 	return id, nil
 }
 
-// BeginResume mirrors the repository's atomic semantics: only a `failed` run
-// flips, so a second concurrent call sees a running run and is refused —
-// which is the behaviour the double-click test exercises.
+// BeginResume mirrors the repository's atomic semantics: only a `failed` or
+// `paused` run flips, so a second concurrent call sees a running run and is
+// refused — which is the behaviour the double-click test exercises.
 func (m *mockRunRepo) BeginResume(_ context.Context, runID string) (*models.DiscoveryRun, error) {
 	if m.beginResumeErr != nil {
 		return nil, m.beginResumeErr
@@ -437,7 +444,7 @@ func (m *mockRunRepo) BeginResume(_ context.Context, runID string) (*models.Disc
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	run, ok := m.runs[runID]
-	if !ok || run.Status != "failed" {
+	if !ok || (run.Status != "failed" && run.Status != models.RunStatusPaused) {
 		return nil, database.ErrNoResumableRun
 	}
 	m.beginResumeRuns = append(m.beginResumeRuns, runID)
@@ -449,11 +456,86 @@ func (m *mockRunRepo) BeginResume(_ context.Context, runID string) (*models.Disc
 	now := time.Now()
 	run.LastResumedAt = &now
 	run.Error = ""
+	// Cleared like the repository does: a request stamped against the previous
+	// attempt must not stop the one this flip starts.
+	run.PauseRequestedAt = nil
+	run.PauseRequestedAttempt = 0
+	run.PauseDeadlineAt = nil
 	run.UpdatedAt = now
 	copied := *run
 	if m.onBeginResume != nil {
 		m.onBeginResume()
 	}
+	return &copied, nil
+}
+
+// requestPauseCallsSafe reads the recorded RequestPause calls under the lock,
+// so a test cannot race the handler's own goroutines. On the fixture rather
+// than the repo because every pause test reaches it through the fixture.
+func (f *resumeFixture) requestPauseCallsSafe() []pauseCall {
+	f.runs.mu.Lock()
+	defer f.runs.mu.Unlock()
+	out := make([]pauseCall, len(f.runs.requestPauseCalls))
+	copy(out, f.runs.requestPauseCalls)
+	return out
+}
+
+// pauseCall is one recorded RequestPause invocation.
+type pauseCall struct {
+	RunID    string
+	Attempt  int
+	Deadline time.Time
+}
+
+// RequestPause mirrors the repository's filter: only an active, non-discarded
+// run on the caller's attempt accepts a request, and only when none is already
+// pending that has not lapsed. A test that wants the duplicate-request 409
+// simply calls twice.
+func (m *mockRunRepo) RequestPause(_ context.Context, runID string, attempt int, deadline time.Time) (*models.DiscoveryRun, error) {
+	if m.requestPauseErr != nil {
+		return nil, m.requestPauseErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	run, ok := m.runs[runID]
+	if !ok || run.DiscardedAt != nil {
+		return nil, database.ErrNoPausableRun
+	}
+	if run.Status != "running" && run.Status != "pending" {
+		return nil, database.ErrNoPausableRun
+	}
+	// The attempt fence, with the same legacy equivalence attemptFence
+	// encodes: 0, 1 and "absent" are all the run nobody has resumed.
+	current := run.Attempt
+	if current == 0 {
+		current = 1
+	}
+	asked := attempt
+	if asked == 0 {
+		asked = 1
+	}
+	if current != asked {
+		return nil, database.ErrNoPausableRun
+	}
+	// A pending request that has not lapsed refuses a second one.
+	if run.PauseRequestedAt != nil {
+		lapsed := run.PauseDeadlineAt != nil && !time.Now().Before(*run.PauseDeadlineAt)
+		if !lapsed {
+			return nil, database.ErrNoPausableRun
+		}
+	}
+	m.requestPauseCalls = append(m.requestPauseCalls, pauseCall{RunID: runID, Attempt: attempt, Deadline: deadline})
+	now := time.Now()
+	run.PauseRequestedAt = &now
+	run.PauseRequestedAttempt = attempt
+	if deadline.IsZero() {
+		run.PauseDeadlineAt = nil
+	} else {
+		d := deadline
+		run.PauseDeadlineAt = &d
+	}
+	run.UpdatedAt = now
+	copied := *run
 	return &copied, nil
 }
 

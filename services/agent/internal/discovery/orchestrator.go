@@ -225,6 +225,45 @@ type Orchestrator struct {
 	// on; see database.DiscoveryAnalysisCheckpointRepository.LoadAreas.
 	explorationSummaryAttempt int
 
+	// contiguousCheckpointThrough is the highest exploration step this run has
+	// an UNBROKEN run of checkpoints up to, counting from step 1.
+	//
+	// Not the same question as keepStepIndex, which an earlier version of the
+	// pause gate confused it with. keepStepIndex is "is there anything worth
+	// keeping an index for", true of any single saved row; this is "could a
+	// resume actually replay something", which needs the rows to be
+	// CONTIGUOUS — LoadPrefix stops at the first gap, so a run whose step-1
+	// write failed and whose step-2 write landed has a row and no replayable
+	// prefix at all. Pausing such a run would strand it: `paused` with a
+	// resume the API then refuses.
+	//
+	// Seeded from the replayable prefix a resumed run starts with, and
+	// advanced only by a checkpoint write that landed for the very next step.
+	contiguousCheckpointThrough int
+
+	// checkpointGapSeen records that a checkpoint write failed and left a
+	// HOLE in this run's step sequence.
+	//
+	// Separate from the counter because the counter alone says too little. A
+	// run whose step-2 write failed still has a contiguous prefix of one, so
+	// "is the prefix non-empty" approves a pause — and LoadPrefix then
+	// truncates at the hole, so the resume throws away every step after it
+	// and pays the warehouse and the model for them again. That is a LOSSY
+	// pause, which is a different failure from the unresumable one the
+	// counter guards, and it breaks the same promise: no re-paid exploration.
+	//
+	// So a gap disqualifies a pause for the rest of the attempt. It does not
+	// heal — nothing backfills a missed step — and the honest outcome is that
+	// the request lapses at its deadline and the operator is told, rather
+	// than a stop that silently discards work.
+	checkpointGapSeen bool
+
+	// attemptStartedAt is when THIS attempt's compute began. Held on the
+	// orchestrator because a cooperative pause books the attempt's active time
+	// from a seam deep inside the pipeline, where RunDiscovery's own startTime
+	// local is out of reach. Set once, at the top of RunDiscovery.
+	attemptStartedAt time.Time
+
 	// resume is the previous attempts' state when this run is a resume, nil
 	// otherwise. Every read goes through the nil-safe helpers in
 	// orchestrator_resume.go, so a normal run takes exactly today's path.
@@ -885,6 +924,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	if o.resume.prefixLen() > 0 || o.resume.explorationComplete() {
 		o.keepStepIndex = true
 	}
+	// A resumed run's replayable prefix is contiguous by construction —
+	// LoadPrefix only ever returns 1..N with no gap — so it is where this
+	// attempt's own contiguity continues from.
+	o.contiguousCheckpointThrough = o.resume.prefixLen()
 
 	applog.WithFields(applog.Fields{
 		"project_id":           o.projectID,
@@ -902,6 +945,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	}
 
 	startTime := time.Now()
+	// Same instant, reachable from the pause seams deep in the pipeline — see
+	// Orchestrator.attemptStartedAt.
+	o.attemptStartedAt = startTime
 
 	// Get prompts from project configuration (fully seeded at project creation)
 	prompts, analysisAreas := o.resolvePrompts()
@@ -1337,8 +1383,13 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// Unlike the per-write gates declined above, one check fully covers this
 	// one: the drop happens once, at a known point, so there is no window
 	// left behind it.
-	if o.ownershipLost(ctx, "rebuilding the step index") {
-		return nil, ai.ErrAttemptSuperseded
+	//
+	// stopBefore rather than ownershipLost, because this boundary can also
+	// honour a cooperative pause: on a resume everything behind it is already
+	// checkpointed, so stopping here spends nothing. On a fresh run there is
+	// no resume point yet and the gate carries on — see stopBefore.
+	if err := o.stopBefore(ctx, "rebuilding the step index"); err != nil {
+		return nil, err
 	}
 	o.rebuildStepIndexForResume(ctx)
 
@@ -1404,6 +1455,25 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			if errors.Is(err, ai.ErrAttemptSuperseded) {
 				return nil, err
 			}
+			// A cooperative pause is not a failure either, and THIS is where
+			// the status write happens — the engine only signals.
+			//
+			// Here rather than in the hook that discovered it, because the
+			// engine goes on to record the interrupted step's counters and
+			// live-feed row, and that recording writes progress through
+			// UpdateStatus, whose filter excludes only a cancelled run. A
+			// pause written inside the hook would therefore be overwritten
+			// with `running` by the very next line of the engine's own
+			// iteration, leaving a run nobody is working on looking live. By
+			// the time Explore has returned, nothing further will write.
+			//
+			// Returning before the persistence tail is the other half: a
+			// paused run saves no discovery, so there is nothing for a later
+			// resume to retire, and its checkpoints survive because
+			// discardCheckpoints only runs on a claimed terminal success.
+			if errors.Is(err, ai.ErrPauseRequested) {
+				return nil, o.pauseAttempt(ctx, o.pauseDetailFor(explorationResult))
+			}
 			return nil, fmt.Errorf("exploration failed: %w", err)
 		}
 		// Record that exploration is done BEFORE analysis starts. A run
@@ -1462,8 +1532,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	}
 
 	applog.Info("Phase 4: Running analysis by area")
-	if o.ownershipLost(ctx, "analysis") {
-		return nil, ai.ErrAttemptSuperseded
+	// The last free pause point today: exploration's summary is checkpointed
+	// by now, so a run paused here resumes straight into analysis without a
+	// single warehouse query. Past this the per-area work is not yet durable,
+	// so the gates below stay ownershipLost — see stopBefore.
+	if err := o.stopBefore(ctx, "analysis"); err != nil {
+		return nil, err
 	}
 	// The areas a previous attempt already finished, narrowed to the ones
 	// THIS run is going to restore. Empty on every run that is not a resume,
@@ -1730,16 +1804,28 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// below, which is v1's checkpoint-before-shared-writes ordering: an
 		// attempt that has lost the run stops here rather than writing rows
 		// on the owner's behalf.
+		// A pause signalled here is taken at the END of this iteration, after
+		// the feed rows below — the same split the exploration seam uses, so
+		// the paused attempt's log is not missing the area it stopped after.
+		// Anything else stops now: a superseded attempt must not write rows
+		// that are keyed on run_id alone.
 		//
 		// The area's spend is the fresh checks plus whatever its draft had
 		// already paid for: the run counter arrived with the draft's markers
 		// already in it, so the delta alone would under-report what this area
 		// took out of the cap and a later attempt would hand the areas it
 		// still has to run a budget that is too generous.
+		//
+		// Both returns are load-bearing and they answer different questions:
+		// `checkpointed` says whether a row is on disk, which decides the
+		// draft discard below; `stopAfterThisArea` carries either a real
+		// failure to stop on now or the pause to take at the end of this
+		// iteration. A pause comes back with checkpointed == true, because the
+		// row landed before the pause was signalled.
 		areaSpend := insightsValidatedThisRun - validatedBefore + len(draftVerdicts)
-		checkpointed, err := o.checkpointAnalysisArea(ctx, step, areaSpend)
-		if err != nil {
-			return nil, err
+		checkpointed, stopAfterThisArea := o.checkpointAnalysisArea(ctx, step, areaSpend)
+		if stopAfterThisArea != nil && !errors.Is(stopAfterThisArea, ai.ErrPauseRequested) {
+			return nil, stopAfterThisArea
 		}
 
 		// The area's checkpoint now describes this work with its validation
@@ -1770,6 +1856,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			"area":     area.ID,
 			"insights": len(insights),
 		}).Info("Analysis complete for area")
+
+		// The area is recorded everywhere it needs to be, so the operator's
+		// pause can be taken. Performed here rather than in the hook for the
+		// reason the exploration path gives: the status write goes last,
+		// once nothing else will write.
+		if stopAfterThisArea != nil {
+			return nil, o.pauseAttempt(ctx, "Paused after analysing "+area.ID+" — resume to continue")
+		}
 	}
 
 	// Check for analysis failures

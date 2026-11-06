@@ -87,6 +87,52 @@ type DiscoveryRun struct {
 	// Lifecycle is the append-only transition log. See RunLifecycleEvent.
 	Lifecycle []RunLifecycleEvent `bson:"lifecycle,omitempty" json:"lifecycle,omitempty"`
 
+	// --- Operator pause (issue #508) ---------------------------------------
+	//
+	// The cooperative stop travels through this document rather than through a
+	// signal: the agent already reads its own run at every phase boundary (see
+	// database.RunRepository.Ownership), so that read is the seam. The API
+	// stamps the request, the agent honours it at its next seam where a
+	// checkpoint has just landed, writes `paused` and exits cleanly.
+	//
+	// All omitempty and additive, like the resume fields above.
+
+	// PauseRequestedAt is when an operator asked for a cooperative stop. Its
+	// presence IS the signal; the agent polls for it.
+	//
+	// Deliberately not a status: while the run drains, an agent is alive and
+	// querying the warehouse, so every predicate that means "this run is
+	// active" has to keep saying yes. A `pausing` status would have to be
+	// added to each of them, and each miss would be two agents on one project.
+	PauseRequestedAt *time.Time `bson:"pause_requested_at,omitempty" json:"pause_requested_at,omitempty"`
+
+	// PauseRequestedAttempt is the attempt the request was made against, so a
+	// request aimed at one attempt cannot stop the next. BeginResume clears
+	// the request outright, which makes this belt-and-braces — but the fence
+	// is what covers a request landing concurrently with a resume, and v1's
+	// whole lesson is that attempt fences are not optional.
+	PauseRequestedAttempt int `bson:"pause_requested_attempt,omitempty" json:"-"`
+
+	// PauseDeadlineAt is when an unhonoured request LAPSES. Past it the agent
+	// ignores the request entirely.
+	//
+	// Written as an absolute instant by the API rather than derived agent-side
+	// from a duration, so the drain timeout has a single reader and the two
+	// services cannot disagree about it the way DISCOVERY_MAX_DURATION and
+	// AGENT_JOB_TIMEOUT_HOURS can — and so the dashboard can render the lapse.
+	//
+	// The lapse is the mechanism, not a tidy-up: an un-expiring request would
+	// let a run pause hours later, unattended, long after the operator had
+	// given up and walked away. Nil means no deadline (the operator disabled
+	// it), in which case the request is honoured whenever the agent next
+	// reaches a seam.
+	PauseDeadlineAt *time.Time `bson:"pause_deadline_at,omitempty" json:"pause_deadline_at,omitempty"`
+
+	// LastPausedAt is when the run actually entered `paused` — as opposed to
+	// when the pause was asked for. Written by the agent with the status flip,
+	// and kept across a later resume, because it is history.
+	LastPausedAt *time.Time `bson:"last_paused_at,omitempty" json:"last_paused_at,omitempty"`
+
 	// --- The run's own parameters ------------------------------------------
 	//
 	// Persisted because nothing recorded them before: the run document knew
@@ -146,7 +192,7 @@ type DiscoveryRun struct {
 // a run automatically.
 type RunLifecycleEvent struct {
 	// Status is the status the run entered: pending, running, completed,
-	// failed or cancelled.
+	// failed, cancelled or paused.
 	Status string    `bson:"status" json:"status"`
 	At     time.Time `bson:"at" json:"at"`
 	// Reason is free text explaining the transition (the failure message, or
@@ -225,4 +271,14 @@ const (
 	// the agent has to recognise it, because a cancellation outranks
 	// anything the agent goes on to conclude.
 	RunStatusCancelled = "cancelled"
+	// RunStatusPaused is a run an operator stopped cooperatively. Written by
+	// the AGENT, because only it knows it reached a clean stop with its
+	// checkpoint written.
+	//
+	// Non-terminal and resumable: it is deliberately absent from every
+	// {completed, failed, cancelled} list, so completion hooks do not fire
+	// and the plan reservation is not closed — the run's outcome is still to
+	// come. It is equally absent from every {pending, running} list, so it
+	// does not count as active and is not swept. See issue #508.
+	RunStatusPaused = "paused"
 )

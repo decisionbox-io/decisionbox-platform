@@ -974,6 +974,10 @@ func TestOwnershipLost_GatesSpendOnPositiveEvidence(t *testing.T) {
 // retireOwnResult cannot undo. That write now happens in the terminal
 // section where ownership is DECIDED — see
 // TestProjectLearning_OnlyRecordedWhenTheResultSurvives.
+//
+// Since #508 the gates come in two kinds and this test pins which is which,
+// because the choice decides where an operator can pause a run — see the
+// comments inside.
 func TestOwnershipGates_CoverEverySpendAndSideEffectAfterExploration(t *testing.T) {
 	// Two files, because the Phase 4 loop's analysis half lives in
 	// analysis_area.go: the loop has to choose between running it and
@@ -987,9 +991,32 @@ func TestOwnershipGates_CoverEverySpendAndSideEffectAfterExploration(t *testing.
 		}
 		src = append(src, b...)
 	}
+	// Two helpers, and which one a seam uses is itself the thing being pinned.
+	// Both stop a superseded attempt identically; stopBefore ALSO honours an
+	// operator's cooperative pause, and it may only be used where a pause is
+	// free — a seam with a checkpoint right behind it. Swapping one for the
+	// other silently changes where a run can be paused, so each list is
+	// asserted separately rather than as "is gated somehow".
+	//
+	// pausable: everything behind these is durable. The step-index rebuild runs
+	// pre-exploration on a resume, and the analysis entry sits just after the
+	// exploration summary is checkpointed, so a run paused at either resumes
+	// having re-paid nothing.
 	for _, want := range []string{
-		`o.ownershipLost(ctx, "rebuilding the step index")`,
-		`o.ownershipLost(ctx, "analysis")`,
+		`o.stopBefore(ctx, "rebuilding the step index")`,
+		`o.stopBefore(ctx, "analysis")`,
+	} {
+		if !strings.Contains(string(src), want) {
+			t.Errorf("missing pausable gate: %s", want)
+		}
+	}
+	// not pausable: the gates that sit MID-area, and everything after the last
+	// area. A pause at one of these would discard work this attempt has done
+	// and not checkpointed — and the per-area seam a few lines later is the
+	// free point, which is also the only one that catches the LAST area
+	// (there is no next iteration after it). The persist tail is outside the
+	// pause window permanently: it owes durability for work already done.
+	for _, want := range []string{
 		`o.ownershipLost(ctx, "analysis area "+area.ID)`,
 		`o.ownershipLost(ctx, "validating area "+area.ID)`,
 		`o.ownershipLost(ctx, "recommendations")`,
@@ -998,6 +1025,30 @@ func TestOwnershipGates_CoverEverySpendAndSideEffectAfterExploration(t *testing.
 		if !strings.Contains(string(src), want) {
 			t.Errorf("missing ownership gate: %s", want)
 		}
+	}
+	// And the converse, which is the half a "does it contain" test would miss:
+	// no seam past the pause window may have become pausable. Without this the
+	// test would pass if someone converted the save gate to stopBefore, which
+	// is precisely the change that would let a pause discard a finished
+	// analysis.
+	for _, forbidden := range []string{
+		`o.stopBefore(ctx, "analysis area "+area.ID)`,
+		`o.stopBefore(ctx, "validating area "+area.ID)`,
+		`o.stopBefore(ctx, "recommendations")`,
+		`o.stopBefore(ctx, "saving the result")`,
+	} {
+		if strings.Contains(string(src), forbidden) {
+			t.Errorf("gate past the pause window became pausable: %s — a pause there discards this attempt's unsaved analysis", forbidden)
+		}
+	}
+	// And the per-area CHECKPOINT seam is where the analysis pause actually
+	// lives, so the call that reaches it has to still be there. Asserted here
+	// rather than only in analysis_resume.go's own tests because this is the
+	// file that decides the pause window, and a seam silently dropped from the
+	// loop would leave a mid-analysis Pause accepted by the API and honoured
+	// by nothing.
+	if !strings.Contains(string(src), "o.checkpointAnalysisArea(ctx, step,") {
+		t.Error("the per-area checkpoint call is gone from the analysis loop; a mid-analysis pause would never be honoured")
 	}
 }
 

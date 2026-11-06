@@ -1126,3 +1126,164 @@ func TestReplay_AFailingFenceDoesNotAbandonTheReplay(t *testing.T) {
 		t.Errorf("TotalSteps = %d, want 3 (2 replayed + the completion)", res.TotalSteps)
 	}
 }
+
+// TestPauseStopsTheRunAfterTheStepIsCheckpointed is the acceptance criterion
+// at the engine level: a pause finishes the step in flight, keeps its
+// checkpoint, and stops — it does not abandon the step it interrupted.
+//
+// Expressed through the hook because that is where the ordering lives: the
+// orchestrator's PersistStep probes for a pause BEFORE it writes (a superseded
+// attempt must be stopped before it splices a row into the prefix) and returns
+// ErrPauseRequested only AFTER. So by the time the engine sees the signal, the
+// row is durable, and the engine's job is simply not to lose what the step
+// produced on its way out.
+func TestPauseStopsTheRunAfterTheStepIsCheckpointed(t *testing.T) {
+	h := newResumeHarness(t, ExplorationEngineOptions{MaxSteps: 10},
+		`{"thinking": "one", "query": "SELECT 1 FROM ds.t"}`,
+		`{"thinking": "two", "query": "SELECT 2 FROM ds.t"}`,
+		`{"done": true, "summary": "done"}`,
+	)
+	// The operator clicks Pause while step 2 is in flight. The hook writes
+	// step 2's row and then reports the pause, exactly as checkpointStep does.
+	var persisted []int
+	h.engine.persistStep = func(_ context.Context, step models.ExplorationStep, _ models.CheckpointArgs) error {
+		persisted = append(persisted, step.Step)
+		if step.Step == 2 {
+			return ErrPauseRequested
+		}
+		return nil
+	}
+
+	res, err := h.engine.Explore(context.Background(), ExplorationContext{
+		ProjectID: "proj", Dataset: "ds", InitialPrompt: "Explore.",
+	})
+	if !errors.Is(err, ErrPauseRequested) {
+		t.Fatalf("Explore err = %v, want ErrPauseRequested", err)
+	}
+	if !errors.Is(res.Error, ErrPauseRequested) {
+		t.Errorf("result.Error = %v, want ErrPauseRequested", res.Error)
+	}
+	if res.Completed {
+		t.Error("a paused run must not report itself completed — its outcome is still to come")
+	}
+	// The interrupted step WAS executed and WAS checkpointed. That is what
+	// makes the pause free: the resume re-enters at step 3.
+	if len(persisted) != 2 || persisted[1] != 2 {
+		t.Fatalf("persisted steps = %v, want [1 2]: the step the operator interrupted must be checkpointed before the run stops", persisted)
+	}
+	// And it stopped there rather than running on to the cap.
+	if len(h.llm.Calls) != 2 {
+		t.Errorf("LLM calls = %d, want 2 — the run kept spending after the pause", len(h.llm.Calls))
+	}
+	// The interrupted step is in the RESULT and was reported through onStep.
+	// Both matter, and the second is the one a pause could silently lose: the
+	// onStep hook is where the step's query and schema-action counters are
+	// recorded, and resume replays rows WITHOUT re-incrementing them — so a
+	// step skipped here is missing from the run's totals for good. Reported by
+	// a Codex review round.
+	if res.TotalSteps != 2 || len(res.Steps) != 2 {
+		t.Errorf("TotalSteps = %d, Steps = %d, want 2 and 2 — the interrupted step is part of the run", res.TotalSteps, len(res.Steps))
+	}
+	if len(h.onSteps) != 2 || h.onSteps[1] != 2 {
+		t.Errorf("onStep calls = %v, want [1 2] — step 2's counters were never recorded", h.onSteps)
+	}
+}
+
+// TestPauseDuringReplayStopsWithoutExploring pins the cheapest pause there is.
+//
+// The rows being replayed were written by the attempt that earned them and are
+// deliberately left untouched, so a pause mid-replay costs nothing at all: the
+// next resume replays the same prefix. What it must not do is make a single
+// LLM call or warehouse query on the way out.
+func TestPauseDuringReplayStopsWithoutExploring(t *testing.T) {
+	h := newResumeHarness(t, ExplorationEngineOptions{
+		MaxSteps: 10,
+		Resume: &ResumeState{Steps: []models.ExplorationCheckpoint{
+			queryStep(1, 3, rows(3)), queryStep(2, 3, rows(3)),
+		}},
+	}, `{"done": true, "summary": "done"}`)
+	h.fenceErr = map[int]error{2: ErrPauseRequested}
+
+	res, err := h.engine.Explore(context.Background(), ExplorationContext{
+		ProjectID: "proj", Dataset: "ds", InitialPrompt: "Explore.",
+	})
+	if !errors.Is(err, ErrPauseRequested) {
+		t.Fatalf("Explore err = %v, want ErrPauseRequested", err)
+	}
+	if res.Completed {
+		t.Error("a paused run must not report itself completed")
+	}
+	if len(h.llm.Calls) != 0 {
+		t.Errorf("LLM calls = %d, want 0 — a pause during replay must spend nothing", len(h.llm.Calls))
+	}
+	if h.warehouseQueries() != 0 {
+		t.Errorf("warehouse queries = %d, want 0", h.warehouseQueries())
+	}
+}
+
+// TestPauseOnARejectedCompletionIsCheckpointedToo covers the other seam that
+// writes a checkpoint: a premature "done" the stopping rule rejects.
+//
+// That rejection is recorded as a step, because skipping it would renumber
+// every later step on a resumed run. So it is a checkpoint seam like any
+// other, and a pause landing on it has to behave identically — otherwise a
+// run paused at exactly that moment would resume with a renumbered prefix.
+func TestPauseOnARejectedCompletionIsCheckpointedToo(t *testing.T) {
+	// MinSteps above the step the model declares done at, so the completion
+	// is rejected and recorded.
+	h := newResumeHarness(t, ExplorationEngineOptions{MaxSteps: 10, MinSteps: 5},
+		`{"done": true, "summary": "too early"}`,
+		`{"done": true, "summary": "still too early"}`,
+	)
+	var persisted []models.ExplorationStep
+	h.engine.persistStep = func(_ context.Context, step models.ExplorationStep, _ models.CheckpointArgs) error {
+		persisted = append(persisted, step)
+		return ErrPauseRequested
+	}
+
+	_, err := h.engine.Explore(context.Background(), ExplorationContext{
+		ProjectID: "proj", Dataset: "ds", InitialPrompt: "Explore.",
+	})
+	if !errors.Is(err, ErrPauseRequested) {
+		t.Fatalf("Explore err = %v, want ErrPauseRequested", err)
+	}
+	if len(persisted) != 1 {
+		t.Fatalf("persisted %d steps, want 1", len(persisted))
+	}
+	if persisted[0].Action != "complete_rejected" {
+		t.Errorf("checkpointed action = %q, want complete_rejected — the rejection must be recorded or a resume renumbers every later step", persisted[0].Action)
+	}
+	// Reported through onStep before the pause, like an executed step.
+	if len(h.onSteps) != 1 {
+		t.Errorf("onStep calls = %v, want one for the rejected step", h.onSteps)
+	}
+}
+
+// TestSupersessionOutranksAPauseAtTheSameSeam pins the precedence where it is
+// cheapest to get wrong.
+//
+// Both arrive through the same hook. If a pause won, a superseded attempt
+// would write `paused` onto a run the LIVE attempt is working on — taking a
+// healthy run out of `running` from a process that no longer owns it.
+func TestSupersessionOutranksAPauseAtTheSameSeam(t *testing.T) {
+	h := newResumeHarness(t, ExplorationEngineOptions{MaxSteps: 10},
+		`{"thinking": "one", "query": "SELECT 1 FROM ds.t"}`,
+		`{"done": true, "summary": "done"}`,
+	)
+	h.engine.persistStep = func(context.Context, models.ExplorationStep, models.CheckpointArgs) error {
+		// The orchestrator's hook returns only one of these; this asserts the
+		// engine propagates whichever it is told, verbatim, rather than
+		// normalising both to a single "stop".
+		return ErrAttemptSuperseded
+	}
+
+	_, err := h.engine.Explore(context.Background(), ExplorationContext{
+		ProjectID: "proj", Dataset: "ds", InitialPrompt: "Explore.",
+	})
+	if !errors.Is(err, ErrAttemptSuperseded) {
+		t.Fatalf("Explore err = %v, want ErrAttemptSuperseded", err)
+	}
+	if errors.Is(err, ErrPauseRequested) {
+		t.Error("supersession was reported as a pause; the agent would write `paused` onto a run it does not own")
+	}
+}

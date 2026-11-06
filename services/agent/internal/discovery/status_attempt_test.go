@@ -28,6 +28,28 @@ type fakeRunDoc struct {
 	cancelled bool
 	ownsErr   error
 	applied   bool
+	// pauseRequested is an operator's cooperative-stop request standing
+	// against this attempt. It does NOT make Ownership report a loss — that
+	// distinction is what the gates rest on.
+	pauseRequested bool
+	// pauseApplied is what the Pause write reports; false is a run that moved
+	// on while the attempt was finishing its step. pauseErr fails the write
+	// outright, which must become a failed run rather than a silent exit.
+	pauseApplied bool
+	pauseErr     error
+	// pauses records the reason of each Pause write attempted, and
+	// pauseActiveMs the compute booked with it — booked in the SAME update as
+	// the status, so there is no window for a resume to orphan it.
+	pauses        []string
+	pauseActiveMs []int64
+	// pauseProvenance records the provider/model each pause event carried.
+	// A paused attempt never reaches recordAttemptOutcome, so this event is
+	// the only place its model is recorded.
+	pauseProvenance []string
+	// pauseMarkers records the last_checkpoint_step each pause stamped. The
+	// pause stamps it itself because the per-step marker write is
+	// best-effort and reports success even when it errors.
+	pauseMarkers []int
 	// writeErr fails every write, which is how a Mongo hiccup reaches the
 	// reporter. None of them may take the run down with them.
 	writeErr error
@@ -38,7 +60,9 @@ type fakeRunDoc struct {
 	attempts []int
 }
 
-func newFakeRunDoc() *fakeRunDoc { return &fakeRunDoc{owns: true, applied: true} }
+func newFakeRunDoc() *fakeRunDoc {
+	return &fakeRunDoc{owns: true, applied: true, pauseApplied: true}
+}
 
 func (f *fakeRunDoc) UpdateStatus(_ context.Context, _ string, status, _, _ string, _ int, attempt int) error {
 	f.statuses = append(f.statuses, status)
@@ -75,7 +99,24 @@ func (f *fakeRunDoc) Ownership(_ context.Context, _ string, attempt int) (databa
 	if !f.owns {
 		return database.RunTakenOverByAnotherAttempt, nil
 	}
+	// Checked last, mirroring the repository: supersession and cancellation
+	// outrank a pause request, because each means the run is not this
+	// attempt's to pause.
+	if f.pauseRequested {
+		return database.RunPauseRequested, nil
+	}
 	return database.RunOwnedByThisAttempt, nil
+}
+func (f *fakeRunDoc) Pause(_ context.Context, _ string, attempt int, reason string, activeMs int64, lastCheckpointStep int, llmProvider, llmModel string) (bool, error) {
+	f.attempts = append(f.attempts, attempt)
+	f.pauses = append(f.pauses, reason)
+	f.pauseActiveMs = append(f.pauseActiveMs, activeMs)
+	f.pauseProvenance = append(f.pauseProvenance, llmProvider+"/"+llmModel)
+	f.pauseMarkers = append(f.pauseMarkers, lastCheckpointStep)
+	if f.pauseErr != nil {
+		return false, f.pauseErr
+	}
+	return f.pauseApplied, nil
 }
 func (f *fakeRunDoc) MarkExplorationCheckpoint(_ context.Context, _ string, step int, attempt int) (bool, error) {
 	f.markers = append(f.markers, step)

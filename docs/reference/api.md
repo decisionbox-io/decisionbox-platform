@@ -797,6 +797,9 @@ The resume-related fields are all optional and absent on runs that predate check
 | `last_checkpoint_step` | Highest exploration step with a checkpoint. `> 0` on a `failed` run is what makes it resumable; zeroed on success. |
 | `active_ms` | Cumulative **active** compute across attempts, so elapsed time excludes the hours a failed run sat waiting to be noticed. Best-effort: an attempt killed before its terminal write contributes nothing. |
 | `last_resumed_at` | When the latest attempt was requested. |
+| `last_paused_at` | When the run last entered `paused`. Kept across a later resume. |
+| `pause_requested_at` | Set while a pause is DRAINING: the operator has asked and the agent stops at its next checkpointed seam. The status stays `running` through that window. |
+| `pause_deadline_at` | When an unhonoured pause request lapses. Absent when the deployment disabled the deadline. |
 | `max_steps`, `min_steps`, `areas`, `effort` | The run's own parameters, so a resume replays the budget the caller chose. |
 | `lifecycle` | Append-only transition log. Each attempt's terminal event carries the LLM provider and model that served it. |
 
@@ -819,7 +822,7 @@ Refusals — all of these are real answers, not errors to retry blindly:
 | Status | When |
 |--------|------|
 | `404` | No such run, or the project it belongs to is gone. |
-| `409` | The run is not `failed`. Only a failed run is resumable — `cancelled` is a deliberate hard kill and stays terminal, `completed` has nothing left, and `running` / `pending` already have an agent. The message names the run's actual status. |
+| `409` | The run is neither `failed` nor `paused`. Those two are the resumable statuses — `cancelled` is a deliberate hard kill and stays terminal, `completed` has nothing left, and `running` / `pending` already have an agent. The message names the run's actual status. |
 | `409` | No checkpoint to resume from: it expired (see `DISCOVERY_CHECKPOINT_RETENTION`) or the run died before its first step. Start a new run. |
 | `409` | The project fails a precondition a fresh run would also fail — its schema index is not ready, or a plugin owns its lifecycle state. A resume re-enters exploration, so it needs the same guarantees. |
 | `409` | Another discovery run is already in progress for the project. |
@@ -828,11 +831,48 @@ Refusals — all of these are real answers, not errors to retry blindly:
 
 Resume does not meter, charge, refund, or open a plan reservation: the run's charge is keyed on its run id and a resume re-enters that id, so it is free by construction.
 
+### POST /api/v1/runs/{runId}/pause
+
+Ask a running discovery to stop **cooperatively**, so it can be resumed later.
+
+The counterpart to cancel, not a variant of it. Cancel kills the agent and deletes the run's checkpoints; pause lets the run finish the step it is on, keep that step's checkpoint, and exit into `paused` — which `POST .../resume` accepts.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/runs/507f1f77bcf86cd799439012/pause
+```
+
+```json
+{
+  "data": {
+    "status": "pause_requested",
+    "run_id": "507f1f77bcf86cd799439012",
+    "attempt": 1,
+    "pause_deadline_at": "2026-03-14T11:04:00Z"
+  }
+}
+```
+
+`202` means the request was **recorded**, not that the run has stopped. The agent reads it at its next seam where a checkpoint has just landed, which can be minutes away while an LLM call or a warehouse query finishes — so the run stays `running`, with `pause_requested_at` set, until then. Poll `GET /api/v1/runs/{runId}` for the flip to `paused`.
+
+| Status | When |
+|--------|------|
+| `403` | The caller has no access to the run's project. |
+| `404` | No such run, or the project it belongs to is gone. |
+| `409` | The run is not active. The message names its actual status. |
+| `409` | The run is past the point where it can be paused — the message names the phase. Nothing is checkpointed after the analysis phase, so a pause there would discard that work for a run that is minutes from finishing; cancel it instead if it has to stop now. |
+| `409` | A pause is already pending that has not lapsed, or the run changed while the request was in flight. |
+
+`pause_deadline_at` is when an unhonoured request lapses — `DISCOVERY_PAUSE_DRAIN_TIMEOUT` past the request, 30 minutes by default. Past it the agent ignores the request and a fresh one can be made. It is absent when the deployment set that to `0`.
+
+Pause neither meters nor charges, and closes no plan reservation: the run is not over, so a paused run keeps holding its concurrent-run slot.
+
+See [Pausing a run](../concepts/discovery-lifecycle.md#pausing-a-run) for where a pause takes effect and why.
+
 ### DELETE /api/v1/runs/{runId}
 
-Cancel a running discovery. Kills the agent process and updates the run status.
+Cancel a discovery run. Kills the agent process and updates the run status. Accepts a `running`, `pending` or `paused` run — cancel is the verb that ends a paused one, since `POST .../discard` refuses it.
 
-Cancellation is terminal: the run's exploration checkpoints are deleted and it cannot be resumed.
+Cancellation is terminal: the run's exploration checkpoints are deleted and it cannot be resumed. Use `POST .../pause` instead to stop a run and keep its progress.
 
 ```bash
 curl -X DELETE http://localhost:8080/api/v1/runs/507f1f77bcf86cd799439012
