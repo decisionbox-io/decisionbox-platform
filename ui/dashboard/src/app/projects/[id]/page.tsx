@@ -1256,7 +1256,7 @@ function LiveRunPanel({ run, onPause, onCancel, onDismiss, onResume, onDiscard }
       <Stack gap="sm">
         <Text size="sm">
           This run will stop representing the project and can no longer be resumed
-          {canResume ? ` from step ${run.last_checkpoint_step}` : ''}. Its status, error and
+          {canResume && resumeKnowsItsStep ? ` from step ${run.last_checkpoint_step}` : ''}. Its status, error and
           step history stay readable.
         </Text>
         <Group justify="flex-end" gap="sm">

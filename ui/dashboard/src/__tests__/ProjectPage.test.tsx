@@ -667,6 +667,27 @@ describe('Discarding a terminal run (#438)', () => {
     expect(discardRun).toHaveBeenCalledWith('r1');
   });
 
+  // The same false claim as the Resume button's, in the dialog where it costs
+  // the most (#448). "can no longer be resumed from step 4" on a run that
+  // stopped after exploration understates what is being thrown away: the
+  // resume would have skipped exploration entirely and re-entered at the
+  // phase it stopped in. This is a destructive confirmation — it is the one
+  // place the panel must not overstate what resuming would have cost.
+  it('does not name a step in the discard modal for a run that stopped past exploration', async () => {
+    getProjectStatus.mockResolvedValue(
+      status(makeRun({ status: 'failed', phase: 'recommendations', last_checkpoint_step: 4 })),
+    );
+
+    renderPage();
+    const btn = await waitFor(() => screen.getByText('Discard'));
+    await act(async () => { btn.click(); });
+    await flush();
+
+    await waitFor(() => expect(screen.getByText('Discard this run?')).toBeInTheDocument());
+    expect(screen.getByText(/can no longer be resumed\./)).toBeInTheDocument();
+    expect(screen.queryByText(/resumed from step/)).not.toBeInTheDocument();
+  });
+
   // Backing out of the modal is the whole point of having one.
   it('does not call the API when the confirm modal is cancelled', async () => {
     getProjectStatus.mockResolvedValue(
