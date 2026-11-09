@@ -210,11 +210,17 @@ func TestInteg_AnalysisDraft_MarkersAccumulateAcrossAttemptsOnOneImmutableDraft(
 		t.Fatalf("SaveDraft: %v", err)
 	}
 
-	// Attempt 1 validates one insight and dies.
-	if _, err := repo.SaveInsightVerdict(ctx, InsightVerdictInput{
+	// Attempt 1 validates one insight and dies. landed=true is the other half
+	// of the pause contract: a verdict that IS durable has to say so, or the
+	// run never stops at the finest seam it has.
+	landed, err := repo.SaveInsightVerdict(ctx, InsightVerdictInput{
 		RunID: "run-1", AreaID: "churn", Attempt: 1, InsightID: "insight-1", Verdict: verdictFor("insight-1"),
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("SaveInsightVerdict: %v", err)
+	}
+	if !landed {
+		t.Error("a marker that reached its draft reported landed=false; the per-insight pause seam would never fire")
 	}
 	// Attempt 2 restores the draft, validates a second, and dies.
 	if _, err := repo.SaveInsightVerdict(ctx, InsightVerdictInput{
@@ -293,11 +299,21 @@ func TestInteg_AnalysisDraft_AttemptFenceInBothDirections(t *testing.T) {
 		t.Error("an orphaned attempt overwrote a newer one's draft")
 	}
 
-	// A marker from the orphan must not land either.
-	if _, err := repo.SaveInsightVerdict(ctx, InsightVerdictInput{
+	// A marker from the orphan must not land either — and must SAY it did
+	// not. The bool is what the cooperative pause reads to decide whether
+	// stopping is free, so a fenced no-op reporting `true` would stop a run
+	// on a verdict no draft is holding: the resumed attempt would re-validate
+	// it, which is the work the pause was supposed to preserve. Asserted
+	// against a real MongoDB because MatchedCount is the server's answer, not
+	// the driver's.
+	landed, err := repo.SaveInsightVerdict(ctx, InsightVerdictInput{
 		RunID: "run-1", AreaID: "churn", Attempt: 1, InsightID: "insight-1", Verdict: verdictFor("insight-1"),
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("SaveInsightVerdict must not error on a fenced no-op, got %v", err)
+	}
+	if landed {
+		t.Error("a fenced no-op reported landed=true; a pause taken on it would stop the run on a verdict nothing stored")
 	}
 	set, _ = repo.LoadDrafts(ctx, "run-1", 1)
 	if len(set.Drafts["churn"].InsightVerdicts) != 0 {
