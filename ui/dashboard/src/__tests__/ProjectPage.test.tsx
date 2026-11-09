@@ -243,6 +243,55 @@ describe('Resume affordance on a failed run (#438)', () => {
     expect(screen.queryByText(/Resume from step/)).not.toBeInTheDocument();
   });
 
+  // --- what the button CLAIMS, which is a different question from whether
+  //     it is offered at all (#448) ---
+
+  it.each([
+    ['analysis', 'analysis'],
+    ['the recommendation phases', 'recommendations'],
+    ['the persistence tail', 'saving'],
+    ['a phase this build has never heard of', 'some_future_phase'],
+  ])('offers Resume without naming a step once the run is past exploration — %s', async (_name, phase) => {
+    // last_checkpoint_step is an EXPLORATION-step counter: nothing in
+    // analysis or the recommendation phases advances it. A run that stopped
+    // in one of those resumes by restoring the exploration summary, the
+    // completed areas and the recommendation checkpoint — it does not re-run
+    // step 42. Naming it there is a false claim about what resuming costs,
+    // and an operator who believes it may cancel a run minutes from done.
+    //
+    // The unknown phase is in this list deliberately: the check allow-lists
+    // the EARLY phases, so anything new falls through to the plain label
+    // rather than inventing a number for a phase nobody taught it about.
+    getProjectStatus.mockResolvedValue(
+      status(makeRun({ status: 'paused', phase, last_checkpoint_step: 42, attempt: 2 })),
+    );
+
+    renderPage();
+
+    // Still offered — the affordance is gated on having a checkpoint, which
+    // this run has. Only the claim about WHERE it resumes is dropped.
+    await waitFor(() => expect(screen.getByText('Resume')).toBeInTheDocument());
+    expect(screen.queryByText(/Resume from step/)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['a run that has not stamped a phase yet', ''],
+    ['init', 'init'],
+    ['schema discovery', 'schema_discovery'],
+    ['exploration itself', 'exploration'],
+  ])('still names the step while the number is true — %s', async (_name, phase) => {
+    // The other half, and why this is not simply "drop the number": during
+    // exploration the step IS where a resume picks up, and it is the most
+    // useful thing the button can say.
+    getProjectStatus.mockResolvedValue(
+      status(makeRun({ status: 'paused', phase, last_checkpoint_step: 42, attempt: 2 })),
+    );
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText(/Resume from step 42/)).toBeInTheDocument());
+  });
+
   it('rebuilds the live step feed from the head of the new attempt rather than appending to the old one', async () => {
     // The live feed is attempt-scoped server-side, and a resume re-emits the
     // replayed prefix under the new attempt. The panel used to be keyed on
