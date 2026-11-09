@@ -653,3 +653,120 @@ func TestPauseIfSignalled(t *testing.T) {
 		}
 	})
 }
+
+// The exploration-summary seam, which codecov caught me missing: the other
+// four seams each got a test and this one did not, so its pause branch was the
+// only one in the set with no coverage at all.
+//
+// It is also the seam whose ordering matters most. The pause is signalled only
+// AFTER o.explorationSummaryAttempt is set, so a resume of this pause restores
+// against the summary instead of re-exploring — the single most expensive thing
+// a mis-ordered pause could cost.
+func TestCheckpointExplorationSummary_PauseSeam(t *testing.T) {
+	ctx := t.Context()
+	res := &ai.ExplorationResult{Completed: true, TotalSteps: 12}
+
+	t.Run("the summary lands, then the stop is signalled", func(t *testing.T) {
+		doc := newFakeRunDoc()
+		doc.pauseRequested = true
+		store := &fakeCheckpointStore{}
+		o := &Orchestrator{
+			runID:            "run-1",
+			projectID:        "proj",
+			statusReporter:   reporterFor(doc, 1),
+			checkpointRepo:   store,
+			attemptStartedAt: time.Now(),
+		}
+		o.contiguousCheckpointThrough = 12
+
+		err := o.checkpointExplorationSummary(ctx, res)
+		if !errors.Is(err, ai.ErrPauseRequested) {
+			t.Fatalf("checkpointExplorationSummary() = %v, want ErrPauseRequested", err)
+		}
+		if len(store.summaries) != 1 {
+			t.Fatalf("summaries = %+v, want the summary written before the stop", store.summaries)
+		}
+		// The ordering that makes the pause cheap rather than ruinous.
+		if o.explorationSummaryAttempt != 1 {
+			t.Errorf("explorationSummaryAttempt = %d, want 1 — a pause signalled before this is set resumes by re-exploring", o.explorationSummaryAttempt)
+		}
+		if !o.keepStepIndex {
+			t.Error("keepStepIndex = false; the resumed attempt would rebuild the step index it could have kept")
+		}
+	})
+
+	t.Run("a failed summary write refuses the pause", func(t *testing.T) {
+		doc := newFakeRunDoc()
+		doc.pauseRequested = true
+		store := &fakeCheckpointStore{summaryErr: errors.New("mongo is down")}
+		o := &Orchestrator{
+			runID:            "run-1",
+			statusReporter:   reporterFor(doc, 1),
+			checkpointRepo:   store,
+			attemptStartedAt: time.Now(),
+		}
+		o.contiguousCheckpointThrough = 12
+
+		if err := o.checkpointExplorationSummary(ctx, res); err != nil {
+			t.Fatalf("checkpointExplorationSummary() = %v, want nil — with no summary a pause resumes by re-exploring everything", err)
+		}
+		if o.explorationSummaryAttempt != 0 {
+			t.Errorf("explorationSummaryAttempt = %d, want 0 after a failed write", o.explorationSummaryAttempt)
+		}
+	})
+
+	t.Run("no pause requested, no signal", func(t *testing.T) {
+		doc := newFakeRunDoc()
+		store := &fakeCheckpointStore{}
+		o := &Orchestrator{
+			runID:            "run-1",
+			statusReporter:   reporterFor(doc, 1),
+			checkpointRepo:   store,
+			attemptStartedAt: time.Now(),
+		}
+		if err := o.checkpointExplorationSummary(ctx, res); err != nil {
+			t.Fatalf("checkpointExplorationSummary() = %v, want nil", err)
+		}
+	})
+}
+
+// A verdict that lands with no pause standing must return cleanly — the
+// ordinary case, and the one path through the rec seam that had no test.
+func TestCheckpointRecommendationVerdict_NoPauseNoSignal(t *testing.T) {
+	ctx := t.Context()
+	doc := newFakeRunDoc()
+	store := &fakeRecommendationCheckpointStore{}
+	o := &Orchestrator{
+		runID:                        "run-1",
+		statusReporter:               reporterFor(doc, 1),
+		recommendationCheckpointRepo: store,
+		explorationSummaryAttempt:    1,
+	}
+	if err := o.checkpointRecommendationVerdict(ctx, models.ValidationResult{InsightID: "r1"}); err != nil {
+		t.Fatalf("checkpointRecommendationVerdict() = %v, want nil", err)
+	}
+	if len(store.verdicts) != 1 {
+		t.Errorf("verdicts = %d, want 1 recorded", len(store.verdicts))
+	}
+}
+
+// The concurrent path's stop check sits BEFORE the semaphore as well as after,
+// and only the post-semaphore one had coverage: with four slots free, four
+// documents dispatch before any worker can report anything, so the pre-check
+// never fired in the existing tests. A pause already standing on entry is what
+// exercises it — and is a real case, since the dispatcher is re-entered per
+// area while a request can be standing from the previous one.
+func TestRunBounded_BreaksBeforeTheFirstDispatchWhenAlreadyStopped(t *testing.T) {
+	p := &validationPhase{}
+	p.caps.Concurrency = 4
+
+	var ran counter
+	dispatched := p.runBounded(10, func(int) { ran.inc() }, func() bool { return true })
+
+	if dispatched != 0 {
+		t.Errorf("dispatched = %d, want 0 — the stop was standing before the first document", dispatched)
+	}
+	if ran.count() != 0 {
+		t.Errorf("ran %d documents though the stop was already standing", ran.count())
+	}
+}
