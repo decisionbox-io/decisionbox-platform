@@ -66,9 +66,9 @@ type analysisDraftStore interface {
 // is that the area is analysed again on a later resume, and a checkpoint must
 // never be able to abort a working run.
 //
-// Also a PAUSE seam, under the uniform rule. A pause is free exactly where a crash would have
-// left a resumable run, and this write is the clearest case of that in the
-// whole area: once the draft is down, a stop here costs the operator nothing
+// Also a PAUSE seam, under the uniform rule. A pause is free exactly where a
+// crash would have left a resumable run, and this write is the clearest case
+// of that in the whole area: once the draft is down, a stop costs nothing
 // and saves them the area's entire per-insight validation bill — the largest
 // number of LLM calls the area will make. Found before the write, taken after,
 // so the pause never discards the analysis call that just paid for this row.
@@ -158,20 +158,28 @@ func (o *Orchestrator) checkpointAreaDraft(ctx context.Context, step models.Anal
 //
 // insightID is the id the DRAFT holds, which is the id live in memory until
 // the area is merged into the run's result. Every failure is swallowed: a lost
-// marker costs one re-validated insight on a later resume. No ownership
-// question here either — the area-level write already asked, moments ago, and
-// asking once per insight would add a Mongo read next to every verifier call
-// to narrow a window the area-level gate already bounds.
-// It is also the finest PAUSE seam in the run. Returns
-// ai.ErrPauseRequested when this verdict landed and an operator's pause is
-// standing — a signal to the validation phase, never a failure, and never a
-// reason not to have written the row.
+// marker costs one re-validated insight on a later resume.
 //
-// Supersession is deliberately NOT read here, unlike at the coarser seams.
-// This runs inside a bounded worker, where an ErrAttemptSuperseded has nothing
-// to abort, and the row-level attempt fence in SaveInsightVerdict already
-// refuses a write a newer attempt has overtaken. One Mongo read per verdict to
-// re-answer a question the write itself answers would be the wrong trade.
+// It is also the finest PAUSE seam in the run. Returns ai.ErrPauseRequested
+// when this verdict landed and an operator's pause is standing — a signal to
+// the validation phase, never a failure, and never a reason not to have
+// written the row.
+//
+// So this seam DOES read standing once per verdict, and it is the only one
+// that pays for a read of its own rather than reusing a probe it was making
+// anyway. An earlier version of this comment declined exactly that, on the
+// grounds that it would "add a Mongo read next to every verifier call to
+// narrow a window the area-level gate already bounds". That reasoning was
+// about SUPERSESSION, where the gate really does bound the window. It does not
+// transfer to a pause: the window a pause cares about is the whole area, and
+// the measured cost of not reading here was thirteen and a half minutes of
+// already-durable work. One projected read on `_id` against a verifier and a
+// refuter call is the right side of that trade.
+//
+// Supersession is still deliberately NOT asked. This runs inside a bounded
+// worker, where an ErrAttemptSuperseded has nothing to abort, and the
+// row-level attempt fence in SaveInsightVerdict already refuses a write a
+// newer attempt has overtaken.
 func (o *Orchestrator) checkpointInsightVerdict(ctx context.Context, areaID string, vr models.ValidationResult) error {
 	if o.analysisDraftRepo == nil || areaID == "" || vr.InsightID == "" {
 		return nil

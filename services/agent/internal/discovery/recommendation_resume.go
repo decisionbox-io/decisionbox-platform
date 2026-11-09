@@ -61,9 +61,11 @@ type recommendationCheckpointStore interface {
 // a marker write is filtered on `attempt <= this attempt`, so with no row of
 // its own it can land on an earlier attempt's, where a reused model-supplied
 // id would overwrite a marker describing a different recommendation.
-// Also a PAUSE seam, under the uniform rule: once this row is down, Phase 5 is paid for and a
-// stop costs nothing while saving the operator every per-recommendation
-// verifier call in Phase 5.5. Found before the write, taken after.
+//
+// Also a PAUSE seam, under the uniform rule: once this row is down, Phase 5 is
+// paid for, so a stop costs nothing and saves the operator every
+// per-recommendation verifier call in Phase 5.5. Found before the write, taken
+// after.
 func (o *Orchestrator) checkpointRecommendations(ctx context.Context, step *models.RecommendationStep, eligibleIDs, generation []string) (bool, error) {
 	if o.recommendationCheckpointRepo == nil || step == nil {
 		return false, nil
@@ -235,6 +237,7 @@ func recommendationStepInStoredIDs(step models.RecommendationStep, storedByLive 
 // validated. Called from validationPhase's bounded workers, so it must stay
 // safe to call concurrently. Failures are swallowed: a lost marker costs one
 // re-validated recommendation.
+//
 // Also a per-item PAUSE seam, on the same contract as
 // checkpointInsightVerdict: ai.ErrPauseRequested means this verdict is durable
 // and an operator is waiting, and supersession is left to the row-level

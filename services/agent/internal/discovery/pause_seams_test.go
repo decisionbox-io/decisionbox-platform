@@ -34,9 +34,11 @@ func TestEveryCheckpointSeamIsAPauseSeam(t *testing.T) {
 		t.Fatalf("glob: %v", err)
 	}
 
-	// A seam is exempt only for a reason that is written down here. Both
-	// exemptions are the same reason: the function does not decide anything
-	// about standing, it is the shared machinery the seams call INTO.
+	// A seam is exempt only for a reason written down here, and the map is
+	// deliberately EMPTY: every durable checkpoint write in the package
+	// follows the rule today. An entry is the escape hatch for a future
+	// `checkpoint*` method that genuinely decides nothing about standing — not
+	// a place to park a seam somebody did not want to wire up.
 	exempt := map[string]string{}
 
 	type seam struct{ name, body string }

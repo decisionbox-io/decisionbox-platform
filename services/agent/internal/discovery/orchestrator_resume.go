@@ -1000,6 +1000,17 @@ func (o *Orchestrator) hasResumePoint() bool {
 //
 // Returns ai.ErrPauseRequested to stop, or nil to carry on with the request
 // still standing — the next seam that has something to resume from honours it.
+func (o *Orchestrator) pauseSignalIfResumable(what string) error {
+	if o.hasResumePoint() {
+		return ai.ErrPauseRequested
+	}
+	applog.WithFields(applog.Fields{
+		"run_id": o.runID, "at": what,
+		"contiguous_through": o.contiguousCheckpointThrough,
+	}).Warn("an operator asked for a pause, but an earlier checkpoint write left a gap, so there is nothing a resume could replay yet; continuing until the prefix is unbroken")
+	return nil
+}
+
 // pauseIfSignalled is the caller-side half of the pause split, and the mirror
 // of pauseSignalIfResumable: that one decides whether a seam MAY signal, this
 // one decides what the loop does with a signal it got.
@@ -1009,8 +1020,8 @@ func (o *Orchestrator) hasResumePoint() bool {
 // discrimination between them is one `errors.Is` that reads like boilerplate
 // and is not: treating ErrPauseRequested as a failure turns a clean pause into
 // a failed run, and treating a failure as a pause writes `paused` over a run
-// that actually broke. Written out five times, those are five chances to get it
-// backwards.
+// that actually broke. Written out five times, those are five chances to get
+// it backwards.
 //
 // Returns nil to carry on, or the error the caller propagates unchanged —
 // ai.ErrPauseRequested once the stop has been performed, or the seam's own
@@ -1025,17 +1036,6 @@ func (o *Orchestrator) pauseIfSignalled(ctx context.Context, signal error, detai
 		return signal
 	}
 	return o.pauseAttempt(ctx, detail)
-}
-
-func (o *Orchestrator) pauseSignalIfResumable(what string) error {
-	if o.hasResumePoint() {
-		return ai.ErrPauseRequested
-	}
-	applog.WithFields(applog.Fields{
-		"run_id": o.runID, "at": what,
-		"contiguous_through": o.contiguousCheckpointThrough,
-	}).Warn("an operator asked for a pause, but an earlier checkpoint write left a gap, so there is nothing a resume could replay yet; continuing until the prefix is unbroken")
-	return nil
 }
 
 // pauseAttempt performs the cooperative stop: books this attempt's compute,
