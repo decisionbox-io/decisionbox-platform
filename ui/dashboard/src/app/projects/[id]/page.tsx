@@ -1053,8 +1053,15 @@ function LiveRunPanel({ run, onPause, onCancel, onDismiss, onResume, onDiscard }
   // An allow-list of the EARLY phases rather than a list of late ones, so a
   // phase this build has never heard of falls through to the plain label. The
   // fail-safe direction is to claim nothing: a missing number costs an
-  // operator nothing, a wrong one costs them the run.
-  const resumeKnowsItsStep = ['', 'init', 'schema_discovery', 'exploration'].includes(run.phase ?? '');
+  // operator nothing, a wrong one costs them the run. `''` is in the list
+  // because that is what a run that has not stamped a phase yet actually
+  // sends — the same entry the API's own pausable-phase set carries.
+  //
+  // No `?? ''` guard: `phase` is a required string on DiscoveryRunStatus, so
+  // the fallback was a branch no test could reach. Were one ever absent at
+  // runtime, `includes(undefined)` is false and the label goes plain, which
+  // is the direction this already fails in.
+  const resumeKnowsItsStep = ['', 'init', 'schema_discovery', 'exploration'].includes(run.phase);
 
   // Pause is offered while the run is live and no request is already pending.
   // Hidden once a request is in flight — the panel says "Pausing…" instead, so
