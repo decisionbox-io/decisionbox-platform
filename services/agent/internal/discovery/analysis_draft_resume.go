@@ -68,9 +68,9 @@ type analysisDraftStore interface {
 //
 // Also a PAUSE seam, under the uniform rule. A pause is free exactly where a
 // crash would have left a resumable run, and this write is the clearest case
-// of that in the whole area: once the draft is down, a stop costs nothing
-// and saves them the area's entire per-insight validation bill — the largest
-// number of LLM calls the area will make. Found before the write, taken after,
+// of that in the whole area: once the draft is down, a stop costs the operator
+// nothing and saves them the area's entire per-insight validation bill — the
+// largest number of LLM calls the area will make. Found before the write, taken after,
 // so the pause never discards the analysis call that just paid for this row.
 //
 // The bool says whether a draft for this area is actually on disk, and it
