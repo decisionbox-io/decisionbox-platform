@@ -7,7 +7,12 @@ on:
     # tested. Add a base here deliberately and temporarily if a feature ever
     # needs to collect its PRs somewhere other than main, and take it out
     # again when that base is gone.
-    branches: [main]
+    #
+    # feat/grounded-confidence-risk is such a base: the grounded
+    # confidence/severity/priority work lands as several PRs that have to be
+    # integrated together across two repositories before any of it reaches
+    # main. REMOVE THIS ENTRY when that branch is merged and deleted.
+    branches: [main, feat/grounded-confidence-risk]
     # `labeled` is included so adding the `run-integration-tests` label actually
     # starts the label-gated integration-tests job — the default activity types
     # (opened/synchronize/reopened) don't fire on a label change, so without it
