@@ -82,3 +82,44 @@ func TestInferBedrockWire_WiredIntoProviderMeta(t *testing.T) {
 		t.Errorf("ResolveWire(claude-99-new) = %q, want %q", wire, gollm.WireAnthropic)
 	}
 }
+
+// TestBedrockUsesMaxCompletionTokens pins the per-generation split for OpenAI
+// GPT models on Bedrock: gpt-5.6 / gpt-6 onwards reject max_tokens, while
+// gpt-5.4 / gpt-5.5 reject max_completion_tokens.
+func TestBedrockUsesMaxCompletionTokens(t *testing.T) {
+	tests := []struct {
+		id   string
+		want bool
+	}{
+		// Generations that require max_completion_tokens.
+		{"us.openai.gpt-5.6-sol", true},
+		{"us.openai.gpt-6-sol", true},
+		{"openai.gpt-5.6-sol", true},
+		{"global.openai.gpt-6-sol", true},
+		{"eu.openai.gpt-6.1", true},
+		{"US.OpenAI.GPT-5.6-sol", true},
+		{"us.openai.gpt-5.10", true},
+		{"us.openai.gpt-7", true},
+
+		// Generations that still require max_tokens.
+		{"us.openai.gpt-5.4", false},
+		{"us.openai.gpt-5.5", false},
+		{"openai.gpt-5.5", false},
+		{"us.openai.gpt-5", false},
+
+		// Not a versioned GPT model — unchanged.
+		{"openai.gpt-oss-120b-1:0", false},
+		{"us.openai.gpt-oss-20b-1:0", false},
+		{"qwen.qwen3-next-80b-a3b", false},
+		{"deepseek.r1-v1:0", false},
+		{"us.anthropic.claude-sonnet-4-20250514-v1:0", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			if got := bedrockUsesMaxCompletionTokens(tt.id); got != tt.want {
+				t.Errorf("bedrockUsesMaxCompletionTokens(%q) = %v, want %v", tt.id, got, tt.want)
+			}
+		})
+	}
+}

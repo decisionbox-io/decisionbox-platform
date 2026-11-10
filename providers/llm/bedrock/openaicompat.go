@@ -38,6 +38,14 @@ func (p *BedrockProvider) chatOpenAICompat(ctx context.Context, req gollm.ChatRe
 	// know (a managed gateway's alias) keeps it — see NormalizeReasoningEffort.
 	req = gollm.NormalizeReasoningEffort(providerName, req.Model, req)
 	body := openaicompat.BuildRequestBody(req.Model, req)
+	// The shared helper picks the token-limit field from bare OpenAI model
+	// IDs and never matches a Bedrock profile ("us.openai.gpt-5.6-sol"), so
+	// the per-generation choice is made here — see
+	// bedrockUsesMaxCompletionTokens.
+	if bedrockUsesMaxCompletionTokens(req.Model) && body.MaxTokens > 0 {
+		body.MaxCompletionTokens = body.MaxTokens
+		body.MaxTokens = 0
+	}
 
 	reqBody, err := json.Marshal(body)
 	if err != nil {
