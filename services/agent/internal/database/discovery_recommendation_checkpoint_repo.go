@@ -187,15 +187,19 @@ func (r *DiscoveryRecommendationCheckpointRepository) SaveDraft(ctx context.Cont
 //
 // A write that matches nothing is not an error, for the reason
 // SaveInsightVerdict gives.
-func (r *DiscoveryRecommendationCheckpointRepository) SaveRecVerdict(ctx context.Context, in RecommendationVerdictInput) error {
+// The bool reports whether the update actually APPLIED, on the same contract as
+// SaveInsightVerdict's: MatchedCount 0 with a nil error is ordinary, and only a
+// caller deciding whether a cooperative stop is free needs to know the
+// difference.
+func (r *DiscoveryRecommendationCheckpointRepository) SaveRecVerdict(ctx context.Context, in RecommendationVerdictInput) (bool, error) {
 	if in.RunID == "" {
-		return errors.New("checkpoint recommendation verdict: run_id is required")
+		return false, errors.New("checkpoint recommendation verdict: run_id is required")
 	}
 	if in.RecommendationID == "" {
-		return errors.New("checkpoint recommendation verdict: recommendation_id is required")
+		return false, errors.New("checkpoint recommendation verdict: recommendation_id is required")
 	}
 	if !safeMarkerKey(in.RecommendationID) {
-		return fmt.Errorf("checkpoint verdict for recommendation %q of run %s: %w", in.RecommendationID, in.RunID, ErrUnsafeMarkerKey)
+		return false, fmt.Errorf("checkpoint verdict for recommendation %q of run %s: %w", in.RecommendationID, in.RunID, ErrUnsafeMarkerKey)
 	}
 	res, err := r.col.UpdateOne(ctx,
 		bson.M{
@@ -205,15 +209,16 @@ func (r *DiscoveryRecommendationCheckpointRepository) SaveRecVerdict(ctx context
 		bson.M{"$set": bson.M{"rec_verdicts." + in.RecommendationID: in.Verdict}},
 	)
 	if err != nil {
-		return fmt.Errorf("checkpoint verdict for recommendation %s of run %s: %w", in.RecommendationID, in.RunID, err)
+		return false, fmt.Errorf("checkpoint verdict for recommendation %s of run %s: %w", in.RecommendationID, in.RunID, err)
 	}
 	if res.MatchedCount == 0 {
 		applog.WithFields(applog.Fields{
 			"run_id":         in.RunID,
 			"recommendation": in.RecommendationID,
 		}).Debug("no recommendation checkpoint to record this verdict against; it would be validated again on a later resume")
+		return false, nil
 	}
-	return nil
+	return true, nil
 }
 
 // Load returns the run's recommendation checkpoint, or nil when there is none

@@ -835,7 +835,7 @@ Resume does not meter, charge, refund, or open a plan reservation: the run's cha
 
 Ask a running discovery to stop **cooperatively**, so it can be resumed later.
 
-The counterpart to cancel, not a variant of it. Cancel kills the agent and deletes the run's checkpoints; pause lets the run finish the step it is on, keep that step's checkpoint, and exit into `paused` — which `POST .../resume` accepts.
+The counterpart to cancel, not a variant of it. Cancel kills the agent and deletes the run's checkpoints; pause lets the run finish whatever it is working on, keep that work's checkpoint, and exit into `paused` — which `POST .../resume` accepts. It stops wherever a crash would have left a resumable run: every durable checkpoint write is a seam, so the wait is one step, one insight verdict or one recommendation verdict rather than a phase boundary.
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/runs/507f1f77bcf86cd799439012/pause
@@ -859,7 +859,7 @@ curl -X POST http://localhost:8080/api/v1/runs/507f1f77bcf86cd799439012/pause
 | `403` | The caller has no access to the run's project. |
 | `404` | No such run, or the project it belongs to is gone. |
 | `409` | The run is not active. The message names its actual status. |
-| `409` | The run is past the point where it can be paused — the message names the phase. Nothing is checkpointed after the analysis phase, so a pause there would discard that work for a run that is minutes from finishing; cancel it instead if it has to stop now. |
+| `409` | The run is past the point where it can be paused — the message names the phase. Accepted for `init`, `schema_discovery`, `exploration`, `analysis` and `recommendations`; refused for the persistence tail (`saving`, `embed_index`), which checkpoints nothing and owes durability for work already done, so a run that has to stop there has to be cancelled instead. |
 | `409` | A pause is already pending that has not lapsed, or the run changed while the request was in flight. |
 
 `pause_deadline_at` is when an unhonoured request lapses — `DISCOVERY_PAUSE_DRAIN_TIMEOUT` past the request, 30 minutes by default. Past it the agent ignores the request and a fresh one can be made. It is absent when the deployment set that to `0`.

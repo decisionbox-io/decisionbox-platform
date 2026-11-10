@@ -15,17 +15,26 @@ import (
 // phase wrongly out of it means Pause is refused during work that IS
 // checkpointed — the feature not working, with a plausible-looking 409.
 func TestRunPhaseAcceptsPause(t *testing.T) {
-	// Everything up to and including analysis has a checkpoint behind it:
-	// exploration checkpoints every step, and analysis every completed area.
-	for _, phase := range []string{"", "init", "schema_discovery", "exploration", "analysis"} {
+	// Everything up to and including the recommendation phases has a
+	// checkpoint behind it: exploration checkpoints every step; analysis
+	// checkpoints every analysed area, every single insight verdict and every
+	// completed area; recommendations checkpoints the generated set and every
+	// single recommendation verdict.
+	for _, phase := range []string{"", "init", "schema_discovery", "exploration", "analysis", "recommendations"} {
 		if !RunPhaseAcceptsPause(phase) {
 			t.Errorf("RunPhaseAcceptsPause(%q) = false, want true", phase)
 		}
 	}
-	// Past that nothing is checkpointed. The recommendation phases would be
-	// discarded wholesale, and the persist tail owes durability for work
-	// already done — it is outside the pause window permanently.
-	for _, phase := range []string{"validation", "recommendations", "saving", "embed_index", "questions", "reflection", "complete"} {
+	// Past that is the persist tail, which owes durability for work already
+	// done and is outside the pause window permanently.
+	//
+	// `validation` is in this list for a different reason, and it is a trap
+	// worth naming: no run document ever reports it. Phase 4.5 and 5.5 stamp
+	// it through setLLMPhase, which is layer attribution for cost accounting
+	// and does not touch the run's `phase`. If it ever started appearing here,
+	// the honest fix is to make it pausable — both validation loops checkpoint
+	// every verdict — not to leave a phase the API silently refuses.
+	for _, phase := range []string{"validation", "saving", "embed_index", "questions", "reflection", "complete"} {
 		if RunPhaseAcceptsPause(phase) {
 			t.Errorf("RunPhaseAcceptsPause(%q) = true, want false", phase)
 		}
