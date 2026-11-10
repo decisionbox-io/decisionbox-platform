@@ -198,13 +198,17 @@ func TestPauseRun_OnlyActiveRunsCanBePaused(t *testing.T) {
 // TestPauseRun_RefusesPastThePausableWindow is the refusal that exists to
 // avoid a silence.
 //
-// A pause only costs nothing where a checkpoint has just landed. Past analysis
-// nothing is checkpointed, so pausing in the recommendation phase or the
-// persistence tail would discard that work for a run minutes from finishing.
+// A pause only costs nothing where a checkpoint has just landed. The
+// persistence tail checkpoints nothing and owes durability for work already
+// done, so pausing there would discard it for a run seconds from finishing.
 // The agent would simply not honour the request — correct, and invisible. So
 // the operator is told now, synchronously, with the alternative named.
+//
+// `recommendations` is deliberately NOT in this list any more: per-recommendation
+// resume gave that phase durable seams, so a pause there is free and refusing
+// it made those seams unreachable.
 func TestPauseRun_RefusesPastThePausableWindow(t *testing.T) {
-	for _, phase := range []string{"recommendations", "saving", "embed_index", "complete"} {
+	for _, phase := range []string{"saving", "embed_index", "complete"} {
 		t.Run(phase, func(t *testing.T) {
 			f := newPauseFixture(t)
 			f.runs.runs["run-1"].Phase = phase
@@ -227,7 +231,7 @@ func TestPauseRun_RefusesPastThePausableWindow(t *testing.T) {
 		})
 	}
 
-	for _, phase := range []string{"", "init", "schema_discovery", "exploration", "analysis"} {
+	for _, phase := range []string{"", "init", "schema_discovery", "exploration", "analysis", "recommendations"} {
 		t.Run("accepted in "+phase, func(t *testing.T) {
 			f := newPauseFixture(t)
 			f.runs.runs["run-1"].Phase = phase
