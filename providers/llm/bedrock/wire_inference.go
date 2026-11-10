@@ -1,7 +1,6 @@
 package bedrock
 
 import (
-	"strconv"
 	"strings"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
@@ -48,15 +47,12 @@ func inferBedrockWire(model string) gollm.Wire {
 // ListFoundationModels.
 var bedrockOpenSourcePrefixes = []string{"qwen.", "deepseek.", "mistral.", "meta."}
 
-// bedrockUsesMaxCompletionTokens reports whether an OpenAI GPT model on
-// Bedrock requires `max_completion_tokens` instead of `max_tokens`. The split
-// is per generation, not per family: gpt-5.4 / gpt-5.5 profiles accept only
-// `max_tokens`, while gpt-5.6 and gpt-6 onwards reject it with a 400
-// ValidationException ("Unsupported parameter: 'max_tokens'"). Region
-// qualifiers ("us.") and the "openai." publisher prefix are stripped before
-// the version is read, so both the bare model ID and every cross-region
-// inference profile resolve the same way. Anything that is not a versioned
-// "gpt-" ID (gpt-oss, Qwen, DeepSeek, …) keeps `max_tokens`.
+// bedrockUsesMaxCompletionTokens reports whether a Bedrock model should get
+// `max_completion_tokens` instead of `max_tokens`. Every OpenAI model on
+// Bedrock (gpt-5.x, gpt-6, gpt-oss) accepts the new name, and gpt-5.6 /
+// gpt-6 onwards reject `max_tokens` with a 400 ValidationException, so the
+// switch is made for the whole "openai." publisher. Region qualifiers ("us.")
+// are stripped first so cross-region inference profiles resolve the same way.
 func bedrockUsesMaxCompletionTokens(model string) bool {
 	m := strings.ToLower(model)
 	for _, prefix := range claudeRegionPrefixes {
@@ -65,34 +61,5 @@ func bedrockUsesMaxCompletionTokens(model string) bool {
 			break
 		}
 	}
-	m = strings.TrimPrefix(m, "openai.")
-	rest, ok := strings.CutPrefix(m, "gpt-")
-	if !ok {
-		return false
-	}
-	major, rest := leadingInt(rest)
-	if major < 0 {
-		return false
-	}
-	minor := 0
-	if after, ok := strings.CutPrefix(rest, "."); ok {
-		if n, _ := leadingInt(after); n >= 0 {
-			minor = n
-		}
-	}
-	return major > 5 || (major == 5 && minor >= 6)
-}
-
-// leadingInt parses the run of ASCII digits at the start of s and returns it
-// with the remainder of s. It returns -1 when s does not start with a digit.
-func leadingInt(s string) (int, string) {
-	i := 0
-	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
-		i++
-	}
-	n, err := strconv.Atoi(s[:i])
-	if err != nil {
-		return -1, s
-	}
-	return n, s[i:]
+	return strings.HasPrefix(m, "openai.")
 }

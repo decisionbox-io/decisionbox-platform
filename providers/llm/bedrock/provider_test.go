@@ -129,19 +129,19 @@ func TestBedrockProvider_OpenAICompat_DropsResponseFormat(t *testing.T) {
 }
 
 func TestBedrockProvider_OpenAICompat_TokenLimitField(t *testing.T) {
-	// The newest OpenAI generations on Bedrock reject max_tokens and want
-	// max_completion_tokens; older ones reject the new name just as firmly,
-	// so the field is chosen per model.
+	// The newest OpenAI generations on Bedrock reject max_tokens, and every
+	// OpenAI model there accepts max_completion_tokens, so the whole openai.
+	// publisher gets the new name; other publishers keep max_tokens.
 	tests := []struct {
 		model     string
 		wantField string
 		dropField string
 	}{
-		{"us.openai.gpt-5.4", "max_tokens", "max_completion_tokens"},
-		{"us.openai.gpt-5.5", "max_tokens", "max_completion_tokens"},
+		{"us.openai.gpt-5.4", "max_completion_tokens", "max_tokens"},
+		{"us.openai.gpt-5.5", "max_completion_tokens", "max_tokens"},
 		{"us.openai.gpt-5.6-sol", "max_completion_tokens", "max_tokens"},
 		{"us.openai.gpt-6-sol", "max_completion_tokens", "max_tokens"},
-		{"openai.gpt-oss-120b-1:0", "max_tokens", "max_completion_tokens"},
+		{"openai.gpt-oss-120b-1:0", "max_completion_tokens", "max_tokens"},
 		{"qwen.qwen3-next-80b-a3b", "max_tokens", "max_completion_tokens"},
 	}
 	for _, tt := range tests {
