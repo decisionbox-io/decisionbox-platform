@@ -8,6 +8,7 @@ import (
 	"time"
 
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation/verifier"
 )
@@ -18,15 +19,23 @@ type recordingCheckpoint struct {
 	mu    sync.Mutex
 	saved []models.ValidationResult
 	done  map[string]models.ValidationResult
+	// pauseAfter makes the seam report a standing pause once this many
+	// verdicts have landed, which is how the real seam behaves when an
+	// operator presses Pause mid-validation. Zero means never.
+	pauseAfter int
 }
 
 func (r *recordingCheckpoint) hook() *perItemCheckpoint {
 	return &perItemCheckpoint{
 		done: r.done,
-		save: func(vr models.ValidationResult) {
+		save: func(vr models.ValidationResult) error {
 			r.mu.Lock()
 			defer r.mu.Unlock()
 			r.saved = append(r.saved, vr)
+			if r.pauseAfter > 0 && len(r.saved) >= r.pauseAfter {
+				return ai.ErrPauseRequested
+			}
+			return nil
 		},
 	}
 }
@@ -87,7 +96,7 @@ func TestValidateInsights_SkipsTheInsightsAPreviousAttemptAlreadyValidated(t *te
 	// The caller arrives having already charged the restored markers against
 	// the run's budget — see restoredDraftBudget for why that happens before
 	// the area loop rather than here.
-	results, validated := p.validateInsights(context.Background(), insights, steps, "a", len(cp.done), cp.hook())
+	results, validated, _ := p.validateInsights(context.Background(), insights, steps, "a", len(cp.done), cp.hook())
 
 	if len(results) != 6 {
 		t.Fatalf("want a result per insight, got %d", len(results))
@@ -165,7 +174,7 @@ func TestValidateInsights_RestoredMarkersSpendTheCapSoItIsNeverExceeded(t *testi
 		"i4": priorVerdict("i4", "a", at),
 		"i3": priorVerdict("i3", "a", at),
 	}}
-	results, validated := p.validateInsights(context.Background(), insights, steps, "a", len(cp.done), cp.hook())
+	results, validated, _ := p.validateInsights(context.Background(), insights, steps, "a", len(cp.done), cp.hook())
 
 	if validated != 4 {
 		t.Errorf("runValidated = %d, want exactly the cap of 4", validated)
@@ -199,7 +208,7 @@ func TestValidateInsights_ARaisedCapValidatesWhatThePreviousAttemptSkipped(t *te
 		"i3": priorVerdict("i3", "a", at),
 		"i2": priorVerdict("i2", "a", at),
 	}}
-	results, validated := p.validateInsights(context.Background(), insights, steps, "a", len(cp.done), cp.hook())
+	results, validated, _ := p.validateInsights(context.Background(), insights, steps, "a", len(cp.done), cp.hook())
 
 	if validated != 6 {
 		t.Errorf("runValidated = %d, want 6", validated)
@@ -223,7 +232,7 @@ func TestValidateInsights_PersistsEveryCheckedVerdictUnderConcurrency(t *testing
 	p.caps.MaxInsightsPerRun = 6
 	cp := &recordingCheckpoint{}
 
-	results, _ := p.validateInsights(context.Background(), insights, steps, "a", 0, cp.hook())
+	results, _, _ := p.validateInsights(context.Background(), insights, steps, "a", 0, cp.hook())
 
 	if llm.peak < 2 {
 		t.Fatalf("peak concurrency %d; this test is not exercising the parallel path", llm.peak)
@@ -258,7 +267,7 @@ func TestValidateInsights_DoesNotPersistACapSkippedVerdict(t *testing.T) {
 // must behave exactly as it always did.
 func TestValidateInsights_NilCheckpointIsTheOldPath(t *testing.T) {
 	p, _, insights, steps := concurrencyFixture(t, 1)
-	results, validated := p.validateInsights(context.Background(), insights, steps, "a", 0, nil)
+	results, validated, _ := p.validateInsights(context.Background(), insights, steps, "a", 0, nil)
 	if len(results) != 6 || validated != 4 {
 		t.Errorf("results = %d, validated = %d; want 6 and the cap of 4", len(results), validated)
 	}
@@ -290,7 +299,7 @@ func TestValidateRecommendations_SkipsTheOnesAlreadyValidated(t *testing.T) {
 		"r1": prior("r1"),
 	}}
 
-	results := p.validateRecommendations(context.Background(), recs, insights, steps, cp.hook())
+	results, _ := p.validateRecommendations(context.Background(), recs, insights, steps, cp.hook())
 
 	if len(results) != 5 {
 		t.Fatalf("want a result per recommendation, got %d", len(results))
@@ -418,7 +427,7 @@ func TestValidateInsights_ValidationDisabledIgnoresTheCheckpoint(t *testing.T) {
 	cp := &recordingCheckpoint{done: map[string]models.ValidationResult{
 		"i1": priorVerdict("i1", "a", time.Now()),
 	}}
-	results, validated := p.validateInsights(context.Background(), insights, nil, "a", 0, cp.hook())
+	results, validated, _ := p.validateInsights(context.Background(), insights, nil, "a", 0, cp.hook())
 
 	if len(results) != 0 || validated != 0 {
 		t.Errorf("results = %d validated = %d, want 0 and 0", len(results), validated)
@@ -457,7 +466,7 @@ func TestValidateRecommendations_ALoweredCapCannotBeExceededByARestoredMarker(t 
 	prior.DocKind = valmodels.DocRecommendation
 	cp := &recordingCheckpoint{done: map[string]models.ValidationResult{"r2": prior}}
 
-	results := p.validateRecommendations(context.Background(), recs, insights, steps, cp.hook())
+	results, _ := p.validateRecommendations(context.Background(), recs, insights, steps, cp.hook())
 
 	checked := len(cp.savedIDs())
 	restored := 0
@@ -498,7 +507,7 @@ func TestValidateInsights_DoesNotChargeARestoredMarkerTwice(t *testing.T) {
 	}}
 
 	// The caller arrives having already charged the two restored markers.
-	_, validated := p.validateInsights(context.Background(), insights, steps, "a", 2, cp.hook())
+	_, validated, _ := p.validateInsights(context.Background(), insights, steps, "a", 2, cp.hook())
 
 	if validated != 6 {
 		t.Errorf("runValidated = %d, want 6 (2 already charged by the caller + 4 checked here); %d means the restored markers were charged twice",
