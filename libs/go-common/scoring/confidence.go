@@ -9,12 +9,20 @@ import (
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 )
 
-// scoreQuantum is the grid every base, dock and cutoff sits on. Rounding to it
-// after each step is what keeps the breakdown's arithmetic exact for a reader:
-// 0.80 - 0.10 - 0.05 has to be 0.65 on screen, not 0.6500000000000001, and the
-// invariant base - sum(docks) == final has to hold as an equality rather than
-// within a tolerance.
-const scoreQuantum = 0.01
+// scoreSteps is the number of grid steps in 1.0 — every base, dock and cutoff
+// sits on a multiple of 1/scoreSteps. Snapping to it after each step is what
+// keeps the breakdown's arithmetic exact for a reader: 0.80 - 0.10 - 0.05 has
+// to be 0.65, not 0.6500000000000001, both on screen and in the stored
+// document an API client reads.
+//
+// Expressed as the RECIPROCAL, and round() divides by it rather than
+// multiplying by 0.01, which is the whole point. 0.01 has no exact binary
+// representation, so `math.Round(v/0.01) * 0.01` reintroduces the error it
+// just removed: it returns 0.35000000000000003 for 0.35, and likewise mangles
+// 0.70 and 0.95 — three of the nineteen scores this engine can produce.
+// Dividing an exact integer by an exact 100 yields the correctly-rounded
+// double instead. Pinned by TestEveryReachableScoreIsExactAtTwoDecimals.
+const scoreSteps = 100
 
 // reasons is the engine's plain-words explanation per verdict.
 //
@@ -274,5 +282,5 @@ func anyQuantifierRefuted(verdicts []gomodels.QuantifierVerdict) bool {
 
 // round snaps a score to the grid every number in this engine sits on.
 func round(v float64) float64 {
-	return math.Round(v/scoreQuantum) * scoreQuantum
+	return math.Round(v*scoreSteps) / scoreSteps
 }

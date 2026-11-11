@@ -3,6 +3,8 @@ package scoring
 import (
 	"math"
 	"reflect"
+	"strconv"
+	"strings"
 	"testing"
 
 	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
@@ -398,6 +400,86 @@ func TestTheDocksAlwaysSumToTheDropTheScoreTook(t *testing.T) {
 	}
 	if cases != len(verdicts)*4*16 {
 		t.Fatalf("the matrix ran %d cases; the generator has stopped covering it", cases)
+	}
+}
+
+// TestEveryReachableScoreIsExactAtTwoDecimals is the guard for a defect that
+// no amount of epsilon-tolerant assertion would have caught.
+//
+// Every base, dock and cutoff sits on a 0.05 grid, so every score this engine
+// can produce has an exact two-decimal decimal form. The score is persisted
+// and served to API clients verbatim, so one that round-trips as
+// 0.35000000000000003 is a 17-digit float in a payload and a trap for any
+// client comparing it for equality.
+//
+// It happened: snapping with `math.Round(v/0.01) * 0.01` mangled 0.35, 0.70
+// and 0.95, because 0.01 has no exact binary representation and multiplying
+// by it reintroduces the error the rounding just removed. Every invariant
+// still held to within 1e-16, which is exactly why the existing tests passed
+// and a reader of the stored document saw it anyway.
+func TestEveryReachableScoreIsExactAtTwoDecimals(t *testing.T) {
+	exact := func(v float64) bool {
+		// strconv's shortest representation is what encoding/json and the
+		// BSON encoder emit, so this is the form a client actually receives.
+		return strconv.FormatFloat(v, 'f', -1, 64) == strconv.FormatFloat(v, 'f', 2, 64) ||
+			strconv.FormatFloat(v, 'f', -1, 64) == strings.TrimRight(strconv.FormatFloat(v, 'f', 2, 64), "0")
+	}
+
+	cfg := DefaultConfig()
+	checked := 0
+	verdicts := []valmodels.Status{
+		valmodels.StatusConfirmed, valmodels.StatusSupported, valmodels.StatusPartial,
+		valmodels.StatusRejected, valmodels.StatusUnverifiable,
+		valmodels.StatusValidationDisabled, valmodels.StatusSkippedBudgetCap, "",
+	}
+	for _, verdict := range verdicts {
+		for kinds := 0; kinds < 4; kinds++ {
+			for mask := 0; mask < 16; mask++ {
+				in := Input{Verdict: verdict, Config: cfg}
+				for i := 0; i < kinds; i++ {
+					in.QualityCaveats = append(in.QualityCaveats,
+						caveat([]string{"withheld", "sampled", "truncated"}[i], "d"))
+				}
+				if mask&1 != 0 {
+					in.FigureVerdicts = []gomodels.FigureVerdict{figureVerdict(gomodels.FigureFails)}
+				}
+				if mask&2 != 0 {
+					in.QuantifierVerdicts = []gomodels.QuantifierVerdict{quantifierVerdict(gomodels.QuantifierFails)}
+				}
+				if mask&4 != 0 {
+					in.UnresolvedFigures = 2
+				}
+				if mask&8 != 0 {
+					in.StepReadBeyondRetained = true
+				}
+				got := Score(in)
+				if !exact(got.ConfidenceScore) {
+					t.Errorf("verdict=%q kinds=%d mask=%d: score serialises as %s, not an exact two-decimal value",
+						verdict, kinds, mask, strconv.FormatFloat(got.ConfidenceScore, 'f', -1, 64))
+				}
+				if !exact(got.ConfidenceBase) {
+					t.Errorf("verdict=%q: base serialises as %s", verdict,
+						strconv.FormatFloat(got.ConfidenceBase, 'f', -1, 64))
+				}
+				for _, d := range got.ConfidenceDocks {
+					if !exact(d.Amount) {
+						t.Errorf("verdict=%q kinds=%d mask=%d: dock %s amount serialises as %s",
+							verdict, kinds, mask, d.Code, strconv.FormatFloat(d.Amount, 'f', -1, 64))
+					}
+				}
+				checked++
+			}
+		}
+	}
+	if checked != len(verdicts)*4*16 {
+		t.Fatalf("checked %d cases; the generator has stopped covering the matrix", checked)
+	}
+
+	// And the snapping helper itself, over every score on the grid.
+	for n := 1; n <= 19; n++ {
+		if v := round(float64(n) * 0.05); !exact(v) {
+			t.Errorf("round(%d*0.05) serialises as %s", n, strconv.FormatFloat(v, 'f', -1, 64))
+		}
 	}
 }
 
