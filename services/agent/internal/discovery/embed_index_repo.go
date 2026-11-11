@@ -4,6 +4,7 @@ import (
 	"context"
 
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 )
 
 // EmbedIndexStore handles Phase 9 database operations.
@@ -13,6 +14,17 @@ type EmbedIndexStore interface {
 	InsertRecommendations(ctx context.Context, recs []*commonmodels.StandaloneRecommendation) error
 	UpdateEmbedding(ctx context.Context, collection, id, embeddingText, embeddingModel string) error
 	UpdateDuplicate(ctx context.Context, collection, id, duplicateOf string, score float64) error
+
+	// UpdateDocVerdict rewrites one standalone row's verdict and the
+	// confidence derived from it, after an on-demand re-validation.
+	//
+	// It lives beside the two above because they already write these same two
+	// collections by id, and it writes all three fields at once for the
+	// reason DocVerdictUpdate names: confidence is a function of the verdict,
+	// so a row carrying one without the other is internally contradictory.
+	// This matters more here than on the discovery document, because these
+	// collections are what the insights list page and Ask read directly.
+	UpdateDocVerdict(ctx context.Context, collection, id string, u database.DocVerdictUpdate) error
 
 	// PointIDsByDiscovery lists the ids of one discovery's standalone
 	// insight / recommendation rows, insights first then recommendations,

@@ -45,8 +45,7 @@ Respond with ONLY valid JSON:
         "Track completion rate for level 42 (target: increase from 22% to 35%)",
         "Monitor D7 retention for this segment (target: improve by 15%)"
       ],
-      "related_insight_ids": ["6e9261f5-c4ec-404b-bdf0-760a4644f384", "02665b9e-468f-41eb-b50e-28702b95e999"],
-      "confidence": 0.85
+      "related_insight_ids": ["6e9261f5-c4ec-404b-bdf0-760a4644f384", "02665b9e-468f-41eb-b50e-28702b95e999"]
     }
   ]
 }

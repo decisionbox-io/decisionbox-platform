@@ -35,7 +35,6 @@ Respond with ONLY valid JSON (no markdown, no explanations):
       "severity": "critical",
       "affected_count": 5400,
       "risk_score": 0.68,
-      "confidence": 0.85,
       "metrics": {
         "milestone": "profile_photo_upload",
         "completion_rate": 0.32,

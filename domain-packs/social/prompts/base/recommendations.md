@@ -45,8 +45,7 @@ Respond with ONLY valid JSON:
         "Track D1 retention for new signups (target: improve from 48% to 60%)",
         "Monitor first-session follow rate (target: 70% follow at least 3 accounts)"
       ],
-      "related_insight_ids": ["6e9261f5-c4ec-404b-bdf0-760a4644f384", "02665b9e-468f-41eb-b50e-28702b95e999"],
-      "confidence": 0.85
+      "related_insight_ids": ["6e9261f5-c4ec-404b-bdf0-760a4644f384", "02665b9e-468f-41eb-b50e-28702b95e999"]
     }
   ]
 }

@@ -36,7 +36,6 @@ Respond with ONLY valid JSON (no markdown, no explanations):
       "severity": "critical",
       "affected_count": 2100,
       "risk_score": 0.7,
-      "confidence": 0.85,
       "metrics": {
         "primary_metric": "posts_per_month",
         "current_value": 10.6,

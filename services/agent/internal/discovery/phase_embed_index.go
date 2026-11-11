@@ -115,8 +115,13 @@ func (o *Orchestrator) denormalizeInsights(result *models.DiscoveryResult) []*co
 			TargetSegment: ins.TargetSegment,
 			SourceSteps:   ins.SourceSteps,
 			Validation:    ins.Validation,
-			DiscoveredAt:  ins.DiscoveredAt,
-			CreatedAt:     now,
+			// The derived grade travels with the document. Without it the
+			// collection the insights list page and Ask read would show a
+			// scored insight as legacy, and its band would exist only on the
+			// discovery document.
+			Scoring:      ins.Scoring,
+			DiscoveredAt: ins.DiscoveredAt,
+			CreatedAt:    now,
 		})
 	}
 
@@ -157,6 +162,7 @@ func (o *Orchestrator) denormalizeRecommendations(result *models.DiscoveryResult
 			RelatedInsightIDs: rec.RelatedInsightIDs,
 			Confidence:        rec.Confidence,
 			Validation:        rec.Validation,
+			Scoring:           rec.Scoring,
 			CreatedAt:         now,
 		})
 	}
@@ -253,8 +259,15 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 				"embedding_model": modelName,
 				"severity":        ins.Severity,
 				"analysis_area":   ins.AnalysisArea,
-				"confidence":      ins.Confidence,
-				"created_at":      ins.CreatedAt.Format(time.RFC3339),
+				// Derived now rather than the model's own number, which is
+				// strictly better but changes nothing structurally. The
+				// payload is write-only -- no retrieval path reads it back
+				// (only type, discovery_id and severity are ever filtered on)
+				// -- so an on-demand re-validation that re-derives the score
+				// deliberately does not rewrite it. The alternative is a
+				// payload-update method on every vector-store provider.
+				"confidence": ins.Confidence,
+				"created_at": ins.CreatedAt.Format(time.RFC3339),
 			},
 		})
 	}

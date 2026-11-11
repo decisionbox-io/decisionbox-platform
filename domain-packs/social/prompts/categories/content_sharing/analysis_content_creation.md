@@ -36,7 +36,6 @@ Respond with ONLY valid JSON:
       "severity": "critical",
       "affected_count": 2448,
       "risk_score": 0.72,
-      "confidence": 0.85,
       "metrics": {
         "pattern_type": "creator_activation",
         "first_time_creators": 3400,

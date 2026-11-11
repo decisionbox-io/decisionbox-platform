@@ -18,6 +18,7 @@ import SimilarItems from '@/components/lists/SimilarItems';
 import { ValidationRouter } from '@/components/validation/ValidationRouter';
 import { ValidationLogRow } from '@/components/validation/ValidationLogRow';
 import { isLegacyValidation } from '@/components/validation/validationShape';
+import { ConfidenceCell } from '@/components/scoring/ConfidenceCell';
 import { DatasourceBadge } from '@/components/common/UIComponents';
 import { markRead } from '@/lib/readState';
 import QuestionsDrawer from '@/components/common/QuestionsDrawer';
@@ -265,7 +266,15 @@ export default function InsightDetailPage() {
             </div>
             <div>
               <Text size="xs" c="dimmed">Confidence</Text>
-              <Text size="lg" fw={700}>{(insight.confidence * 100).toFixed(0)}%</Text>
+              {/* The band and its reason, with the full breakdown behind it.
+                  A document from before the scorer existed shows its stored
+                  number marked legacy instead — nothing is recalculated. */}
+              <ConfidenceCell
+                scoring={insight.evidence_scoring}
+                confidence={insight.confidence}
+                size="md"
+                showReason
+              />
             </div>
             {insight.target_segment && (
               <div>

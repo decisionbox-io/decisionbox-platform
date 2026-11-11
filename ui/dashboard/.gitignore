@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Written and re-added by `next dev` on every start (see
+# node_modules/next/dist/server/lib/generate-agent-files.js). Ignored rather
+# than committed so running the dev server does not leave a dirty tree, and so
+# a generated file never rides into an unrelated change.
+AGENTS.md

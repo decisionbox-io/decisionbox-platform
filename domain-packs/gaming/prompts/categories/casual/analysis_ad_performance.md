@@ -35,7 +35,6 @@ Respond with ONLY valid JSON:
       "severity": "critical",
       "affected_count": 3200,
       "risk_score": 0.42,
-      "confidence": 0.9,
       "metrics": {
         "pattern_type": "tolerance_threshold",
         "threshold_ads_per_session": 6,

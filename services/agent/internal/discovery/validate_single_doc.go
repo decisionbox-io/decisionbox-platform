@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/scoring"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/validation/verifier"
@@ -35,6 +36,12 @@ type ValidateSingleDocInput struct {
 	WH             verifier.WarehouseInfo
 	Disc           verifier.DiscoveryContext
 	Executor       verifier.Executor
+
+	// ScoringCfg is the confidence engine's calibration to re-derive this
+	// document's score against. The zero value is the current default, which
+	// is what a caller with nothing to say should pass -- Score stamps the
+	// build's own engine version rather than an unexplainable 0.
+	ScoringCfg scoring.Config
 
 	DocKind  valmodels.DocKind
 	DocID    string
@@ -104,6 +111,17 @@ func ValidateSingleDoc(ctx context.Context, in ValidateSingleDocInput) (models.V
 			return models.ValidationResult{}, fmt.Errorf("validateInsights returned %d results, expected 1", len(results))
 		}
 		target.Validation = one[0].Validation
+		// The verdict just changed, so the confidence derived from it is
+		// stale. Re-derived here rather than left for the caller, so the one
+		// document can never be persisted with a confidence from verdict X
+		// beside a validation that says Y -- an internally contradictory
+		// document, which is worse than either staleness alone.
+		//
+		// The confidence axis only. Severity and risk_score are still the
+		// analysis model's own words and this path has no business touching
+		// them; it is also why no vector-store method is needed here, since
+		// the Qdrant payload's only re-derivable field is write-only.
+		rescoreTargetInsight(target, in.ScoringCfg)
 		return results[0], nil
 
 	case valmodels.DocRecommendation:
@@ -129,9 +147,32 @@ func ValidateSingleDoc(ctx context.Context, in ValidateSingleDocInput) (models.V
 			return models.ValidationResult{}, fmt.Errorf("validateRecommendations returned %d results, expected 1", len(results))
 		}
 		target.Validation = one[0].Validation
+		rescoreTargetRecommendation(target, in.ScoringCfg)
 		return results[0], nil
 
 	default:
 		return models.ValidationResult{}, fmt.Errorf("unsupported doc_kind %q", in.DocKind)
 	}
+}
+
+// rescoreTargetInsight and rescoreTargetRecommendation re-derive one
+// document's confidence in place, through the same scorer the run uses.
+//
+// The same path deliberately: a second derivation here would be a second
+// answer to "what is this worth", and the two would drift the first time
+// either changed. The single-element slice is how the shared scorer is
+// reached without a divergent code path, which is the same shape
+// ValidateSingleDoc already uses to reach validateInsights.
+func rescoreTargetInsight(target *models.Insight, cfg scoring.Config) {
+	one := []models.Insight{*target}
+	scoreInsights(one, cfg)
+	target.Confidence = one[0].Confidence
+	target.Scoring = one[0].Scoring
+}
+
+func rescoreTargetRecommendation(target *models.Recommendation, cfg scoring.Config) {
+	one := []models.Recommendation{*target}
+	scoreRecommendations(one, cfg)
+	target.Confidence = one[0].Confidence
+	target.Scoring = one[0].Scoring
 }

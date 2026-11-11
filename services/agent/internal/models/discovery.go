@@ -130,7 +130,27 @@ type Insight struct {
 
 	AffectedCount int     `bson:"affected_count" json:"affected_count"`
 	RiskScore     float64 `bson:"risk_score" json:"risk_score"`
-	Confidence    float64 `bson:"confidence" json:"confidence"`
+
+	// Confidence is the derived confidence score -- the continuous number
+	// behind Scoring.ConfidenceBand, repopulated by the scorer rather than
+	// authored by the model. The key stays `confidence` in BSON because it is
+	// a live Qdrant payload field and the sort key on two dashboard pages;
+	// changing how it is POPULATED keeps every consumer working.
+	//
+	// json:"-" is the second defence, and it is doing real work. The schemas
+	// no longer ask for the number, but a pack's prompts are snapshotted into
+	// a project at creation and its seeds are never overwritten on upgrade, so
+	// existing deployments keep asking forever. Dropping only the coercion
+	// that used to read this field would have been worse than leaving it: a
+	// model emitting "confidence": "0.9" would then fail the whole insight
+	// decode and silently zero the area's insights, which is exactly the
+	// issue-#342 failure the coercion was added for. Under json:"-" the key is
+	// an unknown field and encoding/json ignores it, so the model cannot
+	// author the number at all.
+	//
+	// The API mirror and both standalone copies keep json:"confidence": they
+	// are never decoded from model output, and they serve it to clients.
+	Confidence float64 `bson:"confidence" json:"-"`
 
 	// Flexible domain-specific metrics
 	Metrics    map[string]interface{} `bson:"metrics,omitempty" json:"metrics,omitempty"`
@@ -239,6 +259,25 @@ type Insight struct {
 	// the record of its own correction.
 	Repair *InsightRepair `bson:"repair,omitempty" json:"evidence_repair,omitempty"`
 
+	// Scoring is the derived grade: the confidence band, the score behind it,
+	// the reason in plain words, and every deduction the validation verdict's
+	// base took. Written by the scorer at the end of each analysis area, after
+	// the quality label it reads and before the area's checkpoint.
+	//
+	// Nil means the document was written before the scorer existed, which is
+	// what makes it the legacy marker -- a value type would make "never
+	// scored" indistinguishable from "scored to zero".
+	//
+	// The tag is `evidence_scoring` rather than `scoring` for the reason
+	// Quality's is not `quality`: insights are decoded from model output with
+	// the standard decoder, so a key matching this tag would be read straight
+	// into the field, letting the model author the grade whose whole point is
+	// that the model did not reach it. A plain "scoring" is an obvious key for
+	// a model to volunteer, and a scalar one ("scoring": "high") would fail
+	// the decode and drop the whole insight. The scorer also clears the field
+	// before it writes -- two defences, as with the quantifier verdicts.
+	Scoring *Scoring `bson:"scoring,omitempty" json:"evidence_scoring,omitempty"`
+
 	SQLMetadata  *SQLMetadata `bson:"sql_metadata,omitempty" json:"sql_metadata,omitempty"`
 	DiscoveredAt time.Time    `bson:"discovered_at" json:"discovered_at"`
 
@@ -248,14 +287,19 @@ type Insight struct {
 
 // UnmarshalJSON decodes an insight tolerantly. Like the recommendation decoder,
 // it coerces the numeric and list fields that smaller/open models frequently
-// emit with the wrong JSON type — affected_count / risk_score / confidence as
-// strings ("1200", "0.8"), source_steps as string-typed or single values, and
+// emit with the wrong JSON type — affected_count / risk_score as strings
+// ("1200", "0.8"), source_steps as string-typed or single values, and
 // indicators as a bare string instead of a list. Under strict decoding a single
 // off-typed field failed the whole insight and — because the analysis batch was
 // decoded in one shot — silently zeroed the area's insights (the insight
 // analogue of the recommendation loss fixed in issue #342). It reuses the
 // recommendation coercion helpers, so valid input (Opus, GPT) decodes to
 // identical values.
+//
+// `confidence` is deliberately NOT in that list any more. The field is derived
+// now, and under json:"-" the key is an unknown field — so a model emitting
+// "confidence": "0.9" is ignored rather than failing the insight, which is the
+// same protection the coercion gave and a stronger statement besides.
 //
 // Only JSON decoding is customized; BSON is unaffected, so persisted insights
 // read back unchanged.
@@ -264,7 +308,6 @@ func (in *Insight) UnmarshalJSON(data []byte) error {
 	aux := &struct {
 		AffectedCount json.RawMessage `json:"affected_count"`
 		RiskScore     json.RawMessage `json:"risk_score"`
-		Confidence    json.RawMessage `json:"confidence"`
 		SourceSteps   json.RawMessage `json:"source_steps"`
 		Indicators    json.RawMessage `json:"indicators"`
 		*alias
@@ -274,7 +317,6 @@ func (in *Insight) UnmarshalJSON(data []byte) error {
 	}
 	in.AffectedCount = coerceFlexInt(aux.AffectedCount)
 	in.RiskScore = coerceFlexFloat(aux.RiskScore)
-	in.Confidence = coerceFlexFloat(aux.Confidence)
 	in.SourceSteps = coerceFlexIntSlice(aux.SourceSteps)
 	in.Indicators = coerceStringSlice(aux.Indicators)
 	return nil
@@ -299,7 +341,9 @@ type Recommendation struct {
 	Actions           []string `bson:"actions" json:"actions"`
 	RelatedInsightIDs []string `bson:"related_insight_ids,omitempty" json:"related_insight_ids,omitempty"`
 
-	Confidence float64   `bson:"confidence" json:"confidence"`
+	// Confidence is derived from this recommendation's own validation verdict,
+	// tagged json:"-" for the reason Insight.Confidence is. See there.
+	Confidence float64   `bson:"confidence" json:"-"`
 	CreatedAt  time.Time `bson:"created_at" json:"created_at"`
 
 	// Figures are the numbers this recommendation states, emitted as data rather
@@ -336,16 +380,29 @@ type Recommendation struct {
 	// orchestrator's recommendation-validation phase runs. Nil on
 	// legacy docs.
 	Validation *InsightValidation `bson:"validation,omitempty" json:"validation,omitempty"`
+
+	// Scoring is the derived grade, from this recommendation's OWN verdict --
+	// not inherited from the insights it cites. Same shape, same nil-means-
+	// legacy rule and same `evidence_scoring` tag as the insight's; see there.
+	//
+	// Two of the five deductions can never fire here, and correctly so: a
+	// recommendation is shown insights rather than warehouse rows, so it
+	// carries no source-quality caveats and declares no quantifier claims.
+	Scoring *Scoring `bson:"scoring,omitempty" json:"evidence_scoring,omitempty"`
 }
 
 // UnmarshalJSON decodes a recommendation tolerantly. Beyond the tolerant
 // Impact decoding, it coerces the numeric scalar fields (priority,
-// segment_size, confidence) when a model emits them as strings — a common,
+// segment_size) when a model emits them as strings — a common,
 // model-independent behaviour that, under strict decoding, failed the whole
 // recommendation and (because the batch was decoded in one shot) silently
 // zeroed the run's recommendations (issue #342). priority accepts descriptive
-// words ("high", "critical", "P2") as well as numbers; segment_size and
-// confidence accept numeric strings (including thousands separators).
+// words ("high", "critical", "P2") as well as numbers; segment_size accepts
+// numeric strings (including thousands separators).
+//
+// `confidence` is no longer coerced, because it is no longer read: the field
+// is derived and tagged json:"-", so a string-typed one is an unknown field
+// the decoder ignores.
 //
 // Only JSON decoding is customized; BSON is unaffected, so persisted
 // recommendations read back unchanged.
@@ -354,7 +411,6 @@ func (r *Recommendation) UnmarshalJSON(data []byte) error {
 	aux := &struct {
 		Priority    json.RawMessage `json:"priority"`
 		SegmentSize json.RawMessage `json:"segment_size"`
-		Confidence  json.RawMessage `json:"confidence"`
 		*alias
 	}{alias: (*alias)(r)}
 	if err := json.Unmarshal(data, aux); err != nil {
@@ -362,7 +418,6 @@ func (r *Recommendation) UnmarshalJSON(data []byte) error {
 	}
 	r.Priority = coercePriority(aux.Priority)
 	r.SegmentSize = coerceFlexInt(aux.SegmentSize)
-	r.Confidence = coerceFlexFloat(aux.Confidence)
 	return nil
 }
 

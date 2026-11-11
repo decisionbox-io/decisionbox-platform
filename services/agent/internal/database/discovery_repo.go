@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
@@ -69,17 +70,55 @@ func (r *DiscoveryRepository) GetByID(ctx context.Context, idHex string) (*model
 	return &result, nil
 }
 
-// UpdateInsightValidation writes the new Validation pointer onto the
-// matching embedded insight via positional array-filter, leaving the
-// other insights' validation untouched. The element filter scopes the
-// write so a concurrent discovery save doesn't clobber sibling docs.
+// DocVerdictUpdate is what one on-demand re-validation writes back to a
+// document: the new verdict, and the confidence derived from it.
+//
+// The three travel together and in one write, because confidence is now a
+// function of the verdict. Writing the verdict alone would leave the document
+// claiming a confidence derived from the verdict it no longer has -- not
+// merely stale but internally contradictory, which is worse than either
+// staleness alone and is what a reader would be shown.
+//
+// Severity and risk_score are deliberately absent: they are still the analysis
+// model's own words, and nothing on this path is entitled to rewrite them.
+type DocVerdictUpdate struct {
+	// Validation is the new verdict block. Typed as any for the reason it
+	// always was: the agent's InsightValidation is an alias of the shared
+	// type and the caller has it in hand already.
+	Validation interface{}
+
+	// Scoring is the derived grade. Nil writes a null, which is the correct
+	// representation of "this document is not scored" -- but no caller should
+	// pass one, because a re-validated document always gets a fresh score.
+	Scoring *gomodels.Scoring
+
+	// Confidence is the continuous score, duplicated out of Scoring onto the
+	// document's own field because that key is a live Qdrant payload field
+	// and the sort key on two dashboard pages.
+	Confidence float64
+}
+
+// fields renders the update as the $set keys for one array element.
+func (u DocVerdictUpdate) fields(prefix string) bson.M {
+	return bson.M{
+		prefix + ".validation": u.Validation,
+		prefix + ".scoring":    u.Scoring,
+		prefix + ".confidence": u.Confidence,
+		"updated_at":           time.Now(),
+	}
+}
+
+// UpdateInsightValidation writes the new verdict and the confidence derived
+// from it onto the matching embedded insight via positional array-filter,
+// leaving the other insights untouched. The element filter scopes the write so
+// a concurrent discovery save doesn't clobber sibling docs.
 //
 // The main filter includes `insights.id` so a missing or wrong
 // insightID surfaces as MatchedCount=0 — without that predicate the
 // UpdateOne still matches the discovery doc, updates `updated_at`,
 // touches no array element, and returns nil (silent no-op on bad
 // IDs).
-func (r *DiscoveryRepository) UpdateInsightValidation(ctx context.Context, discoveryIDHex, insightID string, validation interface{}) error {
+func (r *DiscoveryRepository) UpdateInsightValidation(ctx context.Context, discoveryIDHex, insightID string, u DocVerdictUpdate) error {
 	oid, err := primitive.ObjectIDFromHex(discoveryIDHex)
 	if err != nil {
 		return fmt.Errorf("invalid discovery id %q: %w", discoveryIDHex, err)
@@ -89,7 +128,7 @@ func (r *DiscoveryRepository) UpdateInsightValidation(ctx context.Context, disco
 	})
 	res, err := r.collection.UpdateOne(ctx,
 		bson.M{"_id": oid, "insights.id": insightID},
-		bson.M{"$set": bson.M{"insights.$[el].validation": validation, "updated_at": time.Now()}},
+		bson.M{"$set": u.fields("insights.$[el]")},
 		opts,
 	)
 	if err != nil {
@@ -106,7 +145,7 @@ func (r *DiscoveryRepository) UpdateInsightValidation(ctx context.Context, disco
 // the same `recommendations.id` predicate on the main filter so a
 // missing recID returns an error instead of silently no-op'ing the
 // array filter while updating `updated_at`.
-func (r *DiscoveryRepository) UpdateRecommendationValidation(ctx context.Context, discoveryIDHex, recID string, validation interface{}) error {
+func (r *DiscoveryRepository) UpdateRecommendationValidation(ctx context.Context, discoveryIDHex, recID string, u DocVerdictUpdate) error {
 	oid, err := primitive.ObjectIDFromHex(discoveryIDHex)
 	if err != nil {
 		return fmt.Errorf("invalid discovery id %q: %w", discoveryIDHex, err)
@@ -116,7 +155,7 @@ func (r *DiscoveryRepository) UpdateRecommendationValidation(ctx context.Context
 	})
 	res, err := r.collection.UpdateOne(ctx,
 		bson.M{"_id": oid, "recommendations.id": recID},
-		bson.M{"$set": bson.M{"recommendations.$[el].validation": validation, "updated_at": time.Now()}},
+		bson.M{"$set": u.fields("recommendations.$[el]")},
 		opts,
 	)
 	if err != nil {

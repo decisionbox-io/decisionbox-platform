@@ -836,10 +836,14 @@ func TestPriorityCoercion(t *testing.T) {
 	}
 }
 
-// TestNumericFieldCoercion covers segment_size / confidence arriving as numeric
-// strings (same class as priority — a stringified number must not drop the rec).
+// TestNumericFieldCoercion covers segment_size arriving as a numeric string
+// (same class as priority — a stringified number must not drop the rec).
+//
+// `confidence` is no longer coerced because it is no longer read from model
+// output; a string-typed one is covered by
+// TestAStringTypedConfidenceIsIgnoredRatherThanFatal.
 func TestNumericFieldCoercion(t *testing.T) {
-	const in = `{"title":"t","segment_size":"1,311,488","confidence":"0.85"}`
+	const in = `{"title":"t","segment_size":"1,311,488"}`
 	var rec Recommendation
 	if err := json.Unmarshal([]byte(in), &rec); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
@@ -847,21 +851,31 @@ func TestNumericFieldCoercion(t *testing.T) {
 	if rec.SegmentSize != 1311488 {
 		t.Errorf("SegmentSize = %d, want 1311488", rec.SegmentSize)
 	}
-	if rec.Confidence != 0.85 {
-		t.Errorf("Confidence = %v, want 0.85", rec.Confidence)
-	}
 }
 
 // TestNonFiniteNumericRejected ensures NaN/Inf strings don't poison a stored
 // float (which would later break JSON serialization of the discovery).
+//
+// The float half runs against risk_score rather than confidence: confidence is
+// derived now and is not read from model output at all, so a non-finite one
+// could not leak through this decoder whatever coerceFlexFloat did.
 func TestNonFiniteNumericRejected(t *testing.T) {
-	for _, in := range []string{`{"title":"t","confidence":"NaN"}`, `{"title":"t","confidence":"Inf"}`, `{"title":"t","segment_size":"-Inf"}`} {
+	for _, in := range []string{`{"title":"t","segment_size":"Inf"}`, `{"title":"t","segment_size":"-Inf"}`} {
 		var rec Recommendation
 		if err := json.Unmarshal([]byte(in), &rec); err != nil {
 			t.Fatalf("Unmarshal(%s): %v", in, err)
 		}
-		if rec.Confidence != 0 || rec.SegmentSize != 0 {
-			t.Errorf("%s: non-finite value leaked (confidence=%v segment=%d)", in, rec.Confidence, rec.SegmentSize)
+		if rec.SegmentSize != 0 {
+			t.Errorf("%s: non-finite value leaked (segment=%d)", in, rec.SegmentSize)
+		}
+	}
+	for _, in := range []string{`{"name":"n","risk_score":"NaN"}`, `{"name":"n","risk_score":"Inf"}`} {
+		var ins Insight
+		if err := json.Unmarshal([]byte(in), &ins); err != nil {
+			t.Fatalf("Unmarshal(%s): %v", in, err)
+		}
+		if ins.RiskScore != 0 {
+			t.Errorf("%s: non-finite value leaked (risk_score=%v)", in, ins.RiskScore)
 		}
 	}
 }
@@ -873,6 +887,11 @@ func TestNonFiniteNumericRejected(t *testing.T) {
 // Unmarshal round trip byte-for-byte identical. The tolerant decoder must not
 // change any value that was already the right type (as an Opus/GPT response
 // is). If this ever fails, the coercion is altering good data.
+//
+// Confidence is deliberately absent from the fixture: it is derived rather than
+// authored and is tagged json:"-", so it is not on this wire at all and a value
+// set here could not come back. Its own behaviour is pinned by
+// TestAStringTypedConfidenceIsIgnoredRatherThanFatal.
 func TestInsightUnmarshalJSON_GoldenEquality(t *testing.T) {
 	original := Insight{
 		ID:            "11111111-2222-3333-4444-555555555555",
@@ -883,7 +902,6 @@ func TestInsightUnmarshalJSON_GoldenEquality(t *testing.T) {
 		Severity:      "critical",
 		AffectedCount: 2847,
 		RiskScore:     0.85,
-		Confidence:    0.92,
 		Metrics:       map[string]interface{}{"drop_rate": 0.67, "cohort": "week-3"},
 		Indicators:    []string{"session drop", "revenue decline"},
 		TargetSegment: "new players",
@@ -910,8 +928,7 @@ func TestInsightUnmarshalJSON_StringTypedScalars(t *testing.T) {
 	const in = `{
 		"name":"Revenue drop",
 		"affected_count":"1,200",
-		"risk_score":"0.7",
-		"confidence":"0.88"
+		"risk_score":"0.7"
 	}`
 	var ins Insight
 	if err := json.Unmarshal([]byte(in), &ins); err != nil {
@@ -923,8 +940,68 @@ func TestInsightUnmarshalJSON_StringTypedScalars(t *testing.T) {
 	if ins.RiskScore != 0.7 {
 		t.Errorf("RiskScore = %v, want 0.7", ins.RiskScore)
 	}
-	if ins.Confidence != 0.88 {
-		t.Errorf("Confidence = %v, want 0.88", ins.Confidence)
+}
+
+// TestAStringTypedConfidenceIsIgnoredRatherThanFatal is the regression guard
+// for the whole reason the field is tagged json:"-" rather than merely losing
+// its coercion.
+//
+// The number is derived now, so the schemas no longer ask for it — but a
+// project snapshots its area prompts at creation and a pack's seeds are never
+// overwritten on upgrade, so existing deployments keep asking the model for it
+// forever. Had the field kept json:"confidence" with the coercion removed, a
+// model answering "confidence": "0.9" would fail the whole insight decode and
+// silently zero the area's insights: precisely the issue-#342 failure the
+// coercion was added for, reintroduced by the fix for something else. Under
+// json:"-" the key is an unknown field and encoding/json ignores it.
+func TestAStringTypedConfidenceIsIgnoredRatherThanFatal(t *testing.T) {
+	for _, raw := range []string{`"0.9"`, `0.9`, `"high"`, `null`, `{"band":"high"}`, `[0.9]`} {
+		t.Run(raw, func(t *testing.T) {
+			var ins Insight
+			in := `{"name":"Revenue drop","severity":"high","confidence":` + raw + `}`
+			if err := json.Unmarshal([]byte(in), &ins); err != nil {
+				t.Fatalf("a volunteered confidence failed the whole insight decode: %v", err)
+			}
+			if ins.Name != "Revenue drop" || ins.Severity != "high" {
+				t.Errorf("the rest of the insight was lost: %+v", ins)
+			}
+			if ins.Confidence != 0 {
+				t.Errorf("Confidence = %v; the model must not be able to author it", ins.Confidence)
+			}
+
+			var rec Recommendation
+			recIn := `{"title":"t","category":"c","confidence":` + raw + `}`
+			if err := json.Unmarshal([]byte(recIn), &rec); err != nil {
+				t.Fatalf("a volunteered confidence failed the whole recommendation decode: %v", err)
+			}
+			if rec.Title != "t" || rec.Category != "c" {
+				t.Errorf("the rest of the recommendation was lost: %+v", rec)
+			}
+			if rec.Confidence != 0 {
+				t.Errorf("Confidence = %v; the model must not be able to author it", rec.Confidence)
+			}
+		})
+	}
+}
+
+// TestAVolunteeredScoringBlockIsIgnored is the same defence one level up. A
+// model told to stop writing `confidence` may reach for the sub-document
+// instead, and a scalar `"scoring": "high"` under a tag the decoder reads would
+// fail the decode and drop the insight — the hazard the evidence_* naming
+// convention exists for.
+func TestAVolunteeredScoringBlockIsIgnored(t *testing.T) {
+	for _, raw := range []string{`"high"`, `0.9`, `{"confidence_band":"high"}`, `null`} {
+		var ins Insight
+		in := `{"name":"n","severity":"high","scoring":` + raw + `}`
+		if err := json.Unmarshal([]byte(in), &ins); err != nil {
+			t.Fatalf("scoring=%s failed the insight decode: %v", raw, err)
+		}
+		if ins.Scoring != nil {
+			t.Errorf("scoring=%s was read into the document: %+v", raw, ins.Scoring)
+		}
+		if ins.Name != "n" {
+			t.Errorf("scoring=%s cost the insight its prose: %+v", raw, ins)
+		}
 	}
 }
 

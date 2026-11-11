@@ -115,7 +115,6 @@ func insightResponseSchema() map[string]interface{} {
 		Severity:      nonEmptyString(`One of "critical", "high", "medium", "low"`, maxSchemaLabelRunes),
 		AffectedCount: map[string]interface{}{"type": "integer", "description": "Number of users/entities affected"},
 		RiskScore:     map[string]interface{}{"type": "number", "description": "Risk score from 0.0 to 1.0"},
-		Confidence:    map[string]interface{}{"type": "number", "description": "Confidence from 0.0 to 1.0"},
 		TargetSegment: boundedString("The user segment this insight applies to", maxSchemaSegmentRunes),
 		Metrics: map[string]interface{}{
 			"type":        "object",
@@ -326,7 +325,6 @@ func insightRepairResponseFormat() *gollm.ResponseFormat {
 		TargetSegment:    keep("target_segment"),
 		AffectedCount:    keep("affected_count"),
 		RiskScore:        keep("risk_score"),
-		Confidence:       keep("confidence"),
 		Metrics:          keep("metrics"),
 	}
 	return &gollm.ResponseFormat{

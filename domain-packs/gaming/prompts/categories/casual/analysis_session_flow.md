@@ -35,7 +35,6 @@ Respond with ONLY valid JSON:
       "severity": "critical",
       "affected_count": 4200,
       "risk_score": 0.38,
-      "confidence": 0.9,
       "metrics": {
         "pattern_type": "onboarding_drop",
         "funnel_step": 3,

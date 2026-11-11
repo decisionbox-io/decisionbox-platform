@@ -33,7 +33,6 @@ Respond with ONLY valid JSON (no markdown, no explanations):
       "severity": "high",
       "affected_count": 1240,
       "risk_score": 0.6,
-      "confidence": 0.8,
       "metrics": {
         "primary_metric": "sessions_per_week",
         "current_value": 3.8,

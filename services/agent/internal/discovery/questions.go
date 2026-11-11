@@ -267,11 +267,17 @@ func (o *Orchestrator) buildQuestionsPrompt(items []uncertaintyItem, existing []
 // / recommendations the verifier could not confirm (unverifiable / partial /
 // skipped) or that carry low confidence, plus analysis areas that failed. An
 // empty result means "nothing to ask about" and the caller skips the LLM call.
+//
+// One behaviour change came with the derived score, and it is deliberate: a
+// document the warehouse CONTRADICTED is now an uncertainty item, where its
+// model-assigned 0.75-0.99 used to keep it out. Nine of 160 insights in the
+// measured sample. "The warehouse contradicted this claim" is a grounded
+// prompt for a clarifying question if anything is, and the digest is capped.
 func buildUncertaintyDigest(insights []models.Insight, recs []models.Recommendation, analysisLog []models.AnalysisStep, confMax float64) []uncertaintyItem {
 	var items []uncertaintyItem
 	for i := range insights {
 		in := insights[i]
-		if reason, ok := uncertaintyReason(in.Validation, in.Confidence, confMax); ok {
+		if reason, ok := uncertaintyReason(in.Validation, in.Scoring, in.Confidence, confMax); ok {
 			items = append(items, uncertaintyItem{
 				TargetType: commonmodels.QuestionTargetInsight,
 				TargetID:   in.ID,
@@ -283,7 +289,7 @@ func buildUncertaintyDigest(insights []models.Insight, recs []models.Recommendat
 	}
 	for i := range recs {
 		rec := recs[i]
-		if reason, ok := uncertaintyReason(rec.Validation, rec.Confidence, confMax); ok {
+		if reason, ok := uncertaintyReason(rec.Validation, rec.Scoring, rec.Confidence, confMax); ok {
 			items = append(items, uncertaintyItem{
 				TargetType: commonmodels.QuestionTargetRecommendation,
 				TargetID:   rec.ID,
@@ -310,7 +316,13 @@ func buildUncertaintyDigest(insights []models.Insight, recs []models.Recommendat
 
 // uncertaintyReason maps a validation verdict / confidence to a human reason,
 // and whether the item counts as genuinely uncertain.
-func uncertaintyReason(v *models.InsightValidation, confidence, confMax float64) (string, bool) {
+//
+// scoring is the document's derived grade, nil on one written before the
+// scorer existed. When it is present the threshold applies to the derived
+// score and the reason is the engine's own wording, so the digest, the
+// dashboard and an API client all say the same thing about the same finding
+// rather than three things.
+func uncertaintyReason(v *models.InsightValidation, scoring *models.Scoring, confidence, confMax float64) (string, bool) {
 	if v != nil {
 		switch v.Combined {
 		case valmodels.StatusUnverifiable:
@@ -319,12 +331,46 @@ func uncertaintyReason(v *models.InsightValidation, confidence, confMax float64)
 			return "the claim was only partially verified", true
 		case valmodels.StatusSkippedBudgetCap:
 			return "validation was skipped for this item (run budget cap)", true
+		case valmodels.StatusValidationDisabled:
+			// Excluded explicitly, and this is the one case where the
+			// threshold must NOT be applied to the derived score.
+			//
+			// Validation off is a run-level setting, so every document on such
+			// a run derives the same never-checked score — below the 50%
+			// default — and without this guard the digest would name every
+			// finding of the run and distinguish nothing. Today's behaviour is
+			// the same: the model's own high number kept these out. It did so
+			// by accident, but for the right reason, which is that "nobody
+			// asked for this to be checked" is not a thing to ask the analyst
+			// a clarifying question about.
+			return "", false
 		}
 	}
-	// Confidence below the threshold (including 0 — the least-confident, or a
-	// finding the model gave no confidence for) is an uncertainty signal per the
-	// DISCOVERY_QUESTIONS_CONFIDENCE_MAX_PCT contract. Grounding + the hard cap +
-	// the "ask only genuine uncertainty" prompt keep this from over-generating.
+
+	// The DISCOVERY_QUESTIONS_CONFIDENCE_MAX_PCT contract, preserved rather
+	// than bypassed: it now applies to the derived score on a scored document
+	// and to the stored number on a legacy one.
+	//
+	// A scored document also reports the engine's reason instead of a second
+	// phrasing of the percentage, because the engine knows WHY the score is
+	// what it is and "low confidence (55%)" does not.
+	if scoring != nil {
+		if scoring.ConfidenceScore >= confMax {
+			return "", false
+		}
+		if scoring.ConfidenceReason != "" {
+			return scoring.ConfidenceReason, true
+		}
+		// The engine always writes a reason, so this is for a document that
+		// did not come from it: one written by a newer version that stores the
+		// wording elsewhere, or one edited by hand. A percentage is a worse
+		// sentence than the engine's, and a better one than none.
+		return fmt.Sprintf("low confidence (%.0f%%)", scoring.ConfidenceScore*100), true
+	}
+
+	// A legacy document, where confidence is still whatever the model wrote.
+	// Zero included — the least-confident value, and on a document from before
+	// the schema asked for one, simply absent.
 	if confidence < confMax {
 		return fmt.Sprintf("low confidence (%.0f%%)", confidence*100), true
 	}

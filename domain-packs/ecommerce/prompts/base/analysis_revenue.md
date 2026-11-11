@@ -35,7 +35,6 @@ Respond with ONLY valid JSON (no markdown, no explanations):
       "severity": "high",
       "affected_count": 45200,
       "risk_score": 0.72,
-      "confidence": 0.9,
       "metrics": {
         "revenue_type": "concentration_risk",
         "top3_revenue_share": 0.72,

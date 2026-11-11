@@ -34,7 +34,6 @@ Respond with ONLY valid JSON (no markdown, no explanations):
       "severity": "critical|high|medium|low",
       "affected_count": 2847,
       "risk_score": 0.68,
-      "confidence": 0.85,
       "metrics": {
         "churn_rate": 0.68,
         "lifecycle_stage": "early|mid|late|tutorial",

@@ -117,9 +117,6 @@ func repairInsightJSON(ins models.Insight) string {
 	if ins.RiskScore != 0 {
 		body["risk_score"] = ins.RiskScore
 	}
-	if ins.Confidence != 0 {
-		body["confidence"] = ins.Confidence
-	}
 	if ins.TargetSegment != "" {
 		body["target_segment"] = ins.TargetSegment
 	}

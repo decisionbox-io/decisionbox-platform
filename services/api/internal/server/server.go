@@ -210,6 +210,13 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	// inference is routed through a managed gateway.
 	mux.HandleFunc("GET /api/v1/config", withRole(viewer, handler.AppConfig))
 
+	// The confidence engine's calibration, per engine version (viewer).
+	// Serves the one line a scored document cannot carry itself — which
+	// cutoff its score crossed — so the dashboard holds no copy of the
+	// cutoffs and a document scored by an earlier version is explained with
+	// the numbers that actually scored it.
+	mux.HandleFunc("GET /api/v1/scoring/engines", withRole(viewer, handler.ScoringEngines))
+
 	// Providers — viewer
 	mux.HandleFunc("GET /api/v1/providers/llm", withRole(viewer, providers.ListLLMProviders))
 	mux.HandleFunc("POST /api/v1/providers/llm/{id}/models/live", withRole(viewer, providers.ListLiveLLMModels))

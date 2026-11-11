@@ -8,6 +8,7 @@ import (
 
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -210,6 +211,7 @@ type mockEmbedIndexStore struct {
 	insertedRecs     []*commonmodels.StandaloneRecommendation
 	embedUpdates     []embedUpdate
 	dupUpdates       []dupUpdate
+	verdictUpdates   []verdictUpdate
 	insertError      error
 
 	// deletedDiscoveries records the discoveries the retire step purged;
@@ -246,6 +248,10 @@ type dupUpdate struct {
 	Collection, ID, DupOf string
 	Score                 float64
 }
+type verdictUpdate struct {
+	Collection, ID string
+	Update         database.DocVerdictUpdate
+}
 
 func (m *mockEmbedIndexStore) InsertInsights(_ context.Context, ins []*commonmodels.StandaloneInsight) error {
 	if m.insertError != nil {
@@ -267,6 +273,10 @@ func (m *mockEmbedIndexStore) UpdateEmbedding(_ context.Context, collection, id,
 }
 func (m *mockEmbedIndexStore) UpdateDuplicate(_ context.Context, collection, id, dupOf string, score float64) error {
 	m.dupUpdates = append(m.dupUpdates, dupUpdate{collection, id, dupOf, score})
+	return nil
+}
+func (m *mockEmbedIndexStore) UpdateDocVerdict(_ context.Context, collection, id string, u database.DocVerdictUpdate) error {
+	m.verdictUpdates = append(m.verdictUpdates, verdictUpdate{collection, id, u})
 	return nil
 }
 

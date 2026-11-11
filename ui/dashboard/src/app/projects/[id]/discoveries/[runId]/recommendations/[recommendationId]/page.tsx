@@ -14,10 +14,9 @@ import BookmarkButton from '@/components/lists/BookmarkButton';
 import RelatedSidebar, { RelatedChipStrip, RelatedItem } from '@/components/lists/RelatedSidebar';
 import SimilarItems from '@/components/lists/SimilarItems';
 import { ValidationRouter } from '@/components/validation/ValidationRouter';
+import { ConfidenceCell } from '@/components/scoring/ConfidenceCell';
 import { markRead } from '@/lib/readState';
-import {
-  Pill, normalizeConfidence,
-} from '@/components/common/UIComponents';
+import { Pill } from '@/components/common/UIComponents';
 import { api, DiscoveryResult, Feedback, Insight, Project, Recommendation, SearchResultItem } from '@/lib/api';
 
 const severityColor: Record<string, string> = {
@@ -209,10 +208,14 @@ export default function RecommendationDetailPage() {
                   <Text size="sm" fw={600}>{recommendation.segment_size.toLocaleString()}</Text>
                 </div>
               )}
-              {recommendation.confidence > 0 && (
+              {(recommendation.evidence_scoring || recommendation.confidence > 0) && (
                 <div>
                   <Text size="xs" c="dimmed">Confidence</Text>
-                  <Text size="sm" fw={600}>{normalizeConfidence(recommendation.confidence)}%</Text>
+                  <ConfidenceCell
+                    scoring={recommendation.evidence_scoring}
+                    confidence={recommendation.confidence}
+                    showReason
+                  />
                 </div>
               )}
             </Group>

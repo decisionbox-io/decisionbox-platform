@@ -54,7 +54,6 @@ Respond with ONLY valid JSON:
       "severity": "high",
       "affected_count": 1686,
       "risk_score": 0.0,
-      "confidence": 0.8,
       "metrics": {
         "feature_name": "profile_boost",
         "opportunity_type": "repeat_purchase",

@@ -19,6 +19,7 @@ import (
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/scoring"
 	_ "github.com/decisionbox-io/decisionbox/libs/go-common/sources" // registers knowledge-sources context provider via init()
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
@@ -330,6 +331,16 @@ type Orchestrator struct {
 	// latent bug before per-layer models — with one model it could not show.
 	calibMu           sync.Mutex
 	calibratedWindows map[string]int
+
+	// scoringCfg is the confidence engine's calibration for this run,
+	// resolved once at construction.
+	//
+	// Once per run rather than per area, because two areas of one run must
+	// never score against different cutoffs -- a run whose first half was
+	// graded on one calibration and second half on another has no meaningful
+	// ranking across it at all. It is also what the stored engine_version on
+	// each document refers to.
+	scoringCfg scoring.Config
 
 	// reasoningEnabled is the resolved model-agnostic per-project "Enable
 	// reasoning" toggle for this run (from DiscoveryOptions.ReasoningEnabled).
@@ -781,6 +792,7 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		warehouses:             opts.Warehouses,
 		runStepIndex:           opts.RunStepIndex,
 		runID:                  opts.RunID,
+		scoringCfg:             scoring.DefaultConfig(),
 	}
 }
 
@@ -1784,6 +1796,19 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// it means the label survives whatever the model wrote.
 		attachSourceQuality(insights, stepByID)
 
+		// Derive every insight's confidence from the verdict its claims
+		// earned, and throw away whatever number the model wrote.
+		//
+		// Here, and not anywhere later, for two reasons that pull in opposite
+		// directions and meet at this line. After attachSourceQuality,
+		// because one of the deductions reads the caveat it attaches. And
+		// before checkpointAnalysisArea below, because a completed area is
+		// restored with `continue` at the top of this loop and never re-enters
+		// the body -- so a score computed after that write would be absent
+		// from every restored area, on every resumed run. The scored insights
+		// ride inside the checkpoint's own step, which needs no schema change.
+		scoreInsights(insights, o.scoringCfg)
+
 		// Provenance of what ships: declared claims with their verdicts, then one
 		// line per insight naming the steps it cited.
 		//
@@ -2120,6 +2145,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		if recsRestored {
 			reidentifyRestoredRecommendations(recommendations, recValidationResults)
 		}
+
+		// And the recommendation side of the same derivation, from each
+		// recommendation's OWN verdict. After the remint because a restored
+		// recommendation's ids are only safe from this point, and after
+		// validation because the verdict is what it scores.
+		scoreRecommendations(recommendations, o.scoringCfg)
 	}
 
 	// Phase 6: Update project context with discovered patterns
@@ -2533,7 +2564,6 @@ type recommenderInsight struct {
 	Severity      string                      `json:"severity"`
 	AffectedCount int                         `json:"affected_count"`
 	RiskScore     float64                     `json:"risk_score"`
-	Confidence    float64                     `json:"confidence"`
 	Metrics       map[string]interface{}      `json:"metrics,omitempty"`
 	Indicators    []string                    `json:"indicators,omitempty"`
 	TargetSegment string                      `json:"target_segment,omitempty"`
@@ -2562,7 +2592,6 @@ func (w figureWriter) insightsForRecommenderPrompt(insights []models.Insight) []
 			Severity:      in.Severity,
 			AffectedCount: in.AffectedCount,
 			RiskScore:     in.RiskScore,
-			Confidence:    in.Confidence,
 			Metrics:       in.Metrics,
 			Indicators:    in.Indicators,
 			TargetSegment: in.TargetSegment,
