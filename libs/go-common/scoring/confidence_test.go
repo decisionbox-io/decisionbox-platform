@@ -687,30 +687,25 @@ func TestScoreStampsTheEngineVersion(t *testing.T) {
 	}
 }
 
-// TestScoreWritesNoSeverityOrWeightField is the freeze, at the engine. The
-// severity half of the sub-document is declared and must stay unwritten while
-// severity and risk_score are still the model's own words.
-func TestScoreWritesNoSeverityOrWeightField(t *testing.T) {
+// TestRiskFlagsStayUnwritten is what is left of the freeze the confidence-only
+// engine kept over the whole severity half.
+//
+// Everything else in that half is written now. Flags are not, and the reason
+// is not scheduling: a flag is derived from the analysis area's risk
+// categories, no pack declares any, so there is nothing to derive one from.
+// An empty list says that; a guessed one would be the model-authored label
+// this engine exists to remove, arriving from a different direction.
+func TestRiskFlagsStayUnwritten(t *testing.T) {
 	got := scored(Input{
 		Verdict:                valmodels.StatusSupported,
 		QualityCaveats:         []gowarehouse.QualityCaveat{caveat("withheld", "a")},
 		FigureVerdicts:         []gomodels.FigureVerdict{figureVerdict(gomodels.FigureFails)},
 		UnresolvedFigures:      1,
 		StepReadBeyondRetained: true,
+		AreaID:                 "retention",
 	})
-	frozen := gomodels.Scoring{
-		MagnitudeScore: got.MagnitudeScore,
-		SeverityBand:   got.SeverityBand,
-		SeverityScore:  got.SeverityScore,
-		SeverityDriver: got.SeverityDriver,
-		AreaWeight:     got.AreaWeight,
-		WeightSource:   got.WeightSource,
-		PriorityTier:   got.PriorityTier,
-		PriorityScore:  got.PriorityScore,
-		RiskFlags:      got.RiskFlags,
-	}
-	if !reflect.DeepEqual(frozen, gomodels.Scoring{}) {
-		t.Errorf("Score wrote a severity / weight / priority field: %+v", frozen)
+	if len(got.RiskFlags) != 0 {
+		t.Errorf("RiskFlags = %v, want none", got.RiskFlags)
 	}
 }
 
