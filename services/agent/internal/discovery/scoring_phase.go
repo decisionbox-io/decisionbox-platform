@@ -150,15 +150,32 @@ type scoringContext struct {
 	currencies currencyPlan
 	stepByID   map[int]*models.ExplorationStep
 
-	// writer answers which of an insight's figures repair severed from the
-	// prose. Its zero value answers "none", which is correct for a document
-	// no repair pass has touched and for the re-score path, where the
-	// severity half is not recomputed at all.
-	writer figureWriter
+	// writer answers which of an insight's figures its prose actually
+	// states. A POINTER, and nil is a real case rather than an oversight:
+	// the on-demand re-score path has no run context, does not recompute the
+	// severity half, and could not answer the question anyway -- establishing
+	// the figure/prose link means re-rendering the authored template, and a
+	// zero figureWriter has no renderer to do it with.
+	writer *figureWriter
+}
+
+// figuresFor is the figures the severity axis may read off one insight: the
+// ones its own prose states.
+//
+// No writer means no figures, which is what the re-score path wants. It
+// throws the severity half away, so handing the engine a figure list it
+// cannot establish would compute a band nobody reads -- and asking a zero
+// writer to render would panic rather than answer.
+func (sc scoringContext) figuresFor(ins models.Insight) []models.Figure {
+	if sc.writer == nil {
+		return nil
+	}
+	return sc.writer.figuresTheProseStates(ins)
 }
 
 // insightScoringInput collects what the engine reads off one insight.
 func insightScoringInput(ins models.Insight, sc scoringContext) scoring.Input {
+	figures := sc.figuresFor(ins)
 	in := scoring.Input{
 		QualityCaveats:     ins.Quality,
 		FigureVerdicts:     ins.FigureVerdicts,
@@ -169,20 +186,28 @@ func insightScoringInput(ins models.Insight, sc scoringContext) scoring.Input {
 		// works identically on a live insight and on one re-read from storage,
 		// which is what the on-demand re-score needs.
 		UnresolvedFigures: len(unresolvedRefsInInsight(ins)),
-		// The figures a reader can still see, not every figure declared.
+		// The figures the insight's own prose STATES, not every figure it
+		// declared.
 		//
-		// Repair edits text and leaves figures alone, so an insight whose 80%
-		// indicator repair deleted still carries that figure, its value and
-		// its holding verdict -- and banding off it would rank the finding on
-		// a number removed from the text that shipped. The same filter also
-		// drops a duplicated id, which cannot be joined to a verdict at all.
+		// Three ways a declaration can exist without being a number a reader
+		// sees, and all three would otherwise band a magnitude: a figure the
+		// prose never referenced at all, one whose sentence repair deleted or
+		// rewrote (repair edits text and leaves figures, their values and
+		// their holding verdicts alone), and a duplicated id, which cannot be
+		// joined to a verdict in the first place. A finding that publishes
+		// 1.00% is a finding about 1.00%, whatever else it declared.
 		//
 		// The VERDICTS are passed whole and deliberately so: a refuted figure
-		// still docks confidence whether or not repair later rewrote its
-		// sentence, because the deduction is about what the check found rather
-		// than about what the prose ended up saying.
-		Figures:      sc.writer.figuresStillBehindTheProse(ins),
-		HomeCurrency: sc.currencies.forInsight(ins, sc.stepByID),
+		// still docks confidence whether or not the prose ended up quoting
+		// it, because that deduction is about what the check found.
+		Figures: figures,
+		// From the SAME surviving set. Reading the full figure list here
+		// would let a figure the prose does not state decide that the
+		// insight's amounts are incomparable -- so removing a euro-sourced
+		// sentence would discard a lira amount that is still on the page,
+		// and the driver would lose the money at stake because of a deleted
+		// sentence somewhere else.
+		HomeCurrency: sc.currencies.forFigures(figures, sc.stepByID),
 		AreaID:       ins.AnalysisArea,
 		Config:       sc.cfg,
 	}

@@ -124,8 +124,16 @@ function SeveritySection({ scoring, engine }: { scoring: Scoring; engine?: Scori
   const driver = scoring.severity_driver;
   const unquantified = notQuantified(driver);
 
-  const cutoff = engine
-    ? cutoffLine(scoring.severity_band ?? '', engine.severity.cutoffs.high, engine.severity.cutoffs.medium)
+  // engine?.severity rather than engine.severity, and the difference is a
+  // crash. An API from before this axis shipped serves engine version 1 with
+  // a confidence object and nothing else -- and version 1 is what this
+  // build's own documents carry, so the lookup by version matches it and
+  // returns an engine whose severity calibration is simply absent. Missing
+  // calibration costs the lines that depend on it and nothing else, which is
+  // the same contract the confidence cutoff line already honoured.
+  const severityCfg = engine?.severity;
+  const cutoff = severityCfg
+    ? cutoffLine(scoring.severity_band ?? '', severityCfg.cutoffs.high, severityCfg.cutoffs.medium)
     : '';
 
   const weightSource = scoring.weight_source;
@@ -171,13 +179,13 @@ function SeveritySection({ scoring, engine }: { scoring: Scoring; engine?: Scori
           sentences, because there are two different outcomes and one wording
           for both contradicted the line above it: a share-banded document was
           ranked on its share, and a baseline one was ranked on nothing. */}
-      {engine && engine.severity.amount_bands.length === 0 && driver?.amount
+      {severityCfg && severityCfg.amount_bands.length === 0 && driver?.amount
         && driver.kind === 'share' && (
         <Text size="xs" c="dimmed" data-testid="severity-no-amount-bands">
           No amount thresholds are configured, so the band comes from the share.
         </Text>
       )}
-      {engine && engine.severity.amount_bands.length === 0 && driver?.amount
+      {severityCfg && severityCfg.amount_bands.length === 0 && driver?.amount
         && driver.kind === 'baseline' && (
         <Text size="xs" c="dimmed" data-testid="severity-no-amount-bands">
           No amount thresholds are configured and this finding states no share, so

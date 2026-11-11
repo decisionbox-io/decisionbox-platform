@@ -534,3 +534,59 @@ describe('the amount explanation matches the band it explains', () => {
     });
   });
 });
+
+// --- An API older than the agent ------------------------------------------
+
+describe('a confidence-only calibration response', () => {
+  // The sharpest consequence of this build keeping engine version 1: an API
+  // from before the severity axis shipped serves version 1 with a
+  // `confidence` object and nothing else, and version 1 is what this build's
+  // own documents carry — so the lookup by version MATCHES it and hands back
+  // an engine with no severity calibration at all.
+  //
+  // Missing calibration has to cost the lines that depend on it and nothing
+  // else. It used to throw, which took the whole detail-page breakdown with
+  // it.
+  const confidenceOnly = {
+    current_version: 1,
+    engines: [{
+      version: 1,
+      confidence: {
+        bases: { confirmed: 0.95 },
+        default: 0.25,
+        cutoffs: { high: 0.75, medium: 0.4 },
+        floor: 0.05,
+        docks: [],
+      },
+    }],
+  } as unknown as ScoringEngines;
+
+  beforeEach(() => {
+    (api.getScoringEngines as jest.Mock).mockResolvedValue(confidenceOnly);
+  });
+
+  it('renders the severity derivation without its cutoff line', async () => {
+    wrap(<ScoringBreakdown scoring={shareBanded()} axis="severity" />);
+
+    await waitFor(() => expect(api.getScoringEngines).toHaveBeenCalled());
+    // Everything that comes off the document is still there.
+    expect(screen.getByTestId('severity-magnitude')).toHaveTextContent('1.00');
+    expect(screen.getByTestId('severity-final')).toHaveTextContent('1.00');
+    expect(screen.getByTestId('severity-banded-by')).toBeInTheDocument();
+    // The two lines that need the calibration are omitted, not faked.
+    expect(screen.queryByTestId('severity-cutoff')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('severity-no-amount-bands')).not.toBeInTheDocument();
+  });
+
+  it('renders all three axes without throwing', async () => {
+    wrap(<ScoringBreakdown scoring={shareBanded()} axis="all" />);
+
+    await waitFor(() => expect(api.getScoringEngines).toHaveBeenCalled());
+    expect(screen.getByTestId('priority-label')).toBeInTheDocument();
+    expect(screen.getByTestId('severity-final')).toBeInTheDocument();
+    expect(screen.getByTestId('scoring-final')).toBeInTheDocument();
+    // The confidence cutoff still renders: that half of the calibration IS
+    // present, which is the whole point of degrading per section.
+    expect(screen.getByTestId('scoring-cutoff')).toBeInTheDocument();
+  });
+});

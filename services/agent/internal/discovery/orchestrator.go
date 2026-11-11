@@ -1813,11 +1813,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// The currency plan is the run's own, built once before this loop:
 		// which of an insight's amounts the severity axis may compare depends
 		// on which datasource each was read from.
+		writer := o.figureWriter()
 		scoreInsights(insights, scoringContext{
 			cfg:        o.scoringCfg,
 			currencies: currencies,
 			stepByID:   stepByID,
-			writer:     o.figureWriter(),
+			writer:     &writer,
 		})
 
 		// Provenance of what ships: declared claims with their verdicts, then one
@@ -2645,24 +2646,6 @@ func (w figureWriter) insightsForRecommenderPrompt(insights []models.Insight) []
 // reference. The number still being in the prose is not the fallback it reads
 // like; a model denied an id does not go back to typing, it finds another id.
 func (w figureWriter) figuresForRecommenderPrompt(ins models.Insight) []models.Figure {
-	return w.figuresStillBehindTheProse(ins)
-}
-
-// figuresStillBehindTheProse is the figures of an insight that are both
-// unambiguously referenceable and still linked to the text that ships.
-//
-// Two callers want exactly this set, for the same underlying reason: the
-// recommender prompt, which may only advertise an id a reference can resolve,
-// and the severity axis, which may only band a magnitude off a number a
-// reader can actually see.
-//
-// The severity case is the one that is easy to get wrong, because repair
-// touches text and not figures. Repair can delete the indicator carrying an
-// 80% figure and leave the figure, its value and its holding verdict on the
-// document -- so an insight whose shipped prose says 1% would be banded high
-// off a number that was removed from it. The audit trail says which figures
-// those are; this is where that answer is applied.
-func (w figureWriter) figuresStillBehindTheProse(ins models.Insight) []models.Figure {
 	usable := usableFigures(ins.Figures)
 	broken := w.figuresBrokenByRepair(ins)
 	if len(broken) == 0 {

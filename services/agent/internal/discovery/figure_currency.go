@@ -220,8 +220,8 @@ func normalizeRecommendationFigureCurrencies(recs []models.Recommendation) {
 	}
 }
 
-// forInsight is the currency an insight's own figures should be read in, or ""
-// where the datasources it drew on disagree.
+// forFigures is the currency a set of an insight's figures should be read in,
+// or "" where the datasources they were drawn from disagree.
 //
 // One answer per insight rather than per figure, because severity compares
 // amounts ACROSS an insight's figures to find the largest: ranking two numbers
@@ -234,12 +234,17 @@ func normalizeRecommendationFigureCurrencies(recs []models.Recommendation) {
 // Resolved from the figures' OWN cited steps rather than from SourceSteps. A
 // figure names the step its number came from and that is the step whose
 // datasource it was read against; SourceSteps is the model's list of what it
-// looked at, which can be broader. An insight with no figure citing any known
-// step falls back to whatever every datasource agrees on -- nothing, where they
-// do not.
-func (p currencyPlan) forInsight(ins models.Insight, stepByID map[int]*models.ExplorationStep) string {
+// looked at, which can be broader. No figure citing a known step falls back to
+// whatever every datasource agrees on -- nothing, where they do not.
+//
+// A SET of figures rather than the insight, because the caller decides which
+// of an insight's declarations count. The severity axis passes only the ones
+// the prose states, and it has to: a figure the insight never published
+// deciding that its amounts are incomparable would discard an amount that IS
+// on the page.
+func (p currencyPlan) forFigures(figures []models.Figure, stepByID map[int]*models.ExplorationStep) string {
 	distinct := map[string]struct{}{}
-	for _, f := range ins.Figures {
+	for _, f := range figures {
 		if f.Unit != models.UnitCurrency {
 			continue
 		}

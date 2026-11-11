@@ -791,7 +791,14 @@ export interface ScoringEngine {
       shared_cap_with?: string;
     }[];
   };
-  severity: {
+  // OPTIONAL, and not because the current API omits them.
+  //
+  // An API from before the severity axis shipped serves engine version 1 with
+  // a `confidence` object and nothing else -- and version 1 is the version
+  // this build's own documents carry, so a lookup by version MATCHES it and
+  // hands back an engine with no severity calibration at all. Typing these as
+  // required made that a crash on the detail page rather than a missing line.
+  severity?: {
     // Ships EMPTY, and the empty array is the information: an absolute money
     // cutoff is a property of a business rather than of the engine, so a
     // grounded amount is shown as the money at stake while the band comes
@@ -803,7 +810,7 @@ export interface ScoringEngine {
     cutoffs: { high: number; medium: number };
     default_weight: number;
   };
-  priority: {
+  priority?: {
     tiers: { tier: PriorityTier; weight: number; priority: number }[];
     trusted_confidence_bands: string[];
     matrix: { severity: SeverityBand; confidence: 'trusted' | 'untrusted'; tier: PriorityTier }[];

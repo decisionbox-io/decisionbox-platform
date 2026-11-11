@@ -62,6 +62,56 @@ func (w figureWriter) figuresBrokenByRepair(ins models.Insight) map[string]bool 
 		}
 		return broken
 	}
+	survived, changed := w.figureProseLinks(ins)
+	broken := make(map[string]bool, len(ins.Figures))
+	for _, f := range ins.Figures {
+		if !survived[f.ID] || changed[f.ID] {
+			broken[f.ID] = true
+		}
+	}
+	return broken
+}
+
+// figuresTheProseStates names the figures whose numbers appear in the text
+// that shipped.
+//
+// Not the complement of figuresBrokenByRepair, and the difference is the
+// whole point of having both. That one answers "may a second document
+// reference this id", and for an unrepaired insight the answer is yes even
+// for a figure the prose never mentioned -- a measured decision, because a
+// model denied an id does not go back to typing, it borrows a wrong one.
+//
+// This answers "does the insight STATE this number", which is a different
+// question and the only one severity may ask. A finding that declares a
+// checked 80% figure and publishes only 1.00% is a finding about 1.00%:
+// banding it high would rank it on a number no reader can see, which is the
+// same defect as banding it on a refuted one and is indistinguishable from
+// the outside.
+//
+// So the link is required in both directions and in every case, repaired or
+// not: referenced from a field whose re-render still matches what shipped,
+// and from no field that changed. An insight with figures and no template
+// cannot be asked -- unreachable on a live run, since the renderer writes a
+// template whenever there are figures -- and the answer that withholds is the
+// one that cannot ground a band on a number nobody published.
+func (w figureWriter) figuresTheProseStates(ins models.Insight) []models.Figure {
+	usable := usableFigures(ins.Figures)
+	if len(usable) == 0 || ins.FigureTemplate == nil {
+		return nil
+	}
+	survived, changed := w.figureProseLinks(ins)
+	kept := make([]models.Figure, 0, len(usable))
+	for _, f := range usable {
+		if survived[f.ID] && !changed[f.ID] {
+			kept = append(kept, f)
+		}
+	}
+	return kept
+}
+
+// figureProseLinks is the shared half: which figure ids the shipped text still
+// references, and which it referenced from a field that has since changed.
+func (w figureWriter) figureProseLinks(ins models.Insight) (survived, changed map[string]bool) {
 
 	// The same renderer over the same figures as renderInsightFigures used, so a
 	// difference between the two texts is a difference repair made and not a difference
@@ -99,7 +149,7 @@ func (w figureWriter) figuresBrokenByRepair(ins models.Insight) map[string]bool 
 	for _, f := range usableFigures(ins.Figures) {
 		usable[f.ID] = true
 	}
-	survived, changed := map[string]bool{}, map[string]bool{}
+	survived, changed = map[string]bool{}, map[string]bool{}
 	note := func(into map[string]bool, authored string) {
 		for _, m := range reFigureRef.FindAllStringSubmatch(authored, -1) {
 			if usable[m[1]] {
@@ -151,11 +201,5 @@ func (w figureWriter) figuresBrokenByRepair(ins models.Insight) map[string]bool 
 	// advertised a figure the renderer cannot resolve and reference resolution rejects, and
 	// the recommendation shipped a visible placeholder. A blank id was skipped outright,
 	// with the same result.
-	broken := make(map[string]bool, len(ins.Figures))
-	for _, f := range ins.Figures {
-		if !survived[f.ID] || changed[f.ID] {
-			broken[f.ID] = true
-		}
-	}
-	return broken
+	return survived, changed
 }
