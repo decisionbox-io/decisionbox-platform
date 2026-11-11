@@ -62,8 +62,20 @@ const FALLBACK: PriorityMeta = {
 // investigateGloss specialises the Investigate tier by what the evidence
 // actually did, because the three untrusted confidence bands got there for
 // three different reasons and only one of them is "nobody looked".
+//
+// The `low` wording says "weak OR contradicts", and the disjunction is not
+// vagueness. That band is reachable two ways: a rejected verdict, where the
+// warehouse really did contradict a headline claim, and a partial verdict
+// docked below the cutoff by source-quality caveats, where nothing was
+// refuted at all. The band cannot tell those apart, so a gloss keyed on it
+// must cover both — saying "contradicts" alone reports refuted evidence for a
+// finding that merely rests on weak rows, which is the mirror image of the
+// mistake this specialisation was added to fix.
+//
+// It is the same phrasing the confidence band's own gloss uses, deliberately:
+// one description of a band, not two.
 const investigateGloss: Record<string, string> = {
-  low: 'Severe if true, and warehouse rows contradict it.',
+  low: 'Severe if true, and what was checked is weak or contradicts it.',
   unverifiable: 'Severe if true, and nothing in the cited evidence could check it.',
   not_confirmed: 'Severe if true, and nothing has checked it yet.',
 };

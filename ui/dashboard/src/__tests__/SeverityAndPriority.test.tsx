@@ -469,16 +469,34 @@ describe('the Investigate gloss follows what the evidence actually did', () => {
   // reasons, and only one of them is "nobody looked". Calling a finding the
   // warehouse CONTRADICTED an unchecked one is the opposite mistake from the
   // one the derivation exists to fix.
-  it('says contradicted for a rejected verdict', async () => {
+  it('covers both ways the low band is reached, without claiming either', async () => {
+    // The `low` band is reachable from a rejected verdict, where the
+    // warehouse really did contradict a headline claim — and from a partial
+    // verdict docked below the cutoff by source-quality caveats, where
+    // nothing was refuted at all. A gloss keyed on the band cannot tell them
+    // apart, so saying "contradicts" alone reports refuted evidence for a
+    // finding that merely rests on weak rows.
     const user = userEvent.setup();
     wrap(<PriorityCell scoring={shareBanded({
       confidence_band: 'low', priority_tier: 'investigate',
+      // A partial verdict docked twice: 0.55 − 0.10 − 0.10 = 0.35, below the
+      // 0.40 medium cutoff. Nothing here was refuted.
+      confidence_base: 0.55,
+      confidence_score: 0.35,
+      confidence_reason: 'Only some of the claims could be checked against warehouse rows. '
+        + 'Lowered because a source reported the rows behind this are not a faithful answer to the query.',
+      confidence_docks: [
+        { code: 'degraded_evidence', label: 'A source reported the rows behind this are not a faithful answer to the query', amount: 0.1 },
+        { code: 'degraded_evidence', label: 'A source reported the rows behind this are not a faithful answer to the query', amount: 0.1 },
+      ],
     })} />);
 
     await user.hover(screen.getByTestId('priority-tier'));
     await waitFor(() => {
-      expect(screen.getByText(/warehouse rows contradict it/i)).toBeInTheDocument();
+      expect(screen.getByText(/weak or contradicts it/i)).toBeInTheDocument();
     });
+    // And specifically does NOT assert a refutation that did not happen.
+    expect(screen.queryByText(/warehouse rows contradict it\./i)).not.toBeInTheDocument();
   });
 
   it('says nothing could check it for an unverifiable verdict', async () => {
