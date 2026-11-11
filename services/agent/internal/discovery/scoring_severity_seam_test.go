@@ -18,7 +18,13 @@ import (
 // holdingFigure is a figure and the verdict that vouches for it.
 func holdingFigure(id string, value float64, unit, currency string, step int) (models.Figure, models.FigureVerdict) {
 	return models.Figure{ID: id, Value: value, Unit: unit, Currency: currency, Decimals: 2, Step: step, Kind: models.FigureCell},
-		models.FigureVerdict{ID: id, Display: id + "!", Status: models.FigureHolds}
+		// Claimed and Evaluated carry the quantity, as a real holding verdict
+		// does: the band is computed from the checked number, so a verdict
+		// recording none asserts the figure measures zero.
+		models.FigureVerdict{
+			ID: id, Display: id + "!", Status: models.FigureHolds,
+			Claimed: value, Evaluated: value,
+		}
 }
 
 // publishedInsight builds an insight the way a run does: the prose is

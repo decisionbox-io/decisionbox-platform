@@ -825,13 +825,21 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 		cand.CreatedAt = now
 		cand.UpdatedAt = now
 		appendFindingSighting(&cand, commonmodels.FindingSighting{
-			RunID:         o.runID,
-			DiscoveryID:   result.ID,
-			Date:          now,
-			KeyMetric:     cand.KeyMetric,
-			AffectedCount: cand.AffectedCount,
-			Severity:      cand.Severity,
-			InsightID:     insightID,
+			RunID:       o.runID,
+			DiscoveryID: result.ID,
+			Date:        now,
+			KeyMetric:   cand.KeyMetric,
+			// The magnitude, on the FIRST sighting too. The merge path
+			// carried it and this literal did not, so every finding's
+			// opening sighting stored zero -- and since a later merge
+			// overwrites the parent, the trail lost the original measurement
+			// entirely. The trail is what makes a magnitude trend drawable
+			// rather than implied, so a missing first point is a missing
+			// baseline for every comparison after it.
+			MagnitudeScore: cand.MagnitudeScore,
+			AffectedCount:  cand.AffectedCount,
+			Severity:       cand.Severity,
+			InsightID:      insightID,
 		})
 		appendFindingStatusChange(&cand, commonmodels.FindingStatusChange{
 			Status:      commonmodels.LedgerFindingStatusConfirmed,

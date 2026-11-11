@@ -16,7 +16,14 @@ import (
 // got wrong, so every case here goes through one helper.
 func fig(id string, value float64, unit, currency, status string) (gomodels.Figure, gomodels.FigureVerdict) {
 	return gomodels.Figure{ID: id, Value: value, Unit: unit, Currency: currency},
-		gomodels.FigureVerdict{ID: id, Display: id + "-display", Status: status}
+		// Claimed and Evaluated carry the quantity, because a real verdict
+		// does and because the band is computed from the CHECKED one: a
+		// fixture whose verdict records nothing is a fixture asserting that
+		// every figure measures zero.
+		gomodels.FigureVerdict{
+			ID: id, Display: id + "-display", Status: status,
+			Claimed: value, Evaluated: value,
+		}
 }
 
 // figurePair keeps a figure with the verdict that settles it, so a case cannot
@@ -582,5 +589,89 @@ func TestAFigureWithAnEmptyIDIsIgnored(t *testing.T) {
 	})
 	if got.SeverityDriver.Kind != gomodels.SeverityDriverBaseline {
 		t.Errorf("an unnamed figure drove the magnitude: %+v", got.SeverityDriver)
+	}
+}
+
+// TestTheBandComesFromTheCheckedQuantityNotTheDeclaredOne is the one way
+// unverified digits could still have decided a ranking.
+//
+// A figure holds when its RENDERED number matches what the warehouse produced
+// at the precision it is printed to. So `value: 4.6, decimals: 0` publishes
+// "5%" and holds against a warehouse 5.4 -- and banding on 4.6 puts it below
+// a 5% cutoff that the number a reader sees is above. Two digits the model
+// never published, and nothing ever checked, would have chosen the band.
+func TestTheBandComesFromTheCheckedQuantityNotTheDeclaredOne(t *testing.T) {
+	declared := gomodels.Figure{ID: "f1", Value: 4.6, Unit: gomodels.UnitPercent, Decimals: 0}
+	verdict := gomodels.FigureVerdict{
+		ID: "f1", Display: "5%", Status: gomodels.FigureHolds,
+		Claimed: 4.6, Evaluated: 5.4,
+	}
+
+	got := Score(Input{
+		Verdict:        valmodels.StatusConfirmed,
+		Figures:        []gomodels.Figure{declared},
+		FigureVerdicts: []gomodels.FigureVerdict{verdict},
+		Config:         DefaultConfig(),
+	})
+
+	if got.SeverityBand != gomodels.SeverityBandMedium {
+		t.Errorf("band = %q, want medium: the published 5%% is at the medium cutoff, and 4.6 "+
+			"is a digit nobody checked", got.SeverityBand)
+	}
+	if got.SeverityDriver.Figure == nil || got.SeverityDriver.Figure.Value != 5.4 {
+		t.Errorf("driver value = %+v, want the evaluated 5.4", got.SeverityDriver.Figure)
+	}
+	// The number a reader sees is still the number the driver shows.
+	if got.SeverityDriver.Figure.Display != "5%" {
+		t.Errorf("display = %q, want the rendered 5%%", got.SeverityDriver.Figure.Display)
+	}
+}
+
+// TestTheLargestIsPickedOnTheCheckedQuantityToo -- the ranking and the band
+// have to read the same number, or the figure that wins "largest" is not the
+// figure the band is computed from.
+func TestTheLargestIsPickedOnTheCheckedQuantityToo(t *testing.T) {
+	// Declared 9 vs 4, but checked 3 vs 30: the second is the larger
+	// quantity, and the declared numbers say the opposite.
+	small := gomodels.Figure{ID: "looks-big", Value: 9, Unit: gomodels.UnitPercent, Decimals: 0}
+	big := gomodels.Figure{ID: "really-big", Value: 4, Unit: gomodels.UnitPercent, Decimals: 0}
+
+	got := Score(Input{
+		Verdict: valmodels.StatusConfirmed,
+		Figures: []gomodels.Figure{small, big},
+		FigureVerdicts: []gomodels.FigureVerdict{
+			{ID: "looks-big", Display: "3%", Status: gomodels.FigureHolds, Claimed: 9, Evaluated: 3},
+			{ID: "really-big", Display: "30%", Status: gomodels.FigureHolds, Claimed: 4, Evaluated: 30},
+		},
+		Config: DefaultConfig(),
+	})
+
+	if got.SeverityDriver.Figure == nil || got.SeverityDriver.Figure.FigureID != "really-big" {
+		t.Errorf("driver = %+v, want the figure whose CHECKED quantity is larger",
+			got.SeverityDriver.Figure)
+	}
+	if got.SeverityBand != gomodels.SeverityBandHigh {
+		t.Errorf("band = %q, want high (30%% is over the 20%% cutoff)", got.SeverityBand)
+	}
+}
+
+// TestAnAbsentEvaluatedValueFallsBackToTheClaim -- Evaluated is omitempty, so
+// BSON cannot tell an evaluated zero from an absent field. For a HOLDING
+// verdict the claim agrees with the evaluation to the printed precision, so
+// either answer is the same answer.
+func TestAnAbsentEvaluatedValueFallsBackToTheClaim(t *testing.T) {
+	got := Score(Input{
+		Verdict: valmodels.StatusConfirmed,
+		Figures: []gomodels.Figure{{ID: "f1", Value: 34, Unit: gomodels.UnitPercent, Decimals: 0}},
+		FigureVerdicts: []gomodels.FigureVerdict{
+			{ID: "f1", Display: "34%", Status: gomodels.FigureHolds, Claimed: 34},
+		},
+		Config: DefaultConfig(),
+	})
+	if got.SeverityBand != gomodels.SeverityBandHigh {
+		t.Errorf("band = %q, want high", got.SeverityBand)
+	}
+	if got.SeverityDriver.Figure.Value != 34 {
+		t.Errorf("driver value = %v, want the claimed 34", got.SeverityDriver.Figure.Value)
 	}
 }

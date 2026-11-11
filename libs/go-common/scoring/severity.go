@@ -140,6 +140,9 @@ func qualifyingFigures(in severityInput) (amount, share *gomodels.SeverityFigure
 		if !ok || v.Status != gomodels.FigureHolds {
 			continue
 		}
+		// Both the ranking and the banding read severityFigure's checked
+		// quantity, so the figure that wins "largest" is the figure whose
+		// number the band is then computed from.
 		switch f.Unit {
 		case gomodels.UnitCurrency:
 			// The home-currency rule. A figure that STATES a currency other
@@ -185,15 +188,40 @@ func larger(cur, next *gomodels.SeverityFigure) *gomodels.SeverityFigure {
 // severityFigure projects a figure and its verdict onto what the driver
 // stores. Display comes off the VERDICT rather than being re-rendered, so the
 // number beside the band is character-for-character the one in the sentence.
+//
+// Value is the CHECKED quantity, not the one the model declared, and the
+// difference is not hypothetical. A figure holds when its rendered number
+// matches what the warehouse produced at the precision it is printed to, so
+// `value: 4.6, decimals: 0` publishes "5%" and holds against a warehouse 5.4.
+// Banding on 4.6 would put it below a 5% cutoff that the number a reader sees
+// is above -- so two digits the model never published, and nothing ever
+// checked, would decide the ranking. The evaluated quantity is the one the
+// verdict is about.
 func severityFigure(f gomodels.Figure, v gomodels.FigureVerdict) *gomodels.SeverityFigure {
 	return &gomodels.SeverityFigure{
 		FigureID: f.ID,
 		Display:  v.Display,
-		Value:    f.Value,
+		Value:    checkedValue(v),
 		Unit:     f.Unit,
 		Currency: f.Currency,
 		Verdict:  v.Status,
 	}
+}
+
+// checkedValue is the quantity a holding verdict certifies: what Go evaluated
+// against the rows.
+//
+// Claimed is the fallback and not a second opinion -- it is what the figure
+// declared, which for a HOLDING verdict agrees with Evaluated to the printed
+// precision by definition. It is reached only when Evaluated is absent, which
+// BSON cannot distinguish from zero because the field is omitempty; and when
+// the evaluated quantity really is zero, Claimed is zero to that precision
+// too, so either answer is the same answer.
+func checkedValue(v gomodels.FigureVerdict) float64 {
+	if v.Evaluated != 0 {
+		return v.Evaluated
+	}
+	return v.Claimed
 }
 
 // bandFor2 finds the band a figure's absolute value falls in, or "" when no

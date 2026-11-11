@@ -2128,3 +2128,45 @@ func TestAnUnquantifiedFindingCarriesNoComparableMagnitude(t *testing.T) {
 		t.Error("a real magnitude move between two measured sightings was not reported")
 	}
 }
+
+// TestTheFirstSightingCarriesTheMagnitudeItMeasured -- the merge path carried
+// it and the new-finding literal did not, so every finding's opening sighting
+// stored zero.
+//
+// The trail is what makes a magnitude trend drawable rather than implied by a
+// counter, and a later merge overwrites the parent -- so a missing first point
+// is a missing baseline for every comparison after it.
+func TestTheFirstSightingCarriesTheMagnitudeItMeasured(t *testing.T) {
+	fr := &fakeFindingRepo{}
+	o := &Orchestrator{projectID: "p1", runID: "r1", findingRepo: fr}
+	_, err := o.consolidateFindings(context.Background(), &models.DiscoveryResult{
+		ProjectID: "p1", ID: "d1",
+		Insights: []models.Insight{{
+			ID: "ins-1", AnalysisArea: "revenue", Name: "Quantified finding",
+			Severity: models.SeverityBandHigh, AffectedCount: 100,
+			Scoring: &models.Scoring{
+				MagnitudeScore: 1.0, SeverityBand: models.SeverityBandHigh,
+				SeverityDriver: &models.SeverityDriver{
+					Kind: models.SeverityDriverShare, Quantified: true,
+				},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("consolidate: %v", err)
+	}
+	if len(fr.upserted) != 1 {
+		t.Fatalf("inserted %d findings, want 1", len(fr.upserted))
+	}
+	f := fr.upserted[0]
+	if f.MagnitudeScore != 1.0 {
+		t.Errorf("finding magnitude = %v, want 1.0", f.MagnitudeScore)
+	}
+	if len(f.Sightings) != 1 {
+		t.Fatalf("sightings = %d, want 1", len(f.Sightings))
+	}
+	if f.Sightings[0].MagnitudeScore != 1.0 {
+		t.Errorf("the opening sighting stored magnitude %v; the trail has no baseline to "+
+			"measure the next run against", f.Sightings[0].MagnitudeScore)
+	}
+}
