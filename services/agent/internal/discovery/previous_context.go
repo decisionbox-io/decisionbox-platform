@@ -8,24 +8,29 @@ import (
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/contextbudget"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 )
 
-// maxLedgerFindingsInPrompt caps how many ledger findings the base context
-// carries. The enterprise per-area RAG provider surfaces the long tail per
-// analysis area; this block is the global, highest-ranked slice.
-const maxLedgerFindingsInPrompt = 25
-
 // ledgerReadContext is the compounding-discovery read context assembled at run
-// start: the accumulated findings (ranked, with substance), the coverage map,
-// and the open next-task queue. hasLedger is false for legacy projects /
-// community builds with nothing in the ledger, so the caller falls back to the
-// older capped insight dump.
+// start: the accumulated findings (ranked, with substance, and budgeted against
+// the model window), the coverage map, the convergence history, and the open
+// next-task queue. hasLedger is false for legacy projects / builds with nothing
+// in the ledger, so the caller falls back to the older capped insight dump.
 type ledgerReadContext struct {
-	findings  []commonmodels.LedgerFinding
-	tasks     []commonmodels.LedgerTask
-	coverage  commonmodels.LedgerCoverage
+	findings []commonmodels.LedgerFinding
+	tasks    []commonmodels.LedgerTask
+	coverage commonmodels.LedgerCoverage
+	// convergence is the per-run share-of-new history. Read because it is the
+	// measurement of whether this investigation is still finding anything, and
+	// it steers both how much prior context the run is given and what the
+	// prompt tells it to do about saturation.
+	convergence []commonmodels.ConvergencePoint
+	// descChars is the description width the findings are rendered at, chosen
+	// with them by the budget: the two are one decision and must not be made
+	// in two places.
+	descChars int
 	hasLedger bool
 }
 
@@ -44,9 +49,19 @@ func (o *Orchestrator) loadLedgerReadContext(ctx context.Context) *ledgerReadCon
 		return nil
 	}
 
-	// Rank (severity × recency × liked × recurrence × status) and keep the top
-	// slice — replacing the arbitrary first-30 truncation. Resolved/refuted
-	// findings are done; drop them from the "build on these" block.
+	lrc := &ledgerReadContext{}
+
+	// Read before the findings are budgeted, not after: the convergence history
+	// is an input to how much of them this run is shown.
+	if o.ledgerRepo != nil {
+		if ledger, err := o.ledgerRepo.Get(ctx, o.projectID); err == nil && ledger != nil {
+			lrc.coverage = ledger.Coverage
+			lrc.convergence = ledger.Convergence
+		}
+	}
+
+	// Rank (severity × recency × liked × recurrence × status). Resolved/refuted
+	// findings are done; drop them from the block the run builds on.
 	now := time.Now()
 	active := make([]commonmodels.LedgerFinding, 0, len(all))
 	for _, f := range all {
@@ -58,17 +73,36 @@ func (o *Orchestrator) loadLedgerReadContext(ctx context.Context) *ledgerReadCon
 	sort.SliceStable(active, func(i, j int) bool {
 		return active[i].Rank(now) > active[j].Rank(now)
 	})
-	if len(active) > maxLedgerFindingsInPrompt {
-		active = active[:maxLedgerFindingsInPrompt]
+
+	// How many of them fit is a question about this run's models, not a
+	// constant. It was 25 — on a project carrying 420 findings that is 6% of
+	// what is known, and the run re-reported most of the rest as new.
+	ratio, haveRatio := latestMarginalRatio(lrc.convergence)
+	budget := o.priorContextBudget(ratio, haveRatio)
+	lrc.findings, lrc.descChars = contextbudget.FitFindings(
+		active, budget, contextbudget.MinFindingDescChars, contextbudget.MaxFindingDescChars)
+
+	// The ids this run is being shown, so the per-area retrieval can spend its
+	// own budget on findings this block does not already carry.
+	o.baseContextFindingIDs = make([]string, 0, len(lrc.findings))
+	for i := range lrc.findings {
+		o.baseContextFindingIDs = append(o.baseContextFindingIDs, lrc.findings[i].ID)
 	}
 
-	lrc := &ledgerReadContext{findings: active}
-
-	if o.ledgerRepo != nil {
-		if ledger, err := o.ledgerRepo.Get(ctx, o.projectID); err == nil && ledger != nil {
-			lrc.coverage = ledger.Coverage
-		}
-	}
+	// Logged because it is the only place the decision is visible afterwards:
+	// a prompt is not persisted, so "the run was shown 12 of 420 findings" is
+	// otherwise indistinguishable from "the project has 12 findings".
+	applog.WithFields(applog.Fields{
+		"project_id":      o.projectID,
+		"candidates":      len(active),
+		"total_findings":  len(all),
+		"shown":           len(lrc.findings),
+		"budget_tokens":   budget,
+		"available_input": o.baseContextAvailableInput(),
+		"desc_chars":      lrc.descChars,
+		"marginal_ratio":  ratio,
+		"have_ratio":      haveRatio,
+	}).Info("Discovery Ledger: prior-context budget")
 
 	// Open tasks — governed by evolution mode (off ⇒ no self-directed threads).
 	pol, _ := agentplugin.ResolveDiscoveryPolicy(ctx, o.projectID)
@@ -162,33 +196,17 @@ func renderCubeExplored(explored, total int) string {
 	}
 }
 
-// renderLedgerFindings renders the ranked findings-with-substance block. Input is
-// already ranked + capped by the loader.
-func renderLedgerFindings(findings []commonmodels.LedgerFinding) string {
+// renderLedgerFindings renders the ranked findings-with-substance block. Input
+// is already ranked, and already selected and sized by the loader's budget —
+// descChars is the width that budget chose, not a second decision.
+func renderLedgerFindings(findings []commonmodels.LedgerFinding, descChars int) string {
 	if len(findings) == 0 {
 		return ""
 	}
 	var sb strings.Builder
 	sb.WriteString("### Key findings so far (build on these — drill deeper or check whether they changed)\n\n")
 	for _, f := range findings {
-		area := f.Area
-		if area == "" {
-			area = "general"
-		}
-		fmt.Fprintf(&sb, "- [%s] **%s** (%s", area, f.Name, f.Severity)
-		if f.Status != "" {
-			fmt.Fprintf(&sb, ", %s", f.Status)
-		}
-		if f.SeenCount > 1 {
-			fmt.Fprintf(&sb, ", seen %d×", f.SeenCount)
-		}
-		sb.WriteString(")")
-		if f.KeyMetric != "" {
-			fmt.Fprintf(&sb, " — %s", f.KeyMetric)
-		}
-		if d := strings.TrimSpace(truncate(f.Description, 200)); d != "" {
-			fmt.Fprintf(&sb, ". %s", d)
-		}
+		sb.WriteString(contextbudget.FindingLine(f, descChars))
 		sb.WriteByte('\n')
 	}
 	sb.WriteString("\n")

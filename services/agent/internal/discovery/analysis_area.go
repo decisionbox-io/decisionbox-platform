@@ -84,7 +84,11 @@ func (o *Orchestrator) analyseArea(ctx context.Context, in areaAnalysisInput) ar
 	// window calibrated mid-run (from an overflow 400) tightens the
 	// remaining areas too.
 	areaWindow, areaOutputCap := o.budgetFor(llmlayer.LayerAnalysis)
-	picker.BudgetTokens = analysisPickerBudgetTokens(AnalysisQueryResultsBudgetTokens, areaWindow, areaOutputCap)
+	// The base context and the area template are already decided and will be in
+	// this prompt whatever the picker does, so they come out of the budget
+	// before the evidence is sized against it.
+	fixedInput := approxTokens(ctx, baseContext) + approxTokens(ctx, areaPrompt)
+	picker.BudgetTokens = analysisPickerBudgetTokens(AnalysisQueryResultsBudgetTokens, areaWindow, areaOutputCap, fixedInput)
 
 	pickResult, pickErr := picker.Pick(ctx, area, in.explorationSteps)
 	// Skip the area if step retrieval fails so the remaining areas

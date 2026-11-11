@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/contextbudget"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
@@ -784,7 +785,7 @@ func TestReflectionPrompt_StoredGraphFieldsNeverReachTheModel(t *testing.T) {
 
 	// Both prompts the ledger feeds.
 	reflectionPrompt := o.buildReflectionPrompt(result, prior, tasks, pol, nil, true, true)
-	explorationPrompt := renderLedgerFindings(prior) + renderLedgerTasks(tasks)
+	explorationPrompt := renderLedgerFindings(prior, contextbudget.MinFindingDescChars) + renderLedgerTasks(tasks)
 
 	leaks := []string{
 		"ins-old-1", "ins-old-2", "t-old", "r-old", "d-old",

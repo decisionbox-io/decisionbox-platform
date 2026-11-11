@@ -167,23 +167,52 @@ func budgetedMaxOutputTokens(window, inputTokens, effectiveOutputCap, floor int)
 	return out
 }
 
-// analysisPickerBudgetTokens couples the analysis step picker's query-results
-// budget to the model window: it returns the smaller of the default soft cap
-// and the room left for input once the *intended* analysis output, reserved
-// system, and safety margin are set aside (Budget.Available). It reserves the
-// intended output (analysisOutputReserveTokens), not the model's hard output cap
-// — reserving the full cap would starve the input on models whose cap approaches
-// the window. It only ever *lowers* the default, so a large-window model keeps
-// the default soft cap while a small-window model can no longer be handed an
-// input that alone exceeds its window. When the window leaves no room even for
-// the intended output, it falls to a small floor rather than the 200K default.
-func analysisPickerBudgetTokens(defaultBudget, window, effectiveOutputCap int) int {
+// intendedOutputReserve is the output headroom to set aside when sizing an
+// INPUT budget: the intended generation size, lowered to the model's own cap
+// when that is smaller, and never larger than the window itself.
+//
+// Shared by every input budget — the step picker's query-results budget and the
+// composed-context budgets — because they are all answering the same question
+// and must answer it the same way. Reserving the model's full output cap
+// instead would starve the input on models whose cap approaches the window
+// (an Ollama row whose output default equals its context window is the case
+// that bites); the precise max_tokens is still recomputed against the measured
+// input once the prompt is assembled, so nothing is lost by reserving the
+// intended size here rather than the maximum.
+func intendedOutputReserve(effectiveOutputCap, window int) int {
 	reserve := analysisOutputReserveTokens
 	if effectiveOutputCap > 0 && effectiveOutputCap < reserve {
 		reserve = effectiveOutputCap
 	}
-	reserve = boundOutputCap(reserve, window)
-	avail := gollm.NewBudget(window, reserve, analysisReservedSystemTokens, false).Available()
+	return boundOutputCap(reserve, window)
+}
+
+// analysisPickerBudgetTokens couples the analysis step picker's query-results
+// budget to the model window: it returns the smaller of the default soft cap
+// and the room left for input once the *intended* analysis output, reserved
+// system, safety margin (Budget.Available) and the prompt's own fixed parts are
+// set aside. It reserves the intended output (analysisOutputReserveTokens), not
+// the model's hard output cap — reserving the full cap would starve the input on
+// models whose cap approaches the window. It only ever *lowers* the default, so
+// a large-window model keeps the default soft cap while a small-window model can
+// no longer be handed an input that alone exceeds its window. When the window
+// leaves no room even for the intended output, it falls to a small floor rather
+// than the 200K default.
+//
+// fixedInputTokens is the measured cost of everything else the prompt will
+// carry — the base context and the area's own template. Counting it is what
+// makes this a budget rather than an estimate: the query results are not the
+// only input, and sizing them against the whole of Available() hands the same
+// tokens out twice. That was tolerable only while the base context was small;
+// prior knowledge sized from the window is not small, and the double-spend
+// lands as a provider 400 on the first area whose evidence actually fills the
+// budget it was promised. Pass 0 when the caller genuinely has nothing else in
+// the prompt yet.
+func analysisPickerBudgetTokens(defaultBudget, window, effectiveOutputCap, fixedInputTokens int) int {
+	avail := gollm.NewBudget(window, intendedOutputReserve(effectiveOutputCap, window), analysisReservedSystemTokens, false).Available()
+	if fixedInputTokens > 0 {
+		avail -= fixedInputTokens
+	}
 	if avail <= 0 {
 		return minPickerBudgetTokens
 	}

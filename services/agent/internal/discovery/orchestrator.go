@@ -357,6 +357,12 @@ type Orchestrator struct {
 	// An id the model returns that is in neither this nor the run's own
 	// insights was invented.
 	promptFindingIDs []string
+	// baseContextFindingIDs are the ledger findings the base context carries
+	// into every prompt this run assembles, captured when the read context was
+	// built. Handed to the per-area context providers as ExcludeIDs, so their
+	// own budget is spent on findings relevant to the area under analysis
+	// rather than on re-printing what the prompt above them already says.
+	baseContextFindingIDs []string
 
 	// recommendationVerdicts is the resolved per-project set of validation
 	// verdicts that make an insight eligible for recommendation generation
@@ -3573,7 +3579,7 @@ func (o *Orchestrator) buildPreviousContext(
 	// old arbitrary first-30, names-only dump. Legacy projects with no ledger yet
 	// fall back to that older block.
 	if hasLedger && len(lrc.findings) > 0 {
-		sb.WriteString(renderLedgerFindings(lrc.findings))
+		sb.WriteString(renderLedgerFindings(lrc.findings, lrc.descChars))
 	} else if len(prevInsights) > 0 {
 		sb.WriteString("### Previously Found Insights\n")
 		sb.WriteString("These insights were already discovered. Build on them — go deeper or check whether they changed — rather than repeating them.\n\n")
