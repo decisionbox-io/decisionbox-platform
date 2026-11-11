@@ -1197,7 +1197,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// or no sources indexed). Query phrased to surface broad domain context
 	// useful for any exploration step.
 	knowledgeQuery := fmt.Sprintf("data exploration for %s; analysis areas: %s", datasetsStr, o.areaNamesCSV(analysisAreas))
-	explorationPrompt = o.injectKnowledgeSources(ctx, explorationPrompt, knowledgeQuery, knowledgeTopKExploration, llmlayer.LayerExploration)
+	explorationPrompt = o.injectKnowledgeSources(ctx, explorationPrompt, knowledgeQuery, knowledgeTopKExploration, llmlayer.LayerExploration, o.baseContextFindingIDs)
 
 	// Phase 3: Autonomous exploration
 	applog.Info("Phase 3: Running autonomous exploration")
@@ -3029,7 +3029,7 @@ func (o *Orchestrator) generateRecommendations(
 	// Recommendations often need broader business context (constraints, prior
 	// initiatives, tone) so we use a higher top-K than analysis prompts.
 	recommendationQuery := o.recommendationsKnowledgeQuery(insights)
-	prompt = o.injectKnowledgeSources(ctx, prompt, recommendationQuery, knowledgeTopKRecommendations, llmlayer.LayerRecommendations)
+	prompt = o.injectKnowledgeSources(ctx, prompt, recommendationQuery, knowledgeTopKRecommendations, llmlayer.LayerRecommendations, o.baseContextFindingIDs)
 
 	step.Prompt = prompt
 
@@ -3586,8 +3586,17 @@ func (o *Orchestrator) buildPreviousContext(
 	// Findings so far — ranked, WITH substance (from the ledger). Replaces the
 	// old arbitrary first-30, names-only dump. Legacy projects with no ledger yet
 	// fall back to that older block.
-	if hasLedger && len(lrc.findings) > 0 {
-		sb.WriteString(renderLedgerFindings(lrc.findings, lrc.descChars))
+	//
+	// A project that HAS a ledger never falls back, even when the budget chose
+	// to carry no findings at all. That case is a decision, not an absence:
+	// either the operator set the share to zero, or the window has no room —
+	// and answering it with an unbudgeted thirty-insight dump would undo the
+	// opt-out and feed the smallest models the very block the budget exists to
+	// keep out of them.
+	if hasLedger {
+		if len(lrc.findings) > 0 {
+			sb.WriteString(renderLedgerFindings(lrc.findings, lrc.descChars))
+		}
 	} else if len(prevInsights) > 0 {
 		sb.WriteString("### Previously Found Insights\n")
 		sb.WriteString("These insights were already discovered. Build on them — go deeper or check whether they changed — rather than repeating them.\n\n")
@@ -4321,7 +4330,14 @@ func (o *Orchestrator) correlationLookup(dc *datasourceContext, guidance correla
 // layer is which model's prompt this is. It decides the token budget the
 // providers are offered, so it has to be the layer that will actually receive
 // the prompt — the same reason the output budget is resolved per layer.
-func (o *Orchestrator) injectKnowledgeSources(ctx context.Context, prompt, query string, topK int, layer string) string {
+//
+// excludeIDs are items THIS prompt already carries, and the caller has to say
+// so rather than this function assuming: the base context reaches exploration,
+// analysis and recommendations, but the clarifying-questions prompt is built
+// without it, so excluding the base context's findings there would suppress
+// relevant prior knowledge that the prompt does not in fact contain. Pass nil
+// from a prompt that does not carry them.
+func (o *Orchestrator) injectKnowledgeSources(ctx context.Context, prompt, query string, topK int, layer string, excludeIDs []string) string {
 	if query == "" || topK <= 0 {
 		return prompt
 	}
@@ -4342,11 +4358,10 @@ func (o *Orchestrator) injectKnowledgeSources(ctx context.Context, prompt, query
 		Limit:       topK,
 		MinScore:    knowledgeMinScore,
 		TokenBudget: budget,
-		// What the base context already carries into this very prompt. A
-		// provider that can tell its items apart spends its budget on the ones
-		// relevant to what is being analysed now, instead of re-printing the
-		// globally top-ranked findings the prompt states above it.
-		ExcludeIDs: o.baseContextFindingIDs,
+		// What this prompt already carries. A provider that can tell its items
+		// apart spends its budget on the ones relevant to what is being
+		// analysed now, instead of re-printing what the prompt states above it.
+		ExcludeIDs: excludeIDs,
 	}, func(name string, err error) {
 		applog.WithFields(applog.Fields{
 			"project_id":       o.projectID,

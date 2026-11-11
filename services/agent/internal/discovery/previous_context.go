@@ -77,8 +77,9 @@ func (o *Orchestrator) loadLedgerReadContext(ctx context.Context) *ledgerReadCon
 	// How many of them fit is a question about this run's models, not a
 	// constant. It was 25 — on a project carrying 420 findings that is 6% of
 	// what is known, and the run re-reported most of the rest as new.
-	ratio, haveRatio := latestMarginalRatio(lrc.convergence)
-	budget := o.priorContextBudget(ratio, haveRatio)
+	novelty, haveNovelty := latestRunNovelty(lrc.convergence)
+	available := o.baseContextAvailableInput()
+	budget := priorContextBudget(available, novelty, haveNovelty)
 	lrc.findings, lrc.descChars = contextbudget.FitFindings(
 		active, budget, contextbudget.MinFindingDescChars, contextbudget.MaxFindingDescChars)
 
@@ -98,10 +99,10 @@ func (o *Orchestrator) loadLedgerReadContext(ctx context.Context) *ledgerReadCon
 		"total_findings":  len(all),
 		"shown":           len(lrc.findings),
 		"budget_tokens":   budget,
-		"available_input": o.baseContextAvailableInput(),
+		"available_input": available,
 		"desc_chars":      lrc.descChars,
-		"marginal_ratio":  ratio,
-		"have_ratio":      haveRatio,
+		"run_novelty":     novelty,
+		"have_novelty":    haveNovelty,
 	}).Info("Discovery Ledger: prior-context budget")
 
 	// Open tasks — governed by evolution mode (off ⇒ no self-directed threads).
@@ -133,7 +134,15 @@ func (o *Orchestrator) loadLedgerReadContext(ctx context.Context) *ledgerReadCon
 	// not exhausted. Leaving it out of this check would discard the ledger in
 	// exactly that case and make renderCoverage's cube-total branch
 	// unreachable — the write would exist for a read that never happens.
-	lrc.hasLedger = len(lrc.findings) > 0 || len(lrc.tasks) > 0 ||
+	//
+	// Counted over the CANDIDATES, not over what the budget chose to show. The
+	// two differ exactly when the budget carried nothing — an operator share of
+	// zero, or a window with no room — and in that case the project still has a
+	// ledger, so the caller must not fall through to the pre-ledger insight
+	// dump. Reading it off the selection made the documented opt-out inject an
+	// unbudgeted block instead of nothing, and handed the smallest models the
+	// very list the budget exists to keep out of them.
+	lrc.hasLedger = len(active) > 0 || len(lrc.tasks) > 0 ||
 		strings.TrimSpace(lrc.coverage.Summary) != "" || len(lrc.coverage.ExploredTables) > 0 ||
 		len(lrc.coverage.ExploredCatalogItems) > 0 || lrc.coverage.TotalCatalogItems > 0
 	if !lrc.hasLedger {
@@ -241,12 +250,12 @@ func renderLedgerFindings(findings []commonmodels.LedgerFinding, descChars int) 
 	return sb.String()
 }
 
-// saturatedMarginalRatio is where the guidance flips from "keep walking this
-// ground" to "find new ground": below half, the MAJORITY of what the last run
-// reported was already known. A boundary at the majority is the one place on
+// saturatedNovelty is where the guidance flips from "keep walking this ground"
+// to "find new ground": below half, the MAJORITY of what the last run reported
+// was already in the ledger. A boundary at the majority is the one place on
 // this axis that is not an arbitrary pick, which is why it is here and not in
 // an env var — it is a property of the sentence, not of a deployment.
-const saturatedMarginalRatio = 0.5
+const saturatedNovelty = 0.5
 
 // maxAreasPerSaturationLine caps each of the two area lists so a project with
 // a large playbook cannot turn a steering note into a wall of area ids.
@@ -255,39 +264,44 @@ const maxAreasPerSaturationLine = 12
 // renderSaturation narrates what the ledger already measures about whether this
 // investigation is still finding anything, and what to do about it.
 //
-// Every number here is read, not computed: ConvergencePoint.MarginalRatio per
-// run, and Coverage.AreaDepth's count of runs that produced findings per area.
-// Both have been written every run since the ledger existed and neither reached
-// a prompt or a decision — the system measured the repetition it was producing
-// and told nobody.
+// Every number here is read, not computed: the per-run novelty and growth
+// figures from the convergence history, and Coverage.AreaDepth's count of runs
+// that produced findings per area. All of it has been recorded every run since
+// the ledger existed and none of it reached a prompt or a decision — the system
+// measured the repetition it was producing and told nobody.
 //
-// The per-area half is what makes the steering specific. A global "you are
-// converging" leaves the model to guess where; "these areas have been mined six
-// times and these have never produced anything" names the frontier using the
-// project's own history.
+// The two ratios say different things and are rendered as different sentences,
+// which is the whole reason this function is careful. RunNovelty is the share of
+// a run's OWN output that was new — the repetition rate, and the only one of the
+// two that can honestly be stated as "already known". MarginalRatio divides by
+// the whole ledger, so it is a growth rate: a run that adds ten entirely new
+// findings to a hundred-finding ledger scores 0.09 there having repeated
+// nothing. Printing that as "91% already known" would tell the model something
+// false about its own project.
 //
 // Empty for a project with nothing measured yet, so an early run reads no
 // steering at all rather than steering derived from one data point.
 func renderSaturation(history []commonmodels.ConvergencePoint, areaDepth map[string]int, areas []AnalysisArea) string {
-	ratio, have := latestMarginalRatio(history)
+	novelty, haveNovelty := latestRunNovelty(history)
+	growth := renderLedgerGrowth(history)
 	deep, barren := areasByDepth(areaDepth, areas)
-	if !have && len(deep) == 0 && len(barren) == 0 {
+	if !haveNovelty && growth == "" && len(deep) == 0 && len(barren) == 0 {
 		return ""
 	}
 
 	var sb strings.Builder
 	sb.WriteString("### How much this investigation is still finding\n")
 
-	if have {
-		if trend := renderMarginalTrend(history); trend != "" {
-			sb.WriteString(trend)
-		}
-		fmt.Fprintf(&sb, "The most recent measured run was **%.0f%% already known**. ", (1-ratio)*100)
-		if ratio < saturatedMarginalRatio {
-			sb.WriteString("Most of what it reported, this project already had. Re-walking the same ground will produce restatements, not findings: prefer territory the coverage map above shows as untouched, or a different angle on covered ground — a different grain, a segment you have not cut by, a join you have not tried — over re-examining what is listed below.\n")
+	if haveNovelty {
+		fmt.Fprintf(&sb, "Of what the last run reported, **%.0f%% was already in this ledger**. ", (1-novelty)*100)
+		if novelty < saturatedNovelty {
+			sb.WriteString("Most of what it said, this project already had. Re-walking the same ground produces restatements, not findings: prefer territory the coverage map above shows as untouched, or a different angle on covered ground — a different grain, a segment you have not cut by, a join you have not tried — over re-examining what is listed below.\n")
 		} else {
 			sb.WriteString("This investigation is still productive. Keep tiling the frontier and drilling the seams that are paying off.\n")
 		}
+	}
+	if growth != "" {
+		sb.WriteString(growth)
 	}
 
 	if len(deep) > 0 {
@@ -300,17 +314,16 @@ func renderSaturation(history []commonmodels.ConvergencePoint, areaDepth map[str
 	return sb.String()
 }
 
-// maxMarginalTrendPoints is how many runs the trend line names. Enough to show
-// a direction; a project carries up to fifty convergence points and all of them
-// would be a table, not a sentence.
-const maxMarginalTrendPoints = 6
-
-// renderMarginalTrend states the share-of-new across the recent measured runs,
-// oldest first, so the model sees a direction rather than one number. Runs that
-// recorded nothing are left out for the same reason latestMarginalRatio skips
-// them: their zero is a division by zero, and printing it would show a decline
-// that did not happen.
-func renderMarginalTrend(history []commonmodels.ConvergencePoint) string {
+// renderLedgerGrowth states how fast the ledger itself has been growing, which
+// is what MarginalRatio measures — named and framed as growth, never as a
+// repetition rate.
+//
+// Still worth telling the model: a ledger that has stopped growing is a tiled
+// warehouse, whoever is or is not repeating themselves. Runs that recorded
+// nothing are left out for the same reason latestRunNovelty skips unmeasured
+// points — their zero is a division by zero, and printing it would show a
+// collapse that never happened.
+func renderLedgerGrowth(history []commonmodels.ConvergencePoint) string {
 	measured := make([]commonmodels.ConvergencePoint, 0, len(history))
 	for _, p := range history {
 		if p.TotalFindings > 0 {
@@ -327,9 +340,14 @@ func renderMarginalTrend(history []commonmodels.ConvergencePoint) string {
 	for _, p := range measured {
 		shares = append(shares, fmt.Sprintf("%.0f%%", p.MarginalRatio*100))
 	}
-	return "Share of each recent run's findings that were genuinely new, oldest first: " +
-		strings.Join(shares, " → ") + ". "
+	return "Each recent run's new findings as a share of everything the ledger then held, oldest first: " +
+		strings.Join(shares, " → ") + ". A falling share means the ledger is still growing but more slowly.\n"
 }
+
+// maxMarginalTrendPoints is how many runs the growth line names. Enough to show
+// a direction; a project carries up to fifty convergence points and all of them
+// would be a table, not a sentence.
+const maxMarginalTrendPoints = 6
 
 // areasByDepth splits this run's analysis areas into the ones earlier runs have
 // repeatedly mined and the ones that have never produced a finding.

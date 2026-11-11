@@ -47,7 +47,7 @@ func TestInjectKnowledgeSources_RegistryMigrationByteEquivalent(t *testing.T) {
 
 	o := &Orchestrator{projectID: "proj_abc"}
 	prompt := "## Original Prompt\nDo the analysis."
-	got := o.injectKnowledgeSources(context.Background(), prompt, "the question", 8, llmlayer.LayerRecommendations)
+	got := o.injectKnowledgeSources(context.Background(), prompt, "the question", 8, llmlayer.LayerRecommendations, nil)
 
 	// Pre-registry layout the orchestrator produced was:
 	//   <FormatPromptSection output> + "\n" + <prompt>
@@ -87,7 +87,7 @@ func TestInjectKnowledgeSources_RegistryMultiProviderOrdering(t *testing.T) {
 	})
 
 	o := &Orchestrator{projectID: "proj_abc"}
-	got := o.injectKnowledgeSources(context.Background(), "PROMPT", "q", 5, llmlayer.LayerAnalysis)
+	got := o.injectKnowledgeSources(context.Background(), "PROMPT", "q", 5, llmlayer.LayerAnalysis, nil)
 
 	if !strings.Contains(got, "## Project Knowledge") {
 		t.Fatalf("expected knowledge-sources section in injection; got:\n%s", got)
@@ -125,7 +125,7 @@ func TestInjectKnowledgeSources_RegistryProviderErrorIsContained(t *testing.T) {
 	})
 
 	o := &Orchestrator{projectID: "proj_abc"}
-	got := o.injectKnowledgeSources(context.Background(), "PROMPT", "q", 5, llmlayer.LayerAnalysis)
+	got := o.injectKnowledgeSources(context.Background(), "PROMPT", "q", 5, llmlayer.LayerAnalysis, nil)
 
 	if !strings.Contains(got, "## Project Knowledge") || !strings.Contains(got, "ok body") {
 		t.Fatalf("knowledge section must still render when a sibling provider fails; got:\n%s", got)

@@ -53,6 +53,9 @@ func windowedOrchestrator(findings []commonmodels.LedgerFinding, ledger *commonm
 	}
 }
 
+// convergence builds a history whose points carry BOTH measurements, with the
+// same value, so a test can name one number and mean it. novelty() builds
+// points where the two deliberately disagree.
 func convergence(ratios ...float64) *commonmodels.DiscoveryLedger {
 	l := &commonmodels.DiscoveryLedger{ProjectID: "p1"}
 	for i, r := range ratios {
@@ -61,8 +64,19 @@ func convergence(ratios ...float64) *commonmodels.DiscoveryLedger {
 			TotalFindings: 50,
 			NewFindings:   int(r * 50),
 			MarginalRatio: r,
+			RunFindings:   50,
 			Date:          time.Now().Add(-time.Duration(len(ratios)-i) * 24 * time.Hour),
 		})
+	}
+	return l
+}
+
+// legacyConvergence builds points as they were written before RunFindings
+// existed: a growth ratio and no per-run measurement at all.
+func legacyConvergence(ratios ...float64) *commonmodels.DiscoveryLedger {
+	l := convergence(ratios...)
+	for i := range l.Convergence {
+		l.Convergence[i].RunFindings = 0
 	}
 	return l
 }
@@ -245,46 +259,71 @@ func TestPriorContextGrowsWithSaturation(t *testing.T) {
 	}
 }
 
-func TestLatestMarginalRatio(t *testing.T) {
-	t.Run("empty history has no ratio", func(t *testing.T) {
-		if _, have := latestMarginalRatio(nil); have {
-			t.Error("no history must report no ratio")
+// TestLatestRunNovelty pins the distinction the P1 review finding was about:
+// MarginalRatio divides by the whole ledger and is NOT a repetition rate, so
+// the budget and the prompt read RunFindings/NewFindings instead.
+func TestLatestRunNovelty(t *testing.T) {
+	t.Run("empty history has no measurement", func(t *testing.T) {
+		if _, have := latestRunNovelty(nil); have {
+			t.Error("no history must report no measurement")
 		}
 	})
 
-	t.Run("takes the most recent point", func(t *testing.T) {
-		got, have := latestMarginalRatio(convergence(1.0, 0.5, 0.1).Convergence)
+	t.Run("takes the most recent measured point", func(t *testing.T) {
+		got, have := latestRunNovelty(convergence(1.0, 0.5, 0.1).Convergence)
 		if !have || got != 0.1 {
 			t.Errorf("got %v (have=%v), want the last point's 0.1", got, have)
 		}
 	})
 
-	t.Run("skips a run that recorded no findings at all", func(t *testing.T) {
-		// A run that found nothing divides by a zero total and stores a ratio
-		// of 0. Reading that as "nothing was new" would hand the largest
-		// prior-context budget to a project whose last run failed.
-		history := convergence(0.9).Convergence
-		history = append(history, commonmodels.ConvergencePoint{
-			RunID: "empty-run", TotalFindings: 0, NewFindings: 0, MarginalRatio: 0,
-		})
-		got, have := latestMarginalRatio(history)
+	t.Run("a legacy point is not a measurement, and is NOT read as zero", func(t *testing.T) {
+		// Reading an unmeasured point as novelty 0 would tell a project that
+		// everything it found was already known, and hand it the largest
+		// prior-context budget on no evidence.
+		if _, have := latestRunNovelty(legacyConvergence(0.9, 0.1).Convergence); have {
+			t.Error("points written before RunFindings existed must not be treated as measurements")
+		}
+	})
+
+	t.Run("skips back past legacy points to the last measured one", func(t *testing.T) {
+		h := convergence(0.9).Convergence
+		h = append(h, legacyConvergence(0.1).Convergence...)
+		got, have := latestRunNovelty(h)
 		if !have || got != 0.9 {
-			t.Errorf("got %v (have=%v), want the last MEASURED 0.9 — an empty run is not saturation", got, have)
+			t.Errorf("got %v (have=%v), want the last MEASURED 0.9", got, have)
 		}
 	})
 
-	t.Run("a history of only empty runs has no ratio", func(t *testing.T) {
-		history := []commonmodels.ConvergencePoint{{RunID: "a"}, {RunID: "b"}}
-		if _, have := latestMarginalRatio(history); have {
-			t.Error("points that measured nothing must not count as a measurement")
+	t.Run("growth and novelty are different numbers", func(t *testing.T) {
+		// The review's example: ten entirely new findings added to a
+		// hundred-finding ledger. Growth says 9%; the run repeated NOTHING.
+		p := commonmodels.ConvergencePoint{NewFindings: 10, TotalFindings: 110, MarginalRatio: 10.0 / 110.0, RunFindings: 10}
+		if n, ok := p.RunNovelty(); !ok || n != 1 {
+			t.Errorf("RunNovelty = %v (ok=%v), want 1 — the run reported ten findings and all ten were new", n, ok)
+		}
+		got, _ := latestRunNovelty([]commonmodels.ConvergencePoint{p})
+		if got != 1 {
+			t.Errorf("latestRunNovelty = %v, want 1, not the 0.09 growth ratio", got)
 		}
 	})
 
-	t.Run("a genuine zero is a measurement", func(t *testing.T) {
-		history := []commonmodels.ConvergencePoint{{RunID: "a", TotalFindings: 40, NewFindings: 0, MarginalRatio: 0}}
-		got, have := latestMarginalRatio(history)
-		if !have || got != 0 {
-			t.Errorf("got %v (have=%v) — a run that found 40 findings, none of them new, measured a real zero", got, have)
+	t.Run("a run that repeated everything measures zero", func(t *testing.T) {
+		p := commonmodels.ConvergencePoint{NewFindings: 0, TotalFindings: 400, RunFindings: 40}
+		n, ok := p.RunNovelty()
+		if !ok || n != 0 {
+			t.Errorf("RunNovelty = %v (ok=%v), want a measured 0", n, ok)
+		}
+	})
+
+	t.Run("out-of-range counts are clamped, not propagated", func(t *testing.T) {
+		for _, p := range []commonmodels.ConvergencePoint{
+			{NewFindings: 50, RunFindings: 10},
+			{NewFindings: -5, RunFindings: 10},
+		} {
+			n, ok := p.RunNovelty()
+			if !ok || n < 0 || n > 1 {
+				t.Errorf("%+v gave %v (ok=%v), outside [0,1]", p, n, ok)
+			}
 		}
 	})
 }
@@ -499,9 +538,10 @@ func TestRenderSaturation(t *testing.T) {
 		out := renderSaturation(convergence(1.00, 0.18, 0.20, 0.10).Convergence,
 			map[string]int{"churn": 6, "fraud": 1}, areas)
 		for _, want := range []string{
+			"90% was already in this ledger",
+			"Re-walking the same ground produces restatements",
 			"100% → 18% → 20% → 10%",
-			"90% already known",
-			"Re-walking the same ground will produce restatements",
+			"the ledger is still growing but more slowly",
 			"Churn (6 runs)",
 			"Inventory",
 		} {
@@ -510,7 +550,7 @@ func TestRenderSaturation(t *testing.T) {
 			}
 		}
 		if strings.Contains(out, "still productive") {
-			t.Errorf("a 10%% share must not read as productive:\n%s", out)
+			t.Errorf("a 10%% novelty must not read as productive:\n%s", out)
 		}
 		// Fraud has produced findings once: neither mined out nor open ground,
 		// so naming it in either list would be false.
@@ -519,10 +559,33 @@ func TestRenderSaturation(t *testing.T) {
 		}
 	})
 
+	t.Run("growth is never stated as a repetition rate", func(t *testing.T) {
+		// The P1 this function was rewritten for: a run that added ten
+		// entirely new findings to a hundred-finding ledger has a growth ratio
+		// of 9% and repeated NOTHING. Saying "91% already known" would tell
+		// the model something false about its own project.
+		h := []commonmodels.ConvergencePoint{
+			{RunID: "a", NewFindings: 20, TotalFindings: 100, MarginalRatio: 0.20, RunFindings: 20},
+			{RunID: "b", NewFindings: 10, TotalFindings: 110, MarginalRatio: 10.0 / 110.0, RunFindings: 10},
+		}
+		out := renderSaturation(h, nil, nil)
+		if !strings.Contains(out, "0% was already in this ledger") {
+			t.Errorf("a run whose every finding was new must read as 0%% already known:\n%s", out)
+		}
+		for _, forbidden := range []string{"91% was already", "9% was already"} {
+			if strings.Contains(out, forbidden) {
+				t.Errorf("the growth ratio leaked into the repetition sentence (%q):\n%s", forbidden, out)
+			}
+		}
+		if !strings.Contains(out, "still productive") {
+			t.Errorf("a fully novel run must read as productive:\n%s", out)
+		}
+	})
+
 	t.Run("a productive project is told to keep going", func(t *testing.T) {
 		out := renderSaturation(convergence(1.00, 0.80).Convergence, map[string]int{"churn": 1}, areas)
 		if !strings.Contains(out, "still productive") {
-			t.Errorf("an 80%% share must read as productive:\n%s", out)
+			t.Errorf("an 80%% novelty must read as productive:\n%s", out)
 		}
 		if strings.Contains(out, "Re-walking the same ground") {
 			t.Errorf("a productive project must not be steered off its seams:\n%s", out)
@@ -538,9 +601,21 @@ func TestRenderSaturation(t *testing.T) {
 		}
 	})
 
-	t.Run("a single run states its share but no trend", func(t *testing.T) {
+	t.Run("a legacy history still states growth but claims no repetition rate", func(t *testing.T) {
+		// Points written before RunFindings existed cannot answer "how much was
+		// already known" — so the block says what it does know and no more.
+		out := renderSaturation(legacyConvergence(1.00, 0.18, 0.10).Convergence, nil, nil)
+		if strings.Contains(out, "already in this ledger") {
+			t.Errorf("an unmeasured history must not assert a repetition rate:\n%s", out)
+		}
+		if !strings.Contains(out, "100% → 18% → 10%") {
+			t.Errorf("the growth series is still known and worth stating:\n%s", out)
+		}
+	})
+
+	t.Run("a single measured run states its share but no growth trend", func(t *testing.T) {
 		out := renderSaturation(convergence(0.40).Convergence, nil, nil)
-		if !strings.Contains(out, "60% already known") {
+		if !strings.Contains(out, "60% was already in this ledger") {
 			t.Errorf("one measured run must still state its share:\n%s", out)
 		}
 		if strings.Contains(out, "→") {
@@ -548,7 +623,7 @@ func TestRenderSaturation(t *testing.T) {
 		}
 	})
 
-	t.Run("an empty run is left out of the trend", func(t *testing.T) {
+	t.Run("an empty run is left out of the growth series", func(t *testing.T) {
 		// Its ratio is a division by zero, and printing it would show a
 		// collapse to 0% that never happened.
 		history := convergence(0.9, 0.8).Convergence
@@ -559,7 +634,7 @@ func TestRenderSaturation(t *testing.T) {
 		if strings.Contains(out, "→ 0%") {
 			t.Errorf("a run that recorded nothing must not appear as a 0%% share:\n%s", out)
 		}
-		if !strings.Contains(out, "20% already known") {
+		if !strings.Contains(out, "20% was already in this ledger") {
 			t.Errorf("the headline must come from the last MEASURED run (0.8):\n%s", out)
 		}
 	})
@@ -592,14 +667,14 @@ func TestRenderSaturation(t *testing.T) {
 		}
 	})
 
-	t.Run("the trend is capped", func(t *testing.T) {
+	t.Run("the growth series is capped", func(t *testing.T) {
 		ratios := make([]float64, 0, 50)
 		for i := 0; i < 50; i++ {
 			ratios = append(ratios, 0.5)
 		}
 		out := renderSaturation(convergence(ratios...).Convergence, nil, nil)
 		if n := strings.Count(out, "→"); n != maxMarginalTrendPoints-1 {
-			t.Errorf("trend has %d arrows, want %d — fifty points is a table, not a sentence", n, maxMarginalTrendPoints-1)
+			t.Errorf("growth line has %d arrows, want %d — fifty points is a table, not a sentence", n, maxMarginalTrendPoints-1)
 		}
 	})
 }
@@ -744,7 +819,7 @@ func TestLedgerAndKnowledgeBudgetsAreIndependent(t *testing.T) {
 			llmInputWindow: window,
 			llmOutputCap:   16_384,
 		}
-		return o.injectKnowledgeSources(context.Background(), "PROMPT", "a query", topK, llmlayer.LayerAnalysis)
+		return o.injectKnowledgeSources(context.Background(), "PROMPT", "a query", topK, llmlayer.LayerAnalysis, nil)
 	}
 
 	t.Run("changing the top-K does not change the retrieval provider", func(t *testing.T) {
@@ -797,7 +872,7 @@ func TestInjectedOptsCarryTheBudgetAndExclusions(t *testing.T) {
 	}
 
 	t.Run("budget and exclusions arrive", func(t *testing.T) {
-		o.injectKnowledgeSources(context.Background(), "PROMPT", "a query", 5, llmlayer.LayerAnalysis)
+		o.injectKnowledgeSources(context.Background(), "PROMPT", "a query", 5, llmlayer.LayerAnalysis, o.baseContextFindingIDs)
 		if scaling.got.TokenBudget <= 0 {
 			t.Errorf("TokenBudget = %d, want positive on a 131K window", scaling.got.TokenBudget)
 		}
@@ -812,7 +887,7 @@ func TestInjectedOptsCarryTheBudgetAndExclusions(t *testing.T) {
 	t.Run("a prompt that already fills the window offers no budget", func(t *testing.T) {
 		// The provider then falls back to Limit, which is the documented
 		// reading of a zero budget — not silence.
-		out := o.injectKnowledgeSources(context.Background(), strings.Repeat("x", 2_000_000), "a query", 5, llmlayer.LayerAnalysis)
+		out := o.injectKnowledgeSources(context.Background(), strings.Repeat("x", 2_000_000), "a query", 5, llmlayer.LayerAnalysis, nil)
 		if scaling.got.TokenBudget != 0 {
 			t.Errorf("TokenBudget = %d, want 0 for a prompt past the window", scaling.got.TokenBudget)
 		}
@@ -821,9 +896,20 @@ func TestInjectedOptsCarryTheBudgetAndExclusions(t *testing.T) {
 		}
 	})
 
+	t.Run("a prompt that does not carry the base context excludes nothing", func(t *testing.T) {
+		// The clarifying-questions prompt is built without the base context, so
+		// excluding its findings there would suppress knowledge the model never
+		// saw. The caller says what its own prompt carries; this function must
+		// not assume.
+		o.injectKnowledgeSources(context.Background(), "PROMPT", "a query", 5, llmlayer.LayerQuestions, nil)
+		if len(scaling.got.ExcludeIDs) != 0 {
+			t.Errorf("ExcludeIDs = %v, want none for a prompt without the base context", scaling.got.ExcludeIDs)
+		}
+	})
+
 	t.Run("no query means no provider call at all", func(t *testing.T) {
 		before := scaling.calls
-		if got := o.injectKnowledgeSources(context.Background(), "PROMPT", "", 5, llmlayer.LayerAnalysis); got != "PROMPT" {
+		if got := o.injectKnowledgeSources(context.Background(), "PROMPT", "", 5, llmlayer.LayerAnalysis, nil); got != "PROMPT" {
 			t.Errorf("an empty query must return the prompt unchanged, got %q", got)
 		}
 		if scaling.calls != before {
@@ -982,5 +1068,124 @@ func TestReflectionResolvePathIsGrounded(t *testing.T) {
 	deny := strings.Index(field, "Do NOT mark a finding `resolved`")
 	if resolve < 0 || deny < 0 || deny < resolve {
 		t.Errorf("the prohibition must follow the permission, so the last word on absence is that it proves nothing:\n%s", field)
+	}
+}
+
+// --- the three remaining review findings ---
+
+// TestPriorContextOptOutIsHonoured. A ledger that carried nothing — because the
+// operator set the share to zero, or because the window has no room — must not
+// be answered with the legacy unbudgeted insight dump. That fallback exists for
+// a project with NO ledger; using it here would undo the opt-out and feed the
+// smallest models exactly the block the budget keeps out of them.
+func TestPriorContextOptOutIsHonoured(t *testing.T) {
+	o := &Orchestrator{}
+	pctx := &models.ProjectContext{TotalDiscoveries: 4, LastDiscoveryDate: time.Now()}
+	prevInsights := []models.InsightSummary{
+		{Name: "legacy dumped insight", AnalysisArea: "churn", Severity: "high", AffectedCount: 10, Date: "2026-01-01"},
+	}
+
+	t.Run("share of zero carries nothing at all", func(t *testing.T) {
+		t.Setenv(priorContextShareEnv, "0")
+		wo := windowedOrchestrator(ledgerFixture(420), convergence(0.10), 131_072, 16_384)
+		lrc := wo.loadLedgerReadContext(context.Background())
+		if lrc == nil {
+			t.Fatal("the ledger is still present — only the budget is zero")
+		}
+		if len(lrc.findings) != 0 {
+			t.Fatalf("budget zero carried %d findings", len(lrc.findings))
+		}
+		out := o.buildPreviousContext(pctx, prevInsights, nil, nil, lrc, nil)
+		if strings.Contains(out, "legacy dumped insight") {
+			t.Errorf("the opt-out fell through to the legacy insight dump:\n%s", out)
+		}
+		if strings.Contains(out, "Already established findings") {
+			t.Errorf("no findings were budgeted, so no findings block may render:\n%s", out)
+		}
+	})
+
+	t.Run("a window with no room carries nothing either", func(t *testing.T) {
+		wo := windowedOrchestrator(ledgerFixture(420), convergence(0.10), 1_024, 256)
+		lrc := wo.loadLedgerReadContext(context.Background())
+		if lrc == nil || len(lrc.findings) != 0 {
+			t.Fatalf("expected a present ledger carrying no findings, got %+v", lrc)
+		}
+		out := o.buildPreviousContext(pctx, prevInsights, nil, nil, lrc, nil)
+		if strings.Contains(out, "legacy dumped insight") {
+			t.Errorf("a 1K window was handed the unbudgeted legacy dump:\n%s", out)
+		}
+	})
+
+	t.Run("a project with NO ledger still gets the legacy dump", func(t *testing.T) {
+		// The fallback is not removed, only stopped from firing for the wrong
+		// reason — a project that predates the ledger still needs it.
+		out := o.buildPreviousContext(pctx, prevInsights, nil, nil, nil, nil)
+		if !strings.Contains(out, "legacy dumped insight") {
+			t.Errorf("a project with no ledger must still get the older block:\n%s", out)
+		}
+	})
+}
+
+// TestPriorContextBudgetNeverExceedsTheHeadroom. SaturatedShare is bounded to
+// twice the configured base, so a base above 0.5 can scale past 1 — and a
+// budget larger than the free space is not a budget. On a 32K/8K model a 0.75
+// base would have allocated 26,356 tokens of 18,496 available.
+func TestPriorContextBudgetNeverExceedsTheHeadroom(t *testing.T) {
+	const available = 18_496
+	for _, share := range []string{"0.2", "0.5", "0.75", "1.0", "2.0"} {
+		t.Setenv(priorContextShareEnv, share)
+		for _, novelty := range []float64{1.0, 0.5, 0.1, 0} {
+			got := priorContextBudget(available, novelty, true)
+			if got > available {
+				t.Errorf("share %s, novelty %v: budget %d exceeds the %d available", share, novelty, got, available)
+			}
+			if got < 0 {
+				t.Errorf("share %s, novelty %v: negative budget %d", share, novelty, got)
+			}
+		}
+	}
+
+	t.Run("an ordinary share is unaffected by the clamp", func(t *testing.T) {
+		t.Setenv(priorContextShareEnv, "0.20")
+		if got := priorContextBudget(available, 1.0, true); got != available/5 {
+			t.Errorf("budget = %d, want a fifth of %d", got, available)
+		}
+	})
+
+	t.Run("zero available yields zero, not a clamp artefact", func(t *testing.T) {
+		if got := priorContextBudget(0, 0, true); got != 0 {
+			t.Errorf("budget = %d, want 0", got)
+		}
+	})
+}
+
+// TestPriorContextBudgetUsesNoveltyNotGrowth is the P1, end to end: a mature
+// project whose last run repeated nothing must NOT be handed the saturated
+// budget just because its ledger is large.
+func TestPriorContextBudgetUsesNoveltyNotGrowth(t *testing.T) {
+	findings := ledgerFixture(420)
+
+	shown := func(history []commonmodels.ConvergencePoint) int {
+		o := windowedOrchestrator(findings, &commonmodels.DiscoveryLedger{ProjectID: "p1", Convergence: history}, 131_072, 16_384)
+		lrc := o.loadLedgerReadContext(context.Background())
+		if lrc == nil {
+			return 0
+		}
+		return len(lrc.findings)
+	}
+
+	// Growth 9% but every finding the run reported was new: productive, so the
+	// base share.
+	productive := shown([]commonmodels.ConvergencePoint{
+		{RunID: "r", NewFindings: 10, TotalFindings: 110, MarginalRatio: 10.0 / 110.0, RunFindings: 10},
+	})
+	// The same growth, but the run repeated almost everything: saturated.
+	repeating := shown([]commonmodels.ConvergencePoint{
+		{RunID: "r", NewFindings: 10, TotalFindings: 110, MarginalRatio: 10.0 / 110.0, RunFindings: 100},
+	})
+	t.Logf("same 9%% growth ratio: all-new run shown %d findings, repeating run shown %d", productive, repeating)
+
+	if repeating <= productive {
+		t.Errorf("the repeating run was shown %d findings and the all-new run %d — the two have the same growth ratio, so only novelty can tell them apart", repeating, productive)
 	}
 }

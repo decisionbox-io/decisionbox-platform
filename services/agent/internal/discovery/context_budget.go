@@ -122,10 +122,26 @@ func (o *Orchestrator) baseContextAvailableInput() int {
 }
 
 // priorContextBudget is how many tokens the accumulated prior-knowledge block
-// may spend, given how much genuinely new the last measured run added.
-func (o *Orchestrator) priorContextBudget(marginalRatio float64, haveRatio bool) int {
-	share := contextbudget.SaturatedShare(priorContextShare(), marginalRatio, haveRatio)
-	return contextbudget.Share(o.baseContextAvailableInput(), share)
+// may spend out of available, given how much of what the last measured run
+// reported the project did not already have.
+//
+// available is passed in rather than resolved here so the caller can log the
+// same number it budgeted from: resolving it twice walks three layers' budgets
+// twice and, if a calibration lands in between, reports a figure the budget was
+// not actually computed from.
+func priorContextBudget(available int, novelty float64, haveNovelty bool) int {
+	share := contextbudget.SaturatedShare(priorContextShare(), novelty, haveNovelty)
+	budget := contextbudget.Share(available, share)
+	// The scaled share exceeds 1 when the operator configures a base above
+	// 0.5, and a budget larger than the free space is not a budget — on a
+	// 32K/8K model a 0.75 base would have allocated 26,356 tokens of 18,496
+	// available, overrunning before any schema or evidence was added. Clamped
+	// here rather than inside Share, which stays a plain fraction, because
+	// this is where the headroom is known.
+	if budget > available {
+		budget = available
+	}
+	return budget
 }
 
 // contextProviderBudget is the per-provider token budget for one assembled
@@ -150,20 +166,24 @@ func (o *Orchestrator) contextProviderBudget(ctx context.Context, layer, prompt 
 	return contextbudget.Share(avail, contextProviderShare())
 }
 
-// latestMarginalRatio is the most recent MEASURED share-of-new from the
-// ledger's convergence history, and whether there is one at all.
+// latestRunNovelty is the most recent MEASURED share of a run's own findings
+// that the project did not already have, and whether there is one at all.
 //
-// Points whose run recorded no findings are skipped. Such a point carries a
-// ratio of 0 because the writer divides by a zero total, not because the run
-// found only things already known — and reading it as saturation would hand the
-// largest prior-context budget to a project whose last run failed or was
-// cancelled before it found anything. Walking back to the last point that
-// actually measured something is the difference between "nothing was new" and
-// "there was nothing".
-func latestMarginalRatio(history []commonmodels.ConvergencePoint) (float64, bool) {
+// Deliberately NOT MarginalRatio, which divides a run's new findings by the
+// whole active ledger and so answers a different question: a run that adds ten
+// entirely new findings to a hundred-finding ledger scores 0.09 there while
+// having repeated nothing. Reading that as repetition would steer the most
+// productive mature projects away from the seams that are paying off, and would
+// put a false sentence in their prompts.
+//
+// Points written before RunFindings existed are skipped rather than guessed at,
+// so a project carrying only legacy points gets the base share until its next
+// run records a measurement. A signal that is inert for one run is better than
+// one driven by a number that does not mean what it is read as.
+func latestRunNovelty(history []commonmodels.ConvergencePoint) (float64, bool) {
 	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].TotalFindings > 0 {
-			return history[i].MarginalRatio, true
+		if n, ok := history[i].RunNovelty(); ok {
+			return n, true
 		}
 	}
 	return 0, false

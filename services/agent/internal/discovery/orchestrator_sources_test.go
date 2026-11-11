@@ -33,7 +33,7 @@ func TestInjectKnowledgeSources_NoOpProviderReturnsPromptUnchanged(t *testing.T)
 	o := &Orchestrator{projectID: "proj_abc"}
 	want := "original prompt body"
 
-	got := o.injectKnowledgeSources(context.Background(), want, "some query", knowledgeTopKAnalysis, llmlayer.LayerAnalysis)
+	got := o.injectKnowledgeSources(context.Background(), want, "some query", knowledgeTopKAnalysis, llmlayer.LayerAnalysis, nil)
 
 	if got != want {
 		t.Errorf("expected prompt to be unchanged when no provider is registered\nwant: %q\ngot:  %q", want, got)
@@ -54,7 +54,7 @@ func TestInjectKnowledgeSources_StubProviderInjectsSection(t *testing.T) {
 	o := &Orchestrator{projectID: "proj_abc"}
 	original := "## Original Prompt\nDo the analysis."
 
-	got := o.injectKnowledgeSources(context.Background(), original, "some query", 5, llmlayer.LayerAnalysis)
+	got := o.injectKnowledgeSources(context.Background(), original, "some query", 5, llmlayer.LayerAnalysis, nil)
 
 	if !strings.Contains(got, "## Project Knowledge") {
 		t.Errorf("expected '## Project Knowledge' section in injected prompt, got:\n%s", got)
@@ -82,7 +82,7 @@ func TestInjectKnowledgeSources_PassesProjectIDAndOpts(t *testing.T) {
 	gosources.SetProviderForTest(stub)
 
 	o := &Orchestrator{projectID: "proj_xyz"}
-	o.injectKnowledgeSources(context.Background(), "p", "the query text", 7, llmlayer.LayerAnalysis)
+	o.injectKnowledgeSources(context.Background(), "p", "the query text", 7, llmlayer.LayerAnalysis, nil)
 
 	if stub.gotProj != "proj_xyz" {
 		t.Errorf("projectID = %q, want %q", stub.gotProj, "proj_xyz")
@@ -107,7 +107,7 @@ func TestInjectKnowledgeSources_ProviderErrorReturnsPromptUnchanged(t *testing.T
 
 	o := &Orchestrator{projectID: "proj_abc"}
 	want := "original prompt body"
-	got := o.injectKnowledgeSources(context.Background(), want, "q", 5, llmlayer.LayerAnalysis)
+	got := o.injectKnowledgeSources(context.Background(), want, "q", 5, llmlayer.LayerAnalysis, nil)
 
 	if got != want {
 		t.Errorf("on provider error, prompt must be returned unchanged\nwant: %q\ngot:  %q", want, got)
@@ -123,7 +123,7 @@ func TestInjectKnowledgeSources_EmptyChunksReturnsPromptUnchanged(t *testing.T) 
 
 	o := &Orchestrator{projectID: "proj_abc"}
 	want := "original prompt"
-	got := o.injectKnowledgeSources(context.Background(), want, "q", 5, llmlayer.LayerAnalysis)
+	got := o.injectKnowledgeSources(context.Background(), want, "q", 5, llmlayer.LayerAnalysis, nil)
 
 	if got != want {
 		t.Errorf("with empty chunks, prompt must be unchanged\nwant: %q\ngot:  %q", want, got)
@@ -139,7 +139,7 @@ func TestInjectKnowledgeSources_EmptyQueryShortCircuits(t *testing.T) {
 
 	o := &Orchestrator{projectID: "proj_abc"}
 	want := "original prompt"
-	got := o.injectKnowledgeSources(context.Background(), want, "", 5, llmlayer.LayerAnalysis)
+	got := o.injectKnowledgeSources(context.Background(), want, "", 5, llmlayer.LayerAnalysis, nil)
 
 	if got != want {
 		t.Errorf("empty query should skip retrieval and return prompt unchanged")
@@ -158,7 +158,7 @@ func TestInjectKnowledgeSources_ZeroTopKShortCircuits(t *testing.T) {
 
 	o := &Orchestrator{projectID: "proj_abc"}
 	want := "original prompt"
-	got := o.injectKnowledgeSources(context.Background(), want, "q", 0, llmlayer.LayerAnalysis)
+	got := o.injectKnowledgeSources(context.Background(), want, "q", 0, llmlayer.LayerAnalysis, nil)
 
 	if got != want {
 		t.Errorf("zero topK should skip retrieval and return prompt unchanged")

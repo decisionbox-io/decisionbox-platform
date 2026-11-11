@@ -89,21 +89,61 @@ type LedgerCoverage struct {
 	Summary string `bson:"summary" json:"summary"`
 }
 
-// ConvergencePoint is the marginal-new signal for one run: how much genuinely
-// new the run added. A decaying MarginalRatio means the warehouse is tiled and
-// the policy should shift breadth→depth or open a new area.
+// ConvergencePoint is the marginal-new signal for one run. A decaying
+// MarginalRatio means the ledger is growing more slowly, so the warehouse is
+// being tiled and the policy should shift breadth→depth or open a new area.
 type ConvergencePoint struct {
-	RunID         string    `bson:"run_id" json:"run_id"`
-	NewFindings   int       `bson:"new_findings" json:"new_findings"`
-	TotalFindings int       `bson:"total_findings" json:"total_findings"`
+	RunID       string `bson:"run_id" json:"run_id"`
+	NewFindings int    `bson:"new_findings" json:"new_findings"`
+	// TotalFindings is the size of the ACTIVE LEDGER after the run, not the
+	// number of findings the run produced.
+	TotalFindings int `bson:"total_findings" json:"total_findings"`
+	// MarginalRatio is NewFindings / TotalFindings: the share of the ledger
+	// that is new as of this run. It measures how fast the ledger is still
+	// growing, and it is NOT the share of the run's own output that was new —
+	// a run that adds ten entirely new findings to a hundred-finding ledger
+	// scores 0.09 here while having repeated nothing. The two are easy to
+	// confuse because "marginal" suggests the second; RunFindings below is
+	// what actually answers it.
 	MarginalRatio float64   `bson:"marginal_ratio" json:"marginal_ratio"`
 	Date          time.Time `bson:"date" json:"date"`
+	// RunFindings is how many distinct findings THIS RUN accounted for: the
+	// ones it created plus the carried ones it surfaced again. With
+	// NewFindings it gives the run's own novelty — NewFindings/RunFindings —
+	// which is the number that answers "how much of what this run reported
+	// did the project already have".
+	//
+	// Added later than the fields above, so it is absent on points written
+	// before it existed. Zero therefore means "not measured", not "this run
+	// found nothing", and every reader has to tell those apart: treating an
+	// old point as a run that reported nothing would read as total repetition.
+	RunFindings int `bson:"run_findings,omitempty" json:"run_findings,omitempty"`
 	// UnrecordedFindings is how many of the run's findings never reached the
 	// ledger — a failed write, or a consolidation that could not read what it
 	// needed. Stored because NewFindings alone cannot tell "found nothing"
 	// from "found things and lost them", and the second silently understates
 	// every run that comes after: the next run builds on this ledger.
 	UnrecordedFindings int `bson:"unrecorded_findings,omitempty" json:"unrecorded_findings,omitempty"`
+}
+
+// RunNovelty is the share of what this run reported that the project did not
+// already have, and whether the point measured it at all.
+//
+// A method rather than a stored float so there is one place that knows an
+// unmeasured point is not a zero, and so the ratio cannot drift from the counts
+// it is derived from.
+func (c ConvergencePoint) RunNovelty() (float64, bool) {
+	if c.RunFindings <= 0 {
+		return 0, false
+	}
+	n := float64(c.NewFindings) / float64(c.RunFindings)
+	if n < 0 {
+		return 0, true
+	}
+	if n > 1 {
+		return 1, true
+	}
+	return n, true
 }
 
 // LedgerFinding is a durable, deduped finding carried across runs WITH substance

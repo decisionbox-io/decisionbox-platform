@@ -1110,7 +1110,14 @@ func (o *Orchestrator) updateLedgerMeta(ctx context.Context, result *models.Disc
 		NewFindings:   newCount,
 		TotalFindings: totalCount,
 		MarginalRatio: ratio,
-		Date:          time.Now(),
+		// What THIS RUN accounted for: the findings it created plus the
+		// carried ones it surfaced again. MarginalRatio above divides by the
+		// whole ledger, so it answers how fast the ledger is growing and not
+		// how much of the run's own output was already known — and the second
+		// question is the one a reader wants when deciding whether a run is
+		// repeating itself.
+		RunFindings: newCount + len(cons.ReSeen),
+		Date:        time.Now(),
 		// Recorded on the run's own point, because this is the record every
 		// reader trusts. Without it a consolidation that wrote nothing
 		// reports "found 0" — indistinguishable from a run that genuinely
