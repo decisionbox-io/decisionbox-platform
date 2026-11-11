@@ -13,21 +13,54 @@ import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
 import {
-  StatCard, SectionHeader, Th, SeverityBadge, AreaBadge, Pill, EmptyState, normalizeConfidence,
+  StatCard, SectionHeader, Th, SeverityBadge as StatusPill, AreaBadge, Pill, EmptyState, normalizeConfidence,
 } from '@/components/common/UIComponents';
 import { RunErrorIndicator } from '@/components/common/RunErrorIndicator';
 import { ValidationLogRow } from '@/components/validation/ValidationLogRow';
 import { InsightValidationBadge } from '@/components/validation/InsightValidationBadge';
 import { ConfidenceCell } from '@/components/scoring/ConfidenceCell';
+import { SeverityCell } from '@/components/scoring/SeverityCell';
+import { PriorityCell } from '@/components/scoring/PriorityCell';
+import { TierTally } from '@/components/scoring/TierTally';
+import { priorityTierOrder, priorityMeta, TIER_ORDER } from '@/components/scoring/priorityMeta';
+import { severityBandOrder } from '@/components/scoring/severityMeta';
 import UnreadDot from '@/components/common/UnreadDot';
 import QuestionsDrawer from '@/components/common/QuestionsDrawer';
 import { useReadSet } from '@/lib/readState';
 import { api, ApiError, DiscoveryResult, Feedback, Insight, Recommendation, ExplorationStep, AnalysisLogStep, ValidationLogEntry, DiscoveryQuestion } from '@/lib/api';
 import { recommendationEmptyReason } from '@/lib/recommendationEmptyReason';
 
-const severityOrder: Record<string, number> = {
-  critical: 0, high: 1, medium: 2, low: 3,
-};
+// tierChips are the filter chips: the four tiers, by the words a reader acts
+// on, plus All.
+const tierChips = ['All', ...TIER_ORDER.map(t => priorityMeta(t).label)];
+
+// matchesTierChip decides whether a row survives a chip.
+//
+// The top chip also matches a legacy `critical` SEVERITY, which is the one
+// place the two vocabularies have to meet. `critical` was the top severity
+// word before severity was derived and is the top priority tier now, so a
+// reader filtering for the most urgent findings on a project with history
+// means both -- and a chip that matched only the tier would silently hide
+// every older finding that the same chip used to show.
+function matchesTierChip(insight: Insight, chip: string): boolean {
+  const tier = insight.evidence_scoring?.priority_tier;
+  if (tier && priorityMeta(tier).label === chip) return true;
+  return chip === priorityMeta('critical').label && insight.severity === 'critical';
+}
+
+// isTopTier is the same question for the KPI card.
+function isTopTier(insight: Insight): boolean {
+  return matchesTierChip(insight, priorityMeta('critical').label);
+}
+
+// tierOf is how a row is placed when the list is ordered by priority.
+//
+// A document with no tier sorts last rather than being mapped onto one. The
+// run header's tally says the same thing a different way: a finding nothing
+// graded has not been triaged, and giving it a tier here would claim it had.
+function tierOf(insight: Insight): number {
+  return priorityTierOrder(insight.evidence_scoring?.priority_tier);
+}
 
 export default function DiscoveryDetailPage() {
   const { id, runId } = useParams<{ id: string; runId: string }>();
@@ -49,8 +82,8 @@ export default function DiscoveryDetailPage() {
   // drop out via onResolved.
   const [questions, setQuestions] = useState<DiscoveryQuestion[]>([]);
   const [loading, setLoading] = useState(true);
-  const [severityFilter, setSeverityFilter] = useState<string>('All');
-  const [sortBy, setSortBy] = useState<string>('Severity');
+  const [priorityFilter, setPriorityFilter] = useState<string>('All');
+  const [sortBy, setSortBy] = useState<string>('Priority');
   const [showAllRecs, setShowAllRecs] = useState(false);
   const readInsights = useReadSet(id, 'insight');
   const readRecs = useReadSet(id, 'recommendation');
@@ -132,22 +165,38 @@ export default function DiscoveryDetailPage() {
 
   // Filter + sort insights
   let filtered = insights;
-  if (severityFilter !== 'All') {
-    filtered = filtered.filter(i => i.severity.toLowerCase() === severityFilter.toLowerCase());
+  if (priorityFilter !== 'All') {
+    filtered = filtered.filter(i => matchesTierChip(i, priorityFilter));
   }
   filtered = [...filtered].sort((a, b) => {
     switch (sortBy) {
-      case 'Severity': return (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9);
+      // Priority first and by default: the tier folds the severity band
+      // together with whether the claim held up, which is the order a reader
+      // scanning thirty findings actually wants. Ties inside a tier break on
+      // the engine's own sort score, so a severe finding leads a mild one.
+      case 'Priority': {
+        const byTier = tierOf(a) - tierOf(b);
+        if (byTier !== 0) return byTier;
+        return (b.evidence_scoring?.priority_score ?? -1) - (a.evidence_scoring?.priority_score ?? -1);
+      }
+      case 'Severity': return severityBandOrder(a.severity) - severityBandOrder(b.severity);
       case 'Confidence': return b.confidence - a.confidence;
       case 'Users affected': return (b.affected_count || 0) - (a.affected_count || 0);
       case 'Area': return a.analysis_area.localeCompare(b.analysis_area);
-      default: return (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9);
+      default: {
+        const byTier = tierOf(a) - tierOf(b);
+        if (byTier !== 0) return byTier;
+        return (b.evidence_scoring?.priority_score ?? -1) - (a.evidence_scoring?.priority_score ?? -1);
+      }
     }
   });
 
   // Aggregate stats
   const totalInsights = insights.length;
-  const criticalCount = insights.filter(i => i.severity === 'critical').length;
+  // The top tier, with a legacy `critical` severity still counted: a run whose
+  // insights predate the derivation has no tier on them, and reporting zero
+  // for it would be a silent undercount rather than an honest one.
+  const criticalCount = insights.filter(isTopTier).length;
   const avgConfidenceRaw = totalInsights > 0
     ? insights.reduce((sum, i) => sum + (i.confidence || 0), 0) / totalInsights
     : 0;
@@ -183,7 +232,7 @@ export default function DiscoveryDetailPage() {
           })}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <SeverityBadge severity={discovery.run_type === 'partial' ? 'Partial' : 'Complete'}
+          <StatusPill severity={discovery.run_type === 'partial' ? 'Partial' : 'Complete'}
             type="status" />
           {/* Analysis-area failures collapse to a compact warning icon next to
               the run status. Clicking it expands the full error(s) in a
@@ -198,6 +247,13 @@ export default function DiscoveryDetailPage() {
           <span style={{ fontSize: 12, color: 'var(--db-text-tertiary)' }}>
             {discovery.total_steps} queries · completed in {durationSec}s
           </span>
+        </div>
+        {/* What this run found, by what to do about it. Computed here rather
+            than persisted: it is a count over fields every run already
+            writes, and a stored copy would go stale the moment a document is
+            re-validated from the dashboard. */}
+        <div style={{ marginTop: 8 }}>
+          <TierTally insights={insights} />
         </div>
       </div>
 
@@ -217,7 +273,7 @@ export default function DiscoveryDetailPage() {
         display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 24,
       }}>
         <StatCard label="Total Insights" value={totalInsights} />
-        <StatCard label="Critical Findings" value={criticalCount}
+        <StatCard label="Act now" value={criticalCount}
           subtitle={`Of ${totalInsights} total insights`}
           valueColor={criticalCount > 0 ? 'var(--db-red-text)' : undefined} />
         <StatCard label="Recommendations" value={recommendations.length} />
@@ -232,13 +288,13 @@ export default function DiscoveryDetailPage() {
         <>
           {/* Filter bar */}
           <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
-            {['All', 'Critical', 'High', 'Medium', 'Low'].map(sev => (
-              <button key={sev} onClick={() => setSeverityFilter(sev)} style={{
+            {tierChips.map(sev => (
+              <button key={sev} onClick={() => setPriorityFilter(sev)} style={{
                 fontSize: 12, padding: '4px 12px',
                 border: `0.5px solid var(--db-border-strong)`,
                 borderRadius: 'var(--db-radius)',
-                background: severityFilter === sev ? 'var(--db-blue-bg)' : 'var(--db-bg-white)',
-                color: severityFilter === sev ? 'var(--db-blue-text)' : 'var(--db-text-secondary)',
+                background: priorityFilter === sev ? 'var(--db-blue-bg)' : 'var(--db-bg-white)',
+                color: priorityFilter === sev ? 'var(--db-blue-text)' : 'var(--db-text-secondary)',
                 cursor: 'pointer', fontFamily: 'inherit', transition: 'all 120ms ease',
               }}>{sev}</button>
             ))}
@@ -257,7 +313,8 @@ export default function DiscoveryDetailPage() {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr>
-                  <Th width="35%">Insight</Th>
+                  <Th width="32%">Insight</Th>
+                  <Th>Priority</Th>
                   <Th>Severity</Th>
                   <Th>Area</Th>
                   <Th>Validation</Th>
@@ -467,7 +524,10 @@ function InsightRow({ insight, projectId, runId, idx, isRead, feedback, onFeedba
         </Link>
       </td>
       <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
-        <SeverityBadge severity={insight.severity} type="severity" />
+        <PriorityCell scoring={insight.evidence_scoring} />
+      </td>
+      <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
+        <SeverityCell scoring={insight.evidence_scoring} severity={insight.severity} />
       </td>
       <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
         <AreaBadge area={insight.analysis_area} />
@@ -635,7 +695,7 @@ function MicroBadge({ children, color }: { children: React.ReactNode; color?: 'r
 
 function SortDropdown({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const [open, { toggle, close }] = useDisclosure(false);
-  const options = ['Severity', 'Confidence', 'Users affected', 'Area'];
+  const options = ['Priority', 'Severity', 'Confidence', 'Users affected', 'Area'];
   return (
     <div style={{ position: 'relative' }}>
       <button onClick={toggle} style={{

@@ -691,8 +691,65 @@ export interface Scoring {
   // — the dashboard does not re-phrase it.
   confidence_reason?: string;
   confidence_docks?: ConfidenceDock[];
+
+  // The severity axis. ABSENT on a document an earlier engine version scored
+  // on the confidence axis alone, which is why every field here is optional
+  // even on a document that carries a `scoring` block: a reader has to be able
+  // to tell "never graded" from "graded low", and `severity_band` being
+  // undefined is how.
+  magnitude_score?: number;
+  severity_band?: SeverityBand;
+  severity_score?: number;
+  severity_driver?: SeverityDriver;
+  // The engine's own sentence for the band, rendered verbatim for the reason
+  // confidence_reason is.
+  severity_reason?: string;
+  area_weight?: number;
+  weight_source?: { kind?: string; category?: string };
+
+  // The priority rollup over the two axes. Absent together with the severity
+  // half, because there is nothing to roll up without it.
+  priority_tier?: PriorityTier;
+  priority_score?: number;
+
+  risk_flags?: string[];
   engine_version: number;
 }
+
+// SeverityDriver is what a reader is shown beside a severity band.
+//
+// Two figure slots, and both are load-bearing. `figure` is what banded the
+// magnitude; `amount` is the money at stake, which is present whether or not
+// it banded anything — amount bands are a per-business threshold and ship
+// unconfigured, so the usual case is a share-banded magnitude beside a
+// grounded amount. They name the same figure once amount bands are set.
+export interface SeverityDriver {
+  kind: SeverityDriverKind;
+  // False only for 'baseline': no figure this engine would use could be
+  // found, so the magnitude is the area baseline and the label reads "not
+  // quantified". It is NOT a low magnitude.
+  quantified: boolean;
+  figure?: SeverityFigure;
+  amount?: SeverityFigure;
+}
+
+export interface SeverityFigure {
+  figure_id?: string;
+  // The figure as the insight's own prose renders it, so the number beside the
+  // band is character-for-character the number in the sentence.
+  display?: string;
+  value?: number;
+  unit?: string;
+  currency?: string;
+  // What the platform concluded about this figure's own arithmetic. Always
+  // 'holds' on a figure the engine would use; rendered from the document
+  // rather than asserted here.
+  verdict?: string;
+}
+
+export type SeverityBand = 'high' | 'medium' | 'low';
+export type SeverityDriverKind = 'amount' | 'share' | 'baseline';
+export type PriorityTier = 'critical' | 'investigate' | 'high' | 'low';
 
 // ConfidenceDock is one deduction the base took. `amount` is the positive
 // magnitude charged: base minus the sum of the amounts always equals the final
@@ -733,6 +790,25 @@ export interface ScoringEngine {
       cap?: number;
       shared_cap_with?: string;
     }[];
+  };
+  severity: {
+    // Ships EMPTY, and the empty array is the information: an absolute money
+    // cutoff is a property of a business rather than of the engine, so a
+    // grounded amount is shown as the money at stake while the band comes
+    // from the share.
+    amount_bands: { at: number; band: SeverityBand }[];
+    share_bands: { at: number; band: SeverityBand }[];
+    magnitudes: { high: number; medium: number; low: number };
+    baseline: number;
+    cutoffs: { high: number; medium: number };
+    default_weight: number;
+  };
+  priority: {
+    tiers: { tier: PriorityTier; weight: number; priority: number }[];
+    trusted_confidence_bands: string[];
+    matrix: { severity: SeverityBand; confidence: 'trusted' | 'untrusted'; tier: PriorityTier }[];
+    severity_coeff: number;
+    confidence_coeff: number;
   };
 }
 
@@ -826,6 +902,10 @@ export interface Recommendation {
   actions: string[];
   related_insight_ids?: string[];
   confidence: number;
+  // Inherited from the insights this recommendation cites — the highest of
+  // them. Absent on a legacy document and on one whose citations resolved to
+  // nothing scored.
+  severity?: string;
   validation?: InsightValidation;
   evidence_scoring?: Scoring;
 }
@@ -1899,6 +1979,7 @@ export interface StandaloneRecommendation {
   actions: string[];
   related_insight_ids?: string[];
   confidence: number;
+  severity?: string;
   validation?: InsightValidation;
   evidence_scoring?: Scoring;
   embedding_text?: string;

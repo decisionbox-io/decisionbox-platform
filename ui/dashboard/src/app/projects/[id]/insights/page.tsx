@@ -17,12 +17,31 @@ import {
 } from '@/components/validation/InsightValidationBadge';
 import { statusMeta } from '@/components/validation/statusMeta';
 import { ConfidenceCell } from '@/components/scoring/ConfidenceCell';
+import { SeverityCell } from '@/components/scoring/SeverityCell';
+import { PriorityCell } from '@/components/scoring/PriorityCell';
+import { priorityTierOrder } from '@/components/scoring/priorityMeta';
+import { severityBandOrder } from '@/components/scoring/severityMeta';
 import { useReadSet } from '@/lib/readState';
 import { api, Feedback, Insight, Project, SearchResultItem } from '@/lib/api';
 
-const severityOrder: Record<string, number> = {
-  critical: 0, high: 1, medium: 2, low: 3,
-};
+// The severity filter chips, as label/value pairs.
+//
+// Bands rather than priority tiers, and the reason is the search path rather
+// than taste: while a semantic search is active this value is sent as a
+// server-side Qdrant match on the payload's `severity` field, and that payload
+// carries no tier. A tier chip would silently filter nothing there.
+//
+// `Critical` is kept and labelled as what it is. It was the top severity word
+// before severity was derived, so it matches only documents from before the
+// change -- and dropping it would make that history unreachable from a page
+// that still lists it.
+const severityChips: { label: string; value: string }[] = [
+  { label: 'All', value: 'All' },
+  { label: 'High', value: 'high' },
+  { label: 'Medium', value: 'medium' },
+  { label: 'Low', value: 'low' },
+  { label: 'Critical (legacy)', value: 'critical' },
+];
 
 // Validation filter options for the Insights tab. Values are the
 // canonical statuses (plus the neutral "unverified" for never-run
@@ -50,7 +69,7 @@ export default function InsightsListPage() {
   const [search, setSearch] = useState('');
   const [severityFilter, setSeverityFilter] = useState('All');
   const [validationFilter, setValidationFilter] = useState('All');
-  const [sortBy, setSortBy] = useState('Severity');
+  const [sortBy, setSortBy] = useState('Priority');
   const [page, setPage] = useState(1);
   const pageSize = 20;
   const [semanticResults, setSemanticResults] = useState<SearchResultItem[] | null>(null);
@@ -105,7 +124,7 @@ export default function InsightsListPage() {
         query: search.trim(),
         limit: 20,
         types: ['insight'],
-        filters: severityFilter !== 'All' ? { severity: severityFilter.toLowerCase() } : undefined,
+        filters: severityFilter !== 'All' ? { severity: severityFilter } : undefined,
       })
         .then(resp => setSemanticResults(resp.results))
         .catch(() => setSemanticResults(null))
@@ -127,21 +146,31 @@ export default function InsightsListPage() {
     );
   }
   if (severityFilter !== 'All') {
-    filtered = filtered.filter(i => i.severity.toLowerCase() === severityFilter.toLowerCase());
+    filtered = filtered.filter(i => i.severity?.toLowerCase() === severityFilter);
   }
   if (validationFilter !== 'All') {
     filtered = filtered.filter(i => resolveValidationStatus(i.validation) === validationFilter);
   }
 
-  // Sort
+  // Sort. Priority is the default: the tier folds the severity band together
+  // with whether the claim held up, which is what a reader scanning a
+  // project's whole history is actually choosing between. Ties inside a tier
+  // break on the engine's own sort score.
+  const byPriority = (a: InsightWithContext, b: InsightWithContext) => {
+    const byTier = priorityTierOrder(a.evidence_scoring?.priority_tier)
+      - priorityTierOrder(b.evidence_scoring?.priority_tier);
+    if (byTier !== 0) return byTier;
+    return (b.evidence_scoring?.priority_score ?? -1) - (a.evidence_scoring?.priority_score ?? -1);
+  };
   filtered = [...filtered].sort((a, b) => {
     switch (sortBy) {
-      case 'Severity': return (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9);
+      case 'Priority': return byPriority(a, b);
+      case 'Severity': return severityBandOrder(a.severity) - severityBandOrder(b.severity);
       case 'Confidence': return (b.confidence || 0) - (a.confidence || 0);
       case 'Users affected': return (b.affected_count || 0) - (a.affected_count || 0);
       case 'Validation': return validationSortRank(a.validation) - validationSortRank(b.validation);
       case 'Date': return new Date(b.discoveryDate).getTime() - new Date(a.discoveryDate).getTime();
-      default: return (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9);
+      default: return byPriority(a, b);
     }
   });
 
@@ -185,15 +214,15 @@ export default function InsightsListPage() {
 
       {/* Filter bar */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
-        {['All', 'Critical', 'High', 'Medium', 'Low'].map(sev => (
-          <button key={sev} onClick={() => setSeverityFilter(sev)} style={{
+        {severityChips.map(chip => (
+          <button key={chip.value} onClick={() => setSeverityFilter(chip.value)} style={{
             fontSize: 12, padding: '4px 12px',
             border: '0.5px solid var(--db-border-strong)',
             borderRadius: 'var(--db-radius)',
-            background: severityFilter === sev ? 'var(--db-blue-bg)' : 'var(--db-bg-white)',
-            color: severityFilter === sev ? 'var(--db-blue-text)' : 'var(--db-text-secondary)',
+            background: severityFilter === chip.value ? 'var(--db-blue-bg)' : 'var(--db-bg-white)',
+            color: severityFilter === chip.value ? 'var(--db-blue-text)' : 'var(--db-text-secondary)',
             cursor: 'pointer', fontFamily: 'inherit', transition: 'all 120ms ease',
-          }}>{sev}</button>
+          }}>{chip.label}</button>
         ))}
         <span style={{ flex: 1 }} />
         <FilterDropdown label="Validation" value={validationFilter}
@@ -203,7 +232,7 @@ export default function InsightsListPage() {
             ...validationFilterValues.map(v => ({ value: v, label: statusMeta(v).label })),
           ]} />
         <SortDropdown value={sortBy} onChange={setSortBy}
-          options={['Severity', 'Confidence', 'Users affected', 'Validation', 'Date']} />
+          options={['Priority', 'Severity', 'Confidence', 'Users affected', 'Validation', 'Date']} />
       </div>
 
       {/* Semantic search results */}
@@ -280,7 +309,8 @@ export default function InsightsListPage() {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr>
-                <Th width="30%">Insight</Th>
+                <Th width="28%">Insight</Th>
+                <Th>Priority</Th>
                 <Th>Severity</Th>
                 <Th>Area</Th>
                 <Th>Validation</Th>
@@ -319,7 +349,11 @@ export default function InsightsListPage() {
                     </Link>
                   </td>
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
-                    <SeverityBadge severity={insight.severity} type="severity" />
+                    <PriorityCell scoring={insight.evidence_scoring} />
+                  </td>
+                  <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
+                    <SeverityCell scoring={insight.evidence_scoring} severity={insight.severity}
+                      showDriver={false} />
                   </td>
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
                     <AreaBadge area={insight.analysis_area} />
