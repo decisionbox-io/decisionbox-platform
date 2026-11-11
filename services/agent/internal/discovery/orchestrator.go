@@ -1197,7 +1197,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// or no sources indexed). Query phrased to surface broad domain context
 	// useful for any exploration step.
 	knowledgeQuery := fmt.Sprintf("data exploration for %s; analysis areas: %s", datasetsStr, o.areaNamesCSV(analysisAreas))
-	explorationPrompt = o.injectKnowledgeSources(ctx, explorationPrompt, knowledgeQuery, knowledgeTopKExploration)
+	explorationPrompt = o.injectKnowledgeSources(ctx, explorationPrompt, knowledgeQuery, knowledgeTopKExploration, llmlayer.LayerExploration)
 
 	// Phase 3: Autonomous exploration
 	applog.Info("Phase 3: Running autonomous exploration")
@@ -3029,7 +3029,7 @@ func (o *Orchestrator) generateRecommendations(
 	// Recommendations often need broader business context (constraints, prior
 	// initiatives, tone) so we use a higher top-K than analysis prompts.
 	recommendationQuery := o.recommendationsKnowledgeQuery(insights)
-	prompt = o.injectKnowledgeSources(ctx, prompt, recommendationQuery, knowledgeTopKRecommendations)
+	prompt = o.injectKnowledgeSources(ctx, prompt, recommendationQuery, knowledgeTopKRecommendations, llmlayer.LayerRecommendations)
 
 	step.Prompt = prompt
 
@@ -4163,12 +4163,22 @@ func cleanJSONResponse(response string) string {
 //   - Exploration prompts already include schema + analysis areas → keep small.
 //   - Analysis prompts add query results → moderate.
 //   - Recommendation prompts often need broader business context → larger.
+//
+// These bound the providers that return a fixed handful of items — a few
+// knowledge chunks, a few hints — and for those they are the right shape: the
+// cost of one item is roughly known and a small count is what the prompt wants.
+//
+// They are no longer the only budget in play. A retrieval provider built to
+// scale with the context window is sized by ContextProviderOpts.TokenBudget
+// instead (see contextProviderBudget), because handing such a provider a
+// top-N of 5 was the defect: it then competed for the same five slots as a
+// provider that needs exactly five, and the long tail it exists to surface
+// could never reach the prompt.
 const (
-	knowledgeTopKExploration      = 3
-	knowledgeTopKAnalysis         = 5
-	knowledgeTopKRecommendations  = 8
-	knowledgeMinScore             = 0.4
-	knowledgeMaxRetrievalPerPhase = 3 * time.Second
+	knowledgeTopKExploration     = 3
+	knowledgeTopKAnalysis        = 5
+	knowledgeTopKRecommendations = 8
+	knowledgeMinScore            = 0.4
 )
 
 // defaultCorrelationLookupTimeout bounds one call to the correlation provider.
@@ -4307,18 +4317,36 @@ func (o *Orchestrator) correlationLookup(dc *datasourceContext, guidance correla
 // Per-provider errors are logged but never returned: failure inside one
 // provider must not abort discovery, and must not suppress sections from
 // other providers.
-func (o *Orchestrator) injectKnowledgeSources(ctx context.Context, prompt, query string, topK int) string {
+//
+// layer is which model's prompt this is. It decides the token budget the
+// providers are offered, so it has to be the layer that will actually receive
+// the prompt — the same reason the output budget is resolved per layer.
+func (o *Orchestrator) injectKnowledgeSources(ctx context.Context, prompt, query string, topK int, layer string) string {
 	if query == "" || topK <= 0 {
 		return prompt
 	}
 
-	// Apply a tight per-call timeout so a slow embedding call cannot stall a phase.
-	retrieveCtx, cancel := context.WithTimeout(ctx, knowledgeMaxRetrievalPerPhase)
+	// Sized from what this layer's window still has free beside the prompt that
+	// already exists, so a provider that can scale is not held to a top-N and
+	// not allowed to overflow either.
+	budget := o.contextProviderBudget(ctx, layer, prompt)
+
+	// Bounded so a slow retrieval cannot stall a phase. Generous enough for a
+	// budget-sized one: this path degrades a timeout to "no section", so a
+	// bound that is too tight does not slow the prompt down, it silently
+	// empties it.
+	retrieveCtx, cancel := context.WithTimeout(ctx, contextRetrievalTimeout())
 	defer cancel()
 
 	section := agentplugin.RenderSections(retrieveCtx, o.projectID, query, agentplugin.ContextProviderOpts{
-		Limit:    topK,
-		MinScore: knowledgeMinScore,
+		Limit:       topK,
+		MinScore:    knowledgeMinScore,
+		TokenBudget: budget,
+		// What the base context already carries into this very prompt. A
+		// provider that can tell its items apart spends its budget on the ones
+		// relevant to what is being analysed now, instead of re-printing the
+		// globally top-ranked findings the prompt states above it.
+		ExcludeIDs: o.baseContextFindingIDs,
 	}, func(name string, err error) {
 		applog.WithFields(applog.Fields{
 			"project_id":       o.projectID,

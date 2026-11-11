@@ -167,7 +167,7 @@ func (o *Orchestrator) analyseArea(ctx context.Context, in areaAnalysisInput) ar
 
 	// Inject project knowledge sources relevant to this analysis area.
 	areaQuery := fmt.Sprintf("%s: %s", area.Name, area.Description)
-	prompt = o.injectKnowledgeSources(ctx, prompt, areaQuery, knowledgeTopKAnalysis)
+	prompt = o.injectKnowledgeSources(ctx, prompt, areaQuery, knowledgeTopKAnalysis, llmlayer.LayerAnalysis)
 
 	// Create analysis step to capture full dialog
 	step := models.AnalysisStep{

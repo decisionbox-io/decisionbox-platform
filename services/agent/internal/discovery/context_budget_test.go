@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/contextbudget"
 	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
@@ -652,4 +653,179 @@ func TestAreasByDepthNeedsSomethingToContrast(t *testing.T) {
 	if len(deep) != 1 || len(barren) != 1 {
 		t.Errorf("one mined area and one untouched: got deep=%v barren=%v", deep, barren)
 	}
+}
+
+// --- the two budgets are independent (acceptance criterion 3) ---
+
+// fixedTopNProvider stands for a provider that returns a known handful of
+// items and reads only Limit — the shape the top-K constants were written for.
+type fixedTopNProvider struct {
+	name  string
+	calls int
+	got   agentplugin.ContextProviderOpts
+}
+
+func (p *fixedTopNProvider) Name() string { return p.name }
+
+func (p *fixedTopNProvider) Section(_ context.Context, _, _ string, opts agentplugin.ContextProviderOpts) (string, error) {
+	p.calls++
+	p.got = opts
+	if opts.Limit <= 0 {
+		return "", nil
+	}
+	lines := make([]string, 0, opts.Limit)
+	for i := 0; i < opts.Limit; i++ {
+		lines = append(lines, fmt.Sprintf("- fixed item %d", i))
+	}
+	return "## Fixed\n" + strings.Join(lines, "\n"), nil
+}
+
+// budgetedProvider stands for a retrieval provider that scales with the window:
+// it sizes itself from TokenBudget and falls back to Limit only when no budget
+// was supplied, which is the contract the opts field documents.
+type budgetedProvider struct {
+	name  string
+	calls int
+	got   agentplugin.ContextProviderOpts
+}
+
+const budgetedProviderTokensPerItem = 10
+
+func (p *budgetedProvider) Name() string { return p.name }
+
+func (p *budgetedProvider) Section(_ context.Context, _, _ string, opts agentplugin.ContextProviderOpts) (string, error) {
+	p.calls++
+	p.got = opts
+	n := opts.Limit
+	if opts.TokenBudget > 0 {
+		n = opts.TokenBudget / budgetedProviderTokensPerItem
+	}
+	if n <= 0 {
+		return "", nil
+	}
+	lines := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		lines = append(lines, fmt.Sprintf("- retrieved item %d", i))
+	}
+	return "## Retrieved\n" + strings.Join(lines, "\n"), nil
+}
+
+func countLines(section, prefix string) int {
+	n := 0
+	for _, line := range strings.Split(section, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
+// TestLedgerAndKnowledgeBudgetsAreIndependent is acceptance criterion 3,
+// asserted in both directions. Before this, one Limit was handed to every
+// provider, so a provider built to scale past a fixed top-N was given 5 and
+// competed for those 5 with a provider that wanted exactly 5.
+func TestLedgerAndKnowledgeBudgetsAreIndependent(t *testing.T) {
+	fixed := &fixedTopNProvider{name: "fixed-knowledge-for-test"}
+	scaling := &budgetedProvider{name: "scaling-retrieval-for-test"}
+	agentplugin.RegisterContextProvider(fixed)
+	agentplugin.RegisterContextProvider(scaling)
+	t.Cleanup(func() {
+		unregisterContextProviderForTest(fixed.name)
+		unregisterContextProviderForTest(scaling.name)
+	})
+
+	inject := func(topK, window int) string {
+		o := &Orchestrator{
+			projectID:      "p1",
+			llmProvider:    "bedrock",
+			llmModel:       "test-model",
+			llmInputWindow: window,
+			llmOutputCap:   16_384,
+		}
+		return o.injectKnowledgeSources(context.Background(), "PROMPT", "a query", topK, llmlayer.LayerAnalysis)
+	}
+
+	t.Run("changing the top-K does not change the retrieval provider", func(t *testing.T) {
+		at5 := inject(5, 131_072)
+		at40 := inject(40, 131_072)
+		if a, b := countLines(at5, "- retrieved"), countLines(at40, "- retrieved"); a != b {
+			t.Errorf("retrieval returned %d items at topK=5 and %d at topK=40 — its budget must not be the knowledge top-K", a, b)
+		}
+		if a, b := countLines(at5, "- fixed"), countLines(at40, "- fixed"); a != 5 || b != 40 {
+			t.Errorf("the fixed provider must still follow Limit: got %d at 5 and %d at 40", a, b)
+		}
+	})
+
+	t.Run("changing the window does not change the fixed provider", func(t *testing.T) {
+		small := inject(5, 32_000)
+		large := inject(5, 1_000_000)
+		if a, b := countLines(small, "- fixed"), countLines(large, "- fixed"); a != 5 || b != 5 {
+			t.Errorf("the fixed provider returned %d and %d items — a window change must not move it", a, b)
+		}
+		if a, b := countLines(small, "- retrieved"), countLines(large, "- retrieved"); b <= a {
+			t.Errorf("retrieval returned %d items on a 32K window and %d on a 1M one — it must scale with the window", a, b)
+		}
+	})
+
+	t.Run("both sections reach the prompt", func(t *testing.T) {
+		out := inject(5, 131_072)
+		if !strings.Contains(out, "## Fixed") || !strings.Contains(out, "## Retrieved") {
+			t.Errorf("both providers must render — they are additive, not alternatives:\n%s", out)
+		}
+		if !strings.HasSuffix(out, "PROMPT") {
+			t.Errorf("the original prompt must survive at the end:\n%s", out)
+		}
+	})
+}
+
+// TestInjectedOptsCarryTheBudgetAndExclusions pins what the providers are
+// actually handed, since everything above depends on it.
+func TestInjectedOptsCarryTheBudgetAndExclusions(t *testing.T) {
+	scaling := &budgetedProvider{name: "opts-observer-for-test"}
+	agentplugin.RegisterContextProvider(scaling)
+	t.Cleanup(func() { unregisterContextProviderForTest(scaling.name) })
+
+	o := &Orchestrator{
+		projectID:             "p1",
+		llmProvider:           "bedrock",
+		llmModel:              "test-model",
+		llmInputWindow:        131_072,
+		llmOutputCap:          16_384,
+		baseContextFindingIDs: []string{"f-000", "f-001", "f-002"},
+	}
+
+	t.Run("budget and exclusions arrive", func(t *testing.T) {
+		o.injectKnowledgeSources(context.Background(), "PROMPT", "a query", 5, llmlayer.LayerAnalysis)
+		if scaling.got.TokenBudget <= 0 {
+			t.Errorf("TokenBudget = %d, want positive on a 131K window", scaling.got.TokenBudget)
+		}
+		if len(scaling.got.ExcludeIDs) != 3 {
+			t.Fatalf("ExcludeIDs = %v, want the three findings the base context already carries", scaling.got.ExcludeIDs)
+		}
+		if scaling.got.MinScore != knowledgeMinScore {
+			t.Errorf("MinScore = %v, want %v", scaling.got.MinScore, knowledgeMinScore)
+		}
+	})
+
+	t.Run("a prompt that already fills the window offers no budget", func(t *testing.T) {
+		// The provider then falls back to Limit, which is the documented
+		// reading of a zero budget — not silence.
+		out := o.injectKnowledgeSources(context.Background(), strings.Repeat("x", 2_000_000), "a query", 5, llmlayer.LayerAnalysis)
+		if scaling.got.TokenBudget != 0 {
+			t.Errorf("TokenBudget = %d, want 0 for a prompt past the window", scaling.got.TokenBudget)
+		}
+		if n := countLines(out, "- retrieved"); n != 5 {
+			t.Errorf("fell back to %d items, want the Limit's 5 — a zero budget is not an instruction to carry nothing", n)
+		}
+	})
+
+	t.Run("no query means no provider call at all", func(t *testing.T) {
+		before := scaling.calls
+		if got := o.injectKnowledgeSources(context.Background(), "PROMPT", "", 5, llmlayer.LayerAnalysis); got != "PROMPT" {
+			t.Errorf("an empty query must return the prompt unchanged, got %q", got)
+		}
+		if scaling.calls != before {
+			t.Error("an empty query must not reach the providers")
+		}
+	})
 }
