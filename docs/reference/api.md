@@ -74,6 +74,63 @@ The Dashboard surfaces this inventory on its **System** page, adding its own bui
 
 ---
 
+## Scoring
+
+### GET /api/v1/scoring/engines
+
+The confidence engine's calibration, per engine version.
+
+Served rather than duplicated in the dashboard, because a document has to be explained with the cutoffs that actually scored it.
+Everything a reader needs about a specific insight or recommendation is stored on the document itself — its band, the reason, the base, each deduction and the final score (see [Scoring](data-models.md#scoring)).
+This endpoint supplies only the line the document cannot carry: which cutoff its score crossed.
+
+```bash
+curl http://localhost:8080/api/v1/scoring/engines
+```
+
+```json
+{
+  "data": {
+    "current_version": 1,
+    "engines": [
+      {
+        "version": 1,
+        "confidence": {
+          "bases": {
+            "confirmed": 0.95,
+            "supported": 0.8,
+            "partial": 0.55,
+            "unverifiable": 0.2,
+            "rejected": 0.05
+          },
+          "default": 0.25,
+          "cutoffs": {"high": 0.75, "medium": 0.4},
+          "floor": 0.05,
+          "docks": [
+            {"code": "degraded_evidence", "label": "A source reported the rows behind this are not a faithful answer to the query", "max": 0.1, "cap": 0.2},
+            {"code": "refuted_arithmetic", "label": "A number's own arithmetic does not reproduce it", "max": 0.1, "cap": 0.15, "shared_cap_with": "refuted_quantifier"},
+            {"code": "refuted_quantifier", "label": "A claim about rank, count or trend is false over the rows it cites", "max": 0.1, "cap": 0.15, "shared_cap_with": "refuted_arithmetic"},
+            {"code": "unresolved_figure", "label": "The text still carries a reference to a number that was never supplied", "max": 0.05},
+            {"code": "sample_ended_early", "label": "Checking ran past the end of the retained row sample", "max": 0.05}
+          ]
+        }
+      }
+    ]
+  }
+}
+```
+
+- `current_version` is what this deployment's agent stamps on a document it scores now.
+- `engines` lists every calibration this build can explain a document with, ascending by version. A document whose `engine_version` is absent from the list was scored by a newer agent than this API; a reader should render the rest of the breakdown and omit the cutoff line rather than substitute another version's numbers.
+- `bases` is keyed by the verdict a document carries. The two verdicts that mean validation never ran (`validation_disabled`, `skipped_budget_cap`) are deliberately absent — they take `default`, and their band is terminal rather than decided by a cutoff.
+- `cutoffs` are inclusive: a score at exactly `high` is high.
+- A deduction's `cap` bounds the total it may charge; `shared_cap_with` names the other deduction it shares that total with, which is why two 0.1 deductions can only come to 0.15 between them.
+
+Read-only, and served to any authenticated viewer.
+`Cache-Control: no-store`, because a cached copy would explain a document with whichever version was deployed when the response was cached.
+
+---
+
 ## Providers
 
 ### GET /api/v1/llm/layers

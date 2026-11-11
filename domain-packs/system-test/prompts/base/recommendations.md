@@ -38,8 +38,7 @@ Respond with ONLY valid JSON:
       "success_metrics": [
         "How to verify this is resolved or confirmed"
       ],
-      "related_insight_ids": ["6e9261f5-c4ec-404b-bdf0-760a4644f384"],
-      "confidence": 0.95
+      "related_insight_ids": ["6e9261f5-c4ec-404b-bdf0-760a4644f384"]
     }
   ]
 }

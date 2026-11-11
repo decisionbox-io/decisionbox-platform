@@ -45,8 +45,7 @@ Respond with ONLY valid JSON:
         "Track cart-to-purchase rate for carts >$100 (target: improve from 22% to 30%)",
         "Monitor email-triggered purchase rate (target: 10% recovery rate)"
       ],
-      "related_insight_ids": ["6e9261f5-c4ec-404b-bdf0-760a4644f384", "02665b9e-468f-41eb-b50e-28702b95e999"],
-      "confidence": 0.85
+      "related_insight_ids": ["6e9261f5-c4ec-404b-bdf0-760a4644f384", "02665b9e-468f-41eb-b50e-28702b95e999"]
     }
   ]
 }

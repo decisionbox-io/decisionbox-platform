@@ -35,7 +35,6 @@ Respond with ONLY valid JSON:
       "severity": "high",
       "affected_count": 34000,
       "risk_score": 0.5,
-      "confidence": 0.85,
       "metrics": {
         "pattern_type": "browse_depth",
         "optimal_view_range_min": 6,

@@ -35,7 +35,6 @@ Respond with ONLY valid JSON (no markdown, no explanations):
       "severity": "critical",
       "affected_count": 12400,
       "risk_score": 0.78,
-      "confidence": 0.85,
       "metrics": {
         "funnel_stage": "cart_to_purchase",
         "abandonment_rate": 0.78,

@@ -36,7 +36,6 @@ Respond with ONLY valid JSON:
       "severity": "high",
       "affected_count": 1500,
       "risk_score": 0.65,
-      "confidence": 0.8,
       "metrics": {
         "booster_name": "Hint",
         "pattern_type": "depletion_risk",

@@ -340,7 +340,6 @@ LLM responds with JSON:
         "severity": "critical",
         "affected_count": 8298,
         "risk_score": 0.67,
-        "confidence": 0.85,
         "indicators": ["...", "..."],
         "source_steps": [1, 3, 5]
       }
@@ -400,8 +399,8 @@ Only insights with `Combined ∈ {supported, confirmed}` are fed to the recommen
 
 **Fail-open exception**: insights with `Combined == "validation_disabled"` (and legacy docs whose `Validation` field is missing entirely) **are** treated as eligible. The rationale is permissive: when validation didn't run at all (no LLM client, no schema provider), it would be misleading to penalise insights for the agent's absence — those insights should flow through unchanged. Operators who want strict gating should ensure validation is configured. When the eligible set is empty the recommendation phase is skipped and a `RecommendationStep{Status: "skipped_no_eligible_insights"}` is persisted for observability.
 
-The prompt receives those insights **trimmed to the fields the recommender reasons over** — `id`, `analysis_area`, `name`, `description`, `severity`, `affected_count`, `risk_score`, `confidence`, `metrics`, `indicators`, `target_segment`, `evidence_quality`.
-`validation`, `source_steps`, `sql_metadata`, `discovered_at` and `description_md` are deliberately left out: none of them is used to write a recommendation, the verdict has already been applied by the filter above, and the verifier + refuter write-ups carried in `validation` were roughly 80% of the rendered prompt — enough on their own to exceed a 40 960-token context window, fail the request, and end the run with no recommendations.
+The prompt receives those insights **trimmed to the fields the recommender reasons over** — `id`, `analysis_area`, `name`, `description`, `severity`, `affected_count`, `risk_score`, `metrics`, `indicators`, `target_segment`, `evidence_quality`.
+`validation`, `confidence`, `scoring`, `source_steps`, `sql_metadata`, `discovered_at` and `description_md` are deliberately left out: none of them is used to write a recommendation, the verdict has already been applied by the filter above — and confidence is now a function of that same verdict, so it carries nothing the filter has not applied — and the verifier + refuter write-ups carried in `validation` were roughly 80% of the rendered prompt — enough on their own to exceed a 40 960-token context window, fail the request, and end the run with no recommendations.
 The stored insights are unchanged; only the prompt copy is trimmed (`insightsForRecommenderPrompt`, see [Prompt variables → {{INSIGHTS_DATA}}](../reference/prompt-variables.md#insights_data)).
 
 After generation, `validateRelatedInsightIDs` drops any recommendation whose `related_insight_ids` list is empty or references an insight not in the eligible set. The dropped recommendation is logged with the bad IDs so operators can trace the cause, and the per-run drop counts are stamped onto the persisted `RecommendationStep` (`recommendations_dropped`, `recommendations_dropped_missing_ids`, `recommendations_dropped_unknown_id` — see the [RecommendationStep data model](../reference/data-models.md#recommendationstep)). The live dashboard run-step message reads "Generated N recommendations (M dropped due to invalid related_insight_ids)" when the drop counter is non-zero. The most common cause of `recommendations_dropped_unknown_id` is an LLM that emits category/severity/theme slug strings in place of the input insight's actual UUID (issue #237); the recommendation discipline rules explicitly forbid this shape, but a regression on a specific model surfaces here.
@@ -432,8 +431,7 @@ LLM responds with JSON:
           "estimated_improvement": "+15-20%"
         },
         "actions": ["Step 1...", "Step 2...", "Step 3..."],
-        "related_insight_ids": ["churn-1", "levels-2"],
-        "confidence": 0.85
+        "related_insight_ids": ["churn-1", "levels-2"]
       }
     ]
   }

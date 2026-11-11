@@ -35,7 +35,6 @@ Respond with ONLY valid JSON (no markdown, no explanations):
       "severity": "high",
       "affected_count": 1250,
       "risk_score": 0.0,
-      "confidence": 0.8,
       "metrics": {
         "opportunity_type": "conversion",
         "segment_size": 1250,

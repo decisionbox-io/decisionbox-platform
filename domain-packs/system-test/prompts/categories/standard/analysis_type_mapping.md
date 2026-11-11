@@ -31,7 +31,6 @@ Respond with ONLY valid JSON (no markdown, no explanations):
       "severity": "info|low|medium|high|critical",
       "affected_count": 12,
       "risk_score": 0.0,
-      "confidence": 0.90,
       "metrics": {
         "test_status": "pass|warn|fail",
         "component": "type_mapping",

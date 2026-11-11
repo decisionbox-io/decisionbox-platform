@@ -33,7 +33,6 @@ Respond with ONLY valid JSON:
       "severity": "critical",
       "affected_count": 1820,
       "risk_score": 0.72,
-      "confidence": 0.85,
       "metrics": {
         "prestige_number": 3,
         "completion_rate": 0.28,

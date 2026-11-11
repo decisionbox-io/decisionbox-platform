@@ -59,10 +59,10 @@ func TestTheInsightScorerRunsAfterTheQualityLabelAndBeforeTheCheckpoint(t *testi
 		"scoreInsights(insights, o.scoringCfg)",
 		"o.checkpointAnalysisArea(ctx, step, areaSpend)",
 	)
-	if !(pos[0] < pos[1]) {
+	if pos[0] >= pos[1] {
 		t.Error("the scorer runs BEFORE attachSourceQuality, so a degraded insight is scored as a clean one")
 	}
-	if !(pos[1] < pos[2]) {
+	if pos[1] >= pos[2] {
 		t.Error("the scorer runs AFTER checkpointAnalysisArea, so every area restored on a resumed run " +
 			"comes back unscored and renders as legacy")
 	}
@@ -78,7 +78,7 @@ func TestTheRecommendationScorerRunsAfterTheRemint(t *testing.T) {
 		"reidentifyRestoredRecommendations(recommendations, recValidationResults)",
 		"scoreRecommendations(recommendations, o.scoringCfg)",
 	)
-	if !(pos[0] < pos[1]) {
+	if pos[0] >= pos[1] {
 		t.Error("the recommendation scorer runs before the remint, so a restored recommendation is " +
 			"scored under an id the tail will not write")
 	}
