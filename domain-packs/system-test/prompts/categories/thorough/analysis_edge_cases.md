@@ -32,9 +32,7 @@ Respond with ONLY valid JSON (no markdown, no explanations):
     {
       "name": "Descriptive finding (e.g., 'NULL Arithmetic: All NULL Operations Return NULL Correctly')",
       "description": "What edge cases were tested and how the provider handled them.",
-      "severity": "info|low|medium|high|critical",
       "affected_count": 5,
-      "risk_score": 0.0,
       "metrics": {
         "test_status": "pass|warn|fail",
         "component": "edge_cases",
@@ -56,13 +54,17 @@ Respond with ONLY valid JSON (no markdown, no explanations):
 }
 ```
 
-## Severity Mapping
+## What the platform measures this by
 
-- **info**: Edge case handled correctly per SQL standard
-- **low**: Non-standard but harmless behavior (e.g., empty string treated as NULL)
-- **medium**: Unexpected behavior that could cause subtle bugs
-- **high**: Incorrect behavior that causes wrong results (e.g., NULL + 1 = 1)
-- **critical**: Edge case causes crash, timeout, or data corruption
+Severity is derived from the figures you declare, not from a word you choose.
+The platform re-checks each figure's arithmetic against the rows and bands the
+largest one that holds: a currency amount in this warehouse's own currency, or
+a percentage. So a finding that states its magnitude as a declared figure is
+ranked on that magnitude, and one that states no figure falls back to an area
+baseline and is marked *not quantified*.
+
+Declare the number that makes the finding matter. Do not describe how severe
+it is.
 
 ## Important Rules
 

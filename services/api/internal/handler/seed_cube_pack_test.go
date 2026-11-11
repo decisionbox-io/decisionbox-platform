@@ -356,13 +356,21 @@ func TestCubeSeedPack_RecommendationExampleParsesAsTheModel(t *testing.T) {
 		t.Fatal("the example decoded to no recommendations, so it proves nothing")
 	}
 	// Zero values would decode happily from an example that simply omitted the
-	// fields, so check the two that carry a type the wrong shape would break.
+	// fields, so check the ones that carry a type the wrong shape would break.
+	//
+	// `priority` is no longer among them, and that is the point rather than a
+	// gap: the field is derived from the priority matrix and tagged json:"-",
+	// so the example must NOT show it -- a pack teaching the model to write
+	// one would be teaching it a key the decoder ignores. The field-name
+	// check above records it as deliberately not the pack's to write.
 	r := envelope.Recommendations[0]
-	if r.Priority == 0 {
-		t.Error("the example's priority decoded to 0 — it is an integer field, and a string there is silently dropped")
-	}
 	if r.ExpectedImpact.Metric == "" {
 		t.Error("the example's expected_impact decoded empty — it is an object, and a sentence there is silently dropped")
+	}
+	if r.Priority != 0 || r.Severity != "" {
+		t.Errorf("the example teaches a derived field (priority=%d severity=%q); "+
+			"the decoder ignores both, so a model copying it would be writing into a hole",
+			r.Priority, r.Severity)
 	}
 }
 

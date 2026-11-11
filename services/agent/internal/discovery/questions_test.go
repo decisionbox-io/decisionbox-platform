@@ -610,3 +610,53 @@ func TestQuestionsSchema_Shape(t *testing.T) {
 		}
 	}
 }
+
+// TestTheDigestCarriesWhatAFindingIsWorth -- the digest lists things the run
+// was unsure about, and a model asked to pick the questions worth putting to
+// an analyst has to know which of them matter.
+//
+// Without the stakes line an unverifiable revenue leak and an unverifiable
+// rounding discrepancy read identically, and the generator has no basis for
+// choosing between them. The line is the engine's own stored sentence, not a
+// second phrasing of it.
+func TestTheDigestCarriesWhatAFindingIsWorth(t *testing.T) {
+	severe := models.Insight{
+		ID: "i1", Name: "Revenue leak", Description: "d",
+		Validation: verdictOf(valmodels.StatusUnverifiable),
+		Scoring: &models.Scoring{
+			ConfidenceBand: models.ConfidenceBandUnverifiable,
+			SeverityBand:   models.SeverityBandHigh,
+			SeverityReason: "High — driven by 34.00%, checked against warehouse rows.",
+			PriorityTier:   models.PriorityTierInvestigate,
+		},
+	}
+	legacy := models.Insight{
+		ID: "i2", Name: "Old finding", Description: "d",
+		Severity:   "critical",
+		Validation: verdictOf(valmodels.StatusUnverifiable),
+	}
+
+	items := buildUncertaintyDigest([]models.Insight{severe, legacy}, nil, nil, 0.5)
+	if len(items) != 2 {
+		t.Fatalf("digest has %d items, want 2", len(items))
+	}
+
+	if items[0].Stakes != severe.Scoring.SeverityReason {
+		t.Errorf("stakes = %q, want the engine's own sentence %q", items[0].Stakes, severe.Scoring.SeverityReason)
+	}
+	// A document with no derived severity carries no stakes rather than a
+	// stand-in: a guess from its stored word would be the model's own
+	// assessment of its own finding, which is the number the derivation
+	// exists to stop reporting.
+	if items[1].Stakes != "" {
+		t.Errorf("a legacy insight claimed stakes %q", items[1].Stakes)
+	}
+
+	rendered := renderDigest(items)
+	if !strings.Contains(rendered, "Stakes: High — driven by 34.00%") {
+		t.Errorf("the rendered digest does not carry the stakes:\n%s", rendered)
+	}
+	if strings.Contains(rendered, `"Old finding"`) && strings.Count(rendered, "Stakes:") != 1 {
+		t.Errorf("the legacy item got a stakes line:\n%s", rendered)
+	}
+}

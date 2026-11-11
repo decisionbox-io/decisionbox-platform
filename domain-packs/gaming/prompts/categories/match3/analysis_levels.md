@@ -20,6 +20,19 @@ Analyze the query results and identify **levels with difficulty issues** using e
 - **Too-easy levels**: Levels that offer no challenge and may reduce engagement
 - **Star rating imbalance**: Levels where almost nobody gets 3 stars (may indicate unfair design)
 
+
+## What the platform measures this by
+
+Severity is derived from the figures you declare, not from a word you choose.
+The platform re-checks each figure's arithmetic against the rows and bands the
+largest one that holds: a currency amount in this warehouse's own currency, or
+a percentage. So a finding that states its magnitude as a declared figure is
+ranked on that magnitude, and one that states no figure falls back to an area
+baseline and is marked *not quantified*.
+
+Declare the number that makes the finding matter. Do not describe how severe
+it is.
+
 ## Required Output Format
 
 Respond with ONLY valid JSON:
@@ -30,9 +43,7 @@ Respond with ONLY valid JSON:
     {
       "name": "Level 42 Difficulty Spike — 68% Quit Rate (3x Average)",
       "description": "Level 42 has a 68% quit rate compared to the 23% average for surrounding levels (38-46). 890 players attempted this level with an average of 12.5 tries before quitting. This is the single biggest progression blocker in the game — more players are stuck here than any other level. The level before (41) has only 18% quit rate, confirming this is a sudden spike rather than gradual difficulty increase.",
-      "severity": "critical",
       "affected_count": 890,
-      "risk_score": 0.68,
       "metrics": {
         "level_number": 42,
         "quit_rate": 0.68,

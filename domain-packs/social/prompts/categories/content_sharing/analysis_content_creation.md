@@ -33,9 +33,7 @@ Respond with ONLY valid JSON:
     {
       "name": "First-Time Creator Drop-off — 72% Never Post a Second Time",
       "description": "Of 3,400 users who created their first post in the last 30 days, 72% (2,448) never posted again. First-time creators whose first post receives at least 5 likes have a 58% chance of posting again, while those receiving 0 likes have only 14% chance. The platform currently shows first-time creator posts to an average of 23 followers, but 40% of first-time creators have fewer than 10 followers, meaning their content gets minimal visibility.",
-      "severity": "critical",
       "affected_count": 2448,
-      "risk_score": 0.72,
       "metrics": {
         "pattern_type": "creator_activation",
         "first_time_creators": 3400,
@@ -72,12 +70,17 @@ Respond with ONLY valid JSON:
 - **creator_burnout**: Power creators reducing activity after sustained high output
 - **creator_earnings_gap**: Creator monetization not reaching creators who need it most
 
-## Severity Calibration
+## What the platform measures this by
 
-- **critical**: Active creator count declining, OR >60% of first-time creators never post again, OR content supply dropping
-- **high**: Significant creator segment reducing activity, OR content concentration risk (top 5% making >70% of content)
-- **medium**: Moderate creator engagement issues, or content diversity declining
-- **low**: Minor optimization in creator experience or content distribution
+Severity is derived from the figures you declare, not from a word you choose.
+The platform re-checks each figure's arithmetic against the rows and bands the
+largest one that holds: a currency amount in this warehouse's own currency, or
+a percentage. So a finding that states its magnitude as a declared figure is
+ranked on that magnitude, and one that states no figure falls back to an area
+baseline and is marked *not quantified*.
+
+Declare the number that makes the finding matter. Do not describe how severe
+it is.
 
 ## Important Rules
 

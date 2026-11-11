@@ -27,7 +27,6 @@ Respond with ONLY valid JSON:
       "title": "Action — Context (e.g., 'Prompt 3 Follow Suggestions During First Session for Unconnected Users')",
       "description": "Detailed explanation with numbers. What is the problem? How big is the impact? Why does this recommendation address it? What evidence supports it?",
       "category": "growth|engagement|retention|monetization|content|community",
-      "priority": 1,
       "effort": "quick_win|moderate|major_initiative",
       "target_segment": "Exact segment definition with measurable criteria (e.g., 'Users who completed signup but followed fewer than 3 accounts and have not returned after day 0')",
       "segment_size": 1234,
@@ -73,12 +72,13 @@ Respond with ONLY valid JSON:
 - **moderate**: Requires development work, typically 1-2 weeks. New feature, algorithm change, flow redesign.
 - **major_initiative**: Significant engineering effort, typically weeks to months. New product area, infrastructure change.
 
-### Priority Scale (1 = highest, 5 = lowest — emit as an integer, NOT a string):
-- **1 (Critical)**: Large user base affected AND high retention/revenue impact. Creator health or premium user churn issues. Do this first.
-- **2 (High)**: Significant impact, implement soon. Strong evidence and clear path.
-- **3 (Medium)**: Moderate impact. Worth doing but not urgent.
-- **4 (Low)**: Nice to have. Small improvement.
-- **5 (Optional)**: Minor improvement. Consider if resources are available.
+### How this recommendation gets ranked
+
+You do not set a priority. The platform derives it from two things it can
+check: the severity of the insights this recommendation cites — the worst of
+them — and whether its own claims held up against warehouse rows. So the way
+to make a recommendation rank highly is to address the findings that matter
+and to state only what the evidence supports.
 
 ### Category Guidelines:
 - **growth**: User acquisition, signup funnel, activation, viral loops

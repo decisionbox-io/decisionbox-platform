@@ -30,9 +30,7 @@ Respond with ONLY valid JSON (no markdown, no explanations):
     {
       "name": "Power User Session Frequency Decline",
       "description": "Players with 20+ sessions show declining engagement. Average sessions per week dropped from 5.2 to 3.8 over last 30 days (-27%). This segment represents 12% of DAU but 45% of revenue, making this a high-priority trend.",
-      "severity": "high",
       "affected_count": 1240,
-      "risk_score": 0.6,
       "metrics": {
         "primary_metric": "sessions_per_week",
         "current_value": 3.8,
@@ -66,12 +64,17 @@ Respond with ONLY valid JSON (no markdown, no explanations):
   - `spike`: Sudden change >20% in a single period (investigate cause)
   - `seasonal`: Recurring pattern tied to day-of-week or time-of-year
 
-## Severity Calibration
+## What the platform measures this by
 
-- **critical**: Core engagement metric (DAU, session frequency) declining >15%, OR affects paying users disproportionately
-- **high**: Significant engagement shift (>10%) in a meaningful segment, OR a positive trend worth amplifying
-- **medium**: Moderate change (5-10%), or affects a smaller segment
-- **low**: Minor fluctuation, or only affects edge-case players
+Severity is derived from the figures you declare, not from a word you choose.
+The platform re-checks each figure's arithmetic against the rows and bands the
+largest one that holds: a currency amount in this warehouse's own currency, or
+a percentage. So a finding that states its magnitude as a declared figure is
+ranked on that magnitude, and one that states no figure falls back to an area
+baseline and is marked *not quantified*.
+
+Declare the number that makes the finding matter. Do not describe how severe
+it is.
 
 Positive trends (increasing engagement) should also be reported — they indicate what's working and should be amplified.
 

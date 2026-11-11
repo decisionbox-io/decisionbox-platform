@@ -32,9 +32,7 @@ Respond with ONLY valid JSON:
     {
       "name": "Top Category Browse-to-Buy Gap — 180K Viewers but Only 2.1% Purchase Rate",
       "description": "The most-viewed category has 180,000 unique viewers in the last 30 days but only a 2.1% view-to-purchase conversion rate (3,780 buyers), compared to 4.8% for the second-largest category. It attracts the most traffic on the platform but converts at less than half the rate of its closest peer. Within this category, the leading brand has a 3.4% conversion rate while the second brand has only 0.9% despite similar view counts, suggesting brand-specific pricing friction.",
-      "severity": "high",
       "affected_count": 176220,
-      "risk_score": 0.6,
       "metrics": {
         "pattern_type": "conversion_gap",
         "viewers_30d": 180000,
@@ -70,12 +68,17 @@ Respond with ONLY valid JSON:
 - **category_trend**: Category growing or declining significantly
 - **null_category_risk**: Significant proportion of events with missing category data
 
-## Severity Calibration
+## What the platform measures this by
 
-- **critical**: A top-3 revenue category declining in both views and purchases, OR >30% of events with NULL category, OR conversion rate gap >3x between comparable categories
-- **high**: Major category with conversion significantly below peers, OR revenue concentration in a single category >40%
-- **medium**: Moderate performance gap in a mid-tier category, or brand-level imbalance
-- **low**: Minor category optimization opportunity, or small-category performance note
+Severity is derived from the figures you declare, not from a word you choose.
+The platform re-checks each figure's arithmetic against the rows and bands the
+largest one that holds: a currency amount in this warehouse's own currency, or
+a percentage. So a finding that states its magnitude as a declared figure is
+ranked on that magnitude, and one that states no figure falls back to an area
+baseline and is marked *not quantified*.
+
+Declare the number that makes the finding matter. Do not describe how severe
+it is.
 
 ## Important Rules
 

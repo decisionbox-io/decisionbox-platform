@@ -36,9 +36,7 @@ Respond with ONLY valid JSON (no markdown, no explanations):
     {
       "name": "Day 0 Abandonment — 52% of New Users Never Return After Signup",
       "description": "52% of users who complete registration never log in a second time. These users complete signup (avg 2.1 minutes) but the median first session is only 45 seconds — they sign up, look around briefly, and leave permanently. Users who follow at least 3 accounts in their first session have 3.1x higher D1 retention (68%) vs those who follow 0 (22%). This represents 7,800 lost users in the last 30 days.",
-      "severity": "critical",
       "affected_count": 7800,
-      "risk_score": 0.52,
       "metrics": {
         "churn_rate": 0.52,
         "lifecycle_stage": "immediate",
@@ -72,13 +70,17 @@ Respond with ONLY valid JSON (no markdown, no explanations):
 - **late** (Day 30+): Established users leaving. High concern — they represent invested users. Best reactivation potential.
 - **premium_churn**: Paying users who cancel or stop paying. Direct revenue impact.
 
-## Severity Calibration
+## What the platform measures this by
 
-When the project profile includes KPI targets, calibrate severity against them:
-- **critical**: Retention below target by >20%, or a lifecycle stage losing >40% of users, or premium user churn increasing, or D1 retention <30%
-- **high**: Retention significantly below target, or creator churn > consumer churn (platform health risk)
-- **medium**: Retention moderately below target, affects 5-10% of active users
-- **low**: Slightly elevated churn in a non-critical segment, or a positive reactivation trend
+Severity is derived from the figures you declare, not from a word you choose.
+The platform re-checks each figure's arithmetic against the rows and bands the
+largest one that holds: a currency amount in this warehouse's own currency, or
+a percentage. So a finding that states its magnitude as a declared figure is
+ranked on that magnitude, and one that states no figure falls back to an area
+baseline and is marked *not quantified*.
+
+Declare the number that makes the finding matter. Do not describe how severe
+it is.
 
 ## Quality Standards
 
@@ -95,7 +97,7 @@ When the project profile includes KPI targets, calibrate severity against them:
 1. **Use ONLY data from the queries below** — don't make up numbers
 2. **Be extremely specific** — exact percentages, counts, time periods
 3. **If no retention patterns found**, return `{"insights": []}`
-4. **Creator churn > consumer churn in severity**: Losing a creator has cascading effects on their followers
+4. **Creator churn reaches further than consumer churn**: losing a creator affects every follower they had, so declare that reach as a figure
 5. **Premium churn = revenue loss**: Always calculate the revenue impact of premium user churn
 6. **Don't duplicate**: Each insight should describe a unique pattern
 7. **Cohort comparison is essential**: "D7 retention is 25%" is not useful. "D7 retention dropped from 32% to 25% over the last 4 cohorts" IS useful.

@@ -32,9 +32,7 @@ Respond with ONLY valid JSON (no markdown, no explanations):
     {
       "name": "Revenue Concentration Risk — Top 3 Categories Generate 72% of Revenue",
       "description": "The top 3 categories together account for 72% of total revenue in the last 30 days ($8.4M of $11.7M). However, the largest category's revenue declined 12% month-over-month while overall revenue only grew 3%, indicating increasing dependence on secondary categories to offset the decline. 45,200 unique buyers contributed to these categories.",
-      "severity": "high",
       "affected_count": 45200,
-      "risk_score": 0.72,
       "metrics": {
         "revenue_type": "concentration_risk",
         "top3_revenue_share": 0.72,
@@ -68,12 +66,17 @@ Respond with ONLY valid JSON (no markdown, no explanations):
 - **basket_change**: Multi-item purchase patterns changing
 - **brand_shift**: Revenue shifting between brands within a category
 
-## Severity Calibration
+## What the platform measures this by
 
-- **critical**: Overall revenue declining, OR >60% of revenue from a single category that's trending down, OR average purchase price declining >10%
-- **high**: Significant revenue shift in a top category, OR revenue concentration risk (top 3 categories >75%)
-- **medium**: Moderate pricing anomaly, or mid-tier category revenue change
-- **low**: Minor price distribution shift, or small-category revenue fluctuation
+Severity is derived from the figures you declare, not from a word you choose.
+The platform re-checks each figure's arithmetic against the rows and bands the
+largest one that holds: a currency amount in this warehouse's own currency, or
+a percentage. So a finding that states its magnitude as a declared figure is
+ranked on that magnitude, and one that states no figure falls back to an area
+baseline and is marked *not quantified*.
+
+Declare the number that makes the finding matter. Do not describe how severe
+it is.
 
 ## Quality Standards
 

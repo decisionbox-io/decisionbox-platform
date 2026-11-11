@@ -36,9 +36,7 @@ Respond with ONLY valid JSON (no markdown, no explanations):
     {
       "name": "Low Repeat Rate — 82% of Buyers Never Return After First Purchase",
       "description": "Of 89,000 unique buyers in the last 90 days, 82% (73,000) made only a single purchase and never returned. Buyers whose first purchase was in kitchen appliances have a 24% repeat rate — the best of any major category — while smartphone buyers have only 12%. The median time to second purchase for those who do return is 18 days. Customers who viewed 5+ products before their first purchase have 1.6x higher repeat rate than those who viewed fewer.",
-      "severity": "critical",
       "affected_count": 73000,
-      "risk_score": 0.82,
       "metrics": {
         "lifecycle_stage": "one_time_buyer",
         "one_time_buyer_rate": 0.82,
@@ -73,13 +71,17 @@ Respond with ONLY valid JSON (no markdown, no explanations):
 - **lapsed**: No purchase in 60+ days, no recent browsing. Requires reactivation.
 - **high_value_churn**: Top-spending customers who become at-risk or lapsed. Direct revenue impact.
 
-## Severity Calibration
+## What the platform measures this by
 
-When the project profile includes KPI targets, calibrate severity against them:
-- **critical**: Repeat purchase rate below 15%, OR declining cohort retention, OR high-value customers churning at increasing rate
-- **high**: Repeat rate below target by >20%, OR time-between-purchases increasing significantly, OR one-time buyer rate >80%
-- **medium**: Moderate retention gap in a specific category or price segment, affects 5-10% of buyers
-- **low**: Minor retention fluctuation in a non-critical segment, or a positive trend worth noting
+Severity is derived from the figures you declare, not from a word you choose.
+The platform re-checks each figure's arithmetic against the rows and bands the
+largest one that holds: a currency amount in this warehouse's own currency, or
+a percentage. So a finding that states its magnitude as a declared figure is
+ranked on that magnitude, and one that states no figure falls back to an area
+baseline and is marked *not quantified*.
+
+Declare the number that makes the finding matter. Do not describe how severe
+it is.
 
 ## Quality Standards
 

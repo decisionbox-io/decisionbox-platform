@@ -32,9 +32,7 @@ Respond with ONLY valid JSON:
     {
       "name": "Ad Tolerance Cliff at 6+ Interstitials Per Session",
       "description": "Players shown 6+ interstitial ads per session have 42% lower D1 retention (18%) compared to players shown 3-5 ads (31%). Players shown 1-2 ads retain at 38%. The revenue gain from high-frequency ads (+$0.03 ARPDAU) is offset by a 45% drop in D7 retention, resulting in 28% lower lifetime ad revenue per user. 3,200 players are currently in the high-frequency group.",
-      "severity": "critical",
       "affected_count": 3200,
-      "risk_score": 0.42,
       "metrics": {
         "pattern_type": "tolerance_threshold",
         "threshold_ads_per_session": 6,
@@ -71,12 +69,17 @@ Respond with ONLY valid JSON:
 - **fatigue_pattern**: Gradual decline in ad engagement over player lifetime
 - **segment_gap**: Significant ARPDAU differences between player segments (platform, geo, etc.)
 
-## Severity Calibration
+## What the platform measures this by
 
-- **critical**: Ad frequency directly causing measurable churn (>20% retention drop), or eCPM declining >15%
-- **high**: Significant revenue optimization opportunity (>10% LTV improvement possible), or retention risk from ad format issues
-- **medium**: Moderate optimization in ad placement, timing, or format selection
-- **low**: Minor eCPM or opt-in rate optimization
+Severity is derived from the figures you declare, not from a word you choose.
+The platform re-checks each figure's arithmetic against the rows and bands the
+largest one that holds: a currency amount in this warehouse's own currency, or
+a percentage. So a finding that states its magnitude as a declared figure is
+ranked on that magnitude, and one that states no figure falls back to an area
+baseline and is marked *not quantified*.
+
+Declare the number that makes the finding matter. Do not describe how severe
+it is.
 
 ## Important Rules
 

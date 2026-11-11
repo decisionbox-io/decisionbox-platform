@@ -32,9 +32,7 @@ Respond with ONLY valid JSON:
     {
       "name": "Deep Browse Sessions Convert 4x Better — 6+ Product Views Predicts Purchase",
       "description": "Sessions with 6 or more product views have a 12.4% purchase rate, compared to 3.1% for sessions with 1-2 views (4x difference). However, sessions with 20+ views actually show a declining purchase rate (8.2%), suggesting decision fatigue or difficulty finding the right product. 34,000 sessions in the last 7 days had 6-19 views, contributing to 62% of all purchases. The optimal browsing depth appears to be 6-15 product views.",
-      "severity": "high",
       "affected_count": 34000,
-      "risk_score": 0.5,
       "metrics": {
         "pattern_type": "browse_depth",
         "optimal_view_range_min": 6,
@@ -71,12 +69,17 @@ Respond with ONLY valid JSON:
 - **single_product_session**: Sessions with minimal browsing — indicates direct intent or bounce
 - **cart_browsing**: Pattern of adding to cart then continuing to browse (comparison shopping)
 
-## Severity Calibration
+## What the platform measures this by
 
-- **critical**: Overall session purchase rate declining significantly, OR a major pattern (e.g., time-of-day) showing >50% conversion variance unexplained by traffic volume
-- **high**: Significant session behavior pattern affecting >10% of all sessions, OR clear friction signal (e.g., high cart-add sessions with zero purchases)
-- **medium**: Moderate session behavior insight, or pattern affecting a specific time/segment
-- **low**: Minor session optimization opportunity
+Severity is derived from the figures you declare, not from a word you choose.
+The platform re-checks each figure's arithmetic against the rows and bands the
+largest one that holds: a currency amount in this warehouse's own currency, or
+a percentage. So a finding that states its magnitude as a declared figure is
+ranked on that magnitude, and one that states no figure falls back to an area
+baseline and is marked *not quantified*.
+
+Declare the number that makes the finding matter. Do not describe how severe
+it is.
 
 ## Important Rules
 

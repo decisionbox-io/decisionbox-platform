@@ -17,6 +17,19 @@ Analyze the query results and produce **structured validation findings** for dat
 4. **Distribution analysis**: High-cardinality vs low-cardinality columns, skewed distributions
 5. **Cross-table patterns**: Consistent column naming, shared key patterns
 
+
+## What the platform measures this by
+
+Severity is derived from the figures you declare, not from a word you choose.
+The platform re-checks each figure's arithmetic against the rows and bands the
+largest one that holds: a currency amount in this warehouse's own currency, or
+a percentage. So a finding that states its magnitude as a declared figure is
+ranked on that magnitude, and one that states no figure falls back to an area
+baseline and is marked *not quantified*.
+
+Declare the number that makes the finding matter. Do not describe how severe
+it is.
+
 ## Required Output Format
 
 Respond with ONLY valid JSON (no markdown, no explanations):
@@ -27,9 +40,7 @@ Respond with ONLY valid JSON (no markdown, no explanations):
     {
       "name": "Descriptive finding",
       "description": "Summary of profiling results.",
-      "severity": "info|low|medium|high|critical",
       "affected_count": 10,
-      "risk_score": 0.1,
       "metrics": {
         "test_status": "pass|warn|fail",
         "component": "data_profiling",

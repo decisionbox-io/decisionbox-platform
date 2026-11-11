@@ -32,9 +32,7 @@ Respond with ONLY valid JSON (no markdown, no explanations):
     {
       "name": "Profile Photo Activation Gap — 68% of Signups Never Upload a Photo",
       "description": "68% of new users who complete registration never upload a profile photo within their first 7 days. Users with profile photos have 2.4x higher D7 retention (38%) vs users without (16%). This represents the single largest activation gap. 5,400 new users in the last 30 days signed up but never added a photo.",
-      "severity": "critical",
       "affected_count": 5400,
-      "risk_score": 0.68,
       "metrics": {
         "milestone": "profile_photo_upload",
         "completion_rate": 0.32,
@@ -60,12 +58,17 @@ Respond with ONLY valid JSON (no markdown, no explanations):
 
 - **source_steps**: List the step numbers from the query results that this insight is based on. Each query result has a "step" field — cite the exact steps.
 
-## Severity Calibration
+## What the platform measures this by
 
-- **critical**: Activation rate below target by >20%, or a single funnel step losing >40% of users, or viral coefficient declining significantly
-- **high**: Activation gap affecting a major segment, or channel producing consistently low-quality users
-- **medium**: Moderate activation improvement opportunity, or onboarding step with 15-30% drop-off
-- **low**: Minor optimization in signup flow or activation sequence
+Severity is derived from the figures you declare, not from a word you choose.
+The platform re-checks each figure's arithmetic against the rows and bands the
+largest one that holds: a currency amount in this warehouse's own currency, or
+a percentage. So a finding that states its magnitude as a declared figure is
+ranked on that magnitude, and one that states no figure falls back to an area
+baseline and is marked *not quantified*.
+
+Declare the number that makes the finding matter. Do not describe how severe
+it is.
 
 ## Quality Standards
 

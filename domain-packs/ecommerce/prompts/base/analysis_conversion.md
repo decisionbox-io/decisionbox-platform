@@ -32,9 +32,7 @@ Respond with ONLY valid JSON (no markdown, no explanations):
     {
       "name": "High-Value Cart Abandonment — 78% of Carts Over $200 Abandoned",
       "description": "Products priced above $200 have a cart-to-purchase rate of only 22%, compared to 45% for products under $50. This affects 12,400 unique customers who added high-value items to cart but did not purchase in the last 30 days. The cart removal rate for items over $200 is 34%, double the 17% rate for items under $50, suggesting active price reconsideration rather than passive abandonment.",
-      "severity": "critical",
       "affected_count": 12400,
-      "risk_score": 0.78,
       "metrics": {
         "funnel_stage": "cart_to_purchase",
         "abandonment_rate": 0.78,
@@ -65,12 +63,17 @@ Respond with ONLY valid JSON (no markdown, no explanations):
 - **cart_removal**: Customer actively removed an item from cart (if this event type exists in the data). Indicates price reconsideration or comparison shopping.
 - **session_no_action**: Customer browsed (multiple views) but took no action. Indicates discovery failure or poor product-market fit.
 
-## Severity Calibration
+## What the platform measures this by
 
-- **critical**: Overall conversion rate declining >10%, OR a major category/price segment with >70% cart abandonment, OR view-to-cart rate below 3%
-- **high**: Significant conversion gap (>15% deviation) in an important segment, OR cart removal rate increasing
-- **medium**: Moderate conversion opportunity (5-15% improvement potential), or affects a smaller segment
-- **low**: Minor optimization in a niche category or price range
+Severity is derived from the figures you declare, not from a word you choose.
+The platform re-checks each figure's arithmetic against the rows and bands the
+largest one that holds: a currency amount in this warehouse's own currency, or
+a percentage. So a finding that states its magnitude as a declared figure is
+ranked on that magnitude, and one that states no figure falls back to an area
+baseline and is marked *not quantified*.
+
+Declare the number that makes the finding matter. Do not describe how severe
+it is.
 
 ## Quality Standards
 

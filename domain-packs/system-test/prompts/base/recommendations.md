@@ -22,7 +22,6 @@ Respond with ONLY valid JSON:
       "title": "Result — Context (e.g., 'All 24 Tables Queryable — Provider Fully Compatible')",
       "description": "What was tested, what the result was, and what it means for warehouse provider compatibility.",
       "category": "connectivity|schema_discovery|type_mapping|data_profiling|query_patterns|edge_cases",
-      "priority": 1,
       "effort": "quick_win|moderate|major_initiative",
       "target_segment": "Component or area this applies to (e.g., 'Warehouse provider DECIMAL handling')",
       "segment_size": 0,
@@ -50,17 +49,14 @@ Respond with ONLY valid JSON:
 
 ### Pass — No Action Needed
 - Provider handles this correctly
-- Priority 4-5 (informational)
 - Effort: quick_win (no work needed)
 
 ### Warning — Investigate
 - Unexpected behavior but not a failure
-- Priority 2-3
 - Example: "NUMERIC column returned as string instead of float64"
 
 ### Failure — Fix Required
 - Provider cannot handle this case
-- Priority 1 (critical)
 - Example: "Query with 3+ parameters fails — driver parameter binding broken"
 
 ## Requirements

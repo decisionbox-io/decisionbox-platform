@@ -33,9 +33,7 @@ Respond with ONLY valid JSON:
     {
       "name": "Hint Booster Depletion Before Level 15 — 2.3x Churn Risk",
       "description": "78% of players exhaust their free Hint boosters before reaching level 15, receiving an average of 5 free hints from onboarding but using them all by level 12. Players who run out of hints have a 2.3x higher churn rate than those with remaining stock. Only 12% purchase hint packs after depletion — the rest either quit or struggle without. 1,500 players affected in last 30 days.",
-      "severity": "high",
       "affected_count": 1500,
-      "risk_score": 0.65,
       "metrics": {
         "booster_name": "Hint",
         "pattern_type": "depletion_risk",
@@ -72,12 +70,17 @@ Respond with ONLY valid JSON:
 - **economy_imbalance**: Earn rate significantly mismatched with usage rate (too generous or too stingy)
 - **ad_conversion**: Rewarded ad viewing patterns — how many players earn boosters through ads
 
-## Severity Calibration
+## What the platform measures this by
 
-- **critical**: Booster depletion directly causing measurable churn (churn_multiplier > 2x), affecting 100+ players
-- **high**: Strong depletion-churn correlation or significant conversion opportunity, affecting 50+ players
-- **medium**: Moderate economy imbalance or underutilization pattern
-- **low**: Minor optimization opportunity or small segment affected
+Severity is derived from the figures you declare, not from a word you choose.
+The platform re-checks each figure's arithmetic against the rows and bands the
+largest one that holds: a currency amount in this warehouse's own currency, or
+a percentage. So a finding that states its magnitude as a declared figure is
+ranked on that magnitude, and one that states no figure falls back to an area
+baseline and is marked *not quantified*.
+
+Declare the number that makes the finding matter. Do not describe how severe
+it is.
 
 ## Important Rules
 

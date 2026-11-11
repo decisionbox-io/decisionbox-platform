@@ -31,9 +31,7 @@ Respond with ONLY valid JSON (no markdown, no explanations):
     {
       "name": "Specific descriptive name (e.g., 'Day 1 Post-Tutorial Churn: 67% Never Return')",
       "description": "Detailed description with exact percentages and player counts. Include the lifecycle stage, what behavior patterns precede the churn, and why this matters for the business.",
-      "severity": "critical|high|medium|low",
       "affected_count": 2847,
-      "risk_score": 0.68,
       "metrics": {
         "churn_rate": 0.68,
         "lifecycle_stage": "early|mid|late|tutorial",
@@ -60,20 +58,23 @@ Respond with ONLY valid JSON (no markdown, no explanations):
 - **lifecycle_stage**: Classify each churn pattern by when it occurs in the player lifecycle.
 - **reactivation_potential**: Estimate based on player investment. Players with more sessions/progress/spending are more likely to return with the right incentive.
 
-## Severity Calibration
+## What the platform measures this by
 
-When the project profile includes KPI targets, calibrate severity against them:
-- **critical**: Churn rate 2x or more above acceptable threshold, OR affects >20% of active players, OR directly impacts revenue
-- **high**: Churn rate significantly above target, affects 10-20% of players
-- **medium**: Churn rate moderately above target, affects 5-10% of players
-- **low**: Slightly elevated churn, affects <5% of players, or affects a non-critical segment
+Severity is derived from the figures you declare, not from a word you choose.
+The platform re-checks each figure's arithmetic against the rows and bands the
+largest one that holds: a currency amount in this warehouse's own currency, or
+a percentage. So a finding that states its magnitude as a declared figure is
+ranked on that magnitude, and one that states no figure falls back to an area
+baseline and is marked *not quantified*.
+
+Declare the number that makes the finding matter. Do not describe how severe
+it is.
 
 ## Quality Standards
 
 - **Name**: Be VERY specific — include the lifecycle stage, time period, cohort, or segment in the name
 - **Description**: Must include exact percentages, player counts, specific behaviors, time periods, and WHY this pattern matters
 - **affected_count**: Actual count from data (COUNT(DISTINCT user_id)), not estimates
-- **risk_score**: 0.0-1.0 based on actual churn rate from the data
 - **indicators**: 3-5 specific data points with exact numbers that support this pattern
 - **Minimum affected**: Only include patterns affecting 50+ players
 - **Platform segmentation**: If data shows iOS vs Android differ by >10%, report them separately

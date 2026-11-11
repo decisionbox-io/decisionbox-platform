@@ -32,9 +32,7 @@ Respond with ONLY valid JSON:
     {
       "name": "Onboarding Drop-off at Step 3 — 38% of New Players Never Reach Core Gameplay",
       "description": "38% of new players abandon during the third onboarding step (account creation prompt). Steps 1-2 (gameplay tutorial) retain 89% of players, but the account creation prompt causes a 38% drop. Players who skip this step and proceed to gameplay have 2.1x higher D1 retention (44%) than those who see the prompt and leave (0%). 4,200 new players lost at this step in the last 30 days.",
-      "severity": "critical",
       "affected_count": 4200,
-      "risk_score": 0.38,
       "metrics": {
         "pattern_type": "onboarding_drop",
         "funnel_step": 3,
@@ -70,12 +68,17 @@ Respond with ONLY valid JSON:
 - **dead_end_screen**: Screen or state from which players frequently exit the app
 - **re_engagement_failure**: Push notifications or daily rewards failing to bring players back
 
-## Severity Calibration
+## What the platform measures this by
 
-- **critical**: Onboarding drop-off >30%, or session-1-to-2 conversion <40%, affecting 100+ players
-- **high**: Core loop completion declining, or important feature discovered by <20% of players
-- **medium**: Session depth or frequency declining for a significant segment
-- **low**: Minor flow optimization or small-segment drop-off
+Severity is derived from the figures you declare, not from a word you choose.
+The platform re-checks each figure's arithmetic against the rows and bands the
+largest one that holds: a currency amount in this warehouse's own currency, or
+a percentage. So a finding that states its magnitude as a declared figure is
+ranked on that magnitude, and one that states no figure falls back to an area
+baseline and is marked *not quantified*.
+
+Declare the number that makes the finding matter. Do not describe how severe
+it is.
 
 ## Important Rules
 
