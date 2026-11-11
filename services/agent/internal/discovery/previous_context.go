@@ -38,7 +38,7 @@ type ledgerReadContext struct {
 // Best-effort: any error yields a nil context (the caller degrades to the legacy
 // path). The open next-task queue is suppressed when evolution mode is off
 // (self-directed threads are the governed part; coverage + findings are not).
-func (o *Orchestrator) loadLedgerReadContext(ctx context.Context) *ledgerReadContext {
+func (o *Orchestrator) loadLedgerReadContext(ctx context.Context, fixedPromptTokens int) *ledgerReadContext {
 	if o.findingRepo == nil {
 		return nil
 	}
@@ -79,7 +79,7 @@ func (o *Orchestrator) loadLedgerReadContext(ctx context.Context) *ledgerReadCon
 	// what is known, and the run re-reported most of the rest as new.
 	novelty, haveNovelty := latestRunNovelty(lrc.convergence)
 	available := o.baseContextAvailableInput()
-	budget := priorContextBudget(available, novelty, haveNovelty)
+	budget := priorContextBudget(available, fixedPromptTokens, novelty, haveNovelty)
 	lrc.findings, lrc.descChars = contextbudget.FitFindings(
 		active, budget, contextbudget.MinFindingDescChars, contextbudget.MaxFindingDescChars)
 
@@ -100,6 +100,7 @@ func (o *Orchestrator) loadLedgerReadContext(ctx context.Context) *ledgerReadCon
 		"shown":           len(lrc.findings),
 		"budget_tokens":   budget,
 		"available_input": available,
+		"fixed_prompt":    fixedPromptTokens,
 		"desc_chars":      lrc.descChars,
 		"run_novelty":     novelty,
 		"have_novelty":    haveNovelty,

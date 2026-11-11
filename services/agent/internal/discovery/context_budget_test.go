@@ -91,7 +91,7 @@ func TestPriorContextScalesWithTheModelWindow(t *testing.T) {
 
 	shown := func(window, outputCap int) int {
 		o := windowedOrchestrator(findings, convergence(1.00), window, outputCap)
-		lrc := o.loadLedgerReadContext(context.Background())
+		lrc := o.loadLedgerReadContext(context.Background(), 0)
 		if lrc == nil {
 			return 0
 		}
@@ -146,7 +146,7 @@ func TestPriorContextDoesNotOverflowASmallWindow(t *testing.T) {
 	} {
 		t.Run(fmt.Sprintf("window-%d", tc.window), func(t *testing.T) {
 			o := windowedOrchestrator(findings, convergence(0.10), tc.window, tc.outputCap)
-			lrc := o.loadLedgerReadContext(context.Background())
+			lrc := o.loadLedgerReadContext(context.Background(), 0)
 
 			shown, rendered := 0, ""
 			if lrc != nil {
@@ -208,7 +208,7 @@ func TestPriorContextBudgetIsSizedForTheTightestLayer(t *testing.T) {
 			aiClient:    big.Client,
 			layers:      &fakeLayerSet{byLayer: layers, fallback: big},
 		}
-		lrc := o.loadLedgerReadContext(context.Background())
+		lrc := o.loadLedgerReadContext(context.Background(), 0)
 		if lrc == nil {
 			return 0
 		}
@@ -237,7 +237,7 @@ func TestPriorContextGrowsWithSaturation(t *testing.T) {
 
 	shown := func(ledger *commonmodels.DiscoveryLedger) int {
 		o := windowedOrchestrator(findings, ledger, 131_072, 16_384)
-		lrc := o.loadLedgerReadContext(context.Background())
+		lrc := o.loadLedgerReadContext(context.Background(), 0)
 		if lrc == nil {
 			return 0
 		}
@@ -333,7 +333,7 @@ func TestLatestRunNovelty(t *testing.T) {
 // run was never actually told about.
 func TestBaseContextFindingIDsAreExactlyWhatWasShown(t *testing.T) {
 	o := windowedOrchestrator(ledgerFixture(420), convergence(0.20), 64_000, 8_192)
-	lrc := o.loadLedgerReadContext(context.Background())
+	lrc := o.loadLedgerReadContext(context.Background(), 0)
 	if lrc == nil || len(lrc.findings) == 0 {
 		t.Fatal("expected a populated read context")
 	}
@@ -357,7 +357,7 @@ func TestPriorContextShareEnvOverride(t *testing.T) {
 	findings := ledgerFixture(420)
 	shown := func() int {
 		o := windowedOrchestrator(findings, convergence(1.00), 131_072, 16_384)
-		lrc := o.loadLedgerReadContext(context.Background())
+		lrc := o.loadLedgerReadContext(context.Background(), 0)
 		if lrc == nil {
 			return 0
 		}
@@ -1094,7 +1094,7 @@ func TestPriorContextOptOutIsHonoured(t *testing.T) {
 	t.Run("share of zero carries nothing at all", func(t *testing.T) {
 		t.Setenv(priorContextShareEnv, "0")
 		wo := windowedOrchestrator(ledgerFixture(420), convergence(0.10), 131_072, 16_384)
-		lrc := wo.loadLedgerReadContext(context.Background())
+		lrc := wo.loadLedgerReadContext(context.Background(), 0)
 		if lrc == nil {
 			t.Fatal("the ledger is still present — only the budget is zero")
 		}
@@ -1112,7 +1112,7 @@ func TestPriorContextOptOutIsHonoured(t *testing.T) {
 
 	t.Run("a window with no room carries nothing either", func(t *testing.T) {
 		wo := windowedOrchestrator(ledgerFixture(420), convergence(0.10), 1_024, 256)
-		lrc := wo.loadLedgerReadContext(context.Background())
+		lrc := wo.loadLedgerReadContext(context.Background(), 0)
 		if lrc == nil || len(lrc.findings) != 0 {
 			t.Fatalf("expected a present ledger carrying no findings, got %+v", lrc)
 		}
@@ -1141,7 +1141,7 @@ func TestPriorContextBudgetNeverExceedsTheHeadroom(t *testing.T) {
 	for _, share := range []string{"0.2", "0.5", "0.75", "1.0", "2.0"} {
 		t.Setenv(priorContextShareEnv, share)
 		for _, novelty := range []float64{1.0, 0.5, 0.1, 0} {
-			got := priorContextBudget(available, novelty, true)
+			got := priorContextBudget(available, 0, novelty, true)
 			if got > available {
 				t.Errorf("share %s, novelty %v: budget %d exceeds the %d available", share, novelty, got, available)
 			}
@@ -1153,13 +1153,13 @@ func TestPriorContextBudgetNeverExceedsTheHeadroom(t *testing.T) {
 
 	t.Run("an ordinary share is unaffected by the clamp", func(t *testing.T) {
 		t.Setenv(priorContextShareEnv, "0.20")
-		if got := priorContextBudget(available, 1.0, true); got != available/5 {
+		if got := priorContextBudget(available, 0, 1.0, true); got != available/5 {
 			t.Errorf("budget = %d, want a fifth of %d", got, available)
 		}
 	})
 
 	t.Run("zero available yields zero, not a clamp artefact", func(t *testing.T) {
-		if got := priorContextBudget(0, 0, true); got != 0 {
+		if got := priorContextBudget(0, 0, 0, true); got != 0 {
 			t.Errorf("budget = %d, want 0", got)
 		}
 	})
@@ -1173,7 +1173,7 @@ func TestPriorContextBudgetUsesNoveltyNotGrowth(t *testing.T) {
 
 	shown := func(history []commonmodels.ConvergencePoint) int {
 		o := windowedOrchestrator(findings, &commonmodels.DiscoveryLedger{ProjectID: "p1", Convergence: history}, 131_072, 16_384)
-		lrc := o.loadLedgerReadContext(context.Background())
+		lrc := o.loadLedgerReadContext(context.Background(), 0)
 		if lrc == nil {
 			return 0
 		}
@@ -1253,5 +1253,96 @@ func TestDocumentDedupMinScoreRejectsNaN(t *testing.T) {
 	}, nil)
 	if len(store.dupUpdates) != 0 {
 		t.Errorf("orthogonal documents were marked duplicates: %+v", store.dupUpdates)
+	}
+}
+
+// --- review round 3 ---
+
+// TestPriorContextLeavesRoomForTheRestOfThePrompt is the regression test for a
+// real overflow: taking a share of the WHOLE input allowance ignored what the
+// prompt already cost, so on a small window a project with a large profile and
+// large area templates was pushed past its window — where the fixed 25-finding
+// block this replaces had fitted.
+//
+// Asserted as the property that matters: whatever the block is given, the
+// assembled request — fixed prompt + prior block + the evidence the picker is
+// then allowed + the output — must stay inside the window.
+func TestPriorContextLeavesRoomForTheRestOfThePrompt(t *testing.T) {
+	const window, outputCap = 32_000, 8_192
+	available := contextbudget.AvailableInput(window, intendedOutputReserve(outputCap, window), analysisReservedSystemTokens)
+	oldBlockCost := contextbudget.Tokens(renderLedgerFindings(ledgerFixture(420)[:25], 200))
+
+	for _, fixed := range []int{0, 2_000, 8_000, 16_000, 18_000, 40_000} {
+		t.Run(fmt.Sprintf("fixed-%d", fixed), func(t *testing.T) {
+			t.Setenv(priorContextShareEnv, "0.40") // the saturated ceiling
+			budget := priorContextBudget(available, fixed, 0, true)
+
+			// What the picker would then be allowed, given the whole fixed
+			// input including the block the budget just chose.
+			picker := analysisPickerBudgetTokens(AnalysisQueryResultsBudgetTokens, window, outputCap, fixed+budget)
+			input := fixed + budget + picker
+			total := input + intendedOutputReserve(outputCap, window)
+
+			t.Logf("fixed=%d available=%d prior=%d picker=%d input=%d total=%d (window %d; the old 25-block cost %d)",
+				fixed, available, budget, picker, input, total, window, oldBlockCost)
+
+			if budget < 0 {
+				t.Errorf("negative budget %d", budget)
+			}
+			if fixed >= available {
+				// The prompt's fixed parts alone do not fit. Nothing the prior
+				// budget does can rescue that — a 40K template on a 32K model
+				// is a misconfiguration the adaptive retry reports — but the
+				// block must not make it worse by adding to it.
+				if budget != 0 {
+					t.Errorf("fixed input (%d) already fills the %d available, yet the block was given %d", fixed, available, budget)
+				}
+				return
+			}
+			if total > window {
+				t.Errorf("assembled request is %d tokens against a %d window", total, window)
+			}
+			// And the evidence is never squeezed to nothing by a generous
+			// ledger: what the picker gets is what the window genuinely has
+			// left, which is the point of subtracting the fixed prompt.
+			if picker <= 0 {
+				t.Errorf("picker got %d — the ledger crowded out the evidence entirely", picker)
+			}
+		})
+	}
+}
+
+// TestFixedPromptTokensTakesTheWidestBody: the block is composed once and
+// prepended to exploration AND to every analysis area, so the budget has to be
+// sized for the widest of them. One that fits the average overflows the widest.
+func TestFixedPromptTokensTakesTheWidestBody(t *testing.T) {
+	o := &Orchestrator{}
+	ctx := context.Background()
+	prompts := ResolvedPrompts{
+		BaseContext: strings.Repeat("b", 400),
+		Exploration: strings.Repeat("e", 800),
+		AnalysisAreas: map[string]string{
+			"narrow": strings.Repeat("n", 400),
+			"wide":   strings.Repeat("w", 40_000),
+		},
+	}
+	areas := []AnalysisArea{{ID: "narrow"}, {ID: "wide"}}
+
+	got := o.fixedPromptTokens(ctx, prompts, strings.Repeat("p", 2_000), areas)
+	wantAtLeast := contextbudget.Tokens(strings.Repeat("w", 40_000))
+	if got < wantAtLeast {
+		t.Errorf("fixedPromptTokens = %d, want at least the widest area's %d", got, wantAtLeast)
+	}
+
+	// An area the run does not have must not be counted.
+	prompts.AnalysisAreas["absent"] = strings.Repeat("x", 400_000)
+	if after := o.fixedPromptTokens(ctx, prompts, strings.Repeat("p", 2_000), areas); after != got {
+		t.Errorf("a template for an area this run does not have changed the cost from %d to %d", got, after)
+	}
+
+	// The profile counts: it is substituted into the base context every run.
+	bigProfile := o.fixedPromptTokens(ctx, prompts, strings.Repeat("p", 100_000), areas)
+	if bigProfile <= got {
+		t.Errorf("a 100K-char profile did not raise the fixed cost (%d vs %d)", bigProfile, got)
 	}
 }

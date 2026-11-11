@@ -170,7 +170,7 @@ func TestLedgerLoop_Integration(t *testing.T) {
 
 	// --- Run 2: the next run READS the ledger back into its prompt context. ---
 	o.runID = "run-2"
-	lrc := o.loadLedgerReadContext(ctx)
+	lrc := o.loadLedgerReadContext(ctx, 0)
 	if lrc == nil || !lrc.hasLedger {
 		t.Fatal("run2 must load a non-empty ledger read context")
 	}

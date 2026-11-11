@@ -130,9 +130,21 @@ func (o *Orchestrator) baseContextAvailableInput() int {
 // same number it budgeted from: resolving it twice walks three layers' budgets
 // twice and, if a calibration lands in between, reports a figure the budget was
 // not actually computed from.
-func priorContextBudget(available int, novelty float64, haveNovelty bool) int {
+func priorContextBudget(available, fixedPromptTokens int, novelty float64, haveNovelty bool) int {
 	share := contextbudget.SaturatedShare(priorContextShare(), novelty, haveNovelty)
 	budget := contextbudget.Share(available, share)
+	// What the rest of the prompt already costs comes off the top, with the
+	// step picker's floor left behind it for the evidence. Taking a share of
+	// the WHOLE allowance ignored both: on a 32K model with a large profile and
+	// large area templates, the fixed prompt plus a saturated ledger left the
+	// picker at its floor and the assembled request ran past the window — where
+	// the fixed 25-finding block this replaces had fitted.
+	if room := available - fixedPromptTokens - minPickerBudgetTokens; budget > room {
+		budget = room
+	}
+	if budget < 0 {
+		budget = 0
+	}
 	// The scaled share exceeds 1 when the operator configures a base above
 	// 0.5, and a budget larger than the free space is not a budget — on a
 	// 32K/8K model a 0.75 base would have allocated 26,356 tokens of 18,496
@@ -311,4 +323,31 @@ func documentDedupMinScore() float64 {
 		return defaultDedupMinScore
 	}
 	return v
+}
+
+// fixedPromptTokens is what every prompt of this run will carry besides the
+// prior-knowledge block and the evidence: the base-context template, the
+// project profile, and the largest body the block will be prepended to.
+//
+// The largest rather than the average, because the block is composed ONCE and
+// prepended to all of them — exploration's own body, and each analysis area's
+// template. A budget that fits the average overflows on the widest.
+//
+// What it cannot see is the schema catalog, which is rendered after this and
+// sized by its own retrieval. That is why priorContextBudget also leaves the
+// step picker its floor: the catalog and the query evidence are the two inputs
+// still to come, and leaving room for the smaller of them is what keeps a
+// generous ledger from crowding out the evidence entirely. Past that the
+// adaptive context-overflow retry remains the net, as it is for every other
+// estimate on this path.
+func (o *Orchestrator) fixedPromptTokens(ctx context.Context, prompts ResolvedPrompts, profileStr string, areas []AnalysisArea) int {
+	widest := approxTokens(ctx, prompts.Exploration)
+	for _, a := range areas {
+		if body, ok := prompts.AnalysisAreas[a.ID]; ok {
+			if n := approxTokens(ctx, body); n > widest {
+				widest = n
+			}
+		}
+	}
+	return approxTokens(ctx, prompts.BaseContext) + approxTokens(ctx, profileStr) + widest
 }

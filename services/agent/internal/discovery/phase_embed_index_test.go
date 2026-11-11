@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -674,29 +675,25 @@ func TestMarkDuplicates_ChainsCollapseToTheCanonical(t *testing.T) {
 
 // TestMarkDuplicates_StoredHitWinsOverSameRun: an earlier run's document was
 // published first and is the row the user has already seen, so it is the truer
-// canonical. A later document in this run that matches a sibling which itself
-// folded into an earlier run's row must end up pointing at that row.
+// canonical and the stored pass is consulted first.
+//
+// Both of this run's documents resemble it, which is what the store would
+// really answer: if the second document resembles the first closely enough to
+// be its duplicate, it resembles whatever the first matched as well. The case
+// where the store genuinely says no about the second is the next test, and
+// there the fold is refused rather than assumed.
 func TestMarkDuplicates_StoredHitWinsOverSameRun(t *testing.T) {
-	o, store, _ := dedupHarness(nil)
-	vs := o.vectorStore.(*mockVectorStore)
-	// Only the first document is known to the store.
-	vs.dupeFn = func(vec []float64) []vectorstore.SearchResult {
-		if len(vec) > 0 && vec[0] == 1 {
-			return []vectorstore.SearchResult{{ID: "published-last-month", Score: 0.98}}
-		}
-		return nil
-	}
+	o, store, _ := dedupHarness([]vectorstore.SearchResult{{ID: "published-last-month", Score: 0.98}})
 
 	o.markDuplicates(context.Background(), []dedupCandidate{
 		{id: "a", docType: "insight", projectID: "p1", vec: []float64{1, 0, 0}},
 		{id: "b", docType: "insight", projectID: "p1", vec: []float64{0.99, 0.01, 0}},
 	}, nil)
 
-	if got := markedAs(store, "a"); got != "published-last-month" {
-		t.Errorf("a must fold into the earlier run's row, got %q", got)
-	}
-	if got := markedAs(store, "b"); got != "published-last-month" {
-		t.Errorf("b must follow the chain to the earlier run's row rather than stopping at a, got %q", got)
+	for _, id := range []string{"a", "b"} {
+		if got := markedAs(store, id); got != "published-last-month" {
+			t.Errorf("%s must fold into the earlier run's row, got %q", id, got)
+		}
 	}
 }
 
@@ -898,4 +895,84 @@ type failingDupVectorStore struct {
 
 func (f *failingDupVectorStore) FindDuplicates(_ context.Context, _ []float64, _ string, _ string, _ []string, _ float64) ([]vectorstore.SearchResult, error) {
 	return nil, errors.New("qdrant unavailable")
+}
+
+// TestMarkDuplicates_ChainsDoNotAssumeTransitivity. Cosine similarity is not
+// transitive: three vectors at 0°, 25° and 50° score 0.906 between neighbours
+// and only 0.643 end to end. Resolving a match to its canonical without
+// re-checking hid the third document behind the first — which it does not
+// resemble — and recorded the neighbour's 0.906 as their score.
+func TestMarkDuplicates_ChainsDoNotAssumeTransitivity(t *testing.T) {
+	o, store, _ := dedupHarness(nil)
+	at := func(deg float64) []float64 {
+		r := deg * math.Pi / 180
+		return []float64{math.Cos(r), math.Sin(r)}
+	}
+
+	o.markDuplicates(context.Background(), []dedupCandidate{
+		{id: "a", docType: "insight", projectID: "p1", vec: at(0)},
+		{id: "b", docType: "insight", projectID: "p1", vec: at(25)},
+		{id: "c", docType: "insight", projectID: "p1", vec: at(50)},
+	}, nil)
+
+	if got := markedAs(store, "b"); got != "a" {
+		t.Errorf("b is 0.906 from a and should fold into it, got %q", got)
+	}
+	// c is 0.906 from b but only 0.643 from a. b is hidden, so folding c into
+	// b would point it at an invisible row; folding it into a would claim a
+	// resemblance that is not there. Neither: c stands on its own.
+	if got := markedAs(store, "c"); got != "" {
+		t.Errorf("c was folded into %q — it is only 0.643 from the canonical and must stay visible", got)
+	}
+
+	// A genuine chain, where every hop also holds end to end, still collapses.
+	store2 := &mockEmbedIndexStore{}
+	o2 := &Orchestrator{embedIndexStore: store2, vectorStore: &mockVectorStore{}}
+	o2.markDuplicates(context.Background(), []dedupCandidate{
+		{id: "x", docType: "insight", projectID: "p1", vec: at(0)},
+		{id: "y", docType: "insight", projectID: "p1", vec: at(3)},
+		{id: "z", docType: "insight", projectID: "p1", vec: at(6)},
+	}, nil)
+	if got := markedAs(store2, "z"); got != "x" {
+		t.Errorf("z is 0.994 from x and should fold into it, got %q", got)
+	}
+
+	// And the recorded score must be the one against the row it was folded
+	// into, not against the neighbour that led there.
+	for _, u := range store2.dupUpdates {
+		if u.ID == "z" && u.Score > 0.999 {
+			t.Errorf("z recorded score %v — that is its neighbour's, not its canonical's", u.Score)
+		}
+	}
+}
+
+// TestMarkDuplicates_CanonicalFromAnEarlierRunIsNotAssumed. When the canonical
+// is a previous run's document its vector is not in hand, so the claim cannot
+// be checked — and the stored pass has already asked the store about this
+// document and been told no.
+func TestMarkDuplicates_CanonicalFromAnEarlierRunIsNotAssumed(t *testing.T) {
+	store := &mockEmbedIndexStore{}
+	vs := &mockVectorStore{}
+	// Only the first document is known to the store.
+	vs.dupeFn = func(vec []float64) []vectorstore.SearchResult {
+		if len(vec) > 0 && vec[0] == 1 {
+			return []vectorstore.SearchResult{{ID: "published-earlier", Score: 0.97}}
+		}
+		return nil
+	}
+	o := &Orchestrator{embedIndexStore: store, vectorStore: vs}
+
+	o.markDuplicates(context.Background(), []dedupCandidate{
+		{id: "a", docType: "insight", projectID: "p1", vec: []float64{1, 0}},
+		{id: "b", docType: "insight", projectID: "p1", vec: []float64{0.99, 0.01}},
+	}, nil)
+
+	if got := markedAs(store, "a"); got != "published-earlier" {
+		t.Errorf("a must fold into the earlier run's row, got %q", got)
+	}
+	// b matches a at 0.9999, and a folded into a row from an earlier run whose
+	// vector we do not have. The store was already asked about b and said no.
+	if got := markedAs(store, "b"); got != "" {
+		t.Errorf("b was folded into %q without any evidence it resembles that row", got)
+	}
 }

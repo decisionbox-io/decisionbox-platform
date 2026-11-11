@@ -37,16 +37,31 @@ const MAX_NAMED = 3;
  *
  *  Older runs carry no `run_findings`; there the growth ratio is all there is,
  *  and the label below says which number it is rather than mislabelling it. */
+export /** Whether this run measured its own novelty at all.
+ *
+ *  `unrecorded_findings` means some of the run's findings never reached the
+ *  ledger, so `new_findings` undercounts while `run_findings` still looks
+ *  positive — two failed writes and one recognised prior finding read as
+ *  "0 of 1: everything was already known", the opposite of what happened. The
+ *  Go side rejects that measurement outright; the UI has to agree with it or
+ *  the page states a rate the API declines to. */
+function hasMeasuredNovelty(run: GraphRun): boolean {
+  return !!run.run_findings && run.run_findings > 0 && !(run.unrecorded_findings ?? 0);
+}
+
 export function runNoveltyFraction(run: GraphRun): number {
-  if (run.run_findings && run.run_findings > 0) {
-    return Math.min(1, Math.max(0, run.new_findings / run.run_findings));
+  if (hasMeasuredNovelty(run)) {
+    return Math.min(1, Math.max(0, run.new_findings / (run.run_findings as number)));
   }
   return Math.min(1, Math.max(0, run.marginal_ratio ?? 0));
 }
 
 export function runNoveltyLabel(run: GraphRun): string {
-  if (run.run_findings && run.run_findings > 0) {
+  if (hasMeasuredNovelty(run)) {
     return `${run.new_findings} of the ${run.run_findings} findings this run surfaced were new — the ledger now holds ${run.total_findings}`;
+  }
+  if ((run.unrecorded_findings ?? 0) > 0) {
+    return `${run.new_findings} new findings recorded, against a ledger of ${run.total_findings} — ${run.unrecorded_findings} of this run's findings never reached the ledger, so its repeat rate is unknown`;
   }
   return `${run.new_findings} new findings, against a ledger of ${run.total_findings} — this run did not record how many it surfaced, so its repeat rate is unknown`;
 }

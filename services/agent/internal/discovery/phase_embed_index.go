@@ -359,6 +359,12 @@ func (o *Orchestrator) markDuplicates(ctx context.Context, candidates []dedupCan
 	// id -> the canonical document it was folded into, already resolved, so a
 	// later match needs one lookup rather than a walk.
 	canonical := make(map[string]string, len(candidates))
+	// id -> position, so a canonical that is one of this run's own documents
+	// can be compared against directly.
+	indexByID := make(map[string]int, len(candidates))
+	for i := range candidates {
+		indexByID[candidates[i].id] = i
+	}
 	crossRun, sameRun := 0, 0
 
 	for i := range candidates {
@@ -379,14 +385,35 @@ func (o *Orchestrator) markDuplicates(ctx context.Context, candidates []dedupCan
 			if !ok || score < threshold {
 				continue
 			}
-			target := earlier.id
-			if resolved, folded := canonical[target]; folded {
-				target = resolved
+			target, targetScore := earlier.id, score
+			if resolved, folded := canonical[earlier.id]; folded {
+				// Cosine is not transitive. Three vectors at 0°, 25° and 50°
+				// score 0.906 between neighbours and 0.643 end to end, so
+				// matching the middle one says nothing about the first — and
+				// folding into it anyway would hide a document behind a row it
+				// does not resemble, under the neighbour's score. So the claim
+				// is re-checked against the canonical itself, and when it does
+				// not hold the document is left alone: it is not a duplicate of
+				// anything the reader can see.
+				k, inRun := indexByID[resolved]
+				if !inRun {
+					// The canonical belongs to an earlier RUN, so its vector is
+					// not in hand. The stored pass already asked the store
+					// about this document and got no match, which is the only
+					// evidence available — and it said no.
+					continue
+				}
+				s, ok := cosineSimilarity(c.vec, candidates[k].vec)
+				if !ok || s < threshold {
+					continue
+				}
+				target, targetScore = resolved, s
 			}
 			if target == "" || target == c.id {
 				continue
 			}
-			o.markDuplicate(ctx, c, target, score, "this run")
+
+			o.markDuplicate(ctx, c, target, targetScore, "this run")
 			canonical[c.id] = target
 			sameRun++
 			break

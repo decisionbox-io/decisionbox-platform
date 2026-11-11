@@ -1056,14 +1056,6 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// RANKED findings-with-substance, the coverage map, and the open next-task
 	// queue. Empty for legacy projects / community builds, in which case
 	// buildPreviousContext falls back to the older capped insight dump.
-	lrc := o.loadLedgerReadContext(ctx)
-
-	// Previous discovery insights, recommendations, user feedback, and the
-	// Discovery Ledger are merged into a reusable context block injected into the
-	// exploration and analysis prompts, so the run continues the investigation
-	// (drill / tile the frontier / re-check) instead of re-treading it.
-	previousContextStr := o.buildPreviousContext(projectCtx, prevInsights, prevRecs, feedbackSummaries, lrc, analysisAreas)
-
 	// Phase 2: Load schemas from the per-project schema cache.
 	// (Discovery is gated on schema_index_status == "ready"; the indexer
 	// has already populated the cache and the Qdrant collection.)
@@ -1149,6 +1141,27 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	if len(o.datasets) > 0 {
 		refDataset = o.datasets[0]
 	}
+
+	// The Discovery Ledger read context (compounding discovery): the
+	// accumulated findings, ranked and budgeted against the model window, the
+	// coverage map and the open next-task queue. Empty for legacy projects /
+	// builds with nothing in the ledger, in which case buildPreviousContext
+	// falls back to the older capped insight dump.
+	//
+	// Built HERE, not at the top of the run, because how many findings fit
+	// depends on what the rest of the prompt already costs — and the profile
+	// and the pack templates only exist by this point. Choosing the block
+	// before measuring them sized it against the whole input allowance, and a
+	// project with a large profile or large area templates could then be
+	// pushed past its window on a small model: the budget would hand the
+	// findings a share of room that the profile had already taken.
+	lrc := o.loadLedgerReadContext(ctx, o.fixedPromptTokens(ctx, prompts, profileStr, analysisAreas))
+
+	// Previous discovery insights, recommendations, user feedback, and the
+	// Discovery Ledger are merged into a reusable context block injected into the
+	// exploration and analysis prompts, so the run continues the investigation
+	// (drill / tile the frontier / re-check) instead of re-treading it.
+	previousContextStr := o.buildPreviousContext(projectCtx, prevInsights, prevRecs, feedbackSummaries, lrc, analysisAreas)
 
 	// baseContext is reused across exploration, analysis, and
 	// recommendation prompts. It combines project profile data,

@@ -56,3 +56,28 @@ describe('run novelty on the story timeline', () => {
     expect(runNoveltyFraction(run({ marginal_ratio: 1.5 }))).toBe(1);
   });
 });
+
+describe('a consolidation that lost findings cannot measure its own novelty', () => {
+  // new_findings counts only what was written, so two failed writes plus one
+  // recognised prior finding read as "0 of 1 — everything already known", the
+  // opposite of the truth. The Go side rejects that measurement; the page has
+  // to agree, or it states a rate the API declines to.
+  const lost = run({ new_findings: 0, total_findings: 100, marginal_ratio: 0.1, run_findings: 1, unrecorded_findings: 2 });
+
+  it('does not report 0% new from incomplete counts', () => {
+    expect(runNoveltyFraction(lost)).toBeCloseTo(0.1); // the growth ratio, not a novelty of 0
+  });
+
+  it('says the repeat rate is unknown, and why', () => {
+    const label = runNoveltyLabel(lost);
+    expect(label).toContain('never reached the ledger');
+    expect(label).toContain('repeat rate is unknown');
+    expect(label).not.toContain('findings this run surfaced were new');
+  });
+
+  it('a clean run with the same counts IS measured', () => {
+    const clean = run({ new_findings: 0, total_findings: 100, marginal_ratio: 0.1, run_findings: 1 });
+    expect(runNoveltyFraction(clean)).toBe(0);
+    expect(runNoveltyLabel(clean)).toContain('0 of the 1 findings this run surfaced were new');
+  });
+});

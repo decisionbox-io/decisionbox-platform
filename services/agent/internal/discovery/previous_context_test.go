@@ -123,7 +123,7 @@ func TestLoadLedgerReadContext_RanksAndExcludesResolved(t *testing.T) {
 	tr := &fakeTaskRepo{existing: []commonmodels.LedgerTask{{Text: "t1", Status: "open"}}}
 	o := &Orchestrator{projectID: "p1", findingRepo: fr, ledgerRepo: &fakeLedgerRepo{}, taskRepo: tr}
 
-	lrc := o.loadLedgerReadContext(context.Background())
+	lrc := o.loadLedgerReadContext(context.Background(), 0)
 	if lrc == nil || !lrc.hasLedger {
 		t.Fatal("expected a ledger read context")
 	}
@@ -160,7 +160,7 @@ func TestLoadLedgerReadContext_RemembersOnlyWhatThePromptShows(t *testing.T) {
 		taskRepo: &fakeTaskRepo{existing: many},
 	}
 
-	o.loadLedgerReadContext(context.Background())
+	o.loadLedgerReadContext(context.Background(), 0)
 
 	if len(o.shownTaskIDs) != maxLedgerTasksInPrompt {
 		t.Errorf("want the prompt's cap (%d) remembered, got %d",
@@ -181,7 +181,7 @@ func TestLoadLedgerReadContext_OffModeSuppressesTasks(t *testing.T) {
 	tr := &fakeTaskRepo{existing: []commonmodels.LedgerTask{{Text: "t1", Status: "open"}}}
 	o := &Orchestrator{projectID: "p1", findingRepo: fr, ledgerRepo: &fakeLedgerRepo{}, taskRepo: tr}
 
-	lrc := o.loadLedgerReadContext(context.Background())
+	lrc := o.loadLedgerReadContext(context.Background(), 0)
 	if lrc == nil {
 		t.Fatal("expected a ledger read context (findings present)")
 	}
