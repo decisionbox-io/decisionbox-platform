@@ -450,6 +450,15 @@ func buildFilter(opts vectorstore.SearchOpts) *pb.Filter {
 		mustNot = append(mustNot, pb.NewMatch("source_type", st))
 	}
 
+	// Status exclusions, server-side for the same reason: a point filtered out
+	// afterwards has already taken a slot in the top-K.
+	for _, st := range opts.ExcludeStatuses {
+		if st == "" {
+			continue
+		}
+		mustNot = append(mustNot, pb.NewMatch("status", st))
+	}
+
 	if len(must) == 0 && len(should) == 0 && len(mustNot) == 0 {
 		return nil
 	}

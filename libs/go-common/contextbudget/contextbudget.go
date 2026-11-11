@@ -195,9 +195,13 @@ func FitFindings(findings []commonmodels.LedgerFinding, budgetTokens, minDesc, m
 
 	descChars := clamp((budgetTokens*runesPerToken)/len(findings), minDesc, maxDesc)
 
+	// Costed WITH the newline each caller writes after a line. Without it a
+	// two-hundred-finding block rendered 13,388 tokens against a 13,338-token
+	// budget: one token per separator, which is nothing per line and a
+	// guarantee broken in aggregate.
 	lines := make([]string, len(findings))
 	for i := range findings {
-		lines[i] = FindingLine(findings[i], descChars)
+		lines[i] = FindingLine(findings[i], descChars) + "\n"
 	}
 	n := FitLines(lines, budgetTokens)
 	if n == 0 {
