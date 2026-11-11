@@ -136,6 +136,17 @@ func (c ConvergencePoint) RunNovelty() (float64, bool) {
 	if c.RunFindings <= 0 {
 		return 0, false
 	}
+	// A consolidation that lost findings cannot measure its own novelty.
+	// NewFindings counts what was successfully written, so a run whose two new
+	// findings failed to persist while one carried finding was recognised
+	// records 0 of 1 and reads as "everything was already known" — the exact
+	// opposite of what happened. The ledger already knows this went wrong;
+	// reporting a rate derived from it would hand the next run a larger
+	// prior-context budget and steer it off a productive seam on the strength
+	// of a failed write.
+	if c.UnrecordedFindings > 0 {
+		return 0, false
+	}
 	n := float64(c.NewFindings) / float64(c.RunFindings)
 	if n < 0 {
 		return 0, true

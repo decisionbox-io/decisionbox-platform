@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"math"
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
@@ -227,7 +228,15 @@ func (o *Orchestrator) reflectionPriorsBudget(
 	if verdicts := reSeenCount * reflectionOutputPerVerdictTokens; verdicts > reserve {
 		reserve = verdicts
 	}
+	// Bounded by what the model can actually emit as well as by the window.
+	// Reserving room the model will never use is not caution, it is the
+	// re-judgement list paying for nothing: a 4,096-cap model with 300 re-seen
+	// findings would have reserved 14,400 tokens and could lose the whole list
+	// while the output it was protecting could not have exceeded 4,096.
 	reserve = boundOutputCap(reserve, window)
+	if outputCap > 0 && reserve > outputCap {
+		reserve = outputCap
+	}
 
 	skeleton := o.buildReflectionPrompt(result, nil, tasks, pol, catalogItems, true, true)
 	return contextbudget.AvailableInput(window, reserve, analysisReservedSystemTokens) - approxTokens(ctx, skeleton)
@@ -289,6 +298,15 @@ const documentDedupMinScoreEnv = "DISCOVERY_DOCUMENT_DEDUP_MINSCORE"
 // Either way the default is the safer answer than the number asked for.
 func documentDedupMinScore() float64 {
 	v := goconfig.GetEnvAsFloat(documentDedupMinScoreEnv, defaultDedupMinScore)
+	// NaN first, and explicitly: ParseFloat accepts "NaN", and every
+	// comparison with NaN is false — so the range check below would pass it
+	// through, and then `score < threshold` would be false for every pair and
+	// mark every document in the run a duplicate of the first one. A range
+	// check written as a range cannot catch the one value that is outside
+	// every range.
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return defaultDedupMinScore
+	}
 	if v <= 0 || v > 1 {
 		return defaultDedupMinScore
 	}

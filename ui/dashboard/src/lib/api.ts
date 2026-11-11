@@ -1396,8 +1396,17 @@ export interface LedgerCoverage {
 export interface ConvergencePoint {
   run_id: string;
   new_findings: number;
+  /** The size of the ACTIVE LEDGER after the run, not what the run produced. */
   total_findings: number;
+  /** new_findings / total_findings: how fast the ledger is still GROWING. Not
+   *  the share of this run's own output that was new — a run adding ten new
+   *  findings to a hundred-finding ledger scores 0.09 having repeated nothing. */
   marginal_ratio: number;
+  /** How many distinct findings the run itself surfaced: created plus carried
+   *  ones seen again. With new_findings this gives the run's own novelty, which
+   *  is the repetition rate. Absent on runs recorded before it was measured —
+   *  so zero means "not measured", never "this run found nothing". */
+  run_findings?: number;
   date: string;
 }
 
@@ -1473,8 +1482,14 @@ export interface GraphRun {
   areas?: string[];
   warehouse_id?: string;
   new_findings: number;
+  /** The size of the active ledger after the run, not what the run produced. */
   total_findings: number;
+  /** A ledger GROWTH rate (new_findings / total_findings), not a repetition
+   *  rate. See run_findings for the latter. */
   marginal_ratio: number;
+  /** How many distinct findings the run itself surfaced. Absent on older runs,
+   *  where zero means "not measured". */
+  run_findings?: number;
   /** How many of this run's findings never reached the ledger. Zero on every
    *  healthy run; non-zero means the counts above understate it. */
   unrecorded_findings?: number;

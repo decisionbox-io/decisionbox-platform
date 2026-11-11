@@ -976,13 +976,19 @@ func TestReflectionPriorsScaleWithTheWindow(t *testing.T) {
 // mid-JSON parses as nothing and discards the whole phase's judgement — the
 // #403 failure. The reserve is sized from the findings the run actually SAW
 // again, because those are the only ones it can honestly judge.
+//
+// Measured on a model whose output cap has headroom ABOVE the intended
+// reserve, since the reserve is also clamped to that cap: on a model that
+// cannot emit more than the intended size, re-sighting count correctly makes no
+// difference, which is the next test.
 func TestReflectionPriorsReserveRoomForTheVerdicts(t *testing.T) {
 	result := &models.DiscoveryResult{ID: "d1", ProjectID: "p1"}
 	pol := agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeAuto}
-	o := windowedOrchestrator(nil, nil, 131_072, 16_384)
+	const window, outputCap = 200_000, 64_000
+	o := windowedOrchestrator(nil, nil, window, outputCap)
 
 	budget := func(reSeen int) int {
-		return o.reflectionPriorsBudget(context.Background(), result, nil, pol, nil, 131_072, 16_384, reSeen)
+		return o.reflectionPriorsBudget(context.Background(), result, nil, pol, nil, window, outputCap, reSeen)
 	}
 
 	none := budget(0)
@@ -1187,5 +1193,65 @@ func TestPriorContextBudgetUsesNoveltyNotGrowth(t *testing.T) {
 
 	if repeating <= productive {
 		t.Errorf("the repeating run was shown %d findings and the all-new run %d — the two have the same growth ratio, so only novelty can tell them apart", repeating, productive)
+	}
+}
+
+// --- review round 2 ---
+
+// TestReflectionReserveRespectsTheOutputCap: reserving output the model cannot
+// emit is not caution, it is the re-judgement list paying for nothing.
+func TestReflectionReserveRespectsTheOutputCap(t *testing.T) {
+	result := &models.DiscoveryResult{ID: "d1", ProjectID: "p1"}
+	pol := agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeAuto}
+	o := windowedOrchestrator(nil, nil, 32_000, 4_096)
+
+	// 300 re-sightings × 48 tokens = 14,400, far past what a 4,096-cap model
+	// could ever emit.
+	capped := o.reflectionPriorsBudget(context.Background(), result, nil, pol, nil, 32_000, 4_096, 300)
+	modest := o.reflectionPriorsBudget(context.Background(), result, nil, pol, nil, 32_000, 4_096, 1)
+
+	t.Logf("32K window, 4,096 output cap: 300 re-seen -> %d, 1 re-seen -> %d", capped, modest)
+	if capped != modest {
+		t.Errorf("budget moved from %d to %d on re-sighting count alone, though the reserve is already at the model's %d-token cap", modest, capped, 4_096)
+	}
+	if capped <= 0 {
+		t.Errorf("budget = %d — the whole list was lost to a reserve the model cannot use", capped)
+	}
+
+	// On a model that CAN emit more, the reserve still grows with the verdicts
+	// it may owe, which is the behaviour this guards without breaking.
+	big := windowedOrchestrator(nil, nil, 200_000, 64_000)
+	few := big.reflectionPriorsBudget(context.Background(), result, nil, pol, nil, 200_000, 64_000, 1)
+	many := big.reflectionPriorsBudget(context.Background(), result, nil, pol, nil, 200_000, 64_000, 1000)
+	if many >= few {
+		t.Errorf("a 64K-cap model owing 1000 verdicts got %d, no less than owing 1 (%d)", many, few)
+	}
+}
+
+// TestDocumentDedupMinScoreRejectsNaN. ParseFloat accepts "NaN", and every
+// comparison with NaN is false — so a range check written as a range lets
+// through the one value outside every range, after which `score < threshold`
+// is false for every pair and every document in the run is marked a duplicate
+// of the first.
+func TestDocumentDedupMinScoreRejectsNaN(t *testing.T) {
+	for _, bad := range []string{"NaN", "nan", "+Inf", "-Inf", "Inf"} {
+		t.Setenv(documentDedupMinScoreEnv, bad)
+		got := documentDedupMinScore()
+		if got != defaultDedupMinScore {
+			t.Errorf("%q = %v, want the default %v", bad, got, defaultDedupMinScore)
+		}
+	}
+
+	// And the consequence, end to end: two orthogonal documents must not be
+	// folded together.
+	t.Setenv(documentDedupMinScoreEnv, "NaN")
+	store := &mockEmbedIndexStore{}
+	o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{}}
+	o.markDuplicates(context.Background(), []dedupCandidate{
+		{id: "a", docType: "insight", projectID: "p1", vec: []float64{1, 0}},
+		{id: "b", docType: "insight", projectID: "p1", vec: []float64{0, 1}},
+	}, nil)
+	if len(store.dupUpdates) != 0 {
+		t.Errorf("orthogonal documents were marked duplicates: %+v", store.dupUpdates)
 	}
 }
