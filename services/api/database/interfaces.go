@@ -152,6 +152,11 @@ type InsightRepo interface {
 	ListByProject(ctx context.Context, projectID string, limit, offset int) ([]*commonmodels.StandaloneInsight, error)
 	ListByDiscovery(ctx context.Context, discoveryID string) ([]*commonmodels.StandaloneInsight, error)
 	CountByProject(ctx context.Context, projectID string) (int64, error)
+	// The Filtered forms state what the three above leave implicit: marked
+	// duplicates are excluded. Handlers that expose an opt-in call these.
+	ListByProjectFiltered(ctx context.Context, projectID string, limit, offset int, f ListFilter) ([]*commonmodels.StandaloneInsight, error)
+	ListByDiscoveryFiltered(ctx context.Context, discoveryID string, f ListFilter) ([]*commonmodels.StandaloneInsight, error)
+	CountByProjectFiltered(ctx context.Context, projectID string, f ListFilter) (int64, error)
 	UpdateEmbedding(ctx context.Context, id string, embeddingText, embeddingModel string) error
 	UpdateDuplicate(ctx context.Context, id string, duplicateOf string, score float64) error
 	GetLatestEmbeddingModel(ctx context.Context, projectID string) (string, error)
@@ -165,6 +170,11 @@ type RecommendationRepo interface {
 	ListByProject(ctx context.Context, projectID string, limit, offset int) ([]*commonmodels.StandaloneRecommendation, error)
 	ListByDiscovery(ctx context.Context, discoveryID string) ([]*commonmodels.StandaloneRecommendation, error)
 	CountByProject(ctx context.Context, projectID string) (int64, error)
+	// The Filtered forms state what the three above leave implicit: marked
+	// duplicates are excluded. Handlers that expose an opt-in call these.
+	ListByProjectFiltered(ctx context.Context, projectID string, limit, offset int, f ListFilter) ([]*commonmodels.StandaloneRecommendation, error)
+	ListByDiscoveryFiltered(ctx context.Context, discoveryID string, f ListFilter) ([]*commonmodels.StandaloneRecommendation, error)
+	CountByProjectFiltered(ctx context.Context, projectID string, f ListFilter) (int64, error)
 	UpdateEmbedding(ctx context.Context, id string, embeddingText, embeddingModel string) error
 	UpdateDuplicate(ctx context.Context, id string, duplicateOf string, score float64) error
 }

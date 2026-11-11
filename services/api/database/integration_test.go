@@ -195,16 +195,44 @@ func TestInteg_InsightRepo_UpdateDuplicate(t *testing.T) {
 	}
 }
 
+// TestInteg_InsightRepo_ListByDiscovery. The one insight on disc-integ-1 is
+// the one TestInteg_InsightRepo_UpdateDuplicate marks, so this discovery is
+// now a worked example of the suppression rather than a plain listing: the
+// default hides the marked row and the opt-in brings it back.
+//
+// Written against whatever UpdateDuplicate left behind rather than against a
+// fixed count, because these tests share one database in file order and
+// pinning a number here would make this test fail for a change made three
+// tests above it.
 func TestInteg_InsightRepo_ListByDiscovery(t *testing.T) {
 	ctx := context.Background()
 	repo := NewInsightRepository(testDB)
+
+	withDupes, err := repo.ListByDiscoveryFiltered(ctx, "disc-integ-1", ListFilter{IncludeDuplicates: true})
+	if err != nil {
+		t.Fatalf("ListByDiscoveryFiltered: %v", err)
+	}
+	if len(withDupes) == 0 {
+		t.Fatal("expected at least one insight on disc-integ-1")
+	}
+	marked := 0
+	for _, i := range withDupes {
+		if i.DuplicateOf != "" {
+			marked++
+		}
+	}
 
 	results, err := repo.ListByDiscovery(ctx, "disc-integ-1")
 	if err != nil {
 		t.Fatalf("ListByDiscovery: %v", err)
 	}
-	if len(results) != 1 {
-		t.Errorf("expected 1 insight for disc-integ-1, got %d", len(results))
+	if want := len(withDupes) - marked; len(results) != want {
+		t.Errorf("default listing returned %d of %d insights (%d marked), want %d", len(results), len(withDupes), marked, want)
+	}
+	for _, i := range results {
+		if i.DuplicateOf != "" {
+			t.Errorf("insight %s is marked a duplicate of %s and must not be in the default listing", i.ID, i.DuplicateOf)
+		}
 	}
 }
 
@@ -723,4 +751,197 @@ func TestInteg_AskSessionRepo_LegacyAnonymousIsShared(t *testing.T) {
 	if len(got) != 1 || got[0].ID != "leg-shared" {
 		t.Fatalf("anonymous caller's list = %+v, want only leg-shared", got)
 	}
+}
+
+// TestInteg_DuplicateSuppression is the real-MongoDB half of hiding documents
+// already marked as duplicates, and it has to be a real Mongo: the whole
+// subtlety is a MongoDB matching semantic that no fake can establish.
+//
+// `duplicate_of` is declared omitempty, so a document that was never marked has
+// NO SUCH KEY — which is every document written before the field existed. A
+// filter written against "" alone would hide the entire existing corpus of
+// every deployment. The three shapes below are exactly that boundary, and the
+// list and the count are asserted against the same fixture because a count that
+// includes what the list hides reports a total the list never returns.
+func TestInteg_DuplicateSuppression(t *testing.T) {
+	ctx := context.Background()
+	const project = "proj-dup-suppression"
+	const discovery = "disc-dup-suppression"
+	base := time.Now().Add(-time.Hour)
+
+	insights := NewInsightRepository(testDB)
+	recs := NewRecommendationRepository(testDB)
+
+	// 1. A row from before this feature existed: no duplicate_of key at all.
+	//    Inserted through the model so omitempty genuinely omits it.
+	if err := insights.CreateMany(ctx, []*commonmodels.StandaloneInsight{
+		{ID: "dup-none", ProjectID: project, DiscoveryID: discovery, Name: "never marked", CreatedAt: base},
+		// 2. Explicitly marked.
+		{ID: "dup-marked", ProjectID: project, DiscoveryID: discovery, Name: "a restatement",
+			DuplicateOf: "dup-none", SimilarityScore: 0.93, CreatedAt: base.Add(time.Minute)},
+		// 3. An empty string: present but meaning "not a duplicate".
+		{ID: "dup-empty", ProjectID: project, DiscoveryID: discovery, Name: "empty marker", CreatedAt: base.Add(2 * time.Minute)},
+	}); err != nil {
+		t.Fatalf("seed insights: %v", err)
+	}
+	// omitempty would drop an empty DuplicateOf, so case 3 is written directly.
+	if _, err := testDB.Collection("insights").UpdateByID(ctx, "dup-empty",
+		bson.M{"$set": bson.M{"duplicate_of": ""}}); err != nil {
+		t.Fatalf("seed the empty-string case: %v", err)
+	}
+	// And prove the fixture really has the three distinct shapes, or the test
+	// below would pass against a corpus that never exercised them.
+	for id, want := range map[string]string{"dup-none": "absent", "dup-marked": "set", "dup-empty": "empty"} {
+		var raw bson.M
+		if err := testDB.Collection("insights").FindOne(ctx, bson.M{"_id": id}).Decode(&raw); err != nil {
+			t.Fatalf("read back %s: %v", id, err)
+		}
+		v, present := raw["duplicate_of"]
+		got := "absent"
+		if present {
+			got = "empty"
+			if s, _ := v.(string); s != "" {
+				got = "set"
+			}
+		}
+		if got != want {
+			t.Fatalf("fixture %s has duplicate_of %s, want %s — the test would not be exercising the boundary", id, got, want)
+		}
+	}
+
+	ids := func(out []*commonmodels.StandaloneInsight) []string {
+		got := make([]string, 0, len(out))
+		for _, i := range out {
+			got = append(got, i.ID)
+		}
+		return got
+	}
+	has := func(got []string, id string) bool {
+		for _, g := range got {
+			if g == id {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("ListByProject hides only the marked row", func(t *testing.T) {
+		out, err := insights.ListByProject(ctx, project, 50, 0)
+		if err != nil {
+			t.Fatalf("ListByProject: %v", err)
+		}
+		got := ids(out)
+		if !has(got, "dup-none") {
+			t.Errorf("a row written before this feature existed must still be returned; got %v", got)
+		}
+		if !has(got, "dup-empty") {
+			t.Errorf("an empty duplicate_of means NOT a duplicate; got %v", got)
+		}
+		if has(got, "dup-marked") {
+			t.Errorf("the marked duplicate must be hidden; got %v", got)
+		}
+		if len(got) != 2 {
+			t.Errorf("got %d rows, want 2: %v", len(got), got)
+		}
+	})
+
+	t.Run("ListByDiscovery hides the same row", func(t *testing.T) {
+		out, err := insights.ListByDiscovery(ctx, discovery)
+		if err != nil {
+			t.Fatalf("ListByDiscovery: %v", err)
+		}
+		got := ids(out)
+		if has(got, "dup-marked") || len(got) != 2 {
+			t.Errorf("got %v, want the two non-duplicates", got)
+		}
+	})
+
+	t.Run("the count agrees with the list", func(t *testing.T) {
+		n, err := insights.CountByProject(ctx, project)
+		if err != nil {
+			t.Fatalf("CountByProject: %v", err)
+		}
+		out, err := insights.ListByProject(ctx, project, 50, 0)
+		if err != nil {
+			t.Fatalf("ListByProject: %v", err)
+		}
+		if int(n) != len(out) {
+			t.Errorf("count = %d, list returned %d — pagination built on this would ask for pages that do not exist", n, len(out))
+		}
+	})
+
+	t.Run("include_duplicates returns everything, and they agree too", func(t *testing.T) {
+		all := ListFilter{IncludeDuplicates: true}
+		out, err := insights.ListByProjectFiltered(ctx, project, 50, 0, all)
+		if err != nil {
+			t.Fatalf("ListByProjectFiltered: %v", err)
+		}
+		if got := ids(out); len(got) != 3 || !has(got, "dup-marked") {
+			t.Errorf("got %v, want all three rows", got)
+		}
+		n, err := insights.CountByProjectFiltered(ctx, project, all)
+		if err != nil {
+			t.Fatalf("CountByProjectFiltered: %v", err)
+		}
+		if int(n) != len(out) {
+			t.Errorf("count = %d, list returned %d", n, len(out))
+		}
+		byDiscovery, err := insights.ListByDiscoveryFiltered(ctx, discovery, all)
+		if err != nil {
+			t.Fatalf("ListByDiscoveryFiltered: %v", err)
+		}
+		if len(byDiscovery) != 3 {
+			t.Errorf("ListByDiscoveryFiltered returned %d, want 3", len(byDiscovery))
+		}
+		// The hidden row must keep the score that hid it, or the suppression
+		// is not auditable.
+		for _, i := range out {
+			if i.ID == "dup-marked" && i.SimilarityScore == 0 {
+				t.Error("the marked duplicate lost its similarity score")
+			}
+		}
+	})
+
+	t.Run("recommendations behave identically", func(t *testing.T) {
+		const recProject = "proj-dup-suppression-recs"
+		if err := recs.CreateMany(ctx, []*commonmodels.StandaloneRecommendation{
+			{ID: "rdup-none", ProjectID: recProject, DiscoveryID: discovery, Title: "never marked", CreatedAt: base},
+			{ID: "rdup-marked", ProjectID: recProject, DiscoveryID: discovery, Title: "a restatement",
+				DuplicateOf: "rdup-none", SimilarityScore: 0.91, CreatedAt: base.Add(time.Minute)},
+			{ID: "rdup-empty", ProjectID: recProject, DiscoveryID: discovery, Title: "empty marker", CreatedAt: base.Add(2 * time.Minute)},
+		}); err != nil {
+			t.Fatalf("seed recommendations: %v", err)
+		}
+		if _, err := testDB.Collection("recommendations").UpdateByID(ctx, "rdup-empty",
+			bson.M{"$set": bson.M{"duplicate_of": ""}}); err != nil {
+			t.Fatalf("seed the empty-string case: %v", err)
+		}
+
+		out, err := recs.ListByProject(ctx, recProject, 50, 0)
+		if err != nil {
+			t.Fatalf("ListByProject: %v", err)
+		}
+		if len(out) != 2 {
+			t.Errorf("got %d recommendations, want 2", len(out))
+		}
+		for _, r := range out {
+			if r.ID == "rdup-marked" {
+				t.Error("the marked duplicate recommendation must be hidden")
+			}
+		}
+		n, err := recs.CountByProject(ctx, recProject)
+		if err != nil {
+			t.Fatalf("CountByProject: %v", err)
+		}
+		if int(n) != len(out) {
+			t.Errorf("count = %d, list returned %d", n, len(out))
+		}
+		withDupes, err := recs.ListByProjectFiltered(ctx, recProject, 50, 0, ListFilter{IncludeDuplicates: true})
+		if err != nil {
+			t.Fatalf("ListByProjectFiltered: %v", err)
+		}
+		if len(withDupes) != 3 {
+			t.Errorf("opt-in returned %d, want 3", len(withDupes))
+		}
+	})
 }
