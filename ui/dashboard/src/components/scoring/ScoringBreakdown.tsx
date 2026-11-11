@@ -20,6 +20,12 @@ import { engineFor, useScoringEngines } from './useScoringEngines';
 // comes from the engine the document says scored it, so an API older than the
 // agent costs this one line and nothing else.
 
+// cutoffLine says which band boundary the final score crossed.
+//
+// Only the three scored bands have one. `not_confirmed` and `unverifiable`
+// come from the verdict and are terminal, so there is no boundary to name —
+// and saying so is better than leaving the line blank, which would read as the
+// cutoff having failed to load.
 function cutoffLine(band: string, high: number, medium: number): string {
   switch (band) {
     case 'high':
@@ -33,6 +39,9 @@ function cutoffLine(band: string, high: number, medium: number): string {
   }
 }
 
+// terminalBands are the two decided by the verdict rather than by a cutoff.
+const terminalBands = new Set(['not_confirmed', 'unverifiable']);
+
 export function ScoringBreakdown({ scoring }: { scoring: Scoring }) {
   const engines = useScoringEngines();
   const engine = engineFor(engines, scoring.engine_version);
@@ -42,9 +51,12 @@ export function ScoringBreakdown({ scoring }: { scoring: Scoring }) {
   const final = scoring.confidence_score ?? 0;
   const docks = scoring.confidence_docks ?? [];
 
-  const cutoff = engine
-    ? cutoffLine(scoring.confidence_band ?? '', engine.confidence.cutoffs.high, engine.confidence.cutoffs.medium)
-    : '';
+  const band = scoring.confidence_band ?? '';
+  const cutoff = terminalBands.has(band)
+    ? 'set by the validation verdict, not by a score cutoff'
+    : engine
+      ? cutoffLine(band, engine.confidence.cutoffs.high, engine.confidence.cutoffs.medium)
+      : '';
 
   return (
     <Stack gap={6} style={{ minWidth: 260, maxWidth: 420 }}>

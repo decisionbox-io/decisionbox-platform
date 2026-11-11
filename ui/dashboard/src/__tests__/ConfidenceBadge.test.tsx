@@ -145,6 +145,21 @@ describe('the "How this was scored" breakdown', () => {
     await flushCalibration();
   });
 
+  it.each(['not_confirmed', 'unverifiable'])(
+    'says a %s band came from the verdict rather than leaving the cutoff line blank',
+    async (band) => {
+      wrap(<ScoringBreakdown scoring={scored({
+        confidence_band: band as Scoring['confidence_band'],
+        confidence_base: 0.25, confidence_score: 0.25, confidence_docks: undefined,
+      })} />);
+      // Present without waiting for the calibration: a terminal band's line
+      // needs no cutoff from the API.
+      expect(screen.getByTestId('scoring-cutoff')).toHaveTextContent(/validation verdict/);
+      expect(screen.getByTestId('scoring-cutoff')).not.toHaveTextContent('%');
+      await flushCalibration();
+    },
+  );
+
   it('omits only the cutoff line when the engine that scored the document is unknown to this API', async () => {
     // A document scored by a newer agent than the API serving the page.
     wrap(<ScoringBreakdown scoring={scored({ engine_version: 7 })} />);
