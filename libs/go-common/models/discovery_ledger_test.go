@@ -69,6 +69,41 @@ func TestLedgerFindingRank(t *testing.T) {
 	})
 }
 
+
+// TestANewTopSeverityFindingIsNotCappedBelowALegacyOne is the vocabulary
+// change, pinned where it would have done quiet damage.
+//
+// `critical` was the top severity word until severity became derived; the top
+// band is `high` now, and `critical` is the top PRIORITY tier. This rank
+// decides which findings reach the next run's prompt, so pricing `high` below
+// `critical` would have held every new finding under the legacy ones and
+// silently kept them out -- a regression with no error, no log line and no
+// visible symptom beyond the next run reasoning over stale history.
+func TestANewTopSeverityFindingIsNotCappedBelowALegacyOne(t *testing.T) {
+	now := time.Now()
+	recent := now.Add(-time.Hour)
+
+	derived := (&LedgerFinding{Severity: SeverityBandHigh, Status: "confirmed", LastSeen: recent}).Rank(now)
+	legacy := (&LedgerFinding{Severity: "critical", Status: "confirmed", LastSeen: recent}).Rank(now)
+	if derived != legacy {
+		t.Errorf("a derived high (%v) does not rank with a legacy critical (%v)", derived, legacy)
+	}
+
+	medium := (&LedgerFinding{Severity: SeverityBandMedium, Status: "confirmed", LastSeen: recent}).Rank(now)
+	if derived <= medium {
+		t.Errorf("high (%v) does not outrank medium (%v)", derived, medium)
+	}
+	low := (&LedgerFinding{Severity: SeverityBandLow, Status: "confirmed", LastSeen: recent}).Rank(now)
+	if medium <= low {
+		t.Errorf("medium (%v) does not outrank low (%v)", medium, low)
+	}
+	// `info` is not a band this engine writes; it survives on legacy rows and
+	// still has to rank, rather than falling to the unknown-value default.
+	if info := (&LedgerFinding{Severity: "info", Status: "confirmed", LastSeen: recent}).Rank(now); info != low {
+		t.Errorf("legacy info (%v) does not rank with low (%v)", info, low)
+	}
+}
+
 func TestNormalizedFindingKey(t *testing.T) {
 	a := NormalizedFindingKey("Churn", "High churn in EU!")
 	b := NormalizedFindingKey("churn", "high  churn in eu")

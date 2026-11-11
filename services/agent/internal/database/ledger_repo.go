@@ -477,10 +477,16 @@ func (r *LedgerTaskRepository) Close(ctx context.Context, projectID, id string, 
 // FindingMerge is one run's contribution to a finding it has seen again:
 // what that run observed, plus the trail entries it is adding.
 type FindingMerge struct {
-	Description       string
-	KeyMetric         string
-	Evidence          string
-	Severity          string
+	Description string
+	KeyMetric   string
+	Evidence    string
+	Severity    string
+	// MagnitudeScore is the weight-free magnitude this run observed, and it
+	// is what the NEXT run compares against to decide whether the finding
+	// moved. A merge that wrote the severity word without it would leave the
+	// comparison with nothing to measure on, so every future run would fall
+	// back to the affected-count delta alone.
+	MagnitudeScore    float64
 	AffectedCount     int
 	LastSeen          time.Time
 	SourceDiscoveryID string
@@ -516,6 +522,7 @@ func (r *LedgerFindingRepository) Merge(ctx context.Context, projectID, id strin
 		"key_metric":          m.KeyMetric,
 		"evidence":            m.Evidence,
 		"severity":            m.Severity,
+		"magnitude_score":     m.MagnitudeScore,
 		"affected_count":      m.AffectedCount,
 		"last_seen":           m.LastSeen,
 		"source_discovery_id": m.SourceDiscoveryID,

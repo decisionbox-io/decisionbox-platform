@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -19,9 +20,11 @@ import (
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
+	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/notify"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/oauthreg"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/scoring"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
 	gosources "github.com/decisionbox-io/decisionbox/libs/go-common/sources"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/telemetry"
@@ -1265,9 +1268,9 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		DiscoveryID:        result.ID,
 		Duration:           result.Duration,
 		InsightsTotal:      len(result.Insights),
-		InsightsCritical:   countBySeverity(result.Insights, "critical"),
-		InsightsHigh:       countBySeverity(result.Insights, "high"),
-		InsightsMedium:     countBySeverity(result.Insights, "medium"),
+		InsightsCritical:   countByTier(result.Insights, gomodels.PriorityTierCritical),
+		InsightsHigh:       countByTier(result.Insights, gomodels.PriorityTierHigh),
+		InsightsMedium:     countByTier(result.Insights, gomodels.PriorityTierInvestigate),
 		Recommendations:    len(result.Recommendations),
 		QueriesExecuted:    result.TotalSteps,
 		TopInsights:        topInsightBriefs(result.Insights, 5),
@@ -1312,40 +1315,95 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	return nil
 }
 
-func countBySeverity(insights []models.Insight, severity string) int {
+// countByTier counts the insights of one priority tier, falling back to the
+// severity word on a document written before the tiers existed.
+//
+// Counting by tier rather than by severity, because `critical` is a tier now
+// and no insight writes it as a severity any more. Counting by the word would
+// have reported "0 critical" on every run from the moment severity became
+// derived -- a silent zero in the one surface a reader sees without opening
+// the dashboard, which is why the severity vocabulary and the priority matrix
+// had to land together.
+//
+// The legacy fallback maps each tier onto the severity word that used to carry
+// the same meaning, so a notification about a run of older insights still says
+// something true. A document with a tier is never read through the fallback.
+func countByTier(insights []models.Insight, tier string) int {
 	count := 0
-	for _, i := range insights {
-		if i.Severity == severity {
+	for _, in := range insights {
+		if in.Scoring != nil && in.Scoring.PriorityTier != "" {
+			if in.Scoring.PriorityTier == tier {
+				count++
+			}
+			continue
+		}
+		if legacySeverityForTier[tier] == in.Severity {
 			count++
 		}
 	}
 	return count
 }
 
+// legacySeverityForTier is how a pre-derivation severity word is counted
+// against a tier.
+//
+// `investigate` has no legacy equivalent at all -- it is the cell the old
+// vocabulary had no way to express, a severe finding nothing could check --
+// so nothing maps onto it and a run of legacy insights reports none. That is
+// the honest answer: those documents were never triaged that way.
+var legacySeverityForTier = map[string]string{
+	gomodels.PriorityTierCritical: "critical",
+	gomodels.PriorityTierHigh:     "high",
+	gomodels.PriorityTierLow:      "low",
+}
+
+// legacyTierForSeverity is the same mapping read the other way, for ordering a
+// mixed run. `medium` lands on the `high` tier because that is the cell a
+// trusted medium-severity finding occupies, and an old `medium` document is
+// one nothing contradicted.
+var legacyTierForSeverity = map[string]string{
+	"critical": gomodels.PriorityTierCritical,
+	"high":     gomodels.PriorityTierCritical,
+	"medium":   gomodels.PriorityTierHigh,
+	"low":      gomodels.PriorityTierLow,
+	"info":     gomodels.PriorityTierLow,
+}
+
 func topInsightBriefs(insights []models.Insight, limit int) []notify.InsightBrief {
-	// Sort by severity: critical > high > medium > low
-	sevOrder := map[string]int{"critical": 4, "high": 3, "medium": 2, "low": 1}
+	// Sort by priority tier: critical > investigate > high > low, through the
+	// engine's own ordering rather than a second copy of it here.
+	//
+	// A legacy document has no tier, so it is placed by the severity word it
+	// does carry -- mapped onto the tier that word used to mean, so the two
+	// kinds of document interleave in one order instead of all the legacy ones
+	// sinking to the bottom of a mixed run.
+	rank := func(in models.Insight) int {
+		if in.Scoring != nil && in.Scoring.PriorityTier != "" {
+			return scoring.PriorityTierRank(in.Scoring.PriorityTier)
+		}
+		return scoring.PriorityTierRank(legacyTierForSeverity[in.Severity])
+	}
 	sorted := make([]models.Insight, len(insights))
 	copy(sorted, insights)
-	for i := 0; i < len(sorted); i++ {
-		for j := i + 1; j < len(sorted); j++ {
-			if sevOrder[sorted[j].Severity] > sevOrder[sorted[i].Severity] {
-				sorted[i], sorted[j] = sorted[j], sorted[i]
-			}
-		}
-	}
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return rank(sorted[i]) > rank(sorted[j])
+	})
 	if len(sorted) > limit {
 		sorted = sorted[:limit]
 	}
 	briefs := make([]notify.InsightBrief, len(sorted))
 	for i, ins := range sorted {
-		briefs[i] = notify.InsightBrief{
+		brief := notify.InsightBrief{
 			ID:            ins.ID,
 			Name:          ins.Name,
 			Severity:      ins.Severity,
 			AnalysisArea:  ins.AnalysisArea,
 			AffectedCount: ins.AffectedCount,
 		}
+		if ins.Scoring != nil {
+			brief.PriorityTier = ins.Scoring.PriorityTier
+		}
+		briefs[i] = brief
 	}
 	return briefs
 }

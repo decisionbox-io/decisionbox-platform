@@ -119,7 +119,12 @@ export interface FlowGeometry {
  *  no run can be found for. */
 export const rowKeyOf = (n: MapNode) => (n.runOrdinal ? (n.runRef ?? '') : '');
 
-const SEVERITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+// `high` ties with `critical`: the severity vocabulary dropped to three bands
+// when severity became derived, and `critical` is the top priority tier now.
+// A legacy row says `critical` where a current one says `high`, so ranking
+// them apart would order a run's own findings behind an older run's. Mirrors
+// LedgerFinding.Rank() and graph.ts's own table.
+const SEVERITY_RANK: Record<string, number> = { critical: 0, high: 0, medium: 1, low: 2, info: 3 };
 
 /** Whether a thread gets a second card in a later row. Only when the run that
  *  took it up comes after the one it is filed under, and is a run the map can

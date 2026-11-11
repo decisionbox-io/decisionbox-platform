@@ -118,8 +118,27 @@ type LedgerFinding struct {
 	Description string `bson:"description" json:"description"`
 	KeyMetric   string `bson:"key_metric,omitempty" json:"key_metric,omitempty"`
 	Evidence    string `bson:"evidence,omitempty" json:"evidence,omitempty"`
-	Severity    string `bson:"severity" json:"severity"`
-	Status      string `bson:"status" json:"status"`
+	// Severity is the band the source insight carried: high, medium or low on
+	// a finding sighted by a build that derives it, and possibly `critical` on
+	// one sighted before that. Rank() ties the two top words together so an
+	// older row cannot outrank a newer one.
+	Severity string `bson:"severity" json:"severity"`
+	Status   string `bson:"status" json:"status"`
+
+	// MagnitudeScore is the source insight's WEIGHT-FREE magnitude, and it is
+	// what a trend across runs is measured on.
+	//
+	// Not the severity word, and not the weighted severity score. The word
+	// changed vocabulary when severity stopped being the model's, so comparing
+	// it across a build boundary reports a move that is really a rename; and
+	// the weighted score moves when an area's configured weight does, which
+	// would make every finding in that area look as though it got worse the
+	// day someone changed a setting. The magnitude is the only half that
+	// answers "did this finding actually grow".
+	//
+	// Zero on a sighting recorded before it was carried, which is what
+	// findingMagnitudeChanged tests for before trusting a comparison.
+	MagnitudeScore float64 `bson:"magnitude_score,omitempty" json:"magnitude_score,omitempty"`
 
 	AffectedCount int  `bson:"affected_count,omitempty" json:"affected_count,omitempty"`
 	SeenCount     int  `bson:"seen_count" json:"seen_count"`
@@ -187,6 +206,10 @@ type FindingSighting struct {
 	KeyMetric     string    `bson:"key_metric,omitempty" json:"key_metric,omitempty"`
 	AffectedCount int       `bson:"affected_count,omitempty" json:"affected_count,omitempty"`
 	Severity      string    `bson:"severity,omitempty" json:"severity,omitempty"`
+	// MagnitudeScore is the weight-free magnitude at that run. See the field
+	// of the same name on LedgerFinding for why a trend is measured on this
+	// rather than on the severity word.
+	MagnitudeScore float64 `bson:"magnitude_score,omitempty" json:"magnitude_score,omitempty"`
 	// InsightID is this run's insight that produced the sighting, so the
 	// sighting itself drills through to the SQL that proved it.
 	InsightID string `bson:"insight_id,omitempty" json:"insight_id,omitempty"`
@@ -246,13 +269,18 @@ const (
 func (f *LedgerFinding) Rank(now time.Time) float64 {
 	sev := 1.0
 	switch f.Severity {
-	case "critical":
+	// `high` and `critical` are both the TOP weight, and the tie is the
+	// point rather than an oversight. `critical` was the top severity word
+	// until severity became derived; it is the top priority tier now, and the
+	// severity vocabulary is three bands. A finding sighted by the current
+	// build therefore says `high` where an older row says `critical`, so
+	// pricing `high` below it would cap every new finding under the legacy
+	// ones and quietly keep them out of the prompt this rank decides.
+	case SeverityBandHigh, "critical":
 		sev = 4.0
-	case "high":
-		sev = 3.0
-	case "medium":
+	case SeverityBandMedium:
 		sev = 2.0
-	case "low", "info":
+	case SeverityBandLow, "info":
 		sev = 1.0
 	}
 
