@@ -371,15 +371,15 @@ func (o *Orchestrator) markDuplicates(ctx context.Context, candidates []dedupCan
 			continue
 		}
 
-		for j := 0; j < i; j++ {
-			if candidates[j].docType != c.docType {
+		for _, earlier := range candidates[:i] {
+			if earlier.docType != c.docType {
 				continue
 			}
-			score, ok := cosineSimilarity(c.vec, candidates[j].vec)
+			score, ok := cosineSimilarity(c.vec, earlier.vec)
 			if !ok || score < threshold {
 				continue
 			}
-			target := candidates[j].id
+			target := earlier.id
 			if resolved, folded := canonical[target]; folded {
 				target = resolved
 			}

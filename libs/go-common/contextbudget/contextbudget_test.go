@@ -385,7 +385,7 @@ func TestFitScalesWithTheModelWindow(t *testing.T) {
 	medium := count(131_072) // the package default
 	large := count(1_000_000)
 
-	if !(small < medium && medium < large) {
+	if small >= medium || medium >= large {
 		t.Fatalf("counts must grow with the window: small=%d medium=%d large=%d", small, medium, large)
 	}
 	if small == 0 {

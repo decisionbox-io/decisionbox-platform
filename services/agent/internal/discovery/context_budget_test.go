@@ -90,7 +90,7 @@ func TestPriorContextScalesWithTheModelWindow(t *testing.T) {
 
 	t.Logf("findings shown: 32K=%d 131K=%d 1M=%d (of %d)", small, medium, large, total)
 
-	if !(small < medium && medium < large) {
+	if small >= medium || medium >= large {
 		t.Fatalf("counts must grow with the window: 32K=%d 131K=%d 1M=%d", small, medium, large)
 	}
 	if small == 0 {
@@ -263,7 +263,8 @@ func TestLatestMarginalRatio(t *testing.T) {
 		// A run that found nothing divides by a zero total and stores a ratio
 		// of 0. Reading that as "nothing was new" would hand the largest
 		// prior-context budget to a project whose last run failed.
-		history := append(convergence(0.9).Convergence, commonmodels.ConvergencePoint{
+		history := convergence(0.9).Convergence
+		history = append(history, commonmodels.ConvergencePoint{
 			RunID: "empty-run", TotalFindings: 0, NewFindings: 0, MarginalRatio: 0,
 		})
 		got, have := latestMarginalRatio(history)
@@ -550,7 +551,8 @@ func TestRenderSaturation(t *testing.T) {
 	t.Run("an empty run is left out of the trend", func(t *testing.T) {
 		// Its ratio is a division by zero, and printing it would show a
 		// collapse to 0% that never happened.
-		history := append(convergence(0.9, 0.8).Convergence, commonmodels.ConvergencePoint{
+		history := convergence(0.9, 0.8).Convergence
+		history = append(history, commonmodels.ConvergencePoint{
 			RunID: "empty", TotalFindings: 0, MarginalRatio: 0,
 		})
 		out := renderSaturation(history, nil, nil)
@@ -627,7 +629,7 @@ func TestSaturationBlockRendersInsideThePreviousContext(t *testing.T) {
 	if cov < 0 || sat < 0 || fin < 0 {
 		t.Fatalf("missing a block: coverage=%d saturation=%d findings=%d\n%s", cov, sat, fin, out)
 	}
-	if !(cov < sat && sat < fin) {
+	if cov >= sat || sat >= fin {
 		t.Errorf("order must be coverage → saturation → findings, got %d/%d/%d", cov, sat, fin)
 	}
 	if !strings.Contains(out, "Churn (7 runs)") || !strings.Contains(out, "Pricing") {
