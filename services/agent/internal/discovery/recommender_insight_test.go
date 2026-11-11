@@ -14,9 +14,19 @@ import (
 
 // recommenderSentInsightFields are the models.Insight json names the
 // recommendation prompt carries — the fields the recommender reasons over.
+//
+// `confidence` is not among them and is not in the dropped table either,
+// because models.Insight no longer emits it at all: the number is derived from
+// the validation verdict, and the field is tagged json:"-" so a model cannot
+// author one. Dropping it from the prompt follows for the reason the table
+// already gives for `validation` — the eligibility filter has applied that
+// verdict before these insights are projected, and confidence is now a
+// function of it, so the field is near-constant here and carries nothing the
+// filter has not already applied. Pinned both ways by
+// TestTheProjectionCarriesNoModelAuthoredConfidence.
 var recommenderSentInsightFields = []string{
 	"id", "analysis_area", "name", "description", "severity",
-	"affected_count", "risk_score", "confidence", "metrics", "indicators",
+	"affected_count", "risk_score", "metrics", "indicators",
 	"target_segment", "evidence_quality", "figures",
 }
 
@@ -42,6 +52,7 @@ var recommenderDroppedInsightFields = map[string]string{
 	"evidence_figure_corrections": "what Go replaced, i.e. the wrong number beside the right one",
 	"evidence_figure_template":    "the prose with references unrendered; the rendered prose and `figures` say the same thing in fewer tokens",
 	"evidence_repair":             "carries the ORIGINAL refuted claim verbatim, so a sentence this pipeline deleted for being false would be back in the prompt",
+	"evidence_scoring":            "the derived grade, which is a function of the verdict the eligibility filter has already applied; a recommender shown it would be re-ranking insights by a number it cannot act on",
 }
 
 // fullyPopulatedInsight returns an insight with every field set, the dropped
@@ -82,7 +93,6 @@ func fullyPopulatedInsight(id string) models.Insight {
 		Severity:      "critical",
 		AffectedCount: 16695,
 		RiskScore:     0.67,
-		Confidence:    0.85,
 		Metrics:       map[string]interface{}{"churn_rate": 0.67},
 		Indicators:    []string{"Only 33% return after Day 1"},
 		TargetSegment: "Players who attempted fewer than 3 levels",
@@ -95,6 +105,13 @@ func fullyPopulatedInsight(id string) models.Insight {
 			Verifier: verdict("verifier", "VERIFIER"),
 			Refuter:  verdict("refuter", "REFUTER"),
 		},
+		Scoring: &models.Scoring{
+			ConfidenceBand:   models.ConfidenceBandHigh,
+			ConfidenceBase:   0.80,
+			ConfidenceScore:  0.80,
+			ConfidenceReason: "SCORING-REASON",
+			EngineVersion:    1,
+		},
 	}
 }
 
@@ -103,7 +120,7 @@ func fullyPopulatedInsight(id string) models.Insight {
 var transcriptMarkers = []string{
 	"VERIFIER-CLAIM", "VERIFIER-REASONING", "VERIFIER-SQL", "VERIFIER-ROWKEY", "VERIFIER-OVERALL",
 	"REFUTER-CLAIM", "REFUTER-REASONING", "REFUTER-SQL", "REFUTER-ROWKEY", "REFUTER-OVERALL",
-	"MARKDOWN-COPY", "SQLMETA-QUERY",
+	"MARKDOWN-COPY", "SQLMETA-QUERY", "SCORING-REASON",
 }
 
 // droppedJSONKeys are the dropped fields as they would appear in the rendered
@@ -261,7 +278,7 @@ func TestInsightsForRecommenderPrompt_KeepsZeroValuedScalars(t *testing.T) {
 	got := mustMarshalProjection(t, []models.Insight{{ID: "i-1"}})
 	for _, key := range []string{
 		`"id":`, `"analysis_area":`, `"name":`, `"description":`, `"severity":`,
-		`"affected_count":`, `"risk_score":`, `"confidence":`,
+		`"affected_count":`, `"risk_score":`,
 	} {
 		if !strings.Contains(got, key) {
 			t.Errorf("zero-valued %s was omitted; it must be present:\n%s", key, got)
@@ -364,6 +381,51 @@ func TestInsightsForRecommenderPrompt_DoesNotMutateInput(t *testing.T) {
 		}
 		if got := insights[i].Metrics["churn_rate"]; got != 0.67 {
 			t.Errorf("insights[%d].Metrics was written through the shared map: churn_rate = %v", i, got)
+		}
+	}
+}
+
+// TestTheProjectionCarriesNoModelAuthoredConfidence pins both halves of the
+// decision, from both directions.
+//
+// The model must not be able to author the number — models.Insight emits no
+// `confidence` json key at all — and the prompt must not carry the derived one,
+// because the recommender's input is already filtered by the verdict that
+// number is a function of.
+func TestTheProjectionCarriesNoModelAuthoredConfidence(t *testing.T) {
+	for _, name := range jsonFieldNames(reflect.TypeOf(models.Insight{})) {
+		if name == "confidence" {
+			t.Error("models.Insight emits a `confidence` json key again; the model must not be able to author the derived number")
+		}
+	}
+	for _, name := range jsonFieldNames(reflect.TypeOf(models.Recommendation{})) {
+		if name == "confidence" {
+			t.Error("models.Recommendation emits a `confidence` json key again")
+		}
+	}
+	// And the field is still persisted — it is a live Qdrant payload key and
+	// the sort key on two dashboard pages, so losing the bson tag would be a
+	// different and worse failure than the one above.
+	for _, tc := range []struct {
+		name string
+		rt   reflect.Type
+	}{
+		{"Insight", reflect.TypeOf(models.Insight{})},
+		{"Recommendation", reflect.TypeOf(models.Recommendation{})},
+	} {
+		f, ok := tc.rt.FieldByName("Confidence")
+		if !ok {
+			t.Fatalf("%s has no Confidence field; the derived score has nowhere to go", tc.name)
+		}
+		if got := strings.Split(f.Tag.Get("bson"), ",")[0]; got != "confidence" {
+			t.Errorf("%s.Confidence bson key = %q, want %q", tc.name, got, "confidence")
+		}
+	}
+
+	payload := mustMarshalProjection(t, []models.Insight{fullyPopulatedInsight("i-1")})
+	for _, key := range []string{`"confidence":`, `"evidence_scoring":`, `"confidence_band":`} {
+		if strings.Contains(payload, key) {
+			t.Errorf("the recommender payload carries %s:\n%s", key, payload)
 		}
 	}
 }

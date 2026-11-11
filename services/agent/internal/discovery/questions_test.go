@@ -127,6 +127,142 @@ func TestBuildUncertaintyDigest_CapturesUncertainty(t *testing.T) {
 	}
 }
 
+// --- buildUncertaintyDigest, on scored documents ---
+
+// scoredInsight is one insight as it leaves the scorer: a derived band, a
+// derived score and the model's own number gone.
+func scoredInsight(t *testing.T, id, name string, verdict valmodels.Status) models.Insight {
+	t.Helper()
+	ins := models.Insight{ID: id, Name: name, Description: name, Confidence: 0.93}
+	if verdict != "" {
+		ins.Validation = &models.InsightValidation{Combined: verdict}
+	}
+	one := []models.Insight{ins}
+	scoreInsights(one, testScoringCfg())
+	return one[0]
+}
+
+// TestBuildUncertaintyDigest_AScoredDocumentReportsTheEnginesReason — one
+// wording for one fact. A digest that re-phrased the score as "low confidence
+// (55%)" beside a dashboard saying "only some of the claims could be checked"
+// would be two answers to the same question.
+func TestBuildUncertaintyDigest_AScoredDocumentReportsTheEnginesReason(t *testing.T) {
+	ins := scoredInsight(t, "part", "partial one", valmodels.StatusPartial)
+	items := buildUncertaintyDigest([]models.Insight{ins}, nil, nil, 0.5)
+	if len(items) != 1 {
+		t.Fatalf("digest = %d items, want 1", len(items))
+	}
+	// The verdict branch answers first for `partial`, which is the existing
+	// behaviour and the more specific sentence. What must not happen is the
+	// percentage wording.
+	if strings.Contains(items[0].Reason, "%") {
+		t.Errorf("reason = %q, want prose rather than a re-phrased percentage", items[0].Reason)
+	}
+
+	// A verdict with no branch of its own falls through to the score, and
+	// there the engine's own reason is what is reported.
+	rejected := scoredInsight(t, "rej", "rejected one", valmodels.StatusRejected)
+	items = buildUncertaintyDigest([]models.Insight{rejected}, nil, nil, 0.5)
+	if len(items) != 1 {
+		t.Fatalf("digest = %d items, want 1", len(items))
+	}
+	if items[0].Reason != rejected.Scoring.ConfidenceReason {
+		t.Errorf("reason = %q, want the engine's own %q", items[0].Reason, rejected.Scoring.ConfidenceReason)
+	}
+}
+
+// TestBuildUncertaintyDigest_ValidationDisabledIsExcluded — validation off is
+// a run-level setting, so every document on the run derives the same
+// never-checked score. Without the explicit exclusion the digest names every
+// finding of the run and distinguishes nothing.
+func TestBuildUncertaintyDigest_ValidationDisabledIsExcluded(t *testing.T) {
+	insights := []models.Insight{
+		scoredInsight(t, "a", "one", valmodels.StatusValidationDisabled),
+		scoredInsight(t, "b", "two", valmodels.StatusValidationDisabled),
+		scoredInsight(t, "c", "three", valmodels.StatusValidationDisabled),
+	}
+	// Sanity: the derived score really is below the threshold, so the
+	// exclusion is doing the work rather than the arithmetic.
+	if insights[0].Scoring.ConfidenceScore >= 0.5 {
+		t.Fatalf("a validation-off document scores %v, which is not below the threshold — "+
+			"this test no longer proves anything", insights[0].Scoring.ConfidenceScore)
+	}
+	if items := buildUncertaintyDigest(insights, nil, nil, 0.5); len(items) != 0 {
+		t.Fatalf("digest = %d items, want 0 on a validation-off run: %+v", len(items), items)
+	}
+
+	recs := []models.Recommendation{{ID: "r1", Title: "rec",
+		Validation: &models.InsightValidation{Combined: valmodels.StatusValidationDisabled}}}
+	scoreRecommendations(recs, testScoringCfg())
+	if items := buildUncertaintyDigest(nil, recs, nil, 0.5); len(items) != 0 {
+		t.Fatalf("recommendation digest = %d items, want 0: %+v", len(items), items)
+	}
+}
+
+// TestBuildUncertaintyDigest_AContradictedDocumentIsAnUncertaintySignal is the
+// one behaviour change the derived score brings, asserted rather than left to
+// be discovered.
+//
+// A rejected document derives 0.05 and becomes an uncertainty item, where its
+// model-assigned 0.75-0.99 used to keep it out — nine of 160 insights in the
+// measured sample. Kept, because "the warehouse contradicted this claim" is a
+// grounded prompt for a clarifying question if anything is.
+func TestBuildUncertaintyDigest_AContradictedDocumentIsAnUncertaintySignal(t *testing.T) {
+	ins := scoredInsight(t, "rej", "contradicted", valmodels.StatusRejected)
+	items := buildUncertaintyDigest([]models.Insight{ins}, nil, nil, 0.5)
+	if len(items) != 1 {
+		t.Fatalf("digest = %d items, want 1", len(items))
+	}
+	if items[0].TargetID != "rej" {
+		t.Errorf("digest named %q, want the contradicted insight", items[0].TargetID)
+	}
+}
+
+// TestBuildUncertaintyDigest_AScoredCleanDocumentStaysOut — the threshold
+// still applies, now to the derived score. A confirmed or supported finding
+// with nothing against it is not an uncertainty signal.
+func TestBuildUncertaintyDigest_AScoredCleanDocumentStaysOut(t *testing.T) {
+	insights := []models.Insight{
+		scoredInsight(t, "conf", "confirmed", valmodels.StatusConfirmed),
+		scoredInsight(t, "supp", "supported", valmodels.StatusSupported),
+	}
+	if items := buildUncertaintyDigest(insights, nil, nil, 0.5); len(items) != 0 {
+		t.Fatalf("digest = %d items, want 0: %+v", len(items), items)
+	}
+}
+
+// TestBuildUncertaintyDigest_TheThresholdAppliesToTheDerivedScore — the
+// DISCOVERY_QUESTIONS_CONFIDENCE_MAX_PCT contract is preserved rather than
+// bypassed: raising the threshold past a scored document's derived score
+// brings it into the digest.
+func TestBuildUncertaintyDigest_TheThresholdAppliesToTheDerivedScore(t *testing.T) {
+	ins := scoredInsight(t, "supp", "supported", valmodels.StatusSupported)
+	if got := ins.Scoring.ConfidenceScore; got != 0.80 {
+		t.Fatalf("derived score = %v, want 0.8", got)
+	}
+	if items := buildUncertaintyDigest([]models.Insight{ins}, nil, nil, 0.5); len(items) != 0 {
+		t.Fatalf("at a 50%% threshold the digest = %d items, want 0", len(items))
+	}
+	if items := buildUncertaintyDigest([]models.Insight{ins}, nil, nil, 0.9); len(items) != 1 {
+		t.Fatalf("at a 90%% threshold the digest = %d items, want 1", len(items))
+	}
+}
+
+// TestBuildUncertaintyDigest_ALegacyDocumentStillHonoursTheThreshold — an
+// insight from before the scorer existed carries no sub-document, and its
+// stored model-assigned number is still what the threshold reads.
+func TestBuildUncertaintyDigest_ALegacyDocumentStillHonoursTheThreshold(t *testing.T) {
+	low := insightWith("legacy-low", "old and unsure", valmodels.StatusSupported, 0.30)
+	high := insightWith("legacy-high", "old and sure", valmodels.StatusSupported, 0.95)
+	if low.Scoring != nil || high.Scoring != nil {
+		t.Fatal("the legacy fixtures carry a scoring sub-document; they must not")
+	}
+	items := buildUncertaintyDigest([]models.Insight{low, high}, nil, nil, 0.5)
+	if len(items) != 1 || items[0].TargetID != "legacy-low" {
+		t.Fatalf("digest = %+v, want just the legacy low-confidence insight", items)
+	}
+}
+
 // --- parseQuestions ---
 
 func TestParseQuestions_Shapes(t *testing.T) {

@@ -519,7 +519,6 @@ func TestInsightsForRecommenderPrompt_ClearsMarkdownCopy(t *testing.T) {
 		`"severity": "critical"`,
 		`"affected_count": 16695`,
 		`"risk_score": 0.67`,
-		`"confidence": 0.85`,
 		`"churn_rate": 0.67`,
 		`"Only 33% return after Day 1"`,
 		`"target_segment": "Players who attempted fewer than 3 levels"`,

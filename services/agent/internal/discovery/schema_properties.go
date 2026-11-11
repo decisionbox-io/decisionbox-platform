@@ -46,6 +46,13 @@ import (
 // before the sentence about them, and the sentence before the title over it.
 
 // insightItemProperties is one insight, in generation order.
+//
+// There is no `confidence` here, and there must not be: the number is derived
+// from the validation verdict and the evidence trail, so asking the model for
+// one would be asking it to grade the work it just did. The field on the model
+// is tagged json:"-" as the second half of that, which makes a volunteered
+// `"confidence"` key an unknown field the decoder ignores rather than one that
+// fails the whole insight. Pinned by TestTheSchemasAskForNoConfidence.
 type insightItemProperties struct {
 	SourceSteps map[string]interface{} `json:"source_steps"`
 	Figures     map[string]interface{} `json:"figures"`
@@ -59,7 +66,6 @@ type insightItemProperties struct {
 	TargetSegment    map[string]interface{} `json:"target_segment"`
 	AffectedCount    map[string]interface{} `json:"affected_count"`
 	RiskScore        map[string]interface{} `json:"risk_score"`
-	Confidence       map[string]interface{} `json:"confidence"`
 	Metrics          map[string]interface{} `json:"metrics"`
 }
 
@@ -80,7 +86,6 @@ type insightRepairItemProperties struct {
 	TargetSegment    map[string]interface{} `json:"target_segment"`
 	AffectedCount    map[string]interface{} `json:"affected_count"`
 	RiskScore        map[string]interface{} `json:"risk_score"`
-	Confidence       map[string]interface{} `json:"confidence"`
 	Metrics          map[string]interface{} `json:"metrics"`
 }
 
@@ -134,7 +139,6 @@ type recommendationItemProperties struct {
 	Priority          map[string]interface{} `json:"priority"`
 	TargetSegment     map[string]interface{} `json:"target_segment"`
 	SegmentSize       map[string]interface{} `json:"segment_size"`
-	Confidence        map[string]interface{} `json:"confidence"`
 }
 
 // expectedImpactProperties is the structured impact object.

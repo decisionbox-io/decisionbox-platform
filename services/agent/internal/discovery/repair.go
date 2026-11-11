@@ -424,9 +424,6 @@ func mergeRepairedInsight(orig, rewritten models.Insight) models.Insight {
 	if rewritten.RiskScore != 0 {
 		out.RiskScore = rewritten.RiskScore
 	}
-	if rewritten.Confidence != 0 {
-		out.Confidence = rewritten.Confidence
-	}
 	if rewritten.TargetSegment != "" {
 		out.TargetSegment = rewritten.TargetSegment
 	}

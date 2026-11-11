@@ -111,7 +111,6 @@ func recommendationResponseSchema() map[string]interface{} {
 			"items":       nonEmptyString("An insight UUID from the input", maxSchemaIdentifierRunes),
 			"minItems":    1,
 		},
-		Confidence: map[string]interface{}{"type": "number", "description": "Confidence from 0.0 to 1.0"},
 		// Described here for the reason the insight schema describes its own
 		// figures array: a contract the prompt asks for and the schema does not
 		// mention is one a decode-constrained provider will not emit, and the
