@@ -116,6 +116,34 @@ func TestEveryKnownStatusHasItsOwnReason(t *testing.T) {
 	}
 }
 
+// TestNoDocumentIsEverStoredWithoutAReason — a band with no explanation beside
+// it is the one shape this layer must not produce. Every verdict the shipped
+// calibration prices has a sentence of its own, and a calibration that priced
+// one without wording it still gets a sentence rather than an empty field.
+func TestNoDocumentIsEverStoredWithoutAReason(t *testing.T) {
+	cfg := DefaultConfig()
+	for verdict := range cfg.Confidence.Bases {
+		if got := reasons[verdict]; got == "" {
+			t.Errorf("the calibration prices %q and the engine has no wording for it", verdict)
+		}
+	}
+
+	custom := DefaultConfig()
+	custom.Confidence.Bases["invented_by_a_later_version"] = 0.6
+	got := Score(Input{Verdict: "invented_by_a_later_version", Config: custom})
+	if got.ConfidenceReason == "" {
+		t.Error("a priced-but-unworded verdict stored an empty reason")
+	}
+	if got.ConfidenceBase != 0.6 {
+		t.Errorf("base = %v, want the calibration's 0.6", got.ConfidenceBase)
+	}
+	// And such a verdict is NOT treated as checked: the band vocabulary is
+	// this build's, so an unrecognised status is never ranked by cutoff.
+	if got.ConfidenceBand != gomodels.ConfidenceBandNotConfirmed {
+		t.Errorf("band = %q, want not_confirmed for a status this build does not know", got.ConfidenceBand)
+	}
+}
+
 // TestEachDockInIsolation fires one signal at a time against a base high
 // enough that nothing is capped or floored, so the amount, code and label are
 // the configured ones.

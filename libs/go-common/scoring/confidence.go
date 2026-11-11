@@ -37,11 +37,25 @@ var reasons = map[valmodels.Status]string{
 // a value written by a newer agent. Both are the same statement to a reader.
 const unscoredReason = "This has not been checked against warehouse rows."
 
+// pricedButUnworded is the sentence for a calibration that prices a verdict
+// this build has no wording for.
+//
+// It exists so the field is never stored empty. A band with no explanation
+// beside it is the one shape this layer must not produce -- a reader would be
+// shown a grade and no reason for it -- and "not checked" would be a worse
+// answer than a vague one, because the document WAS checked. A test pins that
+// every verdict the shipped calibration prices has a sentence of its own, so
+// this is reachable only by a calibration that added one without wording it.
+const pricedButUnworded = "Derived from this document's validation verdict."
+
 // baseFor returns the score a verdict earns before any deduction, and the
 // reason that goes with it.
 func baseFor(v valmodels.Status, cfg ConfidenceConfig) (float64, string) {
 	if base, ok := cfg.Bases[v]; ok {
-		return base, reasons[v]
+		if r := reasons[v]; r != "" {
+			return base, r
+		}
+		return base, pricedButUnworded
 	}
 	if r, ok := reasons[v]; ok {
 		// A status the taxonomy defines but the base table deliberately does
