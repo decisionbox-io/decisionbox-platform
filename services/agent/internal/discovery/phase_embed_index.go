@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -227,8 +228,10 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 		return fmt.Errorf("embedding count mismatch: expected %d, got %d", len(allTexts), len(vectors))
 	}
 
-	// Update MongoDB with embedding text/model, run dedup, and build Qdrant points
+	// Update MongoDB with embedding text/model, collect the duplicate-check
+	// candidates, and build Qdrant points.
 	var points []vectorstore.Point
+	candidates := make([]dedupCandidate, 0, len(insights)+len(recs))
 	vecIdx := 0
 
 	for _, ins := range insights {
@@ -240,8 +243,9 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 			applog.WithError(err).WithField("id", ins.ID).Warn("Failed to update insight embedding")
 		}
 
-		// Deduplication check
-		o.checkAndMarkDuplicate(ctx, ins.ID, vec, ins.ProjectID, "insight", dedupExcludes)
+		candidates = append(candidates, dedupCandidate{
+			id: ins.ID, docType: "insight", projectID: ins.ProjectID, vec: vec,
+		})
 
 		points = append(points, vectorstore.Point{
 			ID:     ins.ID,
@@ -268,8 +272,9 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 			applog.WithError(err).WithField("id", rec.ID).Warn("Failed to update recommendation embedding")
 		}
 
-		// Deduplication check
-		o.checkAndMarkDuplicate(ctx, rec.ID, vec, rec.ProjectID, "recommendation", dedupExcludes)
+		candidates = append(candidates, dedupCandidate{
+			id: rec.ID, docType: "recommendation", projectID: rec.ProjectID, vec: vec,
+		})
 
 		points = append(points, vectorstore.Point{
 			ID:     rec.ID,
@@ -284,6 +289,11 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 			},
 		})
 	}
+
+	// Run the duplicate check over the whole run at once, now that every
+	// vector exists. One pass, in document order, so a later duplicate is
+	// always the one marked and the first occurrence stays canonical.
+	o.markDuplicates(ctx, candidates, dedupExcludes)
 
 	// Upsert all vectors to Qdrant
 	applog.WithField("points", len(points)).Info("Phase 9: Upserting vectors to Qdrant")
@@ -300,31 +310,156 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 	return nil
 }
 
-// checkAndMarkDuplicate searches for near-duplicate vectors and marks the document.
-func (o *Orchestrator) checkAndMarkDuplicate(ctx context.Context, docID string, vec []float64, projectID, docType string, excludeDiscoveryIDs []string) {
-	results, err := o.vectorStore.FindDuplicates(ctx, vec, projectID, docType, excludeDiscoveryIDs, 0.95)
-	if err != nil {
-		applog.WithError(err).WithField("id", docID).Warn("Duplicate check failed")
+// dedupCandidate is one document this run produced, as the duplicate check sees
+// it: an id, what kind of document it is, and the vector that was just embedded
+// for it.
+type dedupCandidate struct {
+	id        string
+	docType   string
+	projectID string
+	vec       []float64
+}
+
+// collectionFor maps a document type to the Mongo collection the duplicate
+// mark is written to.
+func collectionFor(docType string) string {
+	if docType == "recommendation" {
+		return "recommendations"
+	}
+	return "insights"
+}
+
+// markDuplicates finds near-duplicates for every document this run produced and
+// stamps the later one, in two passes per document.
+//
+// FIRST against the vector store, which holds earlier runs' documents. A hit
+// there is the truer original — it was published first and is the row the user
+// has already seen — so it wins over anything in this run.
+//
+// THEN against this run's own earlier documents, in memory. That half could not
+// exist before: the run's vectors are upserted only AFTER every check has run
+// (deliberately — see dedupExclusions), and the check excludes every discovery
+// this run produced, so two duplicates born in the same run could never match
+// each other, by construction. On a run that emits a hundred insights, most of
+// the repetition is exactly there. The comparison is cosine over vectors
+// already in memory, which is the same measure the store's cosine collection
+// scores on, so one threshold governs both passes.
+//
+// Chains are collapsed: if B duplicated A and C duplicates B, C is stamped as a
+// duplicate of A. Pointing C at B would otherwise make C's only pointer a row
+// that is itself hidden, which is how a suppression rule loses a document
+// instead of folding it.
+func (o *Orchestrator) markDuplicates(ctx context.Context, candidates []dedupCandidate, excludeDiscoveryIDs []string) {
+	if len(candidates) == 0 {
 		return
 	}
+	threshold := documentDedupMinScore()
+	started := time.Now()
 
-	if len(results) == 0 {
-		return
+	// id -> the canonical document it was folded into, already resolved, so a
+	// later match needs one lookup rather than a walk.
+	canonical := make(map[string]string, len(candidates))
+	crossRun, sameRun := 0, 0
+
+	for i := range candidates {
+		c := candidates[i]
+
+		if id, score, ok := o.storedDuplicate(ctx, c, excludeDiscoveryIDs, threshold); ok {
+			o.markDuplicate(ctx, c, id, score, "earlier run")
+			canonical[c.id] = id
+			crossRun++
+			continue
+		}
+
+		for j := 0; j < i; j++ {
+			if candidates[j].docType != c.docType {
+				continue
+			}
+			score, ok := cosineSimilarity(c.vec, candidates[j].vec)
+			if !ok || score < threshold {
+				continue
+			}
+			target := candidates[j].id
+			if resolved, folded := canonical[target]; folded {
+				target = resolved
+			}
+			if target == "" || target == c.id {
+				continue
+			}
+			o.markDuplicate(ctx, c, target, score, "this run")
+			canonical[c.id] = target
+			sameRun++
+			break
+		}
 	}
 
-	dup := results[0]
 	applog.WithFields(applog.Fields{
-		"id":           docID,
-		"duplicate_of": dup.ID,
-		"score":        dup.Score,
+		"documents":   len(candidates),
+		"cross_run":   crossRun,
+		"same_run":    sameRun,
+		"threshold":   threshold,
+		"duration_ms": time.Since(started).Milliseconds(),
+	}).Info("Phase 9: Duplicate check complete")
+}
+
+// storedDuplicate asks the vector store whether an EARLIER run already
+// published this document. A failed lookup is reported and treated as "no
+// duplicate": the phase is non-fatal, and a store hiccup must not start
+// stamping documents.
+func (o *Orchestrator) storedDuplicate(ctx context.Context, c dedupCandidate, excludeDiscoveryIDs []string, threshold float64) (string, float64, bool) {
+	results, err := o.vectorStore.FindDuplicates(ctx, c.vec, c.projectID, c.docType, excludeDiscoveryIDs, threshold)
+	if err != nil {
+		applog.WithError(err).WithField("id", c.id).Warn("Duplicate check failed")
+		return "", 0, false
+	}
+	if len(results) == 0 || results[0].ID == "" || results[0].ID == c.id {
+		return "", 0, false
+	}
+	return results[0].ID, results[0].Score, true
+}
+
+// markDuplicate stamps duplicate_of + similarity_score on the later document.
+// The mark is the whole output of this check — nothing else is changed, and the
+// document is still embedded and indexed, because it is real content that a
+// search should still reach.
+func (o *Orchestrator) markDuplicate(ctx context.Context, c dedupCandidate, duplicateOf string, score float64, source string) {
+	applog.WithFields(applog.Fields{
+		"id":           c.id,
+		"duplicate_of": duplicateOf,
+		"score":        score,
+		"type":         c.docType,
+		"source":       source,
 	}).Info("Phase 9: Duplicate detected")
 
-	collection := "insights"
-	if docType == "recommendation" {
-		collection = "recommendations"
+	if err := o.embedIndexStore.UpdateDuplicate(ctx, collectionFor(c.docType), c.id, duplicateOf, score); err != nil {
+		applog.WithError(err).WithField("id", c.id).Warn("Failed to mark duplicate")
 	}
+}
 
-	if err := o.embedIndexStore.UpdateDuplicate(ctx, collection, docID, dup.ID, dup.Score); err != nil {
-		applog.WithError(err).WithField("id", docID).Warn("Failed to mark duplicate")
+// cosineSimilarity returns the cosine of the angle between a and b, and whether
+// it could be computed at all.
+//
+// Proper cosine rather than a dot product: the embeddings are not guaranteed
+// normalised, and the vector store's cosine collection scores on this measure —
+// so computing anything else here would mean the in-memory pass and the stored
+// pass could not share a threshold.
+//
+// Not-ok for an empty vector, a length mismatch (a provider that changed model
+// mid-run), or a zero vector, where the angle is undefined. Those are "no
+// comparison", never a match: a zero-norm shortcut returning 0 would read as
+// "definitely different", which is also wrong but less obviously.
+func cosineSimilarity(a, b []float64) (float64, bool) {
+	if len(a) == 0 || len(a) != len(b) {
+		return 0, false
 	}
+	var dot, na, nb float64
+	for i := range a {
+		dot += a[i] * b[i]
+		na += a[i] * a[i]
+		nb += b[i] * b[i]
+	}
+	if na == 0 || nb == 0 {
+		return 0, false
+	}
+	return dot / (math.Sqrt(na) * math.Sqrt(nb)), true
 }

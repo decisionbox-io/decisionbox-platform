@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -49,6 +50,14 @@ type mockVectorStore struct {
 	// is what proves a resumed run does not dedup against its own
 	// superseded attempts.
 	dupExcludes [][]string
+	// dupThresholds records the threshold each duplicate search was given, so
+	// a test can prove the configured floor reaches the store rather than
+	// only the in-memory pass.
+	dupThresholds []float64
+	// dupeFn answers per vector when set, for the cases where the stored
+	// answer has to differ between this run's documents — "an earlier run
+	// already published THIS one" is not a property of the whole run.
+	dupeFn func(vec []float64) []vectorstore.SearchResult
 }
 
 func (m *mockVectorStore) Upsert(_ context.Context, points []vectorstore.Point) error {
@@ -61,8 +70,12 @@ func (m *mockVectorStore) Search(_ context.Context, _ []float64, _ vectorstore.S
 	return nil, nil
 }
 
-func (m *mockVectorStore) FindDuplicates(_ context.Context, _ []float64, _ string, _ string, excludeDiscoveryIDs []string, _ float64) ([]vectorstore.SearchResult, error) {
+func (m *mockVectorStore) FindDuplicates(_ context.Context, vec []float64, _ string, _ string, excludeDiscoveryIDs []string, threshold float64) ([]vectorstore.SearchResult, error) {
 	m.dupExcludes = append(m.dupExcludes, excludeDiscoveryIDs)
+	m.dupThresholds = append(m.dupThresholds, threshold)
+	if m.dupeFn != nil {
+		return m.dupeFn(vec), nil
+	}
 	return m.dupes, nil
 }
 
@@ -376,7 +389,7 @@ func TestEmbedAndIndex_EmptyDocuments(t *testing.T) {
 	}
 }
 
-func TestCheckAndMarkDuplicate_Found(t *testing.T) {
+func TestMarkDuplicates_StoredHit(t *testing.T) {
 	store := &mockEmbedIndexStore{}
 	mockVS := &mockVectorStore{
 		dupes: []vectorstore.SearchResult{
@@ -389,7 +402,9 @@ func TestCheckAndMarkDuplicate_Found(t *testing.T) {
 		vectorStore:     mockVS,
 	}
 
-	o.checkAndMarkDuplicate(context.Background(), "new-1", []float64{0.1, 0.2}, "proj-1", "insight", []string{"disc-2"})
+	o.markDuplicates(context.Background(),
+		[]dedupCandidate{{id: "new-1", docType: "insight", projectID: "proj-1", vec: []float64{0.1, 0.2}}},
+		[]string{"disc-2"})
 
 	if len(store.dupUpdates) != 1 {
 		t.Fatalf("expected 1 duplicate update, got %d", len(store.dupUpdates))
@@ -405,7 +420,7 @@ func TestCheckAndMarkDuplicate_Found(t *testing.T) {
 	}
 }
 
-func TestCheckAndMarkDuplicate_NotFound(t *testing.T) {
+func TestMarkDuplicates_NoStoredHit(t *testing.T) {
 	store := &mockEmbedIndexStore{}
 	mockVS := &mockVectorStore{dupes: nil}
 
@@ -414,14 +429,16 @@ func TestCheckAndMarkDuplicate_NotFound(t *testing.T) {
 		vectorStore:     mockVS,
 	}
 
-	o.checkAndMarkDuplicate(context.Background(), "new-1", []float64{0.1, 0.2}, "proj-1", "insight", []string{"disc-2"})
+	o.markDuplicates(context.Background(),
+		[]dedupCandidate{{id: "new-1", docType: "insight", projectID: "proj-1", vec: []float64{0.1, 0.2}}},
+		[]string{"disc-2"})
 
 	if len(store.dupUpdates) != 0 {
 		t.Errorf("expected 0 duplicate updates, got %d", len(store.dupUpdates))
 	}
 }
 
-func TestCheckAndMarkDuplicate_Recommendation(t *testing.T) {
+func TestMarkDuplicates_Recommendation(t *testing.T) {
 	store := &mockEmbedIndexStore{}
 	mockVS := &mockVectorStore{
 		dupes: []vectorstore.SearchResult{
@@ -434,7 +451,9 @@ func TestCheckAndMarkDuplicate_Recommendation(t *testing.T) {
 		vectorStore:     mockVS,
 	}
 
-	o.checkAndMarkDuplicate(context.Background(), "new-rec", []float64{0.1, 0.2}, "proj-1", "recommendation", []string{"disc-2"})
+	o.markDuplicates(context.Background(),
+		[]dedupCandidate{{id: "new-rec", docType: "recommendation", projectID: "proj-1", vec: []float64{0.1, 0.2}}},
+		[]string{"disc-2"})
 
 	if len(store.dupUpdates) != 1 {
 		t.Fatalf("expected 1 duplicate update, got %d", len(store.dupUpdates))
@@ -579,4 +598,304 @@ func TestEmbedAndIndexBuildPoints(t *testing.T) {
 	if !mockVS.ensured {
 		t.Error("expected collection to be ensured")
 	}
+}
+
+// --- same-run duplicates (acceptance criterion 5) ---
+
+func dedupHarness(dupes []vectorstore.SearchResult) (*Orchestrator, *mockEmbedIndexStore, *mockVectorStore) {
+	store := &mockEmbedIndexStore{}
+	vs := &mockVectorStore{dupes: dupes}
+	return &Orchestrator{embedIndexStore: store, vectorStore: vs}, store, vs
+}
+
+// markedAs returns the duplicate_of recorded for id, or "" if it was not marked.
+func markedAs(store *mockEmbedIndexStore, id string) string {
+	for _, u := range store.dupUpdates {
+		if u.ID == id {
+			return u.DupOf
+		}
+	}
+	return ""
+}
+
+// TestMarkDuplicates_SameRunDuplicateIsDetected is the defect itself. The
+// stored check excludes every discovery this run produced, and the run's own
+// vectors are upserted only after every check has run — so before this, two
+// duplicates born in the same run could not match each other by construction,
+// however identical their text. On a run that emits a hundred insights, that is
+// where most of the repetition is.
+func TestMarkDuplicates_SameRunDuplicateIsDetected(t *testing.T) {
+	o, store, _ := dedupHarness(nil)
+
+	o.markDuplicates(context.Background(), []dedupCandidate{
+		{id: "first", docType: "insight", projectID: "p1", vec: []float64{1, 0, 0}},
+		{id: "restated", docType: "insight", projectID: "p1", vec: []float64{0.99, 0.01, 0}},
+		{id: "different", docType: "insight", projectID: "p1", vec: []float64{0, 1, 0}},
+	}, []string{"disc-1"})
+
+	if got := markedAs(store, "restated"); got != "first" {
+		t.Errorf("the second of two near-identical insights in one run must be marked a duplicate of the first, got %q", got)
+	}
+	if got := markedAs(store, "first"); got != "" {
+		t.Errorf("the first occurrence must stay canonical, got %q", got)
+	}
+	if got := markedAs(store, "different"); got != "" {
+		t.Errorf("an unrelated insight must not be marked, got %q", got)
+	}
+	// The score must be recorded, or a bad threshold choice is unauditable
+	// afterwards.
+	for _, u := range store.dupUpdates {
+		if u.Score <= 0 {
+			t.Errorf("%s was marked with score %v — the similarity must be recorded", u.ID, u.Score)
+		}
+	}
+}
+
+// TestMarkDuplicates_ChainsCollapseToTheCanonical: if B duplicates A and C
+// duplicates B, C must point at A. Pointing C at B would make C's only pointer
+// a row that is itself hidden, which is how a suppression rule loses a document
+// rather than folding it.
+func TestMarkDuplicates_ChainsCollapseToTheCanonical(t *testing.T) {
+	o, store, _ := dedupHarness(nil)
+
+	o.markDuplicates(context.Background(), []dedupCandidate{
+		{id: "a", docType: "insight", projectID: "p1", vec: []float64{1, 0, 0}},
+		{id: "b", docType: "insight", projectID: "p1", vec: []float64{0.995, 0.01, 0}},
+		{id: "c", docType: "insight", projectID: "p1", vec: []float64{0.99, 0.02, 0}},
+	}, nil)
+
+	if got := markedAs(store, "b"); got != "a" {
+		t.Errorf("b should fold into a, got %q", got)
+	}
+	if got := markedAs(store, "c"); got != "a" {
+		t.Errorf("c should fold into a, not into the already-folded b; got %q", got)
+	}
+}
+
+// TestMarkDuplicates_StoredHitWinsOverSameRun: an earlier run's document was
+// published first and is the row the user has already seen, so it is the truer
+// canonical. A later document in this run that matches a sibling which itself
+// folded into an earlier run's row must end up pointing at that row.
+func TestMarkDuplicates_StoredHitWinsOverSameRun(t *testing.T) {
+	o, store, _ := dedupHarness(nil)
+	vs := o.vectorStore.(*mockVectorStore)
+	// Only the first document is known to the store.
+	vs.dupeFn = func(vec []float64) []vectorstore.SearchResult {
+		if len(vec) > 0 && vec[0] == 1 {
+			return []vectorstore.SearchResult{{ID: "published-last-month", Score: 0.98}}
+		}
+		return nil
+	}
+
+	o.markDuplicates(context.Background(), []dedupCandidate{
+		{id: "a", docType: "insight", projectID: "p1", vec: []float64{1, 0, 0}},
+		{id: "b", docType: "insight", projectID: "p1", vec: []float64{0.99, 0.01, 0}},
+	}, nil)
+
+	if got := markedAs(store, "a"); got != "published-last-month" {
+		t.Errorf("a must fold into the earlier run's row, got %q", got)
+	}
+	if got := markedAs(store, "b"); got != "published-last-month" {
+		t.Errorf("b must follow the chain to the earlier run's row rather than stopping at a, got %q", got)
+	}
+}
+
+// TestMarkDuplicates_TypesNeverCross: an insight and a recommendation are
+// different kinds of document and must never be marked duplicates of one
+// another, however similar their prose — a recommendation restating its own
+// insight is the normal case, not a defect.
+func TestMarkDuplicates_TypesNeverCross(t *testing.T) {
+	o, store, _ := dedupHarness(nil)
+
+	o.markDuplicates(context.Background(), []dedupCandidate{
+		{id: "ins", docType: "insight", projectID: "p1", vec: []float64{1, 0, 0}},
+		{id: "rec", docType: "recommendation", projectID: "p1", vec: []float64{1, 0, 0}},
+	}, nil)
+
+	if len(store.dupUpdates) != 0 {
+		t.Errorf("an identical insight and recommendation must not match: %+v", store.dupUpdates)
+	}
+}
+
+// TestMarkDuplicates_RecommendationsAreDedupedToo — the half that regresses
+// silently, since nothing downstream distinguishes the two paths.
+func TestMarkDuplicates_RecommendationsAreDedupedToo(t *testing.T) {
+	o, store, _ := dedupHarness(nil)
+
+	o.markDuplicates(context.Background(), []dedupCandidate{
+		{id: "r1", docType: "recommendation", projectID: "p1", vec: []float64{1, 0, 0}},
+		{id: "r2", docType: "recommendation", projectID: "p1", vec: []float64{0.99, 0.01, 0}},
+	}, nil)
+
+	if got := markedAs(store, "r2"); got != "r1" {
+		t.Errorf("r2 should fold into r1, got %q", got)
+	}
+	for _, u := range store.dupUpdates {
+		if u.Collection != "recommendations" {
+			t.Errorf("the mark must be written to the recommendations collection, got %q", u.Collection)
+		}
+	}
+}
+
+func TestMarkDuplicates_BelowThresholdIsNotMarked(t *testing.T) {
+	o, store, _ := dedupHarness(nil)
+
+	// cos([1,0],[0.8,0.6]) = 0.8, below the 0.85 default.
+	o.markDuplicates(context.Background(), []dedupCandidate{
+		{id: "a", docType: "insight", projectID: "p1", vec: []float64{1, 0}},
+		{id: "b", docType: "insight", projectID: "p1", vec: []float64{0.8, 0.6}},
+	}, nil)
+
+	if len(store.dupUpdates) != 0 {
+		t.Errorf("a pair below the floor must not be marked: %+v", store.dupUpdates)
+	}
+}
+
+func TestDocumentDedupMinScore(t *testing.T) {
+	if got := documentDedupMinScore(); got != defaultDedupMinScore {
+		t.Errorf("unset = %v, want %v", got, defaultDedupMinScore)
+	}
+	t.Setenv(documentDedupMinScoreEnv, "0.92")
+	if got := documentDedupMinScore(); got != 0.92 {
+		t.Errorf("0.92 = %v", got)
+	}
+	// Cosine cannot exceed 1, so a value above it silently disables the check —
+	// and 95 for 0.95 is the typo that would do it, looking exactly like a
+	// check that found nothing. Non-positive would mark everything.
+	for _, bad := range []string{"95", "1.5", "0", "-0.5", "most of it"} {
+		t.Setenv(documentDedupMinScoreEnv, bad)
+		if got := documentDedupMinScore(); got != defaultDedupMinScore {
+			t.Errorf("%q = %v, want the default %v", bad, got, defaultDedupMinScore)
+		}
+	}
+	// 1.0 is exact-match-only, which is a legitimate thing to ask for.
+	t.Setenv(documentDedupMinScoreEnv, "1")
+	if got := documentDedupMinScore(); got != 1 {
+		t.Errorf("1 = %v, want 1 (exact matches only is a valid choice)", got)
+	}
+}
+
+// TestMarkDuplicatesUsesTheConfiguredThreshold: both passes must obey it, or
+// the two halves of one check disagree about what a duplicate is.
+func TestMarkDuplicatesUsesTheConfiguredThreshold(t *testing.T) {
+	t.Setenv(documentDedupMinScoreEnv, "0.999")
+	o, store, vs := dedupHarness(nil)
+
+	o.markDuplicates(context.Background(), []dedupCandidate{
+		{id: "a", docType: "insight", projectID: "p1", vec: []float64{1, 0}},
+		// cos ≈ 0.995: a duplicate at the default, not at 0.999.
+		{id: "b", docType: "insight", projectID: "p1", vec: []float64{0.99, 0.1}},
+	}, nil)
+
+	if len(store.dupUpdates) != 0 {
+		t.Errorf("the in-memory pass ignored the configured floor: %+v", store.dupUpdates)
+	}
+	if len(vs.dupThresholds) == 0 {
+		t.Fatal("the stored pass was never asked")
+	}
+	for _, got := range vs.dupThresholds {
+		if got != 0.999 {
+			t.Errorf("the stored pass was given %v, want the configured 0.999", got)
+		}
+	}
+}
+
+func TestCosineSimilarity(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b []float64
+		want float64
+		ok   bool
+	}{
+		{"identical", []float64{1, 2, 3}, []float64{1, 2, 3}, 1, true},
+		{"unnormalised but identical in direction", []float64{1, 0}, []float64{7, 0}, 1, true},
+		{"orthogonal", []float64{1, 0}, []float64{0, 1}, 0, true},
+		{"opposite", []float64{1, 0}, []float64{-1, 0}, -1, true},
+		{"length mismatch", []float64{1, 0}, []float64{1, 0, 0}, 0, false},
+		{"empty", nil, nil, 0, false},
+		{"one empty", []float64{1}, nil, 0, false},
+		{"zero vector", []float64{0, 0}, []float64{1, 1}, 0, false},
+		{"both zero", []float64{0, 0}, []float64{0, 0}, 0, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := cosineSimilarity(c.a, c.b)
+			if ok != c.ok {
+				t.Fatalf("ok = %v, want %v", ok, c.ok)
+			}
+			if ok && (got-c.want > 1e-9 || c.want-got > 1e-9) {
+				t.Errorf("got %v, want %v", got, c.want)
+			}
+		})
+	}
+
+	t.Run("an undefined comparison is never a match", func(t *testing.T) {
+		// Not-ok must not be read as similarity 0 or 1 by the caller; the
+		// caller's guard is asserted here because getting it wrong either marks
+		// everything or nothing.
+		for _, c := range [][2][]float64{
+			{{0, 0}, {1, 1}},
+			{{1}, {1, 1}},
+			{nil, {1}},
+		} {
+			if _, ok := cosineSimilarity(c[0], c[1]); ok {
+				t.Errorf("cosineSimilarity(%v, %v) reported a usable score", c[0], c[1])
+			}
+		}
+	})
+}
+
+// TestMarkDuplicates_DegenerateVectorsAreSurvivable: a provider that changed
+// model mid-run, or returned a zero vector, must not take the phase down or
+// mark everything.
+func TestMarkDuplicates_DegenerateVectorsAreSurvivable(t *testing.T) {
+	o, store, _ := dedupHarness(nil)
+
+	o.markDuplicates(context.Background(), []dedupCandidate{
+		{id: "zero", docType: "insight", projectID: "p1", vec: []float64{0, 0, 0}},
+		{id: "also-zero", docType: "insight", projectID: "p1", vec: []float64{0, 0, 0}},
+		{id: "short", docType: "insight", projectID: "p1", vec: []float64{1}},
+		{id: "empty", docType: "insight", projectID: "p1", vec: nil},
+		{id: "normal", docType: "insight", projectID: "p1", vec: []float64{1, 0, 0}},
+	}, nil)
+
+	if len(store.dupUpdates) != 0 {
+		t.Errorf("undefined comparisons must mark nothing: %+v", store.dupUpdates)
+	}
+}
+
+// TestMarkDuplicates_StoreFailureMarksNothing: the phase is non-fatal and a
+// store hiccup must not start stamping documents.
+func TestMarkDuplicates_StoreFailureMarksNothing(t *testing.T) {
+	store := &mockEmbedIndexStore{}
+	vs := &failingDupVectorStore{}
+	o := &Orchestrator{embedIndexStore: store, vectorStore: vs}
+
+	o.markDuplicates(context.Background(), []dedupCandidate{
+		{id: "a", docType: "insight", projectID: "p1", vec: []float64{1, 0}},
+	}, nil)
+
+	if len(store.dupUpdates) != 0 {
+		t.Errorf("a failed lookup must mark nothing: %+v", store.dupUpdates)
+	}
+}
+
+// TestMarkDuplicates_NoCandidatesDoesNotTouchTheStore guards the empty case,
+// which is every project's first phase-9 run with no documents.
+func TestMarkDuplicates_NoCandidatesDoesNotTouchTheStore(t *testing.T) {
+	o, store, vs := dedupHarness([]vectorstore.SearchResult{{ID: "x", Score: 1}})
+	o.markDuplicates(context.Background(), nil, nil)
+	if len(store.dupUpdates) != 0 || len(vs.dupExcludes) != 0 {
+		t.Errorf("no candidates must mean no work: updates=%+v searches=%d", store.dupUpdates, len(vs.dupExcludes))
+	}
+}
+
+// failingDupVectorStore fails only the duplicate lookup, which is the failure
+// the phase has to survive without changing any document.
+type failingDupVectorStore struct {
+	mockVectorStore
+}
+
+func (f *failingDupVectorStore) FindDuplicates(_ context.Context, _ []float64, _ string, _ string, _ []string, _ float64) ([]vectorstore.SearchResult, error) {
+	return nil, errors.New("qdrant unavailable")
 }

@@ -83,7 +83,7 @@ const (
 	defaultDiscoveryReflectionMaxOutput  = 3000
 	defaultDiscoveryReflectionParseRetry = 1
 	defaultDiscoveryLedgerMaxFindings    = 500
-	defaultDiscoveryLedgerDedupMinScore  = 0.85
+	defaultDiscoveryLedgerDedupMinScore  = defaultDedupMinScore
 	defaultDiscoveryLedgerTrendDelta     = 0.2
 	maxConvergenceHistory                = 50
 	maxLedgerTasksInPrompt               = 40
@@ -1612,4 +1612,3 @@ func (o *Orchestrator) applyPackProposals(ctx context.Context, result *models.Di
 		}
 	}
 }
-

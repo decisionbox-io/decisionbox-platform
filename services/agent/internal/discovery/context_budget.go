@@ -212,3 +212,41 @@ func (o *Orchestrator) reflectionPriorsBudget(
 	skeleton := o.buildReflectionPrompt(result, nil, tasks, pol, catalogItems, true, true)
 	return contextbudget.AvailableInput(window, reserve, analysisReservedSystemTokens) - approxTokens(ctx, skeleton)
 }
+
+// defaultDedupMinScore is the cosine floor above which two pieces of discovery
+// output are the same thing said twice.
+//
+// ONE default for the two dedup paths this codebase has, because having two was
+// the defect: the ledger's semantic dedup ran at 0.85 and demonstrably worked —
+// on a production project it merged roughly eighty findings whose text had been
+// reworded between runs — while the document-level check ran at a hard-coded
+// 0.95 and marked zero of about five hundred insights. Two systems disagreeing
+// about what "the same finding" means, and the effective one was not the one
+// the user could see.
+//
+// 0.85 is the value with evidence behind it, measured on the same kind of text:
+// a ledger finding is an area, a name and a description, and a document's
+// embedding text is a name, a description, an area, a severity and a segment.
+// Each path keeps its own override, so a deployment can still separate them.
+const defaultDedupMinScore = 0.85
+
+// documentDedupMinScoreEnv overrides the floor for the insight and
+// recommendation documents Phase 9 marks. Named for documents rather than for
+// insights because it governs both, and they are the same kind of thing to this
+// check.
+const documentDedupMinScoreEnv = "DISCOVERY_DOCUMENT_DEDUP_MINSCORE"
+
+// documentDedupMinScore resolves that floor.
+//
+// Bounded to (0, 1]: cosine similarity cannot exceed 1, so a larger value
+// silently disables the check — which is what a typo like 95 (meaning 0.95)
+// would do, and it would look exactly like a check that found nothing. A
+// non-positive value would mark every document a duplicate of the first one.
+// Either way the default is the safer answer than the number asked for.
+func documentDedupMinScore() float64 {
+	v := goconfig.GetEnvAsFloat(documentDedupMinScoreEnv, defaultDedupMinScore)
+	if v <= 0 || v > 1 {
+		return defaultDedupMinScore
+	}
+	return v
+}
