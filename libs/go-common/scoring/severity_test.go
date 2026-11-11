@@ -522,3 +522,65 @@ func TestARecommendationNeverMeasuresItsOwnFigures(t *testing.T) {
 		t.Errorf("reason = %q, want the cited insight's own", cited.SeverityReason)
 	}
 }
+
+// TestADuplicatedFigureIDCannotDriveTheMagnitude is the one shape that could
+// have graded a refuted number as holding.
+//
+// The evaluator emits one verdict per DECLARATION, so a map keyed by figure id
+// keeps the last while a loop over the figures reaches the first. An insight
+// declaring a failing 99% `f1` and then a holding 1% `f1` would therefore have
+// banded the 99% value against the 1% figure's verdict -- high severity,
+// critical priority, driven by a number the warehouse refuted and showing
+// "1%" as the driver. Which is the single thing this axis exists to make
+// impossible.
+func TestADuplicatedFigureIDCannotDriveTheMagnitude(t *testing.T) {
+	refuted := gomodels.Figure{ID: "f1", Value: 99, Unit: gomodels.UnitPercent}
+	holding := gomodels.Figure{ID: "f1", Value: 1, Unit: gomodels.UnitPercent}
+
+	got := Score(Input{
+		Verdict: valmodels.StatusConfirmed,
+		Figures: []gomodels.Figure{refuted, holding},
+		// One verdict per declaration, in declaration order, which is what
+		// the evaluator produces.
+		FigureVerdicts: []gomodels.FigureVerdict{
+			{ID: "f1", Display: "99%", Status: gomodels.FigureFails},
+			{ID: "f1", Display: "1%", Status: gomodels.FigureHolds},
+		},
+		Config: DefaultConfig(),
+	})
+
+	if got.SeverityDriver.Kind != gomodels.SeverityDriverBaseline {
+		t.Errorf("an ambiguous id drove the magnitude (kind=%q, driver=%+v); every declaration "+
+			"of a repeated id has to be excluded, because the id is the only link between "+
+			"a figure and its verdict", got.SeverityDriver.Kind, got.SeverityDriver.Figure)
+	}
+	if got.SeverityBand == gomodels.SeverityBandHigh {
+		t.Error("severity banded high off a refuted 99% figure")
+	}
+
+	// A single declaration of the same id still works, or the guard would
+	// have turned the axis off rather than made it honest.
+	fine := Score(Input{
+		Verdict:        valmodels.StatusConfirmed,
+		Figures:        []gomodels.Figure{{ID: "f1", Value: 34, Unit: gomodels.UnitPercent}},
+		FigureVerdicts: []gomodels.FigureVerdict{{ID: "f1", Display: "34%", Status: gomodels.FigureHolds}},
+		Config:         DefaultConfig(),
+	})
+	if fine.SeverityDriver.Kind != gomodels.SeverityDriverShare {
+		t.Errorf("an unambiguous figure stopped driving the magnitude: %+v", fine.SeverityDriver)
+	}
+}
+
+// TestAFigureWithAnEmptyIDIsIgnored -- the id is the join key, and "" joins to
+// whatever verdict happens to carry "" as well.
+func TestAFigureWithAnEmptyIDIsIgnored(t *testing.T) {
+	got := Score(Input{
+		Verdict:        valmodels.StatusConfirmed,
+		Figures:        []gomodels.Figure{{ID: "", Value: 80, Unit: gomodels.UnitPercent}},
+		FigureVerdicts: []gomodels.FigureVerdict{{ID: "", Display: "80%", Status: gomodels.FigureHolds}},
+		Config:         DefaultConfig(),
+	})
+	if got.SeverityDriver.Kind != gomodels.SeverityDriverBaseline {
+		t.Errorf("an unnamed figure drove the magnitude: %+v", got.SeverityDriver)
+	}
+}

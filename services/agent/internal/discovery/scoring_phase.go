@@ -39,15 +39,13 @@ import (
 // through. The config is passed in rather than resolved here so that two areas
 // of one run can never disagree about the calibration they scored against.
 //
-// currencies and stepByID are what resolve each insight's home currency, which
-// decides which of its amounts the severity axis is allowed to compare. A zero
-// currencyPlan resolves every insight to "" and bands on share, which is the
-// right answer for a caller that has no datasource context to offer -- the
-// on-demand re-score of a stored document is exactly that, and it keeps its
-// severity frozen anyway.
-func scoreInsights(insights []models.Insight, cfg scoring.Config, currencies currencyPlan, stepByID map[int]*models.ExplorationStep) {
+// The run context it needs beyond the documents is grouped, because the
+// severity axis reads two things only a live run can supply and both are easy
+// to forget at a call site: which datasource each figure was read from, and
+// which figures repair severed from their sentences. See scoringContext.
+func scoreInsights(insights []models.Insight, sc scoringContext) {
 	for i := range insights {
-		in := insightScoringInput(insights[i], cfg, currencies, stepByID)
+		in := insightScoringInput(insights[i], sc)
 		// Clear, then write. Every field, every time: a document arriving
 		// with the model's own numbers and a stale sub-document from a
 		// previous attempt has to come out carrying none of them.
@@ -135,8 +133,32 @@ func citedSeverities(rec models.Recommendation, byInsight map[string]scoring.Inh
 	return out
 }
 
+// scoringContext is everything the scorer needs beyond the documents.
+//
+// A struct rather than four parameters, because three of its fields are things
+// only a live run can supply and a call site that forgets one gets a silently
+// weaker grade rather than a compile error. The on-demand "Run validation"
+// path deliberately supplies only the calibration, and the zero value of each
+// other field is the right answer there: it holds one stored document, has no
+// datasource context, and keeps the document's severity frozen anyway.
+type scoringContext struct {
+	cfg scoring.Config
+
+	// currencies and stepByID resolve each insight's home currency, which
+	// decides which of its amounts the severity axis may compare. A zero plan
+	// resolves every insight to "" and bands on share.
+	currencies currencyPlan
+	stepByID   map[int]*models.ExplorationStep
+
+	// writer answers which of an insight's figures repair severed from the
+	// prose. Its zero value answers "none", which is correct for a document
+	// no repair pass has touched and for the re-score path, where the
+	// severity half is not recomputed at all.
+	writer figureWriter
+}
+
 // insightScoringInput collects what the engine reads off one insight.
-func insightScoringInput(ins models.Insight, cfg scoring.Config, currencies currencyPlan, stepByID map[int]*models.ExplorationStep) scoring.Input {
+func insightScoringInput(ins models.Insight, sc scoringContext) scoring.Input {
 	in := scoring.Input{
 		QualityCaveats:     ins.Quality,
 		FigureVerdicts:     ins.FigureVerdicts,
@@ -147,10 +169,22 @@ func insightScoringInput(ins models.Insight, cfg scoring.Config, currencies curr
 		// works identically on a live insight and on one re-read from storage,
 		// which is what the on-demand re-score needs.
 		UnresolvedFigures: len(unresolvedRefsInInsight(ins)),
-		Figures:           ins.Figures,
-		HomeCurrency:      currencies.forInsight(ins, stepByID),
-		AreaID:            ins.AnalysisArea,
-		Config:            cfg,
+		// The figures a reader can still see, not every figure declared.
+		//
+		// Repair edits text and leaves figures alone, so an insight whose 80%
+		// indicator repair deleted still carries that figure, its value and
+		// its holding verdict -- and banding off it would rank the finding on
+		// a number removed from the text that shipped. The same filter also
+		// drops a duplicated id, which cannot be joined to a verdict at all.
+		//
+		// The VERDICTS are passed whole and deliberately so: a refuted figure
+		// still docks confidence whether or not repair later rewrote its
+		// sentence, because the deduction is about what the check found rather
+		// than about what the prose ended up saying.
+		Figures:      sc.writer.figuresStillBehindTheProse(ins),
+		HomeCurrency: sc.currencies.forInsight(ins, sc.stepByID),
+		AreaID:       ins.AnalysisArea,
+		Config:       sc.cfg,
 	}
 	applyValidationToInput(&in, ins.Validation)
 	return in

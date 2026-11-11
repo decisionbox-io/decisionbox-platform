@@ -138,7 +138,7 @@ func scoredInsight(t *testing.T, id, name string, verdict valmodels.Status) mode
 		ins.Validation = &models.InsightValidation{Combined: verdict}
 	}
 	one := []models.Insight{ins}
-	scoreInsights(one, testScoringCfg(), currencyPlan{}, nil)
+	scoreInsights(one, scoringContext{cfg: testScoringCfg()})
 	return one[0]
 }
 

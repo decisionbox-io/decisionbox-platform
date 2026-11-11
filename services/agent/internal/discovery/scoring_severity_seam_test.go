@@ -100,7 +100,7 @@ func TestTheScorerBandsOnTheInsightsOwnCheckedFigures(t *testing.T) {
 		FigureVerdicts: []models.FigureVerdict{amountVerdict, shareVerdict, refutedVerdict},
 		Validation:     verdictOf(valmodels.StatusConfirmed),
 	}}
-	scoreInsights(insights, testScoringCfg(), plan, stepByID)
+	scoreInsights(insights, scoringContext{cfg: testScoringCfg(), currencies: plan, stepByID: stepByID})
 	got := insights[0]
 
 	// Amount bands ship unconfigured, so the band comes from the 34% share --
@@ -146,7 +146,7 @@ func TestAnAmountFromAnotherDatasourceDoesNotReachTheEngine(t *testing.T) {
 		FigureVerdicts: []models.FigureVerdict{liraVerdict, euroVerdict},
 		Validation:     verdictOf(valmodels.StatusConfirmed),
 	}}
-	scoreInsights(insights, testScoringCfg(), plan, stepByID)
+	scoreInsights(insights, scoringContext{cfg: testScoringCfg(), currencies: plan, stepByID: stepByID})
 	driver := insights[0].Scoring.SeverityDriver
 
 	if driver.Kind != gomodels.SeverityDriverBaseline {
@@ -178,7 +178,7 @@ func TestARevalidatedInsightKeepsItsSeverityAndMovesItsPriority(t *testing.T) {
 		FigureVerdicts: []models.FigureVerdict{shareVerdict},
 		Validation:     verdictOf(valmodels.StatusUnverifiable),
 	}}
-	scoreInsights(insights, testScoringCfg(), plan, stepByID)
+	scoreInsights(insights, scoringContext{cfg: testScoringCfg(), currencies: plan, stepByID: stepByID})
 	target := insights[0]
 	if target.Scoring.PriorityTier != gomodels.PriorityTierInvestigate {
 		t.Fatalf("fixture tier = %q, want investigate", target.Scoring.PriorityTier)
@@ -275,4 +275,111 @@ func TestARevalidatedLegacyRecommendationKeepsItsPriorityInteger(t *testing.T) {
 	if legacy.Scoring == nil || legacy.Scoring.ConfidenceBand == "" {
 		t.Error("the confidence axis was not derived")
 	}
+}
+
+// --- Figures repair severed from the prose --------------------------------
+
+// TestARepairedAwayFigureCannotDriveSeverity is the second thing a review
+// found, and it is the subtler of the two because nothing about the document
+// looks wrong.
+//
+// Repair edits TEXT and leaves figures alone: it substitutes a refuted numeral
+// in place, or drops a sentence outright, and touches neither the figure nor
+// its verdict. So an insight whose 80% indicator repair deleted still carries
+// that figure, its value and its holding verdict -- and banding off it would
+// rank the finding high on a number removed from the text that shipped, while
+// the prose a reader sees says 1%.
+//
+// The audit trail already answers which figures those are; this asserts the
+// severity axis asks it.
+func TestARepairedAwayFigureCannotDriveSeverity(t *testing.T) {
+	plan := projectCurrencyPlan("USD")
+	stepByID := map[int]*models.ExplorationStep{7: {Step: 7, WarehouseID: "default"}}
+	sc := scoringContext{
+		cfg: testScoringCfg(), currencies: plan, stepByID: stepByID, writer: usWriter,
+	}
+
+	// A big share and a small one, both checked and holding, both referenced
+	// from the prose as authored.
+	figures := []models.Figure{
+		// Decimals: 2 because the shipped prose below is written the way the
+		// renderer writes it. figuresBrokenByRepair decides by re-rendering
+		// the template and comparing, so a fixture whose text disagrees with
+		// its own figures reads as repaired everywhere.
+		{ID: "big", Value: 80, Unit: models.UnitPercent, Decimals: 2, Step: 7, Kind: models.FigureCell,
+			Column: "share", Row: "bucket = 'a'"},
+		{ID: "small", Value: 1, Unit: models.UnitPercent, Decimals: 2, Step: 7, Kind: models.FigureCell,
+			Column: "share", Row: "bucket = 'b'"},
+	}
+	verdicts := []models.FigureVerdict{
+		{ID: "big", Display: "80.00%", Status: models.FigureHolds, Claimed: 80, Evaluated: 80},
+		{ID: "small", Display: "1.00%", Status: models.FigureHolds, Claimed: 1, Evaluated: 1},
+	}
+	template := &models.FigureTemplate{
+		Name:        "Concentration in one bucket",
+		Description: "Only {{small}} of orders sit outside the top bucket.",
+		Indicators:  []string{"The top bucket holds {{big}} of orders"},
+	}
+
+	t.Run("untouched by repair, the big share bands it", func(t *testing.T) {
+		insights := []models.Insight{{
+			ID: "i1", AnalysisArea: "revenue", Name: "Concentration in one bucket",
+			Description:    "Only 1.00% of orders sit outside the top bucket.",
+			Indicators:     []string{"The top bucket holds 80.00% of orders"},
+			Figures:        figures,
+			FigureVerdicts: verdicts,
+			FigureTemplate: template,
+			Validation:     verdictOf(valmodels.StatusConfirmed),
+		}}
+		scoreInsights(insights, sc)
+		got := insights[0]
+		if got.Scoring.SeverityDriver.Figure == nil || got.Scoring.SeverityDriver.Figure.FigureID != "big" {
+			t.Fatalf("driver = %+v, want the 80%% share", got.Scoring.SeverityDriver.Figure)
+		}
+		if got.Severity != gomodels.SeverityBandHigh {
+			t.Errorf("severity = %q, want high", got.Severity)
+		}
+	})
+
+	t.Run("repair deleted the indicator carrying it, so it cannot", func(t *testing.T) {
+		// Exactly what repair leaves behind: the indicator gone from the
+		// shipped prose, the figure and its holding verdict still on the
+		// document, and a Repair record saying a claim was dropped.
+		insights := []models.Insight{{
+			ID: "i1", AnalysisArea: "revenue", Name: "Concentration in one bucket",
+			Description:    "Only 1.00% of orders sit outside the top bucket.",
+			Indicators:     nil,
+			Figures:        figures,
+			FigureVerdicts: verdicts,
+			FigureTemplate: template,
+			Repair: &models.InsightRepair{
+				Rounds: 1, Outcome: models.RepairClaimDropped,
+				Dropped: []string{"The top bucket holds 80.00% of orders"},
+			},
+			Validation: verdictOf(valmodels.StatusConfirmed),
+		}}
+		scoreInsights(insights, sc)
+		got := insights[0]
+
+		driver := got.Scoring.SeverityDriver
+		if driver.Figure != nil && driver.Figure.FigureID == "big" {
+			t.Error("severity was banded off a figure whose sentence repair deleted; " +
+				"the prose a reader sees says 1.00%")
+		}
+		if got.Severity == gomodels.SeverityBandHigh {
+			t.Errorf("severity = high off a removed 80%% claim (driver %+v)", driver)
+		}
+		// The small share is still on the page, so it is still allowed to
+		// band -- withholding everything would be the blanket rule this
+		// predicate replaced.
+		if driver.Figure == nil || driver.Figure.FigureID != "small" {
+			t.Errorf("driver = %+v, want the 1%% share that survived", driver.Figure)
+		}
+		// And the verdicts are NOT filtered: a refuted figure still docks
+		// confidence whether or not repair later rewrote its sentence,
+		// because that deduction is about what the check found.
+		if len(got.Scoring.ConfidenceDocks) != 0 {
+			t.Logf("confidence docks: %+v", got.Scoring.ConfidenceDocks)
+		}
+	})
 }

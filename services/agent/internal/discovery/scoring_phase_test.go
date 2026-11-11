@@ -37,7 +37,7 @@ func TestScoreInsightsClearsThenWrites(t *testing.T) {
 		},
 		Validation: verdictOf(valmodels.StatusSupported),
 	}}
-	scoreInsights(insights, testScoringCfg(), currencyPlan{}, nil)
+	scoreInsights(insights, scoringContext{cfg: testScoringCfg()})
 
 	got := insights[0]
 	if got.Scoring == nil {
@@ -66,7 +66,7 @@ func TestScoreInsightsClearsThenWrites(t *testing.T) {
 // as zero. Those are three different statements and only one of them is true.
 func TestScoreInsightsTheZeroCase(t *testing.T) {
 	insights := []models.Insight{{ID: "i1", Name: "n", Confidence: 0.88}}
-	scoreInsights(insights, testScoringCfg(), currencyPlan{}, nil)
+	scoreInsights(insights, scoringContext{cfg: testScoringCfg()})
 
 	got := insights[0]
 	if got.Scoring == nil {
@@ -145,7 +145,7 @@ func TestTheScorerClearsTheModelsSeverityAndRiskScore(t *testing.T) {
 			SeverityReason: "stale",
 		},
 	}}
-	scoreInsights(insights, testScoringCfg(), currencyPlan{}, nil)
+	scoreInsights(insights, scoringContext{cfg: testScoringCfg()})
 	got := insights[0]
 
 	if got.Severity == "critical" {
@@ -273,7 +273,7 @@ func TestTheUnresolvedFigureDockReadsThePublishedProse(t *testing.T) {
 			ins := tc.ins
 			ins.Validation = verdictOf(valmodels.StatusConfirmed)
 			insights := []models.Insight{ins}
-			scoreInsights(insights, testScoringCfg(), currencyPlan{}, nil)
+			scoreInsights(insights, scoringContext{cfg: testScoringCfg()})
 
 			found := false
 			for _, d := range insights[0].Scoring.ConfidenceDocks {
@@ -303,7 +303,7 @@ func TestTheEvidenceTrailReachesTheInput(t *testing.T) {
 			Verifier: &valmodels.StructuredVerdict{StepReadBeyondRetained: true},
 		},
 	}
-	in := insightScoringInput(ins, testScoringCfg(), currencyPlan{}, nil)
+	in := insightScoringInput(ins, scoringContext{cfg: testScoringCfg()})
 	if in.Verdict != valmodels.StatusConfirmed {
 		t.Errorf("verdict = %q", in.Verdict)
 	}
@@ -321,14 +321,14 @@ func TestTheEvidenceTrailReachesTheInput(t *testing.T) {
 		Verifier: &valmodels.StructuredVerdict{},
 		Refuter:  &valmodels.StructuredVerdict{StepReadBeyondRetained: true},
 	}
-	if !insightScoringInput(ins, testScoringCfg(), currencyPlan{}, nil).StepReadBeyondRetained {
+	if !insightScoringInput(ins, scoringContext{cfg: testScoringCfg()}).StepReadBeyondRetained {
 		t.Error("the refuter's step-read flag did not reach the input")
 	}
 
 	// A nil validation block leaves the verdict empty rather than defaulting
 	// to anything that reads as checked.
 	ins.Validation = nil
-	bare := insightScoringInput(ins, testScoringCfg(), currencyPlan{}, nil)
+	bare := insightScoringInput(ins, scoringContext{cfg: testScoringCfg()})
 	if bare.Verdict != "" || bare.RefuterDisabled || bare.StepReadBeyondRetained {
 		t.Errorf("a nil validation block produced %+v", bare)
 	}
@@ -367,10 +367,10 @@ func TestScoringIsIdempotent(t *testing.T) {
 		Validation:     verdictOf(valmodels.StatusSupported),
 	}
 	once := []models.Insight{ins}
-	scoreInsights(once, testScoringCfg(), currencyPlan{}, nil)
+	scoreInsights(once, scoringContext{cfg: testScoringCfg()})
 	twice := []models.Insight{ins}
-	scoreInsights(twice, testScoringCfg(), currencyPlan{}, nil)
-	scoreInsights(twice, testScoringCfg(), currencyPlan{}, nil)
+	scoreInsights(twice, scoringContext{cfg: testScoringCfg()})
+	scoreInsights(twice, scoringContext{cfg: testScoringCfg()})
 
 	if !reflect.DeepEqual(once[0], twice[0]) {
 		t.Errorf("scoring twice differs from scoring once:\n once  = %+v\n twice = %+v", once[0].Scoring, twice[0].Scoring)

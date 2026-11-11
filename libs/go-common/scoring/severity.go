@@ -104,12 +104,38 @@ func scoreSeverity(in severityInput, cfg SeverityConfig) (
 // with no verdict at all: both mean the number was not checked, and the whole
 // point of this axis is that the magnitude was.
 func qualifyingFigures(in severityInput) (amount, share *gomodels.SeverityFigure) {
+	// A repeated figure id cannot be joined to a verdict at all, so every
+	// declaration of it is excluded.
+	//
+	// The evaluator emits one verdict per DECLARATION, so a map keyed by id
+	// keeps the last while a loop over the figures reaches the first: an
+	// insight declaring a failing 99% `f1` and then a holding 1% `f1` would
+	// grade the 99% value against the 1% figure's verdict, and band high off
+	// a number the warehouse refuted. Which is the single thing this axis
+	// exists to make impossible.
+	//
+	// Excluded rather than disambiguated, because there is no honest way to
+	// pick: the ids are the only link between a figure and its verdict, and a
+	// duplicated id means that link does not exist. The same answer the
+	// reference index and the renderer already give an ambiguous id.
+	ambiguous := make(map[string]bool)
+	seen := make(map[string]bool, len(in.figures))
+	for _, f := range in.figures {
+		if seen[f.ID] {
+			ambiguous[f.ID] = true
+		}
+		seen[f.ID] = true
+	}
+
 	byID := make(map[string]gomodels.FigureVerdict, len(in.verdicts))
 	for _, v := range in.verdicts {
 		byID[v.ID] = v
 	}
 
 	for _, f := range in.figures {
+		if f.ID == "" || ambiguous[f.ID] {
+			continue
+		}
 		v, ok := byID[f.ID]
 		if !ok || v.Status != gomodels.FigureHolds {
 			continue

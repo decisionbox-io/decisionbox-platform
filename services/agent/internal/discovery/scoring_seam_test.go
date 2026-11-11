@@ -56,7 +56,7 @@ func callOrder(t *testing.T, calls ...string) []int {
 func TestTheInsightScorerRunsAfterTheQualityLabelAndBeforeTheCheckpoint(t *testing.T) {
 	pos := callOrder(t,
 		"attachSourceQuality(insights, stepByID)",
-		"scoreInsights(insights, o.scoringCfg, currencies, stepByID)",
+		"scoreInsights(insights, scoringContext{",
 		"o.checkpointAnalysisArea(ctx, step, areaSpend)",
 	)
 	if pos[0] >= pos[1] {
@@ -92,7 +92,7 @@ func TestARestoredAreaComesBackScored(t *testing.T) {
 	now := time.Now()
 	stored := doneArea("churn", 2, now.Add(-time.Hour))
 	// As the loop body leaves it: scored before the checkpoint was written.
-	scoreInsights(stored.Insights, testScoringCfg(), currencyPlan{}, nil)
+	scoreInsights(stored.Insights, scoringContext{cfg: testScoringCfg()})
 	want := *stored.Insights[0].Scoring
 
 	log, insights, _ := restoreArea(
@@ -139,7 +139,7 @@ func TestADraftRestoredAreaIsScoredOnTheAttemptThatFinishesIt(t *testing.T) {
 	// The resumed attempt validates the remainder, which stamps the verdict.
 	draft.Insights[0].Validation = &models.InsightValidation{Combined: valmodels.StatusPartial}
 
-	scoreInsights(draft.Insights, testScoringCfg(), currencyPlan{}, nil)
+	scoreInsights(draft.Insights, scoringContext{cfg: testScoringCfg()})
 
 	got := draft.Insights[0]
 	if got.Scoring == nil {

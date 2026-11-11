@@ -191,7 +191,9 @@ func ValidateSingleDoc(ctx context.Context, in ValidateSingleDocInput) (models.V
 // A new discovery run grades such a finding on the current engine, which is
 // what the legacy badge in the dashboard says.
 func rescoreTargetInsight(target *models.Insight, cfg scoring.Config) {
-	in := insightScoringInput(*target, cfg, currencyPlan{}, nil)
+	// Only the calibration: this path holds one stored document, has no
+	// datasource context, and does not recompute the severity half at all.
+	in := insightScoringInput(*target, scoringContext{cfg: cfg})
 	prior := models.Scoring{}
 	if target.Scoring != nil {
 		prior = *target.Scoring
