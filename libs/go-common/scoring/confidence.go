@@ -89,6 +89,9 @@ func bandFor(v valmodels.Status, score float64, cfg ConfidenceConfig) string {
 // number is the more serious fact, and a cap that trimmed it instead would say
 // the opposite.
 func candidateDocks(in Input, cfg ConfidenceConfig) []gomodels.ConfidenceDock {
+	// cfg is the resolved calibration Score settled, not in.Config: a caller
+	// that left the Config unset must not reach the dock table through here
+	// with a zero one.
 	d := cfg.Docks
 	out := make([]gomodels.ConfidenceDock, 0, 5)
 

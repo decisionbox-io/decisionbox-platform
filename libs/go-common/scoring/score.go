@@ -71,20 +71,34 @@ type Input struct {
 // writing a derived band beside an authored one would leave two answers to the
 // same question.
 func Score(in Input) gomodels.Scoring {
-	cfg := in.Config.Confidence
-	base, reason := baseFor(in.Verdict, cfg)
-	docks, score := applyFloor(base, candidateDocks(in, cfg), cfg.Floor)
+	// A zero-valued Config reached Score — a caller that built its
+	// Orchestrator as a struct literal, or one that simply left the field
+	// unset. Scoring against it would be silently, uniformly wrong rather
+	// than loud: an empty base table prices every verdict at 0, and cutoffs
+	// of 0 then put every document in the top band. So an unset calibration
+	// resolves to this build's own, which also makes the stamped
+	// engine_version true rather than an unexplainable 0.
+	//
+	// Falling back rather than erroring, because this is a pure function on a
+	// value type with no way to report and nothing a caller could do about it
+	// at the seam; the panic-free rule applies and the default is the right
+	// answer in every case a caller has not deliberately overridden.
+	cfg := in.Config
+	if len(cfg.Confidence.Bases) == 0 {
+		cfg = DefaultConfig()
+	}
+	conf := cfg.Confidence
 
-	version := in.Config.Version
+	base, reason := baseFor(in.Verdict, conf)
+	docks, score := applyFloor(base, candidateDocks(in, conf), conf.Floor)
+
+	version := cfg.Version
 	if version == 0 {
-		// A zero-valued Config reached Score. Stamping 0 would store a
-		// document no ConfigForVersion can ever explain, so the version the
-		// code producing it belongs to is the honest answer.
 		version = EngineVersion
 	}
 
 	return gomodels.Scoring{
-		ConfidenceBand:   bandFor(in.Verdict, score, cfg),
+		ConfidenceBand:   bandFor(in.Verdict, score, conf),
 		ConfidenceBase:   base,
 		ConfidenceScore:  score,
 		ConfidenceReason: composeReason(reason, docks),

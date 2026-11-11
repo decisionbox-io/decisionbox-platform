@@ -525,6 +525,46 @@ func TestScoreDoesNotMutateItsInput(t *testing.T) {
 	}
 }
 
+// TestAnUnsetConfigScoresAgainstTheDefault is the guard for a caller that
+// built its orchestrator as a struct literal, or simply left the field unset.
+//
+// Scoring against a zero Config would be silently and uniformly wrong rather
+// than loud: an empty base table prices every verdict at 0, and cutoffs of 0
+// then put every document — rejected ones included — in the top band. That is
+// the worst shape for the bug, because nothing about the output looks broken.
+func TestAnUnsetConfigScoresAgainstTheDefault(t *testing.T) {
+	for _, verdict := range []valmodels.Status{
+		valmodels.StatusConfirmed, valmodels.StatusSupported, valmodels.StatusPartial,
+		valmodels.StatusRejected, valmodels.StatusUnverifiable, "",
+	} {
+		bare := Score(Input{Verdict: verdict})
+		explicit := Score(Input{Verdict: verdict, Config: DefaultConfig()})
+		if !reflect.DeepEqual(bare, explicit) {
+			t.Errorf("%q: an unset Config scored differently from the default:\n bare     = %+v\n explicit = %+v",
+				verdict, bare, explicit)
+		}
+	}
+
+	// Specifically: a rejected document does not come out in the top band.
+	got := Score(Input{Verdict: valmodels.StatusRejected})
+	if got.ConfidenceBand != gomodels.ConfidenceBandLow {
+		t.Errorf("a rejected document with no Config landed in %q, want low", got.ConfidenceBand)
+	}
+	if got.EngineVersion != EngineVersion {
+		t.Errorf("EngineVersion = %d, want %d", got.EngineVersion, EngineVersion)
+	}
+
+	// A Config carrying a real base table is used as given, even if its
+	// Version is unset — the fallback must key on the calibration, not on the
+	// version.
+	custom := DefaultConfig()
+	custom.Version = 0
+	custom.Confidence.Bases[valmodels.StatusSupported] = 0.42
+	if got := Score(Input{Verdict: valmodels.StatusSupported, Config: custom}); got.ConfidenceBase != 0.42 {
+		t.Errorf("a versionless but populated Config was discarded: base = %v, want 0.42", got.ConfidenceBase)
+	}
+}
+
 // TestScoreStampsTheEngineVersion — and a zero-valued Config still produces an
 // explainable document rather than one stamped with version 0, which no
 // ConfigForVersion could ever resolve.

@@ -361,6 +361,10 @@ func uncertaintyReason(v *models.InsightValidation, scoring *models.Scoring, con
 		if scoring.ConfidenceReason != "" {
 			return scoring.ConfidenceReason, true
 		}
+		// The engine always writes a reason, so this is for a document that
+		// did not come from it: one written by a newer version that stores the
+		// wording elsewhere, or one edited by hand. A percentage is a worse
+		// sentence than the engine's, and a better one than none.
 		return fmt.Sprintf("low confidence (%.0f%%)", scoring.ConfidenceScore*100), true
 	}
 
