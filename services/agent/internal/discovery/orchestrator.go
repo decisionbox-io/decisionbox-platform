@@ -1062,7 +1062,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// Discovery Ledger are merged into a reusable context block injected into the
 	// exploration and analysis prompts, so the run continues the investigation
 	// (drill / tile the frontier / re-check) instead of re-treading it.
-	previousContextStr := o.buildPreviousContext(projectCtx, prevInsights, prevRecs, feedbackSummaries, lrc)
+	previousContextStr := o.buildPreviousContext(projectCtx, prevInsights, prevRecs, feedbackSummaries, lrc, analysisAreas)
 
 	// Phase 2: Load schemas from the per-project schema cache.
 	// (Discovery is gated on schema_index_status == "ready"; the indexer
@@ -3551,6 +3551,7 @@ func (o *Orchestrator) buildPreviousContext(
 	prevRecs []models.RecommendationSummary,
 	feedback []models.FeedbackSummary,
 	lrc *ledgerReadContext,
+	areas []AnalysisArea,
 ) string {
 	hasLedger := lrc != nil && lrc.hasLedger
 	discoveries := 0
@@ -3571,6 +3572,13 @@ func (o *Orchestrator) buildPreviousContext(
 	// Coverage map (from the ledger): explored territory vs. the frontier.
 	if hasLedger {
 		if s := renderCoverage(lrc.coverage); s != "" {
+			sb.WriteString(s)
+		}
+		// What the ledger already measures about whether this investigation is
+		// still finding anything. Immediately after the coverage map because
+		// the two are one picture, and before the findings because it steers
+		// what the run does with them.
+		if s := renderSaturation(lrc.convergence, lrc.coverage.AreaDepth, areas); s != "" {
 			sb.WriteString(s)
 		}
 	}

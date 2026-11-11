@@ -196,6 +196,32 @@ func renderCubeExplored(explored, total int) string {
 	}
 }
 
+// noRestateInstruction is the contract that comes with the established-findings
+// list: these are already recorded and already in front of the user, so
+// reporting one again is not a finding.
+//
+// It is rendered WITH the list rather than appended to the static discipline
+// rules, and that placement is the point. The discipline blocks are
+// unconditional, and a rule that points at a section the prompt may not carry
+// invites the model to satisfy it against whatever it can see instead — the
+// same reason the reflection prompt renders its re-judgement demand only when
+// there are priors to re-judge. Here the rule and the thing it governs cannot
+// be separated: no findings, no instruction.
+//
+// The wording has to permit the two things a run SHOULD do with a known
+// finding — report a magnitude that moved, and drill past it — or it would
+// suppress the trend reporting the ledger exists to produce. The heading it
+// replaced did the opposite: "build on these — drill deeper or check whether
+// they changed" invites re-examination and says nothing about the result of a
+// re-examination that found no change, so re-reporting was compliant.
+const noRestateInstruction = "These findings are ALREADY RECORDED in this project's ledger and are already in front of the user. " +
+	"Do NOT emit an insight that restates one of them — a restatement is not a finding, however differently it is worded or whatever new figure it carries. " +
+	"If you re-examine one and its magnitude has MOVED, report the change and say which finding it updates. " +
+	"If you re-examine one and it is unchanged, report nothing about it. " +
+	"If you can go deeper than one — a cause, a segment, a mechanism it does not already name — that is a new finding and is what this run is for.\n" +
+	"A `confirmed` finding seen several times is settled: spend the run elsewhere. " +
+	"`monitoring` and `changed` findings are the ones worth re-checking.\n"
+
 // renderLedgerFindings renders the ranked findings-with-substance block. Input
 // is already ranked, and already selected and sized by the loader's budget —
 // descChars is the width that budget chose, not a second decision.
@@ -204,13 +230,148 @@ func renderLedgerFindings(findings []commonmodels.LedgerFinding, descChars int) 
 		return ""
 	}
 	var sb strings.Builder
-	sb.WriteString("### Key findings so far (build on these — drill deeper or check whether they changed)\n\n")
+	sb.WriteString("### Already established findings — do NOT re-report these\n")
+	sb.WriteString(noRestateInstruction)
+	sb.WriteString("\n")
 	for _, f := range findings {
 		sb.WriteString(contextbudget.FindingLine(f, descChars))
 		sb.WriteByte('\n')
 	}
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+// saturatedMarginalRatio is where the guidance flips from "keep walking this
+// ground" to "find new ground": below half, the MAJORITY of what the last run
+// reported was already known. A boundary at the majority is the one place on
+// this axis that is not an arbitrary pick, which is why it is here and not in
+// an env var — it is a property of the sentence, not of a deployment.
+const saturatedMarginalRatio = 0.5
+
+// maxAreasPerSaturationLine caps each of the two area lists so a project with
+// a large playbook cannot turn a steering note into a wall of area ids.
+const maxAreasPerSaturationLine = 12
+
+// renderSaturation narrates what the ledger already measures about whether this
+// investigation is still finding anything, and what to do about it.
+//
+// Every number here is read, not computed: ConvergencePoint.MarginalRatio per
+// run, and Coverage.AreaDepth's count of runs that produced findings per area.
+// Both have been written every run since the ledger existed and neither reached
+// a prompt or a decision — the system measured the repetition it was producing
+// and told nobody.
+//
+// The per-area half is what makes the steering specific. A global "you are
+// converging" leaves the model to guess where; "these areas have been mined six
+// times and these have never produced anything" names the frontier using the
+// project's own history.
+//
+// Empty for a project with nothing measured yet, so an early run reads no
+// steering at all rather than steering derived from one data point.
+func renderSaturation(history []commonmodels.ConvergencePoint, areaDepth map[string]int, areas []AnalysisArea) string {
+	ratio, have := latestMarginalRatio(history)
+	deep, barren := areasByDepth(areaDepth, areas)
+	if !have && len(deep) == 0 && len(barren) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("### How much this investigation is still finding\n")
+
+	if have {
+		if trend := renderMarginalTrend(history); trend != "" {
+			sb.WriteString(trend)
+		}
+		fmt.Fprintf(&sb, "The most recent measured run was **%.0f%% already known**. ", (1-ratio)*100)
+		if ratio < saturatedMarginalRatio {
+			sb.WriteString("Most of what it reported, this project already had. Re-walking the same ground will produce restatements, not findings: prefer territory the coverage map above shows as untouched, or a different angle on covered ground — a different grain, a segment you have not cut by, a join you have not tried — over re-examining what is listed below.\n")
+		} else {
+			sb.WriteString("This investigation is still productive. Keep tiling the frontier and drilling the seams that are paying off.\n")
+		}
+	}
+
+	if len(deep) > 0 {
+		fmt.Fprintf(&sb, "Areas that have produced findings in several runs (diminishing returns): %s.\n", strings.Join(deep, ", "))
+	}
+	if len(barren) > 0 {
+		fmt.Fprintf(&sb, "Areas with no findings recorded yet (open ground): %s.\n", strings.Join(barren, ", "))
+	}
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+// maxMarginalTrendPoints is how many runs the trend line names. Enough to show
+// a direction; a project carries up to fifty convergence points and all of them
+// would be a table, not a sentence.
+const maxMarginalTrendPoints = 6
+
+// renderMarginalTrend states the share-of-new across the recent measured runs,
+// oldest first, so the model sees a direction rather than one number. Runs that
+// recorded nothing are left out for the same reason latestMarginalRatio skips
+// them: their zero is a division by zero, and printing it would show a decline
+// that did not happen.
+func renderMarginalTrend(history []commonmodels.ConvergencePoint) string {
+	measured := make([]commonmodels.ConvergencePoint, 0, len(history))
+	for _, p := range history {
+		if p.TotalFindings > 0 {
+			measured = append(measured, p)
+		}
+	}
+	if len(measured) < 2 {
+		return ""
+	}
+	if len(measured) > maxMarginalTrendPoints {
+		measured = measured[len(measured)-maxMarginalTrendPoints:]
+	}
+	shares := make([]string, 0, len(measured))
+	for _, p := range measured {
+		shares = append(shares, fmt.Sprintf("%.0f%%", p.MarginalRatio*100))
+	}
+	return "Share of each recent run's findings that were genuinely new, oldest first: " +
+		strings.Join(shares, " → ") + ". "
+}
+
+// areasByDepth splits this run's analysis areas into the ones earlier runs have
+// repeatedly mined and the ones that have never produced a finding.
+//
+// Only areas this run actually has are named, because an area id from a
+// playbook that has since changed is not something the run can act on; and area
+// NAMES are used where they exist, because the ids are slugs and the rest of
+// the prompt talks about areas by name.
+func areasByDepth(areaDepth map[string]int, areas []AnalysisArea) (deep, barren []string) {
+	// Nothing recorded means every area reads as open ground, which is a
+	// sentence that distinguishes nothing. The lists are a contrast, so they
+	// need something to contrast against — and a ledger CAN reach here with no
+	// depth map: coverage is written even on a run whose reflection call failed
+	// before it judged any area.
+	if len(areas) == 0 || len(areaDepth) == 0 {
+		return nil, nil
+	}
+	// The boundary for "several runs". Two is not a trend and four is a rule
+	// nobody can satisfy on a young project; three runs having each produced a
+	// finding in one area is the point at which the next one is likely to
+	// restate rather than extend.
+	const deepAfterRuns = 3
+	for _, a := range areas {
+		label := a.Name
+		if strings.TrimSpace(label) == "" {
+			label = a.ID
+		}
+		if strings.TrimSpace(label) == "" {
+			continue
+		}
+		switch depth := areaDepth[a.ID]; {
+		case depth >= deepAfterRuns:
+			if len(deep) < maxAreasPerSaturationLine {
+				deep = append(deep, fmt.Sprintf("%s (%d runs)", label, depth))
+			}
+		case depth == 0:
+			if len(barren) < maxAreasPerSaturationLine {
+				barren = append(barren, label)
+			}
+		}
+	}
+	return deep, barren
 }
 
 // renderLedgerTasks renders the open next-task queue.

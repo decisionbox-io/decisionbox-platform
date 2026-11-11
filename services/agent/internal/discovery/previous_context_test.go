@@ -79,15 +79,16 @@ func TestBuildPreviousContext_WithLedger(t *testing.T) {
 		findings: []commonmodels.LedgerFinding{
 			{Area: "churn", Name: "High EU churn", Severity: "high", Status: "confirmed", KeyMetric: "affected=300", Description: "churn elevated", SeenCount: 3},
 		},
-		tasks: []commonmodels.LedgerTask{{Text: "explore the events tables"}},
+		tasks:     []commonmodels.LedgerTask{{Text: "explore the events tables"}},
+		descChars: 200,
 	}
-	out := o.buildPreviousContext(pctx, nil, nil, nil, lrc)
+	out := o.buildPreviousContext(pctx, nil, nil, nil, lrc, nil)
 
 	for _, want := range []string{
 		"Investigation so far",
 		"Coverage map",
 		"events untouched",
-		"Key findings so far",
+		"Already established findings",
 		"High EU churn",
 		"affected=300",
 		"seen 3×",
@@ -100,6 +101,12 @@ func TestBuildPreviousContext_WithLedger(t *testing.T) {
 	}
 	if strings.Contains(out, "Previously Found Insights") {
 		t.Errorf("ledger present must suppress the legacy insight dump:\n%s", out)
+	}
+	// The heading this replaced invited re-examination and said nothing about
+	// what to do when the re-examination finds no change, which made
+	// re-reporting a compliant answer. It must not come back.
+	if strings.Contains(out, "build on these") {
+		t.Errorf("the findings heading must not invite re-examination without saying what not to do with it:\n%s", out)
 	}
 }
 

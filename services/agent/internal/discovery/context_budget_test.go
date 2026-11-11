@@ -11,6 +11,7 @@ import (
 	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
 // ledgerFixture builds n active findings shaped like a real mature project's:
@@ -409,5 +410,246 @@ func TestContextRetrievalTimeout(t *testing.T) {
 		if got := contextRetrievalTimeout(); got != defaultContextRetrievalTimeout {
 			t.Errorf("%q = %v, want the default %v", bad, got, defaultContextRetrievalTimeout)
 		}
+	}
+}
+
+// --- the do-not-restate contract (acceptance criterion 4) ---
+
+// TestNoRestateInstructionRendersWithTheFindings pins the instruction to the
+// list it governs: present whenever findings are, absent when they are not.
+//
+// A rule that outlives the section it refers to is the failure this placement
+// avoids — the model satisfies it against whatever it can see instead.
+func TestNoRestateInstructionRendersWithTheFindings(t *testing.T) {
+	findings := ledgerFixture(3)
+
+	withFindings := renderLedgerFindings(findings, 200)
+	if !strings.Contains(withFindings, "ALREADY RECORDED") {
+		t.Errorf("the findings block must carry the do-not-restate instruction:\n%s", withFindings)
+	}
+	for _, want := range []string{
+		"Do NOT emit an insight that restates one of them",
+		"magnitude has MOVED",
+		"report nothing about it",
+		"go deeper",
+	} {
+		if !strings.Contains(withFindings, want) {
+			t.Errorf("instruction missing %q:\n%s", want, withFindings)
+		}
+	}
+
+	if got := renderLedgerFindings(nil, 200); got != "" {
+		t.Errorf("no findings must render no instruction, got:\n%s", got)
+	}
+}
+
+// TestNoRestateInstructionStillPermitsTrendReporting is the other half of the
+// contract. The ledger exists to mark a finding `changed` when its magnitude
+// moves, and that mark comes from a run reporting the movement — so an
+// instruction that forbade every mention of a known finding would suppress the
+// trend reporting this feature is for.
+func TestNoRestateInstructionStillPermitsTrendReporting(t *testing.T) {
+	out := renderLedgerFindings(ledgerFixture(1), 200)
+	if !strings.Contains(out, "report the change and say which finding it updates") {
+		t.Errorf("the instruction must permit — and direct — reporting a magnitude that moved:\n%s", out)
+	}
+	if !strings.Contains(out, "`monitoring` and `changed` findings are the ones worth re-checking") {
+		t.Errorf("the instruction must say which statuses are worth re-checking:\n%s", out)
+	}
+}
+
+// TestNoRestateInstructionReachesEveryPromptThatWritesAnInsight: the block lives
+// in the base context, which buildBaseContext prepends to exploration, every
+// analysis area and recommendations. If it only reached one of them, the phase
+// that actually emits insights could miss it.
+func TestNoRestateInstructionReachesEveryPromptThatWritesAnInsight(t *testing.T) {
+	o := &Orchestrator{}
+	lrc := &ledgerReadContext{
+		hasLedger: true,
+		findings:  ledgerFixture(2),
+		descChars: 200,
+	}
+	previous := o.buildPreviousContext(&models.ProjectContext{TotalDiscoveries: 2}, nil, nil, nil, lrc, nil)
+	base := o.buildBaseContext("{{PREVIOUS_CONTEXT}}", "", previous, "English", "ds")
+
+	if !strings.Contains(base, "ALREADY RECORDED") {
+		t.Fatalf("the base context must carry the instruction — it is the one string every writer prompt is built from:\n%s", base)
+	}
+	// Every downstream prompt is base + its own body, so carrying it here is
+	// what carries it to all three. Assert the composition rather than trust it.
+	for _, body := range []string{"\n\nexploration body", "\n\nanalysis area body", "\n\nrecommendations body"} {
+		if !strings.Contains(base+body, "ALREADY RECORDED") {
+			t.Errorf("prompt built from base + %q lost the instruction", body)
+		}
+	}
+}
+
+// --- saturation steering (the MarginalRatio / AreaDepth consumer) ---
+
+func TestRenderSaturation(t *testing.T) {
+	areas := []AnalysisArea{
+		{ID: "churn", Name: "Churn"},
+		{ID: "fraud", Name: "Fraud"},
+		{ID: "inventory", Name: "Inventory"},
+	}
+
+	t.Run("a saturated project is steered off the trodden ground", func(t *testing.T) {
+		out := renderSaturation(convergence(1.00, 0.18, 0.20, 0.10).Convergence,
+			map[string]int{"churn": 6, "fraud": 1}, areas)
+		for _, want := range []string{
+			"100% → 18% → 20% → 10%",
+			"90% already known",
+			"Re-walking the same ground will produce restatements",
+			"Churn (6 runs)",
+			"Inventory",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("missing %q:\n%s", want, out)
+			}
+		}
+		if strings.Contains(out, "still productive") {
+			t.Errorf("a 10%% share must not read as productive:\n%s", out)
+		}
+		// Fraud has produced findings once: neither mined out nor open ground,
+		// so naming it in either list would be false.
+		if strings.Contains(out, "Fraud") {
+			t.Errorf("an area with one productive run belongs in neither list:\n%s", out)
+		}
+	})
+
+	t.Run("a productive project is told to keep going", func(t *testing.T) {
+		out := renderSaturation(convergence(1.00, 0.80).Convergence, map[string]int{"churn": 1}, areas)
+		if !strings.Contains(out, "still productive") {
+			t.Errorf("an 80%% share must read as productive:\n%s", out)
+		}
+		if strings.Contains(out, "Re-walking the same ground") {
+			t.Errorf("a productive project must not be steered off its seams:\n%s", out)
+		}
+	})
+
+	t.Run("nothing measured renders nothing", func(t *testing.T) {
+		if got := renderSaturation(nil, nil, areas); got != "" {
+			t.Errorf("an early run must read no steering at all, got:\n%s", got)
+		}
+		if got := renderSaturation(nil, nil, nil); got != "" {
+			t.Errorf("no history and no areas must render nothing, got:\n%s", got)
+		}
+	})
+
+	t.Run("a single run states its share but no trend", func(t *testing.T) {
+		out := renderSaturation(convergence(0.40).Convergence, nil, nil)
+		if !strings.Contains(out, "60% already known") {
+			t.Errorf("one measured run must still state its share:\n%s", out)
+		}
+		if strings.Contains(out, "→") {
+			t.Errorf("one point is not a trend:\n%s", out)
+		}
+	})
+
+	t.Run("an empty run is left out of the trend", func(t *testing.T) {
+		// Its ratio is a division by zero, and printing it would show a
+		// collapse to 0% that never happened.
+		history := append(convergence(0.9, 0.8).Convergence, commonmodels.ConvergencePoint{
+			RunID: "empty", TotalFindings: 0, MarginalRatio: 0,
+		})
+		out := renderSaturation(history, nil, nil)
+		if strings.Contains(out, "→ 0%") {
+			t.Errorf("a run that recorded nothing must not appear as a 0%% share:\n%s", out)
+		}
+		if !strings.Contains(out, "20% already known") {
+			t.Errorf("the headline must come from the last MEASURED run (0.8):\n%s", out)
+		}
+	})
+
+	t.Run("area lists are capped and only name this run's areas", func(t *testing.T) {
+		many := make([]AnalysisArea, 0, 40)
+		depth := map[string]int{}
+		for i := 0; i < 40; i++ {
+			id := fmt.Sprintf("a%02d", i)
+			many = append(many, AnalysisArea{ID: id, Name: "Area " + id})
+			depth[id] = 5
+		}
+		// An area id the playbook no longer has must not be named: the run
+		// cannot act on it.
+		depth["removed-area"] = 9
+		out := renderSaturation(convergence(0.1).Convergence, depth, many)
+		if strings.Contains(out, "removed-area") {
+			t.Errorf("an area this run does not have must not be named:\n%s", out)
+		}
+		if n := strings.Count(out, " runs)"); n > maxAreasPerSaturationLine {
+			t.Errorf("named %d deep areas, want at most %d", n, maxAreasPerSaturationLine)
+		}
+	})
+
+	t.Run("falls back to the area id when it has no name", func(t *testing.T) {
+		out := renderSaturation(convergence(0.1).Convergence, map[string]int{"slug-only": 4},
+			[]AnalysisArea{{ID: "slug-only"}})
+		if !strings.Contains(out, "slug-only (4 runs)") {
+			t.Errorf("an unnamed area must still be nameable:\n%s", out)
+		}
+	})
+
+	t.Run("the trend is capped", func(t *testing.T) {
+		ratios := make([]float64, 0, 50)
+		for i := 0; i < 50; i++ {
+			ratios = append(ratios, 0.5)
+		}
+		out := renderSaturation(convergence(ratios...).Convergence, nil, nil)
+		if n := strings.Count(out, "→"); n != maxMarginalTrendPoints-1 {
+			t.Errorf("trend has %d arrows, want %d — fifty points is a table, not a sentence", n, maxMarginalTrendPoints-1)
+		}
+	})
+}
+
+// TestSaturationBlockRendersInsideThePreviousContext pins that the block is
+// actually wired into the prompt, between the coverage map it completes and the
+// findings it steers.
+func TestSaturationBlockRendersInsideThePreviousContext(t *testing.T) {
+	o := &Orchestrator{}
+	lrc := &ledgerReadContext{
+		hasLedger: true,
+		coverage: commonmodels.LedgerCoverage{
+			ExploredTables: []string{"ds.orders"}, TotalTables: 5,
+			Summary:   "orders covered",
+			AreaDepth: map[string]int{"churn": 7},
+		},
+		convergence: convergence(1.00, 0.18, 0.10).Convergence,
+		findings:    ledgerFixture(3),
+		descChars:   200,
+	}
+	out := o.buildPreviousContext(&models.ProjectContext{TotalDiscoveries: 3}, nil, nil, nil, lrc,
+		[]AnalysisArea{{ID: "churn", Name: "Churn"}, {ID: "pricing", Name: "Pricing"}})
+
+	cov := strings.Index(out, "Coverage map")
+	sat := strings.Index(out, "How much this investigation is still finding")
+	fin := strings.Index(out, "Already established findings")
+	if cov < 0 || sat < 0 || fin < 0 {
+		t.Fatalf("missing a block: coverage=%d saturation=%d findings=%d\n%s", cov, sat, fin, out)
+	}
+	if !(cov < sat && sat < fin) {
+		t.Errorf("order must be coverage → saturation → findings, got %d/%d/%d", cov, sat, fin)
+	}
+	if !strings.Contains(out, "Churn (7 runs)") || !strings.Contains(out, "Pricing") {
+		t.Errorf("per-area steering missing from the assembled context:\n%s", out)
+	}
+}
+
+// TestAreasByDepthNeedsSomethingToContrast: with no depth recorded, every area
+// is trivially "open ground", and a line naming all of them tells the run
+// nothing it did not already know. A ledger does reach this state — coverage is
+// written even on a run whose reflection call failed before judging any area.
+func TestAreasByDepthNeedsSomethingToContrast(t *testing.T) {
+	areas := []AnalysisArea{{ID: "a", Name: "A"}, {ID: "b", Name: "B"}}
+
+	if deep, barren := areasByDepth(nil, areas); len(deep) != 0 || len(barren) != 0 {
+		t.Errorf("no depth map must name no areas, got deep=%v barren=%v", deep, barren)
+	}
+	if deep, barren := areasByDepth(map[string]int{}, areas); len(deep) != 0 || len(barren) != 0 {
+		t.Errorf("an empty depth map must name no areas, got deep=%v barren=%v", deep, barren)
+	}
+	// One recorded area is enough to make the contrast real.
+	deep, barren := areasByDepth(map[string]int{"a": 4}, areas)
+	if len(deep) != 1 || len(barren) != 1 {
+		t.Errorf("one mined area and one untouched: got deep=%v barren=%v", deep, barren)
 	}
 }
