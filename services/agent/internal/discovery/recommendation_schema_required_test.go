@@ -45,10 +45,15 @@ func TestRecommendationItemRequiresTheFieldsARecommendationNeeds(t *testing.T) {
 	// Each entry says what a recommendation missing the field would be, so a
 	// later edit that drops one has to disagree with the reason rather than
 	// with a list.
+	//
+	// `priority` left this list with the property. It was the one field all
+	// three measured recommendations filled in correctly, which is why it was
+	// named here -- but the value is derived now, from the matrix over the
+	// severity this recommendation inherits and its own validation verdict, so
+	// requiring it would oblige an answer nothing reads.
 	needed := map[string]string{
 		"title":               "a recommendation with no title cannot be listed",
 		"description":         "a title with no description is a headline, not a recommendation",
-		"priority":            "the discipline rules route urgency into this field instead of the prose, so prose without it carries no urgency at all",
 		"expected_impact":     "a recommendation that names no expected impact cannot be ranked against another",
 		"actions":             "a recommendation with no action is an observation",
 		"related_insight_ids": "#347: the citation a small model otherwise omits",

@@ -29,8 +29,8 @@ import (
 var generationOrder = map[string][]string{
 	"insight": {
 		"source_steps", "figures", "description", "indicators", "name",
-		"quantifier_claims", "severity", "target_segment",
-		"affected_count", "risk_score", "metrics",
+		"quantifier_claims", "target_segment",
+		"affected_count", "metrics",
 	},
 	"figures": {
 		"id", "value", "step", "kind",

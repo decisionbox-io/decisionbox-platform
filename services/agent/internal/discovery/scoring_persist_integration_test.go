@@ -239,7 +239,7 @@ func TestInteg_AScoredAreaSurvivesTheCheckpointRoundTrip(t *testing.T) {
 	step.Insights[0].Validation = &models.InsightValidation{Combined: valmodels.StatusSupported}
 	step.Insights[0].FigureVerdicts = []commonmodels.FigureVerdict{{ID: "f1", Status: commonmodels.FigureFails}}
 	step.Insights[1].Validation = &models.InsightValidation{Combined: valmodels.StatusUnverifiable}
-	scoreInsights(step.Insights, testScoringCfg())
+	scoreInsights(step.Insights, testScoringCfg(), currencyPlan{}, nil)
 
 	want := make([]commonmodels.Scoring, 0, len(step.Insights))
 	for i := range step.Insights {

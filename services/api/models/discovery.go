@@ -129,7 +129,18 @@ type Recommendation struct {
 	// formatted in the dashboard. Description stays plain text. Omitted on
 	// unformatted/legacy recommendations.
 	DescriptionMd     string   `bson:"description_md,omitempty" json:"description_md,omitempty"`
-	Priority          int      `bson:"priority" json:"priority"`
+	// Priority is the derived priority, projected from the tier onto the
+	// 1 (highest) to 5 (lowest) integer this field has always carried. Zero
+	// on a legacy document and on one whose citations resolved to nothing
+	// scored.
+	Priority int `bson:"priority" json:"priority"`
+
+	// Severity is inherited from the insights this recommendation cites.
+	// Present here because a field absent from this mirror is a field BSON
+	// drops on decode: the endpoint would report "" however non-zero the
+	// database is, and nothing would fail.
+	Severity string `bson:"severity,omitempty" json:"severity,omitempty"`
+
 	TargetSegment     string   `bson:"target_segment" json:"target_segment"`
 	SegmentSize       int      `bson:"segment_size" json:"segment_size"`
 	ExpectedImpact    Impact   `bson:"expected_impact" json:"expected_impact"`

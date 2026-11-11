@@ -1796,8 +1796,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// it means the label survives whatever the model wrote.
 		attachSourceQuality(insights, stepByID)
 
-		// Derive every insight's confidence from the verdict its claims
-		// earned, and throw away whatever number the model wrote.
+		// Derive every insight's grade from the evidence the run produced --
+		// the verdict its claims earned and the figures Go re-checked -- and
+		// throw away whatever confidence, severity and risk score the model
+		// wrote.
 		//
 		// Here, and not anywhere later, for two reasons that pull in opposite
 		// directions and meet at this line. After attachSourceQuality,
@@ -1807,7 +1809,11 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// the body -- so a score computed after that write would be absent
 		// from every restored area, on every resumed run. The scored insights
 		// ride inside the checkpoint's own step, which needs no schema change.
-		scoreInsights(insights, o.scoringCfg)
+		//
+		// The currency plan is the run's own, built once before this loop:
+		// which of an insight's amounts the severity axis may compare depends
+		// on which datasource each was read from.
+		scoreInsights(insights, o.scoringCfg, currencies, stepByID)
 
 		// Provenance of what ships: declared claims with their verdicts, then one
 		// line per insight naming the steps it cited.
@@ -2146,11 +2152,17 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			reidentifyRestoredRecommendations(recommendations, recValidationResults)
 		}
 
-		// And the recommendation side of the same derivation, from each
-		// recommendation's OWN verdict. After the remint because a restored
+		// And the recommendation side of the same derivation: confidence from
+		// each recommendation's OWN verdict, severity inherited from the
+		// insights it cites. After the remint because a restored
 		// recommendation's ids are only safe from this point, and after
 		// validation because the verdict is what it scores.
-		scoreRecommendations(recommendations, o.scoringCfg)
+		//
+		// allInsights rather than one area's slice: a recommendation can cite
+		// any insight of the run, and a citation this lookup misses is a
+		// recommendation that inherits a lower severity than the finding it
+		// addresses.
+		scoreRecommendations(recommendations, allInsights, o.scoringCfg)
 	}
 
 	// Phase 6: Update project context with discovered patterns

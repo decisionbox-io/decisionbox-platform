@@ -138,7 +138,7 @@ func scoredInsight(t *testing.T, id, name string, verdict valmodels.Status) mode
 		ins.Validation = &models.InsightValidation{Combined: verdict}
 	}
 	one := []models.Insight{ins}
-	scoreInsights(one, testScoringCfg())
+	scoreInsights(one, testScoringCfg(), currencyPlan{}, nil)
 	return one[0]
 }
 
@@ -193,7 +193,7 @@ func TestBuildUncertaintyDigest_ValidationDisabledIsExcluded(t *testing.T) {
 
 	recs := []models.Recommendation{{ID: "r1", Title: "rec",
 		Validation: &models.InsightValidation{Combined: valmodels.StatusValidationDisabled}}}
-	scoreRecommendations(recs, testScoringCfg())
+	scoreRecommendations(recs, nil, testScoringCfg())
 	if items := buildUncertaintyDigest(nil, recs, nil, 0.5); len(items) != 0 {
 		t.Fatalf("recommendation digest = %d items, want 0: %+v", len(items), items)
 	}

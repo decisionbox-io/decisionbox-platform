@@ -59,9 +59,14 @@ func TestParseInsights_KeepsTheInsightWhenOnlyItsDeclarationWillNotDecode(t *tes
 // salvage must not turn every malformed object into a shipped finding.
 func TestParseInsights_StillDropsAnInsightBrokenBeyondItsDeclaration(t *testing.T) {
 	o := &Orchestrator{}
-	// severity is an object where a string belongs, and there is no
+	// target_segment is an object where a string belongs, and there is no
 	// quantifier_claims key at all, so there is nothing to strip.
-	body := `{"insights":[{"name":"x","severity":{"level":"high"}}]}`
+	//
+	// target_segment rather than severity, which this used to break: severity
+	// is derived now and tagged json:"-", so an off-typed one is an unknown
+	// field the decoder ignores. That is deliberate protection, and it means
+	// the field can no longer stand in for "broken beyond the declaration".
+	body := `{"insights":[{"name":"x","target_segment":{"level":"high"}}]}`
 	insights, dropped, err := o.parseInsights(body, "profitability")
 	if err != nil {
 		t.Fatalf("parseInsights() error = %v", err)
@@ -75,7 +80,7 @@ func TestParseInsights_StillDropsAnInsightBrokenBeyondItsDeclaration(t *testing.
 // silently discarding checks on every clean run.
 func TestParseInsights_KeepsAWellFormedDeclaration(t *testing.T) {
 	o := &Orchestrator{}
-	body := `{"insights":[{"name":"x","description":"y.","severity":"high","source_steps":[4],
+	body := `{"insights":[{"name":"x","description":"y.","source_steps":[4],
 		"quantifier_claims":[{"claim":"c","kind":"only","step":4,"filter":"profit < 0"}]}]}`
 	insights, dropped, err := o.parseInsights(body, "profitability")
 	if err != nil || len(insights) != 1 || dropped != 0 {
@@ -90,11 +95,11 @@ func TestParseInsights_KeepsAWellFormedDeclaration(t *testing.T) {
 // much as its successes: it must not turn arbitrary broken JSON into an insight.
 func TestDecodeWithoutClaims(t *testing.T) {
 	// A declaration is present and the rest decodes: salvage.
-	got, ok := decodeWithoutClaims([]byte(`{"name":"n","severity":"high","quantifier_claims":{"bad":true}}`))
+	got, ok := decodeWithoutClaims([]byte(`{"name":"n","target_segment":"new players","quantifier_claims":{"bad":true}}`))
 	if !ok {
 		t.Fatal("want a salvage when only the declaration is malformed")
 	}
-	if got.Name != "n" || got.Severity != "high" {
+	if got.Name != "n" || got.TargetSegment != "new players" {
 		t.Errorf("salvaged insight lost fields: %+v", got)
 	}
 	if len(got.QuantifierClaims) != 0 {
@@ -107,9 +112,9 @@ func TestDecodeWithoutClaims(t *testing.T) {
 	}
 
 	for name, raw := range map[string]string{
-		"no declaration to strip":       `{"name":"n","severity":{"x":1}}`,
+		"no declaration to strip":       `{"name":"n","target_segment":{"x":1}}`,
 		"not an object":                 `["a"]`,
-		"broken beyond the declaration": `{"severity":{"x":1},"quantifier_claims":"bad"}`,
+		"broken beyond the declaration": `{"target_segment":{"x":1},"quantifier_claims":"bad"}`,
 	} {
 		if _, ok := decodeWithoutClaims([]byte(raw)); ok {
 			t.Errorf("%s: want refusal", name)

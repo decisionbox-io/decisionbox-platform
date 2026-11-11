@@ -37,7 +37,7 @@ func TestScoreInsightsClearsThenWrites(t *testing.T) {
 		},
 		Validation: verdictOf(valmodels.StatusSupported),
 	}}
-	scoreInsights(insights, testScoringCfg())
+	scoreInsights(insights, testScoringCfg(), currencyPlan{}, nil)
 
 	got := insights[0]
 	if got.Scoring == nil {
@@ -66,7 +66,7 @@ func TestScoreInsightsClearsThenWrites(t *testing.T) {
 // as zero. Those are three different statements and only one of them is true.
 func TestScoreInsightsTheZeroCase(t *testing.T) {
 	insights := []models.Insight{{ID: "i1", Name: "n", Confidence: 0.88}}
-	scoreInsights(insights, testScoringCfg())
+	scoreInsights(insights, testScoringCfg(), currencyPlan{}, nil)
 
 	got := insights[0]
 	if got.Scoring == nil {
@@ -94,7 +94,7 @@ func TestScoreRecommendationsUseTheirOwnVerdict(t *testing.T) {
 		{ID: "r2", Title: "rejected", Confidence: 0.9, Validation: verdictOf(valmodels.StatusRejected)},
 		{ID: "r3", Title: "none", Confidence: 0.9},
 	}
-	scoreRecommendations(recs, testScoringCfg())
+	scoreRecommendations(recs, nil, testScoringCfg())
 
 	for i, want := range []struct {
 		band  string
@@ -118,13 +118,17 @@ func TestScoreRecommendationsUseTheirOwnVerdict(t *testing.T) {
 	}
 }
 
-// TestTheScorerLeavesSeverityAndRiskScoreAlone is the freeze.
+// TestTheScorerClearsTheModelsSeverityAndRiskScore is the mechanism, one
+// field over from the confidence one.
 //
-// The scorer clears and overwrites confidence and the sub-document ONLY.
-// Clearing severity or risk_score in this version would blank the only values
-// that exist for them, and writing a derived severity beside an authored one
-// would leave two answers to the same question.
-func TestTheScorerLeavesSeverityAndRiskScoreAlone(t *testing.T) {
+// It clears both and overwrites them from the evidence, unconditionally and
+// including the case below -- no verdict this engine prices, no figure, so the
+// band comes from the area baseline. That unconditional clear is the whole
+// correctness argument: editing the prompts could not have been enough,
+// because a project snapshots its area prompts at creation and a pack's seeds
+// are never overwritten on upgrade, so an existing deployment keeps asking the
+// model for `severity` and `risk_score` indefinitely.
+func TestTheScorerClearsTheModelsSeverityAndRiskScore(t *testing.T) {
 	insights := []models.Insight{{
 		ID: "i1", Name: "n",
 		Severity:      "critical",
@@ -132,41 +136,115 @@ func TestTheScorerLeavesSeverityAndRiskScoreAlone(t *testing.T) {
 		AffectedCount: 16695,
 		TargetSegment: "new players",
 		Validation:    verdictOf(valmodels.StatusRejected),
+		// A stale sub-document from a previous attempt, carrying a severity
+		// half that must not survive either.
+		Scoring: &models.Scoring{
+			SeverityBand:   gomodels.SeverityBandHigh,
+			SeverityScore:  0.95,
+			PriorityTier:   gomodels.PriorityTierCritical,
+			SeverityReason: "stale",
+		},
 	}}
-	before := insights[0]
-	scoreInsights(insights, testScoringCfg())
-	after := insights[0]
+	scoreInsights(insights, testScoringCfg(), currencyPlan{}, nil)
+	got := insights[0]
 
-	if after.Severity != before.Severity {
-		t.Errorf("severity changed: %q -> %q", before.Severity, after.Severity)
+	if got.Severity == "critical" {
+		t.Error("the model's severity word survived the scorer")
 	}
-	if after.RiskScore != before.RiskScore {
-		t.Errorf("risk_score changed: %v -> %v", before.RiskScore, after.RiskScore)
+	if got.Severity != gomodels.SeverityBandMedium {
+		t.Errorf("severity = %q, want the baseline band medium", got.Severity)
 	}
-	if after.AffectedCount != before.AffectedCount || after.TargetSegment != before.TargetSegment {
-		t.Error("the scorer wrote a field outside the confidence axis")
+	if got.RiskScore == 0.67 {
+		t.Error("the model's risk_score survived the scorer")
 	}
-	// And nothing in the severity / weight / priority half of the
-	// sub-document is written either.
-	frozen := gomodels.Scoring{
-		MagnitudeScore: after.Scoring.MagnitudeScore,
-		SeverityBand:   after.Scoring.SeverityBand,
-		SeverityScore:  after.Scoring.SeverityScore,
-		SeverityDriver: after.Scoring.SeverityDriver,
-		AreaWeight:     after.Scoring.AreaWeight,
-		WeightSource:   after.Scoring.WeightSource,
-		PriorityTier:   after.Scoring.PriorityTier,
-		PriorityScore:  after.Scoring.PriorityScore,
-		RiskFlags:      after.Scoring.RiskFlags,
+	if got.RiskScore != got.Scoring.SeverityScore {
+		t.Errorf("risk_score %v does not mirror the derived severity score %v",
+			got.RiskScore, got.Scoring.SeverityScore)
 	}
-	if !reflect.DeepEqual(frozen, gomodels.Scoring{}) {
-		t.Errorf("the scorer wrote a severity / weight / priority field: %+v", frozen)
+	if got.Scoring.SeverityReason == "stale" {
+		t.Error("the stale sub-document's reason survived")
 	}
+	// A rejected verdict is untrusted, so a baseline-medium finding is low
+	// priority -- and it has a tier at all, which a stale one would not prove.
+	if got.Scoring.PriorityTier != gomodels.PriorityTierLow {
+		t.Errorf("tier = %q, want low (medium severity, rejected verdict)", got.Scoring.PriorityTier)
+	}
+	// Fields outside the grade are untouched.
+	if got.AffectedCount != 16695 || got.TargetSegment != "new players" {
+		t.Error("the scorer wrote a field outside the grade")
+	}
+	// Flags are the one part of the sub-document nothing derives yet.
+	if len(got.Scoring.RiskFlags) != 0 {
+		t.Errorf("RiskFlags = %v, want none", got.Scoring.RiskFlags)
+	}
+}
 
-	recs := []models.Recommendation{{ID: "r1", Title: "t", Priority: 2, SegmentSize: 400}}
-	scoreRecommendations(recs, testScoringCfg())
-	if recs[0].Priority != 2 || recs[0].SegmentSize != 400 {
-		t.Errorf("the scorer wrote a recommendation field outside the confidence axis: %+v", recs[0])
+// TestTheScorerClearsAModelAuthoredRecommendationPriority -- the same, for the
+// recommendation half. A recommendation citing nothing scored inherits no
+// severity, so its priority is the field's own "unset" rather than a guess.
+func TestTheScorerClearsAModelAuthoredRecommendationPriority(t *testing.T) {
+	recs := []models.Recommendation{{
+		ID: "r1", Title: "t", Priority: 2, Severity: "critical", SegmentSize: 400,
+		Validation: verdictOf(valmodels.StatusSupported),
+	}}
+	scoreRecommendations(recs, nil, testScoringCfg())
+
+	if recs[0].Priority != 0 {
+		t.Errorf("priority = %d; nothing was cited, so there is no tier to project", recs[0].Priority)
+	}
+	if recs[0].Severity != "" {
+		t.Errorf("severity = %q; the model's word must not survive", recs[0].Severity)
+	}
+	if recs[0].SegmentSize != 400 {
+		t.Error("the scorer wrote a recommendation field outside the grade")
+	}
+	if recs[0].Scoring == nil || recs[0].Scoring.ConfidenceBand == "" {
+		t.Error("the confidence axis is still derived from the recommendation's own verdict")
+	}
+}
+
+// TestARecommendationInheritsTheWorstSeverityItCites, and derives its priority
+// from its OWN verdict.
+//
+// Both halves matter. Inheriting the max is what makes a recommendation as
+// important as the worst thing it addresses; deriving priority from its own
+// verdict is what makes the tier a statement about whether THIS action was
+// checked, not about how well the evidence behind it was.
+func TestARecommendationInheritsTheWorstSeverityItCites(t *testing.T) {
+	insights := []models.Insight{
+		{ID: "mild", Scoring: &models.Scoring{
+			SeverityBand: gomodels.SeverityBandLow, SeverityScore: 0.25,
+			MagnitudeScore: 0.25, AreaWeight: 1,
+			SeverityReason: "Low — driven by 2%",
+		}},
+		{ID: "severe", Scoring: &models.Scoring{
+			SeverityBand: gomodels.SeverityBandHigh, SeverityScore: 1.0,
+			MagnitudeScore: 1.0, AreaWeight: 1,
+			SeverityReason: "High — driven by 34%",
+		}},
+		{ID: "legacy"}, // never scored
+	}
+	recs := []models.Recommendation{{
+		ID: "r1", Title: "t",
+		RelatedInsightIDs: []string{"mild", "legacy", "severe", "never-existed"},
+		Validation:        verdictOf(valmodels.StatusUnverifiable),
+	}}
+	scoreRecommendations(recs, insights, testScoringCfg())
+	got := recs[0]
+
+	if got.Severity != gomodels.SeverityBandHigh {
+		t.Errorf("severity = %q, want the worst cited insight's high", got.Severity)
+	}
+	if got.Scoring.SeverityReason != "High — driven by 34%" {
+		t.Errorf("reason = %q, want the severe insight's own", got.Scoring.SeverityReason)
+	}
+	// Its own verdict is unverifiable, so high severity lands in investigate
+	// rather than critical -- the cited insights' verdicts do not decide this.
+	if got.Scoring.PriorityTier != gomodels.PriorityTierInvestigate {
+		t.Errorf("tier = %q, want investigate from its own unverifiable verdict", got.Scoring.PriorityTier)
+	}
+	if got.Priority != scoring.RecommendationPriority(gomodels.PriorityTierInvestigate) {
+		t.Errorf("priority int = %d, want the investigate projection", got.Priority)
 	}
 }
 
@@ -195,7 +273,7 @@ func TestTheUnresolvedFigureDockReadsThePublishedProse(t *testing.T) {
 			ins := tc.ins
 			ins.Validation = verdictOf(valmodels.StatusConfirmed)
 			insights := []models.Insight{ins}
-			scoreInsights(insights, testScoringCfg())
+			scoreInsights(insights, testScoringCfg(), currencyPlan{}, nil)
 
 			found := false
 			for _, d := range insights[0].Scoring.ConfidenceDocks {
@@ -225,7 +303,7 @@ func TestTheEvidenceTrailReachesTheInput(t *testing.T) {
 			Verifier: &valmodels.StructuredVerdict{StepReadBeyondRetained: true},
 		},
 	}
-	in := insightScoringInput(ins, testScoringCfg())
+	in := insightScoringInput(ins, testScoringCfg(), currencyPlan{}, nil)
 	if in.Verdict != valmodels.StatusConfirmed {
 		t.Errorf("verdict = %q", in.Verdict)
 	}
@@ -243,14 +321,14 @@ func TestTheEvidenceTrailReachesTheInput(t *testing.T) {
 		Verifier: &valmodels.StructuredVerdict{},
 		Refuter:  &valmodels.StructuredVerdict{StepReadBeyondRetained: true},
 	}
-	if !insightScoringInput(ins, testScoringCfg()).StepReadBeyondRetained {
+	if !insightScoringInput(ins, testScoringCfg(), currencyPlan{}, nil).StepReadBeyondRetained {
 		t.Error("the refuter's step-read flag did not reach the input")
 	}
 
 	// A nil validation block leaves the verdict empty rather than defaulting
 	// to anything that reads as checked.
 	ins.Validation = nil
-	bare := insightScoringInput(ins, testScoringCfg())
+	bare := insightScoringInput(ins, testScoringCfg(), currencyPlan{}, nil)
 	if bare.Verdict != "" || bare.RefuterDisabled || bare.StepReadBeyondRetained {
 		t.Errorf("a nil validation block produced %+v", bare)
 	}
@@ -289,10 +367,10 @@ func TestScoringIsIdempotent(t *testing.T) {
 		Validation:     verdictOf(valmodels.StatusSupported),
 	}
 	once := []models.Insight{ins}
-	scoreInsights(once, testScoringCfg())
+	scoreInsights(once, testScoringCfg(), currencyPlan{}, nil)
 	twice := []models.Insight{ins}
-	scoreInsights(twice, testScoringCfg())
-	scoreInsights(twice, testScoringCfg())
+	scoreInsights(twice, testScoringCfg(), currencyPlan{}, nil)
+	scoreInsights(twice, testScoringCfg(), currencyPlan{}, nil)
 
 	if !reflect.DeepEqual(once[0], twice[0]) {
 		t.Errorf("scoring twice differs from scoring once:\n once  = %+v\n twice = %+v", once[0].Scoring, twice[0].Scoring)

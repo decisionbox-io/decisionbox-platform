@@ -115,7 +115,6 @@ var requiredByDesign = []struct {
 		required: map[string]string{
 			"name":         "562 of 562",
 			"description":  "562 of 562",
-			"severity":     "562 of 562",
 			"source_steps": "562 of 562",
 			"figures":      "required to keep it in front of the prose; see emptyAllowed",
 			"indicators":   "561 of 562, and likewise before the prose",
@@ -126,6 +125,12 @@ var requiredByDesign = []struct {
 		},
 		forbidden: map[string]string{
 			"quantifier_claims": "61% -- it quotes prose that does not exist yet when the evidence is written, so optional and last is correct",
+			// It WAS required, on 562 of 562. The evidence has not changed;
+			// what changed is who answers. Severity is derived from the
+			// figures the platform re-checked, so requiring it would force a
+			// model to invent a grade that is discarded before it is read.
+			"severity":   "derived from grounded magnitude x area weight; the schema does not ask for it at all",
+			"risk_score": "the continuous half of the same derived band",
 		},
 	},
 	{

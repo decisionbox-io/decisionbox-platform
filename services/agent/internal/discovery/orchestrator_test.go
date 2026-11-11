@@ -860,8 +860,12 @@ func TestGenerateRecommendations_ParseResponse(t *testing.T) {
 	if recs[0].Title != "Send Extra Lives" {
 		t.Errorf("Title = %q", recs[0].Title)
 	}
-	if recs[0].Priority != 1 {
-		t.Errorf("Priority = %d, want 1", recs[0].Priority)
+	// Priority is derived -- from the matrix over the inherited severity and
+	// this recommendation's own verdict -- and the scorer runs after this
+	// phase, so a freshly parsed recommendation carries none. A model-written
+	// one would decode to 0 as well: the field is tagged json:"-".
+	if recs[0].Priority != 0 {
+		t.Errorf("Priority = %d; generation must not set a derived field", recs[0].Priority)
 	}
 	if len(recs[0].RelatedInsightIDs) != 1 || recs[0].RelatedInsightIDs[0] != "churn-1" {
 		t.Errorf("RelatedInsightIDs = %v", recs[0].RelatedInsightIDs)

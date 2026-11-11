@@ -43,8 +43,13 @@ func TestBaseContextRules_ContainsAllExpectedRules(t *testing.T) {
 		{"rule 2 no-claim-beyond-window", "NO CLAIM BEYOND QUERY WINDOW"},
 		{"rule 7 partial-period hygiene", "PARTIAL-PERIOD HYGIENE"},
 		{"rule 8 non-dramatic header", "OBJECTIVE, NON-DRAMATIC LANGUAGE"},
-		{"rule 8 severity-only-in-field clause", "structured `severity` field"},
-		{"rule 8 critical-only-in-severity clause", `The word "critical"`},
+		// The clause used to say the word was allowed as the value of a
+		// structured `severity` field. The field is derived now, so the
+		// prohibition is flat and the test checks for the flat form -- a rule
+		// that still pointed at a field the model cannot write would be
+		// teaching it a contract that no longer exists.
+		{"rule 8 critical-banned-everywhere clause", `The word "critical" (and any translation thereof) may NOT appear`},
+		{"rule 8 critical-has-nowhere-correct clause", "nowhere left for the word to be"},
 		{"rule 8 translation-extension clause", "any translation thereof"},
 		{"rule 8 adverb hygiene clause", "Adverb hygiene"},
 	})
@@ -192,7 +197,11 @@ func TestRecommendationsRules_ContainsExpectedRules(t *testing.T) {
 		{"rule R tells the LLM to omit rather than guess", "OMIT that recommendation"},
 		{"non-dramatic reiteration", "NON-DRAMATIC LANGUAGE"},
 		{"critical banned in prose", "may NOT appear in"},
-		{"priority field reference", "`priority`"},
+		// No `priority` reference any more: the clause used to tell the model
+		// to encode urgency there, and the field is derived from the matrix
+		// over the cited insights' severity and this recommendation's own
+		// verdict.
+		{"urgency is not the model's to encode", "Do not encode urgency anywhere"},
 		{"rule M markdown header", "STRUCTURED MARKDOWN DESCRIPTION"},
 		{"rule M names GitHub-Flavored Markdown", "GitHub-Flavored Markdown"},
 		{"rule M clarifies the envelope", "ENVELOPE only"},
@@ -234,8 +243,8 @@ func TestVerifierRules_ContainsV1V4(t *testing.T) {
 		{"V3 header", "V3. CHECK CROSS-FIELD CONSISTENCY"},
 		{"V3 names source_steps comparison", "`source_steps`"},
 		{"V4 header", "V4. REJECT EDITORIAL LANGUAGE"},
-		{"V4 names severity carve-out", `The word "critical"`},
-		{"V4 allowed only in severity field", "`severity` value"},
+		{"V4 bans critical outright", "is not allowed anywhere"},
+		{"V4 leaves no structured home for the word", "no longer a structured field it"},
 	})
 }
 

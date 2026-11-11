@@ -71,25 +71,35 @@ func (r *DiscoveryRepository) GetByID(ctx context.Context, idHex string) (*model
 }
 
 // DocVerdictUpdate is what one on-demand re-validation writes back to a
-// document: the new verdict, and the confidence derived from it.
+// document: the new verdict, and the grade re-derived from it.
 //
-// The three travel together and in one write, because confidence is now a
-// function of the verdict. Writing the verdict alone would leave the document
-// claiming a confidence derived from the verdict it no longer has -- not
-// merely stale but internally contradictory, which is worse than either
-// staleness alone and is what a reader would be shown.
+// They travel together and in one write, because confidence is now a function
+// of the verdict. Writing the verdict alone would leave the document claiming
+// a confidence derived from the verdict it no longer has -- not merely stale
+// but internally contradictory, which is worse than either staleness alone and
+// is what a reader would be shown.
 //
-// Severity and risk_score are deliberately absent: they are still the analysis
-// model's own words, and nothing on this path is entitled to rewrite them.
+// Severity and risk_score are absent from this struct, and the sub-document
+// below carries them through unchanged. That is the point rather than an
+// omission: severity is magnitude x weight and a validation run changes
+// neither, so the scorer re-derives the confidence axis and the priority
+// rollup over it and copies the severity half from the stored document. A
+// stored severity is an immutable fact about the run that produced it.
 type DocVerdictUpdate struct {
 	// Validation is the new verdict block. Typed as any for the reason it
 	// always was: the agent's InsightValidation is an alias of the shared
 	// type and the caller has it in hand already.
 	Validation interface{}
 
-	// Scoring is the derived grade. Nil writes a null, which is the correct
-	// representation of "this document is not scored" -- but no caller should
-	// pass one, because a re-validated document always gets a fresh score.
+	// Scoring is the derived grade, whole: the re-derived confidence axis and
+	// priority rollup, and the severity half carried over from the stored
+	// document. The sub-document is replaced rather than patched key by key,
+	// so the carried-over half has to be present on the value passed here --
+	// which is why the scorer merges rather than this layer.
+	//
+	// Nil writes a null, which is the correct representation of "this
+	// document is not scored" -- but no caller should pass one, because a
+	// re-validated document always gets a fresh score.
 	Scoring *gomodels.Scoring
 
 	// Confidence is the continuous score, duplicated out of Scoring onto the

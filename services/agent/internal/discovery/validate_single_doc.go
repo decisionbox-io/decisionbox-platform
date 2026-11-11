@@ -37,10 +37,10 @@ type ValidateSingleDocInput struct {
 	Disc           verifier.DiscoveryContext
 	Executor       verifier.Executor
 
-	// ScoringCfg is the confidence engine's calibration to re-derive this
-	// document's score against. The zero value is the current default, which
-	// is what a caller with nothing to say should pass -- Score stamps the
-	// build's own engine version rather than an unexplainable 0.
+	// ScoringCfg is the scoring engine's calibration to re-derive this
+	// document's confidence against. The zero value is the current default,
+	// which is what a caller with nothing to say should pass -- the engine
+	// falls back rather than scoring against an empty table.
 	ScoringCfg scoring.Config
 
 	DocKind  valmodels.DocKind
@@ -117,10 +117,15 @@ func ValidateSingleDoc(ctx context.Context, in ValidateSingleDocInput) (models.V
 		// beside a validation that says Y -- an internally contradictory
 		// document, which is worse than either staleness alone.
 		//
-		// The confidence axis only. Severity and risk_score are still the
-		// analysis model's own words and this path has no business touching
-		// them; it is also why no vector-store method is needed here, since
-		// the Qdrant payload's only re-derivable field is write-only.
+		// The confidence axis and the priority rollup over it. Severity and
+		// risk_score stay FROZEN: severity is magnitude x weight, and a
+		// validation run changes neither -- so a stored severity is an
+		// immutable fact about the run that produced it. That is also why no
+		// vector-store method is needed here: the Qdrant payload's `severity`
+		// filter can never drift, and its other scoring field is write-only.
+		//
+		// Priority is the exception and must move, because one of its two
+		// inputs just did.
 		rescoreTargetInsight(target, in.ScoringCfg)
 		return results[0], nil
 
@@ -156,23 +161,60 @@ func ValidateSingleDoc(ctx context.Context, in ValidateSingleDocInput) (models.V
 }
 
 // rescoreTargetInsight and rescoreTargetRecommendation re-derive one
-// document's confidence in place, through the same scorer the run uses.
+// document's confidence axis in place and leave its severity axis exactly as
+// the run that produced it left it.
 //
-// The same path deliberately: a second derivation here would be a second
-// answer to "what is this worth", and the two would drift the first time
-// either changed. The single-element slice is how the shared scorer is
-// reached without a divergent code path, which is the same shape
-// ValidateSingleDoc already uses to reach validateInsights.
+// Through the engine's own RescoreConfidence rather than a merge written here,
+// because deciding which fields survive a re-validation is a property of the
+// scoring model and not of this call site. The engine states the asymmetry and
+// a test holds it field by field.
+//
+// A document that was never scored at all -- a legacy row an operator clicked
+// Run validation on -- gets a full score instead. It has no severity half to
+// freeze, and leaving it unscored would mean the one action that re-derives a
+// grade declined to produce one.
 func rescoreTargetInsight(target *models.Insight, cfg scoring.Config) {
-	one := []models.Insight{*target}
-	scoreInsights(one, cfg)
-	target.Confidence = one[0].Confidence
-	target.Scoring = one[0].Scoring
+	in := insightScoringInput(*target, cfg, currencyPlan{}, nil)
+	if target.Scoring == nil {
+		derived := scoring.Score(in)
+		applyInsightScore(target, derived)
+		return
+	}
+	applyInsightScore(target, scoring.RescoreConfidence(*target.Scoring, in))
 }
 
 func rescoreTargetRecommendation(target *models.Recommendation, cfg scoring.Config) {
-	one := []models.Recommendation{*target}
-	scoreRecommendations(one, cfg)
-	target.Confidence = one[0].Confidence
-	target.Scoring = one[0].Scoring
+	in := recommendationScoringInput(*target, cfg)
+	if target.Scoring == nil {
+		// No insights in hand on this path, so nothing to inherit: the
+		// confidence axis is re-derived and the severity half stays absent,
+		// which is what it already was.
+		applyRecommendationScore(target, scoring.ScoreRecommendation(in, nil))
+		return
+	}
+	applyRecommendationScore(target, scoring.RescoreConfidence(*target.Scoring, in))
+}
+
+// applyInsightScore and applyRecommendationScore mirror a derived grade back
+// onto the document's own fields.
+//
+// The mirrored fields are the ones that keep their bson keys -- `confidence`,
+// `severity`, `risk_score` and a recommendation's `priority` -- so every
+// existing consumer of them keeps working. Writing them through one helper is
+// what keeps this path and the run path from mirroring different subsets:
+// `severity` is written here even though the re-score cannot change it,
+// because a document whose sub-document says medium and whose own field says
+// critical is worse than either value alone.
+func applyInsightScore(target *models.Insight, derived models.Scoring) {
+	target.Scoring = &derived
+	target.Confidence = derived.ConfidenceScore
+	target.Severity = derived.SeverityBand
+	target.RiskScore = derived.SeverityScore
+}
+
+func applyRecommendationScore(target *models.Recommendation, derived models.Scoring) {
+	target.Scoring = &derived
+	target.Confidence = derived.ConfidenceScore
+	target.Severity = derived.SeverityBand
+	target.Priority = scoring.RecommendationPriority(derived.PriorityTier)
 }

@@ -180,9 +180,12 @@ verbatim in non-English output; translate the principle.
    any translation of these words into the project's output
    language.
 
-   The word "critical" (and any translation thereof) may appear ONLY
-   as the value of the structured ` + "`severity`" + ` field — never inside
-   prose.
+   The word "critical" (and any translation thereof) may NOT appear
+   anywhere. It used to be allowed as the value of a structured
+   ` + "`severity`" + ` field; that field is no longer yours to write, and
+   the platform derives both the severity band and the priority tier
+   from the evidence. There is nowhere left for the word to be
+   correct.
 
    Replace dramatic language with the underlying number or ratio:
      Bad : "Online Return Disaster"
@@ -355,8 +358,10 @@ NON-DRAMATIC LANGUAGE (recommendation prose)
    No dramatic vocabulary (or its translations), no emoji, no
    exclamation marks, no all-caps emphasis, no metaphors. The word
    "critical" (and any translation thereof) may NOT appear in
-   recommendation prose — encode urgency in the structured
-   ` + "`priority`" + ` field instead.
+   recommendation prose. Do not encode urgency anywhere: the
+   platform derives this recommendation's priority from the severity
+   of the insights it cites and from whether its own claims held up
+   against warehouse rows.
 
 M. STRUCTURED MARKDOWN DESCRIPTION
    Author the ` + "`description`" + ` field as GitHub-Flavored Markdown, the
@@ -451,8 +456,8 @@ V4. REJECT EDITORIAL LANGUAGE
     severe, terrible, alarming, devastating — or any translation
     thereof), exclamation marks, emoji, all-caps emphasis, and
     comparative metaphors. The word "critical" (and any translation)
-    is allowed only as a ` + "`severity`" + ` value, never in prose. On any
-    hit, emit:
+    is not allowed anywhere: there is no longer a structured field it
+    can be the value of. On any hit, emit:
       SELECT 0 AS count  -- V4: editorial language in <field>:
                          -- "<offending phrase>"
     so the existing pipeline rejects the insight.

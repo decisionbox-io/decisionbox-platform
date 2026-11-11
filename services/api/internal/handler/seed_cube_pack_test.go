@@ -250,6 +250,13 @@ func TestCubeSeedPack_RecommendationExampleMatchesTheModel(t *testing.T) {
 		"confidence":       "derived from the validation verdict after generation, not authored",
 		"evidence_scoring": "the derived grade; attached by the scorer after validation",
 
+		// The same case, one axis over. Severity is inherited from the
+		// insights a recommendation cites and priority comes from the matrix
+		// over that and its own verdict -- neither exists when the model is
+		// writing, and neither key is on the agent's wire any more.
+		"severity": "inherited from the cited insights by the scorer, not authored",
+		"priority": "derived from the priority matrix after validation, not authored",
+
 		// The figure trail. The three derived records are the same case as
 		// `validation`: attached after generation, and a pack that taught the model
 		// to emit one would be teaching it to author the record of its own check.

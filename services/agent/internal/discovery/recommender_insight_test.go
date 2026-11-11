@@ -12,18 +12,15 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
-// recommenderSentInsightFields are the models.Insight json names the
+// recommenderSentInsightFields are the models.Insight field names the
 // recommendation prompt carries — the fields the recommender reasons over.
 //
-// `confidence` is not among them and is not in the dropped table either,
-// because models.Insight no longer emits it at all: the number is derived from
-// the validation verdict, and the field is tagged json:"-" so a model cannot
-// author one. Dropping it from the prompt follows for the reason the table
-// already gives for `validation` — the eligibility filter has applied that
-// verdict before these insights are projected, and confidence is now a
-// function of it, so the field is near-constant here and carries nothing the
-// filter has not already applied. Pinned both ways by
-// TestTheProjectionCarriesNoModelAuthoredConfidence.
+// `severity` and `risk_score` are still sent, and they are better input than
+// they were: both are derived from the figures Go re-checked rather than
+// written by the model, so the recommender is shown a grounded ranking of
+// which findings matter instead of the analysis model's opinion of its own
+// work. They stay under the names an insight is persisted with, so a project
+// that customised its recommendation prompt around `severity` keeps working.
 var recommenderSentInsightFields = []string{
 	"id", "analysis_area", "name", "description", "severity",
 	"affected_count", "risk_score", "metrics", "indicators",
@@ -52,7 +49,8 @@ var recommenderDroppedInsightFields = map[string]string{
 	"evidence_figure_corrections": "what Go replaced, i.e. the wrong number beside the right one",
 	"evidence_figure_template":    "the prose with references unrendered; the rendered prose and `figures` say the same thing in fewer tokens",
 	"evidence_repair":             "carries the ORIGINAL refuted claim verbatim, so a sentence this pipeline deleted for being false would be back in the prompt",
-	"evidence_scoring":            "the derived grade, which is a function of the verdict the eligibility filter has already applied; a recommender shown it would be re-ranking insights by a number it cannot act on",
+	"evidence_scoring":            "the derived grade; the two numbers a recommender acts on -- severity and risk_score -- are mirrored onto the insight's own fields and ARE sent, and the rest of the sub-document is the arithmetic behind them",
+	"confidence":                  "a function of the verdict the eligibility filter has already applied, so it is near-constant here and carries nothing the filter has not",
 }
 
 // fullyPopulatedInsight returns an insight with every field set, the dropped
@@ -143,6 +141,37 @@ func mustMarshalProjection(t *testing.T, insights []models.Insight) string {
 	return string(b)
 }
 
+// insightFieldNames returns every name a models.Insight field is known by, in
+// declaration order.
+//
+// Not jsonFieldNames, because three of those fields are tagged json:"-" --
+// `severity`, `risk_score` and `confidence` are derived, and the tag is what
+// stops a model authoring them. They are still fields of an insight and still
+// reachable by a projection, which is exactly what this guard is about, so
+// each is reported under the name it is persisted and projected with. Skipping
+// them would mean a derived field could be added to the prompt, or dropped
+// from it, with nobody deciding.
+func insightFieldNames(t reflect.Type) []string {
+	out := make([]string, 0, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		if name == "-" {
+			// The json tag withholds it from the model's own wire; the bson
+			// tag is the name it is stored and projected under.
+			name, _, _ = strings.Cut(f.Tag.Get("bson"), ",")
+		}
+		if name == "-" || name == "" {
+			name = f.Name
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
 // jsonFieldNames returns the json names a struct marshals, in declaration
 // order. Fields tagged "-" are skipped; an untagged field marshals under its Go
 // name, so that is what is reported.
@@ -177,7 +206,7 @@ func TestRecommenderInsightProjectionIsExhaustive(t *testing.T) {
 		sent[n] = true
 	}
 
-	modelFields := jsonFieldNames(reflect.TypeOf(models.Insight{}))
+	modelFields := insightFieldNames(reflect.TypeOf(models.Insight{}))
 	seen := make(map[string]bool, len(modelFields))
 	for _, name := range modelFields {
 		seen[name] = true
@@ -196,7 +225,7 @@ func TestRecommenderInsightProjectionIsExhaustive(t *testing.T) {
 	// the prompt, and the recommender would read a key the model never emits.
 	for _, name := range jsonFieldNames(reflect.TypeOf(recommenderInsight{})) {
 		if !seen[name] {
-			t.Errorf("recommenderInsight emits %q, which is not a json field of models.Insight — check the tag", name)
+			t.Errorf("recommenderInsight emits %q, which is not a field of models.Insight — check the tag", name)
 		}
 		if !sent[name] {
 			t.Errorf("recommenderInsight emits %q, which is missing from recommenderSentInsightFields", name)
@@ -204,7 +233,7 @@ func TestRecommenderInsightProjectionIsExhaustive(t *testing.T) {
 	}
 	for _, name := range recommenderSentInsightFields {
 		if !seen[name] {
-			t.Errorf("recommenderSentInsightFields names %q, which models.Insight does not emit", name)
+			t.Errorf("recommenderSentInsightFields names %q, which models.Insight does not have", name)
 		}
 	}
 
@@ -212,7 +241,7 @@ func TestRecommenderInsightProjectionIsExhaustive(t *testing.T) {
 	// otherwise leave a stale excuse behind and let the new name through.
 	for name := range recommenderDroppedInsightFields {
 		if !seen[name] {
-			t.Errorf("recommenderDroppedInsightFields names %q, which models.Insight no longer emits — drop the entry", name)
+			t.Errorf("recommenderDroppedInsightFields names %q, which models.Insight no longer has — drop the entry", name)
 		}
 	}
 }
@@ -227,7 +256,7 @@ func TestInsightsForRecommenderPrompt_KeyOrderFollowsTheModel(t *testing.T) {
 	for _, n := range projected {
 		sent[n] = true
 	}
-	for _, n := range jsonFieldNames(reflect.TypeOf(models.Insight{})) {
+	for _, n := range insightFieldNames(reflect.TypeOf(models.Insight{})) {
 		if sent[n] {
 			modelOrder = append(modelOrder, n)
 		}

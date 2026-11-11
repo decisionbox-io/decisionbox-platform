@@ -38,7 +38,6 @@ var referenceFields = map[string]string{
 // each. Recorded rather than skipped: the reason is the thing worth keeping, and a field
 // that quietly joins this set is a field nobody argued about.
 var nonReferenceFields = map[string]string{
-	"insight.insights.items.severity":       "a fixed word, not prose",
 	"insight.insights.items.target_segment": "names a population, carries no measurement",
 
 	// The figure sub-schema describes how a figure is declared. Its wording is already

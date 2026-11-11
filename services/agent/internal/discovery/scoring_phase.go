@@ -5,14 +5,17 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
-// Deriving an insight's confidence instead of asking the model for it.
+// Deriving an insight's grade instead of asking the model for it.
 //
-// The model used to author the number, and nothing recomputed it. Measured
-// over 160 stored insights it ran 0.75-0.99 with a mean of 0.93 -- a quarter
-// of its range, correlating with nothing -- while nine of those insights had
-// been contradicted by the warehouse and forty-three carried arithmetic Go
-// refuted and could not repair. A reader sorting thirty findings by confidence
-// was sorting by noise.
+// The model used to author all three numbers -- how confident it was, how
+// severe the finding was, and a risk score -- and nothing recomputed any of
+// them. Measured over 160 stored insights the confidence ran 0.75-0.99 with a
+// mean of 0.93, a quarter of its range correlating with nothing, while nine of
+// those insights had been contradicted by the warehouse and forty-three
+// carried arithmetic Go refuted and could not repair. A reader sorting thirty
+// findings by confidence was sorting by noise, and `severity` was the same
+// self-assessment in words: a finding whose headline number the warehouse had
+// refuted could still call itself critical, and did.
 //
 // Everything the derivation needs is already on the document by the time these
 // run: the verdict the verifier and refuter combined, what the sources said
@@ -21,56 +24,119 @@ import (
 // those and writes the grade.
 //
 // The two functions below CLEAR before they write, unconditionally and
-// including the case where the document has no verdict at all. That is the
-// whole correctness argument, and it is why editing the prompts would not have
-// been enough: a pack's seeds are never overwritten on upgrade and a project
-// snapshots its area prompts at creation, so an existing deployment keeps
-// asking the model for the number forever. Clearing means the answer is
-// discarded whether or not it was asked for.
+// including the case where the document has no verdict and no figure at all.
+// That is the whole correctness argument, and it is why editing the prompts
+// would not have been enough: a pack's seeds are never overwritten on upgrade
+// and a project snapshots its area prompts at creation, so an existing
+// deployment keeps asking the model for these numbers forever. Clearing means
+// the answer is discarded whether or not it was asked for.
 
-// scoreInsights derives every insight's confidence in place.
+// scoreInsights derives every insight's confidence, severity and priority in
+// place.
 //
 // A free function rather than a method, because the on-demand "Run validation"
 // path re-scores one document outside any run and has no orchestrator to reach
 // through. The config is passed in rather than resolved here so that two areas
 // of one run can never disagree about the calibration they scored against.
-func scoreInsights(insights []models.Insight, cfg scoring.Config) {
+//
+// currencies and stepByID are what resolve each insight's home currency, which
+// decides which of its amounts the severity axis is allowed to compare. A zero
+// currencyPlan resolves every insight to "" and bands on share, which is the
+// right answer for a caller that has no datasource context to offer -- the
+// on-demand re-score of a stored document is exactly that, and it keeps its
+// severity frozen anyway.
+func scoreInsights(insights []models.Insight, cfg scoring.Config, currencies currencyPlan, stepByID map[int]*models.ExplorationStep) {
 	for i := range insights {
-		in := insightScoringInput(insights[i], cfg)
-		// Clear, then write. Both fields, every time: a document arriving with
-		// the model's own number and a stale sub-document from a previous
-		// attempt has to come out carrying neither.
+		in := insightScoringInput(insights[i], cfg, currencies, stepByID)
+		// Clear, then write. Every field, every time: a document arriving
+		// with the model's own numbers and a stale sub-document from a
+		// previous attempt has to come out carrying none of them.
 		insights[i].Scoring = nil
 		insights[i].Confidence = 0
+		insights[i].Severity = ""
+		insights[i].RiskScore = 0
 
 		derived := scoring.Score(in)
 		insights[i].Scoring = &derived
 		insights[i].Confidence = derived.ConfidenceScore
+		// Mirrored onto the document's own fields, which keep their bson keys
+		// and types: `severity` is a live Qdrant match filter and sits inside
+		// the dedup embedding text, and `risk_score` is read by API clients.
+		// What changed is how they are POPULATED, so every existing consumer
+		// keeps working and starts reading a grounded value.
+		insights[i].Severity = derived.SeverityBand
+		insights[i].RiskScore = derived.SeverityScore
 	}
 }
 
-// scoreRecommendations derives every recommendation's confidence in place,
-// from its OWN verdict rather than from the insights it cites.
+// scoreRecommendations derives every recommendation's grade in place:
+// confidence from its OWN verdict, severity inherited from the insights it
+// cites.
 //
-// Its own, because a recommendation is a separate claim: the verifier checked
-// whether this action follows from those findings, and that verdict is the one
-// a reader is being told about. Inheriting the insights' confidence would
-// report how well the evidence was checked, not how well the recommendation
-// was.
-func scoreRecommendations(recs []models.Recommendation, cfg scoring.Config) {
+// Confidence is its own because a recommendation is a separate claim -- the
+// verifier checked whether this action follows from those findings, and that
+// verdict is the one a reader is being told about. Inheriting it would report
+// how well the evidence was checked, not how well the recommendation was.
+//
+// Severity is inherited for the opposite reason. A recommendation's figures
+// are `ref` and `sum` over figures its insights already declared, so measuring
+// them would band a magnitude off numbers already banded once and report the
+// result as independent evidence.
+func scoreRecommendations(recs []models.Recommendation, insights []models.Insight, cfg scoring.Config) {
+	severityByInsight := make(map[string]scoring.InheritedSeverity, len(insights))
+	for _, ins := range insights {
+		if ins.ID == "" || ins.Scoring == nil {
+			continue
+		}
+		severityByInsight[ins.ID] = scoring.InheritedSeverity{
+			MagnitudeScore: ins.Scoring.MagnitudeScore,
+			SeverityBand:   ins.Scoring.SeverityBand,
+			SeverityScore:  ins.Scoring.SeverityScore,
+			SeverityDriver: ins.Scoring.SeverityDriver,
+			SeverityReason: ins.Scoring.SeverityReason,
+			AreaWeight:     ins.Scoring.AreaWeight,
+			WeightSource:   ins.Scoring.WeightSource,
+		}
+	}
+
 	for i := range recs {
 		in := recommendationScoringInput(recs[i], cfg)
 		recs[i].Scoring = nil
 		recs[i].Confidence = 0
+		recs[i].Severity = ""
+		recs[i].Priority = 0
 
-		derived := scoring.Score(in)
+		derived := scoring.ScoreRecommendation(in, citedSeverities(recs[i], severityByInsight))
 		recs[i].Scoring = &derived
 		recs[i].Confidence = derived.ConfidenceScore
+		recs[i].Severity = derived.SeverityBand
+		// The integer the field has always carried, repopulated from the
+		// tier. Zero when nothing could be inherited, which is the field's
+		// own "unset" rather than the bottom of the scale.
+		recs[i].Priority = scoring.RecommendationPriority(derived.PriorityTier)
 	}
 }
 
-// insightScoringInput collects what the confidence axis reads off one insight.
-func insightScoringInput(ins models.Insight, cfg scoring.Config) scoring.Input {
+// citedSeverities is the severity half of each insight a recommendation cites,
+// in citation order.
+//
+// Order matters because inheritance keeps the first on a tie, so the inherited
+// driver is the first-cited insight's and is stable across re-scores. An id
+// that resolves to nothing is skipped: the generation phase already drops a
+// recommendation whose citations cannot be resolved, so this only happens on a
+// re-score that has one document in hand rather than the run.
+func citedSeverities(rec models.Recommendation, byInsight map[string]scoring.InheritedSeverity) []scoring.InheritedSeverity {
+	out := make([]scoring.InheritedSeverity, 0, len(rec.RelatedInsightIDs))
+	for _, id := range rec.RelatedInsightIDs {
+		if sev, ok := byInsight[id]; ok {
+			out = append(out, sev)
+		}
+	}
+	return out
+}
+
+// insightScoringInput collects what the engine reads off one insight.
+func insightScoringInput(ins models.Insight, cfg scoring.Config, currencies currencyPlan, stepByID map[int]*models.ExplorationStep) scoring.Input {
 	in := scoring.Input{
 		QualityCaveats:     ins.Quality,
 		FigureVerdicts:     ins.FigureVerdicts,
@@ -81,6 +147,9 @@ func insightScoringInput(ins models.Insight, cfg scoring.Config) scoring.Input {
 		// works identically on a live insight and on one re-read from storage,
 		// which is what the on-demand re-score needs.
 		UnresolvedFigures: len(unresolvedRefsInInsight(ins)),
+		Figures:           ins.Figures,
+		HomeCurrency:      currencies.forInsight(ins, stepByID),
+		AreaID:            ins.AnalysisArea,
 		Config:            cfg,
 	}
 	applyValidationToInput(&in, ins.Validation)
@@ -95,6 +164,10 @@ func insightScoringInput(ins models.Insight, cfg scoring.Config) scoring.Input {
 // unresolved-reference count is computed anyway, because the gate that drops
 // such recommendations runs in the generation phase and an on-demand re-score
 // of a stored document has no gate in front of it.
+//
+// No figures and no home currency, deliberately: ScoreRecommendation does not
+// measure a recommendation's own numbers, and handing it the means to would
+// make that a one-line change away rather than a decision.
 func recommendationScoringInput(rec models.Recommendation, cfg scoring.Config) scoring.Input {
 	in := scoring.Input{
 		FigureVerdicts:    rec.FigureVerdicts,
