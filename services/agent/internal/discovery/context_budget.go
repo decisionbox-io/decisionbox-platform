@@ -216,19 +216,43 @@ func (o *Orchestrator) reflectionPriorsBudget(
 // defaultDedupMinScore is the cosine floor above which two pieces of discovery
 // output are the same thing said twice.
 //
-// ONE default for the two dedup paths this codebase has, because having two was
-// the defect: the ledger's semantic dedup ran at 0.85 and demonstrably worked —
-// on a production project it merged roughly eighty findings whose text had been
-// reworded between runs — while the document-level check ran at a hard-coded
-// 0.95 and marked zero of about five hundred insights. Two systems disagreeing
-// about what "the same finding" means, and the effective one was not the one
-// the user could see.
+// MEASURED, not chosen. 589 real documents (526 insights, 63 recommendations)
+// from 30 runs across 8 projects were embedded and run through this exact check
+// at candidate thresholds:
 //
-// 0.85 is the value with evidence behind it, measured on the same kind of text:
-// a ledger finding is an area, a name and a description, and a document's
-// embedding text is a name, a description, an area, a severity and a segment.
-// Each path keeps its own override, so a deployment can still separate them.
-const defaultDedupMinScore = 0.85
+//	threshold  marked        of which from an earlier run
+//	    0.95    71 (12%)      1
+//	    0.92   152 (26%)      2
+//	    0.90   183 (31%)     12
+//	    0.88   206 (35%)     20
+//	    0.85   239 (41%)     38
+//
+// The literal this replaces was 0.95, and the second column is why it never
+// fired: ONE cross-run duplicate in 589 documents, on a corpus where the same
+// finding is demonstrably reported run after run. The archetype in that data is
+// a take-rate finding restated six times across runs in six wordings, scoring
+// 0.872 to 0.904 — a 0.92 floor catches none of them and 0.95 catches none.
+//
+// Reading the pairs at each floor by hand: above 0.88 the marks are
+// near-verbatim rewordings, including ones that only differ by a word and ones
+// in different analysis areas. Below it they start including findings that are
+// merely ABOUT the same subject with different figures — "top price decile is
+// 40.7% of commission" against "top 2 deciles carry 57.4%" — where hiding one
+// hides a different claim rather than a repetition. 0.88 is where that begins,
+// so that is the default.
+//
+// It is NOT the ledger's 0.85, and the two should not be unified even though
+// they judge a similar question. The ledger MERGES — it bumps a seen-count and
+// keeps one document, on text that is a finding's name and description. This
+// one HIDES, on an insight's full embedding text, which is longer and so scores
+// higher for the same degree of relatedness. A harder action on longer text
+// earns a stricter floor; forcing them equal would import this one's false
+// positives into the other's corpus or the reverse.
+//
+// A wrong mark here is recoverable and visible — the row stays reachable
+// through include_duplicates, carrying the score that hid it — which is what
+// makes erring toward marking defensible at all.
+const defaultDedupMinScore = 0.88
 
 // documentDedupMinScoreEnv overrides the floor for the insight and
 // recommendation documents Phase 9 marks. Named for documents rather than for

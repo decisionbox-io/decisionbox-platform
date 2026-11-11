@@ -83,10 +83,13 @@ const (
 	defaultDiscoveryReflectionMaxOutput  = 3000
 	defaultDiscoveryReflectionParseRetry = 1
 	defaultDiscoveryLedgerMaxFindings    = 500
-	defaultDiscoveryLedgerDedupMinScore  = defaultDedupMinScore
-	defaultDiscoveryLedgerTrendDelta     = 0.2
-	maxConvergenceHistory                = 50
-	maxLedgerTasksInPrompt               = 40
+	// Deliberately not defaultDedupMinScore. That one hides a document; this
+	// one merges two findings into one and bumps a seen-count, on shorter
+	// text. See the comment on defaultDedupMinScore for the measurement.
+	defaultDiscoveryLedgerDedupMinScore = 0.85
+	defaultDiscoveryLedgerTrendDelta    = 0.2
+	maxConvergenceHistory               = 50
+	maxLedgerTasksInPrompt              = 40
 	// defaultLearningRelevance is the importance a learning is stored with when
 	// the model gave none or gave one outside 0..1. Shared by the
 	// project-context note and the ledger's own copy so the two cannot drift.
