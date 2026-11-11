@@ -167,11 +167,6 @@ type LedgerFinding struct {
 	// reflection phase's semantic-dedup path catches rewordings this misses.
 	NormalizedKey string `bson:"normalized_key" json:"-"`
 
-	// Embed* track Qdrant indexing state (enterprise RAG). Not part of any API
-	// contract.
-	EmbedStatus    string `bson:"embed_status,omitempty" json:"-"`
-	EmbeddingModel string `bson:"embedding_model,omitempty" json:"-"`
-
 	CreatedAt time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
 }
@@ -430,4 +425,3 @@ type ReflectionMarker struct {
 func (m ReflectionMarker) Fresh(now time.Time) bool {
 	return !m.Since.IsZero() && now.Sub(m.Since) < ReflectionMarkerTTL()
 }
-
