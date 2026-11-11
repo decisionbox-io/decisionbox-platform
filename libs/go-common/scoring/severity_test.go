@@ -655,23 +655,41 @@ func TestTheLargestIsPickedOnTheCheckedQuantityToo(t *testing.T) {
 	}
 }
 
-// TestAnAbsentEvaluatedValueFallsBackToTheClaim -- Evaluated is omitempty, so
-// BSON cannot tell an evaluated zero from an absent field. For a HOLDING
-// verdict the claim agrees with the evaluation to the printed precision, so
-// either answer is the same answer.
-func TestAnAbsentEvaluatedValueFallsBackToTheClaim(t *testing.T) {
-	got := Score(Input{
-		Verdict: valmodels.StatusConfirmed,
-		Figures: []gomodels.Figure{{ID: "f1", Value: 34, Unit: gomodels.UnitPercent, Decimals: 0}},
-		FigureVerdicts: []gomodels.FigureVerdict{
-			{ID: "f1", Display: "34%", Status: gomodels.FigureHolds, Claimed: 34},
-		},
-		Config: DefaultConfig(),
-	})
-	if got.SeverityBand != gomodels.SeverityBandHigh {
-		t.Errorf("band = %q, want high", got.SeverityBand)
+// TestAZeroEvaluationIsARealAnswer is the trap the Claimed fallback was.
+//
+// Evaluated is omitempty, so a zero evaluation is stored as an absent field --
+// and a zero evaluation is reachable: a claim of 400,000 rendered at millions
+// scale with no decimals prints "$0M" and legitimately holds against a
+// warehouse zero. Falling back to the claim there resurrects the model's
+// unrounded 400,000 and lets a figure a reader sees as $0M outrank a checked
+// $100K, which is the unchecked-digits defect the checked quantity exists to
+// remove, reintroduced by the guard against it.
+func TestAZeroEvaluationIsARealAnswer(t *testing.T) {
+	cfg := configWithAmountBands()
+
+	rounded := gomodels.Figure{
+		ID: "rounds-to-zero", Value: 400_000, Unit: gomodels.UnitCurrency,
+		Currency: "$", Scale: gomodels.ScaleMillions,
 	}
-	if got.SeverityDriver.Figure.Value != 34 {
-		t.Errorf("driver value = %v, want the claimed 34", got.SeverityDriver.Figure.Value)
+	real := gomodels.Figure{ID: "real", Value: 100_000, Unit: gomodels.UnitCurrency, Currency: "$"}
+
+	got := Score(Input{
+		Verdict:      valmodels.StatusConfirmed,
+		HomeCurrency: "$",
+		Figures:      []gomodels.Figure{rounded, real},
+		FigureVerdicts: []gomodels.FigureVerdict{
+			// Holds against zero: Evaluated is absent, which IS the zero.
+			{ID: "rounds-to-zero", Display: "$0M", Status: gomodels.FigureHolds, Claimed: 400_000},
+			{ID: "real", Display: "$100K", Status: gomodels.FigureHolds, Claimed: 100_000, Evaluated: 100_000},
+		},
+		Config: cfg,
+	})
+
+	if got.SeverityDriver.Figure == nil || got.SeverityDriver.Figure.FigureID != "real" {
+		t.Errorf("driver = %+v, want the checked $100K: a figure a reader sees as $0M cannot "+
+			"be the largest amount", got.SeverityDriver.Figure)
+	}
+	if got.SeverityDriver.Amount == nil || got.SeverityDriver.Amount.FigureID != "real" {
+		t.Errorf("amount at stake = %+v, want the checked $100K", got.SeverityDriver.Amount)
 	}
 }

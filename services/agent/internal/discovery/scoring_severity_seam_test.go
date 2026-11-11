@@ -515,3 +515,54 @@ func TestARepairedAwayFigureCannotDriveSeverity(t *testing.T) {
 		}
 	})
 }
+
+// TestARefutedAmountCannotVetoACheckedOne -- the home currency is resolved
+// over the amounts that could actually qualify.
+//
+// An insight with a holding local amount and a refuted one from another
+// datasource used to lose BOTH: the two currencies disagreed, so the home
+// currency came back empty and the checked amount was discarded with the
+// refuted one. That gives a number the warehouse contradicted a veto over the
+// comparability of a number it confirmed.
+func TestARefutedAmountCannotVetoACheckedOne(t *testing.T) {
+	plan := newCurrencyPlan(profileWithCurrency("TRY"), []models.WarehouseConfig{
+		datasource("default", ""), datasource("eu", "EUR"),
+	})
+	stepByID := map[int]*models.ExplorationStep{
+		3: {Step: 3, WarehouseID: "default"},
+		7: {Step: 7, WarehouseID: "eu"},
+	}
+	sc := scoringContext{cfg: testScoringCfg(), currencies: plan, stepByID: stepByID, writer: &usWriter}
+
+	lira, liraVerdict := holdingFigure("lira", 2_400_000, models.UnitCurrency, "₺", 3)
+	share, shareVerdict := holdingFigure("share", 34, models.UnitPercent, "", 3)
+	// A euro amount the warehouse contradicted.
+	euro := models.Figure{ID: "euro", Value: 900_000, Unit: models.UnitCurrency,
+		Currency: "€", Decimals: 2, Step: 7, Kind: models.FigureCell}
+	euroRefuted := models.FigureVerdict{ID: "euro", Display: "€900000.00",
+		Status: models.FigureFails, Claimed: 900_000, Evaluated: 12}
+
+	ins := models.Insight{ID: "i1", AnalysisArea: "revenue", Name: "n"}
+	ins.Figures = []models.Figure{lira, euro, share}
+	ins.FigureVerdicts = []models.FigureVerdict{liraVerdict, euroRefuted, shareVerdict}
+	ins.Description = "The finding states {{lira}}, {{euro}} and {{share}}."
+	one := []models.Insight{ins}
+	usWriter.renderInsightFigures(one)
+	ins = one[0]
+	ins.Validation = verdictOf(valmodels.StatusConfirmed)
+
+	insights := []models.Insight{ins}
+	scoreInsights(insights, sc)
+	driver := insights[0].Scoring.SeverityDriver
+
+	if driver.Amount == nil || driver.Amount.Currency != "₺" {
+		t.Errorf("the checked lira amount was discarded: %+v; a refuted euro figure must not "+
+			"decide that the insight's currencies disagree", driver.Amount)
+	}
+	if driver.Amount != nil && driver.Amount.FigureID == "euro" {
+		t.Error("the refuted euro amount became the driver")
+	}
+	if driver.Figure == nil || driver.Figure.FigureID != "share" {
+		t.Errorf("banded on %+v, want the checked share", driver.Figure)
+	}
+}

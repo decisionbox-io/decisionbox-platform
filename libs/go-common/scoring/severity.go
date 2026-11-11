@@ -209,19 +209,20 @@ func severityFigure(f gomodels.Figure, v gomodels.FigureVerdict) *gomodels.Sever
 }
 
 // checkedValue is the quantity a holding verdict certifies: what Go evaluated
-// against the rows.
+// against the rows, and nothing else.
 //
-// Claimed is the fallback and not a second opinion -- it is what the figure
-// declared, which for a HOLDING verdict agrees with Evaluated to the printed
-// precision by definition. It is reached only when Evaluated is absent, which
-// BSON cannot distinguish from zero because the field is omitempty; and when
-// the evaluated quantity really is zero, Claimed is zero to that precision
-// too, so either answer is the same answer.
+// Evaluated unconditionally, with NO fallback to Claimed, and the absence of
+// that fallback is the point. Evaluated is omitempty, so a zero is stored as
+// an absent field -- but a zero evaluation is a real and reachable answer: a
+// claim of 400,000 rendered at millions scale with no decimals prints "$0M"
+// and legitimately holds against a warehouse zero. Falling back to Claimed
+// there resurrects the model's unrounded 400,000 and lets a figure a reader
+// sees as $0M outrank a checked $100K -- which is the unchecked-digits defect
+// this function exists to remove, reintroduced by the guard against it.
+//
+// So absent reads as zero, which for a holding verdict is what it means.
 func checkedValue(v gomodels.FigureVerdict) float64 {
-	if v.Evaluated != 0 {
-		return v.Evaluated
-	}
-	return v.Claimed
+	return v.Evaluated
 }
 
 // bandFor2 finds the band a figure's absolute value falls in, or "" when no

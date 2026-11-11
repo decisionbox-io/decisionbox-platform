@@ -173,6 +173,41 @@ func (sc scoringContext) figuresFor(ins models.Insight) []models.Figure {
 	return sc.writer.figuresTheProseStates(ins)
 }
 
+// holdingCurrencyFigures is the currency figures whose own arithmetic the
+// platform reproduced.
+//
+// Only these can set an insight's home currency, because only these can be
+// its driver: a refuted or unsettled amount is not a number the severity axis
+// may read, so letting it decide that the insight's currencies disagree would
+// be letting it suppress one that is checked.
+//
+// The verdict list is passed whole to the engine regardless -- a refuted
+// figure still docks confidence, which is a statement about the check rather
+// than about the money.
+func holdingCurrencyFigures(figures []models.Figure, verdicts []models.FigureVerdict) []models.Figure {
+	status := make(map[string]string, len(verdicts))
+	dup := map[string]bool{}
+	for _, v := range verdicts {
+		if _, seen := status[v.ID]; seen {
+			// One verdict per declaration, so a repeated id has no single
+			// status. The engine excludes such a figure outright; so does
+			// this, or an ambiguous amount could still veto a currency.
+			dup[v.ID] = true
+		}
+		status[v.ID] = v.Status
+	}
+	out := make([]models.Figure, 0, len(figures))
+	for _, f := range figures {
+		if f.Unit != models.UnitCurrency || dup[f.ID] {
+			continue
+		}
+		if status[f.ID] == models.FigureHolds {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // insightScoringInput collects what the engine reads off one insight.
 func insightScoringInput(ins models.Insight, sc scoringContext) scoring.Input {
 	figures := sc.figuresFor(ins)
@@ -201,13 +236,17 @@ func insightScoringInput(ins models.Insight, sc scoringContext) scoring.Input {
 		// still docks confidence whether or not the prose ended up quoting
 		// it, because that deduction is about what the check found.
 		Figures: figures,
-		// From the SAME surviving set. Reading the full figure list here
-		// would let a figure the prose does not state decide that the
-		// insight's amounts are incomparable -- so removing a euro-sourced
-		// sentence would discard a lira amount that is still on the page,
-		// and the driver would lose the money at stake because of a deleted
-		// sentence somewhere else.
-		HomeCurrency: sc.currencies.forFigures(figures, sc.stepByID),
+		// Resolved over the amounts that could actually qualify: the ones
+		// the prose states AND whose own arithmetic held.
+		//
+		// Two narrowings, and each has a case behind it. Reading the full
+		// figure list let a figure the prose does not state decide that the
+		// insight's amounts were incomparable, so removing a euro-sourced
+		// sentence discarded a lira amount still on the page. And reading
+		// the refuted ones gave a number the warehouse contradicted a veto
+		// over the comparability of one it confirmed -- an insight with a
+		// holding local amount and a refuted foreign one lost both.
+		HomeCurrency: sc.currencies.forFigures(holdingCurrencyFigures(figures, ins.FigureVerdicts), sc.stepByID),
 		AreaID:       ins.AnalysisArea,
 		Config:       sc.cfg,
 	}
