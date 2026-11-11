@@ -106,14 +106,65 @@ type DocVerdictUpdate struct {
 	// document's own field because that key is a live Qdrant payload field
 	// and the sort key on two dashboard pages.
 	Confidence float64
+
+	// Severity, RiskScore and Priority are the sub-document's OTHER mirrored
+	// fields, and they are here because a re-score can move them.
+	//
+	// Not on the re-validation of an already-scored document: severity is
+	// frozen there, so these arrive equal to what is stored. But two cases do
+	// move them, and both would otherwise leave the row internally
+	// contradictory -- a `scoring.priority_tier` of critical beside a
+	// `priority` of 2, or a derived severity band beside the model's old word
+	// -- which is the exact failure the three fields above travel together to
+	// prevent.
+	//
+	//   - A recommendation's priority tier moves whenever its verdict does,
+	//     because the tier is the matrix over the verdict and the inherited
+	//     severity. The `priority` integer is projected from that tier.
+	//   - A document the scorer never reached is scored IN FULL by this path,
+	//     so it gains a severity band and a risk score it did not have.
+	//
+	// Written unconditionally rather than when non-zero. A zero is a real
+	// value here -- an unscored recommendation's priority is 0 -- and
+	// "write it only when it looks set" is how a field stops being
+	// overwritten in exactly the case that needs it.
+	Severity string
+	// RiskScore mirrors Scoring.SeverityScore. Only meaningful for an
+	// insight; a recommendation has no such field, which is why the two
+	// renderers below differ.
+	RiskScore float64
+	// Priority is the 1-5 projection of Scoring.PriorityTier. Only
+	// meaningful for a recommendation.
+	Priority int
 }
 
-// fields renders the update as the $set keys for one array element.
-func (u DocVerdictUpdate) fields(prefix string) bson.M {
+// insightFields and recommendationFields render the update as the $set keys
+// for one embedded array element.
+//
+// Two renderers rather than one, because the two documents genuinely mirror
+// different fields: an insight carries `risk_score` and no `priority`, a
+// recommendation the reverse. One renderer writing both would add a
+// `priority` of 0 to every insight and a `risk_score` to every
+// recommendation -- fields neither struct declares, which BSON would store
+// anyway and no decoder would ever read back.
+func (u DocVerdictUpdate) insightFields(prefix string) bson.M {
 	return bson.M{
 		prefix + ".validation": u.Validation,
 		prefix + ".scoring":    u.Scoring,
 		prefix + ".confidence": u.Confidence,
+		prefix + ".severity":   u.Severity,
+		prefix + ".risk_score": u.RiskScore,
+		"updated_at":           time.Now(),
+	}
+}
+
+func (u DocVerdictUpdate) recommendationFields(prefix string) bson.M {
+	return bson.M{
+		prefix + ".validation": u.Validation,
+		prefix + ".scoring":    u.Scoring,
+		prefix + ".confidence": u.Confidence,
+		prefix + ".severity":   u.Severity,
+		prefix + ".priority":   u.Priority,
 		"updated_at":           time.Now(),
 	}
 }
@@ -138,7 +189,7 @@ func (r *DiscoveryRepository) UpdateInsightValidation(ctx context.Context, disco
 	})
 	res, err := r.collection.UpdateOne(ctx,
 		bson.M{"_id": oid, "insights.id": insightID},
-		bson.M{"$set": u.fields("insights.$[el]")},
+		bson.M{"$set": u.insightFields("insights.$[el]")},
 		opts,
 	)
 	if err != nil {
@@ -165,7 +216,7 @@ func (r *DiscoveryRepository) UpdateRecommendationValidation(ctx context.Context
 	})
 	res, err := r.collection.UpdateOne(ctx,
 		bson.M{"_id": oid, "recommendations.id": recID},
-		bson.M{"$set": u.fields("recommendations.$[el]")},
+		bson.M{"$set": u.recommendationFields("recommendations.$[el]")},
 		opts,
 	)
 	if err != nil {

@@ -13,6 +13,7 @@ import (
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/scoring"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
@@ -298,4 +299,134 @@ func TestInteg_AScoredAreaSurvivesTheCheckpointRoundTrip(t *testing.T) {
 			t.Errorf("restored insight %d confidence = %v, want %v", i, restored[i].Confidence, want[i].ConfidenceScore)
 		}
 	}
+}
+
+// TestARevalidationPersistsEveryMirroredField is the bug a review found, and
+// it was invisible to every mock: the re-score moved a recommendation's
+// priority tier IN MEMORY and the write carried only the verdict, the
+// sub-document and the confidence -- so the stored row ended up claiming a
+// `scoring.priority_tier` of critical beside a `priority` of 2.
+//
+// That is precisely the contradiction DocVerdictUpdate's three original
+// fields travel together to prevent, reappearing one field over. A document
+// whose own mirrored field disagrees with its sub-document is worse than a
+// stale one, because nothing about it looks wrong.
+func TestARevalidationPersistsEveryMirroredField(t *testing.T) {
+	db, done := scoringPersistMongo(t)
+	defer done()
+	ctx := context.Background()
+	store := NewMongoEmbedIndexStore(db)
+
+	t.Run("recommendation: the tier moves, so the integer must too", func(t *testing.T) {
+		// Scored while nothing could check it: high severity inherited,
+		// unverifiable verdict, so the investigate tier and priority 2.
+		before := scoring.ScoreRecommendation(
+			scoring.Input{Verdict: valmodels.StatusUnverifiable, Config: testScoringCfg()},
+			[]scoring.InheritedSeverity{{
+				SeverityBand: commonmodels.SeverityBandHigh, SeverityScore: 1,
+				MagnitudeScore: 1, AreaWeight: 1,
+			}})
+		if before.PriorityTier != commonmodels.PriorityTierInvestigate {
+			t.Fatalf("fixture tier = %q, want investigate", before.PriorityTier)
+		}
+		stored := &commonmodels.StandaloneRecommendation{
+			ID: "rec-1", ProjectID: "p1", Title: "t",
+			Severity: commonmodels.SeverityBandHigh,
+			Priority: scoring.RecommendationPriority(before.PriorityTier),
+			Scoring:  &before,
+		}
+		if err := store.InsertRecommendations(ctx, []*commonmodels.StandaloneRecommendation{stored}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+
+		// An operator re-runs validation and it confirms. The tier goes
+		// investigate -> critical, so the projected integer goes 2 -> 1.
+		target := models.Recommendation{
+			ID: "rec-1", Title: "t",
+			Severity:   commonmodels.SeverityBandHigh,
+			Priority:   stored.Priority,
+			Scoring:    &before,
+			Validation: &models.InsightValidation{Combined: valmodels.StatusConfirmed},
+		}
+		rescoreTargetRecommendation(&target, testScoringCfg())
+		if target.Scoring.PriorityTier != commonmodels.PriorityTierCritical {
+			t.Fatalf("re-scored tier = %q, want critical", target.Scoring.PriorityTier)
+		}
+
+		if err := store.UpdateDocVerdict(ctx, recommendationsCollection, "rec-1", database.DocVerdictUpdate{
+			Validation: target.Validation,
+			Scoring:    target.Scoring,
+			Confidence: target.Confidence,
+			Severity:   target.Severity,
+			Priority:   target.Priority,
+		}); err != nil {
+			t.Fatalf("update: %v", err)
+		}
+
+		var got commonmodels.StandaloneRecommendation
+		if err := db.Collection(recommendationsCollection).
+			FindOne(ctx, bson.M{"_id": "rec-1"}).Decode(&got); err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		if got.Scoring == nil || got.Scoring.PriorityTier != commonmodels.PriorityTierCritical {
+			t.Fatalf("stored tier = %+v, want critical", got.Scoring)
+		}
+		if got.Priority != target.Priority {
+			t.Errorf("stored priority = %d but the stored tier is %q (in memory it was %d); "+
+				"the row disagrees with its own sub-document",
+				got.Priority, got.Scoring.PriorityTier, target.Priority)
+		}
+		if got.Severity != commonmodels.SeverityBandHigh {
+			t.Errorf("stored severity = %q, want the inherited high", got.Severity)
+		}
+	})
+
+	t.Run("insight: a document the scorer never reached is scored in full", func(t *testing.T) {
+		// A legacy row: the model's own word and number, no sub-document.
+		legacy := &commonmodels.StandaloneInsight{
+			ID: "ins-1", ProjectID: "p1", Name: "n", AnalysisArea: "revenue",
+			Severity: "critical", RiskScore: 0.9,
+		}
+		if err := store.InsertInsights(ctx, []*commonmodels.StandaloneInsight{legacy}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+
+		target := models.Insight{
+			ID: "ins-1", Name: "n", AnalysisArea: "revenue",
+			Severity: "critical", RiskScore: 0.9,
+			Validation: &models.InsightValidation{Combined: valmodels.StatusSupported},
+		}
+		rescoreTargetInsight(&target, testScoringCfg())
+		if target.Scoring == nil || target.Scoring.SeverityBand == "" {
+			t.Fatalf("a legacy insight came back without a severity band: %+v", target.Scoring)
+		}
+		if target.Severity == "critical" {
+			t.Fatal("the legacy word survived a full re-score")
+		}
+
+		if err := store.UpdateDocVerdict(ctx, insightsCollection, "ins-1", database.DocVerdictUpdate{
+			Validation: target.Validation,
+			Scoring:    target.Scoring,
+			Confidence: target.Confidence,
+			Severity:   target.Severity,
+			RiskScore:  target.RiskScore,
+		}); err != nil {
+			t.Fatalf("update: %v", err)
+		}
+
+		var got commonmodels.StandaloneInsight
+		if err := db.Collection(insightsCollection).
+			FindOne(ctx, bson.M{"_id": "ins-1"}).Decode(&got); err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		if got.Severity != target.Severity {
+			t.Errorf("stored severity = %q, want the derived %q", got.Severity, target.Severity)
+		}
+		if got.RiskScore != target.RiskScore {
+			t.Errorf("stored risk_score = %v, want %v", got.RiskScore, target.RiskScore)
+		}
+		if got.Severity == "critical" {
+			t.Error("the stored row still carries the model's own word beside a derived band")
+		}
+	})
 }
