@@ -147,17 +147,13 @@ func (s *MongoEmbedIndexStore) UpdateDocVerdict(ctx context.Context, collection,
 		"validation": u.Validation,
 		"scoring":    u.Scoring,
 		"confidence": u.Confidence,
-		"severity":   u.Severity,
 	}
-	// The one field that differs by collection, for the reason
-	// DocVerdictUpdate's two renderers differ: an insight mirrors
-	// `risk_score` and has no `priority`, a recommendation the reverse.
-	// Writing both to both would put a key on each row that its own struct
-	// does not declare and no decoder reads back.
-	if collection == recommendationsCollection {
+	// A recommendation's priority tier moves whenever its verdict does, so
+	// the integer projected from it has to travel with the sub-document.
+	// Only for that collection, and only when a tier was actually derived --
+	// see DocVerdictUpdate.PriorityDerived.
+	if collection == recommendationsCollection && u.PriorityDerived {
 		set["priority"] = u.Priority
-	} else {
-		set["risk_score"] = u.RiskScore
 	}
 	if _, err := s.db.Collection(collection).UpdateByID(ctx, id, bson.M{"$set": set}); err != nil {
 		return fmt.Errorf("update verdict for %s/%s: %w", collection, id, err)

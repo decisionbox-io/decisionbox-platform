@@ -170,51 +170,55 @@ func ValidateSingleDoc(ctx context.Context, in ValidateSingleDocInput) (models.V
 // a test holds it field by field.
 //
 // A document that was never scored at all -- a legacy row an operator clicked
-// Run validation on -- gets a full score instead. It has no severity half to
-// freeze, and leaving it unscored would mean the one action that re-derives a
-// grade declined to produce one.
+// Run validation on -- gets its CONFIDENCE axis derived and keeps its legacy
+// severity word. It is tempting to score it in full instead, on the grounds
+// that the one action whose purpose is to re-derive a grade should produce
+// one. Two things rule that out:
+//
+//   - The severity it would get carries no information. This path has one
+//     stored document in hand and no datasource context, so the home currency
+//     cannot be resolved and no amount qualifies -- the derivation would land
+//     on the area baseline and replace the model's word with a band that says
+//     only "not quantified".
+//   - It would make the severity filter lie. `severity` is an indexed vector
+//     payload field and the search handler filters on it BEFORE hydrating
+//     rows, so a row whose Mongo severity moved while its indexed copy did
+//     not is a row that answers the wrong query. Severity not moving on this
+//     path is precisely what makes a payload update unnecessary, and spending
+//     a vector-store method on every provider to buy a baseline band would be
+//     paying a lot for nothing.
+//
+// A new discovery run grades such a finding on the current engine, which is
+// what the legacy badge in the dashboard says.
 func rescoreTargetInsight(target *models.Insight, cfg scoring.Config) {
 	in := insightScoringInput(*target, cfg, currencyPlan{}, nil)
-	if target.Scoring == nil {
-		derived := scoring.Score(in)
-		applyInsightScore(target, derived)
-		return
+	prior := models.Scoring{}
+	if target.Scoring != nil {
+		prior = *target.Scoring
 	}
-	applyInsightScore(target, scoring.RescoreConfidence(*target.Scoring, in))
+	derived := scoring.RescoreConfidence(prior, in)
+	target.Scoring = &derived
+	target.Confidence = derived.ConfidenceScore
+	// Severity and risk_score are deliberately NOT written. They are frozen
+	// on this path, and writing an unchanged value would still be this layer
+	// claiming authorship of a field it did not derive.
 }
 
 func rescoreTargetRecommendation(target *models.Recommendation, cfg scoring.Config) {
 	in := recommendationScoringInput(*target, cfg)
-	if target.Scoring == nil {
-		// No insights in hand on this path, so nothing to inherit: the
-		// confidence axis is re-derived and the severity half stays absent,
-		// which is what it already was.
-		applyRecommendationScore(target, scoring.ScoreRecommendation(in, nil))
-		return
+	prior := models.Scoring{}
+	if target.Scoring != nil {
+		prior = *target.Scoring
 	}
-	applyRecommendationScore(target, scoring.RescoreConfidence(*target.Scoring, in))
-}
-
-// applyInsightScore and applyRecommendationScore mirror a derived grade back
-// onto the document's own fields.
-//
-// The mirrored fields are the ones that keep their bson keys -- `confidence`,
-// `severity`, `risk_score` and a recommendation's `priority` -- so every
-// existing consumer of them keeps working. Writing them through one helper is
-// what keeps this path and the run path from mirroring different subsets:
-// `severity` is written here even though the re-score cannot change it,
-// because a document whose sub-document says medium and whose own field says
-// critical is worse than either value alone.
-func applyInsightScore(target *models.Insight, derived models.Scoring) {
+	derived := scoring.RescoreConfidence(prior, in)
 	target.Scoring = &derived
 	target.Confidence = derived.ConfidenceScore
-	target.Severity = derived.SeverityBand
-	target.RiskScore = derived.SeverityScore
-}
-
-func applyRecommendationScore(target *models.Recommendation, derived models.Scoring) {
-	target.Scoring = &derived
-	target.Confidence = derived.ConfidenceScore
-	target.Severity = derived.SeverityBand
-	target.Priority = scoring.RecommendationPriority(derived.PriorityTier)
+	// Priority is the one mirrored field that DOES move here, because the
+	// tier is the matrix over this recommendation's verdict and the severity
+	// it inherited -- and the verdict is what just changed. Left alone when
+	// there is no tier: a legacy row's integer is the analysis model's own
+	// ranking, and zeroing it would destroy the only value it has.
+	if derived.PriorityTier != "" {
+		target.Priority = scoring.RecommendationPriority(derived.PriorityTier)
+	}
 }

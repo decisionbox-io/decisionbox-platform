@@ -28,13 +28,17 @@ const META: Record<string, PriorityMeta> = {
     gloss: 'Severe, and the warehouse rows back it up.',
     tone: 'red',
   },
-  // Above the `high` tier, deliberately. A severe finding nothing could check
-  // is the one a reader most needs to see: severity sets the ceiling and
-  // confidence only refines inside it, so this is "worth a look", not
+  // Above the `high` tier, deliberately. A severe finding the evidence does
+  // not back is the one a reader most needs to see: severity sets the ceiling
+  // and confidence only refines inside it, so this is "worth a look", not
   // "probably nothing".
   investigate: {
     label: 'Investigate',
-    gloss: 'Severe if true, and nothing could check it yet.',
+    // Deliberately not "nothing could check it": this tier also holds a
+    // finding the warehouse CONTRADICTED, and calling refuted evidence
+    // missing evidence is the opposite mistake. The confidence band says
+    // which, and investigateGloss below uses it where one is in hand.
+    gloss: 'Severe if true, and the evidence does not back it.',
     tone: 'amber',
   },
   high: {
@@ -55,9 +59,29 @@ const FALLBACK: PriorityMeta = {
   tone: 'grey',
 };
 
-export function priorityMeta(tier: string | undefined): PriorityMeta {
+// investigateGloss specialises the Investigate tier by what the evidence
+// actually did, because the three untrusted confidence bands got there for
+// three different reasons and only one of them is "nobody looked".
+const investigateGloss: Record<string, string> = {
+  low: 'Severe if true, and warehouse rows contradict it.',
+  unverifiable: 'Severe if true, and nothing in the cited evidence could check it.',
+  not_confirmed: 'Severe if true, and nothing has checked it yet.',
+};
+
+export function priorityMeta(
+  tier: string | undefined,
+  // The document's confidence band, where the caller has one. Omitted by a
+  // surface that renders a tier without a document behind it -- the run
+  // header's tally -- which then gets the wording that covers all three.
+  confidenceBand?: ConfidenceBand | string,
+): PriorityMeta {
   if (!tier) return FALLBACK;
-  return META[tier] ?? FALLBACK;
+  const meta = META[tier] ?? FALLBACK;
+  if (tier === 'investigate' && confidenceBand) {
+    const specific = investigateGloss[confidenceBand];
+    if (specific) return { ...meta, gloss: specific };
+  }
+  return meta;
 }
 
 // tierOrder ranks the tiers for a client-side sort, highest first.

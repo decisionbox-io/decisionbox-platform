@@ -917,7 +917,17 @@ func TestConsolidateFindings_TrendReasonNamesSeverity(t *testing.T) {
 			ID: "ins-1", AnalysisArea: "churn", Name: "High EU churn",
 			Severity:      "high",
 			AffectedCount: 100,
-			Scoring:       &models.Scoring{MagnitudeScore: 1.0, SeverityBand: models.SeverityBandHigh},
+			// With a QUANTIFIED driver, because the ledger only carries a
+			// magnitude it can compare: the engine never produces a
+			// magnitude without a driver, and an unquantified one is a
+			// stand-in rather than a measurement.
+			Scoring: &models.Scoring{
+				MagnitudeScore: 1.0,
+				SeverityBand:   models.SeverityBandHigh,
+				SeverityDriver: &models.SeverityDriver{
+					Kind: models.SeverityDriverShare, Quantified: true,
+				},
+			},
 		}},
 	})
 	if err != nil {
@@ -2052,5 +2062,69 @@ func TestReflectionGates_RunUnderADeadline(t *testing.T) {
 		Insights: []models.Insight{{Name: "x", AnalysisArea: "a"}}})
 	if !phaseSaw {
 		t.Error("the phase must ask its gates under its own deadline")
+	}
+}
+
+// TestAnUnquantifiedFindingCarriesNoComparableMagnitude is the third
+// manufactured trend this comparison could produce, and the subtlest.
+//
+// An unquantified finding still gets a magnitude: the area baseline, which
+// stands in for a number nobody could read rather than measuring anything.
+// Carried into the ledger it would make the next run's comparison fire on the
+// difference between "we could not measure this" and "we measured it this
+// time" — so a model that simply declared a figure it had previously omitted
+// would be reported as a server-detected worsening, with the affected count
+// unchanged and nothing about the finding having moved.
+func TestAnUnquantifiedFindingCarriesNoComparableMagnitude(t *testing.T) {
+	unquantified := models.Insight{
+		ID: "i1", AnalysisArea: "revenue", Name: "Same finding", AffectedCount: 100,
+		Severity: models.SeverityBandMedium,
+		Scoring: &models.Scoring{
+			MagnitudeScore: 0.6,
+			SeverityBand:   models.SeverityBandMedium,
+			SeverityDriver: &models.SeverityDriver{
+				Kind: models.SeverityDriverBaseline, Quantified: false,
+			},
+		},
+	}
+	quantified := models.Insight{
+		ID: "i2", AnalysisArea: "revenue", Name: "Same finding", AffectedCount: 100,
+		Severity: models.SeverityBandHigh,
+		Scoring: &models.Scoring{
+			MagnitudeScore: 1.0,
+			SeverityBand:   models.SeverityBandHigh,
+			SeverityDriver: &models.SeverityDriver{
+				Kind: models.SeverityDriverShare, Quantified: true,
+			},
+		},
+	}
+
+	prior := buildFindingCandidates(&models.DiscoveryResult{
+		ProjectID: "p1", ID: "d1", Insights: []models.Insight{unquantified},
+	})[0]
+	current := buildFindingCandidates(&models.DiscoveryResult{
+		ProjectID: "p1", ID: "d2", Insights: []models.Insight{quantified},
+	})[0]
+
+	if prior.MagnitudeScore != 0 {
+		t.Errorf("an unquantified finding carried magnitude %v into the ledger; the baseline "+
+			"is a stand-in, not a measurement", prior.MagnitudeScore)
+	}
+	if current.MagnitudeScore != 1.0 {
+		t.Errorf("a quantified finding carried magnitude %v, want 1.0", current.MagnitudeScore)
+	}
+	if findingMagnitudeChanged(&prior, &current, 0.2) {
+		t.Error("declaring a figure that was previously omitted was reported as the finding " +
+			"having got worse")
+	}
+
+	// And two quantified sightings still compare, or the fix would have
+	// turned the whole signal off.
+	priorQ := buildFindingCandidates(&models.DiscoveryResult{
+		ProjectID: "p1", ID: "d3", Insights: []models.Insight{unquantified},
+	})[0]
+	priorQ.MagnitudeScore = 0.6
+	if !findingMagnitudeChanged(&priorQ, &current, 0.2) {
+		t.Error("a real magnitude move between two measured sightings was not reported")
 	}
 }

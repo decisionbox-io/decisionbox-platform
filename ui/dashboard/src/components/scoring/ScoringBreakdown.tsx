@@ -167,10 +167,21 @@ function SeveritySection({ scoring, engine }: { scoring: Scoring; engine?: Scori
           dimmed
         />
       )}
+      {/* Why a grounded amount did not set the band. Two different
+          sentences, because there are two different outcomes and one wording
+          for both contradicted the line above it: a share-banded document was
+          ranked on its share, and a baseline one was ranked on nothing. */}
       {engine && engine.severity.amount_bands.length === 0 && driver?.amount
-        && driver.kind !== 'amount' && (
+        && driver.kind === 'share' && (
         <Text size="xs" c="dimmed" data-testid="severity-no-amount-bands">
           No amount thresholds are configured, so the band comes from the share.
+        </Text>
+      )}
+      {engine && engine.severity.amount_bands.length === 0 && driver?.amount
+        && driver.kind === 'baseline' && (
+        <Text size="xs" c="dimmed" data-testid="severity-no-amount-bands">
+          No amount thresholds are configured and this finding states no share, so
+          nothing could rank the amount and the area baseline applies.
         </Text>
       )}
 
@@ -192,7 +203,7 @@ function SeveritySection({ scoring, engine }: { scoring: Scoring; engine?: Scori
 // the two bands, which is exactly what a reader is being shown. The sort score
 // is deliberately absent — it is a key, not a judgement.
 function PrioritySection({ scoring }: { scoring: Scoring }) {
-  const meta = priorityMeta(scoring.priority_tier);
+  const meta = priorityMeta(scoring.priority_tier, scoring.confidence_band);
   const cell = matrixCellWords(scoring.severity_band, scoring.confidence_band);
 
   return (

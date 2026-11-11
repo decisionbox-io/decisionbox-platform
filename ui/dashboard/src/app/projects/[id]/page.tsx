@@ -806,7 +806,13 @@ function isActNow(insight: Insight): boolean {
 function DiscoveryRunCard({ discovery: d, projectId }: { discovery: DiscoveryResult; projectId: string }) {
   const insights = d.insights || [];
   const criticalCount = insights.filter(isActNow).length;
-  const highCount = insights.filter(i => i.severity === 'high').length;
+  // The investigate TIER, not severity `high`. A confirmed high-severity
+  // finding is in the critical tier, so counting the severity word here put
+  // the same finding in both counters -- one run with one such finding read
+  // "1 to act on now" and "1 to investigate".
+  const highCount = insights.filter(
+    i => i.evidence_scoring?.priority_tier === 'investigate',
+  ).length;
   const topInsights = insights.slice(0, 3);
 
   return (

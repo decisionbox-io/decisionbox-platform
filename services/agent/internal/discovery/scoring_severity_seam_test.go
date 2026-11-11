@@ -212,11 +212,25 @@ func TestARevalidatedInsightKeepsItsSeverityAndMovesItsPriority(t *testing.T) {
 	}
 }
 
-// TestARevalidatedLegacyInsightIsScoredInFull -- the other direction. A
-// document written before the scorer existed has no severity half to freeze,
-// and the one action whose whole purpose is to re-derive a grade must not
-// decline to produce one.
-func TestARevalidatedLegacyInsightIsScoredInFull(t *testing.T) {
+// TestARevalidatedLegacyInsightKeepsItsSeverityWord is the invariant that
+// makes a vector-payload update unnecessary on this path.
+//
+// It is tempting to score a legacy document in full here, on the grounds that
+// the one action whose purpose is to re-derive a grade should produce one.
+// Two things rule it out, and the second is the load-bearing one:
+//
+//   - the severity it would get carries no information. This path has one
+//     stored document in hand and no datasource context, so no amount can
+//     qualify and the derivation lands on the area baseline -- replacing the
+//     model's word with a band that says only "not quantified";
+//   - `severity` is an indexed vector-payload field and the search handler
+//     filters on it BEFORE hydrating rows. A row whose stored severity moved
+//     while its indexed copy did not is a row that answers the wrong query:
+//     still matching a `critical` search, and missing from a `medium` one.
+//
+// Severity not moving here is what keeps those two copies in agreement
+// without a payload-update method on every vector-store provider.
+func TestARevalidatedLegacyInsightKeepsItsSeverityWord(t *testing.T) {
 	legacy := models.Insight{
 		ID: "i1", AnalysisArea: "revenue", Name: "n",
 		Severity:   "critical",
@@ -225,13 +239,40 @@ func TestARevalidatedLegacyInsightIsScoredInFull(t *testing.T) {
 	}
 	rescoreTargetInsight(&legacy, testScoringCfg())
 
-	if legacy.Scoring == nil {
-		t.Fatal("a legacy insight came back unscored")
+	if legacy.Severity != "critical" || legacy.RiskScore != 0.9 {
+		t.Errorf("the legacy severity moved to %q/%v; the indexed copy would no longer agree",
+			legacy.Severity, legacy.RiskScore)
 	}
-	if legacy.Severity == "critical" {
-		t.Error("the legacy severity word survived a full re-score")
+	// The confidence axis IS derived, which is what Run validation is for.
+	if legacy.Scoring == nil || legacy.Scoring.ConfidenceBand != gomodels.ConfidenceBandHigh {
+		t.Errorf("the confidence axis was not derived: %+v", legacy.Scoring)
 	}
-	if legacy.Scoring.SeverityBand == "" || legacy.Scoring.PriorityTier == "" {
-		t.Errorf("the severity half was not derived: %+v", *legacy.Scoring)
+	// And no severity half is invented, so no tier is either -- the document
+	// renders its legacy word and a dash for priority.
+	if legacy.Scoring.SeverityBand != "" || legacy.Scoring.PriorityTier != "" {
+		t.Errorf("a severity band or tier was invented: band=%q tier=%q",
+			legacy.Scoring.SeverityBand, legacy.Scoring.PriorityTier)
+	}
+}
+
+// TestARevalidatedLegacyRecommendationKeepsItsPriorityInteger -- the same, for
+// the one mirrored field a recommendation carries. A legacy row's integer is
+// the analysis model's own ranking, and zeroing it would destroy the only
+// value the field has.
+func TestARevalidatedLegacyRecommendationKeepsItsPriorityInteger(t *testing.T) {
+	legacy := models.Recommendation{
+		ID: "r1", Title: "t", Priority: 2, Severity: "critical",
+		Validation: verdictOf(valmodels.StatusSupported),
+	}
+	rescoreTargetRecommendation(&legacy, testScoringCfg())
+
+	if legacy.Priority != 2 {
+		t.Errorf("priority = %d, want the stored 2 kept: nothing derived a tier to replace it", legacy.Priority)
+	}
+	if legacy.Severity != "critical" {
+		t.Errorf("severity = %q, want the stored word kept", legacy.Severity)
+	}
+	if legacy.Scoring == nil || legacy.Scoring.ConfidenceBand == "" {
+		t.Error("the confidence axis was not derived")
 	}
 }

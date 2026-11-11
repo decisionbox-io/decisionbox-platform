@@ -461,3 +461,76 @@ describe('a baseline band with a real amount beside it', () => {
     });
   });
 });
+
+// --- Copy that was saying something the document did not ------------------
+
+describe('the Investigate gloss follows what the evidence actually did', () => {
+  // The three untrusted confidence bands reach this tier for three different
+  // reasons, and only one of them is "nobody looked". Calling a finding the
+  // warehouse CONTRADICTED an unchecked one is the opposite mistake from the
+  // one the derivation exists to fix.
+  it('says contradicted for a rejected verdict', async () => {
+    const user = userEvent.setup();
+    wrap(<PriorityCell scoring={shareBanded({
+      confidence_band: 'low', priority_tier: 'investigate',
+    })} />);
+
+    await user.hover(screen.getByTestId('priority-tier'));
+    await waitFor(() => {
+      expect(screen.getByText(/warehouse rows contradict it/i)).toBeInTheDocument();
+    });
+  });
+
+  it('says nothing could check it for an unverifiable verdict', async () => {
+    const user = userEvent.setup();
+    wrap(<PriorityCell scoring={shareBanded({
+      confidence_band: 'unverifiable', priority_tier: 'investigate',
+    })} />);
+
+    await user.hover(screen.getByTestId('priority-tier'));
+    await waitFor(() => {
+      expect(screen.getByText(/nothing in the cited evidence could check it/i)).toBeInTheDocument();
+    });
+  });
+
+  it('says nothing has checked it for a document validation never reached', async () => {
+    const user = userEvent.setup();
+    wrap(<PriorityCell scoring={shareBanded({
+      confidence_band: 'not_confirmed', priority_tier: 'investigate',
+    })} />);
+
+    await user.hover(screen.getByTestId('priority-tier'));
+    await waitFor(() => {
+      expect(screen.getByText(/nothing has checked it yet/i)).toBeInTheDocument();
+    });
+  });
+});
+
+describe('the amount explanation matches the band it explains', () => {
+  // `kind !== 'amount'` also matches `baseline`, so a baseline-banded document
+  // was told its band came from the share — contradicting the "not quantified"
+  // line directly above it.
+  it('names the share only when the share banded it', async () => {
+    wrap(<ScoringBreakdown scoring={shareBanded()} axis="severity" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('severity-no-amount-bands'))
+        .toHaveTextContent(/the band comes from the share/i);
+    });
+  });
+
+  it('says nothing could rank the amount when the baseline applied', async () => {
+    wrap(<ScoringBreakdown scoring={shareBanded({
+      severity_driver: {
+        kind: 'baseline',
+        quantified: false,
+        amount: { figure_id: 'f3', display: '₺2.40M', value: 2400000, unit: 'currency', currency: '₺', verdict: 'holds' },
+      },
+    })} axis="severity" />);
+
+    await waitFor(() => {
+      const note = screen.getByTestId('severity-no-amount-bands');
+      expect(note).toHaveTextContent(/nothing could rank the amount/i);
+      expect(note).not.toHaveTextContent(/the band comes from the share/i);
+    });
+  });
+});

@@ -1013,9 +1013,25 @@ func buildFindingCandidates(result *models.DiscoveryResult) []commonmodels.Ledge
 			NormalizedKey: commonmodels.NormalizedFindingKey(ins.AnalysisArea, name),
 		}
 		// The weight-free magnitude travels with the finding, because it is
-		// what a trend across runs is measured on. Zero on an insight no
-		// scorer reached.
-		if ins.Scoring != nil {
+		// what a trend across runs is measured on -- but ONLY when it was
+		// measured.
+		//
+		// An unquantified finding still gets a magnitude: the area baseline,
+		// which is a stand-in for a number nobody could read, not a
+		// measurement of anything. Carrying it would make the next run's
+		// comparison fire on the difference between "we could not measure
+		// this" and "we measured it this time" -- so a model that simply
+		// declared a figure it had previously omitted would be reported as a
+		// server-detected worsening, with the affected count unchanged and
+		// nothing about the finding having moved. That is the same
+		// manufactured trend the severity-word comparison produced, arriving
+		// from the other direction.
+		//
+		// Zero therefore means "no comparable magnitude" for both reasons it
+		// can: an insight no scorer reached, and one the scorer could not
+		// quantify. findingMagnitudeChanged tests for exactly that before
+		// trusting a comparison.
+		if ins.Scoring != nil && ins.Scoring.SeverityDriver != nil && ins.Scoring.SeverityDriver.Quantified {
 			cand.MagnitudeScore = ins.Scoring.MagnitudeScore
 		}
 		// The insight's own id, which is also its id in the `insights`

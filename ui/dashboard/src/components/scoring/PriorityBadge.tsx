@@ -21,7 +21,7 @@ export function PriorityBadge({
   scoring: Scoring;
   size?: 'xs' | 'sm' | 'md';
 }) {
-  const meta = priorityMeta(scoring.priority_tier);
+  const meta = priorityMeta(scoring.priority_tier, scoring.confidence_band);
 
   return (
     <HoverCard width="auto" shadow="md" withinPortal position="bottom-start" openDelay={120}>

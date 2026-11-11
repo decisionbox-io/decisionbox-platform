@@ -107,66 +107,62 @@ type DocVerdictUpdate struct {
 	// and the sort key on two dashboard pages.
 	Confidence float64
 
-	// Severity, RiskScore and Priority are the sub-document's OTHER mirrored
-	// fields, and they are here because a re-score can move them.
+	// Priority is a recommendation's 1-5 projection of
+	// Scoring.PriorityTier, and it is the ONE mirrored field beyond the three
+	// above that this path can move.
 	//
-	// Not on the re-validation of an already-scored document: severity is
-	// frozen there, so these arrive equal to what is stored. But two cases do
-	// move them, and both would otherwise leave the row internally
-	// contradictory -- a `scoring.priority_tier` of critical beside a
-	// `priority` of 2, or a derived severity band beside the model's old word
-	// -- which is the exact failure the three fields above travel together to
-	// prevent.
+	// It moves because the tier is the matrix over this recommendation's
+	// verdict and the severity it inherited, and the verdict is what just
+	// changed: a finding that goes from unverifiable to confirmed goes from
+	// the investigate tier to the critical one, so the integer goes 2 -> 1.
+	// Writing the sub-document without it would leave the row claiming a tier
+	// of critical beside a priority of 2 -- the exact contradiction the three
+	// fields above travel together to prevent, one field over.
 	//
-	//   - A recommendation's priority tier moves whenever its verdict does,
-	//     because the tier is the matrix over the verdict and the inherited
-	//     severity. The `priority` integer is projected from that tier.
-	//   - A document the scorer never reached is scored IN FULL by this path,
-	//     so it gains a severity band and a risk score it did not have.
-	//
-	// Written unconditionally rather than when non-zero. A zero is a real
-	// value here -- an unscored recommendation's priority is 0 -- and
-	// "write it only when it looks set" is how a field stops being
-	// overwritten in exactly the case that needs it.
-	Severity string
-	// RiskScore mirrors Scoring.SeverityScore. Only meaningful for an
-	// insight; a recommendation has no such field, which is why the two
-	// renderers below differ.
-	RiskScore float64
-	// Priority is the 1-5 projection of Scoring.PriorityTier. Only
-	// meaningful for a recommendation.
+	// There is deliberately no Severity or RiskScore here. Severity is frozen
+	// on this path for both document kinds, so the stored values are already
+	// right, and writing them anyway would be this layer claiming authorship
+	// of a field it did not derive.
 	Priority int
+
+	// PriorityDerived says the re-score actually produced a tier, which is
+	// what makes Priority safe to write.
+	//
+	// A legacy recommendation has no severity half to roll up, so there is no
+	// tier and the integer it carries is the analysis model's own ranking.
+	// Zeroing that would destroy the only value the field has -- and a plain
+	// `Priority != 0` test cannot tell "no tier" from a tier that legitimately
+	// projects to zero, which is why this is a flag rather than an inference.
+	PriorityDerived bool
 }
 
 // insightFields and recommendationFields render the update as the $set keys
 // for one embedded array element.
 //
-// Two renderers rather than one, because the two documents genuinely mirror
-// different fields: an insight carries `risk_score` and no `priority`, a
-// recommendation the reverse. One renderer writing both would add a
-// `priority` of 0 to every insight and a `risk_score` to every
-// recommendation -- fields neither struct declares, which BSON would store
+// Two renderers rather than one, because only a recommendation has a
+// `priority` to mirror. One renderer writing it would add the key to every
+// insight -- a field models.Insight does not declare, which BSON would store
 // anyway and no decoder would ever read back.
 func (u DocVerdictUpdate) insightFields(prefix string) bson.M {
 	return bson.M{
 		prefix + ".validation": u.Validation,
 		prefix + ".scoring":    u.Scoring,
 		prefix + ".confidence": u.Confidence,
-		prefix + ".severity":   u.Severity,
-		prefix + ".risk_score": u.RiskScore,
 		"updated_at":           time.Now(),
 	}
 }
 
 func (u DocVerdictUpdate) recommendationFields(prefix string) bson.M {
-	return bson.M{
+	set := bson.M{
 		prefix + ".validation": u.Validation,
 		prefix + ".scoring":    u.Scoring,
 		prefix + ".confidence": u.Confidence,
-		prefix + ".severity":   u.Severity,
-		prefix + ".priority":   u.Priority,
 		"updated_at":           time.Now(),
 	}
+	if u.PriorityDerived {
+		set[prefix+".priority"] = u.Priority
+	}
+	return set
 }
 
 // UpdateInsightValidation writes the new verdict and the confidence derived

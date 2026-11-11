@@ -36,6 +36,10 @@ const (
 	SeverityBandMedium = gomodels.SeverityBandMedium
 	SeverityBandLow    = gomodels.SeverityBandLow
 
+	SeverityDriverAmount   = gomodels.SeverityDriverAmount
+	SeverityDriverShare    = gomodels.SeverityDriverShare
+	SeverityDriverBaseline = gomodels.SeverityDriverBaseline
+
 	PriorityTierCritical    = gomodels.PriorityTierCritical
 	PriorityTierInvestigate = gomodels.PriorityTierInvestigate
 	PriorityTierHigh        = gomodels.PriorityTierHigh

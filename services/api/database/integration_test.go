@@ -845,15 +845,31 @@ func TestInteg_AnUnscoredInsightSortsLast(t *testing.T) {
 	}
 }
 
-// TestInteg_ThePrioritySortIsServedByAnIndex -- asserting the index EXISTS
-// does not assert it is used, and the difference is a blocking in-memory sort
-// over a project's whole insight history on every list request. So this reads
-// the plan.
-func TestInteg_ThePrioritySortIsServedByAnIndex(t *testing.T) {
+// TestInteg_BothSortsAreServedByAnIndex -- asserting an index EXISTS does not
+// assert it is used, and the difference is a blocking in-memory sort over a
+// project's whole insight history on every list request. So this reads the
+// plan.
+//
+// Both orders, because the creation-order one is the trap: adding `_id` to
+// make it total means the two-key index that used to serve it no longer can,
+// and the failure is invisible from the outside -- correct rows, quietly
+// scanning every matching index entry to sort them.
+func TestInteg_BothSortsAreServedByAnIndex(t *testing.T) {
+	for _, sort := range []string{"", SortCreatedAt} {
+		name := sort
+		if name == "" {
+			name = "priority (default)"
+		}
+		t.Run(name, func(t *testing.T) { assertSortIsIndexed(t, sort) })
+	}
+}
+
+func assertSortIsIndexed(t *testing.T, sort string) {
+	t.Helper()
 	ctx := context.Background()
-	order, err := ListSort("")
+	order, err := ListSort(sort)
 	if err != nil {
-		t.Fatalf("default sort: %v", err)
+		t.Fatalf("sort %q: %v", sort, err)
 	}
 
 	var plan bson.M
@@ -884,12 +900,20 @@ func TestInteg_ThePrioritySortIsServedByAnIndex(t *testing.T) {
 	}
 	stages := fmt.Sprintf("%v", winning)
 	if strings.Contains(stages, "SORT") {
-		t.Errorf("the priority sort is a blocking in-memory SORT stage, not an index scan.\nWinning plan: %s", stages)
+		t.Errorf("the %q sort is a blocking in-memory SORT stage, not an index scan.\nWinning plan: %s",
+			sort, stages)
 	}
 	if !strings.Contains(stages, "IXSCAN") {
-		t.Errorf("the priority sort is not served by any index.\nWinning plan: %s", stages)
+		t.Errorf("the %q sort is not served by any index.\nWinning plan: %s", sort, stages)
 	}
-	if !strings.Contains(stages, "scoring.priority_score") {
-		t.Errorf("the sort is served by some other index than the one declared for it.\nWinning plan: %s", stages)
+	// And by the index declared for this order rather than one that merely
+	// happens to cover its first key.
+	wantKey := "scoring.priority_score"
+	if sort == SortCreatedAt {
+		wantKey = "created_at"
+	}
+	if !strings.Contains(stages, wantKey) {
+		t.Errorf("the %q sort is served by some other index than the one declared for it.\nWinning plan: %s",
+			sort, stages)
 	}
 }

@@ -344,13 +344,6 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 			Validation: matched.Validation,
 			Scoring:    matched.Scoring,
 			Confidence: matched.Confidence,
-			// The mirrored severity half travels too. On an already-scored
-			// document these are unchanged -- severity is frozen on this
-			// path -- but a document the scorer never reached is scored in
-			// full here, and leaving its old model-written word beside a
-			// freshly derived band would make the row disagree with itself.
-			Severity:  matched.Severity,
-			RiskScore: matched.RiskScore,
 		}
 		if err := discoveryRepo.UpdateInsightValidation(ctx, discDoc.ID, job.DocID, update); err != nil {
 			return fmt.Errorf("persist insight validation: %w", err)
@@ -371,13 +364,13 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 			Validation: matched.Validation,
 			Scoring:    matched.Scoring,
 			Confidence: matched.Confidence,
-			Severity:   matched.Severity,
 			// A recommendation's priority tier MOVES whenever its verdict
 			// does -- the tier is the matrix over that verdict and the
 			// inherited severity -- so the projected integer has to be
 			// written or the row ends up claiming a tier of critical beside
 			// a priority of 2.
-			Priority: matched.Priority,
+			Priority:        matched.Priority,
+			PriorityDerived: matched.Scoring != nil && matched.Scoring.PriorityTier != "",
 		}
 		if err := discoveryRepo.UpdateRecommendationValidation(ctx, discDoc.ID, job.DocID, update); err != nil {
 			return fmt.Errorf("persist recommendation validation: %w", err)
