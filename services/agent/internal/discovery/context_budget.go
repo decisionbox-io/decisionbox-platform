@@ -4,10 +4,12 @@ import (
 	"context"
 	"time"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 	goconfig "github.com/decisionbox-io/decisionbox/libs/go-common/config"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/contextbudget"
 	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
 // Input-side budgeting for composed prompt context: what the project already
@@ -165,4 +167,48 @@ func latestMarginalRatio(history []commonmodels.ConvergencePoint) (float64, bool
 		}
 	}
 	return 0, false
+}
+
+// reflectionOutputPerVerdictTokens is what one prior-finding status verdict
+// costs in the response: a finding id, a status and a one-line reason, as JSON.
+// Measured from the shape the schema demands rather than guessed at.
+const reflectionOutputPerVerdictTokens = 48
+
+// reflectionPriorsBudget is how many tokens the reflection prompt's
+// re-judgement list may spend: what this layer's window leaves free once the
+// response is reserved, minus everything else the prompt will carry.
+//
+// The rest of the prompt is MEASURED, by rendering it with an empty
+// re-judgement list and with both conditional bullets at their most verbose.
+// Measuring beats estimating here because the other sections vary by orders of
+// magnitude between projects — a wide warehouse's two catalog lists alone run
+// to hundreds of names. Rendering the verbose form makes the estimate
+// conservative in the only direction that is safe: the real prompt can only be
+// shorter, so the list can only fit better than budgeted.
+//
+// The output reserve is the part worth explaining. A longer list demands a
+// longer response, because the model may return a verdict per finding — and a
+// reflection response truncated mid-JSON parses as nothing and silently
+// discards the whole phase's judgement (#403). But the verdicts a run can
+// honestly produce are bounded by the findings it actually SAW again, which
+// consolidation has already counted, so the reserve is sized from reSeenCount
+// rather than from the length of the list. Charging every listed finding for a
+// verdict it will almost never receive would halve the list to buy headroom
+// nothing uses.
+func (o *Orchestrator) reflectionPriorsBudget(
+	ctx context.Context,
+	result *models.DiscoveryResult,
+	tasks []commonmodels.LedgerTask,
+	pol agentplugin.DiscoveryPolicy,
+	catalogItems []string,
+	window, outputCap, reSeenCount int,
+) int {
+	reserve := intendedOutputReserve(outputCap, window)
+	if verdicts := reSeenCount * reflectionOutputPerVerdictTokens; verdicts > reserve {
+		reserve = verdicts
+	}
+	reserve = boundOutputCap(reserve, window)
+
+	skeleton := o.buildReflectionPrompt(result, nil, tasks, pol, catalogItems, true, true)
+	return contextbudget.AvailableInput(window, reserve, analysisReservedSystemTokens) - approxTokens(ctx, skeleton)
 }

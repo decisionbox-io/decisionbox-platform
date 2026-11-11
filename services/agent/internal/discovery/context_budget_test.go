@@ -829,3 +829,156 @@ func TestInjectedOptsCarryTheBudgetAndExclusions(t *testing.T) {
 		}
 	})
 }
+
+// --- the reflection prompt's re-judgement list (the retirement path) ---
+
+// TestReflectionPriorsScaleWithTheWindow is the fix for the reason nothing ever
+// retired. A status only moves through prior_status_updates, and the model may
+// only name ids this prompt printed — so a fixed 60-finding list made every
+// finding beyond it unreachable by any verdict, for ever, and the active set
+// could only grow.
+func TestReflectionPriorsScaleWithTheWindow(t *testing.T) {
+	const total = 420
+	prior := ledgerFixture(total)
+	result := &models.DiscoveryResult{
+		ID: "d1", ProjectID: "p1",
+		Insights: []models.Insight{{ID: "ins-1", AnalysisArea: "area-0", Name: "Something", Severity: "high"}},
+	}
+	pol := agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeAuto, FrontierPolicy: agentplugin.FrontierBalanced}
+
+	shown := func(window, outputCap, reSeen int) int {
+		o := windowedOrchestrator(nil, nil, window, outputCap)
+		budget := o.reflectionPriorsBudget(context.Background(), result, nil, pol, nil, window, outputCap, reSeen)
+		return len(priorFindingsForPrompt(append([]commonmodels.LedgerFinding{}, prior...), budget))
+	}
+
+	// This list is cheap — it carries ids, statuses and metrics, and no
+	// descriptions, because the substance is in the base context the same run
+	// already has. So the interesting result is that it fits whole at every
+	// ordinary window size: the retirement path is open on a 32K model too, and
+	// the 60-finding cap was never a budget, just a number.
+	for _, tc := range []struct {
+		name              string
+		window, outputCap int
+	}{
+		{"1M", 1_000_000, 32_000},
+		{"131K", 131_072, 16_384},
+		{"32K", 32_000, 8_192},
+	} {
+		if got := shown(tc.window, tc.outputCap, 0); got != total {
+			t.Errorf("%s window re-judged %d of %d findings — this list is cheap enough to fit whole here", tc.name, got, total)
+		}
+	}
+
+	// It does still degrade, which is what makes it a budget rather than a
+	// bigger constant.
+	tiny := shown(8_192, 2_048, 0)
+	tinier := shown(4_096, 1_024, 0)
+	t.Logf("priors re-judgeable: 32K+=%d (all) 8K=%d 4K=%d (of %d; the deleted cap was 60)", total, tiny, tinier, total)
+	if tiny >= total {
+		t.Errorf("an 8K window re-judged %d of %d — it cannot hold the whole list", tiny, total)
+	}
+	if tinier > tiny {
+		t.Errorf("a 4K window re-judged %d, more than the 8K window's %d", tinier, tiny)
+	}
+}
+
+// TestReflectionPriorsReserveRoomForTheVerdicts pins the output coupling. A
+// longer list can demand a longer response, and a reflection response truncated
+// mid-JSON parses as nothing and discards the whole phase's judgement — the
+// #403 failure. The reserve is sized from the findings the run actually SAW
+// again, because those are the only ones it can honestly judge.
+func TestReflectionPriorsReserveRoomForTheVerdicts(t *testing.T) {
+	result := &models.DiscoveryResult{ID: "d1", ProjectID: "p1"}
+	pol := agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeAuto}
+	o := windowedOrchestrator(nil, nil, 131_072, 16_384)
+
+	budget := func(reSeen int) int {
+		return o.reflectionPriorsBudget(context.Background(), result, nil, pol, nil, 131_072, 16_384, reSeen)
+	}
+
+	none := budget(0)
+	some := budget(50)
+	many := budget(1000)
+
+	t.Logf("priors budget: reSeen=0 -> %d, reSeen=50 -> %d, reSeen=1000 -> %d", none, some, many)
+
+	if some > none {
+		t.Errorf("re-seeing 50 findings must not RAISE the input budget: %d vs %d", some, none)
+	}
+	if many >= none {
+		t.Errorf("a run that re-saw 1000 findings owes a large response and must get less input budget: %d vs %d", many, none)
+	}
+	// Below the intended-output reserve, the number of re-sightings must not
+	// matter at all — otherwise every ordinary run pays for headroom nothing
+	// uses.
+	if budget(1) != none {
+		t.Errorf("one re-sighting changed the budget from %d to %d; it is far below the intended output reserve", none, budget(1))
+	}
+}
+
+// TestReflectionPriorsBudgetMeasuresTheRestOfThePrompt: the other sections vary
+// by orders of magnitude between projects — a wide warehouse's catalog lists
+// alone run to hundreds of names — so the budget measures them instead of
+// assuming a size.
+func TestReflectionPriorsBudgetMeasuresTheRestOfThePrompt(t *testing.T) {
+	pol := agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeAuto}
+	o := windowedOrchestrator(nil, nil, 131_072, 16_384)
+
+	bare := &models.DiscoveryResult{ID: "d1", ProjectID: "p1"}
+	wide := &models.DiscoveryResult{ID: "d1", ProjectID: "p1", Schemas: map[string]models.TableSchema{}}
+	for i := 0; i < 400; i++ {
+		wide.Schemas[fmt.Sprintf("dataset.table_with_a_long_name_%03d", i)] = models.TableSchema{}
+	}
+	manyTasks := make([]commonmodels.LedgerTask, 0, 40)
+	for i := 0; i < 40; i++ {
+		manyTasks = append(manyTasks, commonmodels.LedgerTask{
+			ID: fmt.Sprintf("t-%d", i), Kind: "next_task",
+			Text: "a thread with a reasonably long description of what to investigate next " + strings.Repeat("x", 80),
+		})
+	}
+
+	plain := o.reflectionPriorsBudget(context.Background(), bare, nil, pol, nil, 131_072, 16_384, 0)
+	wideCatalog := o.reflectionPriorsBudget(context.Background(), wide, nil, pol, nil, 131_072, 16_384, 0)
+	withTasks := o.reflectionPriorsBudget(context.Background(), bare, manyTasks, pol, nil, 131_072, 16_384, 0)
+	withCube := o.reflectionPriorsBudget(context.Background(), bare, nil, pol, []string{"a", "b", "c"}, 131_072, 16_384, 0)
+
+	if wideCatalog >= plain {
+		t.Errorf("a 400-table catalog must cost the priors budget: %d vs %d", wideCatalog, plain)
+	}
+	if withTasks >= plain {
+		t.Errorf("40 open threads must cost the priors budget: %d vs %d", withTasks, plain)
+	}
+	if withCube >= plain {
+		t.Errorf("a cube catalog adds two paragraphs and must cost the priors budget: %d vs %d", withCube, plain)
+	}
+}
+
+// TestReflectionResolvePathIsGrounded is acceptance criterion 4's other half: a
+// finding must be able to reach a terminal status, without the prompt
+// licensing absence-as-proof.
+func TestReflectionResolvePathIsGrounded(t *testing.T) {
+	for _, demand := range []bool{false, true} {
+		field := renderPriorStatusField(demand)
+		if !strings.Contains(field, "`resolved`") {
+			t.Errorf("demand=%v: the contract must say when a finding may be resolved:\n%s", demand, field)
+		}
+		for _, want := range []string{
+			"THIS RUN looked at the thing it describes",
+			"Name the finding from this run that establishes it",
+			"Do NOT mark a finding `resolved` just because it did not reappear",
+			"absence from this run's output is not proof",
+		} {
+			if !strings.Contains(field, want) {
+				t.Errorf("demand=%v: missing %q:\n%s", demand, want, field)
+			}
+		}
+	}
+	// The permissive clause must not have displaced the prohibition.
+	field := renderPriorStatusField(true)
+	resolve := strings.Index(field, "Mark a finding `resolved`")
+	deny := strings.Index(field, "Do NOT mark a finding `resolved`")
+	if resolve < 0 || deny < 0 || deny < resolve {
+		t.Errorf("the prohibition must follow the permission, so the last word on absence is that it proves nothing:\n%s", field)
+	}
+}

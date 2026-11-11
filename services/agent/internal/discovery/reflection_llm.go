@@ -10,6 +10,7 @@ import (
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 	goconfig "github.com/decisionbox-io/decisionbox/libs/go-common/config"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/contextbudget"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -99,36 +100,51 @@ func (o *Orchestrator) generateReflection(ctx context.Context, result *models.Di
 		tasks, _ = o.taskRepo.List(ctx, o.projectID, commonmodels.LedgerTaskStatusOpen)
 	}
 
-	demandPriorRejudgement := reSeenPriorIsOnThePage(prior, cons.ReSeen)
+	items := o.runCatalogItems()
+	window, modelOutputCap := o.budgetFor(llmlayer.LayerReflection)
+	// Default to the model's own cap, mirroring the analysis and recommendation
+	// paths; DISCOVERY_REFLECTION_MAX_OUTPUT stays available as an operator
+	// override. A fixed default was simply below what an ordinary ledger needs,
+	// and truncated the response mid-JSON (#403).
+	outputCap := phaseOutputCap(discoveryReflectionMaxOutputEnv, modelOutputCap, 512, defaultDiscoveryReflectionMaxOutput)
+
+	// How many prior findings fit, measured rather than fixed. This was 60 —
+	// and that constant is why a finding could never be retired: a status only
+	// moves through prior_status_updates, the model may only name ids this
+	// prompt printed, so on a project carrying 420 findings 360 of them were
+	// unreachable by any verdict for ever, and the active set could only grow.
+	priorBudget := o.reflectionPriorsBudget(ctx, result, tasks, pol, items, window, outputCap, len(cons.ReSeen))
+	onThePage := priorFindingsForPrompt(prior, priorBudget)
+
+	demandPriorRejudgement := reSeenPriorIsOnThePage(onThePage, cons.ReSeen)
 	// Whether the prompt carries any finding id at all. A run with no prior
 	// findings on the page and no findings of its own has nothing for the model
 	// to attribute a thread to, and demanding an attribution anyway leaves it
 	// only the option of inventing one.
-	// The findings the prompt actually carries — capped, so beyond the cap
-	// the model never saw them. Remembered here because this is the moment
-	// they are shown: re-reading the active set afterwards reads a set that
-	// has moved (another reflection can archive one during the LLM call), and
-	// an id this run genuinely showed would then be thrown out as invented.
-	onThePage := priorFindingsForPrompt(prior)
+	//
+	// The ids are remembered here because this is the moment they are shown:
+	// re-reading the active set afterwards reads a set that has moved (another
+	// reflection can archive one during the LLM call), and an id this run
+	// genuinely showed would then be thrown out as invented.
 	o.promptFindingIDs = make([]string, 0, len(onThePage))
 	for i := range onThePage {
 		o.promptFindingIDs = append(o.promptFindingIDs, onThePage[i].ID)
 	}
 	hasFindingIDs := len(onThePage) > 0 || len(result.Insights) > 0
 
-	items := o.runCatalogItems()
-	prompt := o.buildReflectionPrompt(result, prior, tasks, pol, items, demandPriorRejudgement, hasFindingIDs)
+	prompt := o.buildReflectionPrompt(result, onThePage, tasks, pol, items, demandPriorRejudgement, hasFindingIDs)
 
-	window, modelOutputCap := o.budgetFor(llmlayer.LayerReflection)
-	// Default to the model's own cap, mirroring the analysis and recommendation
-	// paths; DISCOVERY_REFLECTION_MAX_OUTPUT stays available as an operator
-	// override. The response is bounded by the prompt caps
-	// (maxPriorFindingsInPrompt, maxLedgerTasksInPrompt, and
-	// maxCatalogNamesInPrompt on each catalog list), so it does not grow
-	// without limit — a fixed default was simply below what an ordinary ledger
-	// needs, and truncated it mid-JSON (#403).
-	outputCap := phaseOutputCap(discoveryReflectionMaxOutputEnv, modelOutputCap, 512, defaultDiscoveryReflectionMaxOutput)
-	maxTokens := budgetedMaxOutputTokens(window, approxTokens(ctx, prompt), outputCap, analysisMinOutputTokens())
+	inputTokens := approxTokens(ctx, prompt)
+	maxTokens := budgetedMaxOutputTokens(window, inputTokens, outputCap, analysisMinOutputTokens())
+	applog.WithFields(applog.Fields{
+		"project_id":    o.projectID,
+		"priors_total":  len(prior),
+		"priors_shown":  len(onThePage),
+		"priors_budget": priorBudget,
+		"re_seen":       len(cons.ReSeen),
+		"input_tokens":  inputTokens,
+		"max_tokens":    maxTokens,
+	}).Info("Reflection: prior-findings budget")
 
 	format := reflectionResponseFormat(pol.EvolutionMode, demandPriorRejudgement, hasFindingIDs)
 	if o.ai(llmlayer.LayerReflection).SupportsStructuredOutput() {
@@ -227,7 +243,10 @@ func evolutionModeGuidance(mode agentplugin.EvolutionMode) string {
 // reflectionPriorStatusFieldBase is the prior_status_updates bullet of the
 // output contract as the template carried it inline, kept verbatim for the run
 // that has no prior findings to re-judge.
-const reflectionPriorStatusFieldBase = "- **prior_status_updates**: for PRIOR findings only, by their `id`. Update a status ONLY with grounded evidence from this run — e.g. a new finding contradicts a prior one (`refuted`), or the same finding now shows a different magnitude (`changed`). **Do NOT mark a finding `resolved` just because it did not reappear** — discovery is not exhaustive, so absence is not proof. Leave findings you have no evidence about alone."
+const reflectionPriorStatusFieldBase = "- **prior_status_updates**: for PRIOR findings only, by their `id`. Update a status ONLY with grounded evidence from this run — e.g. a new finding contradicts a prior one (`refuted`), or the same finding now shows a different magnitude (`changed`). " +
+	"Mark a finding `resolved` when THIS RUN looked at the thing it describes and the condition is no longer there — a query over the same population that now comes back clean, a segment that has emptied, a gap that has closed. Name the finding from this run that establishes it. " +
+	"**Do NOT mark a finding `resolved` just because it did not reappear** — discovery is not exhaustive, so absence from this run's output is not proof, and the two are easy to confuse: the test is whether you LOOKED, not whether you noticed. " +
+	"Leave findings you have no evidence about alone."
 
 // renderPriorStatusField renders that bullet, demanding at least one
 // re-judgement on a run that surfaced a carried finding again and whose
@@ -293,15 +312,25 @@ func renderProvenanceFields(hasFindingIDs bool) string {
 }
 
 // priorFindingsForPrompt is the subset of the ledger's findings the prompt
-// actually carries: most-recently-seen first so the cap keeps the freshest
-// context. The renderer and the re-judgement gate both go through it, because
-// a demand to re-judge a finding is only honest about findings on the page.
-func priorFindingsForPrompt(prior []commonmodels.LedgerFinding) []commonmodels.LedgerFinding {
+// actually carries: most-recently-seen first, so what the budget keeps is the
+// freshest context.
+//
+// Recency order rather than the base context's rank order, and deliberately so.
+// This list exists to be RE-JUDGED, and the findings a run can honestly judge
+// are the ones it has just been near; the base block exists to be built on, and
+// what matters there is importance. Two orders because they are two questions.
+//
+// budgetTokens is what the rest of the prompt leaves free. A non-positive
+// budget carries nothing, which is correct: on a window that cannot hold the
+// list, a truncated re-judgement demand is worse than none — the model answers
+// about whichever findings it can see.
+func priorFindingsForPrompt(prior []commonmodels.LedgerFinding, budgetTokens int) []commonmodels.LedgerFinding {
 	sort.SliceStable(prior, func(i, j int) bool { return prior[i].LastSeen.After(prior[j].LastSeen) })
-	if len(prior) > maxPriorFindingsInPrompt {
-		return prior[:maxPriorFindingsInPrompt]
+	lines := make([]string, len(prior))
+	for i := range prior {
+		lines[i] = priorFindingLine(prior[i])
 	}
-	return prior
+	return prior[:contextbudget.FitLines(lines, budgetTokens)]
 }
 
 // reSeenPriorIsOnThePage reports whether the prompt shows at least one finding
@@ -313,11 +342,11 @@ func priorFindingsForPrompt(prior []commonmodels.LedgerFinding) []commonmodels.L
 // about a finding it cannot see answers about one it can, which is the
 // invented verdict this gate exists to prevent. It also covers the empty-list
 // case — a failed read renders "(no prior findings)" and shows nothing.
-func reSeenPriorIsOnThePage(prior []commonmodels.LedgerFinding, reSeenPriorIDs map[string]struct{}) bool {
+func reSeenPriorIsOnThePage(onThePage []commonmodels.LedgerFinding, reSeenPriorIDs map[string]struct{}) bool {
 	if len(reSeenPriorIDs) == 0 {
 		return false
 	}
-	for _, f := range priorFindingsForPrompt(prior) {
+	for _, f := range onThePage {
 		if _, ok := reSeenPriorIDs[f.ID]; ok {
 			return true
 		}
@@ -325,16 +354,33 @@ func reSeenPriorIsOnThePage(prior []commonmodels.LedgerFinding, reSeenPriorIDs m
 	return false
 }
 
+// priorFindingLine is one entry of the re-judgement list. Held apart from the
+// renderer so the budget can price a line without rendering the whole block,
+// and so the two can never disagree about what a line costs.
+//
+// No description: this list is addressed by id and judged on status and
+// magnitude, and the substance is in the base context the same run already
+// carries. Adding it here would double the cost of every finding to say the
+// same thing twice.
+func priorFindingLine(f commonmodels.LedgerFinding) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "- id=%s [%s] %q (status %s, seen %d)", f.ID, f.Area, f.Name, f.Status, f.SeenCount)
+	if f.KeyMetric != "" {
+		fmt.Fprintf(&b, " metric: %s", f.KeyMetric)
+	}
+	return b.String()
+}
+
+// renderPriorFindings renders the already-selected re-judgement list. Selection
+// happens in generateReflection, once, because the ids it keeps are also what
+// the apply path validates against.
 func renderPriorFindings(prior []commonmodels.LedgerFinding) string {
 	if len(prior) == 0 {
 		return "(no prior findings — this is an early run)"
 	}
 	var b strings.Builder
-	for _, f := range priorFindingsForPrompt(prior) {
-		fmt.Fprintf(&b, "- id=%s [%s] %q (status %s, seen %d)", f.ID, f.Area, f.Name, f.Status, f.SeenCount)
-		if f.KeyMetric != "" {
-			fmt.Fprintf(&b, " metric: %s", f.KeyMetric)
-		}
+	for _, f := range prior {
+		b.WriteString(priorFindingLine(f))
 		b.WriteByte('\n')
 	}
 	return strings.TrimRight(b.String(), "\n")

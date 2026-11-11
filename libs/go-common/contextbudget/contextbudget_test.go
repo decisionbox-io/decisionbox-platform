@@ -401,3 +401,59 @@ func TestFitScalesWithTheModelWindow(t *testing.T) {
 		t.Errorf("a 4K window carried %d findings — it has no room for any", got)
 	}
 }
+
+func TestFitLines(t *testing.T) {
+	lines := []string{
+		strings.Repeat("a", 40),  // 10 tokens
+		strings.Repeat("b", 40),  // 10
+		strings.Repeat("c", 400), // 100
+		strings.Repeat("d", 4),   // 1
+	}
+
+	t.Run("takes a prefix and stops at the first that does not fit", func(t *testing.T) {
+		// 25 tokens fits the two 10s; the 100 does not. The cheap 1-token line
+		// after it must NOT be pulled forward — the order is a priority order.
+		if got := FitLines(lines, 25); got != 2 {
+			t.Errorf("FitLines = %d, want 2", got)
+		}
+	})
+
+	t.Run("everything fits a large budget", func(t *testing.T) {
+		if got := FitLines(lines, 100_000); got != len(lines) {
+			t.Errorf("FitLines = %d, want %d", got, len(lines))
+		}
+	})
+
+	t.Run("non-positive budget takes nothing", func(t *testing.T) {
+		for _, b := range []int{0, -1} {
+			if got := FitLines(lines, b); got != 0 {
+				t.Errorf("FitLines(%d) = %d, want 0", b, got)
+			}
+		}
+	})
+
+	t.Run("a first line past the budget takes nothing", func(t *testing.T) {
+		if got := FitLines([]string{strings.Repeat("x", 4000)}, 5); got != 0 {
+			t.Errorf("FitLines = %d, want 0 — a line that does not fit must not be half-rendered", got)
+		}
+	})
+
+	t.Run("empty input", func(t *testing.T) {
+		if got := FitLines(nil, 1000); got != 0 {
+			t.Errorf("FitLines(nil) = %d, want 0", got)
+		}
+	})
+
+	t.Run("never exceeds the budget", func(t *testing.T) {
+		for _, b := range []int{1, 5, 11, 21, 121, 122, 1000} {
+			n := FitLines(lines, b)
+			spent := 0
+			for _, l := range lines[:n] {
+				spent += Tokens(l)
+			}
+			if spent > b {
+				t.Errorf("budget %d: took %d lines costing %d", b, n, spent)
+			}
+		}
+	})
+}

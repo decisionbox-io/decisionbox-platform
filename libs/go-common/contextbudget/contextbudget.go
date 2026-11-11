@@ -195,20 +195,39 @@ func FitFindings(findings []commonmodels.LedgerFinding, budgetTokens, minDesc, m
 
 	descChars := clamp((budgetTokens*runesPerToken)/len(findings), minDesc, maxDesc)
 
-	kept := make([]commonmodels.LedgerFinding, 0, len(findings))
-	spent := 0
+	lines := make([]string, len(findings))
 	for i := range findings {
-		cost := Tokens(FindingLine(findings[i], descChars))
-		if spent+cost > budgetTokens {
-			break
-		}
-		kept = append(kept, findings[i])
-		spent += cost
+		lines[i] = FindingLine(findings[i], descChars)
 	}
-	if len(kept) == 0 {
+	n := FitLines(lines, budgetTokens)
+	if n == 0 {
 		return nil, descChars
 	}
-	return kept, descChars
+	return findings[:n], descChars
+}
+
+// FitLines reports how many of lines fit budgetTokens, taking a PREFIX: it
+// stops at the first line that does not fit rather than skipping it to squeeze
+// in a later cheaper one, because the caller's order is a priority order and
+// cherry-picking by size would quietly reorder by length.
+//
+// Exported so the prompts that compose their own line formats — a ledger
+// finding carries a description, a re-judgement list carries ids and statuses —
+// share one selection rule instead of each growing a loop that is nearly the
+// same. Zero for a non-positive budget.
+func FitLines(lines []string, budgetTokens int) int {
+	if budgetTokens <= 0 {
+		return 0
+	}
+	spent := 0
+	for i, line := range lines {
+		cost := Tokens(line)
+		if spent+cost > budgetTokens {
+			return i
+		}
+		spent += cost
+	}
+	return len(lines)
 }
 
 // truncateRunes trims s and cuts it to max runes, marking the cut. A

@@ -5,7 +5,6 @@ import (
 	_ "embed"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -87,7 +86,6 @@ const (
 	defaultDiscoveryLedgerDedupMinScore  = 0.85
 	defaultDiscoveryLedgerTrendDelta     = 0.2
 	maxConvergenceHistory                = 50
-	maxPriorFindingsInPrompt             = 60
 	maxLedgerTasksInPrompt               = 40
 	// defaultLearningRelevance is the importance a learning is stored with when
 	// the model gave none or gave one outside 0..1. Shared by the
@@ -537,8 +535,8 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 		}
 	}
 
-	trendDelta := getEnvAsFloat(discoveryLedgerTrendDeltaEnv, defaultDiscoveryLedgerTrendDelta)
-	dedupMinScore := getEnvAsFloat(discoveryLedgerDedupMinScoreEnv, defaultDiscoveryLedgerDedupMinScore)
+	trendDelta := goconfig.GetEnvAsFloat(discoveryLedgerTrendDeltaEnv, defaultDiscoveryLedgerTrendDelta)
+	dedupMinScore := goconfig.GetEnvAsFloat(discoveryLedgerDedupMinScoreEnv, defaultDiscoveryLedgerDedupMinScore)
 	now := time.Now()
 
 	// A finding the retention cap archived and this run has seen again must
@@ -1615,16 +1613,3 @@ func (o *Orchestrator) applyPackProposals(ctx context.Context, result *models.Di
 	}
 }
 
-// getEnvAsFloat reads a float env var with a default (go-common has no float
-// helper). Rule 2 — all thresholds parametric.
-func getEnvAsFloat(key string, def float64) float64 {
-	v := goconfig.GetEnv(key)
-	if v == "" {
-		return def
-	}
-	f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
-	if err != nil {
-		return def
-	}
-	return f
-}
