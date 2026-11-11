@@ -417,3 +417,47 @@ describe('client-side ordering', () => {
     expect(severityBandOrder(undefined)).toBeGreaterThan(severityBandOrder('low'));
   });
 });
+
+// --- The one row shape that could read as a different claim ---------------
+
+describe('a baseline band with a real amount beside it', () => {
+  // Reachable with the shipped calibration: a checked amount in the home
+  // currency, on a document with no percentage figure and no amount
+  // thresholds configured. The amount is real and worth showing, but it did
+  // not rank the finding — and a bare "₺2.40M" in the driver slot would read
+  // as though it had.
+  const baselineWithAmount = (): Scoring => shareBanded({
+    magnitude_score: 0.6,
+    severity_band: 'medium',
+    severity_score: 0.6,
+    severity_reason: 'Medium — not quantified, so the area baseline applies. ₺2.40M is at '
+      + 'stake but no amount bands are configured to rank it.',
+    severity_driver: {
+      kind: 'baseline',
+      quantified: false,
+      amount: {
+        figure_id: 'f3', display: '₺2.40M', value: 2400000,
+        unit: 'currency', currency: '₺', verdict: 'holds',
+      },
+    },
+    priority_tier: 'high',
+  });
+
+  it('says both the amount and that it did not rank the finding', () => {
+    wrap(<SeverityCell scoring={baselineWithAmount()} severity="medium" />);
+    const driver = screen.getByTestId('severity-driver');
+    expect(driver).toHaveTextContent('₺2.40M');
+    expect(driver).toHaveTextContent('not quantified');
+  });
+
+  it('shows the amount in the breakdown and names no banding figure', async () => {
+    wrap(<ScoringBreakdown scoring={baselineWithAmount()} axis="severity" />);
+
+    expect(screen.getByText(/area baseline — not quantified/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('severity-banded-by')).not.toBeInTheDocument();
+    expect(screen.getByTestId('severity-amount')).toHaveTextContent('₺2.40M (holds)');
+    await waitFor(() => {
+      expect(screen.getByTestId('severity-no-amount-bands')).toBeInTheDocument();
+    });
+  });
+});
