@@ -231,6 +231,18 @@ var schema = []struct {
 			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "severity", Value: 1}}},
 			{Keys: bson.D{{Key: "discovery_id", Value: 1}}},
 			{Keys: bson.D{{Key: "embedding_model", Value: 1}}},
+			// The default list order. All three keys, in these directions,
+			// because that is the sort the read path issues -- an index on the
+			// score alone would leave Mongo sorting a project's whole history
+			// in memory to break the ties, and a run's documents routinely tie
+			// on both the score and `created_at` (the agent stamps one
+			// timestamp per batch). See database.ListSort.
+			{Keys: bson.D{
+				{Key: "project_id", Value: 1},
+				{Key: "scoring.priority_score", Value: -1},
+				{Key: "created_at", Value: -1},
+				{Key: "_id", Value: 1},
+			}},
 		},
 	},
 	{
@@ -240,6 +252,13 @@ var schema = []struct {
 			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "recommendation_category", Value: 1}}},
 			{Keys: bson.D{{Key: "discovery_id", Value: 1}}},
 			{Keys: bson.D{{Key: "embedding_model", Value: 1}}},
+			// The same, for the recommendations list.
+			{Keys: bson.D{
+				{Key: "project_id", Value: 1},
+				{Key: "scoring.priority_score", Value: -1},
+				{Key: "created_at", Value: -1},
+				{Key: "_id", Value: 1},
+			}},
 		},
 	},
 	{

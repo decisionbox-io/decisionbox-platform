@@ -43,8 +43,19 @@ func (h *InsightsHandler) List(w http.ResponseWriter, r *http.Request) {
 		}
 		offset = parsed
 	}
+	// Priority is the default, and `created_at` stays reachable: changing the
+	// default without leaving the old order available would silently reorder
+	// every existing client's pages. An unrecognised value is a 400 rather
+	// than a quiet fall back to the default -- a client that asked for an
+	// order it did not get is a client whose paging is wrong in a way it
+	// cannot detect.
+	sort := r.URL.Query().Get("sort")
+	if _, err := database.ListSort(sort); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
-	insights, err := h.repo.ListByProject(r.Context(), projectID, limit, offset)
+	insights, err := h.repo.ListByProject(r.Context(), projectID, limit, offset, sort)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list insights")
 		return

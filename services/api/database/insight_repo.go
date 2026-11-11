@@ -51,12 +51,16 @@ func (r *InsightRepository) GetByID(ctx context.Context, id string) (*commonmode
 	return &insight, nil
 }
 
-func (r *InsightRepository) ListByProject(ctx context.Context, projectID string, limit, offset int) ([]*commonmodels.StandaloneInsight, error) {
+func (r *InsightRepository) ListByProject(ctx context.Context, projectID string, limit, offset int, sort string) ([]*commonmodels.StandaloneInsight, error) {
 	if limit <= 0 {
 		limit = 50
 	}
+	order, err := ListSort(sort)
+	if err != nil {
+		return nil, err
+	}
 	opts := options.Find().
-		SetSort(bson.D{{Key: "created_at", Value: -1}}).
+		SetSort(order).
 		SetLimit(int64(limit)).
 		SetSkip(int64(offset))
 

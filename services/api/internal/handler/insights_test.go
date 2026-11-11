@@ -13,6 +13,8 @@ import (
 
 type mockInsightRepo struct {
 	insights []*commonmodels.StandaloneInsight
+	// sortsSeen is every `sort` value ListByProject was called with, in order.
+	sortsSeen []string
 }
 
 func (m *mockInsightRepo) Create(_ context.Context, _ *commonmodels.StandaloneInsight) error {
@@ -29,7 +31,10 @@ func (m *mockInsightRepo) GetByID(_ context.Context, id string) (*commonmodels.S
 	}
 	return nil, context.DeadlineExceeded // simulate not found
 }
-func (m *mockInsightRepo) ListByProject(_ context.Context, projectID string, limit, offset int) ([]*commonmodels.StandaloneInsight, error) {
+// sortsSeen records the sort each List call was given, so a test can assert
+// what the handler resolved rather than only what came back.
+func (m *mockInsightRepo) ListByProject(_ context.Context, projectID string, limit, offset int, sort string) ([]*commonmodels.StandaloneInsight, error) {
+	m.sortsSeen = append(m.sortsSeen, sort)
 	var result []*commonmodels.StandaloneInsight
 	for _, ins := range m.insights {
 		if ins.ProjectID == projectID {

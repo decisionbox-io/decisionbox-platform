@@ -68,6 +68,14 @@ func priorityTier(severityBand, confidenceBand string) string {
 	}
 }
 
+// PriorityTierFor is priorityTier for callers outside this package: the API's
+// calibration endpoint, which enumerates the matrix by asking the engine for
+// each cell rather than restating it. A second statement of the matrix on the
+// wire is a second matrix.
+func PriorityTierFor(severityBand, confidenceBand string) string {
+	return priorityTier(severityBand, confidenceBand)
+}
+
 // priorityScore is the sort key: the tier, refined by the two continuous
 // scores.
 //

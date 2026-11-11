@@ -13,6 +13,8 @@ import (
 
 type mockRecommendationRepo struct {
 	recs []*commonmodels.StandaloneRecommendation
+	// sortsSeen is every `sort` value ListByProject was called with, in order.
+	sortsSeen []string
 }
 
 func (m *mockRecommendationRepo) Create(_ context.Context, _ *commonmodels.StandaloneRecommendation) error {
@@ -29,7 +31,8 @@ func (m *mockRecommendationRepo) GetByID(_ context.Context, id string) (*commonm
 	}
 	return nil, context.DeadlineExceeded
 }
-func (m *mockRecommendationRepo) ListByProject(_ context.Context, projectID string, limit, offset int) ([]*commonmodels.StandaloneRecommendation, error) {
+func (m *mockRecommendationRepo) ListByProject(_ context.Context, projectID string, limit, offset int, sort string) ([]*commonmodels.StandaloneRecommendation, error) {
+	m.sortsSeen = append(m.sortsSeen, sort)
 	var result []*commonmodels.StandaloneRecommendation
 	for _, rec := range m.recs {
 		if rec.ProjectID == projectID {

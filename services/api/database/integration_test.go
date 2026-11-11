@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,7 +110,7 @@ func TestInteg_InsightRepo_ListByProject(t *testing.T) {
 	})
 
 	// List by project
-	results, err := repo.ListByProject(ctx, "proj-list-1", 50, 0)
+	results, err := repo.ListByProject(ctx, "proj-list-1", 50, 0, "")
 	if err != nil {
 		t.Fatalf("ListByProject: %v", err)
 	}
@@ -123,7 +124,7 @@ func TestInteg_InsightRepo_ListByProject(t *testing.T) {
 	}
 
 	// List with limit
-	results, err = repo.ListByProject(ctx, "proj-list-1", 2, 0)
+	results, err = repo.ListByProject(ctx, "proj-list-1", 2, 0, "")
 	if err != nil {
 		t.Fatalf("ListByProject with limit: %v", err)
 	}
@@ -132,7 +133,7 @@ func TestInteg_InsightRepo_ListByProject(t *testing.T) {
 	}
 
 	// List with offset
-	results, err = repo.ListByProject(ctx, "proj-list-1", 50, 2)
+	results, err = repo.ListByProject(ctx, "proj-list-1", 50, 2, "")
 	if err != nil {
 		t.Fatalf("ListByProject with offset: %v", err)
 	}
@@ -249,7 +250,7 @@ func TestInteg_RecRepo_ListAndCount(t *testing.T) {
 	ctx := context.Background()
 	repo := NewRecommendationRepository(testDB)
 
-	results, err := repo.ListByProject(ctx, "proj-integ-1", 50, 0)
+	results, err := repo.ListByProject(ctx, "proj-integ-1", 50, 0, "")
 	if err != nil {
 		t.Fatalf("ListByProject: %v", err)
 	}
@@ -573,7 +574,7 @@ func TestInteg_InsightRepo_CreateMany(t *testing.T) {
 		t.Fatalf("CreateMany: %v", err)
 	}
 
-	results, _ := repo.ListByProject(ctx, "proj-many", 50, 0)
+	results, _ := repo.ListByProject(ctx, "proj-many", 50, 0, "")
 	if len(results) != 2 {
 		t.Errorf("expected 2, got %d", len(results))
 	}
@@ -592,7 +593,7 @@ func TestInteg_RecRepo_CreateMany(t *testing.T) {
 		t.Fatalf("CreateMany: %v", err)
 	}
 
-	results, _ := repo.ListByProject(ctx, "proj-many", 50, 0)
+	results, _ := repo.ListByProject(ctx, "proj-many", 50, 0, "")
 	if len(results) != 2 {
 		t.Errorf("expected 2, got %d", len(results))
 	}
@@ -722,5 +723,173 @@ func TestInteg_AskSessionRepo_LegacyAnonymousIsShared(t *testing.T) {
 	got, _ = repo.ListByProject(ctx, project, goauth.AnonymousSubject, 10, "", "")
 	if len(got) != 1 || got[0].ID != "leg-shared" {
 		t.Fatalf("anonymous caller's list = %+v, want only leg-shared", got)
+	}
+}
+
+// --- The default list order ---
+
+// TestInteg_PrioritySortIsStableUnderPaging is the paging bug the three-key
+// sort exists to prevent, measured against a real Mongo rather than argued
+// about.
+//
+// A whole run's documents share one `created_at`, because the agent stamps
+// `now` once for the batch when it denormalises them -- and a run's findings
+// routinely share a priority score, because the score is a tier plus two
+// banded refinements. Those are the normal case, not an edge: without a unique
+// tie-break, two overlapping offset windows over such a set return some
+// documents twice and others never, and a client paging the endpoint has no
+// way to tell.
+func TestInteg_PrioritySortIsStableUnderPaging(t *testing.T) {
+	ctx := context.Background()
+	repo := NewInsightRepository(testDB)
+	const project = "proj-paging-ties"
+
+	// Twelve insights, one timestamp, and only two distinct priority scores:
+	// the worst realistic case for a sort without a tie-break.
+	stamped := time.Now().UTC().Truncate(time.Millisecond)
+	for i := 0; i < 12; i++ {
+		score := 3.09
+		if i%2 == 1 {
+			score = 1.09
+		}
+		if err := repo.Create(ctx, &commonmodels.StandaloneInsight{
+			ID:        fmt.Sprintf("tie-%02d", i),
+			ProjectID: project,
+			Name:      fmt.Sprintf("Finding %02d", i),
+			CreatedAt: stamped,
+			Scoring:   &commonmodels.Scoring{PriorityScore: score, EngineVersion: 1},
+		}); err != nil {
+			t.Fatalf("seeding %d: %v", i, err)
+		}
+	}
+
+	// Page through in fours and in sixes. Every document must appear exactly
+	// once in each walk, and the two walks must agree on the order.
+	for _, page := range []int{4, 6} {
+		var walked []string
+		for offset := 0; offset < 12; offset += page {
+			got, err := repo.ListByProject(ctx, project, page, offset, "")
+			if err != nil {
+				t.Fatalf("page %d offset %d: %v", page, offset, err)
+			}
+			for _, ins := range got {
+				walked = append(walked, ins.ID)
+			}
+		}
+		if len(walked) != 12 {
+			t.Fatalf("page size %d walked %d documents, want 12: %v", page, len(walked), walked)
+		}
+		seen := map[string]int{}
+		for _, id := range walked {
+			seen[id]++
+		}
+		for id, n := range seen {
+			if n != 1 {
+				t.Errorf("page size %d returned %s %d times", page, id, n)
+			}
+		}
+		if len(seen) != 12 {
+			t.Errorf("page size %d returned only %d distinct documents", page, len(seen))
+		}
+		// The higher score comes first, and the tie-break is ascending `_id`.
+		if walked[0] != "tie-00" || walked[5] != "tie-10" || walked[6] != "tie-01" {
+			t.Errorf("page size %d order = %v, want the 3.09 group first in id order", page, walked)
+		}
+	}
+}
+
+// TestInteg_AnUnscoredInsightSortsLast -- a document written before the scorer
+// existed has no priority score at all. A missing field compares as null under
+// a descending sort, which puts it below every scored document: the honest
+// place for a finding nothing graded, and behaviour nobody would notice
+// breaking.
+func TestInteg_AnUnscoredInsightSortsLast(t *testing.T) {
+	ctx := context.Background()
+	repo := NewInsightRepository(testDB)
+	const project = "proj-legacy-last"
+	now := time.Now().UTC()
+
+	// The legacy one is created LAST, so creation order would put it first.
+	if err := repo.Create(ctx, &commonmodels.StandaloneInsight{
+		ID: "scored-low", ProjectID: project, Name: "Scored, bottom tier",
+		CreatedAt: now.Add(-time.Hour),
+		Scoring:   &commonmodels.Scoring{PriorityScore: 0.09, EngineVersion: 1},
+	}); err != nil {
+		t.Fatalf("seeding scored: %v", err)
+	}
+	if err := repo.Create(ctx, &commonmodels.StandaloneInsight{
+		ID: "legacy", ProjectID: project, Name: "Never scored", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seeding legacy: %v", err)
+	}
+
+	got, err := repo.ListByProject(ctx, project, 50, 0, "")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d insights, want 2", len(got))
+	}
+	if got[0].ID != "scored-low" || got[1].ID != "legacy" {
+		t.Errorf("order = [%s %s], want the scored one first", got[0].ID, got[1].ID)
+	}
+
+	// Under the old order the newest wins, which is what keeps an existing
+	// client's paging unchanged.
+	byDate, err := repo.ListByProject(ctx, project, 50, 0, SortCreatedAt)
+	if err != nil {
+		t.Fatalf("list by created_at: %v", err)
+	}
+	if byDate[0].ID != "legacy" {
+		t.Errorf("created_at order = %s first, want the newest (legacy)", byDate[0].ID)
+	}
+}
+
+// TestInteg_ThePrioritySortIsServedByAnIndex -- asserting the index EXISTS
+// does not assert it is used, and the difference is a blocking in-memory sort
+// over a project's whole insight history on every list request. So this reads
+// the plan.
+func TestInteg_ThePrioritySortIsServedByAnIndex(t *testing.T) {
+	ctx := context.Background()
+	order, err := ListSort("")
+	if err != nil {
+		t.Fatalf("default sort: %v", err)
+	}
+
+	var plan bson.M
+	if err := testDB.Collection("insights").Database().RunCommand(ctx, bson.D{
+		{Key: "explain", Value: bson.D{
+			{Key: "find", Value: "insights"},
+			{Key: "filter", Value: bson.M{"project_id": "proj-paging-ties"}},
+			{Key: "sort", Value: order},
+			{Key: "limit", Value: 50},
+		}},
+		{Key: "verbosity", Value: "queryPlanner"},
+	}).Decode(&plan); err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+
+	// The WINNING plan only. Mongo reports every plan it considered, and the
+	// rejected ones here are blocking sorts over the other project_id
+	// indexes -- which is the whole point: it rejected them in favour of the
+	// one that serves the sort. Matching on the rendered whole would have
+	// failed on their presence and taught nothing.
+	planner, ok := plan["queryPlanner"].(bson.M)
+	if !ok {
+		t.Fatalf("explain carried no queryPlanner: %v", plan)
+	}
+	winning, ok := planner["winningPlan"].(bson.M)
+	if !ok {
+		t.Fatalf("explain carried no winningPlan: %v", planner)
+	}
+	stages := fmt.Sprintf("%v", winning)
+	if strings.Contains(stages, "SORT") {
+		t.Errorf("the priority sort is a blocking in-memory SORT stage, not an index scan.\nWinning plan: %s", stages)
+	}
+	if !strings.Contains(stages, "IXSCAN") {
+		t.Errorf("the priority sort is not served by any index.\nWinning plan: %s", stages)
+	}
+	if !strings.Contains(stages, "scoring.priority_score") {
+		t.Errorf("the sort is served by some other index than the one declared for it.\nWinning plan: %s", stages)
 	}
 }
