@@ -1337,7 +1337,11 @@ func countByTier(insights []models.Insight, tier string) int {
 			}
 			continue
 		}
-		if legacySeverityForTier[tier] == in.Severity {
+		// The mapping has to EXIST, not merely match. `investigate` has no
+		// legacy equivalent, so its lookup yields "" -- and a legacy insight
+		// that carries no severity at all also has "", which an equality
+		// check alone would count into a tier nothing ever triaged it by.
+		if word, ok := legacySeverityForTier[tier]; ok && word != "" && word == in.Severity {
 			count++
 		}
 	}

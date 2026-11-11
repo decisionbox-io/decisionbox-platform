@@ -167,3 +167,22 @@ func briefIDs(briefs []notify.InsightBrief) []string {
 	}
 	return out
 }
+
+// TestALegacyInsightWithNoSeverityIsCountedNowhere -- an insight that
+// produced no severity word at all, from before the field was derived.
+//
+// `investigate` has no legacy equivalent, so its lookup yields "" — and so
+// does an empty severity. An equality check alone would count every such
+// document into a tier nothing ever triaged it by, which is the one direction
+// a count must not be wrong in: it would invent urgency.
+func TestALegacyInsightWithNoSeverityIsCountedNowhere(t *testing.T) {
+	blank := []models.Insight{{ID: "i1", Name: "n"}, {ID: "i2", Name: "n2"}}
+	for _, tier := range []string{
+		gomodels.PriorityTierCritical, gomodels.PriorityTierInvestigate,
+		gomodels.PriorityTierHigh, gomodels.PriorityTierLow,
+	} {
+		if got := countByTier(blank, tier); got != 0 {
+			t.Errorf("tier %q counted %d insights that carry no severity at all", tier, got)
+		}
+	}
+}

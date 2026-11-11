@@ -59,12 +59,23 @@ func priorityTier(severityBand, confidenceBand string) string {
 			return gomodels.PriorityTierHigh
 		}
 		return gomodels.PriorityTierLow
-	default:
+	case gomodels.SeverityBandLow:
 		// Low severity, either way. A finding that would not matter if it
 		// were true does not become actionable by being well evidenced, so
 		// there is no cell here for confidence to improve. The continuous
 		// score still orders these against each other.
 		return gomodels.PriorityTierLow
+	default:
+		// No severity band, or one this build does not recognise. There is no
+		// cell for it, and "" says so.
+		//
+		// Deliberately not falling through to `low`, which is what a default
+		// arm covering this would do: `low` is a judgement -- "this would not
+		// matter if it were true" -- and an absent band means nothing has
+		// judged it. Every caller today has a band in hand, so this is a
+		// guard rather than a path; it exists because the alternative fails
+		// silently and in the direction that hides findings.
+		return ""
 	}
 }
 

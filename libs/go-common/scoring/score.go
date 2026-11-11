@@ -227,8 +227,17 @@ func confidenceAxis(in Input, cfg Config) gomodels.Scoring {
 // Called only once both axes are on the struct, so the matrix reads the
 // document rather than a pair of arguments a caller could transpose.
 func withPriority(s gomodels.Scoring, cfg Config) gomodels.Scoring {
-	s.PriorityTier = priorityTier(s.SeverityBand, s.ConfidenceBand)
-	s.PriorityScore = priorityScore(s.PriorityTier, s.SeverityScore, s.ConfidenceScore, cfg.Priority)
+	tier := priorityTier(s.SeverityBand, s.ConfidenceBand)
+	if tier == "" {
+		// No cell to be in. Leaving both fields unset is what makes an
+		// ungraded document sort last and render as a dash rather than as a
+		// real bottom-of-the-list grade.
+		s.PriorityTier = ""
+		s.PriorityScore = 0
+		return s
+	}
+	s.PriorityTier = tier
+	s.PriorityScore = priorityScore(tier, s.SeverityScore, s.ConfidenceScore, cfg.Priority)
 	return s
 }
 
