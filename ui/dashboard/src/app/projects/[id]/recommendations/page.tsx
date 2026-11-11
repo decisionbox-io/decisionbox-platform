@@ -10,7 +10,7 @@ import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
 import AskAboutThisButton from '@/components/ask/AskAboutThisButton';
 import {
-  SectionHeader, Pill, EmptyState, SearchInput, Pagination, normalizeConfidence,
+  SectionHeader, Pill, EmptyState, SearchInput, Pagination,
 } from '@/components/common/UIComponents';
 import UnreadDot from '@/components/common/UnreadDot';
 import { useReadSet } from '@/lib/readState';
@@ -256,12 +256,11 @@ export default function RecommendationsListPage() {
                     <span>{rec.segment_size?.toLocaleString() || ''} {rec.target_segment}</span>
                   )}
                   {rec.expected_impact?.metric && <span>{rec.expected_impact.metric}</span>}
-                  {/* The band, or the stored number marked legacy on a
-                      recommendation written before the scorer existed. Same
-                      branch as the run page's rows — one reader for one fact. */}
-                  {rec.evidence_scoring
-                    ? <ConfidenceCell scoring={rec.evidence_scoring} confidence={rec.confidence} size="xs" />
-                    : rec.confidence > 0 && <span>Confidence: {normalizeConfidence(rec.confidence)}%</span>}
+                  {/* The band, or the stored number marked legacy. Same branch
+                      as the run page's rows — one reader for one fact. */}
+                  {(rec.evidence_scoring || rec.confidence > 0) && (
+                    <ConfidenceCell scoring={rec.evidence_scoring} confidence={rec.confidence} size="xs" />
+                  )}
                 </div>
 
                 {/* Related insights */}

@@ -557,12 +557,12 @@ function RecommendationCard({ rec, projectId, discoveryId, idx, insights, isRead
         {rec.expected_impact?.metric && (
           <span>{rec.expected_impact.metric}</span>
         )}
-        {/* A recommendation with no derived grade is one written before the
-            scorer existed; its stored number is the model's own and is shown
-            as it always was. */}
-        {rec.evidence_scoring
-          ? <ConfidenceCell scoring={rec.evidence_scoring} confidence={rec.confidence} size="xs" />
-          : rec.confidence > 0 && <span>Confidence: {normalizeConfidence(rec.confidence)}%</span>}
+        {/* The band, or — on a recommendation written before the scorer
+            existed — its stored number marked legacy. The guard keeps a
+            recommendation that carries neither silent, as it was before. */}
+        {(rec.evidence_scoring || rec.confidence > 0) && (
+          <ConfidenceCell scoring={rec.evidence_scoring} confidence={rec.confidence} size="xs" />
+        )}
       </div>
 
       {/* Related Insights */}
