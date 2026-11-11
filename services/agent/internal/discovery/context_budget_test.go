@@ -1346,3 +1346,29 @@ func TestFixedPromptTokensTakesTheWidestBody(t *testing.T) {
 		t.Errorf("a 100K-char profile did not raise the fixed cost (%d vs %d)", bigProfile, got)
 	}
 }
+
+// TestFixedPromptTokensCountsTheRecommendationsTemplate. Recommendations
+// receive the same base context and run last, which makes them easy to forget:
+// a project whose recommendation template is the largest of the three would
+// have had the prior block allocate room that template already needed.
+func TestFixedPromptTokensCountsTheRecommendationsTemplate(t *testing.T) {
+	o := &Orchestrator{}
+	ctx := context.Background()
+	prompts := ResolvedPrompts{
+		BaseContext:   strings.Repeat("b", 400),
+		Exploration:   strings.Repeat("e", 800),
+		AnalysisAreas: map[string]string{"a": strings.Repeat("a", 800)},
+	}
+	areas := []AnalysisArea{{ID: "a"}}
+
+	without := o.fixedPromptTokens(ctx, prompts, "", areas)
+	prompts.Recommendations = strings.Repeat("r", 60_000)
+	with := o.fixedPromptTokens(ctx, prompts, "", areas)
+
+	if with <= without {
+		t.Errorf("a 60K-char recommendations template did not raise the fixed cost (%d vs %d)", with, without)
+	}
+	if want := contextbudget.Tokens(prompts.Recommendations); with < want {
+		t.Errorf("fixedPromptTokens = %d, want at least the recommendations template's %d", with, want)
+	}
+}

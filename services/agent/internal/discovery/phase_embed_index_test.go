@@ -225,6 +225,11 @@ type mockEmbedIndexStore struct {
 	embedUpdates     []embedUpdate
 	dupUpdates       []dupUpdate
 	insertError      error
+	// alreadyFolded answers DuplicateOf: ids that a PREVIOUS run already
+	// marked, which are still indexed in the vector store and so can still be
+	// the best match for a later document.
+	alreadyFolded  map[string]string
+	duplicateOfErr error
 
 	// deletedDiscoveries records the discoveries the retire step purged;
 	// deleteInsightIDs / deleteRecIDs are the ids it hands back as the
@@ -238,6 +243,19 @@ type mockEmbedIndexStore struct {
 	// the rows go, so listing must happen first and deleting last.
 	listedDiscoveries []string
 	listError         error
+}
+
+func (m *mockEmbedIndexStore) DuplicateOf(_ context.Context, _, id string) (string, error) {
+	if m.duplicateOfErr != nil {
+		return "", m.duplicateOfErr
+	}
+	// This run's own marks count too: markDuplicates writes them as it goes.
+	for _, u := range m.dupUpdates {
+		if u.ID == id {
+			return u.DupOf, nil
+		}
+	}
+	return m.alreadyFolded[id], nil
 }
 
 func (m *mockEmbedIndexStore) PointIDsByDiscovery(_ context.Context, discoveryID string) ([]string, []string, error) {
@@ -974,5 +992,62 @@ func TestMarkDuplicates_CanonicalFromAnEarlierRunIsNotAssumed(t *testing.T) {
 	// vector we do not have. The store was already asked about b and said no.
 	if got := markedAs(store, "b"); got != "" {
 		t.Errorf("b was folded into %q without any evidence it resembles that row", got)
+	}
+}
+
+// TestMarkDuplicates_StoredHitThatIsItselfSuppressed. An earlier run's
+// duplicate stays indexed in the vector store, so it can still be the best
+// match for a later document. Folding into it would give that document a
+// pointer to a row the reader cannot see — and since cosine is not transitive,
+// resembling a suppressed row says nothing about resembling the visible one it
+// was folded into (0.906 between neighbours, 0.643 end to end). The canonical's
+// vector is not in hand to check against, so the fold is refused.
+func TestMarkDuplicates_StoredHitThatIsItselfSuppressed(t *testing.T) {
+	store := &mockEmbedIndexStore{
+		alreadyFolded: map[string]string{"b-from-an-earlier-run": "a-the-visible-one"},
+	}
+	vs := &mockVectorStore{dupes: []vectorstore.SearchResult{{ID: "b-from-an-earlier-run", Score: 0.906}}}
+	o := &Orchestrator{embedIndexStore: store, vectorStore: vs}
+
+	o.markDuplicates(context.Background(), []dedupCandidate{
+		{id: "c", docType: "insight", projectID: "p1", vec: []float64{1, 0}},
+	}, nil)
+
+	if len(store.dupUpdates) != 0 {
+		t.Errorf("c was folded into %+v — its best match is itself hidden, and nothing establishes that c resembles the visible row", store.dupUpdates)
+	}
+}
+
+// TestMarkDuplicates_StoredHitThatIsCanonicalIsStillUsed keeps the common case
+// working: a match that is not itself suppressed is exactly what this check is
+// for.
+func TestMarkDuplicates_StoredHitThatIsCanonicalIsStillUsed(t *testing.T) {
+	store := &mockEmbedIndexStore{alreadyFolded: map[string]string{}}
+	vs := &mockVectorStore{dupes: []vectorstore.SearchResult{{ID: "a-canonical", Score: 0.97}}}
+	o := &Orchestrator{embedIndexStore: store, vectorStore: vs}
+
+	o.markDuplicates(context.Background(), []dedupCandidate{
+		{id: "c", docType: "insight", projectID: "p1", vec: []float64{1, 0}},
+	}, nil)
+
+	if got := markedAs(store, "c"); got != "a-canonical" {
+		t.Errorf("c should fold into the canonical row, got %q", got)
+	}
+}
+
+// TestMarkDuplicates_UnknownSuppressionStateIsNotAssumed: if the lookup fails
+// we cannot tell whether the match is canonical, and marking on a guess is the
+// one outcome that loses a document.
+func TestMarkDuplicates_UnknownSuppressionStateIsNotAssumed(t *testing.T) {
+	store := &mockEmbedIndexStore{duplicateOfErr: errors.New("mongo unavailable")}
+	vs := &mockVectorStore{dupes: []vectorstore.SearchResult{{ID: "a", Score: 0.99}}}
+	o := &Orchestrator{embedIndexStore: store, vectorStore: vs}
+
+	o.markDuplicates(context.Background(), []dedupCandidate{
+		{id: "c", docType: "insight", projectID: "p1", vec: []float64{1, 0}},
+	}, nil)
+
+	if len(store.dupUpdates) != 0 {
+		t.Errorf("a failed lookup must not mark anything: %+v", store.dupUpdates)
 	}
 }

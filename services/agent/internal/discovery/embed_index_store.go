@@ -2,11 +2,13 @@ package discovery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -123,6 +125,24 @@ func (s *MongoEmbedIndexStore) UpdateEmbedding(ctx context.Context, collection, 
 		return fmt.Errorf("update embedding for %s/%s: %w", collection, id, err)
 	}
 	return nil
+}
+
+// DuplicateOf reports what a document was folded into, or "" when it is
+// canonical or not found. A missing document is not an error here: the caller
+// is deciding whether a vector-store hit is safe to fold into, and a hit whose
+// row has since been deleted is one it must not fold into either.
+func (s *MongoEmbedIndexStore) DuplicateOf(ctx context.Context, collection, id string) (string, error) {
+	var doc struct {
+		DuplicateOf string `bson:"duplicate_of"`
+	}
+	err := s.db.Collection(collection).FindOne(ctx, map[string]interface{}{"_id": id}).Decode(&doc)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read duplicate_of for %s/%s: %w", collection, id, err)
+	}
+	return doc.DuplicateOf, nil
 }
 
 func (s *MongoEmbedIndexStore) UpdateDuplicate(ctx context.Context, collection, id, duplicateOf string, score float64) error {

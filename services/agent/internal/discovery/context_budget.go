@@ -330,8 +330,10 @@ func documentDedupMinScore() float64 {
 // project profile, and the largest body the block will be prepended to.
 //
 // The largest rather than the average, because the block is composed ONCE and
-// prepended to all of them — exploration's own body, and each analysis area's
-// template. A budget that fits the average overflows on the widest.
+// prepended to all of them — exploration's own body, each analysis area's
+// template, and the recommendations template, which receives the same base
+// context and is easy to forget because it runs last. A budget that fits the
+// average overflows on the widest.
 //
 // What it cannot see is the schema catalog, which is rendered after this and
 // sized by its own retrieval. That is why priorContextBudget also leaves the
@@ -342,6 +344,9 @@ func documentDedupMinScore() float64 {
 // estimate on this path.
 func (o *Orchestrator) fixedPromptTokens(ctx context.Context, prompts ResolvedPrompts, profileStr string, areas []AnalysisArea) int {
 	widest := approxTokens(ctx, prompts.Exploration)
+	if n := approxTokens(ctx, prompts.Recommendations); n > widest {
+		widest = n
+	}
 	for _, a := range areas {
 		if body, ok := prompts.AnalysisAreas[a.ID]; ok {
 			if n := approxTokens(ctx, body); n > widest {
