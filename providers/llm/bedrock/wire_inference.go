@@ -46,3 +46,20 @@ func inferBedrockWire(model string) gollm.Wire {
 // Completions wire today. Matches what AWS exposes via
 // ListFoundationModels.
 var bedrockOpenSourcePrefixes = []string{"qwen.", "deepseek.", "mistral.", "meta."}
+
+// bedrockUsesMaxCompletionTokens reports whether a Bedrock model should get
+// `max_completion_tokens` instead of `max_tokens`. Every OpenAI model on
+// Bedrock (gpt-5.x, gpt-6, gpt-oss) accepts the new name, and gpt-5.6 /
+// gpt-6 onwards reject `max_tokens` with a 400 ValidationException, so the
+// switch is made for the whole "openai." publisher. Region qualifiers ("us.")
+// are stripped first so cross-region inference profiles resolve the same way.
+func bedrockUsesMaxCompletionTokens(model string) bool {
+	m := strings.ToLower(model)
+	for _, prefix := range claudeRegionPrefixes {
+		if strings.HasPrefix(m, prefix) {
+			m = strings.TrimPrefix(m, prefix)
+			break
+		}
+	}
+	return strings.HasPrefix(m, "openai.")
+}
