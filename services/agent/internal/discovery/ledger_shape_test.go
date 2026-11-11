@@ -65,7 +65,11 @@ func reflectionPromptFixture() (*Orchestrator, *models.DiscoveryResult, []common
 // prior findings present, so it carries both demands), and the provenance
 // fields — this run's findings are now listed with their insight ids, because
 // a thread this run answered is answered by a finding from this run and the
-// model had no id to copy for one.
+// model had no id to copy for one; and the grounded `resolved` path, without
+// which no finding could reach a terminal status and the active set could only
+// grow. When it was re-captured for that last change, the prior_status_updates
+// bullet was the ONLY line that moved, which is the other thing this golden is
+// for: proving that a change to one bullet did not disturb the rest.
 func TestReflectionPrompt_TableOnlyRunIsUnchanged(t *testing.T) {
 	want, err := os.ReadFile("testdata/reflection_prompt_table_only.golden")
 	if err != nil {
