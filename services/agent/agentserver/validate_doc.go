@@ -8,6 +8,7 @@ import (
 	"time"
 
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/scoring"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/config"
@@ -281,11 +282,15 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 			Language: project.EffectiveLanguage(),
 		},
 		Executor: exec,
-		DocKind:  valmodels.DocKind(job.DocKind),
-		DocID:    job.DocID,
-		Insights: discDoc.Insights,
-		Recs:     discDoc.Recommendations,
-		Steps:    steps,
+		// One calibration, resolved here rather than defaulted inside the
+		// scorer, so this path and a run are visibly scoring against the same
+		// table.
+		ScoringCfg: scoring.DefaultConfig(),
+		DocKind:    valmodels.DocKind(job.DocKind),
+		DocID:      job.DocID,
+		Insights:   discDoc.Insights,
+		Recs:       discDoc.Recommendations,
+		Steps:      steps,
 	}
 	result, err := discovery.ValidateSingleDoc(ctx, input)
 	if err != nil {
@@ -335,9 +340,15 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 		if matched == nil || matched.Validation == nil {
 			return fmt.Errorf("validation result was not stamped on insight %s", job.DocID)
 		}
-		if err := discoveryRepo.UpdateInsightValidation(ctx, discDoc.ID, job.DocID, matched.Validation); err != nil {
+		update := database.DocVerdictUpdate{
+			Validation: matched.Validation,
+			Scoring:    matched.Scoring,
+			Confidence: matched.Confidence,
+		}
+		if err := discoveryRepo.UpdateInsightValidation(ctx, discDoc.ID, job.DocID, update); err != nil {
 			return fmt.Errorf("persist insight validation: %w", err)
 		}
+		persistStandaloneVerdict(ctx, db, "insights", job.DocID, update)
 	case valmodels.DocRecommendation:
 		var matched *models.Recommendation
 		for i := range discDoc.Recommendations {
@@ -349,9 +360,15 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 		if matched == nil || matched.Validation == nil {
 			return fmt.Errorf("validation result was not stamped on recommendation %s", job.DocID)
 		}
-		if err := discoveryRepo.UpdateRecommendationValidation(ctx, discDoc.ID, job.DocID, matched.Validation); err != nil {
+		update := database.DocVerdictUpdate{
+			Validation: matched.Validation,
+			Scoring:    matched.Scoring,
+			Confidence: matched.Confidence,
+		}
+		if err := discoveryRepo.UpdateRecommendationValidation(ctx, discDoc.ID, job.DocID, update); err != nil {
 			return fmt.Errorf("persist recommendation validation: %w", err)
 		}
+		persistStandaloneVerdict(ctx, db, "recommendations", job.DocID, update)
 	}
 
 	// Insert the ValidationResult log row.
@@ -362,6 +379,32 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 		applog.WithError(err).Warn("save validation result row failed")
 	}
 	return nil
+}
+
+// persistStandaloneVerdict carries the new verdict and its derived confidence
+// into the standalone collection.
+//
+// Not optional polish. The `insights` and `recommendations` collections are
+// what the insights list page and Ask read, and they hold their own copy of
+// both fields -- so leaving them alone would show a reader a confidence
+// derived from the verdict the document USED to have, beside a validation
+// block saying something else. An internally contradictory document is worse
+// than a stale one, because nothing about it looks wrong.
+//
+// Best-effort, like the ValidationResult log row below it and for the same
+// reason: the discovery document is the authoritative copy and its write has
+// already landed, so failing the job here would mark a completed validation
+// as failed. A discovery whose standalone rows were never written (or have
+// since been deleted) is not an error either -- UpdateByID matches nothing
+// and reports nothing.
+func persistStandaloneVerdict(ctx context.Context, db *database.DB, collection, docID string, u database.DocVerdictUpdate) {
+	store := discovery.NewMongoEmbedIndexStore(db)
+	if err := store.UpdateDocVerdict(ctx, collection, docID, u); err != nil {
+		applog.WithError(err).WithFields(applog.Fields{
+			"collection": collection,
+			"doc_id":     docID,
+		}).Warn("could not carry the new verdict into the standalone row; it will keep the previous verdict and the confidence derived from it")
+	}
 }
 
 // --- inline validation_jobs reader/writers ---------------------------

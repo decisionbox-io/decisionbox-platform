@@ -125,6 +125,27 @@ func (s *MongoEmbedIndexStore) UpdateEmbedding(ctx context.Context, collection, 
 	return nil
 }
 
+// UpdateDocVerdict implements EmbedIndexStore.
+//
+// UpdateByID rather than a filter, because the standalone `_id` IS the
+// embedded document's id -- one key across the discovery document, this row
+// and the Qdrant point -- so a caller holding the doc id can reach the row
+// directly. A row that is simply not there (a discovery whose standalone
+// documents were never written, or were deleted) is not an error: the
+// verdict on the discovery document is the authoritative copy and has
+// already landed.
+func (s *MongoEmbedIndexStore) UpdateDocVerdict(ctx context.Context, collection, id string, u database.DocVerdictUpdate) error {
+	_, err := s.db.Collection(collection).UpdateByID(ctx, id, bson.M{"$set": bson.M{
+		"validation": u.Validation,
+		"scoring":    u.Scoring,
+		"confidence": u.Confidence,
+	}})
+	if err != nil {
+		return fmt.Errorf("update verdict for %s/%s: %w", collection, id, err)
+	}
+	return nil
+}
+
 func (s *MongoEmbedIndexStore) UpdateDuplicate(ctx context.Context, collection, id, duplicateOf string, score float64) error {
 	_, err := s.db.Collection(collection).UpdateByID(ctx, id, map[string]interface{}{
 		"$set": map[string]interface{}{
