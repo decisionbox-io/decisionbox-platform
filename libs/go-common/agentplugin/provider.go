@@ -24,6 +24,28 @@ type ContextProviderOpts struct {
 	// MinScore is the minimum similarity threshold for retrieval-style
 	// providers. Providers without a notion of similarity ignore it.
 	MinScore float64
+	// TokenBudget caps the prompt tokens THIS provider's section may occupy,
+	// sized by the caller from the model window and the measured prompt. It is
+	// per-provider, not a pool: providers do not take from one another, which
+	// is the point. Limit alone could not express that — one number shared by
+	// every provider means a provider built to scale with the window competes
+	// for slots with one that needs a handful, and loses.
+	//
+	// Zero means the caller supplied no budget. A provider must then behave
+	// exactly as it did before this field existed and bound itself by Limit,
+	// because a caller that cannot size a budget has not asked for silence.
+	//
+	// The caller leaves headroom for the providers that ignore this, so a
+	// provider that honours it must not exceed it.
+	TokenBudget int
+	// ExcludeIDs are items the caller already carries elsewhere in the same
+	// prompt. A provider that can identify its items by id should skip them;
+	// one that cannot ignores this.
+	//
+	// It exists because showing an item twice spends two budgets and, worse,
+	// models the repetition in the context of a prompt that is asking the model
+	// not to repeat itself.
+	ExcludeIDs []string
 }
 
 // ContextProvider returns a markdown section to inject into agent prompts
