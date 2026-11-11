@@ -128,6 +128,54 @@ func TestBedrockProvider_OpenAICompat_DropsResponseFormat(t *testing.T) {
 	}
 }
 
+func TestBedrockProvider_OpenAICompat_TokenLimitField(t *testing.T) {
+	// The newest OpenAI generations on Bedrock reject max_tokens, and every
+	// OpenAI model there accepts max_completion_tokens, so the whole openai.
+	// publisher gets the new name; other publishers keep max_tokens.
+	tests := []struct {
+		model     string
+		wantField string
+		dropField string
+	}{
+		{"us.openai.gpt-5.4", "max_completion_tokens", "max_tokens"},
+		{"us.openai.gpt-5.5", "max_completion_tokens", "max_tokens"},
+		{"us.openai.gpt-5.6-sol", "max_completion_tokens", "max_tokens"},
+		{"us.openai.gpt-6-sol", "max_completion_tokens", "max_tokens"},
+		{"openai.gpt-oss-120b-1:0", "max_completion_tokens", "max_tokens"},
+		{"qwen.qwen3-next-80b-a3b", "max_tokens", "max_completion_tokens"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			openaiBody := []byte(`{"id":"x","model":"m",
+		"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}`)
+			wrapped := &capturingMockBedrockClient{delegate: &mockBedrockClient{responseBody: openaiBody}}
+			p := &BedrockProvider{
+				client:       wrapped,
+				model:        tt.model,
+				wireOverride: gollm.WireOpenAICompat,
+				httpClient:   &http.Client{},
+			}
+			if _, err := p.Chat(context.Background(), gollm.ChatRequest{
+				Messages:  []gollm.Message{{Role: "user", Content: "ping"}},
+				MaxTokens: 1024,
+			}); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			var body map[string]interface{}
+			if err := json.Unmarshal(wrapped.lastBody, &body); err != nil {
+				t.Fatalf("parse request body: %v", err)
+			}
+			if got, ok := body[tt.wantField]; !ok || got != float64(1024) {
+				t.Errorf("%s = %v, want 1024; body=%s", tt.wantField, got, wrapped.lastBody)
+			}
+			if _, ok := body[tt.dropField]; ok {
+				t.Errorf("%s must not be sent for %s; body=%s", tt.dropField, tt.model, wrapped.lastBody)
+			}
+		})
+	}
+}
+
 func TestBedrockProvider_Dispatch_CatalogOpenAICompatViaCrossRegionAlias(t *testing.T) {
 	openaiBody := []byte(`{"id":"x","model":"deepseek.r1-v1:0",
 		"choices":[{"index":0,"message":{"role":"assistant","content":"r1 ok"},"finish_reason":"stop"}],

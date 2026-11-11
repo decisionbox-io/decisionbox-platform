@@ -216,8 +216,8 @@ export default function RecommendationsListPage() {
                     <span>{rec.title}</span>
                   </Link>
                   <FeedbackButtons projectId={id} discoveryId={rec.discoveryId} targetType="recommendation"
-                    targetId={String(idx)}
-                    feedback={feedbackMap[`recommendation:${idx}:${rec.discoveryId}`]} />
+                    targetId={targetId}
+                    feedback={feedbackMap[`recommendation:${targetId}:${rec.discoveryId}`]} />
                   <AskAboutThisButton projectId={id}
                     seed={{ type: 'recommendation', id: targetId, title: rec.title }} />
                 </div>

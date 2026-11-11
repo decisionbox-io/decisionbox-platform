@@ -297,9 +297,21 @@ func (o *Orchestrator) checkpointExplorationSummary(ctx context.Context, res *ai
 	// superseded attempt: a later resume reads it, believes exploration
 	// finished, and skips Phase 3 over work another attempt did. Once per
 	// run, against an indexed _id.
-	if o.statusReporter != nil && !o.statusReporter.OwnsRun(ctx) {
-		applog.WithField("run_id", o.runID).Warn("another attempt of this run has taken over; stopping before analysis rather than spending it on a result that will be discarded")
-		return ai.ErrAttemptSuperseded
+	// Standing rather than OwnsRun: one read answers ownership and the
+	// operator's pause together, and the pause half is remembered so the
+	// summary still lands. Without it this seam would be the only durable
+	// write in the run that a pause could not stop at — the gate eight lines
+	// downstream would catch it, but the rule is "every durable write", not
+	// "every durable write that happens to sit next to a gate".
+	pauseRequested := false
+	if o.statusReporter != nil {
+		switch o.statusReporter.Standing(ctx) {
+		case standingLost:
+			applog.WithField("run_id", o.runID).Warn("another attempt of this run has taken over; stopping before analysis rather than spending it on a result that will be discarded")
+			return ai.ErrAttemptSuperseded
+		case standingPauseRequested:
+			pauseRequested = true
+		}
 	}
 	err := o.checkpointRepo.SaveExplorationSummary(ctx, database.CheckpointSummaryInput{
 		ProjectID: o.projectID,
@@ -331,6 +343,12 @@ func (o *Orchestrator) checkpointExplorationSummary(ctx context.Context, res *ai
 	// The summary is durable, so areas analysed from here on can be
 	// checkpointed against it. See the doc comment above.
 	o.explorationSummaryAttempt = o.resume.attemptNumber()
+	// Exploration is banked, so a stop is free and saves the operator the
+	// whole analysis phase. Set AFTER explorationSummaryAttempt, so a resume
+	// of this pause restores against the summary rather than re-exploring.
+	if pauseRequested {
+		return o.pauseSignalIfResumable("exploration summary")
+	}
 	return nil
 }
 
@@ -991,6 +1009,33 @@ func (o *Orchestrator) pauseSignalIfResumable(what string) error {
 		"contiguous_through": o.contiguousCheckpointThrough,
 	}).Warn("an operator asked for a pause, but an earlier checkpoint write left a gap, so there is nothing a resume could replay yet; continuing until the prefix is unbroken")
 	return nil
+}
+
+// pauseIfSignalled is the caller-side half of the pause split, and the mirror
+// of pauseSignalIfResumable: that one decides whether a seam MAY signal, this
+// one decides what the loop does with a signal it got.
+//
+// Centralised for the reason the other one was. Five seams now hand back an
+// error that is either a real failure or the operator's stop, and the
+// discrimination between them is one `errors.Is` that reads like boilerplate
+// and is not: treating ErrPauseRequested as a failure turns a clean pause into
+// a failed run, and treating a failure as a pause writes `paused` over a run
+// that actually broke. Written out five times, those are five chances to get
+// it backwards.
+//
+// Returns nil to carry on, or the error the caller propagates unchanged —
+// ai.ErrPauseRequested once the stop has been performed, or the seam's own
+// failure untouched.
+func (o *Orchestrator) pauseIfSignalled(ctx context.Context, signal error, detail string) error {
+	if signal == nil {
+		return nil
+	}
+	if !errors.Is(signal, ai.ErrPauseRequested) {
+		// A real failure from the seam — a lost attempt, usually. Propagated
+		// as-is; it is not this function's to interpret.
+		return signal
+	}
+	return o.pauseAttempt(ctx, detail)
 }
 
 // pauseAttempt performs the cooperative stop: books this attempt's compute,

@@ -82,3 +82,39 @@ func TestInferBedrockWire_WiredIntoProviderMeta(t *testing.T) {
 		t.Errorf("ResolveWire(claude-99-new) = %q, want %q", wire, gollm.WireAnthropic)
 	}
 }
+
+// TestBedrockUsesMaxCompletionTokens pins that every OpenAI model on Bedrock,
+// in any region profile, gets max_completion_tokens and other publishers keep
+// max_tokens.
+func TestBedrockUsesMaxCompletionTokens(t *testing.T) {
+	tests := []struct {
+		id   string
+		want bool
+	}{
+		// OpenAI publisher — max_completion_tokens.
+		{"us.openai.gpt-5.4", true},
+		{"us.openai.gpt-5.5", true},
+		{"us.openai.gpt-5.6-sol", true},
+		{"us.openai.gpt-6-sol", true},
+		{"openai.gpt-5.6-sol", true},
+		{"global.openai.gpt-6-sol", true},
+		{"eu.openai.gpt-6.1", true},
+		{"US.OpenAI.GPT-5.6-sol", true},
+		{"openai.gpt-oss-120b-1:0", true},
+		{"us.openai.gpt-oss-20b-1:0", true},
+
+		// Other publishers — unchanged.
+		{"qwen.qwen3-next-80b-a3b", false},
+		{"deepseek.r1-v1:0", false},
+		{"us.deepseek.r1-v1:0", false},
+		{"us.anthropic.claude-sonnet-4-20250514-v1:0", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			if got := bedrockUsesMaxCompletionTokens(tt.id); got != tt.want {
+				t.Errorf("bedrockUsesMaxCompletionTokens(%q) = %v, want %v", tt.id, got, tt.want)
+			}
+		})
+	}
+}

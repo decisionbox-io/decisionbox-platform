@@ -292,8 +292,8 @@ export default function DiscoveryDetailPage() {
             <RecommendationCard key={idx} rec={rec} projectId={id} discoveryId={runId} idx={idx}
               insights={insights}
               isRead={readRecs.has(String(rec.id || idx))}
-              feedback={feedbackMap[`recommendation:${idx}`]}
-              onFeedbackUpdate={(fb) => handleFeedbackUpdate('recommendation', String(idx), fb)} />
+              feedback={feedbackMap[`recommendation:${rec.id || idx}`]}
+              onFeedbackUpdate={(fb) => handleFeedbackUpdate('recommendation', String(rec.id || idx), fb)} />
           ))}
           {!showAllRecs && hiddenRecCount > 0 && (
             <div onClick={() => setShowAllRecs(true)} style={{
@@ -529,7 +529,7 @@ function RecommendationCard({ rec, projectId, discoveryId, idx, insights, isRead
           <span>{rec.title}</span>
         </Link>
         <FeedbackButtons projectId={projectId} discoveryId={discoveryId} targetType="recommendation"
-          targetId={String(idx)} feedback={feedback} onUpdate={onFeedbackUpdate} />
+          targetId={String(rec.id || idx)} feedback={feedback} onUpdate={onFeedbackUpdate} />
       </div>
 
       {/* Pills + impact row */}

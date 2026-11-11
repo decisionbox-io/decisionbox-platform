@@ -34,6 +34,7 @@ type fakeAnalysisDraftStore struct {
 
 	saveErr    error
 	verdictErr error
+	verdictNoRow bool
 	loadErr    error
 	deleteErr  error
 	touchErr   error
@@ -50,14 +51,20 @@ func (f *fakeAnalysisDraftStore) SaveDraft(_ context.Context, in database.Analys
 	return nil
 }
 
-func (f *fakeAnalysisDraftStore) SaveInsightVerdict(_ context.Context, in database.InsightVerdictInput) error {
+func (f *fakeAnalysisDraftStore) SaveInsightVerdict(_ context.Context, in database.InsightVerdictInput) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.verdictErr != nil {
-		return f.verdictErr
+		return false, f.verdictErr
+	}
+	// verdictNoRow reproduces the real store's MatchedCount-0 outcome: the
+	// write succeeded and matched nothing, because the draft was swept, deleted
+	// or fenced out by a newer attempt.
+	if f.verdictNoRow {
+		return false, nil
 	}
 	f.verdicts = append(f.verdicts, in)
-	return nil
+	return true, nil
 }
 
 func (f *fakeAnalysisDraftStore) LoadDrafts(_ context.Context, _ string, explorationAttempt int) (*database.AnalysisDraftSet, error) {

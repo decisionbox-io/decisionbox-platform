@@ -1201,14 +1201,18 @@ func (h *DiscoveriesHandler) PauseRun(w http.ResponseWriter, r *http.Request) {
 	// rather than letting the request sit unhonoured and leaving the operator
 	// watching a "Pausing…" that never resolves.
 	//
-	// A pause only costs nothing where a checkpoint has just landed, and past
-	// analysis nothing is checkpointed: pausing in the recommendation phase or
-	// the persistence tail would discard that work entirely for a run that is
-	// minutes from finishing. See models.RunPhaseAcceptsPause.
+	// A pause only costs nothing where a checkpoint has just landed, and the
+	// phases that have one now run through the recommendation phases:
+	// exploration checkpoints every step, analysis every drafted area, every
+	// insight verdict and every completed area, and recommendations the
+	// generated set and every recommendation verdict. What is left outside is
+	// the persistence tail, which checkpoints nothing and owes durability for
+	// work already done, so stopping there would discard it for a run that is
+	// seconds from finishing. See models.RunPhaseAcceptsPause.
 	//
-	// The residual race — the run leaves analysis between this check and the
-	// agent's next seam — ends with the agent simply not pausing, and the
-	// request cleared by its terminal write.
+	// The residual race — the run leaves the last pausable phase between this
+	// check and the agent's next seam — ends with the agent simply not
+	// pausing, and the request cleared by its terminal write.
 	if !models.RunPhaseAcceptsPause(run.Phase) {
 		writeError(w, http.StatusConflict,
 			"run is past the point where it can be paused (phase: "+run.Phase+

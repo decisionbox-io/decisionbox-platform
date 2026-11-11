@@ -165,13 +165,17 @@ func TestInteg_RecommendationCheckpoint_MarkersAccumulateAndSurviveReload(t *tes
 	}); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
-	if err := repo.SaveRecVerdict(ctx, RecommendationVerdictInput{
+	landed, err := repo.SaveRecVerdict(ctx, RecommendationVerdictInput{
 		RunID: "run-1", Attempt: 1, RecommendationID: "rec-1", Verdict: recVerdictFor("rec-1"),
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("SaveRecVerdict(attempt 1): %v", err)
 	}
+	if !landed {
+		t.Error("a marker that reached its checkpoint reported landed=false; the per-recommendation pause seam would never fire")
+	}
 	// Attempt 2 restores the row and validates the second.
-	if err := repo.SaveRecVerdict(ctx, RecommendationVerdictInput{
+	if _, err := repo.SaveRecVerdict(ctx, RecommendationVerdictInput{
 		RunID: "run-1", Attempt: 2, RecommendationID: "rec-2", Verdict: recVerdictFor("rec-2"),
 	}); err != nil {
 		t.Fatalf("SaveRecVerdict(attempt 2): %v", err)
@@ -243,11 +247,17 @@ func TestInteg_RecommendationCheckpoint_AttemptFenceInBothDirections(t *testing.
 		t.Error("an orphaned attempt overwrote a newer one's recommendations")
 	}
 
-	// A marker from the orphan must not land.
-	if err := repo.SaveRecVerdict(ctx, RecommendationVerdictInput{
+	// A marker from the orphan must not land — and must say so, for the
+	// reason SaveInsightVerdict's fence test gives: the bool is what decides
+	// whether a cooperative stop is free.
+	landed, err := repo.SaveRecVerdict(ctx, RecommendationVerdictInput{
 		RunID: "run-1", Attempt: 1, RecommendationID: "rec-1", Verdict: recVerdictFor("rec-1"),
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("SaveRecVerdict must not error on a fenced no-op, got %v", err)
+	}
+	if landed {
+		t.Error("a fenced no-op reported landed=true; a pause taken on it would stop the run on a verdict nothing stored")
 	}
 	cp, _ = repo.Load(ctx, "run-1", 1)
 	if len(cp.RecVerdicts) != 0 {
@@ -433,7 +443,7 @@ func TestInteg_RecommendationCheckpoint_ConcurrentMarkerWritesAllLand(t *testing
 		wg.Add(1)
 		go func(id string) {
 			defer wg.Done()
-			if err := repo.SaveRecVerdict(ctx, RecommendationVerdictInput{
+			if _, err := repo.SaveRecVerdict(ctx, RecommendationVerdictInput{
 				RunID: "run-1", Attempt: 1, RecommendationID: id, Verdict: recVerdictFor(id),
 			}); err != nil {
 				errs <- err

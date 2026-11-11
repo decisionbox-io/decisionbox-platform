@@ -1034,6 +1034,35 @@ function LiveRunPanel({ run, onPause, onCancel, onDismiss, onResume, onDiscard }
   // marker is what the server clears when it does.
   const canResume = (run.status === 'failed' || isPaused) && (run.last_checkpoint_step ?? 0) > 0;
 
+  // ...but naming the step is only honest while the run is still IN
+  // exploration, which is a different question from whether it can resume.
+  //
+  // last_checkpoint_step is an EXPLORATION-step counter — its writers are the
+  // per-step marker, the pause that stamps its own, completion (zero) and
+  // discard — and nothing in the analysis or recommendation phases advances
+  // it. Those phases checkpoint into their own collections. So a run that
+  // stopped later was offered "Resume from step 43" for a step the resume
+  // skips outright: it restores the exploration summary, the completed areas
+  // and the recommendation checkpoint, and re-enters where it stopped.
+  //
+  // That is not cosmetic. It misinforms the one decision this panel exists to
+  // support — an operator reading "from step 43" on a run that has already
+  // generated its recommendations may conclude a resume re-runs 43 steps and
+  // cancel a run that was minutes from finishing.
+  //
+  // An allow-list of the EARLY phases rather than a list of late ones, so a
+  // phase this build has never heard of falls through to the plain label. The
+  // fail-safe direction is to claim nothing: a missing number costs an
+  // operator nothing, a wrong one costs them the run. `''` is in the list
+  // because that is what a run that has not stamped a phase yet actually
+  // sends — the same entry the API's own pausable-phase set carries.
+  //
+  // No `?? ''` guard: `phase` is a required string on DiscoveryRunStatus, so
+  // the fallback was a branch no test could reach. Were one ever absent at
+  // runtime, `includes(undefined)` is false and the label goes plain, which
+  // is the direction this already fails in.
+  const resumeKnowsItsStep = ['', 'init', 'schema_discovery', 'exploration'].includes(run.phase);
+
   // Pause is offered while the run is live and no request is already pending.
   // Hidden once a request is in flight — the panel says "Pausing…" instead, so
   // a second click cannot look like it will make it stop any sooner. Offered
@@ -1123,7 +1152,7 @@ function LiveRunPanel({ run, onPause, onCancel, onDismiss, onResume, onDiscard }
             {canPause && <GhostButton onClick={onPause} small>Pause</GhostButton>}
             {canResume && (
               <GhostButton onClick={onResume} small>
-                Resume from step {run.last_checkpoint_step}
+                {resumeKnowsItsStep ? `Resume from step ${run.last_checkpoint_step}` : 'Resume'}
               </GhostButton>
             )}
             {/* Cancel is red and modal-confirmed, which is the whole point of
@@ -1234,7 +1263,7 @@ function LiveRunPanel({ run, onPause, onCancel, onDismiss, onResume, onDiscard }
       <Stack gap="sm">
         <Text size="sm">
           This run will stop representing the project and can no longer be resumed
-          {canResume ? ` from step ${run.last_checkpoint_step}` : ''}. Its status, error and
+          {canResume && resumeKnowsItsStep ? ` from step ${run.last_checkpoint_step}` : ''}. Its status, error and
           step history stay readable.
         </Text>
         <Group justify="flex-end" gap="sm">

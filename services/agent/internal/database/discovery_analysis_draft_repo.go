@@ -329,18 +329,29 @@ func (r *DiscoveryAnalysisDraftRepository) SaveDraft(ctx context.Context, in Ana
 // a later resume, and a checkpoint must never be able to abort a working run.
 // The ownership signal that does matter is raised one level up, by SaveDraft
 // and by SaveArea.
-func (r *DiscoveryAnalysisDraftRepository) SaveInsightVerdict(ctx context.Context, in InsightVerdictInput) error {
+// The bool reports whether the update actually APPLIED. MatchedCount 0 with no
+// error is an ordinary outcome here — the draft was swept by the retention TTL,
+// or deleted when its area completed, or the attempt fence excluded it because a
+// newer attempt owns the row — and the error stays nil for all three, because a
+// marker write must never abort a working run.
+//
+// But "no error" and "the marker is durable" are different facts, and the
+// cooperative pause depends on the second: a seam that stops the run on a marker
+// that never landed strands exactly the work the pause was meant to preserve.
+// Callers that only stand to waste money on a miss may ignore the bool; the one
+// that decides whether stopping is free may not.
+func (r *DiscoveryAnalysisDraftRepository) SaveInsightVerdict(ctx context.Context, in InsightVerdictInput) (bool, error) {
 	if in.RunID == "" {
-		return errors.New("checkpoint insight verdict: run_id is required")
+		return false, errors.New("checkpoint insight verdict: run_id is required")
 	}
 	if in.AreaID == "" {
-		return errors.New("checkpoint insight verdict: area_id is required")
+		return false, errors.New("checkpoint insight verdict: area_id is required")
 	}
 	if in.InsightID == "" {
-		return errors.New("checkpoint insight verdict: insight_id is required")
+		return false, errors.New("checkpoint insight verdict: insight_id is required")
 	}
 	if !safeMarkerKey(in.InsightID) {
-		return fmt.Errorf("checkpoint verdict for insight %q of run %s: %w", in.InsightID, in.RunID, ErrUnsafeMarkerKey)
+		return false, fmt.Errorf("checkpoint verdict for insight %q of run %s: %w", in.InsightID, in.RunID, ErrUnsafeMarkerKey)
 	}
 	res, err := r.col.UpdateOne(ctx,
 		bson.M{
@@ -351,7 +362,7 @@ func (r *DiscoveryAnalysisDraftRepository) SaveInsightVerdict(ctx context.Contex
 		bson.M{"$set": bson.M{"insight_verdicts." + in.InsightID: in.Verdict}},
 	)
 	if err != nil {
-		return fmt.Errorf("checkpoint verdict for insight %s of run %s: %w", in.InsightID, in.RunID, err)
+		return false, fmt.Errorf("checkpoint verdict for insight %s of run %s: %w", in.InsightID, in.RunID, err)
 	}
 	if res.MatchedCount == 0 {
 		applog.WithFields(applog.Fields{
@@ -359,8 +370,9 @@ func (r *DiscoveryAnalysisDraftRepository) SaveInsightVerdict(ctx context.Contex
 			"area":    in.AreaID,
 			"insight": in.InsightID,
 		}).Debug("no analysis draft to record this insight verdict against; it would be validated again on a later resume")
+		return false, nil
 	}
-	return nil
+	return true, nil
 }
 
 // LoadDrafts returns the in-flight areas a resumed run may restore and finish,

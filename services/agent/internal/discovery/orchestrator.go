@@ -1484,10 +1484,16 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// the pipeline: everything after this — analysis, recommendations,
 		// validation — would otherwise be spent by a superseded attempt on
 		// a result it deletes at the tail.
-		if err := o.checkpointExplorationSummary(ctx, explorationResult); err != nil {
-			return nil, err
+		summarySignal := o.checkpointExplorationSummary(ctx, explorationResult)
+		if summarySignal != nil && !errors.Is(summarySignal, ai.ErrPauseRequested) {
+			return nil, summarySignal
 		}
 		applog.WithField("steps", explorationResult.TotalSteps).Info("Exploration completed")
+		// The summary is durable and exploration's own rows are already out,
+		// so a signalled stop is taken right here.
+		if err := o.pauseIfSignalled(ctx, summarySignal, "Paused after exploration, before analysis — resume to continue"); err != nil {
+			return nil, err
+		}
 	}
 
 	// One line per executed step: the SQL, the row count, any fidelity caveat,
@@ -1714,11 +1720,18 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			// is the one point in its life where a crash loses the most for
 			// the least reason. Recorded before the per-insight calls start,
 			// so a resume re-enters at the first insight without a verdict.
-			landed, err := o.checkpointAreaDraft(ctx, step, valPhase.agent != nil)
-			if err != nil {
+			landed, stopAfterDraft := o.checkpointAreaDraft(ctx, step, valPhase.agent != nil)
+			draftOnDisk = landed
+			// A pause asked for while this area was being analysed, taken now
+			// that the draft is down. Taken HERE rather than deferred to the
+			// end of the iteration like the completed-area seam's, because the
+			// whole point is to skip what comes next: the per-insight
+			// validation calls. There are no feed rows for this area yet — a
+			// crash at this exact point would leave the same state — so there
+			// is nothing to emit first.
+			if err := o.pauseIfSignalled(ctx, stopAfterDraft, "Paused after analysing "+area.ID+", before validating it — resume to continue"); err != nil {
 				return nil, err
 			}
-			draftOnDisk = landed
 		}
 
 		// Phase 4.5: Validate insights via the LLM-native verifier
@@ -1744,13 +1757,23 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			// gives a marker somewhere to go.
 			itemCheckpoint := &perItemCheckpoint{done: draftVerdicts}
 			if draftOnDisk {
-				itemCheckpoint.save = func(vr models.ValidationResult) {
-					o.checkpointInsightVerdict(ctx, area.ID, vr)
+				itemCheckpoint.save = func(vr models.ValidationResult) error {
+					return o.checkpointInsightVerdict(ctx, area.ID, vr)
 				}
 			}
-			areaResults, insightsValidatedThisRun = valPhase.validateInsights(ctx, insights, stepByID, area.ID, insightsValidatedThisRun, itemCheckpoint)
+			var pausedMidValidation bool
+			areaResults, insightsValidatedThisRun, pausedMidValidation = valPhase.validateInsights(ctx, insights, stepByID, area.ID, insightsValidatedThisRun, itemCheckpoint)
 			o.setLLMPhase(models.PhaseAnalysis)
 			step.ValidationResults = areaResults
+			// An operator's pause honoured between two verdicts. The
+			// area is NOT finished, so it deliberately gets no completed-area
+			// checkpoint and its draft is deliberately kept: the draft plus the
+			// verdicts already banked are what let the resumed attempt validate
+			// only the remainder. Returning here is what skips both — the same
+			// state a crash between two verdicts would have left.
+			if pausedMidValidation {
+				return nil, o.pauseAttempt(ctx, "Paused while validating "+area.ID+" — resume to continue")
+			}
 		}
 
 		// Label every insight with what its evidence was worth. Derived from
@@ -1928,6 +1951,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// is worse than no marker.
 	var recVerdictsDone map[string]models.ValidationResult
 	recCheckpointOnDisk := recsRestored
+	// Carries the Phase 5 checkpoint seam's pause signal to just past the
+	// phase's live row, rather than taking it at the write, so the paused
+	// attempt's log is not missing the phase it stopped after.
+	var recPauseSignal error
 
 	switch {
 	case recsRestored:
@@ -2018,11 +2045,15 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// cited the live ids, and only the stored ones are stable across
 		// attempts. See recommendationStepInStoredIDs.
 		stored := recommendationStepInStoredIDs(*recStep, storedIDByLive)
-		landed, err := o.checkpointRecommendations(ctx, &stored, eligibleStoredIDs, analysisGeneration)
-		if err != nil {
-			return nil, err
+		landed, stopAfterRecCheckpoint := o.checkpointRecommendations(ctx, &stored, eligibleStoredIDs, analysisGeneration)
+		if stopAfterRecCheckpoint != nil && !errors.Is(stopAfterRecCheckpoint, ai.ErrPauseRequested) {
+			return nil, stopAfterRecCheckpoint
 		}
 		recCheckpointOnDisk = landed
+		// Carried, not taken: deferred to just past the live row below, which
+		// is the same split the completed-area seam uses — the paused
+		// attempt's log must not be missing the phase it stopped after.
+		recPauseSignal = stopAfterRecCheckpoint
 	}
 
 	// Emit a per-call RunStep so the live UI carries the recommendation
@@ -2043,6 +2074,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		o.statusReporter.AddRecommendationStep(ctx, len(recommendations), relatedIDDrops, recStep.Error, recStep.TokensIn, recStep.TokensOut)
 	}
 
+	// The checkpoint is down and the phase's live row is out, so the operator's
+	// pause can be taken. Before Phase 5.5, which is the point of it: a
+	// resumed attempt restores these recommendations and validates them without
+	// re-generating anything.
+	if err := o.pauseIfSignalled(ctx, recPauseSignal, "Paused after generating recommendations, before validating them — resume to continue"); err != nil {
+		return nil, err
+	}
+
 	// Phase 5.5: Validate recommendations via the LLM-native verifier
 	// agent. Bundle's source-steps are the token-budgeted union of
 	// related insights' source_steps; the agent runs verifier +
@@ -2056,12 +2095,20 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		o.setLLMPhase(models.PhaseValidation)
 		recCheckpoint := &perItemCheckpoint{done: recVerdictsDone}
 		if recCheckpointOnDisk {
-			recCheckpoint.save = func(vr models.ValidationResult) {
-				o.checkpointRecommendationVerdict(ctx, vr)
+			recCheckpoint.save = func(vr models.ValidationResult) error {
+				return o.checkpointRecommendationVerdict(ctx, vr)
 			}
 		}
-		recValidationResults = valPhase.validateRecommendations(ctx, recommendations, allInsights, stepByID, recCheckpoint)
+		var pausedMidRecValidation bool
+		recValidationResults, pausedMidRecValidation = valPhase.validateRecommendations(ctx, recommendations, allInsights, stepByID, recCheckpoint)
 		o.setLLMPhase(models.PhaseRecommendations)
+		// Same seam on the recommendation side. Phase 5's checkpoint and
+		// the verdicts already produced are on disk, so the resumed attempt
+		// regenerates nothing — it picks up at the first recommendation without
+		// a verdict.
+		if pausedMidRecValidation {
+			return nil, o.pauseAttempt(ctx, "Paused while validating recommendations — resume to continue")
+		}
 
 		// Restored recommendations still carry the ids the checkpoint holds,
 		// which is what kept this attempt's verdict markers keyed as a third
@@ -3759,31 +3806,7 @@ func (o *Orchestrator) loadPreviousDiscoveryContext(ctx context.Context) (
 		if err != nil {
 			applog.WithError(err).Warn("Failed to load feedback for context")
 		} else {
-			// Build insight name lookup from discoveries
-			insightNameByKey := make(map[string]string)
-			for _, disc := range recentDiscoveries {
-				for i, ins := range disc.Insights {
-					insightNameByKey[disc.ID+":insight:"+fmt.Sprintf("%d", i)] = ins.Name
-					if ins.ID != "" {
-						insightNameByKey[disc.ID+":insight:"+ins.ID] = ins.Name
-					}
-				}
-				for i, rec := range disc.Recommendations {
-					insightNameByKey[disc.ID+":recommendation:"+fmt.Sprintf("%d", i)] = rec.Title
-				}
-			}
-
-			for _, fb := range fbEntries {
-				name := insightNameByKey[fb.DiscoveryID+":"+fb.TargetType+":"+fb.TargetID]
-				if name == "" {
-					name = fb.TargetType + " #" + fb.TargetID
-				}
-				feedbackSummaries = append(feedbackSummaries, models.FeedbackSummary{
-					InsightName: name,
-					Rating:      fb.Rating,
-					Comment:     fb.Comment,
-				})
-			}
+			feedbackSummaries = buildFeedbackSummaries(recentDiscoveries, fbEntries)
 		}
 	}
 
@@ -3796,6 +3819,42 @@ func (o *Orchestrator) loadPreviousDiscoveryContext(ctx context.Context) (
 	}
 
 	return insightSummaries, recSummaries, feedbackSummaries
+}
+
+// buildFeedbackSummaries resolves each feedback entry to the name of the
+// insight or recommendation it targets. The dashboard saves an item's id as
+// target_id; older rows used the item's index in the stored list, so both
+// keys are mapped.
+func buildFeedbackSummaries(discoveries []*models.DiscoveryResult, entries []database.FeedbackEntry) []models.FeedbackSummary {
+	nameByKey := make(map[string]string)
+	for _, disc := range discoveries {
+		for i, ins := range disc.Insights {
+			nameByKey[disc.ID+":insight:"+fmt.Sprintf("%d", i)] = ins.Name
+			if ins.ID != "" {
+				nameByKey[disc.ID+":insight:"+ins.ID] = ins.Name
+			}
+		}
+		for i, rec := range disc.Recommendations {
+			nameByKey[disc.ID+":recommendation:"+fmt.Sprintf("%d", i)] = rec.Title
+			if rec.ID != "" {
+				nameByKey[disc.ID+":recommendation:"+rec.ID] = rec.Title
+			}
+		}
+	}
+
+	summaries := make([]models.FeedbackSummary, 0, len(entries))
+	for _, fb := range entries {
+		name := nameByKey[fb.DiscoveryID+":"+fb.TargetType+":"+fb.TargetID]
+		if name == "" {
+			name = fb.TargetType + " #" + fb.TargetID
+		}
+		summaries = append(summaries, models.FeedbackSummary{
+			InsightName: name,
+			Rating:      fb.Rating,
+			Comment:     fb.Comment,
+		})
+	}
+	return summaries
 }
 
 // discoverSchemas loads the schemas map from the project's schema cache
