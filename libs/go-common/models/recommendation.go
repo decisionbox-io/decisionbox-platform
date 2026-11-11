@@ -40,6 +40,12 @@ type StandaloneRecommendation struct {
 	// recommendation that fits within the per-run validation cap.
 	Validation *valmodels.InsightValidation `bson:"validation,omitempty" json:"validation,omitempty"`
 
+	// Scoring is the derived grade, from this recommendation's own verdict,
+	// carried over from the embedded copy. Present for the reason
+	// StandaloneInsight.Scoring is: this collection is read directly, so a
+	// field absent here is a field BSON drops. Nil is the legacy marker.
+	Scoring *Scoring `bson:"scoring,omitempty" json:"evidence_scoring,omitempty"`
+
 	// Embedding fields
 	EmbeddingText  string `bson:"embedding_text,omitempty" json:"embedding_text,omitempty"`
 	EmbeddingModel string `bson:"embedding_model,omitempty" json:"embedding_model,omitempty"`

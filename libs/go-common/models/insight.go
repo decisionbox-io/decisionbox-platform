@@ -48,6 +48,18 @@ type StandaloneInsight struct {
 	SQLMetadata   *InsightSQLMetadata    `bson:"sql_metadata,omitempty" json:"sql_metadata,omitempty"`
 	Validation    *InsightValidation     `bson:"validation,omitempty" json:"validation,omitempty"`
 
+	// Scoring is the derived grade, carried over from the embedded insight on
+	// the discovery document. This collection is what the insights list page
+	// and Ask read, so the field has to be here too or those surfaces would
+	// render every scored insight as legacy. Nil is the legacy marker, and the
+	// json name matches the other three copies.
+	//
+	// It is rewritten together with Confidence and Validation whenever a
+	// document's verdict is re-derived on request, so this row can never carry
+	// a confidence derived from one verdict beside a validation that says
+	// another.
+	Scoring *Scoring `bson:"scoring,omitempty" json:"evidence_scoring,omitempty"`
+
 	// Embedding fields
 	EmbeddingText  string `bson:"embedding_text,omitempty" json:"embedding_text,omitempty"`
 	EmbeddingModel string `bson:"embedding_model,omitempty" json:"embedding_model,omitempty"`

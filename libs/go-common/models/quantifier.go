@@ -77,3 +77,21 @@ type QuantifierVerdict struct {
 	Status string `bson:"status" json:"status"`
 	Reason string `bson:"reason,omitempty" json:"reason,omitempty"`
 }
+
+// Quantifier verdict statuses, declared here beside the verdict they describe.
+//
+// They were strings in the evaluator's own package and a doc comment here, so
+// anything outside the agent that had to read a stored verdict -- the API, the
+// scoring engine -- had to spell the literal out again. Named once, aliased by
+// the evaluator, and the two cannot drift.
+const (
+	// QuantifierHolds -- the predicate is true over the step's rows.
+	QuantifierHolds = "holds"
+	// QuantifierFails -- the predicate is false over the step's rows. The only
+	// status that says the claim is wrong.
+	QuantifierFails = "fails"
+	// QuantifierUndecidable -- the rows cannot settle it. Kept distinct from
+	// fails so the evaluator's own limits are never reported as the model
+	// being wrong.
+	QuantifierUndecidable = "undecidable"
+)

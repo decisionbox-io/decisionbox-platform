@@ -239,6 +239,25 @@ type Insight struct {
 	// the record of its own correction.
 	Repair *InsightRepair `bson:"repair,omitempty" json:"evidence_repair,omitempty"`
 
+	// Scoring is the derived grade: the confidence band, the score behind it,
+	// the reason in plain words, and every deduction the validation verdict's
+	// base took. Written by the scorer at the end of each analysis area, after
+	// the quality label it reads and before the area's checkpoint.
+	//
+	// Nil means the document was written before the scorer existed, which is
+	// what makes it the legacy marker -- a value type would make "never
+	// scored" indistinguishable from "scored to zero".
+	//
+	// The tag is `evidence_scoring` rather than `scoring` for the reason
+	// Quality's is not `quality`: insights are decoded from model output with
+	// the standard decoder, so a key matching this tag would be read straight
+	// into the field, letting the model author the grade whose whole point is
+	// that the model did not reach it. A plain "scoring" is an obvious key for
+	// a model to volunteer, and a scalar one ("scoring": "high") would fail
+	// the decode and drop the whole insight. The scorer also clears the field
+	// before it writes -- two defences, as with the quantifier verdicts.
+	Scoring *Scoring `bson:"scoring,omitempty" json:"evidence_scoring,omitempty"`
+
 	SQLMetadata  *SQLMetadata `bson:"sql_metadata,omitempty" json:"sql_metadata,omitempty"`
 	DiscoveredAt time.Time    `bson:"discovered_at" json:"discovered_at"`
 
@@ -336,6 +355,15 @@ type Recommendation struct {
 	// orchestrator's recommendation-validation phase runs. Nil on
 	// legacy docs.
 	Validation *InsightValidation `bson:"validation,omitempty" json:"validation,omitempty"`
+
+	// Scoring is the derived grade, from this recommendation's OWN verdict --
+	// not inherited from the insights it cites. Same shape, same nil-means-
+	// legacy rule and same `evidence_scoring` tag as the insight's; see there.
+	//
+	// Two of the five deductions can never fire here, and correctly so: a
+	// recommendation is shown insights rather than warehouse rows, so it
+	// carries no source-quality caveats and declares no quantifier claims.
+	Scoring *Scoring `bson:"scoring,omitempty" json:"evidence_scoring,omitempty"`
 }
 
 // UnmarshalJSON decodes a recommendation tolerantly. Beyond the tolerant

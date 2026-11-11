@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
@@ -65,12 +66,17 @@ const (
 // QuantifierStatus is the outcome of evaluating one claim.
 type QuantifierStatus = string
 
+// The values are declared in libs/go-common/models beside QuantifierVerdict
+// itself, so a reader outside this service -- the API mirror, the scoring
+// engine -- settles a stored status against the same names rather than
+// re-spelling the literal. Aliased here so every caller in this package keeps
+// one import.
 const (
 	// QuantifierHolds — the predicate is true over the step's rows.
-	QuantifierHolds QuantifierStatus = "holds"
+	QuantifierHolds QuantifierStatus = gomodels.QuantifierHolds
 	// QuantifierFails — the predicate is false over the step's rows. This is
 	// the only status that says the claim is wrong.
-	QuantifierFails QuantifierStatus = "fails"
+	QuantifierFails QuantifierStatus = gomodels.QuantifierFails
 	// QuantifierUndecidable — the rows cannot settle it: the step is missing,
 	// the column is absent, the filter is richer than the evaluator reads, or
 	// the step is a capped view and no rank, count or uniqueness claim over a
@@ -79,7 +85,7 @@ const (
 	// Distinct from Fails on purpose. Undecidable is the evaluator declining;
 	// treating it as a failure would reject sound claims for the evaluator's
 	// own limits, which is how a checker starts costing more than it catches.
-	QuantifierUndecidable QuantifierStatus = "undecidable"
+	QuantifierUndecidable QuantifierStatus = gomodels.QuantifierUndecidable
 )
 
 // StepRows is the evidence an evaluation runs over: one step's full result rows

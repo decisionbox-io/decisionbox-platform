@@ -110,3 +110,106 @@ func TestAnalysisStep_CarriesTheRepairCountersThroughBSON(t *testing.T) {
 		t.Errorf("repair counters dropped: %+v", got)
 	}
 }
+
+// The scoring sub-document is the newest member of the same class, and it
+// carries the one distinction the dashboard renders everything else off: a
+// stored `scoring` means a derived band, its absence means a legacy
+// model-assigned number. Both directions have to survive the decode.
+func TestInsight_CarriesTheScoringSubDocumentThroughBSON(t *testing.T) {
+	raw, err := bson.Marshal(bson.M{
+		"id": "i1", "name": "n", "confidence": 0.7,
+		"scoring": bson.M{
+			"confidence_band":   "medium",
+			"confidence_base":   0.8,
+			"confidence_score":  0.7,
+			"confidence_reason": "Warehouse rows are consistent with the claims that were checked.",
+			"confidence_docks": bson.A{bson.M{
+				"code": "refuted_arithmetic", "label": "A number's own arithmetic does not reproduce it",
+				"amount": 0.1,
+			}},
+			"engine_version": 1,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Insight
+	if err := bson.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Scoring == nil {
+		t.Fatal("the scoring sub-document was dropped on decode")
+	}
+	if got.Scoring.ConfidenceBand != "medium" || got.Scoring.EngineVersion != 1 {
+		t.Errorf("band / version dropped: %+v", got.Scoring)
+	}
+	if got.Scoring.ConfidenceBase != 0.8 || got.Scoring.ConfidenceScore != 0.7 {
+		t.Errorf("base / score dropped: %+v", got.Scoring)
+	}
+	if got.Scoring.ConfidenceReason == "" {
+		t.Error("the reason was dropped; the dashboard renders the engine's words")
+	}
+	if len(got.Scoring.ConfidenceDocks) != 1 ||
+		got.Scoring.ConfidenceDocks[0].Code != "refuted_arithmetic" ||
+		got.Scoring.ConfidenceDocks[0].Amount != 0.1 ||
+		got.Scoring.ConfidenceDocks[0].Label == "" {
+		t.Errorf("the docks were dropped: %+v", got.Scoring.ConfidenceDocks)
+	}
+	// The severity half is declared and unwritten in this version; a document
+	// that carries none of it must decode to the zero values rather than to
+	// anything a reader could mistake for a derived severity.
+	if got.Scoring.SeverityBand != "" || got.Scoring.SeverityScore != 0 || got.Scoring.SeverityDriver != nil {
+		t.Errorf("the unwritten severity half decoded to something: %+v", got.Scoring)
+	}
+}
+
+// A document stored before the scorer existed carries no `scoring` key at all,
+// and that has to arrive as nil: it is the only signal the dashboard has to
+// label the old model-assigned number as legacy instead of rendering it as a
+// band.
+func TestInsight_AnAbsentScoringDecodesToNil(t *testing.T) {
+	raw, err := bson.Marshal(bson.M{"id": "i1", "name": "n", "confidence": 0.93})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Insight
+	if err := bson.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Scoring != nil {
+		t.Errorf("an unscored document decoded to a non-nil scoring block: %+v", got.Scoring)
+	}
+	if got.Confidence != 0.93 {
+		t.Errorf("confidence = %v, want the stored 0.93 — legacy documents are not rewritten", got.Confidence)
+	}
+}
+
+// The recommendation half of the same pair.
+func TestRecommendation_CarriesTheScoringSubDocumentThroughBSON(t *testing.T) {
+	raw, err := bson.Marshal(bson.M{
+		"id": "r1", "title": "t",
+		"scoring": bson.M{"confidence_band": "not_confirmed", "confidence_score": 0.25, "engine_version": 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Recommendation
+	if err := bson.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Scoring == nil || got.Scoring.ConfidenceBand != "not_confirmed" || got.Scoring.EngineVersion != 1 {
+		t.Errorf("the scoring sub-document was dropped or garbled: %+v", got.Scoring)
+	}
+
+	var legacy Recommendation
+	bare, err := bson.Marshal(bson.M{"id": "r1", "title": "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bson.Unmarshal(bare, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Scoring != nil {
+		t.Errorf("an unscored recommendation decoded to a non-nil scoring block: %+v", legacy.Scoring)
+	}
+}

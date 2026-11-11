@@ -106,6 +106,18 @@ type Insight struct {
 	FigureVerdicts    []gomodels.FigureVerdict    `bson:"figure_verdicts,omitempty" json:"evidence_figures,omitempty"`
 	FigureCorrections []gomodels.FigureCorrection `bson:"figure_corrections,omitempty" json:"evidence_figure_corrections,omitempty"`
 	FigureTemplate    *gomodels.FigureTemplate    `bson:"figure_template,omitempty" json:"evidence_figure_template,omitempty"`
+
+	// Scoring is the derived grade the agent wrote: the confidence band, the
+	// score behind it, the reason, and every deduction the verdict's base
+	// took. Mirrored for the reason everything above it is -- this struct, not
+	// the agent's, is what a stored discovery decodes into on its way to a
+	// client, so a field missing here is a field BSON drops and the dashboard
+	// would render every scored insight as legacy.
+	//
+	// Nil is the legacy marker: a document written before the scorer existed.
+	// The json name matches the agent's and both standalone copies, so the
+	// dashboard reads one wire name across every endpoint it gets these from.
+	Scoring *gomodels.Scoring `bson:"scoring,omitempty" json:"evidence_scoring,omitempty"`
 }
 
 type Recommendation struct {
@@ -138,6 +150,10 @@ type Recommendation struct {
 	// Validation is the verifier+refuter verdict attached after the
 	// agent's recommendation-validation phase runs. Nil on legacy docs.
 	Validation *InsightValidation `bson:"validation,omitempty" json:"validation,omitempty"`
+
+	// Scoring is the derived grade, from this recommendation's own verdict.
+	// Mirrored and named for the reasons the insight's is; nil is legacy.
+	Scoring *gomodels.Scoring `bson:"scoring,omitempty" json:"evidence_scoring,omitempty"`
 }
 
 type Impact struct {
