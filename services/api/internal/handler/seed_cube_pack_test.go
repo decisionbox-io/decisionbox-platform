@@ -242,6 +242,14 @@ func TestCubeSeedPack_RecommendationExampleMatchesTheModel(t *testing.T) {
 		"validation":      "attached by the validation phase after generation",
 		"expected_impact": "checked through its own fields below, since it is an object",
 
+		// Confidence and the sub-document it belongs to are derived from the
+		// validation verdict, which does not exist yet when the model is
+		// writing. The agent's own model does not even expose them on this
+		// wire any more, so a pack teaching either would be teaching a key
+		// the decoder ignores.
+		"confidence":       "derived from the validation verdict after generation, not authored",
+		"evidence_scoring": "the derived grade; attached by the scorer after validation",
+
 		// The figure trail. The three derived records are the same case as
 		// `validation`: attached after generation, and a pack that taught the model
 		// to emit one would be teaching it to author the record of its own check.

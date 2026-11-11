@@ -667,7 +667,73 @@ export interface Insight {
   target_segment: string;
   source_steps?: number[];
   validation?: InsightValidation;
+  // The derived grade. Absent on a document written before the scorer
+  // existed, which is what marks `confidence` above as legacy.
+  evidence_scoring?: Scoring;
   discovered_at: string;
+}
+
+// --- Derived scoring -------------------------------------------------------
+
+// Scoring is the derived grade an insight or recommendation carries. Its
+// ABSENCE (`evidence_scoring` undefined) is the legacy marker: a document
+// written before the scorer existed, whose `confidence` is still the analysis
+// model's own number.
+//
+// Every field a reader needs about a specific document is here, which is what
+// lets the breakdown render against an API older than the agent that scored
+// it: only the cutoff line comes from /api/v1/scoring/engines.
+export interface Scoring {
+  confidence_band?: ConfidenceBand;
+  confidence_base?: number;
+  confidence_score?: number;
+  // The engine's own words for why the score is what it is. Rendered verbatim
+  // — the dashboard does not re-phrase it.
+  confidence_reason?: string;
+  confidence_docks?: ConfidenceDock[];
+  engine_version: number;
+}
+
+// ConfidenceDock is one deduction the base took. `amount` is the positive
+// magnitude charged: base minus the sum of the amounts always equals the final
+// score exactly, including when a cap or the floor trimmed one of them.
+export interface ConfidenceDock {
+  code: string;
+  label: string;
+  amount: number;
+}
+
+export type ConfidenceBand =
+  | 'high'
+  | 'medium'
+  | 'low'
+  | 'not_confirmed'
+  | 'unverifiable';
+
+// ScoringEngines is GET /api/v1/scoring/engines — the calibration per engine
+// version, so no cutoff is duplicated here as a TypeScript constant. A
+// document whose engine_version is absent from `engines` was scored by a newer
+// agent than this API; its breakdown renders without the cutoff line.
+export interface ScoringEngines {
+  current_version: number;
+  engines: ScoringEngine[];
+}
+
+export interface ScoringEngine {
+  version: number;
+  confidence: {
+    bases: Record<string, number>;
+    default: number;
+    cutoffs: { high: number; medium: number };
+    floor: number;
+    docks: {
+      code: string;
+      label: string;
+      max: number;
+      cap?: number;
+      shared_cap_with?: string;
+    }[];
+  };
 }
 
 // Status values come from the seven-status taxonomy plus the legacy
@@ -761,6 +827,7 @@ export interface Recommendation {
   related_insight_ids?: string[];
   confidence: number;
   validation?: InsightValidation;
+  evidence_scoring?: Scoring;
 }
 
 export interface Summary {
@@ -1807,6 +1874,7 @@ export interface StandaloneInsight {
   target_segment: string;
   source_steps?: number[];
   validation?: InsightValidation;
+  evidence_scoring?: Scoring;
   embedding_text?: string;
   embedding_model?: string;
   duplicate_of?: string;
@@ -1832,6 +1900,7 @@ export interface StandaloneRecommendation {
   related_insight_ids?: string[];
   confidence: number;
   validation?: InsightValidation;
+  evidence_scoring?: Scoring;
   embedding_text?: string;
   embedding_model?: string;
   duplicate_of?: string;
@@ -1990,6 +2059,11 @@ export const api = {
 
   // Deployment capability flags (drives which config surfaces the UI renders)
   getAppConfig: () => request<AppConfig>('/api/v1/config'),
+
+  // The confidence engine's calibration, per version. Fetched rather than
+  // duplicated here, so a document scored by an earlier engine version is
+  // explained with the cutoffs that actually scored it.
+  getScoringEngines: () => request<ScoringEngines>('/api/v1/scoring/engines'),
 
   // Authenticated principal — roles + resolved permissions (advanced RBAC).
   getMe: () => request<Me>('/api/v1/me'),

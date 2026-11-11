@@ -13,11 +13,12 @@ import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
 import {
-  StatCard, SectionHeader, Th, SeverityBadge, AreaBadge, ConfidenceBar, Pill, EmptyState, normalizeConfidence,
+  StatCard, SectionHeader, Th, SeverityBadge, AreaBadge, Pill, EmptyState, normalizeConfidence,
 } from '@/components/common/UIComponents';
 import { RunErrorIndicator } from '@/components/common/RunErrorIndicator';
 import { ValidationLogRow } from '@/components/validation/ValidationLogRow';
 import { InsightValidationBadge } from '@/components/validation/InsightValidationBadge';
+import { ConfidenceCell } from '@/components/scoring/ConfidenceCell';
 import UnreadDot from '@/components/common/UnreadDot';
 import QuestionsDrawer from '@/components/common/QuestionsDrawer';
 import { useReadSet } from '@/lib/readState';
@@ -478,7 +479,7 @@ function InsightRow({ insight, projectId, runId, idx, isRead, feedback, onFeedba
         {insight.affected_count > 0 ? insight.affected_count.toLocaleString() : '—'}
       </td>
       <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
-        <ConfidenceBar confidence={insight.confidence} />
+        <ConfidenceCell scoring={insight.evidence_scoring} confidence={insight.confidence} />
       </td>
       <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
         <FeedbackButtons projectId={projectId} discoveryId={runId} targetType="insight"
@@ -556,7 +557,12 @@ function RecommendationCard({ rec, projectId, discoveryId, idx, insights, isRead
         {rec.expected_impact?.metric && (
           <span>{rec.expected_impact.metric}</span>
         )}
-        {rec.confidence > 0 && <span>Confidence: {normalizeConfidence(rec.confidence)}%</span>}
+        {/* A recommendation with no derived grade is one written before the
+            scorer existed; its stored number is the model's own and is shown
+            as it always was. */}
+        {rec.evidence_scoring
+          ? <ConfidenceCell scoring={rec.evidence_scoring} confidence={rec.confidence} size="xs" />
+          : rec.confidence > 0 && <span>Confidence: {normalizeConfidence(rec.confidence)}%</span>}
       </div>
 
       {/* Related Insights */}

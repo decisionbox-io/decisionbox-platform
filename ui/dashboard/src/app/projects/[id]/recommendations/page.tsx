@@ -14,6 +14,7 @@ import {
 } from '@/components/common/UIComponents';
 import UnreadDot from '@/components/common/UnreadDot';
 import { useReadSet } from '@/lib/readState';
+import { ConfidenceCell } from '@/components/scoring/ConfidenceCell';
 import { api, Feedback, Insight, Project, Recommendation, SearchResultItem } from '@/lib/api';
 
 interface RecWithContext extends Recommendation {
@@ -255,7 +256,12 @@ export default function RecommendationsListPage() {
                     <span>{rec.segment_size?.toLocaleString() || ''} {rec.target_segment}</span>
                   )}
                   {rec.expected_impact?.metric && <span>{rec.expected_impact.metric}</span>}
-                  {rec.confidence > 0 && <span>Confidence: {normalizeConfidence(rec.confidence)}%</span>}
+                  {/* The band, or the stored number marked legacy on a
+                      recommendation written before the scorer existed. Same
+                      branch as the run page's rows — one reader for one fact. */}
+                  {rec.evidence_scoring
+                    ? <ConfidenceCell scoring={rec.evidence_scoring} confidence={rec.confidence} size="xs" />
+                    : rec.confidence > 0 && <span>Confidence: {normalizeConfidence(rec.confidence)}%</span>}
                 </div>
 
                 {/* Related insights */}

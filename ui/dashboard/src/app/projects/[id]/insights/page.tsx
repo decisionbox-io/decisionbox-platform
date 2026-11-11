@@ -9,13 +9,14 @@ import Shell from '@/components/layout/AppShell';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
 import AskAboutThisButton from '@/components/ask/AskAboutThisButton';
 import {
-  SectionHeader, SeverityBadge, AreaBadge, ConfidenceBar, Th, EmptyState, SearchInput, Pagination,
+  SectionHeader, SeverityBadge, AreaBadge, Th, EmptyState, SearchInput, Pagination,
 } from '@/components/common/UIComponents';
 import UnreadDot from '@/components/common/UnreadDot';
 import {
   InsightValidationBadge, resolveValidationStatus, validationSortRank,
 } from '@/components/validation/InsightValidationBadge';
 import { statusMeta } from '@/components/validation/statusMeta';
+import { ConfidenceCell } from '@/components/scoring/ConfidenceCell';
 import { useReadSet } from '@/lib/readState';
 import { api, Feedback, Insight, Project, SearchResultItem } from '@/lib/api';
 
@@ -330,7 +331,7 @@ export default function InsightsListPage() {
                     {insight.affected_count > 0 ? insight.affected_count.toLocaleString() : '—'}
                   </td>
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
-                    <ConfidenceBar confidence={insight.confidence} />
+                    <ConfidenceCell scoring={insight.evidence_scoring} confidence={insight.confidence} />
                   </td>
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
                     <Link href={`/projects/${id}/discoveries/${insight.discoveryId}`}
