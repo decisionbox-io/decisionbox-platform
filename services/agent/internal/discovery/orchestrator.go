@@ -3806,31 +3806,7 @@ func (o *Orchestrator) loadPreviousDiscoveryContext(ctx context.Context) (
 		if err != nil {
 			applog.WithError(err).Warn("Failed to load feedback for context")
 		} else {
-			// Build insight name lookup from discoveries
-			insightNameByKey := make(map[string]string)
-			for _, disc := range recentDiscoveries {
-				for i, ins := range disc.Insights {
-					insightNameByKey[disc.ID+":insight:"+fmt.Sprintf("%d", i)] = ins.Name
-					if ins.ID != "" {
-						insightNameByKey[disc.ID+":insight:"+ins.ID] = ins.Name
-					}
-				}
-				for i, rec := range disc.Recommendations {
-					insightNameByKey[disc.ID+":recommendation:"+fmt.Sprintf("%d", i)] = rec.Title
-				}
-			}
-
-			for _, fb := range fbEntries {
-				name := insightNameByKey[fb.DiscoveryID+":"+fb.TargetType+":"+fb.TargetID]
-				if name == "" {
-					name = fb.TargetType + " #" + fb.TargetID
-				}
-				feedbackSummaries = append(feedbackSummaries, models.FeedbackSummary{
-					InsightName: name,
-					Rating:      fb.Rating,
-					Comment:     fb.Comment,
-				})
-			}
+			feedbackSummaries = buildFeedbackSummaries(recentDiscoveries, fbEntries)
 		}
 	}
 
@@ -3843,6 +3819,42 @@ func (o *Orchestrator) loadPreviousDiscoveryContext(ctx context.Context) (
 	}
 
 	return insightSummaries, recSummaries, feedbackSummaries
+}
+
+// buildFeedbackSummaries resolves each feedback entry to the name of the
+// insight or recommendation it targets. The dashboard saves an item's id as
+// target_id; older rows used the item's index in the stored list, so both
+// keys are mapped.
+func buildFeedbackSummaries(discoveries []*models.DiscoveryResult, entries []database.FeedbackEntry) []models.FeedbackSummary {
+	nameByKey := make(map[string]string)
+	for _, disc := range discoveries {
+		for i, ins := range disc.Insights {
+			nameByKey[disc.ID+":insight:"+fmt.Sprintf("%d", i)] = ins.Name
+			if ins.ID != "" {
+				nameByKey[disc.ID+":insight:"+ins.ID] = ins.Name
+			}
+		}
+		for i, rec := range disc.Recommendations {
+			nameByKey[disc.ID+":recommendation:"+fmt.Sprintf("%d", i)] = rec.Title
+			if rec.ID != "" {
+				nameByKey[disc.ID+":recommendation:"+rec.ID] = rec.Title
+			}
+		}
+	}
+
+	summaries := make([]models.FeedbackSummary, 0, len(entries))
+	for _, fb := range entries {
+		name := nameByKey[fb.DiscoveryID+":"+fb.TargetType+":"+fb.TargetID]
+		if name == "" {
+			name = fb.TargetType + " #" + fb.TargetID
+		}
+		summaries = append(summaries, models.FeedbackSummary{
+			InsightName: name,
+			Rating:      fb.Rating,
+			Comment:     fb.Comment,
+		})
+	}
+	return summaries
 }
 
 // discoverSchemas loads the schemas map from the project's schema cache
