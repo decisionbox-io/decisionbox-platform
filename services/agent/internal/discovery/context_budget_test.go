@@ -1339,7 +1339,7 @@ func TestFixedPromptTokensTakesTheWidestBody(t *testing.T) {
 	}
 	areas := []AnalysisArea{{ID: "narrow"}, {ID: "wide"}}
 
-	got := o.fixedPromptTokens(ctx, prompts, strings.Repeat("p", 2_000), "English", "ds", "", "", areas)
+	got := o.fixedPromptTokens(ctx, fixedPromptParts{Prompts: prompts, Profile: strings.Repeat("p", 2_000), Language: "English", Datasets: "ds", AreasDesc: "", Areas: areas})
 	wantAtLeast := contextbudget.Tokens(strings.Repeat("w", 40_000))
 	if got < wantAtLeast {
 		t.Errorf("fixedPromptTokens = %d, want at least the widest area's %d", got, wantAtLeast)
@@ -1347,12 +1347,12 @@ func TestFixedPromptTokensTakesTheWidestBody(t *testing.T) {
 
 	// An area the run does not have must not be counted.
 	prompts.AnalysisAreas["absent"] = strings.Repeat("x", 400_000)
-	if after := o.fixedPromptTokens(ctx, prompts, strings.Repeat("p", 2_000), "English", "ds", "", "", areas); after != got {
+	if after := o.fixedPromptTokens(ctx, fixedPromptParts{Prompts: prompts, Profile: strings.Repeat("p", 2_000), Language: "English", Datasets: "ds", AreasDesc: "", Areas: areas}); after != got {
 		t.Errorf("a template for an area this run does not have changed the cost from %d to %d", got, after)
 	}
 
 	// The profile counts: it is substituted into the base context every run.
-	bigProfile := o.fixedPromptTokens(ctx, prompts, strings.Repeat("p", 100_000), "English", "ds", "", "", areas)
+	bigProfile := o.fixedPromptTokens(ctx, fixedPromptParts{Prompts: prompts, Profile: strings.Repeat("p", 100_000), Language: "English", Datasets: "ds", AreasDesc: "", Areas: areas})
 	if bigProfile <= got {
 		t.Errorf("a 100K-char profile did not raise the fixed cost (%d vs %d)", bigProfile, got)
 	}
@@ -1361,8 +1361,8 @@ func TestFixedPromptTokensTakesTheWidestBody(t *testing.T) {
 	// charging the block for it would shrink the block for nothing.
 	noPlaceholder := prompts
 	noPlaceholder.BaseContext = strings.Repeat("b", 400)
-	bare := o.fixedPromptTokens(ctx, noPlaceholder, "", "English", "ds", "", "", areas)
-	if huge := o.fixedPromptTokens(ctx, noPlaceholder, strings.Repeat("p", 100_000), "English", "ds", "", "", areas); huge != bare {
+	bare := o.fixedPromptTokens(ctx, fixedPromptParts{Prompts: noPlaceholder, Profile: "", Language: "English", Datasets: "ds", AreasDesc: "", Areas: areas})
+	if huge := o.fixedPromptTokens(ctx, fixedPromptParts{Prompts: noPlaceholder, Profile: strings.Repeat("p", 100_000), Language: "English", Datasets: "ds", AreasDesc: "", Areas: areas}); huge != bare {
 		t.Errorf("a profile the template never substitutes changed the cost from %d to %d", bare, huge)
 	}
 }
@@ -1381,9 +1381,9 @@ func TestFixedPromptTokensCountsTheRecommendationsTemplate(t *testing.T) {
 	}
 	areas := []AnalysisArea{{ID: "a"}}
 
-	without := o.fixedPromptTokens(ctx, prompts, "", "English", "ds", "", "", areas)
+	without := o.fixedPromptTokens(ctx, fixedPromptParts{Prompts: prompts, Profile: "", Language: "English", Datasets: "ds", AreasDesc: "", Areas: areas})
 	prompts.Recommendations = strings.Repeat("r", 60_000)
-	with := o.fixedPromptTokens(ctx, prompts, "", "English", "ds", "", "", areas)
+	with := o.fixedPromptTokens(ctx, fixedPromptParts{Prompts: prompts, Profile: "", Language: "English", Datasets: "ds", AreasDesc: "", Areas: areas})
 
 	if with <= without {
 		t.Errorf("a 60K-char recommendations template did not raise the fixed cost (%d vs %d)", with, without)
@@ -1415,7 +1415,7 @@ func TestFixedPromptTokensCountsWhatTheBuildersAppend(t *testing.T) {
 	}
 	areas := []AnalysisArea{{ID: "a"}}
 
-	got := o.fixedPromptTokens(ctx, prompts, "profile", "English", "ds", "areas", "", areas)
+	got := o.fixedPromptTokens(ctx, fixedPromptParts{Prompts: prompts, Profile: "profile", Language: "English", Datasets: "ds", AreasDesc: "areas", Areas: areas})
 
 	templatesOnly := contextbudget.Tokens(prompts.BaseContext) +
 		contextbudget.Tokens("profile") + contextbudget.Tokens(prompts.Exploration)
@@ -1441,7 +1441,66 @@ func TestFixedPromptTokensCountsWhatTheBuildersAppend(t *testing.T) {
 	// being budgeted, so counting it would make a large ledger shrink its own
 	// allowance.
 	o2 := &Orchestrator{}
-	if other := o2.fixedPromptTokens(ctx, prompts, "profile", "English", "ds", "areas", "", areas); other != got {
+	if other := o2.fixedPromptTokens(ctx, fixedPromptParts{Prompts: prompts, Profile: "profile", Language: "English", Datasets: "ds", AreasDesc: "areas", Areas: areas}); other != got {
 		t.Errorf("fixedPromptTokens is not a function of the fixed parts alone: %d vs %d", other, got)
+	}
+}
+
+// TestFixedPromptTokensCountsTheCatalogAndRoutingCards. The schema catalog is
+// the largest fixed part of an exploration prompt on a warehouse of any size,
+// and it is rendered BEFORE the prior-knowledge block is chosen — the comment
+// here used to claim it could not be seen from that point, which was simply
+// wrong. Leaving it out allocated the block space the catalog already occupied:
+// a 32K-window model with a 1,525-table catalog assembled over 32,000 input
+// tokens before any evidence, where the fixed 25-finding block this replaces
+// had fitted. An input-only overflow cannot be recovered by asking for less
+// output.
+func TestFixedPromptTokensCountsTheCatalogAndRoutingCards(t *testing.T) {
+	o := &Orchestrator{}
+	ctx := context.Background()
+	base := fixedPromptParts{
+		Prompts: ResolvedPrompts{
+			BaseContext:   "base {{PROFILE}}",
+			Exploration:   "explore {{SCHEMA_INFO}}",
+			AnalysisAreas: map[string]string{"a": "analyse"},
+		},
+		Language: "English", Datasets: "ds", Areas: []AnalysisArea{{ID: "a"}},
+	}
+
+	// Exploration is already the widest body here, so each piece added to it
+	// has to show up in full. (Comparing against the no-catalog total would be
+	// wrong arithmetic: the result is base + the WIDEST body, so when the
+	// catalog makes exploration the widest it replaces whichever body was,
+	// rather than adding to it.)
+	base.Prompts.Exploration = "explore {{SCHEMA_INFO}} " + strings.Repeat("e", 40_000)
+	without := o.fixedPromptTokens(ctx, base)
+
+	bigCatalog := base
+	bigCatalog.Catalog = strings.Repeat("table_name, col_a, col_b\n", 2_000)
+	withCatalog := o.fixedPromptTokens(ctx, bigCatalog)
+	if want := contextbudget.Tokens(bigCatalog.Catalog); withCatalog < without+want {
+		t.Errorf("fixedPromptTokens = %d, want at least %d + the catalog's %d",
+			withCatalog, without, want)
+	}
+
+	withCards := base
+	withCards.Datasources = strings.Repeat("datasource routing card\n", 500)
+	if want := contextbudget.Tokens(withCards.Datasources); o.fixedPromptTokens(ctx, withCards) < without+want {
+		t.Errorf("the routing cards (%d tokens) did not reach the fixed cost", want)
+	}
+
+	// And the end-to-end property: with the catalog counted, the block plus
+	// everything else fits the window it was sized for.
+	const window, outputCap = 32_000, 4_096
+	avail := contextbudget.AvailableInput(window, intendedOutputReserve(outputCap, window), analysisReservedSystemTokens)
+	t.Setenv(priorContextShareEnv, "0.40")
+	fixed := o.fixedPromptTokens(ctx, bigCatalog)
+	budget := priorContextBudget(avail, fixed, 0, true)
+	picker := analysisPickerBudgetTokens(AnalysisQueryResultsBudgetTokens, window, outputCap, fixed+budget)
+	total := fixed + budget + picker + intendedOutputReserve(outputCap, window)
+	t.Logf("fixed=%d (catalog %d) avail=%d prior=%d picker=%d total=%d window=%d",
+		fixed, contextbudget.Tokens(bigCatalog.Catalog), avail, budget, picker, total, window)
+	if fixed < avail && total > window {
+		t.Errorf("assembled request is %d tokens against a %d window", total, window)
 	}
 }

@@ -1155,7 +1155,21 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// project with a large profile or large area templates could then be
 	// pushed past its window on a small model: the budget would hand the
 	// findings a share of room that the profile had already taken.
-	lrc := o.loadLedgerReadContext(ctx, o.fixedPromptTokens(ctx, prompts, profileStr, language, datasetsStr, areasDesc, refDataset, analysisAreas))
+	fixedParts := fixedPromptParts{
+		Prompts: prompts, Profile: profileStr, Language: language,
+		Datasets: datasetsStr, AreasDesc: areasDesc, RefDataset: refDataset,
+		Areas: analysisAreas,
+	}
+	// rendered is assigned on both branches above and neither builder returns
+	// nil, so this is not guarded — a nil check here is also what made
+	// staticcheck read the dereferences above as reachable with nil.
+	fixedParts.Catalog = rendered.Catalog
+	if dc != nil {
+		// The routing cards, which are a function of dc alone. The curated
+		// correlations appended with them are resolved later and are not here.
+		fixedParts.Datasources = buildDatasourcesPromptSection(dc, correlationGuidance{})
+	}
+	lrc := o.loadLedgerReadContext(ctx, o.fixedPromptTokens(ctx, fixedParts))
 
 	// Previous discovery insights, recommendations, user feedback, and the
 	// Discovery Ledger are merged into a reusable context block injected into the

@@ -2096,3 +2096,50 @@ func TestApplyReflection_ReindexesStatusChanges(t *testing.T) {
 		}
 	})
 }
+
+// TestApplyReflection_ReconfirmingDoesNotReindex. A reflection that reconfirms
+// an already-confirmed finding is the ordinary case on a mature project, and it
+// still writes a history entry for the run. Re-embedding every one of those
+// would buy an identical payload: on a project where most verdicts are
+// reconfirmations, that is an extra embedding pass over nearly the whole active
+// ledger, every run, for nothing.
+func TestApplyReflection_ReconfirmingDoesNotReindex(t *testing.T) {
+	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{
+		{ID: "same", ProjectID: "p1", Name: "n", Status: commonmodels.LedgerFindingStatusConfirmed},
+		{ID: "moved", ProjectID: "p1", Name: "m", Status: commonmodels.LedgerFindingStatusConfirmed},
+	}}
+	vs := &mockVectorStore{}
+	emb := &mockEmbeddingProvider{dims: 3, model: "test-model"}
+	o := &Orchestrator{
+		projectID: "p1", runID: "r1", findingRepo: fr,
+		promptFindingIDs: idsOf(fr.findings), vectorStore: vs, embeddingProvider: emb,
+	}
+	ref := &parsedReflection{}
+	ref.StatusUpdates = []struct {
+		FindingID string `json:"finding_id"`
+		Status    string `json:"status"`
+		Reason    string `json:"reason"`
+	}{
+		{FindingID: "same", Status: commonmodels.LedgerFindingStatusConfirmed, Reason: "still true"},
+		{FindingID: "moved", Status: commonmodels.LedgerFindingStatusResolved, Reason: "the condition is gone"},
+	}
+	o.applyReflection(context.Background(), &models.DiscoveryResult{ID: "d1"},
+		agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeOff}, ref, consolidationResult{})
+
+	// Both verdicts are still recorded — the history is what the model said,
+	// not what changed.
+	if len(fr.statuses) != 2 {
+		t.Fatalf("wrote %d status updates, want both verdicts recorded", len(fr.statuses))
+	}
+	// Only the one that moved is re-indexed.
+	if len(vs.upserted) != 1 || vs.upserted[0].ID != "moved" {
+		var got []string
+		for _, p := range vs.upserted {
+			got = append(got, p.ID)
+		}
+		t.Errorf("re-indexed %v, want only the finding whose status moved", got)
+	}
+	if emb.calls != 1 {
+		t.Errorf("embedding calls = %d, want 1 — one batch for the findings that moved", emb.calls)
+	}
+}

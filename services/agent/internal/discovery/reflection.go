@@ -1311,6 +1311,13 @@ func (o *Orchestrator) applyReflection(ctx context.Context, result *models.Disco
 					continue
 				}
 				now := time.Now()
+				// Captured before the write, because only a finding whose
+				// status actually MOVED needs its indexed payload rewritten.
+				// A reflection that reconfirms an already-confirmed finding is
+				// the ordinary case on a mature project, and it still records a
+				// history entry — re-embedding every one of those would buy an
+				// identical payload.
+				prevStatus := f.Status
 				f.Status = su.Status
 				f.UpdatedAt = now
 				// The model already emits a reason per status change and it
@@ -1332,7 +1339,9 @@ func (o *Orchestrator) applyReflection(ctx context.Context, result *models.Disco
 					applog.WithError(err).Warn("Reflection: apply finding status update failed")
 					continue
 				}
-				restatused = append(restatused, *f)
+				if prevStatus != su.Status {
+					restatused = append(restatused, *f)
+				}
 			}
 			// Consolidation indexed these findings before the model had judged
 			// them, so the index is now the only copy carrying the old status —

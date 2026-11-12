@@ -350,31 +350,61 @@ func documentDedupMinScore() float64 {
 // that block is precisely what is being budgeted. The bodies are rendered with
 // an empty base context, so the base is counted once rather than once per body.
 //
-// What it still cannot see is the schema catalog and, on a multi-datasource
-// run, the routing cards — both rendered after this and sized by their own
-// retrieval. That is why priorContextBudget also leaves the step picker its
-// floor: the catalog and the query evidence are the two inputs still to come,
-// and leaving room for the smaller of them is what keeps a generous ledger
-// from crowding out the evidence entirely. Past that the adaptive
-// context-overflow retry remains the net, as it is for every other estimate on
-// this path.
-func (o *Orchestrator) fixedPromptTokens(ctx context.Context, prompts ResolvedPrompts,
-	profileStr, language, datasetsStr, areasDesc, refDataset string, areas []AnalysisArea) int {
-	base := approxTokens(ctx, o.buildBaseContext(prompts.BaseContext, profileStr, "", language, refDataset))
+// The schema catalog counts, and it is the largest of them on a warehouse of
+// any size: the comment here used to say the catalog could not be seen from
+// this point, and that was simply wrong — it is rendered before the block is
+// chosen and substituted into the exploration body. A 32K-window model with a
+// 1,525-table catalog and a saturated ledger assembled 32,045 input tokens
+// before any evidence, where the fixed 25-finding block it replaces had fitted.
+// Reducing the output request cannot recover an input-only overflow.
+//
+// What is genuinely still outside it is the curated correlation guidance on a
+// multi-datasource run, which does not exist yet — the routing cards it is
+// appended to are counted. That, and the query evidence, is why
+// priorContextBudget also leaves the step picker its floor; past that the
+// adaptive context-overflow retry remains the net, as it is for every other
+// estimate on this path.
+func (o *Orchestrator) fixedPromptTokens(ctx context.Context, p fixedPromptParts) int {
+	base := approxTokens(ctx, o.buildBaseContext(p.Prompts.BaseContext, p.Profile, "", p.Language, p.RefDataset))
 
 	// Exploration is assembled inline by runDiscovery rather than by a builder,
-	// and appends no rules of its own — the areas description is the one
-	// substitution with a size worth counting.
-	widest := approxTokens(ctx, prompts.Exploration) + approxTokens(ctx, areasDesc)
-	if n := approxTokens(ctx, o.buildRecommendationsPrompt("", prompts.Recommendations, "", "", refDataset)); n > widest {
+	// so its pieces are counted here: the template, the areas description, the
+	// rendered catalog, and the datasource routing cards.
+	widest := approxTokens(ctx, p.Prompts.Exploration) + approxTokens(ctx, p.AreasDesc) +
+		approxTokens(ctx, p.Catalog) + approxTokens(ctx, p.Datasources)
+	if n := approxTokens(ctx, o.buildRecommendationsPrompt("", p.Prompts.Recommendations, "", "", p.RefDataset)); n > widest {
 		widest = n
 	}
-	for _, a := range areas {
-		if body, ok := prompts.AnalysisAreas[a.ID]; ok {
-			if n := approxTokens(ctx, o.buildAnalysisAreaPrompt("", body, datasetsStr, 0, "", refDataset)); n > widest {
+	for _, a := range p.Areas {
+		if body, ok := p.Prompts.AnalysisAreas[a.ID]; ok {
+			if n := approxTokens(ctx, o.buildAnalysisAreaPrompt("", body, p.Datasets, 0, "", p.RefDataset)); n > widest {
 				widest = n
 			}
 		}
 	}
 	return base + widest
+}
+
+// fixedPromptParts is everything a run's prompts will carry besides the
+// prior-knowledge block and the query evidence, as it exists at the moment the
+// block has to be sized.
+//
+// A struct rather than nine positional strings, so that what is counted is
+// legible at the call site — and so that the next thing the prompt grows is
+// added as a named field by someone who can see the list, rather than
+// forgotten because the signature was already long. Three of the review
+// findings on this change were a piece of the prompt that nothing was counting.
+type fixedPromptParts struct {
+	Prompts    ResolvedPrompts
+	Profile    string
+	Language   string
+	Datasets   string
+	AreasDesc  string
+	RefDataset string
+	// Catalog is the rendered schema catalog substituted into {{SCHEMA_INFO}}.
+	Catalog string
+	// Datasources is the routing-contract section a multi-datasource run
+	// appends. Empty on a single-warehouse run.
+	Datasources string
+	Areas       []AnalysisArea
 }
