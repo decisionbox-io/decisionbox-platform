@@ -98,9 +98,12 @@ func buildInsightRepairPrompt(ins models.Insight, failed []models.QuantifierVerd
 // things a rewrite may touch, and a field shown in the input is a field the model
 // reasonably assumes it should return.
 func repairInsightJSON(ins models.Insight) string {
+	// No `severity` and no `risk_score`. Both are derived, so echoing one
+	// into the repair prompt would show the model a grade it is not being
+	// asked for and could not change -- and the repair schema has no key to
+	// return it in, so a model that tried would have its answer dropped.
 	body := map[string]any{
 		"name":         ins.Name,
-		"severity":     ins.Severity,
 		"source_steps": ins.SourceSteps,
 	}
 	// Prefer the Markdown rendition the model authored; Description is the
@@ -113,9 +116,6 @@ func repairInsightJSON(ins models.Insight) string {
 	}
 	if ins.AffectedCount != 0 {
 		body["affected_count"] = ins.AffectedCount
-	}
-	if ins.RiskScore != 0 {
-		body["risk_score"] = ins.RiskScore
 	}
 	if ins.TargetSegment != "" {
 		body["target_segment"] = ins.TargetSegment

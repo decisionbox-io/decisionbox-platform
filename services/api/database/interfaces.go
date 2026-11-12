@@ -149,7 +149,7 @@ type InsightRepo interface {
 	Create(ctx context.Context, insight *commonmodels.StandaloneInsight) error
 	CreateMany(ctx context.Context, insights []*commonmodels.StandaloneInsight) error
 	GetByID(ctx context.Context, id string) (*commonmodels.StandaloneInsight, error)
-	ListByProject(ctx context.Context, projectID string, limit, offset int) ([]*commonmodels.StandaloneInsight, error)
+	ListByProject(ctx context.Context, projectID string, limit, offset int, sort string) ([]*commonmodels.StandaloneInsight, error)
 	ListByDiscovery(ctx context.Context, discoveryID string) ([]*commonmodels.StandaloneInsight, error)
 	CountByProject(ctx context.Context, projectID string) (int64, error)
 	UpdateEmbedding(ctx context.Context, id string, embeddingText, embeddingModel string) error
@@ -162,7 +162,7 @@ type RecommendationRepo interface {
 	Create(ctx context.Context, rec *commonmodels.StandaloneRecommendation) error
 	CreateMany(ctx context.Context, recs []*commonmodels.StandaloneRecommendation) error
 	GetByID(ctx context.Context, id string) (*commonmodels.StandaloneRecommendation, error)
-	ListByProject(ctx context.Context, projectID string, limit, offset int) ([]*commonmodels.StandaloneRecommendation, error)
+	ListByProject(ctx context.Context, projectID string, limit, offset int, sort string) ([]*commonmodels.StandaloneRecommendation, error)
 	ListByDiscovery(ctx context.Context, discoveryID string) ([]*commonmodels.StandaloneRecommendation, error)
 	CountByProject(ctx context.Context, projectID string) (int64, error)
 	UpdateEmbedding(ctx context.Context, id string, embeddingText, embeddingModel string) error

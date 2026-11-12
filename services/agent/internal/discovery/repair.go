@@ -415,14 +415,8 @@ func mergeRepairedInsight(orig, rewritten models.Insight) models.Insight {
 		// rendered beside the new plain text.
 		out.DescriptionMd = rewritten.DescriptionMd
 	}
-	if rewritten.Severity != "" {
-		out.Severity = rewritten.Severity
-	}
 	if rewritten.AffectedCount != 0 {
 		out.AffectedCount = rewritten.AffectedCount
-	}
-	if rewritten.RiskScore != 0 {
-		out.RiskScore = rewritten.RiskScore
 	}
 	if rewritten.TargetSegment != "" {
 		out.TargetSegment = rewritten.TargetSegment

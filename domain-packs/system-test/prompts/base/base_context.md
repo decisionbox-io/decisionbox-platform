@@ -12,4 +12,4 @@
 
 Write **every** piece of natural-language text you produce in **{{LANGUAGE}}**, including the `thinking` on each exploration step. The list below is the only exception. The previous discovery context may be in a different language; translate as needed and do not mirror it.
 
-Keep these in English regardless of the configured output language: SQL queries, column names, table names, identifiers, JSON keys, severity values, analysis_area IDs.
+Keep these in English regardless of the configured output language: SQL queries, column names, table names, identifiers, JSON keys, analysis_area IDs.

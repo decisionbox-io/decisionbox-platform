@@ -37,10 +37,10 @@ type ValidateSingleDocInput struct {
 	Disc           verifier.DiscoveryContext
 	Executor       verifier.Executor
 
-	// ScoringCfg is the confidence engine's calibration to re-derive this
-	// document's score against. The zero value is the current default, which
-	// is what a caller with nothing to say should pass -- Score stamps the
-	// build's own engine version rather than an unexplainable 0.
+	// ScoringCfg is the scoring engine's calibration to re-derive this
+	// document's confidence against. The zero value is the current default,
+	// which is what a caller with nothing to say should pass -- the engine
+	// falls back rather than scoring against an empty table.
 	ScoringCfg scoring.Config
 
 	DocKind  valmodels.DocKind
@@ -117,10 +117,15 @@ func ValidateSingleDoc(ctx context.Context, in ValidateSingleDocInput) (models.V
 		// beside a validation that says Y -- an internally contradictory
 		// document, which is worse than either staleness alone.
 		//
-		// The confidence axis only. Severity and risk_score are still the
-		// analysis model's own words and this path has no business touching
-		// them; it is also why no vector-store method is needed here, since
-		// the Qdrant payload's only re-derivable field is write-only.
+		// The confidence axis and the priority rollup over it. Severity and
+		// risk_score stay FROZEN: severity is magnitude x weight, and a
+		// validation run changes neither -- so a stored severity is an
+		// immutable fact about the run that produced it. That is also why no
+		// vector-store method is needed here: the Qdrant payload's `severity`
+		// filter can never drift, and its other scoring field is write-only.
+		//
+		// Priority is the exception and must move, because one of its two
+		// inputs just did.
 		rescoreTargetInsight(target, in.ScoringCfg)
 		return results[0], nil
 
@@ -156,23 +161,66 @@ func ValidateSingleDoc(ctx context.Context, in ValidateSingleDocInput) (models.V
 }
 
 // rescoreTargetInsight and rescoreTargetRecommendation re-derive one
-// document's confidence in place, through the same scorer the run uses.
+// document's confidence axis in place and leave its severity axis exactly as
+// the run that produced it left it.
 //
-// The same path deliberately: a second derivation here would be a second
-// answer to "what is this worth", and the two would drift the first time
-// either changed. The single-element slice is how the shared scorer is
-// reached without a divergent code path, which is the same shape
-// ValidateSingleDoc already uses to reach validateInsights.
+// Through the engine's own RescoreConfidence rather than a merge written here,
+// because deciding which fields survive a re-validation is a property of the
+// scoring model and not of this call site. The engine states the asymmetry and
+// a test holds it field by field.
+//
+// A document that was never scored at all -- a legacy row an operator clicked
+// Run validation on -- gets its CONFIDENCE axis derived and keeps its legacy
+// severity word. It is tempting to score it in full instead, on the grounds
+// that the one action whose purpose is to re-derive a grade should produce
+// one. Two things rule that out:
+//
+//   - The severity it would get carries no information. This path has one
+//     stored document in hand and no datasource context, so the home currency
+//     cannot be resolved and no amount qualifies -- the derivation would land
+//     on the area baseline and replace the model's word with a band that says
+//     only "not quantified".
+//   - It would make the severity filter lie. `severity` is an indexed vector
+//     payload field and the search handler filters on it BEFORE hydrating
+//     rows, so a row whose Mongo severity moved while its indexed copy did
+//     not is a row that answers the wrong query. Severity not moving on this
+//     path is precisely what makes a payload update unnecessary, and spending
+//     a vector-store method on every provider to buy a baseline band would be
+//     paying a lot for nothing.
+//
+// A new discovery run grades such a finding on the current engine, which is
+// what the legacy badge in the dashboard says.
 func rescoreTargetInsight(target *models.Insight, cfg scoring.Config) {
-	one := []models.Insight{*target}
-	scoreInsights(one, cfg)
-	target.Confidence = one[0].Confidence
-	target.Scoring = one[0].Scoring
+	// Only the calibration: this path holds one stored document, has no
+	// datasource context, and does not recompute the severity half at all.
+	in := insightScoringInput(*target, scoringContext{cfg: cfg})
+	prior := models.Scoring{}
+	if target.Scoring != nil {
+		prior = *target.Scoring
+	}
+	derived := scoring.RescoreConfidence(prior, in)
+	target.Scoring = &derived
+	target.Confidence = derived.ConfidenceScore
+	// Severity and risk_score are deliberately NOT written. They are frozen
+	// on this path, and writing an unchanged value would still be this layer
+	// claiming authorship of a field it did not derive.
 }
 
 func rescoreTargetRecommendation(target *models.Recommendation, cfg scoring.Config) {
-	one := []models.Recommendation{*target}
-	scoreRecommendations(one, cfg)
-	target.Confidence = one[0].Confidence
-	target.Scoring = one[0].Scoring
+	in := recommendationScoringInput(*target, cfg)
+	prior := models.Scoring{}
+	if target.Scoring != nil {
+		prior = *target.Scoring
+	}
+	derived := scoring.RescoreConfidence(prior, in)
+	target.Scoring = &derived
+	target.Confidence = derived.ConfidenceScore
+	// Priority is the one mirrored field that DOES move here, because the
+	// tier is the matrix over this recommendation's verdict and the severity
+	// it inherited -- and the verdict is what just changed. Left alone when
+	// there is no tier: a legacy row's integer is the analysis model's own
+	// ranking, and zeroing it would destroy the only value it has.
+	if derived.PriorityTier != "" {
+		target.Priority = scoring.RecommendationPriority(derived.PriorityTier)
+	}
 }

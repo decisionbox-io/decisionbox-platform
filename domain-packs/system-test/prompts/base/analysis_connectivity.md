@@ -27,9 +27,7 @@ Respond with ONLY valid JSON (no markdown, no explanations):
     {
       "name": "Descriptive finding (e.g., 'Basic Connectivity: SELECT 1 Returns Successfully')",
       "description": "What was tested, what the result was, and what this validates about the provider.",
-      "severity": "info|low|medium|high|critical",
       "affected_count": 1,
-      "risk_score": 0.0,
       "metrics": {
         "test_status": "pass|warn|fail",
         "component": "connectivity",
@@ -49,13 +47,17 @@ Respond with ONLY valid JSON (no markdown, no explanations):
 }
 ```
 
-## Severity Mapping for Validation
+## What the platform measures this by
 
-- **info**: Test passed — provider handles this correctly
-- **low**: Minor observation — non-standard but functional behavior
-- **medium**: Warning — unexpected behavior that may affect some use cases
-- **high**: Failure — provider cannot handle a common operation
-- **critical**: Blocker — provider cannot connect or execute basic queries
+Severity is derived from the figures you declare, not from a word you choose.
+The platform re-checks each figure's arithmetic against the rows and bands the
+largest one that holds: a currency amount in this warehouse's own currency, or
+a percentage. So a finding that states its magnitude as a declared figure is
+ranked on that magnitude, and one that states no figure falls back to an area
+baseline and is marked *not quantified*.
+
+Declare the number that makes the finding matter. Do not describe how severe
+it is.
 
 ## Quality Standards
 

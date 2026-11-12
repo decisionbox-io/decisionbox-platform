@@ -19,11 +19,16 @@ import { ValidationRouter } from '@/components/validation/ValidationRouter';
 import { ValidationLogRow } from '@/components/validation/ValidationLogRow';
 import { isLegacyValidation } from '@/components/validation/validationShape';
 import { ConfidenceCell } from '@/components/scoring/ConfidenceCell';
+import { SeverityCell } from '@/components/scoring/SeverityCell';
+import { PriorityCell } from '@/components/scoring/PriorityCell';
+import { ScoringBreakdown } from '@/components/scoring/ScoringBreakdown';
 import { DatasourceBadge } from '@/components/common/UIComponents';
 import { markRead } from '@/lib/readState';
 import QuestionsDrawer from '@/components/common/QuestionsDrawer';
 import { api, DiscoveryResult, DiscoveryQuestion, Feedback, Insight, Project, SearchResultItem, ExplorationStep, AnalysisLogStep, ValidationLogEntry } from '@/lib/api';
 
+// The header icon's tint. `critical` is kept for documents written before
+// severity was derived; the three bands below are what a current run writes.
 const severityColor: Record<string, string> = {
   critical: 'red', high: 'orange', medium: 'yellow', low: 'gray',
 };
@@ -211,7 +216,8 @@ export default function InsightDetailPage() {
           <Title order={2}>{insight.name}</Title>
         </Group>
         <Group gap="xs">
-          <Badge color={severityColor[insight.severity] || 'gray'} variant="light">{insight.severity}</Badge>
+          <SeverityCell scoring={insight.evidence_scoring} severity={insight.severity} />
+          <PriorityCell scoring={insight.evidence_scoring} />
           <Badge variant="outline">{insight.analysis_area}</Badge>
           {insight.affected_count > 0 && (
             <Badge variant="outline">{insight.affected_count.toLocaleString()} affected</Badge>
@@ -257,24 +263,27 @@ export default function InsightDetailPage() {
             numbers right after the description. */}
         <Card withBorder p="lg">
           <Title order={4} mb="sm">Assessment</Title>
-          <Group gap="xl">
+          <Group gap="xl" align="flex-start">
             <div>
-              <Text size="xs" c="dimmed">Risk Score</Text>
-              <Text size="lg" fw={700} c={insight.risk_score > 0.7 ? 'red' : insight.risk_score > 0.4 ? 'orange' : 'green'}>
-                {(insight.risk_score * 100).toFixed(0)}%
-              </Text>
+              <Text size="xs" c="dimmed">Severity</Text>
+              {/* The band with the figure that drove it, and the derivation
+                  behind both. A document from before the scorer existed shows
+                  its stored word marked legacy instead — nothing is
+                  recalculated. */}
+              <SeverityCell scoring={insight.evidence_scoring} severity={insight.severity} size="md" />
             </div>
             <div>
               <Text size="xs" c="dimmed">Confidence</Text>
-              {/* The band and its reason, with the full breakdown behind it.
-                  A document from before the scorer existed shows its stored
-                  number marked legacy instead — nothing is recalculated. */}
               <ConfidenceCell
                 scoring={insight.evidence_scoring}
                 confidence={insight.confidence}
                 size="md"
                 showReason
               />
+            </div>
+            <div>
+              <Text size="xs" c="dimmed">Priority</Text>
+              <PriorityCell scoring={insight.evidence_scoring} size="md" />
             </div>
             {insight.target_segment && (
               <div>
@@ -284,6 +293,18 @@ export default function InsightDetailPage() {
             )}
           </Group>
         </Card>
+
+        {/* How this was scored — the full derivation of all three labels, on
+            the page a reader opens to decide whether to believe one of them.
+            The badges above each open their own axis on hover; this is the
+            whole thing without a hover, which is what a reader comparing two
+            findings side by side needs. Absent on a document the scorer never
+            reached. */}
+        {insight.evidence_scoring && (
+          <Card withBorder p="lg" data-testid="scoring-card">
+            <ScoringBreakdown scoring={insight.evidence_scoring} axis="all" />
+          </Card>
+        )}
 
         {/* Key Indicators — plain-language bullets supporting the claim. */}
         {insight.indicators && insight.indicators.length > 0 && (

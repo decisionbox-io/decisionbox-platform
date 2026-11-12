@@ -110,12 +110,18 @@ export default function SearchPage() {
             placeholder="Severity"
             value={severityFilter}
             onChange={v => setSeverityFilter(v)}
+            // The three derived bands, plus `critical` labelled as what it
+            // is. This filter is a server-side match on the indexed
+            // `severity` payload, so the options have to name values a point
+            // actually carries -- `critical` was the top severity word before
+            // severity was derived, so it reaches older findings and only
+            // those. Dropping it would make that history unsearchable.
             data={[
               { label: 'All severities', value: '' },
-              { label: 'Critical', value: 'critical' },
               { label: 'High', value: 'high' },
               { label: 'Medium', value: 'medium' },
               { label: 'Low', value: 'low' },
+              { label: 'Critical (legacy)', value: 'critical' },
             ]}
             clearable
             size="xs"

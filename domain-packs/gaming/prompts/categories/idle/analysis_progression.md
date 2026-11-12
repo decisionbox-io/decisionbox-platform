@@ -30,9 +30,7 @@ Respond with ONLY valid JSON:
     {
       "name": "Prestige 3 Wall — 72% of Players Never Reach Third Prestige",
       "description": "While 85% of players complete their first prestige (avg 4.2 hours) and 58% complete a second (avg 8.1 hours), only 28% ever reach a third prestige. The time between prestige 2 and 3 averages 26 hours — over 3x the prestige 1-2 gap. The prestige multiplier gained at P3 (1.8x) doesn't feel proportional to the effort compared to P1 (2.5x) and P2 (2.1x). 1,820 players dropped off between prestige 2 and 3 in the last 30 days.",
-      "severity": "critical",
       "affected_count": 1820,
-      "risk_score": 0.72,
       "metrics": {
         "prestige_number": 3,
         "completion_rate": 0.28,
@@ -67,12 +65,17 @@ Respond with ONLY valid JSON:
 - **pacing_too_fast**: Players progressing too quickly, running out of content
 - **pacing_too_slow**: Players stuck for extended periods with no sense of progress
 
-## Severity Calibration
+## What the platform measures this by
 
-- **critical**: Progression wall causing measurable churn (>50% drop-off at that stage), affecting 100+ players
-- **high**: Significant pacing issue causing >30% drop-off or noticeable engagement decline
-- **medium**: Moderate pacing imbalance affecting player satisfaction but not directly causing churn
-- **low**: Minor optimization opportunity in progression tuning
+Severity is derived from the figures you declare, not from a word you choose.
+The platform re-checks each figure's arithmetic against the rows and bands the
+largest one that holds: a currency amount in this warehouse's own currency, or
+a percentage. So a finding that states its magnitude as a declared figure is
+ranked on that magnitude, and one that states no figure falls back to an area
+baseline and is marked *not quantified*.
+
+Declare the number that makes the finding matter. Do not describe how severe
+it is.
 
 ## Important Rules
 

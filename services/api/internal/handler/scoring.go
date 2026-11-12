@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 
+	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/scoring"
 )
@@ -38,6 +39,81 @@ type scoringEnginesResponse struct {
 type scoringEngine struct {
 	Version    int                     `json:"version"`
 	Confidence scoringConfidenceConfig `json:"confidence"`
+	Severity   scoringSeverityConfig   `json:"severity"`
+	Priority   scoringPriorityConfig   `json:"priority"`
+}
+
+// scoringSeverityConfig is the severity axis: which figures band a magnitude,
+// what each band is worth, and where the weighted score's cutoffs fall.
+type scoringSeverityConfig struct {
+	// AmountBands bands a currency figure, and SHIPS EMPTY -- serialised as
+	// `[]` rather than omitted, so a reader can see that the axis is
+	// unconfigured rather than that the field is missing. An absolute money
+	// cutoff is a property of a business, not of this engine, so there is no
+	// default for it; a document with a checked amount and a checked share
+	// therefore bands on the share while still showing the amount.
+	AmountBands []scoringMagnitudeBand `json:"amount_bands"`
+	// ShareBands bands a percentage figure. A share needs no per-business
+	// calibration, which is why this one has defaults and AmountBands does
+	// not.
+	ShareBands []scoringMagnitudeBand `json:"share_bands"`
+
+	// Magnitudes is what each band is worth before the weight.
+	Magnitudes scoringMagnitudes `json:"magnitudes"`
+	// Baseline is the magnitude of a document with no figure this engine
+	// would use. Deliberately mid-range: an unquantified finding is
+	// unmeasured, not small.
+	Baseline float64 `json:"baseline"`
+
+	// Cutoffs are the band boundaries on the weighted score, inclusive.
+	Cutoffs scoringCutoffs `json:"cutoffs"`
+	// DefaultWeight is the multiplier for an area with no configured weight.
+	DefaultWeight float64 `json:"default_weight"`
+}
+
+type scoringMagnitudeBand struct {
+	// At is the absolute value a figure must reach to land in Band.
+	At   float64 `json:"at"`
+	Band string  `json:"band"`
+}
+
+type scoringMagnitudes struct {
+	High   float64 `json:"high"`
+	Medium float64 `json:"medium"`
+	Low    float64 `json:"low"`
+}
+
+// scoringPriorityConfig is the rollup: the matrix, what each tier is worth as
+// a sort key, and how much the two continuous scores may refine it.
+type scoringPriorityConfig struct {
+	// Tiers is every tier, highest first, with its sort weight.
+	Tiers []scoringTier `json:"tiers"`
+	// TrustedConfidenceBands are the confidence bands the matrix treats as
+	// actionable without further checking. Served rather than assumed,
+	// because the matrix cell a reader is shown is chosen by this partition.
+	TrustedConfidenceBands []string `json:"trusted_confidence_bands"`
+	// Matrix is every cell: which tier a (severity band, trusted) pair
+	// selects.
+	Matrix []scoringMatrixCell `json:"matrix"`
+
+	SeverityCoeff   float64 `json:"severity_coeff"`
+	ConfidenceCoeff float64 `json:"confidence_coeff"`
+}
+
+type scoringTier struct {
+	Tier   string  `json:"tier"`
+	Weight float64 `json:"weight"`
+	// Priority is the 1-5 integer a recommendation in this tier carries, so a
+	// client reading that field knows which tier produced it.
+	Priority int `json:"priority"`
+}
+
+type scoringMatrixCell struct {
+	Severity string `json:"severity"`
+	// Confidence is "trusted" or "untrusted" -- the two groups the five
+	// confidence bands collapse to.
+	Confidence string `json:"confidence"`
+	Tier       string `json:"tier"`
 }
 
 type scoringConfidenceConfig struct {
@@ -102,7 +178,12 @@ func ScoringEngines(w http.ResponseWriter, r *http.Request) {
 			// divergence from taking the whole endpoint down.
 			continue
 		}
-		engines = append(engines, scoringEngine{Version: v, Confidence: confidenceConfigPayload(cfg.Confidence)})
+		engines = append(engines, scoringEngine{
+			Version:    v,
+			Confidence: confidenceConfigPayload(cfg.Confidence),
+			Severity:   severityConfigPayload(cfg.Severity),
+			Priority:   priorityConfigPayload(cfg.Priority),
+		})
 	}
 
 	writeJSON(w, http.StatusOK, scoringEnginesResponse{
@@ -149,4 +230,81 @@ func confidenceConfigPayload(cfg scoring.ConfidenceConfig) scoringConfidenceConf
 				Max: d.SampleEndedEarly.Amount},
 		},
 	}
+}
+
+// severityConfigPayload projects one engine version's severity calibration
+// onto the wire shape.
+func severityConfigPayload(cfg scoring.SeverityConfig) scoringSeverityConfig {
+	return scoringSeverityConfig{
+		AmountBands: magnitudeBandsPayload(cfg.AmountBands),
+		ShareBands:  magnitudeBandsPayload(cfg.ShareBands),
+		Magnitudes: scoringMagnitudes{
+			High:   cfg.HighMagnitude,
+			Medium: cfg.MediumMagnitude,
+			Low:    cfg.LowMagnitude,
+		},
+		Baseline:      cfg.BaselineMagnitude,
+		Cutoffs:       scoringCutoffs{High: cfg.HighAt, Medium: cfg.MediumAt},
+		DefaultWeight: cfg.DefaultWeight,
+	}
+}
+
+// magnitudeBandsPayload always returns a non-nil slice, so an unconfigured
+// band set serialises as `[]` rather than `null`. A reader has to be able to
+// tell "this axis is deliberately unconfigured" from "this field is missing",
+// and `null` says neither.
+func magnitudeBandsPayload(bands []scoring.MagnitudeBand) []scoringMagnitudeBand {
+	out := make([]scoringMagnitudeBand, 0, len(bands))
+	for _, b := range bands {
+		out = append(out, scoringMagnitudeBand{At: b.At, Band: b.Band})
+	}
+	return out
+}
+
+// priorityConfigPayload projects the matrix and the sort weights.
+//
+// The matrix is enumerated rather than described, because a client rendering
+// "high severity x unverified evidence -> investigate" beside a tier badge
+// needs the cell, and deriving it from a rule stated in prose is how a second
+// implementation of the matrix appears.
+func priorityConfigPayload(cfg scoring.PriorityConfig) scoringPriorityConfig {
+	tiers := []string{
+		gomodels.PriorityTierCritical, gomodels.PriorityTierInvestigate,
+		gomodels.PriorityTierHigh, gomodels.PriorityTierLow,
+	}
+	out := scoringPriorityConfig{
+		Tiers: make([]scoringTier, 0, len(tiers)),
+		TrustedConfidenceBands: []string{
+			gomodels.ConfidenceBandHigh, gomodels.ConfidenceBandMedium,
+		},
+		SeverityCoeff:   cfg.SeverityCoeff,
+		ConfidenceCoeff: cfg.ConfidenceCoeff,
+	}
+	for _, tier := range tiers {
+		out.Tiers = append(out.Tiers, scoringTier{
+			Tier:     tier,
+			Weight:   cfg.TierWeights[tier],
+			Priority: scoring.RecommendationPriority(tier),
+		})
+	}
+	// Built by asking the engine for each cell rather than restating the
+	// matrix here, so this payload cannot disagree with the scorer.
+	for _, severity := range []string{
+		gomodels.SeverityBandHigh, gomodels.SeverityBandMedium, gomodels.SeverityBandLow,
+	} {
+		for _, confidence := range []struct {
+			label string
+			band  string
+		}{
+			{"trusted", gomodels.ConfidenceBandHigh},
+			{"untrusted", gomodels.ConfidenceBandUnverifiable},
+		} {
+			out.Matrix = append(out.Matrix, scoringMatrixCell{
+				Severity:   severity,
+				Confidence: confidence.label,
+				Tier:       scoring.PriorityTierFor(severity, confidence.band),
+			})
+		}
+	}
+	return out
 }

@@ -682,7 +682,7 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 			// reason a trend is reported with has to name the values that
 			// moved and the merge below overwrites them.
 			changed := findingMagnitudeChanged(match, &cand, trendDelta)
-			priorSeverity, priorAffected := match.Severity, match.AffectedCount
+			priorSnapshot := snapshotOf(match)
 			// The finding as it is STORED, kept until the write lands. Two of
 			// this run's insights can merge into the same finding, and if the
 			// first write fails the second must be compared against what is
@@ -694,6 +694,7 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 			match.KeyMetric = cand.KeyMetric
 			match.Evidence = cand.Evidence
 			match.Severity = cand.Severity
+			match.MagnitudeScore = cand.MagnitudeScore
 			match.AffectedCount = cand.AffectedCount
 			match.Liked = match.Liked || cand.Liked
 			match.SeenCount++
@@ -707,13 +708,14 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 			// writing to the same finding and a write that says "the document
 			// is now this" does not.
 			sighting := commonmodels.FindingSighting{
-				RunID:         o.runID,
-				DiscoveryID:   result.ID,
-				Date:          now,
-				KeyMetric:     cand.KeyMetric,
-				AffectedCount: cand.AffectedCount,
-				Severity:      cand.Severity,
-				InsightID:     insightID,
+				RunID:          o.runID,
+				DiscoveryID:    result.ID,
+				Date:           now,
+				KeyMetric:      cand.KeyMetric,
+				AffectedCount:  cand.AffectedCount,
+				Severity:       cand.Severity,
+				MagnitudeScore: cand.MagnitudeScore,
+				InsightID:      insightID,
 			}
 			var statusAdded []commonmodels.FindingStatusChange
 			sightingAdded := appendFindingSighting(match, sighting)
@@ -757,7 +759,7 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 				// that moved with nothing to explain it.
 				trend := commonmodels.FindingStatusChange{
 					Status:      commonmodels.LedgerFindingStatusChanged,
-					Reason:      trendReason(priorSeverity, priorAffected, cand.Severity, cand.AffectedCount),
+					Reason:      trendReason(priorSnapshot, snapshotOf(&cand)),
 					RunID:       o.runID,
 					DiscoveryID: result.ID,
 					At:          now,
@@ -790,6 +792,7 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 				KeyMetric:         match.KeyMetric,
 				Evidence:          match.Evidence,
 				Severity:          match.Severity,
+				MagnitudeScore:    match.MagnitudeScore,
 				AffectedCount:     match.AffectedCount,
 				LastSeen:          match.LastSeen,
 				SourceDiscoveryID: match.SourceDiscoveryID,
@@ -822,13 +825,21 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 		cand.CreatedAt = now
 		cand.UpdatedAt = now
 		appendFindingSighting(&cand, commonmodels.FindingSighting{
-			RunID:         o.runID,
-			DiscoveryID:   result.ID,
-			Date:          now,
-			KeyMetric:     cand.KeyMetric,
-			AffectedCount: cand.AffectedCount,
-			Severity:      cand.Severity,
-			InsightID:     insightID,
+			RunID:       o.runID,
+			DiscoveryID: result.ID,
+			Date:        now,
+			KeyMetric:   cand.KeyMetric,
+			// The magnitude, on the FIRST sighting too. The merge path
+			// carried it and this literal did not, so every finding's
+			// opening sighting stored zero -- and since a later merge
+			// overwrites the parent, the trail lost the original measurement
+			// entirely. The trail is what makes a magnitude trend drawable
+			// rather than implied, so a missing first point is a missing
+			// baseline for every comparison after it.
+			MagnitudeScore: cand.MagnitudeScore,
+			AffectedCount:  cand.AffectedCount,
+			Severity:       cand.Severity,
+			InsightID:      insightID,
 		})
 		appendFindingStatusChange(&cand, commonmodels.FindingStatusChange{
 			Status:      commonmodels.LedgerFindingStatusConfirmed,
@@ -915,14 +926,38 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 }
 
 // trendReason states what moved, so a `changed` status the server detected
-// arrives with its own evidence rather than as a bare label. Severity is
-// reported when it moved; otherwise the affected-count delta is — the same two
-// signals findingMagnitudeChanged decides on, in the same order.
-func trendReason(priorSeverity string, priorAffected int, curSeverity string, curAffected int) string {
-	if priorSeverity != curSeverity {
-		return fmt.Sprintf("severity moved from %s to %s", priorSeverity, curSeverity)
+// arrives with its own evidence rather than as a bare label. The magnitude is
+// reported when it moved; otherwise the affected-count delta is -- the same two
+// signals findingMagnitudeChanged decides on, in the same order, under the
+// same rule about an incomparable prior.
+//
+// It names the SEVERITY BANDS beside the magnitudes rather than the raw
+// numbers, because "0.6 to 1.0" means nothing to a reader and "medium to high"
+// is the same fact in the vocabulary the rest of the product uses. The
+// decision is still made on the magnitude: a band that did not move is still
+// reported as a move when the magnitude under it did, which is a weight
+// change away from being the only honest thing to say.
+func trendReason(prior, cur trendSnapshot) string {
+	if prior.magnitude != 0 && cur.magnitude != 0 && prior.magnitude != cur.magnitude {
+		if prior.severity != cur.severity {
+			return fmt.Sprintf("severity moved from %s to %s", prior.severity, cur.severity)
+		}
+		return fmt.Sprintf("magnitude moved from %.2f to %.2f within %s severity",
+			prior.magnitude, cur.magnitude, cur.severity)
 	}
-	return fmt.Sprintf("affected count moved from %d to %d", priorAffected, curAffected)
+	return fmt.Sprintf("affected count moved from %d to %d", prior.affected, cur.affected)
+}
+
+// trendSnapshot is one side of a trend comparison: the three fields both
+// halves read, so the two cannot be transposed at the call site.
+type trendSnapshot struct {
+	severity  string
+	magnitude float64
+	affected  int
+}
+
+func snapshotOf(f *commonmodels.LedgerFinding) trendSnapshot {
+	return trendSnapshot{severity: f.Severity, magnitude: f.MagnitudeScore, affected: f.AffectedCount}
 }
 
 // dedupSearchBudget is how long ALL of this run's semantic lookups may take
@@ -985,6 +1020,28 @@ func buildFindingCandidates(result *models.DiscoveryResult) []commonmodels.Ledge
 			AffectedCount: ins.AffectedCount,
 			NormalizedKey: commonmodels.NormalizedFindingKey(ins.AnalysisArea, name),
 		}
+		// The weight-free magnitude travels with the finding, because it is
+		// what a trend across runs is measured on -- but ONLY when it was
+		// measured.
+		//
+		// An unquantified finding still gets a magnitude: the area baseline,
+		// which is a stand-in for a number nobody could read, not a
+		// measurement of anything. Carrying it would make the next run's
+		// comparison fire on the difference between "we could not measure
+		// this" and "we measured it this time" -- so a model that simply
+		// declared a figure it had previously omitted would be reported as a
+		// server-detected worsening, with the affected count unchanged and
+		// nothing about the finding having moved. That is the same
+		// manufactured trend the severity-word comparison produced, arriving
+		// from the other direction.
+		//
+		// Zero therefore means "no comparable magnitude" for both reasons it
+		// can: an insight no scorer reached, and one the scorer could not
+		// quantify. findingMagnitudeChanged tests for exactly that before
+		// trusting a comparison.
+		if ins.Scoring != nil && ins.Scoring.SeverityDriver != nil && ins.Scoring.SeverityDriver.Quantified {
+			cand.MagnitudeScore = ins.Scoring.MagnitudeScore
+		}
 		// The insight's own id, which is also its id in the `insights`
 		// collection and its Qdrant point id — so this one edge reaches the
 		// narrative, the SQL, the rows, the quality caveats and the validation
@@ -1020,9 +1077,28 @@ func buildKeyMetric(ins models.Insight) string {
 }
 
 // findingMagnitudeChanged reports whether the new sighting of a finding is a
-// trend (a changed magnitude), by comparing severity and affected-count delta.
+// trend (a changed magnitude), by comparing the weight-free magnitude and the
+// affected-count delta.
+//
+// The magnitude, NOT the severity word, and the difference matters twice.
+//
+// The word changed vocabulary when severity stopped being the model's own:
+// `critical` became the top priority tier and the top severity band became
+// `high`. Comparing the words across that boundary would report "severity
+// moved from critical to high" on every re-sighted finding of the first run
+// after the change -- a manufactured trend, naming a symptom that does not
+// exist, on a status a reader is told the server detected. The weighted
+// severity score has the same problem for a different reason: it moves when an
+// area's configured weight does, which would make every finding in that area
+// look as though it got worse the day someone changed a setting.
+//
+// A prior with no magnitude at all is a sighting recorded before it was
+// carried. There is nothing comparable there, so the magnitude comparison is
+// SKIPPED rather than guessed and the affected-count delta decides alone: "no
+// detectable trend" is the honest answer, and a fabricated one is not.
 func findingMagnitudeChanged(prior *commonmodels.LedgerFinding, cur *commonmodels.LedgerFinding, delta float64) bool {
-	if prior.Severity != cur.Severity {
+	if prior.MagnitudeScore != 0 && cur.MagnitudeScore != 0 &&
+		prior.MagnitudeScore != cur.MagnitudeScore {
 		return true
 	}
 	base := prior.AffectedCount

@@ -26,6 +26,29 @@ const engines: ScoringEngines = {
       floor: 0.05,
       docks: [],
     },
+    // Carried so the fixture is a whole ScoringEngine rather than the
+    // confidence half of one. Nothing in this file reads it; a fixture that
+    // does not match its own type is a trap for whoever adds the next case.
+    severity: {
+      amount_bands: [],
+      share_bands: [{ at: 20, band: 'high' }, { at: 5, band: 'medium' }],
+      magnitudes: { high: 1, medium: 0.6, low: 0.25 },
+      baseline: 0.6,
+      cutoffs: { high: 0.66, medium: 0.33 },
+      default_weight: 1,
+    },
+    priority: {
+      tiers: [
+        { tier: 'critical', weight: 3, priority: 1 },
+        { tier: 'investigate', weight: 2, priority: 2 },
+        { tier: 'high', weight: 1, priority: 3 },
+        { tier: 'low', weight: 0, priority: 4 },
+      ],
+      trusted_confidence_bands: ['high', 'medium'],
+      matrix: [],
+      severity_coeff: 0.15,
+      confidence_coeff: 0.05,
+    },
   }],
 };
 

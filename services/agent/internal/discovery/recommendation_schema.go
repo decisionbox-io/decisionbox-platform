@@ -55,25 +55,6 @@ func recommendationResponseSchema() map[string]interface{} {
 		Category:    boundedString("Recommendation category (e.g. churn, engagement, monetization)", maxSchemaLabelRunes),
 		Title:       nonEmptyString("Specific, action-oriented recommendation title. One line, not a paragraph. "+recommendationReferenceRule, maxSchemaTitleRunes),
 		Description: nonEmptyString("Explanation of the recommendation. "+recommendationReferenceRule, maxSchemaDescriptionRunes),
-		// Bounded as well as typed. An integer field cannot run away, but it
-		// can arrive outside the scale the reader renders: the packs that get
-		// this right say "emit as an integer, NOT a string", and two of the
-		// three generated packs measured said `critical | high | medium | low`
-		// instead -- which is why coercePriority exists. A model that cannot
-		// write the word writes a number, and these bounds keep it on the
-		// scale the field is documented as.
-		//
-		// These two survive grammar translation, unlike a string bound above
-		// grammarRepetitionCeiling: json-schema-to-grammar.cpp routes an
-		// integer carrying either keyword through build_min_max_int rather
-		// than the unconstrained integer rule, so the range holds on an
-		// Ollama-backed runner as well as on a json_schema provider.
-		Priority: map[string]interface{}{
-			"type":        "integer",
-			"description": "1 (highest priority) to 5 (lowest)",
-			"minimum":     1,
-			"maximum":     5,
-		},
 		TargetSegment: boundedString("The user segment this recommendation targets", maxSchemaSegmentRunes),
 		SegmentSize:   map[string]interface{}{"type": "integer", "description": "Number of users in the target segment"},
 		ExpectedImpact: map[string]interface{}{
@@ -210,8 +191,14 @@ func recommendationResponseSchema() map[string]interface{} {
 						// that has written its prose can no longer reach it. The array may be
 						// empty -- a recommendation that reports no number names no figure --
 						// so this buys the position without forcing a declaration.
+						//
+						// `priority` left this list with the property. It was
+						// the one field all three measured models filled in
+						// correctly, which is why it was named here; the value
+						// is derived now, so requiring it would require an
+						// answer nothing reads.
 						"related_insight_ids", "figures", "description", "actions",
-						"expected_impact", "title", "priority",
+						"expected_impact", "title",
 					},
 				},
 			},

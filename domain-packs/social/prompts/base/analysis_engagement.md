@@ -33,9 +33,7 @@ Respond with ONLY valid JSON (no markdown, no explanations):
     {
       "name": "Creator Engagement Decline — Power Creators Posting 25% Less",
       "description": "Users who created 10+ posts/month (power creators, 2,100 users, 3% of MAU) have reduced posting frequency by 25% over the last 30 days — from 14.2 to 10.6 posts/month. This segment drives 38% of all platform content. Their followers' session duration has also dropped 12%, suggesting a content supply impact. VIP creators (paid subscribers) show a smaller decline (15%) compared to free power creators (30%).",
-      "severity": "critical",
       "affected_count": 2100,
-      "risk_score": 0.7,
       "metrics": {
         "primary_metric": "posts_per_month",
         "current_value": 10.6,
@@ -71,19 +69,24 @@ Respond with ONLY valid JSON (no markdown, no explanations):
   - `spike`: Sudden change >20% in a single period (investigate cause)
   - `seasonal`: Recurring pattern tied to day-of-week or time-of-year
 
-## Severity Calibration
+## What the platform measures this by
 
-- **critical**: DAU/MAU declining >5%, OR creator engagement dropping significantly (creators are the lifeblood of social platforms), OR premium user engagement declining
-- **high**: Significant engagement shift (>10%) in an important segment, OR a positive trend worth amplifying
-- **medium**: Moderate change (5-10%), or affects a smaller segment
-- **low**: Minor fluctuation, or only affects a niche user group
+Severity is derived from the figures you declare, not from a word you choose.
+The platform re-checks each figure's arithmetic against the rows and bands the
+largest one that holds: a currency amount in this warehouse's own currency, or
+a percentage. So a finding that states its magnitude as a declared figure is
+ranked on that magnitude, and one that states no figure falls back to an area
+baseline and is marked *not quantified*.
+
+Declare the number that makes the finding matter. Do not describe how severe
+it is.
 
 Report both positive AND negative trends — positive trends indicate what's working and should be amplified.
 
 ## Quality Standards
 
 - **Significant changes only**: At least 5% change OR affecting 50+ users
-- **Creators are critical**: Any negative trend among content creators should be flagged with higher severity than a similar trend among consumers
+- **Creators matter more than their numbers suggest**: a negative trend among content creators reaches every follower they have, so state the follower reach as a declared figure — that is what the platform can rank it on
 - **Premium users matter**: Paying users (VIP, subscribers) should be analyzed separately — their engagement directly impacts revenue
 - **CRITICAL — Validate user counts**: affected_count must be COUNT(DISTINCT user_id)
 - **Include trend duration**: How long has this trend been active?

@@ -61,7 +61,19 @@ type Event struct {
 	Duration    time.Duration `json:"duration"`
 	Timestamp   time.Time     `json:"timestamp"`
 
-	// Populated on discovery_completed
+	// Populated on discovery_completed.
+	//
+	// The three counters below count PRIORITY TIERS, not severity words. They
+	// keep their wire names because a channel's own templates are built
+	// against them, and what changed is what they mean: `critical` is the top
+	// tier (high severity, trusted evidence), `high` is the tier below it
+	// (medium severity, trusted), and `medium` carries `investigate` -- a
+	// severe finding nothing could check, which the old severity vocabulary
+	// had no way to express at all.
+	//
+	// Counting by tier rather than by the word is not cosmetic. No insight
+	// writes `critical` as a severity any more, so a counter reading the word
+	// would have reported zero of them on every run.
 	InsightsTotal    int            `json:"insights_total,omitempty"`
 	InsightsCritical int            `json:"insights_critical,omitempty"`
 	InsightsHigh     int            `json:"insights_high,omitempty"`
@@ -77,9 +89,17 @@ type Event struct {
 
 // InsightBrief is a summary of a single insight for notifications.
 type InsightBrief struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	Severity      string `json:"severity"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Severity is the derived band -- high, medium or low -- or the model's
+	// own word on an insight written before it was derived, `critical`
+	// included.
+	Severity string `json:"severity"`
+	// PriorityTier is what the briefs are ordered by, and what a channel
+	// should lead with: it folds the severity band together with whether the
+	// claim held up against warehouse rows. Empty on a legacy insight, which
+	// is ordered by its severity word instead.
+	PriorityTier  string `json:"priority_tier,omitempty"`
 	AnalysisArea  string `json:"analysis_area"`
 	AffectedCount int    `json:"affected_count"`
 }

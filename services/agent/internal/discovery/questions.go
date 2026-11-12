@@ -75,6 +75,18 @@ type uncertaintyItem struct {
 	Label      string
 	Reason     string
 	Detail     string
+	// Stakes is what the finding would be worth if it were true, in the
+	// engine's own words -- the severity band and the figure that drove it.
+	//
+	// Carried because the digest is a list of things the run was unsure
+	// about, and a model asked to pick the questions worth putting to an
+	// analyst has to know which of them MATTER. Without it an unverifiable
+	// ₺2.4M revenue leak and an unverifiable rounding discrepancy read
+	// identically.
+	//
+	// The engine's stored sentence, not a second phrasing: the dashboard,
+	// an API client and this digest all quote one wording.
+	Stakes string
 }
 
 // RunPhaseQuestions is the best-effort clarifying-questions hop. It is invoked
@@ -284,6 +296,7 @@ func buildUncertaintyDigest(insights []models.Insight, recs []models.Recommendat
 				Label:      in.Name,
 				Reason:     reason,
 				Detail:     truncate(in.Description, 240),
+				Stakes:     stakesOf(in.Scoring),
 			})
 		}
 	}
@@ -296,6 +309,7 @@ func buildUncertaintyDigest(insights []models.Insight, recs []models.Recommendat
 				Label:      rec.Title,
 				Reason:     reason,
 				Detail:     truncate(rec.Description, 240),
+				Stakes:     stakesOf(rec.Scoring),
 			})
 		}
 	}
@@ -377,6 +391,21 @@ func uncertaintyReason(v *models.InsightValidation, scoring *models.Scoring, con
 	return "", false
 }
 
+// stakesOf is the engine's own sentence about what a finding is worth, or ""
+// on a document with no derived severity.
+//
+// Empty rather than a stand-in, because the alternatives are both wrong: a
+// phrase composed here would be a second wording of something the engine
+// already wrote, and a guess from the stored severity word would be the
+// model's own assessment of its own finding -- which is the number this whole
+// derivation exists to stop reporting.
+func stakesOf(scoring *models.Scoring) string {
+	if scoring == nil || scoring.SeverityBand == "" {
+		return ""
+	}
+	return scoring.SeverityReason
+}
+
 func renderDigest(items []uncertaintyItem) string {
 	if len(items) == 0 {
 		return "(none)"
@@ -384,6 +413,9 @@ func renderDigest(items []uncertaintyItem) string {
 	var b strings.Builder
 	for _, it := range items {
 		fmt.Fprintf(&b, "- [%s %s] %q — %s.", it.TargetType, it.TargetID, it.Label, it.Reason)
+		if it.Stakes != "" {
+			fmt.Fprintf(&b, " Stakes: %s", it.Stakes)
+		}
 		if it.Detail != "" {
 			fmt.Fprintf(&b, " Detail: %s", it.Detail)
 		}

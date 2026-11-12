@@ -110,11 +110,7 @@ func insightResponseSchema() map[string]interface{} {
 	insightProps := insightItemProperties{
 		Name:        nonEmptyString("Short, specific name for the discovered pattern or finding. "+figureReferenceRule, maxSchemaTitleRunes),
 		Description: unboundedProse("Explanation of the finding. " + figureReferenceRule),
-		// nonEmptyString rather than label because this field is required below, and a
-		// grammar satisfies a required string with "".
-		Severity:      nonEmptyString(`One of "critical", "high", "medium", "low"`, maxSchemaLabelRunes),
 		AffectedCount: map[string]interface{}{"type": "integer", "description": "Number of users/entities affected"},
-		RiskScore:     map[string]interface{}{"type": "number", "description": "Risk score from 0.0 to 1.0"},
 		TargetSegment: boundedString("The user segment this insight applies to", maxSchemaSegmentRunes),
 		Metrics: map[string]interface{}{
 			"type":        "object",
@@ -273,10 +269,16 @@ func insightResponseSchema() map[string]interface{} {
 					// quantifier_claims stays optional because it quotes prose that does
 					// not exist yet when the evidence is written.
 					//
+					// `severity` left this list with the property itself. It was
+					// here because every insight has one and a model that
+					// omitted it produced an unsortable finding -- which is
+					// still true, and is now satisfied by deriving the band
+					// rather than by requiring the model to guess it.
+					//
 					// Pinned by TestTheInsightSchemaRequiresWhatAnInsightCannotLack and
 					// TestSchemaPropertyOrderIsDeclaredNotAlphabetical.
 					"required": []interface{}{
-						"source_steps", "figures", "description", "indicators", "name", "severity",
+						"source_steps", "figures", "description", "indicators", "name",
 					},
 				},
 			},
@@ -321,10 +323,8 @@ func insightRepairResponseFormat() *gollm.ResponseFormat {
 		Indicators:       indicatorsWithoutReference(keep("indicators")),
 		Name:             proseWithoutReference(keep("name")),
 		QuantifierClaims: keep("quantifier_claims"),
-		Severity:         keep("severity"),
 		TargetSegment:    keep("target_segment"),
 		AffectedCount:    keep("affected_count"),
-		RiskScore:        keep("risk_score"),
 		Metrics:          keep("metrics"),
 	}
 	return &gollm.ResponseFormat{
@@ -340,8 +340,10 @@ func insightRepairResponseFormat() *gollm.ResponseFormat {
 						"properties": props,
 						// `figures` is gone, so nothing has to precede the prose and the
 						// required set is the measured one minus the two that were there
-						// only to hold the evidence in front of it.
-						"required": []interface{}{"source_steps", "description", "name", "severity"},
+						// only to hold the evidence in front of it -- and minus
+						// `severity`, which the repair pass has no more business
+						// rewriting than the analysis pass has authoring.
+						"required": []interface{}{"source_steps", "description", "name"},
 					},
 				},
 			},

@@ -280,7 +280,16 @@ func anyQuantifierRefuted(verdicts []gomodels.QuantifierVerdict) bool {
 	return false
 }
 
-// round snaps a score to the grid every number in this engine sits on.
+// round snaps a score to the grid every band-forming number in this engine
+// sits on.
 func round(v float64) float64 {
-	return math.Round(v*scoreSteps) / scoreSteps
+	return roundSteps(v, scoreSteps)
+}
+
+// roundSteps snaps to an arbitrary reciprocal grid. Dividing by an exact
+// integer rather than multiplying by a fraction, for the reason scoreSteps is
+// expressed as a reciprocal: 0.01 has no exact binary representation, so
+// multiplying by it reintroduces the error the rounding just removed.
+func roundSteps(v float64, steps float64) float64 {
+	return math.Round(v*steps) / steps
 }

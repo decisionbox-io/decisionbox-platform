@@ -18,7 +18,7 @@ import { SchemaIndexPanel } from '@/components/SchemaIndexPanel';
 import { RunErrorIndicator } from '@/components/common/RunErrorIndicator';
 import { UpcomingInvestigation } from '@/components/projects/UpcomingInvestigation';
 import {
-  api, ApiError, DebugLogEntry, DiscoveryResult, DiscoveryRunStatus, Project, RunStep, SchemaIndexStatus,
+  api, ApiError, DebugLogEntry, DiscoveryResult, DiscoveryRunStatus, Insight, Project, RunStep, SchemaIndexStatus,
   PROJECT_STATE_READY, resolvePrimaryDatasourceId,
 } from '@/lib/api';
 
@@ -444,8 +444,15 @@ export default function ProjectPage() {
   const totalRuns = discoveries.length;
   const totalInsights = discoveries.reduce((sum, d) => sum + (d.summary?.total_insights || 0), 0);
   const totalRecs = discoveries.reduce((sum, d) => sum + (d.summary?.total_recommendations || 0), 0);
+  // The findings worth acting on now, across every run of the project.
+  //
+  // By the priority tier, which folds the severity band together with whether
+  // the claim held up -- and falling back to the severity word on a run from
+  // before the derivation, `critical` included. Reading only the word would
+  // report zero on every current run; reading only the tier would report zero
+  // on every older one.
   const criticalCount = discoveries.reduce((sum, d) =>
-    sum + (d.insights?.filter(i => i.severity === 'critical' || i.severity === 'high').length || 0), 0);
+    sum + (d.insights?.filter(isActNow).length || 0), 0);
   const latestAgo = discoveries.length > 0
     ? formatTimeAgo(new Date(discoveries[0].discovery_date))
     : null;
@@ -545,7 +552,7 @@ export default function ProjectPage() {
           marginBottom: 24,
         }}>
           <StatCard label="Total Runs" value={totalRuns} subtitle={latestAgo ? `Latest: ${latestAgo}` : undefined} />
-          <StatCard label="Total Insights" value={totalInsights} subtitle={criticalCount > 0 ? `${criticalCount} critical or high` : undefined} />
+          <StatCard label="Total Insights" value={totalInsights} subtitle={criticalCount > 0 ? `${criticalCount} to act on now` : undefined} />
           <StatCard label="Recommendations" value={totalRecs} valueColor="var(--db-green-text)" />
           <StatCard label="Queries Executed" value={discoveries.reduce((sum, d) => sum + (d.summary?.queries_executed || 0), 0)} />
         </div>
@@ -780,12 +787,32 @@ function SectionHeader({ title, count }: { title: string; count?: number }) {
   );
 }
 
+// isActNow is the top priority tier, with a legacy `critical` severity still
+// counted.
+//
+// The two vocabularies have to meet here, because this page spans a project's
+// whole history: `critical` was the top severity word before severity was
+// derived and is the top priority tier now, so a count that read only one of
+// them would be silently wrong on half the runs.
+function isActNow(insight: Insight): boolean {
+  if (insight.evidence_scoring?.priority_tier) {
+    return insight.evidence_scoring.priority_tier === 'critical';
+  }
+  return insight.severity === 'critical' || insight.severity === 'high';
+}
+
 /* ========== Discovery Run Card ========== */
 
 function DiscoveryRunCard({ discovery: d, projectId }: { discovery: DiscoveryResult; projectId: string }) {
   const insights = d.insights || [];
-  const criticalCount = insights.filter(i => i.severity === 'critical').length;
-  const highCount = insights.filter(i => i.severity === 'high').length;
+  const criticalCount = insights.filter(isActNow).length;
+  // The investigate TIER, not severity `high`. A confirmed high-severity
+  // finding is in the critical tier, so counting the severity word here put
+  // the same finding in both counters -- one run with one such finding read
+  // "1 to act on now" and "1 to investigate".
+  const highCount = insights.filter(
+    i => i.evidence_scoring?.priority_tier === 'investigate',
+  ).length;
   const topInsights = insights.slice(0, 3);
 
   return (
@@ -830,8 +857,8 @@ function DiscoveryRunCard({ discovery: d, projectId }: { discovery: DiscoveryRes
         {/* Row 2: Stats */}
         <div style={{ display: 'flex', gap: 24, fontSize: 12, color: 'var(--db-text-secondary)' }}>
           <StatDot color="var(--db-blue-text)" text={`${d.summary?.total_insights || 0} insights`} />
-          {criticalCount > 0 && <StatDot color="var(--db-red-text)" text={`${criticalCount} critical`} />}
-          {highCount > 0 && <StatDot color="var(--db-severity-high-text)" text={`${highCount} high`} />}
+          {criticalCount > 0 && <StatDot color="var(--db-red-text)" text={`${criticalCount} to act on now`} />}
+          {highCount > 0 && <StatDot color="var(--db-severity-high-text)" text={`${highCount} to investigate`} />}
           <StatDot color="var(--db-purple-text)" text={`${d.summary?.total_recommendations || 0} recommendations`} />
         </div>
 
@@ -1798,6 +1825,8 @@ function StatDot({ color, text }: { color: string; text: string }) {
 }
 
 function SeverityDot({ severity }: { severity: string }) {
+  // `critical` is kept for documents written before severity was derived; the
+  // three bands below are what a current run writes.
   const colors: Record<string, string> = {
     critical: 'var(--db-severity-critical-text)',
     high: 'var(--db-severity-high-text)',

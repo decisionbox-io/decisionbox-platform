@@ -69,11 +69,14 @@ func TestParseRecommendations_SkipsMalformedItem(t *testing.T) {
 }
 
 func TestParseRecommendations_StringScalarsKept(t *testing.T) {
-	// Real-world shapes: priority as a descriptive string and a stringified
-	// segment_size must be coerced and kept, not dropped (issue #342).
+	// Real-world shapes: a stringified segment_size must be coerced and kept,
+	// not dropped (issue #342). The derived fields a model still volunteers --
+	// priority, confidence -- must be ignored without costing the
+	// recommendation, which is the same protection the coercion gave and a
+	// stronger statement besides.
 	const in = `{"recommendations":[
 		{"title":"A","priority":"high","segment_size":"27,889","expected_impact":"boosts conversion"},
-		{"title":"B","priority":"P1","confidence":"0.9"}
+		{"title":"B","priority":"P1","confidence":"0.9","severity":"critical"}
 	]}`
 	recs, dropped, err := parseRecommendations(in)
 	if err != nil {
@@ -82,11 +85,14 @@ func TestParseRecommendations_StringScalarsKept(t *testing.T) {
 	if len(recs) != 2 || dropped != 0 {
 		t.Fatalf("got %d recs, %d dropped; want 2, 0", len(recs), dropped)
 	}
-	if recs[0].Priority != 2 || recs[0].SegmentSize != 27889 {
-		t.Errorf("rec A coercion wrong: priority=%d segment=%d", recs[0].Priority, recs[0].SegmentSize)
+	if recs[0].SegmentSize != 27889 {
+		t.Errorf("rec A coercion wrong: segment=%d", recs[0].SegmentSize)
 	}
-	if recs[1].Priority != 1 {
-		t.Errorf("rec B priority = %d, want 1", recs[1].Priority)
+	for i, rec := range recs {
+		if rec.Priority != 0 || rec.Confidence != 0 || rec.Severity != "" {
+			t.Errorf("rec %d kept a model-authored derived field: priority=%d confidence=%v severity=%q",
+				i, rec.Priority, rec.Confidence, rec.Severity)
+		}
 	}
 }
 

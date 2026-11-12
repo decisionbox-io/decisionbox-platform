@@ -43,7 +43,7 @@ func (s *MongoEmbedIndexStore) InsertRecommendations(ctx context.Context, recs [
 	for i, rec := range recs {
 		docs[i] = rec
 	}
-	_, err := s.db.Collection("recommendations").InsertMany(ctx, docs)
+	_, err := s.db.Collection(recommendationsCollection).InsertMany(ctx, docs)
 	if err != nil {
 		return fmt.Errorf("insert recommendations: %w", err)
 	}
@@ -59,7 +59,7 @@ func (s *MongoEmbedIndexStore) PointIDsByDiscovery(ctx context.Context, discover
 	if err != nil {
 		return nil, nil, err
 	}
-	recIDs, err := s.pointIDsByDiscovery(ctx, "recommendations", discoveryID)
+	recIDs, err := s.pointIDsByDiscovery(ctx, recommendationsCollection, discoveryID)
 	if err != nil {
 		// Return what was listed: deleting the vectors we DID find is
 		// strictly better than deleting none, and nothing has been removed
@@ -75,7 +75,7 @@ func (s *MongoEmbedIndexStore) DeleteByDiscovery(ctx context.Context, discoveryI
 		return fmt.Errorf("delete standalone docs: discovery_id is required")
 	}
 	filter := bson.M{"discovery_id": discoveryID}
-	for _, collection := range []string{"insights", "recommendations"} {
+	for _, collection := range []string{insightsCollection, recommendationsCollection} {
 		if _, err := s.db.Collection(collection).DeleteMany(ctx, filter); err != nil {
 			return fmt.Errorf("delete %s for discovery %s: %w", collection, discoveryID, err)
 		}
@@ -125,6 +125,14 @@ func (s *MongoEmbedIndexStore) UpdateEmbedding(ctx context.Context, collection, 
 	return nil
 }
 
+// The two standalone collections, named once. The verdict write has to branch
+// on which it is, and a literal at that branch is a literal that can disagree
+// with the one at the insert.
+const (
+	insightsCollection        = "insights"
+	recommendationsCollection = "recommendations"
+)
+
 // UpdateDocVerdict implements EmbedIndexStore.
 //
 // UpdateByID rather than a filter, because the standalone `_id` IS the
@@ -135,12 +143,19 @@ func (s *MongoEmbedIndexStore) UpdateEmbedding(ctx context.Context, collection, 
 // verdict on the discovery document is the authoritative copy and has
 // already landed.
 func (s *MongoEmbedIndexStore) UpdateDocVerdict(ctx context.Context, collection, id string, u database.DocVerdictUpdate) error {
-	_, err := s.db.Collection(collection).UpdateByID(ctx, id, bson.M{"$set": bson.M{
+	set := bson.M{
 		"validation": u.Validation,
 		"scoring":    u.Scoring,
 		"confidence": u.Confidence,
-	}})
-	if err != nil {
+	}
+	// A recommendation's priority tier moves whenever its verdict does, so
+	// the integer projected from it has to travel with the sub-document.
+	// Only for that collection, and only when a tier was actually derived --
+	// see DocVerdictUpdate.PriorityDerived.
+	if collection == recommendationsCollection && u.PriorityDerived {
+		set["priority"] = u.Priority
+	}
+	if _, err := s.db.Collection(collection).UpdateByID(ctx, id, bson.M{"$set": set}); err != nil {
 		return fmt.Errorf("update verdict for %s/%s: %w", collection, id, err)
 	}
 	return nil

@@ -13,6 +13,7 @@ import (
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/scoring"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
@@ -239,7 +240,7 @@ func TestInteg_AScoredAreaSurvivesTheCheckpointRoundTrip(t *testing.T) {
 	step.Insights[0].Validation = &models.InsightValidation{Combined: valmodels.StatusSupported}
 	step.Insights[0].FigureVerdicts = []commonmodels.FigureVerdict{{ID: "f1", Status: commonmodels.FigureFails}}
 	step.Insights[1].Validation = &models.InsightValidation{Combined: valmodels.StatusUnverifiable}
-	scoreInsights(step.Insights, testScoringCfg())
+	scoreInsights(step.Insights, scoringContext{cfg: testScoringCfg()})
 
 	want := make([]commonmodels.Scoring, 0, len(step.Insights))
 	for i := range step.Insights {
@@ -298,4 +299,166 @@ func TestInteg_AScoredAreaSurvivesTheCheckpointRoundTrip(t *testing.T) {
 			t.Errorf("restored insight %d confidence = %v, want %v", i, restored[i].Confidence, want[i].ConfidenceScore)
 		}
 	}
+}
+
+// TestARevalidationPersistsThePriorityItMoved is the bug a review found, and
+// it was invisible to every mock: the re-score moved a recommendation's
+// priority tier IN MEMORY and the write carried only the verdict, the
+// sub-document and the confidence -- so the stored row ended up claiming a
+// `scoring.priority_tier` of critical beside a `priority` of 2.
+//
+// That is precisely the contradiction DocVerdictUpdate's three original
+// fields travel together to prevent, reappearing one field over. A document
+// whose own mirrored field disagrees with its sub-document is worse than a
+// stale one, because nothing about it looks wrong.
+func TestARevalidationPersistsThePriorityItMoved(t *testing.T) {
+	db, done := scoringPersistMongo(t)
+	defer done()
+	ctx := context.Background()
+	store := NewMongoEmbedIndexStore(db)
+
+	t.Run("the tier moves, so the integer must too", func(t *testing.T) {
+		// Scored while nothing could check it: high severity inherited,
+		// unverifiable verdict, so the investigate tier and priority 2.
+		before := scoring.ScoreRecommendation(
+			scoring.Input{Verdict: valmodels.StatusUnverifiable, Config: testScoringCfg()},
+			[]scoring.InheritedSeverity{{
+				SeverityBand: commonmodels.SeverityBandHigh, SeverityScore: 1,
+				MagnitudeScore: 1, AreaWeight: 1,
+			}})
+		if before.PriorityTier != commonmodels.PriorityTierInvestigate {
+			t.Fatalf("fixture tier = %q, want investigate", before.PriorityTier)
+		}
+		if err := store.InsertRecommendations(ctx, []*commonmodels.StandaloneRecommendation{{
+			ID: "rec-1", ProjectID: "p1", Title: "t",
+			Severity: commonmodels.SeverityBandHigh,
+			Priority: scoring.RecommendationPriority(before.PriorityTier),
+			Scoring:  &before,
+		}}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+
+		// An operator re-runs validation and it confirms. The tier goes
+		// investigate -> critical, so the projected integer goes 2 -> 1.
+		target := models.Recommendation{
+			ID: "rec-1", Title: "t",
+			Severity:   commonmodels.SeverityBandHigh,
+			Priority:   scoring.RecommendationPriority(before.PriorityTier),
+			Scoring:    &before,
+			Validation: &models.InsightValidation{Combined: valmodels.StatusConfirmed},
+		}
+		rescoreTargetRecommendation(&target, testScoringCfg())
+		if target.Scoring.PriorityTier != commonmodels.PriorityTierCritical {
+			t.Fatalf("re-scored tier = %q, want critical", target.Scoring.PriorityTier)
+		}
+
+		if err := store.UpdateDocVerdict(ctx, recommendationsCollection, "rec-1", database.DocVerdictUpdate{
+			Validation:      target.Validation,
+			Scoring:         target.Scoring,
+			Confidence:      target.Confidence,
+			Priority:        target.Priority,
+			PriorityDerived: true,
+		}); err != nil {
+			t.Fatalf("update: %v", err)
+		}
+
+		var got commonmodels.StandaloneRecommendation
+		if err := db.Collection(recommendationsCollection).
+			FindOne(ctx, bson.M{"_id": "rec-1"}).Decode(&got); err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		if got.Scoring == nil || got.Scoring.PriorityTier != commonmodels.PriorityTierCritical {
+			t.Fatalf("stored tier = %+v, want critical", got.Scoring)
+		}
+		if got.Priority != target.Priority {
+			t.Errorf("stored priority = %d but the stored tier is %q (in memory it was %d); "+
+				"the row disagrees with its own sub-document",
+				got.Priority, got.Scoring.PriorityTier, target.Priority)
+		}
+		// The inherited severity is frozen on this path, so the stored word
+		// is still the one the run wrote.
+		if got.Severity != commonmodels.SeverityBandHigh {
+			t.Errorf("stored severity = %q, want the inherited high", got.Severity)
+		}
+	})
+
+	t.Run("a legacy row's own ranking is left alone", func(t *testing.T) {
+		// No sub-document, and a priority the analysis model wrote. Nothing
+		// here derives a tier, so there is nothing to project -- and zeroing
+		// the integer would destroy the only value the field has.
+		if err := store.InsertRecommendations(ctx, []*commonmodels.StandaloneRecommendation{{
+			ID: "rec-legacy", ProjectID: "p1", Title: "t", Priority: 2,
+		}}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		target := models.Recommendation{
+			ID: "rec-legacy", Title: "t", Priority: 2,
+			Validation: &models.InsightValidation{Combined: valmodels.StatusSupported},
+		}
+		rescoreTargetRecommendation(&target, testScoringCfg())
+
+		if err := store.UpdateDocVerdict(ctx, recommendationsCollection, "rec-legacy", database.DocVerdictUpdate{
+			Validation:      target.Validation,
+			Scoring:         target.Scoring,
+			Confidence:      target.Confidence,
+			Priority:        target.Priority,
+			PriorityDerived: target.Scoring != nil && target.Scoring.PriorityTier != "",
+		}); err != nil {
+			t.Fatalf("update: %v", err)
+		}
+
+		var got commonmodels.StandaloneRecommendation
+		if err := db.Collection(recommendationsCollection).
+			FindOne(ctx, bson.M{"_id": "rec-legacy"}).Decode(&got); err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		if got.Priority != 2 {
+			t.Errorf("stored priority = %d, want the model's own 2 kept", got.Priority)
+		}
+		if got.Scoring == nil || got.Scoring.ConfidenceBand == "" {
+			t.Error("the confidence axis was not persisted")
+		}
+	})
+
+	t.Run("an insight's severity is not rewritten", func(t *testing.T) {
+		// A legacy row: the model's own word and number. The re-validation
+		// derives its confidence and leaves both alone, which is what keeps
+		// the indexed vector payload in agreement with the stored row.
+		if err := store.InsertInsights(ctx, []*commonmodels.StandaloneInsight{{
+			ID: "ins-1", ProjectID: "p1", Name: "n", AnalysisArea: "revenue",
+			Severity: "critical", RiskScore: 0.9,
+		}}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		target := models.Insight{
+			ID: "ins-1", Name: "n", AnalysisArea: "revenue",
+			Severity: "critical", RiskScore: 0.9,
+			Validation: &models.InsightValidation{Combined: valmodels.StatusSupported},
+		}
+		rescoreTargetInsight(&target, testScoringCfg())
+
+		if err := store.UpdateDocVerdict(ctx, insightsCollection, "ins-1", database.DocVerdictUpdate{
+			Validation: target.Validation,
+			Scoring:    target.Scoring,
+			Confidence: target.Confidence,
+		}); err != nil {
+			t.Fatalf("update: %v", err)
+		}
+
+		var got commonmodels.StandaloneInsight
+		if err := db.Collection(insightsCollection).
+			FindOne(ctx, bson.M{"_id": "ins-1"}).Decode(&got); err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		if got.Severity != "critical" || got.RiskScore != 0.9 {
+			t.Errorf("stored severity/risk moved to %q/%v; the indexed copy would no longer agree",
+				got.Severity, got.RiskScore)
+		}
+		if got.Scoring == nil || got.Scoring.ConfidenceBand == "" {
+			t.Error("the confidence axis was not persisted")
+		}
+		if got.Scoring.SeverityBand != "" {
+			t.Errorf("a severity band was invented for a legacy row: %q", got.Scoring.SeverityBand)
+		}
+	})
 }

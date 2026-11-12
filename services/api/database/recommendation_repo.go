@@ -51,12 +51,16 @@ func (r *RecommendationRepository) GetByID(ctx context.Context, id string) (*com
 	return &rec, nil
 }
 
-func (r *RecommendationRepository) ListByProject(ctx context.Context, projectID string, limit, offset int) ([]*commonmodels.StandaloneRecommendation, error) {
+func (r *RecommendationRepository) ListByProject(ctx context.Context, projectID string, limit, offset int, sort string) ([]*commonmodels.StandaloneRecommendation, error) {
 	if limit <= 0 {
 		limit = 50
 	}
+	order, err := ListSort(sort)
+	if err != nil {
+		return nil, err
+	}
 	opts := options.Find().
-		SetSort(bson.D{{Key: "created_at", Value: -1}}).
+		SetSort(order).
 		SetLimit(int64(limit)).
 		SetSkip(int64(offset))
 

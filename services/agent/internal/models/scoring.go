@@ -13,6 +13,7 @@ type (
 	Scoring        = gomodels.Scoring
 	ConfidenceDock = gomodels.ConfidenceDock
 	SeverityDriver = gomodels.SeverityDriver
+	SeverityFigure = gomodels.SeverityFigure
 	WeightSource   = gomodels.WeightSource
 )
 
@@ -24,4 +25,23 @@ const (
 	ConfidenceBandLow          = gomodels.ConfidenceBandLow
 	ConfidenceBandNotConfirmed = gomodels.ConfidenceBandNotConfirmed
 	ConfidenceBandUnverifiable = gomodels.ConfidenceBandUnverifiable
+)
+
+// The severity band and priority tier vocabularies, re-exported for the same
+// reason. The agent's own code branches on these -- the run-completed
+// notification counts by tier and the top-insight briefs sort by it -- so a
+// literal at those call sites is a literal that can drift from the engine.
+const (
+	SeverityBandHigh   = gomodels.SeverityBandHigh
+	SeverityBandMedium = gomodels.SeverityBandMedium
+	SeverityBandLow    = gomodels.SeverityBandLow
+
+	SeverityDriverAmount   = gomodels.SeverityDriverAmount
+	SeverityDriverShare    = gomodels.SeverityDriverShare
+	SeverityDriverBaseline = gomodels.SeverityDriverBaseline
+
+	PriorityTierCritical    = gomodels.PriorityTierCritical
+	PriorityTierInvestigate = gomodels.PriorityTierInvestigate
+	PriorityTierHigh        = gomodels.PriorityTierHigh
+	PriorityTierLow         = gomodels.PriorityTierLow
 )

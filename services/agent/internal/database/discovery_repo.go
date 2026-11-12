@@ -71,41 +71,98 @@ func (r *DiscoveryRepository) GetByID(ctx context.Context, idHex string) (*model
 }
 
 // DocVerdictUpdate is what one on-demand re-validation writes back to a
-// document: the new verdict, and the confidence derived from it.
+// document: the new verdict, and the grade re-derived from it.
 //
-// The three travel together and in one write, because confidence is now a
-// function of the verdict. Writing the verdict alone would leave the document
-// claiming a confidence derived from the verdict it no longer has -- not
-// merely stale but internally contradictory, which is worse than either
-// staleness alone and is what a reader would be shown.
+// They travel together and in one write, because confidence is now a function
+// of the verdict. Writing the verdict alone would leave the document claiming
+// a confidence derived from the verdict it no longer has -- not merely stale
+// but internally contradictory, which is worse than either staleness alone and
+// is what a reader would be shown.
 //
-// Severity and risk_score are deliberately absent: they are still the analysis
-// model's own words, and nothing on this path is entitled to rewrite them.
+// Severity and risk_score are absent from this struct, and the sub-document
+// below carries them through unchanged. That is the point rather than an
+// omission: severity is magnitude x weight and a validation run changes
+// neither, so the scorer re-derives the confidence axis and the priority
+// rollup over it and copies the severity half from the stored document. A
+// stored severity is an immutable fact about the run that produced it.
 type DocVerdictUpdate struct {
 	// Validation is the new verdict block. Typed as any for the reason it
 	// always was: the agent's InsightValidation is an alias of the shared
 	// type and the caller has it in hand already.
 	Validation interface{}
 
-	// Scoring is the derived grade. Nil writes a null, which is the correct
-	// representation of "this document is not scored" -- but no caller should
-	// pass one, because a re-validated document always gets a fresh score.
+	// Scoring is the derived grade, whole: the re-derived confidence axis and
+	// priority rollup, and the severity half carried over from the stored
+	// document. The sub-document is replaced rather than patched key by key,
+	// so the carried-over half has to be present on the value passed here --
+	// which is why the scorer merges rather than this layer.
+	//
+	// Nil writes a null, which is the correct representation of "this
+	// document is not scored" -- but no caller should pass one, because a
+	// re-validated document always gets a fresh score.
 	Scoring *gomodels.Scoring
 
 	// Confidence is the continuous score, duplicated out of Scoring onto the
 	// document's own field because that key is a live Qdrant payload field
 	// and the sort key on two dashboard pages.
 	Confidence float64
+
+	// Priority is a recommendation's 1-5 projection of
+	// Scoring.PriorityTier, and it is the ONE mirrored field beyond the three
+	// above that this path can move.
+	//
+	// It moves because the tier is the matrix over this recommendation's
+	// verdict and the severity it inherited, and the verdict is what just
+	// changed: a finding that goes from unverifiable to confirmed goes from
+	// the investigate tier to the critical one, so the integer goes 2 -> 1.
+	// Writing the sub-document without it would leave the row claiming a tier
+	// of critical beside a priority of 2 -- the exact contradiction the three
+	// fields above travel together to prevent, one field over.
+	//
+	// There is deliberately no Severity or RiskScore here. Severity is frozen
+	// on this path for both document kinds, so the stored values are already
+	// right, and writing them anyway would be this layer claiming authorship
+	// of a field it did not derive.
+	Priority int
+
+	// PriorityDerived says the re-score actually produced a tier, which is
+	// what makes Priority safe to write.
+	//
+	// A legacy recommendation has no severity half to roll up, so there is no
+	// tier and the integer it carries is the analysis model's own ranking.
+	// Zeroing that would destroy the only value the field has -- and a plain
+	// `Priority != 0` test cannot tell "no tier" from a tier that legitimately
+	// projects to zero, which is why this is a flag rather than an inference.
+	PriorityDerived bool
 }
 
-// fields renders the update as the $set keys for one array element.
-func (u DocVerdictUpdate) fields(prefix string) bson.M {
+// insightFields and recommendationFields render the update as the $set keys
+// for one embedded array element.
+//
+// Two renderers rather than one, because only a recommendation has a
+// `priority` to mirror. One renderer writing it would add the key to every
+// insight -- a field models.Insight does not declare, which BSON would store
+// anyway and no decoder would ever read back.
+func (u DocVerdictUpdate) insightFields(prefix string) bson.M {
 	return bson.M{
 		prefix + ".validation": u.Validation,
 		prefix + ".scoring":    u.Scoring,
 		prefix + ".confidence": u.Confidence,
 		"updated_at":           time.Now(),
 	}
+}
+
+func (u DocVerdictUpdate) recommendationFields(prefix string) bson.M {
+	set := bson.M{
+		prefix + ".validation": u.Validation,
+		prefix + ".scoring":    u.Scoring,
+		prefix + ".confidence": u.Confidence,
+		"updated_at":           time.Now(),
+	}
+	if u.PriorityDerived {
+		set[prefix+".priority"] = u.Priority
+	}
+	return set
 }
 
 // UpdateInsightValidation writes the new verdict and the confidence derived
@@ -128,7 +185,7 @@ func (r *DiscoveryRepository) UpdateInsightValidation(ctx context.Context, disco
 	})
 	res, err := r.collection.UpdateOne(ctx,
 		bson.M{"_id": oid, "insights.id": insightID},
-		bson.M{"$set": u.fields("insights.$[el]")},
+		bson.M{"$set": u.insightFields("insights.$[el]")},
 		opts,
 	)
 	if err != nil {
@@ -155,7 +212,7 @@ func (r *DiscoveryRepository) UpdateRecommendationValidation(ctx context.Context
 	})
 	res, err := r.collection.UpdateOne(ctx,
 		bson.M{"_id": oid, "recommendations.id": recID},
-		bson.M{"$set": u.fields("recommendations.$[el]")},
+		bson.M{"$set": u.recommendationFields("recommendations.$[el]")},
 		opts,
 	)
 	if err != nil {

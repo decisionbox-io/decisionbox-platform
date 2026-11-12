@@ -13,6 +13,7 @@
 package scoring
 
 import (
+	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 )
 
@@ -23,6 +24,29 @@ import (
 // an edit of this one -- a document has to be explainable with the cutoffs that
 // actually scored it, and rewriting version 1's numbers would make every
 // already-stored breakdown a lie.
+//
+// The severity and priority axes were ADDED to version 1 rather than becoming
+// version 2, and the same goes for any further axis or re-calibration this
+// feature needs before it ships: while it is in development, version 1 means
+// "whatever this build calibrates to". It never scored a document outside this
+// work's own integration branch, so no stored breakdown says "version 1" and
+// means "confidence only", and none of its confidence numbers moved when the
+// axes were added. Bumping instead would mint a permanent frozen entry per
+// development step -- each one describing a calibration that exists on no
+// deployment, each one served by the API and rendered around by the dashboard
+// -- and would ship a finished feature as version 4.
+//
+// What keeps that safe is that no reader REQUIRES this table. Everything a
+// breakdown needs is stored on the document; the calibration supplies only the
+// line naming the cutoff a score crossed, and a client that finds no entry for
+// its version -- or an entry without the axis it wanted, which is what an API
+// older than its dashboard serves -- omits that line. A document scored by a
+// superseded calibration is explained by re-running its discovery.
+//
+// This expires at the first deployment whose stored documents we undertake to
+// explain. From then on, a change to any number below is a new entry and this
+// one is immutable. Stated for readers outside this package in
+// docs/reference/data-models.md.
 const EngineVersion = 1
 
 // Dock codes. The code is the stable machine name; the label beside it in the
@@ -64,6 +88,75 @@ type Config struct {
 	Version int
 
 	Confidence ConfidenceConfig
+	Severity   SeverityConfig
+	Priority   PriorityConfig
+}
+
+// SeverityConfig is the severity axis: which figures band a magnitude, where
+// the band boundaries fall, and what multiplies the result.
+type SeverityConfig struct {
+	// AmountBands bands a currency figure. SHIPS EMPTY, deliberately.
+	//
+	// An absolute money cutoff is not an engine constant: "2M is severe" is
+	// true of one business and meaningless for another, and hardcoding a
+	// number here would be hardcoding a business's balance sheet (Rule 2).
+	// Empty means no amount can be banded -- so a document with a checked
+	// amount and a checked share bands on the share, while the amount is
+	// still extracted and still shown as what the finding is about. Configure
+	// these and the amount takes precedence exactly as the ladder describes.
+	AmountBands []MagnitudeBand
+
+	// ShareBands bands a percentage figure. A share needs no per-business
+	// calibration -- 20% of anything is a large fraction of it -- which is
+	// why this one has defaults and AmountBands does not.
+	ShareBands []MagnitudeBand
+
+	// What each band is worth as a magnitude.
+	HighMagnitude   float64
+	MediumMagnitude float64
+	LowMagnitude    float64
+
+	// BaselineMagnitude is the magnitude of a document with no figure this
+	// engine would use. Deliberately mid-range and deliberately NOT the low
+	// magnitude: an unquantified finding is unmeasured, not small, and
+	// banding it low would hide exactly the finding whose figures a model
+	// failed to declare.
+	BaselineMagnitude float64
+
+	// HighAt and MediumAt are the band cutoffs on the severity score,
+	// inclusive: a score at exactly HighAt is high.
+	HighAt   float64
+	MediumAt float64
+
+	// DefaultWeight is the multiplier for an area with no configured weight,
+	// which today is every area.
+	DefaultWeight float64
+}
+
+// MagnitudeBand is one cutoff: a figure whose absolute value is at or above At
+// lands in Band.
+//
+// A slice rather than three floats because the set is configurable in length
+// as well as in value, and because an empty slice is then the natural
+// representation of "this axis is not configured" -- which is what AmountBands
+// ships as. Ordered descending by At; the first match wins, and nothing
+// matches an empty slice.
+type MagnitudeBand struct {
+	At   float64
+	Band string
+}
+
+// PriorityConfig is the rollup: what each tier is worth as a sort key, and how
+// much the two continuous scores may refine it.
+//
+// The coefficients are small on purpose. Their maximum combined contribution
+// has to stay below one tier step, or the sort would put a well-evidenced
+// `high` above a poorly-evidenced `critical` -- which is the opposite of what
+// the tier is for. Pinned by TestThePriorityScoreNeverCrossesATier.
+type PriorityConfig struct {
+	TierWeights     map[string]float64
+	SeverityCoeff   float64
+	ConfidenceCoeff float64
 }
 
 // ConfidenceConfig is the confidence axis: where a verdict starts, what the
@@ -185,6 +278,40 @@ func DefaultConfig() Config {
 					Amount: 0.05,
 				},
 			},
+		},
+		Severity: SeverityConfig{
+			// Empty. See the field comment -- this is the one axis whose
+			// cutoffs are a property of a business rather than of the engine.
+			AmountBands: nil,
+			ShareBands: []MagnitudeBand{
+				{At: 20, Band: gomodels.SeverityBandHigh},
+				{At: 5, Band: gomodels.SeverityBandMedium},
+			},
+			HighMagnitude:     1.00,
+			MediumMagnitude:   0.60,
+			LowMagnitude:      0.25,
+			BaselineMagnitude: 0.60,
+			// 0.66 and 0.33 rather than thirds, so every reachable score
+			// lands exactly on the two-decimal grid the breakdown renders.
+			// With a uniform weight the three magnitudes map one-to-one onto
+			// the three bands; the cutoffs only start doing independent work
+			// once a weight moves a magnitude across one of them.
+			HighAt:        0.66,
+			MediumAt:      0.33,
+			DefaultWeight: 1.0,
+		},
+		Priority: PriorityConfig{
+			TierWeights: map[string]float64{
+				gomodels.PriorityTierCritical:    3,
+				gomodels.PriorityTierInvestigate: 2,
+				gomodels.PriorityTierHigh:        1,
+				gomodels.PriorityTierLow:         0,
+			},
+			// 0.15 + 0.05 = 0.20 at most, against a tier step of 1.0.
+			// Severity leads because it is the axis the tier ordering
+			// follows; confidence breaks the ties severity leaves.
+			SeverityCoeff:   0.15,
+			ConfidenceCoeff: 0.05,
 		},
 	}
 }

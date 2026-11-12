@@ -15,6 +15,9 @@ import {
 import UnreadDot from '@/components/common/UnreadDot';
 import { useReadSet } from '@/lib/readState';
 import { ConfidenceCell } from '@/components/scoring/ConfidenceCell';
+import { SeverityCell } from '@/components/scoring/SeverityCell';
+import { PriorityCell } from '@/components/scoring/PriorityCell';
+import { priorityTierOrder } from '@/components/scoring/priorityMeta';
 import { api, Feedback, Insight, Project, Recommendation, SearchResultItem } from '@/lib/api';
 
 interface RecWithContext extends Recommendation {
@@ -106,14 +109,30 @@ export default function RecommendationsListPage() {
     );
   }
 
-  // Sort
+  // Sort. Priority was already the default here, and it means something now:
+  // the tier comes from the matrix over the severity this recommendation
+  // inherits from the insights it cites and whether its own claims held up.
+  //
+  // By the TIER rather than the `priority` integer, with the integer as the
+  // fallback. The integer is a projection of the tier onto the 1-5 scale the
+  // field has always carried, so the two agree on a scored document -- but a
+  // legacy document's integer is the analysis model's own ranking, and
+  // ordering a mixed list by it would interleave derived tiers with guesses.
+  const byPriority = (a: RecWithContext, b: RecWithContext) => {
+    const byTier = priorityTierOrder(a.evidence_scoring?.priority_tier)
+      - priorityTierOrder(b.evidence_scoring?.priority_tier);
+    if (byTier !== 0) return byTier;
+    const byScore = (b.evidence_scoring?.priority_score ?? -1) - (a.evidence_scoring?.priority_score ?? -1);
+    if (byScore !== 0) return byScore;
+    return (a.priority || 99) - (b.priority || 99);
+  };
   filtered = [...filtered].sort((a, b) => {
     switch (sortBy) {
-      case 'Priority': return a.priority - b.priority;
+      case 'Priority': return byPriority(a, b);
       case 'Confidence': return (b.confidence || 0) - (a.confidence || 0);
       case 'Segment size': return (b.segment_size || 0) - (a.segment_size || 0);
       case 'Date': return new Date(b.discoveryDate).getTime() - new Date(a.discoveryDate).getTime();
-      default: return a.priority - b.priority;
+      default: return byPriority(a, b);
     }
   });
 
@@ -125,12 +144,6 @@ export default function RecommendationsListPage() {
     { label: project?.name || '...', href: `/projects/${id}` },
     { label: 'Recommendations' },
   ];
-
-  const effortColors: Record<string, { bg: string; color: string }> = {
-    low: { bg: 'var(--db-severity-low-bg)', color: 'var(--db-severity-low-text)' },
-    medium: { bg: 'var(--db-amber-bg)', color: 'var(--db-amber-text)' },
-    high: { bg: 'var(--db-severity-high-bg)', color: 'var(--db-severity-high-text)' },
-  };
 
   return (
     <Shell breadcrumb={breadcrumb}>
@@ -185,8 +198,11 @@ export default function RecommendationsListPage() {
       {!semanticResults && filtered.length > 0 ? (<>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {paged.map((rec, idx) => {
-            const effort = rec.priority <= 1 ? 'low' : rec.priority <= 3 ? 'medium' : 'high';
-            const effortStyle = effortColors[effort] || effortColors.medium;
+            // The "effort" pill was never about effort: it read the priority
+            // integer, which the analysis model wrote and which now comes from
+            // the priority matrix. A tier badge says the same thing without
+            // claiming to know how much work the action is, so the pill goes
+            // and the badge takes its place.
             const relatedInsights = (rec.related_insight_ids || [])
               .map(rid => rec.discoveryInsights.find(i => i.id === rid))
               .filter(Boolean) as Insight[];
@@ -225,9 +241,9 @@ export default function RecommendationsListPage() {
 
                 {/* Pills row */}
                 <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                  <Pill bg={effortStyle.bg} color={effortStyle.color}>
-                    {effort.charAt(0).toUpperCase() + effort.slice(1)} effort
-                  </Pill>
+                  <PriorityCell scoring={rec.evidence_scoring} size="xs" />
+                  <SeverityCell scoring={rec.evidence_scoring} severity={rec.severity ?? ''}
+                    size="xs" showDriver={false} />
                   {rec.expected_impact?.estimated_improvement && (
                     rec.expected_impact.estimated_improvement.length > 30
                       ? <span style={{ fontSize: 12, color: 'var(--db-green-text)' }}>

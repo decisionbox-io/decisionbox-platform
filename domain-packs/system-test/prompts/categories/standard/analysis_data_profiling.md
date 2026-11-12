@@ -27,9 +27,7 @@ Respond with ONLY valid JSON (no markdown, no explanations):
     {
       "name": "Descriptive finding (e.g., 'Data Completeness: 3 Columns Are 100% NULL Across All Rows')",
       "description": "Summary of data profiling results — which tables/columns were profiled, key statistics, and any anomalies found.",
-      "severity": "info|low|medium|high|critical",
       "affected_count": 3,
-      "risk_score": 0.1,
       "metrics": {
         "test_status": "pass|warn|fail",
         "component": "data_profiling",
@@ -50,13 +48,17 @@ Respond with ONLY valid JSON (no markdown, no explanations):
 }
 ```
 
-## Severity Mapping
+## What the platform measures this by
 
-- **info**: Data quality is normal — expected NULL rates, reasonable cardinality
-- **low**: Minor quality note — a few columns with high NULL rates (expected for optional fields)
-- **medium**: Potential data issue — columns that should have data but are mostly NULL
-- **high**: Data quality concern — tables with zero rows, or required-looking columns that are 100% NULL
-- **critical**: Not applicable for profiling (profiling is observational, not a pass/fail test)
+Severity is derived from the figures you declare, not from a word you choose.
+The platform re-checks each figure's arithmetic against the rows and bands the
+largest one that holds: a currency amount in this warehouse's own currency, or
+a percentage. So a finding that states its magnitude as a declared figure is
+ranked on that magnitude, and one that states no figure falls back to an area
+baseline and is marked *not quantified*.
+
+Declare the number that makes the finding matter. Do not describe how severe
+it is.
 
 ## Important Rules
 

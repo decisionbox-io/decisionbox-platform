@@ -144,6 +144,7 @@ func (f *fakeFindingRepo) Merge(_ context.Context, _, id string, m database.Find
 		fd := &f.findings[i]
 		fd.Description, fd.KeyMetric, fd.Evidence = m.Description, m.KeyMetric, m.Evidence
 		fd.Severity, fd.AffectedCount = m.Severity, m.AffectedCount
+		fd.MagnitudeScore = m.MagnitudeScore
 		if len(m.StatusChanges) > 0 {
 			fd.Status = m.StatusChanges[len(m.StatusChanges)-1].Status
 		}
@@ -355,18 +356,76 @@ func TestApplyNextTasks_DedupAndSupersedes(t *testing.T) {
 }
 
 func TestFindingMagnitudeChanged(t *testing.T) {
-	prior := &commonmodels.LedgerFinding{Severity: "high", AffectedCount: 100}
-	same := &commonmodels.LedgerFinding{Severity: "high", AffectedCount: 105}
+	prior := &commonmodels.LedgerFinding{Severity: "high", MagnitudeScore: 0.6, AffectedCount: 100}
+
+	same := &commonmodels.LedgerFinding{Severity: "high", MagnitudeScore: 0.6, AffectedCount: 105}
 	if findingMagnitudeChanged(prior, same, 0.2) {
 		t.Error("5% delta should not be a trend at 0.2 threshold")
 	}
-	bigger := &commonmodels.LedgerFinding{Severity: "high", AffectedCount: 200}
+	bigger := &commonmodels.LedgerFinding{Severity: "high", MagnitudeScore: 0.6, AffectedCount: 200}
 	if !findingMagnitudeChanged(prior, bigger, 0.2) {
 		t.Error("100% delta should be a trend")
 	}
-	sevChange := &commonmodels.LedgerFinding{Severity: "critical", AffectedCount: 100}
-	if !findingMagnitudeChanged(prior, sevChange, 0.2) {
-		t.Error("severity change should be a trend")
+	grew := &commonmodels.LedgerFinding{Severity: "high", MagnitudeScore: 1.0, AffectedCount: 100}
+	if !findingMagnitudeChanged(prior, grew, 0.2) {
+		t.Error("a magnitude move should be a trend")
+	}
+}
+
+// TestAVocabularyChangeIsNotATrend is the hazard the severity derivation
+// created, pinned.
+//
+// `critical` was the top severity word and is the top priority tier now, so a
+// finding last sighted by an older build says `critical` where this run says
+// `high`. Comparing the WORDS would report "severity moved from critical to
+// high" on every re-sighted finding of the first run after the change -- a
+// manufactured worsening, attributed to a trend the server claims to have
+// detected. The comparison is on the weight-free magnitude, and a prior
+// carrying none is incomparable rather than changed.
+func TestAVocabularyChangeIsNotATrend(t *testing.T) {
+	legacy := &commonmodels.LedgerFinding{Severity: "critical", AffectedCount: 100}
+	derived := &commonmodels.LedgerFinding{Severity: "high", MagnitudeScore: 1.0, AffectedCount: 100}
+
+	if findingMagnitudeChanged(legacy, derived, 0.2) {
+		t.Error("the severity vocabulary change was reported as a trend")
+	}
+	// The affected-count delta still decides on its own, which is the whole
+	// signal available on a legacy prior.
+	grewToo := &commonmodels.LedgerFinding{Severity: "high", MagnitudeScore: 1.0, AffectedCount: 400}
+	if !findingMagnitudeChanged(legacy, grewToo, 0.2) {
+		t.Error("a real affected-count move should still be a trend against a legacy prior")
+	}
+}
+
+// TestAWeightChangeIsNotATrend -- the same hazard from the other direction,
+// and the reason the comparison is on the MAGNITUDE rather than on the
+// weighted severity score. Raising an area's weight must not make every
+// finding in it look as though it got worse.
+func TestAWeightChangeIsNotATrend(t *testing.T) {
+	// Same magnitude, and a severity band the weight lifted.
+	prior := &commonmodels.LedgerFinding{Severity: "medium", MagnitudeScore: 0.6, AffectedCount: 100}
+	reweighted := &commonmodels.LedgerFinding{Severity: "high", MagnitudeScore: 0.6, AffectedCount: 100}
+	if findingMagnitudeChanged(prior, reweighted, 0.2) {
+		t.Error("a weight change was reported as the finding having got worse")
+	}
+}
+
+// TestTrendReasonNamesWhatMoved -- the reason has to be legible, so it quotes
+// the severity bands when they moved and falls back to the magnitudes inside
+// one band when they did not.
+func TestTrendReasonNamesWhatMoved(t *testing.T) {
+	medium := trendSnapshot{severity: "medium", magnitude: 0.6, affected: 100}
+
+	if got := trendReason(medium, trendSnapshot{severity: "high", magnitude: 1.0, affected: 100}); !strings.Contains(got, "medium") || !strings.Contains(got, "high") {
+		t.Errorf("reason = %q, want the band move named", got)
+	}
+	inBand := trendReason(medium, trendSnapshot{severity: "medium", magnitude: 1.0, affected: 100})
+	if !strings.Contains(inBand, "magnitude") || !strings.Contains(inBand, "medium") {
+		t.Errorf("reason = %q, want the magnitude move named within the band", inBand)
+	}
+	count := trendReason(medium, trendSnapshot{severity: "medium", magnitude: 0.6, affected: 400})
+	if !strings.Contains(count, "affected count") {
+		t.Errorf("reason = %q, want the affected-count move named", count)
 	}
 }
 
@@ -840,20 +899,36 @@ func TestConsolidateFindings_SightingsAndStatusTrail(t *testing.T) {
 }
 
 // TestConsolidateFindings_TrendReasonNamesSeverity covers the other half of the
-// trend signal: when severity moved, that is what the reason must say.
+// trend signal: when the magnitude moved across a band boundary, the bands are
+// what the reason must name.
 func TestConsolidateFindings_TrendReasonNamesSeverity(t *testing.T) {
 	prior := commonmodels.LedgerFinding{
 		ID: "f1", ProjectID: "p1", Area: "churn", Name: "High EU churn",
-		NormalizedKey: commonmodels.NormalizedFindingKey("churn", "High EU churn"),
-		Severity:      "medium", AffectedCount: 100, Status: commonmodels.LedgerFindingStatusConfirmed, SeenCount: 1,
+		NormalizedKey:  commonmodels.NormalizedFindingKey("churn", "High EU churn"),
+		Severity:       "medium",
+		MagnitudeScore: 0.6,
+		AffectedCount:  100, Status: commonmodels.LedgerFindingStatusConfirmed, SeenCount: 1,
 	}
 	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{prior}}
 	o := &Orchestrator{projectID: "p1", runID: "r1", findingRepo: fr}
 	_, err := o.consolidateFindings(context.Background(), &models.DiscoveryResult{
 		ProjectID: "p1", ID: "d1",
-		Insights: []models.Insight{
-			{ID: "ins-1", AnalysisArea: "churn", Name: "High EU churn", Severity: "critical", AffectedCount: 100},
-		},
+		Insights: []models.Insight{{
+			ID: "ins-1", AnalysisArea: "churn", Name: "High EU churn",
+			Severity:      "high",
+			AffectedCount: 100,
+			// With a QUANTIFIED driver, because the ledger only carries a
+			// magnitude it can compare: the engine never produces a
+			// magnitude without a driver, and an unquantified one is a
+			// stand-in rather than a measurement.
+			Scoring: &models.Scoring{
+				MagnitudeScore: 1.0,
+				SeverityBand:   models.SeverityBandHigh,
+				SeverityDriver: &models.SeverityDriver{
+					Kind: models.SeverityDriverShare, Quantified: true,
+				},
+			},
+		}},
 	})
 	if err != nil {
 		t.Fatalf("consolidate: %v", err)
@@ -861,8 +936,13 @@ func TestConsolidateFindings_TrendReasonNamesSeverity(t *testing.T) {
 	if len(fr.merged) != 1 || len(fr.merged[0].StatusHistory) != 1 {
 		t.Fatalf("expected one status change, got %+v", fr.merged)
 	}
-	if got := fr.merged[0].StatusHistory[0].Reason; !strings.Contains(got, "medium") || !strings.Contains(got, "critical") {
+	if got := fr.merged[0].StatusHistory[0].Reason; !strings.Contains(got, "medium") || !strings.Contains(got, "high") {
 		t.Errorf("reason should name the severity move, got %q", got)
+	}
+	// The magnitude travels onto the finding and onto the sighting, or the
+	// next run has nothing comparable to measure against.
+	if fr.merged[0].MagnitudeScore != 1.0 {
+		t.Errorf("finding magnitude = %v, want the new 1.0", fr.merged[0].MagnitudeScore)
 	}
 }
 
@@ -1982,5 +2062,111 @@ func TestReflectionGates_RunUnderADeadline(t *testing.T) {
 		Insights: []models.Insight{{Name: "x", AnalysisArea: "a"}}})
 	if !phaseSaw {
 		t.Error("the phase must ask its gates under its own deadline")
+	}
+}
+
+// TestAnUnquantifiedFindingCarriesNoComparableMagnitude is the third
+// manufactured trend this comparison could produce, and the subtlest.
+//
+// An unquantified finding still gets a magnitude: the area baseline, which
+// stands in for a number nobody could read rather than measuring anything.
+// Carried into the ledger it would make the next run's comparison fire on the
+// difference between "we could not measure this" and "we measured it this
+// time" — so a model that simply declared a figure it had previously omitted
+// would be reported as a server-detected worsening, with the affected count
+// unchanged and nothing about the finding having moved.
+func TestAnUnquantifiedFindingCarriesNoComparableMagnitude(t *testing.T) {
+	unquantified := models.Insight{
+		ID: "i1", AnalysisArea: "revenue", Name: "Same finding", AffectedCount: 100,
+		Severity: models.SeverityBandMedium,
+		Scoring: &models.Scoring{
+			MagnitudeScore: 0.6,
+			SeverityBand:   models.SeverityBandMedium,
+			SeverityDriver: &models.SeverityDriver{
+				Kind: models.SeverityDriverBaseline, Quantified: false,
+			},
+		},
+	}
+	quantified := models.Insight{
+		ID: "i2", AnalysisArea: "revenue", Name: "Same finding", AffectedCount: 100,
+		Severity: models.SeverityBandHigh,
+		Scoring: &models.Scoring{
+			MagnitudeScore: 1.0,
+			SeverityBand:   models.SeverityBandHigh,
+			SeverityDriver: &models.SeverityDriver{
+				Kind: models.SeverityDriverShare, Quantified: true,
+			},
+		},
+	}
+
+	prior := buildFindingCandidates(&models.DiscoveryResult{
+		ProjectID: "p1", ID: "d1", Insights: []models.Insight{unquantified},
+	})[0]
+	current := buildFindingCandidates(&models.DiscoveryResult{
+		ProjectID: "p1", ID: "d2", Insights: []models.Insight{quantified},
+	})[0]
+
+	if prior.MagnitudeScore != 0 {
+		t.Errorf("an unquantified finding carried magnitude %v into the ledger; the baseline "+
+			"is a stand-in, not a measurement", prior.MagnitudeScore)
+	}
+	if current.MagnitudeScore != 1.0 {
+		t.Errorf("a quantified finding carried magnitude %v, want 1.0", current.MagnitudeScore)
+	}
+	if findingMagnitudeChanged(&prior, &current, 0.2) {
+		t.Error("declaring a figure that was previously omitted was reported as the finding " +
+			"having got worse")
+	}
+
+	// And two quantified sightings still compare, or the fix would have
+	// turned the whole signal off.
+	priorQ := buildFindingCandidates(&models.DiscoveryResult{
+		ProjectID: "p1", ID: "d3", Insights: []models.Insight{unquantified},
+	})[0]
+	priorQ.MagnitudeScore = 0.6
+	if !findingMagnitudeChanged(&priorQ, &current, 0.2) {
+		t.Error("a real magnitude move between two measured sightings was not reported")
+	}
+}
+
+// TestTheFirstSightingCarriesTheMagnitudeItMeasured -- the merge path carried
+// it and the new-finding literal did not, so every finding's opening sighting
+// stored zero.
+//
+// The trail is what makes a magnitude trend drawable rather than implied by a
+// counter, and a later merge overwrites the parent -- so a missing first point
+// is a missing baseline for every comparison after it.
+func TestTheFirstSightingCarriesTheMagnitudeItMeasured(t *testing.T) {
+	fr := &fakeFindingRepo{}
+	o := &Orchestrator{projectID: "p1", runID: "r1", findingRepo: fr}
+	_, err := o.consolidateFindings(context.Background(), &models.DiscoveryResult{
+		ProjectID: "p1", ID: "d1",
+		Insights: []models.Insight{{
+			ID: "ins-1", AnalysisArea: "revenue", Name: "Quantified finding",
+			Severity: models.SeverityBandHigh, AffectedCount: 100,
+			Scoring: &models.Scoring{
+				MagnitudeScore: 1.0, SeverityBand: models.SeverityBandHigh,
+				SeverityDriver: &models.SeverityDriver{
+					Kind: models.SeverityDriverShare, Quantified: true,
+				},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("consolidate: %v", err)
+	}
+	if len(fr.upserted) != 1 {
+		t.Fatalf("inserted %d findings, want 1", len(fr.upserted))
+	}
+	f := fr.upserted[0]
+	if f.MagnitudeScore != 1.0 {
+		t.Errorf("finding magnitude = %v, want 1.0", f.MagnitudeScore)
+	}
+	if len(f.Sightings) != 1 {
+		t.Fatalf("sightings = %d, want 1", len(f.Sightings))
+	}
+	if f.Sightings[0].MagnitudeScore != 1.0 {
+		t.Errorf("the opening sighting stored magnitude %v; the trail has no baseline to "+
+			"measure the next run against", f.Sightings[0].MagnitudeScore)
 	}
 }

@@ -364,6 +364,13 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 			Validation: matched.Validation,
 			Scoring:    matched.Scoring,
 			Confidence: matched.Confidence,
+			// A recommendation's priority tier MOVES whenever its verdict
+			// does -- the tier is the matrix over that verdict and the
+			// inherited severity -- so the projected integer has to be
+			// written or the row ends up claiming a tier of critical beside
+			// a priority of 2.
+			Priority:        matched.Priority,
+			PriorityDerived: matched.Scoring != nil && matched.Scoring.PriorityTier != "",
 		}
 		if err := discoveryRepo.UpdateRecommendationValidation(ctx, discDoc.ID, job.DocID, update); err != nil {
 			return fmt.Errorf("persist recommendation validation: %w", err)

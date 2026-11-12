@@ -19,6 +19,29 @@ func storedScoring() *Scoring {
 			{Code: "refuted_arithmetic", Label: "A number's own arithmetic does not reproduce it", Amount: 0.10},
 			{Code: "unresolved_figure", Label: "The text still carries a reference to a number that was never supplied", Amount: 0.05},
 		},
+
+		MagnitudeScore: 0.60,
+		SeverityBand:   SeverityBandMedium,
+		SeverityScore:  0.60,
+		SeverityDriver: &SeverityDriver{
+			Kind:       SeverityDriverShare,
+			Quantified: true,
+			Figure: &SeverityFigure{
+				FigureID: "f1", Display: "12.40%", Value: 12.4,
+				Unit: UnitPercent, Verdict: FigureHolds,
+			},
+			Amount: &SeverityFigure{
+				FigureID: "f3", Display: "$2.40M", Value: 2_400_000,
+				Unit: UnitCurrency, Currency: "$", Verdict: FigureHolds,
+			},
+		},
+		SeverityReason: "Medium — banded on 12.40%, with $2.40M at stake. Both checked against warehouse rows.",
+		AreaWeight:     1.0,
+		WeightSource:   &WeightSource{Kind: WeightSourceDefault},
+
+		PriorityTier:  PriorityTierHigh,
+		PriorityScore: 1.1225,
+
 		EngineVersion: 1,
 	}
 }
@@ -93,27 +116,66 @@ func TestAnUnscoredStandaloneDocDecodesToNil(t *testing.T) {
 	}
 }
 
-// TestScoringOmitsTheUnwrittenHalfOnTheWire — the severity, weight and
-// priority fields are declared and never written in this version, so a scored
-// document must not ship a dozen zero-valued keys for them. They are omitempty
-// precisely so declaring them early costs a client nothing.
-func TestScoringOmitsTheUnwrittenHalfOnTheWire(t *testing.T) {
+// TestScoringShipsBothAxesAndOmitsOnlyWhatNothingWrites — the severity and
+// priority halves are written now, so they have to reach a client; risk_flags
+// is the one part nothing derives yet, and a scored document must not ship an
+// empty key for it.
+func TestScoringShipsBothAxesAndOmitsOnlyWhatNothingWrites(t *testing.T) {
 	out, err := json.Marshal(storedScoring())
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, key := range []string{
 		"magnitude_score", "severity_band", "severity_score", "severity_driver",
-		"area_weight", "weight_source", "priority_tier", "priority_score", "risk_flags",
+		"severity_reason", "area_weight", "weight_source", "priority_tier",
+		"priority_score",
 	} {
-		if strings.Contains(string(out), `"`+key+`"`) {
-			t.Errorf("a scored document ships %q, which nothing writes in this version:\n%s", key, out)
+		if !strings.Contains(string(out), `"`+key+`"`) {
+			t.Errorf("a scored document does not ship %q:\n%s", key, out)
+		}
+	}
+	if strings.Contains(string(out), `"risk_flags"`) {
+		t.Errorf("a scored document ships risk_flags, which nothing derives yet:\n%s", out)
+	}
+	// Both driver slots reach the client. The amount is the number a reader
+	// cares about and it is NOT the figure that banded the magnitude here, so
+	// a client that only received one of them would be shown the share and
+	// not the money.
+	for _, key := range []string{`"figure"`, `"amount"`, `"$2.40M"`, `"12.40%"`} {
+		if !strings.Contains(string(out), key) {
+			t.Errorf("the driver lost %s on the wire:\n%s", key, out)
 		}
 	}
 	// The engine version is NOT omitempty: a reader needs it to know which
 	// cutoffs scored the document, and version 0 is not a legal value anyway.
 	if !strings.Contains(string(out), `"engine_version"`) {
 		t.Errorf("engine_version was omitted:\n%s", out)
+	}
+}
+
+// TestAnUnscoredSeverityHalfOmitsItsKeys — the other direction. A document an
+// older engine scored on the confidence axis alone must not ship a severity
+// band of "" and a priority score of 0, which a client would read as a real
+// bottom-of-the-list grade rather than as "this was never graded".
+func TestAnUnscoredSeverityHalfOmitsItsKeys(t *testing.T) {
+	confidenceOnly := &Scoring{
+		ConfidenceBand:  ConfidenceBandHigh,
+		ConfidenceBase:  0.95,
+		ConfidenceScore: 0.95,
+		EngineVersion:   1,
+	}
+	out, err := json.Marshal(confidenceOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{
+		"magnitude_score", "severity_band", "severity_score", "severity_driver",
+		"severity_reason", "area_weight", "weight_source", "priority_tier",
+		"priority_score", "risk_flags",
+	} {
+		if strings.Contains(string(out), `"`+key+`"`) {
+			t.Errorf("an unscored severity half shipped %q:\n%s", key, out)
+		}
 	}
 }
 
@@ -142,24 +204,83 @@ func TestScoringUsesTheSameWireNameEverywhere(t *testing.T) {
 // TestTheBandVocabularyIsTheFiveValues pins the vocabulary the dashboard
 // switches on. A sixth band added without a label would render as nothing.
 func TestTheBandVocabularyIsTheFiveValues(t *testing.T) {
-	want := map[string]bool{
-		"high": true, "medium": true, "low": true,
-		"not_confirmed": true, "unverifiable": true,
+	assertVocabulary(t, "confidence band",
+		[]string{
+			ConfidenceBandHigh, ConfidenceBandMedium, ConfidenceBandLow,
+			ConfidenceBandNotConfirmed, ConfidenceBandUnverifiable,
+		},
+		"high", "medium", "low", "not_confirmed", "unverifiable")
+}
+
+// TestTheSeverityVocabularyIsThreeValuesAndExcludesCritical is the vocabulary
+// change, pinned.
+//
+// `critical` was the top severity word and is now the top PRIORITY tier, which
+// is what the matrix calls it. The word MOVED rather than being duplicated:
+// two vocabularies for one idea leave every filter and every counter having to
+// decide which of them it meant. A document written before this carries
+// `critical` in its own `severity` field and is rendered as a legacy value,
+// never re-interpreted as a tier.
+func TestTheSeverityVocabularyIsThreeValuesAndExcludesCritical(t *testing.T) {
+	bands := []string{SeverityBandHigh, SeverityBandMedium, SeverityBandLow}
+	assertVocabulary(t, "severity band", bands, "high", "medium", "low")
+	for _, band := range bands {
+		if band == PriorityTierCritical {
+			t.Errorf("%q is both a severity band and the top priority tier; "+
+				"the word was supposed to move, not be duplicated", band)
+		}
 	}
-	got := []string{
-		ConfidenceBandHigh, ConfidenceBandMedium, ConfidenceBandLow,
-		ConfidenceBandNotConfirmed, ConfidenceBandUnverifiable,
+}
+
+// TestThePriorityTierVocabularyIsFourValues — ordered critical > investigate >
+// high > low, which is the order the sort score has to reproduce.
+func TestThePriorityTierVocabularyIsFourValues(t *testing.T) {
+	assertVocabulary(t, "priority tier",
+		[]string{
+			PriorityTierCritical, PriorityTierInvestigate,
+			PriorityTierHigh, PriorityTierLow,
+		},
+		"critical", "investigate", "high", "low")
+}
+
+// TestTheDriverKindVocabularyIsThreeValues — what banded the magnitude, in
+// precedence order, plus the baseline that means nothing did.
+func TestTheDriverKindVocabularyIsThreeValues(t *testing.T) {
+	assertVocabulary(t, "driver kind",
+		[]string{SeverityDriverAmount, SeverityDriverShare, SeverityDriverBaseline},
+		"amount", "share", "baseline")
+}
+
+// TestTheWeightSourceVocabularyIsThreeValues — only the default is reachable
+// today; the other two are the words a configured taxonomy will set.
+func TestTheWeightSourceVocabularyIsThreeValues(t *testing.T) {
+	assertVocabulary(t, "weight source",
+		[]string{WeightSourceDefault, WeightSourceCategory, WeightSourceAreaOverride},
+		"default", "category", "area_override")
+}
+
+// assertVocabulary checks a constant set against the exact string values a
+// reader on the other side of the wire switches on.
+//
+// Both directions, which is the point: a renamed constant breaks a dashboard
+// that still matches the old string, and a dropped one leaves a reader with a
+// case it will never hit.
+func assertVocabulary(t *testing.T, name string, got []string, want ...string) {
+	t.Helper()
+	remaining := make(map[string]bool, len(want))
+	for _, w := range want {
+		remaining[w] = true
 	}
 	if len(got) != len(want) {
-		t.Fatalf("the vocabulary has %d values, want %d", len(got), len(want))
+		t.Fatalf("the %s vocabulary has %d values, want %d", name, len(got), len(want))
 	}
-	for _, band := range got {
-		if !want[band] {
-			t.Errorf("unexpected band value %q", band)
+	for _, value := range got {
+		if !remaining[value] {
+			t.Errorf("unexpected %s value %q", name, value)
 		}
-		delete(want, band)
+		delete(remaining, value)
 	}
-	for band := range want {
-		t.Errorf("the vocabulary no longer declares %q", band)
+	for value := range remaining {
+		t.Errorf("the %s vocabulary no longer declares %q", name, value)
 	}
 }

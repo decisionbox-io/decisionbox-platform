@@ -47,12 +47,14 @@ import (
 
 // insightItemProperties is one insight, in generation order.
 //
-// There is no `confidence` here, and there must not be: the number is derived
-// from the validation verdict and the evidence trail, so asking the model for
-// one would be asking it to grade the work it just did. The field on the model
-// is tagged json:"-" as the second half of that, which makes a volunteered
-// `"confidence"` key an unknown field the decoder ignores rather than one that
-// fails the whole insight. Pinned by TestTheSchemasAskForNoConfidence.
+// There is no `confidence`, no `severity` and no `risk_score` here, and there
+// must not be. All three are derived -- confidence from the validation
+// verdict, severity from grounded magnitude x area weight -- so asking the
+// model for any of them would be asking it to grade the work it just did. The
+// fields on the model are tagged json:"-" as the second half of that, which
+// makes a volunteered `"severity"` key an unknown field the decoder ignores
+// rather than one that fails the whole insight. Pinned by
+// TestTheSchemasAskForNoDerivedField.
 type insightItemProperties struct {
 	SourceSteps map[string]interface{} `json:"source_steps"`
 	Figures     map[string]interface{} `json:"figures"`
@@ -62,10 +64,8 @@ type insightItemProperties struct {
 	// After the prose it quotes: a claim repeats a sentence verbatim and cannot be
 	// written before the sentence exists.
 	QuantifierClaims map[string]interface{} `json:"quantifier_claims"`
-	Severity         map[string]interface{} `json:"severity"`
 	TargetSegment    map[string]interface{} `json:"target_segment"`
 	AffectedCount    map[string]interface{} `json:"affected_count"`
-	RiskScore        map[string]interface{} `json:"risk_score"`
 	Metrics          map[string]interface{} `json:"metrics"`
 }
 
@@ -82,10 +82,8 @@ type insightRepairItemProperties struct {
 	Indicators       map[string]interface{} `json:"indicators"`
 	Name             map[string]interface{} `json:"name"`
 	QuantifierClaims map[string]interface{} `json:"quantifier_claims"`
-	Severity         map[string]interface{} `json:"severity"`
 	TargetSegment    map[string]interface{} `json:"target_segment"`
 	AffectedCount    map[string]interface{} `json:"affected_count"`
-	RiskScore        map[string]interface{} `json:"risk_score"`
 	Metrics          map[string]interface{} `json:"metrics"`
 }
 
@@ -128,6 +126,11 @@ type claimItemProperties struct {
 
 // recommendationItemProperties is one recommendation, in generation order: the insights it
 // rests on and the numbers it restates, then the prose, then the title over it.
+//
+// There is no `priority` here, for the reason the insight shape has no
+// `severity`: the value is derived from the matrix over this
+// recommendation's own verdict and the severity it inherits, so asking for one
+// would be asking the model to rank its own output.
 type recommendationItemProperties struct {
 	RelatedInsightIDs map[string]interface{} `json:"related_insight_ids"`
 	Figures           map[string]interface{} `json:"figures"`
@@ -136,7 +139,6 @@ type recommendationItemProperties struct {
 	ExpectedImpact    map[string]interface{} `json:"expected_impact"`
 	Title             map[string]interface{} `json:"title"`
 	Category          map[string]interface{} `json:"category"`
-	Priority          map[string]interface{} `json:"priority"`
 	TargetSegment     map[string]interface{} `json:"target_segment"`
 	SegmentSize       map[string]interface{} `json:"segment_size"`
 }

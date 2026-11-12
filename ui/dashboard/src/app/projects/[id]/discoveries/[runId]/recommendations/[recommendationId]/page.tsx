@@ -15,18 +15,16 @@ import RelatedSidebar, { RelatedChipStrip, RelatedItem } from '@/components/list
 import SimilarItems from '@/components/lists/SimilarItems';
 import { ValidationRouter } from '@/components/validation/ValidationRouter';
 import { ConfidenceCell } from '@/components/scoring/ConfidenceCell';
+import { SeverityCell } from '@/components/scoring/SeverityCell';
+import { PriorityCell } from '@/components/scoring/PriorityCell';
+import { ScoringBreakdown } from '@/components/scoring/ScoringBreakdown';
 import { markRead } from '@/lib/readState';
-import { Pill } from '@/components/common/UIComponents';
 import { api, DiscoveryResult, Feedback, Insight, Project, Recommendation, SearchResultItem } from '@/lib/api';
 
+// The tint for a cited insight's badge in the sidebar. `critical` is kept for
+// insights written before severity was derived.
 const severityColor: Record<string, string> = {
   critical: 'red', high: 'orange', medium: 'yellow', low: 'gray',
-};
-
-const effortColors: Record<string, { bg: string; color: string }> = {
-  low: { bg: '#EAF3DE', color: '#3B6D11' },
-  medium: { bg: 'var(--db-amber-bg)', color: 'var(--db-amber-text)' },
-  high: { bg: '#FAECE7', color: '#993C1D' },
 };
 
 export default function RecommendationDetailPage() {
@@ -95,9 +93,6 @@ export default function RecommendationDetailPage() {
   if (loading) return <Shell><Loader /></Shell>;
   if (!recommendation) return <Shell><Text>Recommendation not found</Text></Shell>;
 
-  const effort = recommendation.priority <= 1 ? 'low' : recommendation.priority <= 3 ? 'medium' : 'high';
-  const effortStyle = effortColors[effort] || effortColors.medium;
-
   const relatedInsights = (recommendation.related_insight_ids || [])
     .map(rid => (discovery?.insights || []).find(i => i.id === rid))
     .filter(Boolean) as Insight[];
@@ -131,12 +126,15 @@ export default function RecommendationDetailPage() {
           <Title order={2}>{recommendation.title}</Title>
         </Group>
         <Group gap="xs">
-          <Badge color={recommendation.priority <= 1 ? 'red' : recommendation.priority <= 2 ? 'orange' : 'blue'} variant="light">
-            P{recommendation.priority}
-          </Badge>
-          <Pill bg={effortStyle.bg} color={effortStyle.color}>
-            {effort.charAt(0).toUpperCase() + effort.slice(1)} effort
-          </Pill>
+          {/* The tier, and the severity inherited from the insights this
+              addresses. The "P{n}" badge and the "effort" pill both read the
+              priority integer the analysis model used to write; it comes from
+              the priority matrix now, so the tier says what it says without
+              the indirection -- and nothing here ever claimed to know how much
+              work an action is. */}
+          <PriorityCell scoring={recommendation.evidence_scoring} />
+          <SeverityCell scoring={recommendation.evidence_scoring}
+            severity={recommendation.severity ?? ''} showDriver={false} />
           {recommendation.category && <Badge variant="outline">{recommendation.category}</Badge>}
           <FeedbackButtons projectId={id} discoveryId={runId} targetType="recommendation" targetId={recommendationId}
             feedback={feedback} onUpdate={setFeedback} />
@@ -219,6 +217,16 @@ export default function RecommendationDetailPage() {
                 </div>
               )}
             </Group>
+          </Card>
+        )}
+
+        {/* How this was scored. Severity here is INHERITED from the insights
+            this recommendation cites -- the worst of them -- so the breakdown
+            shows their driver; confidence is its own, from whether the
+            verifier agreed this action follows from those findings. */}
+        {recommendation.evidence_scoring && (
+          <Card withBorder p="lg" data-testid="scoring-card">
+            <ScoringBreakdown scoring={recommendation.evidence_scoring} axis="all" />
           </Card>
         )}
 

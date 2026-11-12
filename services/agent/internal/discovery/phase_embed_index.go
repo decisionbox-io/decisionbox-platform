@@ -161,6 +161,7 @@ func (o *Orchestrator) denormalizeRecommendations(result *models.DiscoveryResult
 			Actions:           rec.Actions,
 			RelatedInsightIDs: rec.RelatedInsightIDs,
 			Confidence:        rec.Confidence,
+			Severity:          rec.Severity,
 			Validation:        rec.Validation,
 			Scoring:           rec.Scoring,
 			CreatedAt:         now,

@@ -126,10 +126,32 @@ type Insight struct {
 	// embeddings); DescriptionMd is empty when the description carries no
 	// formatting and on legacy documents.
 	DescriptionMd string `bson:"description_md,omitempty" json:"description_md,omitempty"`
-	Severity      string `bson:"severity" json:"severity"` // "critical", "high", "medium", "low"
+	// Severity is the derived severity BAND -- high, medium or low -- written
+	// by the scorer from grounded magnitude x area weight rather than
+	// authored by the model. The key stays `severity` in BSON because it is a
+	// live Qdrant match filter and sits inside the dedup embedding text;
+	// changing how it is POPULATED keeps every consumer working.
+	//
+	// There is no `critical` any more. That word is the top PRIORITY tier
+	// now, which is what the matrix calls it; a document written before this
+	// carries `critical` here and is rendered as a legacy value, never
+	// re-interpreted as a tier.
+	//
+	// json:"-" is the second defence, and it is doing real work for the
+	// reason Confidence's is: a project snapshots its area prompts at
+	// creation and a pack's seeds are never overwritten on upgrade, so
+	// existing deployments keep asking the model for this field forever.
+	// Under json:"-" a volunteered `"severity": "critical"` is an unknown
+	// field the decoder ignores, rather than one that could fail the whole
+	// insight and silently zero the area's insights (the issue-#342 failure).
+	Severity string `bson:"severity" json:"-"`
 
-	AffectedCount int     `bson:"affected_count" json:"affected_count"`
-	RiskScore     float64 `bson:"risk_score" json:"risk_score"`
+	AffectedCount int `bson:"affected_count" json:"affected_count"`
+
+	// RiskScore is the derived severity score -- the continuous number behind
+	// Scoring.SeverityBand, clamped to [0, 1] so the readers that print it as
+	// a percentage keep working. Derived and json:"-" for the reasons above.
+	RiskScore float64 `bson:"risk_score" json:"-"`
 
 	// Confidence is the derived confidence score -- the continuous number
 	// behind Scoring.ConfidenceBand, repopulated by the scorer rather than
@@ -287,19 +309,21 @@ type Insight struct {
 
 // UnmarshalJSON decodes an insight tolerantly. Like the recommendation decoder,
 // it coerces the numeric and list fields that smaller/open models frequently
-// emit with the wrong JSON type — affected_count / risk_score as strings
-// ("1200", "0.8"), source_steps as string-typed or single values, and
-// indicators as a bare string instead of a list. Under strict decoding a single
-// off-typed field failed the whole insight and — because the analysis batch was
-// decoded in one shot — silently zeroed the area's insights (the insight
-// analogue of the recommendation loss fixed in issue #342). It reuses the
-// recommendation coercion helpers, so valid input (Opus, GPT) decodes to
-// identical values.
+// emit with the wrong JSON type — affected_count as a string ("1200"),
+// source_steps as string-typed or single values, and indicators as a bare
+// string instead of a list. Under strict decoding a single off-typed field
+// failed the whole insight and — because the analysis batch was decoded in one
+// shot — silently zeroed the area's insights (the insight analogue of the
+// recommendation loss fixed in issue #342). It reuses the recommendation
+// coercion helpers, so valid input (Opus, GPT) decodes to identical values.
 //
-// `confidence` is deliberately NOT in that list any more. The field is derived
-// now, and under json:"-" the key is an unknown field — so a model emitting
-// "confidence": "0.9" is ignored rather than failing the insight, which is the
-// same protection the coercion gave and a stronger statement besides.
+// `confidence`, `severity` and `risk_score` are deliberately NOT in that list.
+// All three are derived now, and under json:"-" each key is an unknown field —
+// so a model emitting "risk_score": "0.9" is ignored rather than failing the
+// insight, which is the same protection the coercion gave and a stronger
+// statement besides. The prompts cannot be relied on to stop asking: a project
+// snapshots its area prompts at creation, so an existing deployment keeps
+// sending the old contract indefinitely.
 //
 // Only JSON decoding is customized; BSON is unaffected, so persisted insights
 // read back unchanged.
@@ -307,7 +331,6 @@ func (in *Insight) UnmarshalJSON(data []byte) error {
 	type alias Insight
 	aux := &struct {
 		AffectedCount json.RawMessage `json:"affected_count"`
-		RiskScore     json.RawMessage `json:"risk_score"`
 		SourceSteps   json.RawMessage `json:"source_steps"`
 		Indicators    json.RawMessage `json:"indicators"`
 		*alias
@@ -316,7 +339,6 @@ func (in *Insight) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	in.AffectedCount = coerceFlexInt(aux.AffectedCount)
-	in.RiskScore = coerceFlexFloat(aux.RiskScore)
 	in.SourceSteps = coerceFlexIntSlice(aux.SourceSteps)
 	in.Indicators = coerceStringSlice(aux.Indicators)
 	return nil
@@ -332,7 +354,22 @@ type Recommendation struct {
 	// Description stays plain text; DescriptionMd is empty when unformatted
 	// and on legacy documents.
 	DescriptionMd string `bson:"description_md,omitempty" json:"description_md,omitempty"`
-	Priority      int    `bson:"priority" json:"priority"` // 1-5
+
+	// Priority is the derived priority, projected onto the 1 (highest) to 5
+	// (lowest) integer this field has always carried, from the tier in
+	// Scoring.PriorityTier. Repopulated rather than repurposed: the field is
+	// documented, served and rendered on that scale, so the tier order is
+	// preserved inside it and 5 is left unused.
+	//
+	// json:"-" and no coercion, for the reason Severity's are: the field is
+	// derived, the prompts of an existing project keep asking for it, and an
+	// ignored key cannot fail the document.
+	Priority int `bson:"priority" json:"-"`
+
+	// Severity is inherited from the insights this recommendation cites --
+	// the highest of them -- rather than measured from its own figures, which
+	// are restatements of theirs. Derived, and json:"-" for the same reason.
+	Severity string `bson:"severity,omitempty" json:"-"`
 
 	TargetSegment string `bson:"target_segment" json:"target_segment"`
 	SegmentSize   int    `bson:"segment_size" json:"segment_size"`
@@ -392,75 +429,32 @@ type Recommendation struct {
 }
 
 // UnmarshalJSON decodes a recommendation tolerantly. Beyond the tolerant
-// Impact decoding, it coerces the numeric scalar fields (priority,
-// segment_size) when a model emits them as strings — a common,
-// model-independent behaviour that, under strict decoding, failed the whole
-// recommendation and (because the batch was decoded in one shot) silently
-// zeroed the run's recommendations (issue #342). priority accepts descriptive
-// words ("high", "critical", "P2") as well as numbers; segment_size accepts
-// numeric strings (including thousands separators).
+// Impact decoding, it coerces `segment_size` when a model emits it as a string
+// (including thousands separators) — a common, model-independent behaviour
+// that, under strict decoding, failed the whole recommendation and (because
+// the batch was decoded in one shot) silently zeroed the run's
+// recommendations (issue #342).
 //
-// `confidence` is no longer coerced, because it is no longer read: the field
-// is derived and tagged json:"-", so a string-typed one is an unknown field
-// the decoder ignores.
+// `confidence`, `priority` and `severity` are not coerced, because none of
+// them is read: all three are derived and tagged json:"-", so a string-typed
+// one is an unknown field the decoder ignores. The coercion that used to read
+// descriptive priority words ("high", "critical", "P2") went with the ask —
+// keeping a parser for a field nothing reads would be keeping the shape of the
+// old contract after the contract changed.
 //
 // Only JSON decoding is customized; BSON is unaffected, so persisted
 // recommendations read back unchanged.
 func (r *Recommendation) UnmarshalJSON(data []byte) error {
 	type alias Recommendation
 	aux := &struct {
-		Priority    json.RawMessage `json:"priority"`
 		SegmentSize json.RawMessage `json:"segment_size"`
 		*alias
 	}{alias: (*alias)(r)}
 	if err := json.Unmarshal(data, aux); err != nil {
 		return err
 	}
-	r.Priority = coercePriority(aux.Priority)
 	r.SegmentSize = coerceFlexInt(aux.SegmentSize)
 	return nil
-}
-
-// coercePriority reads a recommendation priority that may be a number or a
-// descriptive string. Numbers pass through; "P2"/"2" parse directly; and
-// severity words map onto the 1 (highest) – 5 (lowest) scale. An
-// unrecognized value yields 0 (unset) rather than failing the decode.
-func coercePriority(raw json.RawMessage) int {
-	raw = bytes.TrimSpace(raw)
-	if len(raw) == 0 || string(raw) == "null" {
-		return 0
-	}
-	if raw[0] == '"' {
-		var s string
-		if json.Unmarshal(raw, &s) != nil {
-			return 0
-		}
-		s = strings.ToLower(strings.TrimSpace(s))
-		s = strings.TrimPrefix(s, "p") // "P2" -> "2"
-		if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
-			return n
-		}
-		// Order matters: more specific words are checked before substrings
-		// they contain ("lowest"/"highest" before "low"/"high").
-		switch {
-		case strings.Contains(s, "critical"), strings.Contains(s, "highest"), strings.Contains(s, "urgent"):
-			return 1
-		case strings.Contains(s, "optional"), strings.Contains(s, "minimal"), strings.Contains(s, "lowest"):
-			return 5
-		case strings.Contains(s, "high"):
-			return 2
-		case strings.Contains(s, "medium"), strings.Contains(s, "moderate"), strings.Contains(s, "med"):
-			return 3
-		case strings.Contains(s, "low"):
-			return 4
-		}
-		return 0
-	}
-	var n float64
-	if json.Unmarshal(raw, &n) == nil {
-		return int(n)
-	}
-	return 0
 }
 
 // coerceFlexInt reads an int that may arrive as a number or a numeric string
@@ -468,15 +462,6 @@ func coercePriority(raw json.RawMessage) int {
 func coerceFlexInt(raw json.RawMessage) int {
 	if f, ok := flexNumber(raw); ok {
 		return int(f)
-	}
-	return 0
-}
-
-// coerceFlexFloat reads a float that may arrive as a number or a numeric
-// string. Unparseable input yields 0.
-func coerceFlexFloat(raw json.RawMessage) float64 {
-	if f, ok := flexNumber(raw); ok {
-		return f
 	}
 	return 0
 }

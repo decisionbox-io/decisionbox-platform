@@ -28,9 +28,7 @@ Respond with ONLY valid JSON (no markdown, no explanations):
     {
       "name": "Descriptive finding (e.g., 'DECIMAL Columns: All 12 Columns Return float64 Correctly')",
       "description": "Which data types were tested, how many columns of each type, and whether the mapping is correct.",
-      "severity": "info|low|medium|high|critical",
       "affected_count": 12,
-      "risk_score": 0.0,
       "metrics": {
         "test_status": "pass|warn|fail",
         "component": "type_mapping",
@@ -51,13 +49,17 @@ Respond with ONLY valid JSON (no markdown, no explanations):
 }
 ```
 
-## Severity Mapping
+## What the platform measures this by
 
-- **info**: All columns of this type map correctly
-- **low**: Correct but non-standard (e.g., BOOLEAN returned as 0/1 int instead of true/false)
-- **medium**: Inconsistent mapping (e.g., DECIMAL sometimes returns float64, sometimes string)
-- **high**: Incorrect mapping (e.g., DECIMAL returns int64, losing fractional part)
-- **critical**: Type causes query failure or data corruption
+Severity is derived from the figures you declare, not from a word you choose.
+The platform re-checks each figure's arithmetic against the rows and bands the
+largest one that holds: a currency amount in this warehouse's own currency, or
+a percentage. So a finding that states its magnitude as a declared figure is
+ranked on that magnitude, and one that states no figure falls back to an area
+baseline and is marked *not quantified*.
+
+Declare the number that makes the finding matter. Do not describe how severe
+it is.
 
 ## Important Rules
 

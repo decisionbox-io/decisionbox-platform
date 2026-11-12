@@ -226,20 +226,56 @@ var schema = []struct {
 	{
 		Name: "insights",
 		Indexes: []mongo.IndexModel{
-			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "created_at", Value: -1}}},
+			// `_id` is part of this one because the creation-order list sort
+			// ends with it: without a unique final key that order is not
+			// total, and under limit/offset paging a tie means a document can
+			// come back twice or not at all. A two-key index can no longer
+			// serve a three-key sort, so leaving it short would turn every
+			// `?sort=created_at` page into a blocking in-memory sort over the
+			// project's whole history. Deployments that already created the
+			// two-key form keep it, unused.
+			{Keys: bson.D{
+				{Key: "project_id", Value: 1},
+				{Key: "created_at", Value: -1},
+				{Key: "_id", Value: 1},
+			}},
 			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "analysis_area", Value: 1}}},
 			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "severity", Value: 1}}},
 			{Keys: bson.D{{Key: "discovery_id", Value: 1}}},
 			{Keys: bson.D{{Key: "embedding_model", Value: 1}}},
+			// The default list order. All three keys, in these directions,
+			// because that is the sort the read path issues -- an index on the
+			// score alone would leave Mongo sorting a project's whole history
+			// in memory to break the ties, and a run's documents routinely tie
+			// on both the score and `created_at` (the agent stamps one
+			// timestamp per batch). See database.ListSort.
+			{Keys: bson.D{
+				{Key: "project_id", Value: 1},
+				{Key: "scoring.priority_score", Value: -1},
+				{Key: "created_at", Value: -1},
+				{Key: "_id", Value: 1},
+			}},
 		},
 	},
 	{
 		Name: "recommendations",
 		Indexes: []mongo.IndexModel{
-			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "created_at", Value: -1}}},
+			// The same, for the same reason. See the insights entry above.
+			{Keys: bson.D{
+				{Key: "project_id", Value: 1},
+				{Key: "created_at", Value: -1},
+				{Key: "_id", Value: 1},
+			}},
 			{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "recommendation_category", Value: 1}}},
 			{Keys: bson.D{{Key: "discovery_id", Value: 1}}},
 			{Keys: bson.D{{Key: "embedding_model", Value: 1}}},
+			// The same, for the recommendations list.
+			{Keys: bson.D{
+				{Key: "project_id", Value: 1},
+				{Key: "scoring.priority_score", Value: -1},
+				{Key: "created_at", Value: -1},
+				{Key: "_id", Value: 1},
+			}},
 		},
 	},
 	{

@@ -118,9 +118,15 @@ func TestLedgerLoop_Integration(t *testing.T) {
 		ProjectID: projectID, ID: "disc-1",
 		Schemas: map[string]models.TableSchema{"ds.orders": {}, "ds.events": {}, "ds.users": {}},
 		Insights: []models.Insight{
-			{ID: "ins-churn-1", AnalysisArea: "churn", Name: "High EU churn", Severity: "high", AffectedCount: 100, Description: "churn elevated in EU"},
-			{ID: "ins-fraud-1", AnalysisArea: "fraud", Name: "Card testing spike", Severity: "critical", AffectedCount: 12},
-			{ID: "ins-revenue-1", AnalysisArea: "revenue", Name: "Refund rate up", Severity: "medium", AffectedCount: 40},
+			// One vocabulary, because one run writes one: severity is three
+			// bands now, and the fixture used to mix a `critical` with a
+			// `high` and assert the first outranked the second. It no longer
+			// does, deliberately -- `critical` is a legacy word for what
+			// `high` means today, so the two rank together, and a run that
+			// produced both is a run that cannot happen.
+			{ID: "ins-churn-1", AnalysisArea: "churn", Name: "High EU churn", Severity: models.SeverityBandMedium, AffectedCount: 100, Description: "churn elevated in EU"},
+			{ID: "ins-fraud-1", AnalysisArea: "fraud", Name: "Card testing spike", Severity: models.SeverityBandHigh, AffectedCount: 12},
+			{ID: "ins-revenue-1", AnalysisArea: "revenue", Name: "Refund rate up", Severity: models.SeverityBandLow, AffectedCount: 40},
 		},
 	}
 	cons1, err := o.consolidateFindings(ctx, run1)
@@ -177,9 +183,9 @@ func TestLedgerLoop_Integration(t *testing.T) {
 	if len(lrc.findings) != 3 {
 		t.Errorf("run2 read context should carry 3 findings, got %d", len(lrc.findings))
 	}
-	// Critical finding ranks first.
+	// The highest-severity finding ranks first.
 	if lrc.findings[0].Name != "Card testing spike" {
-		t.Errorf("critical finding should rank first, got %q", lrc.findings[0].Name)
+		t.Errorf("the high-severity finding should rank first, got %q", lrc.findings[0].Name)
 	}
 	prevCtx := o.buildPreviousContext(&models.ProjectContext{TotalDiscoveries: 1, LastDiscoveryDate: time.Now()}, nil, nil, nil, lrc)
 	for _, want := range []string{"Investigation so far", "Coverage map", "untouched", "Card testing spike", "explore the untouched events tables"} {

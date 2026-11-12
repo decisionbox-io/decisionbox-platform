@@ -669,7 +669,14 @@ export function buildMap(idx: GraphIndex, filters: TreeFilters = {}): Investigat
   }
 
   // Most important first, so the cap keeps those.
-  const severityRank: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+  //
+  // `high` and `critical` share rank 0, and the tie is the point. `critical`
+  // was the top severity word until severity became derived; the top band is
+  // `high` now and `critical` is the top priority tier, so a finding sighted
+  // by the current build says `high` where an older row says `critical`.
+  // Ranking `high` below it would cap every new finding under the legacy ones
+  // and drop them off the end of this list. Mirrors LedgerFinding.Rank().
+  const severityRank: Record<string, number> = { critical: 0, high: 0, medium: 1, low: 2, info: 3 };
   const candidates: MapNode[] = [];
   const placeInTime = (node: MapNode): MapNode => {
     const ref = producedIn(idx, node.id);

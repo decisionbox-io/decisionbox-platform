@@ -219,3 +219,51 @@ func normalizeRecommendationFigureCurrencies(recs []models.Recommendation) {
 		settleCurrencies(recs[i].Figures, func(models.Figure) string { return "" })
 	}
 }
+
+// forFigures is the currency a set of an insight's figures should be read in,
+// or "" where the datasources they were drawn from disagree.
+//
+// One answer per insight rather than per figure, because severity compares
+// amounts ACROSS an insight's figures to find the largest: ranking two numbers
+// read in different currencies against each other is the mislabelling this
+// file exists to prevent, arriving as an arithmetic error instead of a
+// rendering one. So an insight whose cited steps span datasources with
+// different currencies has no single currency its amounts are comparable in,
+// and the honest answer is none.
+//
+// Resolved from the figures' OWN cited steps rather than from SourceSteps. A
+// figure names the step its number came from and that is the step whose
+// datasource it was read against; SourceSteps is the model's list of what it
+// looked at, which can be broader. No figure citing a known step falls back to
+// whatever every datasource agrees on -- nothing, where they do not.
+//
+// A SET of figures rather than the insight, because the caller decides which
+// of an insight's declarations count. The severity axis passes only the ones
+// the prose states, and it has to: a figure the insight never published
+// deciding that its amounts are incomparable would discard an amount that IS
+// on the page.
+func (p currencyPlan) forFigures(figures []models.Figure, stepByID map[int]*models.ExplorationStep) string {
+	distinct := map[string]struct{}{}
+	for _, f := range figures {
+		if f.Unit != models.UnitCurrency {
+			continue
+		}
+		if _, known := stepByID[f.Step]; !known {
+			continue
+		}
+		distinct[currencySymbol(p.forStep(f.Step, stepByID))] = struct{}{}
+	}
+	if len(distinct) != 1 {
+		// None: no currency figure citing a known step, so there is nothing
+		// to read off the document and the run-wide agreement is the best
+		// available answer. Several: genuinely incomparable amounts.
+		if len(distinct) == 0 {
+			return currencySymbol(p.agreed)
+		}
+		return ""
+	}
+	for c := range distinct {
+		return c
+	}
+	return ""
+}

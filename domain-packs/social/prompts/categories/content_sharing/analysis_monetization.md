@@ -51,9 +51,7 @@ Respond with ONLY valid JSON:
     {
       "name": "Profile Boost IAP — 68% of Purchasers Never Buy a Second Boost",
       "description": "Profile Boost is the highest-revenue IAP ($4.99/boost), generating $12,400 in the last 30 days from 2,480 unique purchasers. However, 68% of purchasers never buy a second boost. First-time boost buyers who receive >50 profile views during their boost period have a 45% repeat purchase rate, while those receiving <20 views have only 12% repeat rate. The average boost generates 34 profile views, but there's high variance (std dev: 42). Users who boost on weekends get 2.1x more views than weekday boosters.",
-      "severity": "high",
       "affected_count": 1686,
-      "risk_score": 0.0,
       "metrics": {
         "feature_name": "profile_boost",
         "opportunity_type": "repeat_purchase",
@@ -93,12 +91,17 @@ Respond with ONLY valid JSON:
 - **currency_imbalance**: Virtual currency economy with unhealthy earn/spend ratios
 - **trial_conversion**: Free trial users not converting to paid
 
-## Severity Calibration
+## What the platform measures this by
 
-- **critical**: Premium subscriber churn increasing, or total revenue declining, or a major monetization channel underperforming by >20%
-- **high**: Clear conversion opportunity with strong intent signals, or premium feature with high revenue potential but low adoption
-- **medium**: Moderate pricing optimization, or repeat purchase opportunity
-- **low**: Minor monetization tuning, or small-segment opportunity
+Severity is derived from the figures you declare, not from a word you choose.
+The platform re-checks each figure's arithmetic against the rows and bands the
+largest one that holds: a currency amount in this warehouse's own currency, or
+a percentage. So a finding that states its magnitude as a declared figure is
+ranked on that magnitude, and one that states no figure falls back to an area
+baseline and is marked *not quantified*.
+
+Declare the number that makes the finding matter. Do not describe how severe
+it is.
 
 ## Important Rules
 

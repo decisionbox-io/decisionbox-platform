@@ -34,6 +34,14 @@ type StandaloneRecommendation struct {
 	RelatedInsightIDs      []string        `bson:"related_insight_ids,omitempty" json:"related_insight_ids,omitempty"`
 	Confidence             float64         `bson:"confidence" json:"confidence"`
 
+	// Severity is inherited from the insights this recommendation cites --
+	// the highest of them -- rather than measured from its own figures, which
+	// are restatements of theirs. Carried here for the reason Scoring is:
+	// this collection is read directly, so a field absent from it is a field
+	// BSON drops on the way to a client. Empty on a legacy document and on
+	// one whose citations resolved to nothing scored.
+	Severity string `bson:"severity,omitempty" json:"severity,omitempty"`
+
 	// Validation is the verifier+refuter verdict attached after
 	// Phase 5.5. Nil on legacy docs and on docs written before this
 	// plan landed; populated by the orchestrator for every

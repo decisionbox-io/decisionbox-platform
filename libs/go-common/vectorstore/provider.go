@@ -63,7 +63,13 @@ type SearchOpts struct {
 	ProjectIDs     []string // required: scope to one or more projects
 	Types          []string // optional: "insight", "recommendation"
 	EmbeddingModel string   // optional: filter by model (for cross-project search)
-	Severity       string   // optional: "critical", "high", "medium", "low"
+	// Severity filters on the payload's `severity` field. The values a point
+	// can carry are the three derived bands -- "high", "medium", "low" --
+	// plus "critical" on a point indexed before severity was derived, when
+	// the word was the top severity rather than the top priority tier. A
+	// filter for "critical" therefore matches legacy points only, and is kept
+	// reachable for exactly that reason.
+	Severity string
 	AnalysisArea   string   // optional: filter by area
 	Limit          int      // max results to return
 	MinScore       float64  // optional: minimum similarity threshold

@@ -31,9 +31,7 @@ Respond with ONLY valid JSON:
     {
       "name": "Soft Currency Inflation — Day 14+ Players Hoarding 10x Spend Rate",
       "description": "Players active for 14+ days accumulate soft currency 10x faster than they can spend it. Average balance grows from 50K at day 7 to 2.3M at day 14, while the most expensive available upgrade costs 150K. This devalues soft currency and removes a key progression motivator. 890 players in this state. Payers are unaffected (they spend premium currency instead), widening the free-to-pay gap unnecessarily.",
-      "severity": "high",
       "affected_count": 890,
-      "risk_score": 0.55,
       "metrics": {
         "currency_name": "gold",
         "pattern_type": "inflation",
@@ -70,12 +68,17 @@ Respond with ONLY valid JSON:
 - **ad_dependency**: Economy overly reliant on rewarded ad earnings — problematic for ad-free users
 - **pay_wall**: Progression point where free players effectively cannot advance without spending real money
 
-## Severity Calibration
+## What the platform measures this by
 
-- **critical**: Economy imbalance directly causing churn or blocking progression for >100 players
-- **high**: Significant imbalance affecting engagement or monetization potential
-- **medium**: Moderate imbalance that reduces game satisfaction but doesn't cause churn
-- **low**: Minor pricing optimization or small economy tuning opportunity
+Severity is derived from the figures you declare, not from a word you choose.
+The platform re-checks each figure's arithmetic against the rows and bands the
+largest one that holds: a currency amount in this warehouse's own currency, or
+a percentage. So a finding that states its magnitude as a declared figure is
+ranked on that magnitude, and one that states no figure falls back to an area
+baseline and is marked *not quantified*.
+
+Declare the number that makes the finding matter. Do not describe how severe
+it is.
 
 ## Important Rules
 
