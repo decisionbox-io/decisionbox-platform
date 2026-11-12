@@ -11,6 +11,7 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/contextbudget"
 	"time"
 
 	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
@@ -32,6 +33,12 @@ type areaAnalysisInput struct {
 	explorationSteps []models.ExplorationStep
 	stepByID         map[int]*models.ExplorationStep
 	currencies       currencyPlan
+	// runInsights is what the areas BEFORE this one already reported, so this
+	// one can go somewhere else. The run's own accumulator, which grows as the
+	// run proceeds — unlike the base context, composed once at run start and so
+	// able to carry only earlier RUNS. Rendered here rather than by the loop,
+	// so the block is sized against the window that will receive it.
+	runInsights []models.Insight
 }
 
 // areaDisposition is what the loop should do with an outcome.
@@ -84,6 +91,12 @@ func (o *Orchestrator) analyseArea(ctx context.Context, in areaAnalysisInput) ar
 	// window calibrated mid-run (from an overflow 400) tightens the
 	// remaining areas too.
 	areaWindow, areaOutputCap := o.budgetFor(llmlayer.LayerAnalysis)
+	// What the areas before this one reported, sized against this area's own
+	// window. Rendered here rather than in the loop so it is bounded by the
+	// window that will receive it, and recomputed per area for the same reason
+	// the picker's budget is: a window calibrated mid-run tightens the rest.
+	soFar := renderRunFindingsSoFar(in.runInsights,
+		contextbudget.AvailableInput(areaWindow, intendedOutputReserve(areaOutputCap, areaWindow), analysisReservedSystemTokens))
 	// The base context and the area template are already decided and will be in
 	// this prompt whatever the picker does, so they come out of the budget
 	// before the evidence is sized against it.
@@ -94,7 +107,7 @@ func (o *Orchestrator) analyseArea(ctx context.Context, in areaAnalysisInput) ar
 	// discipline rules — about 3.7K tokens that summing the inputs cannot see,
 	// and enough to push a small-window request past its window while the
 	// picker believed it had room.
-	fixedInput := approxTokens(ctx, o.buildAnalysisAreaPrompt(baseContext, areaPrompt, datasetsStr, 0, "", refDataset))
+	fixedInput := approxTokens(ctx, o.buildAnalysisAreaPrompt(baseContext, areaPrompt, datasetsStr, 0, "", refDataset, soFar))
 	picker.BudgetTokens = analysisPickerBudgetTokens(AnalysisQueryResultsBudgetTokens, areaWindow, areaOutputCap, fixedInput)
 
 	pickResult, pickErr := picker.Pick(ctx, area, in.explorationSteps)
@@ -169,9 +182,9 @@ func (o *Orchestrator) analyseArea(ctx context.Context, in areaAnalysisInput) ar
 	// budget cannot rescue a prompt the block has already filled, and an
 	// input-only overflow cannot be answered by asking for less output.
 	baseContext, carried := o.refitForAnalysisArea(ctx, baseContext, areaPrompt, datasetsStr,
-		len(relevantSteps), queryResultsJSON, refDataset)
+		len(relevantSteps), queryResultsJSON, refDataset, soFar)
 
-	prompt := o.buildAnalysisAreaPrompt(baseContext, areaPrompt, datasetsStr, len(relevantSteps), queryResultsJSON, refDataset)
+	prompt := o.buildAnalysisAreaPrompt(baseContext, areaPrompt, datasetsStr, len(relevantSteps), queryResultsJSON, refDataset, soFar)
 
 	// Smart-overflow breadcrumb (R5): when the picker trimmed steps for
 	// budget, tell the model what evidence exists but wasn't shown, so it

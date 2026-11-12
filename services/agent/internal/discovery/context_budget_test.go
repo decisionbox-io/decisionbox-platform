@@ -1426,7 +1426,7 @@ func TestFixedPromptTokensCountsWhatTheBuildersAppend(t *testing.T) {
 
 	// Specifically: the rendered base context, and the widest rendered body.
 	wantBase := contextbudget.Tokens(o.buildBaseContext(prompts.BaseContext, "profile", "", "English", ""))
-	wantArea := contextbudget.Tokens(o.buildAnalysisAreaPrompt("", "analyse", "ds", 0, "", ""))
+	wantArea := contextbudget.Tokens(o.buildAnalysisAreaPrompt("", "analyse", "ds", 0, "", "", ""))
 	wantRec := contextbudget.Tokens(o.buildRecommendationsPrompt("", "recommend", "", "", ""))
 	widest := wantArea
 	if wantRec > widest {
@@ -1715,19 +1715,19 @@ func TestRefitForAnalysisArea(t *testing.T) {
 
 	window, outputCap := o.budgetFor(llmlayer.LayerAnalysis)
 	available := contextbudget.AvailableInput(window, intendedOutputReserve(outputCap, window), analysisReservedSystemTokens)
-	before := contextbudget.Tokens(o.buildAnalysisAreaPrompt(base, areaFixture, "ds", 12, evidence, ""))
+	before := contextbudget.Tokens(o.buildAnalysisAreaPrompt(base, areaFixture, "ds", 12, evidence, "", ""))
 	if before <= available {
 		t.Fatalf("fixture does not overflow: %d of %d", before, available)
 	}
 
-	got, _ := o.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, "")
-	after := contextbudget.Tokens(o.buildAnalysisAreaPrompt(got, areaFixture, "ds", 12, evidence, ""))
+	got, _ := o.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, "", "")
+	after := contextbudget.Tokens(o.buildAnalysisAreaPrompt(got, areaFixture, "ds", 12, evidence, "", ""))
 	t.Logf("available=%d before=%d after=%d", available, before, after)
 	if after > available {
 		t.Errorf("the refitted prompt is still %d tokens against %d available", after, available)
 	}
 	// The evidence stays: it is what the area is analysing.
-	if !strings.Contains(o.buildAnalysisAreaPrompt(got, areaFixture, "ds", 12, evidence, ""), `"sql":"select 1"`) {
+	if !strings.Contains(o.buildAnalysisAreaPrompt(got, areaFixture, "ds", 12, evidence, "", ""), `"sql":"select 1"`) {
 		t.Error("the evidence was dropped — that is the thing being analysed")
 	}
 	// And the legacy insight dump must not come back in through the floor.
@@ -1738,7 +1738,7 @@ func TestRefitForAnalysisArea(t *testing.T) {
 	// A prompt that fits is returned untouched.
 	o2 := &Orchestrator{projectID: "p1", llmProvider: "bedrock", llmModel: "m",
 		llmInputWindow: 1_000_000, llmOutputCap: 64_000, baseRebuild: o.baseRebuild}
-	if got, _ := o2.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, ""); got != base {
+	if got, _ := o2.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, "", ""); got != base {
 		t.Error("the base context was rebuilt on a 1M window")
 	}
 }
@@ -1853,7 +1853,7 @@ func TestRefitReportsWhatThePromptCarries(t *testing.T) {
 	const areaFixture = "Analyse this area.\n{{QUERY_RESULTS}}\n"
 	evidence := strings.Repeat(`{"step":1,"sql":"select 1","rows":[["a","b"]]},`, 1_500)
 
-	refitted, carried := o.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, "")
+	refitted, carried := o.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, "", "")
 	if refitted == base {
 		t.Fatal("fixture did not refit")
 	}
@@ -1872,7 +1872,7 @@ func TestRefitReportsWhatThePromptCarries(t *testing.T) {
 	big := &Orchestrator{projectID: "p1", llmProvider: "bedrock", llmModel: "m",
 		llmInputWindow: 1_000_000, llmOutputCap: 64_000,
 		baseRebuild: o.baseRebuild, baseContextFindingIDs: o.baseContextFindingIDs}
-	if _, ids := big.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, ""); len(ids) != len(o.baseContextFindingIDs) {
+	if _, ids := big.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, "", ""); len(ids) != len(o.baseContextFindingIDs) {
 		t.Errorf("a prompt that was not resized reported %d ids, want the run-start %d",
 			len(ids), len(o.baseContextFindingIDs))
 	}

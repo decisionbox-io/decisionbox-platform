@@ -11,6 +11,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/contextbudget"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
 // ledgerReadContext is the compounding-discovery read context assembled at run
@@ -460,3 +461,106 @@ func renderLedgerTasks(tasks []commonmodels.LedgerTask) string {
 	sb.WriteString("\n")
 	return sb.String()
 }
+
+// --- what THIS run has already found (enterprise#542) ---
+
+// runFindingsSoFar is the rendered block naming what earlier analysis areas of
+// the SAME run already reported.
+//
+// A named type rather than a seventh string parameter on
+// buildAnalysisAreaPrompt, which already takes five strings: the compiler
+// cannot catch two of them being swapped, and the measurement paths have to
+// carry this one too or they measure a prompt the model does not receive. That
+// mistake accounted for five consecutive review findings on this change, so the
+// type is the cheap guard against making it again.
+type runFindingsSoFar string
+
+// maxRunFindingsInAreaPrompt caps the lines, like maxLedgerTasksInPrompt and
+// maxHistoricalPatternsInPrompt next to it: a property of a readable prompt
+// rather than of a deployment. A run's whole output is the natural bound — ten
+// areas of eight insights is eighty — and the budget below is what actually
+// keeps it inside the window.
+const maxRunFindingsInAreaPrompt = 100
+
+// runFindingsSoFarShare is the share of an area's available input the block may
+// occupy. A share rather than a token count, for the reason the rest of this
+// change is about: a constant is simultaneously trivial on a large window and
+// material on a small one, and on an 8K model a fixed few thousand tokens would
+// be a third of everything available.
+//
+// Small, because the block is names and figures only and is bounded by the
+// run's own output — ten areas of eight insights is eighty lines, which is
+// about 1.4K tokens. The share is what stops a pathological run spending an
+// area's evidence budget on its own table of contents.
+const runFindingsSoFarShare = 0.05
+
+// runFindingsSoFarHeading introduces the block.
+const runFindingsSoFarHeading = "### Already found by other areas in THIS run — do NOT report these again\n"
+
+// renderRunFindingsSoFar names what the areas before this one reported, so this
+// area can go somewhere else.
+//
+// It exists because {{PREVIOUS_CONTEXT}} cannot answer this. That block is
+// composed once at run start, before any area has run, and carries what EARLIER
+// RUNS established — so an area has never had any way to know what a sibling
+// area of its own run just said. Measured on a real project, every single
+// duplicate insight within a run crossed an area boundary, and roughly half of
+// each run's output restated another area of the same run.
+//
+// Names, areas and figures only. Recognition is the whole job: the model needs
+// to see that a subject is taken, not to re-read the finding.
+func renderRunFindingsSoFar(insights []models.Insight, availableInput int) runFindingsSoFar {
+	if len(insights) == 0 {
+		return ""
+	}
+	budget := contextbudget.Share(availableInput, runFindingsSoFarShare)
+	if budget <= 0 {
+		// A window with nothing spare carries nothing, the same answer the
+		// prior-knowledge block gives. Said once, here, rather than left for
+		// the overflow retry to discover.
+		return ""
+	}
+	if len(insights) > maxRunFindingsInAreaPrompt {
+		// The most recent, which are the ones the areas nearest this one
+		// produced and so the likeliest to be re-trodden.
+		insights = insights[len(insights)-maxRunFindingsInAreaPrompt:]
+	}
+	lines := make([]string, 0, len(insights))
+	for _, in := range insights {
+		area := in.AnalysisArea
+		if area == "" {
+			area = "general"
+		}
+		line := fmt.Sprintf("- [%s] **%s**", area, strings.TrimSpace(in.Name))
+		if in.AffectedCount > 0 {
+			line += fmt.Sprintf(" (affected %d)", in.AffectedCount)
+		}
+		lines = append(lines, line+"\n")
+	}
+	n := contextbudget.FitLines(lines, budget)
+	if n == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString(runFindingsSoFarHeading)
+	sb.WriteString(runFindingsSoFarInstruction)
+	sb.WriteString("\n")
+	for _, l := range lines[:n] {
+		sb.WriteString(l)
+	}
+	sb.WriteString("\n")
+	return runFindingsSoFar(sb.String())
+}
+
+// runFindingsSoFarInstruction is deliberately the same contract as
+// noRestateInstruction, one axis along. A model told two different things about
+// two kinds of repetition will apply neither consistently; the cross-run
+// wording is also the one that has been measured to work, so this is that
+// wording with its subject changed rather than a new attempt at it.
+const runFindingsSoFarInstruction = "These were reported MINUTES AGO by other analysis areas of this same run, and are already recorded for it. " +
+	"Do NOT emit an insight that restates one — a restatement is not a finding, however differently it is worded or whatever figure it carries. " +
+	"If your evidence gives a DIFFERENT magnitude for the same thing, report that and say which one it updates. " +
+	"If it gives the same thing, report nothing about it. " +
+	"If you can go deeper than one — a cause, a segment, a mechanism it does not already name — that is a new finding and is what this area is for.\n" +
+	"Several of these may be about subjects close to your own area: the overlap is expected, and leaving a subject to the area that already covered it is the correct answer, not a gap in your own.\n"

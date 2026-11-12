@@ -235,3 +235,150 @@ func TestLedgerBlockFitsItsWholeAllowance(t *testing.T) {
 		}
 	}
 }
+
+// --- what THIS run has already found (enterprise#542) ---
+
+func runInsights(n int) []models.Insight {
+	out := make([]models.Insight, 0, n)
+	areas := []string{"pricing-margin-dynamics", "inventory-stock-health", "store-sales-performance"}
+	for i := 0; i < n; i++ {
+		out = append(out, models.Insight{
+			ID:            "ins-" + strconv.Itoa(i),
+			AnalysisArea:  areas[i%len(areas)],
+			Name:          "Finding " + strconv.Itoa(i) + " about the warehouse",
+			Description:   strings.Repeat("substance nobody needs to re-read. ", 40),
+			Severity:      "high",
+			AffectedCount: 100 + i,
+		})
+	}
+	return out
+}
+
+// TestRenderRunFindingsSoFar. Every duplicate insight measured inside a run
+// crossed an analysis-area boundary, and roughly half of each run's output
+// restated another area of the same run. {{PREVIOUS_CONTEXT}} cannot address
+// that: it is composed once at run start, before any area has run, so it
+// carries what EARLIER RUNS established and nothing from this one.
+func TestRenderRunFindingsSoFar(t *testing.T) {
+	t.Run("nothing yet renders nothing", func(t *testing.T) {
+		// The first area of a run has no siblings to be told about, and a
+		// heading with nothing under it reads as "the others found nothing".
+		if got := renderRunFindingsSoFar(nil, 100_000); got != "" {
+			t.Errorf("got %q, want empty", got)
+		}
+		if got := renderRunFindingsSoFar([]models.Insight{}, 100_000); got != "" {
+			t.Errorf("got %q, want empty", got)
+		}
+	})
+
+	t.Run("names, areas and figures — not descriptions", func(t *testing.T) {
+		got := string(renderRunFindingsSoFar(runInsights(3), 100_000))
+		for _, want := range []string{
+			"Already found by other areas in THIS run",
+			"[pricing-margin-dynamics]",
+			"Finding 0 about the warehouse",
+			"(affected 100)",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("missing %q in:\n%s", want, got)
+			}
+		}
+		// Recognition is the job: the model has to see a subject is taken,
+		// not re-read the finding. Descriptions would multiply the cost by the
+		// number of areas left to run.
+		if strings.Contains(got, "substance nobody needs to re-read") {
+			t.Error("the block carries descriptions; it is meant to be recognisable, not complete")
+		}
+	})
+
+	t.Run("the instruction is the same contract the cross-run block states", func(t *testing.T) {
+		// A model told two different things about two kinds of repetition will
+		// apply neither consistently — and the cross-run wording is the one
+		// that has been measured to work.
+		got := string(renderRunFindingsSoFar(runInsights(2), 100_000))
+		for _, want := range []string{
+			"Do NOT emit an insight that restates one",
+			"magnitude for the same thing",
+			"report nothing about it",
+			"go deeper",
+			"leaving a subject to the area that already covered it is the correct answer",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("missing %q", want)
+			}
+		}
+	})
+
+	t.Run("the block is sized from the window, not from a constant", func(t *testing.T) {
+		// A fixed token budget is simultaneously trivial on a large window and
+		// material on a small one, which is the thing this whole change is
+		// about. The share bounds the LINES; the heading and the instruction
+		// are the block's fixed cost.
+		overhead := contextbudget.Tokens(runFindingsSoFarHeading + runFindingsSoFarInstruction + "\n\n")
+		for _, available := range []int{1_000, 20_000, 150_000} {
+			got := renderRunFindingsSoFar(runInsights(500), available)
+			if got == "" {
+				continue
+			}
+			lines := contextbudget.Tokens(string(got)) - overhead
+			if want := contextbudget.Share(available, runFindingsSoFarShare); lines > want {
+				t.Errorf("available %d: lines cost %d tokens against a share of %d", available, lines, want)
+			}
+		}
+		// More window, more of the run named.
+		small := strings.Count(string(renderRunFindingsSoFar(runInsights(500), 20_000)), "\n- ")
+		large := strings.Count(string(renderRunFindingsSoFar(runInsights(500), 150_000)), "\n- ")
+		if large <= small {
+			t.Errorf("20K window named %d lines, 150K named %d", small, large)
+		}
+	})
+
+	t.Run("a window with nothing spare carries nothing", func(t *testing.T) {
+		// The same answer the prior-knowledge block gives, rather than leaving
+		// it for the overflow retry to discover.
+		for _, available := range []int{0, -1} {
+			if got := renderRunFindingsSoFar(runInsights(20), available); got != "" {
+				t.Errorf("available %d rendered %q", available, got)
+			}
+		}
+	})
+
+	t.Run("a run bigger than the cap keeps the most recent", func(t *testing.T) {
+		// The areas nearest this one are the likeliest to be re-trodden.
+		got := string(renderRunFindingsSoFar(runInsights(maxRunFindingsInAreaPrompt + 20), 100_000))
+		if strings.Contains(got, "Finding 0 about") {
+			t.Error("kept the oldest insights over the most recent")
+		}
+		if !strings.Contains(got, "Finding "+strconv.Itoa(maxRunFindingsInAreaPrompt+19)+" about") {
+			t.Error("dropped the most recent insight")
+		}
+	})
+}
+
+// TestRunFindingsReachTheMeasuredPrompt is the property five consecutive review
+// findings on this change were about: a section the model receives but the
+// budget does not measure. The area's own prompt assembly and both of its
+// measurement paths have to carry this block, or the prior-knowledge block is
+// sized against a prompt that is not the one being sent.
+func TestRunFindingsReachTheMeasuredPrompt(t *testing.T) {
+	o := &Orchestrator{}
+	soFar := renderRunFindingsSoFar(runInsights(40), 100_000)
+	if soFar == "" {
+		t.Fatal("fixture rendered nothing")
+	}
+
+	withBlock := o.buildAnalysisAreaPrompt("BASE", "AREA {{QUERY_RESULTS}}", "ds", 3, "[]", "", soFar)
+	without := o.buildAnalysisAreaPrompt("BASE", "AREA {{QUERY_RESULTS}}", "ds", 3, "[]", "", "")
+
+	if !strings.Contains(withBlock, "Already found by other areas in THIS run") {
+		t.Fatal("the block does not reach the assembled prompt")
+	}
+	if strings.Contains(without, "Already found by other areas in THIS run") {
+		t.Error("an empty block still rendered a heading")
+	}
+	// It costs what it costs, and the measurement has to see it.
+	delta := contextbudget.Tokens(withBlock) - contextbudget.Tokens(without)
+	if want := contextbudget.Tokens(string(soFar)); delta < want-2 {
+		t.Errorf("the prompt grew by %d tokens, want about the block's %d", delta, want)
+	}
+}

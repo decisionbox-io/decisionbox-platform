@@ -386,7 +386,7 @@ func (o *Orchestrator) fixedPromptTokens(ctx context.Context, p fixedPromptParts
 	}
 	for _, a := range p.Areas {
 		if body, ok := p.Prompts.AnalysisAreas[a.ID]; ok {
-			if n := approxTokens(ctx, o.buildAnalysisAreaPrompt("", body, p.Datasets, 0, "", p.RefDataset)); n > widest {
+			if n := approxTokens(ctx, o.buildAnalysisAreaPrompt("", body, p.Datasets, 0, "", p.RefDataset, "")); n > widest {
 				widest = n
 			}
 		}
@@ -512,10 +512,10 @@ func (o *Orchestrator) refitForRecommendations(ctx context.Context, baseContext,
 // therefore could not rescue a prompt the block had already filled, and this is
 // what does.
 func (o *Orchestrator) refitForAnalysisArea(ctx context.Context, baseContext, areaPrompt, datasetsStr string,
-	totalQueries int, queryResultsJSON, refDataset string) (string, []string) {
+	totalQueries int, queryResultsJSON, refDataset string, soFar runFindingsSoFar) (string, []string) {
 	return o.refitAgainst(ctx, "analysis", baseContext, llmlayer.LayerAnalysis,
 		func(base string) string {
-			return o.buildAnalysisAreaPrompt(base, areaPrompt, datasetsStr, totalQueries, queryResultsJSON, refDataset)
+			return o.buildAnalysisAreaPrompt(base, areaPrompt, datasetsStr, totalQueries, queryResultsJSON, refDataset, soFar)
 		})
 }
 

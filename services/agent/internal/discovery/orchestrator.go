@@ -1762,6 +1762,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 				explorationSteps: explorationResult.Steps,
 				stepByID:         stepByID,
 				currencies:       currencies,
+				// What the areas before this one reported. allInsights is the
+				// run's own accumulator, appended to at the end of each
+				// iteration, so this is exactly areas 1..N-1 — and it is
+				// already in hand, which is why this needed rendering rather
+				// than plumbing.
+				runInsights: allInsights,
 			})
 			switch out.disposition {
 			case areaSuperseded:
@@ -3529,7 +3535,7 @@ func (o *Orchestrator) buildBaseContext(template, profileStr, previousContext, l
 // discipline rules (3, 4, 5, 6). Called once per analysis area inside the
 // run loop — user-added custom areas flow through the same path, so they
 // inherit the rules regardless of pack content.
-func (o *Orchestrator) buildAnalysisAreaPrompt(baseContext, areaPrompt, datasetsStr string, totalQueries int, queryResultsJSON, refDataset string) string {
+func (o *Orchestrator) buildAnalysisAreaPrompt(baseContext, areaPrompt, datasetsStr string, totalQueries int, queryResultsJSON, refDataset string, soFar runFindingsSoFar) string {
 	prompt := baseContext + "\n\n" + areaPrompt
 	prompt = strings.ReplaceAll(prompt, "{{DATASET}}", datasetsStr)
 	prompt = strings.ReplaceAll(prompt, "{{TOTAL_QUERIES}}", fmt.Sprintf("%d", totalQueries))
@@ -3537,6 +3543,14 @@ func (o *Orchestrator) buildAnalysisAreaPrompt(baseContext, areaPrompt, datasets
 	// domain-pack templates, so one wording covers every pack and a pack
 	// author cannot ship an area prompt that renders the digest unexplained.
 	prompt = strings.ReplaceAll(prompt, "{{QUERY_RESULTS}}", digestLegend+queryResultsJSON)
+	// What the areas before this one already reported, so this one can go
+	// somewhere else. Appended in code rather than substituted into a pack
+	// template, for the reason the contracts below are: a section that lives
+	// only in templates is one a custom area does not have.
+	if soFar != "" {
+		prompt += "\n\n" + string(soFar)
+	}
+
 	// Appended after the area body for the same reason the discipline rules
 	// are: a contract that lives only in pack templates is one a custom area
 	// does not have.
