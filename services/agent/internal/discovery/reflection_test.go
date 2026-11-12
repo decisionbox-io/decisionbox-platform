@@ -2018,9 +2018,12 @@ func TestApplyReflection_ReindexesStatusChanges(t *testing.T) {
 		}{{FindingID: id, Status: status, Reason: "grounded in this run"}}
 		return ref
 	}
+	// The two steps the phase runs: applyReflection returns what needs
+	// re-indexing, and the phase does it last, after every durable write.
 	apply := func(o *Orchestrator, ref *parsedReflection) {
-		o.applyReflection(context.Background(), &models.DiscoveryResult{ID: "d1"},
+		restatused := o.applyReflection(context.Background(), &models.DiscoveryResult{ID: "d1"},
 			agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeOff}, ref, consolidationResult{})
+		o.reindexFindings(context.Background(), restatused)
 	}
 
 	t.Run("a reconfirmed finding is indexed as live again", func(t *testing.T) {
@@ -2133,8 +2136,9 @@ func TestApplyReflection_ReconfirmingDoesNotReindex(t *testing.T) {
 	// Consolidation re-indexed "same" in this pass, so its payload already
 	// carries the status it holds now.
 	cons := consolidationResult{Reindexed: map[string]struct{}{"same": {}}}
-	o.applyReflection(context.Background(), &models.DiscoveryResult{ID: "d1"},
+	restatused := o.applyReflection(context.Background(), &models.DiscoveryResult{ID: "d1"},
 		agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeOff}, ref, cons)
+	o.reindexFindings(context.Background(), restatused)
 
 	// Both verdicts are still recorded — the history is what the model said,
 	// not what changed.
@@ -2176,9 +2180,10 @@ func TestApplyReflection_ReconfirmingRepairsAnUnwrittenPayload(t *testing.T) {
 	}{{FindingID: "untouched", Status: commonmodels.LedgerFindingStatusConfirmed, Reason: "still true"}}
 
 	// Nothing in Reindexed: this run did not see this finding again.
-	o.applyReflection(context.Background(), &models.DiscoveryResult{ID: "d1"},
+	restatused := o.applyReflection(context.Background(), &models.DiscoveryResult{ID: "d1"},
 		agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeOff}, ref,
 		consolidationResult{Reindexed: map[string]struct{}{}})
+	o.reindexFindings(context.Background(), restatused)
 
 	if len(vs.upserted) != 1 || vs.upserted[0].ID != "untouched" {
 		t.Fatalf("upserted %+v, want the finding whose payload age is unknown", vs.upserted)
@@ -2187,3 +2192,84 @@ func TestApplyReflection_ReconfirmingRepairsAnUnwrittenPayload(t *testing.T) {
 		t.Errorf("indexed status = %v, want confirmed", got)
 	}
 }
+
+// TestApplyReflection_IndexMaintenanceCannotCostADurableWrite. The re-index
+// embeds, and it used to run inline between the status writes and everything
+// after them — the learnings, the task closures, the coverage map and the
+// convergence point. A stalled embedder or a reflection call that returned near
+// its deadline then spent the time those writes needed, and the phase lost
+// records it already had the answers for.
+//
+// The same ordering consolidation states in its own comment: obligation first,
+// enrichment last.
+func TestApplyReflection_IndexMaintenanceCannotCostADurableWrite(t *testing.T) {
+	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{
+		{ID: "f1", ProjectID: "p1", Name: "n", Status: commonmodels.LedgerFindingStatusConfirmed},
+	}}
+	// An embedder that never returns within the test's patience.
+	blocked := &blockingEmbeddingProvider{dims: 3, model: "test-model"}
+	o := &Orchestrator{
+		projectID: "p1", runID: "r1", findingRepo: fr,
+		promptFindingIDs: idsOf(fr.findings),
+		vectorStore:      &mockVectorStore{}, embeddingProvider: blocked,
+		learningRepo: &fakeLearningRepo{},
+	}
+	ref := &parsedReflection{}
+	ref.Learnings = []struct {
+		Category  string  `json:"category"`
+		Note      string  `json:"note"`
+		Relevance float64 `json:"relevance"`
+	}{{Category: "grain", Note: "orders are one row per line", Relevance: 0.9}}
+	ref.StatusUpdates = []struct {
+		FindingID string `json:"finding_id"`
+		Status    string `json:"status"`
+		Reason    string `json:"reason"`
+	}{{FindingID: "f1", Status: commonmodels.LedgerFindingStatusResolved, Reason: "gone"}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	restatused := o.applyReflection(ctx, &models.DiscoveryResult{ID: "d1"},
+		agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeOff}, ref, consolidationResult{})
+
+	// applyReflection must have finished its durable work without waiting on
+	// the embedder at all.
+	if blocked.calls != 0 {
+		t.Errorf("applyReflection embedded %d time(s) — the maintenance is back inside the durable path", blocked.calls)
+	}
+	if len(fr.statuses) != 1 {
+		t.Errorf("the status write did not land: %+v", fr.statuses)
+	}
+	if len(restatused) != 1 || restatused[0].ID != "f1" {
+		t.Fatalf("restatused = %+v, want the finding whose status moved", restatused)
+	}
+
+	// And the maintenance itself, run last, gives up on a spent deadline
+	// rather than hanging the phase.
+	done := make(chan struct{})
+	go func() {
+		o.reindexFindings(ctx, restatused)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reindexFindings did not return on a context that is out of time")
+	}
+}
+
+// blockingEmbeddingProvider blocks until its context is done, which is what a
+// stalled embedding endpoint looks like from here.
+type blockingEmbeddingProvider struct {
+	dims  int
+	model string
+	calls int
+}
+
+func (b *blockingEmbeddingProvider) Embed(ctx context.Context, texts []string) ([][]float64, error) {
+	b.calls++
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func (b *blockingEmbeddingProvider) Dimensions() int                { return b.dims }
+func (b *blockingEmbeddingProvider) ModelName() string              { return b.model }
+func (b *blockingEmbeddingProvider) Validate(context.Context) error { return nil }

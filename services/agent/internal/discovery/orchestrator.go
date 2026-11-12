@@ -353,6 +353,11 @@ type Orchestrator struct {
 	// these as pursued rather than re-reading the queue, which by then may
 	// have moved under it.
 	shownTaskIDs []string
+	// baseRebuild is what the recommendations phase needs to compose the base
+	// context again with a smaller prior-knowledge block. Nil until the base
+	// context has been built.
+	baseRebuild *baseContextRebuild
+
 	// promptFindingIDs are the ledger findings the reflection prompt carried.
 	// An id the model returns that is in neither this nor the run's own
 	// insights was invented.
@@ -1186,6 +1191,15 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// exploration and analysis prompts, so the run continues the investigation
 	// (drill / tile the frontier / re-check) instead of re-treading it.
 	previousContextStr := frame.with(renderPriorFindingsSlot(lrc, prevInsights))
+
+	// Kept so the recommendations phase can compose this again with a block
+	// sized against the payload it actually carries — that phase has no
+	// evidence picker to shrink anything, so it is the one that can be pushed
+	// past its window by a generous ledger.
+	o.baseRebuild = &baseContextRebuild{
+		template: prompts.BaseContext, profile: profileStr, language: language,
+		refDataset: refDataset, frame: frame, lrc: lrc, prevInsights: prevInsights,
+	}
 
 	// baseContext is reused across exploration, analysis, and
 	// recommendation prompts. It combines project profile data,
@@ -3059,6 +3073,12 @@ func (o *Orchestrator) generateRecommendations(
 	if len(o.datasets) > 0 {
 		refDataset = o.datasets[0]
 	}
+
+	// The one phase whose variable payload nothing bounds: analysis has an
+	// evidence budget that shrinks to fit, recommendations carry every insight
+	// the run produced. So the prior-knowledge block is checked against the
+	// prompt as it really stands, and resized if it does not fit.
+	baseContext = o.refitForRecommendations(ctx, baseContext, promptTemplate, summary, string(insightsJSON), refDataset)
 
 	prompt := o.buildRecommendationsPrompt(baseContext, promptTemplate, summary, string(insightsJSON), refDataset)
 

@@ -59,8 +59,13 @@ func (o *Orchestrator) fitPriorFindings(lrc *ledgerReadContext, fixedPromptToken
 	novelty, haveNovelty := latestRunNovelty(lrc.convergence)
 	available := o.baseContextAvailableInput()
 	budget := priorContextBudget(available, fixedPromptTokens, novelty, haveNovelty)
+	// The allowance is for the whole block; the fit is over its lines.
+	lines := budget - ledgerBlockOverhead()
+	if lines < 0 {
+		lines = 0
+	}
 	lrc.findings, lrc.descChars = contextbudget.FitFindings(
-		lrc.candidates, budget, contextbudget.MinFindingDescChars, contextbudget.MaxFindingDescChars)
+		lrc.candidates, lines, contextbudget.MinFindingDescChars, contextbudget.MaxFindingDescChars)
 
 	// The ids this run is being shown, so the per-area retrieval can spend its
 	// own budget on findings this block does not already carry.
@@ -262,12 +267,27 @@ const noRestateInstruction = "These findings are ALREADY RECORDED in this projec
 // renderLedgerFindings renders the ranked findings-with-substance block. Input
 // is already ranked, and already selected and sized by the loader's budget —
 // descChars is the width that budget chose, not a second decision.
+// ledgerFindingsHeading introduces the block. Named because its cost has to be
+// subtracted from the block's allowance before the lines are fitted.
+const ledgerFindingsHeading = "### Already established findings — do NOT re-report these\n"
+
+// ledgerBlockOverhead is what the block costs besides its finding lines: this
+// heading, the no-restate instruction, and the blank lines around them.
+//
+// Subtracted from the allowance before the lines are fitted, because
+// contextbudget.FitFindings is given a budget for LINES. Handing it the whole
+// block allowance overran that allowance by exactly this much — the same error
+// as pricing a line without the newline that follows it, one level up.
+func ledgerBlockOverhead() int {
+	return contextbudget.Tokens(ledgerFindingsHeading + noRestateInstruction + "\n\n")
+}
+
 func renderLedgerFindings(findings []commonmodels.LedgerFinding, descChars int) string {
 	if len(findings) == 0 {
 		return ""
 	}
 	var sb strings.Builder
-	sb.WriteString("### Already established findings — do NOT re-report these\n")
+	sb.WriteString(ledgerFindingsHeading)
 	sb.WriteString(noRestateInstruction)
 	sb.WriteString("\n")
 	for _, f := range findings {

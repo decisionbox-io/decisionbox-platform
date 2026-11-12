@@ -1599,3 +1599,89 @@ func TestPreviousContextFrameClosesAroundTheFindings(t *testing.T) {
 		t.Errorf("an empty frame rendered %q", empty.with("anything"))
 	}
 }
+
+// TestRefitForRecommendations. Recommendations are the one phase whose variable
+// payload nothing bounds: analysis has an evidence budget that shrinks to fit,
+// and recommendations carry every insight the run produced. So a prior-knowledge
+// block sized for the exploration shape, plus a large insights payload, can push
+// the input alone past the window — and an input-only overflow cannot be
+// recovered by asking for less output, so the phase returns nothing where the
+// fixed 25-finding block it replaces had fitted.
+// recTemplateFixture carries the placeholders a real recommendations template
+// carries. Without them the payload never enters the prompt, and a test that
+// omitted them measured a prompt with no payload in it — which is how the first
+// version of this test passed the overflow case for the wrong reason.
+const recTemplateFixture = "Recommend from {{INSIGHTS_SUMMARY}}:\n{{INSIGHTS_DATA}}\n"
+
+func TestRefitForRecommendations(t *testing.T) {
+	newOrchestrator := func(window, outputCap int, shown int) *Orchestrator {
+		o := &Orchestrator{
+			projectID: "p1", llmProvider: "bedrock", llmModel: "m",
+			llmInputWindow: window, llmOutputCap: outputCap,
+		}
+		lrc := &ledgerReadContext{hasLedger: true, candidates: ledgerFixture(420), descChars: 600}
+		lrc.findings = lrc.candidates[:shown]
+		o.baseRebuild = &baseContextRebuild{
+			template: "base {{PROFILE}} {{PREVIOUS_CONTEXT}}", profile: "p", language: "English",
+			frame: previousContextFrame{head: "## Investigation so far\n\n"},
+			lrc:   lrc,
+		}
+		return o
+	}
+
+	t.Run("a prompt that fits is left alone", func(t *testing.T) {
+		o := newOrchestrator(1_000_000, 64_000, 420)
+		base := o.renderBaseContext(o.baseRebuild, renderLedgerFindings(o.baseRebuild.lrc.findings, 600))
+		got := o.refitForRecommendations(context.Background(), base, recTemplateFixture, "summary", "[]", "")
+		if got != base {
+			t.Errorf("the base context was rebuilt on a 1M window: %d chars -> %d", len(base), len(got))
+		}
+	})
+
+	t.Run("a payload that does not fit shrinks the block, not the phase", func(t *testing.T) {
+		o := newOrchestrator(32_000, 4_096, 420)
+		base := o.renderBaseContext(o.baseRebuild, renderLedgerFindings(o.baseRebuild.lrc.findings, 600))
+		payload := strings.Repeat(`{"name":"an insight","description":"with substance"},`, 200)
+
+		window, outputCap := o.budgetFor(llmlayer.LayerRecommendations)
+		available := contextbudget.AvailableInput(window, intendedOutputReserve(outputCap, window), analysisReservedSystemTokens)
+		before := contextbudget.Tokens(o.buildRecommendationsPrompt(base, recTemplateFixture, "summary", payload, ""))
+		if before <= available {
+			t.Fatalf("fixture does not overflow: %d tokens of %d available", before, available)
+		}
+
+		got := o.refitForRecommendations(context.Background(), base, recTemplateFixture, "summary", payload, "")
+		after := contextbudget.Tokens(o.buildRecommendationsPrompt(got, recTemplateFixture, "summary", payload, ""))
+		t.Logf("available=%d  before=%d  after=%d", available, before, after)
+		if after > available {
+			t.Errorf("the refitted prompt is still %d tokens against %d available", after, available)
+		}
+		// The phase keeps its payload: it is this run's own output and the
+		// recommendations are about it.
+		if !strings.Contains(o.buildRecommendationsPrompt(got, recTemplateFixture, "summary", payload, ""), "an insight") {
+			t.Error("the insights payload was dropped — that is the evidence, not the context")
+		}
+	})
+
+	t.Run("a payload that fills the window on its own leaves no block", func(t *testing.T) {
+		o := newOrchestrator(32_000, 4_096, 420)
+		base := o.renderBaseContext(o.baseRebuild, renderLedgerFindings(o.baseRebuild.lrc.findings, 600))
+		huge := strings.Repeat("x", 400_000)
+		got := o.refitForRecommendations(context.Background(), base, recTemplateFixture, "summary", huge, "")
+		if strings.Contains(got, "Already established findings") {
+			t.Error("findings were kept in a prompt whose payload alone fills the window")
+		}
+		// And it is still a base context, not an empty string: the profile and
+		// the discipline rules are not optional.
+		if !strings.Contains(got, "Investigation so far") {
+			t.Error("the rest of the base context was thrown away with the findings")
+		}
+	})
+
+	t.Run("no ledger, nothing to refit", func(t *testing.T) {
+		o := &Orchestrator{projectID: "p1", llmInputWindow: 32_000, llmOutputCap: 4_096}
+		if got := o.refitForRecommendations(context.Background(), "base", recTemplateFixture, "s", "[]", ""); got != "base" {
+			t.Errorf("got %q, want the caller's base context untouched", got)
+		}
+	})
+}

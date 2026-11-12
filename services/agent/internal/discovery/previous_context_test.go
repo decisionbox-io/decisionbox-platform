@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/contextbudget"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
@@ -203,4 +204,34 @@ func (o *Orchestrator) loadAndFitLedger(ctx context.Context, fixedPromptTokens i
 	lrc := o.loadLedgerReadContext(ctx)
 	o.fitPriorFindings(lrc, fixedPromptTokens)
 	return lrc
+}
+
+// TestLedgerBlockFitsItsWholeAllowance. FitFindings is handed a budget for
+// LINES, and the rendered block is heading + no-restate instruction + lines.
+// Handing it the whole block allowance overran that allowance by the heading's
+// cost — the same error as pricing a line without the newline that follows it,
+// one level up, and the enterprise renderer had already been fixed for it.
+func TestLedgerBlockFitsItsWholeAllowance(t *testing.T) {
+	o := &Orchestrator{
+		projectID: "p1", llmProvider: "bedrock", llmModel: "m",
+		llmInputWindow: 32_000, llmOutputCap: 8_192,
+		findingRepo: &fakeFindingRepo{findings: ledgerFixture(420)},
+	}
+	if o := ledgerBlockOverhead(); o <= 0 {
+		t.Fatalf("the block overhead measured %d — the subtraction would be a no-op", o)
+	}
+
+	for _, fixed := range []int{0, 2_000, 8_000, 16_000} {
+		lrc := o.loadAndFitLedger(context.Background(), fixed)
+		if lrc == nil {
+			t.Fatal("no read context")
+		}
+		available := o.baseContextAvailableInput()
+		allowance := priorContextBudget(available, fixed, 0, false)
+		block := renderLedgerFindings(lrc.findings, lrc.descChars)
+		if got := contextbudget.Tokens(block); got > allowance {
+			t.Errorf("fixed=%d: the rendered block is %d tokens against an allowance of %d (%d over)",
+				fixed, got, allowance, got-allowance)
+		}
+	}
 }

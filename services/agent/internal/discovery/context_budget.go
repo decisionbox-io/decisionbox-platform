@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
+	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	goconfig "github.com/decisionbox-io/decisionbox/libs/go-common/config"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/contextbudget"
 	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
@@ -385,6 +386,77 @@ func (o *Orchestrator) fixedPromptTokens(ctx context.Context, p fixedPromptParts
 		}
 	}
 	return base + widest
+}
+
+// baseContextRebuild is what is needed to compose the base context again with a
+// different number of prior findings.
+//
+// It exists for the recommendations phase, which is the one phase whose
+// variable payload is NOT bounded by a picker: analysis has an evidence budget
+// that shrinks to fit, and recommendations simply carry every insight the run
+// produced. On a mature ledger that payload plus a prior block sized for the
+// exploration shape can exceed the window, and an input-only overflow cannot be
+// recovered by asking for less output — the phase returns nothing, where the
+// fixed 25-finding block it replaces had fitted.
+//
+// Held on the orchestrator rather than threaded through six parameters because
+// it is run-scoped state in the same sense promptFindingIDs and
+// baseContextFindingIDs already are.
+type baseContextRebuild struct {
+	template     string
+	profile      string
+	language     string
+	refDataset   string
+	frame        previousContextFrame
+	lrc          *ledgerReadContext
+	prevInsights []models.InsightSummary
+}
+
+// render composes the base context with the given findings block in the slot.
+func (o *Orchestrator) renderBaseContext(rb *baseContextRebuild, findings string) string {
+	return o.buildBaseContext(rb.template, rb.profile, rb.frame.with(findings), rb.language, rb.refDataset)
+}
+
+// refitForRecommendations returns the base context the recommendations phase
+// should use: the one it was given when that already fits, and otherwise one
+// whose prior-knowledge block has been resized against the payload this phase
+// is really carrying.
+//
+// Measured, not predicted. The insights payload is this run's own output, so it
+// does not exist when the block is first sized — the same reason the analysis
+// evidence is left a floor rather than a number.
+func (o *Orchestrator) refitForRecommendations(ctx context.Context, baseContext, template, summary, insightsJSON, refDataset string) string {
+	rb := o.baseRebuild
+	if rb == nil || rb.lrc == nil || len(rb.lrc.findings) == 0 {
+		return baseContext
+	}
+	window, outputCap := o.budgetFor(llmlayer.LayerRecommendations)
+	available := contextbudget.AvailableInput(window, intendedOutputReserve(outputCap, window), analysisReservedSystemTokens)
+
+	if approxTokens(ctx, o.buildRecommendationsPrompt(baseContext, template, summary, insightsJSON, refDataset)) <= available {
+		return baseContext
+	}
+
+	// What this phase costs with no prior findings at all. Everything else in
+	// the prompt is fixed by now, payload included, so this is the real floor.
+	bare := o.renderBaseContext(rb, renderPriorFindingsSlot(nil, rb.prevInsights))
+	fixed := approxTokens(ctx, o.buildRecommendationsPrompt(bare, template, summary, insightsJSON, refDataset))
+	room := available - fixed - ledgerBlockOverhead()
+	findings, descChars := contextbudget.FitFindings(rb.lrc.candidates, room,
+		contextbudget.MinFindingDescChars, contextbudget.MaxFindingDescChars)
+
+	applog.WithFields(applog.Fields{
+		"project_id": o.projectID,
+		"available":  available,
+		"fixed":      fixed,
+		"was_shown":  len(rb.lrc.findings),
+		"now_shown":  len(findings),
+	}).Info("Recommendations: prior context refitted against the real insights payload")
+
+	if len(findings) == 0 {
+		return bare
+	}
+	return o.renderBaseContext(rb, renderLedgerFindings(findings, descChars))
 }
 
 // fixedPromptParts is everything a run's prompts will carry besides the
