@@ -900,3 +900,45 @@ func TestSchemaCollectionName(t *testing.T) {
 
 // Verify Provider satisfies vectorstore.Provider interface.
 var _ vectorstore.Provider = (*Provider)(nil)
+
+// TestBuildFilterExcludeIDs. Id exclusions belong in the query for the reason
+// the other two exclusions do, and one more: a caller that filters afterwards
+// has to over-fetch to compensate, and whatever bound it puts on the over-fetch
+// is a size at which the search comes back holding nothing but exclusions while
+// matching points sit below the cut. A prompt already carrying hundreds of
+// findings is exactly the case the exclusions exist for.
+func TestBuildFilterExcludeIDs(t *testing.T) {
+	filter := buildFilter(vectorstore.SearchOpts{
+		ProjectIDs: []string{"proj-1"},
+		ExcludeIDs: []string{"a", "b", "c"},
+	})
+	if filter == nil {
+		t.Fatal("expected a filter")
+	}
+	// One has-id condition carrying every id, not one condition per id: the
+	// caller passes everything a prompt already holds.
+	if len(filter.MustNot) != 1 {
+		t.Fatalf("must_not conditions = %d, want 1 has-id condition", len(filter.MustNot))
+	}
+	if ids := filter.MustNot[0].GetHasId().GetHasId(); len(ids) != 3 {
+		t.Errorf("has-id carried %d ids, want 3", len(ids))
+	}
+
+	// Blank ids exclude nothing and must not reach the query.
+	filter = buildFilter(vectorstore.SearchOpts{
+		ProjectIDs: []string{"proj-1"},
+		ExcludeIDs: []string{"", "  ", ""},
+	})
+	for _, c := range filter.GetMustNot() {
+		if c.GetHasId() != nil {
+			t.Errorf("blank ids produced a has-id condition: %v", c.GetHasId())
+		}
+	}
+
+	// And an empty exclusion list leaves the filter exactly as it was.
+	plain := buildFilter(vectorstore.SearchOpts{ProjectIDs: []string{"proj-1"}})
+	withNone := buildFilter(vectorstore.SearchOpts{ProjectIDs: []string{"proj-1"}, ExcludeIDs: nil})
+	if len(plain.GetMustNot()) != len(withNone.GetMustNot()) {
+		t.Errorf("an empty exclusion list changed the filter")
+	}
+}

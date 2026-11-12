@@ -93,6 +93,17 @@ type SearchOpts struct {
 	// here. This keeps retired findings from crowding the window; the caller's
 	// own check on the hydrated document is what is authoritative.
 	ExcludeStatuses []string
+
+	// ExcludeIDs drops points by id — items the caller already carries
+	// elsewhere in the same prompt and must not be handed twice.
+	//
+	// In the query, for the same reason as the two above and one the caller
+	// cannot work around: a caller that filters afterwards has to over-fetch to
+	// compensate, and any bound it puts on that over-fetch is a size at which
+	// the search returns nothing but exclusions while matching points sit below
+	// the cut. A ledger large enough to put 800 findings in a prompt is exactly
+	// the one where that happens, and it is the case the exclusions exist for.
+	ExcludeIDs []string
 }
 
 // SearchResult represents a single vector search match.

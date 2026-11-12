@@ -473,6 +473,13 @@ func buildFilter(opts vectorstore.SearchOpts) *pb.Filter {
 		mustNot = append(mustNot, pb.NewMatch("status", st))
 	}
 
+	// Id exclusions, in one has-id condition rather than one per id: the caller
+	// passes everything a prompt already carries, which on a large ledger is
+	// hundreds of ids.
+	if ids := pointIDs(opts.ExcludeIDs); len(ids) > 0 {
+		mustNot = append(mustNot, pb.NewHasID(ids...))
+	}
+
 	if len(must) == 0 && len(should) == 0 && len(mustNot) == 0 {
 		return nil
 	}
@@ -482,6 +489,24 @@ func buildFilter(opts vectorstore.SearchOpts) *pb.Filter {
 		Should:  should,
 		MustNot: mustNot,
 	}
+}
+
+// pointIDs converts ids to Qdrant point ids, dropping the blank ones — a blank
+// id excludes nothing and must not reach a has-id condition, where it reads as
+// a real exclusion that silently matches no point.
+//
+// Blankness is judged after trimming, but the id is passed through as given: a
+// whitespace-only id is a caller's mistake, while altering an id that has
+// content would turn one mistake into a different one.
+func pointIDs(ids []string) []*pb.PointId {
+	out := make([]*pb.PointId, 0, len(ids))
+	for _, id := range ids {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		out = append(out, pb.NewID(id))
+	}
+	return out
 }
 
 // float64sToFloat32s converts a float64 slice to float32 for Qdrant.
