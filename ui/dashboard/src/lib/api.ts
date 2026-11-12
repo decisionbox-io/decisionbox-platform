@@ -668,6 +668,15 @@ export interface Insight {
   source_steps?: number[];
   validation?: InsightValidation;
   discovered_at: string;
+  // Set when Phase 9 judged this insight a restatement of another: the id it
+  // restates, and the similarity that decided it. Absent on everything written
+  // before the mark existed, and on everything judged distinct — so absence
+  // means "not a restatement", never "unknown".
+  //
+  // Mirrored onto this embedded copy because these pages read it rather than
+  // the standalone collection the API filters.
+  duplicate_of?: string;
+  similarity_score?: number;
 }
 
 // Status values come from the seven-status taxonomy plus the legacy
@@ -761,6 +770,9 @@ export interface Recommendation {
   related_insight_ids?: string[];
   confidence: number;
   validation?: InsightValidation;
+  // See Insight.duplicate_of.
+  duplicate_of?: string;
+  similarity_score?: number;
 }
 
 export interface Summary {

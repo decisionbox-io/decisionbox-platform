@@ -12,12 +12,14 @@ import {
   SectionHeader, SeverityBadge, AreaBadge, ConfidenceBar, Th, EmptyState, SearchInput, Pagination,
 } from '@/components/common/UIComponents';
 import UnreadDot from '@/components/common/UnreadDot';
+import RestatedBadge from '@/components/common/RestatedBadge';
 import {
   InsightValidationBadge, resolveValidationStatus, validationSortRank,
 } from '@/components/validation/InsightValidationBadge';
 import { statusMeta } from '@/components/validation/statusMeta';
 import { useReadSet } from '@/lib/readState';
 import { api, Feedback, Insight, Project, SearchResultItem } from '@/lib/api';
+import { restatedToggleLabel, splitRestated } from '@/lib/restated';
 
 const severityOrder: Record<string, number> = {
   critical: 0, high: 1, medium: 2, low: 3,
@@ -53,6 +55,7 @@ export default function InsightsListPage() {
   const [page, setPage] = useState(1);
   const pageSize = 20;
   const [semanticResults, setSemanticResults] = useState<SearchResultItem[] | null>(null);
+  const [showRestated, setShowRestated] = useState(false);
   const [searching, setSearching] = useState(false);
   const hasEmbedding = !!project?.embedding?.provider;
   const readSet = useReadSet(id, 'insight');
@@ -115,8 +118,17 @@ export default function InsightsListPage() {
 
   if (loading) return <Shell><Loader /></Shell>;
 
+  // Restatements first, before any other filter, so the toggle's count is of
+  // real items rather than of whatever the current search happens to match.
+  // Phase 9 judged these a rewording of an insight already reported; showing
+  // all three wordings asks the reader to notice they are the same. They are
+  // hidden, not dropped: the judgement is a similarity score and it can be
+  // wrong, so one click brings them back — the same contract the API's
+  // include_duplicates offers.
+  const { shown: distinctInsights, restated: restatedInsights } = splitRestated(allInsights);
+
   // Filter
-  let filtered = allInsights;
+  let filtered = showRestated ? allInsights : distinctInsights;
   if (search) {
     const q = search.toLowerCase();
     filtered = filtered.filter(i =>
@@ -194,6 +206,16 @@ export default function InsightsListPage() {
             cursor: 'pointer', fontFamily: 'inherit', transition: 'all 120ms ease',
           }}>{sev}</button>
         ))}
+        {restatedInsights.length > 0 && (
+          <button onClick={() => { setShowRestated(v => !v); setPage(1); }} style={{
+            fontSize: 12, padding: '4px 12px',
+            border: '0.5px solid var(--db-border-strong)',
+            borderRadius: 'var(--db-radius)',
+            background: showRestated ? 'var(--db-blue-bg)' : 'var(--db-bg-white)',
+            color: showRestated ? 'var(--db-blue-text)' : 'var(--db-text-secondary)',
+            cursor: 'pointer', fontFamily: 'inherit', transition: 'all 120ms ease',
+          }}>{restatedToggleLabel(restatedInsights.length, showRestated)}</button>
+        )}
         <span style={{ flex: 1 }} />
         <FilterDropdown label="Validation" value={validationFilter}
           onChange={v => { setValidationFilter(v); setPage(1); }}
@@ -316,6 +338,7 @@ export default function InsightsListPage() {
                       <UnreadDot unread={!isRead} />
                       <span>{insight.name}</span>
                     </Link>
+                    <RestatedBadge doc={insight} />
                   </td>
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
                     <SeverityBadge severity={insight.severity} type="severity" />

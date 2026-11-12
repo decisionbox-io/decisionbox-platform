@@ -29,6 +29,15 @@ var recommenderDroppedInsightFields = map[string]string{
 	"sql_metadata":   "the recommender does not reason over SQL",
 	"discovered_at":  "a timestamp",
 
+	// Phase 9 writes these, and Phase 9 runs AFTER the recommender — so at the
+	// moment this prompt is built they are empty on every insight, and sending
+	// them would put a field in the prompt that is always blank. Worth knowing
+	// if the phase order ever changes: feeding the recommender three wordings
+	// of one finding does bias it toward that subject, and the marks are what
+	// would let it be told.
+	"duplicate_of":     "written by Phase 9, which runs after this prompt is built",
+	"similarity_score": "written by Phase 9, which runs after this prompt is built",
+
 	// The figures themselves ARE sent -- the contract tells the recommender to
 	// reference them by id. These three are derived from them, and each one
 	// carries the pre-correction number or text, which is the whole reason they

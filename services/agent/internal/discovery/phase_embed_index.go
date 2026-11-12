@@ -246,7 +246,7 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 		}
 
 		candidates = append(candidates, dedupCandidate{
-			id: ins.ID, docType: "insight", projectID: ins.ProjectID, vec: vec,
+			id: ins.ID, docType: "insight", projectID: ins.ProjectID, discoveryID: ins.DiscoveryID, vec: vec,
 			text: ins.EmbeddingText, magnitude: magnitudeOf("insight", ins.AffectedCount, ins.Metrics),
 		})
 
@@ -276,7 +276,7 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 		}
 
 		candidates = append(candidates, dedupCandidate{
-			id: rec.ID, docType: "recommendation", projectID: rec.ProjectID, vec: vec,
+			id: rec.ID, docType: "recommendation", projectID: rec.ProjectID, discoveryID: rec.DiscoveryID, vec: vec,
 			// magnitudeOf gives a recommendation no magnitude: its expected
 			// impact is already in the text its vector was built from.
 			text: rec.EmbeddingText, magnitude: magnitudeOf("recommendation", 0, nil),
@@ -323,7 +323,11 @@ type dedupCandidate struct {
 	id        string
 	docType   string
 	projectID string
-	vec       []float64
+	// discoveryID is the discovery document this document is also embedded in.
+	// The dashboard renders those embedded copies, so a mark has to reach them
+	// too or the suppression lands on the API and on none of the screens.
+	discoveryID string
+	vec         []float64
 	// text is what the vector was built from. Two documents with the same text
 	// are identical to the search by construction, so whatever the text leaves
 	// out is all there is to distinguish them.
@@ -598,6 +602,30 @@ func (o *Orchestrator) markDuplicate(ctx context.Context, c dedupCandidate, dupl
 
 	if err := o.embedIndexStore.UpdateDuplicate(ctx, collectionFor(c.docType), c.id, duplicateOf, score); err != nil {
 		applog.WithError(err).WithField("id", c.id).Warn("Failed to mark duplicate")
+		// The standalone copy is what the API filters on. If that write failed
+		// the document is not suppressed anywhere, and mirroring the mark onto
+		// the embedded copy would hide it on the dashboard while the API still
+		// returned it — two surfaces disagreeing about the same document.
+		return
+	}
+
+	// And onto the copy embedded in the discovery, which is what the project's
+	// insight and recommendation lists and the run's own detail page render.
+	// Best-effort: the standalone mark has already landed and it is the
+	// authoritative one, so a retired discovery must not turn this into a
+	// failure.
+	if o.discoveryRepo == nil || c.discoveryID == "" {
+		return
+	}
+	mirrored, err := o.discoveryRepo.MarkEmbeddedDuplicate(ctx, c.discoveryID, collectionFor(c.docType), c.id, duplicateOf, score)
+	if err != nil {
+		applog.WithError(err).WithFields(applog.Fields{"id": c.id, "discovery_id": c.discoveryID}).
+			Warn("Could not mirror the duplicate mark onto the embedded copy; the dashboard will still show it")
+		return
+	}
+	if !mirrored {
+		applog.WithFields(applog.Fields{"id": c.id, "discovery_id": c.discoveryID}).
+			Warn("No embedded copy to mark; the dashboard will still show this document")
 	}
 }
 

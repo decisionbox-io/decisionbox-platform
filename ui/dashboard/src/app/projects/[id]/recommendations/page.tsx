@@ -14,6 +14,8 @@ import {
 } from '@/components/common/UIComponents';
 import UnreadDot from '@/components/common/UnreadDot';
 import { useReadSet } from '@/lib/readState';
+import { restatedToggleLabel, splitRestated } from '@/lib/restated';
+import RestatedBadge from '@/components/common/RestatedBadge';
 import { api, Feedback, Insight, Project, Recommendation, SearchResultItem } from '@/lib/api';
 
 interface RecWithContext extends Recommendation {
@@ -33,6 +35,7 @@ export default function RecommendationsListPage() {
   const [page, setPage] = useState(1);
   const pageSize = 10;
   const [semanticResults, setSemanticResults] = useState<SearchResultItem[] | null>(null);
+  const [showRestated, setShowRestated] = useState(false);
   const [searching, setSearching] = useState(false);
   const hasEmbedding = !!project?.embedding?.provider;
   const readSet = useReadSet(id, 'recommendation');
@@ -93,8 +96,14 @@ export default function RecommendationsListPage() {
 
   if (loading) return <Shell><Loader /></Shell>;
 
+  // Restatements split out before any other filter, so the toggle's count is
+  // of real items rather than of whatever the search matches. Hidden by
+  // default, never dropped: the judgement is a similarity score and it can be
+  // wrong, so one click brings them back with the score that hid them.
+  const { shown: distinctRecs, restated: restatedRecs } = splitRestated(allRecs);
+
   // Filter
-  let filtered = allRecs;
+  let filtered = showRestated ? allRecs : distinctRecs;
   if (search) {
     const q = search.toLowerCase();
     filtered = filtered.filter(r =>
@@ -138,6 +147,16 @@ export default function RecommendationsListPage() {
           {searching && <Loader size="xs" />}
           <SearchInput value={search} onChange={v => { setSearch(v); setPage(1); }}
             placeholder={hasEmbedding ? 'Semantic search recommendations...' : 'Filter recommendations...'} />
+          {restatedRecs.length > 0 && (
+            <button onClick={() => { setShowRestated(v => !v); setPage(1); }} style={{
+              fontSize: 12, padding: '4px 12px',
+              border: '0.5px solid var(--db-border-strong)',
+              borderRadius: 'var(--db-radius)',
+              background: showRestated ? 'var(--db-blue-bg)' : 'var(--db-bg-white)',
+              color: showRestated ? 'var(--db-blue-text)' : 'var(--db-text-secondary)',
+              cursor: 'pointer', fontFamily: 'inherit', transition: 'all 120ms ease',
+            }}>{restatedToggleLabel(restatedRecs.length, showRestated)}</button>
+          )}
           <SortDropdown value={sortBy} onChange={setSortBy}
             options={['Priority', 'Confidence', 'Segment size', 'Date']} />
         </div>
@@ -215,6 +234,7 @@ export default function RecommendationsListPage() {
                     <UnreadDot unread={!isRead} />
                     <span>{rec.title}</span>
                   </Link>
+                  <RestatedBadge doc={rec} />
                   <FeedbackButtons projectId={id} discoveryId={rec.discoveryId} targetType="recommendation"
                     targetId={targetId}
                     feedback={feedbackMap[`recommendation:${targetId}:${rec.discoveryId}`]} />

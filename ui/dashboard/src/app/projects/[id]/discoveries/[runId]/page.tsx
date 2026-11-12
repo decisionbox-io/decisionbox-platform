@@ -11,6 +11,7 @@ import {
 } from '@tabler/icons-react';
 import Link from 'next/link';
 import Shell from '@/components/layout/AppShell';
+import RestatedBadge from '@/components/common/RestatedBadge';
 import FeedbackButtons from '@/components/common/FeedbackButtons';
 import {
   StatCard, SectionHeader, Th, SeverityBadge, AreaBadge, ConfidenceBar, Pill, EmptyState, normalizeConfidence,
@@ -23,6 +24,7 @@ import QuestionsDrawer from '@/components/common/QuestionsDrawer';
 import { useReadSet } from '@/lib/readState';
 import { api, ApiError, DiscoveryResult, Feedback, Insight, Recommendation, ExplorationStep, AnalysisLogStep, ValidationLogEntry, DiscoveryQuestion } from '@/lib/api';
 import { recommendationEmptyReason } from '@/lib/recommendationEmptyReason';
+import { restatedToggleLabel, splitRestated } from '@/lib/restated';
 
 const severityOrder: Record<string, number> = {
   critical: 0, high: 1, medium: 2, low: 3,
@@ -51,6 +53,7 @@ export default function DiscoveryDetailPage() {
   const [severityFilter, setSeverityFilter] = useState<string>('All');
   const [sortBy, setSortBy] = useState<string>('Severity');
   const [showAllRecs, setShowAllRecs] = useState(false);
+  const [showRestated, setShowRestated] = useState(false);
   const readInsights = useReadSet(id, 'insight');
   const readRecs = useReadSet(id, 'recommendation');
 
@@ -126,8 +129,19 @@ export default function DiscoveryDetailPage() {
   if (loading) return <Shell><Loader /></Shell>;
   if (!discovery) return <Shell><Text>Discovery not found</Text></Shell>;
 
-  const insights = discovery.insights || [];
-  const recommendations = [...(discovery.recommendations || [])].sort((a, b) => a.priority - b.priority);
+  // Restatements split out of both lists. This page is the record of one run,
+  // so the toggle matters more here than on the project lists: hiding them
+  // without saying so would misreport what the run produced. The counts below
+  // come from the same split, because a header that disagrees with its list is
+  // worse than either number alone.
+  const allInsights = discovery.insights || [];
+  const { shown: distinctInsights, restated: restatedInsights } = splitRestated(allInsights);
+  const insights = showRestated ? allInsights : distinctInsights;
+
+  const allRecommendations = discovery.recommendations || [];
+  const { shown: distinctRecs, restated: restatedRecs } = splitRestated(allRecommendations);
+  const recommendations = [...(showRestated ? allRecommendations : distinctRecs)]
+    .sort((a, b) => a.priority - b.priority);
 
   // Filter + sort insights
   let filtered = insights;
@@ -241,6 +255,16 @@ export default function DiscoveryDetailPage() {
                 cursor: 'pointer', fontFamily: 'inherit', transition: 'all 120ms ease',
               }}>{sev}</button>
             ))}
+            {restatedInsights.length + restatedRecs.length > 0 && (
+              <button onClick={() => setShowRestated(v => !v)} style={{
+                fontSize: 12, padding: '4px 12px',
+                border: `0.5px solid var(--db-border-strong)`,
+                borderRadius: 'var(--db-radius)',
+                background: showRestated ? 'var(--db-blue-bg)' : 'var(--db-bg-white)',
+                color: showRestated ? 'var(--db-blue-text)' : 'var(--db-text-secondary)',
+                cursor: 'pointer', fontFamily: 'inherit', transition: 'all 120ms ease',
+              }}>{restatedToggleLabel(restatedInsights.length + restatedRecs.length, showRestated)}</button>
+            )}
             <span style={{ flex: 1 }} />
             <SortDropdown value={sortBy} onChange={setSortBy} />
           </div>
@@ -464,6 +488,7 @@ function InsightRow({ insight, projectId, runId, idx, isRead, feedback, onFeedba
           <UnreadDot unread={!isRead} />
           <span>{insight.name}</span>
         </Link>
+        <RestatedBadge doc={insight} />
       </td>
       <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
         <SeverityBadge severity={insight.severity} type="severity" />
@@ -528,6 +553,7 @@ function RecommendationCard({ rec, projectId, discoveryId, idx, insights, isRead
           <UnreadDot unread={!isRead} />
           <span>{rec.title}</span>
         </Link>
+        <RestatedBadge doc={rec} />
         <FeedbackButtons projectId={projectId} discoveryId={discoveryId} targetType="recommendation"
           targetId={String(rec.id || idx)} feedback={feedback} onUpdate={onFeedbackUpdate} />
       </div>
