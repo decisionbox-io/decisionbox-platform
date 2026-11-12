@@ -124,6 +124,12 @@ A deduction a cap or the floor reduced is stored reduced, and one reduced to not
 The verdict bases, the band cutoffs and the deduction amounts are engine constants rather than deployment settings, because a document has to be explainable with the calibration that scored it and an overridable cutoff would make the stored `engine_version` a lie.
 A re-calibration is a version bump.
 
+That rule starts at the first deployment whose stored documents we undertake to explain.
+Until then the current version is still being calibrated: numbers move, axes are added, and the version does not change — so the completed feature ships as version 1 rather than as whichever number the development sequence happened to reach.
+What makes that safe is the degradation contract above: everything a reader needs about a document is stored on the document, the calibration supplies only the line naming the cutoff a score crossed, and a client that cannot find its version — or finds one without the axis it was looking for — omits that line rather than failing.
+A document scored by a pre-release calibration is explained by re-running its discovery, not by freezing a version for it.
+From the first such deployment onward, a change to any number here is a new version with a new entry, and the old entry is immutable.
+
 ### InsightValidation
 
 Attached to an insight after validation by the verifier + refuter pair.

@@ -26,17 +26,27 @@ import (
 // already-stored breakdown a lie.
 //
 // The severity and priority axes were ADDED to version 1 rather than becoming
-// version 2, which is the one case where that rule does not apply: version 1
-// never scored a document outside this work's own integration branch, so no
-// stored breakdown says "version 1" and means "confidence only". None of
-// version 1's confidence numbers moved when the axes were added, so every
-// confidence breakdown it did produce stays exact. The alternative would have
-// been a permanent frozen entry describing a calibration with no severity
-// axis, which the API would have had to serve and the dashboard to render
-// around, for documents that exist on no deployment.
+// version 2, and the same goes for any further axis or re-calibration this
+// feature needs before it ships: while it is in development, version 1 means
+// "whatever this build calibrates to". It never scored a document outside this
+// work's own integration branch, so no stored breakdown says "version 1" and
+// means "confidence only", and none of its confidence numbers moved when the
+// axes were added. Bumping instead would mint a permanent frozen entry per
+// development step -- each one describing a calibration that exists on no
+// deployment, each one served by the API and rendered around by the dashboard
+// -- and would ship a finished feature as version 4.
 //
-// That argument expires the moment this reaches a release. From then on, a
-// change to any number below is a new entry.
+// What keeps that safe is that no reader REQUIRES this table. Everything a
+// breakdown needs is stored on the document; the calibration supplies only the
+// line naming the cutoff a score crossed, and a client that finds no entry for
+// its version -- or an entry without the axis it wanted, which is what an API
+// older than its dashboard serves -- omits that line. A document scored by a
+// superseded calibration is explained by re-running its discovery.
+//
+// This expires at the first deployment whose stored documents we undertake to
+// explain. From then on, a change to any number below is a new entry and this
+// one is immutable. Stated for readers outside this package in
+// docs/reference/data-models.md.
 const EngineVersion = 1
 
 // Dock codes. The code is the stable machine name; the label beside it in the
