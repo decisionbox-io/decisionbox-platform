@@ -608,3 +608,45 @@ describe('a confidence-only calibration response', () => {
     expect(screen.getByTestId('scoring-cutoff')).toBeInTheDocument();
   });
 });
+
+// --- A band this build has no cutoff line for -------------------------------
+
+describe('a severity band the dashboard does not recognise', () => {
+  beforeEach(() => {
+    (api.getScoringEngines as jest.Mock).mockResolvedValue(engines);
+  });
+
+  // A document scored by a newer calibration. Everything stored on the
+  // document still renders; the one line that needs a cutoff for THIS band
+  // is omitted rather than guessed at. Naming a boundary the score was never
+  // measured against is the failure here, not a missing line.
+  it('renders the derivation without inventing a cutoff', async () => {
+    wrap(<ScoringBreakdown scoring={shareBanded({ severity_band: 'severe-ish' })} axis="severity" />);
+
+    await waitFor(() => expect(api.getScoringEngines).toHaveBeenCalled());
+    expect(screen.getByTestId('severity-magnitude')).toHaveTextContent('1.00');
+    expect(screen.getByTestId('severity-final')).toHaveTextContent('1.00');
+    expect(screen.getByTestId('severity-banded-by')).toBeInTheDocument();
+    expect(screen.queryByTestId('severity-cutoff')).not.toBeInTheDocument();
+  });
+
+  // The low arm of the cutoff line, which the other fixtures never reach:
+  // a low band is described by the cutoff it fell BELOW, not one it cleared.
+  it('describes a low band by the cutoff it fell below', async () => {
+    wrap(<ScoringBreakdown
+      scoring={shareBanded({
+        severity_band: 'low',
+        severity_score: 0.25,
+        magnitude_score: 0.25,
+        priority_tier: 'low',
+        priority_score: 0.0875,
+      })}
+      axis="severity"
+    />);
+
+    // findBy, not getBy after waiting on the fetch: the calibration arrives in
+    // a state update after the promise resolves, so asserting a line's
+    // PRESENCE has to wait for the element, not for the call.
+    expect(await screen.findByTestId('severity-cutoff')).toHaveTextContent('below 33%');
+  });
+});
