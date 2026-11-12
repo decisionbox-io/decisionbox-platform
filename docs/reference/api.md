@@ -884,6 +884,60 @@ curl -X DELETE http://localhost:8080/api/v1/runs/507f1f77bcf86cd799439012
 
 ---
 
+## Insights & Recommendations
+
+The denormalised, per-document views of what discovery produced, across every run of a project.
+Each document carries the same id as its copy inside the discovery result, so a link from one reaches the other.
+
+**Marked duplicates are excluded by default.** Phase 9 compares each new insight and recommendation against earlier runs' documents and against the run's own others, and stamps `duplicate_of` plus `similarity_score` on the later one when they are the same thing said twice.
+Those documents are real content and are still indexed for search; they are simply not listed or counted alongside the row they restate.
+Pass `include_duplicates=1` to see them, with the score that hid them — a suppression made on a similarity score is a judgement that can be wrong, and the rows stay auditable rather than disappearing.
+The floor is `DISCOVERY_DOCUMENT_DEDUP_MINSCORE`.
+
+### GET /api/v1/projects/{id}/insights
+
+List a project's insights, newest first.
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `limit` | `50` | Page size. A negative value is `400`. |
+| `offset` | `0` | Rows to skip. A negative value is `400`. |
+| `include_duplicates` | `false` | `1` or `true` also returns documents marked as duplicates. Any other value, including an absent one, is read as false — the parameter widens a response rather than changing what it means, so a value nobody meant is not worth a `400`. |
+
+```bash
+curl "http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/insights?limit=20&include_duplicates=1"
+```
+
+```json
+{
+  "data": [
+    {
+      "id": "9f1c0a52-6c2e-4a1f-9a17-2b7e5d3c8a04",
+      "project_id": "507f1f77bcf86cd799439011",
+      "discovery_id": "507f1f77bcf86cd799439013",
+      "analysis_area": "inventory",
+      "name": "Dead stock concentrated in two sellers",
+      "severity": "high",
+      "affected_count": 42,
+      "duplicate_of": "3a7b1e90-55cd-4f20-8e11-c6d9440a1b77",
+      "similarity_score": 0.93
+    }
+  ]
+}
+```
+
+### GET /api/v1/projects/{id}/insights/{insightId}
+
+Get one insight. Returns `404` when it belongs to another project — and serves a marked duplicate normally, since asking for a document by id is already explicit.
+
+### GET /api/v1/projects/{id}/recommendations
+
+List a project's recommendations, newest first. Same three parameters as the insight listing, with the same defaults.
+
+### GET /api/v1/projects/{id}/recommendations/{recId}
+
+Get one recommendation. Same rules as a single insight.
+
 ## Feedback
 
 ### POST /api/v1/discoveries/{runId}/feedback

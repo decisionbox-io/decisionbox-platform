@@ -353,10 +353,21 @@ type Orchestrator struct {
 	// these as pursued rather than re-reading the queue, which by then may
 	// have moved under it.
 	shownTaskIDs []string
+	// baseRebuild is what the recommendations phase needs to compose the base
+	// context again with a smaller prior-knowledge block. Nil until the base
+	// context has been built.
+	baseRebuild *baseContextRebuild
+
 	// promptFindingIDs are the ledger findings the reflection prompt carried.
 	// An id the model returns that is in neither this nor the run's own
 	// insights was invented.
 	promptFindingIDs []string
+	// baseContextFindingIDs are the ledger findings the base context carries
+	// into every prompt this run assembles, captured when the read context was
+	// built. Handed to the per-area context providers as ExcludeIDs, so their
+	// own budget is spent on findings relevant to the area under analysis
+	// rather than on re-printing what the prompt above them already says.
+	baseContextFindingIDs []string
 
 	// recommendationVerdicts is the resolved per-project set of validation
 	// verdicts that make an insight eligible for recommendation generation
@@ -1050,14 +1061,6 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// RANKED findings-with-substance, the coverage map, and the open next-task
 	// queue. Empty for legacy projects / community builds, in which case
 	// buildPreviousContext falls back to the older capped insight dump.
-	lrc := o.loadLedgerReadContext(ctx)
-
-	// Previous discovery insights, recommendations, user feedback, and the
-	// Discovery Ledger are merged into a reusable context block injected into the
-	// exploration and analysis prompts, so the run continues the investigation
-	// (drill / tile the frontier / re-check) instead of re-treading it.
-	previousContextStr := o.buildPreviousContext(projectCtx, prevInsights, prevRecs, feedbackSummaries, lrc)
-
 	// Phase 2: Load schemas from the per-project schema cache.
 	// (Discovery is gated on schema_index_status == "ready"; the indexer
 	// has already populated the cache and the Qdrant collection.)
@@ -1144,11 +1147,80 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		refDataset = o.datasets[0]
 	}
 
+	// The Discovery Ledger read context (compounding discovery): the
+	// accumulated findings, ranked and budgeted against the model window, the
+	// coverage map and the open next-task queue. Empty for legacy projects /
+	// builds with nothing in the ledger, in which case buildPreviousContext
+	// falls back to the older capped insight dump.
+	//
+	// Built HERE, not at the top of the run, because how many findings fit
+	// depends on what the rest of the prompt already costs — and the profile
+	// and the pack templates only exist by this point. Choosing the block
+	// before measuring them sized it against the whole input allowance, and a
+	// project with a large profile or large area templates could then be
+	// pushed past its window on a small model: the budget would hand the
+	// findings a share of room that the profile had already taken.
+	fixedParts := fixedPromptParts{
+		Prompts: prompts, Profile: profileStr, Language: language,
+		Datasets: datasetsStr, AreasDesc: areasDesc, RefDataset: refDataset,
+		// The areas this run will actually analyse. A partial run executes a
+		// subset, and sizing the block against the widest template of an area
+		// that never enters a prompt can reduce prior context to nothing for
+		// no reason — on a 32K model the selected-only figure left 3,699
+		// tokens where the all-areas figure left none.
+		Areas: selectAreas(analysisAreas, opts.SelectedAreas),
+	}
+	// rendered is assigned on both branches above and neither builder returns
+	// nil, so this is not guarded — a nil check here is also what made
+	// staticcheck read the dereferences above as reachable with nil.
+	fixedParts.Catalog = rendered.Catalog
+	if dc != nil {
+		// The routing cards, which are a function of dc alone. The curated
+		// correlations appended with them are resolved later and are not here.
+		fixedParts.Datasources = buildDatasourcesPromptSection(dc, correlationGuidance{})
+	}
+
+	// The ledger is read first, then the rest of the prior-knowledge block is
+	// rendered around a hole, and only then is it decided how many findings go
+	// in the hole — because the coverage map, the saturation reading, the
+	// feedback, the earlier recommendations and the open-thread queue are all
+	// in the same block, and a findings budget that does not know what they
+	// cost is sized against room they have already taken.
+	lrc := o.loadLedgerReadContext(ctx)
+	frame := o.previousContextFrame(projectCtx, prevRecs, feedbackSummaries, lrc, analysisAreas)
+	fixedParts.PriorHistory = frame.cost()
+	o.fitPriorFindings(lrc, o.fixedPromptTokens(ctx, fixedParts), o.priorContextRoom(ctx, fixedParts))
+
+	// Previous discovery insights, recommendations, user feedback, and the
+	// Discovery Ledger are merged into a reusable context block injected into the
+	// exploration and analysis prompts, so the run continues the investigation
+	// (drill / tile the frontier / re-check) instead of re-treading it.
+	previousContextStr := frame.with(renderPriorFindingsSlot(lrc, prevInsights))
+
+	// Kept so the recommendations phase can compose this again with a block
+	// sized against the payload it actually carries — that phase has no
+	// evidence picker to shrink anything, so it is the one that can be pushed
+	// past its window by a generous ledger.
+	o.baseRebuild = &baseContextRebuild{
+		template: prompts.BaseContext, profile: profileStr, language: language,
+		refDataset: refDataset, frame: frame, lrc: lrc, prevInsights: prevInsights,
+	}
+
 	// baseContext is reused across exploration, analysis, and
 	// recommendation prompts. It combines project profile data,
 	// previous discoveries, feedback summaries, language settings,
 	// and domain-specific instructions into a single prompt context.
 	baseContext := o.buildBaseContext(prompts.BaseContext, profileStr, previousContextStr, language, refDataset)
+
+	// The ids this prompt carries, so per-area retrieval can spend its own
+	// budget on findings the prompt does not already hold. Read off the
+	// TEMPLATE that was just rendered, not off the fit: a project's own
+	// base_context may have no {{PREVIOUS_CONTEXT}} slot, and then the fit
+	// chose findings that went nowhere — telling retrieval to skip them would
+	// withhold prior knowledge the model never saw.
+	if lrc != nil {
+		o.baseContextFindingIDs = priorFindingIDs(prompts.BaseContext, lrc.findings)
+	}
 
 	// Prepare exploration prompt: base context + exploration-specific content.
 	// {{SCHEMA_INFO}} is the single canonical schema placeholder; it
@@ -1191,7 +1263,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// or no sources indexed). Query phrased to surface broad domain context
 	// useful for any exploration step.
 	knowledgeQuery := fmt.Sprintf("data exploration for %s; analysis areas: %s", datasetsStr, o.areaNamesCSV(analysisAreas))
-	explorationPrompt = o.injectKnowledgeSources(ctx, explorationPrompt, knowledgeQuery, knowledgeTopKExploration)
+	explorationPrompt = o.injectKnowledgeSources(ctx, explorationPrompt, knowledgeQuery, knowledgeTopKExploration, llmlayer.LayerExploration, o.baseContextFindingIDs)
 
 	// Phase 3: Autonomous exploration
 	applog.Info("Phase 3: Running autonomous exploration")
@@ -1520,17 +1592,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// only those areas instead of running the full domain pack.
 	if len(opts.SelectedAreas) > 0 {
 		runType = "partial"
-		selected := make(map[string]bool)
-		for _, a := range opts.SelectedAreas {
-			selected[a] = true
-		}
-		var filtered []AnalysisArea
-		for _, a := range analysisAreas {
-			if selected[a.ID] {
-				filtered = append(filtered, a)
-			}
-		}
-		runAreas = filtered
+		runAreas = selectAreas(analysisAreas, opts.SelectedAreas)
 		applog.WithFields(applog.Fields{
 			"requested": opts.SelectedAreas,
 			"matched":   len(runAreas),
@@ -1705,6 +1767,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 				explorationSteps: explorationResult.Steps,
 				stepByID:         stepByID,
 				currencies:       currencies,
+				// What the areas before this one reported. allInsights is the
+				// run's own accumulator, appended to at the end of each
+				// iteration, so this is exactly areas 1..N-1 — and it is
+				// already in hand, which is why this needed rendering rather
+				// than plumbing.
+				runInsights: allInsights,
 			})
 			switch out.disposition {
 			case areaSuperseded:
@@ -2825,6 +2893,15 @@ func (o *Orchestrator) decodeInsightItems(raws []json.RawMessage, areaID string,
 			insight.ID = uuid.New().String()
 		}
 
+		// Phase 9's marks are not the model's to write. This struct is both the
+		// stored shape and the parse target for the analysis response, so a
+		// model emitting duplicate_of would mark its own finding a restatement
+		// of any id it cared to name — hiding a finding from every default list
+		// by inventing a reference. Cleared at the boundary rather than trusted
+		// and checked later: the only thing that may set these is the duplicate
+		// check, over documents it has actually compared.
+		insight.DuplicateOf, insight.SimilarityScore = "", 0
+
 		insights = append(insights, insight)
 	}
 
@@ -3017,13 +3094,22 @@ func (o *Orchestrator) generateRecommendations(
 		refDataset = o.datasets[0]
 	}
 
+	// The one phase whose variable payload nothing bounds: analysis has an
+	// evidence budget that shrinks to fit, recommendations carry every insight
+	// the run produced. So the prior-knowledge block is checked against the
+	// prompt as it really stands, and resized if it does not fit.
+	baseContext, carried := o.refitForRecommendations(ctx, baseContext, promptTemplate, summary, string(insightsJSON), refDataset)
+
 	prompt := o.buildRecommendationsPrompt(baseContext, promptTemplate, summary, string(insightsJSON), refDataset)
 
 	// Inject project knowledge sources relevant to the discovered insights.
 	// Recommendations often need broader business context (constraints, prior
 	// initiatives, tone) so we use a higher top-K than analysis prompts.
 	recommendationQuery := o.recommendationsKnowledgeQuery(insights)
-	prompt = o.injectKnowledgeSources(ctx, prompt, recommendationQuery, knowledgeTopKRecommendations)
+	// carried, not baseContextFindingIDs: the refit above may have left fewer
+	// findings in THIS prompt, and retrieval must not skip what it no longer
+	// holds.
+	prompt = o.injectKnowledgeSources(ctx, prompt, recommendationQuery, knowledgeTopKRecommendations, llmlayer.LayerRecommendations, carried)
 
 	step.Prompt = prompt
 
@@ -3159,6 +3245,8 @@ func (o *Orchestrator) generateRecommendations(
 		if recs[i].ID == "" {
 			recs[i].ID = uuid.New().String()
 		}
+		// See parseInsights: the duplicate marks are Phase 9's alone.
+		recs[i].DuplicateOf, recs[i].SimilarityScore = "", 0
 	}
 
 	step.RecommendationsDroppedParse = parseDropped
@@ -3451,7 +3539,7 @@ func (o *Orchestrator) resolvePrompts() (ResolvedPrompts, []AnalysisArea) {
 func (o *Orchestrator) buildBaseContext(template, profileStr, previousContext, language, refDataset string) string {
 	base := template
 	base = strings.ReplaceAll(base, "{{PROFILE}}", profileStr)
-	base = strings.ReplaceAll(base, "{{PREVIOUS_CONTEXT}}", previousContext)
+	base = strings.ReplaceAll(base, previousContextToken, previousContext)
 	base = strings.ReplaceAll(base, "{{LANGUAGE}}", language)
 	base = substituteDialectTokens(base, o.warehouse, refDataset)
 	return discipline.AppendBaseContextRules(base)
@@ -3463,7 +3551,7 @@ func (o *Orchestrator) buildBaseContext(template, profileStr, previousContext, l
 // discipline rules (3, 4, 5, 6). Called once per analysis area inside the
 // run loop — user-added custom areas flow through the same path, so they
 // inherit the rules regardless of pack content.
-func (o *Orchestrator) buildAnalysisAreaPrompt(baseContext, areaPrompt, datasetsStr string, totalQueries int, queryResultsJSON, refDataset string) string {
+func (o *Orchestrator) buildAnalysisAreaPrompt(baseContext, areaPrompt, datasetsStr string, totalQueries int, queryResultsJSON, refDataset string, soFar runFindingsSoFar) string {
 	prompt := baseContext + "\n\n" + areaPrompt
 	prompt = strings.ReplaceAll(prompt, "{{DATASET}}", datasetsStr)
 	prompt = strings.ReplaceAll(prompt, "{{TOTAL_QUERIES}}", fmt.Sprintf("%d", totalQueries))
@@ -3471,6 +3559,14 @@ func (o *Orchestrator) buildAnalysisAreaPrompt(baseContext, areaPrompt, datasets
 	// domain-pack templates, so one wording covers every pack and a pack
 	// author cannot ship an area prompt that renders the digest unexplained.
 	prompt = strings.ReplaceAll(prompt, "{{QUERY_RESULTS}}", digestLegend+queryResultsJSON)
+	// What the areas before this one already reported, so this one can go
+	// somewhere else. Appended in code rather than substituted into a pack
+	// template, for the reason the contracts below are: a section that lives
+	// only in templates is one a custom area does not have.
+	if soFar != "" {
+		prompt += "\n\n" + string(soFar)
+	}
+
 	// Appended after the area body for the same reason the discipline rules
 	// are: a contract that lives only in pack templates is one a custom area
 	// does not have.
@@ -3539,20 +3635,120 @@ func (o *Orchestrator) buildAnalysisAreasDescription(areas []AnalysisArea) strin
 
 // buildPreviousContext builds a rich context from previous discoveries and user feedback.
 // This prevents duplicate insights, respects user feedback, and helps the LLM focus on new findings.
+// previousContextFrame is the prior-knowledge block with a hole where the
+// findings go: head is what sits above them (the coverage map and the
+// saturation reading, which steer what the run does with them), tail is
+// everything below (user feedback, earlier recommendations, the open-thread
+// queue, trends and agent observations).
+//
+// It exists so the findings can be budgeted against the rest of the block they
+// sit in. They could not be, and that was the fifth consecutive review finding
+// on this change where the answer to "what else is in this prompt" was
+// something nobody was counting: forty open threads of 1,500 characters are
+// 15,000 tokens rendered right underneath a findings block sized as though the
+// whole window were free.
+type previousContextFrame struct {
+	head, tail string
+	// empty is a project with no discoveries and no ledger: there is nothing to
+	// say, and the block is omitted rather than rendered as a header with
+	// nothing under it.
+	empty bool
+}
+
+// cost is the frame's own contribution to the prompt, for the budget.
+func (f previousContextFrame) cost() string { return f.head + f.tail }
+
+// with closes the frame around the findings block.
+func (f previousContextFrame) with(findings string) string {
+	if f.empty {
+		return ""
+	}
+	return f.head + findings + f.tail
+}
+
+// selectAreas narrows areas to the ids requested, preserving pack order. An
+// empty request means every area, which is the ordinary full run.
+//
+// One function for the budget and the loop, because they were doing this
+// separately and only the loop was doing it: the budget took the widest
+// template of every ENABLED area while the run analysed only the selected
+// ones.
+func selectAreas(areas []AnalysisArea, requested []string) []AnalysisArea {
+	if len(requested) == 0 {
+		return areas
+	}
+	want := make(map[string]bool, len(requested))
+	for _, id := range requested {
+		want[id] = true
+	}
+	out := make([]AnalysisArea, 0, len(requested))
+	for _, a := range areas {
+		if want[a.ID] {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// buildPreviousContext renders the whole block, findings included. Kept as the
+// one entry point for callers that do not budget — the frame and the findings
+// are assembled separately only where the budget needs the frame's size first.
 func (o *Orchestrator) buildPreviousContext(
 	pctx *models.ProjectContext,
 	prevInsights []models.InsightSummary,
 	prevRecs []models.RecommendationSummary,
 	feedback []models.FeedbackSummary,
 	lrc *ledgerReadContext,
+	areas []AnalysisArea,
 ) string {
+	frame := o.previousContextFrame(pctx, prevRecs, feedback, lrc, areas)
+	return frame.with(renderPriorFindingsSlot(lrc, prevInsights))
+}
+
+// renderPriorFindingsSlot is what fills the hole in the frame: the budgeted
+// ledger findings, or — for a project with no ledger at all — the older capped
+// insight dump.
+//
+// A project that HAS a ledger never falls back, even when the budget chose to
+// carry no findings. That case is a decision, not an absence: either the
+// operator set the share to zero, or the window has no room — and answering it
+// with an unbudgeted thirty-insight dump would undo the opt-out and feed the
+// smallest models the very block the budget exists to keep out of them.
+func renderPriorFindingsSlot(lrc *ledgerReadContext, prevInsights []models.InsightSummary) string {
+	if lrc != nil && lrc.hasLedger {
+		if len(lrc.findings) == 0 {
+			return ""
+		}
+		return renderLedgerFindings(lrc.findings, lrc.descChars)
+	}
+	if len(prevInsights) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("### Previously Found Insights\n")
+	sb.WriteString("These insights were already discovered. Build on them — go deeper or check whether they changed — rather than repeating them.\n\n")
+	for _, ins := range prevInsights {
+		fmt.Fprintf(&sb, "- **%s** [%s, %s] — %d affected (%s)\n",
+			ins.Name, ins.AnalysisArea, ins.Severity, ins.AffectedCount, ins.Date)
+	}
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+func (o *Orchestrator) previousContextFrame(
+	pctx *models.ProjectContext,
+	prevRecs []models.RecommendationSummary,
+	feedback []models.FeedbackSummary,
+	lrc *ledgerReadContext,
+	areas []AnalysisArea,
+) previousContextFrame {
 	hasLedger := lrc != nil && lrc.hasLedger
 	discoveries := 0
 	if pctx != nil {
 		discoveries = pctx.TotalDiscoveries
 	}
 	if discoveries == 0 && !hasLedger {
-		return ""
+		return previousContextFrame{empty: true}
 	}
 
 	var sb strings.Builder
@@ -3567,22 +3763,20 @@ func (o *Orchestrator) buildPreviousContext(
 		if s := renderCoverage(lrc.coverage); s != "" {
 			sb.WriteString(s)
 		}
+		// What the ledger already measures about whether this investigation is
+		// still finding anything. Immediately after the coverage map because
+		// the two are one picture, and before the findings because it steers
+		// what the run does with them.
+		if s := renderSaturation(lrc.convergence, lrc.coverage.AreaDepth, areas); s != "" {
+			sb.WriteString(s)
+		}
 	}
 
-	// Findings so far — ranked, WITH substance (from the ledger). Replaces the
-	// old arbitrary first-30, names-only dump. Legacy projects with no ledger yet
-	// fall back to that older block.
-	if hasLedger && len(lrc.findings) > 0 {
-		sb.WriteString(renderLedgerFindings(lrc.findings))
-	} else if len(prevInsights) > 0 {
-		sb.WriteString("### Previously Found Insights\n")
-		sb.WriteString("These insights were already discovered. Build on them — go deeper or check whether they changed — rather than repeating them.\n\n")
-		for _, ins := range prevInsights {
-			fmt.Fprintf(&sb, "- **%s** [%s, %s] — %d affected (%s)\n",
-				ins.Name, ins.AnalysisArea, ins.Severity, ins.AffectedCount, ins.Date)
-		}
-		sb.WriteString("\n")
-	}
+	// The findings go here, between the saturation reading that steers what the
+	// run does with them and the feedback that qualifies them. Everything from
+	// this point is the tail.
+	head := sb.String()
+	sb.Reset()
 
 	// User feedback
 	disliked := make([]models.FeedbackSummary, 0)
@@ -3639,14 +3833,19 @@ func (o *Orchestrator) buildPreviousContext(
 	// evolving instead of re-reporting it cold. Recurring = seen in more than one
 	// run; the ledger's finding statuses supersede this going forward, but the
 	// pattern history remains a cheap, always-available trend signal.
-	if trend := renderHistoricalPatterns(pctx.HistoricalPatterns); trend != "" {
-		sb.WriteString(trend)
+	// pctx can be nil here: the early return above only fires when there is
+	// neither a discovery nor a ledger, so a project with a ledger and no
+	// project-context document reaches this line.
+	if pctx != nil {
+		if trend := renderHistoricalPatterns(pctx.HistoricalPatterns); trend != "" {
+			sb.WriteString(trend)
+		}
 	}
 
 	// Agent observations are auto-learnings the orchestrator records during
 	// discovery (separate from user-authored knowledge sources, which render
 	// under "## Project Knowledge").
-	if len(pctx.Notes) > 0 {
+	if pctx != nil && len(pctx.Notes) > 0 {
 		sb.WriteString("### Agent observations\n")
 		shown := 0
 		for i := len(pctx.Notes) - 1; i >= 0 && shown < 10; i-- {
@@ -3658,7 +3857,7 @@ func (o *Orchestrator) buildPreviousContext(
 		}
 	}
 
-	return sb.String()
+	return previousContextFrame{head: head, tail: sb.String()}
 }
 
 // maxHistoricalPatternsInPrompt caps how many recurring/worsening patterns the
@@ -4149,12 +4348,22 @@ func cleanJSONResponse(response string) string {
 //   - Exploration prompts already include schema + analysis areas → keep small.
 //   - Analysis prompts add query results → moderate.
 //   - Recommendation prompts often need broader business context → larger.
+//
+// These bound the providers that return a fixed handful of items — a few
+// knowledge chunks, a few hints — and for those they are the right shape: the
+// cost of one item is roughly known and a small count is what the prompt wants.
+//
+// They are no longer the only budget in play. A retrieval provider built to
+// scale with the context window is sized by ContextProviderOpts.TokenBudget
+// instead (see contextProviderBudget), because handing such a provider a
+// top-N of 5 was the defect: it then competed for the same five slots as a
+// provider that needs exactly five, and the long tail it exists to surface
+// could never reach the prompt.
 const (
-	knowledgeTopKExploration      = 3
-	knowledgeTopKAnalysis         = 5
-	knowledgeTopKRecommendations  = 8
-	knowledgeMinScore             = 0.4
-	knowledgeMaxRetrievalPerPhase = 3 * time.Second
+	knowledgeTopKExploration     = 3
+	knowledgeTopKAnalysis        = 5
+	knowledgeTopKRecommendations = 8
+	knowledgeMinScore            = 0.4
 )
 
 // defaultCorrelationLookupTimeout bounds one call to the correlation provider.
@@ -4293,18 +4502,55 @@ func (o *Orchestrator) correlationLookup(dc *datasourceContext, guidance correla
 // Per-provider errors are logged but never returned: failure inside one
 // provider must not abort discovery, and must not suppress sections from
 // other providers.
-func (o *Orchestrator) injectKnowledgeSources(ctx context.Context, prompt, query string, topK int) string {
+//
+// layer is which model's prompt this is. It decides the token budget the
+// providers are offered, so it has to be the layer that will actually receive
+// the prompt — the same reason the output budget is resolved per layer.
+//
+// excludeIDs are items THIS prompt already carries, and the caller has to say
+// so rather than this function assuming: the base context reaches exploration,
+// analysis and recommendations, but the clarifying-questions prompt is built
+// without it, so excluding the base context's findings there would suppress
+// relevant prior knowledge that the prompt does not in fact contain. Pass nil
+// from a prompt that does not carry them.
+func (o *Orchestrator) injectKnowledgeSources(ctx context.Context, prompt, query string, topK int, layer string, excludeIDs []string) string {
 	if query == "" || topK <= 0 {
 		return prompt
 	}
 
-	// Apply a tight per-call timeout so a slow embedding call cannot stall a phase.
-	retrieveCtx, cancel := context.WithTimeout(ctx, knowledgeMaxRetrievalPerPhase)
+	// Sized from what this layer's window still has free beside the prompt that
+	// already exists, so a provider that can scale is not held to a top-N and
+	// not allowed to overflow either.
+	budget, headroom := o.contextProviderBudget(ctx, layer, prompt)
+
+	// No room, or an operator who set the share to zero. Either way the answer
+	// is the same and it is not "retrieve anyway": a provider that ignores the
+	// budget would be injected into a prompt with nothing left to spend, which
+	// is the overflow this sizing exists to prevent, and a share of zero is a
+	// request to spend nothing on composed context rather than a request to
+	// spend it unmeasured. Returning here also saves the retrieval round-trip
+	// whose result could not be used.
+	if budget <= 0 {
+		applog.WithFields(applog.Fields{"project_id": o.projectID, "layer": layer}).
+			Debug("No room for composed context in this prompt; skipping the context providers")
+		return prompt
+	}
+
+	// Bounded so a slow retrieval cannot stall a phase. Generous enough for a
+	// budget-sized one: this path degrades a timeout to "no section", so a
+	// bound that is too tight does not slow the prompt down, it silently
+	// empties it.
+	retrieveCtx, cancel := context.WithTimeout(ctx, contextRetrievalTimeout())
 	defer cancel()
 
 	section := agentplugin.RenderSections(retrieveCtx, o.projectID, query, agentplugin.ContextProviderOpts{
-		Limit:    topK,
-		MinScore: knowledgeMinScore,
+		Limit:       topK,
+		MinScore:    knowledgeMinScore,
+		TokenBudget: &budget,
+		// What this prompt already carries. A provider that can tell its items
+		// apart spends its budget on the ones relevant to what is being
+		// analysed now, instead of re-printing what the prompt states above it.
+		ExcludeIDs: excludeIDs,
 	}, func(name string, err error) {
 		applog.WithFields(applog.Fields{
 			"project_id":       o.projectID,
@@ -4314,6 +4560,26 @@ func (o *Orchestrator) injectKnowledgeSources(ctx context.Context, prompt, query
 	})
 
 	if section == "" {
+		return prompt
+	}
+
+	// What came back, against what the prompt can actually afford. The budget
+	// above is per provider and only binds the ones that honour it: the
+	// knowledge-sources provider is bounded by its own top-N and returns
+	// whatever those items are, which on a project with large source chunks is
+	// more than the headroom. Measuring the composed sections is the only thing
+	// that can catch that, and it is the last point at which anything can.
+	//
+	// Dropped whole rather than cut: a half-rendered knowledge chunk is worse
+	// than none, because the model cannot tell it was truncated. This fires
+	// only where the alternative is a prompt over its window.
+	if cost := approxTokens(ctx, section); cost > headroom {
+		applog.WithFields(applog.Fields{
+			"project_id": o.projectID,
+			"layer":      layer,
+			"section":    cost,
+			"headroom":   headroom,
+		}).Warn("Composed context does not fit what is left of this prompt; dropping it")
 		return prompt
 	}
 

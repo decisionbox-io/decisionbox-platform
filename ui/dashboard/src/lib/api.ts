@@ -668,6 +668,15 @@ export interface Insight {
   source_steps?: number[];
   validation?: InsightValidation;
   discovered_at: string;
+  // Set when Phase 9 judged this insight a restatement of another: the id it
+  // restates, and the similarity that decided it. Absent on everything written
+  // before the mark existed, and on everything judged distinct — so absence
+  // means "not a restatement", never "unknown".
+  //
+  // Mirrored onto this embedded copy because these pages read it rather than
+  // the standalone collection the API filters.
+  duplicate_of?: string;
+  similarity_score?: number;
 }
 
 // Status values come from the seven-status taxonomy plus the legacy
@@ -761,6 +770,9 @@ export interface Recommendation {
   related_insight_ids?: string[];
   confidence: number;
   validation?: InsightValidation;
+  // See Insight.duplicate_of.
+  duplicate_of?: string;
+  similarity_score?: number;
 }
 
 export interface Summary {
@@ -1396,8 +1408,17 @@ export interface LedgerCoverage {
 export interface ConvergencePoint {
   run_id: string;
   new_findings: number;
+  /** The size of the ACTIVE LEDGER after the run, not what the run produced. */
   total_findings: number;
+  /** new_findings / total_findings: how fast the ledger is still GROWING. Not
+   *  the share of this run's own output that was new — a run adding ten new
+   *  findings to a hundred-finding ledger scores 0.09 having repeated nothing. */
   marginal_ratio: number;
+  /** How many distinct findings the run itself surfaced: created plus carried
+   *  ones seen again. With new_findings this gives the run's own novelty, which
+   *  is the repetition rate. Absent on runs recorded before it was measured —
+   *  so zero means "not measured", never "this run found nothing". */
+  run_findings?: number;
   date: string;
 }
 
@@ -1473,8 +1494,14 @@ export interface GraphRun {
   areas?: string[];
   warehouse_id?: string;
   new_findings: number;
+  /** The size of the active ledger after the run, not what the run produced. */
   total_findings: number;
+  /** A ledger GROWTH rate (new_findings / total_findings), not a repetition
+   *  rate. See run_findings for the latter. */
   marginal_ratio: number;
+  /** How many distinct findings the run itself surfaced. Absent on older runs,
+   *  where zero means "not measured". */
+  run_findings?: number;
   /** How many of this run's findings never reached the ledger. Zero on every
    *  healthy run; non-zero means the counts above understate it. */
   unrecorded_findings?: number;
@@ -1712,6 +1739,13 @@ export interface SearchResultItem {
   project_id?: string;
   project_name?: string;
   validation?: InsightValidation;
+  // The duplicate check's marks, carried because search is a reading surface
+  // like any other list: a restatement and the row it restates embed almost
+  // identically, so one query returns BOTH, adjacent. Without these the
+  // search results would show as two findings the pair every other list
+  // folds into one. Absent on a canonical row and on a source_chunk.
+  duplicate_of?: string;
+  similarity_score?: number;
 }
 
 export interface SearchResponse {

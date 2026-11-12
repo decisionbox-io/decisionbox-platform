@@ -286,3 +286,45 @@ func (r *DiscoveryRepository) EnsureIndexes(ctx context.Context) error {
 	_, err := r.collection.Indexes().CreateMany(ctx, indexes)
 	return err
 }
+
+// MarkEmbeddedDuplicate stamps Phase 9's duplicate mark on the copy of a
+// document embedded in its discovery, so the dashboard — which renders the
+// embedded copies and not the standalone collection — can hide it the way the
+// list endpoints do.
+//
+// field is "insights" or "recommendations". Same positional array-filter
+// contract as UpdateInsightValidation, and the same predicate on the main
+// filter: without it an UpdateOne with a wrong id still matches the discovery
+// document, touches no array element and returns nil, which is a silent no-op
+// on a bad id.
+//
+// A missing document or element is NOT an error here. This runs after the mark
+// on the standalone copy has already landed, and that one is what the API
+// filters on; a discovery that has since been retired, or an embedded array
+// that never held this id, must not turn an index-maintenance step into a
+// failure. The caller logs the count it managed to mirror.
+func (r *DiscoveryRepository) MarkEmbeddedDuplicate(ctx context.Context, discoveryIDHex, field, id, duplicateOf string, score float64) (bool, error) {
+	if field != "insights" && field != "recommendations" {
+		return false, fmt.Errorf("unknown embedded field %q", field)
+	}
+	oid, err := primitive.ObjectIDFromHex(discoveryIDHex)
+	if err != nil {
+		return false, fmt.Errorf("invalid discovery id %q: %w", discoveryIDHex, err)
+	}
+	opts := options.Update().SetArrayFilters(options.ArrayFilters{
+		Filters: []interface{}{bson.M{"el.id": id}},
+	})
+	res, err := r.collection.UpdateOne(ctx,
+		bson.M{"_id": oid, field + ".id": id},
+		bson.M{"$set": bson.M{
+			field + ".$[el].duplicate_of":     duplicateOf,
+			field + ".$[el].similarity_score": score,
+			"updated_at":                      time.Now(),
+		}},
+		opts,
+	)
+	if err != nil {
+		return false, fmt.Errorf("mirror duplicate mark onto embedded %s %s: %w", field, id, err)
+	}
+	return res.ModifiedCount > 0, nil
+}

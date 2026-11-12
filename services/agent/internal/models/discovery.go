@@ -132,6 +132,22 @@ type Insight struct {
 	RiskScore     float64 `bson:"risk_score" json:"risk_score"`
 	Confidence    float64 `bson:"confidence" json:"confidence"`
 
+	// DuplicateOf and SimilarityScore mirror the marks Phase 9 writes on the
+	// denormalised copy of this insight, because the dashboard reads the
+	// EMBEDDED copy: the project's insight list, its recommendation list and a
+	// run's own detail page all render these, not the standalone collection, so
+	// a suppression that lives only on the standalone document reaches the API
+	// and none of the screens anybody looks at.
+	//
+	// The same fact in two places, written by one function in one pass — and a
+	// document is marked at most once, by the run that produced it, so the two
+	// copies cannot drift apart afterwards. The alternative was to re-point
+	// three pages at the standalone endpoints, which would also have had to
+	// rebuild their per-run grouping and would not have covered the run detail
+	// page at all, since that page IS the record of one run's output.
+	DuplicateOf     string  `bson:"duplicate_of,omitempty" json:"duplicate_of,omitempty"`
+	SimilarityScore float64 `bson:"similarity_score,omitempty" json:"similarity_score,omitempty"`
+
 	// Flexible domain-specific metrics
 	Metrics    map[string]interface{} `bson:"metrics,omitempty" json:"metrics,omitempty"`
 	Indicators []string               `bson:"indicators,omitempty" json:"indicators,omitempty"`
@@ -294,6 +310,11 @@ type Recommendation struct {
 
 	TargetSegment string `bson:"target_segment" json:"target_segment"`
 	SegmentSize   int    `bson:"segment_size" json:"segment_size"`
+
+	// DuplicateOf and SimilarityScore mirror Phase 9's marks, for the reason
+	// given on Insight: the dashboard renders the embedded copy.
+	DuplicateOf     string  `bson:"duplicate_of,omitempty" json:"duplicate_of,omitempty"`
+	SimilarityScore float64 `bson:"similarity_score,omitempty" json:"similarity_score,omitempty"`
 
 	ExpectedImpact    Impact   `bson:"expected_impact" json:"expected_impact"`
 	Actions           []string `bson:"actions" json:"actions"`

@@ -9,10 +9,13 @@ import (
 	"time"
 
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+	"github.com/decisionbox-io/decisionbox/services/api/database"
 )
 
 type mockRecommendationRepo struct {
 	recs []*commonmodels.StandaloneRecommendation
+	// lastFilter is what the handler asked for.
+	lastFilter database.ListFilter
 }
 
 func (m *mockRecommendationRepo) Create(_ context.Context, _ *commonmodels.StandaloneRecommendation) error {
@@ -29,20 +32,46 @@ func (m *mockRecommendationRepo) GetByID(_ context.Context, id string) (*commonm
 	}
 	return nil, context.DeadlineExceeded
 }
-func (m *mockRecommendationRepo) ListByProject(_ context.Context, projectID string, limit, offset int) ([]*commonmodels.StandaloneRecommendation, error) {
+func (m *mockRecommendationRepo) ListByProject(ctx context.Context, projectID string, limit, offset int) ([]*commonmodels.StandaloneRecommendation, error) {
+	return m.ListByProjectFiltered(ctx, projectID, limit, offset, database.ListFilter{})
+}
+
+// ListByProjectFiltered mirrors the repository: marked duplicates are dropped
+// unless the caller opted in.
+func (m *mockRecommendationRepo) ListByProjectFiltered(_ context.Context, projectID string, _, _ int, f database.ListFilter) ([]*commonmodels.StandaloneRecommendation, error) {
+	m.lastFilter = f
 	var result []*commonmodels.StandaloneRecommendation
 	for _, rec := range m.recs {
-		if rec.ProjectID == projectID {
-			result = append(result, rec)
+		if rec.ProjectID != projectID {
+			continue
 		}
+		if !f.IncludeDuplicates && rec.DuplicateOf != "" {
+			continue
+		}
+		result = append(result, rec)
 	}
 	return result, nil
 }
 func (m *mockRecommendationRepo) ListByDiscovery(_ context.Context, _ string) ([]*commonmodels.StandaloneRecommendation, error) {
 	return nil, nil
 }
-func (m *mockRecommendationRepo) CountByProject(_ context.Context, _ string) (int64, error) {
-	return int64(len(m.recs)), nil
+func (m *mockRecommendationRepo) ListByDiscoveryFiltered(_ context.Context, _ string, f database.ListFilter) ([]*commonmodels.StandaloneRecommendation, error) {
+	m.lastFilter = f
+	return nil, nil
+}
+func (m *mockRecommendationRepo) CountByProject(ctx context.Context, projectID string) (int64, error) {
+	return m.CountByProjectFiltered(ctx, projectID, database.ListFilter{})
+}
+func (m *mockRecommendationRepo) CountByProjectFiltered(_ context.Context, _ string, f database.ListFilter) (int64, error) {
+	m.lastFilter = f
+	n := 0
+	for _, rec := range m.recs {
+		if !f.IncludeDuplicates && rec.DuplicateOf != "" {
+			continue
+		}
+		n++
+	}
+	return int64(n), nil
 }
 func (m *mockRecommendationRepo) UpdateEmbedding(_ context.Context, _ string, _, _ string) error {
 	return nil
@@ -130,5 +159,42 @@ func TestRecommendationsHandler_GetNotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestRecommendationsHandler_HidesMarkedDuplicatesByDefault(t *testing.T) {
+	repo := &mockRecommendationRepo{recs: []*commonmodels.StandaloneRecommendation{
+		{ID: "a", ProjectID: "p1", Title: "original"},
+		{ID: "b", ProjectID: "p1", Title: "restatement", DuplicateOf: "a", SimilarityScore: 0.91},
+	}}
+	h := NewRecommendationsHandler(repo)
+
+	list := func(query string) []*commonmodels.StandaloneRecommendation {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/p1/recommendations"+query, nil)
+		req.SetPathValue("id", "p1")
+		w := httptest.NewRecorder()
+		h.List(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("query %q: status %d", query, w.Code)
+		}
+		// The handlers wrap their payload in APIResponse, so the list has to
+		// be decoded out of Data rather than off the body.
+		var resp struct {
+			Data []*commonmodels.StandaloneRecommendation `json:"data"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("query %q: decode: %v", query, err)
+		}
+		return resp.Data
+	}
+
+	if out := list(""); len(out) != 1 || out[0].ID != "a" {
+		t.Errorf("default listing = %+v, want only the original", out)
+	}
+	if out := list("?include_duplicates=true"); len(out) != 2 {
+		t.Errorf("opt-in returned %d, want 2", len(out))
+	}
+	if !repo.lastFilter.IncludeDuplicates {
+		t.Error("the opt-in did not reach the repository")
 	}
 }

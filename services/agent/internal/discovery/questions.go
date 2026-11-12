@@ -195,7 +195,10 @@ func (o *Orchestrator) generateQuestions(ctx context.Context, items []uncertaint
 	prompt := o.buildQuestionsPrompt(items, existing, maxN)
 	// Let already-answered notes surface so the model doesn't re-raise resolved
 	// ambiguities (the answer is now in the KB).
-	prompt = o.injectKnowledgeSources(ctx, prompt, "clarifying questions about "+strings.Join(o.datasets, ", "), knowledgeTopKRecommendations)
+	// No exclusions: this prompt is built by buildQuestionsPrompt without the
+	// shared base context, so the findings that context carries are not in it
+	// and excluding them would suppress knowledge the model never saw.
+	prompt = o.injectKnowledgeSources(ctx, prompt, "clarifying questions about "+strings.Join(o.datasets, ", "), knowledgeTopKRecommendations, llmlayer.LayerQuestions, nil)
 
 	window, modelOutputCap := o.budgetFor(llmlayer.LayerQuestions)
 	// Default to the model's own cap, mirroring the analysis/recommendation

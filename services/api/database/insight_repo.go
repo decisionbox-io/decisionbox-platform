@@ -51,7 +51,15 @@ func (r *InsightRepository) GetByID(ctx context.Context, id string) (*commonmode
 	return &insight, nil
 }
 
+// ListByProject returns a page of the project's documents, excluding the ones
+// already marked as duplicates. ListByProjectFiltered is the same query with
+// that choice made explicitly.
 func (r *InsightRepository) ListByProject(ctx context.Context, projectID string, limit, offset int) ([]*commonmodels.StandaloneInsight, error) {
+	return r.ListByProjectFiltered(ctx, projectID, limit, offset, ListFilter{})
+}
+
+// ListByProjectFiltered is ListByProject with the duplicate handling stated.
+func (r *InsightRepository) ListByProjectFiltered(ctx context.Context, projectID string, limit, offset int, f ListFilter) ([]*commonmodels.StandaloneInsight, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -60,7 +68,7 @@ func (r *InsightRepository) ListByProject(ctx context.Context, projectID string,
 		SetLimit(int64(limit)).
 		SetSkip(int64(offset))
 
-	cursor, err := r.db.Collection("insights").Find(ctx, bson.M{"project_id": projectID}, opts)
+	cursor, err := r.db.Collection("insights").Find(ctx, f.apply(bson.M{"project_id": projectID}), opts)
 	if err != nil {
 		return nil, fmt.Errorf("list insights for project %s: %w", projectID, err)
 	}
@@ -73,9 +81,16 @@ func (r *InsightRepository) ListByProject(ctx context.Context, projectID string,
 	return results, nil
 }
 
+// ListByDiscovery returns one discovery's documents, excluding the ones already
+// marked as duplicates.
 func (r *InsightRepository) ListByDiscovery(ctx context.Context, discoveryID string) ([]*commonmodels.StandaloneInsight, error) {
+	return r.ListByDiscoveryFiltered(ctx, discoveryID, ListFilter{})
+}
+
+// ListByDiscoveryFiltered is ListByDiscovery with the duplicate handling stated.
+func (r *InsightRepository) ListByDiscoveryFiltered(ctx context.Context, discoveryID string, f ListFilter) ([]*commonmodels.StandaloneInsight, error) {
 	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}})
-	cursor, err := r.db.Collection("insights").Find(ctx, bson.M{"discovery_id": discoveryID}, opts)
+	cursor, err := r.db.Collection("insights").Find(ctx, f.apply(bson.M{"discovery_id": discoveryID}), opts)
 	if err != nil {
 		return nil, fmt.Errorf("list insights for discovery %s: %w", discoveryID, err)
 	}
@@ -88,8 +103,17 @@ func (r *InsightRepository) ListByDiscovery(ctx context.Context, discoveryID str
 	return results, nil
 }
 
+// CountByProject counts the project's documents, excluding the ones already
+// marked as duplicates — the same set ListByProject returns. The two have to
+// agree: a count that includes what the list hides reports a total the list
+// never produces, and pagination built on it asks for pages that do not exist.
 func (r *InsightRepository) CountByProject(ctx context.Context, projectID string) (int64, error) {
-	count, err := r.db.Collection("insights").CountDocuments(ctx, bson.M{"project_id": projectID})
+	return r.CountByProjectFiltered(ctx, projectID, ListFilter{})
+}
+
+// CountByProjectFiltered is CountByProject with the duplicate handling stated.
+func (r *InsightRepository) CountByProjectFiltered(ctx context.Context, projectID string, f ListFilter) (int64, error) {
+	count, err := r.db.Collection("insights").CountDocuments(ctx, f.apply(bson.M{"project_id": projectID}))
 	if err != nil {
 		return 0, fmt.Errorf("count insights for project %s: %w", projectID, err)
 	}

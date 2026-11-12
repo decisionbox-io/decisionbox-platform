@@ -295,3 +295,67 @@ func TestNormalizedLearningKey(t *testing.T) {
 		t.Error("an empty learning should produce an empty key, not a punctuation artefact")
 	}
 }
+
+// TestRunNovelty_UnrecordedConsolidationIsNotMeasured. NewFindings counts what
+// was successfully written, so a run whose new findings failed to persist while
+// a carried one was recognised records 0 of 1 — "everything was already known",
+// the exact opposite of what happened. The ledger already records that the
+// write went wrong; a rate derived from it would hand the next run a larger
+// prior-context budget on the strength of a failure.
+func TestRunNovelty_UnrecordedConsolidationIsNotMeasured(t *testing.T) {
+	lost := ConvergencePoint{NewFindings: 0, TotalFindings: 100, RunFindings: 1, UnrecordedFindings: 2}
+	if _, ok := lost.RunNovelty(); ok {
+		t.Error("a consolidation that lost findings must not report a measured novelty")
+	}
+
+	// The same counts, nothing lost, is a real measurement.
+	clean := ConvergencePoint{NewFindings: 0, TotalFindings: 100, RunFindings: 1}
+	if n, ok := clean.RunNovelty(); !ok || n != 0 {
+		t.Errorf("RunNovelty = %v (ok=%v), want a measured 0", n, ok)
+	}
+}
+
+func TestRunNovelty(t *testing.T) {
+	cases := []struct {
+		name string
+		p    ConvergencePoint
+		want float64
+		ok   bool
+	}{
+		{"all new", ConvergencePoint{NewFindings: 10, RunFindings: 10, TotalFindings: 110}, 1, true},
+		{"all repeated", ConvergencePoint{NewFindings: 0, RunFindings: 40, TotalFindings: 400}, 0, true},
+		{"half", ConvergencePoint{NewFindings: 5, RunFindings: 10}, 0.5, true},
+		{"not measured", ConvergencePoint{NewFindings: 41, TotalFindings: 422, MarginalRatio: 0.097}, 0, false},
+		{"negative run findings", ConvergencePoint{NewFindings: 1, RunFindings: -3}, 0, false},
+		{"more new than surfaced is clamped", ConvergencePoint{NewFindings: 50, RunFindings: 10}, 1, true},
+		{"negative new is clamped", ConvergencePoint{NewFindings: -5, RunFindings: 10}, 0, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := c.p.RunNovelty()
+			if ok != c.ok {
+				t.Fatalf("ok = %v, want %v", ok, c.ok)
+			}
+			if ok && got != c.want {
+				t.Errorf("got %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestRunNoveltyIsNotMarginalRatio keeps the two apart, which is the whole
+// reason RunFindings exists: MarginalRatio divides by the ledger, so it is a
+// growth rate and says nothing about whether a run repeated itself.
+func TestRunNoveltyIsNotMarginalRatio(t *testing.T) {
+	p := ConvergencePoint{NewFindings: 10, TotalFindings: 110, MarginalRatio: 10.0 / 110.0, RunFindings: 10}
+	n, ok := p.RunNovelty()
+	if !ok {
+		t.Fatal("expected a measurement")
+	}
+	if n == p.MarginalRatio {
+		t.Fatal("the two must be able to differ, or RunFindings buys nothing")
+	}
+	if n != 1 {
+		t.Errorf("novelty = %v, want 1 — the run surfaced ten findings and all ten were new", n)
+	}
+}

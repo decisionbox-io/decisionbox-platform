@@ -312,3 +312,112 @@ func TestRenderSections_PassesProjectAndQuery(t *testing.T) {
 		t.Fatalf("provider got opts %+v, want Limit=7 MinScore=0.42", gotOpts)
 	}
 }
+
+// optsRecorder captures the options one provider was handed.
+type optsRecorder struct {
+	name string
+	got  ContextProviderOpts
+}
+
+func (r *optsRecorder) Name() string { return r.name }
+
+func (r *optsRecorder) Section(_ context.Context, _ string, _ string, opts ContextProviderOpts) (string, error) {
+	r.got = opts
+	return "section from " + r.name, nil
+}
+
+// TestRenderSectionsPassesOptsThroughVerbatim pins the per-provider budget
+// contract: every registered provider is handed exactly the options the caller
+// set, with nothing redistributed or divided between them.
+//
+// The whole fix for providers competing over one shared Limit is that each gets
+// its own budget, so a renderer that quietly split or rewrote TokenBudget would
+// restore the defect while every other test still passed.
+func TestRenderSectionsPassesOptsThroughVerbatim(t *testing.T) {
+	resetForTest()
+	t.Cleanup(resetForTest)
+
+	a := &optsRecorder{name: "provider-a"}
+	b := &optsRecorder{name: "provider-b"}
+	RegisterContextProvider(a)
+	RegisterContextProvider(b)
+
+	budget := 9000
+	want := ContextProviderOpts{
+		Limit:       5,
+		MinScore:    0.4,
+		TokenBudget: &budget,
+		ExcludeIDs:  []string{"f1", "f2"},
+	}
+	out := RenderSections(context.Background(), "proj-1", "a query", want, nil)
+	if out == "" {
+		t.Fatal("expected both sections")
+	}
+
+	for _, r := range []*optsRecorder{a, b} {
+		got, supplied := r.got.Budget()
+		if !supplied || got != budget {
+			t.Errorf("%s got TokenBudget %v (supplied=%v), want %d — the budget is per provider, not a pool to divide",
+				r.name, got, supplied, budget)
+		}
+		if r.got.Limit != want.Limit || r.got.MinScore != want.MinScore {
+			t.Errorf("%s got Limit=%d MinScore=%v, want %d/%v", r.name, r.got.Limit, r.got.MinScore, want.Limit, want.MinScore)
+		}
+		if len(r.got.ExcludeIDs) != len(want.ExcludeIDs) {
+			t.Fatalf("%s got %d ExcludeIDs, want %d", r.name, len(r.got.ExcludeIDs), len(want.ExcludeIDs))
+		}
+		for i := range want.ExcludeIDs {
+			if r.got.ExcludeIDs[i] != want.ExcludeIDs[i] {
+				t.Errorf("%s ExcludeIDs[%d] = %q, want %q", r.name, i, r.got.ExcludeIDs[i], want.ExcludeIDs[i])
+			}
+		}
+	}
+}
+
+// TestRenderSectionsAbsentBudgetIsNotSilence pins the back-compatible reading of
+// an ABSENT TokenBudget: a caller that supplied no budget must get the
+// behaviour it got before the field existed, which is bounded by Limit.
+//
+// Reading "no budget" as "carry nothing" would silently empty every prompt
+// assembled by a caller that has not been taught the new field — including the
+// /ask path and any plugin calling RenderSections directly. Which is why the
+// field is a pointer: a SUPPLIED zero is the opposite instruction, and an int
+// could not tell the renderer which of the two it had been handed.
+func TestRenderSectionsAbsentBudgetIsNotSilence(t *testing.T) {
+	resetForTest()
+	t.Cleanup(resetForTest)
+
+	rec := &optsRecorder{name: "legacy-caller-provider"}
+	RegisterContextProvider(rec)
+
+	out := RenderSections(context.Background(), "proj-1", "a query", ContextProviderOpts{Limit: 3, MinScore: 0.4}, nil)
+	if out == "" {
+		t.Fatal("a caller that set only Limit must still get its section")
+	}
+	if got, supplied := rec.got.Budget(); supplied {
+		t.Errorf("Budget() reported %d as supplied — an unsupplied budget must not be invented", got)
+	}
+	if rec.got.Limit != 3 {
+		t.Errorf("Limit = %d, want 3", rec.got.Limit)
+	}
+}
+
+// TestRenderSectionsPassesASuppliedZeroThrough. The renderer must not treat a
+// supplied zero as absent on the way to the providers: a provider that honours
+// budgets has to be able to see "no room" and render nothing. The agent does
+// not call at all in that case, but a provider cannot rely on every caller
+// doing so.
+func TestRenderSectionsPassesASuppliedZeroThrough(t *testing.T) {
+	resetForTest()
+	t.Cleanup(resetForTest)
+
+	rec := &optsRecorder{name: "budget-aware-provider"}
+	RegisterContextProvider(rec)
+
+	zero := 0
+	_ = RenderSections(context.Background(), "proj-1", "a query", ContextProviderOpts{Limit: 3, TokenBudget: &zero}, nil)
+	got, supplied := rec.got.Budget()
+	if !supplied || got != 0 {
+		t.Errorf("Budget() = (%d, %v), want (0, true) — a supplied zero is an instruction, not an omission", got, supplied)
+	}
+}

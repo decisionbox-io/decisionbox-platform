@@ -290,3 +290,53 @@ func TestForwardedEnv_ReasoningEffort(t *testing.T) {
 		t.Errorf("%s not forwarded: %q", gollm.ReasoningEffortEnvVar, found[gollm.ReasoningEffortEnvVar])
 	}
 }
+
+// TestForwardedEnv_PromptCompositionBudgets pins that the prompt-composition
+// knobs reach container-spawned agents.
+//
+// They are read by the agent when it assembles each prompt, and production runs
+// agents as Kubernetes Jobs — so without forwarding, an operator who tunes them
+// on the API would see no effect at all on the runners that matter, while a
+// subprocess run would honour them. The same configuration behaving differently
+// per runner is the failure this guards.
+func TestForwardedEnv_PromptCompositionBudgets(t *testing.T) {
+	want := map[string]string{
+		"DISCOVERY_PRIOR_CONTEXT_SHARE":       "0.35",
+		"DISCOVERY_CONTEXT_PROVIDER_SHARE":    "0.15",
+		"DISCOVERY_CONTEXT_RETRIEVAL_TIMEOUT": "25s",
+		"DISCOVERY_DOCUMENT_DEDUP_MINSCORE":   "0.91",
+	}
+	for k, v := range want {
+		t.Setenv(k, v)
+	}
+
+	found := map[string]string{}
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys) {
+		found[kv.Key] = kv.Value
+	}
+	for k, v := range want {
+		if found[k] != v {
+			t.Errorf("%s not forwarded (got %q, want %q) — tuning it on the API would silently do nothing on a Kubernetes or Docker run", k, found[k], v)
+		}
+	}
+}
+
+// TestForwardedEnv_PromptCompositionBudgetsAbsentWhenUnset keeps the
+// forward-only-when-set contract: an unset share must not arrive as an empty
+// string, which the agent would have to parse and fall back from.
+func TestForwardedEnv_PromptCompositionBudgetsAbsentWhenUnset(t *testing.T) {
+	found := map[string]bool{}
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys) {
+		found[kv.Key] = true
+	}
+	for _, k := range []string{
+		"DISCOVERY_PRIOR_CONTEXT_SHARE",
+		"DISCOVERY_CONTEXT_PROVIDER_SHARE",
+		"DISCOVERY_CONTEXT_RETRIEVAL_TIMEOUT",
+		"DISCOVERY_DOCUMENT_DEDUP_MINSCORE",
+	} {
+		if found[k] {
+			t.Errorf("%s should not be forwarded when unset", k)
+		}
+	}
+}

@@ -78,6 +78,32 @@ type SearchOpts struct {
 	// and be discarded by the caller, silently returning fewer results
 	// than Limit while matching points sat just below the cut.
 	ExcludeSourceTypes []string
+
+	// ExcludeStatuses drops points whose `status` payload is in this list.
+	//
+	// Same reason as ExcludeSourceTypes, one field along: a retired finding
+	// filtered out AFTER the search still occupied the top-K window, so a
+	// query whose best few hits happened to be resolved or refuted returned
+	// nothing while live findings sat just below the cut. Filtering in the
+	// query means retired findings cannot starve live context.
+	//
+	// It does not make a caller-side check redundant. The payload records the
+	// status AS INDEXED, and a finding is only re-upserted when a run sees it
+	// again — so a finding resolved since then still carries its old status
+	// here. This keeps retired findings from crowding the window; the caller's
+	// own check on the hydrated document is what is authoritative.
+	ExcludeStatuses []string
+
+	// ExcludeIDs drops points by id — items the caller already carries
+	// elsewhere in the same prompt and must not be handed twice.
+	//
+	// In the query, for the same reason as the two above and one the caller
+	// cannot work around: a caller that filters afterwards has to over-fetch to
+	// compensate, and any bound it puts on that over-fetch is a size at which
+	// the search returns nothing but exclusions while matching points sit below
+	// the cut. A ledger large enough to put 800 findings in a prompt is exactly
+	// the one where that happens, and it is the case the exclusions exist for.
+	ExcludeIDs []string
 }
 
 // SearchResult represents a single vector search match.

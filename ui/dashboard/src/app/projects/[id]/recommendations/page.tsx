@@ -14,6 +14,8 @@ import {
 } from '@/components/common/UIComponents';
 import UnreadDot from '@/components/common/UnreadDot';
 import { useReadSet } from '@/lib/readState';
+import { collapseByKey, restatedToggleLabel, splitRestated } from '@/lib/restated';
+import RestatedBadge from '@/components/common/RestatedBadge';
 import { api, Feedback, Insight, Project, Recommendation, SearchResultItem } from '@/lib/api';
 
 interface RecWithContext extends Recommendation {
@@ -33,6 +35,7 @@ export default function RecommendationsListPage() {
   const [page, setPage] = useState(1);
   const pageSize = 10;
   const [semanticResults, setSemanticResults] = useState<SearchResultItem[] | null>(null);
+  const [showRestated, setShowRestated] = useState(false);
   const [searching, setSearching] = useState(false);
   const hasEmbedding = !!project?.embedding?.provider;
   const readSet = useReadSet(id, 'recommendation');
@@ -42,7 +45,7 @@ export default function RecommendationsListPage() {
       api.getProject(id).then(p => setProject(p)),
       api.listDiscoveries(id).then(discoveries => {
         const recs: RecWithContext[] = [];
-        const seen = new Set<string>();
+        const collected: RecWithContext[] = [];
 
         for (const d of (discoveries || [])) {
           api.listFeedback(d.id).then(fb => {
@@ -52,11 +55,7 @@ export default function RecommendationsListPage() {
           }).catch(() => {});
 
           for (const rec of (d.recommendations || [])) {
-            // Deduplicate by title (show latest)
-            if (seen.has(rec.title)) continue;
-            seen.add(rec.title);
-
-            recs.push({
+            collected.push({
               ...rec,
               discoveryId: d.id,
               discoveryDate: d.discovery_date,
@@ -64,6 +63,9 @@ export default function RecommendationsListPage() {
             });
           }
         }
+        // One row per title, collapsed AFTER collecting so a canonical row can
+        // win over a restatement sharing its title — see collapseByKey.
+        recs.push(...collapseByKey(collected, r => r.title));
         setAllRecs(recs);
       }),
     ])
@@ -93,17 +95,38 @@ export default function RecommendationsListPage() {
 
   if (loading) return <Shell><Loader /></Shell>;
 
-  // Filter
-  let filtered = allRecs;
+  // The text filter runs BEFORE the restatement split — a row is hidden only
+  // when the row it restates is one the reader can see in this list, and a
+  // filter that removes the original would otherwise leave a matching
+  // recommendation hidden behind nothing. Hidden by default, never dropped:
+  // the judgement is a similarity score and it can be wrong, so one click
+  // brings them back with the score that hid them.
+  let matching = allRecs;
   if (search) {
     const q = search.toLowerCase();
-    filtered = filtered.filter(r =>
+    matching = matching.filter(r =>
       r.title.toLowerCase().includes(q) ||
       r.description?.toLowerCase().includes(q) ||
       r.category?.toLowerCase().includes(q) ||
       r.target_segment?.toLowerCase().includes(q)
     );
   }
+  const { shown: distinctRecs, restated: restatedRecs } = splitRestated(matching);
+
+  // The semantic results are a reading surface too, and the one most likely
+  // to show a fold: a restatement and the row it restates embed almost
+  // identically, so a query that matches one matches the other and they come
+  // back adjacent. Hidden by the same rule and revealed by the same toggle, or
+  // a search would undo the suppression every other list on this page applies.
+  const semanticSplit = semanticResults ? splitRestated(semanticResults) : null;
+  const shownSemanticResults = semanticSplit
+    ? (showRestated ? semanticResults : semanticSplit.shown)
+    : null;
+  // The toggle governs whichever list is being read, so its count is of rows
+  // revealing will actually produce — not of a list the reader cannot see.
+  const restatedCount = semanticSplit ? semanticSplit.restated.length : restatedRecs.length;
+
+  let filtered = showRestated ? matching : distinctRecs;
 
   // Sort
   filtered = [...filtered].sort((a, b) => {
@@ -133,20 +156,30 @@ export default function RecommendationsListPage() {
 
   return (
     <Shell breadcrumb={breadcrumb}>
-      <SectionHeader title="All Recommendations" count={semanticResults ? semanticResults.length : filtered.length} right={
+      <SectionHeader title="All Recommendations" count={shownSemanticResults ? shownSemanticResults.length : filtered.length} right={
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {searching && <Loader size="xs" />}
           <SearchInput value={search} onChange={v => { setSearch(v); setPage(1); }}
             placeholder={hasEmbedding ? 'Semantic search recommendations...' : 'Filter recommendations...'} />
+          {restatedCount > 0 && (
+            <button onClick={() => { setShowRestated(v => !v); setPage(1); }} style={{
+              fontSize: 12, padding: '4px 12px',
+              border: '0.5px solid var(--db-border-strong)',
+              borderRadius: 'var(--db-radius)',
+              background: showRestated ? 'var(--db-blue-bg)' : 'var(--db-bg-white)',
+              color: showRestated ? 'var(--db-blue-text)' : 'var(--db-text-secondary)',
+              cursor: 'pointer', fontFamily: 'inherit', transition: 'all 120ms ease',
+            }}>{restatedToggleLabel(restatedCount, showRestated)}</button>
+          )}
           <SortDropdown value={sortBy} onChange={setSortBy}
             options={['Priority', 'Confidence', 'Segment size', 'Date']} />
         </div>
       } />
 
       {/* Semantic search results */}
-      {semanticResults && semanticResults.length > 0 && (
+      {shownSemanticResults && shownSemanticResults.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {semanticResults.map(r => (
+          {shownSemanticResults.map(r => (
             <Link key={r.id} href={`/projects/${id}/discoveries/${r.discovery_id}/recommendations/${r.id}`}
               style={{ textDecoration: 'none' }}>
               <div style={{
@@ -163,6 +196,7 @@ export default function RecommendationsListPage() {
                   <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--db-text-primary)' }}>
                     {r.name || r.title}
                   </span>
+                  <RestatedBadge doc={r} />
                 </div>
                 {r.description && (
                   <p style={{ fontSize: 13, color: 'var(--db-text-secondary)', margin: 0, lineHeight: 1.5 }}>
@@ -215,6 +249,7 @@ export default function RecommendationsListPage() {
                     <UnreadDot unread={!isRead} />
                     <span>{rec.title}</span>
                   </Link>
+                  <RestatedBadge doc={rec} />
                   <FeedbackButtons projectId={id} discoveryId={rec.discoveryId} targetType="recommendation"
                     targetId={targetId}
                     feedback={feedbackMap[`recommendation:${targetId}:${rec.discoveryId}`]} />

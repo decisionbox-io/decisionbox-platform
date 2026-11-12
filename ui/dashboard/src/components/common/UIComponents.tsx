@@ -159,7 +159,7 @@ export function Pill({ bg, color, children }: { bg: string; color: string; child
 
 /* ========== Empty State ========== */
 
-export function EmptyState({ icon, title, description }: { icon: React.ReactNode; title: string; description: string }) {
+export function EmptyState({ icon, title, description, action }: { icon: React.ReactNode; title: string; description: string; action?: React.ReactNode }) {
   return (
     <div style={{
       background: 'var(--db-bg-white)',
@@ -170,6 +170,9 @@ export function EmptyState({ icon, title, description }: { icon: React.ReactNode
       <div style={{ opacity: 0.3, marginBottom: 8 }}>{icon}</div>
       <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--db-text-secondary)', marginBottom: 4 }}>{title}</div>
       <div style={{ fontSize: 13, color: 'var(--db-text-tertiary)' }}>{description}</div>
+      {/* Optional: a way out of the empty state. An empty list whose contents
+          were hidden rather than absent needs one, or the hiding is a dead end. */}
+      {action && <div style={{ marginTop: 14 }}>{action}</div>}
     </div>
   );
 }

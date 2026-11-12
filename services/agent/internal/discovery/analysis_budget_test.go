@@ -58,32 +58,87 @@ func TestAnalysisPickerBudgetTokens(t *testing.T) {
 	def := AnalysisQueryResultsBudgetTokens // 200_000
 
 	// 128K window: budget must drop below the 200K default (protective).
-	if got := analysisPickerBudgetTokens(def, 128000, 64000); got >= def || got <= 0 {
+	if got := analysisPickerBudgetTokens(def, 128000, 64000, 0); got >= def || got <= 0 {
 		t.Fatalf("128K window: expected 0 < budget < %d, got %d", def, got)
 	}
 
 	// 1M window: plenty of room, keep the default soft cap.
-	if got := analysisPickerBudgetTokens(def, 1000000, 64000); got != def {
+	if got := analysisPickerBudgetTokens(def, 1000000, 64000, 0); got != def {
 		t.Fatalf("1M window: expected the default %d, got %d", def, got)
 	}
 
 	// Output cap >= window (Ollama qwen/deepseek/gemma: output default equals the
 	// context window) must NOT collapse the picker to the floor — it reserves the
 	// intended analysis output, leaving most of the 128K window for evidence.
-	if got := analysisPickerBudgetTokens(def, 131072, 131072); got <= minPickerBudgetTokens || got >= def {
+	if got := analysisPickerBudgetTokens(def, 131072, 131072, 0); got <= minPickerBudgetTokens || got >= def {
 		t.Fatalf("cap==window (128K): expected a large budget, got %d", got)
 	}
 
 	// Genuinely tiny window (8K) where even the intended output leaves no input
 	// room → the small floor, NOT the 200K default (else input alone overflows).
-	if got := analysisPickerBudgetTokens(def, 8192, 64000); got != minPickerBudgetTokens {
+	if got := analysisPickerBudgetTokens(def, 8192, 64000, 0); got != minPickerBudgetTokens {
 		t.Fatalf("tiny window: expected the picker floor %d, got %d", minPickerBudgetTokens, got)
 	}
 
 	// Degenerate window: falls to the floor, never the 200K default.
-	if got := analysisPickerBudgetTokens(def, 0, 64000); got != minPickerBudgetTokens {
+	if got := analysisPickerBudgetTokens(def, 0, 64000, 0); got != minPickerBudgetTokens {
 		t.Fatalf("zero window: expected the picker floor %d, got %d", minPickerBudgetTokens, got)
 	}
+}
+
+// TestAnalysisPickerBudgetCountsTheRestOfThePrompt pins the half of this budget
+// that was missing: the query results are not the only input, so sizing them
+// against the whole of Available() promises the same tokens to the evidence and
+// to the base context both.
+//
+// It did not show while the base context was a couple of thousand tokens and
+// the safety margin absorbed the overlap. Prior knowledge sized from the window
+// is an order of magnitude larger than that, and the overlap lands as a
+// context-overflow 400 on the first area whose evidence fills the budget.
+func TestAnalysisPickerBudgetCountsTheRestOfThePrompt(t *testing.T) {
+	def := AnalysisQueryResultsBudgetTokens
+
+	t.Run("a large fixed input lowers the budget by exactly that much", func(t *testing.T) {
+		const window, cap, fixed = 131072, 16384, 20000
+		free := analysisPickerBudgetTokens(def, window, cap, 0)
+		occupied := analysisPickerBudgetTokens(def, window, cap, fixed)
+		if free-occupied != fixed {
+			t.Errorf("budget fell from %d to %d for a %d-token prompt — want exactly %d less", free, occupied, fixed, fixed)
+		}
+	})
+
+	t.Run("input plus intended output stays inside the window", func(t *testing.T) {
+		// The property that matters: whatever the picker is allowed to add to
+		// what the prompt already holds must still leave room for the output.
+		const window, cap = 131072, 16384
+		for _, fixed := range []int{0, 5000, 20000, 60000, 90000} {
+			budget := analysisPickerBudgetTokens(def, window, cap, fixed)
+			total := fixed + budget + intendedOutputReserve(cap, window)
+			if total > window {
+				t.Errorf("fixed=%d budget=%d output=%d sums to %d, past the %d window",
+					fixed, budget, intendedOutputReserve(cap, window), total, window)
+			}
+		}
+	})
+
+	t.Run("a fixed input past the window falls to the floor, not below zero", func(t *testing.T) {
+		if got := analysisPickerBudgetTokens(def, 131072, 16384, 500000); got != minPickerBudgetTokens {
+			t.Errorf("got %d, want the picker floor %d", got, minPickerBudgetTokens)
+		}
+	})
+
+	t.Run("a huge window still keeps the default soft cap under an ordinary prompt", func(t *testing.T) {
+		if got := analysisPickerBudgetTokens(def, 1000000, 32000, 25000); got != def {
+			t.Errorf("got %d, want the default %d — a 1M window has room for both", got, def)
+		}
+	})
+
+	t.Run("a negative fixed input is ignored rather than crediting the budget", func(t *testing.T) {
+		free := analysisPickerBudgetTokens(def, 131072, 16384, 0)
+		if got := analysisPickerBudgetTokens(def, 131072, 16384, -10000); got != free {
+			t.Errorf("got %d, want %d — a negative measurement must not buy extra budget", got, free)
+		}
+	})
 }
 
 func TestBudgetedMaxOutputTokens_OutputCapBelowFloor(t *testing.T) {

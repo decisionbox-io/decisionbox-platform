@@ -5,7 +5,6 @@ import (
 	_ "embed"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -79,16 +78,22 @@ const (
 	// a single vector search, and it is optional — the exact-key match has
 	// already been tried.
 	ledgerDedupSearchTimeout = 15 * time.Second
+	// ledgerReindexBudget is the ceiling on bringing the vector index in line
+	// with the reflection verdicts. It runs after every durable write, so this
+	// bounds only how long an optional step may hold the phase open.
+	ledgerReindexBudget = 60 * time.Second
 	// ledgerDedupSearchBudget is the ceiling on all of them together.
 	ledgerDedupSearchBudget              = 45 * time.Second
 	defaultDiscoveryReflectionMaxOutput  = 3000
 	defaultDiscoveryReflectionParseRetry = 1
 	defaultDiscoveryLedgerMaxFindings    = 500
-	defaultDiscoveryLedgerDedupMinScore  = 0.85
-	defaultDiscoveryLedgerTrendDelta     = 0.2
-	maxConvergenceHistory                = 50
-	maxPriorFindingsInPrompt             = 60
-	maxLedgerTasksInPrompt               = 40
+	// Deliberately not defaultDedupMinScore. That one hides a document; this
+	// one merges two findings into one and bumps a seen-count, on shorter
+	// text. See the comment on defaultDedupMinScore for the measurement.
+	defaultDiscoveryLedgerDedupMinScore = 0.85
+	defaultDiscoveryLedgerTrendDelta    = 0.2
+	maxConvergenceHistory               = 50
+	maxLedgerTasksInPrompt              = 40
 	// defaultLearningRelevance is the importance a learning is stored with when
 	// the model gave none or gave one outside 0..1. Shared by the
 	// project-context note and the ledger's own copy so the two cannot drift.
@@ -340,14 +345,24 @@ func (o *Orchestrator) RunPhaseReflection(ctx context.Context, result *models.Di
 	}
 
 	// 3. Apply the LLM outputs, each independently guarded.
-	o.applyReflection(rctx, result, pol, ref, cons)
+	restatused := o.applyReflection(rctx, result, pol, ref, cons)
 
 	// 4. Update coverage + convergence on the ledger and prune findings.
 	o.updateLedgerMeta(rctx, result, ref, cons)
+
+	// Retention before maintenance: pruning is a write the ledger owes, and it
+	// was behind the re-index, which embeds — so a stalled embedder could spend
+	// the rest of the phase and leave the active set over its cap.
 	if err := o.findingRepo.Prune(rctx, o.projectID,
 		goconfig.GetEnvAsInt(discoveryLedgerMaxFindingsEnv, defaultDiscoveryLedgerMaxFindings)); err != nil {
 		applog.WithError(err).Warn("Reflection: ledger prune failed")
 	}
+
+	// Last, and on its own budget: bringing the vector index in line with the
+	// verdicts is maintenance, and it embeds. Everything above is a durable
+	// write this run already has the answer for, and a stalled embedder must
+	// not be able to cost one.
+	o.reindexFindings(rctx, restatused)
 
 	applog.WithFields(applog.Fields{
 		"project_id":     o.projectID,
@@ -379,6 +394,17 @@ type consolidationResult struct {
 	// ago by an earlier candidate in the same loop are indistinguishable in
 	// the stored document.
 	ReSeen map[string]struct{}
+
+	// Reindexed are the findings whose vector payload this pass successfully
+	// rewrote, carrying the status they hold now.
+	//
+	// It exists so applyReflection can tell a payload it knows is fresh from
+	// one whose age it cannot know. A verdict that does not move a status needs
+	// no payload write when the payload was just written — and does need one
+	// otherwise, because the only thing that repairs a payload left stale by an
+	// earlier run is a write, and a status that does not move would never
+	// trigger one.
+	Reindexed map[string]struct{}
 
 	// Unrecorded is how many of this run's findings did not reach the ledger.
 	//
@@ -510,6 +536,7 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 	candidates := buildFindingCandidates(result)
 	out := consolidationResult{
 		ReSeen:               make(map[string]struct{}),
+		Reindexed:            make(map[string]struct{}),
 		FindingIDByInsightID: make(map[string]string, len(candidates)),
 	}
 	// The ACTIVE set, which the retention cap bounds. The archived rows this
@@ -537,8 +564,8 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 		}
 	}
 
-	trendDelta := getEnvAsFloat(discoveryLedgerTrendDeltaEnv, defaultDiscoveryLedgerTrendDelta)
-	dedupMinScore := getEnvAsFloat(discoveryLedgerDedupMinScoreEnv, defaultDiscoveryLedgerDedupMinScore)
+	trendDelta := goconfig.GetEnvAsFloat(discoveryLedgerTrendDeltaEnv, defaultDiscoveryLedgerTrendDelta)
+	dedupMinScore := goconfig.GetEnvAsFloat(discoveryLedgerDedupMinScoreEnv, defaultDiscoveryLedgerDedupMinScore)
 	now := time.Now()
 
 	// A finding the retention cap archived and this run has seen again must
@@ -871,23 +898,17 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 			model := o.embeddingProvider.ModelName()
 			points := make([]vectorstore.Point, 0, len(toIndex))
 			for _, it := range toIndex {
-				points = append(points, vectorstore.Point{
-					ID:     it.finding.ID,
-					Vector: it.vector,
-					Payload: map[string]interface{}{
-						"type":            commonmodels.LedgerFindingVectorType,
-						"project_id":      o.projectID,
-						"analysis_area":   it.finding.Area,
-						"severity":        it.finding.Severity,
-						"status":          it.finding.Status,
-						"embedding_model": model,
-						"name":            it.finding.Name,
-						"created_at":      time.Now().Format(time.RFC3339),
-					},
-				})
+				points = append(points, o.ledgerFindingPoint(it.finding, it.vector, model))
 			}
 			if err := o.vectorStore.Upsert(ctx, points); err != nil {
 				applog.WithError(err).Warn("Reflection: Qdrant upsert of ledger findings failed")
+			} else {
+				// Recorded only on success: a failed upsert leaves the payload
+				// as it was, which is exactly the case a later verdict must
+				// still repair.
+				for _, it := range toIndex {
+					out.Reindexed[it.finding.ID] = struct{}{}
+				}
 			}
 		}
 	}
@@ -962,6 +983,108 @@ func (o *Orchestrator) searchLedgerNeighbour(ctx context.Context, vec []float64,
 		return ""
 	}
 	return hits[0].ID
+}
+
+// ledgerFindingPoint is the indexed form of one finding: its vector plus the
+// payload the retrieval filters read.
+//
+// One builder for every write, because the payload's `status` is now something
+// a QUERY filters on — the per-area ledger retrieval excludes retired findings
+// in the search rather than after it, so that a query whose best hits happen to
+// be retired does not come back empty while live findings sit below the cut.
+// A second place writing this map is a second place that can forget a field the
+// filter needs.
+func (o *Orchestrator) ledgerFindingPoint(f commonmodels.LedgerFinding, vec []float64, model string) vectorstore.Point {
+	return vectorstore.Point{
+		ID:     f.ID,
+		Vector: vec,
+		Payload: map[string]interface{}{
+			"type":            commonmodels.LedgerFindingVectorType,
+			"project_id":      o.projectID,
+			"analysis_area":   f.Area,
+			"severity":        f.Severity,
+			"status":          f.Status,
+			"embedding_model": model,
+			"name":            f.Name,
+			"created_at":      time.Now().Format(time.RFC3339),
+		},
+	}
+}
+
+// reindexFindings re-writes the indexed form of findings whose STATUS moved
+// after they were indexed.
+//
+// Consolidation indexes before the model has judged anything, because the
+// ledger writes are the obligation and the reflection call is what comes after
+// them. The model's verdicts then land in MongoDB only — so the index kept
+// saying "confirmed" for a finding that had just been resolved, and
+// "resolved" for one that had just been reconfirmed. Both directions are wrong
+// now that a query filters on that field: the first lets a retired finding
+// occupy a slot a live one needed, and the second makes a LIVE finding
+// unreachable by per-area retrieval while the global block still carries it —
+// the two reads disagreeing about the same document, which is exactly what one
+// shared rule was meant to prevent.
+//
+// The text has not changed, so this re-embeds only to have a vector to write
+// with: the store's write primitive is an upsert. Best-effort and silent when
+// nothing moved, which is the ordinary case — no status change, no call.
+func (o *Orchestrator) reindexFindings(ctx context.Context, findings []commonmodels.LedgerFinding) {
+	if len(findings) == 0 || o.embeddingProvider == nil || o.vectorStore == nil {
+		return
+	}
+
+	// Bounded: a share of what is left of the phase, never more than the
+	// ceiling. This runs after every durable write, so there is nothing left
+	// for it to starve — the bound is there so a stalled embedder cannot hold
+	// the phase open past its deadline doing work that is, by then, optional.
+	// Derived from the parent, so cancelling the run cancels this too.
+	budget := ledgerReindexBudget
+	if deadline, ok := ctx.Deadline(); ok {
+		if left := time.Until(deadline); left < budget {
+			budget = left
+		}
+	}
+	if budget <= 0 {
+		applog.WithField("findings", len(findings)).
+			Warn("Reflection: no time left to re-index the findings whose status moved; their payloads keep the old status")
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+
+	texts := make([]string, len(findings))
+	for i := range findings {
+		texts[i] = ledgerFindingEmbedText(findings[i])
+	}
+	vectors, err := o.embeddingProvider.Embed(ctx, texts)
+	if err != nil {
+		applog.WithError(err).Warn("Reflection: re-embed of status-changed findings failed; the index keeps their old status")
+		return
+	}
+	if len(vectors) != len(findings) {
+		applog.WithField("findings", len(findings)).WithField("vectors", len(vectors)).
+			Warn("Reflection: re-embed returned the wrong number of vectors; not re-indexing")
+		return
+	}
+	dims, dErr := resolveEmbeddingDimensions(ctx, o.embeddingProvider)
+	if dErr != nil {
+		applog.WithError(dErr).Warn("Reflection: resolve embedding dims failed; not re-indexing status changes")
+		return
+	}
+	if err := o.vectorStore.EnsureCollection(ctx, dims); err != nil {
+		applog.WithError(err).Warn("Reflection: ensure Qdrant collection failed; not re-indexing status changes")
+		return
+	}
+	model := o.embeddingProvider.ModelName()
+	points := make([]vectorstore.Point, 0, len(findings))
+	for i := range findings {
+		points = append(points, o.ledgerFindingPoint(findings[i], vectors[i], model))
+	}
+	if err := o.vectorStore.Upsert(ctx, points); err != nil {
+		applog.WithError(err).Warn("Reflection: re-index of status-changed findings failed")
+		return
+	}
+	applog.WithField("findings", len(points)).Info("Reflection: re-indexed the findings whose status moved")
 }
 
 // buildFindingCandidates extracts durable, substance-carrying findings from the
@@ -1109,7 +1232,14 @@ func (o *Orchestrator) updateLedgerMeta(ctx context.Context, result *models.Disc
 		NewFindings:   newCount,
 		TotalFindings: totalCount,
 		MarginalRatio: ratio,
-		Date:          time.Now(),
+		// What THIS RUN accounted for: the findings it created plus the
+		// carried ones it surfaced again. MarginalRatio above divides by the
+		// whole ledger, so it answers how fast the ledger is growing and not
+		// how much of the run's own output was already known — and the second
+		// question is the one a reader wants when deciding whether a run is
+		// repeating itself.
+		RunFindings: newCount + len(cons.ReSeen),
+		Date:        time.Now(),
 		// Recorded on the run's own point, because this is the record every
 		// reader trusts. Without it a consolidation that wrote nothing
 		// reports "found 0" — indistinguishable from a run that genuinely
@@ -1204,10 +1334,18 @@ func mergeExplored(carried, reported []string, catalog map[string]string) []stri
 // applyReflection persists the LLM outputs: prior-finding status updates,
 // durable learnings (fixing the dead AddNote channel), next-tasks, and — when
 // the evolution mode allows — proposed domain-pack deltas.
-func (o *Orchestrator) applyReflection(ctx context.Context, result *models.DiscoveryResult, pol agentplugin.DiscoveryPolicy, ref *parsedReflection, cons consolidationResult) {
+// The returned findings are the ones whose indexed payload needs rewriting.
+// They are returned rather than re-indexed here because that work is
+// best-effort index maintenance and it embeds: run inline, a stalled embedder
+// spends the deadline the learnings, task closures, coverage map and
+// convergence point still need, and the phase loses durable writes it already
+// had the answers for. Obligation first, enrichment last — the same order
+// consolidation uses, and for the same reason.
+func (o *Orchestrator) applyReflection(ctx context.Context, result *models.DiscoveryResult, pol agentplugin.DiscoveryPolicy, ref *parsedReflection, cons consolidationResult) []commonmodels.LedgerFinding {
 	if ref == nil {
-		return
+		return nil
 	}
+	var restatused []commonmodels.LedgerFinding
 
 	// Prior-finding status re-judgement (confirmed/monitoring/resolved/refuted).
 	// The consolidation pass already set "changed" for trends it detected; here
@@ -1223,12 +1361,23 @@ func (o *Orchestrator) applyReflection(ctx context.Context, result *models.Disco
 			for i := range prior {
 				byID[prior[i].ID] = &prior[i]
 			}
+			// Collected as they are written, so the index can be brought in
+			// line with them. Only the writes that LANDED: re-indexing a status
+			// MongoDB rejected would make the index the one place the wrong
+			// answer lives.
 			for _, su := range ref.StatusUpdates {
 				f := byID[strings.TrimSpace(su.FindingID)]
 				if f == nil || !commonmodels.ValidLedgerFindingStatus(su.Status) {
 					continue
 				}
 				now := time.Now()
+				// Captured before the write, because only a finding whose
+				// status actually MOVED needs its indexed payload rewritten.
+				// A reflection that reconfirms an already-confirmed finding is
+				// the ordinary case on a mature project, and it still records a
+				// history entry — re-embedding every one of those would buy an
+				// identical payload.
+				prevStatus := f.Status
 				f.Status = su.Status
 				f.UpdatedAt = now
 				// The model already emits a reason per status change and it
@@ -1248,6 +1397,24 @@ func (o *Orchestrator) applyReflection(ctx context.Context, result *models.Disco
 				}
 				if err := o.findingRepo.ApplyStatus(ctx, o.projectID, f.ID, su.Status, change); err != nil {
 					applog.WithError(err).Warn("Reflection: apply finding status update failed")
+					continue
+				}
+				// Re-index unless this pass has already written this
+				// finding's payload with the status it now holds.
+				//
+				// A verdict that moves the status always needs the write. A
+				// verdict that does not still needs it when the payload's age
+				// is unknown: the per-area retrieval filters on that field, and
+				// a payload left stale by an earlier run would otherwise never
+				// be repaired — a status that does not move would never trigger
+				// a write, so the finding would stay unreachable. The one case
+				// that is provably safe to skip is a finding consolidation just
+				// re-indexed in this same pass, which on a mature project is
+				// most of what the model is asked to re-judge, since it is
+				// asked about the findings the run saw again.
+				_, fresh := cons.Reindexed[f.ID]
+				if prevStatus != su.Status || !fresh {
+					restatused = append(restatused, *f)
 				}
 			}
 		}
@@ -1290,11 +1457,12 @@ func (o *Orchestrator) applyReflection(ctx context.Context, result *models.Disco
 	// The rest (next-tasks + domain-pack deltas) is the self-directing part the
 	// evolution mode governs. Off records coverage/findings/learnings only.
 	if pol.EvolutionMode == agentplugin.EvolutionModeOff {
-		return
+		return restatused
 	}
 
 	o.applyNextTasks(ctx, ref, closedTaskKeys, cons)
 	o.applyPackProposals(ctx, result, ref)
+	return restatused
 }
 
 // applyLearnings records the run's durable learnings on the ledger, attributed
@@ -1613,18 +1781,4 @@ func (o *Orchestrator) applyPackProposals(ctx context.Context, result *models.Di
 			applog.WithError(err).Warn("Reflection: insert pack proposals failed")
 		}
 	}
-}
-
-// getEnvAsFloat reads a float env var with a default (go-common has no float
-// helper). Rule 2 — all thresholds parametric.
-func getEnvAsFloat(key string, def float64) float64 {
-	v := goconfig.GetEnv(key)
-	if v == "" {
-		return def
-	}
-	f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
-	if err != nil {
-		return def
-	}
-	return f
 }

@@ -6,6 +6,53 @@ import (
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 )
 
+// IndexedDoc is what the duplicate check needs to know about a document already
+// in the index.
+type IndexedDoc struct {
+	// DuplicateOf is what this document was itself folded into, or "" when it
+	// is canonical. An earlier run's duplicate stays indexed in the vector
+	// store, so a later document can match it and would otherwise be folded
+	// into a row that is itself hidden, and that it may not resemble at all.
+	DuplicateOf string
+	// EmbeddingText is the text the document's vector was built from. Compared
+	// because two documents with the SAME text are indistinguishable to the
+	// search by construction, so anything the text leaves out has to decide
+	// between them.
+	EmbeddingText string
+	// AffectedCount and Metrics are what BuildEmbeddingText leaves out. Two
+	// insights with identical prose and different magnitudes embed identically
+	// and score 1.0, and suppressing the second hides a different claim — the
+	// magnitude having moved is the thing the prompt asks the model to report.
+	AffectedCount int
+	Metrics       map[string]interface{}
+	// Indicators are the supporting figures the model lists beside a finding.
+	// They carry a quantitative claim the prose need not repeat, so two
+	// insights reporting 0% and 20% in their indicators can read identically
+	// and embed identically.
+	Indicators []string
+	// Actions and SegmentSize are what a RECOMMENDATION's embedding text
+	// leaves out. Two recommendations that read the same and tell you to do
+	// different things — or the same thing to a segment twice the size — embed
+	// identically, and hiding the second hides the only part that differs.
+	// SegmentSize is the recommendation's count the way AffectedCount is the
+	// insight's; a document is only ever one of the two.
+	Actions     []string
+	SegmentSize int
+}
+
+// magnitude is the signature of what this document's embedding text leaves out,
+// derived through the SAME magnitudeOf the candidate side uses — one
+// derivation for both halves of a comparison. Deriving them separately once
+// gave the two sides different answers for the same recommendation and switched
+// cross-run suppression off entirely.
+func (d IndexedDoc) magnitude(docType string) string {
+	count := d.AffectedCount
+	if docType == "recommendation" {
+		count = d.SegmentSize
+	}
+	return magnitudeOf(docType, count, d.Metrics, d.Actions, d.Indicators)
+}
+
 // EmbedIndexStore handles Phase 9 database operations.
 // This interface allows unit testing without a real MongoDB connection.
 type EmbedIndexStore interface {
@@ -13,6 +60,15 @@ type EmbedIndexStore interface {
 	InsertRecommendations(ctx context.Context, recs []*commonmodels.StandaloneRecommendation) error
 	UpdateEmbedding(ctx context.Context, collection, id, embeddingText, embeddingModel string) error
 	UpdateDuplicate(ctx context.Context, collection, id, duplicateOf string, score float64) error
+
+	// IndexedDoc reads what the duplicate check needs to know about a document
+	// a vector search matched, and whether that document exists at all.
+	//
+	// exists is separate from the fields because "" has to mean one thing. A
+	// canonical document and a vector-store point whose row has since been
+	// deleted both have no DuplicateOf, and folding into the second hides the
+	// new document behind an original that cannot be displayed.
+	IndexedDoc(ctx context.Context, collection, id string) (doc IndexedDoc, exists bool, err error)
 
 	// PointIDsByDiscovery lists the ids of one discovery's standalone
 	// insight / recommendation rows, insights first then recommendations,

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/contextbudget"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
@@ -541,43 +542,60 @@ func TestRunPhaseReflection_PriorDemandNeedsEvidence(t *testing.T) {
 	})
 }
 
-// TestReSeenPriorIsOnThePage_RespectsTheCap. The prompt shows at most
-// maxPriorFindingsInPrompt findings, and every finding a run touches — the new
-// ones it just created and the carried one it surfaced again — shares the same
+// TestReSeenPriorIsOnThePage_RespectsTheBudget. The prompt shows as many prior
+// findings as the budget fits, and every finding a run touches — the new ones
+// it just created and the carried one it surfaced again — shares the same
 // LastSeen, so the tie-break decides who makes the page. A run that created
 // enough new findings can push its one re-sighting off it. Demanding a
 // re-judgement then puts the model in front of a page of ids it has no
 // evidence about, which is precisely the invented verdict the gate exists to
 // prevent: it must be membership of the rendered page, not a count.
-func TestReSeenPriorIsOnThePage_RespectsTheCap(t *testing.T) {
+//
+// The cap that used to decide the page is now a measured budget, so the test
+// derives the boundary from the line cost instead of from a constant — and
+// asserts the thing that actually matters either way: the gate and the renderer
+// agree on what "the page" is.
+func TestReSeenPriorIsOnThePage_RespectsTheBudget(t *testing.T) {
 	now := time.Now()
 	carried := commonmodels.LedgerFinding{ID: "f-carried", Name: "Dead stock", LastSeen: now}
 
 	// Every finding this run touched carries the same LastSeen. The carried
 	// one is last in list order, so the stable sort leaves it last.
-	crowded := make([]commonmodels.LedgerFinding, 0, maxPriorFindingsInPrompt+1)
-	for i := 0; i < maxPriorFindingsInPrompt; i++ {
-		crowded = append(crowded, commonmodels.LedgerFinding{
+	const crowd = 30
+	all := make([]commonmodels.LedgerFinding, 0, crowd+1)
+	for i := 0; i < crowd; i++ {
+		all = append(all, commonmodels.LedgerFinding{
 			ID: fmt.Sprintf("f-new-%d", i), Name: "Fresh finding", LastSeen: now,
 		})
 	}
-	crowded = append(crowded, carried)
+	all = append(all, carried)
 
 	reSeen := map[string]struct{}{"f-carried": {}}
 
+	// A budget that fits everything except the last line: the carried finding
+	// is exactly the one pushed off.
+	full := 0
+	for _, f := range all {
+		full += contextbudget.Tokens(priorFindingLine(f))
+	}
+	tight := full - contextbudget.Tokens(priorFindingLine(carried))
+
+	crowded := priorFindingsForPrompt(append([]commonmodels.LedgerFinding{}, all...), tight)
 	if reSeenPriorIsOnThePage(crowded, reSeen) {
 		t.Error("the re-seen finding was pushed off the page; no re-judgement may be demanded")
 	}
 	// The rendered prompt and the gate must agree on what "the page" is.
 	if strings.Contains(renderPriorFindings(crowded), "id=f-carried") {
-		t.Error("the fixture no longer exercises the cap — the carried finding is still rendered")
+		t.Error("the gate and the renderer disagree about the page — the renderer shows a finding the gate says is off it")
 	}
 
-	// It fits once the crowd does not fill the page.
-	roomy := append([]commonmodels.LedgerFinding{}, crowded[:maxPriorFindingsInPrompt-1]...)
-	roomy = append(roomy, carried)
+	// It fits once the budget covers the whole list.
+	roomy := priorFindingsForPrompt(append([]commonmodels.LedgerFinding{}, all...), full)
 	if !reSeenPriorIsOnThePage(roomy, reSeen) {
 		t.Error("a re-seen finding the prompt does show must license the demand")
+	}
+	if !strings.Contains(renderPriorFindings(roomy), "id=f-carried") {
+		t.Error("the renderer must show what the gate counted")
 	}
 
 	// And the degenerate inputs behave: nothing re-seen, nothing shown.
@@ -585,7 +603,12 @@ func TestReSeenPriorIsOnThePage_RespectsTheCap(t *testing.T) {
 		t.Error("no re-seen finding means no demand")
 	}
 	if reSeenPriorIsOnThePage(nil, reSeen) {
-		t.Error("an empty prior list shows nothing, so nothing can be demanded of it")
+		t.Error("an empty page shows nothing, so nothing can be demanded of it")
+	}
+	// A budget too small for even one line shows nothing, and must not license
+	// a demand the model cannot ground.
+	if reSeenPriorIsOnThePage(priorFindingsForPrompt(append([]commonmodels.LedgerFinding{}, all...), 1), reSeen) {
+		t.Error("a budget that fits nothing must not license a re-judgement demand")
 	}
 }
 
@@ -784,7 +807,7 @@ func TestReflectionPrompt_StoredGraphFieldsNeverReachTheModel(t *testing.T) {
 
 	// Both prompts the ledger feeds.
 	reflectionPrompt := o.buildReflectionPrompt(result, prior, tasks, pol, nil, true, true)
-	explorationPrompt := renderLedgerFindings(prior) + renderLedgerTasks(tasks)
+	explorationPrompt := renderLedgerFindings(prior, contextbudget.MinFindingDescChars) + renderLedgerTasks(tasks)
 
 	leaks := []string{
 		"ins-old-1", "ins-old-2", "t-old", "r-old", "d-old",
