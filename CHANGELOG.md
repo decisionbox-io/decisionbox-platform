@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Dashboard sidebar logo replaced with a single combined logo image** — `ui/dashboard/src/components/layout/AppShell.tsx`, `ui/dashboard/public/logo.svg` (new), `ui/dashboard/public/logo-icon.png` (removed). The top-left sidebar header previously rendered two pieces — a square `logo-icon.png` icon plus a `<span>DecisionBox</span>` wordmark. Both are now a single combined logo (`public/logo.svg`, icon + wordmark baked into one file) rendered through a plain `<img>` at `height: 24px` / `width: auto`, so it stays vector-sharp at any DPI and fits inside the 220px sidebar without clipping. Using a plain `<img>` for the SVG avoids enabling `dangerouslyAllowSVG` in `next/image`; the now-unused `next/image` import and the orphaned `logo-icon.png` asset were removed. `alt="DecisionBox"` is preserved.
+
 ### Added
 
 - **Discovery stops re-reporting what the project already knows ([#458](https://github.com/decisionbox-io/decisionbox-platform/issues/458)).** On a mature project, every run re-reported findings the project had already recorded: one production project accumulated ~420 findings across six runs, and the share of each run's findings that were genuinely new fell `1.00 → 0.18 → 0.20 → 0.10`. The latest run was ~90% things already known. The system measured that — it is `marginal_ratio` in the convergence history, computed and stored every run — and no decision anywhere read it.
