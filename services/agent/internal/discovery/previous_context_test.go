@@ -207,6 +207,15 @@ func (o *Orchestrator) loadAndFitLedger(ctx context.Context, fixedPromptTokens i
 	// picker's floor — which is what the old single-number form computed.
 	room := o.baseContextAvailableInput() - fixedPromptTokens - minPickerBudgetTokens
 	o.fitPriorFindings(lrc, fixedPromptTokens, room)
+	// Production captures the exclusion ids AFTER rendering the base context,
+	// off the template that rendered it — a template with no
+	// {{PREVIOUS_CONTEXT}} slot carries no findings and must claim none.
+	// Mirrored here, with the smallest template that has the slot, so the
+	// tests exercise that step instead of a shortcut past it. The slot-less
+	// case is TestPriorFindingIDsFollowTheTemplate.
+	if lrc != nil {
+		o.baseContextFindingIDs = priorFindingIDs(previousContextToken, lrc.findings)
+	}
 	return lrc
 }
 
