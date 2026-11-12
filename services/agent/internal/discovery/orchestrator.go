@@ -1212,6 +1212,16 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// and domain-specific instructions into a single prompt context.
 	baseContext := o.buildBaseContext(prompts.BaseContext, profileStr, previousContextStr, language, refDataset)
 
+	// The ids this prompt carries, so per-area retrieval can spend its own
+	// budget on findings the prompt does not already hold. Read off the
+	// TEMPLATE that was just rendered, not off the fit: a project's own
+	// base_context may have no {{PREVIOUS_CONTEXT}} slot, and then the fit
+	// chose findings that went nowhere — telling retrieval to skip them would
+	// withhold prior knowledge the model never saw.
+	if lrc != nil {
+		o.baseContextFindingIDs = priorFindingIDs(prompts.BaseContext, lrc.findings)
+	}
+
 	// Prepare exploration prompt: base context + exploration-specific content.
 	// {{SCHEMA_INFO}} is the single canonical schema placeholder; it
 	// resolves to the compact catalog (one line per table). Per-table
@@ -3529,7 +3539,7 @@ func (o *Orchestrator) resolvePrompts() (ResolvedPrompts, []AnalysisArea) {
 func (o *Orchestrator) buildBaseContext(template, profileStr, previousContext, language, refDataset string) string {
 	base := template
 	base = strings.ReplaceAll(base, "{{PROFILE}}", profileStr)
-	base = strings.ReplaceAll(base, "{{PREVIOUS_CONTEXT}}", previousContext)
+	base = strings.ReplaceAll(base, previousContextToken, previousContext)
 	base = strings.ReplaceAll(base, "{{LANGUAGE}}", language)
 	base = substituteDialectTokens(base, o.warehouse, refDataset)
 	return discipline.AppendBaseContextRules(base)

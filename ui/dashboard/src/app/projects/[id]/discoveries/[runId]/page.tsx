@@ -143,11 +143,16 @@ export default function DiscoveryDetailPage() {
   const recommendations = [...(showRestated ? allRecommendations : distinctRecs)]
     .sort((a, b) => a.priority - b.priority);
 
-  // Filter + sort insights
-  let filtered = insights;
-  if (severityFilter !== 'All') {
-    filtered = filtered.filter(i => i.severity.toLowerCase() === severityFilter.toLowerCase());
-  }
+  // Filter + sort insights. The severity filter runs BEFORE the restatement
+  // split, because a row is hidden only when the row it restates is one the
+  // reader can see in this list — and the filter can remove exactly that row,
+  // leaving a matching insight hidden behind one the filter took away. The
+  // stats above stay on the run-level split: they describe the run, which is
+  // what this page is, not the current filter.
+  const matching = severityFilter === 'All'
+    ? allInsights
+    : allInsights.filter(i => i.severity.toLowerCase() === severityFilter.toLowerCase());
+  let filtered = showRestated ? matching : splitRestated(matching).shown;
   filtered = [...filtered].sort((a, b) => {
     switch (sortBy) {
       case 'Severity': return (severityOrder[a.severity] ?? 9) - (severityOrder[b.severity] ?? 9);

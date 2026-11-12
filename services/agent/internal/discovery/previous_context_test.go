@@ -386,3 +386,54 @@ func TestRunFindingsReachTheMeasuredPrompt(t *testing.T) {
 		t.Errorf("the prompt grew by %d tokens, want about the block's %d", delta, want)
 	}
 }
+
+// TestPriorFindingIDsFollowTheTemplate. Retrieval is told to skip the findings
+// the prompt already carries, so that list has to come from the prompt and not
+// from the budget's choice. A project can supply its own base_context, and one
+// without the {{PREVIOUS_CONTEXT}} slot renders no findings at all — claiming
+// them anyway makes the per-area retrieval skip the project's best-ranked
+// findings on behalf of a prompt that never contained them, so the model is
+// denied knowledge it was never shown. Retrieving something twice is a wasted
+// budget; this loses the finding.
+func TestPriorFindingIDsFollowTheTemplate(t *testing.T) {
+	findings := ledgerFixture(3)
+
+	t.Run("a template with the slot claims what it renders", func(t *testing.T) {
+		ids := priorFindingIDs("Analyst instructions.\n\n{{PREVIOUS_CONTEXT}}\n", findings)
+		if len(ids) != 3 {
+			t.Fatalf("ids = %v, want all three the prompt carries", ids)
+		}
+		for i := range findings {
+			if ids[i] != findings[i].ID {
+				t.Errorf("ids[%d] = %q, want %q", i, ids[i], findings[i].ID)
+			}
+		}
+	})
+
+	t.Run("a custom template without the slot claims nothing", func(t *testing.T) {
+		const custom = "You are an analyst. Use {{PROFILE}} and answer in {{LANGUAGE}}."
+		if ids := priorFindingIDs(custom, findings); len(ids) != 0 {
+			t.Errorf("ids = %v, want none — this prompt renders no findings", ids)
+		}
+	})
+
+	t.Run("the claim matches what buildBaseContext actually rendered", func(t *testing.T) {
+		// The property, rather than the two cases: whatever the template, a
+		// finding is claimed only if its name is in the rendered prompt.
+		o := &Orchestrator{}
+		block := renderLedgerFindings(findings, 200)
+		for _, template := range []string{
+			"{{PREVIOUS_CONTEXT}}",
+			"Instructions.\n{{PROFILE}}\n{{PREVIOUS_CONTEXT}}\nin {{LANGUAGE}}",
+			"Instructions only, no history slot.",
+			"{{PROFILE}} in {{LANGUAGE}}",
+		} {
+			rendered := o.buildBaseContext(template, "p", block, "English", "ds")
+			claimed := len(priorFindingIDs(template, findings)) > 0
+			present := strings.Contains(rendered, findings[0].Name)
+			if claimed != present {
+				t.Errorf("template %q: claimed=%v but rendered=%v", template, claimed, present)
+			}
+		}
+	})
+}

@@ -592,11 +592,9 @@ func (o *Orchestrator) refitAgainst(ctx context.Context, phase, baseContext stri
 	// Retrieval is told to skip what the prompt already holds, so a stale list
 	// suppresses prior knowledge this prompt no longer contains and the model
 	// never sees it — the same mistake as excluding the base context's findings
-	// from a prompt built without the base context.
-	carried := make([]string, 0, len(findings))
-	for i := range findings {
-		carried = append(carried, findings[i].ID)
-	}
+	// from a prompt built without the base context, which priorFindingIDs is
+	// also what prevents.
+	carried := priorFindingIDs(rb.template, findings)
 
 	if len(findings) == 0 {
 		return bare, nil

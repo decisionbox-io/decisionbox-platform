@@ -119,31 +119,35 @@ export default function InsightsListPage() {
 
   if (loading) return <Shell><Loader /></Shell>;
 
-  // Restatements first, before any other filter, so the toggle's count is of
-  // real items rather than of whatever the current search happens to match.
+  // Filters first, then the restatement split — in that order, because a row
+  // is hidden only when the row it restates is one the reader can see in this
+  // list, and a filter can remove exactly that row. Splitting first hid a
+  // Confirmed restatement behind a Rejected original, and then the Confirmed
+  // filter took the original away too: a matching insight, and no results.
+  //
   // Phase 9 judged these a rewording of an insight already reported; showing
   // all three wordings asks the reader to notice they are the same. They are
   // hidden, not dropped: the judgement is a similarity score and it can be
   // wrong, so one click brings them back — the same contract the API's
   // include_duplicates offers.
-  const { shown: distinctInsights, restated: restatedInsights } = splitRestated(allInsights);
-
-  // Filter
-  let filtered = showRestated ? allInsights : distinctInsights;
+  let matching = allInsights;
   if (search) {
     const q = search.toLowerCase();
-    filtered = filtered.filter(i =>
+    matching = matching.filter(i =>
       i.name.toLowerCase().includes(q) ||
       i.description?.toLowerCase().includes(q) ||
       i.analysis_area.toLowerCase().includes(q)
     );
   }
   if (severityFilter !== 'All') {
-    filtered = filtered.filter(i => i.severity.toLowerCase() === severityFilter.toLowerCase());
+    matching = matching.filter(i => i.severity.toLowerCase() === severityFilter.toLowerCase());
   }
   if (validationFilter !== 'All') {
-    filtered = filtered.filter(i => resolveValidationStatus(i.validation) === validationFilter);
+    matching = matching.filter(i => resolveValidationStatus(i.validation) === validationFilter);
   }
+  const { shown: distinctInsights, restated: restatedInsights } = splitRestated(matching);
+
+  let filtered = showRestated ? matching : distinctInsights;
 
   // Sort
   filtered = [...filtered].sort((a, b) => {

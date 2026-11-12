@@ -151,4 +151,23 @@ describe('collapseByKey', () => {
       expect(splitRestated(rows).shown.length).toBeGreaterThan(0);
     }
   });
+
+  it('filters must run before the split, or a matching row is lost', () => {
+    // The rule every list page follows. Hiding depends on whether the row a
+    // restatement points at is in the list the reader is looking at, so a
+    // filter that removes that row has to run first.
+    const rows = [
+      { id: 'canonical', verdict: 'rejected' },
+      { id: 'restatement', verdict: 'confirmed', duplicate_of: 'canonical' },
+    ];
+    const confirmed = (r: { verdict: string }) => r.verdict === 'confirmed';
+
+    // Split first: the restatement is hidden behind the canonical, and then
+    // the filter takes the canonical away — a matching row, and no results.
+    expect(splitRestated(rows).shown.filter(confirmed)).toHaveLength(0);
+
+    // Filter first: the row it restates is not in this list, so the row the
+    // reader asked for is the row they get.
+    expect(splitRestated(rows.filter(confirmed)).shown.map(r => r.id)).toEqual(['restatement']);
+  });
 });

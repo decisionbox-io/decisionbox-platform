@@ -95,11 +95,23 @@ export default function RecommendationsListPage() {
 
   if (loading) return <Shell><Loader /></Shell>;
 
-  // Restatements split out before any other filter, so the toggle's count is
-  // of real items rather than of whatever the search matches. Hidden by
-  // default, never dropped: the judgement is a similarity score and it can be
-  // wrong, so one click brings them back with the score that hid them.
-  const { shown: distinctRecs, restated: restatedRecs } = splitRestated(allRecs);
+  // The text filter runs BEFORE the restatement split — a row is hidden only
+  // when the row it restates is one the reader can see in this list, and a
+  // filter that removes the original would otherwise leave a matching
+  // recommendation hidden behind nothing. Hidden by default, never dropped:
+  // the judgement is a similarity score and it can be wrong, so one click
+  // brings them back with the score that hid them.
+  let matching = allRecs;
+  if (search) {
+    const q = search.toLowerCase();
+    matching = matching.filter(r =>
+      r.title.toLowerCase().includes(q) ||
+      r.description?.toLowerCase().includes(q) ||
+      r.category?.toLowerCase().includes(q) ||
+      r.target_segment?.toLowerCase().includes(q)
+    );
+  }
+  const { shown: distinctRecs, restated: restatedRecs } = splitRestated(matching);
 
   // The semantic results are a reading surface too, and the one most likely
   // to show a fold: a restatement and the row it restates embed almost
@@ -114,17 +126,7 @@ export default function RecommendationsListPage() {
   // revealing will actually produce — not of a list the reader cannot see.
   const restatedCount = semanticSplit ? semanticSplit.restated.length : restatedRecs.length;
 
-  // Filter
-  let filtered = showRestated ? allRecs : distinctRecs;
-  if (search) {
-    const q = search.toLowerCase();
-    filtered = filtered.filter(r =>
-      r.title.toLowerCase().includes(q) ||
-      r.description?.toLowerCase().includes(q) ||
-      r.category?.toLowerCase().includes(q) ||
-      r.target_segment?.toLowerCase().includes(q)
-    );
-  }
+  let filtered = showRestated ? matching : distinctRecs;
 
   // Sort
   filtered = [...filtered].sort((a, b) => {

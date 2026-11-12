@@ -68,13 +68,6 @@ func (o *Orchestrator) fitPriorFindings(lrc *ledgerReadContext, fixedPromptToken
 	lrc.findings, lrc.descChars = contextbudget.FitFindings(
 		lrc.candidates, lines, contextbudget.MinFindingDescChars, contextbudget.MaxFindingDescChars)
 
-	// The ids this run is being shown, so the per-area retrieval can spend its
-	// own budget on findings this block does not already carry.
-	o.baseContextFindingIDs = make([]string, 0, len(lrc.findings))
-	for i := range lrc.findings {
-		o.baseContextFindingIDs = append(o.baseContextFindingIDs, lrc.findings[i].ID)
-	}
-
 	// Logged because it is the only place the decision is visible afterwards:
 	// a prompt is not persisted, so "the run was shown 12 of 420 findings" is
 	// otherwise indistinguishable from "the project has 12 findings".
@@ -90,6 +83,33 @@ func (o *Orchestrator) fitPriorFindings(lrc *ledgerReadContext, fixedPromptToken
 		"run_novelty":     novelty,
 		"have_novelty":    haveNovelty,
 	}).Info("Discovery Ledger: prior-context budget")
+}
+
+// previousContextToken is the slot a base-context template offers the
+// prior-knowledge block. A project may supply its own base_context, and one
+// without this token renders no prior findings at all.
+const previousContextToken = "{{PREVIOUS_CONTEXT}}"
+
+// priorFindingIDs is the ids a RENDERED prompt actually carries, which is what
+// per-area retrieval is told to skip so it can spend its own budget elsewhere.
+//
+// Derived from the template rather than from the fit, because the two can
+// disagree: buildBaseContext substitutes previousContextToken, so a project
+// whose own base_context omits it gets a prompt with no findings in it — and
+// excluding findings from retrieval on behalf of a prompt that does not contain
+// them hides prior knowledge the model never saw, which is the one failure
+// worse than retrieving something twice. Exactly the mistake refitAgainst
+// guards against when a phase resizes the block; this is the same rule at the
+// other end.
+func priorFindingIDs(template string, findings []commonmodels.LedgerFinding) []string {
+	if !strings.Contains(template, previousContextToken) {
+		return nil
+	}
+	ids := make([]string, 0, len(findings))
+	for i := range findings {
+		ids = append(ids, findings[i].ID)
+	}
+	return ids
 }
 
 // loadLedgerReadContext reads the project's ledger and builds the read context,
