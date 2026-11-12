@@ -1284,7 +1284,7 @@ func TestMarkDuplicates_RecommendationsStillFoldAcrossRuns(t *testing.T) {
 	}}
 	o.markDuplicates(context.Background(), []dedupCandidate{{
 		id: "this-run", docType: "recommendation", projectID: "p1", vec: []float64{1, 0, 0},
-		text: prose, magnitude: magnitudeOf("recommendation", 0, nil),
+		text: prose, magnitude: magnitudeOf("recommendation", 0, nil, nil),
 	}}, nil)
 
 	if len(store.dupUpdates) != 1 || store.dupUpdates[0].DupOf != "last-run" {
@@ -1306,11 +1306,11 @@ func TestMarkDuplicates_ChainCannotRouteAroundTheMagnitudeGuard(t *testing.T) {
 	o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{}}
 	o.markDuplicates(context.Background(), []dedupCandidate{
 		{id: "A", docType: "insight", projectID: "p1", vec: a,
-			text: prose, magnitude: magnitudeOf("insight", 1_000, nil)},
+			text: prose, magnitude: magnitudeOf("insight", 1_000, nil, nil)},
 		{id: "B", docType: "insight", projectID: "p1", vec: b,
-			text: "A paraphrase of the same thing. Area: pricing.", magnitude: magnitudeOf("insight", 1_000, nil)},
+			text: "A paraphrase of the same thing. Area: pricing.", magnitude: magnitudeOf("insight", 1_000, nil, nil)},
 		{id: "C", docType: "insight", projectID: "p1", vec: a,
-			text: prose, magnitude: magnitudeOf("insight", 100, nil)},
+			text: prose, magnitude: magnitudeOf("insight", 100, nil, nil)},
 	}, nil)
 
 	// B folds into A — that one is a genuine paraphrase.
@@ -1329,15 +1329,95 @@ func TestMarkDuplicates_ChainCannotRouteAroundTheMagnitudeGuard(t *testing.T) {
 }
 
 // TestMagnitudeOfIsTypeAware pins the one derivation both sides of every
-// comparison go through.
+// comparison go through, and what each document type's embedded text leaves
+// out — which is the only thing that can decide between two documents whose
+// text is identical.
 func TestMagnitudeOfIsTypeAware(t *testing.T) {
-	if got := magnitudeOf("recommendation", 500, map[string]interface{}{"x": 1}); got != "" {
-		t.Errorf("recommendation magnitude = %q, want empty — its numbers are already in its text", got)
-	}
-	if got := magnitudeOf("insight", 500, nil); got == "" {
-		t.Error("insight magnitude is empty — the guard would never fire")
-	}
-	if magnitudeOf("insight", 500, nil) == magnitudeOf("insight", 501, nil) {
-		t.Error("the affected count does not reach the signature")
-	}
+	t.Run("an insight signs its count and metrics", func(t *testing.T) {
+		if got := magnitudeOf("insight", 500, nil, nil); got == "" {
+			t.Error("insight signature is empty — the guard would never fire")
+		}
+		if magnitudeOf("insight", 500, nil, nil) == magnitudeOf("insight", 501, nil, nil) {
+			t.Error("the affected count does not reach the signature")
+		}
+		// A recommendation's actions are not an insight's concern.
+		if magnitudeOf("insight", 500, nil, nil) != magnitudeOf("insight", 500, nil, []string{"do a thing"}) {
+			t.Error("actions reached an insight's signature")
+		}
+	})
+
+	t.Run("a recommendation signs its actions", func(t *testing.T) {
+		// Its expected impact IS in the embedded text; its actions are not,
+		// and they are the part a reader would act on. Two recommendations
+		// that read the same and tell you to do different things embed
+		// identically, so hiding the second hides the only part that differs.
+		a := magnitudeOf("recommendation", 0, nil, []string{"cut the price", "re-list"})
+		b := magnitudeOf("recommendation", 0, nil, []string{"delist", "renegotiate"})
+		if a == "" || a == b {
+			t.Errorf("recommendation signatures = %q and %q, want distinct and non-empty", a, b)
+		}
+		// Order is an instruction, not a set.
+		reordered := magnitudeOf("recommendation", 0, nil, []string{"re-list", "cut the price"})
+		if a == reordered {
+			t.Error("a reordered action list signed the same — the order is part of the instruction")
+		}
+		// No actions is no signature, so an older document with none behaves
+		// as it did: the guard stands aside rather than refusing every fold.
+		if got := magnitudeOf("recommendation", 500, map[string]interface{}{"x": 1}, nil); got != "" {
+			t.Errorf("a recommendation with no actions signed %q, want empty", got)
+		}
+	})
+}
+
+// TestMarkDuplicates_SameWordingDifferentActions. The recommendation twin of
+// the magnitude guard: BuildEmbeddingText carries the title, description,
+// expected impact and segment — and not the implementation steps. So two
+// recommendations that read the same and tell you to do different things score
+// 1.0, and suppressing the second removes the only part a reader would act on.
+func TestMarkDuplicates_SameWordingDifferentActions(t *testing.T) {
+	const prose = "Reprice the long tail. Margin is leaking. Impact: margin +2pp. Segment: ."
+	vec := []float64{1, 0, 0}
+
+	t.Run("different actions are not duplicates", func(t *testing.T) {
+		store := &mockEmbedIndexStore{}
+		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{}}
+		o.markDuplicates(context.Background(), []dedupCandidate{
+			{id: "first", docType: "recommendation", projectID: "p1", vec: vec, text: prose,
+				magnitude: magnitudeOf("recommendation", 0, nil, []string{"cut the price"})},
+			{id: "second", docType: "recommendation", projectID: "p1", vec: vec, text: prose,
+				magnitude: magnitudeOf("recommendation", 0, nil, []string{"delist the SKUs"})},
+		}, nil)
+		if len(store.dupUpdates) != 0 {
+			t.Errorf("folded two different instructions together: %+v", store.dupUpdates)
+		}
+	})
+
+	t.Run("the same actions still fold", func(t *testing.T) {
+		store := &mockEmbedIndexStore{}
+		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{}}
+		same := magnitudeOf("recommendation", 0, nil, []string{"cut the price"})
+		o.markDuplicates(context.Background(), []dedupCandidate{
+			{id: "first", docType: "recommendation", projectID: "p1", vec: vec, text: prose, magnitude: same},
+			{id: "second", docType: "recommendation", projectID: "p1", vec: vec, text: prose, magnitude: same},
+		}, nil)
+		if len(store.dupUpdates) != 1 || store.dupUpdates[0].ID != "second" {
+			t.Errorf("want the second folded into the first, got %+v", store.dupUpdates)
+		}
+	})
+
+	t.Run("the stored side reads actions too", func(t *testing.T) {
+		store := &mockEmbedIndexStore{storedDocs: map[string]IndexedDoc{
+			"last-run": {EmbeddingText: prose, Actions: []string{"delist the SKUs"}},
+		}}
+		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{
+			dupes: []vectorstore.SearchResult{{ID: "last-run", Score: 1.0}},
+		}}
+		o.markDuplicates(context.Background(), []dedupCandidate{{
+			id: "this-run", docType: "recommendation", projectID: "p1", vec: vec, text: prose,
+			magnitude: magnitudeOf("recommendation", 0, nil, []string{"cut the price"}),
+		}}, nil)
+		if len(store.dupUpdates) != 0 {
+			t.Errorf("folded into a stored recommendation with different actions: %+v", store.dupUpdates)
+		}
+	})
 }

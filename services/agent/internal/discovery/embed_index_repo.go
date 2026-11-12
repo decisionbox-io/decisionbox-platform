@@ -25,6 +25,11 @@ type IndexedDoc struct {
 	// magnitude having moved is the thing the prompt asks the model to report.
 	AffectedCount int
 	Metrics       map[string]interface{}
+	// Actions is what a RECOMMENDATION's embedding text leaves out. Two
+	// recommendations that read the same and tell you to do different things
+	// embed identically, and hiding the second hides the only part that
+	// differs.
+	Actions []string
 }
 
 // EmbedIndexStore handles Phase 9 database operations.

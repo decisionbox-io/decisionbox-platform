@@ -6,11 +6,12 @@ import (
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
-	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	goconfig "github.com/decisionbox-io/decisionbox/libs/go-common/config"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/contextbudget"
 	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai"
+	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -112,7 +113,7 @@ func (o *Orchestrator) baseContextAvailableInput() int {
 	avail := -1
 	for _, layer := range baseContextLayers {
 		window, outputCap := o.budgetFor(layer)
-		a := contextbudget.AvailableInput(window, intendedOutputReserve(outputCap, window), analysisReservedSystemTokens)
+		a := contextbudget.AvailableInput(window, o.layerOutputReserve(layer, outputCap, window), analysisReservedSystemTokens)
 		if avail < 0 || a < avail {
 			avail = a
 		}
@@ -121,6 +122,30 @@ func (o *Orchestrator) baseContextAvailableInput() int {
 		return 0
 	}
 	return avail
+}
+
+// layerOutputReserve is the output headroom to set aside when sizing an INPUT
+// budget for one layer.
+//
+// Per layer, because the phases do not ask for the same thing. Analysis and
+// recommendations ask for their layer's output cap, so the cap is the right
+// reserve. Exploration asks for far less — the catalogued cap bounded by
+// EXPLORATION_MAX_OUTPUT_TOKENS, 4,096 by default — and reserving its model's
+// cap instead cost a 32K-window model with a 16K cap every token of composed
+// context it had: 16K reserved against a 4K request left no headroom, so every
+// provider was skipped with nothing to explain it.
+//
+// The exploration figure comes from the function exploration itself asks with,
+// so the reserve and the request cannot drift.
+func (o *Orchestrator) layerOutputReserve(layer string, outputCap, window int) int {
+	if layer != llmlayer.LayerExploration {
+		return intendedOutputReserve(outputCap, window)
+	}
+	intended := ai.ExplorationIntendedOutput(o.llmProvider, o.llmModel, outputCap, o.effectiveReasoningFor(llmlayer.LayerExploration))
+	if intended <= 0 {
+		return intendedOutputReserve(outputCap, window)
+	}
+	return intendedOutputReserve(intended, window)
 }
 
 // priorContextBudget is how many tokens the accumulated prior-knowledge block
@@ -178,7 +203,7 @@ func priorContextBudget(available, fixedPromptTokens int, novelty float64, haveN
 // entirely.
 func (o *Orchestrator) contextProviderBudget(ctx context.Context, layer, prompt string) (budget, headroom int) {
 	window, outputCap := o.budgetFor(layer)
-	avail := contextbudget.AvailableInput(window, intendedOutputReserve(outputCap, window), analysisReservedSystemTokens)
+	avail := contextbudget.AvailableInput(window, o.layerOutputReserve(layer, outputCap, window), analysisReservedSystemTokens)
 	avail -= approxTokens(ctx, prompt)
 	if avail <= 0 {
 		return 0, 0

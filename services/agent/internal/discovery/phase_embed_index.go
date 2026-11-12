@@ -247,7 +247,7 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 
 		candidates = append(candidates, dedupCandidate{
 			id: ins.ID, docType: "insight", projectID: ins.ProjectID, discoveryID: ins.DiscoveryID, vec: vec,
-			text: ins.EmbeddingText, magnitude: magnitudeOf("insight", ins.AffectedCount, ins.Metrics),
+			text: ins.EmbeddingText, magnitude: magnitudeOf("insight", ins.AffectedCount, ins.Metrics, nil),
 		})
 
 		points = append(points, vectorstore.Point{
@@ -277,9 +277,10 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 
 		candidates = append(candidates, dedupCandidate{
 			id: rec.ID, docType: "recommendation", projectID: rec.ProjectID, discoveryID: rec.DiscoveryID, vec: vec,
-			// magnitudeOf gives a recommendation no magnitude: its expected
-			// impact is already in the text its vector was built from.
-			text: rec.EmbeddingText, magnitude: magnitudeOf("recommendation", 0, nil),
+			// A recommendation's signature is its actions: the expected impact
+			// is already in the text its vector was built from, the actions
+			// are not, and they are the part a reader would act on.
+			text: rec.EmbeddingText, magnitude: magnitudeOf("recommendation", 0, nil, rec.Actions),
 		})
 
 		points = append(points, vectorstore.Point{
@@ -339,21 +340,41 @@ type dedupCandidate struct {
 	magnitude string
 }
 
-// magnitudeOf is the magnitude signature for a document of this type — empty
-// for a type whose numbers are already inside the text its vector was built
-// from, which is the case for a recommendation (BuildEmbeddingText carries its
-// expected impact).
+// magnitudeOf is the signature of whatever a document type's embedding text
+// leaves out, which is what has to decide between two documents whose text is
+// identical.
+//
+// For an insight that is the affected count and the metrics. For a
+// recommendation it is the implementation actions: BuildEmbeddingText carries
+// the title, description, expected impact and segment, so two recommendations
+// that read the same and tell you to do DIFFERENT things embed identically, and
+// suppressing the second hides the only part that differs — the part a reader
+// would act on.
 //
 // One derivation, used for both sides of every comparison. Deriving the
-// candidate's magnitude one way and the stored document's another gave a
+// candidate's signature one way and the stored document's another gave a
 // recommendation "" on one side and "affected=0" on the other, so sameClaim
 // refused even an exact duplicate scoring 1.0 and cross-run recommendation
 // suppression stopped working altogether.
-func magnitudeOf(docType string, affected int, metrics map[string]interface{}) string {
-	if docType != "insight" {
-		return ""
+func magnitudeOf(docType string, affected int, metrics map[string]interface{}, actions []string) string {
+	if docType == "recommendation" {
+		return actionsKey(actions)
 	}
 	return magnitudeKey(affected, metrics)
+}
+
+// actionsKey is the comparable form of a recommendation's implementation steps.
+// Order is kept: "cut the price, then re-list" and "re-list, then cut the
+// price" are different instructions.
+func actionsKey(actions []string) string {
+	if len(actions) == 0 {
+		return ""
+	}
+	trimmed := make([]string, 0, len(actions))
+	for _, a := range actions {
+		trimmed = append(trimmed, strings.TrimSpace(a))
+	}
+	return "actions=" + strings.Join(trimmed, "|")
 }
 
 // magnitudeKey is the comparable form of the quantitative fields an insight's
@@ -575,7 +596,7 @@ func (o *Orchestrator) storedDuplicate(ctx context.Context, c dedupCandidate, ex
 			applog.WithFields(applog.Fields{"id": c.id, "hit": hit.ID, "hit_folded_into": doc.DuplicateOf}).
 				Info("Phase 9: a stored match is itself suppressed; looking past it")
 			continue
-		case !sameClaim(c.text, c.magnitude, doc.EmbeddingText, magnitudeOf(c.docType, doc.AffectedCount, doc.Metrics)):
+		case !sameClaim(c.text, c.magnitude, doc.EmbeddingText, magnitudeOf(c.docType, doc.AffectedCount, doc.Metrics, doc.Actions)):
 			// Identical prose, different numbers. The same rule as the
 			// same-run pass, applied at the other read.
 			applog.WithFields(applog.Fields{"id": c.id, "hit": hit.ID}).

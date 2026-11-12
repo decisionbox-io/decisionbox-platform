@@ -1758,7 +1758,7 @@ func TestRefitNeverReinsertsTheLegacyDump(t *testing.T) {
 	prev := make([]models.InsightSummary, 0, 30)
 	for i := 0; i < 30; i++ {
 		prev = append(prev, models.InsightSummary{
-			Name: fmt.Sprintf("legacy insight %d%s", i, strings.Repeat(" padding", 40)),
+			Name:         fmt.Sprintf("legacy insight %d%s", i, strings.Repeat(" padding", 40)),
 			AnalysisArea: "a", Severity: "high",
 		})
 	}
@@ -1885,4 +1885,86 @@ func findingNameForID(findings []commonmodels.LedgerFinding, id string) string {
 		}
 	}
 	return "\x00no-such-finding"
+}
+
+// --- review round 12 ---
+
+// TestLayerOutputReserveMatchesWhatThePhaseAsksFor. The reserve was the model's
+// output cap for every layer, and exploration does not ask for that: on the
+// non-reasoning path it asks for the catalogued cap bounded by
+// EXPLORATION_MAX_OUTPUT_TOKENS, 4,096 by default. A 32K-window model with a
+// 16K cap therefore had 16K reserved against a 4K request, which left no
+// headroom for composed context and skipped every provider — a quality loss
+// with nothing in the logs to explain it.
+func TestLayerOutputReserveMatchesWhatThePhaseAsksFor(t *testing.T) {
+	const window, outputCap = 32_000, 16_000
+	o := &Orchestrator{
+		projectID: "p1", llmProvider: "bedrock", llmModel: "test-model",
+		llmInputWindow: window, llmOutputCap: outputCap,
+	}
+
+	exploration := o.layerOutputReserve(llmlayer.LayerExploration, outputCap, window)
+	analysis := o.layerOutputReserve(llmlayer.LayerAnalysis, outputCap, window)
+
+	if exploration >= analysis {
+		t.Errorf("exploration reserved %d and analysis %d — exploration asks for far less, so it must reserve less",
+			exploration, analysis)
+	}
+	if want := intendedOutputReserve(outputCap, window); analysis != want {
+		t.Errorf("analysis reserve = %d, want the layer's cap %d", analysis, want)
+	}
+	// And the headroom that buys: with the smaller reserve there is room for
+	// composed context where there was none.
+	freed := contextbudget.AvailableInput(window, exploration, analysisReservedSystemTokens) -
+		contextbudget.AvailableInput(window, analysis, analysisReservedSystemTokens)
+	t.Logf("exploration reserve %d, analysis reserve %d, headroom freed %d", exploration, analysis, freed)
+	if freed <= 0 {
+		t.Error("the smaller reserve freed no input headroom")
+	}
+
+	// The operator's own ceiling is honoured: raising it raises the reserve,
+	// because the phase will then ask for more.
+	t.Setenv("EXPLORATION_MAX_OUTPUT_TOKENS", "12000")
+	if raised := o.layerOutputReserve(llmlayer.LayerExploration, outputCap, window); raised <= exploration {
+		t.Errorf("a raised EXPLORATION_MAX_OUTPUT_TOKENS gave reserve %d, want more than %d", raised, exploration)
+	}
+}
+
+// TestSelectAreas. The budget took the widest template of every ENABLED area
+// while a partial run analyses only the selected ones, so a long template in an
+// area that never enters a prompt could reduce prior context to nothing.
+func TestSelectAreas(t *testing.T) {
+	areas := []AnalysisArea{{ID: "a"}, {ID: "b"}, {ID: "c"}}
+
+	if got := selectAreas(areas, nil); len(got) != 3 {
+		t.Errorf("an empty request selected %d areas, want every one — that is the ordinary full run", len(got))
+	}
+	got := selectAreas(areas, []string{"c", "a"})
+	if len(got) != 2 || got[0].ID != "a" || got[1].ID != "c" {
+		t.Errorf("selectAreas = %+v, want a and c in pack order", got)
+	}
+	if got := selectAreas(areas, []string{"nope"}); len(got) != 0 {
+		t.Errorf("an unmatched request selected %+v", got)
+	}
+
+	// The consequence: an unselected area's template must not shrink the
+	// budget of a run that will never render it.
+	o := &Orchestrator{}
+	ctx := context.Background()
+	prompts := ResolvedPrompts{
+		BaseContext: "base {{PROFILE}}",
+		Exploration: "explore",
+		AnalysisAreas: map[string]string{
+			"a": "short",
+			"b": strings.Repeat("an enormous custom template. ", 4_000),
+		},
+	}
+	all := o.fixedPromptTokens(ctx, fixedPromptParts{Prompts: prompts, Language: "English",
+		Areas: selectAreas([]AnalysisArea{{ID: "a"}, {ID: "b"}}, nil)})
+	selected := o.fixedPromptTokens(ctx, fixedPromptParts{Prompts: prompts, Language: "English",
+		Areas: selectAreas([]AnalysisArea{{ID: "a"}, {ID: "b"}}, []string{"a"})})
+	if selected >= all {
+		t.Errorf("selecting only area a cost %d, the same as both areas' %d — the unused template is still being counted",
+			selected, all)
+	}
 }

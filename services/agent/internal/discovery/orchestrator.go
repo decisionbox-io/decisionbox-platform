@@ -1163,7 +1163,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	fixedParts := fixedPromptParts{
 		Prompts: prompts, Profile: profileStr, Language: language,
 		Datasets: datasetsStr, AreasDesc: areasDesc, RefDataset: refDataset,
-		Areas: analysisAreas,
+		// The areas this run will actually analyse. A partial run executes a
+		// subset, and sizing the block against the widest template of an area
+		// that never enters a prompt can reduce prior context to nothing for
+		// no reason — on a 32K model the selected-only figure left 3,699
+		// tokens where the all-areas figure left none.
+		Areas: selectAreas(analysisAreas, opts.SelectedAreas),
 	}
 	// rendered is assigned on both branches above and neither builder returns
 	// nil, so this is not guarded — a nil check here is also what made
@@ -1577,17 +1582,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// only those areas instead of running the full domain pack.
 	if len(opts.SelectedAreas) > 0 {
 		runType = "partial"
-		selected := make(map[string]bool)
-		for _, a := range opts.SelectedAreas {
-			selected[a] = true
-		}
-		var filtered []AnalysisArea
-		for _, a := range analysisAreas {
-			if selected[a.ID] {
-				filtered = append(filtered, a)
-			}
-		}
-		runAreas = filtered
+		runAreas = selectAreas(analysisAreas, opts.SelectedAreas)
 		applog.WithFields(applog.Fields{
 			"requested": opts.SelectedAreas,
 			"matched":   len(runAreas),
@@ -3648,6 +3643,30 @@ func (f previousContextFrame) with(findings string) string {
 		return ""
 	}
 	return f.head + findings + f.tail
+}
+
+// selectAreas narrows areas to the ids requested, preserving pack order. An
+// empty request means every area, which is the ordinary full run.
+//
+// One function for the budget and the loop, because they were doing this
+// separately and only the loop was doing it: the budget took the widest
+// template of every ENABLED area while the run analysed only the selected
+// ones.
+func selectAreas(areas []AnalysisArea, requested []string) []AnalysisArea {
+	if len(requested) == 0 {
+		return areas
+	}
+	want := make(map[string]bool, len(requested))
+	for _, id := range requested {
+		want[id] = true
+	}
+	out := make([]AnalysisArea, 0, len(requested))
+	for _, a := range areas {
+		if want[a.ID] {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // buildPreviousContext renders the whole block, findings included. Kept as the
