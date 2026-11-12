@@ -181,7 +181,7 @@ func TestLedgerLoop_Integration(t *testing.T) {
 	if lrc.findings[0].Name != "Card testing spike" {
 		t.Errorf("critical finding should rank first, got %q", lrc.findings[0].Name)
 	}
-	prevCtx := o.buildPreviousContext(&models.ProjectContext{TotalDiscoveries: 1, LastDiscoveryDate: time.Now()}, nil, nil, nil, lrc)
+	prevCtx := o.buildPreviousContext(&models.ProjectContext{TotalDiscoveries: 1, LastDiscoveryDate: time.Now()}, nil, nil, nil, lrc, nil)
 	for _, want := range []string{"Investigation so far", "Coverage map", "untouched", "Card testing spike", "explore the untouched events tables"} {
 		if !strings.Contains(prevCtx, want) {
 			t.Errorf("run2 prompt context missing %q:\n%s", want, prevCtx)
