@@ -91,7 +91,7 @@ func TestPriorContextScalesWithTheModelWindow(t *testing.T) {
 
 	shown := func(window, outputCap int) int {
 		o := windowedOrchestrator(findings, convergence(1.00), window, outputCap)
-		lrc := o.loadLedgerReadContext(context.Background(), 0)
+		lrc := o.loadAndFitLedger(context.Background(), 0)
 		if lrc == nil {
 			return 0
 		}
@@ -146,7 +146,7 @@ func TestPriorContextDoesNotOverflowASmallWindow(t *testing.T) {
 	} {
 		t.Run(fmt.Sprintf("window-%d", tc.window), func(t *testing.T) {
 			o := windowedOrchestrator(findings, convergence(0.10), tc.window, tc.outputCap)
-			lrc := o.loadLedgerReadContext(context.Background(), 0)
+			lrc := o.loadAndFitLedger(context.Background(), 0)
 
 			shown, rendered := 0, ""
 			if lrc != nil {
@@ -208,7 +208,7 @@ func TestPriorContextBudgetIsSizedForTheTightestLayer(t *testing.T) {
 			aiClient:    big.Client,
 			layers:      &fakeLayerSet{byLayer: layers, fallback: big},
 		}
-		lrc := o.loadLedgerReadContext(context.Background(), 0)
+		lrc := o.loadAndFitLedger(context.Background(), 0)
 		if lrc == nil {
 			return 0
 		}
@@ -237,7 +237,7 @@ func TestPriorContextGrowsWithSaturation(t *testing.T) {
 
 	shown := func(ledger *commonmodels.DiscoveryLedger) int {
 		o := windowedOrchestrator(findings, ledger, 131_072, 16_384)
-		lrc := o.loadLedgerReadContext(context.Background(), 0)
+		lrc := o.loadAndFitLedger(context.Background(), 0)
 		if lrc == nil {
 			return 0
 		}
@@ -333,7 +333,7 @@ func TestLatestRunNovelty(t *testing.T) {
 // run was never actually told about.
 func TestBaseContextFindingIDsAreExactlyWhatWasShown(t *testing.T) {
 	o := windowedOrchestrator(ledgerFixture(420), convergence(0.20), 64_000, 8_192)
-	lrc := o.loadLedgerReadContext(context.Background(), 0)
+	lrc := o.loadAndFitLedger(context.Background(), 0)
 	if lrc == nil || len(lrc.findings) == 0 {
 		t.Fatal("expected a populated read context")
 	}
@@ -357,7 +357,7 @@ func TestPriorContextShareEnvOverride(t *testing.T) {
 	findings := ledgerFixture(420)
 	shown := func() int {
 		o := windowedOrchestrator(findings, convergence(1.00), 131_072, 16_384)
-		lrc := o.loadLedgerReadContext(context.Background(), 0)
+		lrc := o.loadAndFitLedger(context.Background(), 0)
 		if lrc == nil {
 			return 0
 		}
@@ -1102,7 +1102,7 @@ func TestPriorContextOptOutIsHonoured(t *testing.T) {
 	t.Run("share of zero carries nothing at all", func(t *testing.T) {
 		t.Setenv(priorContextShareEnv, "0")
 		wo := windowedOrchestrator(ledgerFixture(420), convergence(0.10), 131_072, 16_384)
-		lrc := wo.loadLedgerReadContext(context.Background(), 0)
+		lrc := wo.loadAndFitLedger(context.Background(), 0)
 		if lrc == nil {
 			t.Fatal("the ledger is still present — only the budget is zero")
 		}
@@ -1120,7 +1120,7 @@ func TestPriorContextOptOutIsHonoured(t *testing.T) {
 
 	t.Run("a window with no room carries nothing either", func(t *testing.T) {
 		wo := windowedOrchestrator(ledgerFixture(420), convergence(0.10), 1_024, 256)
-		lrc := wo.loadLedgerReadContext(context.Background(), 0)
+		lrc := wo.loadAndFitLedger(context.Background(), 0)
 		if lrc == nil || len(lrc.findings) != 0 {
 			t.Fatalf("expected a present ledger carrying no findings, got %+v", lrc)
 		}
@@ -1181,7 +1181,7 @@ func TestPriorContextBudgetUsesNoveltyNotGrowth(t *testing.T) {
 
 	shown := func(history []commonmodels.ConvergencePoint) int {
 		o := windowedOrchestrator(findings, &commonmodels.DiscoveryLedger{ProjectID: "p1", Convergence: history}, 131_072, 16_384)
-		lrc := o.loadLedgerReadContext(context.Background(), 0)
+		lrc := o.loadAndFitLedger(context.Background(), 0)
 		if lrc == nil {
 			return 0
 		}
@@ -1502,5 +1502,100 @@ func TestFixedPromptTokensCountsTheCatalogAndRoutingCards(t *testing.T) {
 		fixed, contextbudget.Tokens(bigCatalog.Catalog), avail, budget, picker, total, window)
 	if fixed < avail && total > window {
 		t.Errorf("assembled request is %d tokens against a %d window", total, window)
+	}
+}
+
+// TestPriorHistoryIsBudgetedWithTheFindings. The findings are one section of a
+// block that also carries the coverage map, the saturation reading, user
+// feedback, earlier recommendations and the open-thread queue — and the budget
+// could not see any of it, because the cost was measured by rendering the base
+// context with the whole prior block replaced by "". Forty open threads of
+// 1,500 characters are 15,000 tokens landing immediately under a findings block
+// sized as though the window were free: a 32K/4K run assembled over 32,000
+// input tokens where retaining the fixed 25 findings had fitted. An input-only
+// overflow cannot be recovered by asking for less output.
+func TestPriorHistoryIsBudgetedWithTheFindings(t *testing.T) {
+	o := &Orchestrator{}
+	ctx := context.Background()
+	parts := fixedPromptParts{
+		Prompts: ResolvedPrompts{
+			BaseContext:   "base {{PROFILE}} {{PREVIOUS_CONTEXT}}",
+			Exploration:   "explore",
+			AnalysisAreas: map[string]string{"a": "analyse"},
+		},
+		Language: "English", Datasets: "ds", Areas: []AnalysisArea{{ID: "a"}},
+	}
+
+	bare := o.fixedPromptTokens(ctx, parts)
+
+	// Forty open threads, as the reproduction had them.
+	withThreads := parts
+	withThreads.PriorHistory = strings.Repeat(strings.Repeat("t", 1_500)+"\n", 40)
+	loaded := o.fixedPromptTokens(ctx, withThreads)
+	if want := contextbudget.Tokens(withThreads.PriorHistory); loaded < bare+want {
+		t.Fatalf("fixedPromptTokens = %d, want at least %d + the history's %d tokens",
+			loaded, bare, want)
+	}
+
+	// And the consequence: on a window that cannot hold both, the findings give
+	// way to the history rather than being added on top of it.
+	const window, outputCap = 32_000, 4_096
+	avail := contextbudget.AvailableInput(window, intendedOutputReserve(outputCap, window), analysisReservedSystemTokens)
+	t.Setenv(priorContextShareEnv, "0.40")
+	bareBudget := priorContextBudget(avail, bare, 0, true)
+	loadedBudget := priorContextBudget(avail, loaded, 0, true)
+	t.Logf("avail=%d  fixed bare=%d -> prior %d   fixed with 40 threads=%d -> prior %d",
+		avail, bare, bareBudget, loaded, loadedBudget)
+	if loadedBudget >= bareBudget {
+		t.Errorf("the findings budget did not shrink when 15K tokens of history joined the block: %d vs %d",
+			loadedBudget, bareBudget)
+	}
+	total := loaded + loadedBudget +
+		analysisPickerBudgetTokens(AnalysisQueryResultsBudgetTokens, window, outputCap, loaded+loadedBudget) +
+		intendedOutputReserve(outputCap, window)
+	if loaded < avail && total > window {
+		t.Errorf("assembled request is %d tokens against a %d window", total, window)
+	}
+}
+
+// TestPreviousContextFrameClosesAroundTheFindings. The frame is rendered before
+// the findings are chosen, so the two halves have to compose back into exactly
+// the block the single-shot builder produces — otherwise the measurement and
+// the prompt are of different things.
+func TestPreviousContextFrameClosesAroundTheFindings(t *testing.T) {
+	o := &Orchestrator{}
+	pctx := &models.ProjectContext{TotalDiscoveries: 3}
+	lrc := &ledgerReadContext{
+		hasLedger: true,
+		findings:  ledgerFixture(3),
+		descChars: contextbudget.MinFindingDescChars,
+		tasks: []commonmodels.LedgerTask{
+			{ID: "t1", Title: "Check the join", Text: "the orders/customers join", Status: commonmodels.LedgerTaskStatusOpen},
+		},
+	}
+	frame := o.previousContextFrame(pctx, nil, nil, lrc, nil)
+	slot := renderPriorFindingsSlot(lrc, nil)
+	whole := o.buildPreviousContext(pctx, nil, nil, nil, lrc, nil)
+
+	if got := frame.with(slot); got != whole {
+		t.Errorf("frame.with(slot) differs from the whole block:\n--- frame ---\n%s\n--- whole ---\n%s", got, whole)
+	}
+	if slot == "" || !strings.Contains(whole, "Already established findings") {
+		t.Error("the findings slot is empty — the composition would pass for the wrong reason")
+	}
+	// The frame must carry the sections that are NOT the findings, since that
+	// is what it is measured for.
+	if !strings.Contains(frame.cost(), "the orders/customers join") {
+		t.Error("the open-thread queue is not in the frame, so its cost is still invisible to the budget")
+	}
+	if strings.Contains(frame.cost(), "Already established findings") {
+		t.Error("the frame contains the findings block — it would be counted twice")
+	}
+
+	// A project with neither discoveries nor a ledger renders nothing at all,
+	// rather than a header with nothing under it.
+	empty := o.previousContextFrame(nil, nil, nil, nil, nil)
+	if !empty.empty || empty.with("anything") != "" {
+		t.Errorf("an empty frame rendered %q", empty.with("anything"))
 	}
 }

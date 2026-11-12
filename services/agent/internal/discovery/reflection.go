@@ -381,6 +381,17 @@ type consolidationResult struct {
 	// the stored document.
 	ReSeen map[string]struct{}
 
+	// Reindexed are the findings whose vector payload this pass successfully
+	// rewrote, carrying the status they hold now.
+	//
+	// It exists so applyReflection can tell a payload it knows is fresh from
+	// one whose age it cannot know. A verdict that does not move a status needs
+	// no payload write when the payload was just written — and does need one
+	// otherwise, because the only thing that repairs a payload left stale by an
+	// earlier run is a write, and a status that does not move would never
+	// trigger one.
+	Reindexed map[string]struct{}
+
 	// Unrecorded is how many of this run's findings did not reach the ledger.
 	//
 	// It exists because the alternative is a lie. Consolidation is
@@ -511,6 +522,7 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 	candidates := buildFindingCandidates(result)
 	out := consolidationResult{
 		ReSeen:               make(map[string]struct{}),
+		Reindexed:            make(map[string]struct{}),
 		FindingIDByInsightID: make(map[string]string, len(candidates)),
 	}
 	// The ACTIVE set, which the retention cap bounds. The archived rows this
@@ -876,6 +888,13 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 			}
 			if err := o.vectorStore.Upsert(ctx, points); err != nil {
 				applog.WithError(err).Warn("Reflection: Qdrant upsert of ledger findings failed")
+			} else {
+				// Recorded only on success: a failed upsert leaves the payload
+				// as it was, which is exactly the case a later verdict must
+				// still repair.
+				for _, it := range toIndex {
+					out.Reindexed[it.finding.ID] = struct{}{}
+				}
 			}
 		}
 	}
@@ -1339,7 +1358,21 @@ func (o *Orchestrator) applyReflection(ctx context.Context, result *models.Disco
 					applog.WithError(err).Warn("Reflection: apply finding status update failed")
 					continue
 				}
-				if prevStatus != su.Status {
+				// Re-index unless this pass has already written this
+				// finding's payload with the status it now holds.
+				//
+				// A verdict that moves the status always needs the write. A
+				// verdict that does not still needs it when the payload's age
+				// is unknown: the per-area retrieval filters on that field, and
+				// a payload left stale by an earlier run would otherwise never
+				// be repaired — a status that does not move would never trigger
+				// a write, so the finding would stay unreachable. The one case
+				// that is provably safe to skip is a finding consolidation just
+				// re-indexed in this same pass, which on a mature project is
+				// most of what the model is asked to re-judge, since it is
+				// asked about the findings the run saw again.
+				_, fresh := cons.Reindexed[f.ID]
+				if prevStatus != su.Status || !fresh {
 					restatused = append(restatused, *f)
 				}
 			}

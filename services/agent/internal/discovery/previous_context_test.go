@@ -123,7 +123,7 @@ func TestLoadLedgerReadContext_RanksAndExcludesResolved(t *testing.T) {
 	tr := &fakeTaskRepo{existing: []commonmodels.LedgerTask{{Text: "t1", Status: "open"}}}
 	o := &Orchestrator{projectID: "p1", findingRepo: fr, ledgerRepo: &fakeLedgerRepo{}, taskRepo: tr}
 
-	lrc := o.loadLedgerReadContext(context.Background(), 0)
+	lrc := o.loadAndFitLedger(context.Background(), 0)
 	if lrc == nil || !lrc.hasLedger {
 		t.Fatal("expected a ledger read context")
 	}
@@ -160,7 +160,7 @@ func TestLoadLedgerReadContext_RemembersOnlyWhatThePromptShows(t *testing.T) {
 		taskRepo: &fakeTaskRepo{existing: many},
 	}
 
-	o.loadLedgerReadContext(context.Background(), 0)
+	o.loadAndFitLedger(context.Background(), 0)
 
 	if len(o.shownTaskIDs) != maxLedgerTasksInPrompt {
 		t.Errorf("want the prompt's cap (%d) remembered, got %d",
@@ -181,7 +181,7 @@ func TestLoadLedgerReadContext_OffModeSuppressesTasks(t *testing.T) {
 	tr := &fakeTaskRepo{existing: []commonmodels.LedgerTask{{Text: "t1", Status: "open"}}}
 	o := &Orchestrator{projectID: "p1", findingRepo: fr, ledgerRepo: &fakeLedgerRepo{}, taskRepo: tr}
 
-	lrc := o.loadLedgerReadContext(context.Background(), 0)
+	lrc := o.loadAndFitLedger(context.Background(), 0)
 	if lrc == nil {
 		t.Fatal("expected a ledger read context (findings present)")
 	}
@@ -191,4 +191,16 @@ func TestLoadLedgerReadContext_OffModeSuppressesTasks(t *testing.T) {
 	if len(lrc.findings) != 1 {
 		t.Errorf("findings are unconditional, got %d", len(lrc.findings))
 	}
+}
+
+// loadAndFitLedger is the two production steps in one call, for the tests that
+// are about what the budget chooses rather than about when it is chosen.
+//
+// Production splits them because the findings have to be budgeted against the
+// rest of the prompt — including the rest of their own block — and that is not
+// rendered until the ledger has been read.
+func (o *Orchestrator) loadAndFitLedger(ctx context.Context, fixedPromptTokens int) *ledgerReadContext {
+	lrc := o.loadLedgerReadContext(ctx)
+	o.fitPriorFindings(lrc, fixedPromptTokens)
+	return lrc
 }

@@ -233,7 +233,12 @@ type mockEmbedIndexStore struct {
 	// as the exception rather than the rule, the way a real store behaves: a
 	// point normally has a document, and a test that had to enumerate the
 	// documents that exist would pass for a reason no store shares.
-	missingDocs    map[string]bool
+	missingDocs map[string]bool
+	// storedDocs is what the store knows about documents from EARLIER runs —
+	// their embedding text and magnitudes. Empty for the tests that do not
+	// care, which is how a real store answers for a document written before
+	// those fields existed.
+	storedDocs     map[string]IndexedDoc
 	duplicateOfErr error
 
 	// deletedDiscoveries records the discoveries the retire step purged;
@@ -250,20 +255,25 @@ type mockEmbedIndexStore struct {
 	listError         error
 }
 
-func (m *mockEmbedIndexStore) DuplicateOf(_ context.Context, _, id string) (string, bool, error) {
+func (m *mockEmbedIndexStore) IndexedDoc(_ context.Context, _, id string) (IndexedDoc, bool, error) {
 	if m.duplicateOfErr != nil {
-		return "", false, m.duplicateOfErr
+		return IndexedDoc{}, false, m.duplicateOfErr
 	}
 	if m.missingDocs[id] {
-		return "", false, nil
+		return IndexedDoc{}, false, nil
 	}
+	doc := m.storedDocs[id]
 	// This run's own marks count too: markDuplicates writes them as it goes.
 	for _, u := range m.dupUpdates {
 		if u.ID == id {
-			return u.DupOf, true, nil
+			doc.DuplicateOf = u.DupOf
+			return doc, true, nil
 		}
 	}
-	return m.alreadyFolded[id], true, nil
+	if folded, ok := m.alreadyFolded[id]; ok {
+		doc.DuplicateOf = folded
+	}
+	return doc, true, nil
 }
 
 func (m *mockEmbedIndexStore) PointIDsByDiscovery(_ context.Context, discoveryID string) ([]string, []string, error) {
@@ -1148,4 +1158,110 @@ func TestStoredDuplicateWalksPastUnusableHits(t *testing.T) {
 			t.Fatalf("got (%q, %v), want the next hit after its own point", id, ok)
 		}
 	})
+}
+
+// TestMarkDuplicates_SameWordingDifferentMagnitude. A duplicate check on a
+// similarity score cannot see what the embedded text omits.
+// StandaloneInsight.BuildEmbeddingText carries the name, description, area,
+// severity and segment — and not the affected count or the metrics. So two
+// insights with identical prose and materially different numbers embed
+// identically, score 1.0, and the later one is suppressed: 100 affected
+// entities hidden behind 1,000, when a magnitude that has MOVED is exactly what
+// the prompt asks the model to report.
+func TestMarkDuplicates_SameWordingDifferentMagnitude(t *testing.T) {
+	const prose = "Margin erosion. The long tail is unpriced. Area: pricing. Severity: high. Segment: ."
+	vec := []float64{1, 0, 0}
+
+	t.Run("same run", func(t *testing.T) {
+		store := &mockEmbedIndexStore{}
+		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{}}
+		o.markDuplicates(context.Background(), []dedupCandidate{
+			{id: "small", docType: "insight", projectID: "p1", vec: vec, text: prose, magnitude: magnitudeKey(100, nil)},
+			{id: "large", docType: "insight", projectID: "p1", vec: vec, text: prose, magnitude: magnitudeKey(1_000, nil)},
+		}, nil)
+		if len(store.dupUpdates) != 0 {
+			t.Errorf("folded a different magnitude away: %+v", store.dupUpdates)
+		}
+	})
+
+	t.Run("same run, same magnitude, still folds", func(t *testing.T) {
+		// The guard must not switch the feature off.
+		store := &mockEmbedIndexStore{}
+		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{}}
+		o.markDuplicates(context.Background(), []dedupCandidate{
+			{id: "first", docType: "insight", projectID: "p1", vec: vec, text: prose, magnitude: magnitudeKey(100, nil)},
+			{id: "second", docType: "insight", projectID: "p1", vec: vec, text: prose, magnitude: magnitudeKey(100, nil)},
+		}, nil)
+		if len(store.dupUpdates) != 1 || store.dupUpdates[0].ID != "second" {
+			t.Errorf("want the second folded into the first, got %+v", store.dupUpdates)
+		}
+	})
+
+	t.Run("reworded with different numbers still folds", func(t *testing.T) {
+		// The case the feature exists for: "707 SKUs, ₺48.2M" and "801 SKUs,
+		// ₺48M" are the same finding restated, with different texts AND
+		// different numbers. Requiring equal magnitudes in general would
+		// refuse exactly these.
+		store := &mockEmbedIndexStore{}
+		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{}}
+		o.markDuplicates(context.Background(), []dedupCandidate{
+			{id: "a", docType: "insight", projectID: "p1", vec: vec,
+				text: "707 SKUs unpriced. Area: pricing.", magnitude: magnitudeKey(707, nil)},
+			{id: "b", docType: "insight", projectID: "p1", vec: vec,
+				text: "801 SKUs still unpriced. Area: pricing.", magnitude: magnitudeKey(801, nil)},
+		}, nil)
+		if len(store.dupUpdates) != 1 || store.dupUpdates[0].ID != "b" {
+			t.Errorf("a restatement was not folded: %+v", store.dupUpdates)
+		}
+	})
+
+	t.Run("stored match, the same rule at the other read", func(t *testing.T) {
+		store := &mockEmbedIndexStore{storedDocs: map[string]IndexedDoc{
+			"earlier": {EmbeddingText: prose, AffectedCount: 1_000},
+		}}
+		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{
+			dupes: []vectorstore.SearchResult{{ID: "earlier", Score: 1.0}},
+		}}
+		o.markDuplicates(context.Background(), []dedupCandidate{
+			{id: "new", docType: "insight", projectID: "p1", vec: vec, text: prose, magnitude: magnitudeKey(100, nil)},
+		}, nil)
+		if len(store.dupUpdates) != 0 {
+			t.Errorf("folded into a stored document stating a different magnitude: %+v", store.dupUpdates)
+		}
+	})
+
+	t.Run("a stored document with no recorded text still folds", func(t *testing.T) {
+		// Written before those fields existed: nothing to compare, so the
+		// guard stands aside rather than refusing every fold.
+		store := &mockEmbedIndexStore{storedDocs: map[string]IndexedDoc{"old": {}}}
+		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{
+			dupes: []vectorstore.SearchResult{{ID: "old", Score: 0.95}},
+		}}
+		o.markDuplicates(context.Background(), []dedupCandidate{
+			{id: "new", docType: "insight", projectID: "p1", vec: vec, text: prose, magnitude: magnitudeKey(100, nil)},
+		}, nil)
+		if len(store.dupUpdates) != 1 {
+			t.Errorf("want the fold, got %+v", store.dupUpdates)
+		}
+	})
+}
+
+// TestMagnitudeKeyIsDeterministic. Ranging a Go map is randomised, so a
+// signature built by ranging would differ between two documents with identical
+// metrics and read as a magnitude change on every pair.
+func TestMagnitudeKeyIsDeterministic(t *testing.T) {
+	m1 := map[string]interface{}{"rate": 4.2, "affected_stores": 424, "aisle": "paint"}
+	m2 := map[string]interface{}{"aisle": "paint", "affected_stores": 424, "rate": 4.2}
+	first := magnitudeKey(100, m1)
+	for i := 0; i < 50; i++ {
+		if got := magnitudeKey(100, m2); got != first {
+			t.Fatalf("iteration %d gave %q, want %q", i, got, first)
+		}
+	}
+	if magnitudeKey(100, m1) == magnitudeKey(101, m1) {
+		t.Error("the affected count does not reach the signature")
+	}
+	if magnitudeKey(100, m1) == magnitudeKey(100, map[string]interface{}{"rate": 9.9}) {
+		t.Error("the metrics do not reach the signature")
+	}
 }

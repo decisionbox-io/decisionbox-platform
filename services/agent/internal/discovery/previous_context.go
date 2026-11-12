@@ -19,9 +19,14 @@ import (
 // next-task queue. hasLedger is false for legacy projects / builds with nothing
 // in the ledger, so the caller falls back to the older capped insight dump.
 type ledgerReadContext struct {
-	findings []commonmodels.LedgerFinding
-	tasks    []commonmodels.LedgerTask
-	coverage commonmodels.LedgerCoverage
+	// candidates are every active finding, ranked, before a budget has chosen
+	// which of them fit. Held because the choosing happens in a second step:
+	// how many fit depends on what the rest of the prompt costs, and part of
+	// that cost is the rest of this very block.
+	candidates []commonmodels.LedgerFinding
+	findings   []commonmodels.LedgerFinding
+	tasks      []commonmodels.LedgerTask
+	coverage   commonmodels.LedgerCoverage
 	// convergence is the per-run share-of-new history. Read because it is the
 	// measurement of whether this investigation is still finding anything, and
 	// it steers both how much prior context the run is given and what the
@@ -32,13 +37,64 @@ type ledgerReadContext struct {
 	// in two places.
 	descChars int
 	hasLedger bool
+	// totalFindings is the ledger's size including the retired ones, for the
+	// log line that is the only lasting record of what the run was shown.
+	totalFindings int
 }
 
-// loadLedgerReadContext reads the project's ledger and builds the read context.
+// fitPriorFindings chooses which of the ranked candidates this run is shown,
+// and how fully each is rendered.
+//
+// Separate from the read because how many fit is a question about this run's
+// models and this run's prompt, not a constant — it was 25, which on a project
+// carrying 420 findings is 6% of what is known, and the run re-reported most of
+// the rest as new. fixedPromptTokens is everything else the prompt will carry,
+// including the other sections of this same block: five consecutive review
+// findings on this change were a piece of that prompt nothing was counting, and
+// the last of them was this block's own open-threads queue.
+func (o *Orchestrator) fitPriorFindings(lrc *ledgerReadContext, fixedPromptTokens int) {
+	if lrc == nil {
+		return
+	}
+	novelty, haveNovelty := latestRunNovelty(lrc.convergence)
+	available := o.baseContextAvailableInput()
+	budget := priorContextBudget(available, fixedPromptTokens, novelty, haveNovelty)
+	lrc.findings, lrc.descChars = contextbudget.FitFindings(
+		lrc.candidates, budget, contextbudget.MinFindingDescChars, contextbudget.MaxFindingDescChars)
+
+	// The ids this run is being shown, so the per-area retrieval can spend its
+	// own budget on findings this block does not already carry.
+	o.baseContextFindingIDs = make([]string, 0, len(lrc.findings))
+	for i := range lrc.findings {
+		o.baseContextFindingIDs = append(o.baseContextFindingIDs, lrc.findings[i].ID)
+	}
+
+	// Logged because it is the only place the decision is visible afterwards:
+	// a prompt is not persisted, so "the run was shown 12 of 420 findings" is
+	// otherwise indistinguishable from "the project has 12 findings".
+	applog.WithFields(applog.Fields{
+		"project_id":      o.projectID,
+		"candidates":      len(lrc.candidates),
+		"total_findings":  lrc.totalFindings,
+		"shown":           len(lrc.findings),
+		"budget_tokens":   budget,
+		"available_input": available,
+		"fixed_prompt":    fixedPromptTokens,
+		"desc_chars":      lrc.descChars,
+		"run_novelty":     novelty,
+		"have_novelty":    haveNovelty,
+	}).Info("Discovery Ledger: prior-context budget")
+}
+
+// loadLedgerReadContext reads the project's ledger and builds the read context,
+// up to but NOT including the choice of which findings fit — that is
+// fitPriorFindings, and it runs once the rest of the prompt, this block's own
+// other sections included, has been rendered and measured.
+//
 // Best-effort: any error yields a nil context (the caller degrades to the legacy
 // path). The open next-task queue is suppressed when evolution mode is off
 // (self-directed threads are the governed part; coverage + findings are not).
-func (o *Orchestrator) loadLedgerReadContext(ctx context.Context, fixedPromptTokens int) *ledgerReadContext {
+func (o *Orchestrator) loadLedgerReadContext(ctx context.Context) *ledgerReadContext {
 	if o.findingRepo == nil {
 		return nil
 	}
@@ -73,38 +129,9 @@ func (o *Orchestrator) loadLedgerReadContext(ctx context.Context, fixedPromptTok
 	sort.SliceStable(active, func(i, j int) bool {
 		return active[i].Rank(now) > active[j].Rank(now)
 	})
-
-	// How many of them fit is a question about this run's models, not a
-	// constant. It was 25 — on a project carrying 420 findings that is 6% of
-	// what is known, and the run re-reported most of the rest as new.
-	novelty, haveNovelty := latestRunNovelty(lrc.convergence)
-	available := o.baseContextAvailableInput()
-	budget := priorContextBudget(available, fixedPromptTokens, novelty, haveNovelty)
-	lrc.findings, lrc.descChars = contextbudget.FitFindings(
-		active, budget, contextbudget.MinFindingDescChars, contextbudget.MaxFindingDescChars)
-
-	// The ids this run is being shown, so the per-area retrieval can spend its
-	// own budget on findings this block does not already carry.
-	o.baseContextFindingIDs = make([]string, 0, len(lrc.findings))
-	for i := range lrc.findings {
-		o.baseContextFindingIDs = append(o.baseContextFindingIDs, lrc.findings[i].ID)
-	}
-
-	// Logged because it is the only place the decision is visible afterwards:
-	// a prompt is not persisted, so "the run was shown 12 of 420 findings" is
-	// otherwise indistinguishable from "the project has 12 findings".
-	applog.WithFields(applog.Fields{
-		"project_id":      o.projectID,
-		"candidates":      len(active),
-		"total_findings":  len(all),
-		"shown":           len(lrc.findings),
-		"budget_tokens":   budget,
-		"available_input": available,
-		"fixed_prompt":    fixedPromptTokens,
-		"desc_chars":      lrc.descChars,
-		"run_novelty":     novelty,
-		"have_novelty":    haveNovelty,
-	}).Info("Discovery Ledger: prior-context budget")
+	lrc.candidates = active
+	lrc.totalFindings = len(all)
+	lrc.descChars = contextbudget.MinFindingDescChars
 
 	// Open tasks — governed by evolution mode (off ⇒ no self-directed threads).
 	pol, _ := agentplugin.ResolveDiscoveryPolicy(ctx, o.projectID)

@@ -346,9 +346,11 @@ func documentDedupMinScore() float64 {
 // written would drift the first time one of them appends something else; the
 // builders themselves cannot.
 //
-// The base context is rendered with an EMPTY prior-knowledge block, because
-// that block is precisely what is being budgeted. The bodies are rendered with
-// an empty base context, so the base is counted once rather than once per body.
+// The base context is rendered with the prior-knowledge block's OTHER sections
+// in place and the findings themselves absent, because the findings are
+// precisely what is being budgeted and everything around them is not. The
+// bodies are rendered with an empty base context, so the base is counted once
+// rather than once per body.
 //
 // The schema catalog counts, and it is the largest of them on a warehouse of
 // any size: the comment here used to say the catalog could not be seen from
@@ -365,7 +367,7 @@ func documentDedupMinScore() float64 {
 // adaptive context-overflow retry remains the net, as it is for every other
 // estimate on this path.
 func (o *Orchestrator) fixedPromptTokens(ctx context.Context, p fixedPromptParts) int {
-	base := approxTokens(ctx, o.buildBaseContext(p.Prompts.BaseContext, p.Profile, "", p.Language, p.RefDataset))
+	base := approxTokens(ctx, o.buildBaseContext(p.Prompts.BaseContext, p.Profile, p.PriorHistory, p.Language, p.RefDataset))
 
 	// Exploration is assembled inline by runDiscovery rather than by a builder,
 	// so its pieces are counted here: the template, the areas description, the
@@ -406,5 +408,12 @@ type fixedPromptParts struct {
 	// Datasources is the routing-contract section a multi-datasource run
 	// appends. Empty on a single-warehouse run.
 	Datasources string
-	Areas       []AnalysisArea
+	// PriorHistory is the prior-knowledge block MINUS the findings being
+	// budgeted: the coverage map, the saturation reading, user feedback,
+	// earlier recommendations, the open-thread queue, trends and observations.
+	// It lands in the same prompt as the findings and had been invisible to
+	// their budget — forty open threads of 1,500 characters are 15,000 tokens
+	// rendered immediately under a block sized as though the window were free.
+	PriorHistory string
+	Areas        []AnalysisArea
 }

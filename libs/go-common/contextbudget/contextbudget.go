@@ -177,7 +177,11 @@ func FindingLine(f commonmodels.LedgerFinding, descChars int) string {
 // The width is the budget spread over the candidates we actually have, bounded
 // to [minDesc, maxDesc]: few findings and a large window render in full, many
 // findings and a small window render at the old level of detail and the prefix
-// is shorter. One formula, no tiers.
+// is shorter. One formula, no tiers — and one fallback, because that formula
+// does not reserve what the rest of a line costs and so can ask for a
+// description that makes the whole line unaffordable. When nothing fits at the
+// computed width, the narrow width is tried before giving up: a finding that
+// fits at minDesc must not be dropped because maxDesc was attempted first.
 //
 // A non-positive budget returns no findings — correct, and the only safe answer
 // on a window too small to hold any of them. The returned width is still usable
@@ -194,20 +198,36 @@ func FitFindings(findings []commonmodels.LedgerFinding, budgetTokens, minDesc, m
 	}
 
 	descChars := clamp((budgetTokens*runesPerToken)/len(findings), minDesc, maxDesc)
+	if n, width := fitAt(findings, budgetTokens, descChars); n > 0 {
+		return findings[:n], width
+	}
 
-	// Costed WITH the newline each caller writes after a line. Without it a
-	// two-hundred-finding block rendered 13,388 tokens against a 13,338-token
-	// budget: one token per separator, which is nothing per line and a
-	// guarantee broken in aggregate.
+	// Nothing fit at that width, which does not mean nothing fits. The width
+	// above divides the budget among the candidates without reserving what the
+	// rest of a line costs — the area, name, severity, status, seen-count and
+	// key metric — so it can ask for a description the line cannot afford and
+	// then reject the line whole. A finding that fits at the narrow width must
+	// not be dropped because the wide one was tried first: one finding and a
+	// 206-token budget rendered nothing, where the narrow width rendered it.
+	if descChars > minDesc {
+		if n, width := fitAt(findings, budgetTokens, minDesc); n > 0 {
+			return findings[:n], width
+		}
+	}
+	return nil, descChars
+}
+
+// fitAt reports how many findings fit budgetTokens when rendered at descChars,
+// and the width used. Costed WITH the newline each caller writes after a line:
+// without it a two-hundred-finding block rendered 13,388 tokens against a
+// 13,338-token budget — one token per separator, which is nothing per line and
+// a guarantee broken in aggregate.
+func fitAt(findings []commonmodels.LedgerFinding, budgetTokens, descChars int) (int, int) {
 	lines := make([]string, len(findings))
 	for i := range findings {
 		lines[i] = FindingLine(findings[i], descChars) + "\n"
 	}
-	n := FitLines(lines, budgetTokens)
-	if n == 0 {
-		return nil, descChars
-	}
-	return findings[:n], descChars
+	return FitLines(lines, budgetTokens), descChars
 }
 
 // FitLines reports how many of lines fit budgetTokens, taking a PREFIX: it

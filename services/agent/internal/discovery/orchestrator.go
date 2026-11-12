@@ -1169,13 +1169,23 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// correlations appended with them are resolved later and are not here.
 		fixedParts.Datasources = buildDatasourcesPromptSection(dc, correlationGuidance{})
 	}
-	lrc := o.loadLedgerReadContext(ctx, o.fixedPromptTokens(ctx, fixedParts))
+
+	// The ledger is read first, then the rest of the prior-knowledge block is
+	// rendered around a hole, and only then is it decided how many findings go
+	// in the hole — because the coverage map, the saturation reading, the
+	// feedback, the earlier recommendations and the open-thread queue are all
+	// in the same block, and a findings budget that does not know what they
+	// cost is sized against room they have already taken.
+	lrc := o.loadLedgerReadContext(ctx)
+	frame := o.previousContextFrame(projectCtx, prevRecs, feedbackSummaries, lrc, analysisAreas)
+	fixedParts.PriorHistory = frame.cost()
+	o.fitPriorFindings(lrc, o.fixedPromptTokens(ctx, fixedParts))
 
 	// Previous discovery insights, recommendations, user feedback, and the
 	// Discovery Ledger are merged into a reusable context block injected into the
 	// exploration and analysis prompts, so the run continues the investigation
 	// (drill / tile the frontier / re-check) instead of re-treading it.
-	previousContextStr := o.buildPreviousContext(projectCtx, prevInsights, prevRecs, feedbackSummaries, lrc, analysisAreas)
+	previousContextStr := frame.with(renderPriorFindingsSlot(lrc, prevInsights))
 
 	// baseContext is reused across exploration, analysis, and
 	// recommendation prompts. It combines project profile data,
@@ -3572,6 +3582,40 @@ func (o *Orchestrator) buildAnalysisAreasDescription(areas []AnalysisArea) strin
 
 // buildPreviousContext builds a rich context from previous discoveries and user feedback.
 // This prevents duplicate insights, respects user feedback, and helps the LLM focus on new findings.
+// previousContextFrame is the prior-knowledge block with a hole where the
+// findings go: head is what sits above them (the coverage map and the
+// saturation reading, which steer what the run does with them), tail is
+// everything below (user feedback, earlier recommendations, the open-thread
+// queue, trends and agent observations).
+//
+// It exists so the findings can be budgeted against the rest of the block they
+// sit in. They could not be, and that was the fifth consecutive review finding
+// on this change where the answer to "what else is in this prompt" was
+// something nobody was counting: forty open threads of 1,500 characters are
+// 15,000 tokens rendered right underneath a findings block sized as though the
+// whole window were free.
+type previousContextFrame struct {
+	head, tail string
+	// empty is a project with no discoveries and no ledger: there is nothing to
+	// say, and the block is omitted rather than rendered as a header with
+	// nothing under it.
+	empty bool
+}
+
+// cost is the frame's own contribution to the prompt, for the budget.
+func (f previousContextFrame) cost() string { return f.head + f.tail }
+
+// with closes the frame around the findings block.
+func (f previousContextFrame) with(findings string) string {
+	if f.empty {
+		return ""
+	}
+	return f.head + findings + f.tail
+}
+
+// buildPreviousContext renders the whole block, findings included. Kept as the
+// one entry point for callers that do not budget — the frame and the findings
+// are assembled separately only where the budget needs the frame's size first.
 func (o *Orchestrator) buildPreviousContext(
 	pctx *models.ProjectContext,
 	prevInsights []models.InsightSummary,
@@ -3580,13 +3624,54 @@ func (o *Orchestrator) buildPreviousContext(
 	lrc *ledgerReadContext,
 	areas []AnalysisArea,
 ) string {
+	frame := o.previousContextFrame(pctx, prevRecs, feedback, lrc, areas)
+	return frame.with(renderPriorFindingsSlot(lrc, prevInsights))
+}
+
+// renderPriorFindingsSlot is what fills the hole in the frame: the budgeted
+// ledger findings, or — for a project with no ledger at all — the older capped
+// insight dump.
+//
+// A project that HAS a ledger never falls back, even when the budget chose to
+// carry no findings. That case is a decision, not an absence: either the
+// operator set the share to zero, or the window has no room — and answering it
+// with an unbudgeted thirty-insight dump would undo the opt-out and feed the
+// smallest models the very block the budget exists to keep out of them.
+func renderPriorFindingsSlot(lrc *ledgerReadContext, prevInsights []models.InsightSummary) string {
+	if lrc != nil && lrc.hasLedger {
+		if len(lrc.findings) == 0 {
+			return ""
+		}
+		return renderLedgerFindings(lrc.findings, lrc.descChars)
+	}
+	if len(prevInsights) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("### Previously Found Insights\n")
+	sb.WriteString("These insights were already discovered. Build on them — go deeper or check whether they changed — rather than repeating them.\n\n")
+	for _, ins := range prevInsights {
+		fmt.Fprintf(&sb, "- **%s** [%s, %s] — %d affected (%s)\n",
+			ins.Name, ins.AnalysisArea, ins.Severity, ins.AffectedCount, ins.Date)
+	}
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+func (o *Orchestrator) previousContextFrame(
+	pctx *models.ProjectContext,
+	prevRecs []models.RecommendationSummary,
+	feedback []models.FeedbackSummary,
+	lrc *ledgerReadContext,
+	areas []AnalysisArea,
+) previousContextFrame {
 	hasLedger := lrc != nil && lrc.hasLedger
 	discoveries := 0
 	if pctx != nil {
 		discoveries = pctx.TotalDiscoveries
 	}
 	if discoveries == 0 && !hasLedger {
-		return ""
+		return previousContextFrame{empty: true}
 	}
 
 	var sb strings.Builder
@@ -3610,29 +3695,11 @@ func (o *Orchestrator) buildPreviousContext(
 		}
 	}
 
-	// Findings so far — ranked, WITH substance (from the ledger). Replaces the
-	// old arbitrary first-30, names-only dump. Legacy projects with no ledger yet
-	// fall back to that older block.
-	//
-	// A project that HAS a ledger never falls back, even when the budget chose
-	// to carry no findings at all. That case is a decision, not an absence:
-	// either the operator set the share to zero, or the window has no room —
-	// and answering it with an unbudgeted thirty-insight dump would undo the
-	// opt-out and feed the smallest models the very block the budget exists to
-	// keep out of them.
-	if hasLedger {
-		if len(lrc.findings) > 0 {
-			sb.WriteString(renderLedgerFindings(lrc.findings, lrc.descChars))
-		}
-	} else if len(prevInsights) > 0 {
-		sb.WriteString("### Previously Found Insights\n")
-		sb.WriteString("These insights were already discovered. Build on them — go deeper or check whether they changed — rather than repeating them.\n\n")
-		for _, ins := range prevInsights {
-			fmt.Fprintf(&sb, "- **%s** [%s, %s] — %d affected (%s)\n",
-				ins.Name, ins.AnalysisArea, ins.Severity, ins.AffectedCount, ins.Date)
-		}
-		sb.WriteString("\n")
-	}
+	// The findings go here, between the saturation reading that steers what the
+	// run does with them and the feedback that qualifies them. Everything from
+	// this point is the tail.
+	head := sb.String()
+	sb.Reset()
 
 	// User feedback
 	disliked := make([]models.FeedbackSummary, 0)
@@ -3689,14 +3756,19 @@ func (o *Orchestrator) buildPreviousContext(
 	// evolving instead of re-reporting it cold. Recurring = seen in more than one
 	// run; the ledger's finding statuses supersede this going forward, but the
 	// pattern history remains a cheap, always-available trend signal.
-	if trend := renderHistoricalPatterns(pctx.HistoricalPatterns); trend != "" {
-		sb.WriteString(trend)
+	// pctx can be nil here: the early return above only fires when there is
+	// neither a discovery nor a ledger, so a project with a ledger and no
+	// project-context document reaches this line.
+	if pctx != nil {
+		if trend := renderHistoricalPatterns(pctx.HistoricalPatterns); trend != "" {
+			sb.WriteString(trend)
+		}
 	}
 
 	// Agent observations are auto-learnings the orchestrator records during
 	// discovery (separate from user-authored knowledge sources, which render
 	// under "## Project Knowledge").
-	if len(pctx.Notes) > 0 {
+	if pctx != nil && len(pctx.Notes) > 0 {
 		sb.WriteString("### Agent observations\n")
 		shown := 0
 		for i := len(pctx.Notes) - 1; i >= 0 && shown < 10; i-- {
@@ -3708,7 +3780,7 @@ func (o *Orchestrator) buildPreviousContext(
 		}
 	}
 
-	return sb.String()
+	return previousContextFrame{head: head, tail: sb.String()}
 }
 
 // maxHistoricalPatternsInPrompt caps how many recurring/worsening patterns the

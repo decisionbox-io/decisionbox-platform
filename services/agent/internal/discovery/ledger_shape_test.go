@@ -392,7 +392,7 @@ func TestLoadLedgerReadContext_CubeCoverageAloneIsALedger(t *testing.T) {
 				}},
 			}
 
-			lrc := o.loadLedgerReadContext(context.Background(), 0)
+			lrc := o.loadAndFitLedger(context.Background(), 0)
 
 			if lrc == nil {
 				t.Fatal("cube coverage on its own must still produce a ledger read context")

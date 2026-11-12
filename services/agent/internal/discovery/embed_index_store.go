@@ -127,26 +127,38 @@ func (s *MongoEmbedIndexStore) UpdateEmbedding(ctx context.Context, collection, 
 	return nil
 }
 
-// DuplicateOf reports what a document was folded into, and whether it exists.
+// IndexedDoc reads a matched document's fold pointer, the text its vector was
+// built from, and the magnitudes that text leaves out.
 //
 // A missing document is not an error — a vector-store point can outlive the row
 // it describes — but it is not "canonical" either, which is why exists is
-// reported separately. Collapsing them returned the same ("", nil) for a real
+// reported separately. Collapsing them returned the same empty answer for a real
 // canonical and for a row that is gone, and the caller then folded a new
 // document into an original it cannot show: the new one disappears from the
 // default lists and nothing takes its place.
-func (s *MongoEmbedIndexStore) DuplicateOf(ctx context.Context, collection, id string) (string, bool, error) {
+//
+// One read, three facts. The caller is deciding whether a hit is safe to fold
+// into, and every one of them is part of that question.
+func (s *MongoEmbedIndexStore) IndexedDoc(ctx context.Context, collection, id string) (IndexedDoc, bool, error) {
 	var doc struct {
-		DuplicateOf string `bson:"duplicate_of"`
+		DuplicateOf   string                 `bson:"duplicate_of"`
+		EmbeddingText string                 `bson:"embedding_text"`
+		AffectedCount int                    `bson:"affected_count"`
+		Metrics       map[string]interface{} `bson:"metrics"`
 	}
 	err := s.db.Collection(collection).FindOne(ctx, map[string]interface{}{"_id": id}).Decode(&doc)
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
-			return "", false, nil
+			return IndexedDoc{}, false, nil
 		}
-		return "", false, fmt.Errorf("read duplicate_of for %s/%s: %w", collection, id, err)
+		return IndexedDoc{}, false, fmt.Errorf("read %s/%s for the duplicate check: %w", collection, id, err)
 	}
-	return doc.DuplicateOf, true, nil
+	return IndexedDoc{
+		DuplicateOf:   doc.DuplicateOf,
+		EmbeddingText: doc.EmbeddingText,
+		AffectedCount: doc.AffectedCount,
+		Metrics:       doc.Metrics,
+	}, true, nil
 }
 
 func (s *MongoEmbedIndexStore) UpdateDuplicate(ctx context.Context, collection, id, duplicateOf string, score float64) error {

@@ -2097,12 +2097,19 @@ func TestApplyReflection_ReindexesStatusChanges(t *testing.T) {
 	})
 }
 
-// TestApplyReflection_ReconfirmingDoesNotReindex. A reflection that reconfirms
-// an already-confirmed finding is the ordinary case on a mature project, and it
-// still writes a history entry for the run. Re-embedding every one of those
-// would buy an identical payload: on a project where most verdicts are
-// reconfirmations, that is an extra embedding pass over nearly the whole active
-// ledger, every run, for nothing.
+// TestApplyReflection_ReconfirmingDoesNotReindex. Two opposite costs meet here.
+//
+// Re-embedding a finding whose status did not move buys an identical payload,
+// and on a project where most verdicts are reconfirmations that is an extra
+// embedding pass over nearly the whole active ledger, every run. But a payload
+// left stale by an EARLIER run is repaired only by a write, and a status that
+// does not move would never trigger one — so skipping on "did not move" alone
+// leaves a live finding excluded from per-area retrieval indefinitely, because
+// that retrieval filters on the indexed status.
+//
+// The line between them is whether this pass already wrote the payload:
+// consolidation re-indexes the findings the run saw again, and those are the
+// ones the model is asked to re-judge.
 func TestApplyReflection_ReconfirmingDoesNotReindex(t *testing.T) {
 	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{
 		{ID: "same", ProjectID: "p1", Name: "n", Status: commonmodels.LedgerFindingStatusConfirmed},
@@ -2123,23 +2130,60 @@ func TestApplyReflection_ReconfirmingDoesNotReindex(t *testing.T) {
 		{FindingID: "same", Status: commonmodels.LedgerFindingStatusConfirmed, Reason: "still true"},
 		{FindingID: "moved", Status: commonmodels.LedgerFindingStatusResolved, Reason: "the condition is gone"},
 	}
+	// Consolidation re-indexed "same" in this pass, so its payload already
+	// carries the status it holds now.
+	cons := consolidationResult{Reindexed: map[string]struct{}{"same": {}}}
 	o.applyReflection(context.Background(), &models.DiscoveryResult{ID: "d1"},
-		agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeOff}, ref, consolidationResult{})
+		agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeOff}, ref, cons)
 
 	// Both verdicts are still recorded — the history is what the model said,
 	// not what changed.
 	if len(fr.statuses) != 2 {
 		t.Fatalf("wrote %d status updates, want both verdicts recorded", len(fr.statuses))
 	}
-	// Only the one that moved is re-indexed.
 	if len(vs.upserted) != 1 || vs.upserted[0].ID != "moved" {
 		var got []string
 		for _, p := range vs.upserted {
 			got = append(got, p.ID)
 		}
-		t.Errorf("re-indexed %v, want only the finding whose status moved", got)
+		t.Errorf("re-indexed %v, want only the finding whose status moved — the other's payload was just written", got)
 	}
 	if emb.calls != 1 {
-		t.Errorf("embedding calls = %d, want 1 — one batch for the findings that moved", emb.calls)
+		t.Errorf("embedding calls = %d, want 1 — one batch", emb.calls)
+	}
+}
+
+// TestApplyReflection_ReconfirmingRepairsAnUnwrittenPayload is the other half:
+// a finding this pass did NOT re-index has a payload of unknown age, and the
+// only thing that can repair one left stale by an earlier run is a write. A
+// status that does not move would never trigger one, so the finding would stay
+// excluded from per-area retrieval for as long as nobody happened to move it.
+func TestApplyReflection_ReconfirmingRepairsAnUnwrittenPayload(t *testing.T) {
+	fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{
+		{ID: "untouched", ProjectID: "p1", Name: "n", Status: commonmodels.LedgerFindingStatusConfirmed},
+	}}
+	vs := &mockVectorStore{}
+	o := &Orchestrator{
+		projectID: "p1", runID: "r1", findingRepo: fr,
+		promptFindingIDs: idsOf(fr.findings), vectorStore: vs,
+		embeddingProvider: &mockEmbeddingProvider{dims: 3, model: "test-model"},
+	}
+	ref := &parsedReflection{}
+	ref.StatusUpdates = []struct {
+		FindingID string `json:"finding_id"`
+		Status    string `json:"status"`
+		Reason    string `json:"reason"`
+	}{{FindingID: "untouched", Status: commonmodels.LedgerFindingStatusConfirmed, Reason: "still true"}}
+
+	// Nothing in Reindexed: this run did not see this finding again.
+	o.applyReflection(context.Background(), &models.DiscoveryResult{ID: "d1"},
+		agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeOff}, ref,
+		consolidationResult{Reindexed: map[string]struct{}{}})
+
+	if len(vs.upserted) != 1 || vs.upserted[0].ID != "untouched" {
+		t.Fatalf("upserted %+v, want the finding whose payload age is unknown", vs.upserted)
+	}
+	if got := vs.upserted[0].Payload["status"]; got != commonmodels.LedgerFindingStatusConfirmed {
+		t.Errorf("indexed status = %v, want confirmed", got)
 	}
 }

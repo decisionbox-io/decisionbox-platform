@@ -3,6 +3,8 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"math"
 	"time"
 
@@ -245,6 +247,7 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 
 		candidates = append(candidates, dedupCandidate{
 			id: ins.ID, docType: "insight", projectID: ins.ProjectID, vec: vec,
+			text: ins.EmbeddingText, magnitude: magnitudeKey(ins.AffectedCount, ins.Metrics),
 		})
 
 		points = append(points, vectorstore.Point{
@@ -274,6 +277,9 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 
 		candidates = append(candidates, dedupCandidate{
 			id: rec.ID, docType: "recommendation", projectID: rec.ProjectID, vec: vec,
+			// No magnitude: a recommendation's expected impact is already in
+			// the text its vector was built from.
+			text: rec.EmbeddingText,
 		})
 
 		points = append(points, vectorstore.Point{
@@ -311,13 +317,66 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 }
 
 // dedupCandidate is one document this run produced, as the duplicate check sees
-// it: an id, what kind of document it is, and the vector that was just embedded
-// for it.
+// it: an id, what kind of document it is, the vector that was just embedded for
+// it, and the two things needed to tell apart documents the vector cannot.
 type dedupCandidate struct {
 	id        string
 	docType   string
 	projectID string
 	vec       []float64
+	// text is what the vector was built from. Two documents with the same text
+	// are identical to the search by construction, so whatever the text leaves
+	// out is all there is to distinguish them.
+	text string
+	// magnitude is a signature of the quantitative fields the embedding text
+	// omits — an insight's affected count and metrics. Empty for a document
+	// type whose numbers are already in its text, which is the case for a
+	// recommendation: BuildEmbeddingText carries its expected impact.
+	magnitude string
+}
+
+// magnitudeKey is the comparable form of the quantitative fields an insight's
+// embedding text leaves out.
+//
+// Deterministic across runs and processes, so keys sorted and values formatted
+// rather than fmt'ed off a map: ranging a Go map is randomised, and a signature
+// that changes order between two documents would read as a magnitude change on
+// every pair.
+func magnitudeKey(affected int, metrics map[string]interface{}) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "affected=%d", affected)
+	keys := make([]string, 0, len(metrics))
+	for k := range metrics {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Fprintf(&b, ";%s=%v", k, metrics[k])
+	}
+	return b.String()
+}
+
+// sameClaim reports whether two documents may be folded together at all.
+//
+// A duplicate check on a similarity score cannot see what the embedded text
+// omits. StandaloneInsight.BuildEmbeddingText carries the name, description,
+// area, severity and segment — and not the affected count or the metrics. So
+// two insights with identical prose and materially different numbers embed
+// identically, score 1.0, and the later one is suppressed: 100 affected
+// entities hidden behind 1,000, when a magnitude that has MOVED is precisely
+// what the prompt asks the model to report.
+//
+// The guard is narrow on purpose. It applies only when the texts are
+// IDENTICAL, which is the case where the score carries no information at all.
+// Two findings reworded between runs — "707 SKUs, ₺48.2M" and "801 SKUs, ₺48M"
+// — have different texts and different numbers and SHOULD still fold: that
+// restatement is the whole point of the feature, and requiring equal magnitudes
+// in general would switch it off.
+func sameClaim(aText, aMagnitude, bText, bMagnitude string) bool {
+	if aText == "" || bText == "" || aText != bText {
+		return true
+	}
+	return aMagnitude == bMagnitude
 }
 
 // collectionFor maps a document type to the Mongo collection the duplicate
@@ -383,6 +442,13 @@ func (o *Orchestrator) markDuplicates(ctx context.Context, candidates []dedupCan
 			}
 			score, ok := cosineSimilarity(c.vec, earlier.vec)
 			if !ok || score < threshold {
+				continue
+			}
+			// Identical prose, different numbers: the score cannot tell these
+			// apart, and folding would hide a different claim.
+			if !sameClaim(c.text, c.magnitude, earlier.text, earlier.magnitude) {
+				applog.WithFields(applog.Fields{"id": c.id, "earlier": earlier.id}).
+					Info("Phase 9: same wording, different magnitude; not a duplicate")
 				continue
 			}
 			target, targetScore := earlier.id, score
@@ -460,22 +526,28 @@ func (o *Orchestrator) storedDuplicate(ctx context.Context, c dedupCandidate, ex
 		if o.embedIndexStore == nil {
 			return hit.ID, hit.Score, true
 		}
-		folded, exists, err := o.embedIndexStore.DuplicateOf(ctx, collectionFor(c.docType), hit.ID)
+		doc, exists, err := o.embedIndexStore.IndexedDoc(ctx, collectionFor(c.docType), hit.ID)
 		switch {
 		case err != nil:
 			// The state of this hit is unknown, and so is every other hit's —
 			// the same store answers for all of them. Refuse the whole check
 			// rather than walk on and fold into a row that may be just as bad.
 			applog.WithError(err).WithFields(applog.Fields{"id": c.id, "hit": hit.ID}).
-				Warn("could not tell whether the matched document is itself a duplicate; not folding")
+				Warn("could not read the matched document; not folding")
 			return "", 0, false
 		case !exists:
 			applog.WithFields(applog.Fields{"id": c.id, "hit": hit.ID}).
 				Info("Phase 9: a stored match has no document left; looking past it")
 			continue
-		case folded != "":
-			applog.WithFields(applog.Fields{"id": c.id, "hit": hit.ID, "hit_folded_into": folded}).
+		case doc.DuplicateOf != "":
+			applog.WithFields(applog.Fields{"id": c.id, "hit": hit.ID, "hit_folded_into": doc.DuplicateOf}).
 				Info("Phase 9: a stored match is itself suppressed; looking past it")
+			continue
+		case !sameClaim(c.text, c.magnitude, doc.EmbeddingText, magnitudeKey(doc.AffectedCount, doc.Metrics)):
+			// Identical prose, different numbers. The same rule as the
+			// same-run pass, applied at the other read.
+			applog.WithFields(applog.Fields{"id": c.id, "hit": hit.ID}).
+				Info("Phase 9: same wording as a stored document, different magnitude; looking past it")
 			continue
 		}
 		return hit.ID, hit.Score, true

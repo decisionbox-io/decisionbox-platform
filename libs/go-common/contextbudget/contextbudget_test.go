@@ -457,3 +457,53 @@ func TestFitLines(t *testing.T) {
 		}
 	})
 }
+
+// TestFitFindingsFallsBackToTheNarrowWidth. The width is the budget divided
+// among the candidates, which does not reserve what the rest of a line costs —
+// the area, name, severity, status, seen count and key metric. So the formula
+// can ask for a description the line cannot afford, and the line is then
+// rejected whole: one finding and a 206-token budget rendered NOTHING, where
+// the narrow width rendered it. A section that goes silent is worse than one
+// that renders at the old level of detail.
+func TestFitFindingsFallsBackToTheNarrowWidth(t *testing.T) {
+	one := []commonmodels.LedgerFinding{{
+		ID: "f1", Area: "pricing", Name: "Margin erosion on the long tail",
+		Severity: "high", Status: "confirmed", SeenCount: 3, KeyMetric: "affected=801",
+		Description: strings.Repeat("substance about the warehouse. ", 60),
+	}}
+
+	// The budget that reproduced it: enough for the line at the narrow width,
+	// not enough at the width the formula picks.
+	wide := Tokens(FindingLine(one[0], MaxFindingDescChars) + "\n")
+	narrow := Tokens(FindingLine(one[0], MinFindingDescChars) + "\n")
+	if narrow >= wide {
+		t.Fatalf("fixture does not exercise the case: narrow %d, wide %d", narrow, wide)
+	}
+
+	got, width := FitFindings(one, narrow,
+		MinFindingDescChars, MaxFindingDescChars)
+	if len(got) != 1 {
+		t.Fatalf("rendered %d findings at a budget of %d, want the one that fits at the narrow width", len(got), narrow)
+	}
+	if width != MinFindingDescChars {
+		t.Errorf("width = %d, want the narrow %d", width, MinFindingDescChars)
+	}
+	// Still inside the budget: the fallback is a narrower render, not a waiver.
+	if cost := Tokens(FindingLine(got[0], width) + "\n"); cost > narrow {
+		t.Errorf("the fallback rendered %d tokens against a %d budget", cost, narrow)
+	}
+
+	// A budget below even the narrow line still carries nothing — the fallback
+	// must not become a way to exceed the budget.
+	if got, _ := FitFindings(one, narrow-1,
+		MinFindingDescChars, MaxFindingDescChars); len(got) != 0 {
+		t.Errorf("a budget below the narrow line rendered %d findings", len(got))
+	}
+
+	// And a budget that comfortably fits the wide line still gets the wide one:
+	// the fallback is reached only when the first attempt fits nothing.
+	if _, width := FitFindings(one, wide*4,
+		MinFindingDescChars, MaxFindingDescChars); width <= MinFindingDescChars {
+		t.Errorf("a generous budget rendered at width %d — the fallback is not meant to win", width)
+	}
+}
