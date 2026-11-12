@@ -228,7 +228,12 @@ type mockEmbedIndexStore struct {
 	// alreadyFolded answers DuplicateOf: ids that a PREVIOUS run already
 	// marked, which are still indexed in the vector store and so can still be
 	// the best match for a later document.
-	alreadyFolded  map[string]string
+	alreadyFolded map[string]string
+	// missingDocs are ids whose vector-store point outlived its row. Modelled
+	// as the exception rather than the rule, the way a real store behaves: a
+	// point normally has a document, and a test that had to enumerate the
+	// documents that exist would pass for a reason no store shares.
+	missingDocs    map[string]bool
 	duplicateOfErr error
 
 	// deletedDiscoveries records the discoveries the retire step purged;
@@ -245,17 +250,20 @@ type mockEmbedIndexStore struct {
 	listError         error
 }
 
-func (m *mockEmbedIndexStore) DuplicateOf(_ context.Context, _, id string) (string, error) {
+func (m *mockEmbedIndexStore) DuplicateOf(_ context.Context, _, id string) (string, bool, error) {
 	if m.duplicateOfErr != nil {
-		return "", m.duplicateOfErr
+		return "", false, m.duplicateOfErr
+	}
+	if m.missingDocs[id] {
+		return "", false, nil
 	}
 	// This run's own marks count too: markDuplicates writes them as it goes.
 	for _, u := range m.dupUpdates {
 		if u.ID == id {
-			return u.DupOf, nil
+			return u.DupOf, true, nil
 		}
 	}
-	return m.alreadyFolded[id], nil
+	return m.alreadyFolded[id], true, nil
 }
 
 func (m *mockEmbedIndexStore) PointIDsByDiscovery(_ context.Context, discoveryID string) ([]string, []string, error) {
@@ -1050,4 +1058,94 @@ func TestMarkDuplicates_UnknownSuppressionStateIsNotAssumed(t *testing.T) {
 	if len(store.dupUpdates) != 0 {
 		t.Errorf("a failed lookup must not mark anything: %+v", store.dupUpdates)
 	}
+}
+
+// --- review round 5 ---
+
+// TestStoredDuplicateWalksPastUnusableHits. A suppressed duplicate stays
+// indexed, so the nearest stored match is often a row the reader cannot be sent
+// to. Stopping at the first hit meant the check decayed exactly as a project
+// accumulated duplicates: the more there were, the more of them outranked the
+// canonical they had been folded into, and the fewer new ones could be found.
+//
+// The walk is safe precisely because each hit's score is this document against
+// THAT document, measured by the store — nothing inherits a suppressed row's
+// canonical, which cosine's non-transitivity would not support.
+func TestStoredDuplicateWalksPastUnusableHits(t *testing.T) {
+	cand := dedupCandidate{id: "new", docType: "insight", projectID: "p1", vec: []float64{1, 0}}
+
+	t.Run("past a suppressed hit to the visible one below it", func(t *testing.T) {
+		store := &mockEmbedIndexStore{alreadyFolded: map[string]string{"hidden": "canonical"}}
+		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{dupes: []vectorstore.SearchResult{
+			{ID: "hidden", Score: 0.97},
+			{ID: "canonical", Score: 0.91},
+		}}}
+		id, score, ok := o.storedDuplicate(context.Background(), cand, nil, 0.88)
+		if !ok || id != "canonical" {
+			t.Fatalf("got (%q, %v, %v), want the visible canonical", id, score, ok)
+		}
+		if score != 0.91 {
+			t.Errorf("score = %v, want 0.91 — this document against the canonical, not against the row that hid it", score)
+		}
+	})
+
+	t.Run("past a hit whose document is gone", func(t *testing.T) {
+		// A vector-store point can outlive its row. There is nothing to fold
+		// into, and folding anyway hides the new document behind an original
+		// that cannot be displayed.
+		store := &mockEmbedIndexStore{missingDocs: map[string]bool{"stale": true}}
+		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{dupes: []vectorstore.SearchResult{
+			{ID: "stale", Score: 0.99},
+			{ID: "alive", Score: 0.90},
+		}}}
+		id, _, ok := o.storedDuplicate(context.Background(), cand, nil, 0.88)
+		if !ok || id != "alive" {
+			t.Fatalf("got (%q, %v), want the hit that still has a document", id, ok)
+		}
+	})
+
+	t.Run("a stale hit alone folds into nothing", func(t *testing.T) {
+		store := &mockEmbedIndexStore{missingDocs: map[string]bool{"stale": true}}
+		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{dupes: []vectorstore.SearchResult{
+			{ID: "stale", Score: 0.99},
+		}}}
+		if id, _, ok := o.storedDuplicate(context.Background(), cand, nil, 0.88); ok {
+			t.Errorf("folded into %q, which has no document — the new one would vanish behind nothing", id)
+		}
+	})
+
+	t.Run("every hit suppressed means no fold", func(t *testing.T) {
+		store := &mockEmbedIndexStore{alreadyFolded: map[string]string{"h1": "c", "h2": "c"}}
+		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{dupes: []vectorstore.SearchResult{
+			{ID: "h1", Score: 0.97}, {ID: "h2", Score: 0.95},
+		}}}
+		if _, _, ok := o.storedDuplicate(context.Background(), cand, nil, 0.88); ok {
+			t.Error("folded into a suppressed row")
+		}
+	})
+
+	t.Run("a store that cannot answer refuses the whole check", func(t *testing.T) {
+		// The same store answers for every hit, so one unreadable answer makes
+		// all of them unknown. Walking on would fold into a row that may be
+		// just as suppressed.
+		store := &mockEmbedIndexStore{duplicateOfErr: errors.New("mongo down")}
+		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{dupes: []vectorstore.SearchResult{
+			{ID: "h1", Score: 0.97}, {ID: "h2", Score: 0.95},
+		}}}
+		if _, _, ok := o.storedDuplicate(context.Background(), cand, nil, 0.88); ok {
+			t.Error("folded while the store could not say whether the hit was itself a duplicate")
+		}
+	})
+
+	t.Run("the candidate's own point is skipped, not treated as the end", func(t *testing.T) {
+		store := &mockEmbedIndexStore{}
+		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{dupes: []vectorstore.SearchResult{
+			{ID: "new", Score: 1.0},
+			{ID: "other", Score: 0.93},
+		}}}
+		id, _, ok := o.storedDuplicate(context.Background(), cand, nil, 0.88)
+		if !ok || id != "other" {
+			t.Fatalf("got (%q, %v), want the next hit after its own point", id, ok)
+		}
+	})
 }

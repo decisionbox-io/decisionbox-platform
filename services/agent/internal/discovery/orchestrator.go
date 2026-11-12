@@ -1155,7 +1155,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// project with a large profile or large area templates could then be
 	// pushed past its window on a small model: the budget would hand the
 	// findings a share of room that the profile had already taken.
-	lrc := o.loadLedgerReadContext(ctx, o.fixedPromptTokens(ctx, prompts, profileStr, analysisAreas))
+	lrc := o.loadLedgerReadContext(ctx, o.fixedPromptTokens(ctx, prompts, profileStr, language, datasetsStr, areasDesc, refDataset, analysisAreas))
 
 	// Previous discovery insights, recommendations, user feedback, and the
 	// Discovery Ledger are merged into a reusable context block injected into the
@@ -4360,6 +4360,19 @@ func (o *Orchestrator) injectKnowledgeSources(ctx context.Context, prompt, query
 	// not allowed to overflow either.
 	budget := o.contextProviderBudget(ctx, layer, prompt)
 
+	// No room, or an operator who set the share to zero. Either way the answer
+	// is the same and it is not "retrieve anyway": a provider that ignores the
+	// budget would be injected into a prompt with nothing left to spend, which
+	// is the overflow this sizing exists to prevent, and a share of zero is a
+	// request to spend nothing on composed context rather than a request to
+	// spend it unmeasured. Returning here also saves the retrieval round-trip
+	// whose result could not be used.
+	if budget <= 0 {
+		applog.WithFields(applog.Fields{"project_id": o.projectID, "layer": layer}).
+			Debug("No room for composed context in this prompt; skipping the context providers")
+		return prompt
+	}
+
 	// Bounded so a slow retrieval cannot stall a phase. Generous enough for a
 	// budget-sized one: this path degrades a timeout to "no section", so a
 	// bound that is too tight does not slow the prompt down, it silently
@@ -4370,7 +4383,7 @@ func (o *Orchestrator) injectKnowledgeSources(ctx context.Context, prompt, query
 	section := agentplugin.RenderSections(retrieveCtx, o.projectID, query, agentplugin.ContextProviderOpts{
 		Limit:       topK,
 		MinScore:    knowledgeMinScore,
-		TokenBudget: budget,
+		TokenBudget: &budget,
 		// What this prompt already carries. A provider that can tell its items
 		// apart spends its budget on the ones relevant to what is being
 		// analysed now, instead of re-printing what the prompt states above it.

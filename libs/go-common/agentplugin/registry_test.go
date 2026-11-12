@@ -342,10 +342,11 @@ func TestRenderSectionsPassesOptsThroughVerbatim(t *testing.T) {
 	RegisterContextProvider(a)
 	RegisterContextProvider(b)
 
+	budget := 9000
 	want := ContextProviderOpts{
 		Limit:       5,
 		MinScore:    0.4,
-		TokenBudget: 9000,
+		TokenBudget: &budget,
 		ExcludeIDs:  []string{"f1", "f2"},
 	}
 	out := RenderSections(context.Background(), "proj-1", "a query", want, nil)
@@ -354,9 +355,10 @@ func TestRenderSectionsPassesOptsThroughVerbatim(t *testing.T) {
 	}
 
 	for _, r := range []*optsRecorder{a, b} {
-		if r.got.TokenBudget != want.TokenBudget {
-			t.Errorf("%s got TokenBudget %d, want %d — the budget is per provider, not a pool to divide",
-				r.name, r.got.TokenBudget, want.TokenBudget)
+		got, supplied := r.got.Budget()
+		if !supplied || got != budget {
+			t.Errorf("%s got TokenBudget %v (supplied=%v), want %d — the budget is per provider, not a pool to divide",
+				r.name, got, supplied, budget)
 		}
 		if r.got.Limit != want.Limit || r.got.MinScore != want.MinScore {
 			t.Errorf("%s got Limit=%d MinScore=%v, want %d/%v", r.name, r.got.Limit, r.got.MinScore, want.Limit, want.MinScore)
@@ -372,14 +374,16 @@ func TestRenderSectionsPassesOptsThroughVerbatim(t *testing.T) {
 	}
 }
 
-// TestRenderSectionsZeroBudgetIsNotSilence pins the back-compatible reading of
-// an unset TokenBudget: a caller that supplied no budget must get the
+// TestRenderSectionsAbsentBudgetIsNotSilence pins the back-compatible reading of
+// an ABSENT TokenBudget: a caller that supplied no budget must get the
 // behaviour it got before the field existed, which is bounded by Limit.
 //
-// Reading zero as "carry nothing" would silently empty every prompt assembled
-// by a caller that has not been taught the new field — including the /ask path
-// and any plugin calling RenderSections directly.
-func TestRenderSectionsZeroBudgetIsNotSilence(t *testing.T) {
+// Reading "no budget" as "carry nothing" would silently empty every prompt
+// assembled by a caller that has not been taught the new field — including the
+// /ask path and any plugin calling RenderSections directly. Which is why the
+// field is a pointer: a SUPPLIED zero is the opposite instruction, and an int
+// could not tell the renderer which of the two it had been handed.
+func TestRenderSectionsAbsentBudgetIsNotSilence(t *testing.T) {
 	resetForTest()
 	t.Cleanup(resetForTest)
 
@@ -390,10 +394,30 @@ func TestRenderSectionsZeroBudgetIsNotSilence(t *testing.T) {
 	if out == "" {
 		t.Fatal("a caller that set only Limit must still get its section")
 	}
-	if rec.got.TokenBudget != 0 {
-		t.Errorf("TokenBudget = %d, want 0 — an unsupplied budget must not be invented", rec.got.TokenBudget)
+	if got, supplied := rec.got.Budget(); supplied {
+		t.Errorf("Budget() reported %d as supplied — an unsupplied budget must not be invented", got)
 	}
 	if rec.got.Limit != 3 {
 		t.Errorf("Limit = %d, want 3", rec.got.Limit)
+	}
+}
+
+// TestRenderSectionsPassesASuppliedZeroThrough. The renderer must not treat a
+// supplied zero as absent on the way to the providers: a provider that honours
+// budgets has to be able to see "no room" and render nothing. The agent does
+// not call at all in that case, but a provider cannot rely on every caller
+// doing so.
+func TestRenderSectionsPassesASuppliedZeroThrough(t *testing.T) {
+	resetForTest()
+	t.Cleanup(resetForTest)
+
+	rec := &optsRecorder{name: "budget-aware-provider"}
+	RegisterContextProvider(rec)
+
+	zero := 0
+	_ = RenderSections(context.Background(), "proj-1", "a query", ContextProviderOpts{Limit: 3, TokenBudget: &zero}, nil)
+	got, supplied := rec.got.Budget()
+	if !supplied || got != 0 {
+		t.Errorf("Budget() = (%d, %v), want (0, true) — a supplied zero is an instruction, not an omission", got, supplied)
 	}
 }

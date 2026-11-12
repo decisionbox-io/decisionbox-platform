@@ -430,41 +430,57 @@ func (o *Orchestrator) markDuplicates(ctx context.Context, candidates []dedupCan
 }
 
 // storedDuplicate asks the vector store whether an EARLIER run already
-// published this document. A failed lookup is reported and treated as "no
-// duplicate": the phase is non-fatal, and a store hiccup must not start
-// stamping documents.
+// published this document, and returns the best match that a reader could
+// actually be sent to.
+//
+// It walks the ranked hits rather than taking the first, because a suppressed
+// duplicate stays indexed and a stale point can outlive its row. Both are
+// matches this document must not be folded into, and both get MORE common as a
+// project accumulates duplicates — so stopping at the first unusable hit made
+// the check decay exactly where it is needed most. Walking on costs nothing in
+// accuracy: every hit's score is this document against THAT document, measured
+// by the store, so nothing here assumes cosine is transitive. (It is not: 0°,
+// 25° and 50° score 0.906 between neighbours and 0.643 end to end, which is
+// why the suppressed row's own canonical cannot simply be inherited.)
+//
+// A failed lookup is reported and treated as "no duplicate" — the phase is
+// non-fatal and a store hiccup must not start stamping documents. A document
+// left visible is the recoverable error; one hidden behind a row that is itself
+// hidden, or behind no row at all, is not.
 func (o *Orchestrator) storedDuplicate(ctx context.Context, c dedupCandidate, excludeDiscoveryIDs []string, threshold float64) (string, float64, bool) {
 	results, err := o.vectorStore.FindDuplicates(ctx, c.vec, c.projectID, c.docType, excludeDiscoveryIDs, threshold)
 	if err != nil {
 		applog.WithError(err).WithField("id", c.id).Warn("Duplicate check failed")
 		return "", 0, false
 	}
-	if len(results) == 0 || results[0].ID == "" || results[0].ID == c.id {
-		return "", 0, false
-	}
-	hit := results[0]
-
-	// An earlier run's duplicate stays indexed, so the best match can be a row
-	// that is itself hidden. Folding into it would give this document a pointer
-	// to something the reader cannot see — and cosine is not transitive, so
-	// resembling a suppressed row says nothing about resembling the visible one
-	// it was folded into: 0°, 25° and 50° score 0.906 between neighbours and
-	// 0.643 end to end. The canonical's vector is not in hand to check against,
-	// so the fold is refused rather than guessed, exactly as the same-run pass
-	// refuses it. The document stays visible, which is the recoverable error.
-	if o.embedIndexStore != nil {
-		switch folded, err := o.embedIndexStore.DuplicateOf(ctx, collectionFor(c.docType), hit.ID); {
+	for _, hit := range results {
+		if hit.ID == "" || hit.ID == c.id {
+			continue
+		}
+		if o.embedIndexStore == nil {
+			return hit.ID, hit.Score, true
+		}
+		folded, exists, err := o.embedIndexStore.DuplicateOf(ctx, collectionFor(c.docType), hit.ID)
+		switch {
 		case err != nil:
+			// The state of this hit is unknown, and so is every other hit's —
+			// the same store answers for all of them. Refuse the whole check
+			// rather than walk on and fold into a row that may be just as bad.
 			applog.WithError(err).WithFields(applog.Fields{"id": c.id, "hit": hit.ID}).
 				Warn("could not tell whether the matched document is itself a duplicate; not folding")
 			return "", 0, false
+		case !exists:
+			applog.WithFields(applog.Fields{"id": c.id, "hit": hit.ID}).
+				Info("Phase 9: a stored match has no document left; looking past it")
+			continue
 		case folded != "":
 			applog.WithFields(applog.Fields{"id": c.id, "hit": hit.ID, "hit_folded_into": folded}).
-				Info("Phase 9: best stored match is itself suppressed; leaving this document visible")
-			return "", 0, false
+				Info("Phase 9: a stored match is itself suppressed; looking past it")
+			continue
 		}
+		return hit.ID, hit.Score, true
 	}
-	return hit.ID, hit.Score, true
+	return "", 0, false
 }
 
 // markDuplicate stamps duplicate_of + similarity_score on the later document.

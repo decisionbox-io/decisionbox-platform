@@ -774,8 +774,8 @@ func (p *budgetedProvider) Section(_ context.Context, _, _ string, opts agentplu
 	p.calls++
 	p.got = opts
 	n := opts.Limit
-	if opts.TokenBudget > 0 {
-		n = opts.TokenBudget / budgetedProviderTokensPerItem
+	if budget, supplied := opts.Budget(); supplied {
+		n = budget / budgetedProviderTokensPerItem
 	}
 	if n <= 0 {
 		return "", nil
@@ -873,8 +873,8 @@ func TestInjectedOptsCarryTheBudgetAndExclusions(t *testing.T) {
 
 	t.Run("budget and exclusions arrive", func(t *testing.T) {
 		o.injectKnowledgeSources(context.Background(), "PROMPT", "a query", 5, llmlayer.LayerAnalysis, o.baseContextFindingIDs)
-		if scaling.got.TokenBudget <= 0 {
-			t.Errorf("TokenBudget = %d, want positive on a 131K window", scaling.got.TokenBudget)
+		if budget, supplied := scaling.got.Budget(); !supplied || budget <= 0 {
+			t.Errorf("TokenBudget = %v (supplied=%v), want a positive budget on a 131K window", budget, supplied)
 		}
 		if len(scaling.got.ExcludeIDs) != 3 {
 			t.Fatalf("ExcludeIDs = %v, want the three findings the base context already carries", scaling.got.ExcludeIDs)
@@ -884,15 +884,23 @@ func TestInjectedOptsCarryTheBudgetAndExclusions(t *testing.T) {
 		}
 	})
 
-	t.Run("a prompt that already fills the window offers no budget", func(t *testing.T) {
-		// The provider then falls back to Limit, which is the documented
-		// reading of a zero budget — not silence.
-		out := o.injectKnowledgeSources(context.Background(), strings.Repeat("x", 2_000_000), "a query", 5, llmlayer.LayerAnalysis, nil)
-		if scaling.got.TokenBudget != 0 {
-			t.Errorf("TokenBudget = %d, want 0 for a prompt past the window", scaling.got.TokenBudget)
+	t.Run("a prompt that already fills the window gets no section at all", func(t *testing.T) {
+		// This test used to assert the opposite — that the provider falls back
+		// to its Limit, "because a zero budget is not an instruction to carry
+		// nothing". That reading is what made a budget of ZERO inject the whole
+		// legacy top-N unfitted while a budget of ONE correctly injected
+		// nothing. There is no room: nothing may be added, by any provider,
+		// including the ones that ignore budgets. The providers are not even
+		// asked, so a prompt past its window costs no retrieval either.
+		const huge = 2_000_000
+		before := scaling.calls
+		prompt := strings.Repeat("x", huge)
+		out := o.injectKnowledgeSources(context.Background(), prompt, "a query", 5, llmlayer.LayerAnalysis, nil)
+		if scaling.calls != before {
+			t.Errorf("the provider was called %d time(s) for a prompt with no headroom", scaling.calls-before)
 		}
-		if n := countLines(out, "- retrieved"); n != 5 {
-			t.Errorf("fell back to %d items, want the Limit's 5 — a zero budget is not an instruction to carry nothing", n)
+		if out != prompt {
+			t.Errorf("the prompt grew by %d chars", len(out)-len(prompt))
 		}
 	})
 
@@ -1319,7 +1327,10 @@ func TestFixedPromptTokensTakesTheWidestBody(t *testing.T) {
 	o := &Orchestrator{}
 	ctx := context.Background()
 	prompts := ResolvedPrompts{
-		BaseContext: strings.Repeat("b", 400),
+		// With the placeholder a real base-context template carries, because
+		// the cost is measured by rendering: a profile the template never
+		// substitutes never reaches the model and must not be charged for.
+		BaseContext: strings.Repeat("b", 400) + " {{PROFILE}}",
 		Exploration: strings.Repeat("e", 800),
 		AnalysisAreas: map[string]string{
 			"narrow": strings.Repeat("n", 400),
@@ -1328,7 +1339,7 @@ func TestFixedPromptTokensTakesTheWidestBody(t *testing.T) {
 	}
 	areas := []AnalysisArea{{ID: "narrow"}, {ID: "wide"}}
 
-	got := o.fixedPromptTokens(ctx, prompts, strings.Repeat("p", 2_000), areas)
+	got := o.fixedPromptTokens(ctx, prompts, strings.Repeat("p", 2_000), "English", "ds", "", "", areas)
 	wantAtLeast := contextbudget.Tokens(strings.Repeat("w", 40_000))
 	if got < wantAtLeast {
 		t.Errorf("fixedPromptTokens = %d, want at least the widest area's %d", got, wantAtLeast)
@@ -1336,14 +1347,23 @@ func TestFixedPromptTokensTakesTheWidestBody(t *testing.T) {
 
 	// An area the run does not have must not be counted.
 	prompts.AnalysisAreas["absent"] = strings.Repeat("x", 400_000)
-	if after := o.fixedPromptTokens(ctx, prompts, strings.Repeat("p", 2_000), areas); after != got {
+	if after := o.fixedPromptTokens(ctx, prompts, strings.Repeat("p", 2_000), "English", "ds", "", "", areas); after != got {
 		t.Errorf("a template for an area this run does not have changed the cost from %d to %d", got, after)
 	}
 
 	// The profile counts: it is substituted into the base context every run.
-	bigProfile := o.fixedPromptTokens(ctx, prompts, strings.Repeat("p", 100_000), areas)
+	bigProfile := o.fixedPromptTokens(ctx, prompts, strings.Repeat("p", 100_000), "English", "ds", "", "", areas)
 	if bigProfile <= got {
 		t.Errorf("a 100K-char profile did not raise the fixed cost (%d vs %d)", bigProfile, got)
+	}
+	// And only because the template asks for it. A template with no
+	// {{PROFILE}} placeholder does not carry the profile into any prompt, so
+	// charging the block for it would shrink the block for nothing.
+	noPlaceholder := prompts
+	noPlaceholder.BaseContext = strings.Repeat("b", 400)
+	bare := o.fixedPromptTokens(ctx, noPlaceholder, "", "English", "ds", "", "", areas)
+	if huge := o.fixedPromptTokens(ctx, noPlaceholder, strings.Repeat("p", 100_000), "English", "ds", "", "", areas); huge != bare {
+		t.Errorf("a profile the template never substitutes changed the cost from %d to %d", bare, huge)
 	}
 }
 
@@ -1361,14 +1381,67 @@ func TestFixedPromptTokensCountsTheRecommendationsTemplate(t *testing.T) {
 	}
 	areas := []AnalysisArea{{ID: "a"}}
 
-	without := o.fixedPromptTokens(ctx, prompts, "", areas)
+	without := o.fixedPromptTokens(ctx, prompts, "", "English", "ds", "", "", areas)
 	prompts.Recommendations = strings.Repeat("r", 60_000)
-	with := o.fixedPromptTokens(ctx, prompts, "", areas)
+	with := o.fixedPromptTokens(ctx, prompts, "", "English", "ds", "", "", areas)
 
 	if with <= without {
 		t.Errorf("a 60K-char recommendations template did not raise the fixed cost (%d vs %d)", with, without)
 	}
 	if want := contextbudget.Tokens(prompts.Recommendations); with < want {
 		t.Errorf("fixedPromptTokens = %d, want at least the recommendations template's %d", with, want)
+	}
+}
+
+// TestFixedPromptTokensCountsWhatTheBuildersAppend. The templates are not what
+// reaches the model. buildBaseContext appends the base discipline rules to
+// EVERY prompt; buildAnalysisAreaPrompt appends the digest legend, the
+// quantifier and figure contracts and the analysis rules; and
+// buildRecommendationsPrompt appends its own. Counting the raw templates missed
+// all of it — thousands of tokens the prior-knowledge block then allocated for
+// itself, which on a small window is the difference between a prompt that fits
+// and a provider 400.
+//
+// Asserted against the builders rather than against a number, so the test
+// cannot drift the next time one of them appends something else.
+func TestFixedPromptTokensCountsWhatTheBuildersAppend(t *testing.T) {
+	o := &Orchestrator{}
+	ctx := context.Background()
+	prompts := ResolvedPrompts{
+		BaseContext:     "base {{PROFILE}} {{PREVIOUS_CONTEXT}} {{LANGUAGE}}",
+		Exploration:     "explore",
+		Recommendations: "recommend",
+		AnalysisAreas:   map[string]string{"a": "analyse"},
+	}
+	areas := []AnalysisArea{{ID: "a"}}
+
+	got := o.fixedPromptTokens(ctx, prompts, "profile", "English", "ds", "areas", "", areas)
+
+	templatesOnly := contextbudget.Tokens(prompts.BaseContext) +
+		contextbudget.Tokens("profile") + contextbudget.Tokens(prompts.Exploration)
+	if got <= templatesOnly*2 {
+		t.Errorf("fixedPromptTokens = %d, barely more than the %d tokens of raw template — "+
+			"the appended rules and contracts are not being counted", got, templatesOnly)
+	}
+
+	// Specifically: the rendered base context, and the widest rendered body.
+	wantBase := contextbudget.Tokens(o.buildBaseContext(prompts.BaseContext, "profile", "", "English", ""))
+	wantArea := contextbudget.Tokens(o.buildAnalysisAreaPrompt("", "analyse", "ds", 0, "", ""))
+	wantRec := contextbudget.Tokens(o.buildRecommendationsPrompt("", "recommend", "", "", ""))
+	widest := wantArea
+	if wantRec > widest {
+		widest = wantRec
+	}
+	if got < wantBase+widest {
+		t.Errorf("fixedPromptTokens = %d, want at least the rendered base (%d) plus the widest rendered body (%d)",
+			got, wantBase, widest)
+	}
+
+	// And the prior-knowledge block itself must NOT be counted — it is what is
+	// being budgeted, so counting it would make a large ledger shrink its own
+	// allowance.
+	o2 := &Orchestrator{}
+	if other := o2.fixedPromptTokens(ctx, prompts, "profile", "English", "ds", "areas", "", areas); other != got {
+		t.Errorf("fixedPromptTokens is not a function of the fixed parts alone: %d vs %d", other, got)
 	}
 }

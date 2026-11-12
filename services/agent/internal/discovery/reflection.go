@@ -872,20 +872,7 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 			model := o.embeddingProvider.ModelName()
 			points := make([]vectorstore.Point, 0, len(toIndex))
 			for _, it := range toIndex {
-				points = append(points, vectorstore.Point{
-					ID:     it.finding.ID,
-					Vector: it.vector,
-					Payload: map[string]interface{}{
-						"type":            commonmodels.LedgerFindingVectorType,
-						"project_id":      o.projectID,
-						"analysis_area":   it.finding.Area,
-						"severity":        it.finding.Severity,
-						"status":          it.finding.Status,
-						"embedding_model": model,
-						"name":            it.finding.Name,
-						"created_at":      time.Now().Format(time.RFC3339),
-					},
-				})
+				points = append(points, o.ledgerFindingPoint(it.finding, it.vector, model))
 			}
 			if err := o.vectorStore.Upsert(ctx, points); err != nil {
 				applog.WithError(err).Warn("Reflection: Qdrant upsert of ledger findings failed")
@@ -963,6 +950,88 @@ func (o *Orchestrator) searchLedgerNeighbour(ctx context.Context, vec []float64,
 		return ""
 	}
 	return hits[0].ID
+}
+
+// ledgerFindingPoint is the indexed form of one finding: its vector plus the
+// payload the retrieval filters read.
+//
+// One builder for every write, because the payload's `status` is now something
+// a QUERY filters on — the per-area ledger retrieval excludes retired findings
+// in the search rather than after it, so that a query whose best hits happen to
+// be retired does not come back empty while live findings sit below the cut.
+// A second place writing this map is a second place that can forget a field the
+// filter needs.
+func (o *Orchestrator) ledgerFindingPoint(f commonmodels.LedgerFinding, vec []float64, model string) vectorstore.Point {
+	return vectorstore.Point{
+		ID:     f.ID,
+		Vector: vec,
+		Payload: map[string]interface{}{
+			"type":            commonmodels.LedgerFindingVectorType,
+			"project_id":      o.projectID,
+			"analysis_area":   f.Area,
+			"severity":        f.Severity,
+			"status":          f.Status,
+			"embedding_model": model,
+			"name":            f.Name,
+			"created_at":      time.Now().Format(time.RFC3339),
+		},
+	}
+}
+
+// reindexFindings re-writes the indexed form of findings whose STATUS moved
+// after they were indexed.
+//
+// Consolidation indexes before the model has judged anything, because the
+// ledger writes are the obligation and the reflection call is what comes after
+// them. The model's verdicts then land in MongoDB only — so the index kept
+// saying "confirmed" for a finding that had just been resolved, and
+// "resolved" for one that had just been reconfirmed. Both directions are wrong
+// now that a query filters on that field: the first lets a retired finding
+// occupy a slot a live one needed, and the second makes a LIVE finding
+// unreachable by per-area retrieval while the global block still carries it —
+// the two reads disagreeing about the same document, which is exactly what one
+// shared rule was meant to prevent.
+//
+// The text has not changed, so this re-embeds only to have a vector to write
+// with: the store's write primitive is an upsert. Best-effort and silent when
+// nothing moved, which is the ordinary case — no status change, no call.
+func (o *Orchestrator) reindexFindings(ctx context.Context, findings []commonmodels.LedgerFinding) {
+	if len(findings) == 0 || o.embeddingProvider == nil || o.vectorStore == nil {
+		return
+	}
+	texts := make([]string, len(findings))
+	for i := range findings {
+		texts[i] = ledgerFindingEmbedText(findings[i])
+	}
+	vectors, err := o.embeddingProvider.Embed(ctx, texts)
+	if err != nil {
+		applog.WithError(err).Warn("Reflection: re-embed of status-changed findings failed; the index keeps their old status")
+		return
+	}
+	if len(vectors) != len(findings) {
+		applog.WithField("findings", len(findings)).WithField("vectors", len(vectors)).
+			Warn("Reflection: re-embed returned the wrong number of vectors; not re-indexing")
+		return
+	}
+	dims, dErr := resolveEmbeddingDimensions(ctx, o.embeddingProvider)
+	if dErr != nil {
+		applog.WithError(dErr).Warn("Reflection: resolve embedding dims failed; not re-indexing status changes")
+		return
+	}
+	if err := o.vectorStore.EnsureCollection(ctx, dims); err != nil {
+		applog.WithError(err).Warn("Reflection: ensure Qdrant collection failed; not re-indexing status changes")
+		return
+	}
+	model := o.embeddingProvider.ModelName()
+	points := make([]vectorstore.Point, 0, len(findings))
+	for i := range findings {
+		points = append(points, o.ledgerFindingPoint(findings[i], vectors[i], model))
+	}
+	if err := o.vectorStore.Upsert(ctx, points); err != nil {
+		applog.WithError(err).Warn("Reflection: re-index of status-changed findings failed")
+		return
+	}
+	applog.WithField("findings", len(points)).Info("Reflection: re-indexed the findings whose status moved")
 }
 
 // buildFindingCandidates extracts durable, substance-carrying findings from the
@@ -1231,6 +1300,11 @@ func (o *Orchestrator) applyReflection(ctx context.Context, result *models.Disco
 			for i := range prior {
 				byID[prior[i].ID] = &prior[i]
 			}
+			// The findings whose status actually moved, collected as they are
+			// written so the index can be brought in line with them. Only the
+			// writes that LANDED: re-indexing a status MongoDB rejected would
+			// make the index the one place the wrong answer lives.
+			var restatused []commonmodels.LedgerFinding
 			for _, su := range ref.StatusUpdates {
 				f := byID[strings.TrimSpace(su.FindingID)]
 				if f == nil || !commonmodels.ValidLedgerFindingStatus(su.Status) {
@@ -1256,8 +1330,14 @@ func (o *Orchestrator) applyReflection(ctx context.Context, result *models.Disco
 				}
 				if err := o.findingRepo.ApplyStatus(ctx, o.projectID, f.ID, su.Status, change); err != nil {
 					applog.WithError(err).Warn("Reflection: apply finding status update failed")
+					continue
 				}
+				restatused = append(restatused, *f)
 			}
+			// Consolidation indexed these findings before the model had judged
+			// them, so the index is now the only copy carrying the old status —
+			// and the per-area retrieval filters on it.
+			o.reindexFindings(ctx, restatused)
 		}
 	}
 

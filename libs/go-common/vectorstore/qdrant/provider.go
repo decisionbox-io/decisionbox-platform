@@ -38,6 +38,20 @@ type qdrantClient interface {
 	Close() error
 }
 
+// duplicateSearchLimit is how many ranked candidates a duplicate search
+// returns.
+//
+// It was one — the single best match — which is wrong because a suppressed
+// duplicate stays indexed. A document restated N times leaves N-1 hidden rows
+// in the collection, each of them a near-perfect match for the next
+// restatement and each able to outrank the canonical it was folded into. With
+// one result the caller could only refuse the fold, so the feature decayed as
+// the collection filled: the more duplicates a project had, the fewer it could
+// find. Ten lets the caller walk down to the first VISIBLE match — six
+// restatements of one finding is what real data showed, so ten has room —
+// while bounding what one document's check costs.
+const duplicateSearchLimit = 10
+
 // Provider implements vectorstore.Provider using Qdrant.
 type Provider struct {
 	client qdrantClient
@@ -239,9 +253,9 @@ func (p *Provider) FindDuplicates(ctx context.Context, vector []float64, project
 	name := collectionName(len(vector))
 	scoreThreshold := float32(threshold)
 
-	// Excluded in the FILTER rather than by discarding matches afterwards:
-	// the query asks for a single best match, so a post-filter would turn an
-	// excluded hit into no hit at all instead of the next genuine duplicate.
+	// Excluded in the FILTER rather than by discarding matches afterwards: a
+	// post-filter would spend ranked slots on hits the caller has already said
+	// it does not want, instead of returning the next genuine duplicate.
 	mustNot := make([]*pb.Condition, 0, len(excludeDiscoveryIDs))
 	for _, id := range excludeDiscoveryIDs {
 		if id == "" {
@@ -258,7 +272,7 @@ func (p *Provider) FindDuplicates(ctx context.Context, vector []float64, project
 		MustNot: mustNot,
 	}
 
-	dupLimit := uint64(1)
+	dupLimit := uint64(duplicateSearchLimit)
 	scored, err := p.client.Query(ctx, &pb.QueryPoints{
 		CollectionName: name,
 		Query:          pb.NewQueryDense(float64sToFloat32s(vector)),

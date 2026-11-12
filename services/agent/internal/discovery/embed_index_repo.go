@@ -14,11 +14,17 @@ type EmbedIndexStore interface {
 	UpdateEmbedding(ctx context.Context, collection, id, embeddingText, embeddingModel string) error
 	UpdateDuplicate(ctx context.Context, collection, id, duplicateOf string, score float64) error
 
-	// DuplicateOf reports what a document was folded into, or "" when it is
-	// canonical. Needed because an earlier run's duplicate stays indexed in the
-	// vector store: a later document can match it and would otherwise be folded
-	// into a row that is itself hidden, and that it may not resemble at all.
-	DuplicateOf(ctx context.Context, collection, id string) (string, error)
+	// DuplicateOf reports what a document was folded into, and whether the
+	// document exists at all. Needed because an earlier run's duplicate stays
+	// indexed in the vector store: a later document can match it and would
+	// otherwise be folded into a row that is itself hidden, and that it may not
+	// resemble at all.
+	//
+	// exists is separate from the id because "" has to mean one thing. A
+	// canonical document and a vector-store point whose row has since been
+	// deleted both have no duplicate_of, and folding into the second hides the
+	// new document behind an original that cannot be displayed.
+	DuplicateOf(ctx context.Context, collection, id string) (duplicateOf string, exists bool, err error)
 
 	// PointIDsByDiscovery lists the ids of one discovery's standalone
 	// insight / recommendation rows, insights first then recommendations,

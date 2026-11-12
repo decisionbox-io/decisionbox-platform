@@ -1984,3 +1984,115 @@ func TestReflectionGates_RunUnderADeadline(t *testing.T) {
 		t.Error("the phase must ask its gates under its own deadline")
 	}
 }
+
+// TestApplyReflection_ReindexesStatusChanges. Consolidation indexes findings
+// before the model has judged anything — the ledger writes are the obligation
+// and the reflection call is what comes after them. The verdicts then landed in
+// MongoDB only, so the indexed payload kept the status the finding had BEFORE
+// the model spoke.
+//
+// That was harmless until a query started filtering on it. Now the per-area
+// ledger retrieval excludes retired findings in the search rather than after
+// it, so a stale payload is wrong in both directions: "confirmed" on a resolved
+// finding lets it occupy a slot a live one needed, and "resolved" on one the
+// model has just RECONFIRMED makes a live finding unreachable by retrieval
+// while the global block still carries it — the two reads disagreeing about the
+// same document.
+func TestApplyReflection_ReindexesStatusChanges(t *testing.T) {
+	newOrchestrator := func(fr *fakeFindingRepo) (*Orchestrator, *mockVectorStore, *mockEmbeddingProvider) {
+		vs := &mockVectorStore{}
+		emb := &mockEmbeddingProvider{dims: 3, model: "test-model"}
+		return &Orchestrator{
+			projectID: "p1", runID: "r1", findingRepo: fr,
+			promptFindingIDs:  idsOf(fr.findings),
+			vectorStore:       vs,
+			embeddingProvider: emb,
+		}, vs, emb
+	}
+	statusUpdate := func(id, status string) *parsedReflection {
+		ref := &parsedReflection{}
+		ref.StatusUpdates = []struct {
+			FindingID string `json:"finding_id"`
+			Status    string `json:"status"`
+			Reason    string `json:"reason"`
+		}{{FindingID: id, Status: status, Reason: "grounded in this run"}}
+		return ref
+	}
+	apply := func(o *Orchestrator, ref *parsedReflection) {
+		o.applyReflection(context.Background(), &models.DiscoveryResult{ID: "d1"},
+			agentplugin.DiscoveryPolicy{EvolutionMode: agentplugin.EvolutionModeOff}, ref, consolidationResult{})
+	}
+
+	t.Run("a reconfirmed finding is indexed as live again", func(t *testing.T) {
+		fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{
+			{ID: "f1", ProjectID: "p1", Name: "n", Status: commonmodels.LedgerFindingStatusResolved},
+		}}
+		o, vs, _ := newOrchestrator(fr)
+		apply(o, statusUpdate("f1", commonmodels.LedgerFindingStatusConfirmed))
+
+		if len(vs.upserted) != 1 {
+			t.Fatalf("upserted %d points, want the one finding whose status moved", len(vs.upserted))
+		}
+		p := vs.upserted[0]
+		if p.ID != "f1" {
+			t.Errorf("point id = %q, want f1", p.ID)
+		}
+		if got := p.Payload["status"]; got != commonmodels.LedgerFindingStatusConfirmed {
+			t.Errorf("indexed status = %v, want confirmed — a live finding indexed as resolved is excluded from retrieval for ever", got)
+		}
+		// And the rest of the payload the filters read is still there.
+		for _, k := range []string{"type", "project_id", "embedding_model", "name"} {
+			if p.Payload[k] == nil || p.Payload[k] == "" {
+				t.Errorf("payload %q is empty — one builder writes this map so a field cannot be forgotten", k)
+			}
+		}
+	})
+
+	t.Run("a retired finding is indexed as retired", func(t *testing.T) {
+		fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{
+			{ID: "f1", ProjectID: "p1", Name: "n", Status: commonmodels.LedgerFindingStatusConfirmed},
+		}}
+		o, vs, _ := newOrchestrator(fr)
+		apply(o, statusUpdate("f1", commonmodels.LedgerFindingStatusResolved))
+
+		if len(vs.upserted) != 1 {
+			t.Fatalf("upserted %d points, want 1", len(vs.upserted))
+		}
+		if got := vs.upserted[0].Payload["status"]; got != commonmodels.LedgerFindingStatusResolved {
+			t.Errorf("indexed status = %v, want resolved — otherwise it keeps taking a slot a live finding needed", got)
+		}
+	})
+
+	t.Run("no status change means no embedding call at all", func(t *testing.T) {
+		fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{
+			{ID: "f1", ProjectID: "p1", Status: commonmodels.LedgerFindingStatusConfirmed},
+		}}
+		o, vs, emb := newOrchestrator(fr)
+		apply(o, &parsedReflection{})
+		if emb.calls != 0 || len(vs.upserted) != 0 {
+			t.Errorf("a run with no verdicts cost %d embedding call(s) and %d upsert(s)", emb.calls, len(vs.upserted))
+		}
+	})
+
+	t.Run("a verdict on a finding that is not there is not indexed", func(t *testing.T) {
+		fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{
+			{ID: "f1", ProjectID: "p1", Status: commonmodels.LedgerFindingStatusConfirmed},
+		}}
+		o, vs, _ := newOrchestrator(fr)
+		apply(o, statusUpdate("ghost", commonmodels.LedgerFindingStatusResolved))
+		if len(vs.upserted) != 0 {
+			t.Errorf("indexed %d point(s) for a finding the ledger does not have", len(vs.upserted))
+		}
+	})
+
+	t.Run("no vector store is not a failure", func(t *testing.T) {
+		fr := &fakeFindingRepo{findings: []commonmodels.LedgerFinding{
+			{ID: "f1", ProjectID: "p1", Status: commonmodels.LedgerFindingStatusConfirmed},
+		}}
+		o := &Orchestrator{projectID: "p1", runID: "r1", findingRepo: fr, promptFindingIDs: idsOf(fr.findings)}
+		apply(o, statusUpdate("f1", commonmodels.LedgerFindingStatusResolved))
+		if len(fr.statuses) != 1 {
+			t.Errorf("the status write itself must not depend on the index being there")
+		}
+	})
+}

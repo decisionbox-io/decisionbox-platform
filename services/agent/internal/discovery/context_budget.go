@@ -326,8 +326,8 @@ func documentDedupMinScore() float64 {
 }
 
 // fixedPromptTokens is what every prompt of this run will carry besides the
-// prior-knowledge block and the evidence: the base-context template, the
-// project profile, and the largest body the block will be prepended to.
+// prior-knowledge block and the evidence: the rendered base context, and the
+// largest body the block will be prepended to.
 //
 // The largest rather than the average, because the block is composed ONCE and
 // prepended to all of them — exploration's own body, each analysis area's
@@ -335,24 +335,46 @@ func documentDedupMinScore() float64 {
 // context and is easy to forget because it runs last. A budget that fits the
 // average overflows on the widest.
 //
-// What it cannot see is the schema catalog, which is rendered after this and
-// sized by its own retrieval. That is why priorContextBudget also leaves the
-// step picker its floor: the catalog and the query evidence are the two inputs
-// still to come, and leaving room for the smaller of them is what keeps a
-// generous ledger from crowding out the evidence entirely. Past that the
-// adaptive context-overflow retry remains the net, as it is for every other
-// estimate on this path.
-func (o *Orchestrator) fixedPromptTokens(ctx context.Context, prompts ResolvedPrompts, profileStr string, areas []AnalysisArea) int {
-	widest := approxTokens(ctx, prompts.Exploration)
-	if n := approxTokens(ctx, prompts.Recommendations); n > widest {
+// Every part is measured by RENDERING it, not by counting the template it came
+// from. The templates are not what reaches the model: buildBaseContext appends
+// the base discipline rules to every prompt, buildAnalysisAreaPrompt appends
+// the digest legend, the quantifier and figure contracts and the analysis
+// rules, and buildRecommendationsPrompt appends its own figure contract and
+// rules. Those are thousands of tokens that a template count cannot see, and
+// on a small window they are the difference between a prompt that fits and a
+// provider 400. Counting a list of what the builders appended when this was
+// written would drift the first time one of them appends something else; the
+// builders themselves cannot.
+//
+// The base context is rendered with an EMPTY prior-knowledge block, because
+// that block is precisely what is being budgeted. The bodies are rendered with
+// an empty base context, so the base is counted once rather than once per body.
+//
+// What it still cannot see is the schema catalog and, on a multi-datasource
+// run, the routing cards — both rendered after this and sized by their own
+// retrieval. That is why priorContextBudget also leaves the step picker its
+// floor: the catalog and the query evidence are the two inputs still to come,
+// and leaving room for the smaller of them is what keeps a generous ledger
+// from crowding out the evidence entirely. Past that the adaptive
+// context-overflow retry remains the net, as it is for every other estimate on
+// this path.
+func (o *Orchestrator) fixedPromptTokens(ctx context.Context, prompts ResolvedPrompts,
+	profileStr, language, datasetsStr, areasDesc, refDataset string, areas []AnalysisArea) int {
+	base := approxTokens(ctx, o.buildBaseContext(prompts.BaseContext, profileStr, "", language, refDataset))
+
+	// Exploration is assembled inline by runDiscovery rather than by a builder,
+	// and appends no rules of its own — the areas description is the one
+	// substitution with a size worth counting.
+	widest := approxTokens(ctx, prompts.Exploration) + approxTokens(ctx, areasDesc)
+	if n := approxTokens(ctx, o.buildRecommendationsPrompt("", prompts.Recommendations, "", "", refDataset)); n > widest {
 		widest = n
 	}
 	for _, a := range areas {
 		if body, ok := prompts.AnalysisAreas[a.ID]; ok {
-			if n := approxTokens(ctx, body); n > widest {
+			if n := approxTokens(ctx, o.buildAnalysisAreaPrompt("", body, datasetsStr, 0, "", refDataset)); n > widest {
 				widest = n
 			}
 		}
 	}
-	return approxTokens(ctx, prompts.BaseContext) + approxTokens(ctx, profileStr) + widest
+	return base + widest
 }

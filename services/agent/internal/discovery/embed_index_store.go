@@ -127,22 +127,26 @@ func (s *MongoEmbedIndexStore) UpdateEmbedding(ctx context.Context, collection, 
 	return nil
 }
 
-// DuplicateOf reports what a document was folded into, or "" when it is
-// canonical or not found. A missing document is not an error here: the caller
-// is deciding whether a vector-store hit is safe to fold into, and a hit whose
-// row has since been deleted is one it must not fold into either.
-func (s *MongoEmbedIndexStore) DuplicateOf(ctx context.Context, collection, id string) (string, error) {
+// DuplicateOf reports what a document was folded into, and whether it exists.
+//
+// A missing document is not an error — a vector-store point can outlive the row
+// it describes — but it is not "canonical" either, which is why exists is
+// reported separately. Collapsing them returned the same ("", nil) for a real
+// canonical and for a row that is gone, and the caller then folded a new
+// document into an original it cannot show: the new one disappears from the
+// default lists and nothing takes its place.
+func (s *MongoEmbedIndexStore) DuplicateOf(ctx context.Context, collection, id string) (string, bool, error) {
 	var doc struct {
 		DuplicateOf string `bson:"duplicate_of"`
 	}
 	err := s.db.Collection(collection).FindOne(ctx, map[string]interface{}{"_id": id}).Decode(&doc)
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
-			return "", nil
+			return "", false, nil
 		}
-		return "", fmt.Errorf("read duplicate_of for %s/%s: %w", collection, id, err)
+		return "", false, fmt.Errorf("read duplicate_of for %s/%s: %w", collection, id, err)
 	}
-	return doc.DuplicateOf, nil
+	return doc.DuplicateOf, true, nil
 }
 
 func (s *MongoEmbedIndexStore) UpdateDuplicate(ctx context.Context, collection, id, duplicateOf string, score float64) error {
