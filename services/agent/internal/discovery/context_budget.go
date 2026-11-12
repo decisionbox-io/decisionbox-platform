@@ -417,46 +417,90 @@ func (o *Orchestrator) renderBaseContext(rb *baseContextRebuild, findings string
 	return o.buildBaseContext(rb.template, rb.profile, rb.frame.with(findings), rb.language, rb.refDataset)
 }
 
-// refitForRecommendations returns the base context the recommendations phase
-// should use: the one it was given when that already fits, and otherwise one
-// whose prior-knowledge block has been resized against the payload this phase
-// is really carrying.
+// refitAgainst returns the base context a phase should use, given a function
+// that assembles that phase's whole prompt around a candidate base context.
 //
-// Measured, not predicted. The insights payload is this run's own output, so it
-// does not exist when the block is first sized — the same reason the analysis
-// evidence is left a floor rather than a number.
-func (o *Orchestrator) refitForRecommendations(ctx context.Context, baseContext, template, summary, insightsJSON, refDataset string) string {
+// The block is sized once, early, against what the prompt was expected to cost.
+// Two phases then carry something that estimate could not include, because it
+// is this run's own output and does not exist yet: the recommendations phase
+// carries every insight the run produced, and an analysis area carries the
+// evidence its picker retained. Neither is bounded by anything the early
+// estimate can see — recommendations have no picker at all, and the picker does
+// not drop or re-compact its final step, so a single large exploration result
+// stays whatever size it is however small the budget.
+//
+// So each of them checks the prompt it is about to send, and resizes the block
+// if it does not fit. Measured, not predicted. An input-only overflow cannot be
+// answered by asking for less output: the phase simply returns nothing, where
+// the fixed 25-finding block this replaces had fitted.
+//
+// Returns the caller's base context untouched when it already fits, which is
+// the ordinary case and costs two string builds.
+func (o *Orchestrator) refitAgainst(ctx context.Context, phase, baseContext string,
+	layer string, assemble func(base string) string) string {
 	rb := o.baseRebuild
 	if rb == nil || rb.lrc == nil || len(rb.lrc.findings) == 0 {
 		return baseContext
 	}
-	window, outputCap := o.budgetFor(llmlayer.LayerRecommendations)
+	window, outputCap := o.budgetFor(layer)
 	available := contextbudget.AvailableInput(window, intendedOutputReserve(outputCap, window), analysisReservedSystemTokens)
 
-	if approxTokens(ctx, o.buildRecommendationsPrompt(baseContext, template, summary, insightsJSON, refDataset)) <= available {
+	if approxTokens(ctx, assemble(baseContext)) <= available {
 		return baseContext
 	}
 
 	// What this phase costs with no prior findings at all. Everything else in
-	// the prompt is fixed by now, payload included, so this is the real floor.
-	bare := o.renderBaseContext(rb, renderPriorFindingsSlot(nil, rb.prevInsights))
-	fixed := approxTokens(ctx, o.buildRecommendationsPrompt(bare, template, summary, insightsJSON, refDataset))
+	// the prompt is fixed by now, this run's own output included, so this is
+	// the real floor.
+	//
+	// An EMPTY slot, not renderPriorFindingsSlot(nil, …): passing a nil read
+	// context selects the no-ledger fallback, which re-inserts the legacy
+	// insight dump — unbudgeted, into the one prompt that has no room for the
+	// budgeted block it is replacing.
+	bare := o.renderBaseContext(rb, "")
+	fixed := approxTokens(ctx, assemble(bare))
 	room := available - fixed - ledgerBlockOverhead()
 	findings, descChars := contextbudget.FitFindings(rb.lrc.candidates, room,
 		contextbudget.MinFindingDescChars, contextbudget.MaxFindingDescChars)
 
 	applog.WithFields(applog.Fields{
 		"project_id": o.projectID,
+		"phase":      phase,
 		"available":  available,
 		"fixed":      fixed,
 		"was_shown":  len(rb.lrc.findings),
 		"now_shown":  len(findings),
-	}).Info("Recommendations: prior context refitted against the real insights payload")
+	}).Info("Prior context refitted against the prompt this phase is really sending")
 
 	if len(findings) == 0 {
 		return bare
 	}
 	return o.renderBaseContext(rb, renderLedgerFindings(findings, descChars))
+}
+
+// refitForRecommendations sizes the block against the insights payload this run
+// produced. That phase has no evidence picker at all: it carries every insight.
+func (o *Orchestrator) refitForRecommendations(ctx context.Context, baseContext, template, summary, insightsJSON, refDataset string) string {
+	return o.refitAgainst(ctx, "recommendations", baseContext, llmlayer.LayerRecommendations,
+		func(base string) string {
+			return o.buildRecommendationsPrompt(base, template, summary, insightsJSON, refDataset)
+		})
+}
+
+// refitForAnalysisArea sizes the block against the evidence the picker actually
+// retained for this area.
+//
+// The picker's budget is not a bound on that: Pick neither drops nor
+// re-compacts its final step, so an area whose exploration produced one large
+// result keeps it whatever BudgetTokens says. Lowering the evidence budget
+// therefore could not rescue a prompt the block had already filled, and this is
+// what does.
+func (o *Orchestrator) refitForAnalysisArea(ctx context.Context, baseContext, areaPrompt, datasetsStr string,
+	totalQueries int, queryResultsJSON, refDataset string) string {
+	return o.refitAgainst(ctx, "analysis", baseContext, llmlayer.LayerAnalysis,
+		func(base string) string {
+			return o.buildAnalysisAreaPrompt(base, areaPrompt, datasetsStr, totalQueries, queryResultsJSON, refDataset)
+		})
 }
 
 // fixedPromptParts is everything a run's prompts will carry besides the

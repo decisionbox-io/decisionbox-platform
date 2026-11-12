@@ -1685,3 +1685,100 @@ func TestRefitForRecommendations(t *testing.T) {
 		}
 	})
 }
+
+// TestRefitForAnalysisArea. The picker's budget is not a bound on the evidence
+// an area keeps: Pick neither drops nor re-compacts its FINAL step, so an area
+// whose exploration produced one large result carries it whatever BudgetTokens
+// says. Lowering the evidence budget therefore cannot rescue a prompt the prior
+// block has already filled — and an input-only overflow cannot be answered by
+// asking for less output.
+func TestRefitForAnalysisArea(t *testing.T) {
+	o := &Orchestrator{
+		projectID: "p1", llmProvider: "bedrock", llmModel: "m",
+		llmInputWindow: 32_000, llmOutputCap: 4_096,
+	}
+	lrc := &ledgerReadContext{hasLedger: true, candidates: ledgerFixture(420), descChars: 600}
+	lrc.findings = lrc.candidates
+	o.baseRebuild = &baseContextRebuild{
+		template: "base {{PROFILE}} {{PREVIOUS_CONTEXT}}", profile: "p", language: "English",
+		frame: previousContextFrame{head: "## Investigation so far\n\n"}, lrc: lrc,
+		// A project with previous insights, so a refit that reached for the
+		// no-ledger fallback would reinsert them unbudgeted.
+		prevInsights: []models.InsightSummary{{Name: "an older insight", AnalysisArea: "a", Severity: "high"}},
+	}
+	base := o.renderBaseContext(o.baseRebuild, renderLedgerFindings(lrc.findings, 600))
+	evidence := strings.Repeat(`{"step":1,"sql":"select 1","rows":[["a","b"]]},`, 1_500)
+	// With the placeholder a real area template carries. Without it the
+	// evidence never enters the prompt, and the test measures a prompt with no
+	// evidence in it — the same way the recommendations fixture did.
+	const areaFixture = "Analyse this area.\n{{QUERY_RESULTS}}\n"
+
+	window, outputCap := o.budgetFor(llmlayer.LayerAnalysis)
+	available := contextbudget.AvailableInput(window, intendedOutputReserve(outputCap, window), analysisReservedSystemTokens)
+	before := contextbudget.Tokens(o.buildAnalysisAreaPrompt(base, areaFixture, "ds", 12, evidence, ""))
+	if before <= available {
+		t.Fatalf("fixture does not overflow: %d of %d", before, available)
+	}
+
+	got := o.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, "")
+	after := contextbudget.Tokens(o.buildAnalysisAreaPrompt(got, areaFixture, "ds", 12, evidence, ""))
+	t.Logf("available=%d before=%d after=%d", available, before, after)
+	if after > available {
+		t.Errorf("the refitted prompt is still %d tokens against %d available", after, available)
+	}
+	// The evidence stays: it is what the area is analysing.
+	if !strings.Contains(o.buildAnalysisAreaPrompt(got, areaFixture, "ds", 12, evidence, ""), `"sql":"select 1"`) {
+		t.Error("the evidence was dropped — that is the thing being analysed")
+	}
+	// And the legacy insight dump must not come back in through the floor.
+	if strings.Contains(got, "an older insight") {
+		t.Error("the no-ledger fallback was reinserted, unbudgeted, into the prompt with no room")
+	}
+
+	// A prompt that fits is returned untouched.
+	o2 := &Orchestrator{projectID: "p1", llmProvider: "bedrock", llmModel: "m",
+		llmInputWindow: 1_000_000, llmOutputCap: 64_000, baseRebuild: o.baseRebuild}
+	if got := o2.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, ""); got != base {
+		t.Error("the base context was rebuilt on a 1M window")
+	}
+}
+
+// TestRefitNeverReinsertsTheLegacyDump. The floor the refit falls back to is an
+// EMPTY findings slot. Passing a nil read context to renderPriorFindingsSlot
+// instead selects the no-ledger fallback, which re-inserts the legacy insight
+// dump — unbudgeted, into the one prompt that has no room for the budgeted
+// block it is replacing.
+func TestRefitNeverReinsertsTheLegacyDump(t *testing.T) {
+	o := &Orchestrator{
+		projectID: "p1", llmProvider: "bedrock", llmModel: "m",
+		llmInputWindow: 32_000, llmOutputCap: 4_096,
+	}
+	lrc := &ledgerReadContext{hasLedger: true, candidates: ledgerFixture(420), descChars: 600}
+	lrc.findings = lrc.candidates
+	prev := make([]models.InsightSummary, 0, 30)
+	for i := 0; i < 30; i++ {
+		prev = append(prev, models.InsightSummary{
+			Name: fmt.Sprintf("legacy insight %d%s", i, strings.Repeat(" padding", 40)),
+			AnalysisArea: "a", Severity: "high",
+		})
+	}
+	o.baseRebuild = &baseContextRebuild{
+		template: "base {{PROFILE}} {{PREVIOUS_CONTEXT}}", profile: "p", language: "English",
+		frame: previousContextFrame{head: "## Investigation so far\n\n"}, lrc: lrc, prevInsights: prev,
+	}
+	base := o.renderBaseContext(o.baseRebuild, renderLedgerFindings(lrc.findings, 600))
+
+	// A payload so large that no findings can fit, which is the path that
+	// returns the floor.
+	huge := strings.Repeat("x", 300_000)
+	got := o.refitForRecommendations(context.Background(), base, recTemplateFixture, "summary", huge, "")
+	if strings.Contains(got, "legacy insight") {
+		t.Error("the legacy insight dump was reinserted into the prompt with no room for the budgeted block")
+	}
+	if strings.Contains(got, "Already established findings") {
+		t.Error("findings were kept in a prompt whose payload alone fills the window")
+	}
+	if !strings.Contains(got, "Investigation so far") {
+		t.Error("the rest of the base context was thrown away with the findings")
+	}
+}

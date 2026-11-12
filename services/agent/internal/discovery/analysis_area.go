@@ -161,6 +161,16 @@ func (o *Orchestrator) analyseArea(ctx context.Context, in areaAnalysisInput) ar
 		"results_chars": len(queryResultsJSON),
 		"prompt_chars":  len(baseContext) + len(areaPrompt) + len(queryResultsJSON),
 	}).Debug("Analysis area: rendered prompt sizing")
+	// The evidence is known now, and the picker's budget is not a bound on it:
+	// Pick neither drops nor re-compacts its final step, so an area whose
+	// exploration produced one large result keeps it however small the budget
+	// was. So the prior-knowledge block is checked against this prompt as it
+	// really stands and resized if it does not fit — lowering the evidence
+	// budget cannot rescue a prompt the block has already filled, and an
+	// input-only overflow cannot be answered by asking for less output.
+	baseContext = o.refitForAnalysisArea(ctx, baseContext, areaPrompt, datasetsStr,
+		len(relevantSteps), queryResultsJSON, refDataset)
+
 	prompt := o.buildAnalysisAreaPrompt(baseContext, areaPrompt, datasetsStr, len(relevantSteps), queryResultsJSON, refDataset)
 
 	// Smart-overflow breadcrumb (R5): when the picker trimmed steps for

@@ -350,15 +350,19 @@ func (o *Orchestrator) RunPhaseReflection(ctx context.Context, result *models.Di
 	// 4. Update coverage + convergence on the ledger and prune findings.
 	o.updateLedgerMeta(rctx, result, ref, cons)
 
+	// Retention before maintenance: pruning is a write the ledger owes, and it
+	// was behind the re-index, which embeds — so a stalled embedder could spend
+	// the rest of the phase and leave the active set over its cap.
+	if err := o.findingRepo.Prune(rctx, o.projectID,
+		goconfig.GetEnvAsInt(discoveryLedgerMaxFindingsEnv, defaultDiscoveryLedgerMaxFindings)); err != nil {
+		applog.WithError(err).Warn("Reflection: ledger prune failed")
+	}
+
 	// Last, and on its own budget: bringing the vector index in line with the
 	// verdicts is maintenance, and it embeds. Everything above is a durable
 	// write this run already has the answer for, and a stalled embedder must
 	// not be able to cost one.
 	o.reindexFindings(rctx, restatused)
-	if err := o.findingRepo.Prune(rctx, o.projectID,
-		goconfig.GetEnvAsInt(discoveryLedgerMaxFindingsEnv, defaultDiscoveryLedgerMaxFindings)); err != nil {
-		applog.WithError(err).Warn("Reflection: ledger prune failed")
-	}
 
 	applog.WithFields(applog.Fields{
 		"project_id":     o.projectID,
