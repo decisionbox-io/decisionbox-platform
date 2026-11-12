@@ -202,7 +202,11 @@ func TestLoadLedgerReadContext_OffModeSuppressesTasks(t *testing.T) {
 // rendered until the ledger has been read.
 func (o *Orchestrator) loadAndFitLedger(ctx context.Context, fixedPromptTokens int) *ledgerReadContext {
 	lrc := o.loadLedgerReadContext(ctx)
-	o.fitPriorFindings(lrc, fixedPromptTokens)
+	// The room a single-model project has: one window, so the per-layer
+	// minimum is that window's allowance less the fixed prompt and the
+	// picker's floor — which is what the old single-number form computed.
+	room := o.baseContextAvailableInput() - fixedPromptTokens - minPickerBudgetTokens
+	o.fitPriorFindings(lrc, fixedPromptTokens, room)
 	return lrc
 }
 
@@ -227,7 +231,7 @@ func TestLedgerBlockFitsItsWholeAllowance(t *testing.T) {
 			t.Fatal("no read context")
 		}
 		available := o.baseContextAvailableInput()
-		allowance := priorContextBudget(available, fixed, 0, false)
+		allowance := priorContextBudget(available, available-fixed-minPickerBudgetTokens, 0, false)
 		block := renderLedgerFindings(lrc.findings, lrc.descChars)
 		if got := contextbudget.Tokens(block); got > allowance {
 			t.Errorf("fixed=%d: the rendered block is %d tokens against an allowance of %d (%d over)",

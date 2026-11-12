@@ -1189,7 +1189,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	lrc := o.loadLedgerReadContext(ctx)
 	frame := o.previousContextFrame(projectCtx, prevRecs, feedbackSummaries, lrc, analysisAreas)
 	fixedParts.PriorHistory = frame.cost()
-	o.fitPriorFindings(lrc, o.fixedPromptTokens(ctx, fixedParts))
+	o.fitPriorFindings(lrc, o.fixedPromptTokens(ctx, fixedParts), o.priorContextRoom(ctx, fixedParts))
 
 	// Previous discovery insights, recommendations, user feedback, and the
 	// Discovery Ledger are merged into a reusable context block injected into the

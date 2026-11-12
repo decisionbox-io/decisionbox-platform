@@ -110,6 +110,9 @@ func contextRetrievalTimeout() time.Duration {
 // some other layer's cap: those two numbers belong to different models, and a
 // budget assembled from parts of two models describes neither.
 func (o *Orchestrator) baseContextAvailableInput() int {
+	// The negative sentinel is safe HERE, unlike in priorContextRoom below:
+	// AvailableInput floors at zero, so `a` is never negative and cannot be
+	// mistaken for "unset".
 	avail := -1
 	for _, layer := range baseContextLayers {
 		window, outputCap := o.budgetFor(layer)
@@ -172,16 +175,20 @@ func (o *Orchestrator) layerOutputReserve(layer string, outputCap, window int) i
 // same number it budgeted from: resolving it twice walks three layers' budgets
 // twice and, if a calibration lands in between, reports a figure the budget was
 // not actually computed from.
-func priorContextBudget(available, fixedPromptTokens int, novelty float64, haveNovelty bool) int {
+func priorContextBudget(available, room int, novelty float64, haveNovelty bool) int {
 	share := contextbudget.SaturatedShare(priorContextShare(), novelty, haveNovelty)
 	budget := contextbudget.Share(available, share)
-	// What the rest of the prompt already costs comes off the top, with the
-	// step picker's floor left behind it for the evidence. Taking a share of
-	// the WHOLE allowance ignored both: on a 32K model with a large profile and
-	// large area templates, the fixed prompt plus a saturated ledger left the
-	// picker at its floor and the assembled request ran past the window — where
-	// the fixed 25-finding block this replaces had fitted.
-	if room := available - fixedPromptTokens - minPickerBudgetTokens; budget > room {
+	// What the rest of the prompt already costs comes off the top. Taking a
+	// share of the WHOLE allowance ignored it: on a 32K model with a large
+	// profile and large area templates, the fixed prompt plus a saturated
+	// ledger pushed the assembled request past the window — where the fixed
+	// 25-finding block this replaces had fitted.
+	//
+	// room is computed per layer by the caller (priorContextRoom), because the
+	// layers that share this block do not carry the same content and may not
+	// have the same window: charging the largest content against the smallest
+	// window describes neither model.
+	if budget > room {
 		budget = room
 	}
 	if budget < 0 {
@@ -415,24 +422,86 @@ func documentDedupMinScore() float64 {
 // adaptive context-overflow retry remains the net, as it is for every other
 // estimate on this path.
 func (o *Orchestrator) fixedPromptTokens(ctx context.Context, p fixedPromptParts) int {
+	widest := 0
+	for _, c := range o.fixedPromptCosts(ctx, p) {
+		if c > widest {
+			widest = c
+		}
+	}
+	return widest
+}
+
+// fixedPromptCosts is the same measurement PER LAYER, which is what the budget
+// actually needs.
+//
+// These costs differ a lot between layers: the schema catalog goes to
+// exploration alone, and on a large warehouse it is the biggest single piece of
+// any prompt. Taking the maximum and charging it against the SMALLEST layer's
+// window pairs one model's content with another model's limit — a 1M-window
+// exploration model beside a 32K analysis model had its 36,000-token catalog
+// subtracted from the 32K layer's allowance, so the block was given nothing on
+// every phase, while the analysis prompt it was protecting used 6,572 of its
+// 18,496 available tokens. Each layer is charged for what that layer carries.
+func (o *Orchestrator) fixedPromptCosts(ctx context.Context, p fixedPromptParts) map[string]int {
 	base := approxTokens(ctx, o.buildBaseContext(p.Prompts.BaseContext, p.Profile, p.PriorHistory, p.Language, p.RefDataset))
 
 	// Exploration is assembled inline by runDiscovery rather than by a builder,
 	// so its pieces are counted here: the template, the areas description, the
 	// rendered catalog, and the datasource routing cards.
-	widest := approxTokens(ctx, p.Prompts.Exploration) + approxTokens(ctx, p.AreasDesc) +
-		approxTokens(ctx, p.Catalog) + approxTokens(ctx, p.Datasources)
-	if n := approxTokens(ctx, o.buildRecommendationsPrompt("", p.Prompts.Recommendations, "", "", p.RefDataset)); n > widest {
-		widest = n
+	out := map[string]int{
+		llmlayer.LayerExploration: base + approxTokens(ctx, p.Prompts.Exploration) +
+			approxTokens(ctx, p.AreasDesc) + approxTokens(ctx, p.Catalog) +
+			approxTokens(ctx, p.Datasources),
+		llmlayer.LayerRecommendations: base +
+			approxTokens(ctx, o.buildRecommendationsPrompt("", p.Prompts.Recommendations, "", "", p.RefDataset)),
 	}
+	widestArea := 0
 	for _, a := range p.Areas {
 		if body, ok := p.Prompts.AnalysisAreas[a.ID]; ok {
-			if n := approxTokens(ctx, o.buildAnalysisAreaPrompt("", body, p.Datasets, 0, "", p.RefDataset, "")); n > widest {
-				widest = n
+			if n := approxTokens(ctx, o.buildAnalysisAreaPrompt("", body, p.Datasets, 0, "", p.RefDataset, "")); n > widestArea {
+				widestArea = n
 			}
 		}
 	}
-	return base + widest
+	out[llmlayer.LayerAnalysis] = base + widestArea
+	return out
+}
+
+// priorContextRoom is how much room the prior-knowledge block has once EVERY
+// layer that receives it is charged for what that layer itself will carry, and
+// the analysis evidence still to come is left its floor.
+//
+// The block is one string prepended to three prompts, so it must fit the
+// tightest of them — but "tightest" is a per-layer question, not a single
+// pairing of the smallest window with the largest content.
+func (o *Orchestrator) priorContextRoom(ctx context.Context, p fixedPromptParts) int {
+	costs := o.fixedPromptCosts(ctx, p)
+	// `set` rather than a negative sentinel: a layer's room CAN be legitimately
+	// negative — its fixed prompt alone may exceed its window — and a sentinel
+	// that means both "unset" and "negative" lets the next layer overwrite the
+	// minimum. That is not a hypothetical: a 36,000-token catalog on a 32K
+	// exploration layer gave -13,395, which the analysis layer then replaced
+	// with 13,790, and the block was handed room on a prompt that does not fit
+	// without it.
+	room, set := 0, false
+	for _, layer := range baseContextLayers {
+		window, outputCap := o.budgetFor(layer)
+		avail := contextbudget.AvailableInput(window, o.layerOutputReserve(layer, outputCap, window), analysisReservedSystemTokens)
+		r := avail - costs[layer]
+		// Analysis has its evidence still to come. The other two are measured
+		// against the real payload at the moment they are sent, and both refit
+		// against it, so they need no floor reserved here.
+		if layer == llmlayer.LayerAnalysis {
+			r -= minPickerBudgetTokens
+		}
+		if !set || r < room {
+			room, set = r, true
+		}
+	}
+	if room < 0 {
+		return 0
+	}
+	return room
 }
 
 // baseContextRebuild is what is needed to compose the base context again with a

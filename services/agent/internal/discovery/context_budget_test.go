@@ -1149,7 +1149,7 @@ func TestPriorContextBudgetNeverExceedsTheHeadroom(t *testing.T) {
 	for _, share := range []string{"0.2", "0.5", "0.75", "1.0", "2.0"} {
 		t.Setenv(priorContextShareEnv, share)
 		for _, novelty := range []float64{1.0, 0.5, 0.1, 0} {
-			got := priorContextBudget(available, 0, novelty, true)
+			got := priorContextBudget(available, available-minPickerBudgetTokens, novelty, true)
 			if got > available {
 				t.Errorf("share %s, novelty %v: budget %d exceeds the %d available", share, novelty, got, available)
 			}
@@ -1161,13 +1161,15 @@ func TestPriorContextBudgetNeverExceedsTheHeadroom(t *testing.T) {
 
 	t.Run("an ordinary share is unaffected by the clamp", func(t *testing.T) {
 		t.Setenv(priorContextShareEnv, "0.20")
-		if got := priorContextBudget(available, 0, 1.0, true); got != available/5 {
+		if got := priorContextBudget(available, available-minPickerBudgetTokens, 1.0, true); got != available/5 {
 			t.Errorf("budget = %d, want a fifth of %d", got, available)
 		}
 	})
 
 	t.Run("zero available yields zero, not a clamp artefact", func(t *testing.T) {
-		if got := priorContextBudget(0, 0, 0, true); got != 0 {
+		// No allowance and no room: the negative room is what a window whose
+		// fixed prompt alone fills it produces.
+		if got := priorContextBudget(0, -minPickerBudgetTokens, 0, true); got != 0 {
 			t.Errorf("budget = %d, want 0", got)
 		}
 	})
@@ -1283,7 +1285,7 @@ func TestPriorContextLeavesRoomForTheRestOfThePrompt(t *testing.T) {
 	for _, fixed := range []int{0, 2_000, 8_000, 16_000, 18_000, 40_000} {
 		t.Run(fmt.Sprintf("fixed-%d", fixed), func(t *testing.T) {
 			t.Setenv(priorContextShareEnv, "0.40") // the saturated ceiling
-			budget := priorContextBudget(available, fixed, 0, true)
+			budget := priorContextBudget(available, available-fixed-minPickerBudgetTokens, 0, true)
 
 			// What the picker would then be allowed, given the whole fixed
 			// input including the block the budget just chose.
@@ -1495,7 +1497,7 @@ func TestFixedPromptTokensCountsTheCatalogAndRoutingCards(t *testing.T) {
 	avail := contextbudget.AvailableInput(window, intendedOutputReserve(outputCap, window), analysisReservedSystemTokens)
 	t.Setenv(priorContextShareEnv, "0.40")
 	fixed := o.fixedPromptTokens(ctx, bigCatalog)
-	budget := priorContextBudget(avail, fixed, 0, true)
+	budget := priorContextBudget(avail, avail-fixed-minPickerBudgetTokens, 0, true)
 	picker := analysisPickerBudgetTokens(AnalysisQueryResultsBudgetTokens, window, outputCap, fixed+budget)
 	total := fixed + budget + picker + intendedOutputReserve(outputCap, window)
 	t.Logf("fixed=%d (catalog %d) avail=%d prior=%d picker=%d total=%d window=%d",
@@ -1542,8 +1544,8 @@ func TestPriorHistoryIsBudgetedWithTheFindings(t *testing.T) {
 	const window, outputCap = 32_000, 4_096
 	avail := contextbudget.AvailableInput(window, intendedOutputReserve(outputCap, window), analysisReservedSystemTokens)
 	t.Setenv(priorContextShareEnv, "0.40")
-	bareBudget := priorContextBudget(avail, bare, 0, true)
-	loadedBudget := priorContextBudget(avail, loaded, 0, true)
+	bareBudget := priorContextBudget(avail, avail-bare-minPickerBudgetTokens, 0, true)
+	loadedBudget := priorContextBudget(avail, avail-loaded-minPickerBudgetTokens, 0, true)
 	t.Logf("avail=%d  fixed bare=%d -> prior %d   fixed with 40 threads=%d -> prior %d",
 		avail, bare, bareBudget, loaded, loadedBudget)
 	if loadedBudget >= bareBudget {
@@ -1968,3 +1970,118 @@ func TestSelectAreas(t *testing.T) {
 			selected, all)
 	}
 }
+
+// --- review round 15 ---
+
+// TestPriorContextRoomIsPerLayer. The block is one string prepended to three
+// prompts, so it must fit the tightest of them — but taking the LARGEST fixed
+// cost and charging it against the SMALLEST layer's window pairs one model's
+// content with another model's limit.
+//
+// The schema catalog is the case that makes it bite: it goes to exploration
+// alone, and on a large warehouse it is the biggest single piece of any prompt.
+// A 1M-window exploration model beside a 32K analysis model had its
+// 36,000-token catalog subtracted from the 32K layer's allowance, so the block
+// was given nothing on every phase — while the analysis prompt it was
+// protecting had plenty of room.
+func TestPriorContextRoomIsPerLayer(t *testing.T) {
+	ctx := context.Background()
+	parts := fixedPromptParts{
+		Prompts: ResolvedPrompts{
+			BaseContext:   "base {{PROFILE}} {{PREVIOUS_CONTEXT}}",
+			Exploration:   "explore {{SCHEMA_INFO}}",
+			AnalysisAreas: map[string]string{"a": "analyse {{QUERY_RESULTS}}"},
+		},
+		// The catalog only exploration receives.
+		Catalog:  strings.Repeat("table, col_a, col_b\n", 7_000),
+		Language: "English", Datasets: "ds", Areas: []AnalysisArea{{ID: "a"}},
+	}
+
+	// One model everywhere: the catalog genuinely is in the window that has to
+	// hold it, so it legitimately costs the block its room.
+	single := &Orchestrator{projectID: "p1", llmProvider: "bedrock", llmModel: "m",
+		llmInputWindow: 32_000, llmOutputCap: 4_096}
+	if room := single.priorContextRoom(ctx, parts); room > 0 {
+		t.Errorf("single 32K model: room = %d, want none — the catalog alone exceeds the window", room)
+	}
+
+	// Per-layer costs must differ, or the fix is a no-op.
+	costs := single.fixedPromptCosts(ctx, parts)
+	if costs[llmlayer.LayerExploration] <= costs[llmlayer.LayerAnalysis] {
+		t.Errorf("exploration (%d) does not cost more than analysis (%d), yet it carries the catalog",
+			costs[llmlayer.LayerExploration], costs[llmlayer.LayerAnalysis])
+	}
+	if want := contextbudget.Tokens(parts.Catalog); costs[llmlayer.LayerExploration]-costs[llmlayer.LayerAnalysis] < want/2 {
+		t.Errorf("the catalog's %d tokens are not showing up in exploration's cost alone", want)
+	}
+
+	// And the analysis layer's own cost is what its own allowance is charged,
+	// so a project whose analysis prompt is small keeps its prior context even
+	// when exploration's is enormous.
+	t.Logf("exploration cost %d, analysis cost %d, recommendations cost %d",
+		costs[llmlayer.LayerExploration], costs[llmlayer.LayerAnalysis], costs[llmlayer.LayerRecommendations])
+	analysisOnly := single.fixedPromptCosts(ctx, fixedPromptParts{
+		Prompts: parts.Prompts, Language: "English", Datasets: "ds", Areas: parts.Areas,
+	})[llmlayer.LayerAnalysis]
+	if analysisOnly != costs[llmlayer.LayerAnalysis] {
+		t.Errorf("the catalog changed the ANALYSIS cost (%d vs %d) — analysis never receives it",
+			analysisOnly, costs[llmlayer.LayerAnalysis])
+	}
+}
+
+// TestPriorContextRoomMixedModels is the configuration the per-layer split
+// exists for: a large-window exploration model beside a small analysis one.
+// The catalog goes to exploration alone and fits its window comfortably;
+// charging it against the analysis layer's window instead removed cross-run
+// memory from every phase for no reason.
+func TestPriorContextRoomMixedModels(t *testing.T) {
+	ctx := context.Background()
+	parts := fixedPromptParts{
+		Prompts: ResolvedPrompts{
+			BaseContext:   "base {{PROFILE}} {{PREVIOUS_CONTEXT}}",
+			Exploration:   "explore {{SCHEMA_INFO}}",
+			AnalysisAreas: map[string]string{"a": "analyse {{QUERY_RESULTS}}"},
+		},
+		Catalog:  strings.Repeat("table, col_a, col_b\n", 7_000), // ~36K tokens
+		Language: "English", Datasets: "ds", Areas: []AnalysisArea{{ID: "a"}},
+	}
+
+	o := &Orchestrator{
+		projectID: "p1", llmProvider: "bedrock", llmModel: "small",
+		llmInputWindow: 32_000, llmOutputCap: 4_096,
+		layers: mixedLayersForTest(),
+	}
+	room := o.priorContextRoom(ctx, parts)
+	t.Logf("mixed 1M-exploration / 32K-analysis: room = %d", room)
+	if room <= 0 {
+		t.Fatalf("room = %d — the catalog belongs to a 1M window and must not spend the 32K layer's allowance", room)
+	}
+
+	// And the room is still bounded by the SMALL layer: the block goes into its
+	// prompt too, so it cannot be sized for the large one.
+	window, outputCap := o.budgetFor(llmlayer.LayerAnalysis)
+	avail := contextbudget.AvailableInput(window, o.layerOutputReserve(llmlayer.LayerAnalysis, outputCap, window), analysisReservedSystemTokens)
+	if room > avail {
+		t.Errorf("room %d exceeds the analysis layer's whole allowance %d", room, avail)
+	}
+}
+
+// mixedLayersForTest gives exploration a 1M window and leaves analysis and
+// recommendations on a 32K one, which is the supported per-layer configuration
+// the per-layer room calculation exists for.
+type mixedLayers struct{}
+
+func (mixedLayers) For(layer string) *ai.LayerLLM {
+	if layer == llmlayer.LayerExploration {
+		return &ai.LayerLLM{
+			Layer: layer, Provider: "bedrock", Model: "big",
+			Window: 1_000_000, OutputCap: 64_000,
+		}
+	}
+	return &ai.LayerLLM{
+		Layer: layer, Provider: "bedrock", Model: "small",
+		Window: 32_000, OutputCap: 4_096,
+	}
+}
+
+func mixedLayersForTest() ai.LayerSet { return mixedLayers{} }

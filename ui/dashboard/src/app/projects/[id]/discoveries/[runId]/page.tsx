@@ -331,7 +331,12 @@ export default function DiscoveryDetailPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {visibleRecs.map((rec, idx) => (
             <RecommendationCard key={idx} rec={rec} projectId={id} discoveryId={runId} idx={idx}
-              insights={insights}
+              // allInsights, not the filtered list: the card resolves
+              // related_insight_ids by searching this array, and a
+              // recommendation whose source insight is a hidden restatement
+              // would otherwise lose its "Addresses" links. Hiding a duplicate
+              // from a LIST must not sever a reference to it.
+              insights={allInsights}
               isRead={readRecs.has(String(rec.id || idx))}
               feedback={feedbackMap[`recommendation:${rec.id || idx}`]}
               onFeedbackUpdate={(fb) => handleFeedbackUpdate('recommendation', String(rec.id || idx), fb)} />

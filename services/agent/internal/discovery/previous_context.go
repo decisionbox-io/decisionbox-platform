@@ -53,13 +53,13 @@ type ledgerReadContext struct {
 // including the other sections of this same block: five consecutive review
 // findings on this change were a piece of that prompt nothing was counting, and
 // the last of them was this block's own open-threads queue.
-func (o *Orchestrator) fitPriorFindings(lrc *ledgerReadContext, fixedPromptTokens int) {
+func (o *Orchestrator) fitPriorFindings(lrc *ledgerReadContext, fixedPromptTokens, room int) {
 	if lrc == nil {
 		return
 	}
 	novelty, haveNovelty := latestRunNovelty(lrc.convergence)
 	available := o.baseContextAvailableInput()
-	budget := priorContextBudget(available, fixedPromptTokens, novelty, haveNovelty)
+	budget := priorContextBudget(available, room, novelty, haveNovelty)
 	// The allowance is for the whole block; the fit is over its lines.
 	lines := budget - ledgerBlockOverhead()
 	if lines < 0 {
