@@ -170,14 +170,20 @@ func priorContextBudget(available, fixedPromptTokens int, novelty float64, haveN
 // Zero when the prompt already fills the window. That is the honest answer and
 // the safe one: providers that honour the budget go quiet instead of pushing a
 // prompt that is already at the limit over it.
-func (o *Orchestrator) contextProviderBudget(ctx context.Context, layer, prompt string) int {
+//
+// headroom is everything that is free, of which the budget is a share. The
+// caller needs both: the budget is what each provider that honours one may
+// spend, and the headroom is what the prompt can actually afford in total —
+// which is the only thing that bounds a provider that ignores the budget
+// entirely.
+func (o *Orchestrator) contextProviderBudget(ctx context.Context, layer, prompt string) (budget, headroom int) {
 	window, outputCap := o.budgetFor(layer)
 	avail := contextbudget.AvailableInput(window, intendedOutputReserve(outputCap, window), analysisReservedSystemTokens)
 	avail -= approxTokens(ctx, prompt)
 	if avail <= 0 {
-		return 0
+		return 0, 0
 	}
-	return contextbudget.Share(avail, contextProviderShare())
+	return contextbudget.Share(avail, contextProviderShare()), avail
 }
 
 // latestRunNovelty is the most recent MEASURED share of a run's own findings
@@ -437,16 +443,16 @@ func (o *Orchestrator) renderBaseContext(rb *baseContextRebuild, findings string
 // Returns the caller's base context untouched when it already fits, which is
 // the ordinary case and costs two string builds.
 func (o *Orchestrator) refitAgainst(ctx context.Context, phase, baseContext string,
-	layer string, assemble func(base string) string) string {
+	layer string, assemble func(base string) string) (string, []string) {
 	rb := o.baseRebuild
 	if rb == nil || rb.lrc == nil || len(rb.lrc.findings) == 0 {
-		return baseContext
+		return baseContext, o.baseContextFindingIDs
 	}
 	window, outputCap := o.budgetFor(layer)
 	available := contextbudget.AvailableInput(window, intendedOutputReserve(outputCap, window), analysisReservedSystemTokens)
 
 	if approxTokens(ctx, assemble(baseContext)) <= available {
-		return baseContext
+		return baseContext, o.baseContextFindingIDs
 	}
 
 	// What this phase costs with no prior findings at all. Everything else in
@@ -472,15 +478,25 @@ func (o *Orchestrator) refitAgainst(ctx context.Context, phase, baseContext stri
 		"now_shown":  len(findings),
 	}).Info("Prior context refitted against the prompt this phase is really sending")
 
-	if len(findings) == 0 {
-		return bare
+	// The ids THIS prompt carries, not the ids the run-start block carried.
+	// Retrieval is told to skip what the prompt already holds, so a stale list
+	// suppresses prior knowledge this prompt no longer contains and the model
+	// never sees it — the same mistake as excluding the base context's findings
+	// from a prompt built without the base context.
+	carried := make([]string, 0, len(findings))
+	for i := range findings {
+		carried = append(carried, findings[i].ID)
 	}
-	return o.renderBaseContext(rb, renderLedgerFindings(findings, descChars))
+
+	if len(findings) == 0 {
+		return bare, nil
+	}
+	return o.renderBaseContext(rb, renderLedgerFindings(findings, descChars)), carried
 }
 
 // refitForRecommendations sizes the block against the insights payload this run
 // produced. That phase has no evidence picker at all: it carries every insight.
-func (o *Orchestrator) refitForRecommendations(ctx context.Context, baseContext, template, summary, insightsJSON, refDataset string) string {
+func (o *Orchestrator) refitForRecommendations(ctx context.Context, baseContext, template, summary, insightsJSON, refDataset string) (string, []string) {
 	return o.refitAgainst(ctx, "recommendations", baseContext, llmlayer.LayerRecommendations,
 		func(base string) string {
 			return o.buildRecommendationsPrompt(base, template, summary, insightsJSON, refDataset)
@@ -496,7 +512,7 @@ func (o *Orchestrator) refitForRecommendations(ctx context.Context, baseContext,
 // therefore could not rescue a prompt the block had already filled, and this is
 // what does.
 func (o *Orchestrator) refitForAnalysisArea(ctx context.Context, baseContext, areaPrompt, datasetsStr string,
-	totalQueries int, queryResultsJSON, refDataset string) string {
+	totalQueries int, queryResultsJSON, refDataset string) (string, []string) {
 	return o.refitAgainst(ctx, "analysis", baseContext, llmlayer.LayerAnalysis,
 		func(base string) string {
 			return o.buildAnalysisAreaPrompt(base, areaPrompt, datasetsStr, totalQueries, queryResultsJSON, refDataset)

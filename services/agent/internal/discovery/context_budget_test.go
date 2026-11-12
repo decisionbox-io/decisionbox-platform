@@ -396,14 +396,14 @@ func TestContextProviderBudget(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("a short prompt leaves a budget", func(t *testing.T) {
-		if got := o.contextProviderBudget(ctx, llmlayer.LayerAnalysis, "a short prompt"); got <= 0 {
+		if got, _ := o.contextProviderBudget(ctx, llmlayer.LayerAnalysis, "a short prompt"); got <= 0 {
 			t.Errorf("budget = %d, want a positive budget on a 131K window", got)
 		}
 	})
 
 	t.Run("shrinks as the prompt grows", func(t *testing.T) {
-		small := o.contextProviderBudget(ctx, llmlayer.LayerAnalysis, strings.Repeat("x", 4_000))
-		large := o.contextProviderBudget(ctx, llmlayer.LayerAnalysis, strings.Repeat("x", 200_000))
+		small, _ := o.contextProviderBudget(ctx, llmlayer.LayerAnalysis, strings.Repeat("x", 4_000))
+		large, _ := o.contextProviderBudget(ctx, llmlayer.LayerAnalysis, strings.Repeat("x", 200_000))
 		if large >= small {
 			t.Errorf("a 200K-char prompt got %d, no less than a 4K-char prompt's %d", large, small)
 		}
@@ -412,7 +412,7 @@ func TestContextProviderBudget(t *testing.T) {
 	t.Run("zero when the prompt already fills the window", func(t *testing.T) {
 		// Providers must go quiet rather than push a prompt that is already at
 		// the limit over it.
-		if got := o.contextProviderBudget(ctx, llmlayer.LayerAnalysis, strings.Repeat("x", 2_000_000)); got != 0 {
+		if got, _ := o.contextProviderBudget(ctx, llmlayer.LayerAnalysis, strings.Repeat("x", 2_000_000)); got != 0 {
 			t.Errorf("budget = %d, want 0 for a prompt past the window", got)
 		}
 	})
@@ -428,8 +428,8 @@ func TestContextProviderBudget(t *testing.T) {
 			},
 		}
 		prompt := strings.Repeat("x", 10_000)
-		analysis := po.contextProviderBudget(ctx, llmlayer.LayerAnalysis, prompt)
-		exploration := po.contextProviderBudget(ctx, llmlayer.LayerExploration, prompt)
+		analysis, _ := po.contextProviderBudget(ctx, llmlayer.LayerAnalysis, prompt)
+		exploration, _ := po.contextProviderBudget(ctx, llmlayer.LayerExploration, prompt)
 		if analysis >= exploration {
 			t.Errorf("the 32K analysis layer got %d, no less than the 1M exploration layer's %d", analysis, exploration)
 		}
@@ -1632,7 +1632,7 @@ func TestRefitForRecommendations(t *testing.T) {
 	t.Run("a prompt that fits is left alone", func(t *testing.T) {
 		o := newOrchestrator(1_000_000, 64_000, 420)
 		base := o.renderBaseContext(o.baseRebuild, renderLedgerFindings(o.baseRebuild.lrc.findings, 600))
-		got := o.refitForRecommendations(context.Background(), base, recTemplateFixture, "summary", "[]", "")
+		got, _ := o.refitForRecommendations(context.Background(), base, recTemplateFixture, "summary", "[]", "")
 		if got != base {
 			t.Errorf("the base context was rebuilt on a 1M window: %d chars -> %d", len(base), len(got))
 		}
@@ -1650,7 +1650,7 @@ func TestRefitForRecommendations(t *testing.T) {
 			t.Fatalf("fixture does not overflow: %d tokens of %d available", before, available)
 		}
 
-		got := o.refitForRecommendations(context.Background(), base, recTemplateFixture, "summary", payload, "")
+		got, _ := o.refitForRecommendations(context.Background(), base, recTemplateFixture, "summary", payload, "")
 		after := contextbudget.Tokens(o.buildRecommendationsPrompt(got, recTemplateFixture, "summary", payload, ""))
 		t.Logf("available=%d  before=%d  after=%d", available, before, after)
 		if after > available {
@@ -1667,7 +1667,7 @@ func TestRefitForRecommendations(t *testing.T) {
 		o := newOrchestrator(32_000, 4_096, 420)
 		base := o.renderBaseContext(o.baseRebuild, renderLedgerFindings(o.baseRebuild.lrc.findings, 600))
 		huge := strings.Repeat("x", 400_000)
-		got := o.refitForRecommendations(context.Background(), base, recTemplateFixture, "summary", huge, "")
+		got, _ := o.refitForRecommendations(context.Background(), base, recTemplateFixture, "summary", huge, "")
 		if strings.Contains(got, "Already established findings") {
 			t.Error("findings were kept in a prompt whose payload alone fills the window")
 		}
@@ -1680,7 +1680,7 @@ func TestRefitForRecommendations(t *testing.T) {
 
 	t.Run("no ledger, nothing to refit", func(t *testing.T) {
 		o := &Orchestrator{projectID: "p1", llmInputWindow: 32_000, llmOutputCap: 4_096}
-		if got := o.refitForRecommendations(context.Background(), "base", recTemplateFixture, "s", "[]", ""); got != "base" {
+		if got, _ := o.refitForRecommendations(context.Background(), "base", recTemplateFixture, "s", "[]", ""); got != "base" {
 			t.Errorf("got %q, want the caller's base context untouched", got)
 		}
 	})
@@ -1720,7 +1720,7 @@ func TestRefitForAnalysisArea(t *testing.T) {
 		t.Fatalf("fixture does not overflow: %d of %d", before, available)
 	}
 
-	got := o.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, "")
+	got, _ := o.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, "")
 	after := contextbudget.Tokens(o.buildAnalysisAreaPrompt(got, areaFixture, "ds", 12, evidence, ""))
 	t.Logf("available=%d before=%d after=%d", available, before, after)
 	if after > available {
@@ -1738,7 +1738,7 @@ func TestRefitForAnalysisArea(t *testing.T) {
 	// A prompt that fits is returned untouched.
 	o2 := &Orchestrator{projectID: "p1", llmProvider: "bedrock", llmModel: "m",
 		llmInputWindow: 1_000_000, llmOutputCap: 64_000, baseRebuild: o.baseRebuild}
-	if got := o2.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, ""); got != base {
+	if got, _ := o2.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, ""); got != base {
 		t.Error("the base context was rebuilt on a 1M window")
 	}
 }
@@ -1771,7 +1771,7 @@ func TestRefitNeverReinsertsTheLegacyDump(t *testing.T) {
 	// A payload so large that no findings can fit, which is the path that
 	// returns the floor.
 	huge := strings.Repeat("x", 300_000)
-	got := o.refitForRecommendations(context.Background(), base, recTemplateFixture, "summary", huge, "")
+	got, _ := o.refitForRecommendations(context.Background(), base, recTemplateFixture, "summary", huge, "")
 	if strings.Contains(got, "legacy insight") {
 		t.Error("the legacy insight dump was reinserted into the prompt with no room for the budgeted block")
 	}
@@ -1781,4 +1781,108 @@ func TestRefitNeverReinsertsTheLegacyDump(t *testing.T) {
 	if !strings.Contains(got, "Investigation so far") {
 		t.Error("the rest of the base context was thrown away with the findings")
 	}
+}
+
+// --- review round 11 ---
+
+// TestInjectKnowledgeSourcesDropsASectionThatDoesNotFit. The per-provider
+// budget only binds providers that honour it. The knowledge-sources provider is
+// bounded by its own top-N and returns whatever those items are, which on a
+// project with large source chunks is more than the prompt can afford — and the
+// composed section was inserted without ever being measured. On a 32K window
+// that assembled more input than the fixed 25-finding block it replaces did
+// with the same chunks.
+func TestInjectKnowledgeSourcesDropsASectionThatDoesNotFit(t *testing.T) {
+	// A provider that ignores TokenBudget, as the community one does.
+	big := agentplugin.ContextProviderFunc{
+		ProviderName: "oversized-provider-for-test",
+		Fn: func(_ context.Context, _, _ string, _ agentplugin.ContextProviderOpts) (string, error) {
+			return "## Project Knowledge\n" + strings.Repeat("a source chunk of real size. ", 4_000), nil
+		},
+	}
+	agentplugin.RegisterContextProvider(big)
+	t.Cleanup(func() { unregisterContextProviderForTest(big.ProviderName) })
+	o := &Orchestrator{
+		projectID: "p1", llmProvider: "bedrock", llmModel: "m",
+		llmInputWindow: 32_000, llmOutputCap: 4_096,
+	}
+	prompt := strings.Repeat("the prompt that already exists. ", 1_000)
+	got := o.injectKnowledgeSources(context.Background(), prompt, "a query", 5, llmlayer.LayerAnalysis, nil)
+	if got != prompt {
+		t.Errorf("a section of %d tokens was injected into a prompt with less headroom than that",
+			contextbudget.Tokens(got)-contextbudget.Tokens(prompt))
+	}
+
+	// And one that fits is still injected — the check is a bound, not a veto.
+	unregisterContextProviderForTest(big.ProviderName)
+	small := agentplugin.ContextProviderFunc{
+		ProviderName: "small-provider-for-test",
+		Fn: func(_ context.Context, _, _ string, _ agentplugin.ContextProviderOpts) (string, error) {
+			return "## Project Knowledge\n- one small hint\n", nil
+		},
+	}
+	agentplugin.RegisterContextProvider(small)
+	t.Cleanup(func() { unregisterContextProviderForTest(small.ProviderName) })
+	if got := o.injectKnowledgeSources(context.Background(), prompt, "a query", 5, llmlayer.LayerAnalysis, nil); got == prompt {
+		t.Error("a section that fits was dropped")
+	}
+}
+
+// TestRefitReportsWhatThePromptCarries. Retrieval is told to skip the findings
+// the prompt already holds. After a refit the prompt holds FEWER, and passing
+// the run-start list would suppress prior knowledge this prompt no longer
+// contains — so the model never sees it. The same mistake as excluding the base
+// context's findings from a prompt built without the base context, which was
+// the fifth finding of the first round.
+func TestRefitReportsWhatThePromptCarries(t *testing.T) {
+	o := &Orchestrator{
+		projectID: "p1", llmProvider: "bedrock", llmModel: "m",
+		llmInputWindow: 32_000, llmOutputCap: 4_096,
+	}
+	lrc := &ledgerReadContext{hasLedger: true, candidates: ledgerFixture(420), descChars: 600}
+	lrc.findings = lrc.candidates
+	o.baseContextFindingIDs = make([]string, 0, len(lrc.findings))
+	for i := range lrc.findings {
+		o.baseContextFindingIDs = append(o.baseContextFindingIDs, lrc.findings[i].ID)
+	}
+	o.baseRebuild = &baseContextRebuild{
+		template: "base {{PROFILE}} {{PREVIOUS_CONTEXT}}", profile: "p", language: "English",
+		frame: previousContextFrame{head: "## Investigation so far\n\n"}, lrc: lrc,
+	}
+	base := o.renderBaseContext(o.baseRebuild, renderLedgerFindings(lrc.findings, 600))
+	const areaFixture = "Analyse this area.\n{{QUERY_RESULTS}}\n"
+	evidence := strings.Repeat(`{"step":1,"sql":"select 1","rows":[["a","b"]]},`, 1_500)
+
+	refitted, carried := o.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, "")
+	if refitted == base {
+		t.Fatal("fixture did not refit")
+	}
+	if len(carried) >= len(o.baseContextFindingIDs) {
+		t.Errorf("carried %d ids after a refit that removed findings, from a run-start list of %d",
+			len(carried), len(o.baseContextFindingIDs))
+	}
+	// Every id reported must actually be in the prompt.
+	for _, id := range carried {
+		if !strings.Contains(refitted, findingNameForID(lrc.candidates, id)) {
+			t.Errorf("id %s is reported as carried but its finding is not in the prompt", id)
+		}
+	}
+
+	// A prompt that needed no refit keeps the run-start list.
+	big := &Orchestrator{projectID: "p1", llmProvider: "bedrock", llmModel: "m",
+		llmInputWindow: 1_000_000, llmOutputCap: 64_000,
+		baseRebuild: o.baseRebuild, baseContextFindingIDs: o.baseContextFindingIDs}
+	if _, ids := big.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, ""); len(ids) != len(o.baseContextFindingIDs) {
+		t.Errorf("a prompt that was not resized reported %d ids, want the run-start %d",
+			len(ids), len(o.baseContextFindingIDs))
+	}
+}
+
+func findingNameForID(findings []commonmodels.LedgerFinding, id string) string {
+	for i := range findings {
+		if findings[i].ID == id {
+			return findings[i].Name
+		}
+	}
+	return "\x00no-such-finding"
 }

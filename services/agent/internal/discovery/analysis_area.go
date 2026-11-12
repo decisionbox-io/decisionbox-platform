@@ -168,7 +168,7 @@ func (o *Orchestrator) analyseArea(ctx context.Context, in areaAnalysisInput) ar
 	// really stands and resized if it does not fit — lowering the evidence
 	// budget cannot rescue a prompt the block has already filled, and an
 	// input-only overflow cannot be answered by asking for less output.
-	baseContext = o.refitForAnalysisArea(ctx, baseContext, areaPrompt, datasetsStr,
+	baseContext, carried := o.refitForAnalysisArea(ctx, baseContext, areaPrompt, datasetsStr,
 		len(relevantSteps), queryResultsJSON, refDataset)
 
 	prompt := o.buildAnalysisAreaPrompt(baseContext, areaPrompt, datasetsStr, len(relevantSteps), queryResultsJSON, refDataset)
@@ -184,7 +184,10 @@ func (o *Orchestrator) analyseArea(ctx context.Context, in areaAnalysisInput) ar
 
 	// Inject project knowledge sources relevant to this analysis area.
 	areaQuery := fmt.Sprintf("%s: %s", area.Name, area.Description)
-	prompt = o.injectKnowledgeSources(ctx, prompt, areaQuery, knowledgeTopKAnalysis, llmlayer.LayerAnalysis, o.baseContextFindingIDs)
+	// carried, not baseContextFindingIDs: the refit above may have left fewer
+	// findings in THIS prompt, and retrieval must not skip what it no longer
+	// holds — that would suppress prior knowledge the model never saw.
+	prompt = o.injectKnowledgeSources(ctx, prompt, areaQuery, knowledgeTopKAnalysis, llmlayer.LayerAnalysis, carried)
 
 	// Create analysis step to capture full dialog
 	step := models.AnalysisStep{

@@ -3078,7 +3078,7 @@ func (o *Orchestrator) generateRecommendations(
 	// evidence budget that shrinks to fit, recommendations carry every insight
 	// the run produced. So the prior-knowledge block is checked against the
 	// prompt as it really stands, and resized if it does not fit.
-	baseContext = o.refitForRecommendations(ctx, baseContext, promptTemplate, summary, string(insightsJSON), refDataset)
+	baseContext, carried := o.refitForRecommendations(ctx, baseContext, promptTemplate, summary, string(insightsJSON), refDataset)
 
 	prompt := o.buildRecommendationsPrompt(baseContext, promptTemplate, summary, string(insightsJSON), refDataset)
 
@@ -3086,7 +3086,10 @@ func (o *Orchestrator) generateRecommendations(
 	// Recommendations often need broader business context (constraints, prior
 	// initiatives, tone) so we use a higher top-K than analysis prompts.
 	recommendationQuery := o.recommendationsKnowledgeQuery(insights)
-	prompt = o.injectKnowledgeSources(ctx, prompt, recommendationQuery, knowledgeTopKRecommendations, llmlayer.LayerRecommendations, o.baseContextFindingIDs)
+	// carried, not baseContextFindingIDs: the refit above may have left fewer
+	// findings in THIS prompt, and retrieval must not skip what it no longer
+	// holds.
+	prompt = o.injectKnowledgeSources(ctx, prompt, recommendationQuery, knowledgeTopKRecommendations, llmlayer.LayerRecommendations, carried)
 
 	step.Prompt = prompt
 
@@ -4464,7 +4467,7 @@ func (o *Orchestrator) injectKnowledgeSources(ctx context.Context, prompt, query
 	// Sized from what this layer's window still has free beside the prompt that
 	// already exists, so a provider that can scale is not held to a top-N and
 	// not allowed to overflow either.
-	budget := o.contextProviderBudget(ctx, layer, prompt)
+	budget, headroom := o.contextProviderBudget(ctx, layer, prompt)
 
 	// No room, or an operator who set the share to zero. Either way the answer
 	// is the same and it is not "retrieve anyway": a provider that ignores the
@@ -4503,6 +4506,26 @@ func (o *Orchestrator) injectKnowledgeSources(ctx context.Context, prompt, query
 	})
 
 	if section == "" {
+		return prompt
+	}
+
+	// What came back, against what the prompt can actually afford. The budget
+	// above is per provider and only binds the ones that honour it: the
+	// knowledge-sources provider is bounded by its own top-N and returns
+	// whatever those items are, which on a project with large source chunks is
+	// more than the headroom. Measuring the composed sections is the only thing
+	// that can catch that, and it is the last point at which anything can.
+	//
+	// Dropped whole rather than cut: a half-rendered knowledge chunk is worse
+	// than none, because the model cannot tell it was truncated. This fires
+	// only where the alternative is a prompt over its window.
+	if cost := approxTokens(ctx, section); cost > headroom {
+		applog.WithFields(applog.Fields{
+			"project_id": o.projectID,
+			"layer":      layer,
+			"section":    cost,
+			"headroom":   headroom,
+		}).Warn("Composed context does not fit what is left of this prompt; dropping it")
 		return prompt
 	}
 
