@@ -259,6 +259,13 @@ func TestCubeSeedPack_RecommendationExampleMatchesTheModel(t *testing.T) {
 		// it lives: the agent's TestRecommendationsPrompt_CarriesTheFigureContract
 		// and TestRecommendationSchema_DescribesEveryArrayTheContractAsksFor.
 		"figures": "asked for by the contract the orchestrator appends, not by pack content",
+
+		// Phase 9's duplicate markers. Same case as `validation`: attached after
+		// generation, by a similarity check over the finished documents. A pack
+		// that taught the model to emit one would be teaching it to declare its
+		// own output a restatement of something it cannot see.
+		"duplicate_of":     "attached by the Phase 9 duplicate check after generation",
+		"similarity_score": "attached by the Phase 9 duplicate check after generation",
 	}
 
 	body := loadSeedPack(t, cubeSeedSlug).Prompts.Base.Recommendations
