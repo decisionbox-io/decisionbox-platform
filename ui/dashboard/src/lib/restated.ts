@@ -45,34 +45,38 @@ export function restatedToggleLabel(count: number, showing: boolean): string {
 }
 
 /**
- * Collapses rows that share a key, keeping the one a reader should be sent to.
+ * Collapses rows that share a key, keeping at most one canonical and at most
+ * one restatement for each.
  *
- * These lists show one row per subject across runs, keyed by title or by
- * area+name, and they kept whichever came first. That is wrong once
- * restatements are hidden: if the first row for a subject is a restatement and
- * the canonical it points at carries the same key, the canonical was discarded
- * here and the restatement was then hidden by the split — so the subject
- * vanished from the list entirely, having been reported twice.
+ * These lists show one row per subject across runs and used to keep whichever
+ * came first. That breaks in both directions once restatements are hidden, and
+ * I got it wrong each way in turn:
  *
- * A canonical row therefore wins over a restatement for the same key.
- * Otherwise the first still wins, which is the previous behaviour and is the
- * newest row, since these lists are built newest-run first.
+ *   - keep-first alone: if the first row for a subject was a restatement and
+ *     the canonical shared its key, the canonical was dropped here and the
+ *     restatement hidden by the split, so a subject reported TWICE vanished.
+ *   - canonical-wins alone: the restatement was dropped here instead, so the
+ *     reveal control could not show it or the score that hid it — and a
+ *     suppression nothing can reveal is the one thing this must never be.
+ *
+ * Keeping one of each is what satisfies both: the default view shows the
+ * canonical, the toggle reveals the restatement beside it, and the count the
+ * toggle offers is the number of rows it can actually produce. Among rows of
+ * the same kind the first still wins, which is the newest, since these lists
+ * are built newest-run first.
  */
 export function collapseByKey<T extends MaybeRestated>(docs: T[], key: (doc: T) => string): T[] {
-  const at = new Map<string, number>();
+  const seen = new Set<string>();
   const out: T[] = [];
   for (const doc of docs) {
-    const k = key(doc);
-    const seen = at.get(k);
-    if (seen === undefined) {
-      at.set(k, out.length);
-      out.push(doc);
+    // The kind is part of the identity here: a canonical and a restatement of
+    // the same subject are two rows the reader may need, not one row twice.
+    const k = (isRestated(doc) ? 'r:' : 'c:') + key(doc);
+    if (seen.has(k)) {
       continue;
     }
-    // Replace a kept restatement with the canonical for the same subject.
-    if (isRestated(out[seen]) && !isRestated(doc)) {
-      out[seen] = doc;
-    }
+    seen.add(k);
+    out.push(doc);
   }
   return out;
 }

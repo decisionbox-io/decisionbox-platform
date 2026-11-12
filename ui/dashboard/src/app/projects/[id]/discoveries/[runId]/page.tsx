@@ -300,6 +300,23 @@ export default function DiscoveryDetailPage() {
             </table>
           </div>
         </>
+      ) : restatedInsights.length > 0 ? (
+        // Everything this run reported was judged a restatement. Saying "no
+        // issues were detected" would be false, and the reveal control lives
+        // inside the branch above — so a run like this had its whole output
+        // hidden with no way to reach it. A suppression that cannot be undone
+        // is the one thing this feature must never be.
+        <EmptyState icon={<IconBulb size={32} />} title="Everything this run found was already reported"
+          description={`All ${restatedInsights.length} of this run's insights restate findings already recorded. Nothing here is new — but you can read them.`}
+          action={
+            <button onClick={() => setShowRestated(true)} style={{
+              fontSize: 12, padding: '6px 14px',
+              border: '0.5px solid var(--db-border-strong)',
+              borderRadius: 'var(--db-radius)',
+              background: 'var(--db-bg-white)', color: 'var(--db-text-secondary)',
+              cursor: 'pointer', fontFamily: 'inherit',
+            }}>{restatedToggleLabel(restatedInsights.length, false)}</button>
+          } />
       ) : (
         <EmptyState icon={<IconBulb size={32} />} title="No insights found"
           description="No issues were detected in this discovery run." />

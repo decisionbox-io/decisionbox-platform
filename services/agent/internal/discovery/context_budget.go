@@ -155,7 +155,13 @@ func (o *Orchestrator) layerOutputReserve(layer string, outputCap, window int) i
 	if intended <= 0 {
 		return intendedOutputReserve(outputCap, window)
 	}
-	return intendedOutputReserve(intended, window)
+	// Bounded by the WINDOW only, not routed through intendedOutputReserve.
+	// That helper lowers its answer to the analysis phase's intended size,
+	// which is the right reserve for analysis and the wrong one here: an
+	// operator who raises EXPLORATION_MAX_OUTPUT_TOKENS above it gets a reserve
+	// smaller than what exploration will actually request, and the input
+	// budgets then spend tokens generation needs.
+	return boundOutputCap(intended, window)
 }
 
 // priorContextBudget is how many tokens the accumulated prior-knowledge block
