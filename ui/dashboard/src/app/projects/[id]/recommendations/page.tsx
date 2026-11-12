@@ -14,7 +14,7 @@ import {
 } from '@/components/common/UIComponents';
 import UnreadDot from '@/components/common/UnreadDot';
 import { useReadSet } from '@/lib/readState';
-import { restatedToggleLabel, splitRestated } from '@/lib/restated';
+import { collapseByKey, restatedToggleLabel, splitRestated } from '@/lib/restated';
 import RestatedBadge from '@/components/common/RestatedBadge';
 import { api, Feedback, Insight, Project, Recommendation, SearchResultItem } from '@/lib/api';
 
@@ -45,7 +45,7 @@ export default function RecommendationsListPage() {
       api.getProject(id).then(p => setProject(p)),
       api.listDiscoveries(id).then(discoveries => {
         const recs: RecWithContext[] = [];
-        const seen = new Set<string>();
+        const collected: RecWithContext[] = [];
 
         for (const d of (discoveries || [])) {
           api.listFeedback(d.id).then(fb => {
@@ -55,11 +55,7 @@ export default function RecommendationsListPage() {
           }).catch(() => {});
 
           for (const rec of (d.recommendations || [])) {
-            // Deduplicate by title (show latest)
-            if (seen.has(rec.title)) continue;
-            seen.add(rec.title);
-
-            recs.push({
+            collected.push({
               ...rec,
               discoveryId: d.id,
               discoveryDate: d.discovery_date,
@@ -67,6 +63,9 @@ export default function RecommendationsListPage() {
             });
           }
         }
+        // One row per title, collapsed AFTER collecting so a canonical row can
+        // win over a restatement sharing its title — see collapseByKey.
+        recs.push(...collapseByKey(collected, r => r.title));
         setAllRecs(recs);
       }),
     ])

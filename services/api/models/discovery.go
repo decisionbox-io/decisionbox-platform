@@ -106,6 +106,15 @@ type Insight struct {
 	FigureVerdicts    []gomodels.FigureVerdict    `bson:"figure_verdicts,omitempty" json:"evidence_figures,omitempty"`
 	FigureCorrections []gomodels.FigureCorrection `bson:"figure_corrections,omitempty" json:"evidence_figure_corrections,omitempty"`
 	FigureTemplate    *gomodels.FigureTemplate    `bson:"figure_template,omitempty" json:"evidence_figure_template,omitempty"`
+
+	// DuplicateOf and SimilarityScore are Phase 9's marks, mirrored onto the
+	// embedded copy so the dashboard can hide a restatement. They have to be
+	// HERE as well as on the agent's own struct: the discovery endpoints decode
+	// BSON into this type, so a field the agent writes and this type does not
+	// declare is dropped silently on the way out — the mark would reach the
+	// database and never reach a screen.
+	DuplicateOf     string  `bson:"duplicate_of,omitempty" json:"duplicate_of,omitempty"`
+	SimilarityScore float64 `bson:"similarity_score,omitempty" json:"similarity_score,omitempty"`
 }
 
 type Recommendation struct {
@@ -138,6 +147,10 @@ type Recommendation struct {
 	// Validation is the verifier+refuter verdict attached after the
 	// agent's recommendation-validation phase runs. Nil on legacy docs.
 	Validation *InsightValidation `bson:"validation,omitempty" json:"validation,omitempty"`
+
+	// See Insight.DuplicateOf: declared here too, or the API drops it.
+	DuplicateOf     string  `bson:"duplicate_of,omitempty" json:"duplicate_of,omitempty"`
+	SimilarityScore float64 `bson:"similarity_score,omitempty" json:"similarity_score,omitempty"`
 }
 
 type Impact struct {

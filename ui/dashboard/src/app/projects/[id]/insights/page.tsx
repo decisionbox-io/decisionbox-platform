@@ -19,7 +19,7 @@ import {
 import { statusMeta } from '@/components/validation/statusMeta';
 import { useReadSet } from '@/lib/readState';
 import { api, Feedback, Insight, Project, SearchResultItem } from '@/lib/api';
-import { restatedToggleLabel, splitRestated } from '@/lib/restated';
+import { collapseByKey, restatedToggleLabel, splitRestated } from '@/lib/restated';
 
 const severityOrder: Record<string, number> = {
   critical: 0, high: 1, medium: 2, low: 3,
@@ -65,8 +65,8 @@ export default function InsightsListPage() {
       api.getProject(id).then(p => setProject(p)),
       api.listDiscoveries(id).then(discoveries => {
         const insights: InsightWithContext[] = [];
-        const seen = new Set<string>();
 
+        const collected: InsightWithContext[] = [];
         for (const d of (discoveries || [])) {
           // Load feedback per discovery
           api.listFeedback(d.id).then(fb => {
@@ -76,18 +76,19 @@ export default function InsightsListPage() {
           }).catch(() => {});
 
           for (const insight of (d.insights || [])) {
-            // Deduplicate by name (show latest version)
-            const key = `${insight.analysis_area}:${insight.name}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-
-            insights.push({
+            collected.push({
               ...insight,
               discoveryId: d.id,
               discoveryDate: d.discovery_date,
             });
           }
         }
+        // One row per subject, collapsed AFTER collecting so a canonical row
+        // can win over a restatement that shares its key. Collapsing on the
+        // way in kept whichever came first, and if that was a restatement the
+        // canonical was dropped here and the restatement hidden by the split —
+        // the subject disappeared from the list having been reported twice.
+        insights.push(...collapseByKey(collected, i => `${i.analysis_area}:${i.name}`));
         setAllInsights(insights);
       }),
     ])

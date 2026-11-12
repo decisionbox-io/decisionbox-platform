@@ -141,7 +141,17 @@ func (o *Orchestrator) layerOutputReserve(layer string, outputCap, window int) i
 	if layer != llmlayer.LayerExploration {
 		return intendedOutputReserve(outputCap, window)
 	}
-	intended := ai.ExplorationIntendedOutput(o.llmProvider, o.llmModel, outputCap, o.effectiveReasoningFor(llmlayer.LayerExploration))
+	// The EXPLORATION layer's own provider and model, resolved the way
+	// budgetFor resolves them. Reading the project default instead got the
+	// wrong catalogued cap the moment a deployment gave exploration its own
+	// model (#407): a default capped at 4,096 beside an exploration model
+	// asking for 12,000 reserved 4,096, and the provider budget then spent
+	// output headroom on retrieved context.
+	provider, model := o.llmProvider, o.llmModel
+	if l := o.layer(llmlayer.LayerExploration); l != nil {
+		provider, model = l.Provider, l.Model
+	}
+	intended := ai.ExplorationIntendedOutput(provider, model, outputCap, o.effectiveReasoningFor(llmlayer.LayerExploration))
 	if intended <= 0 {
 		return intendedOutputReserve(outputCap, window)
 	}
