@@ -620,11 +620,62 @@ func (o *Orchestrator) refitForRecommendations(ctx context.Context, baseContext,
 // therefore could not rescue a prompt the block had already filled, and this is
 // what does.
 func (o *Orchestrator) refitForAnalysisArea(ctx context.Context, baseContext, areaPrompt, datasetsStr string,
-	totalQueries int, queryResultsJSON, refDataset string, soFar runFindingsSoFar) (string, []string) {
-	return o.refitAgainst(ctx, "analysis", baseContext, llmlayer.LayerAnalysis,
-		func(base string) string {
-			return o.buildAnalysisAreaPrompt(base, areaPrompt, datasetsStr, totalQueries, queryResultsJSON, refDataset, soFar)
-		})
+	totalQueries int, queryResultsJSON, refDataset string, soFar runFindingsSoFar,
+	runInsights []models.Insight) (string, []string, runFindingsSoFar) {
+	assemble := func(base string, sf runFindingsSoFar) string {
+		return o.buildAnalysisAreaPrompt(base, areaPrompt, datasetsStr, totalQueries, queryResultsJSON, refDataset, sf)
+	}
+	// The same-run block gives way first — see refitRunFindingsSoFar for why
+	// it rather than the evidence or the ledger block.
+	soFar = o.refitRunFindingsSoFar(ctx, soFar, runInsights, func(sf runFindingsSoFar) string {
+		return assemble(baseContext, sf)
+	})
+	base, carried := o.refitAgainst(ctx, "analysis", baseContext, llmlayer.LayerAnalysis,
+		func(base string) string { return assemble(base, soFar) })
+	return base, carried, soFar
+}
+
+// refitRunFindingsSoFar re-sizes the same-run block against the prompt as it
+// really stands, and drops it when there is no room left for it.
+//
+// The block is sized before the evidence exists, as a share of the window —
+// and the picker does not drop or re-compact its final step, so one oversized
+// exploration result can leave a prompt that fitted WITHOUT this block and
+// overflows with it. The ledger refit cannot rescue that: it only removes
+// ledger findings, and a project with none has nothing to remove. Reproduced in
+// review with the real picker and renderer — 126,719 tokens beside a 4,096
+// output reserve became 132,235 against a 131,072 window.
+//
+// This block is the right one to give up, of the three things in that prompt.
+// The evidence is what the analysis is about. The ledger block is what earlier
+// runs established, and losing it is the defect this change exists to fix.
+// This one is an optimisation inside a single run: without it an area may
+// repeat a sibling area, which is a finding the reader sees twice — against a
+// phase that returns nothing at all, because an input-only overflow cannot be
+// answered by asking for less output.
+func (o *Orchestrator) refitRunFindingsSoFar(ctx context.Context, soFar runFindingsSoFar,
+	insights []models.Insight, assemble func(runFindingsSoFar) string) runFindingsSoFar {
+	if soFar == "" {
+		return soFar
+	}
+	window, outputCap := o.budgetFor(llmlayer.LayerAnalysis)
+	available := contextbudget.AvailableInput(window, intendedOutputReserve(outputCap, window), analysisReservedSystemTokens)
+	if approxTokens(ctx, assemble(soFar)) <= available {
+		return soFar
+	}
+	// What this prompt costs with no same-run block at all. Everything else in
+	// it is decided by now, this area's retained evidence included, so this is
+	// the real floor.
+	room := available - approxTokens(ctx, assemble(""))
+	refitted := renderRunFindingsSoFarWithin(insights, room)
+	applog.WithFields(applog.Fields{
+		"project_id": o.projectID,
+		"available":  available,
+		"room":       room,
+		"was":        contextbudget.Tokens(string(soFar)),
+		"now":        contextbudget.Tokens(string(refitted)),
+	}).Info("Same-run findings block refitted against the prompt this area is really sending")
+	return refitted
 }
 
 // fixedPromptParts is everything a run's prompts will carry besides the

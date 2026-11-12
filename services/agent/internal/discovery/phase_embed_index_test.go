@@ -1176,8 +1176,8 @@ func TestMarkDuplicates_SameWordingDifferentMagnitude(t *testing.T) {
 		store := &mockEmbedIndexStore{}
 		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{}}
 		o.markDuplicates(context.Background(), []dedupCandidate{
-			{id: "small", docType: "insight", projectID: "p1", vec: vec, text: prose, magnitude: magnitudeKey(100, nil)},
-			{id: "large", docType: "insight", projectID: "p1", vec: vec, text: prose, magnitude: magnitudeKey(1_000, nil)},
+			{id: "small", docType: "insight", projectID: "p1", vec: vec, text: prose, magnitude: magnitudeKey(100, nil, nil)},
+			{id: "large", docType: "insight", projectID: "p1", vec: vec, text: prose, magnitude: magnitudeKey(1_000, nil, nil)},
 		}, nil)
 		if len(store.dupUpdates) != 0 {
 			t.Errorf("folded a different magnitude away: %+v", store.dupUpdates)
@@ -1189,8 +1189,8 @@ func TestMarkDuplicates_SameWordingDifferentMagnitude(t *testing.T) {
 		store := &mockEmbedIndexStore{}
 		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{}}
 		o.markDuplicates(context.Background(), []dedupCandidate{
-			{id: "first", docType: "insight", projectID: "p1", vec: vec, text: prose, magnitude: magnitudeKey(100, nil)},
-			{id: "second", docType: "insight", projectID: "p1", vec: vec, text: prose, magnitude: magnitudeKey(100, nil)},
+			{id: "first", docType: "insight", projectID: "p1", vec: vec, text: prose, magnitude: magnitudeKey(100, nil, nil)},
+			{id: "second", docType: "insight", projectID: "p1", vec: vec, text: prose, magnitude: magnitudeKey(100, nil, nil)},
 		}, nil)
 		if len(store.dupUpdates) != 1 || store.dupUpdates[0].ID != "second" {
 			t.Errorf("want the second folded into the first, got %+v", store.dupUpdates)
@@ -1206,9 +1206,9 @@ func TestMarkDuplicates_SameWordingDifferentMagnitude(t *testing.T) {
 		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{}}
 		o.markDuplicates(context.Background(), []dedupCandidate{
 			{id: "a", docType: "insight", projectID: "p1", vec: vec,
-				text: "707 SKUs unpriced. Area: pricing.", magnitude: magnitudeKey(707, nil)},
+				text: "707 SKUs unpriced. Area: pricing.", magnitude: magnitudeKey(707, nil, nil)},
 			{id: "b", docType: "insight", projectID: "p1", vec: vec,
-				text: "801 SKUs still unpriced. Area: pricing.", magnitude: magnitudeKey(801, nil)},
+				text: "801 SKUs still unpriced. Area: pricing.", magnitude: magnitudeKey(801, nil, nil)},
 		}, nil)
 		if len(store.dupUpdates) != 1 || store.dupUpdates[0].ID != "b" {
 			t.Errorf("a restatement was not folded: %+v", store.dupUpdates)
@@ -1223,7 +1223,7 @@ func TestMarkDuplicates_SameWordingDifferentMagnitude(t *testing.T) {
 			dupes: []vectorstore.SearchResult{{ID: "earlier", Score: 1.0}},
 		}}
 		o.markDuplicates(context.Background(), []dedupCandidate{
-			{id: "new", docType: "insight", projectID: "p1", vec: vec, text: prose, magnitude: magnitudeKey(100, nil)},
+			{id: "new", docType: "insight", projectID: "p1", vec: vec, text: prose, magnitude: magnitudeKey(100, nil, nil)},
 		}, nil)
 		if len(store.dupUpdates) != 0 {
 			t.Errorf("folded into a stored document stating a different magnitude: %+v", store.dupUpdates)
@@ -1238,7 +1238,7 @@ func TestMarkDuplicates_SameWordingDifferentMagnitude(t *testing.T) {
 			dupes: []vectorstore.SearchResult{{ID: "old", Score: 0.95}},
 		}}
 		o.markDuplicates(context.Background(), []dedupCandidate{
-			{id: "new", docType: "insight", projectID: "p1", vec: vec, text: prose, magnitude: magnitudeKey(100, nil)},
+			{id: "new", docType: "insight", projectID: "p1", vec: vec, text: prose, magnitude: magnitudeKey(100, nil, nil)},
 		}, nil)
 		if len(store.dupUpdates) != 1 {
 			t.Errorf("want the fold, got %+v", store.dupUpdates)
@@ -1252,16 +1252,16 @@ func TestMarkDuplicates_SameWordingDifferentMagnitude(t *testing.T) {
 func TestMagnitudeKeyIsDeterministic(t *testing.T) {
 	m1 := map[string]interface{}{"rate": 4.2, "affected_stores": 424, "aisle": "paint"}
 	m2 := map[string]interface{}{"aisle": "paint", "affected_stores": 424, "rate": 4.2}
-	first := magnitudeKey(100, m1)
+	first := magnitudeKey(100, m1, nil)
 	for i := 0; i < 50; i++ {
-		if got := magnitudeKey(100, m2); got != first {
+		if got := magnitudeKey(100, m2, nil); got != first {
 			t.Fatalf("iteration %d gave %q, want %q", i, got, first)
 		}
 	}
-	if magnitudeKey(100, m1) == magnitudeKey(101, m1) {
+	if magnitudeKey(100, m1, nil) == magnitudeKey(101, m1, nil) {
 		t.Error("the affected count does not reach the signature")
 	}
-	if magnitudeKey(100, m1) == magnitudeKey(100, map[string]interface{}{"rate": 9.9}) {
+	if magnitudeKey(100, m1, nil) == magnitudeKey(100, map[string]interface{}{"rate": 9.9}, nil) {
 		t.Error("the metrics do not reach the signature")
 	}
 }
@@ -1284,7 +1284,7 @@ func TestMarkDuplicates_RecommendationsStillFoldAcrossRuns(t *testing.T) {
 	}}
 	o.markDuplicates(context.Background(), []dedupCandidate{{
 		id: "this-run", docType: "recommendation", projectID: "p1", vec: []float64{1, 0, 0},
-		text: prose, magnitude: magnitudeOf("recommendation", 0, nil, nil),
+		text: prose, magnitude: magnitudeOf("recommendation", 0, nil, nil, nil),
 	}}, nil)
 
 	if len(store.dupUpdates) != 1 || store.dupUpdates[0].DupOf != "last-run" {
@@ -1306,11 +1306,11 @@ func TestMarkDuplicates_ChainCannotRouteAroundTheMagnitudeGuard(t *testing.T) {
 	o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{}}
 	o.markDuplicates(context.Background(), []dedupCandidate{
 		{id: "A", docType: "insight", projectID: "p1", vec: a,
-			text: prose, magnitude: magnitudeOf("insight", 1_000, nil, nil)},
+			text: prose, magnitude: magnitudeOf("insight", 1_000, nil, nil, nil)},
 		{id: "B", docType: "insight", projectID: "p1", vec: b,
-			text: "A paraphrase of the same thing. Area: pricing.", magnitude: magnitudeOf("insight", 1_000, nil, nil)},
+			text: "A paraphrase of the same thing. Area: pricing.", magnitude: magnitudeOf("insight", 1_000, nil, nil, nil)},
 		{id: "C", docType: "insight", projectID: "p1", vec: a,
-			text: prose, magnitude: magnitudeOf("insight", 100, nil, nil)},
+			text: prose, magnitude: magnitudeOf("insight", 100, nil, nil, nil)},
 	}, nil)
 
 	// B folds into A — that one is a genuine paraphrase.
@@ -1334,15 +1334,37 @@ func TestMarkDuplicates_ChainCannotRouteAroundTheMagnitudeGuard(t *testing.T) {
 // text is identical.
 func TestMagnitudeOfIsTypeAware(t *testing.T) {
 	t.Run("an insight signs its count and metrics", func(t *testing.T) {
-		if got := magnitudeOf("insight", 500, nil, nil); got == "" {
+		if got := magnitudeOf("insight", 500, nil, nil, nil); got == "" {
 			t.Error("insight signature is empty — the guard would never fire")
 		}
-		if magnitudeOf("insight", 500, nil, nil) == magnitudeOf("insight", 501, nil, nil) {
+		if magnitudeOf("insight", 500, nil, nil, nil) == magnitudeOf("insight", 501, nil, nil, nil) {
 			t.Error("the affected count does not reach the signature")
 		}
 		// A recommendation's actions are not an insight's concern.
-		if magnitudeOf("insight", 500, nil, nil) != magnitudeOf("insight", 500, nil, []string{"do a thing"}) {
+		if magnitudeOf("insight", 500, nil, nil, nil) != magnitudeOf("insight", 500, nil, []string{"do a thing"}, nil) {
 			t.Error("actions reached an insight's signature")
+		}
+		// The indicators are the supporting figures the model is asked to
+		// list, and they carry a claim the prose need not repeat: "purchase
+		// rate: 0%" and "purchase rate: 20%" under identical wording are two
+		// different findings.
+		if magnitudeOf("insight", 500, nil, nil, []string{"purchase rate: 0%"}) ==
+			magnitudeOf("insight", 500, nil, nil, []string{"purchase rate: 20%"}) {
+			t.Error("the indicators do not reach the signature")
+		}
+		// Their ORDER does not, though — unlike an action list, these are
+		// observations about one finding rather than an instruction, and the
+		// same two figures the other way round are not a changed claim.
+		if magnitudeOf("insight", 500, nil, nil, []string{"a: 1", "b: 2"}) !=
+			magnitudeOf("insight", 500, nil, nil, []string{"b: 2", "a: 1"}) {
+			t.Error("reordered indicators read as a changed magnitude")
+		}
+		// And sorting must not reorder the caller's own slice, which is the
+		// insight's stored and rendered data.
+		given := []string{"z: 9", "a: 1"}
+		magnitudeOf("insight", 1, nil, nil, given)
+		if given[0] != "z: 9" {
+			t.Errorf("the insight's own indicators were reordered in place: %v", given)
 		}
 	})
 
@@ -1351,13 +1373,13 @@ func TestMagnitudeOfIsTypeAware(t *testing.T) {
 		// and they are the part a reader would act on. Two recommendations
 		// that read the same and tell you to do different things embed
 		// identically, so hiding the second hides the only part that differs.
-		a := magnitudeOf("recommendation", 0, nil, []string{"cut the price", "re-list"})
-		b := magnitudeOf("recommendation", 0, nil, []string{"delist", "renegotiate"})
+		a := magnitudeOf("recommendation", 0, nil, []string{"cut the price", "re-list"}, nil)
+		b := magnitudeOf("recommendation", 0, nil, []string{"delist", "renegotiate"}, nil)
 		if a == "" || a == b {
 			t.Errorf("recommendation signatures = %q and %q, want distinct and non-empty", a, b)
 		}
 		// Order is an instruction, not a set.
-		reordered := magnitudeOf("recommendation", 0, nil, []string{"re-list", "cut the price"})
+		reordered := magnitudeOf("recommendation", 0, nil, []string{"re-list", "cut the price"}, nil)
 		if a == reordered {
 			t.Error("a reordered action list signed the same — the order is part of the instruction")
 		}
@@ -1366,13 +1388,13 @@ func TestMagnitudeOfIsTypeAware(t *testing.T) {
 		// insight's: the same sentence against 1,200 customers and against
 		// 14,000 is a different claim.
 		steps := []string{"win back the lapsed"}
-		if magnitudeOf("recommendation", 1_200, nil, steps) == magnitudeOf("recommendation", 14_000, nil, steps) {
+		if magnitudeOf("recommendation", 1_200, nil, steps, nil) == magnitudeOf("recommendation", 14_000, nil, steps, nil) {
 			t.Error("the segment size does not reach the signature")
 		}
 		// Metrics are an insight's field and must not leak in here, or two
 		// recommendations would be told apart by something neither carries.
-		if magnitudeOf("recommendation", 500, map[string]interface{}{"x": 1}, steps) !=
-			magnitudeOf("recommendation", 500, nil, steps) {
+		if magnitudeOf("recommendation", 500, map[string]interface{}{"x": 1}, steps, nil) !=
+			magnitudeOf("recommendation", 500, nil, steps, nil) {
 			t.Error("metrics reached a recommendation signature")
 		}
 		// A document with no actions at all — an older one, or a model that
@@ -1380,7 +1402,7 @@ func TestMagnitudeOfIsTypeAware(t *testing.T) {
 		// guard refuse every pair. The pair that matters is candidate against
 		// stored, since those are the two sides of a real comparison.
 		stored := IndexedDoc{EmbeddingText: "same prose", SegmentSize: 500}
-		if got, want := stored.magnitude("recommendation"), magnitudeOf("recommendation", 500, nil, nil); got != want {
+		if got, want := stored.magnitude("recommendation"), magnitudeOf("recommendation", 500, nil, nil, nil); got != want {
 			t.Errorf("an action-less recommendation signed %q stored and %q as a candidate, so its twin would never fold", got, want)
 		}
 	})
@@ -1391,16 +1413,17 @@ func TestMagnitudeOfIsTypeAware(t *testing.T) {
 		// sameClaim refused an exact duplicate scoring 1.0 and cross-run
 		// suppression stopped working altogether.
 		rec := IndexedDoc{AffectedCount: 7, SegmentSize: 1_200, Actions: []string{"win back the lapsed"}}
-		if got, want := rec.magnitude("recommendation"), magnitudeOf("recommendation", 1_200, nil, rec.Actions); got != want {
+		if got, want := rec.magnitude("recommendation"), magnitudeOf("recommendation", 1_200, nil, rec.Actions, nil); got != want {
 			t.Errorf("stored recommendation signed %q, candidate side signs %q", got, want)
 		}
-		ins := IndexedDoc{AffectedCount: 707, SegmentSize: 1_200, Metrics: map[string]interface{}{"revenue": 48.2}}
-		if got, want := ins.magnitude("insight"), magnitudeOf("insight", 707, ins.Metrics, nil); got != want {
+		ins := IndexedDoc{AffectedCount: 707, SegmentSize: 1_200, Metrics: map[string]interface{}{"revenue": 48.2},
+			Indicators: []string{"purchase rate: 20%"}}
+		if got, want := ins.magnitude("insight"), magnitudeOf("insight", 707, ins.Metrics, nil, ins.Indicators); got != want {
 			t.Errorf("stored insight signed %q, candidate side signs %q", got, want)
 		}
 		// Each type reads ITS own count. Reading the wrong field would sign
 		// every recommendation "segment=0" and give the guard nothing to see.
-		if rec.magnitude("recommendation") == magnitudeOf("recommendation", rec.AffectedCount, nil, rec.Actions) {
+		if rec.magnitude("recommendation") == magnitudeOf("recommendation", rec.AffectedCount, nil, rec.Actions, nil) {
 			t.Error("a stored recommendation was signed with the insight count field")
 		}
 	})
@@ -1420,9 +1443,9 @@ func TestMarkDuplicates_SameWordingDifferentActions(t *testing.T) {
 		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{}}
 		o.markDuplicates(context.Background(), []dedupCandidate{
 			{id: "first", docType: "recommendation", projectID: "p1", vec: vec, text: prose,
-				magnitude: magnitudeOf("recommendation", 0, nil, []string{"cut the price"})},
+				magnitude: magnitudeOf("recommendation", 0, nil, []string{"cut the price"}, nil)},
 			{id: "second", docType: "recommendation", projectID: "p1", vec: vec, text: prose,
-				magnitude: magnitudeOf("recommendation", 0, nil, []string{"delist the SKUs"})},
+				magnitude: magnitudeOf("recommendation", 0, nil, []string{"delist the SKUs"}, nil)},
 		}, nil)
 		if len(store.dupUpdates) != 0 {
 			t.Errorf("folded two different instructions together: %+v", store.dupUpdates)
@@ -1432,7 +1455,7 @@ func TestMarkDuplicates_SameWordingDifferentActions(t *testing.T) {
 	t.Run("the same actions still fold", func(t *testing.T) {
 		store := &mockEmbedIndexStore{}
 		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{}}
-		same := magnitudeOf("recommendation", 0, nil, []string{"cut the price"})
+		same := magnitudeOf("recommendation", 0, nil, []string{"cut the price"}, nil)
 		o.markDuplicates(context.Background(), []dedupCandidate{
 			{id: "first", docType: "recommendation", projectID: "p1", vec: vec, text: prose, magnitude: same},
 			{id: "second", docType: "recommendation", projectID: "p1", vec: vec, text: prose, magnitude: same},
@@ -1451,7 +1474,7 @@ func TestMarkDuplicates_SameWordingDifferentActions(t *testing.T) {
 		}}
 		o.markDuplicates(context.Background(), []dedupCandidate{{
 			id: "this-run", docType: "recommendation", projectID: "p1", vec: vec, text: prose,
-			magnitude: magnitudeOf("recommendation", 0, nil, []string{"cut the price"}),
+			magnitude: magnitudeOf("recommendation", 0, nil, []string{"cut the price"}, nil),
 		}}, nil)
 		if len(store.dupUpdates) != 0 {
 			t.Errorf("folded into a stored recommendation with different actions: %+v", store.dupUpdates)
@@ -1475,9 +1498,9 @@ func TestMarkDuplicates_SameWordingDifferentSegmentSize(t *testing.T) {
 		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{}}
 		o.markDuplicates(context.Background(), []dedupCandidate{
 			{id: "first", docType: "recommendation", projectID: "p1", vec: vec, text: prose,
-				magnitude: magnitudeOf("recommendation", 1_200, nil, steps)},
+				magnitude: magnitudeOf("recommendation", 1_200, nil, steps, nil)},
 			{id: "second", docType: "recommendation", projectID: "p1", vec: vec, text: prose,
-				magnitude: magnitudeOf("recommendation", 14_000, nil, steps)},
+				magnitude: magnitudeOf("recommendation", 14_000, nil, steps, nil)},
 		}, nil)
 		if len(store.dupUpdates) != 0 {
 			t.Errorf("folded a 1,200-customer segment into a 14,000-customer one: %+v", store.dupUpdates)
@@ -1487,7 +1510,7 @@ func TestMarkDuplicates_SameWordingDifferentSegmentSize(t *testing.T) {
 	t.Run("an unchanged segment still folds", func(t *testing.T) {
 		store := &mockEmbedIndexStore{}
 		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{}}
-		same := magnitudeOf("recommendation", 1_200, nil, steps)
+		same := magnitudeOf("recommendation", 1_200, nil, steps, nil)
 		o.markDuplicates(context.Background(), []dedupCandidate{
 			{id: "first", docType: "recommendation", projectID: "p1", vec: vec, text: prose, magnitude: same},
 			{id: "second", docType: "recommendation", projectID: "p1", vec: vec, text: prose, magnitude: same},
@@ -1508,10 +1531,64 @@ func TestMarkDuplicates_SameWordingDifferentSegmentSize(t *testing.T) {
 		}}
 		o.markDuplicates(context.Background(), []dedupCandidate{{
 			id: "this-run", docType: "recommendation", projectID: "p1", vec: vec, text: prose,
-			magnitude: magnitudeOf("recommendation", 14_000, nil, steps),
+			magnitude: magnitudeOf("recommendation", 14_000, nil, steps, nil),
 		}}, nil)
 		if len(store.dupUpdates) != 0 {
 			t.Errorf("folded into a stored recommendation whose segment was a tenth the size: %+v", store.dupUpdates)
+		}
+	})
+}
+
+// TestMarkDuplicates_SameWordingDifferentIndicators. BuildEmbeddingText carries
+// the name, description, area, severity and segment — and the indicators are
+// where the model is asked to put the figures that support the finding. So two
+// insights can read identically word for word and report a 0% and a 20%
+// purchase rate, embed identically, score 1.0, and the second is suppressed:
+// the reader is told nothing changed by the one field that says it did.
+func TestMarkDuplicates_SameWordingDifferentIndicators(t *testing.T) {
+	const prose = "Browsers do not buy. The funnel leaks after the product page. Area: conversion. Severity: high. Segment: ."
+	vec := []float64{0, 0, 1}
+
+	t.Run("a changed indicator is not a duplicate", func(t *testing.T) {
+		store := &mockEmbedIndexStore{}
+		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{}}
+		o.markDuplicates(context.Background(), []dedupCandidate{
+			{id: "first", docType: "insight", projectID: "p1", vec: vec, text: prose,
+				magnitude: magnitudeOf("insight", 100, nil, nil, []string{"purchase rate: 0%"})},
+			{id: "second", docType: "insight", projectID: "p1", vec: vec, text: prose,
+				magnitude: magnitudeOf("insight", 100, nil, nil, []string{"purchase rate: 20%"})},
+		}, nil)
+		if len(store.dupUpdates) != 0 {
+			t.Errorf("folded a 0%% purchase rate into a 20%% one: %+v", store.dupUpdates)
+		}
+	})
+
+	t.Run("unchanged indicators still fold", func(t *testing.T) {
+		store := &mockEmbedIndexStore{}
+		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{}}
+		same := magnitudeOf("insight", 100, nil, nil, []string{"purchase rate: 0%"})
+		o.markDuplicates(context.Background(), []dedupCandidate{
+			{id: "first", docType: "insight", projectID: "p1", vec: vec, text: prose, magnitude: same},
+			{id: "second", docType: "insight", projectID: "p1", vec: vec, text: prose, magnitude: same},
+		}, nil)
+		if len(store.dupUpdates) != 1 || store.dupUpdates[0].ID != "second" {
+			t.Errorf("want the second folded into the first, got %+v", store.dupUpdates)
+		}
+	})
+
+	t.Run("the stored side reads the indicators too", func(t *testing.T) {
+		store := &mockEmbedIndexStore{storedDocs: map[string]IndexedDoc{
+			"last-run": {EmbeddingText: prose, AffectedCount: 100, Indicators: []string{"purchase rate: 0%"}},
+		}}
+		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{
+			dupes: []vectorstore.SearchResult{{ID: "last-run", Score: 1.0}},
+		}}
+		o.markDuplicates(context.Background(), []dedupCandidate{{
+			id: "this-run", docType: "insight", projectID: "p1", vec: vec, text: prose,
+			magnitude: magnitudeOf("insight", 100, nil, nil, []string{"purchase rate: 20%"}),
+		}}, nil)
+		if len(store.dupUpdates) != 0 {
+			t.Errorf("folded into a stored insight whose figure has since moved: %+v", store.dupUpdates)
 		}
 	})
 }

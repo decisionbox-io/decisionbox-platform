@@ -530,10 +530,28 @@ const runFindingsSoFarHeading = "### Already found by other areas in THIS run â€
 // Names, areas and figures only. Recognition is the whole job: the model needs
 // to see that a subject is taken, not to re-read the finding.
 func renderRunFindingsSoFar(insights []models.Insight, availableInput int) runFindingsSoFar {
+	return renderRunFindingsSoFarWithin(insights, contextbudget.Share(availableInput, runFindingsSoFarShare))
+}
+
+// runFindingsSoFarOverhead is the heading and the instruction, which the block
+// pays before its first line. Counted for the reason ledgerBlockOverhead is:
+// fitting the lines to the whole allowance renders a block larger than the
+// allowance, and in the refit below that difference is the overflow itself.
+func runFindingsSoFarOverhead() int {
+	return contextbudget.Tokens(runFindingsSoFarHeading + runFindingsSoFarInstruction + "\n\n")
+}
+
+// renderRunFindingsSoFarWithin renders the block to an ABSOLUTE token budget,
+// heading and instruction included.
+//
+// Separate from the share-of-window form because the block is sized twice: once
+// before the evidence exists, as a share, and again against the prompt as it
+// really stands â€” see refitRunFindingsSoFar.
+func renderRunFindingsSoFarWithin(insights []models.Insight, budget int) runFindingsSoFar {
 	if len(insights) == 0 {
 		return ""
 	}
-	budget := contextbudget.Share(availableInput, runFindingsSoFarShare)
+	budget -= runFindingsSoFarOverhead()
 	if budget <= 0 {
 		// A window with nothing spare carries nothing, the same answer the
 		// prior-knowledge block gives. Said once, here, rather than left for

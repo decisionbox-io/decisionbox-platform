@@ -181,8 +181,8 @@ func (o *Orchestrator) analyseArea(ctx context.Context, in areaAnalysisInput) ar
 	// really stands and resized if it does not fit — lowering the evidence
 	// budget cannot rescue a prompt the block has already filled, and an
 	// input-only overflow cannot be answered by asking for less output.
-	baseContext, carried := o.refitForAnalysisArea(ctx, baseContext, areaPrompt, datasetsStr,
-		len(relevantSteps), queryResultsJSON, refDataset, soFar)
+	baseContext, carried, soFar := o.refitForAnalysisArea(ctx, baseContext, areaPrompt, datasetsStr,
+		len(relevantSteps), queryResultsJSON, refDataset, soFar, in.runInsights)
 
 	prompt := o.buildAnalysisAreaPrompt(baseContext, areaPrompt, datasetsStr, len(relevantSteps), queryResultsJSON, refDataset, soFar)
 

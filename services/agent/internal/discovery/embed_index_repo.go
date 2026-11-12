@@ -25,6 +25,11 @@ type IndexedDoc struct {
 	// magnitude having moved is the thing the prompt asks the model to report.
 	AffectedCount int
 	Metrics       map[string]interface{}
+	// Indicators are the supporting figures the model lists beside a finding.
+	// They carry a quantitative claim the prose need not repeat, so two
+	// insights reporting 0% and 20% in their indicators can read identically
+	// and embed identically.
+	Indicators []string
 	// Actions and SegmentSize are what a RECOMMENDATION's embedding text
 	// leaves out. Two recommendations that read the same and tell you to do
 	// different things — or the same thing to a segment twice the size — embed
@@ -45,7 +50,7 @@ func (d IndexedDoc) magnitude(docType string) string {
 	if docType == "recommendation" {
 		count = d.SegmentSize
 	}
-	return magnitudeOf(docType, count, d.Metrics, d.Actions)
+	return magnitudeOf(docType, count, d.Metrics, d.Actions, d.Indicators)
 }
 
 // EmbedIndexStore handles Phase 9 database operations.

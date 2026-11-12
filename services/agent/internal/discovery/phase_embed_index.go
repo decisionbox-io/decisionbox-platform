@@ -247,7 +247,7 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 
 		candidates = append(candidates, dedupCandidate{
 			id: ins.ID, docType: "insight", projectID: ins.ProjectID, discoveryID: ins.DiscoveryID, vec: vec,
-			text: ins.EmbeddingText, magnitude: magnitudeOf("insight", ins.AffectedCount, ins.Metrics, nil),
+			text: ins.EmbeddingText, magnitude: magnitudeOf("insight", ins.AffectedCount, ins.Metrics, nil, ins.Indicators),
 		})
 
 		points = append(points, vectorstore.Point{
@@ -281,7 +281,7 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 			// segment it targets: the expected impact and the segment's NAME
 			// are already in the text its vector was built from, these are
 			// not, and they are what a reader would act on and act at.
-			text: rec.EmbeddingText, magnitude: magnitudeOf("recommendation", rec.SegmentSize, nil, rec.Actions),
+			text: rec.EmbeddingText, magnitude: magnitudeOf("recommendation", rec.SegmentSize, nil, rec.Actions, nil),
 		})
 
 		points = append(points, vectorstore.Point{
@@ -345,8 +345,11 @@ type dedupCandidate struct {
 // leaves out, which is what has to decide between two documents whose text is
 // identical.
 //
-// For an insight that is the affected count and the metrics. For a
-// recommendation it is the implementation actions and the segment size:
+// For an insight that is the affected count, the metrics and the indicators —
+// the supporting figures the model is asked to list, which carry a claim the
+// prose need not repeat: two insights reporting a 0% and a 20% purchase rate in
+// their indicators can read identically. For a recommendation it is the
+// implementation actions and the segment size:
 // BuildEmbeddingText carries the title, description, expected impact and the
 // segment's NAME, so two recommendations that read the same and tell you to do
 // DIFFERENT things — or to do the same thing to twice as many customers —
@@ -361,11 +364,11 @@ type dedupCandidate struct {
 // recommendation "" on one side and "affected=0" on the other, so sameClaim
 // refused even an exact duplicate scoring 1.0 and cross-run recommendation
 // suppression stopped working altogether.
-func magnitudeOf(docType string, count int, metrics map[string]interface{}, actions []string) string {
+func magnitudeOf(docType string, count int, metrics map[string]interface{}, actions, indicators []string) string {
 	if docType == "recommendation" {
 		return recommendationKey(count, actions)
 	}
-	return magnitudeKey(count, metrics)
+	return magnitudeKey(count, metrics, indicators)
 }
 
 // recommendationKey is the comparable form of what a recommendation's embedding
@@ -400,7 +403,7 @@ func actionsKey(actions []string) string {
 // rather than fmt'ed off a map: ranging a Go map is randomised, and a signature
 // that changes order between two documents would read as a magnitude change on
 // every pair.
-func magnitudeKey(affected int, metrics map[string]interface{}) string {
+func magnitudeKey(affected int, metrics map[string]interface{}, indicators []string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "affected=%d", affected)
 	keys := make([]string, 0, len(metrics))
@@ -411,7 +414,34 @@ func magnitudeKey(affected int, metrics map[string]interface{}) string {
 	for _, k := range keys {
 		fmt.Fprintf(&b, ";%s=%v", k, metrics[k])
 	}
+	if key := indicatorsKey(indicators); key != "" {
+		b.WriteString(";" + key)
+	}
 	return b.String()
+}
+
+// indicatorsKey is the comparable form of an insight's supporting figures.
+//
+// Sorted, unlike a recommendation's actions: an action list is an instruction
+// and its order is part of it, while indicators are a set of observations about
+// the same finding, and the same two figures listed the other way round are not
+// a changed claim. Sorted on a COPY — ranging and sorting the model's own slice
+// in place would reorder what gets stored and rendered.
+func indicatorsKey(indicators []string) string {
+	if len(indicators) == 0 {
+		return ""
+	}
+	trimmed := make([]string, 0, len(indicators))
+	for _, in := range indicators {
+		if in = strings.TrimSpace(in); in != "" {
+			trimmed = append(trimmed, in)
+		}
+	}
+	if len(trimmed) == 0 {
+		return ""
+	}
+	sort.Strings(trimmed)
+	return "indicators=" + strings.Join(trimmed, "|")
 }
 
 // sameClaim reports whether two documents may be folded together at all.

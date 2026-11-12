@@ -1722,7 +1722,7 @@ func TestRefitForAnalysisArea(t *testing.T) {
 		t.Fatalf("fixture does not overflow: %d of %d", before, available)
 	}
 
-	got, _ := o.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, "", "")
+	got, _, _ := o.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, "", "", nil)
 	after := contextbudget.Tokens(o.buildAnalysisAreaPrompt(got, areaFixture, "ds", 12, evidence, "", ""))
 	t.Logf("available=%d before=%d after=%d", available, before, after)
 	if after > available {
@@ -1740,7 +1740,7 @@ func TestRefitForAnalysisArea(t *testing.T) {
 	// A prompt that fits is returned untouched.
 	o2 := &Orchestrator{projectID: "p1", llmProvider: "bedrock", llmModel: "m",
 		llmInputWindow: 1_000_000, llmOutputCap: 64_000, baseRebuild: o.baseRebuild}
-	if got, _ := o2.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, "", ""); got != base {
+	if got, _, _ := o2.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, "", "", nil); got != base {
 		t.Error("the base context was rebuilt on a 1M window")
 	}
 }
@@ -1855,7 +1855,7 @@ func TestRefitReportsWhatThePromptCarries(t *testing.T) {
 	const areaFixture = "Analyse this area.\n{{QUERY_RESULTS}}\n"
 	evidence := strings.Repeat(`{"step":1,"sql":"select 1","rows":[["a","b"]]},`, 1_500)
 
-	refitted, carried := o.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, "", "")
+	refitted, carried, _ := o.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, "", "", nil)
 	if refitted == base {
 		t.Fatal("fixture did not refit")
 	}
@@ -1874,7 +1874,7 @@ func TestRefitReportsWhatThePromptCarries(t *testing.T) {
 	big := &Orchestrator{projectID: "p1", llmProvider: "bedrock", llmModel: "m",
 		llmInputWindow: 1_000_000, llmOutputCap: 64_000,
 		baseRebuild: o.baseRebuild, baseContextFindingIDs: o.baseContextFindingIDs}
-	if _, ids := big.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, "", ""); len(ids) != len(o.baseContextFindingIDs) {
+	if _, ids, _ := big.refitForAnalysisArea(context.Background(), base, areaFixture, "ds", 12, evidence, "", "", nil); len(ids) != len(o.baseContextFindingIDs) {
 		t.Errorf("a prompt that was not resized reported %d ids, want the run-start %d",
 			len(ids), len(o.baseContextFindingIDs))
 	}
@@ -2085,3 +2085,102 @@ func (mixedLayers) For(layer string) *ai.LayerLLM {
 }
 
 func mixedLayersForTest() ai.LayerSet { return mixedLayers{} }
+
+// TestSameRunBlockCannotOverflowTheArea. The #542 block is sized as a share of
+// the window BEFORE the evidence exists, and the picker neither drops nor
+// re-compacts its final step — so an area whose exploration produced one large
+// result can assemble a prompt that fitted without the block and overflows with
+// it. The ledger refit cannot rescue that: it removes ledger findings, and a
+// project with none has nothing to remove. An input-only overflow cannot be
+// answered by asking for less output, so the phase would return nothing at all.
+//
+// Reproduced in review with the real picker and renderer: 126,719 tokens beside
+// a 4,096 output reserve became 132,235 against a 131,072 window.
+func TestSameRunBlockCannotOverflowTheArea(t *testing.T) {
+	const areaFixture = "Analyse this area.\n{{QUERY_RESULTS}}\n"
+
+	newArea := func() *Orchestrator {
+		return &Orchestrator{
+			projectID: "p1", llmProvider: "bedrock", llmModel: "m",
+			llmInputWindow: 131_072, llmOutputCap: 4_096,
+		}
+	}
+	available := func(o *Orchestrator) int {
+		window, outputCap := o.budgetFor(llmlayer.LayerAnalysis)
+		return contextbudget.AvailableInput(window,
+			intendedOutputReserve(outputCap, window), analysisReservedSystemTokens)
+	}
+
+	ctx := context.Background()
+	o := newArea()
+	insights := runInsights(60)
+	soFar := renderRunFindingsSoFar(insights, available(o))
+	if soFar == "" {
+		t.Fatal("fixture produced no same-run block")
+	}
+
+	// One retained result the picker would not have re-compacted, sized from a
+	// MEASUREMENT of this prompt rather than from a magic number — so an
+	// unrelated change to the prompt's fixed parts cannot quietly turn this
+	// fixture into one that no longer exhibits the defect. Aimed to leave room
+	// for half the block, so it fits bare and overflows with it.
+	const chunk = `{"step":1,"sql":"select 1","rows":[["a","b","c","d"]]},`
+	cost := func(evidence string, sf runFindingsSoFar) int {
+		return approxTokens(ctx, o.buildAnalysisAreaPrompt("", areaFixture, "ds", 12, evidence, "", sf))
+	}
+	empty := cost("", "")
+	perChunk := float64(cost(strings.Repeat(chunk, 4_000), "")-empty) / 4_000
+	block := contextbudget.Tokens(string(soFar))
+	evidence := strings.Repeat(chunk, int(float64(available(o)-empty-block/2)/perChunk))
+
+	// The prompt without the block fits; with it, it does not. That is the
+	// defect, and the fixture has to exhibit it or the test proves nothing.
+	bare := cost(evidence, "")
+	withBlock := cost(evidence, soFar)
+	if bare > available(o) {
+		t.Fatalf("fixture does not fit even bare: %d > %d", bare, available(o))
+	}
+	if withBlock <= available(o) {
+		t.Fatalf("fixture does not overflow with the block: %d <= %d", withBlock, available(o))
+	}
+
+	// No ledger at all — the case the ledger refit cannot help with.
+	_, _, refitted := o.refitForAnalysisArea(ctx, "", areaFixture, "ds",
+		12, evidence, "", soFar, insights)
+	got := cost(evidence, refitted)
+	if got > available(o) {
+		t.Errorf("prompt still overflows after the refit: %d > %d (block went from %d to %d tokens)",
+			got, available(o), contextbudget.Tokens(string(soFar)), contextbudget.Tokens(string(refitted)))
+	}
+
+	// And a prompt with room keeps its block untouched — the refit must not
+	// charge every area for the one that overflowed.
+	roomy := &Orchestrator{projectID: "p1", llmProvider: "bedrock", llmModel: "m",
+		llmInputWindow: 1_000_000, llmOutputCap: 64_000}
+	kept := roomy.refitRunFindingsSoFar(ctx, soFar, insights,
+		func(sf runFindingsSoFar) string {
+			return roomy.buildAnalysisAreaPrompt("", areaFixture, "ds", 12, evidence, "", sf)
+		})
+	if kept != soFar {
+		t.Error("a prompt that fits had its same-run block resized anyway")
+	}
+}
+
+// TestRunFindingsSoFarPaysForItsOwnHeading. The block writes a heading and the
+// no-restate instruction before its first line, and fitting the lines to the
+// whole allowance renders a block larger than the allowance. Harmless as a
+// share of a window; in the refit above that difference IS the overflow.
+func TestRunFindingsSoFarPaysForItsOwnHeading(t *testing.T) {
+	insights := runInsights(80)
+	for _, budget := range []int{200, 500, 2_000, 10_000} {
+		out := renderRunFindingsSoFarWithin(insights, budget)
+		if got := contextbudget.Tokens(string(out)); got > budget {
+			t.Errorf("budget %d rendered %d tokens (%d over)", budget, got, got-budget)
+		}
+	}
+	// A budget with no room for the heading renders nothing, rather than a
+	// heading promising findings with none under it.
+	if out := renderRunFindingsSoFarWithin(insights, 5); out != "" {
+		t.Errorf("want an empty block, got:\n%s", out)
+	}
+}
