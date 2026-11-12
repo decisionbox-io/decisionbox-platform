@@ -1265,3 +1265,79 @@ func TestMagnitudeKeyIsDeterministic(t *testing.T) {
 		t.Error("the metrics do not reach the signature")
 	}
 }
+
+// --- review round 8: two ways the magnitude guard was wrong ---
+
+// TestMarkDuplicates_RecommendationsStillFoldAcrossRuns. A recommendation gets
+// no magnitude signature on purpose — its expected impact is already inside the
+// text its vector was built from. Deriving the candidate's signature one way
+// and the stored document's another gave "" on one side and "affected=0" on the
+// other, so the claim check refused even an exact duplicate scoring 1.0 and
+// cross-run recommendation suppression stopped working entirely.
+func TestMarkDuplicates_RecommendationsStillFoldAcrossRuns(t *testing.T) {
+	const prose = "Reprice the long tail. Start with the paint aisle. Impact: margin +2pp. Segment: ."
+	store := &mockEmbedIndexStore{storedDocs: map[string]IndexedDoc{
+		"last-run": {EmbeddingText: prose},
+	}}
+	o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{
+		dupes: []vectorstore.SearchResult{{ID: "last-run", Score: 1.0}},
+	}}
+	o.markDuplicates(context.Background(), []dedupCandidate{{
+		id: "this-run", docType: "recommendation", projectID: "p1", vec: []float64{1, 0, 0},
+		text: prose, magnitude: magnitudeOf("recommendation", 0, nil),
+	}}, nil)
+
+	if len(store.dupUpdates) != 1 || store.dupUpdates[0].DupOf != "last-run" {
+		t.Errorf("an identical recommendation was not folded: %+v", store.dupUpdates)
+	}
+}
+
+// TestMarkDuplicates_ChainCannotRouteAroundTheMagnitudeGuard. A and C share
+// their wording and differ in magnitude; B is a paraphrase of A already folded
+// into it. C fails the claim check against A directly — and then matches B, and
+// the chain branch re-checked only cosine against A and folded C into A anyway.
+// A guard that can be reached by another route is not a guard.
+func TestMarkDuplicates_ChainCannotRouteAroundTheMagnitudeGuard(t *testing.T) {
+	const prose = "Margin erosion. The long tail is unpriced. Area: pricing. Severity: high. Segment: ."
+	// A and B are near-identical vectors (B is the paraphrase), C equals A's.
+	a := []float64{1, 0, 0}
+	b := []float64{0.999, 0.0447, 0}
+	store := &mockEmbedIndexStore{}
+	o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{}}
+	o.markDuplicates(context.Background(), []dedupCandidate{
+		{id: "A", docType: "insight", projectID: "p1", vec: a,
+			text: prose, magnitude: magnitudeOf("insight", 1_000, nil)},
+		{id: "B", docType: "insight", projectID: "p1", vec: b,
+			text: "A paraphrase of the same thing. Area: pricing.", magnitude: magnitudeOf("insight", 1_000, nil)},
+		{id: "C", docType: "insight", projectID: "p1", vec: a,
+			text: prose, magnitude: magnitudeOf("insight", 100, nil)},
+	}, nil)
+
+	// B folds into A — that one is a genuine paraphrase.
+	var cFolded bool
+	for _, u := range store.dupUpdates {
+		if u.ID == "C" {
+			cFolded = true
+		}
+	}
+	if cFolded {
+		t.Errorf("C was folded despite stating a different magnitude than its canonical: %+v", store.dupUpdates)
+	}
+	if len(store.dupUpdates) != 1 || store.dupUpdates[0].ID != "B" {
+		t.Errorf("want only B folded, got %+v", store.dupUpdates)
+	}
+}
+
+// TestMagnitudeOfIsTypeAware pins the one derivation both sides of every
+// comparison go through.
+func TestMagnitudeOfIsTypeAware(t *testing.T) {
+	if got := magnitudeOf("recommendation", 500, map[string]interface{}{"x": 1}); got != "" {
+		t.Errorf("recommendation magnitude = %q, want empty — its numbers are already in its text", got)
+	}
+	if got := magnitudeOf("insight", 500, nil); got == "" {
+		t.Error("insight magnitude is empty — the guard would never fire")
+	}
+	if magnitudeOf("insight", 500, nil) == magnitudeOf("insight", 501, nil) {
+		t.Error("the affected count does not reach the signature")
+	}
+}

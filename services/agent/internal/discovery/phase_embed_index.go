@@ -247,7 +247,7 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 
 		candidates = append(candidates, dedupCandidate{
 			id: ins.ID, docType: "insight", projectID: ins.ProjectID, vec: vec,
-			text: ins.EmbeddingText, magnitude: magnitudeKey(ins.AffectedCount, ins.Metrics),
+			text: ins.EmbeddingText, magnitude: magnitudeOf("insight", ins.AffectedCount, ins.Metrics),
 		})
 
 		points = append(points, vectorstore.Point{
@@ -277,9 +277,9 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 
 		candidates = append(candidates, dedupCandidate{
 			id: rec.ID, docType: "recommendation", projectID: rec.ProjectID, vec: vec,
-			// No magnitude: a recommendation's expected impact is already in
-			// the text its vector was built from.
-			text: rec.EmbeddingText,
+			// magnitudeOf gives a recommendation no magnitude: its expected
+			// impact is already in the text its vector was built from.
+			text: rec.EmbeddingText, magnitude: magnitudeOf("recommendation", 0, nil),
 		})
 
 		points = append(points, vectorstore.Point{
@@ -333,6 +333,23 @@ type dedupCandidate struct {
 	// type whose numbers are already in its text, which is the case for a
 	// recommendation: BuildEmbeddingText carries its expected impact.
 	magnitude string
+}
+
+// magnitudeOf is the magnitude signature for a document of this type — empty
+// for a type whose numbers are already inside the text its vector was built
+// from, which is the case for a recommendation (BuildEmbeddingText carries its
+// expected impact).
+//
+// One derivation, used for both sides of every comparison. Deriving the
+// candidate's magnitude one way and the stored document's another gave a
+// recommendation "" on one side and "affected=0" on the other, so sameClaim
+// refused even an exact duplicate scoring 1.0 and cross-run recommendation
+// suppression stopped working altogether.
+func magnitudeOf(docType string, affected int, metrics map[string]interface{}) string {
+	if docType != "insight" {
+		return ""
+	}
+	return magnitudeKey(affected, metrics)
 }
 
 // magnitudeKey is the comparable form of the quantitative fields an insight's
@@ -473,6 +490,17 @@ func (o *Orchestrator) markDuplicates(ctx context.Context, candidates []dedupCan
 				if !ok || s < threshold {
 					continue
 				}
+				// And the same claim check against the canonical, for the same
+				// reason the direct comparison has one: matching a paraphrase
+				// of A says nothing about whether this document states A's
+				// magnitude. Without it the guard was simply routed around —
+				// C fails against A directly, matches B, and is folded into A
+				// anyway.
+				if !sameClaim(c.text, c.magnitude, candidates[k].text, candidates[k].magnitude) {
+					applog.WithFields(applog.Fields{"id": c.id, "canonical": resolved}).
+						Info("Phase 9: same wording as the canonical, different magnitude; not a duplicate")
+					continue
+				}
 				target, targetScore = resolved, s
 			}
 			if target == "" || target == c.id {
@@ -543,7 +571,7 @@ func (o *Orchestrator) storedDuplicate(ctx context.Context, c dedupCandidate, ex
 			applog.WithFields(applog.Fields{"id": c.id, "hit": hit.ID, "hit_folded_into": doc.DuplicateOf}).
 				Info("Phase 9: a stored match is itself suppressed; looking past it")
 			continue
-		case !sameClaim(c.text, c.magnitude, doc.EmbeddingText, magnitudeKey(doc.AffectedCount, doc.Metrics)):
+		case !sameClaim(c.text, c.magnitude, doc.EmbeddingText, magnitudeOf(c.docType, doc.AffectedCount, doc.Metrics)):
 			// Identical prose, different numbers. The same rule as the
 			// same-run pass, applied at the other read.
 			applog.WithFields(applog.Fields{"id": c.id, "hit": hit.ID}).
