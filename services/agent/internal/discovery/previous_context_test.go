@@ -349,7 +349,7 @@ func TestRenderRunFindingsSoFar(t *testing.T) {
 
 	t.Run("a run bigger than the cap keeps the most recent", func(t *testing.T) {
 		// The areas nearest this one are the likeliest to be re-trodden.
-		got := string(renderRunFindingsSoFar(runInsights(maxRunFindingsInAreaPrompt + 20), 100_000))
+		got := string(renderRunFindingsSoFar(runInsights(maxRunFindingsInAreaPrompt+20), 100_000))
 		if strings.Contains(got, "Finding 0 about") {
 			t.Error("kept the oldest insights over the most recent")
 		}

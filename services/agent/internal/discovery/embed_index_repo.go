@@ -25,11 +25,27 @@ type IndexedDoc struct {
 	// magnitude having moved is the thing the prompt asks the model to report.
 	AffectedCount int
 	Metrics       map[string]interface{}
-	// Actions is what a RECOMMENDATION's embedding text leaves out. Two
-	// recommendations that read the same and tell you to do different things
-	// embed identically, and hiding the second hides the only part that
-	// differs.
-	Actions []string
+	// Actions and SegmentSize are what a RECOMMENDATION's embedding text
+	// leaves out. Two recommendations that read the same and tell you to do
+	// different things — or the same thing to a segment twice the size — embed
+	// identically, and hiding the second hides the only part that differs.
+	// SegmentSize is the recommendation's count the way AffectedCount is the
+	// insight's; a document is only ever one of the two.
+	Actions     []string
+	SegmentSize int
+}
+
+// magnitude is the signature of what this document's embedding text leaves out,
+// derived through the SAME magnitudeOf the candidate side uses — one
+// derivation for both halves of a comparison. Deriving them separately once
+// gave the two sides different answers for the same recommendation and switched
+// cross-run suppression off entirely.
+func (d IndexedDoc) magnitude(docType string) string {
+	count := d.AffectedCount
+	if docType == "recommendation" {
+		count = d.SegmentSize
+	}
+	return magnitudeOf(docType, count, d.Metrics, d.Actions)
 }
 
 // EmbedIndexStore handles Phase 9 database operations.

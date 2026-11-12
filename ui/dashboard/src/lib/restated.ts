@@ -29,11 +29,33 @@ export function isRestated(doc: MaybeRestated): boolean {
  * to come from the same split that hid them, or a header and its list can
  * disagree.
  */
-export function splitRestated<T extends MaybeRestated>(docs: T[]): { shown: T[]; restated: T[] } {
+export function splitRestated<T extends MaybeRestated & { id?: string }>(
+  docs: T[],
+): { shown: T[]; restated: T[] } {
+  // What a restatement points AT, among the rows actually in hand.
+  const present = new Set<string>();
+  for (const doc of docs) {
+    if (doc.id) {
+      present.add(doc.id);
+    }
+  }
+
   const shown: T[] = [];
   const restated: T[] = [];
   for (const doc of docs) {
-    (isRestated(doc) ? restated : shown).push(doc);
+    // Hidden only when the row it restates is here to be read instead.
+    //
+    // These lists are built from the runs that happen to be loaded, so the
+    // canonical may be in an older discovery that was never fetched. Hiding a
+    // restatement whose original is not on the page removes the information
+    // from the reader altogether rather than de-duplicating it — a subject
+    // reported twice would simply be missing, which is worse than showing it
+    // twice and is not what suppression is for.
+    if (isRestated(doc) && doc.duplicate_of && present.has(doc.duplicate_of)) {
+      restated.push(doc);
+    } else {
+      shown.push(doc);
+    }
   }
   return { shown, restated };
 }

@@ -1346,7 +1346,7 @@ func TestMagnitudeOfIsTypeAware(t *testing.T) {
 		}
 	})
 
-	t.Run("a recommendation signs its actions", func(t *testing.T) {
+	t.Run("a recommendation signs its actions and its segment size", func(t *testing.T) {
 		// Its expected impact IS in the embedded text; its actions are not,
 		// and they are the part a reader would act on. Two recommendations
 		// that read the same and tell you to do different things embed
@@ -1361,10 +1361,47 @@ func TestMagnitudeOfIsTypeAware(t *testing.T) {
 		if a == reordered {
 			t.Error("a reordered action list signed the same — the order is part of the instruction")
 		}
-		// No actions is no signature, so an older document with none behaves
-		// as it did: the guard stands aside rather than refusing every fold.
-		if got := magnitudeOf("recommendation", 500, map[string]interface{}{"x": 1}, nil); got != "" {
-			t.Errorf("a recommendation with no actions signed %q, want empty", got)
+		// The embedded text names the segment and never says how large it is,
+		// so the size is this type's count the way AffectedCount is an
+		// insight's: the same sentence against 1,200 customers and against
+		// 14,000 is a different claim.
+		steps := []string{"win back the lapsed"}
+		if magnitudeOf("recommendation", 1_200, nil, steps) == magnitudeOf("recommendation", 14_000, nil, steps) {
+			t.Error("the segment size does not reach the signature")
+		}
+		// Metrics are an insight's field and must not leak in here, or two
+		// recommendations would be told apart by something neither carries.
+		if magnitudeOf("recommendation", 500, map[string]interface{}{"x": 1}, steps) !=
+			magnitudeOf("recommendation", 500, nil, steps) {
+			t.Error("metrics reached a recommendation signature")
+		}
+		// A document with no actions at all — an older one, or a model that
+		// emitted none — must still fold into its twin rather than have the
+		// guard refuse every pair. The pair that matters is candidate against
+		// stored, since those are the two sides of a real comparison.
+		stored := IndexedDoc{EmbeddingText: "same prose", SegmentSize: 500}
+		if got, want := stored.magnitude("recommendation"), magnitudeOf("recommendation", 500, nil, nil); got != want {
+			t.Errorf("an action-less recommendation signed %q stored and %q as a candidate, so its twin would never fold", got, want)
+		}
+	})
+
+	t.Run("a stored document is signed the same way as a candidate", func(t *testing.T) {
+		// The derivation that broke once: the candidate side said one thing
+		// and the stored side another for the same recommendation, so
+		// sameClaim refused an exact duplicate scoring 1.0 and cross-run
+		// suppression stopped working altogether.
+		rec := IndexedDoc{AffectedCount: 7, SegmentSize: 1_200, Actions: []string{"win back the lapsed"}}
+		if got, want := rec.magnitude("recommendation"), magnitudeOf("recommendation", 1_200, nil, rec.Actions); got != want {
+			t.Errorf("stored recommendation signed %q, candidate side signs %q", got, want)
+		}
+		ins := IndexedDoc{AffectedCount: 707, SegmentSize: 1_200, Metrics: map[string]interface{}{"revenue": 48.2}}
+		if got, want := ins.magnitude("insight"), magnitudeOf("insight", 707, ins.Metrics, nil); got != want {
+			t.Errorf("stored insight signed %q, candidate side signs %q", got, want)
+		}
+		// Each type reads ITS own count. Reading the wrong field would sign
+		// every recommendation "segment=0" and give the guard nothing to see.
+		if rec.magnitude("recommendation") == magnitudeOf("recommendation", rec.AffectedCount, nil, rec.Actions) {
+			t.Error("a stored recommendation was signed with the insight count field")
 		}
 	})
 }
@@ -1418,6 +1455,63 @@ func TestMarkDuplicates_SameWordingDifferentActions(t *testing.T) {
 		}}, nil)
 		if len(store.dupUpdates) != 0 {
 			t.Errorf("folded into a stored recommendation with different actions: %+v", store.dupUpdates)
+		}
+	})
+}
+
+// TestMarkDuplicates_SameWordingDifferentSegmentSize. BuildEmbeddingText names
+// the target segment and never says how many it holds, so "win back lapsed
+// subscribers" re-issued word for word against a segment that has grown
+// eleven-fold is the same sentence and a different recommendation. Suppressing
+// the second tells the reader nothing has changed, when the thing that changed
+// is the size of the problem.
+func TestMarkDuplicates_SameWordingDifferentSegmentSize(t *testing.T) {
+	const prose = "Win back lapsed subscribers. They stopped at month three. Impact: retention +3pp. Segment: lapsed."
+	steps := []string{"email the lapsed cohort"}
+	vec := []float64{0, 1, 0}
+
+	t.Run("a segment that moved is not a duplicate", func(t *testing.T) {
+		store := &mockEmbedIndexStore{}
+		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{}}
+		o.markDuplicates(context.Background(), []dedupCandidate{
+			{id: "first", docType: "recommendation", projectID: "p1", vec: vec, text: prose,
+				magnitude: magnitudeOf("recommendation", 1_200, nil, steps)},
+			{id: "second", docType: "recommendation", projectID: "p1", vec: vec, text: prose,
+				magnitude: magnitudeOf("recommendation", 14_000, nil, steps)},
+		}, nil)
+		if len(store.dupUpdates) != 0 {
+			t.Errorf("folded a 1,200-customer segment into a 14,000-customer one: %+v", store.dupUpdates)
+		}
+	})
+
+	t.Run("an unchanged segment still folds", func(t *testing.T) {
+		store := &mockEmbedIndexStore{}
+		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{}}
+		same := magnitudeOf("recommendation", 1_200, nil, steps)
+		o.markDuplicates(context.Background(), []dedupCandidate{
+			{id: "first", docType: "recommendation", projectID: "p1", vec: vec, text: prose, magnitude: same},
+			{id: "second", docType: "recommendation", projectID: "p1", vec: vec, text: prose, magnitude: same},
+		}, nil)
+		if len(store.dupUpdates) != 1 || store.dupUpdates[0].ID != "second" {
+			t.Errorf("want the second folded into the first, got %+v", store.dupUpdates)
+		}
+	})
+
+	t.Run("the stored side reads the segment size too", func(t *testing.T) {
+		// The cross-run case, which is the one a reader meets: last month's
+		// recommendation is in the index, this month's segment has grown.
+		store := &mockEmbedIndexStore{storedDocs: map[string]IndexedDoc{
+			"last-run": {EmbeddingText: prose, Actions: steps, SegmentSize: 1_200},
+		}}
+		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{
+			dupes: []vectorstore.SearchResult{{ID: "last-run", Score: 1.0}},
+		}}
+		o.markDuplicates(context.Background(), []dedupCandidate{{
+			id: "this-run", docType: "recommendation", projectID: "p1", vec: vec, text: prose,
+			magnitude: magnitudeOf("recommendation", 14_000, nil, steps),
+		}}, nil)
+		if len(store.dupUpdates) != 0 {
+			t.Errorf("folded into a stored recommendation whose segment was a tenth the size: %+v", store.dupUpdates)
 		}
 	})
 }

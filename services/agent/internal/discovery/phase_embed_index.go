@@ -3,9 +3,9 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
-	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -277,10 +277,11 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 
 		candidates = append(candidates, dedupCandidate{
 			id: rec.ID, docType: "recommendation", projectID: rec.ProjectID, discoveryID: rec.DiscoveryID, vec: vec,
-			// A recommendation's signature is its actions: the expected impact
-			// is already in the text its vector was built from, the actions
-			// are not, and they are the part a reader would act on.
-			text: rec.EmbeddingText, magnitude: magnitudeOf("recommendation", 0, nil, rec.Actions),
+			// A recommendation's signature is its actions and the size of the
+			// segment it targets: the expected impact and the segment's NAME
+			// are already in the text its vector was built from, these are
+			// not, and they are what a reader would act on and act at.
+			text: rec.EmbeddingText, magnitude: magnitudeOf("recommendation", rec.SegmentSize, nil, rec.Actions),
 		})
 
 		points = append(points, vectorstore.Point{
@@ -333,10 +334,10 @@ type dedupCandidate struct {
 	// are identical to the search by construction, so whatever the text leaves
 	// out is all there is to distinguish them.
 	text string
-	// magnitude is a signature of the quantitative fields the embedding text
-	// omits — an insight's affected count and metrics. Empty for a document
-	// type whose numbers are already in its text, which is the case for a
-	// recommendation: BuildEmbeddingText carries its expected impact.
+	// magnitude is a signature of the fields the embedding text omits — an
+	// insight's affected count and metrics, a recommendation's actions and
+	// segment size. Derived by magnitudeOf, which is the one derivation both
+	// sides of every comparison go through.
 	magnitude string
 }
 
@@ -345,22 +346,37 @@ type dedupCandidate struct {
 // identical.
 //
 // For an insight that is the affected count and the metrics. For a
-// recommendation it is the implementation actions: BuildEmbeddingText carries
-// the title, description, expected impact and segment, so two recommendations
-// that read the same and tell you to do DIFFERENT things embed identically, and
-// suppressing the second hides the only part that differs — the part a reader
-// would act on.
+// recommendation it is the implementation actions and the segment size:
+// BuildEmbeddingText carries the title, description, expected impact and the
+// segment's NAME, so two recommendations that read the same and tell you to do
+// DIFFERENT things — or to do the same thing to twice as many customers —
+// embed identically, and suppressing the second hides the only part that
+// differs.
+//
+// count is whichever population the document type counts: an insight's
+// affected entities, a recommendation's target segment.
 //
 // One derivation, used for both sides of every comparison. Deriving the
 // candidate's signature one way and the stored document's another gave a
 // recommendation "" on one side and "affected=0" on the other, so sameClaim
 // refused even an exact duplicate scoring 1.0 and cross-run recommendation
 // suppression stopped working altogether.
-func magnitudeOf(docType string, affected int, metrics map[string]interface{}, actions []string) string {
+func magnitudeOf(docType string, count int, metrics map[string]interface{}, actions []string) string {
 	if docType == "recommendation" {
-		return actionsKey(actions)
+		return recommendationKey(count, actions)
 	}
-	return magnitudeKey(affected, metrics)
+	return magnitudeKey(count, metrics)
+}
+
+// recommendationKey is the comparable form of what a recommendation's embedding
+// text leaves out.
+//
+// The segment SIZE is in it because the text names the segment and never says
+// how large it is: "win back lapsed subscribers" written word for word against
+// 1,200 of them and against 14,000 is the same sentence and a different claim,
+// which is the case AffectedCount covers on the insight side.
+func recommendationKey(segmentSize int, actions []string) string {
+	return fmt.Sprintf("segment=%d;%s", segmentSize, actionsKey(actions))
 }
 
 // actionsKey is the comparable form of a recommendation's implementation steps.
@@ -596,7 +612,7 @@ func (o *Orchestrator) storedDuplicate(ctx context.Context, c dedupCandidate, ex
 			applog.WithFields(applog.Fields{"id": c.id, "hit": hit.ID, "hit_folded_into": doc.DuplicateOf}).
 				Info("Phase 9: a stored match is itself suppressed; looking past it")
 			continue
-		case !sameClaim(c.text, c.magnitude, doc.EmbeddingText, magnitudeOf(c.docType, doc.AffectedCount, doc.Metrics, doc.Actions)):
+		case !sameClaim(c.text, c.magnitude, doc.EmbeddingText, doc.magnitude(c.docType)):
 			// Identical prose, different numbers. The same rule as the
 			// same-run pass, applied at the other read.
 			applog.WithFields(applog.Fields{"id": c.id, "hit": hit.ID}).

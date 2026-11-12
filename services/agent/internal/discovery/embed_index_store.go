@@ -146,6 +146,7 @@ func (s *MongoEmbedIndexStore) IndexedDoc(ctx context.Context, collection, id st
 		AffectedCount int                    `bson:"affected_count"`
 		Metrics       map[string]interface{} `bson:"metrics"`
 		Actions       []string               `bson:"actions"`
+		SegmentSize   int                    `bson:"segment_size"`
 	}
 	err := s.db.Collection(collection).FindOne(ctx, map[string]interface{}{"_id": id}).Decode(&doc)
 	if err != nil {
@@ -160,6 +161,7 @@ func (s *MongoEmbedIndexStore) IndexedDoc(ctx context.Context, collection, id st
 		AffectedCount: doc.AffectedCount,
 		Metrics:       doc.Metrics,
 		Actions:       doc.Actions,
+		SegmentSize:   doc.SegmentSize,
 	}, true, nil
 }
 

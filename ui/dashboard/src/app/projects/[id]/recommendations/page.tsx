@@ -101,6 +101,19 @@ export default function RecommendationsListPage() {
   // wrong, so one click brings them back with the score that hid them.
   const { shown: distinctRecs, restated: restatedRecs } = splitRestated(allRecs);
 
+  // The semantic results are a reading surface too, and the one most likely
+  // to show a fold: a restatement and the row it restates embed almost
+  // identically, so a query that matches one matches the other and they come
+  // back adjacent. Hidden by the same rule and revealed by the same toggle, or
+  // a search would undo the suppression every other list on this page applies.
+  const semanticSplit = semanticResults ? splitRestated(semanticResults) : null;
+  const shownSemanticResults = semanticSplit
+    ? (showRestated ? semanticResults : semanticSplit.shown)
+    : null;
+  // The toggle governs whichever list is being read, so its count is of rows
+  // revealing will actually produce — not of a list the reader cannot see.
+  const restatedCount = semanticSplit ? semanticSplit.restated.length : restatedRecs.length;
+
   // Filter
   let filtered = showRestated ? allRecs : distinctRecs;
   if (search) {
@@ -141,12 +154,12 @@ export default function RecommendationsListPage() {
 
   return (
     <Shell breadcrumb={breadcrumb}>
-      <SectionHeader title="All Recommendations" count={semanticResults ? semanticResults.length : filtered.length} right={
+      <SectionHeader title="All Recommendations" count={shownSemanticResults ? shownSemanticResults.length : filtered.length} right={
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {searching && <Loader size="xs" />}
           <SearchInput value={search} onChange={v => { setSearch(v); setPage(1); }}
             placeholder={hasEmbedding ? 'Semantic search recommendations...' : 'Filter recommendations...'} />
-          {restatedRecs.length > 0 && (
+          {restatedCount > 0 && (
             <button onClick={() => { setShowRestated(v => !v); setPage(1); }} style={{
               fontSize: 12, padding: '4px 12px',
               border: '0.5px solid var(--db-border-strong)',
@@ -154,7 +167,7 @@ export default function RecommendationsListPage() {
               background: showRestated ? 'var(--db-blue-bg)' : 'var(--db-bg-white)',
               color: showRestated ? 'var(--db-blue-text)' : 'var(--db-text-secondary)',
               cursor: 'pointer', fontFamily: 'inherit', transition: 'all 120ms ease',
-            }}>{restatedToggleLabel(restatedRecs.length, showRestated)}</button>
+            }}>{restatedToggleLabel(restatedCount, showRestated)}</button>
           )}
           <SortDropdown value={sortBy} onChange={setSortBy}
             options={['Priority', 'Confidence', 'Segment size', 'Date']} />
@@ -162,9 +175,9 @@ export default function RecommendationsListPage() {
       } />
 
       {/* Semantic search results */}
-      {semanticResults && semanticResults.length > 0 && (
+      {shownSemanticResults && shownSemanticResults.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {semanticResults.map(r => (
+          {shownSemanticResults.map(r => (
             <Link key={r.id} href={`/projects/${id}/discoveries/${r.discovery_id}/recommendations/${r.id}`}
               style={{ textDecoration: 'none' }}>
               <div style={{
@@ -181,6 +194,7 @@ export default function RecommendationsListPage() {
                   <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--db-text-primary)' }}>
                     {r.name || r.title}
                   </span>
+                  <RestatedBadge doc={r} />
                 </div>
                 {r.description && (
                   <p style={{ fontSize: 13, color: 'var(--db-text-secondary)', margin: 0, lineHeight: 1.5 }}>

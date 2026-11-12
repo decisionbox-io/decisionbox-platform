@@ -179,6 +179,22 @@ export default function InsightsListPage() {
     );
   }
 
+  // The semantic results are a reading surface too, and the one most likely to
+  // show a fold: a restatement and the row it restates embed almost
+  // identically, so a query that matches one matches the other and they come
+  // back adjacent. Hidden by the same rule and revealed by the same toggle, or
+  // a search would undo the suppression this page applies everywhere else.
+  //
+  // Split AFTER the validation filter, so a row hidden for restating another
+  // is hidden behind one the reader can actually see in this list.
+  const semanticSplit = shownSemanticResults ? splitRestated(shownSemanticResults) : null;
+  if (semanticSplit && !showRestated) {
+    shownSemanticResults = semanticSplit.shown;
+  }
+  // The toggle governs whichever list is being read, so its count is of rows
+  // revealing will actually produce — not of a list the reader cannot see.
+  const restatedCount = semanticSplit ? semanticSplit.restated.length : restatedInsights.length;
+
   const breadcrumb = [
     { label: 'Projects', href: '/' },
     { label: project?.name || '...', href: `/projects/${id}` },
@@ -207,7 +223,7 @@ export default function InsightsListPage() {
             cursor: 'pointer', fontFamily: 'inherit', transition: 'all 120ms ease',
           }}>{sev}</button>
         ))}
-        {restatedInsights.length > 0 && (
+        {restatedCount > 0 && (
           <button onClick={() => { setShowRestated(v => !v); setPage(1); }} style={{
             fontSize: 12, padding: '4px 12px',
             border: '0.5px solid var(--db-border-strong)',
@@ -215,7 +231,7 @@ export default function InsightsListPage() {
             background: showRestated ? 'var(--db-blue-bg)' : 'var(--db-bg-white)',
             color: showRestated ? 'var(--db-blue-text)' : 'var(--db-text-secondary)',
             cursor: 'pointer', fontFamily: 'inherit', transition: 'all 120ms ease',
-          }}>{restatedToggleLabel(restatedInsights.length, showRestated)}</button>
+          }}>{restatedToggleLabel(restatedCount, showRestated)}</button>
         )}
         <span style={{ flex: 1 }} />
         <FilterDropdown label="Validation" value={validationFilter}
@@ -264,6 +280,7 @@ export default function InsightsListPage() {
                       style={{ fontSize: 13, fontWeight: 500, color: 'var(--db-text-link)', textDecoration: 'none' }}>
                       {r.name}
                     </Link>
+                    <RestatedBadge doc={r} />
                   </td>
                   <td style={{ padding: '10px 12px' }}>
                     {r.severity && <SeverityBadge severity={r.severity} type="severity" />}

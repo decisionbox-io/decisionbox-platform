@@ -2883,6 +2883,15 @@ func (o *Orchestrator) decodeInsightItems(raws []json.RawMessage, areaID string,
 			insight.ID = uuid.New().String()
 		}
 
+		// Phase 9's marks are not the model's to write. This struct is both the
+		// stored shape and the parse target for the analysis response, so a
+		// model emitting duplicate_of would mark its own finding a restatement
+		// of any id it cared to name — hiding a finding from every default list
+		// by inventing a reference. Cleared at the boundary rather than trusted
+		// and checked later: the only thing that may set these is the duplicate
+		// check, over documents it has actually compared.
+		insight.DuplicateOf, insight.SimilarityScore = "", 0
+
 		insights = append(insights, insight)
 	}
 
@@ -3226,6 +3235,8 @@ func (o *Orchestrator) generateRecommendations(
 		if recs[i].ID == "" {
 			recs[i].ID = uuid.New().String()
 		}
+		// See parseInsights: the duplicate marks are Phase 9's alone.
+		recs[i].DuplicateOf, recs[i].SimilarityScore = "", 0
 	}
 
 	step.RecommendationsDroppedParse = parseDropped

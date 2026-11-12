@@ -48,6 +48,15 @@ describe('splitRestated', () => {
     expect(splitRestated([{ id: 'a' }]).restated).toEqual([]);
     expect(splitRestated([])).toEqual({ shown: [], restated: [] });
   });
+
+  it('hides a restatement only when the row it points at is present', () => {
+    const withOriginal = splitRestated([{ id: 'a' }, { id: 'b', duplicate_of: 'a' }]);
+    expect(withOriginal.restated.map(d => d.id)).toEqual(['b']);
+
+    const without = splitRestated([{ id: 'b', duplicate_of: 'a' }]);
+    expect(without.restated).toEqual([]);
+    expect(without.shown.map(d => d.id)).toEqual(['b']);
+  });
 });
 
 describe('restatedToggleLabel', () => {
@@ -100,23 +109,46 @@ describe('collapseByKey', () => {
     expect(collapseByKey(rows, key).map(r => r.title)).toEqual(['a', 'b', 'c']);
   });
 
-  it('keeps a subject whose only row is a restatement, for the toggle to reveal', () => {
-    const rows = [{ title: 'only copy', duplicate_of: 'elsewhere', similarity_score: 0.9 }];
-    const collapsed = collapseByKey(rows, key);
-    expect(splitRestated(collapsed).restated).toHaveLength(1);
-    expect(splitRestated(collapsed).shown).toHaveLength(0);
+  it('shows a restatement outright when its original was never loaded', () => {
+    // These lists are built from the runs that happen to be loaded, so the
+    // canonical may sit in an older discovery nobody fetched. Hiding the
+    // restatement then removes the information from the reader altogether
+    // instead of de-duplicating it.
+    const rows = [{ id: 'r1', title: 'only copy', duplicate_of: 'never-loaded', similarity_score: 0.9 }];
+    const { shown, restated } = splitRestated(collapseByKey(rows, key));
+    expect(shown).toHaveLength(1);
+    expect(restated).toHaveLength(0);
   });
 
   it('the toggle count is the number of rows it can actually produce', () => {
     // The count and the reveal come from the same collapsed list, so a header
-    // can never offer more than the toggle will show.
+    // can never offer more than the toggle will show — and only rows whose
+    // original is on the page are hidden in the first place.
     const rows = [
-      { title: 'a' }, { title: 'a', duplicate_of: 'a1' },
-      { title: 'b', duplicate_of: 'b1' },
-      { title: 'c' },
+      { id: 'a1', title: 'a' }, { id: 'a2', title: 'a', duplicate_of: 'a1' },
+      { id: 'b2', title: 'b', duplicate_of: 'b-not-loaded' },
+      { id: 'c1', title: 'c' },
     ];
     const { shown, restated } = splitRestated(collapseByKey(rows, key));
-    expect(shown).toHaveLength(2);
-    expect(restated).toHaveLength(2);
+    // a1 (canonical), b2 (its original was not loaded, so it is shown), c1.
+    expect(shown.map(r => r.id)).toEqual(['a1', 'b2', 'c1']);
+    // Only a2, whose original a1 is right there to read instead.
+    expect(restated.map(r => r.id)).toEqual(['a2']);
+  });
+
+  it('hiding restatements can never empty a non-empty list', () => {
+    // The pages rely on this: each list renders "nothing matched" only when
+    // the unfiltered list is empty, so if suppression could empty a list of
+    // real rows, a search that matched would report that it had not. It
+    // cannot, because a row is only hidden when the row it points at is in
+    // the same list — and that one is shown.
+    const lists = [
+      [{ id: 'x1', title: 'x' }, { id: 'x2', title: 'x2', duplicate_of: 'x1' }],
+      [{ id: 'y2', title: 'y', duplicate_of: 'gone' }],
+      [{ id: 'z2', title: 'z', duplicate_of: 'z1' }, { id: 'z1', title: 'z' }],
+    ];
+    for (const rows of lists) {
+      expect(splitRestated(rows).shown.length).toBeGreaterThan(0);
+    }
   });
 });

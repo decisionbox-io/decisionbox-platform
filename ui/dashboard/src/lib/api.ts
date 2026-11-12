@@ -1739,6 +1739,13 @@ export interface SearchResultItem {
   project_id?: string;
   project_name?: string;
   validation?: InsightValidation;
+  // The duplicate check's marks, carried because search is a reading surface
+  // like any other list: a restatement and the row it restates embed almost
+  // identically, so one query returns BOTH, adjacent. Without these the
+  // search results would show as two findings the pair every other list
+  // folds into one. Absent on a canonical row and on a source_chunk.
+  duplicate_of?: string;
+  similarity_score?: number;
 }
 
 export interface SearchResponse {
