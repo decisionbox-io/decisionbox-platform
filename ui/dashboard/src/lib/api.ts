@@ -430,6 +430,7 @@ export interface Project {
   recommendation_verdicts?: string[];
   created_at: string;
   updated_at: string;
+  category_weights?: Record<string, number>;
 }
 
 // Project lifecycle constants. Mirrors the Go-side

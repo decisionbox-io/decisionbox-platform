@@ -42,6 +42,10 @@ export default function PromptsPage() {
   // rather than restated here. Undefined while it loads or against an older
   // API, which costs the global ids and the ceiling and leaves the rest of
   // the editor working.
+  // The project's own category-weight overrides, which win over the
+  // taxonomy's declared weights.
+  const [categoryWeights, setCategoryWeights] = useState<Record<string, number> | undefined>();
+
   const engines = useScoringEngines();
   const severityCfg = engineFor(engines, engines?.current_version)?.severity;
 
@@ -52,8 +56,15 @@ export default function PromptsPage() {
   const [newAreaKeywords, setNewAreaKeywords] = useState('');
 
   useEffect(() => {
+    // The project is KEPT, not just used as an existence check: its
+    // category_weights override what the taxonomy declares, and the editor
+    // below labels each category with the weight the scorer will actually
+    // apply.
     api.getProject(id)
-      .then(() => api.getPrompts(id))
+      .then((p) => {
+        setCategoryWeights(p.category_weights);
+        return api.getPrompts(id);
+      })
       .then(setPrompts)
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
@@ -298,6 +309,7 @@ export default function PromptsPage() {
                     taxonomy={prompts.risk_taxonomy}
                     globalCategories={severityCfg?.global_risk_categories}
                     maxWeight={severityCfg?.max_weight}
+                    categoryWeights={categoryWeights}
                     onChange={(updates) => updateArea(areaId, updates)}
                   />
                 </Stack>

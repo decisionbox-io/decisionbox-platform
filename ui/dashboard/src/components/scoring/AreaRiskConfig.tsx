@@ -35,6 +35,7 @@ export function AreaRiskConfig({
   taxonomy,
   globalCategories,
   maxWeight,
+  categoryWeights,
   onChange,
 }: {
   area: AnalysisAreaConfig;
@@ -47,21 +48,41 @@ export function AreaRiskConfig({
   // ids and the ceiling, and leaves the pack's own categories selectable.
   globalCategories: string[] | undefined;
   maxWeight: number | undefined;
+  // The project's own overrides of a category's weight. They WIN over the
+  // taxonomy's, so a label that ignored them would advertise a weight the
+  // scorer does not use -- a pack's 2.5 shown beside a category the project
+  // has set to 0.5.
+  categoryWeights: Record<string, number> | undefined;
   onChange: (updates: Partial<AnalysisAreaConfig>) => void;
 }) {
   const declared = taxonomy ?? [];
   const global = globalCategories ?? [];
+
+  // The weight the SCORER will apply: the project's override when it has one,
+  // else what the taxonomy declares.
+  //
+  // The label is a factual claim about what choosing this category is worth,
+  // so showing the pack's number beside a category the project has re-weighted
+  // tells an operator the opposite of what the next run will do.
+  const effectiveWeight = (id: string, declaredWeight?: number): number | undefined =>
+    categoryWeights?.[id] ?? declaredWeight;
+
+  const withWeight = (id: string, label: string, declaredWeight?: number) => {
+    const weight = effectiveWeight(id, declaredWeight);
+    return { value: id, label: weight ? `${label} (×${weight})` : label };
+  };
+
   const options = [
-    ...declared.map((cat) => ({
-      value: cat.id,
-      label: cat.weight ? `${cat.label} (×${cat.weight})` : cat.label,
-    })),
+    ...declared.map((cat) => withWeight(cat.id, cat.label, cat.weight)),
     // The global ids last, and only where the pack has not declared one of
     // them itself -- a pack that declares `compliance` with a weight of its
-    // own must not be offered the id twice.
+    // own must not be offered the id twice. A project CAN weight a global id
+    // the pack says nothing about, which is how a deployment weights
+    // `compliance` without its pack declaring a taxonomy at all, so these
+    // carry a weight too when one is set.
     ...global
       .filter((id) => !declared.some((cat) => cat.id === id))
-      .map((id) => ({ value: id, label: id.replace(/[_-]+/g, ' ') })),
+      .map((id) => withWeight(id, id.replace(/[_-]+/g, ' '))),
   ];
 
   return (

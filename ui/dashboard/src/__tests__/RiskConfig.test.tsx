@@ -87,6 +87,7 @@ describe('AreaRiskConfig', () => {
         taxonomy={taxonomy}
         globalCategories={globals}
         maxWeight={3}
+        categoryWeights={undefined}
         onChange={() => {}}
       />,
     );
@@ -111,6 +112,7 @@ describe('AreaRiskConfig', () => {
         taxonomy={undefined}
         globalCategories={globals}
         maxWeight={3}
+        categoryWeights={undefined}
         onChange={() => {}}
       />,
     );
@@ -127,6 +129,7 @@ describe('AreaRiskConfig', () => {
         taxonomy={[{ id: 'compliance', label: 'Regulatory compliance', weight: 3 }]}
         globalCategories={globals}
         maxWeight={3}
+        categoryWeights={undefined}
         onChange={() => {}}
       />,
     );
@@ -143,6 +146,7 @@ describe('AreaRiskConfig', () => {
         taxonomy={taxonomy}
         globalCategories={globals}
         maxWeight={3}
+        categoryWeights={undefined}
         onChange={onChange}
       />,
     );
@@ -159,6 +163,7 @@ describe('AreaRiskConfig', () => {
         taxonomy={taxonomy}
         globalCategories={globals}
         maxWeight={3}
+        categoryWeights={undefined}
         onChange={() => {}}
       />,
     );
@@ -173,6 +178,7 @@ describe('AreaRiskConfig', () => {
         taxonomy={taxonomy}
         globalCategories={globals}
         maxWeight={3}
+        categoryWeights={undefined}
         onChange={onChange}
       />,
     );
@@ -196,6 +202,7 @@ describe('AreaRiskConfig', () => {
         taxonomy={taxonomy}
         globalCategories={globals}
         maxWeight={3}
+        categoryWeights={undefined}
         onChange={onChange}
       />,
     );
@@ -214,6 +221,7 @@ describe('AreaRiskConfig', () => {
         taxonomy={taxonomy}
         globalCategories={undefined}
         maxWeight={undefined}
+        categoryWeights={undefined}
         onChange={() => {}}
       />,
     );
@@ -233,11 +241,77 @@ describe('AreaRiskConfig', () => {
         taxonomy={[]}
         globalCategories={[]}
         maxWeight={3}
+        categoryWeights={undefined}
         onChange={() => {}}
       />,
     );
     const input = screen.getByTestId('area-risk-categories');
     expect(input).toBeDisabled();
     expect(input).toHaveAttribute('placeholder', 'No risk categories available');
+  });
+});
+
+// --- Round 3 review: the label has to be the weight the scorer applies ---
+
+describe('AreaRiskConfig with project overrides', () => {
+  const globals = ['compliance', 'security', 'data_quality'];
+
+  // A project's category_weights WIN over the taxonomy's declared weights, so
+  // a label that ignored them advertised a weight the next run would not use:
+  // a pack's 2.5 shown beside a category the project had set to 0.5.
+  it('shows the project’s weight rather than the pack’s', async () => {
+    wrap(
+      <AreaRiskConfig
+        area={area()}
+        taxonomy={taxonomy}
+        globalCategories={globals}
+        maxWeight={3}
+        categoryWeights={{ revenue_leak: 0.5 }}
+        onChange={() => {}}
+      />,
+    );
+    await userEvent.click(screen.getByTestId('area-risk-categories'));
+
+    expect(screen.getByText('Revenue leakage (×0.5)')).toBeInTheDocument();
+    expect(screen.queryByText('Revenue leakage (×2.5)')).not.toBeInTheDocument();
+    // A category the project did not override keeps the pack's weight.
+    expect(screen.getByText('Customer churn (×2)')).toBeInTheDocument();
+  });
+
+  // A project can weight one of the platform's own ids that the pack says
+  // nothing about — which is how a deployment weights `compliance` without
+  // its pack declaring a taxonomy at all. That weight has to show.
+  it('shows a weight set on a global category the pack does not declare', async () => {
+    wrap(
+      <AreaRiskConfig
+        area={area()}
+        taxonomy={taxonomy}
+        globalCategories={globals}
+        maxWeight={3}
+        categoryWeights={{ compliance: 3 }}
+        onChange={() => {}}
+      />,
+    );
+    await userEvent.click(screen.getByTestId('area-risk-categories'));
+
+    expect(screen.getByText('compliance (×3)')).toBeInTheDocument();
+    // And one with no weight anywhere is still offered, unlabelled: it flags
+    // a finding without weighting it.
+    expect(screen.getByText('security')).toBeInTheDocument();
+  });
+
+  it('falls back to the declared weights when the project overrides nothing', async () => {
+    wrap(
+      <AreaRiskConfig
+        area={area()}
+        taxonomy={taxonomy}
+        globalCategories={globals}
+        maxWeight={3}
+        categoryWeights={{}}
+        onChange={() => {}}
+      />,
+    );
+    await userEvent.click(screen.getByTestId('area-risk-categories'));
+    expect(screen.getByText('Revenue leakage (×2.5)')).toBeInTheDocument();
   });
 });
