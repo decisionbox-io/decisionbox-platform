@@ -68,3 +68,55 @@ func GlobalRiskCategories() []string {
 func ValidSeverityWeight(w float64) bool {
 	return w > 0 && w <= MaxSeverityWeight
 }
+
+// riskFlags is the business-risk flags an insight in this area carries: the
+// area's own category ids, in the order the area declares them, deduped, with
+// anything the configuration does not know dropped.
+//
+// Area-derived and nothing else. There is deliberately no input here that a
+// model could write: a flag says what KIND of risk a finding is, which is a
+// property of the area the finding was produced in, not a claim the analysis
+// model is entitled to make about its own work -- the same reason the severity
+// word and the confidence number stopped being its to write.
+//
+// `declared` is the resolved weight map, whose keys are the category ids a
+// configuration declared. One map rather than a second set of known ids,
+// because validation requires every declared category to state a weight, so
+// the two would hold the same ids and could only differ by going wrong. The
+// engine's global ids are known whether or not a configuration mentions them,
+// which is what makes the cross-cutting set reachable for a pack that declares
+// no taxonomy of its own.
+//
+// An id nothing declares is dropped SILENTLY, and that is the honest answer
+// rather than a shortcut: pack validation rejects such an id at save time, so
+// one reaching the engine came from a hand-edited document -- and this is a
+// pure function with nothing to report through. Carrying it into the flags
+// would render an unknown word as a chip beside the finding.
+//
+// Returns nil, never an empty slice, for an area with no categories: the field
+// is omitempty, and an empty array on the wire would read as "flagged, with
+// nothing" where absent reads as "not flagged".
+func riskFlags(areaCategories []string, declared map[string]float64) []string {
+	if len(areaCategories) == 0 {
+		return nil
+	}
+	global := make(map[string]bool, 3)
+	for _, id := range GlobalRiskCategories() {
+		global[id] = true
+	}
+
+	var out []string
+	seen := make(map[string]bool, len(areaCategories))
+	for _, id := range areaCategories {
+		if seen[id] {
+			continue
+		}
+		_, isDeclared := declared[id]
+		if !isDeclared && !global[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}

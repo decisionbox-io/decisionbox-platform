@@ -94,6 +94,7 @@ func scoreRecommendations(recs []models.Recommendation, insights []models.Insigh
 			SeverityReason: ins.Scoring.SeverityReason,
 			AreaWeight:     ins.Scoring.AreaWeight,
 			WeightSource:   ins.Scoring.WeightSource,
+			RiskFlags:      ins.Scoring.RiskFlags,
 		}
 	}
 

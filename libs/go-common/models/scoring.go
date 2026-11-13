@@ -101,10 +101,15 @@ type Scoring struct {
 	PriorityTier  string  `bson:"priority_tier,omitempty"  json:"priority_tier,omitempty"`
 	PriorityScore float64 `bson:"priority_score,omitempty" json:"priority_score,omitempty"`
 
-	// RiskFlags is declared and written by nothing yet: a flag is derived
-	// from the analysis area's risk categories, and no pack declares any.
-	// Here so that adding them later is logic rather than a schema change,
-	// and so the mirror guard covers the field from the day it ships.
+	// RiskFlags is what KIND of risk this finding is: the business-risk
+	// category ids its analysis area maps to, in the area's own declaration
+	// order.
+	//
+	// Derived from the area and from nothing the model wrote, like every
+	// other field here. Absent on a document whose area maps to no category,
+	// which is every document on a deployment that configures no taxonomy --
+	// and absent reads as "not flagged" where an empty array would read as
+	// "flagged, with nothing".
 	RiskFlags []string `bson:"risk_flags,omitempty" json:"risk_flags,omitempty"`
 
 	// EngineVersion is which calibration produced these numbers. Not

@@ -128,9 +128,73 @@ type SeverityConfig struct {
 	HighAt   float64
 	MediumAt float64
 
-	// DefaultWeight is the multiplier for an area with no configured weight,
-	// which today is every area.
+	// DefaultWeight is the multiplier for an area with no configured weight:
+	// no per-area override, and no risk category carrying one.
 	DefaultWeight float64
+
+	// CategoryWeights is what a finding in each business-risk category is
+	// worth relative to one in an unweighted area, keyed by category id.
+	//
+	// RESOLVED, not authored here: a pack declares the taxonomy and a project
+	// overrides individual categories, and ResolveSeverity folds the two into
+	// this map once per run. Nil is the shipped state and means no category
+	// weights at all, which is what makes an unconfigured deployment score
+	// byte-identically to one with no taxonomy.
+	//
+	// Its keys are also the category ids the engine will FLAG an insight
+	// with, beside the global cross-cutting set -- see riskFlags for why that
+	// is one map rather than two.
+	CategoryWeights map[string]float64
+}
+
+// ResolveSeverity folds a pack's declared risk taxonomy and a project's own
+// category weights into the map the engine reads, and returns the calibration
+// with it attached.
+//
+// Pure, and exported, for two reasons. The resolution happens once per run --
+// two areas of one run must never be weighted against different numbers -- so
+// it belongs at the seam that starts a run rather than inside the per-document
+// scorer. And it has two callers: the agent resolving a run's configuration,
+// and the agent reading back the configuration pinned on a resumed run. One
+// implementation means those two cannot drift into weighting the same area
+// differently.
+//
+// Precedence: a project's weight for a category wins over the pack's declared
+// one, because the project is the more specific statement. A weight outside
+// (0, MaxSeverityWeight] is SKIPPED rather than clamped -- a configuration
+// cannot reach this function through validation, so one that did was
+// hand-edited, and an area whose only category was skipped falls back to the
+// default weight with the default source. Clamping would silently act on a
+// number nobody wrote.
+//
+// A resolution that finds nothing leaves the map nil rather than empty, so a
+// project with a taxonomy of exclusively broken weights is indistinguishable
+// from one with no taxonomy -- which is what it is.
+func ResolveSeverity(cfg SeverityConfig, taxonomy []gomodels.RiskCategory, projectWeights map[string]float64) SeverityConfig {
+	resolved := make(map[string]float64, len(taxonomy)+len(projectWeights))
+	for _, cat := range taxonomy {
+		if cat.ID == "" || !ValidSeverityWeight(cat.Weight) {
+			continue
+		}
+		resolved[cat.ID] = cat.Weight
+	}
+	// The project's overrides, second, so they win. An id no taxonomy
+	// declares is kept rather than dropped: it is a deployment's standing
+	// priority waiting for a pack that has the category, and it is the only
+	// way to weight one of the engine's global categories.
+	for id, w := range projectWeights {
+		if id == "" || !ValidSeverityWeight(w) {
+			continue
+		}
+		resolved[id] = w
+	}
+
+	out := cfg
+	out.CategoryWeights = nil
+	if len(resolved) > 0 {
+		out.CategoryWeights = resolved
+	}
+	return out
 }
 
 // MagnitudeBand is one cutoff: a figure whose absolute value is at or above At
