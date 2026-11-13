@@ -220,6 +220,38 @@ func TestScoringEngines_ServesTheSeverityCutoffs(t *testing.T) {
 	}
 }
 
+// TestScoringEngines_ServesTheWeightContract -- the range a configured weight
+// must fall in, and the cross-cutting category ids every pack may use.
+//
+// Served for the reason the cutoffs are: two copies of a contract is two
+// chances to disagree about it. The prompts page offers these ids and enforces
+// that range on input, and the validator rejects anything outside it on save;
+// a literal in the dashboard would be how the editor comes to offer a weight
+// the save refuses, or a category the engine drops.
+func TestScoringEngines_ServesTheWeightContract(t *testing.T) {
+	sev := currentEngine(t, getScoringEngines(t)).Severity
+
+	if sev.MaxWeight != scoring.MaxSeverityWeight {
+		t.Errorf("max_weight = %v, want %v", sev.MaxWeight, scoring.MaxSeverityWeight)
+	}
+	// Above the default, or the range would exclude the weight every
+	// unconfigured area already has.
+	if sev.MaxWeight <= sev.DefaultWeight {
+		t.Errorf("max_weight %v is not above default_weight %v", sev.MaxWeight, sev.DefaultWeight)
+	}
+
+	want := scoring.GlobalRiskCategories()
+	if len(sev.GlobalRiskCategories) != len(want) {
+		t.Fatalf("global_risk_categories = %v, want %v", sev.GlobalRiskCategories, want)
+	}
+	for i := range want {
+		if sev.GlobalRiskCategories[i] != want[i] {
+			t.Errorf("global_risk_categories = %v, want %v (order included: it is what the "+
+				"prompts page offers them in)", sev.GlobalRiskCategories, want)
+		}
+	}
+}
+
 // TestScoringEngines_AmountBandsShipVisiblyEmpty -- a reader has to be able to
 // tell "this axis is deliberately unconfigured" from "this field is missing",
 // and `null` says neither. An absolute money cutoff is a property of a

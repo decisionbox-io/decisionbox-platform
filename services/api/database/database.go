@@ -185,6 +185,11 @@ var clearableProjectFields = []struct {
 	// the stored version behind — and a project with no rows but a version
 	// reads back as CONFIGURED, skipping the review it was just reset for.
 	{"llm_config_version", func(p *models.Project) bool { return p.LLMConfigVersion == 0 }},
+	// The project-wide risk category weights, for the same reason as the
+	// rows above: the field is omitempty, so a cleared map is absent from the
+	// $set and the stored weights survive. The next read restores them and
+	// every discovery after it keeps using weights the operator removed.
+	{"category_weights", func(p *models.Project) bool { return len(p.CategoryWeights) == 0 }},
 }
 
 // clearedProjectFields returns the $unset document for the clearable fields

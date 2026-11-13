@@ -401,12 +401,42 @@ func TestAVocabularyChangeIsNotATrend(t *testing.T) {
 // and the reason the comparison is on the MAGNITUDE rather than on the
 // weighted severity score. Raising an area's weight must not make every
 // finding in it look as though it got worse.
+//
+// Reachable from the day severity weights became configurable: someone sets
+// `compliance: 3.0`, the next run bands every compliance finding higher
+// without any of them having moved, and a comparison on the band or on the
+// weighted score would mark the lot as worsening trends. The one signal that
+// does not move with a setting is the magnitude.
 func TestAWeightChangeIsNotATrend(t *testing.T) {
 	// Same magnitude, and a severity band the weight lifted.
 	prior := &commonmodels.LedgerFinding{Severity: "medium", MagnitudeScore: 0.6, AffectedCount: 100}
 	reweighted := &commonmodels.LedgerFinding{Severity: "high", MagnitudeScore: 0.6, AffectedCount: 100}
 	if findingMagnitudeChanged(prior, reweighted, 0.2) {
 		t.Error("a weight change was reported as the finding having got worse")
+	}
+
+	// A real move in the same run as the weight change is still a trend, and
+	// is still reported on its own terms. Otherwise the guard above would be
+	// indistinguishable from the comparison having stopped working.
+	grewToo := &commonmodels.LedgerFinding{Severity: "high", MagnitudeScore: 1.0, AffectedCount: 100}
+	if !findingMagnitudeChanged(prior, grewToo, 0.2) {
+		t.Error("a magnitude move alongside a weight change should still be a trend")
+	}
+
+	// And the reason a reader is shown does not name the band the weight
+	// moved. The affected count is what made this a trend, so that is what it
+	// says: a reason claiming "severity moved from medium to high" would
+	// attribute a configuration change to the finding.
+	reason := trendReason(
+		trendSnapshot{severity: "medium", magnitude: 0.6, affected: 100},
+		trendSnapshot{severity: "high", magnitude: 0.6, affected: 400},
+	)
+	if strings.Contains(reason, "severity moved") {
+		t.Errorf("reason = %q, want the affected count named — the severity band moved because "+
+			"a weight did, which is not something the finding did", reason)
+	}
+	if !strings.Contains(reason, "affected count") {
+		t.Errorf("reason = %q, want the affected-count move named", reason)
 	}
 }
 

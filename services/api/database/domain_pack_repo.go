@@ -91,7 +91,22 @@ func (r *DomainPackRepository) Update(ctx context.Context, slug string, pack *mo
 	pack.ID = ""
 	pack.UpdatedAt = time.Now()
 
-	result, err := r.col.UpdateOne(ctx, bson.M{"slug": slug}, bson.M{"$set": pack})
+	update := bson.M{"$set": pack}
+	// `risk_taxonomy` is omitempty, so an empty one is absent from the $set
+	// above and the stored value survives — which makes removing a pack's
+	// last risk category impossible through this route. It passes validation
+	// (a pack with no taxonomy is legal), answers 200, and leaves every
+	// project created afterwards weighted by a taxonomy the pack no longer
+	// declares.
+	//
+	// Unset explicitly instead. The same rule would apply to any other
+	// omitempty field this route is expected to be able to clear; today this
+	// is the only one, so it is named rather than generalised.
+	if len(pack.RiskTaxonomy) == 0 {
+		update["$unset"] = bson.M{"risk_taxonomy": ""}
+	}
+
+	result, err := r.col.UpdateOne(ctx, bson.M{"slug": slug}, update)
 	if err != nil {
 		return fmt.Errorf("update domain pack: %w", err)
 	}

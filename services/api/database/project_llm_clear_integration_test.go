@@ -144,3 +144,65 @@ func TestInteg_ProjectUpdate_OmissionIsNotAReset(t *testing.T) {
 		t.Errorf("llm_config_version = %d, want %d — a rename must not re-gate the project", got.LLMConfigVersion, llmlayer.ConfigVersion)
 	}
 }
+
+// TestProjectRepo_UpdateClearsCategoryWeights is the round-2 finding.
+//
+// `category_weights` is omitempty, so a cleared map was absent from the
+// repository's `$set` and the stored weights survived: the route answered 200,
+// the next read restored them, and every discovery after that kept using
+// weights the operator had removed.
+//
+// The same shape as the LLM fields this file already covers, which is why the
+// fix is an entry in the same clearable-field table rather than a second
+// mechanism.
+func TestProjectRepo_UpdateClearsCategoryWeights(t *testing.T) {
+	db, cleanup := setupTestMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewProjectRepository(db)
+
+	p := &models.Project{
+		Name:            "weighted",
+		Domain:          "gaming",
+		CategoryWeights: map[string]float64{"compliance": 3, "revenue_leak": 2},
+	}
+	if err := repo.Create(ctx, p); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	stored, err := repo.GetByID(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if len(stored.CategoryWeights) != 2 {
+		t.Fatalf("the weights did not round-trip: %v", stored.CategoryWeights)
+	}
+
+	// The operator removes every weight.
+	stored.CategoryWeights = nil
+	if err := repo.Update(ctx, p.ID, stored); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	after, err := repo.GetByID(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if len(after.CategoryWeights) != 0 {
+		t.Errorf("CategoryWeights = %v, want cleared — the next discovery would keep using them",
+			after.CategoryWeights)
+	}
+
+	// And setting them again still works, so the clear is not one-way.
+	after.CategoryWeights = map[string]float64{"security": 1.5}
+	if err := repo.Update(ctx, p.ID, after); err != nil {
+		t.Fatalf("Update (re-set): %v", err)
+	}
+	again, err := repo.GetByID(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if again.CategoryWeights["security"] != 1.5 {
+		t.Errorf("CategoryWeights = %v, want the re-set weight", again.CategoryWeights)
+	}
+}

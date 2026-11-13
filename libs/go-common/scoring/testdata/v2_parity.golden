@@ -1,0 +1,758 @@
+## confirmed, high share
+{
+  "confidence_band": "high",
+  "confidence_base": 0.95,
+  "confidence_score": 0.95,
+  "confidence_reason": "Warehouse rows matched every claim exactly.",
+  "magnitude_score": 1,
+  "severity_band": "high",
+  "severity_score": 1,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "f1",
+      "display": "24.66%",
+      "value": 24.66,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "High — driven by 24.66%, checked against warehouse rows.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "critical",
+  "priority_score": 3.1975,
+  "engine_version": 1
+}
+
+## supported, high share
+{
+  "confidence_band": "high",
+  "confidence_base": 0.8,
+  "confidence_score": 0.8,
+  "confidence_reason": "Warehouse rows are consistent with the claims that were checked.",
+  "magnitude_score": 1,
+  "severity_band": "high",
+  "severity_score": 1,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "f1",
+      "display": "24.66%",
+      "value": 24.66,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "High — driven by 24.66%, checked against warehouse rows.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "critical",
+  "priority_score": 3.19,
+  "engine_version": 1
+}
+
+## partial, high share
+{
+  "confidence_band": "medium",
+  "confidence_base": 0.55,
+  "confidence_score": 0.55,
+  "confidence_reason": "Only some of the claims could be checked against warehouse rows.",
+  "magnitude_score": 1,
+  "severity_band": "high",
+  "severity_score": 1,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "f1",
+      "display": "24.66%",
+      "value": 24.66,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "High — driven by 24.66%, checked against warehouse rows.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "critical",
+  "priority_score": 3.1775,
+  "engine_version": 1
+}
+
+## rejected, high share
+{
+  "confidence_band": "low",
+  "confidence_base": 0.05,
+  "confidence_score": 0.05,
+  "confidence_reason": "Warehouse rows contradict a headline claim.",
+  "magnitude_score": 1,
+  "severity_band": "high",
+  "severity_score": 1,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "f1",
+      "display": "24.66%",
+      "value": 24.66,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "High — driven by 24.66%, checked against warehouse rows.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "investigate",
+  "priority_score": 2.1525,
+  "engine_version": 1
+}
+
+## unverifiable, high share
+{
+  "confidence_band": "unverifiable",
+  "confidence_base": 0.2,
+  "confidence_score": 0.2,
+  "confidence_reason": "Nothing in the cited evidence could check these claims.",
+  "magnitude_score": 1,
+  "severity_band": "high",
+  "severity_score": 1,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "f1",
+      "display": "24.66%",
+      "value": 24.66,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "High — driven by 24.66%, checked against warehouse rows.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "investigate",
+  "priority_score": 2.16,
+  "engine_version": 1
+}
+
+## no verdict at all, high share
+{
+  "confidence_band": "not_confirmed",
+  "confidence_base": 0.25,
+  "confidence_score": 0.25,
+  "confidence_reason": "This has not been checked against warehouse rows.",
+  "magnitude_score": 1,
+  "severity_band": "high",
+  "severity_score": 1,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "f1",
+      "display": "24.66%",
+      "value": 24.66,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "High — driven by 24.66%, checked against warehouse rows.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "investigate",
+  "priority_score": 2.1625,
+  "engine_version": 1
+}
+
+## confirmed, medium share
+{
+  "confidence_band": "high",
+  "confidence_base": 0.95,
+  "confidence_score": 0.95,
+  "confidence_reason": "Warehouse rows matched every claim exactly.",
+  "magnitude_score": 0.6,
+  "severity_band": "medium",
+  "severity_score": 0.6,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "f2",
+      "display": "7.50%",
+      "value": 7.5,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "Medium — driven by 7.50%, checked against warehouse rows.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "high",
+  "priority_score": 1.1375,
+  "engine_version": 1
+}
+
+## confirmed, low share
+{
+  "confidence_band": "high",
+  "confidence_base": 0.95,
+  "confidence_score": 0.95,
+  "confidence_reason": "Warehouse rows matched every claim exactly.",
+  "magnitude_score": 0.25,
+  "severity_band": "low",
+  "severity_score": 0.25,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "f3",
+      "display": "1.20%",
+      "value": 1.2,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "Low — driven by 1.20%, checked against warehouse rows.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "low",
+  "priority_score": 0.085,
+  "engine_version": 1
+}
+
+## confirmed, nothing quantified
+{
+  "confidence_band": "high",
+  "confidence_base": 0.95,
+  "confidence_score": 0.95,
+  "confidence_reason": "Warehouse rows matched every claim exactly.",
+  "magnitude_score": 0.6,
+  "severity_band": "medium",
+  "severity_score": 0.6,
+  "severity_driver": {
+    "kind": "baseline",
+    "quantified": false
+  },
+  "severity_reason": "Medium — not quantified: this finding states no checked figure to measure it by, so the area baseline applies.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "high",
+  "priority_score": 1.1375,
+  "engine_version": 1
+}
+
+## confirmed, a grounded amount and no amount bands
+{
+  "confidence_band": "high",
+  "confidence_base": 0.95,
+  "confidence_score": 0.95,
+  "confidence_reason": "Warehouse rows matched every claim exactly.",
+  "magnitude_score": 0.6,
+  "severity_band": "medium",
+  "severity_score": 0.6,
+  "severity_driver": {
+    "kind": "baseline",
+    "quantified": false,
+    "amount": {
+      "figure_id": "a1",
+      "display": "$8.48B",
+      "value": 8476238553,
+      "unit": "currency",
+      "currency": "$",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "Medium — not quantified, so the area baseline applies. $8.48B is at stake but no amount bands are configured to rank it.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "high",
+  "priority_score": 1.1375,
+  "engine_version": 1
+}
+
+## confirmed, an amount and a share together
+{
+  "confidence_band": "high",
+  "confidence_base": 0.95,
+  "confidence_score": 0.95,
+  "confidence_reason": "Warehouse rows matched every claim exactly.",
+  "magnitude_score": 0.6,
+  "severity_band": "medium",
+  "severity_score": 0.6,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "f2",
+      "display": "7.50%",
+      "value": 7.5,
+      "unit": "percent",
+      "verdict": "holds"
+    },
+    "amount": {
+      "figure_id": "a1",
+      "display": "$8.48B",
+      "value": 8476238553,
+      "unit": "currency",
+      "currency": "$",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "Medium — banded on 7.50%, with $8.48B at stake. Both checked against warehouse rows.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "high",
+  "priority_score": 1.1375,
+  "engine_version": 1
+}
+
+## confirmed, an amount in a foreign currency
+{
+  "confidence_band": "high",
+  "confidence_base": 0.95,
+  "confidence_score": 0.95,
+  "confidence_reason": "Warehouse rows matched every claim exactly.",
+  "magnitude_score": 0.6,
+  "severity_band": "medium",
+  "severity_score": 0.6,
+  "severity_driver": {
+    "kind": "baseline",
+    "quantified": false
+  },
+  "severity_reason": "Medium — not quantified: this finding states no checked figure to measure it by, so the area baseline applies.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "high",
+  "priority_score": 1.1375,
+  "engine_version": 1
+}
+
+## confirmed, the only figure refuted
+{
+  "confidence_band": "high",
+  "confidence_base": 0.95,
+  "confidence_score": 0.85,
+  "confidence_reason": "Warehouse rows matched every claim exactly. Lowered because a number's own arithmetic does not reproduce it.",
+  "confidence_docks": [
+    {
+      "code": "refuted_arithmetic",
+      "label": "A number's own arithmetic does not reproduce it",
+      "amount": 0.1
+    }
+  ],
+  "magnitude_score": 0.6,
+  "severity_band": "medium",
+  "severity_score": 0.6,
+  "severity_driver": {
+    "kind": "baseline",
+    "quantified": false
+  },
+  "severity_reason": "Medium — not quantified: this finding states no checked figure to measure it by, so the area baseline applies.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "high",
+  "priority_score": 1.1325,
+  "engine_version": 1
+}
+
+## confirmed, a duplicated figure id
+{
+  "confidence_band": "high",
+  "confidence_base": 0.95,
+  "confidence_score": 0.95,
+  "confidence_reason": "Warehouse rows matched every claim exactly.",
+  "magnitude_score": 0.6,
+  "severity_band": "medium",
+  "severity_score": 0.6,
+  "severity_driver": {
+    "kind": "baseline",
+    "quantified": false
+  },
+  "severity_reason": "Medium — not quantified: this finding states no checked figure to measure it by, so the area baseline applies.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "high",
+  "priority_score": 1.1375,
+  "engine_version": 1
+}
+
+## supported, two quality caveats
+{
+  "confidence_band": "medium",
+  "confidence_base": 0.8,
+  "confidence_score": 0.6,
+  "confidence_reason": "Warehouse rows are consistent with the claims that were checked. Lowered because a source reported the rows behind this are not a faithful answer to the query.",
+  "confidence_docks": [
+    {
+      "code": "degraded_evidence",
+      "label": "A source reported the rows behind this are not a faithful answer to the query",
+      "amount": 0.1
+    },
+    {
+      "code": "degraded_evidence",
+      "label": "A source reported the rows behind this are not a faithful answer to the query",
+      "amount": 0.1
+    }
+  ],
+  "magnitude_score": 1,
+  "severity_band": "high",
+  "severity_score": 1,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "f1",
+      "display": "24.66%",
+      "value": 24.66,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "High — driven by 24.66%, checked against warehouse rows.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "critical",
+  "priority_score": 3.18,
+  "engine_version": 1
+}
+
+## supported, three quality caveats hit the cap
+{
+  "confidence_band": "medium",
+  "confidence_base": 0.8,
+  "confidence_score": 0.6,
+  "confidence_reason": "Warehouse rows are consistent with the claims that were checked. Lowered because a source reported the rows behind this are not a faithful answer to the query.",
+  "confidence_docks": [
+    {
+      "code": "degraded_evidence",
+      "label": "A source reported the rows behind this are not a faithful answer to the query",
+      "amount": 0.1
+    },
+    {
+      "code": "degraded_evidence",
+      "label": "A source reported the rows behind this are not a faithful answer to the query",
+      "amount": 0.1
+    }
+  ],
+  "magnitude_score": 1,
+  "severity_band": "high",
+  "severity_score": 1,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "f1",
+      "display": "24.66%",
+      "value": 24.66,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "High — driven by 24.66%, checked against warehouse rows.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "critical",
+  "priority_score": 3.18,
+  "engine_version": 1
+}
+
+## supported, refuted arithmetic and a refuted claim hit the cap
+{
+  "confidence_band": "medium",
+  "confidence_base": 0.8,
+  "confidence_score": 0.65,
+  "confidence_reason": "Warehouse rows are consistent with the claims that were checked. Lowered because a number's own arithmetic does not reproduce it and a claim about rank, count or trend is false over the rows it cites.",
+  "confidence_docks": [
+    {
+      "code": "refuted_arithmetic",
+      "label": "A number's own arithmetic does not reproduce it",
+      "amount": 0.1
+    },
+    {
+      "code": "refuted_quantifier",
+      "label": "A claim about rank, count or trend is false over the rows it cites",
+      "amount": 0.05
+    }
+  ],
+  "magnitude_score": 1,
+  "severity_band": "high",
+  "severity_score": 1,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "f1",
+      "display": "24.66%",
+      "value": 24.66,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "High — driven by 24.66%, checked against warehouse rows.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "critical",
+  "priority_score": 3.1825,
+  "engine_version": 1
+}
+
+## supported, an unresolved reference
+{
+  "confidence_band": "high",
+  "confidence_base": 0.8,
+  "confidence_score": 0.75,
+  "confidence_reason": "Warehouse rows are consistent with the claims that were checked. Lowered because the text still carries a reference to a number that was never supplied.",
+  "confidence_docks": [
+    {
+      "code": "unresolved_figure",
+      "label": "The text still carries a reference to a number that was never supplied",
+      "amount": 0.05
+    }
+  ],
+  "magnitude_score": 1,
+  "severity_band": "high",
+  "severity_score": 1,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "f1",
+      "display": "24.66%",
+      "value": 24.66,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "High — driven by 24.66%, checked against warehouse rows.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "critical",
+  "priority_score": 3.1875,
+  "engine_version": 1
+}
+
+## supported, checking ran past the retained sample
+{
+  "confidence_band": "high",
+  "confidence_base": 0.8,
+  "confidence_score": 0.75,
+  "confidence_reason": "Warehouse rows are consistent with the claims that were checked. Lowered because checking ran past the end of the retained row sample.",
+  "confidence_docks": [
+    {
+      "code": "sample_ended_early",
+      "label": "Checking ran past the end of the retained row sample",
+      "amount": 0.05
+    }
+  ],
+  "magnitude_score": 1,
+  "severity_band": "high",
+  "severity_score": 1,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "f1",
+      "display": "24.66%",
+      "value": 24.66,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "High — driven by 24.66%, checked against warehouse rows.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "critical",
+  "priority_score": 3.1875,
+  "engine_version": 1
+}
+
+## supported, every dock at once
+{
+  "confidence_band": "low",
+  "confidence_base": 0.8,
+  "confidence_score": 0.35,
+  "confidence_reason": "Warehouse rows are consistent with the claims that were checked. Lowered because a source reported the rows behind this are not a faithful answer to the query; a number's own arithmetic does not reproduce it; a claim about rank, count or trend is false over the rows it cites; the text still carries a reference to a number that was never supplied; and checking ran past the end of the retained row sample.",
+  "confidence_docks": [
+    {
+      "code": "degraded_evidence",
+      "label": "A source reported the rows behind this are not a faithful answer to the query",
+      "amount": 0.1
+    },
+    {
+      "code": "degraded_evidence",
+      "label": "A source reported the rows behind this are not a faithful answer to the query",
+      "amount": 0.1
+    },
+    {
+      "code": "refuted_arithmetic",
+      "label": "A number's own arithmetic does not reproduce it",
+      "amount": 0.1
+    },
+    {
+      "code": "refuted_quantifier",
+      "label": "A claim about rank, count or trend is false over the rows it cites",
+      "amount": 0.05
+    },
+    {
+      "code": "unresolved_figure",
+      "label": "The text still carries a reference to a number that was never supplied",
+      "amount": 0.05
+    },
+    {
+      "code": "sample_ended_early",
+      "label": "Checking ran past the end of the retained row sample",
+      "amount": 0.05
+    }
+  ],
+  "magnitude_score": 1,
+  "severity_band": "high",
+  "severity_score": 1,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "f1",
+      "display": "24.66%",
+      "value": 24.66,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "High — driven by 24.66%, checked against warehouse rows.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "investigate",
+  "priority_score": 2.1675,
+  "engine_version": 1
+}
+
+## refuter disabled is never docked
+{
+  "confidence_band": "high",
+  "confidence_base": 0.8,
+  "confidence_score": 0.8,
+  "confidence_reason": "Warehouse rows are consistent with the claims that were checked.",
+  "magnitude_score": 1,
+  "severity_band": "high",
+  "severity_score": 1,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "f1",
+      "display": "24.66%",
+      "value": 24.66,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "High — driven by 24.66%, checked against warehouse rows.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "critical",
+  "priority_score": 3.19,
+  "engine_version": 1
+}
+
+## a zero config falls back to the default
+{
+  "confidence_band": "high",
+  "confidence_base": 0.8,
+  "confidence_score": 0.8,
+  "confidence_reason": "Warehouse rows are consistent with the claims that were checked.",
+  "magnitude_score": 1,
+  "severity_band": "high",
+  "severity_score": 1,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "f1",
+      "display": "24.66%",
+      "value": 24.66,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "High — driven by 24.66%, checked against warehouse rows.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "critical",
+  "priority_score": 3.19,
+  "engine_version": 1
+}
+
+## recommendation inheriting the highest-severity insight
+{
+  "confidence_band": "high",
+  "confidence_base": 0.8,
+  "confidence_score": 0.8,
+  "confidence_reason": "Warehouse rows are consistent with the claims that were checked.",
+  "magnitude_score": 1,
+  "severity_band": "high",
+  "severity_score": 1,
+  "severity_reason": "High — banded on 24.66%, checked against warehouse rows.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "critical",
+  "priority_score": 3.19,
+  "engine_version": 1
+}
+
+## recommendation with nothing to inherit
+{
+  "confidence_band": "medium",
+  "confidence_base": 0.55,
+  "confidence_score": 0.55,
+  "confidence_reason": "Only some of the claims could be checked against warehouse rows.",
+  "engine_version": 1
+}
+

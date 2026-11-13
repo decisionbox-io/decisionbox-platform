@@ -425,3 +425,68 @@ func containsStr(s, substr string) bool {
 	}
 	return false
 }
+
+// TestDomainPackRepo_UpdateCanClearTheRiskTaxonomy is the round-1 finding.
+//
+// `risk_taxonomy` is omitempty, so an empty one is absent from the `$set` this
+// repository builds and the stored value survives — which made removing a
+// pack's last risk category impossible through this route. It passed
+// validation (a pack with no taxonomy is legal), answered 200, and left every
+// project created afterwards weighted by a taxonomy the pack no longer
+// declared.
+func TestDomainPackRepo_UpdateCanClearTheRiskTaxonomy(t *testing.T) {
+	db, cleanup := setupTestMongoDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	repo := NewDomainPackRepository(db)
+
+	pack := testPack("healthcare")
+	pack.RiskTaxonomy = []models.PackRiskCategory{
+		{ID: "compliance", Label: "Compliance", Weight: 3},
+		{ID: "revenue_leak", Label: "Revenue leakage", Weight: 2},
+	}
+	if err := repo.Create(ctx, pack); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	stored, err := repo.GetBySlug(ctx, "healthcare")
+	if err != nil {
+		t.Fatalf("GetBySlug: %v", err)
+	}
+	if len(stored.RiskTaxonomy) != 2 {
+		t.Fatalf("the taxonomy did not round-trip: %+v", stored.RiskTaxonomy)
+	}
+
+	// Remove every category, which the pack contract allows.
+	stored.RiskTaxonomy = nil
+	if err := repo.Update(ctx, "healthcare", stored); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	after, err := repo.GetBySlug(ctx, "healthcare")
+	if err != nil {
+		t.Fatalf("GetBySlug: %v", err)
+	}
+	if len(after.RiskTaxonomy) != 0 {
+		t.Errorf("RiskTaxonomy = %+v, want it cleared — a project created now would be weighted "+
+			"by a taxonomy the pack no longer declares", after.RiskTaxonomy)
+	}
+	// And the rest of the pack is untouched, because the clear is one field
+	// rather than a replace.
+	if after.Name != stored.Name || len(after.Categories) != len(stored.Categories) {
+		t.Errorf("clearing the taxonomy changed the rest of the pack: %+v", after)
+	}
+
+	// Setting one again still works, so the clear is not a one-way door.
+	after.RiskTaxonomy = []models.PackRiskCategory{{ID: "security", Label: "Security", Weight: 1.5}}
+	if err := repo.Update(ctx, "healthcare", after); err != nil {
+		t.Fatalf("Update (re-set): %v", err)
+	}
+	again, err := repo.GetBySlug(ctx, "healthcare")
+	if err != nil {
+		t.Fatalf("GetBySlug: %v", err)
+	}
+	if len(again.RiskTaxonomy) != 1 || again.RiskTaxonomy[0].ID != "security" {
+		t.Errorf("RiskTaxonomy = %+v, want the re-set one", again.RiskTaxonomy)
+	}
+}

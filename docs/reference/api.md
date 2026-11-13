@@ -83,6 +83,7 @@ The confidence engine's calibration, per engine version.
 Served rather than duplicated in the dashboard, because a document has to be explained with the cutoffs that actually scored it.
 Everything a reader needs about a specific insight or recommendation is stored on the document itself — its band, the reason, the base, each deduction and the final score (see [Scoring](data-models.md#scoring)).
 This endpoint supplies only the line the document cannot carry: which cutoff its score crossed.
+It also serves the severity-weight contract — `max_weight`, the top of the range a configured weight must fall in, and `global_risk_categories`, the cross-cutting category ids every pack may map an area to — for the same reason: the playbook editor enforces them on input and the pack validator rejects a violation on save, and two copies of a contract are two chances to disagree about it.
 
 ```bash
 curl http://localhost:8080/api/v1/scoring/engines
@@ -113,6 +114,16 @@ curl http://localhost:8080/api/v1/scoring/engines
             {"code": "unresolved_figure", "label": "The text still carries a reference to a number that was never supplied", "max": 0.05},
             {"code": "sample_ended_early", "label": "Checking ran past the end of the retained row sample", "max": 0.05}
           ]
+        },
+        "severity": {
+          "amount_bands": [],
+          "share_bands": [{"at": 20, "band": "high"}, {"at": 5, "band": "medium"}],
+          "magnitudes": {"high": 1, "medium": 0.6, "low": 0.25},
+          "baseline": 0.6,
+          "cutoffs": {"high": 0.66, "medium": 0.33},
+          "default_weight": 1,
+          "max_weight": 3,
+          "global_risk_categories": ["compliance", "security", "data_quality"]
         }
       }
     ]
@@ -120,11 +131,15 @@ curl http://localhost:8080/api/v1/scoring/engines
 }
 ```
 
+The example is abridged: each engine also carries a `priority` block with the tier weights and the matrix.
+
 - `current_version` is what this deployment's agent stamps on a document it scores now.
 - `engines` lists every calibration this build can explain a document with, ascending by version. A document whose `engine_version` is absent from the list was scored by a newer agent than this API; a reader should render the rest of the breakdown and omit the cutoff line rather than substitute another version's numbers.
 - `bases` is keyed by the verdict a document carries. The two verdicts that mean validation never ran (`validation_disabled`, `skipped_budget_cap`) are deliberately absent — they take `default`, and their band is terminal rather than decided by a cutoff.
 - `cutoffs` are inclusive: a score at exactly `high` is high.
 - A deduction's `cap` bounds the total it may charge; `shared_cap_with` names the other deduction it shares that total with, which is why two 0.1 deductions can only come to 0.15 between them.
+- `severity.amount_bands` ships EMPTY, and the empty array is the information rather than an omission: an absolute money cutoff is a property of a business, not of the engine, so an unconfigured deployment bands on the share and still shows the amount at stake.
+- `severity.max_weight` is the top of the range a configured severity weight must fall in, `(0, max_weight]`, and `severity.global_risk_categories` are the cross-cutting risk category ids available to every domain pack. See [Risk taxonomy and severity weights](data-models.md#risk-taxonomy-and-severity-weights).
 
 Read-only, and served to any authenticated viewer.
 `Cache-Control: no-store`, because a cached copy would explain a document with whichever version was deployed when the response was cached.
@@ -635,6 +650,10 @@ curl http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/prompts
     "exploration": "# Gaming Analytics Discovery Agent\n\nYou are an autonomous...",
     "recommendations": "# Generate Actionable Recommendations\n\n...",
     "base_context": "## Project Profile\n\n{{PROFILE}}\n\n...",
+    "risk_taxonomy": [
+      { "id": "player_churn", "label": "Player churn", "weight": 2.5 },
+      { "id": "monetization", "label": "Monetization", "weight": 2.0 }
+    ],
     "analysis_areas": {
       "churn": {
         "name": "Churn Risks",
@@ -643,12 +662,18 @@ curl http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/prompts
         "prompt": "# Churn Pattern Analysis\n\n...",
         "is_base": true,
         "enabled": true,
-        "priority": 1
+        "priority": 1,
+        "risk_categories": ["player_churn"]
       }
     }
   }
 }
 ```
+
+`risk_taxonomy` and each area's `risk_categories` / `severity_weight` are the severity weighting: they decide what a finding in the area is multiplied by, and the business-risk flags it carries.
+Both are snapshotted from the domain pack when the project is created and are editable here afterwards.
+A stated weight must be in `(0, 3]`; a category id must be one the taxonomy declares or one of the engine's cross-cutting ids, which [`GET /api/v1/scoring/engines`](#get-apiv1scoringengines) serves alongside the ceiling.
+See [Risk taxonomy and severity weights](data-models.md#risk-taxonomy-and-severity-weights).
 
 ### PUT /api/v1/projects/{id}/prompts
 

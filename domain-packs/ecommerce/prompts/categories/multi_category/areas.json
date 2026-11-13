@@ -5,6 +5,7 @@
     "description": "Category and brand-level analysis — which categories drive views vs purchases, cross-category shopping behavior, brand loyalty, and product discovery patterns",
     "keywords": ["category", "brand", "product", "sku", "catalog", "assortment", "cross_category", "category_code", "electronics", "appliances", "computers", "discovery"],
     "priority": 4,
+    "risk_categories": ["merchandising", "revenue_leak"],
     "prompt_file": "analysis_product_performance.md"
   },
   {
@@ -13,6 +14,7 @@
     "description": "Session-level analysis — browsing depth, session event count patterns, time-of-day effects, multi-product viewing patterns, and the journey from browse to buy within a session",
     "keywords": ["session", "browse", "view", "visit", "journey", "path", "depth", "duration", "time_of_day", "user_session", "click", "navigation"],
     "priority": 5,
+    "risk_categories": ["conversion_friction"],
     "prompt_file": "analysis_session_behavior.md"
   }
 ]

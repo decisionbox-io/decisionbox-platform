@@ -109,6 +109,34 @@ curl -X PUT http://localhost:8080/api/v1/projects/{id}/prompts \
 
 Custom areas are merged with domain pack areas at runtime.
 
+## Weighting an Area's Risk
+
+Not every analysis area matters equally. Each area on the **Prompts** page carries two more controls, beside its name and keywords:
+
+- **Risk categories** — what kind of risk a finding here is. The options are the risk categories your domain pack declared, with the weight each contributes, plus three the platform owns and offers to every pack: `compliance`, `security` and `data_quality`. Selecting one or more does two things: the area's severity weight becomes the **largest** of their weights, and every insight the area produces carries them as business-risk flags, shown beside its severity band.
+- **Severity weight override** — the weight for this area alone, overriding its categories'. In `(0, 3]`.
+
+Prefer the categories. A weight attaches to a *category*, so a statement like "compliance matters three times as much to us" reaches every area mapped to it — including the one a pack update adds next month, which an area-by-area override would leave untouched.
+
+```bash
+curl -X PUT http://localhost:8080/api/v1/projects/{id}/prompts \
+  -H "Content-Type: application/json" \
+  -d '{
+    "analysis_areas": {
+      "churn": {
+        "risk_categories": ["player_churn", "data_quality"],
+        "severity_weight": 1.5
+      }
+    }
+  }'
+```
+
+Severity is `magnitude × weight`, clamped at 1.00, so a weight of 3.0 lifts a *low*-magnitude finding (0.25 → 0.75) above a *medium*-magnitude one in an unweighted area (0.60). Opening a severity label shows which category set the weight, or that an override did.
+
+Two things a weight change deliberately does **not** do: it does not re-score anything already stored — a stored severity is a fact about the run that produced it — and it does not mark unchanged findings as trends, because the cross-run comparison reads the weight-free magnitude. A run already in progress keeps the weights it started with, including across a resume.
+
+See [Risk taxonomy and severity weights](../reference/data-models.md#risk-taxonomy-and-severity-weights) for the full contract, and [Creating Domain Packs](creating-domain-packs.md) for declaring a taxonomy of your own.
+
 ## Enabling/Disabling Areas
 
 You can disable analysis areas without deleting them:

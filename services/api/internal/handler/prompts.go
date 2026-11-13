@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
@@ -30,6 +31,12 @@ func SeedProjectPrompts(project *models.Project, pack *models.DomainPack) {
 		Recommendations: pack.Prompts.Base.Recommendations,
 		BaseContext:     pack.Prompts.Base.BaseContext,
 		AnalysisAreas:   make(map[string]models.AnalysisAreaConfig),
+		// The pack's risk taxonomy, copied here with everything else it
+		// seeds. This is the ONLY moment it can arrive: a project snapshots
+		// its area configuration at creation and pack seeds are never
+		// re-applied on upgrade, so a taxonomy missed here is one the project
+		// can never acquire.
+		RiskTaxonomy: pack.RiskTaxonomy,
 	}
 
 	// Seed base analysis areas
@@ -43,6 +50,10 @@ func SeedProjectPrompts(project *models.Project, pack *models.DomainPack) {
 			IsCustom:    false,
 			Priority:    area.Priority,
 			Enabled:     true,
+			// The area's risk mapping and weight override, for the reason the
+			// taxonomy above is carried.
+			RiskCategories: area.RiskCategories,
+			SeverityWeight: area.SeverityWeight,
 		}
 	}
 
@@ -50,14 +61,16 @@ func SeedProjectPrompts(project *models.Project, pack *models.DomainPack) {
 	if catAreas, ok := pack.AnalysisAreas.Categories[category]; ok {
 		for _, area := range catAreas {
 			prompts.AnalysisAreas[area.ID] = models.AnalysisAreaConfig{
-				Name:        area.Name,
-				Description: area.Description,
-				Keywords:    area.Keywords,
-				Prompt:      area.Prompt,
-				IsBase:      false,
-				IsCustom:    false,
-				Priority:    area.Priority,
-				Enabled:     true,
+				Name:           area.Name,
+				Description:    area.Description,
+				Keywords:       area.Keywords,
+				Prompt:         area.Prompt,
+				IsBase:         false,
+				IsCustom:       false,
+				Priority:       area.Priority,
+				Enabled:        true,
+				RiskCategories: area.RiskCategories,
+				SeverityWeight: area.SeverityWeight,
 			}
 		}
 	}
@@ -107,6 +120,17 @@ func UpdatePrompts(projectRepo database.ProjectRepo) http.HandlerFunc {
 		var prompts models.ProjectPrompts
 		if err := decodeJSON(r, &prompts); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+
+		// The risk configuration is checked here, because this is the route
+		// the playbook page's weight editor writes through. The engine
+		// IGNORES an illegal weight and an unknown category id, so accepting
+		// them would store nothing wrong — it would just answer 200 to a
+		// reviewer who typed 4.0 and then score the area at 1.0 forever. A
+		// save that silently does nothing is worse than a rejected one.
+		if issues := models.ProjectRiskConfigIssues(&prompts, p.CategoryWeights); len(issues) > 0 {
+			writeError(w, http.StatusBadRequest, strings.Join(issues, "; "))
 			return
 		}
 

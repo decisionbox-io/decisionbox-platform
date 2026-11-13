@@ -357,6 +357,21 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The risk configuration, checked AFTER seeding and before anything is
+	// persisted.
+	//
+	// After seeding, because a seeded project's taxonomy and area mappings
+	// come from the pack and are part of what is being created. Before
+	// persistence, because the update route checks the same rules
+	// unconditionally — so a project created with an illegal weight would
+	// have every later edit rejected with a 400 about a field the edit does
+	// not touch, including an unrelated rename. A refusal here is a refusal a
+	// client can act on; a refusal three screens later is not.
+	if issues := models.ProjectRiskConfigIssues(p.Prompts, p.CategoryWeights); len(issues) > 0 {
+		writeError(w, http.StatusBadRequest, strings.Join(issues, "; "))
+		return
+	}
+
 	// Plan-gate: provider allow-list. Self-hosted Noop permits everything.
 	ck := policy.GetChecker()
 	if err := ck.CheckLLMProviderAllowed(r.Context(), "", p.LLM.Provider); err != nil {
@@ -625,6 +640,26 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if incoming.Prompts != nil {
 		existing.Prompts = incoming.Prompts
+	}
+	// CategoryWeights is a map: nil means "field not present in this request"
+	// (preserve), and an empty-but-present map means the client cleared every
+	// weight. Without this the field could be set at creation and never
+	// changed or cleared again, while the route answered 200 — the shape of
+	// silent failure this merge exists to avoid.
+	if incoming.CategoryWeights != nil {
+		existing.CategoryWeights = incoming.CategoryWeights
+		if len(incoming.CategoryWeights) == 0 {
+			existing.CategoryWeights = nil
+		}
+	}
+	// Checked after both merges, because the two halves of the risk
+	// configuration are validated against each other: an area's mapping is
+	// read against the project's own taxonomy, and a category weight against
+	// the engine's range. The engine ignores an illegal value, so accepting
+	// one here would answer 200 to a client whose setting will never take.
+	if issues := models.ProjectRiskConfigIssues(existing.Prompts, existing.CategoryWeights); len(issues) > 0 {
+		writeError(w, http.StatusBadRequest, strings.Join(issues, "; "))
+		return
 	}
 	if incoming.Embedding.Provider != "" {
 		existing.Embedding = incoming.Embedding

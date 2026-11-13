@@ -22,6 +22,7 @@ import { ConfidenceCell } from '@/components/scoring/ConfidenceCell';
 import { SeverityCell } from '@/components/scoring/SeverityCell';
 import { PriorityCell } from '@/components/scoring/PriorityCell';
 import { ScoringBreakdown } from '@/components/scoring/ScoringBreakdown';
+import { RiskFlagChips } from '@/components/scoring/RiskFlagChips';
 import { DatasourceBadge } from '@/components/common/UIComponents';
 import { markRead } from '@/lib/readState';
 import QuestionsDrawer from '@/components/common/QuestionsDrawer';
@@ -272,6 +273,17 @@ export default function InsightDetailPage() {
                   recalculated. */}
               <SeverityCell scoring={insight.evidence_scoring} severity={insight.severity} size="md" />
             </div>
+            {/* What KIND of risk this is, beside how much it matters. Derived
+                from the analysis area's risk categories, so it renders
+                nothing at all on a deployment whose pack declares none —
+                rather than an empty row that would read as "no business
+                risk". */}
+            {insight.evidence_scoring?.risk_flags?.length ? (
+              <div>
+                <Text size="xs" c="dimmed">Business risk</Text>
+                <RiskFlagChips scoring={insight.evidence_scoring} size="md" />
+              </div>
+            ) : null}
             <div>
               <Text size="xs" c="dimmed">Confidence</Text>
               <ConfidenceCell

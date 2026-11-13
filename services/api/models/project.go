@@ -7,6 +7,7 @@ import (
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
+	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 	warehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 )
@@ -99,6 +100,22 @@ type Project struct {
 
 	Profile map[string]interface{} `bson:"profile,omitempty" json:"profile,omitempty"`
 	Prompts *ProjectPrompts        `bson:"prompts,omitempty" json:"prompts,omitempty"`
+
+	// CategoryWeights overrides the pack-declared weight of a risk category,
+	// project-wide: "compliance is three times anything else for us".
+	//
+	// Project-scoped rather than per-datasource because that is the grain the
+	// statement is true at -- a business's priorities do not change between
+	// its warehouses -- while the taxonomy, the area mappings and the
+	// per-area override sit on ProjectPrompts, which is mirrored per
+	// datasource. A warehouse whose pack has no `compliance` category simply
+	// never looks it up.
+	//
+	// Keyed by category id. An id no pack declares is inert rather than an
+	// error: it is a weight waiting for a pack that has the category, which
+	// is what makes a deployment-wide set of priorities survive a pack
+	// change.
+	CategoryWeights map[string]float64 `bson:"category_weights,omitempty" json:"category_weights,omitempty"`
 
 	// Language is the human-readable output language for insights,
 	// recommendations, and /ask answers. Substituted into prompts as
@@ -235,6 +252,15 @@ type ProjectPrompts struct {
 	Recommendations string                        `bson:"recommendations" json:"recommendations"`
 	BaseContext     string                        `bson:"base_context" json:"base_context"`
 	AnalysisAreas   map[string]AnalysisAreaConfig `bson:"analysis_areas" json:"analysis_areas"`
+
+	// RiskTaxonomy is the risk classes this project's pack declared, copied
+	// here at project creation like every other seeded prompt field.
+	//
+	// Warehouse-scoped, which is why it is here rather than on Project: each
+	// datasource can be bound to a different pack, so the taxonomy is a
+	// property of the pack behind the prompts, not of the project. The
+	// per-datasource mirror is WarehouseConfig.Prompts, which already exists.
+	RiskTaxonomy []gomodels.RiskCategory `bson:"risk_taxonomy,omitempty" json:"risk_taxonomy,omitempty"`
 }
 
 type AnalysisAreaConfig struct {
@@ -246,6 +272,14 @@ type AnalysisAreaConfig struct {
 	IsCustom    bool     `bson:"is_custom" json:"is_custom"`
 	Priority    int      `bson:"priority" json:"priority"`
 	Enabled     bool     `bson:"enabled" json:"enabled"`
+
+	// RiskCategories and SeverityWeight are the area's half of the severity
+	// weight: which risk classes a finding here belongs to, and the override
+	// for an area weighted differently from the rest of its categories.
+	// Seeded from the pack and editable per project. See PackAnalysisArea for
+	// why the override is a pointer.
+	RiskCategories []string `bson:"risk_categories,omitempty" json:"risk_categories,omitempty"`
+	SeverityWeight *float64 `bson:"severity_weight,omitempty" json:"severity_weight,omitempty"`
 }
 
 type WarehouseConfig struct {

@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/scoring"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
@@ -94,6 +95,7 @@ func scoreRecommendations(recs []models.Recommendation, insights []models.Insigh
 			SeverityReason: ins.Scoring.SeverityReason,
 			AreaWeight:     ins.Scoring.AreaWeight,
 			WeightSource:   ins.Scoring.WeightSource,
+			RiskFlags:      ins.Scoring.RiskFlags,
 		}
 	}
 
@@ -143,6 +145,16 @@ func citedSeverities(rec models.Recommendation, byInsight map[string]scoring.Inh
 // datasource context, and keeps the document's severity frozen anyway.
 type scoringContext struct {
 	cfg scoring.Config
+
+	// areaRisk is each analysis area's risk mapping and weight override, as
+	// pinned on the run. Keyed by area id; an area with no entry scores at
+	// the engine default with no flags, which is both the unconfigured case
+	// and the case of an area the project gained after the run started.
+	//
+	// A zero map is the right answer for the on-demand re-score path for the
+	// same reason the other fields' zero values are: it keeps a stored
+	// document's severity half frozen, so there is nothing to look up.
+	areaRisk map[string]gomodels.RunAreaRisk
 
 	// currencies and stepByID resolve each insight's home currency, which
 	// decides which of its amounts the severity axis may compare. A zero plan
@@ -249,6 +261,16 @@ func insightScoringInput(ins models.Insight, sc scoringContext) scoring.Input {
 		HomeCurrency: sc.currencies.forFigures(holdingCurrencyFigures(figures, ins.FigureVerdicts), sc.stepByID),
 		AreaID:       ins.AnalysisArea,
 		Config:       sc.cfg,
+	}
+	// The area's risk mapping, looked up by the insight's OWN stored area
+	// rather than taken from the area being analysed: the two agree on every
+	// path that exists today, and reading the insight's own is what keeps
+	// that true if one ever stops agreeing. An unmapped area leaves both
+	// fields zero, which the engine scores at the default weight with no
+	// flags.
+	if risk, ok := sc.areaRisk[ins.AnalysisArea]; ok {
+		in.AreaCategories = risk.RiskCategories
+		in.AreaOverride = risk.SeverityWeight
 	}
 	applyValidationToInput(&in, ins.Validation)
 	return in

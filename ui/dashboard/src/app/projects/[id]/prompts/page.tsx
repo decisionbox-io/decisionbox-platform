@@ -10,6 +10,8 @@ import {
 import { notifications } from '@mantine/notifications';
 import { IconAlertCircle, IconArrowLeft, IconCheck, IconPlus, IconTrash } from '@tabler/icons-react';
 import Shell from '@/components/layout/AppShell';
+import { AreaRiskConfig } from '@/components/scoring/AreaRiskConfig';
+import { useScoringEngines, engineFor } from '@/components/scoring/useScoringEngines';
 import { api, ProjectPrompts, AnalysisAreaConfig } from '@/lib/api';
 
 // Dynamic import to avoid SSR issues with the markdown editor
@@ -35,6 +37,18 @@ export default function PromptsPage() {
   const [activeTab, setActiveTab] = useState<string>('base_context');
   const [addModalOpen, setAddModalOpen] = useState(false);
 
+  // The engine's own weight contract — the cross-cutting risk category ids
+  // and the top of the legal range — read from the calibration the API serves
+  // rather than restated here. Undefined while it loads or against an older
+  // API, which costs the global ids and the ceiling and leaves the rest of
+  // the editor working.
+  // The project's own category-weight overrides, which win over the
+  // taxonomy's declared weights.
+  const [categoryWeights, setCategoryWeights] = useState<Record<string, number> | undefined>();
+
+  const engines = useScoringEngines();
+  const severityCfg = engineFor(engines, engines?.current_version)?.severity;
+
   // New area form
   const [newAreaId, setNewAreaId] = useState('');
   const [newAreaName, setNewAreaName] = useState('');
@@ -42,8 +56,15 @@ export default function PromptsPage() {
   const [newAreaKeywords, setNewAreaKeywords] = useState('');
 
   useEffect(() => {
+    // The project is KEPT, not just used as an existence check: its
+    // category_weights override what the taxonomy declares, and the editor
+    // below labels each category with the weight the scorer will actually
+    // apply.
     api.getProject(id)
-      .then(() => api.getPrompts(id))
+      .then((p) => {
+        setCategoryWeights(p.category_weights);
+        return api.getPrompts(id);
+      })
       .then(setPrompts)
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
@@ -278,6 +299,19 @@ export default function PromptsPage() {
                     onChange={(e) => updateArea(areaId, {
                       keywords: e.target.value.split(',').map((k) => k.trim()).filter(Boolean),
                     })} />
+                  {/* What kind of risk a finding here is, and what that is
+                      worth. The categories are the normal control: a weight
+                      attaches to a category, so it reaches every area mapped
+                      to it including one a pack update adds later. The
+                      override is for this area alone. */}
+                  <AreaRiskConfig
+                    area={area}
+                    taxonomy={prompts.risk_taxonomy}
+                    globalCategories={severityCfg?.global_risk_categories}
+                    maxWeight={severityCfg?.max_weight}
+                    categoryWeights={categoryWeights}
+                    onChange={(updates) => updateArea(areaId, updates)}
+                  />
                 </Stack>
 
                 <Text size="sm" fw={600} mb="xs">Analysis Prompt</Text>

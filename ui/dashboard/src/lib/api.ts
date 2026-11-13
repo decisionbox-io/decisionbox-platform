@@ -261,6 +261,10 @@ export interface DomainPack {
   source_url: string;
   is_published: boolean;
   categories: PackCategory[];
+  // The business-risk categories this pack's domain has, with what a finding
+  // in each is worth. Absent on a pack that declares none, which is every
+  // pack written before the configuration existed.
+  risk_taxonomy?: RiskCategory[];
   prompts: PackPrompts;
   analysis_areas: PackAnalysisAreas;
   profile_schema: PackProfileSchema;
@@ -289,6 +293,11 @@ export interface PackAnalysisArea {
   description: string;
   keywords: string[];
   priority: number;
+  // Which risk categories a finding in this area belongs to, and the weight
+  // for this area alone. See AnalysisAreaConfig, which is where they land
+  // once a project is created from the pack.
+  risk_categories?: string[];
+  severity_weight?: number;
   prompt: string;
 }
 
@@ -421,6 +430,7 @@ export interface Project {
   recommendation_verdicts?: string[];
   created_at: string;
   updated_at: string;
+  category_weights?: Record<string, number>;
 }
 
 // Project lifecycle constants. Mirrors the Go-side
@@ -809,6 +819,14 @@ export interface ScoringEngine {
     baseline: number;
     cutoffs: { high: number; medium: number };
     default_weight: number;
+    // The range a configured severity weight must fall in, (0, max_weight],
+    // and the cross-cutting risk category ids every pack may map an area to.
+    // Served rather than duplicated here: the editor that enforces them and
+    // the validator that rejects a violation on save have to agree. Optional
+    // for the same reason the block around them is — an API older than this
+    // build serves a severity calibration without them.
+    max_weight?: number;
+    global_risk_categories?: string[];
   };
   priority?: {
     tiers: { tier: PriorityTier; weight: number; priority: number }[];
@@ -1038,6 +1056,21 @@ export interface ProjectPrompts {
   recommendations: string;
   base_context: string;
   analysis_areas: Record<string, AnalysisAreaConfig>;
+  // The risk categories this project's pack declared, snapshotted at
+  // creation. Absent for a project whose pack declares none, which still
+  // leaves the engine's cross-cutting ids usable.
+  risk_taxonomy?: RiskCategory[];
+}
+
+// RiskCategory is one business-risk category: what it is called, and what a
+// finding in it is worth relative to one in an unweighted area.
+export interface RiskCategory {
+  id: string;
+  label: string;
+  description?: string;
+  // Absent means the engine default. A weight of 0 is not legal, which is why
+  // absent and zero can share a representation here.
+  weight?: number;
 }
 
 export interface AnalysisAreaConfig {
@@ -1049,6 +1082,14 @@ export interface AnalysisAreaConfig {
   is_custom: boolean;
   priority: number;
   enabled: boolean;
+  // Which risk categories a finding in this area belongs to: they decide the
+  // area's severity weight (the largest of theirs) and the risk flags its
+  // insights carry.
+  risk_categories?: string[];
+  // The weight for this area alone, overriding its categories'. Undefined is
+  // "no override" — the field is cleared into undefined rather than 0, which
+  // is not a legal weight.
+  severity_weight?: number;
 }
 
 export interface ProviderMeta {

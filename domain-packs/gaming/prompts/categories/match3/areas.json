@@ -5,6 +5,7 @@
     "description": "Difficulty spikes, frustration points, progression blockers, and chapter transition drop-offs in level progression",
     "keywords": ["level", "quit", "success", "difficulty", "fail", "attempt", "stage", "star", "chapter", "episode", "progression", "completion"],
     "priority": 4,
+    "risk_categories": ["player_experience"],
     "prompt_file": "analysis_levels.md"
   },
   {
@@ -13,6 +14,7 @@
     "description": "Power-up usage patterns, depletion risks, economy balance, purchase opportunities, and ad-booster conversion",
     "keywords": ["booster", "hint", "magnet", "power", "extra_life", "hammer", "consumable", "inventory", "earn", "deplete"],
     "priority": 5,
+    "risk_categories": ["monetization", "game_economy"],
     "prompt_file": "analysis_boosters.md"
   }
 ]
