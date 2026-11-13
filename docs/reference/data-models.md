@@ -73,11 +73,11 @@ The scorer clears every one of these fields and writes them from the evidence, w
 | `severity_score` | float64 | `min(1.0, magnitude × area_weight)`. The same number as the document's own `risk_score` |
 | `severity_driver` | SeverityDriver | The figure the magnitude came from, and the amount the finding is about |
 | `severity_reason` | string | The engine's own words for the band, stored so every reader quotes one wording |
-| `area_weight` | float64 | The multiplier applied to the magnitude. `1.0` on every area today |
+| `area_weight` | float64 | The multiplier applied to the magnitude: the analysis area's per-area override, else the largest weight among its risk categories, else `1.0`. See [Risk taxonomy and severity weights](#risk-taxonomy-and-severity-weights) |
 | `weight_source` | object | `kind` is `default`, `category` or `area_override`, with `category` naming the one that set it. Written even when the default applied, so a reader can tell a deliberate `1.0` from an unwritten field |
 | `priority_tier` | string | `critical`, `investigate`, `high` or `low` — the matrix cell over the severity and confidence bands. Absent together with the severity half, because there is nothing to roll up without it |
 | `priority_score` | float64 | The sort key: the tier's weight plus a small refinement from the two continuous scores. Monotone in the tier, so no amount of severity or confidence lifts a finding over the tier above it |
-| `risk_flags` | string[] | Declared and written by nothing yet: a flag is derived from an analysis area's risk categories, and no pack declares any |
+| `risk_flags` | string[] | What **kind** of risk this finding is: the risk category ids its analysis area maps to, in the area's own declaration order. Derived from the area — the analysis model cannot author one. Absent on a document whose area maps to no category |
 
 #### SeverityDriver
 
@@ -95,6 +95,38 @@ A `SeverityFigure` carries `figure_id`, `display` (the figure as the prose rende
 **Two figure slots, and both are load-bearing.** An absolute money cutoff is a property of a business rather than of the engine, so `amount_bands` ships empty (see [`GET /api/v1/scoring/engines`](api.md#scoring)) and an unconfigured deployment cannot band an amount at all. What it can still do is extract the amount and show it, while the band comes from the share — which is the usual case, not an edge one, and is why `figure` and `amount` are usually two different figures. They name the same figure once amount bands are configured.
 
 **Magnitude comes only from figures the platform re-checked**, in this order: the largest currency figure whose verdict holds and whose currency is the document's home currency (banded by the configured amount bands), then the largest percentage figure whose verdict holds, then the area baseline. Largest by *absolute* value — a 12% fall matters as much as a 12% rise. A figure the warehouse refuted, one the evaluator could not settle, and one with no verdict at all are the same thing here: a number that was not checked.
+
+#### Risk taxonomy and severity weights
+
+Not every analysis area matters equally. A domain pack declares a **risk taxonomy** — the business-risk categories its domain has, with a weight each — and maps every analysis area to one or more of them. A project overrides any category's weight deployment-wide, and a single area can override the weight its categories would give it.
+
+```
+weight(area) = the area's own severity_weight, when one is configured
+             | max(weight(c) for c in the area's risk_categories)
+             | 1.0                                                     (the engine default)
+risk_flags   = the area's risk_categories, deduped, in declaration order
+```
+
+**`max`, not the product or the mean.** A product double-counts: a finding that is both a revenue leak (2.0) and a compliance exposure (3.0) would be weighted 6.0 and clamp to the top of the scale whatever its magnitude. A mean dilutes the category that matters by averaging it with one that does not. `max` says *weighted by whichever is worse*, which is the sentence a reader expects from a list ordered by it.
+
+**Multipliers, not band floors.** "Compliance is always at least high" collapses everything it touches onto one band and sorts nothing; the continuous score is what orders twenty findings *inside* a band. A weight of 3.0 lifts a low-magnitude finding (0.25) above the high cutoff (0.66) without flattening anything: 0.25 × 3.0 = 0.75 outranks a medium-magnitude finding in an unweighted area (0.60 × 1.0).
+
+A stated weight must be in **(0, 3]**. Zero is excluded because it multiplies a magnitude to nothing and removes every finding in the category from the ranking, silently and in the direction that hides findings; the ceiling is what keeps a weight a weight, since the score is clamped at 1.00 and an unbounded one would produce a column of identical values. [`GET /api/v1/scoring/engines`](api.md#scoring) serves the ceiling and the cross-cutting category ids, so no client restates them.
+
+**Three category ids are the engine's own** and are available to every pack, whether or not it declares a taxonomy: `compliance`, `security` and `data_quality`. They flag a finding without weighting it unless a pack or a project declares a weight for them.
+
+| Where | Field | Scope |
+|---|---|---|
+| Domain pack | `risk_taxonomy` (`id`, `label`, `description`, `weight`) | The pack, and so the warehouse it is bound to |
+| Domain pack / project area | `risk_categories`, `severity_weight` | The pack, and so the warehouse — a project snapshots both at creation and they are editable per area on the playbook page |
+| Project | `category_weights` | The project, across every datasource: "compliance is three times anything else for us" is not a per-warehouse statement |
+| Discovery run | `scoring_config` | One run, pinned at its first attempt |
+
+**A run's weighting is pinned.** `scoring_config` records the resolved category weights and each configured area's mapping at the run's first attempt, and every later attempt replays it. A resume can happen days after the attempt it continues, and a weight changed in between would score the second half of a run against different numbers from the first. It stores the resolved *inputs* rather than the per-area weights, so a later attempt re-derives both the weight and the flags through the same engine code the first used.
+
+**A weight change is not a trend.** The cross-run comparison in the discovery ledger reads `magnitude_score`, which is weight-free, precisely so that raising a category's weight cannot make every finding in it look as though it got worse on the day someone changed a setting.
+
+**Nothing is re-scored.** A stored `severity` is an immutable fact about the run that produced it: changing a weight changes what the next run computes and leaves every stored document alone, and the on-demand "Run validation" path re-derives the confidence axis only.
 
 #### Priority
 
@@ -331,6 +363,7 @@ Live status of a running discovery. Stored in `discovery_runs` collection, updat
 | `max_steps`, `min_steps` | int | The run's own step budget, so a resume replays what the caller chose rather than the agent's defaults. |
 | `areas` | string[] | The run's own area selection. |
 | `effort` | string | The run's own effort level. |
+| `scoring_config` | object | The severity weighting this run was started with — `category_weights`, and `areas` keyed by area id with each one's `risk_categories` and `severity_weight`. Written once at the first attempt and replayed on every resume, so a weight changed in between cannot score the second half of a run against different numbers from the first. Absent on a run that predates it, which resolves nothing and scores every area at the engine default. See [Risk taxonomy and severity weights](#risk-taxonomy-and-severity-weights). |
 
 All the fields from `attempt` down are optional and absent on runs that predate checkpointing — such a run reads as attempt 0 with no checkpoint, which is correct: it has nothing to resume.
 
@@ -507,7 +540,8 @@ Project configuration. Stored in `projects` collection.
 | `layer_models` | map[string]LayerModel | Which connection and model each layer uses, keyed by layer, plus the reserved `default` row every layer without one inherits. Non-empty means **authoritative**: `blurb_llm` is not consulted, so resetting a table-description override cannot rediscover the stale mirror. |
 | `llm_config_version` | int | The per-layer-configuration generation this project has been configured for. 0 (or absent) means never: discovery is refused and the dashboard sends the user to settings. |
 | `profile` | map | Domain-specific profile (from JSON Schema form) |
-| `prompts` | ProjectPrompts | Per-project prompt overrides |
+| `prompts` | ProjectPrompts | Per-project prompt overrides, including the risk taxonomy and each area's risk categories — snapshotted from the pack at creation |
+| `category_weights` | map[string]float64 | Per-project override of a risk category's pack-declared weight, keyed by category id. Project-wide across every datasource, because "compliance is three times anything else for us" is not a per-warehouse statement. An id no pack declares is inert rather than an error. See [Risk taxonomy and severity weights](#risk-taxonomy-and-severity-weights). |
 | `status` | string | Project status |
 | `last_run_at` | timestamp | When the last discovery ran |
 | `last_run_status` | string | Last run result |

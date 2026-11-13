@@ -31,6 +31,7 @@ Create `prompts/base/areas.json` — the patterns your domain should discover:
     "description": "Drop-offs in the purchase funnel from browse to checkout",
     "keywords": ["conversion", "funnel", "cart", "checkout", "purchase", "browse", "add_to_cart"],
     "priority": 1,
+    "risk_categories": ["conversion_friction", "revenue_leak"],
     "prompt_file": "analysis_conversion.md"
   },
   {
@@ -62,6 +63,8 @@ Create `prompts/base/areas.json` — the patterns your domain should discover:
 | `keywords` | The agent filters exploration query results by these keywords to find results relevant to this area. Choose keywords that appear in table/column names in typical warehouses. |
 | `priority` | Execution order (1 = first). Lower priority areas run first. |
 | `prompt_file` | Filename of the analysis prompt markdown file (relative to this `areas.json`). |
+| `risk_categories` | Which business-risk categories a finding in this area belongs to — ids from your pack's `risk_taxonomy` (Step 1b) or the platform's own `compliance` / `security` / `data_quality`. They set the area's severity weight and the risk flags its insights carry. |
+| `severity_weight` | Optional. The weight for this area alone, overriding its categories'. In `(0, 3]`. Leave it out unless one area genuinely differs from the rest of its category — the category is the better place to say it. |
 
 ### Category-Specific Areas
 
@@ -81,6 +84,42 @@ If your domain has sub-types, add category-specific areas in `prompts/categories
 ```
 
 These are merged with base areas at runtime. A B2C e-commerce project would get: conversion + retention + revenue (base) + cart_abandonment (B2C specific).
+
+## Step 1b: Declare a Risk Taxonomy
+
+Severity is `magnitude × weight`, and the weight comes from the risk categories an area maps to. Declare them in your pack's JSON, beside `categories`:
+
+```json
+"risk_taxonomy": [
+  {
+    "id": "revenue_leak",
+    "label": "Revenue leakage",
+    "description": "Money the business is not collecting: lost conversions, mispriced orders, discount erosion.",
+    "weight": 2.5
+  },
+  {
+    "id": "customer_churn",
+    "label": "Customer churn",
+    "description": "Customers who stop buying, and the cohorts drifting toward it.",
+    "weight": 2.0
+  }
+]
+```
+
+| Field | Description |
+|-------|-------------|
+| `id` | Lowercase slug — letters, digits, hyphens or underscores, unique within the pack. Cited by an area's `risk_categories`. |
+| `label` | What a reader sees. |
+| `description` | What the category covers. Shown to whoever tunes the weight. |
+| `weight` | Required, in `(0, 3]`. `1.0` means "matters as much as any other area"; `3.0` lifts a *low*-magnitude finding above the high band. |
+
+Two to six categories is the useful range: they are what a customer tunes, and a list of twelve is a list nobody tunes. An area maps to as many as apply — the weight is the **largest** of them, so a finding that is both a revenue leak and a compliance exposure is weighted by whichever is worse.
+
+The taxonomy lives in the pack JSON only, not in the authoring tree: like `categories`, it is pack-level configuration rather than a prompt. The area **mappings** are authored in `areas.json` and shipped in the pack JSON, and a test fails the build if the two disagree.
+
+A pack that declares no taxonomy is fully supported: every area is weighted `1.0`, exactly as before this existed, and its areas can still map to the platform's three cross-cutting ids to carry risk flags.
+
+See [Risk taxonomy and severity weights](../reference/data-models.md#risk-taxonomy-and-severity-weights) for the whole contract.
 
 ## Step 2: Write Prompts
 
