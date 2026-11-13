@@ -13,12 +13,11 @@ import type { AnalysisAreaConfig, RiskCategory } from '@/lib/api';
 // area a business weights differently from the rest of its category, and it
 // wins.
 //
-// A component rather than JSX inline on the page, because the enterprise
-// dashboard is this app with its own overlay copied over it: an editor written
-// inline in the page would be invisible to the overlay-drift guard, and the
-// overlay's older copy of the page would shadow the feature silently on every
-// enterprise deployment. That has happened three times, most recently to the
-// schema editor, which shipped dark for five releases.
+// A component rather than JSX inline on the page, because a distribution that
+// overlays its own copy of a page over this one shadows whatever the page
+// holds: an editor written inline would be invisible to a drift check and
+// silently absent wherever the older copy wins. A component is comparable, so
+// its absence is detectable.
 
 // MIN_WEIGHT is the smallest weight this editor will produce. Not a contract
 // value: the engine's range is (0, maxWeight], which is open at the bottom and

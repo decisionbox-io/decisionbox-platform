@@ -151,9 +151,11 @@ func ValidateDomainPackForTarget(pack *DomainPack, target warehouse.SourceShape)
 
 	// The risk configuration, last, and through the accumulating form so
 	// there is one implementation of the rules rather than two phrasings of
-	// them. This contract returns the FIRST failure; the enterprise pack
-	// generator calls RiskConfigIssues directly, because its auto-fix loop
-	// has three attempts and needs every issue in one round-trip.
+	// them. This contract returns the FIRST failure, which is why
+	// RiskConfigIssues is exported as well: a caller that fixes a pack up
+	// rather than rejecting it needs every issue in one round-trip, and
+	// discovering them one re-run at a time is the difference between one
+	// pass and five.
 	if issues := RiskConfigIssues(pack); len(issues) > 0 {
 		return fmt.Errorf("%s", issues[0])
 	}
