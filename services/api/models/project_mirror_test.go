@@ -71,6 +71,16 @@ var riskConfigMirrors = []struct {
 			{"SeverityWeight", "severity_weight", "severity_weight", reflect.Ptr},
 		},
 	},
+	{
+		name:   "DiscoveryRun",
+		source: agentRunSource,
+		fields: []mirroredField{
+			// A pointer: nil is how a run that predates the pin says it
+			// recorded no weights, which is different from one pinned with
+			// none configured.
+			{"ScoringConfig", "scoring_config", "scoring_config", reflect.Ptr},
+		},
+	},
 }
 
 // TestTheProjectMirrorsCarryTheRiskConfiguration -- the API side declares each
@@ -80,6 +90,7 @@ func TestTheProjectMirrorsCarryTheRiskConfiguration(t *testing.T) {
 		"Project":            reflect.TypeOf(Project{}),
 		"ProjectPrompts":     reflect.TypeOf(ProjectPrompts{}),
 		"AnalysisAreaConfig": reflect.TypeOf(AnalysisAreaConfig{}),
+		"DiscoveryRun":       reflect.TypeOf(DiscoveryRun{}),
 	}
 
 	for _, m := range riskConfigMirrors {
@@ -153,6 +164,18 @@ func TestTheRiskTaxonomyIsOneStructEverywhere(t *testing.T) {
 	// alias for the shared struct and not a second declaration of it.
 	if got := reflect.TypeOf(PackRiskCategory{}); got != shared {
 		t.Errorf("PackRiskCategory = %s, want it to be an alias for %s", got, shared)
+	}
+
+	// The run's pinned configuration, for the same reason: it is written by
+	// the agent and read back by the agent, through two struct declarations
+	// that would otherwise be two shapes.
+	runCfg := reflect.TypeOf(gomodels.RunScoringConfig{})
+	runField, ok := reflect.TypeOf(DiscoveryRun{}).FieldByName("ScoringConfig")
+	if !ok {
+		t.Fatal("DiscoveryRun has no ScoringConfig field")
+	}
+	if got := runField.Type.Elem(); got != runCfg {
+		t.Errorf("DiscoveryRun.ScoringConfig points at %s, want %s", got, runCfg)
 	}
 
 	// The agent's copy, read from source: the element type is the shared one

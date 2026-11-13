@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+)
 
 // DiscoveryRun tracks the live status of an agent discovery run.
 // Written by the agent as it progresses. Read by the API for dashboard status.
@@ -144,6 +148,14 @@ type DiscoveryRun struct {
 	MinSteps int      `bson:"min_steps,omitempty" json:"min_steps,omitempty"`
 	Areas    []string `bson:"areas,omitempty" json:"areas,omitempty"`
 	Effort   string   `bson:"effort,omitempty" json:"effort,omitempty"`
+
+	// ScoringConfig is the severity weighting this run was started with.
+	// Written once, at the first attempt, and read verbatim on every later
+	// one: a weight changed between attempts must not score the second half
+	// of a run against different numbers from the first. Nil on a run that
+	// predates the field, which resolves from the project — correct for a run
+	// that pinned nothing. Mirrors the API model.
+	ScoringConfig *gomodels.RunScoringConfig `bson:"scoring_config,omitempty" json:"scoring_config,omitempty"`
 
 	// Schema-retrieval telemetry. Mirrors the API-side model.
 	//

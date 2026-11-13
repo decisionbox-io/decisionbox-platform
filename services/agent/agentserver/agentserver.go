@@ -1102,6 +1102,14 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 	defaultLayer := layerSet.For(llmlayer.DefaultLayer)
 	resolvedWindow, resolvedOutputCap := defaultLayer.Window, defaultLayer.OutputCap
 
+	// The severity weighting this run is scored under, pinned on the run
+	// document so a resume is scored with the weights the run started with
+	// rather than with whatever the project has since been changed to.
+	scoringConfig, err := pinRunScoringConfig(ctx, runRepo, runID, project)
+	if err != nil {
+		return err
+	}
+
 	// Create orchestrator
 	orchestrator := discovery.NewOrchestrator(discovery.OrchestratorOptions{
 		AIClient:              defaultLayer.Client,
@@ -1127,6 +1135,7 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 		Language:              project.Language,
 		Profile:               project.Profile,
 		ProjectPrompts:        project.Prompts,
+		ScoringConfig:         scoringConfig,
 		Datasets:              datasets,
 		FilterField:           primaryWH.FilterField,
 		FilterValue:           primaryWH.FilterValue,

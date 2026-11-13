@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -1336,5 +1337,159 @@ func TestRunRepository_ResumableOrActiveIDsKeepsAPausedRun(t *testing.T) {
 	}
 	if keptCancelled {
 		t.Error("a cancelled run was kept; it can never be resumed")
+	}
+}
+
+// TestRunRepository_PinScoringConfigIsWriteOnce is the resume guarantee, at
+// the write.
+//
+// Severity is magnitude x the analysis area's weight, and the weight is
+// configuration. A resume can happen days after the attempt it continues, so
+// the first attempt records the weighting it was scored under and every later
+// attempt reads that record back -- otherwise a weight someone changed in
+// between would score the second half of a run against different numbers from
+// the first.
+//
+// Against a real server rather than a fake, because what is being asserted is
+// the conditional update itself: the write matches only a run with no pinned
+// configuration, and a mock of UpdateOne would assert the query this test
+// exists to check.
+func TestRunRepository_PinScoringConfigIsWriteOnce(t *testing.T) {
+	ctx := context.Background()
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+
+	repo := NewRunRepository(db)
+	runID, err := repo.Create(ctx, &models.DiscoveryRun{ProjectID: "proj-pin"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	override := 1.5
+	first := gomodels.RunScoringConfig{
+		CategoryWeights: map[string]float64{"compliance": 3.0},
+		Areas: map[string]gomodels.RunAreaRisk{
+			"consent": {RiskCategories: []string{"compliance"}, SeverityWeight: &override},
+		},
+	}
+
+	// Attempt 1 writes it, and gets its own answer back.
+	got, err := repo.PinScoringConfig(ctx, runID, first)
+	if err != nil {
+		t.Fatalf("PinScoringConfig (attempt 1): %v", err)
+	}
+	if got == nil {
+		t.Fatal("attempt 1 got no configuration back")
+	}
+	if got.CategoryWeights["compliance"] != 3.0 {
+		t.Errorf("attempt 1 weights = %v, want compliance at 3.0", got.CategoryWeights)
+	}
+	area, ok := got.Areas["consent"]
+	if !ok {
+		t.Fatalf("attempt 1 areas = %v, want consent", got.Areas)
+	}
+	if len(area.RiskCategories) != 1 || area.RiskCategories[0] != "compliance" {
+		t.Errorf("consent categories = %v", area.RiskCategories)
+	}
+	if area.SeverityWeight == nil || *area.SeverityWeight != 1.5 {
+		t.Errorf("consent override = %v, want 1.5", area.SeverityWeight)
+	}
+
+	// The project is then re-weighted, and attempt 2 asks to pin the new
+	// weights. It must get attempt 1's back, and the document must still hold
+	// attempt 1's.
+	second := gomodels.RunScoringConfig{
+		CategoryWeights: map[string]float64{"compliance": 1.0, "revenue_leak": 2.0},
+	}
+	again, err := repo.PinScoringConfig(ctx, runID, second)
+	if err != nil {
+		t.Fatalf("PinScoringConfig (attempt 2): %v", err)
+	}
+	if again == nil {
+		t.Fatal("attempt 2 got no configuration back")
+	}
+	if again.CategoryWeights["compliance"] != 3.0 {
+		t.Errorf("attempt 2 weights = %v, want attempt 1's compliance at 3.0", again.CategoryWeights)
+	}
+	if _, leaked := again.CategoryWeights["revenue_leak"]; leaked {
+		t.Error("attempt 2's own weights were applied; a resume must be scored with the weights the run started with")
+	}
+	if len(again.Areas) != 1 {
+		t.Errorf("attempt 2 areas = %v, want attempt 1's single area", again.Areas)
+	}
+
+	// And the stored document agrees, read back through the driver rather
+	// than through the repository that wrote it.
+	stored := readRunDoc(t, ctx, db, runID)
+	cfg, ok := stored["scoring_config"].(bson.M)
+	if !ok {
+		t.Fatalf("scoring_config is %T, want a sub-document", stored["scoring_config"])
+	}
+	weights, ok := cfg["category_weights"].(bson.M)
+	if !ok {
+		t.Fatalf("category_weights is %T", cfg["category_weights"])
+	}
+	if weights["compliance"] != 3.0 {
+		t.Errorf("stored compliance weight = %v, want 3", weights["compliance"])
+	}
+	if _, leaked := weights["revenue_leak"]; leaked {
+		t.Error("attempt 2's weights were written into the document")
+	}
+}
+
+// TestRunRepository_PinScoringConfigPinsAnEmptyConfiguration -- a project with
+// nothing configured still pins, and the pin is distinguishable from a run
+// that predates the field.
+//
+// The distinction is the point: a run started with no taxonomy must stay
+// unweighted when it is resumed after someone adds one, and a document with no
+// `scoring_config` at all is a run from before any of this existed.
+func TestRunRepository_PinScoringConfigPinsAnEmptyConfiguration(t *testing.T) {
+	ctx := context.Background()
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+
+	repo := NewRunRepository(db)
+	runID, err := repo.Create(ctx, &models.DiscoveryRun{ProjectID: "proj-empty"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := repo.PinScoringConfig(ctx, runID, gomodels.RunScoringConfig{})
+	if err != nil {
+		t.Fatalf("PinScoringConfig: %v", err)
+	}
+	if got == nil {
+		t.Fatal("an empty configuration came back nil, which is how a pre-feature run reads")
+	}
+	if len(got.CategoryWeights) != 0 || len(got.Areas) != 0 {
+		t.Errorf("got %+v, want an empty configuration", got)
+	}
+
+	// Re-pinning with weights now configured must not take.
+	again, err := repo.PinScoringConfig(ctx, runID, gomodels.RunScoringConfig{
+		CategoryWeights: map[string]float64{"compliance": 3.0},
+	})
+	if err != nil {
+		t.Fatalf("PinScoringConfig (again): %v", err)
+	}
+	if len(again.CategoryWeights) != 0 {
+		t.Errorf("got %v, want the empty configuration the run started with", again.CategoryWeights)
+	}
+}
+
+// TestRunRepository_PinScoringConfigOnAMissingRun -- reported rather than
+// silently scoring against a configuration that belongs to nothing.
+func TestRunRepository_PinScoringConfigOnAMissingRun(t *testing.T) {
+	ctx := context.Background()
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+
+	repo := NewRunRepository(db)
+	if _, err := repo.PinScoringConfig(ctx, primitive.NewObjectID().Hex(), gomodels.RunScoringConfig{}); err == nil {
+		t.Error("pinning a configuration on a run that does not exist should be an error")
+	}
+	if _, err := repo.PinScoringConfig(ctx, "not-an-object-id", gomodels.RunScoringConfig{}); err == nil {
+		t.Error("an invalid run id should be an error")
 	}
 }

@@ -234,6 +234,39 @@ type RiskCategory struct {
 	Weight      float64 `bson:"weight,omitempty"      json:"weight,omitempty"`
 }
 
+// RunScoringConfig is the scoring configuration one discovery run was started
+// with, pinned on its run document at the first attempt and replayed verbatim
+// on every later one.
+//
+// It exists because a resume can happen days after the attempt it continues,
+// and a weight someone changed in between would otherwise score the second
+// half of a run against different numbers from the first -- leaving a result
+// with no meaningful ranking across it at all. The run's step budget, area
+// list and effort are pinned beside it for the same reason.
+//
+// It stores the resolved INPUTS, not the resolved per-area weights. Attempt 2
+// therefore re-derives both the weight and the risk flags through the same
+// engine code attempt 1 used, and cannot disagree with it. Storing the output
+// would put a second copy of the "largest of its categories" rule in the
+// database, and would leave the flags unpinned.
+type RunScoringConfig struct {
+	// CategoryWeights is the resolved weight of each risk category: the
+	// pack's declared taxonomy with the project's own overrides folded in.
+	CategoryWeights map[string]float64 `bson:"category_weights,omitempty" json:"category_weights,omitempty"`
+
+	// Areas is each analysis area's risk configuration, keyed by area id. An
+	// area absent from the map -- one the project gained after this run
+	// started -- is scored at the engine default, which is what "the weights
+	// it started with" means for an area that was not there.
+	Areas map[string]RunAreaRisk `bson:"areas,omitempty" json:"areas,omitempty"`
+}
+
+// RunAreaRisk is one area's half of a pinned scoring configuration.
+type RunAreaRisk struct {
+	RiskCategories []string `bson:"risk_categories,omitempty" json:"risk_categories,omitempty"`
+	SeverityWeight *float64 `bson:"severity_weight,omitempty" json:"severity_weight,omitempty"`
+}
+
 // The confidence band vocabulary.
 //
 // Three of the five are decided by where the score falls; two are decided by
