@@ -261,6 +261,10 @@ export interface DomainPack {
   source_url: string;
   is_published: boolean;
   categories: PackCategory[];
+  // The business-risk categories this pack's domain has, with what a finding
+  // in each is worth. Absent on a pack that declares none, which is every
+  // pack written before the configuration existed.
+  risk_taxonomy?: RiskCategory[];
   prompts: PackPrompts;
   analysis_areas: PackAnalysisAreas;
   profile_schema: PackProfileSchema;
@@ -289,6 +293,11 @@ export interface PackAnalysisArea {
   description: string;
   keywords: string[];
   priority: number;
+  // Which risk categories a finding in this area belongs to, and the weight
+  // for this area alone. See AnalysisAreaConfig, which is where they land
+  // once a project is created from the pack.
+  risk_categories?: string[];
+  severity_weight?: number;
   prompt: string;
 }
 
