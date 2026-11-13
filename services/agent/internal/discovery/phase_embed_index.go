@@ -456,8 +456,9 @@ func indicatorsKey(indicators []string) string {
 //
 // The guard is narrow on purpose. It applies only when the texts are
 // IDENTICAL, which is the case where the score carries no information at all.
-// Two findings reworded between runs — "707 SKUs, ₺48.2M" and "801 SKUs, ₺48M"
-// — have different texts and different numbers and SHOULD still fold: that
+// Two findings reworded between runs — the same shortfall restated with a
+// slightly different count and amount — have different texts and different
+// numbers and SHOULD still fold: that
 // restatement is the whole point of the feature, and requiring equal magnitudes
 // in general would switch it off.
 func sameClaim(aText, aMagnitude, bText, bMagnitude string) bool {

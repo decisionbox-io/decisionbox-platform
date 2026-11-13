@@ -1198,17 +1198,17 @@ func TestMarkDuplicates_SameWordingDifferentMagnitude(t *testing.T) {
 	})
 
 	t.Run("reworded with different numbers still folds", func(t *testing.T) {
-		// The case the feature exists for: "707 SKUs, ₺48.2M" and "801 SKUs,
-		// ₺48M" are the same finding restated, with different texts AND
-		// different numbers. Requiring equal magnitudes in general would
-		// refuse exactly these.
+		// The case the feature exists for: the same shortfall restated with
+		// a slightly different count and amount is one finding twice, with
+		// different texts AND different numbers. Requiring equal magnitudes
+		// in general would refuse exactly these.
 		store := &mockEmbedIndexStore{}
 		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{}}
 		o.markDuplicates(context.Background(), []dedupCandidate{
 			{id: "a", docType: "insight", projectID: "p1", vec: vec,
-				text: "707 SKUs unpriced. Area: pricing.", magnitude: magnitudeKey(707, nil, nil)},
+				text: "120 items unpriced. Area: pricing.", magnitude: magnitudeKey(120, nil, nil)},
 			{id: "b", docType: "insight", projectID: "p1", vec: vec,
-				text: "801 SKUs still unpriced. Area: pricing.", magnitude: magnitudeKey(801, nil, nil)},
+				text: "140 items still unpriced. Area: pricing.", magnitude: magnitudeKey(140, nil, nil)},
 		}, nil)
 		if len(store.dupUpdates) != 1 || store.dupUpdates[0].ID != "b" {
 			t.Errorf("a restatement was not folded: %+v", store.dupUpdates)
@@ -1416,9 +1416,9 @@ func TestMagnitudeOfIsTypeAware(t *testing.T) {
 		if got, want := rec.magnitude("recommendation"), magnitudeOf("recommendation", 1_200, nil, rec.Actions, nil); got != want {
 			t.Errorf("stored recommendation signed %q, candidate side signs %q", got, want)
 		}
-		ins := IndexedDoc{AffectedCount: 707, SegmentSize: 1_200, Metrics: map[string]interface{}{"revenue": 48.2},
+		ins := IndexedDoc{AffectedCount: 120, SegmentSize: 1_200, Metrics: map[string]interface{}{"revenue": 4.5},
 			Indicators: []string{"purchase rate: 20%"}}
-		if got, want := ins.magnitude("insight"), magnitudeOf("insight", 707, ins.Metrics, nil, ins.Indicators); got != want {
+		if got, want := ins.magnitude("insight"), magnitudeOf("insight", 120, ins.Metrics, nil, ins.Indicators); got != want {
 			t.Errorf("stored insight signed %q, candidate side signs %q", got, want)
 		}
 		// Each type reads ITS own count. Reading the wrong field would sign
@@ -1445,7 +1445,7 @@ func TestMarkDuplicates_SameWordingDifferentActions(t *testing.T) {
 			{id: "first", docType: "recommendation", projectID: "p1", vec: vec, text: prose,
 				magnitude: magnitudeOf("recommendation", 0, nil, []string{"cut the price"}, nil)},
 			{id: "second", docType: "recommendation", projectID: "p1", vec: vec, text: prose,
-				magnitude: magnitudeOf("recommendation", 0, nil, []string{"delist the SKUs"}, nil)},
+				magnitude: magnitudeOf("recommendation", 0, nil, []string{"delist the items"}, nil)},
 		}, nil)
 		if len(store.dupUpdates) != 0 {
 			t.Errorf("folded two different instructions together: %+v", store.dupUpdates)
@@ -1467,7 +1467,7 @@ func TestMarkDuplicates_SameWordingDifferentActions(t *testing.T) {
 
 	t.Run("the stored side reads actions too", func(t *testing.T) {
 		store := &mockEmbedIndexStore{storedDocs: map[string]IndexedDoc{
-			"last-run": {EmbeddingText: prose, Actions: []string{"delist the SKUs"}},
+			"last-run": {EmbeddingText: prose, Actions: []string{"delist the items"}},
 		}}
 		o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{
 			dupes: []vectorstore.SearchResult{{ID: "last-run", Score: 1.0}},
