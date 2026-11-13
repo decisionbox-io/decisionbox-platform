@@ -5,6 +5,7 @@
     "description": "Verify warehouse connection, authentication, basic query execution, and database metadata retrieval",
     "keywords": ["connection", "ping", "version", "select", "auth", "database", "current_date", "current_timestamp", "current_user"],
     "priority": 1,
+    "risk_categories": ["access_failure"],
     "prompt_file": "analysis_connectivity.md"
   },
   {
@@ -13,6 +14,7 @@
     "description": "Enumerate all accessible schemas, tables, columns, row counts, and table metadata",
     "keywords": ["schema", "table", "column", "metadata", "information_schema", "row_count", "table_type", "ordinal", "catalog", "describe"],
     "priority": 2,
+    "risk_categories": ["schema_mismatch", "data_quality"],
     "prompt_file": "analysis_schema_discovery.md"
   }
 ]

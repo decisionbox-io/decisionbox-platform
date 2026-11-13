@@ -5,6 +5,7 @@
     "description": "Exhaustive validation of every data type in the warehouse — test casting, precision, and edge cases for each type",
     "keywords": ["type", "cast", "decimal", "numeric", "timestamp", "boolean", "varchar", "integer", "float", "bigint", "date", "time", "data_type", "column_type", "precision", "scale"],
     "priority": 3,
+    "risk_categories": ["schema_mismatch"],
     "prompt_file": "analysis_type_mapping.md"
   },
   {
@@ -13,6 +14,7 @@
     "description": "Comprehensive data quality profiling — NULL rates, cardinality, distributions, and completeness across all tables",
     "keywords": ["null", "distinct", "cardinality", "min", "max", "count", "distribution", "empty", "missing", "completeness", "statistics"],
     "priority": 4,
+    "risk_categories": ["data_quality"],
     "prompt_file": "analysis_data_profiling.md"
   },
   {
@@ -21,6 +23,7 @@
     "description": "Validate complex SQL capabilities — JOINs, CTEs, window functions, subqueries, UNION, GROUP BY with HAVING, and nested aggregations",
     "keywords": ["join", "cte", "window", "partition", "rank", "row_number", "subquery", "having", "union", "with", "over", "lag", "lead", "dense_rank"],
     "priority": 5,
+    "risk_categories": ["access_failure"],
     "prompt_file": "analysis_query_patterns.md"
   },
   {
@@ -29,6 +32,7 @@
     "description": "Test boundary conditions — NULL arithmetic, empty strings, large numbers, timestamp precision, COALESCE, and CASE expressions",
     "keywords": ["null", "empty", "precision", "overflow", "timezone", "boundary", "coalesce", "case", "limit", "offset", "alias", "epoch", "large"],
     "priority": 6,
+    "risk_categories": ["schema_mismatch", "data_quality"],
     "prompt_file": "analysis_edge_cases.md"
   }
 ]
