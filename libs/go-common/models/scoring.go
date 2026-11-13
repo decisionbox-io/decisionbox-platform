@@ -202,14 +202,32 @@ type WeightSource struct {
 	Category string `bson:"category,omitempty" json:"category,omitempty"`
 }
 
-// Weight sources. Only the default is reachable today; the other two are the
-// vocabulary a configured taxonomy will set, named here so the three live in
-// one place rather than as literals at a future call site.
+// Weight sources: what set an area's severity weight.
 const (
 	WeightSourceDefault      = "default"
 	WeightSourceCategory     = "category"
 	WeightSourceAreaOverride = "area_override"
 )
+
+// RiskCategory is one business-risk category: what it is called, and how much
+// a finding in it is worth relative to one in an unweighted area.
+//
+// It lives here, beside WeightSource, because the taxonomy has to exist in
+// four places that cannot all import each other -- the pack model, the project
+// model, the agent's own mirror of the project, and the scoring engine, which
+// must not import any of the three. Declared once rather than hand-copied,
+// for the reason Scoring itself is: a field absent from one copy is a field
+// BSON silently drops.
+//
+// Weight is omitempty so a category that takes the engine default is stored
+// as a category rather than as a category weighted zero -- which is not a
+// legal weight and would be rejected if it were stated.
+type RiskCategory struct {
+	ID          string  `bson:"id"                    json:"id"`
+	Label       string  `bson:"label"                 json:"label"`
+	Description string  `bson:"description,omitempty" json:"description,omitempty"`
+	Weight      float64 `bson:"weight,omitempty"      json:"weight,omitempty"`
+}
 
 // The confidence band vocabulary.
 //

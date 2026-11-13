@@ -187,3 +187,87 @@ func TestUpdatePrompts_ReturnsHandlerFunc(t *testing.T) {
 		t.Fatal("UpdatePrompts should return non-nil handler")
 	}
 }
+
+// TestSeedProjectPromptsCarriesTheRiskConfiguration -- the taxonomy, the area
+// mappings and the per-area override reach the project.
+//
+// This is the only moment they can. A project snapshots its area
+// configuration at creation and pack seeds are never re-applied on upgrade,
+// so a field this function drops is one the project can never acquire -- and
+// the acceptance criterion for the whole feature is a FRESHLY CREATED project,
+// for exactly that reason.
+func TestSeedProjectPromptsCarriesTheRiskConfiguration(t *testing.T) {
+	override := 1.5
+	pack := testDomainPack("healthcare", "clinic")
+	pack.RiskTaxonomy = []models.PackRiskCategory{
+		{ID: "compliance", Label: "Regulatory compliance", Weight: 3.0},
+		{ID: "revenue_leak", Label: "Revenue leakage", Weight: 2.0},
+	}
+	pack.AnalysisAreas.Base[0].RiskCategories = []string{"compliance", "data_quality"}
+	pack.AnalysisAreas.Base[0].SeverityWeight = &override
+	pack.AnalysisAreas.Categories["clinic"] = []models.PackAnalysisArea{{
+		ID: "billing", Name: "Billing", Description: "Billing analysis",
+		Keywords: []string{"billing"}, Priority: 2,
+		Prompt:         "Analyze billing: {{QUERY_RESULTS}}",
+		RiskCategories: []string{"revenue_leak"},
+	}}
+
+	p := &models.Project{Domain: "healthcare", Category: "clinic"}
+	SeedProjectPrompts(p, pack)
+
+	if p.Prompts == nil {
+		t.Fatal("Prompts should not be nil")
+	}
+	if len(p.Prompts.RiskTaxonomy) != 2 {
+		t.Fatalf("RiskTaxonomy length = %d, want 2 — the project cannot acquire it later",
+			len(p.Prompts.RiskTaxonomy))
+	}
+	if p.Prompts.RiskTaxonomy[0].ID != "compliance" || p.Prompts.RiskTaxonomy[0].Weight != 3.0 {
+		t.Errorf("RiskTaxonomy[0] = %+v, want compliance at 3.0", p.Prompts.RiskTaxonomy[0])
+	}
+
+	base, ok := p.Prompts.AnalysisAreas["test_area"]
+	if !ok {
+		t.Fatal("the base area was not seeded")
+	}
+	if len(base.RiskCategories) != 2 || base.RiskCategories[0] != "compliance" {
+		t.Errorf("base area RiskCategories = %v, want [compliance data_quality]", base.RiskCategories)
+	}
+	if base.SeverityWeight == nil || *base.SeverityWeight != override {
+		t.Errorf("base area SeverityWeight = %v, want %v", base.SeverityWeight, override)
+	}
+
+	cat, ok := p.Prompts.AnalysisAreas["billing"]
+	if !ok {
+		t.Fatal("the per-category area was not seeded")
+	}
+	if len(cat.RiskCategories) != 1 || cat.RiskCategories[0] != "revenue_leak" {
+		t.Errorf("category area RiskCategories = %v, want [revenue_leak]", cat.RiskCategories)
+	}
+	// Not overridden, so nil rather than a zero that would be a rejected
+	// weight if anyone stated it.
+	if cat.SeverityWeight != nil {
+		t.Errorf("category area SeverityWeight = %v, want nil", *cat.SeverityWeight)
+	}
+}
+
+// TestSeedProjectPromptsLeavesAnUnconfiguredPackAlone -- a pack with no risk
+// configuration seeds a project with none, rather than with empty slices that
+// would read as "configured, to nothing".
+func TestSeedProjectPromptsLeavesAnUnconfiguredPackAlone(t *testing.T) {
+	pack := testDomainPack("gaming", "match3")
+	p := &models.Project{Domain: "gaming", Category: "match3"}
+
+	SeedProjectPrompts(p, pack)
+
+	if p.Prompts.RiskTaxonomy != nil {
+		t.Errorf("RiskTaxonomy = %v, want nil", p.Prompts.RiskTaxonomy)
+	}
+	area := p.Prompts.AnalysisAreas["test_area"]
+	if area.RiskCategories != nil {
+		t.Errorf("RiskCategories = %v, want nil", area.RiskCategories)
+	}
+	if area.SeverityWeight != nil {
+		t.Errorf("SeverityWeight = %v, want nil", *area.SeverityWeight)
+	}
+}

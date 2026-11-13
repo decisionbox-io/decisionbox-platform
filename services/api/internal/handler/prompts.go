@@ -30,6 +30,12 @@ func SeedProjectPrompts(project *models.Project, pack *models.DomainPack) {
 		Recommendations: pack.Prompts.Base.Recommendations,
 		BaseContext:     pack.Prompts.Base.BaseContext,
 		AnalysisAreas:   make(map[string]models.AnalysisAreaConfig),
+		// The pack's risk taxonomy, copied here with everything else it
+		// seeds. This is the ONLY moment it can arrive: a project snapshots
+		// its area configuration at creation and pack seeds are never
+		// re-applied on upgrade, so a taxonomy missed here is one the project
+		// can never acquire.
+		RiskTaxonomy: pack.RiskTaxonomy,
 	}
 
 	// Seed base analysis areas
@@ -43,6 +49,10 @@ func SeedProjectPrompts(project *models.Project, pack *models.DomainPack) {
 			IsCustom:    false,
 			Priority:    area.Priority,
 			Enabled:     true,
+			// The area's risk mapping and weight override, for the reason the
+			// taxonomy above is carried.
+			RiskCategories: area.RiskCategories,
+			SeverityWeight: area.SeverityWeight,
 		}
 	}
 
@@ -50,14 +60,16 @@ func SeedProjectPrompts(project *models.Project, pack *models.DomainPack) {
 	if catAreas, ok := pack.AnalysisAreas.Categories[category]; ok {
 		for _, area := range catAreas {
 			prompts.AnalysisAreas[area.ID] = models.AnalysisAreaConfig{
-				Name:        area.Name,
-				Description: area.Description,
-				Keywords:    area.Keywords,
-				Prompt:      area.Prompt,
-				IsBase:      false,
-				IsCustom:    false,
-				Priority:    area.Priority,
-				Enabled:     true,
+				Name:           area.Name,
+				Description:    area.Description,
+				Keywords:       area.Keywords,
+				Prompt:         area.Prompt,
+				IsBase:         false,
+				IsCustom:       false,
+				Priority:       area.Priority,
+				Enabled:        true,
+				RiskCategories: area.RiskCategories,
+				SeverityWeight: area.SeverityWeight,
 			}
 		}
 	}
