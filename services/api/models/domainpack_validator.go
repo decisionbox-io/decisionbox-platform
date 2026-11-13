@@ -203,42 +203,19 @@ func RiskConfigIssues(pack *DomainPack) []string {
 		known[id] = true
 	}
 
+	// A category's weight is REQUIRED rather than defaulted, which
+	// riskCategoryIssues enforces: the stored shape cannot tell an unstated
+	// weight from one stated as zero, so a rule that let it default would be
+	// a rule that could never reject `"weight": 0` -- the one value that
+	// would delete every finding in the category from the ranking.
 	declared := make(map[string]bool, len(pack.RiskTaxonomy))
 	for i, cat := range pack.RiskTaxonomy {
-		label := fmt.Sprintf("risk_taxonomy[%d]", i)
-		if cat.ID == "" {
-			issues = append(issues, label+": id is required")
-		} else {
-			if !RiskCategoryIDRegex.MatchString(cat.ID) {
-				issues = append(issues, fmt.Sprintf(
-					"%s: id %q must be a lowercase slug of letters, digits, hyphens or underscores (e.g. 'revenue_leak')",
-					label, cat.ID))
-			}
-			if declared[cat.ID] {
-				issues = append(issues, fmt.Sprintf("%s: id %q is declared twice", label, cat.ID))
-			}
-			declared[cat.ID] = true
+		issues = append(issues, riskCategoryIssues(cat, fmt.Sprintf("risk_taxonomy[%d]", i), declared)...)
+		if cat.ID != "" {
 			// Citable even when its shape or its weight was rejected, so one
 			// bad category produces one issue rather than one per area that
 			// maps to it.
 			known[cat.ID] = true
-		}
-		if strings.TrimSpace(cat.Label) == "" {
-			issues = append(issues, fmt.Sprintf("%s (%q): label is required — it is what a reader sees on the insight", label, cat.ID))
-		}
-		switch {
-		case cat.Weight == 0:
-			// Required rather than defaulted, because the stored shape cannot
-			// tell an unstated weight from one stated as zero -- so a rule
-			// that let it default would be a rule that could never reject
-			// `"weight": 0`, which is the one value that would delete every
-			// finding in the category from the ranking.
-			issues = append(issues, fmt.Sprintf(
-				"%s (%q): weight is required and must be in (0, %g] — 1.0 means this category matters as much as an unweighted area",
-				label, cat.ID, scoring.MaxSeverityWeight))
-		case !scoring.ValidSeverityWeight(cat.Weight):
-			issues = append(issues, fmt.Sprintf("%s (%q): weight %v is outside (0, %g]",
-				label, cat.ID, cat.Weight, scoring.MaxSeverityWeight))
 		}
 	}
 
@@ -260,6 +237,112 @@ func RiskConfigIssues(pack *DomainPack) []string {
 		}
 	}
 
+	return issues
+}
+
+// ProjectRiskConfigIssues is RiskConfigIssues for a PROJECT's copy of the risk
+// configuration: the taxonomy and area overrides snapshotted onto
+// ProjectPrompts, plus the project-wide category weights.
+//
+// The same rules, over a different shape, because a project is editable where
+// a pack is generated: the playbook page writes the per-area mapping and the
+// override, and the project route writes the category weights. Without this,
+// those two endpoints would accept a weight of 4 or a category id nothing
+// declares and answer 200 — the engine ignores both, so nothing would be
+// wrong with the stored score, but the editor's whole contract is that the
+// server refuses what it cannot act on. A save that silently does nothing is
+// worse than a rejected one.
+//
+// The union an area may cite is the PROJECT's taxonomy plus the engine's
+// global ids, not the pack's: a project's copy is the one the run reads, and
+// it can legitimately differ from the pack it was seeded from.
+func ProjectRiskConfigIssues(prompts *ProjectPrompts, categoryWeights map[string]float64) []string {
+	var issues []string
+
+	known := make(map[string]bool, 3)
+	for _, id := range scoring.GlobalRiskCategories() {
+		known[id] = true
+	}
+
+	if prompts != nil {
+		declared := make(map[string]bool, len(prompts.RiskTaxonomy))
+		for i, cat := range prompts.RiskTaxonomy {
+			issues = append(issues, riskCategoryIssues(cat, fmt.Sprintf("prompts.risk_taxonomy[%d]", i), declared)...)
+			if cat.ID != "" {
+				known[cat.ID] = true
+			}
+		}
+
+		// Sorted, because this list is accumulated: Go randomises map
+		// iteration, and an error whose text depends on it is one a client
+		// cannot test against.
+		areaIDs := make([]string, 0, len(prompts.AnalysisAreas))
+		for id := range prompts.AnalysisAreas {
+			areaIDs = append(areaIDs, id)
+		}
+		sort.Strings(areaIDs)
+		for _, id := range areaIDs {
+			area := prompts.AnalysisAreas[id]
+			issues = append(issues, areaRiskIssues(PackAnalysisArea{
+				ID:             id,
+				RiskCategories: area.RiskCategories,
+				SeverityWeight: area.SeverityWeight,
+			}, known, fmt.Sprintf("analysis_areas[%q]", id))...)
+		}
+	}
+
+	// The project's own category weights. An id nothing declares is inert
+	// rather than an error -- it is a standing priority waiting for a pack
+	// that has the category, which is what lets one set of priorities survive
+	// a pack change -- but the WEIGHT still has to be legal, because an
+	// illegal one is a number the engine will ignore while the client thinks
+	// it took.
+	ids := make([]string, 0, len(categoryWeights))
+	for id := range categoryWeights {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if !scoring.ValidSeverityWeight(categoryWeights[id]) {
+			issues = append(issues, fmt.Sprintf("category_weights[%q]: weight %v is outside (0, %g]",
+				id, categoryWeights[id], scoring.MaxSeverityWeight))
+		}
+	}
+
+	return issues
+}
+
+// riskCategoryIssues is one taxonomy entry's rules, shared by the pack and the
+// project forms so the two cannot come to disagree about what a category is.
+//
+// `declared` is updated as it goes, which is what detects a duplicate id.
+func riskCategoryIssues(cat PackRiskCategory, label string, declared map[string]bool) []string {
+	var issues []string
+	if cat.ID == "" {
+		issues = append(issues, label+": id is required")
+	} else {
+		if !RiskCategoryIDRegex.MatchString(cat.ID) {
+			issues = append(issues, fmt.Sprintf(
+				"%s: id %q must be a lowercase slug of letters, digits, hyphens or underscores (e.g. 'revenue_leak')",
+				label, cat.ID))
+		}
+		if declared[cat.ID] {
+			issues = append(issues, fmt.Sprintf("%s: id %q is declared twice", label, cat.ID))
+		}
+		declared[cat.ID] = true
+	}
+	if strings.TrimSpace(cat.Label) == "" {
+		issues = append(issues, fmt.Sprintf("%s (%q): label is required — it is what a reader sees on the insight", label, cat.ID))
+	}
+	switch {
+	case cat.Weight == 0:
+		issues = append(issues, fmt.Sprintf(
+			"%s (%q): weight is required and must be in (0, %g] — 1.0 means this category matters as much as an unweighted area",
+			label, cat.ID, scoring.MaxSeverityWeight))
+	case !scoring.ValidSeverityWeight(cat.Weight):
+		issues = append(issues, fmt.Sprintf("%s (%q): weight %v is outside (0, %g]",
+			label, cat.ID, cat.Weight, scoring.MaxSeverityWeight))
+	}
 	return issues
 }
 

@@ -1104,8 +1104,10 @@ func runDiscovery(cfg *config.Config, projectID string, runID string, selectedAr
 
 	// The severity weighting this run is scored under, pinned on the run
 	// document so a resume is scored with the weights the run started with
-	// rather than with whatever the project has since been changed to.
-	scoringConfig, err := pinRunScoringConfig(ctx, runRepo, runID, project)
+	// rather than with whatever the project has since been changed to. A
+	// resume reads the pin and never writes one — see pinRunScoringConfig for
+	// why a run that pinned nothing has to stay unweighted.
+	scoringConfig, err := pinRunScoringConfig(ctx, runRepo, runID, project, resume)
 	if err != nil {
 		return err
 	}

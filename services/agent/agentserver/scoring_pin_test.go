@@ -1,6 +1,7 @@
 package agentserver
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -110,4 +111,95 @@ func TestResolveRunScoringConfigRejectsAnIllegalWeight(t *testing.T) {
 	if w := pinned.Areas["billing"].SeverityWeight; w == nil || *w != 0 {
 		t.Errorf("billing override = %v, want the stated 0 recorded as stated", w)
 	}
+}
+
+// --- Round 1 review: a resume must not pin --------------------------------
+
+// fakeScoringStore records which of the two repository calls the seam made.
+type fakeScoringStore struct {
+	run     *models.DiscoveryRun
+	getErr  error
+	pinned  *gomodels.RunScoringConfig
+	gets    int
+	pinCall int
+}
+
+func (f *fakeScoringStore) GetByID(_ context.Context, _ string) (*models.DiscoveryRun, error) {
+	f.gets++
+	return f.run, f.getErr
+}
+
+func (f *fakeScoringStore) PinScoringConfig(_ context.Context, _ string, want gomodels.RunScoringConfig) (*gomodels.RunScoringConfig, error) {
+	f.pinCall++
+	f.pinned = &want
+	return &want, nil
+}
+
+// TestAResumeReadsThePinAndNeverWritesOne is the round-1 finding at the seam
+// that decides it.
+//
+// A run started before `scoring_config` existed was scored with no weights at
+// all, and resuming it RESTORES its completed areas rather than re-scoring
+// them. Pinning the project's current weights on the way back in would score
+// the rest of that run against them and leave one result half unweighted and
+// half weighted — the exact outcome the pin exists to prevent, arrived at by
+// the pin itself. And because the write is conditional on absence, it would
+// succeed.
+func TestAResumeReadsThePinAndNeverWritesOne(t *testing.T) {
+	ctx := context.Background()
+	project := projectWithRisk()
+
+	t.Run("a resume of a run that pinned nothing stays unweighted", func(t *testing.T) {
+		store := &fakeScoringStore{run: &models.DiscoveryRun{}}
+		got, err := pinRunScoringConfig(ctx, store, "run-1", project, true)
+		if err != nil {
+			t.Fatalf("pinRunScoringConfig: %v", err)
+		}
+		if got != nil {
+			t.Errorf("got %+v, want nil — the run recorded no weights", got)
+		}
+		if store.pinCall != 0 {
+			t.Errorf("the resume wrote a pin (%d calls); it must only read", store.pinCall)
+		}
+		if store.gets != 1 {
+			t.Errorf("GetByID calls = %d, want 1", store.gets)
+		}
+	})
+
+	t.Run("a resume of a pinned run replays that pin", func(t *testing.T) {
+		pinned := &gomodels.RunScoringConfig{CategoryWeights: map[string]float64{"compliance": 1.0}}
+		store := &fakeScoringStore{run: &models.DiscoveryRun{ScoringConfig: pinned}}
+		got, err := pinRunScoringConfig(ctx, store, "run-1", project, true)
+		if err != nil {
+			t.Fatalf("pinRunScoringConfig: %v", err)
+		}
+		// Attempt 1's weights, NOT the project's current 3.0.
+		if got == nil || got.CategoryWeights["compliance"] != 1.0 {
+			t.Errorf("got %+v, want the pinned 1.0", got)
+		}
+		if store.pinCall != 0 {
+			t.Errorf("the resume wrote a pin (%d calls)", store.pinCall)
+		}
+	})
+
+	t.Run("a fresh run pins the project's configuration", func(t *testing.T) {
+		store := &fakeScoringStore{run: &models.DiscoveryRun{}}
+		got, err := pinRunScoringConfig(ctx, store, "run-1", project, false)
+		if err != nil {
+			t.Fatalf("pinRunScoringConfig: %v", err)
+		}
+		if store.pinCall != 1 {
+			t.Fatalf("PinScoringConfig calls = %d, want 1", store.pinCall)
+		}
+		if got == nil || got.CategoryWeights["compliance"] != 3.0 {
+			t.Errorf("got %+v, want the project's compliance weight", got)
+		}
+	})
+
+	t.Run("a resume of a run that no longer exists is reported", func(t *testing.T) {
+		store := &fakeScoringStore{run: nil}
+		if _, err := pinRunScoringConfig(ctx, store, "run-gone", project, true); err == nil {
+			t.Error("a missing run should be an error rather than an unweighted run")
+		}
+	})
 }

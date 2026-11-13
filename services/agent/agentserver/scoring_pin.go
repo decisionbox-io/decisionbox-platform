@@ -2,10 +2,10 @@ package agentserver
 
 import (
 	"context"
+	"fmt"
 
 	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/scoring"
-	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -21,6 +21,19 @@ import (
 // are already pinned on the document for exactly this reason; this is the
 // same decision one field over.
 
+// scoringConfigStore is the two run-repository calls this seam makes.
+//
+// An interface rather than *database.RunRepository because the one thing worth
+// asserting here is WHICH of the two a resume makes: a resume that pinned
+// would write on a run that recorded nothing — and the write is conditional on
+// absence, so it would succeed, and score the rest of a legacy run against
+// today's weights while its restored areas keep their unweighted ones. That is
+// a branch, not a value, and a fake is the only way to see it.
+type scoringConfigStore interface {
+	GetByID(ctx context.Context, runID string) (*models.DiscoveryRun, error)
+	PinScoringConfig(ctx context.Context, runID string, want gomodels.RunScoringConfig) (*gomodels.RunScoringConfig, error)
+}
+
 // pinRunScoringConfig returns the severity weighting this run is scored under,
 // writing it on the run document if this is the attempt that starts it.
 //
@@ -34,12 +47,33 @@ import (
 // engine code as the first, and cannot disagree with it -- where storing the
 // output would put a second copy of the "largest of its categories" rule in
 // the database and leave the flags unpinned.
+//
+// A RESUME never writes. It reads whatever is pinned and takes nil for an
+// answer, and that is the case the whole field exists for: a run started
+// before this existed was scored with no weights at all, and its completed
+// areas are RESTORED rather than re-scored. Pinning the project's current
+// weights on the way back in would score the rest of that run against them
+// and leave one result half unweighted and half weighted -- which is exactly
+// the outcome the pin is here to prevent, arrived at by the pin itself. An
+// attempt-1 process that died before this call is indistinguishable from such
+// a run, and the same answer is right for it.
 func pinRunScoringConfig(
 	ctx context.Context,
-	runRepo *database.RunRepository,
+	runRepo scoringConfigStore,
 	runID string,
 	project *models.Project,
+	resume bool,
 ) (*gomodels.RunScoringConfig, error) {
+	if resume {
+		run, err := runRepo.GetByID(ctx, runID)
+		if err != nil {
+			return nil, err
+		}
+		if run == nil {
+			return nil, fmt.Errorf("run %s not found", runID)
+		}
+		return run.ScoringConfig, nil
+	}
 	return runRepo.PinScoringConfig(ctx, runID, resolveRunScoringConfig(project))
 }
 

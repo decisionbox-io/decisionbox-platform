@@ -1,8 +1,13 @@
 package handler
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/decisionbox-io/decisionbox/services/api/database"
 	"github.com/decisionbox-io/decisionbox/services/api/models"
 )
 
@@ -269,5 +274,136 @@ func TestSeedProjectPromptsLeavesAnUnconfiguredPackAlone(t *testing.T) {
 	}
 	if area.SeverityWeight != nil {
 		t.Errorf("SeverityWeight = %v, want nil", *area.SeverityWeight)
+	}
+}
+
+// --- Round 1 review: the prompts route is the weight editor's write -------
+
+// recordingProjectRepo is stubProjectRepo with the Update it received.
+type recordingProjectRepo struct {
+	stubProjectRepo
+	updated *models.Project
+}
+
+func (r *recordingProjectRepo) Update(_ context.Context, _ string, p *models.Project) error {
+	r.updated = p
+	return nil
+}
+
+func putPrompts(t *testing.T, repo database.ProjectRepo, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/projects/p1/prompts", strings.NewReader(body))
+	req.SetPathValue("id", "p1")
+	w := httptest.NewRecorder()
+	UpdatePrompts(repo)(w, req)
+	return w
+}
+
+// TestUpdatePromptsRefusesAnInvalidRiskConfiguration.
+//
+// The playbook page's weight editor writes through this route. The engine
+// IGNORES an illegal weight and an unknown category id, so accepting them
+// stores nothing wrong — it just answers 200 to a reviewer who typed 4.0 and
+// then scores the area at 1.0 forever. A save that silently does nothing is
+// worse than a rejected one.
+func TestUpdatePromptsRefusesAnInvalidRiskConfiguration(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "an override above the ceiling",
+			body: `{"analysis_areas":{"consent":{"name":"Consent","severity_weight":4}}}`,
+			want: "severity_weight",
+		},
+		{
+			name: "a stated zero override",
+			body: `{"analysis_areas":{"consent":{"name":"Consent","severity_weight":0}}}`,
+			want: "severity_weight",
+		},
+		{
+			name: "a category id nothing declares",
+			body: `{"analysis_areas":{"consent":{"name":"Consent","risk_categories":["invented_here"]}}}`,
+			want: "invented_here",
+		},
+		{
+			name: "a taxonomy weight above the ceiling",
+			body: `{"risk_taxonomy":[{"id":"compliance","label":"Compliance","weight":9}]}`,
+			want: "outside",
+		},
+		{
+			name: "a taxonomy id that is not a slug",
+			body: `{"risk_taxonomy":[{"id":"Compliance","label":"Compliance","weight":2}]}`,
+			want: "slug",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &recordingProjectRepo{stubProjectRepo: stubProjectRepo{project: &models.Project{ID: "p1"}}}
+			w := putPrompts(t, repo, tc.body)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body = %s", w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), tc.want) {
+				t.Errorf("the response does not say what is wrong (%q): %s", tc.want, w.Body.String())
+			}
+			if repo.updated != nil {
+				t.Error("the project was written despite the refusal")
+			}
+		})
+	}
+}
+
+// TestUpdatePromptsAcceptsAValidRiskConfiguration -- including the two cases
+// that must NOT be refused: a global category id on a project whose pack
+// declares no taxonomy, and prompts carrying no risk configuration at all.
+func TestUpdatePromptsAcceptsAValidRiskConfiguration(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "a declared taxonomy and a mapped area",
+			body: `{"risk_taxonomy":[{"id":"compliance","label":"Compliance","weight":3}],` +
+				`"analysis_areas":{"consent":{"name":"Consent","risk_categories":["compliance"],"severity_weight":1.5}}}`,
+		},
+		{
+			name: "a global id with no taxonomy",
+			body: `{"analysis_areas":{"consent":{"name":"Consent","risk_categories":["data_quality"]}}}`,
+		},
+		{
+			name: "no risk configuration at all",
+			body: `{"exploration":"e","analysis_areas":{"consent":{"name":"Consent"}}}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &recordingProjectRepo{stubProjectRepo: stubProjectRepo{project: &models.Project{ID: "p1"}}}
+			w := putPrompts(t, repo, tc.body)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
+			}
+			if repo.updated == nil {
+				t.Fatal("the project was not written")
+			}
+		})
+	}
+}
+
+// TestUpdatePromptsValidatesAgainstTheProjectsOwnCategoryWeights -- the two
+// halves of the configuration are checked against each other, so a weight
+// already stored on the project cannot be left invalid by a prompts write.
+func TestUpdatePromptsValidatesAgainstTheProjectsOwnCategoryWeights(t *testing.T) {
+	repo := &recordingProjectRepo{stubProjectRepo: stubProjectRepo{project: &models.Project{
+		ID:              "p1",
+		CategoryWeights: map[string]float64{"compliance": 9},
+	}}}
+	w := putPrompts(t, repo, `{"analysis_areas":{"consent":{"name":"Consent"}}}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (the project carries an illegal category weight); body = %s",
+			w.Code, w.Body.String())
 	}
 }

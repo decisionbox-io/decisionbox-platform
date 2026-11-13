@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/scoring"
 )
 
@@ -372,5 +373,199 @@ func TestRiskConfigIssuesIsDeterministic(t *testing.T) {
 func TestANilPackProducesNoIssues(t *testing.T) {
 	if issues := RiskConfigIssues(nil); issues != nil {
 		t.Errorf("a nil pack produced %v", issues)
+	}
+}
+
+// --- Round 1 review: the project's own copy of the configuration ---------
+
+// TestProjectRiskConfigIssuesAppliesTheSameRules.
+//
+// The playbook page writes the per-area mapping and the override; the project
+// route writes the category weights. Both used to accept a weight of 4 or a
+// category id nothing declares and answer 200 — the engine ignores both, so
+// nothing stored was wrong; it just meant a reviewer who typed 4.0 was told it
+// saved and then had the area scored at 1.0 forever. A save that silently does
+// nothing is worse than a rejected one.
+func TestProjectRiskConfigIssuesAppliesTheSameRules(t *testing.T) {
+	valid := &ProjectPrompts{
+		RiskTaxonomy: []gomodels.RiskCategory{
+			{ID: "compliance", Label: "Compliance", Weight: 3},
+			{ID: "revenue_leak", Label: "Revenue leakage", Weight: 2},
+		},
+		AnalysisAreas: map[string]AnalysisAreaConfig{
+			"consent": {Name: "Consent", RiskCategories: []string{"compliance", "data_quality"}},
+			"billing": {Name: "Billing", RiskCategories: []string{"revenue_leak"}, SeverityWeight: weight(1.5)},
+		},
+	}
+
+	t.Run("a valid project configuration", func(t *testing.T) {
+		if issues := ProjectRiskConfigIssues(valid, map[string]float64{"compliance": 2.5}); len(issues) != 0 {
+			t.Errorf("a valid configuration produced issues: %v", issues)
+		}
+	})
+
+	t.Run("nothing configured at all", func(t *testing.T) {
+		if issues := ProjectRiskConfigIssues(nil, nil); len(issues) != 0 {
+			t.Errorf("an unconfigured project produced issues: %v", issues)
+		}
+		if issues := ProjectRiskConfigIssues(&ProjectPrompts{}, nil); len(issues) != 0 {
+			t.Errorf("prompts with no risk config produced issues: %v", issues)
+		}
+	})
+
+	t.Run("an out-of-range area override", func(t *testing.T) {
+		for _, w := range []float64{0, -1, scoring.MaxSeverityWeight + 0.5} {
+			bad := *valid
+			bad.AnalysisAreas = map[string]AnalysisAreaConfig{
+				"billing": {Name: "Billing", RiskCategories: []string{"revenue_leak"}, SeverityWeight: weight(w)},
+			}
+			issues := ProjectRiskConfigIssues(&bad, nil)
+			if len(issues) == 0 {
+				t.Errorf("override %v was accepted", w)
+				continue
+			}
+			if !strings.Contains(strings.Join(issues, "; "), "billing") {
+				t.Errorf("the issue does not name the area: %v", issues)
+			}
+		}
+	})
+
+	t.Run("an area citing a category the project does not have", func(t *testing.T) {
+		bad := *valid
+		bad.AnalysisAreas = map[string]AnalysisAreaConfig{
+			"billing": {Name: "Billing", RiskCategories: []string{"invented_here"}},
+		}
+		if issues := ProjectRiskConfigIssues(&bad, nil); len(issues) == 0 {
+			t.Error("an undeclared category id was accepted")
+		}
+	})
+
+	t.Run("a global id with no project taxonomy", func(t *testing.T) {
+		// The compat case: a project seeded from a pack that declares nothing
+		// can still map an area to the engine's cross-cutting ids.
+		bare := &ProjectPrompts{AnalysisAreas: map[string]AnalysisAreaConfig{
+			"consent": {Name: "Consent", RiskCategories: []string{"compliance"}},
+		}}
+		if issues := ProjectRiskConfigIssues(bare, nil); len(issues) != 0 {
+			t.Errorf("a global id was rejected on a project with no taxonomy: %v", issues)
+		}
+	})
+
+	t.Run("an out-of-range category weight", func(t *testing.T) {
+		for _, w := range []float64{0, -2, 9} {
+			issues := ProjectRiskConfigIssues(valid, map[string]float64{"compliance": w})
+			if len(issues) == 0 {
+				t.Errorf("category weight %v was accepted", w)
+			}
+		}
+	})
+
+	t.Run("a category weight for an id no pack declares is inert", func(t *testing.T) {
+		// A standing priority waiting for a pack that has the category, which
+		// is what lets one set of priorities survive a pack change. The
+		// WEIGHT still has to be legal.
+		if issues := ProjectRiskConfigIssues(valid, map[string]float64{"not_in_any_pack": 2}); len(issues) != 0 {
+			t.Errorf("an unmatched category weight was rejected: %v", issues)
+		}
+	})
+
+	t.Run("the taxonomy rules apply to the project's copy too", func(t *testing.T) {
+		bad := *valid
+		bad.RiskTaxonomy = []gomodels.RiskCategory{
+			{ID: "Compliance", Label: "Compliance", Weight: 3}, // not a slug
+			{ID: "revenue_leak", Label: "", Weight: 2},         // no label
+			{ID: "revenue_leak", Label: "Dup", Weight: 2},      // duplicate
+		}
+		bad.AnalysisAreas = nil
+		issues := ProjectRiskConfigIssues(&bad, nil)
+		if len(issues) < 3 {
+			t.Errorf("expected every issue in one pass, got %v", issues)
+		}
+	})
+
+	t.Run("the issue order is stable", func(t *testing.T) {
+		// Accumulated over two maps, and Go randomises map iteration: an
+		// error whose text depends on that is one a client cannot test
+		// against.
+		bad := &ProjectPrompts{AnalysisAreas: map[string]AnalysisAreaConfig{
+			"zebra":  {RiskCategories: []string{"nope"}},
+			"alpha":  {RiskCategories: []string{"nope"}},
+			"middle": {RiskCategories: []string{"nope"}},
+		}}
+		weights := map[string]float64{"zulu": 9, "alfa": 9, "mike": 9}
+		first := strings.Join(ProjectRiskConfigIssues(bad, weights), "\n")
+		for i := 0; i < 20; i++ {
+			if got := strings.Join(ProjectRiskConfigIssues(bad, weights), "\n"); got != first {
+				t.Fatalf("issue order is not stable:\n%s\n--- vs ---\n%s", first, got)
+			}
+		}
+		alpha := strings.Index(first, `"alpha"`)
+		middle := strings.Index(first, `"middle"`)
+		zebra := strings.Index(first, `"zebra"`)
+		if alpha >= middle || middle >= zebra {
+			t.Errorf("area issues are not in sorted order:\n%s", first)
+		}
+	})
+}
+
+// TestTheTwoRiskValidatorsAgree -- a pack and the project seeded from it hold
+// the same configuration, so a configuration one accepts and the other
+// refuses would make the seeding path produce a project nobody can save.
+func TestTheTwoRiskValidatorsAgree(t *testing.T) {
+	cases := []struct {
+		name     string
+		taxonomy []PackRiskCategory
+		area     PackAnalysisArea
+	}{
+		{
+			name:     "valid",
+			taxonomy: []PackRiskCategory{{ID: "compliance", Label: "Compliance", Weight: 3}},
+			area:     PackAnalysisArea{ID: "consent", RiskCategories: []string{"compliance"}},
+		},
+		{
+			name:     "a weight above the ceiling",
+			taxonomy: []PackRiskCategory{{ID: "compliance", Label: "Compliance", Weight: 9}},
+			area:     PackAnalysisArea{ID: "consent", RiskCategories: []string{"compliance"}},
+		},
+		{
+			name:     "an unknown category id",
+			taxonomy: []PackRiskCategory{{ID: "compliance", Label: "Compliance", Weight: 3}},
+			area:     PackAnalysisArea{ID: "consent", RiskCategories: []string{"invented"}},
+		},
+		{
+			name:     "a stated zero override",
+			taxonomy: []PackRiskCategory{{ID: "compliance", Label: "Compliance", Weight: 3}},
+			area:     PackAnalysisArea{ID: "consent", RiskCategories: []string{"compliance"}, SeverityWeight: weight(0)},
+		},
+		{
+			name:     "a non-slug id",
+			taxonomy: []PackRiskCategory{{ID: "Compliance", Label: "Compliance", Weight: 3}},
+			area:     PackAnalysisArea{ID: "consent"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pack := testDomainPack("healthcare", "clinic")
+			pack.RiskTaxonomy = tc.taxonomy
+			pack.AnalysisAreas.Base[0].RiskCategories = tc.area.RiskCategories
+			pack.AnalysisAreas.Base[0].SeverityWeight = tc.area.SeverityWeight
+			packIssues := RiskConfigIssues(pack)
+
+			prompts := &ProjectPrompts{
+				RiskTaxonomy: tc.taxonomy,
+				AnalysisAreas: map[string]AnalysisAreaConfig{
+					pack.AnalysisAreas.Base[0].ID: {
+						RiskCategories: tc.area.RiskCategories,
+						SeverityWeight: tc.area.SeverityWeight,
+					},
+				},
+			}
+			projectIssues := ProjectRiskConfigIssues(prompts, nil)
+
+			if (len(packIssues) == 0) != (len(projectIssues) == 0) {
+				t.Errorf("the two validators disagree: pack %v, project %v", packIssues, projectIssues)
+			}
+		})
 	}
 }

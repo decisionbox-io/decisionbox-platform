@@ -1493,3 +1493,44 @@ func TestRunRepository_PinScoringConfigOnAMissingRun(t *testing.T) {
 		t.Error("an invalid run id should be an error")
 	}
 }
+
+// TestRunRepository_AResumeNeverPinsAConfiguration is the round-1 finding, and
+// the case the whole field exists for.
+//
+// A run started before `scoring_config` existed was scored with no weights at
+// all, and resuming it restores its completed areas rather than re-scoring
+// them. Pinning the project's CURRENT weights on the way back in would score
+// the rest of that run against them and leave one result half unweighted and
+// half weighted — the exact outcome the pin is here to prevent, arrived at by
+// the pin itself.
+//
+// So a resume READS and never writes, and takes nil for an answer. An
+// attempt-1 process that died before its pin landed is indistinguishable from
+// a legacy run, and the same answer is right for it.
+func TestRunRepository_AResumeNeverPinsAConfiguration(t *testing.T) {
+	ctx := context.Background()
+	db, cleanup := setupMongoDB(t)
+	defer cleanup()
+
+	repo := NewRunRepository(db)
+	runID, err := repo.Create(ctx, &models.DiscoveryRun{ProjectID: "proj-legacy"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// The read a resume does: nothing pinned, so nothing to score against.
+	run, err := repo.GetByID(ctx, runID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if run.ScoringConfig != nil {
+		t.Fatalf("a fresh run document already carries a pin: %+v", run.ScoringConfig)
+	}
+
+	// And the document still carries nothing, which is what distinguishes it
+	// from a run deliberately pinned with nothing configured.
+	stored := readRunDoc(t, ctx, db, runID)
+	if _, present := stored["scoring_config"]; present {
+		t.Errorf("scoring_config is present on a run nothing pinned: %v", stored["scoring_config"])
+	}
+}

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
@@ -119,6 +120,17 @@ func UpdatePrompts(projectRepo database.ProjectRepo) http.HandlerFunc {
 		var prompts models.ProjectPrompts
 		if err := decodeJSON(r, &prompts); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+
+		// The risk configuration is checked here, because this is the route
+		// the playbook page's weight editor writes through. The engine
+		// IGNORES an illegal weight and an unknown category id, so accepting
+		// them would store nothing wrong — it would just answer 200 to a
+		// reviewer who typed 4.0 and then score the area at 1.0 forever. A
+		// save that silently does nothing is worse than a rejected one.
+		if issues := models.ProjectRiskConfigIssues(&prompts, p.CategoryWeights); len(issues) > 0 {
+			writeError(w, http.StatusBadRequest, strings.Join(issues, "; "))
 			return
 		}
 
