@@ -357,6 +357,21 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The risk configuration, checked AFTER seeding and before anything is
+	// persisted.
+	//
+	// After seeding, because a seeded project's taxonomy and area mappings
+	// come from the pack and are part of what is being created. Before
+	// persistence, because the update route checks the same rules
+	// unconditionally — so a project created with an illegal weight would
+	// have every later edit rejected with a 400 about a field the edit does
+	// not touch, including an unrelated rename. A refusal here is a refusal a
+	// client can act on; a refusal three screens later is not.
+	if issues := models.ProjectRiskConfigIssues(p.Prompts, p.CategoryWeights); len(issues) > 0 {
+		writeError(w, http.StatusBadRequest, strings.Join(issues, "; "))
+		return
+	}
+
 	// Plan-gate: provider allow-list. Self-hosted Noop permits everything.
 	ck := policy.GetChecker()
 	if err := ck.CheckLLMProviderAllowed(r.Context(), "", p.LLM.Provider); err != nil {

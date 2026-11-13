@@ -172,3 +172,88 @@ func TestProjectUpdateAcceptsAValidRiskConfiguration(t *testing.T) {
 		}
 	})
 }
+
+// --- Round 2 review -------------------------------------------------------
+
+// TestProjectCreateRefusesAnIllegalWeight.
+//
+// Create used to accept one, which was worse than it sounds: the UPDATE route
+// checks the same rules unconditionally, so a project created with
+// `category_weights: {"compliance": 9}` had EVERY later edit rejected with a
+// 400 about a field the edit did not touch — including an unrelated rename.
+// A refusal at create is one a client can act on; a refusal three screens
+// later is not.
+func TestProjectCreateRefusesAnIllegalWeight(t *testing.T) {
+	h, repo := projectWeightsHandler(t)
+
+	body := `{"name":"p","domain":"gaming","category":"match3",
+		"warehouse":{"provider":"bigquery","datasets":["d1"]},
+		"llm":{"provider":"claude","model":"claude-sonnet-4-6"},
+		"category_weights":{"compliance":9}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Create(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", w.Code, w.Body.String())
+	}
+	if len(repo.projects) != 0 {
+		t.Error("the project was created despite the refusal")
+	}
+}
+
+// TestProjectCreateAcceptsAValidConfigurationAndStaysEditable is the other
+// half: a project created with legal weights must not then be refused an
+// ordinary edit.
+func TestProjectCreateAcceptsAValidConfigurationAndStaysEditable(t *testing.T) {
+	h, repo := projectWeightsHandler(t)
+
+	body := `{"name":"p","domain":"gaming","category":"match3",
+		"warehouse":{"provider":"bigquery","datasets":["d1"]},
+		"llm":{"provider":"claude","model":"claude-sonnet-4-6"},
+		"category_weights":{"compliance":2.5}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Create(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body = %s", w.Code, w.Body.String())
+	}
+
+	var created string
+	for id := range repo.projects {
+		created = id
+	}
+	if created == "" {
+		t.Fatal("the project was not created")
+	}
+	if got := putProjectWeights(t, h, created, `{"name":"renamed"}`); got.Code != http.StatusOK {
+		t.Errorf("an unrelated rename was refused: %d %s", got.Code, got.Body.String())
+	}
+}
+
+// TestProjectCreateValidatesTheSeededConfiguration -- a seeded project's
+// taxonomy and area mappings come from the pack, which is why the check runs
+// after seeding rather than on the request body.
+func TestProjectCreateValidatesTheSeededConfiguration(t *testing.T) {
+	projRepo := newMockProjectRepo()
+	packRepo := newMockDomainPackRepo()
+	pack := testDomainPack("gaming", "match3")
+	// A pack nothing could have saved, which is the only way this state is
+	// reachable — the seed is copied verbatim, so a project created from it
+	// would otherwise carry the same illegal weight.
+	pack.RiskTaxonomy = []models.PackRiskCategory{{ID: "compliance", Label: "Compliance", Weight: 9}}
+	pack.AnalysisAreas.Base[0].RiskCategories = []string{"compliance"}
+	packRepo.add(pack)
+	h := NewProjectsHandler(projRepo, packRepo)
+
+	body := `{"name":"p","domain":"gaming","category":"match3",
+		"warehouse":{"provider":"bigquery","datasets":["d1"]},
+		"llm":{"provider":"claude","model":"claude-sonnet-4-6"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Create(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (the seeded taxonomy is invalid); body = %s", w.Code, w.Body.String())
+	}
+}
