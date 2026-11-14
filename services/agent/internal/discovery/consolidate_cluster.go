@@ -222,7 +222,14 @@ type consolidationDoc struct {
 	// valid only when current.
 	slot int
 
-	name        string
+	name string
+	// prose is the finding's authored body, markdown rendition preferred.
+	// What the provider is shown.
+	prose string
+	// body is prose plus the supporting figures, which is what the
+	// containment test looks inside. Separate from prose because the
+	// provider is shown the figures as their own field, and sending them
+	// twice is prompt budget spent saying one thing.
 	body        string
 	area        string
 	areaScope   string

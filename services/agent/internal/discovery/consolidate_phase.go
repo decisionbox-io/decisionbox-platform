@@ -164,6 +164,7 @@ func (o *Orchestrator) consolidationDocs(ctx context.Context, in consolidateArea
 			current:     current,
 			slot:        slot,
 			name:        ins.Name,
+			prose:       insightProse(ins),
 			body:        insightBody(ins),
 			area:        ins.AnalysisArea,
 			areaScope:   areaScopeText(area, in.prompts.AnalysisAreas[ins.AnalysisArea]),
@@ -235,6 +236,14 @@ func (o *Orchestrator) fillInsightVectors(ctx context.Context, docs []consolidat
 // than in the prose.
 func insightBody(ins *models.Insight) string {
 	return insightBodyOf(ins.Description, ins.DescriptionMd, ins.Indicators)
+}
+
+// insightProse is the authored body alone, markdown rendition preferred.
+func insightProse(ins *models.Insight) string {
+	if ins.DescriptionMd != "" {
+		return ins.DescriptionMd
+	}
+	return ins.Description
 }
 
 // insightBodyOf is insightBody over loose fields, so a description rewritten
@@ -388,7 +397,7 @@ func projectCluster(docs []consolidationDoc, c docCluster) agentplugin.Duplicate
 		cands = append(cands, agentplugin.ConsolidationDoc{
 			ID:            d.id,
 			Name:          d.name,
-			Description:   d.body,
+			Description:   d.prose,
 			AnalysisArea:  d.area,
 			Severity:      d.severity,
 			TargetSegment: d.segment,
@@ -656,6 +665,7 @@ func (o *Orchestrator) applyConsolidation(
 				// still reads the pre-merge document, which is the
 				// conservative direction: it can refuse a fold that would now
 				// hold, never accept one that would not.
+				docs[fi].prose = insightProse(&in.insights[docs[fi].slot])
 				docs[fi].body = insightBodyOf(plain, md, docs[fi].indicators)
 				mergedCanonicals[final] = true
 				applog.WithFields(applog.Fields{"area": st.Area, "canonical": final}).

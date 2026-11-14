@@ -219,6 +219,17 @@ func TestConsolidateArea_ProviderFoldsAContainmentPair(t *testing.T) {
 	if stub.gotFirst[0].Candidates[0].AreaScope == "" {
 		t.Error("a candidate must carry its area's ownership statement")
 	}
+	// The figures have their own field, so the body must not repeat them:
+	// sending them twice is prompt budget spent saying one thing. The
+	// containment test still runs over both.
+	withFigures := insight("f", "stock", "headline", "prose only", 1)
+	withFigures.Indicators = []string{"111,222 units"}
+	if got := insightProse(&withFigures); strings.Contains(got, "111,222") {
+		t.Errorf("prose = %q, want the authored body alone", got)
+	}
+	if got := insightBody(&withFigures); !strings.Contains(got, "111,222") {
+		t.Errorf("body = %q, want the figures included for the containment test", got)
+	}
 }
 
 // An earlier area's finding is a legitimate canonical — usually the right one.
