@@ -1252,3 +1252,29 @@ func TestConsolidateArea_AGivenBackFoldLeavesNoTrace(t *testing.T) {
 		t.Error("the refused pair was not recorded; Phase 9 will fold it on document order")
 	}
 }
+
+// A fold given back must give back the bucket it was counted in, or Folded
+// reads 0 beside a non-zero by_containment and the one number the log line
+// exists to make legible does not add up.
+func TestConsolidateArea_AGivenBackFoldGivesBackItsBucket(t *testing.T) {
+	earlier := insight("e1", "repl", "overdue orders are rising", "the rate climbed", 500)
+	cur := insight("c1", "stock", "overdue orders keep rising", "the rate climbed; seasonality not separated", 480)
+
+	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		return []agentplugin.ConsolidationVerdict{{
+			CanonicalID: "e1", Duplicates: map[string]float64{"c1": 0.99},
+			MergedDescription: "needs a rewrite of an earlier area's text",
+		}}, nil
+	}})
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(earlier): 0, embText(cur): 1,
+	}}}
+	st := o.consolidateArea(context.Background(), areaInput("stock", []models.Insight{cur}, []models.Insight{earlier}))
+
+	if st.Folded != 0 {
+		t.Fatalf("stats = %+v, want no folds", st)
+	}
+	if st.ByCosine+st.ByContainment+st.ByBoth != st.Folded {
+		t.Errorf("stats = %+v; the per-test buckets must sum to Folded", st)
+	}
+}

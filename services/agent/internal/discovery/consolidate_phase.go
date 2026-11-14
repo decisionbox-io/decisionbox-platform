@@ -234,13 +234,21 @@ func (o *Orchestrator) fillInsightVectors(ctx context.Context, docs []consolidat
 // model asked to list its supporting figures puts some of them there rather
 // than in the prose.
 func insightBody(ins *models.Insight) string {
+	return insightBodyOf(ins.Description, ins.DescriptionMd, ins.Indicators)
+}
+
+// insightBodyOf is insightBody over loose fields, so a description rewritten
+// mid-pass can be projected again through the same derivation. Two
+// constructions of "what the containment test looks inside" is how the
+// projection and the re-check come to disagree about one document.
+func insightBodyOf(description, descriptionMd string, indicators []string) string {
 	var b strings.Builder
-	if ins.DescriptionMd != "" {
-		b.WriteString(ins.DescriptionMd)
+	if descriptionMd != "" {
+		b.WriteString(descriptionMd)
 	} else {
-		b.WriteString(ins.Description)
+		b.WriteString(description)
 	}
-	for _, ind := range ins.Indicators {
+	for _, ind := range indicators {
 		b.WriteString("\n")
 		b.WriteString(ind)
 	}
@@ -567,14 +575,7 @@ func (o *Orchestrator) applyConsolidation(
 			usedAsCanonical[final] = true
 			clusterFolds++
 			st.Folded++
-			switch c.proposal {
-			case agentplugin.ProposalCosine:
-				st.ByCosine++
-			case agentplugin.ProposalContainment:
-				st.ByContainment++
-			default:
-				st.ByBoth++
-			}
+			countFold(&st, c.proposal, 1)
 			applog.WithFields(applog.Fields{
 				"area": st.Area, "id": dupID, "duplicate_of": final, "score": score,
 				"proposal": string(c.proposal), "decider": st.Decider, "reason": v.Reason,
@@ -609,6 +610,11 @@ func (o *Orchestrator) applyConsolidation(
 					in.insights[slot].SimilarityScore = 0
 					st.Folded--
 					clusterFolds--
+					// And the bucket the fold was counted in, or Folded would
+					// read 0 beside a non-zero by_cosine and the one number
+					// this log line exists to make legible — the fold rate per
+					// test — would not add up.
+					countFold(&st, c.proposal, -1)
 				}
 				written = written[:len(written)-len(clusterWritten)]
 				st.RefusedUnmergeable++
@@ -621,6 +627,15 @@ func (o *Orchestrator) applyConsolidation(
 				plain, md := splitMarkdownDescription(merged)
 				in.insights[docs[fi].slot].Description = plain
 				in.insights[docs[fi].slot].DescriptionMd = md
+				// And in the projection, so a later cluster folding into the
+				// same survivor runs its containment re-check against what
+				// the survivor now says rather than against the text it said
+				// before this rewrite. The VECTOR is necessarily stale — the
+				// merged text has not been embedded — so a cosine re-check
+				// still reads the pre-merge document, which is the
+				// conservative direction: it can refuse a fold that would now
+				// hold, never accept one that would not.
+				docs[fi].body = insightBodyOf(plain, md, docs[fi].indicators)
 				mergedCanonicals[final] = true
 				applog.WithFields(applog.Fields{"area": st.Area, "canonical": final}).
 					Info("Consolidation: merged the folded members' detail onto the canonical")
@@ -671,6 +686,20 @@ func (o *Orchestrator) applyConsolidation(
 		st.Folded, st.ByCosine, st.ByContainment, st.ByBoth = 0, 0, 0, 0
 	}
 	return st
+}
+
+// countFold moves the per-test fold counter the proposal belongs to. One
+// function for both directions, so a fold and a fold given back cannot be
+// counted against different buckets.
+func countFold(st *consolidationStats, p agentplugin.Proposal, delta int) {
+	switch p {
+	case agentplugin.ProposalCosine:
+		st.ByCosine += delta
+	case agentplugin.ProposalContainment:
+		st.ByContainment += delta
+	default:
+		st.ByBoth += delta
+	}
 }
 
 // keepStanding records every pair inside an adjudicated cluster that the
