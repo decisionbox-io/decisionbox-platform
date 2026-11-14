@@ -795,7 +795,9 @@ func (o *Orchestrator) applyConsolidation(
 		if merged := strings.TrimSpace(v.MergedDescription); merged != "" {
 			switch {
 			case !docs[fi].current, mergedCanonicals[final], clusterRefusedDonor,
-				len(in.insights[docs[fi].slot].Figures) > 0:
+				final != v.CanonicalID,
+				len(in.insights[docs[fi].slot].Figures) > 0,
+				foldedDonorHasFigures(in.insights, clusterWritten):
 				// Either the survivor belongs to an area the run has already
 				// finished — its text is recorded in that area's checkpoint,
 				// and rewriting it here would leave the record and the result
@@ -807,6 +809,29 @@ func (o *Orchestrator) applyConsolidation(
 				switch {
 				case !docs[fi].current:
 					// keeps the reason above
+				case final != v.CanonicalID:
+					// The canonical this verdict named was itself folded, so
+					// the mark resolves somewhere else — and the rewrite was
+					// written against the text of the document that was
+					// NAMED, which may not even have been in this cluster's
+					// payload. Applying it to the resolved survivor would
+					// overwrite that survivor's own caveats with a rewrite of
+					// someone else's prose.
+					reason = "the canonical this verdict named resolves elsewhere, so its rewrite is about another document"
+				case foldedDonorHasFigures(in.insights, clusterWritten):
+					// A donor declared evidence figures, and the rewrite
+					// states its numbers — but the figures were rendered into
+					// the DONOR's prose against {{fN}} references the model
+					// never saw and cannot reproduce. Transferring the
+					// declarations would leave figures with no placeholder in
+					// the survivor's text, which is the "no link for this to
+					// check" case the figure layer withholds anyway; leaving
+					// them behind puts the number in the survivor's prose
+					// with nothing a recommendation can reference it by, so
+					// `ref` and `sum` over that measurement stop working
+					// while the donor that owns it is suppressed. The donor
+					// stays visible instead, with its figures intact.
+					reason = "a folded member's prose carries rendered evidence figures"
 				case clusterRefusedDonor:
 					// The rewrite may incorporate detail from a member this
 					// pass refused to fold — an earlier area's finding, say,
@@ -992,6 +1017,20 @@ func (o *Orchestrator) applyConsolidation(
 		st.Folded, st.ByCosine, st.ByContainment, st.ByBoth = 0, 0, 0, 0
 	}
 	return st
+}
+
+// foldedDonorHasFigures reports whether any member written into this cluster's
+// fold declared evidence figures.
+//
+// It gates the REWRITE, not the fold: a fold with no rewrite leaves the
+// survivor's text alone, so nothing it states needs a figure of its own.
+func foldedDonorHasFigures(insights []models.Insight, written []int) bool {
+	for _, slot := range written {
+		if len(insights[slot].Figures) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // mergeSourceSteps returns the survivor's cited steps unioned with those of

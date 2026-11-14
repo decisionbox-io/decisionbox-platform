@@ -2114,3 +2114,103 @@ func TestConsolidateArea_TheCommunityPassSeesTheProvidersMarks(t *testing.T) {
 		t.Errorf("stats = %+v, want both folds", st)
 	}
 }
+
+// A rewrite is written against the text of the document the verdict NAMED. If
+// that document was itself folded, the mark resolves somewhere else — and
+// applying the rewrite to the resolved survivor overwrites ITS caveats with a
+// rewrite of someone else's prose. The named document need not even have been
+// in this cluster's payload.
+func TestConsolidateArea_RefusesARewriteRedirectedToAnotherCanonical(t *testing.T) {
+	a := insight("a", "stock", "claim a", "body a, with a caveat of its own", 400)
+	b := insight("b", "stock", "claim b", "body b", 300)
+	c := insight("c", "stock", "claim c", "body c", 200)
+
+	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		out := make([]agentplugin.ConsolidationVerdict, len(cl))
+		for i, cluster := range cl {
+			ids := make([]string, 0, 3)
+			for _, cand := range cluster.Candidates {
+				ids = append(ids, cand.ID)
+			}
+			switch {
+			case slices.Contains(ids, "a"):
+				// b folds into a, with NO rewrite — so mergedCanonicals does
+				// not know about a.
+				out[i] = agentplugin.ConsolidationVerdict{
+					CanonicalID: "a", Duplicates: map[string]float64{"b": 0.906},
+				}
+			case slices.Contains(ids, "d"):
+				// Names b, which is now folded into a, and offers a rewrite
+				// of b's text.
+				out[i] = agentplugin.ConsolidationVerdict{
+					CanonicalID: "b", Duplicates: map[string]float64{"d": 0.906},
+					MergedDescription: "b's text, rewritten",
+				}
+			}
+		}
+		return out, nil
+	}})
+
+	d := insight("d", "stock", "claim d", "body d", 100)
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 25, embText(c): 50, embText(d): 75,
+	}}}
+	current := []models.Insight{a, b, c, d}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if current[0].Description != "body a, with a caveat of its own" {
+		t.Errorf("a.description = %q; it was overwritten with a rewrite of b's prose", current[0].Description)
+	}
+	if st.RefusedUnmergeable == 0 {
+		t.Errorf("stats = %+v, want the redirected rewrite refused", st)
+	}
+}
+
+// A donor's figures were rendered into the DONOR's prose against {{fN}}
+// references the model never saw and cannot reproduce. Transferring the
+// declarations leaves figures with no placeholder in the survivor's text;
+// leaving them behind puts the number in the survivor's prose with nothing a
+// recommendation can reference it by, while the donor that owns it is
+// suppressed. The donor stays visible instead.
+func TestConsolidateArea_RefusesARewriteThatWouldOrphanADonorsFigures(t *testing.T) {
+	a := insight("a", "stock", "claim a", "body a", 300)
+	b := insight("b", "stock", "claim b", "the rate is {{f1}}", 200)
+	b.Figures = []models.Figure{{ID: "f1", Value: 142, Unit: "units"}}
+
+	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		return []agentplugin.ConsolidationVerdict{{
+			CanonicalID: "a", Duplicates: map[string]float64{"b": 0.99},
+			MergedDescription: "a, and the rate is 142 units",
+		}}, nil
+	}})
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 1,
+	}}}
+	current := []models.Insight{a, b}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if st.Folded != 0 || st.RefusedUnmergeable != 1 {
+		t.Fatalf("stats = %+v, want the cluster given back", st)
+	}
+	if current[1].DuplicateOf != "" {
+		t.Errorf("b was suppressed; its figure is now unreferenceable while its number is in a's prose")
+	}
+	if strings.Contains(current[0].Description, "142") {
+		t.Errorf("a.description = %q; the rewrite states a number no figure backs", current[0].Description)
+	}
+
+	// A fold with NO rewrite is unaffected: the survivor's text is untouched,
+	// so it states nothing needing a figure of its own.
+	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		return []agentplugin.ConsolidationVerdict{{
+			CanonicalID: "a", Duplicates: map[string]float64{"b": 0.99},
+		}}, nil
+	}})
+	plain := []models.Insight{a, b}
+	o2 := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 1,
+	}}}
+	if st := o2.consolidateArea(context.Background(), areaInput("stock", plain, nil)); st.Folded != 1 {
+		t.Errorf("stats = %+v; a fold with no rewrite must still apply", st)
+	}
+}
