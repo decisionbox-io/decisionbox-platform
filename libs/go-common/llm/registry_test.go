@@ -673,6 +673,47 @@ func TestPromptCacheEnabled(t *testing.T) {
 	}
 }
 
+func TestPromptCacheImplemented(t *testing.T) {
+	const (
+		caching    = "test-prompt-cache-implemented"
+		noCaching  = "test-prompt-cache-absent"
+		handRolled = "test-prompt-cache-hand-rolled"
+	)
+	factory := func(ProviderConfig) (Provider, error) { return nil, nil }
+	RegisterWithMeta(caching, factory, ProviderMeta{
+		Name:         "declares it the way a provider does",
+		ConfigFields: append([]ConfigField{{Key: "region"}}, PromptCacheConfigFields()...),
+	})
+	RegisterWithMeta(noCaching, factory, ProviderMeta{
+		Name: "an OpenAI-compatible provider: config fields, none of them this one",
+		// reasoning_enabled is the near miss worth having: another
+		// bool-ish per-project key, and not the one being asked about.
+		ConfigFields: []ConfigField{{Key: "base_url"}, {Key: ReasoningEnabledKey}},
+	})
+	// Declared by key rather than through the helper — the check is on the
+	// key, so a provider that spells the field itself still counts.
+	RegisterWithMeta(handRolled, factory, ProviderMeta{
+		Name:         "hand-rolled field",
+		ConfigFields: []ConfigField{{Key: PromptCacheKey, Type: "boolean"}},
+	})
+
+	for _, name := range []string{caching, handRolled} {
+		if !PromptCacheImplemented(name) {
+			t.Errorf("PromptCacheImplemented(%q) = false, want true — it declares %q", name, PromptCacheKey)
+		}
+	}
+	if PromptCacheImplemented(noCaching) {
+		t.Errorf("PromptCacheImplemented(%q) = true; a provider that declares no prompt-cache field implements none", noCaching)
+	}
+	// An unregistered provider cannot be known to implement anything, and
+	// neither can the empty slug a half-built spec carries.
+	for _, name := range []string{"no-such-provider", ""} {
+		if PromptCacheImplemented(name) {
+			t.Errorf("PromptCacheImplemented(%q) = true, want false", name)
+		}
+	}
+}
+
 func TestRejectsForcedToolChoice(t *testing.T) {
 	const name = "test-rejects-forced-tool"
 	RegisterWithMeta(name, func(ProviderConfig) (Provider, error) { return nil, nil }, ProviderMeta{

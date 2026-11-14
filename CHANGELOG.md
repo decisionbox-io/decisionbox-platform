@@ -30,6 +30,14 @@ Three things make that correct rather than merely bigger. The block is sized for
 
 ### Fixed
 
+- **The agent's resolved-layer log line no longer claims prompt caching on providers that have none ([#553](https://github.com/decisionbox-io/decisionbox-platform/issues/553)).** `Layer LLM resolved` reported each layer's `prompt_cache` by reading the config value, which resolves to on for anything other than a literal `"false"` — absence included. Only the four providers that speak the Anthropic Messages wire read that key; `openai`, `litellm` and `ollama` contain no prompt-cache code at all, which is correct, because an OpenAI-compatible backend caches repeated prefixes itself with no directive to send. So every layer on one of those three logged `prompt_cache=true` for a setting nothing on that path reads.
+
+  It was a faithful-looking record of nothing, and it cost real time: a bug report was filed on the strength of that line, and two rounds of measurement across five discovery runs went looking for cache directives the request never carried.
+
+  The field now reports what the provider implements rather than what the config says — the resolved `true` / `false` where the directive is sent, and `n/a` where it is not. Which providers those are is read from each provider's own declared config fields, the same declaration that decides whether the dashboard renders the toggle, so there is no provider list to drift: a new Anthropic-wire provider is covered by registering, and one that drops caching moves the log line with it.
+
+  Nothing else changes. The toggle, its semantics and the provider wiring are untouched, and the dashboard never had the same problem — it already renders the switch only for a provider that declares the field.
+
 - **Duplicate insights and recommendations are no longer shown, and duplicates born in the same run are now found at all ([#458](https://github.com/decisionbox-io/decisionbox-platform/issues/458), supersedes #537).** Phase 9 has been detecting near-duplicate documents and stamping `duplicate_of` for as long as these collections have existed, and **nothing read the flag**: a document identified as a restatement was marked and then displayed next to the row it restates, and counted alongside it. The list and count paths now exclude marked duplicates, and `include_duplicates=1` on the insight and recommendation listings brings them back with the score that hid them, because suppressing a document on a similarity score is a judgement that can be wrong.
 
   The filter treats a **missing** `duplicate_of` as "not a duplicate". The field is `omitempty`, so every document written before it existed has no such key, and a filter written against `""` alone would have hidden every existing deployment's entire corpus. Count and list are fixed together: a count that includes what the list hides reports a total the list never returns.
