@@ -1140,15 +1140,27 @@ func TestConsolidateArea_CanBeTurnedOff(t *testing.T) {
 // that folded into another can restore BEFORE it, and clearing on the spot
 // threw away a good mark whose target had not registered yet.
 func TestSettleRunMarks(t *testing.T) {
-	// b restored first, carrying a mark into a — which restores after it.
-	allInsights := []models.Insight{
+	ids := newRestoredIDs()
+	// repl restores first, carrying a mark into an insight of stock's — which
+	// restores after it, so the mark is still the stored id at this point.
+	repl := []models.Insight{
 		{ID: "fresh-b", AnalysisArea: "repl", DuplicateOf: "stored-a", SimilarityScore: 0.93},
+	}
+	restoreOneArea(ids, "repl", map[string]string{"fresh-b": "stored-b"}, repl)
+	// stock restores next: fresh-a is the canonical repl was waiting for, and
+	// two of its own insights point at a row no attempt of this run holds.
+	stock := []models.Insight{
 		{ID: "fresh-a", AnalysisArea: "stock"},
 		{ID: "fresh-c", AnalysisArea: "stock", DuplicateOf: "never-existed", SimilarityScore: 0.91,
 			Validation: &valmodels.InsightValidation{Combined: valmodels.StatusSkippedDuplicate}},
 		{ID: "fresh-d", AnalysisArea: "stock", DuplicateOf: "never-existed", SimilarityScore: 0.9,
 			Validation: &valmodels.InsightValidation{Combined: valmodels.StatusConfirmed}},
 	}
+	restoreOneArea(ids, "stock", map[string]string{
+		"fresh-a": "stored-a", "fresh-c": "stored-c", "fresh-d": "stored-d",
+	}, stock)
+
+	allInsights := append(append([]models.Insight{}, repl...), stock...)
 	// The step copies, which are a separate copy by the time the loop has
 	// appended them: settling one and not the other would leave the result and
 	// the record disagreeing about which findings are visible.
@@ -1162,7 +1174,7 @@ func TestSettleRunMarks(t *testing.T) {
 		}},
 	}
 
-	repointed, cleared := settleRunMarks(analysisLog, allInsights, restoredIDsFor(map[string]string{"stored-a": "fresh-a"}))
+	repointed, cleared := settleRunMarks(analysisLog, allInsights, ids)
 
 	if allInsights[0].DuplicateOf != "fresh-a" {
 		t.Errorf("mark = %q, want fresh-a: its target registered after its own area restored", allInsights[0].DuplicateOf)
@@ -1200,14 +1212,26 @@ func TestSettleRunMarks(t *testing.T) {
 }
 
 // restoredIDsFor builds the bookkeeping a resume would have produced from a
-// stored-to-fresh mapping: every fresh id in it is one this attempt minted
-// for a restored area.
+// stored-to-fresh mapping, with no marks recorded.
 func restoredIDsFor(freshByStored map[string]string) *restoredIDs {
 	ids := newRestoredIDs()
 	for stored, fresh := range freshByStored {
 		ids.register(map[string]string{fresh: stored}, "test")
 	}
 	return ids
+}
+
+// restoreOneArea is what a restore does to the run's id bookkeeping: remint,
+// register, then re-point whatever can be resolved so far. The tests that
+// care about marks go through it rather than hand-writing a mark, because the
+// stored target it records on the way past is what settleRunMarks decides
+// from.
+//
+// `storedByFresh` is this area's remap as reidentifyRestoredArea would have
+// produced it, fresh id to the id the checkpoint holds.
+func restoreOneArea(ids *restoredIDs, areaID string, storedByFresh map[string]string, insights []models.Insight) {
+	ids.register(storedByFresh, areaID)
+	repointRestoredMarks(insights, ids, areaID)
 }
 
 // An insight id is the MODEL's when the model supplies one — the parse mints a
@@ -1241,21 +1265,6 @@ func TestRestoredIDs_ASharedStoredIDResolvesNowhere(t *testing.T) {
 		t.Error("a third claim un-poisoned the entry")
 	}
 
-	// A poisoned TARGET does not cost its claimants their provenance. This is
-	// the hole in the first version of this rule, which read the minted set
-	// back out of the mapping's values: poisoning replaces those values, so
-	// the insights of the two colliding areas — the ones most likely to carry
-	// a mark that collides — were exactly the ones the trust rule stopped
-	// protecting.
-	for _, id := range []string{"fresh-1", "fresh-2", "fresh-3", "fresh-x"} {
-		if !ids.fromRestore(id) {
-			t.Errorf("fromRestore(%s) = false; a collision on its stored id must not cost it its provenance", id)
-		}
-	}
-	if ids.fromRestore("minted-by-nobody") {
-		t.Error("an id no restore minted was reported as restored")
-	}
-
 	// And nothing resolves through a poisoned entry: not the restore-time
 	// re-point, which leaves the mark for the end-of-run settle...
 	insights := []models.Insight{
@@ -1279,67 +1288,150 @@ func TestRestoredIDs_ASharedStoredIDResolvesNowhere(t *testing.T) {
 
 // A restored insight's mark names an id from a PREVIOUS attempt, and an
 // insight id is the model's when it supplies one — so an area this attempt
-// analysed afresh can hand back that very id for an unrelated finding.
-// Matching a live id is therefore evidence for a mark THIS attempt's
-// consolidation pass wrote, and a coincidence for one that came out of a
-// checkpoint.
+// analysed afresh can hand back that very id for an unrelated finding. A
+// mark out of a checkpoint is therefore decided from the stored target it
+// arrived with, and a live row carrying that same string is not evidence of
+// anything.
 func TestSettleRunMarks_ARestoredMarkWillNotRideACoincidence(t *testing.T) {
-	ids := restoredIDsFor(map[string]string{
-		"stored-a": "fresh-a", "stored-r": "fresh-r", "stored-s": "fresh-s",
-	})
-	allInsights := []models.Insight{
-		// Restored, its mark already translated at restore time to another
-		// restored insight. Provenance; kept.
-		{ID: "fresh-r", AnalysisArea: "repl", DuplicateOf: "fresh-a", SimilarityScore: 0.93},
-		{ID: "fresh-a", AnalysisArea: "repl"},
-		// Restored, its mark still naming a previous attempt's id — which a
-		// freshly analysed area has handed back for a different finding, so
-		// it matches a live id. Cleared: the finding is visible again.
+	ids := newRestoredIDs()
+	// One restored area, whose insight restates a canonical from a previous
+	// attempt. That canonical's area is NOT restored this time: this attempt
+	// re-analysed it, and it handed back the same id for a different finding.
+	restored := []models.Insight{
 		{ID: "fresh-s", AnalysisArea: "stock", DuplicateOf: "reused-id", SimilarityScore: 0.91,
 			Validation: &valmodels.InsightValidation{Combined: valmodels.StatusSkippedDuplicate}},
-		{ID: "reused-id", AnalysisArea: "margin", Name: "an unrelated finding"},
-		// Freshly analysed and marked by this attempt's pass against an id it
-		// is holding. Trusted, and the mark is into the same row.
-		{ID: "fresh-live", AnalysisArea: "margin", DuplicateOf: "reused-id", SimilarityScore: 0.95},
 	}
+	restoreOneArea(ids, "stock", map[string]string{"fresh-s": "stored-s"}, restored)
+
+	allInsights := append([]models.Insight{}, restored...)
+	allInsights = append(allInsights,
+		// The freshly analysed area that reused the id, and one of its own
+		// insights marked by THIS attempt's pass against an id it was
+		// holding. The second is trusted; the first is a coincidence.
+		models.Insight{ID: "reused-id", AnalysisArea: "margin", Name: "an unrelated finding"},
+		models.Insight{ID: "fresh-live", AnalysisArea: "margin", DuplicateOf: "reused-id", SimilarityScore: 0.95},
+	)
 
 	repointed, cleared := settleRunMarks(nil, allInsights, ids)
 
-	if allInsights[0].DuplicateOf != "fresh-a" {
-		t.Errorf("a restored mark into a restored target = %q, want fresh-a kept", allInsights[0].DuplicateOf)
+	if allInsights[0].DuplicateOf != "" || allInsights[0].SimilarityScore != 0 {
+		t.Errorf("a restored mark onto a reused id = {%q, %v}, want cleared", allInsights[0].DuplicateOf, allInsights[0].SimilarityScore)
 	}
-	if allInsights[2].DuplicateOf != "" || allInsights[2].SimilarityScore != 0 {
-		t.Errorf("a restored mark onto a reused id = {%q, %v}, want cleared", allInsights[2].DuplicateOf, allInsights[2].SimilarityScore)
+	if allInsights[0].Validation != nil {
+		t.Errorf("the skip verdict outlived its mark: %+v", allInsights[0].Validation)
 	}
-	if allInsights[2].Validation != nil {
-		t.Errorf("the skip verdict outlived its mark: %+v", allInsights[2].Validation)
-	}
-	if allInsights[4].DuplicateOf != "reused-id" || allInsights[4].SimilarityScore != 0.95 {
-		t.Errorf("this attempt's own mark = {%q, %v}, want it left alone", allInsights[4].DuplicateOf, allInsights[4].SimilarityScore)
+	if allInsights[2].DuplicateOf != "reused-id" || allInsights[2].SimilarityScore != 0.95 {
+		t.Errorf("this attempt's own mark = {%q, %v}, want it left alone", allInsights[2].DuplicateOf, allInsights[2].SimilarityScore)
 	}
 	if repointed != 0 || cleared != 1 {
 		t.Errorf("repointed=%d cleared=%d, want 0 and 1", repointed, cleared)
 	}
 }
 
+// The restore-time translation reads a mapping that is still being written —
+// a restore happens in the same pass over the areas as a fresh analysis — so
+// it can resolve a mark through an entry a LATER area then poisons. Deciding
+// the mark from what it says afterwards keeps the wrong canonical: the id is
+// live and this attempt minted it, it just belongs to an unrelated finding.
+func TestSettleRunMarks_ATranslationIsNotTrustedOverItsArrivalTarget(t *testing.T) {
+	ids := newRestoredIDs()
+	// Area A restores first and happens to carry the id that area B's
+	// canonical also has.
+	restoreOneArea(ids, "margin", map[string]string{"fresh-a": "collides"}, []models.Insight{
+		{ID: "fresh-a", AnalysisArea: "margin", Name: "an unrelated finding"},
+	})
+	// Area C restores next, restating a canonical it knows as "collides" —
+	// which at this moment resolves to A's insight.
+	restatement := []models.Insight{
+		{ID: "fresh-c", AnalysisArea: "stock", DuplicateOf: "collides", SimilarityScore: 0.94,
+			Validation: &valmodels.InsightValidation{Combined: valmodels.StatusSkippedDuplicate}},
+	}
+	restoreOneArea(ids, "stock", map[string]string{"fresh-c": "stored-c"}, restatement)
+	if restatement[0].DuplicateOf != "fresh-a" {
+		t.Fatalf("mark = %q; the fixture needs the mid-loop translation to have happened", restatement[0].DuplicateOf)
+	}
+	// And NOW area B restores, revealing that "collides" was claimed twice.
+	restoreOneArea(ids, "repl", map[string]string{"fresh-b": "collides"}, []models.Insight{
+		{ID: "fresh-b", AnalysisArea: "repl", Name: "the canonical c actually restates"},
+	})
+
+	allInsights := []models.Insight{
+		{ID: "fresh-a", AnalysisArea: "margin", Name: "an unrelated finding"},
+		restatement[0],
+		{ID: "fresh-b", AnalysisArea: "repl", Name: "the canonical c actually restates"},
+	}
+
+	if _, cleared := settleRunMarks(nil, allInsights, ids); cleared != 1 {
+		t.Errorf("cleared=%d, want 1: the translation resolved through an entry that is now ambiguous", cleared)
+	}
+	if allInsights[1].DuplicateOf != "" || allInsights[1].Validation != nil {
+		t.Errorf("mark = {%q, %+v}; the finding is suppressed behind an unrelated canonical",
+			allInsights[1].DuplicateOf, allInsights[1].Validation)
+	}
+}
+
+// The mirror image: a mark whose canonical restores AFTER its own area is
+// left untranslated on purpose, and its stored target can collide with a live
+// id from a freshly analysed area. Clearing on that collision throws away a
+// fold the final mapping can resolve perfectly well — and a restatement that
+// loses its mark also loses its skip verdict and reaches the recommender
+// unvalidated.
+func TestSettleRunMarks_AnUntranslatedMarkIsResolvedBeforeItIsJudged(t *testing.T) {
+	ids := newRestoredIDs()
+	// C restores first, restating a canonical whose area has not registered.
+	restatement := []models.Insight{
+		{ID: "fresh-c", AnalysisArea: "stock", DuplicateOf: "canonical-id", SimilarityScore: 0.94,
+			Validation: &valmodels.InsightValidation{Combined: valmodels.StatusSkippedDuplicate}},
+	}
+	restoreOneArea(ids, "stock", map[string]string{"fresh-c": "stored-c"}, restatement)
+	if restatement[0].DuplicateOf != "canonical-id" {
+		t.Fatalf("mark = %q; the fixture needs the mark left untranslated", restatement[0].DuplicateOf)
+	}
+	// Then its canonical's area restores, minting a fresh id for it.
+	restoreOneArea(ids, "repl", map[string]string{"fresh-canonical": "canonical-id"}, []models.Insight{
+		{ID: "fresh-canonical", AnalysisArea: "repl", Name: "the canonical"},
+	})
+
+	allInsights := []models.Insight{
+		restatement[0],
+		{ID: "fresh-canonical", AnalysisArea: "repl", Name: "the canonical"},
+		// A freshly analysed area that happens to carry the stored id as a
+		// live one. It must not get a say.
+		{ID: "canonical-id", AnalysisArea: "margin", Name: "an unrelated finding"},
+	}
+
+	repointed, cleared := settleRunMarks(nil, allInsights, ids)
+	if allInsights[0].DuplicateOf != "fresh-canonical" {
+		t.Errorf("mark = %q, want fresh-canonical: the final mapping resolves it", allInsights[0].DuplicateOf)
+	}
+	if allInsights[0].Validation == nil || allInsights[0].Validation.Combined != valmodels.StatusSkippedDuplicate {
+		t.Errorf("the skip verdict was dropped from a mark that is still good: %+v", allInsights[0].Validation)
+	}
+	if repointed != 1 || cleared != 0 {
+		t.Errorf("repointed=%d cleared=%d, want 1 and 0", repointed, cleared)
+	}
+}
+
 // The case that cost the first version of the trust rule its teeth: a stored
 // id claimed by TWO restored areas. Poisoning the mapping was right, but the
-// minted set was read back out of that mapping's values — so poisoning took
+// provenance was read back out of that mapping's values — so poisoning took
 // both areas' insights out of it, and a stale mark from either rode a live-id
 // coincidence straight into a reader's hidden finding.
 func TestSettleRunMarks_ACollisionDoesNotLaunderARestoredMark(t *testing.T) {
-	// Two restored areas, both of which handed back "dup-7" for an insight of
-	// their own, so the entry is poisoned.
 	ids := newRestoredIDs()
-	ids.register(map[string]string{"fresh-stock": "dup-7"}, "stock")
-	ids.register(map[string]string{"fresh-repl": "dup-7"}, "repl")
-
-	allInsights := []models.Insight{
-		// Its stored id collided. Its MARK names a previous attempt's
-		// canonical, which a freshly analysed area has reused for something
-		// unrelated.
+	// Two restored areas, both of which handed back "dup-7" for an insight of
+	// their own, so the entry is poisoned. The stock one's MARK names a
+	// previous attempt's canonical, which a freshly analysed area has reused
+	// for something unrelated.
+	marked := []models.Insight{
 		{ID: "fresh-stock", AnalysisArea: "stock", DuplicateOf: "old-canonical", SimilarityScore: 0.9,
 			Validation: &valmodels.InsightValidation{Combined: valmodels.StatusSkippedDuplicate}},
+	}
+	restoreOneArea(ids, "stock", map[string]string{"fresh-stock": "dup-7"}, marked)
+	restoreOneArea(ids, "repl", map[string]string{"fresh-repl": "dup-7"}, nil)
+
+	allInsights := []models.Insight{
+		marked[0],
 		{ID: "old-canonical", AnalysisArea: "margin", Name: "an unrelated finding this attempt analysed"},
 	}
 

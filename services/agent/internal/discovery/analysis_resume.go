@@ -349,37 +349,34 @@ const ambiguousStoredID = "\x00ambiguous"
 // restoredIDs is the id bookkeeping one resume performs, carried across every
 // restore of the run and read by settleRunMarks at the end of it.
 //
-// Two maps, because they answer different questions and neither derives from
-// the other. freshByStored RESOLVES a mark's target — the mark names its
-// canonical by an id a checkpoint holds, and that id has just changed. minted
-// says whether an insight came out of a restore AT ALL, which is what decides
-// whether a mark on it may be trusted.
+// Two maps, because a restored mark takes two things to decide and neither
+// derives from the other. freshByStored RESOLVES a target: the mark names its
+// canonical by an id a checkpoint holds, and that id has just changed.
+// markTargetByID records, per insight, the stored target the mark ARRIVED
+// with — which is the only form of the mark that survives being wrong.
 //
-// The first version of this derived the second from the first's values, and
-// was wrong exactly where it mattered: a stored id two areas claim is
-// poisoned, which takes both areas' fresh ids out of the value set — so the
-// insights most likely to carry a colliding mark were the two the rule
-// stopped protecting. A separate set has no such hole.
+// That second map is the third attempt at the same question, and the reason
+// to keep the first two in mind. Deriving provenance from this attempt's
+// minted ids lost it for exactly the areas that collided; trusting the
+// translated mark lost it whenever the translation itself was decided on a
+// mapping that was still being written. The arrival value is decided once,
+// at the end, by a mapping nothing further will change.
 type restoredIDs struct {
-	freshByStored map[string]string
-	minted        map[string]struct{}
+	freshByStored  map[string]string
+	markTargetByID map[string]string
 }
 
 func newRestoredIDs() *restoredIDs {
 	return &restoredIDs{
-		freshByStored: make(map[string]string),
-		minted:        make(map[string]struct{}),
+		freshByStored:  make(map[string]string),
+		markTargetByID: make(map[string]string),
 	}
 }
 
 // register adds one restored area's fresh-to-stored remap, poisoning any
-// stored id another area has already claimed. Every fresh id is recorded as
-// minted whether or not its stored id collided.
+// stored id another area has already claimed.
 func (r *restoredIDs) register(storedByFresh map[string]string, areaID string) {
 	for fresh, stored := range storedByFresh {
-		if fresh != "" {
-			r.minted[fresh] = struct{}{}
-		}
 		switch prior, seen := r.freshByStored[stored]; {
 		case !seen:
 			r.freshByStored[stored] = fresh
@@ -404,14 +401,23 @@ func (r *restoredIDs) resolve(stored string) (string, bool) {
 	return fresh, ok && fresh != ambiguousStoredID
 }
 
-// fromRestore reports whether an id is one this attempt minted for a restored
-// area's insight.
-func (r *restoredIDs) fromRestore(id string) bool {
-	if r == nil {
-		return false
+// rememberMarkTarget records the stored target a restored insight's mark
+// arrived with, under the id this attempt minted for that insight.
+func (r *restoredIDs) rememberMarkTarget(id, storedTarget string) {
+	if r == nil || id == "" || storedTarget == "" {
+		return
 	}
-	_, ok := r.minted[id]
-	return ok
+	r.markTargetByID[id] = storedTarget
+}
+
+// markTarget returns the stored target an insight's mark arrived with, and
+// whether the mark came out of a checkpoint at all.
+func (r *restoredIDs) markTarget(id string) (string, bool) {
+	if r == nil {
+		return "", false
+	}
+	stored, ok := r.markTargetByID[id]
+	return stored, ok
 }
 
 // withCheckpointStableMarks returns the step with every consolidation mark
@@ -479,12 +485,25 @@ func withCheckpointStableMarks(step models.AnalysisStep, checkpointIDByLive map[
 // whose target simply had not registered its ids yet, and nothing revisited
 // it. settleRunMarks, run once the loop has finished and every restored area
 // has registered, is what decides which marks are genuinely broken.
+//
+// Which makes what this function writes BEST EFFORT, and the arrival target
+// it records the authoritative form. The mapping is still being written while
+// the loop runs — a restore happens in the same pass over the areas as a
+// fresh analysis, so areas later in that order have not registered yet — so a
+// translation here can resolve through an entry a later area poisons, and can
+// fail for a canonical that registers a moment afterwards. Translating anyway
+// is worth it because the mid-run consolidation pass reads these marks to
+// decide which earlier-area documents are already canonicals, and it needs
+// live ids; the cost of getting one wrong there is a fold that pass declines
+// to make, never a hidden finding, because settleRunMarks re-decides every
+// one of these marks from the value recorded here.
 func repointRestoredMarks(insights []models.Insight, ids *restoredIDs, areaID string) {
 	for i := range insights {
 		stored := insights[i].DuplicateOf
 		if stored == "" {
 			continue
 		}
+		ids.rememberMarkTarget(insights[i].ID, stored)
 		if fresh, ok := ids.resolve(stored); ok {
 			insights[i].DuplicateOf = fresh
 			applog.WithFields(applog.Fields{"area": areaID, "id": insights[i].ID, "duplicate_of": fresh}).
@@ -497,10 +516,14 @@ func repointRestoredMarks(insights []models.Insight, ids *restoredIDs, areaID st
 // resume. Called once after the analysis loop, with every restored area's id
 // mapping in hand and the run's whole insight set in front of it.
 //
-// It re-points a mark whose target registered after the mark's own area
-// restored — the case repointRestoredMarks deliberately leaves alone, because
-// the area order is not stable between attempts — and then CLEARS any mark
-// still pointing at a row this run does not hold. That is strictly worse than
+// Every mark that came out of a checkpoint is re-decided here, from the
+// stored target it arrived with rather than from whatever repointRestoredMarks
+// left on it: that translation ran against a mapping the loop was still
+// writing, so it is a convenience for the mid-run readers and not a verdict.
+// A mark whose target registered after its own area restored is re-pointed —
+// the case repointRestoredMarks deliberately leaves alone, because the area
+// order is not stable between attempts — and any mark still pointing at a row
+// this run does not hold is CLEARED. That is strictly worse than
 // no mark: the insight renders as suppressed behind a canonical the reader
 // cannot reach, which is the one outcome the non-destructive contract exists
 // to prevent.
@@ -535,34 +558,38 @@ func settleRunMarks(analysisLog []models.AnalysisStep, allInsights []models.Insi
 		if target == "" {
 			return
 		}
-		if _, ok := live[target]; ok {
-			// Whether a live target is evidence depends on who wrote the
-			// mark. For a FRESH insight this attempt's consolidation pass
-			// wrote it against an id the pass was holding, so a live target
-			// is the target. For a RESTORED one the mark names an id from a
-			// previous attempt — and an insight id is the MODEL's when the
-			// model supplies one, so a re-analysed area can hand back that
-			// id for a different finding and the stale target then matches a
-			// live row belonging to something unrelated. A restored mark
-			// therefore has to resolve through the remap, or point at
-			// another insight this attempt minted for a restored area; a
-			// bare coincidence is not provenance.
-			if !ids.fromRestore(ins.ID) || ids.fromRestore(target) {
-				return
+		// A mark that came out of a CHECKPOINT is decided here, and from the
+		// stored target it arrived with rather than from whatever the mark
+		// says now. The restore-time translation read a mapping that was
+		// still being written, so it can have resolved through an entry a
+		// later area poisoned, or failed for a canonical that registered
+		// just after it; re-deciding from the arrival value is the only
+		// reading of the mark that cannot be stale.
+		//
+		// A FRESH insight's mark is not re-decided: this attempt's own
+		// consolidation pass wrote it, against an id the pass was holding,
+		// and the pass never writes a mark onto a restored insight — a
+		// completed area never reaches it and a draft-restored area's marks
+		// arrive with the draft.
+		if stored, fromCheckpoint := ids.markTarget(ins.ID); fromCheckpoint {
+			if fresh, ok := ids.resolve(stored); ok {
+				if _, isLive := live[fresh]; isLive {
+					if ins.DuplicateOf != fresh {
+						ins.DuplicateOf = fresh
+						repointed++
+					}
+					return
+				}
 			}
 			applog.WithFields(applog.Fields{
-				"area": areaID, "id": ins.ID, "was_duplicate_of": target,
-			}).Info("restore: a restored mark names an id this attempt did not mint for it; the finding is visible again")
+				"area": areaID, "id": ins.ID, "was_duplicate_of": target, "stored_target": stored,
+			}).Info("restore: a restored mark names a canonical this run does not hold, or one two areas both claim; the finding is visible again")
 			clearMark(ins)
 			cleared++
 			return
 		}
-		if fresh, ok := ids.resolve(target); ok {
-			if _, live2 := live[fresh]; live2 {
-				ins.DuplicateOf = fresh
-				repointed++
-				return
-			}
+		if _, ok := live[target]; ok {
+			return
 		}
 		applog.WithFields(applog.Fields{
 			"area": areaID, "id": ins.ID, "was_duplicate_of": target,

@@ -1728,10 +1728,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	for _, a := range runAreas {
 		areaByID[a.ID] = a
 	}
-	// Stored insight id -> the id this attempt minted for it, accumulated
-	// across every restore this run performs. A consolidation mark names its
-	// canonical by the stored id, and a restore remints every id in the set,
-	// so this is what lets such a mark survive. See repointRestoredMarks.
+	// The id bookkeeping of every restore this run performs: what each
+	// stored insight id was reminted to, and the stored target each restored
+	// mark arrived with. A consolidation mark names its canonical by the
+	// stored id and a restore remints every id in the set, so this is what
+	// lets such a mark survive — and settleRunMarks, below, is what decides
+	// it, once no further area can change the mapping.
 	restoredInsightIDs := newRestoredIDs()
 
 	for _, area := range runAreas {
