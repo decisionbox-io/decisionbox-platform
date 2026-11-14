@@ -1199,6 +1199,105 @@ func TestSettleRunMarks(t *testing.T) {
 	}
 }
 
+// An insight id is the MODEL's when the model supplies one — the parse mints a
+// UUID only for an insight that arrived without an `id` — so two restored
+// areas can hand back the same stored id. Last-writer-wins pointed a mark at
+// whichever area restored second, which is a reader sent to an unrelated
+// finding while the one they asked for stays hidden. The entry is poisoned
+// instead: the fold is lost and both findings stay visible, which is the
+// recoverable direction.
+func TestRegisterRestoredIDs_ASharedStoredIDResolvesNowhere(t *testing.T) {
+	freshByStored := map[string]string{}
+	registerRestoredIDs(freshByStored, map[string]string{"fresh-1": "shared", "fresh-x": "its-own"}, "stock")
+	registerRestoredIDs(freshByStored, map[string]string{"fresh-2": "shared"}, "repl")
+
+	if got := freshByStored["shared"]; got != ambiguousStoredID {
+		t.Errorf("freshByStored[shared] = %q, want the entry poisoned", got)
+	}
+	// A stored id only one area claims is untouched.
+	if got := freshByStored["its-own"]; got != "fresh-x" {
+		t.Errorf("freshByStored[its-own] = %q, want fresh-x", got)
+	}
+	// Re-registering the SAME mapping is not a collision — an area restored
+	// twice in one loop would otherwise poison its own ids.
+	registerRestoredIDs(freshByStored, map[string]string{"fresh-x": "its-own"}, "stock")
+	if got := freshByStored["its-own"]; got != "fresh-x" {
+		t.Errorf("an identical re-registration poisoned the entry: %q", got)
+	}
+	// A third claimant does not un-poison one.
+	registerRestoredIDs(freshByStored, map[string]string{"fresh-3": "shared"}, "margin")
+	if got := freshByStored["shared"]; got != ambiguousStoredID {
+		t.Errorf("freshByStored[shared] = %q after a third claim, want it still poisoned", got)
+	}
+
+	// And nothing resolves through a poisoned entry: not the restore-time
+	// re-point, which leaves the mark for the end-of-run settle...
+	insights := []models.Insight{
+		{ID: "fresh-2", DuplicateOf: "shared", SimilarityScore: 0.93,
+			Validation: &valmodels.InsightValidation{Combined: valmodels.StatusSkippedDuplicate}},
+	}
+	repointRestoredMarks(insights, freshByStored, "repl")
+	if insights[0].DuplicateOf != "shared" {
+		t.Errorf("mark = %q; a poisoned entry must not re-point a mark", insights[0].DuplicateOf)
+	}
+	// ...nor the settle itself, which clears it rather than pointing a
+	// reader at the sentinel.
+	repointed, cleared := settleRunMarks(nil, insights, freshByStored)
+	if insights[0].DuplicateOf != "" || insights[0].Validation != nil {
+		t.Errorf("settled mark = {%q, %+v}, want cleared", insights[0].DuplicateOf, insights[0].Validation)
+	}
+	if repointed != 0 || cleared != 1 {
+		t.Errorf("repointed=%d cleared=%d, want 0 and 1", repointed, cleared)
+	}
+}
+
+// A restored insight's mark names an id from a PREVIOUS attempt, and an
+// insight id is the model's when it supplies one — so an area this attempt
+// analysed afresh can hand back that very id for an unrelated finding.
+// Matching a live id is therefore evidence for a mark THIS attempt's
+// consolidation pass wrote, and a coincidence for one that came out of a
+// checkpoint.
+func TestSettleRunMarks_ARestoredMarkWillNotRideACoincidence(t *testing.T) {
+	// What this attempt minted for the areas it RESTORED, which is the only
+	// provenance available: the values are those ids.
+	freshByStored := map[string]string{
+		"stored-a": "fresh-a", "stored-r": "fresh-r", "stored-s": "fresh-s",
+	}
+	allInsights := []models.Insight{
+		// Restored, its mark already translated at restore time to another
+		// restored insight. Provenance; kept.
+		{ID: "fresh-r", AnalysisArea: "repl", DuplicateOf: "fresh-a", SimilarityScore: 0.93},
+		{ID: "fresh-a", AnalysisArea: "repl"},
+		// Restored, its mark still naming a previous attempt's id — which a
+		// freshly analysed area has handed back for a different finding, so
+		// it matches a live id. Cleared: the finding is visible again.
+		{ID: "fresh-s", AnalysisArea: "stock", DuplicateOf: "reused-id", SimilarityScore: 0.91,
+			Validation: &valmodels.InsightValidation{Combined: valmodels.StatusSkippedDuplicate}},
+		{ID: "reused-id", AnalysisArea: "margin", Name: "an unrelated finding"},
+		// Freshly analysed and marked by this attempt's pass against an id it
+		// is holding. Trusted, and the mark is into the same row.
+		{ID: "fresh-live", AnalysisArea: "margin", DuplicateOf: "reused-id", SimilarityScore: 0.95},
+	}
+
+	repointed, cleared := settleRunMarks(nil, allInsights, freshByStored)
+
+	if allInsights[0].DuplicateOf != "fresh-a" {
+		t.Errorf("a restored mark into a restored target = %q, want fresh-a kept", allInsights[0].DuplicateOf)
+	}
+	if allInsights[2].DuplicateOf != "" || allInsights[2].SimilarityScore != 0 {
+		t.Errorf("a restored mark onto a reused id = {%q, %v}, want cleared", allInsights[2].DuplicateOf, allInsights[2].SimilarityScore)
+	}
+	if allInsights[2].Validation != nil {
+		t.Errorf("the skip verdict outlived its mark: %+v", allInsights[2].Validation)
+	}
+	if allInsights[4].DuplicateOf != "reused-id" || allInsights[4].SimilarityScore != 0.95 {
+		t.Errorf("this attempt's own mark = {%q, %v}, want it left alone", allInsights[4].DuplicateOf, allInsights[4].SimilarityScore)
+	}
+	if repointed != 0 || cleared != 1 {
+		t.Errorf("repointed=%d cleared=%d, want 0 and 1", repointed, cleared)
+	}
+}
+
 // A document another finding is already folded INTO cannot be suppressed by
 // the end-of-run check. A mid-run mark B -> A is already written and
 // persisted, so folding A into an earlier run's X would leave B pointing at a
@@ -2466,19 +2565,36 @@ func TestConsolidateArea_ARewriteIsCheckedAgainstEveryExistingFold(t *testing.T)
 		t.Errorf("n.duplicate_of = %q; its claim is stated nowhere in the rewritten survivor", current[1].DuplicateOf)
 	}
 
-	// The guard reads the live mark set, so a fold recorded on ARRIVAL —
-	// written by a previous area's pass — counts the same way.
+	// A dependant THIS verdict did not fold — a previous area's, say — is
+	// refused outright, whichever way its own fold was justified: the rewrite
+	// was written from this cluster's payload and does not contain that
+	// finding's text at all.
 	docs := []consolidationDoc{
 		doc(0, "broad", 0, true, "the whole total", table),
 		doc(1, "earlier", 90, false, "the north segment holds 111,222 units, 33.3 of it", ""),
 	}
 	marks := map[string]string{"earlier": "broad"}
 	kept := insightBodyOf("the whole total\n\n"+table, "", nil)
-	if rewriteBreaksAFold(kept, docs[0], docs, marks, 0.88) {
-		t.Error("a rewrite that keeps the row must not be refused")
+	if !rewriteBreaksAFold(kept, docs[0], docs, marks, nil, 0.88) {
+		t.Error("a dependant this verdict did not fold must refuse the rewrite")
+	}
+	// Folded by THIS verdict, and the rewrite keeps the row its containment
+	// rests on: applied.
+	mine := map[string]float64{"earlier": 0}
+	if rewriteBreaksAFold(kept, docs[0], docs, marks, mine, 0.88) {
+		t.Error("a rewrite that keeps the justification of its own fold must not be refused")
 	}
 	dropped := insightBodyOf("the whole total\n\n| south | 444,555 | 66.6 |", "", nil)
-	if !rewriteBreaksAFold(dropped, docs[0], docs, marks, 0.88) {
-		t.Error("a previous area's fold into this survivor must be checked too")
+	if !rewriteBreaksAFold(dropped, docs[0], docs, marks, mine, 0.88) {
+		t.Error("a rewrite that drops the row its own fold rests on must be refused")
+	}
+	// A cosine-justified dependant of THIS verdict needs no further check:
+	// the adjudicator saw its text and the rewrite is what carries it.
+	near := []consolidationDoc{
+		doc(0, "a", 0, true, "claim a", "body a"),
+		doc(1, "b", 1, true, "claim b", "body b"),
+	}
+	if rewriteBreaksAFold("anything at all", near[0], near, map[string]string{"b": "a"}, map[string]float64{"b": 0.99}, 0.88) {
+		t.Error("a similarity-justified fold of this verdict's own must not be re-checked against the prose")
 	}
 }

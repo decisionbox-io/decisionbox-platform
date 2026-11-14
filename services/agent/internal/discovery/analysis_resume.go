@@ -328,11 +328,40 @@ func restoreArea(
 	freshByStored map[string]string,
 ) ([]models.AnalysisStep, []models.Insight, map[string]string) {
 	step, storedByFresh := reidentifyRestoredArea(cp.Step)
-	for fresh, stored := range storedByFresh {
-		freshByStored[stored] = fresh
-	}
+	registerRestoredIDs(freshByStored, storedByFresh, step.AreaID)
 	repointRestoredMarks(step.Insights, freshByStored, step.AreaID)
 	return append(analysisLog, step), append(allInsights, step.Insights...), storedByFresh
+}
+
+// ambiguousStoredID is the value registerRestoredIDs parks on a stored id that
+// two areas both claim, so nothing resolves through it.
+//
+// An insight id is the model's when the model supplies one — the parse only
+// mints a UUID for an insight that arrived without an `id` — so two areas can
+// hand back the same id, and `{area}-{index}` style ids make that likelier
+// than it sounds. A map written last-writer-wins then points a mark at
+// whichever area restored second, which is a reader sent to an unrelated
+// finding while the one they asked for is hidden. Refusing the translation
+// loses the fold and keeps both findings visible, which is the recoverable
+// direction.
+const ambiguousStoredID = "\x00ambiguous"
+
+// registerRestoredIDs adds one restored area's stored-to-fresh mapping,
+// poisoning any stored id another area has already claimed.
+func registerRestoredIDs(freshByStored, storedByFresh map[string]string, areaID string) {
+	for fresh, stored := range storedByFresh {
+		switch prior, seen := freshByStored[stored]; {
+		case !seen:
+			freshByStored[stored] = fresh
+		case prior == fresh || prior == ambiguousStoredID:
+			// Nothing to decide: the same mapping, or already poisoned.
+		default:
+			applog.WithFields(applog.Fields{
+				"area": areaID, "stored_id": stored,
+			}).Warn("restore: two analysis areas carry the same insight id; no consolidation mark will be resolved through it")
+			freshByStored[stored] = ambiguousStoredID
+		}
+	}
 }
 
 // withCheckpointStableMarks returns the step with every consolidation mark
@@ -406,7 +435,7 @@ func repointRestoredMarks(insights []models.Insight, freshByStored map[string]st
 		if stored == "" {
 			continue
 		}
-		if fresh, ok := freshByStored[stored]; ok {
+		if fresh, ok := freshByStored[stored]; ok && fresh != ambiguousStoredID {
 			insights[i].DuplicateOf = fresh
 			applog.WithFields(applog.Fields{"area": areaID, "id": insights[i].ID, "duplicate_of": fresh}).
 				Debug("restore: re-pointed a consolidation mark at this attempt's id")
@@ -450,16 +479,52 @@ func settleRunMarks(analysisLog []models.AnalysisStep, allInsights []models.Insi
 			live[allInsights[i].ID] = struct{}{}
 		}
 	}
+	// The ids this attempt minted for the areas it RESTORED — the values of
+	// the mapping, read back as a set.
+	//
+	// It is what tells a restored insight from a freshly analysed one without
+	// threading a second map through every restore, and the distinction
+	// decides whether a live-id match is evidence. For a FRESH insight the
+	// mark was written by this attempt's consolidation pass against an id it
+	// is holding, so a live target is the target. For a RESTORED one the mark
+	// names an id from a previous attempt — and an insight id is the MODEL's
+	// when the model supplies one, so a re-analysed area can hand back the
+	// same id for a different finding and that stale target then matches a
+	// live id belonging to something unrelated. A mark on a restored insight
+	// therefore has to resolve through the mapping, or point at another
+	// restored insight that it already resolved to; a bare coincidence is not
+	// provenance.
+	restored := make(map[string]struct{}, len(freshByStored))
+	for _, fresh := range freshByStored {
+		if fresh != "" && fresh != ambiguousStoredID {
+			restored[fresh] = struct{}{}
+		}
+	}
 
 	settle := func(ins *models.Insight, areaID string) {
 		target := ins.DuplicateOf
 		if target == "" {
 			return
 		}
+		_, fromRestore := restored[ins.ID]
 		if _, ok := live[target]; ok {
+			if !fromRestore {
+				return
+			}
+			// A restored insight's mark may point at another restored one,
+			// which is a target this attempt minted and already resolved.
+			// Anything else live is a coincidence — see `restored`.
+			if _, resolved := restored[target]; resolved {
+				return
+			}
+			applog.WithFields(applog.Fields{
+				"area": areaID, "id": ins.ID, "was_duplicate_of": target,
+			}).Info("restore: a restored mark names an id this attempt did not mint for it; the finding is visible again")
+			clearMark(ins)
+			cleared++
 			return
 		}
-		if fresh, ok := freshByStored[target]; ok {
+		if fresh, ok := freshByStored[target]; ok && fresh != ambiguousStoredID {
 			if _, live2 := live[fresh]; live2 {
 				ins.DuplicateOf = fresh
 				repointed++
@@ -469,11 +534,7 @@ func settleRunMarks(analysisLog []models.AnalysisStep, allInsights []models.Insi
 		applog.WithFields(applog.Fields{
 			"area": areaID, "id": ins.ID, "was_duplicate_of": target,
 		}).Info("restore: a consolidation mark pointed at a row this run does not hold; the finding is visible again")
-		ins.DuplicateOf = ""
-		ins.SimilarityScore = 0
-		if v := ins.Validation; v != nil && v.Combined == valmodels.StatusSkippedDuplicate {
-			ins.Validation = nil
-		}
+		clearMark(ins)
 		cleared++
 	}
 
@@ -492,6 +553,18 @@ func settleRunMarks(analysisLog []models.AnalysisStep, allInsights []models.Insi
 		}
 	}
 	return repointed, cleared
+}
+
+// clearMark removes a duplicate mark and the verdict that existed only
+// because of it. `skipped_duplicate` is stamped BY the mark, so a finding that
+// is visible again carrying that stamp would render as a restatement of
+// nothing; with no verdict it reads as what it is, an insight nothing checked.
+func clearMark(ins *models.Insight) {
+	ins.DuplicateOf = ""
+	ins.SimilarityScore = 0
+	if v := ins.Validation; v != nil && v.Combined == valmodels.StatusSkippedDuplicate {
+		ins.Validation = nil
+	}
 }
 
 // dropSkippedDuplicateResult removes the skip-only validation result an

@@ -808,6 +808,7 @@ func (o *Orchestrator) applyConsolidation(
 				insights:         in.insights,
 				docs:             docs,
 				marks:            marks,
+				folded:           v.Duplicates,
 				written:          clusterWritten,
 				threshold:        threshold,
 			}); {
@@ -1172,7 +1173,10 @@ type mergeCheck struct {
 	// marks is every mark standing at this point — the arrival marks and
 	// everything this pass has written — which is what makes "every fold
 	// into this survivor" answerable.
-	marks     map[string]string
+	marks map[string]string
+	// folded is what THIS verdict folds, which is the set the rewrite was
+	// written from.
+	folded    map[string]float64
 	written   []int
 	threshold float64
 }
@@ -1207,8 +1211,8 @@ func mergeRefusal(c mergeCheck) string {
 		return "a folded member's prose carries rendered evidence figures"
 	case c.refusedDonor:
 		return "a member this verdict folds was refused, so its rewrite cannot be trusted"
-	case rewriteBreaksAFold(c.prospectiveBody, c.survivor, c.docs, c.marks, c.threshold):
-		return "the rewrite no longer states a claim it folds"
+	case rewriteBreaksAFold(c.prospectiveBody, c.survivor, c.docs, c.marks, c.folded, c.threshold):
+		return "the rewrite does not account for every finding folded into the survivor"
 	}
 	return ""
 }
@@ -1224,22 +1228,34 @@ func mergeRefusal(c mergeCheck) string {
 // POINT, not whether the claim still holds — and the end-of-run check skips a
 // document that already carries a mark. So the finding would stay suppressed
 // and unvalidated with its claim stated nowhere.
-func rewriteBreaksAFold(prospectiveBody string, survivor consolidationDoc, docs []consolidationDoc, marks map[string]string, threshold float64) bool {
-	// EVERY document whose mark points here, not just the ones this verdict
-	// folded. The survivor can already carry folds from an overlapping
-	// cluster of this same pass, or from a previous area's — and a rewrite
-	// that keeps THIS cluster's figures while dropping an earlier
-	// dependant's leaves that finding hidden behind a survivor which no
-	// longer states its claim: the same defect, one cluster further out.
-	// `marks` holds both the arrival marks and everything written since, so
-	// it is the whole set.
+func rewriteBreaksAFold(prospectiveBody string, survivor consolidationDoc, docs []consolidationDoc, marks map[string]string, folded map[string]float64, threshold float64) bool {
 	for i := range docs {
 		if marks[docs[i].id] != survivor.id {
 			continue
 		}
-		if _, cosine := cosineFold(docs[i].foldSubject, survivor.foldSubject, threshold); cosine {
-			continue // justified by the vectors, not by the prose.
+		// A dependant THIS verdict did not fold. The rewrite was written from
+		// this cluster's payload, which does not contain that finding's text,
+		// so there is no sense in which it carries its claim — and no way to
+		// check, either: a cosine justification cannot be re-established
+		// against prose that has not been embedded, and containment cannot be
+		// expected of a pair that never shared figures. Refused outright.
+		//
+		// This replaced a weaker rule that skipped a cosine-justified
+		// dependant on the grounds that the vectors decided it. They did —
+		// but they describe the OLD prose, so a rewrite dropping that
+		// dependant's claim left it hidden behind a survivor that no longer
+		// states it, which is exactly what the rule was meant to stop.
+		if _, mine := folded[docs[i].id]; !mine {
+			return true
 		}
+		if _, cosine := cosineFold(docs[i].foldSubject, survivor.foldSubject, threshold); cosine {
+			// The adjudicator saw this finding's text and wrote the rewrite to
+			// carry it; that is what MergedDescription is for. There is
+			// nothing further to verify for a pair whose similarity was the
+			// justification.
+			continue
+		}
+		// A containment justification CAN be re-checked, and is.
 		if !containedIn(docs[i].name, prospectiveBody) {
 			return true
 		}
