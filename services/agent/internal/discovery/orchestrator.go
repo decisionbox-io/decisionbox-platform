@@ -398,6 +398,15 @@ type Orchestrator struct {
 	// adjudicated and decided to leave standing, so Phase 9 does not fold
 	// them the other way round. See keepPair.
 	consolidationKept map[string]struct{}
+	// checkpointIDByLive maps an insight id this attempt minted onto the id
+	// the run's CHECKPOINTS hold for the same insight, for the areas this
+	// attempt restored. Set once before the analysis loop and added to as
+	// each area restores — it is the same map the loop threads for Phase 5's
+	// stored citations, held here because the checkpoint writers need it too:
+	// a consolidation mark into a restored area has to be STORED by the
+	// stable id or a third attempt cannot follow it. See
+	// withCheckpointStableMarks.
+	checkpointIDByLive map[string]string
 
 	// embedder + schemaRetriever are the Qdrant-backed schema retrieval
 	// layer (top-K relevant tables in the prompt instead of dumping the
@@ -1630,6 +1639,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// different id. Empty on a run that restores nothing, which is what keeps
 	// Phase 5 on the path it always took. See storedInsightIDs.
 	storedIDByLive := make(map[string]string)
+	// The checkpoint writers read the same map, so they are given the same
+	// one rather than a copy that could drift from it.
+	o.checkpointIDByLive = storedIDByLive
 	// The feed is attempt-scoped, so this attempt has to own a copy of the
 	// restored areas' rows or its log shows recommendations drawn from
 	// insights the operator cannot see. Once, here, in RunAt order — see

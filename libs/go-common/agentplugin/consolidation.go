@@ -124,10 +124,21 @@ type ConsolidationVerdict struct {
 // a near-threshold pair that is the same subject with a different metric is one
 // finding or two.
 type ConsolidationProvider interface {
-	// Consolidate returns one verdict per cluster it decided. Clusters it
-	// declines to decide may be omitted; the caller falls back to the
-	// community rule for those. Must be safe for concurrent use and honor
-	// ctx cancellation.
+	// Consolidate returns ONE VERDICT PER CLUSTER, POSITIONALLY: the answer
+	// must be the same length as `clusters`, and a cluster the provider
+	// declines to decide is the ZERO verdict at that position, not an omitted
+	// entry. The caller applies the community rule to those.
+	//
+	// Positional and strict, because the alternative silently reverses
+	// decisions. A provider that returns one verdict for the second of two
+	// clusters has its answer read against the FIRST, where it is rejected as
+	// naming a stranger — and the second cluster then gets the community
+	// rule, which may fold it the way the provider refused to. A caller
+	// cannot tell that apart from a provider that answered the first cluster,
+	// so the length is checked instead: a response of any other length is
+	// discarded whole.
+	//
+	// Must be safe for concurrent use and honor ctx cancellation.
 	Consolidate(ctx context.Context, projectID string, clusters []DuplicateCluster) ([]ConsolidationVerdict, error)
 	// Name is a stable identifier for telemetry.
 	Name() string
@@ -177,6 +188,11 @@ func ConsolidationProviderName() string {
 
 // ResolveConsolidation asks the registered provider to adjudicate clusters.
 //
+// The answer is returned only when it is positional — the same length as
+// `clusters`. Any other length is a provider that is not following the
+// contract, and reading it by position would assign one cluster's verdict to
+// another; see ConsolidationProvider.Consolidate.
+//
 // Best-effort and it never fails discovery. With no provider registered it
 // returns (nil, nil) and the caller applies the community rule — earliest
 // member wins, which is what Phase 9 does today. A provider that errors or
@@ -205,6 +221,10 @@ func ResolveConsolidation(ctx context.Context, projectID string, clusters []Dupl
 	out, perr := p.Consolidate(ctx, projectID, clusters)
 	if perr != nil {
 		return nil, perr
+	}
+	if len(out) != 0 && len(out) != len(clusters) {
+		return nil, fmt.Errorf("agentplugin: consolidation provider %q returned %d verdicts for %d clusters; the contract is one per cluster, positionally",
+			safeConsolidationName(p), len(out), len(clusters))
 	}
 	return out, nil
 }

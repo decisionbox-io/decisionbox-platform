@@ -588,15 +588,26 @@ func (o *Orchestrator) applyConsolidation(
 		// consolidated: an earlier area's text is already recorded in that
 		// area's checkpoint, and rewriting it here would leave the record and
 		// the result disagreeing about what the finding says.
+		// A rewrite is asked for precisely when the folded members carry
+		// something the survivor does not, so a rewrite that cannot be
+		// applied means the folds cannot be applied either: suppressing those
+		// members without it is exactly how a fold loses a caveat, which is
+		// the failure this pass exists to stop making. Two reasons it cannot
+		// be applied, and they get the same answer.
 		if merged := strings.TrimSpace(v.MergedDescription); merged != "" && clusterFolds > 0 {
 			switch {
-			case !docs[fi].current:
-				// An earlier area's text is already recorded in that area's
-				// checkpoint and cannot be rewritten here. The folds are
-				// given back rather than applied without the rewrite: the
-				// adjudicator asked for one because the survivor is missing
-				// something the folded members carry, and applying the fold
-				// anyway is exactly how a fold loses a caveat.
+			case !docs[fi].current, mergedCanonicals[final]:
+				// Either the survivor belongs to an area the run has already
+				// finished — its text is recorded in that area's checkpoint,
+				// and rewriting it here would leave the record and the result
+				// disagreeing — or this pass has already rewritten it for an
+				// overlapping cluster, so this rewrite was written against
+				// text that has since changed and applying it would erase
+				// what the first one preserved.
+				reason := "the survivor's area has already recorded its text"
+				if docs[fi].current {
+					reason = "this pass has already rewritten the survivor for an overlapping cluster"
+				}
 				for _, slot := range clusterWritten {
 					// Out of `marks` as well as off the insight. Left in, a
 					// later cluster resolving its canonical through the chain
@@ -616,17 +627,27 @@ func (o *Orchestrator) applyConsolidation(
 					// test — would not add up.
 					countFold(&st, c.proposal, -1)
 				}
+				// `written` is the pass-wide list the closure check reads, and
+				// this cluster's slots are its last entries. `clusterWritten`
+				// is not reset: nothing after this switch reads it, and the
+				// next cluster builds its own.
 				written = written[:len(written)-len(clusterWritten)]
 				st.RefusedUnmergeable++
-				applog.WithFields(applog.Fields{"area": st.Area, "canonical": final}).
-					Info("Consolidation: the survivor needs a rewrite its area has already recorded; leaving the findings standing")
-			case mergedCanonicals[final]:
-				applog.WithFields(applog.Fields{"area": st.Area, "canonical": final}).
-					Info("Consolidation: a second rewrite of the same survivor was dropped; it was written against text this pass has already changed")
+				applog.WithFields(applog.Fields{"area": st.Area, "canonical": final, "reason": reason}).
+					Info("Consolidation: the survivor cannot be rewritten; leaving the findings standing")
 			default:
 				plain, md := splitMarkdownDescription(merged)
 				in.insights[docs[fi].slot].Description = plain
 				in.insights[docs[fi].slot].DescriptionMd = md
+				// The provenance of what the rewrite now states, carried with
+				// it. A folded member's figure is supported by the steps IT
+				// cited, and the verifier builds its evidence bundle from the
+				// survivor's SourceSteps — so a merged claim whose step the
+				// survivor does not cite would be checked against evidence
+				// that does not contain it, and attachSourceQuality would
+				// miss the caveat that step carries.
+				in.insights[docs[fi].slot].SourceSteps = mergeSourceSteps(
+					in.insights[docs[fi].slot].SourceSteps, in.insights, clusterWritten)
 				// And in the projection, so a later cluster folding into the
 				// same survivor runs its containment re-check against what
 				// the survivor now says rather than against the text it said
@@ -686,6 +707,34 @@ func (o *Orchestrator) applyConsolidation(
 		st.Folded, st.ByCosine, st.ByContainment, st.ByBoth = 0, 0, 0, 0
 	}
 	return st
+}
+
+// mergeSourceSteps returns the survivor's cited steps unioned with those of
+// the members folded into it, deduplicated and ordered.
+//
+// Only called when a rewrite was applied: a fold with no rewrite leaves the
+// survivor's text alone, so it states nothing it did not already cite.
+// Ordered and deduplicated because the list is rendered into prompts and
+// persisted, and a set whose order changes between two runs reads as a changed
+// claim.
+func mergeSourceSteps(canonical []int, insights []models.Insight, folded []int) []int {
+	seen := make(map[int]struct{}, len(canonical)+len(folded))
+	out := make([]int, 0, len(canonical)+len(folded))
+	add := func(steps []int) {
+		for _, step := range steps {
+			if _, dup := seen[step]; dup {
+				continue
+			}
+			seen[step] = struct{}{}
+			out = append(out, step)
+		}
+	}
+	add(canonical)
+	for _, slot := range folded {
+		add(insights[slot].SourceSteps)
+	}
+	sort.Ints(out)
+	return out
 }
 
 // countFold moves the per-test fold counter the proposal belongs to. One

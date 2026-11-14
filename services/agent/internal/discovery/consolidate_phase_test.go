@@ -1278,3 +1278,137 @@ func TestConsolidateArea_AGivenBackFoldGivesBackItsBucket(t *testing.T) {
 		t.Errorf("stats = %+v; the per-test buckets must sum to Folded", st)
 	}
 }
+
+// A second rewrite of the same survivor means the second cluster's folds go
+// back too, not just its rewrite. Keeping the folds would suppress the second
+// cluster's members without the detail the rewrite was asked for — the caveat
+// loss this pass exists to stop making, arriving through the back door.
+//
+// Two overlapping maximal stars sharing one survivor is the shape: a chain of
+// four documents 25° apart gives {a,b,c} and {b,c,d}, and c is a legitimate
+// canonical in both.
+func TestConsolidateArea_ASecondRewriteGivesBackItsClustersFolds(t *testing.T) {
+	a := insight("a", "stock", "claim a", "body a", 400)
+	b := insight("b", "stock", "claim b", "body b carries a figure", 300)
+	c := insight("c", "stock", "claim c", "body c", 200)
+	d := insight("d", "stock", "claim d", "body d carries the caveat", 100)
+
+	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		out := make([]agentplugin.ConsolidationVerdict, len(cl))
+		for i, cluster := range cl {
+			ids := make([]string, 0, 3)
+			for _, cand := range cluster.Candidates {
+				ids = append(ids, cand.ID)
+			}
+			switch {
+			case slices.Contains(ids, "a"):
+				out[i] = agentplugin.ConsolidationVerdict{
+					CanonicalID: "c", Duplicates: map[string]float64{"b": 0.906},
+					MergedDescription: "c, carrying b's figure",
+				}
+			case slices.Contains(ids, "d"):
+				out[i] = agentplugin.ConsolidationVerdict{
+					CanonicalID: "c", Duplicates: map[string]float64{"d": 0.906},
+					MergedDescription: "c, carrying d's caveat",
+				}
+			}
+		}
+		return out, nil
+	}})
+
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 25, embText(c): 50, embText(d): 75,
+	}}}
+	current := []models.Insight{a, b, c, d}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if st.Clusters != 2 {
+		t.Fatalf("clusters = %d (%+v), want the two overlapping stars", st.Clusters, st)
+	}
+	byID := map[string]models.Insight{}
+	for _, ins := range current {
+		byID[ins.ID] = ins
+	}
+	if byID["b"].DuplicateOf != "c" {
+		t.Errorf("b.duplicate_of = %q, want c — the first cluster's fold and rewrite stand", byID["b"].DuplicateOf)
+	}
+	if byID["d"].DuplicateOf != "" {
+		t.Errorf("d.duplicate_of = %q; its rewrite could not be applied, so its fold must have been given back", byID["d"].DuplicateOf)
+	}
+	if st.RefusedUnmergeable != 1 {
+		t.Errorf("stats = %+v, want one cluster given back", st)
+	}
+	if st.Folded != 1 || st.ByCosine != 1 {
+		t.Errorf("stats = %+v, want exactly the one fold that kept its rewrite", st)
+	}
+	// d's caveat is not hidden behind text that does not mention it.
+	if !strings.Contains(byID["c"].Description, "b's figure") {
+		t.Errorf("c.description = %q, want the first rewrite", byID["c"].Description)
+	}
+}
+
+// A merge carries the folded members' evidence with it. The verifier builds
+// its bundle from the survivor's SourceSteps, so a merged claim whose step the
+// survivor does not cite would be checked against evidence that does not
+// contain it — and attachSourceQuality would miss the caveat that step
+// carries.
+func TestConsolidateArea_AMergeCarriesTheEvidenceWithIt(t *testing.T) {
+	a := insight("a", "stock", "claim a", "body a", 300)
+	a.SourceSteps = []int{1, 3}
+	b := insight("b", "stock", "claim b", "body b", 200)
+	b.SourceSteps = []int{7, 3}
+
+	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		return []agentplugin.ConsolidationVerdict{{
+			CanonicalID: "a", Duplicates: map[string]float64{"b": 0.99},
+			MergedDescription: "a, carrying b's figure from step 7",
+		}}, nil
+	}})
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 1,
+	}}}
+	current := []models.Insight{a, b}
+	if st := o.consolidateArea(context.Background(), areaInput("stock", current, nil)); st.Folded != 1 {
+		t.Fatalf("stats = %+v", st)
+	}
+	if got := fmt.Sprint(current[0].SourceSteps); got != "[1 3 7]" {
+		t.Errorf("canonical source steps = %s, want [1 3 7]: deduplicated, ordered, and carrying step 7", got)
+	}
+	// A fold with NO rewrite states nothing new, so it must not widen the
+	// survivor's provenance.
+	if got := fmt.Sprint(mergeSourceSteps([]int{1}, current, nil)); got != "[1]" {
+		t.Errorf("mergeSourceSteps with nothing folded = %s, want [1]", got)
+	}
+}
+
+// A mark into a restored area is STORED by the id the run's checkpoints hold,
+// not the one this attempt minted — otherwise a third attempt, which can only
+// translate the original id, resolves it against nothing and clears a fold
+// that was perfectly good.
+func TestWithCheckpointStableMarks(t *testing.T) {
+	step := models.AnalysisStep{AreaID: "stock", Insights: []models.Insight{
+		{ID: "live-b", DuplicateOf: "live-a", SimilarityScore: 0.93},
+		{ID: "live-c"},
+		{ID: "live-d", DuplicateOf: "live-c"},
+	}}
+	stored := withCheckpointStableMarks(step, map[string]string{"live-a": "checkpoint-a"})
+
+	if stored.Insights[0].DuplicateOf != "checkpoint-a" {
+		t.Errorf("stored mark = %q, want the checkpoint's id", stored.Insights[0].DuplicateOf)
+	}
+	// An intra-area target is not in the map, so it is stored as it stands —
+	// which IS the id the checkpoint holds for it.
+	if stored.Insights[2].DuplicateOf != "live-c" {
+		t.Errorf("intra-area mark = %q, want live-c", stored.Insights[2].DuplicateOf)
+	}
+	// And the LIVE slice is untouched: the in-memory mark must keep naming
+	// the live id, or the dashboard renders a suppression pointing at an id no
+	// row carries.
+	if step.Insights[0].DuplicateOf != "live-a" {
+		t.Errorf("the live mark was rewritten to %q", step.Insights[0].DuplicateOf)
+	}
+	// Nothing to translate: the same step back, no copy.
+	if got := withCheckpointStableMarks(step, nil); got.Insights[0].DuplicateOf != "live-a" {
+		t.Errorf("with no mapping the step must come back unchanged, got %q", got.Insights[0].DuplicateOf)
+	}
+}

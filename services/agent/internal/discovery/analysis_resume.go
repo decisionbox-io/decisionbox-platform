@@ -134,8 +134,11 @@ func (o *Orchestrator) checkpointAnalysisArea(ctx context.Context, step models.A
 		RunID:              o.runID,
 		Attempt:            o.resume.attemptNumber(),
 		ExplorationAttempt: o.explorationSummaryAttempt,
-		Step:               step,
-		InsightsValidated:  insightsValidated,
+		// A consolidation mark into an earlier area is stored by the id the
+		// run's checkpoints hold, not the one this attempt minted, so a third
+		// attempt can still follow it. See withCheckpointStableMarks.
+		Step:              withCheckpointStableMarks(step, o.checkpointIDByLive),
+		InsightsValidated: insightsValidated,
 	})
 	if err != nil {
 		if errors.Is(err, database.ErrSupersededAttempt) {
@@ -330,6 +333,56 @@ func restoreArea(
 	}
 	repointRestoredMarks(step.Insights, freshByStored, step.AreaID)
 	return append(analysisLog, step), append(allInsights, step.Insights...), storedByFresh
+}
+
+// withCheckpointStableMarks returns the step with every consolidation mark
+// re-pointed at the id the run's CHECKPOINTS hold for its target, rather than
+// the id this attempt minted for it.
+//
+// This is what makes a mark survive more than one resume. A mark into an
+// earlier area names that area's insight by this attempt's id — and if the
+// area was itself restored, that id was minted here and exists nowhere on
+// disk. A third attempt restores the earlier area from its OWN checkpoint,
+// which still holds the original id, so it can translate the original id and
+// nothing else: a mark naming the second attempt's id resolves against
+// neither, and settleRunMarks correctly clears it, costing the fold and
+// returning an unvalidated finding to the recommender. Storing the stable id
+// means every later attempt can follow it — the same discipline Phase 5's
+// stored recommendation citations already use.
+//
+// A COPY of the insight slice, because the live slice is shared with the
+// reader and the result: the in-memory mark must keep naming the live id, or
+// the dashboard would render a suppression pointing at an id no row carries.
+// Only the stored copy is translated.
+//
+// A no-op for an area this attempt analysed itself, whose insights are not in
+// the map — which is also why an intra-area mark is stored as it stands and
+// matches the checkpoint's own ids.
+func withCheckpointStableMarks(step models.AnalysisStep, checkpointIDByLive map[string]string) models.AnalysisStep {
+	if len(checkpointIDByLive) == 0 || len(step.Insights) == 0 {
+		return step
+	}
+	var copied []models.Insight
+	for i := range step.Insights {
+		target := step.Insights[i].DuplicateOf
+		if target == "" {
+			continue
+		}
+		stored, ok := checkpointIDByLive[target]
+		if !ok || stored == target {
+			continue
+		}
+		if copied == nil {
+			copied = make([]models.Insight, len(step.Insights))
+			copy(copied, step.Insights)
+		}
+		copied[i].DuplicateOf = stored
+	}
+	if copied == nil {
+		return step
+	}
+	step.Insights = copied
+	return step
 }
 
 // repointRestoredMarks re-points a restored area's duplicate marks at the ids

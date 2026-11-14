@@ -188,3 +188,47 @@ func TestRegisterConsolidationProvider_LastWins(t *testing.T) {
 		t.Errorf("provider = %q, want second", got)
 	}
 }
+
+// The contract is one verdict per cluster, POSITIONALLY. A response of any
+// other length is discarded whole, because reading it by position assigns one
+// cluster's verdict to another: a provider that answers only the second of two
+// clusters has that answer read against the FIRST, where it is rejected as
+// naming a stranger — and the second cluster then gets the community rule,
+// which may fold it the way the provider refused to. A caller cannot tell that
+// apart from a provider that answered the first cluster.
+func TestResolveConsolidation_RejectsANonPositionalResponse(t *testing.T) {
+	resetConsolidationForTest()
+	t.Cleanup(resetConsolidationForTest)
+
+	two := []DuplicateCluster{
+		{Candidates: []ConsolidationDoc{{ID: "a"}, {ID: "b"}}, Proposal: ProposalCosine},
+		{Candidates: []ConsolidationDoc{{ID: "c"}, {ID: "d"}}, Proposal: ProposalCosine},
+	}
+
+	RegisterConsolidationProvider(&stubConsolidator{
+		name:     "shortish",
+		verdicts: []ConsolidationVerdict{{CanonicalID: "d", Duplicates: map[string]float64{"c": 0.9}}},
+	})
+	verdicts, err := ResolveConsolidation(context.Background(), "proj", two)
+	if err == nil {
+		t.Fatal("a one-verdict answer for two clusters must be refused, not read by position")
+	}
+	if verdicts != nil {
+		t.Fatalf("verdicts = %+v, want none", verdicts)
+	}
+
+	// The positional answer — including the zero verdict for a cluster the
+	// provider declined — is accepted.
+	resetConsolidationForTest()
+	RegisterConsolidationProvider(&stubConsolidator{
+		name:     "positional",
+		verdicts: []ConsolidationVerdict{{}, {CanonicalID: "d", Duplicates: map[string]float64{"c": 0.9}}},
+	})
+	verdicts, err = ResolveConsolidation(context.Background(), "proj", two)
+	if err != nil {
+		t.Fatalf("a positional answer must be accepted: %v", err)
+	}
+	if len(verdicts) != 2 || verdicts[0].CanonicalID != "" || verdicts[1].CanonicalID != "d" {
+		t.Fatalf("verdicts = %+v", verdicts)
+	}
+}
