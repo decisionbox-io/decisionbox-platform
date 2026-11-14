@@ -1607,3 +1607,199 @@ func TestConsolidateArea_AFallbackDoesNotOverrideAProviderKeep(t *testing.T) {
 		t.Errorf("stats = %+v, want the refusal counted", st)
 	}
 }
+
+// The keeps are registered BEFORE any mark is written, and that ordering is
+// the fix. The clusters are overlapping stars processed in order, so a cluster
+// the provider DECLINED can be processed first and its community fallback
+// folds a pair a provider verdict for a later, overlapping cluster explicitly
+// keeps — and discovering the keep afterwards is useless, because the mark is
+// already written and the end-of-run check will not revisit a marked document.
+func TestConsolidateArea_AProviderKeepBeatsAnEarlierFallbackFold(t *testing.T) {
+	// {a,b,c} then {b,c,d}, with a attached to b by CONTAINMENT only — so the
+	// fallback for the first cluster would fold c into b, which is exactly the
+	// pair the provider's verdict for the second cluster keeps apart. The
+	// first cluster is processed first, so the keep has to be known before it.
+	table := "| north | 111,222 | 33.3 |"
+	a := insight("a", "stock", "the whole total", table, 400)
+	b := insight("b", "stock", "the north segment holds 111,222 units, 33.3 of it", "body b", 300)
+	c := insight("c", "stock", "claim c", "body c", 200)
+	d := insight("d", "stock", "claim d", "body d", 100)
+
+	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		out := make([]agentplugin.ConsolidationVerdict, len(cl))
+		for i, cluster := range cl {
+			ids := make([]string, 0, 3)
+			for _, cand := range cluster.Candidates {
+				ids = append(ids, cand.ID)
+			}
+			if slices.Contains(ids, "d") {
+				out[i] = agentplugin.ConsolidationVerdict{CanonicalID: "b", Reason: "all three are distinct"}
+			}
+		}
+		return out, nil
+	}})
+
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 150, embText(b): 0, embText(c): 25, embText(d): 50,
+	}}}
+	current := []models.Insight{a, b, c, d}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if st.Clusters != 2 {
+		t.Fatalf("clusters = %d (%+v), want the two overlapping stars (fixture broken)", st.Clusters, st)
+	}
+	if !o.adjudicatedKeep("b", "c") {
+		t.Fatalf("the provider's keep was not registered: %+v", st)
+	}
+	byID := map[string]models.Insight{}
+	for _, ins := range current {
+		byID[ins.ID] = ins
+	}
+	if byID["c"].DuplicateOf != "" {
+		t.Errorf("c.duplicate_of = %q; the fallback for the first cluster folded a pair the provider kept", byID["c"].DuplicateOf)
+	}
+	if st.RefusedKept == 0 {
+		t.Errorf("stats = %+v, want the fallback's fold refused", st)
+	}
+}
+
+// Two overlapping verdicts can disagree about one pair — folded in one, simply
+// unnamed in the other. An explicit fold beats an omission: the fold is a
+// positive judgement, while a member a verdict did not mention may just be a
+// member it did not mention. Without that precedence the second cluster's
+// silence vetoed the first cluster's decision.
+func TestConsolidateArea_AnExplicitFoldBeatsAnOmission(t *testing.T) {
+	a := insight("a", "stock", "claim a", "body a", 400)
+	b := insight("b", "stock", "claim b", "body b", 300)
+	c := insight("c", "stock", "claim c", "body c", 200)
+	d := insight("d", "stock", "claim d", "body d", 100)
+
+	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		out := make([]agentplugin.ConsolidationVerdict, len(cl))
+		for i, cluster := range cl {
+			ids := make([]string, 0, 3)
+			for _, cand := range cluster.Candidates {
+				ids = append(ids, cand.ID)
+			}
+			switch {
+			case slices.Contains(ids, "a"):
+				// Explicitly folds b into c.
+				out[i] = agentplugin.ConsolidationVerdict{
+					CanonicalID: "c", Duplicates: map[string]float64{"b": 0.906},
+				}
+			case slices.Contains(ids, "d"):
+				// Names c as canonical and never mentions b.
+				out[i] = agentplugin.ConsolidationVerdict{CanonicalID: "c", Reason: "d is distinct"}
+			}
+		}
+		return out, nil
+	}})
+
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 25, embText(c): 50, embText(d): 75,
+	}}}
+	current := []models.Insight{a, b, c, d}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if current[1].DuplicateOf != "c" {
+		t.Errorf("b.duplicate_of = %q, want c — the explicit fold must not be vetoed by the other cluster's silence", current[1].DuplicateOf)
+	}
+	if st.Folded != 1 {
+		t.Errorf("stats = %+v, want the one explicit fold", st)
+	}
+}
+
+// A rewrite may incorporate detail from a member this pass refused to fold, so
+// applying it would credit the survivor with a claim whose evidence it does
+// not cite — and the provenance union cannot carry what was never folded. The
+// whole cluster goes back rather than half of it.
+func TestConsolidateArea_ARefusedDonorGivesBackTheWholeCluster(t *testing.T) {
+	earlier := insight("e1", "repl", "the broad claim", "body e1", 500)
+	c1 := insight("c1", "stock", "the broad claim restated", "body e1 again", 400)
+	c2 := insight("c2", "stock", "a narrower slice", "body c2", 300)
+
+	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		// e1 cannot be suppressed (earlier area); c2 can. The rewrite claims
+		// to carry both donors' detail.
+		return []agentplugin.ConsolidationVerdict{{
+			CanonicalID:       "c1",
+			Duplicates:        map[string]float64{"e1": 0.95, "c2": 0.95},
+			MergedDescription: "c1, carrying e1's and c2's detail",
+		}}, nil
+	}})
+
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(earlier): 0, embText(c1): 1, embText(c2): 2,
+	}}}
+	current := []models.Insight{c1, c2}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, []models.Insight{earlier}))
+
+	if st.Folded != 0 || st.RefusedUnmergeable != 1 {
+		t.Fatalf("stats = %+v, want the whole cluster given back", st)
+	}
+	if current[1].DuplicateOf != "" {
+		t.Errorf("c2.duplicate_of = %q; it was suppressed behind a rewrite that credits a donor nobody folded", current[1].DuplicateOf)
+	}
+	if strings.Contains(current[0].Description, "carrying") {
+		t.Errorf("c1.description = %q, want the rewrite refused", current[0].Description)
+	}
+}
+
+// On a mixed star the community rule applies the pairwise rule inside the
+// cluster, not only against its seed. Comparing everything against the seed
+// alone folded nothing, so BOTH later members spent validation budget and the
+// end-of-run check folded one into the other afterwards anyway.
+func TestCommunityVerdict_FoldsAPairThatDoesNotIncludeTheSeed(t *testing.T) {
+	table := "| north | 111,222 | 33.3 |"
+	docs := []consolidationDoc{
+		// a relates to b by containment only.
+		doc(0, "a", 0, true, "a headline", table),
+		doc(1, "b", 70, true, "b carries 111,222 and 33.3", ""),
+		// b and c are a similarity pair; neither is near a.
+		doc(2, "c", 71, true, "claim c", ""),
+	}
+	clusters := buildClusters(docs, proposePairs(docs, 0.88))
+	var star docCluster
+	for _, cl := range clusters {
+		if len(cl.members) == 3 {
+			star = cl
+		}
+	}
+	if len(star.members) != 3 {
+		t.Fatalf("clusters = %v, want a star of three (fixture broken)", clusters)
+	}
+
+	v := communityVerdict(docs, star, 0.88)
+	if v.CanonicalID != "b" {
+		t.Errorf("canonical = %q, want b — the earliest member of the similarity pair", v.CanonicalID)
+	}
+	if _, ok := v.Duplicates["c"]; !ok {
+		t.Errorf("duplicates = %v, want c folded into b", v.Duplicates)
+	}
+	if _, ok := v.Duplicates["a"]; ok {
+		t.Errorf("duplicates = %v; a is a containment-only relation and the community rule must not fold it", v.Duplicates)
+	}
+}
+
+// Phase 9 must check the keep against the target it RESOLVED to, not only the
+// candidate it matched. A chain hides the pair otherwise: with b folded into a
+// and the adjudicator having kept a and c apart, matching c against b resolves
+// back to a and suppresses c anyway.
+func TestMarkDuplicates_HonoursAKeepAgainstTheResolvedTarget(t *testing.T) {
+	store := &mockEmbedIndexStore{}
+	o := &Orchestrator{embedIndexStore: store, vectorStore: &mockVectorStore{}}
+	o.keepPair("a", "c")
+
+	vec := []float64{1, 0, 0}
+	o.markDuplicates(context.Background(), []dedupCandidate{
+		{id: "a", docType: "insight", vec: vec, text: "a", magnitude: "affected=1"},
+		{id: "b", docType: "insight", vec: vec, text: "b", magnitude: "affected=1"},
+		{id: "c", docType: "insight", vec: vec, text: "c", magnitude: "affected=1"},
+	}, nil)
+
+	for _, u := range store.dupUpdates {
+		if u.ID == "c" {
+			t.Errorf("c was folded into %q; the keep against a was routed around through b", u.DupOf)
+		}
+	}
+}

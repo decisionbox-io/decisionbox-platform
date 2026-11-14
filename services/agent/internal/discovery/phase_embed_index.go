@@ -667,6 +667,16 @@ func (o *Orchestrator) markDuplicates(ctx context.Context, candidates []dedupCan
 			if !ok {
 				continue
 			}
+			// And against the target it RESOLVED to, not only the candidate it
+			// matched. A chain hides the pair otherwise: with B already folded
+			// into A and the adjudicator having kept A and C apart, matching C
+			// against B resolves back to A and suppresses C anyway — the very
+			// decision the keep records, routed around by one hop.
+			if o.adjudicatedKeep(c.id, target) {
+				applog.WithFields(applog.Fields{"id": c.id, "canonical": target}).
+					Info("Phase 9: the resolved canonical is one this pair was adjudicated against; not folding")
+				continue
+			}
 
 			o.markDuplicate(ctx, c, target, targetScore, "this run")
 			canonical[c.id] = target

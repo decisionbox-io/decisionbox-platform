@@ -475,26 +475,46 @@ func anyMap(in map[string]interface{}) map[string]any {
 	return out
 }
 
-// communityVerdict is the fallback: earliest member canonical, cosine pairs
-// folded into it, everything else left standing.
+// communityVerdict is the fallback: the earliest member that a later member
+// restates is canonical, the later members that restate it are folded into it,
+// and everything else stands.
+//
+// "The earliest member that a later member restates" rather than simply the
+// earliest member, because a cluster is a star and its seed need not be in
+// every pair. On a mixed star — A and B related only by containment, B and C a
+// similarity pair, and neither B nor C similar to A — comparing everything
+// against A alone folds nothing, so BOTH B and C spend validation budget and
+// the end-of-run check folds C into B afterwards anyway. The pairwise rule
+// inside the cluster is the same rule, applied where the pair actually is.
+//
+// Cosine only. Containment is a proposal an adjudicator rules on, never a
+// community rule — see reverifyFold.
 func communityVerdict(docs []consolidationDoc, c docCluster, threshold float64) agentplugin.ConsolidationVerdict {
+	for i, m := range c.members {
+		dupes := make(map[string]float64, len(c.members))
+		for _, later := range c.members[i+1:] {
+			if score, ok := cosineFold(docs[later].foldSubject, docs[m].foldSubject, threshold); ok {
+				dupes[docs[later].id] = score
+			}
+		}
+		if len(dupes) > 0 {
+			return agentplugin.ConsolidationVerdict{
+				CanonicalID: docs[m].id,
+				Duplicates:  dupes,
+				Reason:      "community rule: earliest member of a similarity pair",
+			}
+		}
+	}
+	// No similarity pair anywhere in the cluster: nothing for the community
+	// rule to decide. The earliest member is still named so the cluster reads
+	// as adjudicated rather than skipped.
 	if len(c.members) == 0 {
 		return agentplugin.ConsolidationVerdict{}
 	}
-	canonical := docs[c.members[0]]
-	v := agentplugin.ConsolidationVerdict{
-		CanonicalID: canonical.id,
-		Reason:      "community rule: earliest member, similarity pair",
+	return agentplugin.ConsolidationVerdict{
+		CanonicalID: docs[c.members[0]].id,
+		Reason:      "community rule: no similarity pair in this cluster",
 	}
-	for _, m := range c.members[1:] {
-		if score, ok := cosineFold(docs[m].foldSubject, canonical.foldSubject, threshold); ok {
-			if v.Duplicates == nil {
-				v.Duplicates = make(map[string]float64, len(c.members))
-			}
-			v.Duplicates[docs[m].id] = score
-		}
-	}
-	return v
 }
 
 // applyConsolidation writes the verdicts the guards allow, then proves the
@@ -524,6 +544,19 @@ func (o *Orchestrator) applyConsolidation(
 	// Documents this pass has already sent a reader to. Marking one of them
 	// later would build a chain — the closure check would catch it, but
 	// refusing here keeps the pass's own output chain-free by construction.
+	// Every pair an adjudicator decided should stand, registered BEFORE a
+	// single mark is written.
+	//
+	// Incrementally was wrong, and the shape is worth stating: the clusters
+	// are overlapping stars processed in order, so a cluster the provider
+	// DECLINED can be processed first and its community fallback folds a pair
+	// that a provider verdict for a later, overlapping cluster explicitly
+	// keeps. Discovered after the fact, the keep is useless — the mark is
+	// already written, and the end-of-run check will not revisit a document
+	// that carries one. A pair's keep is derivable from the verdict alone, so
+	// it does not need the marks and can be known first.
+	o.registerAdjudicatedKeeps(docs, clusters, verdicts, byProvider, marks, &st)
+
 	usedAsCanonical := make(map[string]bool, len(clusters))
 	// Canonicals whose description this pass has already rewritten. Clusters
 	// are overlapping stars, so two verdicts can legitimately fold different
@@ -576,6 +609,12 @@ func (o *Orchestrator) applyConsolidation(
 		// into, as soon as any earlier cluster had folded something.
 		clusterFolds := 0
 		clusterWritten := make([]int, 0, len(c.members))
+		// Whether any member this verdict named as a duplicate was NOT
+		// folded. It matters only when a rewrite is also asked for: the
+		// rewrite may incorporate detail from a donor that was refused, and
+		// applying it would then credit the survivor with evidence it does
+		// not cite. See the merge switch below.
+		clusterRefusedDonor := false
 
 		// Sorted, so two runs over the same verdict write the same marks.
 		dupIDs := make([]string, 0, len(v.Duplicates))
@@ -587,11 +626,13 @@ func (o *Orchestrator) applyConsolidation(
 		for _, dupID := range dupIDs {
 			if !member[dupID] || dupID == final {
 				st.RefusedShape++
+				clusterRefusedDonor = true
 				continue
 			}
 			di, inHand := byID[dupID]
 			if !inHand {
 				st.RefusedShape++
+				clusterRefusedDonor = true
 				continue
 			}
 			dup := docs[di]
@@ -606,6 +647,7 @@ func (o *Orchestrator) applyConsolidation(
 				applog.WithFields(applog.Fields{"area": st.Area, "id": dupID}).
 					Info("Consolidation: refusing to suppress a document this pass already made canonical")
 				st.RefusedShape++
+				clusterRefusedDonor = true
 				continue
 			}
 			if !dup.current {
@@ -617,6 +659,7 @@ func (o *Orchestrator) applyConsolidation(
 				// not fold it the other way round on this run.
 				o.keepPair(dupID, final)
 				st.RefusedNotMine++
+				clusterRefusedDonor = true
 				continue
 			}
 			// The adjudicator decided this pair stands, in some other cluster
@@ -630,6 +673,7 @@ func (o *Orchestrator) applyConsolidation(
 				applog.WithFields(applog.Fields{"area": st.Area, "id": dupID, "canonical": final}).
 					Info("Consolidation: this pair was already adjudicated and left standing; not folding it in another cluster")
 				st.RefusedKept++
+				clusterRefusedDonor = true
 				continue
 			}
 			score, held := reverifyFold(dup, docs[fi], threshold, byProvider[i])
@@ -637,6 +681,7 @@ func (o *Orchestrator) applyConsolidation(
 				applog.WithFields(applog.Fields{"area": st.Area, "id": dupID, "canonical": final}).
 					Info("Consolidation: the claim does not hold against the resolved canonical; not folded")
 				st.RefusedRecheck++
+				clusterRefusedDonor = true
 				continue
 			}
 
@@ -669,7 +714,8 @@ func (o *Orchestrator) applyConsolidation(
 		// be applied, and they get the same answer.
 		if merged := strings.TrimSpace(v.MergedDescription); merged != "" && clusterFolds > 0 {
 			switch {
-			case !docs[fi].current, mergedCanonicals[final], len(in.insights[docs[fi].slot].Figures) > 0:
+			case !docs[fi].current, mergedCanonicals[final], clusterRefusedDonor,
+				len(in.insights[docs[fi].slot].Figures) > 0:
 				// Either the survivor belongs to an area the run has already
 				// finished — its text is recorded in that area's checkpoint,
 				// and rewriting it here would leave the record and the result
@@ -681,6 +727,15 @@ func (o *Orchestrator) applyConsolidation(
 				switch {
 				case !docs[fi].current:
 					// keeps the reason above
+				case clusterRefusedDonor:
+					// The rewrite may incorporate detail from a member this
+					// pass refused to fold — an earlier area's finding, say,
+					// or one the re-check dropped. Applying it credits the
+					// survivor with a claim whose evidence it does not cite,
+					// and the provenance union below cannot carry what was
+					// never folded. The whole cluster goes back rather than
+					// half of it.
+					reason = "a member this verdict folds was refused, so its rewrite cannot be trusted"
 				case len(in.insights[docs[fi].slot].Figures) > 0:
 					// The survivor declared evidence figures, and those were
 					// RENDERED INTO this prose: the figure template holds the
@@ -700,6 +755,14 @@ func (o *Orchestrator) applyConsolidation(
 					reason = "this pass has already rewritten the survivor for an overlapping cluster"
 				}
 				for _, slot := range clusterWritten {
+					// The pair is registered as standing here and not in the
+					// pre-pass: the pre-pass reads the verdicts, which FOLD
+					// this pair, and only the writer knows it could not apply
+					// the fold. Without it the end-of-run check folds the pair
+					// on document order, without the rewrite this branch
+					// refused to make.
+					o.keepPair(in.insights[slot].ID, final)
+					st.Kept++
 					// Out of `marks` as well as off the insight. Left in, a
 					// later cluster resolving its canonical through the chain
 					// map would resolve through a mark that no longer exists
@@ -755,17 +818,6 @@ func (o *Orchestrator) applyConsolidation(
 			}
 		}
 
-		// Every pair the PROVIDER left standing inside a cluster it decided.
-		// Omitting a member from Duplicates is an explicit judgement that it
-		// is a different finding, and without recording it the end-of-run
-		// check folds the pair anyway on document order — overriding the one
-		// decision this feature exists to take. Only for a cluster the
-		// provider decided: the community fallback's non-folds ARE the
-		// end-of-run rule, and freezing those would change the community
-		// outcome rather than preserve it.
-		if byProvider[i] {
-			o.keepStanding(docs, c, marks, &st)
-		}
 	}
 
 	if st.Folded == 0 {
@@ -843,29 +895,74 @@ func countFold(st *consolidationStats, p agentplugin.Proposal, delta int) {
 	}
 }
 
-// keepStanding records every pair inside an adjudicated cluster that the
-// provider decided to leave standing, so the end-of-run check does not fold
-// it on document order.
+// registerAdjudicatedKeeps records every pair an adjudicator decided should
+// stand, before a single mark is written.
 //
-// A pair is "left standing" when the final marks relate neither member to the
-// other: a member the verdict never named is a judgement that it states a
-// different claim, and a member whose fold this pass refused is one the
-// adjudicator could not be given. Both must survive Phase 9.
-func (o *Orchestrator) keepStanding(docs []consolidationDoc, c docCluster, marks map[string]string, st *consolidationStats) {
-	for i := 0; i < len(c.members); i++ {
-		for j := i + 1; j < len(c.members); j++ {
-			a, b := docs[c.members[i]].id, docs[c.members[j]].id
-			if marks[a] == b || marks[b] == a {
-				continue
+// Read from the VERDICTS, not from the marks, which is what lets it run first.
+// It takes two passes over them, and both are load-bearing.
+//
+// FIRST every pair any verdict explicitly folds, resolving each canonical the
+// way the writer will: a verdict naming a canonical that is already suppressed
+// is folding into the end of that chain, so the pair it folds is (resolved
+// canonical, duplicate) and not only the pair it named.
+//
+// THEN the keeps, skipping any pair in that set. Two overlapping clusters can
+// disagree about one pair — the same member folded in one and simply unnamed
+// in the other — and an explicit fold beats an omission: the fold is a
+// positive judgement, while a member a verdict did not mention may just be a
+// member it did not mention. Without that precedence the second cluster's
+// silence vetoed the first cluster's decision, which is the opposite of
+// honouring the adjudicator.
+//
+// A pair whose fold this pass goes on to REFUSE is registered at the refusal
+// instead: that one cannot be known from the verdicts, because it depends on
+// what the writer could apply.
+func (o *Orchestrator) registerAdjudicatedKeeps(
+	docs []consolidationDoc,
+	clusters []docCluster,
+	verdicts map[int]agentplugin.ConsolidationVerdict,
+	byProvider map[int]bool,
+	marks map[string]string,
+	st *consolidationStats,
+) {
+	explicit := make(map[string]struct{})
+	for i := range clusters {
+		v, ok := verdicts[i]
+		if !ok || !byProvider[i] {
+			continue
+		}
+		canonical, cycle := resolveTarget(v.CanonicalID, marks)
+		if cycle {
+			canonical = v.CanonicalID
+		}
+		for dupID := range v.Duplicates {
+			explicit[keptPairKey(v.CanonicalID, dupID)] = struct{}{}
+			explicit[keptPairKey(canonical, dupID)] = struct{}{}
+		}
+	}
+
+	for i, c := range clusters {
+		v, ok := verdicts[i]
+		if !ok || !byProvider[i] {
+			continue
+		}
+		for x := 0; x < len(c.members); x++ {
+			for y := x + 1; y < len(c.members); y++ {
+				a, b := docs[c.members[x]].id, docs[c.members[y]].id
+				if _, folded := explicit[keptPairKey(a, b)]; folded {
+					continue
+				}
+				// Both folded into the same canonical by this verdict: they
+				// are related through it, and neither can be folded into the
+				// other afterwards because both carry a mark.
+				_, aDup := v.Duplicates[a]
+				_, bDup := v.Duplicates[b]
+				if aDup && bDup {
+					continue
+				}
+				o.keepPair(a, b)
+				st.Kept++
 			}
-			// Both folded into the same survivor: they are related through it,
-			// and the end-of-run check cannot fold one into the other anyway
-			// because both already carry a mark.
-			if marks[a] != "" && marks[a] == marks[b] {
-				continue
-			}
-			o.keepPair(a, b)
-			st.Kept++
 		}
 	}
 }
