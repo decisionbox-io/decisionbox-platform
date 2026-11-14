@@ -303,16 +303,9 @@ type docCluster struct {
 // already emitted are dropped too, so a pair is not adjudicated twice.
 func buildClusters(docs []consolidationDoc, rel map[pairKey]agentplugin.Proposal) []docCluster {
 	neighbours := make(map[int][]int, len(docs))
-	proposals := make(map[int]map[agentplugin.Proposal]bool, len(docs))
-	for key, p := range rel {
+	for key := range rel {
 		neighbours[key.lo] = append(neighbours[key.lo], key.hi)
 		neighbours[key.hi] = append(neighbours[key.hi], key.lo)
-		for _, side := range []int{key.lo, key.hi} {
-			if proposals[side] == nil {
-				proposals[side] = make(map[agentplugin.Proposal]bool, 2)
-			}
-			proposals[side][p] = true
-		}
 	}
 
 	// One candidate star per seed, in seed order.
@@ -363,17 +356,23 @@ func buildClusters(docs []consolidationDoc, rel map[pairKey]agentplugin.Proposal
 		if !maximal {
 			continue
 		}
-		out = append(out, docCluster{members: ordered[i], proposal: mergeProposals(proposals, ordered[i])})
+		out = append(out, docCluster{members: ordered[i], proposal: mergeProposals(rel, ordered[i])})
 	}
 	return out
 }
 
-// mergeProposals reports which tests fired anywhere inside a cluster.
-func mergeProposals(byDoc map[int]map[agentplugin.Proposal]bool, members []int) agentplugin.Proposal {
+// mergeProposals reports which tests fired on the relations INSIDE a cluster.
+//
+// Inside, and not "on any relation touching a member": a member of a
+// containment cluster usually also has similarity relations to documents that
+// are not in it, and reading those would report every such cluster as "both"
+// — which is the one field that says whether the similarity threshold could
+// have seen this duplicate at all.
+func mergeProposals(rel map[pairKey]agentplugin.Proposal, members []int) agentplugin.Proposal {
 	cos, con := false, false
-	for _, m := range members {
-		for p := range byDoc[m] {
-			switch p {
+	for i := 0; i < len(members); i++ {
+		for j := i + 1; j < len(members); j++ {
+			switch rel[newPairKey(members[i], members[j])] {
 			case agentplugin.ProposalCosine:
 				cos = true
 			case agentplugin.ProposalContainment:

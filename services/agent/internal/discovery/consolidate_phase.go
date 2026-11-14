@@ -311,9 +311,18 @@ func (o *Orchestrator) adjudicate(ctx context.Context, docs []consolidationDoc, 
 			// answers in order. A short answer leaves the rest to the
 			// fallback; a longer one is truncated, because a verdict with no
 			// cluster has no candidate set to validate it against.
+			//
+			// An empty CanonicalID is "I did not decide this one", not a
+			// malformed verdict: a provider that answers some clusters and
+			// not others has to be able to say so without its gaps being
+			// counted as errors. Those fall through to the community rule
+			// below.
 			for i := range verdicts {
 				if i >= len(clusters) {
 					break
+				}
+				if verdicts[i].CanonicalID == "" {
+					continue
 				}
 				out[i] = verdicts[i]
 			}
@@ -444,7 +453,7 @@ func (o *Orchestrator) applyConsolidation(
 			st.RefusedShape++
 			continue
 		}
-		if v.Duplicates[final] > 0 || hasKey(v.Duplicates, final) {
+		if hasKey(v.Duplicates, final) {
 			applog.WithFields(applog.Fields{"area": st.Area, "canonical": final}).
 				Info("Consolidation: the resolved canonical is suppressed by the same verdict; cluster discarded")
 			st.RefusedShape++
@@ -455,6 +464,11 @@ func (o *Orchestrator) applyConsolidation(
 			st.RefusedShape++
 			continue
 		}
+
+		// This cluster's own folds. Gating the merge on the run-wide counter
+		// would apply a merged description to a canonical nothing was folded
+		// into, as soon as any earlier cluster had folded something.
+		clusterFolds := 0
 
 		// Sorted, so two runs over the same verdict write the same marks.
 		dupIDs := make([]string, 0, len(v.Duplicates))
@@ -511,6 +525,7 @@ func (o *Orchestrator) applyConsolidation(
 			marks[dupID] = final
 			written = append(written, dup.slot)
 			usedAsCanonical[final] = true
+			clusterFolds++
 			st.Folded++
 			switch c.proposal {
 			case agentplugin.ProposalCosine:
@@ -532,7 +547,7 @@ func (o *Orchestrator) applyConsolidation(
 		// consolidated: an earlier area's text is already recorded in that
 		// area's checkpoint, and rewriting it here would leave the record and
 		// the result disagreeing about what the finding says.
-		if merged := strings.TrimSpace(v.MergedDescription); merged != "" && docs[fi].current && st.Folded > 0 {
+		if merged := strings.TrimSpace(v.MergedDescription); merged != "" && docs[fi].current && clusterFolds > 0 {
 			plain, md := splitMarkdownDescription(merged)
 			in.insights[docs[fi].slot].Description = plain
 			in.insights[docs[fi].slot].DescriptionMd = md

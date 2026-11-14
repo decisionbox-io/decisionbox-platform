@@ -197,6 +197,12 @@ func (p *validationPhase) datasourceForSteps(steps []int, stepByID map[int]*mode
 // the per-run cap get Combined=skipped_budget_cap; if the agent is
 // nil (no aiClient or no schemaProvider), Combined=validation_disabled.
 //
+// An insight the mid-run consolidation pass marked as a restatement gets
+// Combined=skipped_duplicate and is NOT charged against `runValidated` — the
+// whole point of consolidating before validation is that the cap is spent on
+// the run's distinct findings rather than on its restatements. See
+// consolidate_phase.go.
+//
 // `runValidated` tracks how many insights have been validated so far
 // across all areas; the caller must thread it through area loops, and must
 // have already added every RESTORED marker of every area it is going to

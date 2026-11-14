@@ -350,6 +350,13 @@ func restoreArea(
 // the consolidation pass would have re-derived had the area been re-analysed,
 // and neither can produce a broken pointer. Marks inside the restored area
 // always resolve, and those are the ones that cost the validation budget.
+//
+// Clearing a mark also clears the verdict that existed only because of it.
+// `skipped_duplicate` is stamped BY the mark — it says "the canonical carries
+// this claim's verdict" — so a finding that is visible again with that stamp
+// still standing would render as a restatement of nothing. Dropping it leaves
+// the finding with no verdict, which is what an insight that was never checked
+// has, and which the recommender's filter already fails open on.
 func repointRestoredMarks(insights []models.Insight, freshByStored map[string]string, areaID string) {
 	for i := range insights {
 		stored := insights[i].DuplicateOf
@@ -365,6 +372,9 @@ func repointRestoredMarks(insights []models.Insight, freshByStored map[string]st
 		}).Info("restore: a consolidation mark pointed at a row this attempt does not hold; the finding is visible again")
 		insights[i].DuplicateOf = ""
 		insights[i].SimilarityScore = 0
+		if v := insights[i].Validation; v != nil && v.Combined == valmodels.StatusSkippedDuplicate {
+			insights[i].Validation = nil
+		}
 	}
 }
 

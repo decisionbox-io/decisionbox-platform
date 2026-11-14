@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -781,7 +782,10 @@ func TestRepointRestoredMarks(t *testing.T) {
 	insights := []models.Insight{
 		{ID: "fresh-a", Name: "canonical"},
 		{ID: "fresh-b", Name: "restatement", DuplicateOf: "stored-a", SimilarityScore: 0.93},
-		{ID: "fresh-c", Name: "orphan", DuplicateOf: "gone", SimilarityScore: 0.91},
+		{ID: "fresh-c", Name: "orphan", DuplicateOf: "gone", SimilarityScore: 0.91,
+			Validation: &valmodels.InsightValidation{Combined: valmodels.StatusSkippedDuplicate}},
+		{ID: "fresh-d", Name: "checked and also orphaned", DuplicateOf: "gone", SimilarityScore: 0.9,
+			Validation: &valmodels.InsightValidation{Combined: valmodels.StatusConfirmed}},
 	}
 	repointRestoredMarks(insights, map[string]string{"stored-a": "fresh-a"}, "stock")
 
@@ -793,6 +797,15 @@ func TestRepointRestoredMarks(t *testing.T) {
 	}
 	if insights[2].DuplicateOf != "" || insights[2].SimilarityScore != 0 {
 		t.Errorf("unresolvable mark = {%q, %v}, want cleared", insights[2].DuplicateOf, insights[2].SimilarityScore)
+	}
+	// And the verdict that existed only because of the mark goes with it: a
+	// visible finding stamped "Restated" is a restatement of nothing.
+	if insights[2].Validation != nil {
+		t.Errorf("validation = %+v, want cleared with the mark", insights[2].Validation)
+	}
+	// A verdict the verifier actually produced is NOT touched.
+	if insights[3].Validation == nil || insights[3].Validation.Combined != valmodels.StatusConfirmed {
+		t.Errorf("a real verdict was cleared: %+v", insights[3].Validation)
 	}
 	if insights[0].DuplicateOf != "" {
 		t.Errorf("an unmarked insight was touched: %q", insights[0].DuplicateOf)
@@ -859,5 +872,99 @@ func TestAreaScopeText(t *testing.T) {
 
 	if got := areaScopeText(area, "no boundary block here"); got != "stock health across the chain" {
 		t.Errorf("scope with no block = %q", got)
+	}
+}
+
+// A merged description must not land on a canonical that nothing was folded
+// into. Gating it on the run-wide fold counter applied one cluster's rewrite
+// to the next cluster's canonical as soon as any earlier cluster had folded
+// something.
+func TestConsolidateArea_MergedDescriptionNeedsAFoldInItsOwnCluster(t *testing.T) {
+	a := insight("a", "stock", "claim a", "body a", 400)
+	b := insight("b", "stock", "claim b restated", "body a again", 300)
+	c := insight("c", "stock", "claim c", "body c", 200)
+	d := insight("d", "stock", "claim d", "body d", 100)
+
+	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		out := make([]agentplugin.ConsolidationVerdict, len(cl))
+		for i, cluster := range cl {
+			ids := make([]string, 0, 2)
+			for _, cand := range cluster.Candidates {
+				ids = append(ids, cand.ID)
+			}
+			switch {
+			case slices.Contains(ids, "a") && slices.Contains(ids, "b"):
+				out[i] = agentplugin.ConsolidationVerdict{
+					CanonicalID: "a", Duplicates: map[string]float64{"b": 0.99},
+					MergedDescription: "a, with b's detail",
+				}
+			case slices.Contains(ids, "c") && slices.Contains(ids, "d"):
+				// Nothing folded, but a rewrite offered anyway.
+				out[i] = agentplugin.ConsolidationVerdict{
+					CanonicalID: "c", MergedDescription: "c, rewritten for no reason",
+				}
+			}
+		}
+		return out, nil
+	}})
+
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 1, embText(c): 60, embText(d): 61,
+	}}}
+	current := []models.Insight{a, b, c, d}
+	if st := o.consolidateArea(context.Background(), areaInput("stock", current, nil)); st.Folded != 1 {
+		t.Fatalf("stats = %+v, want exactly one fold", st)
+	}
+	if !strings.Contains(current[0].Description, "b's detail") {
+		t.Errorf("a.description = %q; the cluster that DID fold must get its merge", current[0].Description)
+	}
+	if strings.Contains(current[2].Description, "rewritten") {
+		t.Errorf("c.description = %q; nothing was folded into c, so its text must be untouched", current[2].Description)
+	}
+}
+
+// Which test proposed a cluster is read from the relations INSIDE it.
+//
+// Two overlapping maximal stars are what tells the two readings apart. Here
+// a-b and b-c are containment and only c-d is a similarity pair, so the
+// {a,b,c} cluster was proposed by containment ALONE — but c also sits in
+// {b,c,d}, and reading every relation that touches a member reported {a,b,c}
+// as "both". That field is the one thing that says whether the similarity
+// threshold could have seen this duplicate at all, so a containment-only
+// cluster reported as "both" is the measurement reading as its own opposite.
+func TestBuildClusters_ProposalComesFromTheClustersOwnRelations(t *testing.T) {
+	// Angles: only c and d are inside the 0.88 floor of each other.
+	docs := []consolidationDoc{
+		doc(0, "a", 0, true, "111,222 and 333,444", ""),
+		doc(1, "b", 30, true, "555,666 and 777,888", "ref 111,222 and 333,444"),
+		doc(2, "c", 60, true, "claim c", "ref 555,666 and 777,888"),
+		doc(3, "d", 61, true, "claim d", ""),
+	}
+	rel := proposePairs(docs, 0.88)
+	if got := rel[newPairKey(0, 1)]; got != agentplugin.ProposalContainment {
+		t.Fatalf("a-b = %q, want containment (fixture broken)", got)
+	}
+	if got := rel[newPairKey(1, 2)]; got != agentplugin.ProposalContainment {
+		t.Fatalf("b-c = %q, want containment (fixture broken)", got)
+	}
+	if got := rel[newPairKey(2, 3)]; got != agentplugin.ProposalCosine {
+		t.Fatalf("c-d = %q, want cosine (fixture broken)", got)
+	}
+	if len(rel) != 3 {
+		t.Fatalf("relations = %v, want exactly the three (fixture broken)", rel)
+	}
+
+	byMembers := map[string]agentplugin.Proposal{}
+	for _, cl := range buildClusters(docs, rel) {
+		byMembers[fmt.Sprint(cl.members)] = cl.proposal
+	}
+	if len(byMembers) != 2 {
+		t.Fatalf("clusters = %v, want the two overlapping stars", byMembers)
+	}
+	if got := byMembers["[0 1 2]"]; got != agentplugin.ProposalContainment {
+		t.Errorf("{a,b,c} proposal = %q, want containment — c's similarity pair with d is not in this cluster", got)
+	}
+	if got := byMembers["[1 2 3]"]; got != agentplugin.ProposalBoth {
+		t.Errorf("{b,c,d} proposal = %q, want both", got)
 	}
 }
