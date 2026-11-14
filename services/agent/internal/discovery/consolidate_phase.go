@@ -483,7 +483,15 @@ type communityFold struct {
 // one global pass: markDuplicates' same-run rule over the documents in hand —
 // document order, cosine at the configured floor, the magnitude guard and the
 // canonical-chain re-check, all of it through the one shared function.
-func communityFolds(docs []consolidationDoc, threshold float64) map[string]communityFold {
+// The chain is built only from folds this pass could actually WRITE.
+//
+// Simulating a fold that cannot be written is how the chain comes to describe
+// a run nobody will see: with A and B kept apart by an adjudicator, recording
+// B -> A anyway made a later document's chain re-check resolve against A — a
+// canonical the reader is NOT being sent to — so a document that plainly
+// restates the visible B was left standing and spent a validation check,
+// before the end-of-run rule folded it into B regardless.
+func (o *Orchestrator) communityFolds(docs []consolidationDoc, threshold float64) map[string]communityFold {
 	byID := make(map[string]int, len(docs))
 	for i := range docs {
 		byID[docs[i].id] = i
@@ -508,13 +516,22 @@ func communityFolds(docs []consolidationDoc, threshold float64) map[string]commu
 
 	out := make(map[string]communityFold, len(docs))
 	for i := range docs {
-		if docs[i].duplicateOf != "" {
+		// A document this pass cannot mark — one from an earlier area, or
+		// one already folded — contributes nothing to the chain either: its
+		// mark would never be written, so a later document must not resolve
+		// through it.
+		if docs[i].duplicateOf != "" || !docs[i].current {
 			continue
 		}
 		for j := 0; j < i; j++ {
 			target, score, ok := cosineFoldTarget(
 				docs[i].foldSubject, docs[j].foldSubject, threshold, canonical, lookup, "Consolidation: ")
 			if !ok {
+				continue
+			}
+			if o.adjudicatedKeep(docs[i].id, target) {
+				// Kept apart by an adjudicator. Not a fold, and so not a
+				// link in the chain.
 				continue
 			}
 			out[docs[i].id] = communityFold{target: target, score: score}
@@ -754,7 +771,13 @@ func (o *Orchestrator) applyConsolidation(
 		// members without it is exactly how a fold loses a caveat, which is
 		// the failure this pass exists to stop making. Two reasons it cannot
 		// be applied, and they get the same answer.
-		if merged := strings.TrimSpace(v.MergedDescription); merged != "" && clusterFolds > 0 {
+		// Not gated on clusterFolds: when EVERY proposed fold is refused there
+		// is nothing to revert, and the members the verdict named still carry
+		// detail the survivor lacks — so they still have to be protected from
+		// being folded sideways into each other by the community pass, which
+		// is what happened. The protection is the point; the revert is only
+		// the part that has something to undo.
+		if merged := strings.TrimSpace(v.MergedDescription); merged != "" {
 			switch {
 			case !docs[fi].current, mergedCanonicals[final], clusterRefusedDonor,
 				len(in.insights[docs[fi].slot].Figures) > 0:
@@ -796,27 +819,26 @@ func (o *Orchestrator) applyConsolidation(
 				default:
 					reason = "this pass has already rewritten the survivor for an overlapping cluster"
 				}
-				for _, slot := range clusterWritten {
-					// Registered as standing here and not in the pre-pass:
-					// the pre-pass reads the verdicts, which FOLD this pair,
-					// and only the writer knows it could not apply the fold.
-					//
-					// Against every other member of the cluster, not only the
-					// survivor the verdict named. The reason this branch
-					// refuses is that the member carries detail the survivor
-					// lacks — and that is just as true of any OTHER member it
-					// might be folded into instead, by the community rule or
-					// by the end-of-run check. Registering the named pair
-					// alone left it to be folded sideways into a neighbour,
-					// which loses the same caveat through a different door.
-					reverted := in.insights[slot].ID
+				// Every member this verdict named as a duplicate, written or
+				// not, protected against every other member of the cluster.
+				// Named-but-refused is the case that has nothing to revert and
+				// needed protecting just as much.
+				for _, dupID := range dupIDs {
 					for _, m := range c.members {
-						if docs[m].id == reverted {
+						if docs[m].id == dupID {
 							continue
 						}
-						o.keepPair(reverted, docs[m].id)
+						o.keepPair(dupID, docs[m].id)
 						st.Kept++
 					}
+				}
+				for _, slot := range clusterWritten {
+					// Registered at the refusal and not in the pre-pass: the
+					// pre-pass reads the verdicts, which FOLD these pairs, and
+					// only the writer knows it could not apply the fold.
+					//
+					// The keeps for this member are registered above, with
+					// every other named duplicate's.
 					// Out of `marks` as well as off the insight. Left in, a
 					// later cluster resolving its canonical through the chain
 					// map would resolve through a mark that no longer exists
@@ -844,6 +866,14 @@ func (o *Orchestrator) applyConsolidation(
 				st.RefusedUnmergeable++
 				applog.WithFields(applog.Fields{"area": st.Area, "canonical": final, "reason": reason}).
 					Info("Consolidation: the survivor cannot be rewritten; leaving the findings standing")
+			case clusterFolds == 0:
+				// A rewrite with nothing folded into the survivor. There is
+				// nothing to carry across and nothing to protect — the
+				// pre-pass has already registered this verdict's pairs as
+				// standing — so an unnecessary rewrite would lose detail
+				// rather than add it.
+				applog.WithFields(applog.Fields{"area": st.Area, "canonical": final}).
+					Info("Consolidation: a rewrite was offered with nothing folded into the survivor; left alone")
 			default:
 				plain, md := splitMarkdownDescription(merged)
 				in.insights[docs[fi].slot].Description = plain
@@ -878,7 +908,7 @@ func (o *Orchestrator) applyConsolidation(
 	// One global pass in document order, so the outcome is the end-of-run
 	// check's own and does not depend on which overlapping star came first.
 	// See communityFolds.
-	for _, fold := range communityFoldOrder(docs, communityFolds(docs, threshold)) {
+	for _, fold := range communityFoldOrder(docs, o.communityFolds(docs, threshold)) {
 		dup := docs[fold.at]
 		if !dup.current || dup.duplicateOf != "" || marks[dup.id] != "" || dependants[dup.id] > 0 {
 			continue

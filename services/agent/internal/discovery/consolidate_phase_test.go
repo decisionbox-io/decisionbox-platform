@@ -420,8 +420,15 @@ func TestConsolidateArea_RefusesAVerdictThatSuppressesItsOwnCanonical(t *testing
 	current := []models.Insight{a, b, c}
 	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
 
-	if st.Folded != 0 || st.RefusedShape == 0 {
-		t.Fatalf("stats = %+v, want the cluster discarded", st)
+	if st.RefusedShape == 0 {
+		t.Fatalf("stats = %+v, want the malformed verdict discarded", st)
+	}
+	// b must not be folded into the canonical the verdict named, which the
+	// verdict itself suppressed. The community rule may then make its own
+	// decision about these documents — that is the documented fallback — so
+	// what this asserts is that nothing CHAINS, below.
+	if current[1].DuplicateOf == "b" {
+		t.Errorf("b.duplicate_of = %q, pointing at itself", current[1].DuplicateOf)
 	}
 	byID := map[string]string{}
 	for _, ins := range current {
@@ -1603,8 +1610,11 @@ func TestConsolidateArea_AFallbackDoesNotOverrideAProviderKeep(t *testing.T) {
 	if current[2].DuplicateOf != "" {
 		t.Errorf("c.duplicate_of = %q; a fallback verdict overrode the provider's keep", current[2].DuplicateOf)
 	}
-	if st.RefusedKept == 0 {
-		t.Errorf("stats = %+v, want the refusal counted", st)
+	// Asserted as an OUTCOME, not as a refusal counter: the community pass
+	// consults the keeps while it builds its chain, so a kept pair is never
+	// proposed in the first place rather than proposed and refused.
+	if current[1].DuplicateOf == "c" || current[2].DuplicateOf == "b" {
+		t.Errorf("b/c = (%q, %q); the provider kept them apart", current[1].DuplicateOf, current[2].DuplicateOf)
 	}
 }
 
@@ -1658,9 +1668,10 @@ func TestConsolidateArea_AProviderKeepBeatsAnEarlierFallbackFold(t *testing.T) {
 	if byID["c"].DuplicateOf != "" {
 		t.Errorf("c.duplicate_of = %q; the fallback for the first cluster folded a pair the provider kept", byID["c"].DuplicateOf)
 	}
-	if st.RefusedKept == 0 {
-		t.Errorf("stats = %+v, want the fallback's fold refused", st)
+	if byID["b"].DuplicateOf == "c" {
+		t.Errorf("b.duplicate_of = %q; the provider kept b and c apart", byID["b"].DuplicateOf)
 	}
+	_ = st
 }
 
 // Two overlapping verdicts can disagree about one pair — folded in one, simply
@@ -1758,7 +1769,8 @@ func TestCommunityFolds_IsTheEndOfRunRuleInDocumentOrder(t *testing.T) {
 		doc(2, "c", 2, true, "claim c", ""),
 		doc(3, "d", 90, true, "claim d", ""),
 	}
-	folds := communityFolds(docs, 0.88)
+	o := &Orchestrator{}
+	folds := o.communityFolds(docs, 0.88)
 
 	if folds["b"].target != "a" || folds["c"].target != "a" {
 		t.Errorf("folds = %+v; both later members must point at the earliest, not at each other", folds)
@@ -1777,7 +1789,7 @@ func TestCommunityFolds_IsTheEndOfRunRuleInDocumentOrder(t *testing.T) {
 		doc(1, "y", 25, true, "claim y", ""),
 		doc(2, "z", 50, true, "claim z", ""),
 	}
-	cf := communityFolds(chain, 0.88)
+	cf := o.communityFolds(chain, 0.88)
 	if cf["y"].target != "x" {
 		t.Errorf("y folded into %q, want x", cf["y"].target)
 	}
@@ -1793,7 +1805,7 @@ func TestCommunityFolds_IsTheEndOfRunRuleInDocumentOrder(t *testing.T) {
 		doc(2, "r", 2, true, "claim r", ""),
 	}
 	seeded[1].duplicateOf = "p"
-	sf := communityFolds(seeded, 0.88)
+	sf := o.communityFolds(seeded, 0.88)
 	if _, ok := sf["q"]; ok {
 		t.Error("an already-folded document must not be re-decided")
 	}
@@ -1818,11 +1830,11 @@ func TestConsolidateArea_OverlappingStarsStillFoldInDocumentOrder(t *testing.T) 
 	d := insight("d", "stock", "north once more: 111,222 units, 33.3", "slice d", 200)
 	e := insight("e", "stock", "the whole total again", table, 100)
 
-	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+	oc := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
 		embText(a): 0, embText(b): 90, embText(c): 91, embText(d): 92, embText(e): 180,
 	}}}
 	current := []models.Insight{a, b, c, d, e}
-	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+	st := oc.consolidateArea(context.Background(), areaInput("stock", current, nil))
 
 	byID := map[string]models.Insight{}
 	for _, ins := range current {
@@ -1939,5 +1951,111 @@ func TestConsolidateArea_AnAlreadyFoldedDonorRefusesTheRewrite(t *testing.T) {
 	}
 	if st.Folded != 0 {
 		t.Errorf("stats = %+v, want no fold", st)
+	}
+}
+
+// The community chain is built only from folds this pass could actually WRITE.
+// Simulating a fold a keep forbids made a later document's chain re-check
+// resolve against a canonical the reader is NOT being sent to — so a document
+// that plainly restates the visible middle finding was left standing and spent
+// a validation check, before the end-of-run rule folded it there anyway.
+func TestCommunityFolds_DoesNotChainThroughAForbiddenFold(t *testing.T) {
+	// 0°/25°/50°: neighbours at 0.906, ends at 0.643.
+	docs := []consolidationDoc{
+		doc(0, "a", 0, true, "claim a", ""),
+		doc(1, "b", 25, true, "claim b", ""),
+		doc(2, "c", 50, true, "claim c", ""),
+	}
+
+	// With nothing kept, b folds into a and c then fails the re-check
+	// against a — which is correct, because a is where the mark points.
+	plain := &Orchestrator{}
+	if f := plain.communityFolds(docs, 0.88); f["b"].target != "a" {
+		t.Fatalf("folds = %+v, want b into a (fixture broken)", f)
+	} else if _, ok := f["c"]; ok {
+		t.Fatalf("folds = %+v; c resembles b but not a (fixture broken)", f)
+	}
+
+	// With a and b kept apart, b is NOT folded — so b stays visible, and c
+	// plainly restates it.
+	kept := &Orchestrator{}
+	kept.keepPair("a", "b")
+	folds := kept.communityFolds(docs, 0.88)
+	if _, ok := folds["b"]; ok {
+		t.Errorf("folds = %+v; a and b were kept apart", folds)
+	}
+	if folds["c"].target != "b" {
+		t.Errorf("c folded into %q, want b — the visible finding it restates", folds["c"].target)
+	}
+}
+
+// A document this pass cannot mark contributes nothing to the chain either:
+// its mark would never be written, so a later document must not resolve
+// through it.
+func TestCommunityFolds_IgnoresDocumentsItCannotMark(t *testing.T) {
+	docs := []consolidationDoc{
+		doc(0, "earlier", 0, false, "claim a", ""),
+		doc(1, "b", 25, true, "claim b", ""),
+		doc(2, "c", 50, true, "claim c", ""),
+	}
+	docs[0].current = false
+
+	o := &Orchestrator{}
+	folds := o.communityFolds(docs, 0.88)
+	if _, ok := folds["earlier"]; ok {
+		t.Errorf("folds = %+v; an earlier area's finding cannot be marked by this pass", folds)
+	}
+	// b may still fold INTO it: an earlier area's finding is a legitimate
+	// canonical.
+	if folds["b"].target != "earlier" {
+		t.Errorf("b folded into %q, want earlier", folds["b"].target)
+	}
+}
+
+// When EVERY proposed fold is refused there is nothing to revert — and the
+// members the verdict named still carry detail the survivor lacks, so they
+// still have to be protected from being folded sideways into each other by
+// the community pass.
+func TestConsolidateArea_RefusedMergeDonorsAreProtectedWithNothingToRevert(t *testing.T) {
+	// a is the survivor the verdict names. It joins the star because ITS
+	// headline figures appear in b's and c's bodies — containment the other
+	// way round — so neither b nor c is contained in a, and with a 90° gap
+	// neither fold survives the re-check either.
+	a := insight("a", "stock", "the totals are 111,222 and 444,555", "body a", 400)
+	b := insight("b", "stock", "claim b", "ref 111,222 and 444,555", 300)
+	c := insight("c", "stock", "claim c carries the caveat", "ref 111,222 and 444,555 again", 200)
+
+	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		return []agentplugin.ConsolidationVerdict{{
+			CanonicalID:       "a",
+			Duplicates:        map[string]float64{"b": 0.9, "c": 0.9},
+			MergedDescription: "a, carrying b's and c's detail",
+		}}, nil
+	}})
+
+	// b and c are a similarity pair; neither is near a.
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 90, embText(c): 91,
+	}}}
+	current := []models.Insight{a, b, c}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if st.Clusters != 1 {
+		t.Fatalf("clusters = %d (%+v), want one star of three (fixture broken)", st.Clusters, st)
+	}
+	if st.RefusedRecheck != 2 {
+		t.Fatalf("stats = %+v, want both proposed folds refused by the re-check (fixture broken)", st)
+	}
+	if st.Folded != 0 {
+		t.Fatalf("stats = %+v, want nothing folded", st)
+	}
+	if current[2].DuplicateOf != "" {
+		t.Errorf("c.duplicate_of = %q; it was folded sideways into b, losing the caveat the rewrite was for", current[2].DuplicateOf)
+	}
+	if !o.adjudicatedKeep("b", "c") {
+		t.Error("the refused donors were not protected against each other")
+	}
+	if strings.Contains(current[0].Description, "carrying") {
+		t.Errorf("a.description = %q; the rewrite was applied with nothing folded", current[0].Description)
 	}
 }
