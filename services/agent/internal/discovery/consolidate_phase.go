@@ -162,7 +162,7 @@ func (o *Orchestrator) consolidateArea(ctx context.Context, in consolidateAreaIn
 	}
 
 	verdicts, byProvider, decider := o.adjudicate(ctx, docs, adjudicable, threshold)
-	communityVerdicts(docs, clusters, len(adjudicable), threshold, verdicts)
+	communityVerdictsFrom(docs, clusters, len(adjudicable), threshold, verdicts)
 	st.Decider = decider
 	st = o.applyConsolidation(in, docs, clusters, verdicts, byProvider, threshold, st)
 	st.DurationMs = time.Since(started).Milliseconds()
@@ -374,8 +374,8 @@ func sectionAfterHeading(text, heading string) string {
 // holds between the two. A containment-only cluster is left standing by the
 // fallback, which is what keeps a deployment with no provider on exactly the
 // outcome it has today — only the moment the decision is made moves.
-func (o *Orchestrator) adjudicate(ctx context.Context, docs []consolidationDoc, clusters []docCluster, threshold float64) (map[int]agentplugin.ConsolidationVerdict, map[int]bool, string) {
-	out := make(map[int]agentplugin.ConsolidationVerdict, len(clusters))
+func (o *Orchestrator) adjudicate(ctx context.Context, docs []consolidationDoc, clusters []docCluster, threshold float64) (map[int][]agentplugin.ConsolidationVerdict, map[int]bool, string) {
+	out := make(map[int][]agentplugin.ConsolidationVerdict, len(clusters))
 	// Which verdicts came from the PROVIDER rather than the fallback. It
 	// decides whether a member the verdict left out is a judgement to honour
 	// or simply the community rule declining to fold — see keepStanding.
@@ -411,7 +411,7 @@ func (o *Orchestrator) adjudicate(ctx context.Context, docs []consolidationDoc, 
 				if verdicts[i].CanonicalID == "" {
 					continue
 				}
-				out[i] = verdicts[i]
+				out[i] = []agentplugin.ConsolidationVerdict{verdicts[i]}
 				byProvider[i] = true
 			}
 		}
@@ -421,17 +421,17 @@ func (o *Orchestrator) adjudicate(ctx context.Context, docs []consolidationDoc, 
 		if _, decided := out[i]; decided {
 			continue
 		}
-		out[i] = communityVerdict(docs, c, threshold)
+		out[i] = communityVerdicts(docs, c, threshold)
 	}
 	return out, byProvider, decider
 }
 
-// communityVerdicts decides every cluster by the community rule. Used for the
-// clusters past the adjudication bound, which are not dropped — they get the
-// decision the product makes today.
-func communityVerdicts(docs []consolidationDoc, clusters []docCluster, from int, threshold float64, out map[int]agentplugin.ConsolidationVerdict) {
+// communityVerdictsFrom decides every cluster from `from` onward by the
+// community rule. Used for the clusters past the adjudication bound, which are
+// not dropped — they get the decision the product makes today.
+func communityVerdictsFrom(docs []consolidationDoc, clusters []docCluster, from int, threshold float64, out map[int][]agentplugin.ConsolidationVerdict) {
 	for i := from; i < len(clusters); i++ {
-		out[i] = communityVerdict(docs, clusters[i], threshold)
+		out[i] = communityVerdicts(docs, clusters[i], threshold)
 	}
 }
 
@@ -489,32 +489,53 @@ func anyMap(in map[string]interface{}) map[string]any {
 //
 // Cosine only. Containment is a proposal an adjudicator rules on, never a
 // community rule — see reverifyFold.
-func communityVerdict(docs []consolidationDoc, c docCluster, threshold float64) agentplugin.ConsolidationVerdict {
+func communityVerdicts(docs []consolidationDoc, c docCluster, threshold float64) []agentplugin.ConsolidationVerdict {
+	// EVERY group, not just the first. One maximal star can hold two
+	// independent similarity pairs joined only through a third finding that
+	// contains both — and buildClusters removed the smaller stars as subsets,
+	// so a rule that stopped after the first group left the second with no
+	// pre-validation decision at all. Both its members then spent validation
+	// budget and the end-of-run check folded one into the other afterwards
+	// anyway, which is the exact waste this phase exists to stop.
+	assigned := make(map[int]bool, len(c.members))
+	out := make([]agentplugin.ConsolidationVerdict, 0, 1)
 	for i, m := range c.members {
+		if assigned[i] {
+			continue
+		}
 		dupes := make(map[string]float64, len(c.members))
-		for _, later := range c.members[i+1:] {
+		for j, later := range c.members[i+1:] {
+			if assigned[i+1+j] {
+				continue
+			}
 			if score, ok := cosineFold(docs[later].foldSubject, docs[m].foldSubject, threshold); ok {
 				dupes[docs[later].id] = score
+				assigned[i+1+j] = true
 			}
 		}
-		if len(dupes) > 0 {
-			return agentplugin.ConsolidationVerdict{
-				CanonicalID: docs[m].id,
-				Duplicates:  dupes,
-				Reason:      "community rule: earliest member of a similarity pair",
-			}
+		if len(dupes) == 0 {
+			continue
 		}
+		assigned[i] = true
+		out = append(out, agentplugin.ConsolidationVerdict{
+			CanonicalID: docs[m].id,
+			Duplicates:  dupes,
+			Reason:      "community rule: earliest member of a similarity pair",
+		})
+	}
+	if len(out) > 0 {
+		return out
 	}
 	// No similarity pair anywhere in the cluster: nothing for the community
 	// rule to decide. The earliest member is still named so the cluster reads
 	// as adjudicated rather than skipped.
 	if len(c.members) == 0 {
-		return agentplugin.ConsolidationVerdict{}
+		return nil
 	}
-	return agentplugin.ConsolidationVerdict{
+	return []agentplugin.ConsolidationVerdict{{
 		CanonicalID: docs[c.members[0]].id,
 		Reason:      "community rule: no similarity pair in this cluster",
-	}
+	}}
 }
 
 // applyConsolidation writes the verdicts the guards allow, then proves the
@@ -524,7 +545,7 @@ func (o *Orchestrator) applyConsolidation(
 	in consolidateAreaInput,
 	docs []consolidationDoc,
 	clusters []docCluster,
-	verdicts map[int]agentplugin.ConsolidationVerdict,
+	verdicts map[int][]agentplugin.ConsolidationVerdict,
 	byProvider map[int]bool,
 	threshold float64,
 	st consolidationStats,
@@ -569,255 +590,263 @@ func (o *Orchestrator) applyConsolidation(
 	written := make([]int, 0, len(docs))
 
 	for i, c := range clusters {
-		v, ok := verdicts[i]
-		if !ok {
-			continue
-		}
 		member := make(map[string]bool, len(c.members))
 		for _, m := range c.members {
 			member[docs[m].id] = true
 		}
-		if !member[v.CanonicalID] {
-			applog.WithFields(applog.Fields{"area": st.Area, "canonical": v.CanonicalID}).
-				Info("Consolidation: a verdict named a canonical outside its cluster; discarded")
-			st.RefusedShape++
-			continue
-		}
-		// Resolve the canonical through the marks already standing. A
-		// canonical that is itself suppressed — by this proposal or by a
-		// previous pass — is a row the reader cannot be sent to, and pointing
-		// at it is how a mutual cycle gets built.
-		final, cycle := resolveTarget(v.CanonicalID, marks)
-		if cycle {
-			st.RefusedShape++
-			continue
-		}
-		if hasKey(v.Duplicates, final) {
-			applog.WithFields(applog.Fields{"area": st.Area, "canonical": final}).
-				Info("Consolidation: the resolved canonical is suppressed by the same verdict; cluster discarded")
-			st.RefusedShape++
-			continue
-		}
-		fi, inHand := byID[final]
-		if !inHand {
-			st.RefusedShape++
-			continue
-		}
-
-		// This cluster's own folds. Gating the merge on the run-wide counter
-		// would apply a merged description to a canonical nothing was folded
-		// into, as soon as any earlier cluster had folded something.
-		clusterFolds := 0
-		clusterWritten := make([]int, 0, len(c.members))
-		// Whether any member this verdict named as a duplicate was NOT
-		// folded. It matters only when a rewrite is also asked for: the
-		// rewrite may incorporate detail from a donor that was refused, and
-		// applying it would then credit the survivor with evidence it does
-		// not cite. See the merge switch below.
-		clusterRefusedDonor := false
-
-		// Sorted, so two runs over the same verdict write the same marks.
-		dupIDs := make([]string, 0, len(v.Duplicates))
-		for id := range v.Duplicates {
-			dupIDs = append(dupIDs, id)
-		}
-		sort.Strings(dupIDs)
-
-		for _, dupID := range dupIDs {
-			if !member[dupID] || dupID == final {
+		// One cluster can carry several verdicts: the community rule emits
+		// one per similarity group it finds inside the star, because a
+		// maximal star can hold two independent groups joined only through a
+		// finding that contains both. A provider answers with exactly one.
+		for _, v := range verdicts[i] {
+			if !member[v.CanonicalID] {
+				applog.WithFields(applog.Fields{"area": st.Area, "canonical": v.CanonicalID}).
+					Info("Consolidation: a verdict named a canonical outside its cluster; discarded")
 				st.RefusedShape++
-				clusterRefusedDonor = true
 				continue
 			}
-			di, inHand := byID[dupID]
+			// Resolve the canonical through the marks already standing. A
+			// canonical that is itself suppressed — by this proposal or by a
+			// previous pass — is a row the reader cannot be sent to, and pointing
+			// at it is how a mutual cycle gets built.
+			final, cycle := resolveTarget(v.CanonicalID, marks)
+			if cycle {
+				st.RefusedShape++
+				continue
+			}
+			if hasKey(v.Duplicates, final) {
+				applog.WithFields(applog.Fields{"area": st.Area, "canonical": final}).
+					Info("Consolidation: the resolved canonical is suppressed by the same verdict; cluster discarded")
+				st.RefusedShape++
+				continue
+			}
+			fi, inHand := byID[final]
 			if !inHand {
 				st.RefusedShape++
-				clusterRefusedDonor = true
-				continue
-			}
-			dup := docs[di]
-			if dup.duplicateOf != "" || marks[dupID] != "" {
-				// Already folded, by a previous area's pass or by an earlier
-				// cluster of this one. Not re-decided: that mark was made with
-				// the same judgement and re-pointing it could send the reader
-				// somewhere else.
-				continue
-			}
-			if usedAsCanonical[dupID] {
-				applog.WithFields(applog.Fields{"area": st.Area, "id": dupID}).
-					Info("Consolidation: refusing to suppress a document this pass already made canonical")
-				st.RefusedShape++
-				clusterRefusedDonor = true
-				continue
-			}
-			if !dup.current {
-				// An earlier area's finding. Its verdict is already paid for
-				// and its mark has nowhere durable to live — the area's
-				// checkpoint is written and its insight ids are reminted on
-				// restore — so suppressing it here would not survive a resume.
-				// Left standing, and remembered so the end-of-run check does
-				// not fold it the other way round on this run.
-				o.keepPair(dupID, final)
-				st.RefusedNotMine++
-				clusterRefusedDonor = true
-				continue
-			}
-			// The adjudicator decided this pair stands, in some other cluster
-			// of this same pass. A fallback verdict for an overlapping
-			// cluster must not override it: the clusters are stars and they
-			// share members, so the same pair can appear in one cluster the
-			// provider answered and another it declined — and the end-of-run
-			// check cannot correct it afterwards, because it skips a document
-			// that already carries a mark.
-			if o.adjudicatedKeep(dupID, final) {
-				applog.WithFields(applog.Fields{"area": st.Area, "id": dupID, "canonical": final}).
-					Info("Consolidation: this pair was already adjudicated and left standing; not folding it in another cluster")
-				st.RefusedKept++
-				clusterRefusedDonor = true
-				continue
-			}
-			score, held := reverifyFold(dup, docs[fi], threshold, byProvider[i])
-			if !held {
-				applog.WithFields(applog.Fields{"area": st.Area, "id": dupID, "canonical": final}).
-					Info("Consolidation: the claim does not hold against the resolved canonical; not folded")
-				st.RefusedRecheck++
-				clusterRefusedDonor = true
 				continue
 			}
 
-			in.insights[dup.slot].DuplicateOf = final
-			in.insights[dup.slot].SimilarityScore = score
-			marks[dupID] = final
-			written = append(written, dup.slot)
-			clusterWritten = append(clusterWritten, dup.slot)
-			usedAsCanonical[final] = true
-			clusterFolds++
-			st.Folded++
-			countFold(&st, c.proposal, 1)
-			applog.WithFields(applog.Fields{
-				"area": st.Area, "id": dupID, "duplicate_of": final, "score": score,
-				"proposal": string(c.proposal), "decider": st.Decider, "reason": v.Reason,
-			}).Info("Consolidation: folded")
-		}
+			// This cluster's own folds. Gating the merge on the run-wide counter
+			// would apply a merged description to a canonical nothing was folded
+			// into, as soon as any earlier cluster had folded something.
+			clusterFolds := 0
+			clusterWritten := make([]int, 0, len(c.members))
+			// Whether any member this verdict named as a duplicate was NOT
+			// folded. It matters only when a rewrite is also asked for: the
+			// rewrite may incorporate detail from a donor that was refused, and
+			// applying it would then credit the survivor with evidence it does
+			// not cite. See the merge switch below.
+			clusterRefusedDonor := false
 
-		// The detail a folded member added, kept on the survivor rather than
-		// discarded with it — a fold decides which caveats live, so it is not
-		// quality-neutral. Only onto a canonical in the area being
-		// consolidated: an earlier area's text is already recorded in that
-		// area's checkpoint, and rewriting it here would leave the record and
-		// the result disagreeing about what the finding says.
-		// A rewrite is asked for precisely when the folded members carry
-		// something the survivor does not, so a rewrite that cannot be
-		// applied means the folds cannot be applied either: suppressing those
-		// members without it is exactly how a fold loses a caveat, which is
-		// the failure this pass exists to stop making. Two reasons it cannot
-		// be applied, and they get the same answer.
-		if merged := strings.TrimSpace(v.MergedDescription); merged != "" && clusterFolds > 0 {
-			switch {
-			case !docs[fi].current, mergedCanonicals[final], clusterRefusedDonor,
-				len(in.insights[docs[fi].slot].Figures) > 0:
-				// Either the survivor belongs to an area the run has already
-				// finished — its text is recorded in that area's checkpoint,
-				// and rewriting it here would leave the record and the result
-				// disagreeing — or this pass has already rewritten it for an
-				// overlapping cluster, so this rewrite was written against
-				// text that has since changed and applying it would erase
-				// what the first one preserved.
-				reason := "the survivor's area has already recorded its text"
+			// Sorted, so two runs over the same verdict write the same marks.
+			dupIDs := make([]string, 0, len(v.Duplicates))
+			for id := range v.Duplicates {
+				dupIDs = append(dupIDs, id)
+			}
+			sort.Strings(dupIDs)
+
+			for _, dupID := range dupIDs {
+				if !member[dupID] || dupID == final {
+					st.RefusedShape++
+					clusterRefusedDonor = true
+					continue
+				}
+				di, inHand := byID[dupID]
+				if !inHand {
+					st.RefusedShape++
+					clusterRefusedDonor = true
+					continue
+				}
+				dup := docs[di]
+				if dup.duplicateOf != "" || marks[dupID] != "" {
+					// Already folded, by a previous area's pass or by an earlier
+					// cluster of this one. Not re-decided: that mark was made with
+					// the same judgement and re-pointing it could send the reader
+					// somewhere else.
+					//
+					// It still counts as a refused donor, because a rewrite naming
+					// it credits the survivor with its detail while mergeSourceSteps
+					// carries only what this verdict actually folded — so the
+					// survivor would state a claim whose evidence it does not cite.
+					clusterRefusedDonor = true
+					continue
+				}
+				if usedAsCanonical[dupID] {
+					applog.WithFields(applog.Fields{"area": st.Area, "id": dupID}).
+						Info("Consolidation: refusing to suppress a document this pass already made canonical")
+					st.RefusedShape++
+					clusterRefusedDonor = true
+					continue
+				}
+				if !dup.current {
+					// An earlier area's finding. Its verdict is already paid for
+					// and its mark has nowhere durable to live — the area's
+					// checkpoint is written and its insight ids are reminted on
+					// restore — so suppressing it here would not survive a resume.
+					// Left standing, and remembered so the end-of-run check does
+					// not fold it the other way round on this run.
+					o.keepPair(dupID, final)
+					st.RefusedNotMine++
+					clusterRefusedDonor = true
+					continue
+				}
+				// The adjudicator decided this pair stands, in some other cluster
+				// of this same pass. A fallback verdict for an overlapping
+				// cluster must not override it: the clusters are stars and they
+				// share members, so the same pair can appear in one cluster the
+				// provider answered and another it declined — and the end-of-run
+				// check cannot correct it afterwards, because it skips a document
+				// that already carries a mark.
+				if o.adjudicatedKeep(dupID, final) {
+					applog.WithFields(applog.Fields{"area": st.Area, "id": dupID, "canonical": final}).
+						Info("Consolidation: this pair was already adjudicated and left standing; not folding it in another cluster")
+					st.RefusedKept++
+					clusterRefusedDonor = true
+					continue
+				}
+				score, held := reverifyFold(dup, docs[fi], threshold, byProvider[i])
+				if !held {
+					applog.WithFields(applog.Fields{"area": st.Area, "id": dupID, "canonical": final}).
+						Info("Consolidation: the claim does not hold against the resolved canonical; not folded")
+					st.RefusedRecheck++
+					clusterRefusedDonor = true
+					continue
+				}
+
+				in.insights[dup.slot].DuplicateOf = final
+				in.insights[dup.slot].SimilarityScore = score
+				marks[dupID] = final
+				written = append(written, dup.slot)
+				clusterWritten = append(clusterWritten, dup.slot)
+				usedAsCanonical[final] = true
+				clusterFolds++
+				st.Folded++
+				countFold(&st, c.proposal, 1)
+				applog.WithFields(applog.Fields{
+					"area": st.Area, "id": dupID, "duplicate_of": final, "score": score,
+					"proposal": string(c.proposal), "decider": st.Decider, "reason": v.Reason,
+				}).Info("Consolidation: folded")
+			}
+
+			// The detail a folded member added, kept on the survivor rather than
+			// discarded with it — a fold decides which caveats live, so it is not
+			// quality-neutral. Only onto a canonical in the area being
+			// consolidated: an earlier area's text is already recorded in that
+			// area's checkpoint, and rewriting it here would leave the record and
+			// the result disagreeing about what the finding says.
+			// A rewrite is asked for precisely when the folded members carry
+			// something the survivor does not, so a rewrite that cannot be
+			// applied means the folds cannot be applied either: suppressing those
+			// members without it is exactly how a fold loses a caveat, which is
+			// the failure this pass exists to stop making. Two reasons it cannot
+			// be applied, and they get the same answer.
+			if merged := strings.TrimSpace(v.MergedDescription); merged != "" && clusterFolds > 0 {
 				switch {
-				case !docs[fi].current:
-					// keeps the reason above
-				case clusterRefusedDonor:
-					// The rewrite may incorporate detail from a member this
-					// pass refused to fold — an earlier area's finding, say,
-					// or one the re-check dropped. Applying it credits the
-					// survivor with a claim whose evidence it does not cite,
-					// and the provenance union below cannot carry what was
-					// never folded. The whole cluster goes back rather than
-					// half of it.
-					reason = "a member this verdict folds was refused, so its rewrite cannot be trusted"
-				case len(in.insights[docs[fi].slot].Figures) > 0:
-					// The survivor declared evidence figures, and those were
-					// RENDERED INTO this prose: the figure template holds the
-					// text as authored with the references intact, and a
-					// recommendation may restate a figure by naming its id.
-					// Free-text replacement severs that link — every field
-					// stops matching its re-render, so a repaired insight's
-					// figures are all withheld from the recommender, and on an
-					// unrepaired one a recommendation could restate a number
-					// the survivor's prose no longer shows. The model is not
-					// shown the references (it is shown the rendered text), so
-					// it cannot preserve them, and re-deriving them from free
-					// text is the numeral surgery the figure layer exists to
-					// avoid.
-					reason = "the survivor's prose carries rendered evidence figures"
+				case !docs[fi].current, mergedCanonicals[final], clusterRefusedDonor,
+					len(in.insights[docs[fi].slot].Figures) > 0:
+					// Either the survivor belongs to an area the run has already
+					// finished — its text is recorded in that area's checkpoint,
+					// and rewriting it here would leave the record and the result
+					// disagreeing — or this pass has already rewritten it for an
+					// overlapping cluster, so this rewrite was written against
+					// text that has since changed and applying it would erase
+					// what the first one preserved.
+					reason := "the survivor's area has already recorded its text"
+					switch {
+					case !docs[fi].current:
+						// keeps the reason above
+					case clusterRefusedDonor:
+						// The rewrite may incorporate detail from a member this
+						// pass refused to fold — an earlier area's finding, say,
+						// or one the re-check dropped. Applying it credits the
+						// survivor with a claim whose evidence it does not cite,
+						// and the provenance union below cannot carry what was
+						// never folded. The whole cluster goes back rather than
+						// half of it.
+						reason = "a member this verdict folds was refused, so its rewrite cannot be trusted"
+					case len(in.insights[docs[fi].slot].Figures) > 0:
+						// The survivor declared evidence figures, and those were
+						// RENDERED INTO this prose: the figure template holds the
+						// text as authored with the references intact, and a
+						// recommendation may restate a figure by naming its id.
+						// Free-text replacement severs that link — every field
+						// stops matching its re-render, so a repaired insight's
+						// figures are all withheld from the recommender, and on an
+						// unrepaired one a recommendation could restate a number
+						// the survivor's prose no longer shows. The model is not
+						// shown the references (it is shown the rendered text), so
+						// it cannot preserve them, and re-deriving them from free
+						// text is the numeral surgery the figure layer exists to
+						// avoid.
+						reason = "the survivor's prose carries rendered evidence figures"
+					default:
+						reason = "this pass has already rewritten the survivor for an overlapping cluster"
+					}
+					for _, slot := range clusterWritten {
+						// The pair is registered as standing here and not in the
+						// pre-pass: the pre-pass reads the verdicts, which FOLD
+						// this pair, and only the writer knows it could not apply
+						// the fold. Without it the end-of-run check folds the pair
+						// on document order, without the rewrite this branch
+						// refused to make.
+						o.keepPair(in.insights[slot].ID, final)
+						st.Kept++
+						// Out of `marks` as well as off the insight. Left in, a
+						// later cluster resolving its canonical through the chain
+						// map would resolve through a mark that no longer exists
+						// and point a real fold at the wrong document — and
+						// keepStanding would read this pair as folded and record
+						// no keep for it, so the end-of-run check would fold it
+						// the way this branch just refused.
+						delete(marks, in.insights[slot].ID)
+						in.insights[slot].DuplicateOf = ""
+						in.insights[slot].SimilarityScore = 0
+						st.Folded--
+						clusterFolds--
+						// And the bucket the fold was counted in, or Folded would
+						// read 0 beside a non-zero by_cosine and the one number
+						// this log line exists to make legible — the fold rate per
+						// test — would not add up.
+						countFold(&st, c.proposal, -1)
+					}
+					// `written` is the pass-wide list the closure check reads, and
+					// this cluster's slots are its last entries. `clusterWritten`
+					// is not reset: nothing after this switch reads it, and the
+					// next cluster builds its own.
+					written = written[:len(written)-len(clusterWritten)]
+					st.RefusedUnmergeable++
+					applog.WithFields(applog.Fields{"area": st.Area, "canonical": final, "reason": reason}).
+						Info("Consolidation: the survivor cannot be rewritten; leaving the findings standing")
 				default:
-					reason = "this pass has already rewritten the survivor for an overlapping cluster"
+					plain, md := splitMarkdownDescription(merged)
+					in.insights[docs[fi].slot].Description = plain
+					in.insights[docs[fi].slot].DescriptionMd = md
+					// The provenance of what the rewrite now states, carried with
+					// it. A folded member's figure is supported by the steps IT
+					// cited, and the verifier builds its evidence bundle from the
+					// survivor's SourceSteps — so a merged claim whose step the
+					// survivor does not cite would be checked against evidence
+					// that does not contain it, and attachSourceQuality would
+					// miss the caveat that step carries.
+					in.insights[docs[fi].slot].SourceSteps = mergeSourceSteps(
+						in.insights[docs[fi].slot].SourceSteps, in.insights, clusterWritten)
+					// And in the projection, so a later cluster folding into the
+					// same survivor runs its containment re-check against what
+					// the survivor now says rather than against the text it said
+					// before this rewrite. The VECTOR is necessarily stale — the
+					// merged text has not been embedded — so a cosine re-check
+					// still reads the pre-merge document, which is the
+					// conservative direction: it can refuse a fold that would now
+					// hold, never accept one that would not.
+					docs[fi].prose = insightProse(&in.insights[docs[fi].slot])
+					docs[fi].body = insightBodyOf(plain, md, docs[fi].indicators)
+					mergedCanonicals[final] = true
+					applog.WithFields(applog.Fields{"area": st.Area, "canonical": final}).
+						Info("Consolidation: merged the folded members' detail onto the canonical")
 				}
-				for _, slot := range clusterWritten {
-					// The pair is registered as standing here and not in the
-					// pre-pass: the pre-pass reads the verdicts, which FOLD
-					// this pair, and only the writer knows it could not apply
-					// the fold. Without it the end-of-run check folds the pair
-					// on document order, without the rewrite this branch
-					// refused to make.
-					o.keepPair(in.insights[slot].ID, final)
-					st.Kept++
-					// Out of `marks` as well as off the insight. Left in, a
-					// later cluster resolving its canonical through the chain
-					// map would resolve through a mark that no longer exists
-					// and point a real fold at the wrong document — and
-					// keepStanding would read this pair as folded and record
-					// no keep for it, so the end-of-run check would fold it
-					// the way this branch just refused.
-					delete(marks, in.insights[slot].ID)
-					in.insights[slot].DuplicateOf = ""
-					in.insights[slot].SimilarityScore = 0
-					st.Folded--
-					clusterFolds--
-					// And the bucket the fold was counted in, or Folded would
-					// read 0 beside a non-zero by_cosine and the one number
-					// this log line exists to make legible — the fold rate per
-					// test — would not add up.
-					countFold(&st, c.proposal, -1)
-				}
-				// `written` is the pass-wide list the closure check reads, and
-				// this cluster's slots are its last entries. `clusterWritten`
-				// is not reset: nothing after this switch reads it, and the
-				// next cluster builds its own.
-				written = written[:len(written)-len(clusterWritten)]
-				st.RefusedUnmergeable++
-				applog.WithFields(applog.Fields{"area": st.Area, "canonical": final, "reason": reason}).
-					Info("Consolidation: the survivor cannot be rewritten; leaving the findings standing")
-			default:
-				plain, md := splitMarkdownDescription(merged)
-				in.insights[docs[fi].slot].Description = plain
-				in.insights[docs[fi].slot].DescriptionMd = md
-				// The provenance of what the rewrite now states, carried with
-				// it. A folded member's figure is supported by the steps IT
-				// cited, and the verifier builds its evidence bundle from the
-				// survivor's SourceSteps — so a merged claim whose step the
-				// survivor does not cite would be checked against evidence
-				// that does not contain it, and attachSourceQuality would
-				// miss the caveat that step carries.
-				in.insights[docs[fi].slot].SourceSteps = mergeSourceSteps(
-					in.insights[docs[fi].slot].SourceSteps, in.insights, clusterWritten)
-				// And in the projection, so a later cluster folding into the
-				// same survivor runs its containment re-check against what
-				// the survivor now says rather than against the text it said
-				// before this rewrite. The VECTOR is necessarily stale — the
-				// merged text has not been embedded — so a cosine re-check
-				// still reads the pre-merge document, which is the
-				// conservative direction: it can refuse a fold that would now
-				// hold, never accept one that would not.
-				docs[fi].prose = insightProse(&in.insights[docs[fi].slot])
-				docs[fi].body = insightBodyOf(plain, md, docs[fi].indicators)
-				mergedCanonicals[final] = true
-				applog.WithFields(applog.Fields{"area": st.Area, "canonical": final}).
-					Info("Consolidation: merged the folded members' detail onto the canonical")
 			}
-		}
 
+		}
 	}
 
 	if st.Folded == 0 {
@@ -920,48 +949,50 @@ func countFold(st *consolidationStats, p agentplugin.Proposal, delta int) {
 func (o *Orchestrator) registerAdjudicatedKeeps(
 	docs []consolidationDoc,
 	clusters []docCluster,
-	verdicts map[int]agentplugin.ConsolidationVerdict,
+	verdicts map[int][]agentplugin.ConsolidationVerdict,
 	byProvider map[int]bool,
 	marks map[string]string,
 	st *consolidationStats,
 ) {
 	explicit := make(map[string]struct{})
 	for i := range clusters {
-		v, ok := verdicts[i]
-		if !ok || !byProvider[i] {
+		if !byProvider[i] {
 			continue
 		}
-		canonical, cycle := resolveTarget(v.CanonicalID, marks)
-		if cycle {
-			canonical = v.CanonicalID
-		}
-		for dupID := range v.Duplicates {
-			explicit[keptPairKey(v.CanonicalID, dupID)] = struct{}{}
-			explicit[keptPairKey(canonical, dupID)] = struct{}{}
+		for _, v := range verdicts[i] {
+			canonical, cycle := resolveTarget(v.CanonicalID, marks)
+			if cycle {
+				canonical = v.CanonicalID
+			}
+			for dupID := range v.Duplicates {
+				explicit[keptPairKey(v.CanonicalID, dupID)] = struct{}{}
+				explicit[keptPairKey(canonical, dupID)] = struct{}{}
+			}
 		}
 	}
 
 	for i, c := range clusters {
-		v, ok := verdicts[i]
-		if !ok || !byProvider[i] {
+		if !byProvider[i] {
 			continue
 		}
-		for x := 0; x < len(c.members); x++ {
-			for y := x + 1; y < len(c.members); y++ {
-				a, b := docs[c.members[x]].id, docs[c.members[y]].id
-				if _, folded := explicit[keptPairKey(a, b)]; folded {
-					continue
+		for _, v := range verdicts[i] {
+			for x := 0; x < len(c.members); x++ {
+				for y := x + 1; y < len(c.members); y++ {
+					a, b := docs[c.members[x]].id, docs[c.members[y]].id
+					if _, folded := explicit[keptPairKey(a, b)]; folded {
+						continue
+					}
+					// Both folded into the same canonical by this verdict:
+					// they are related through it, and neither can be folded
+					// into the other afterwards because both carry a mark.
+					_, aDup := v.Duplicates[a]
+					_, bDup := v.Duplicates[b]
+					if aDup && bDup {
+						continue
+					}
+					o.keepPair(a, b)
+					st.Kept++
 				}
-				// Both folded into the same canonical by this verdict: they
-				// are related through it, and neither can be folded into the
-				// other afterwards because both carry a mark.
-				_, aDup := v.Duplicates[a]
-				_, bDup := v.Duplicates[b]
-				if aDup && bDup {
-					continue
-				}
-				o.keepPair(a, b)
-				st.Kept++
 			}
 		}
 	}

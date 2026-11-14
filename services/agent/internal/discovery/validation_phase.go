@@ -38,6 +38,16 @@ type validationPhase struct {
 	whByDS       map[string]verifier.WarehouseInfo
 	executorByDS map[string]verifier.Executor
 	primaryDS    string
+
+	// onRequest marks the phase as serving ONE document an operator asked
+	// for, outside any run (see ValidateSingleDoc). It switches off the
+	// duplicate skip below: the skip exists so a run's budget is not spent on
+	// restatements, and an operator clicking Validate on a finding the
+	// dashboard shows as restated has already decided to spend it. Without
+	// this the request was a permanent no-op that overwrote whatever verdict
+	// the document had with the skip stamp — and the dashboard offers the
+	// button for exactly those documents.
+	onRequest bool
 }
 
 // perItemCheckpoint is how a run makes one document's validation verdict
@@ -268,7 +278,7 @@ func (p *validationPhase) validateInsights(ctx context.Context, insights []model
 		// Its own status rather than skipped_budget_cap, so the stored verdict
 		// says which of the two happened — "there was nothing here the
 		// canonical does not already carry" is not "the run ran out of budget".
-		if ins.DuplicateOf != "" {
+		if ins.DuplicateOf != "" && !p.onRequest {
 			ins.Validation = &valmodels.InsightValidation{
 				Combined:    valmodels.StatusSkippedDuplicate,
 				ValidatedAt: vr.ValidatedAt,

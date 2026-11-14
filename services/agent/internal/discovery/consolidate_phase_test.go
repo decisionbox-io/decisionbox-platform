@@ -1769,7 +1769,11 @@ func TestCommunityVerdict_FoldsAPairThatDoesNotIncludeTheSeed(t *testing.T) {
 		t.Fatalf("clusters = %v, want a star of three (fixture broken)", clusters)
 	}
 
-	v := communityVerdict(docs, star, 0.88)
+	vs := communityVerdicts(docs, star, 0.88)
+	if len(vs) != 1 {
+		t.Fatalf("verdicts = %+v, want one group", vs)
+	}
+	v := vs[0]
 	if v.CanonicalID != "b" {
 		t.Errorf("canonical = %q, want b — the earliest member of the similarity pair", v.CanonicalID)
 	}
@@ -1778,6 +1782,45 @@ func TestCommunityVerdict_FoldsAPairThatDoesNotIncludeTheSeed(t *testing.T) {
 	}
 	if _, ok := v.Duplicates["a"]; ok {
 		t.Errorf("duplicates = %v; a is a containment-only relation and the community rule must not fold it", v.Duplicates)
+	}
+}
+
+// One maximal star can hold TWO independent similarity groups, joined only
+// through a finding that contains both — and buildClusters removed the smaller
+// stars as subsets, so a rule that stopped after the first group left the
+// second with no pre-validation decision at all. Both its members then spent
+// validation budget and the end-of-run check folded one into the other
+// afterwards anyway.
+func TestCommunityVerdicts_DecidesEveryGroupInTheStar(t *testing.T) {
+	table := "| north | 111,222 | 33.3 |\n| south | 444,555 | 66.6 |"
+	docs := []consolidationDoc{
+		// The broad finding contains both slices by figure.
+		doc(0, "broad", 0, true, "the whole total", table),
+		doc(1, "n1", 70, true, "the north segment holds 111,222 units, 33.3 of it", ""),
+		doc(2, "n2", 71, true, "north again: 111,222 units, 33.3", ""),
+		doc(3, "s1", 160, true, "the south segment holds 444,555 units, 66.6 of it", ""),
+		doc(4, "s2", 161, true, "south again: 444,555 units, 66.6", ""),
+	}
+	star := docCluster{members: []int{0, 1, 2, 3, 4}, proposal: agentplugin.ProposalBoth}
+
+	vs := communityVerdicts(docs, star, 0.88)
+	if len(vs) != 2 {
+		t.Fatalf("verdicts = %+v, want one per similarity group", vs)
+	}
+	folded := map[string]string{}
+	for _, v := range vs {
+		for id := range v.Duplicates {
+			folded[id] = v.CanonicalID
+		}
+	}
+	if folded["n2"] != "n1" {
+		t.Errorf("n2 folded into %q, want n1", folded["n2"])
+	}
+	if folded["s2"] != "s1" {
+		t.Errorf("s2 folded into %q, want s1 — the second group must be decided too", folded["s2"])
+	}
+	if _, ok := folded["broad"]; ok {
+		t.Errorf("the broad finding was folded: %v; it relates to the slices by figure, not by similarity", folded)
 	}
 }
 
@@ -1801,5 +1844,73 @@ func TestMarkDuplicates_HonoursAKeepAgainstTheResolvedTarget(t *testing.T) {
 		if u.ID == "c" {
 			t.Errorf("c was folded into %q; the keep against a was routed around through b", u.DupOf)
 		}
+	}
+}
+
+// An operator clicking Validate on a finding the dashboard shows as restated
+// has already decided to spend the check. The run-wide duplicate skip exists
+// so a RUN's fixed budget is not spent on restatements; applied to a
+// single-document request it made the request a permanent no-op that
+// overwrote whatever verdict the document had with the skip stamp.
+func TestValidateInsights_ASingleDocumentRequestIgnoresTheDuplicateSkip(t *testing.T) {
+	p, _, insights, steps := concurrencyFixture(t, 1)
+	p.caps.MaxInsightsPerRun = 6
+	for i := range insights {
+		insights[i].DuplicateOf = "some-canonical"
+	}
+
+	// The run path skips every one of them and charges nothing.
+	results, validated, _ := p.validateInsights(context.Background(), insights, steps, "a", 0, nil)
+	if validated != 0 {
+		t.Errorf("validated = %d in a run, want 0: the budget must not be spent on restatements", validated)
+	}
+	for _, r := range results {
+		if r.Combined != valmodels.StatusSkippedDuplicate {
+			t.Errorf("%s = %q, want skipped_duplicate", r.InsightID, r.Combined)
+		}
+	}
+
+	// On request, the same documents are checked.
+	p.onRequest = true
+	one := []models.Insight{insights[0]}
+	one[0].Validation = nil
+	onRequest, validatedOnRequest, _ := p.validateInsights(context.Background(), one, steps, "a", 0, nil)
+	if validatedOnRequest != 1 {
+		t.Fatalf("validated = %d on request, want 1", validatedOnRequest)
+	}
+	if len(onRequest) != 1 || onRequest[0].Combined == valmodels.StatusSkippedDuplicate {
+		t.Errorf("verdict = %+v; an explicit request must actually run the agents", onRequest[0].Combined)
+	}
+}
+
+// A rewrite naming a donor this pass did not fold — because a previous area
+// had already folded it — credits the survivor with detail whose evidence the
+// provenance union cannot carry.
+func TestConsolidateArea_AnAlreadyFoldedDonorRefusesTheRewrite(t *testing.T) {
+	e0 := insight("e0", "repl", "the canonical statement", "body e0", 600)
+	e1 := insight("e1", "repl", "a restatement of it", "body e1", 500)
+	e1.DuplicateOf = "e0" // folded by its own area's pass
+	c1 := insight("c1", "stock", "another restatement", "body c1", 400)
+
+	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		// Folds e1 (already folded) and c1 into the current-area canonical,
+		// with a rewrite claiming both donors' detail.
+		return []agentplugin.ConsolidationVerdict{{
+			CanonicalID:       "c1",
+			Duplicates:        map[string]float64{"e1": 0.99},
+			MergedDescription: "c1, carrying e1's detail",
+		}}, nil
+	}})
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(e0): 0, embText(e1): 1, embText(c1): 2,
+	}}}
+	current := []models.Insight{c1}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, []models.Insight{e0, e1}))
+
+	if strings.Contains(current[0].Description, "carrying") {
+		t.Errorf("c1.description = %q; the rewrite credits a donor nobody folded", current[0].Description)
+	}
+	if st.Folded != 0 {
+		t.Errorf("stats = %+v, want no fold", st)
 	}
 }
