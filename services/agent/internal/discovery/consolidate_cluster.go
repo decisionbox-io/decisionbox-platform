@@ -133,6 +133,12 @@ var figureToken = regexp.MustCompile(`\d[\d.,]*`)
 // claimFigures returns the distinctive numeric tokens of a text: those whose
 // digits number three or more.
 //
+// Used for both sides of the containment test — the headline's figures and the
+// body's — so the comparison is token against token. One derivation, for the
+// reason magnitudeOf is one derivation: a headline parsed one way and a body
+// scanned another is how "is this figure in that text" comes to mean two
+// different questions.
+//
 // Three is the floor that makes the containment test mean something. "5%",
 // "3x" and "12" appear in almost every finding a project produces, so a test
 // built on them matches everything; a figure of three significant digits is
@@ -196,8 +202,18 @@ func containedIn(claim, body string) bool {
 	if len(figs) < minContainmentFigures || body == "" {
 		return false
 	}
+	// WHOLE tokens, through the same parser, not substrings of the body.
+	// `strings.Contains` accepted a headline's 123 and 456 as contained in a
+	// body stating 1123 and 2456 — two different measurements reading as the
+	// same one, and on a pair below the similarity floor the fold would cost
+	// a distinct finding its verdict and its place in Phase 5 on nothing at
+	// all.
+	inBody := make(map[string]struct{}, 8)
+	for _, f := range claimFigures(body) {
+		inBody[f] = struct{}{}
+	}
 	for _, f := range figs {
-		if !strings.Contains(body, f) {
+		if _, ok := inBody[f]; !ok {
 			return false
 		}
 	}

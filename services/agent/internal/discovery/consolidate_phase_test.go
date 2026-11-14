@@ -1745,82 +1745,109 @@ func TestConsolidateArea_ARefusedDonorGivesBackTheWholeCluster(t *testing.T) {
 	}
 }
 
-// On a mixed star the community rule applies the pairwise rule inside the
-// cluster, not only against its seed. Comparing everything against the seed
-// alone folded nothing, so BOTH later members spent validation budget and the
-// end-of-run check folded one into the other afterwards anyway.
-func TestCommunityVerdict_FoldsAPairThatDoesNotIncludeTheSeed(t *testing.T) {
-	table := "| north | 111,222 | 33.3 |"
+// The community rule is ONE pass in document order, not a per-cluster
+// decision. Per cluster carried state that depended on which overlapping star
+// was processed first, and it also had to MATCH what the end-of-run check
+// would have made — the promise to a community deployment is that only the
+// moment of the decision moves.
+func TestCommunityFolds_IsTheEndOfRunRuleInDocumentOrder(t *testing.T) {
+	// a, b, c pairwise similar; d far from all of them.
 	docs := []consolidationDoc{
-		// a relates to b by containment only.
-		doc(0, "a", 0, true, "a headline", table),
-		doc(1, "b", 70, true, "b carries 111,222 and 33.3", ""),
-		// b and c are a similarity pair; neither is near a.
-		doc(2, "c", 71, true, "claim c", ""),
+		doc(0, "a", 0, true, "claim a", ""),
+		doc(1, "b", 1, true, "claim b", ""),
+		doc(2, "c", 2, true, "claim c", ""),
+		doc(3, "d", 90, true, "claim d", ""),
 	}
-	clusters := buildClusters(docs, proposePairs(docs, 0.88))
-	var star docCluster
-	for _, cl := range clusters {
-		if len(cl.members) == 3 {
-			star = cl
-		}
+	folds := communityFolds(docs, 0.88)
+
+	if folds["b"].target != "a" || folds["c"].target != "a" {
+		t.Errorf("folds = %+v; both later members must point at the earliest, not at each other", folds)
 	}
-	if len(star.members) != 3 {
-		t.Fatalf("clusters = %v, want a star of three (fixture broken)", clusters)
+	if _, ok := folds["a"]; ok {
+		t.Error("the earliest member must not be folded")
+	}
+	if _, ok := folds["d"]; ok {
+		t.Error("an unrelated finding must not be folded")
 	}
 
-	vs := communityVerdicts(docs, star, 0.88)
-	if len(vs) != 1 {
-		t.Fatalf("verdicts = %+v, want one group", vs)
+	// The non-transitive chain: 0/25/50 scores 0.906 between neighbours and
+	// 0.643 end to end, so the last must NOT be folded into the first.
+	chain := []consolidationDoc{
+		doc(0, "x", 0, true, "claim x", ""),
+		doc(1, "y", 25, true, "claim y", ""),
+		doc(2, "z", 50, true, "claim z", ""),
 	}
-	v := vs[0]
-	if v.CanonicalID != "b" {
-		t.Errorf("canonical = %q, want b — the earliest member of the similarity pair", v.CanonicalID)
+	cf := communityFolds(chain, 0.88)
+	if cf["y"].target != "x" {
+		t.Errorf("y folded into %q, want x", cf["y"].target)
 	}
-	if _, ok := v.Duplicates["c"]; !ok {
-		t.Errorf("duplicates = %v, want c folded into b", v.Duplicates)
+	if f, ok := cf["z"]; ok {
+		t.Errorf("z folded into %q; it resembles y but not x, so it is a duplicate of nothing visible", f.target)
 	}
-	if _, ok := v.Duplicates["a"]; ok {
-		t.Errorf("duplicates = %v; a is a containment-only relation and the community rule must not fold it", v.Duplicates)
+
+	// A document already folded by a previous area's pass is not re-decided,
+	// and a match against it resolves to the canonical a reader can see.
+	seeded := []consolidationDoc{
+		doc(0, "p", 0, true, "claim p", ""),
+		doc(1, "q", 1, true, "claim q", ""),
+		doc(2, "r", 2, true, "claim r", ""),
+	}
+	seeded[1].duplicateOf = "p"
+	sf := communityFolds(seeded, 0.88)
+	if _, ok := sf["q"]; ok {
+		t.Error("an already-folded document must not be re-decided")
+	}
+	if sf["r"].target != "p" {
+		t.Errorf("r folded into %q, want p — the canonical a reader can see", sf["r"].target)
 	}
 }
 
-// One maximal star can hold TWO independent similarity groups, joined only
-// through a finding that contains both — and buildClusters removed the smaller
-// stars as subsets, so a rule that stopped after the first group left the
-// second with no pre-validation decision at all. Both its members then spent
-// validation budget and the end-of-run check folded one into the other
-// afterwards anyway.
-func TestCommunityVerdicts_DecidesEveryGroupInTheStar(t *testing.T) {
-	table := "| north | 111,222 | 33.3 |\n| south | 444,555 | 66.6 |"
-	docs := []consolidationDoc{
-		// The broad finding contains both slices by figure.
-		doc(0, "broad", 0, true, "the whole total", table),
-		doc(1, "n1", 70, true, "the north segment holds 111,222 units, 33.3 of it", ""),
-		doc(2, "n2", 71, true, "north again: 111,222 units, 33.3", ""),
-		doc(3, "s1", 160, true, "the south segment holds 444,555 units, 66.6 of it", ""),
-		doc(4, "s2", 161, true, "south again: 444,555 units, 66.6", ""),
-	}
-	star := docCluster{members: []int{0, 1, 2, 3, 4}, proposal: agentplugin.ProposalBoth}
+// Two overlapping containment stars whose middle members are all similar to
+// each other: per cluster, the first star made one of them a canonical and the
+// second then refused to fold it into the earlier member it actually restates,
+// leaving two redundant findings standing and spending the budget on both.
+func TestConsolidateArea_OverlappingStarsStillFoldInDocumentOrder(t *testing.T) {
+	withProvider(t, nil)
 
-	vs := communityVerdicts(docs, star, 0.88)
-	if len(vs) != 2 {
-		t.Fatalf("verdicts = %+v, want one per similarity group", vs)
+	// b, c, d are mutually similar. a and e are broad findings that contain
+	// them by figure, which is what joins them into overlapping stars.
+	table := "| north | 111,222 | 33.3 |\n| south | 444,555 | 66.6 |"
+	a := insight("a", "stock", "the whole total", table, 500)
+	b := insight("b", "stock", "the north segment holds 111,222 units, 33.3 of it", "slice b", 400)
+	c := insight("c", "stock", "north restated: 111,222 units at 33.3", "slice c", 300)
+	d := insight("d", "stock", "north once more: 111,222 units, 33.3", "slice d", 200)
+	e := insight("e", "stock", "the whole total again", table, 100)
+
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 90, embText(c): 91, embText(d): 92, embText(e): 180,
+	}}}
+	current := []models.Insight{a, b, c, d, e}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	byID := map[string]models.Insight{}
+	for _, ins := range current {
+		byID[ins.ID] = ins
 	}
-	folded := map[string]string{}
-	for _, v := range vs {
-		for id := range v.Duplicates {
-			folded[id] = v.CanonicalID
+	// b is the earliest of the three similar findings, so c and d fold into
+	// it — whichever stars they happened to land in.
+	if byID["c"].DuplicateOf != "b" {
+		t.Errorf("c.duplicate_of = %q, want b", byID["c"].DuplicateOf)
+	}
+	if byID["d"].DuplicateOf != "b" {
+		t.Errorf("d.duplicate_of = %q, want b", byID["d"].DuplicateOf)
+	}
+	if byID["b"].DuplicateOf != "" {
+		t.Errorf("b.duplicate_of = %q; it is the earliest of the three", byID["b"].DuplicateOf)
+	}
+	// The community rule folds on similarity only, so the broad findings
+	// stand: containment is a proposal an adjudicator rules on.
+	for _, id := range []string{"a", "e"} {
+		if byID[id].DuplicateOf != "" {
+			t.Errorf("%s.duplicate_of = %q; the community rule must not fold a containment relation", id, byID[id].DuplicateOf)
 		}
 	}
-	if folded["n2"] != "n1" {
-		t.Errorf("n2 folded into %q, want n1", folded["n2"])
-	}
-	if folded["s2"] != "s1" {
-		t.Errorf("s2 folded into %q, want s1 — the second group must be decided too", folded["s2"])
-	}
-	if _, ok := folded["broad"]; ok {
-		t.Errorf("the broad finding was folded: %v; it relates to the slices by figure, not by similarity", folded)
+	if st.Folded != 2 {
+		t.Errorf("stats = %+v, want two folds", st)
 	}
 }
 

@@ -321,3 +321,28 @@ func TestResolveMarkClosure(t *testing.T) {
 		}
 	})
 }
+
+// Containment compares WHOLE tokens, through the same parser, not substrings.
+// `strings.Contains` accepted a headline's 123 and 456 as contained in a body
+// stating 1123 and 2456 — two different measurements reading as the same one,
+// and on a pair below the similarity floor the fold costs a distinct finding
+// its verdict and its place in recommendation generation on nothing at all.
+func TestContainedIn_ComparesWholeTokens(t *testing.T) {
+	if containedIn("the figures are 123 and 456", "we measured 1123 and 2456") {
+		t.Error("a headline's figures must not match longer numbers that merely contain them")
+	}
+	// The same figures as whole tokens are contained.
+	if !containedIn("the figures are 123 and 456", "we measured 123 and 456 across the set") {
+		t.Error("whole-token matches must still be contained")
+	}
+	// A decimal is a different token from its integer part.
+	if containedIn("the figures are 123 and 456", "we measured 123.45 and 456.78") {
+		t.Error("123 must not match 123.45: they are different measurements")
+	}
+	// And a grouped figure is a different token from its ungrouped spelling,
+	// which the substring rule also could not match — stated so the limit is
+	// recorded rather than discovered.
+	if containedIn("the figures are 1,234 and 5,678", "we measured 1234 and 5678") {
+		t.Error("the comparison is textual: a grouped figure is not matched against its ungrouped spelling")
+	}
+}
