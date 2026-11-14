@@ -333,30 +333,20 @@ func restoreArea(
 }
 
 // repointRestoredMarks re-points a restored area's duplicate marks at the ids
-// this attempt minted, and CLEARS the ones it cannot resolve.
+// this attempt minted, for every target it can already resolve.
 //
 // A mark is a pointer between two of the run's insights, and
 // reidentifyRestoredArea has just given every insight in the restored set a
 // new id — so a mark carried over verbatim names a row this attempt does not
-// hold. That is strictly worse than no mark: the insight renders as suppressed
-// behind a canonical the reader cannot reach, which is the one outcome the
-// non-destructive contract exists to prevent. So an unresolvable mark is
-// dropped and the finding is simply visible again.
+// hold.
 //
-// What cannot be resolved, stated plainly rather than papered over: a mark
-// into an area that THIS attempt re-analysed from scratch (its target was a
-// previous attempt's insight, which no longer exists), and a mark written
-// against ids that a third attempt had itself reminted. Both lose a fold that
-// the consolidation pass would have re-derived had the area been re-analysed,
-// and neither can produce a broken pointer. Marks inside the restored area
-// always resolve, and those are the ones that cost the validation budget.
-//
-// Clearing a mark also clears the verdict that existed only because of it.
-// `skipped_duplicate` is stamped BY the mark — it says "the canonical carries
-// this claim's verdict" — so a finding that is visible again with that stamp
-// still standing would render as a restatement of nothing. Dropping it leaves
-// the finding with no verdict, which is what an insight that was never checked
-// has, and which the recommender's filter already fails open on.
+// It does NOT clear what it cannot resolve, and that restraint is the whole
+// point: the run's analysis areas come out of a MAP, so their order is not
+// stable between attempts, and an area that folded into another can therefore
+// restore BEFORE it. Clearing on the spot threw away a perfectly good mark
+// whose target simply had not registered its ids yet, and nothing revisited
+// it. settleRunMarks, run once the loop has finished and every restored area
+// has registered, is what decides which marks are genuinely broken.
 func repointRestoredMarks(insights []models.Insight, freshByStored map[string]string, areaID string) {
 	for i := range insights {
 		stored := insights[i].DuplicateOf
@@ -365,17 +355,84 @@ func repointRestoredMarks(insights []models.Insight, freshByStored map[string]st
 		}
 		if fresh, ok := freshByStored[stored]; ok {
 			insights[i].DuplicateOf = fresh
-			continue
-		}
-		applog.WithFields(applog.Fields{
-			"area": areaID, "id": insights[i].ID, "was_duplicate_of": stored,
-		}).Info("restore: a consolidation mark pointed at a row this attempt does not hold; the finding is visible again")
-		insights[i].DuplicateOf = ""
-		insights[i].SimilarityScore = 0
-		if v := insights[i].Validation; v != nil && v.Combined == valmodels.StatusSkippedDuplicate {
-			insights[i].Validation = nil
+			applog.WithFields(applog.Fields{"area": areaID, "id": insights[i].ID, "duplicate_of": fresh}).
+				Debug("restore: re-pointed a consolidation mark at this attempt's id")
 		}
 	}
+}
+
+// settleRunMarks is the authority on which consolidation marks survive a
+// resume. Called once after the analysis loop, with every restored area's id
+// mapping in hand and the run's whole insight set in front of it.
+//
+// It re-points a mark whose target registered after the mark's own area
+// restored — the case repointRestoredMarks deliberately leaves alone, because
+// the area order is not stable between attempts — and then CLEARS any mark
+// still pointing at a row this run does not hold. That is strictly worse than
+// no mark: the insight renders as suppressed behind a canonical the reader
+// cannot reach, which is the one outcome the non-destructive contract exists
+// to prevent.
+//
+// What is genuinely unresolvable, stated rather than papered over: a mark into
+// an area THIS attempt re-analysed from scratch, whose target was a previous
+// attempt's insight and no longer exists. That loses a fold the consolidation
+// pass would have re-derived had the area been re-analysed, and it cannot
+// produce a broken pointer.
+//
+// Clearing a mark also clears the verdict that existed only because of it.
+// `skipped_duplicate` is stamped BY the mark — it says "the canonical carries
+// this claim's verdict" — so a finding that is visible again with that stamp
+// still standing would render as a restatement of nothing. Dropping it leaves
+// the finding with no verdict, which is what an insight that was never checked
+// has, and which the recommender's filter already fails open on.
+//
+// Both copies are settled: the run's accumulator, which becomes the result,
+// and each area's step, which is the record of that area's output. They are
+// separate copies by the time the loop has appended them, so settling one
+// would leave the two disagreeing about which findings are visible.
+func settleRunMarks(analysisLog []models.AnalysisStep, allInsights []models.Insight, freshByStored map[string]string) (repointed, cleared int) {
+	live := make(map[string]struct{}, len(allInsights))
+	for i := range allInsights {
+		if allInsights[i].ID != "" {
+			live[allInsights[i].ID] = struct{}{}
+		}
+	}
+
+	settle := func(ins *models.Insight, areaID string) {
+		target := ins.DuplicateOf
+		if target == "" {
+			return
+		}
+		if _, ok := live[target]; ok {
+			return
+		}
+		if fresh, ok := freshByStored[target]; ok {
+			if _, live2 := live[fresh]; live2 {
+				ins.DuplicateOf = fresh
+				repointed++
+				return
+			}
+		}
+		applog.WithFields(applog.Fields{
+			"area": areaID, "id": ins.ID, "was_duplicate_of": target,
+		}).Info("restore: a consolidation mark pointed at a row this run does not hold; the finding is visible again")
+		ins.DuplicateOf = ""
+		ins.SimilarityScore = 0
+		if v := ins.Validation; v != nil && v.Combined == valmodels.StatusSkippedDuplicate {
+			ins.Validation = nil
+		}
+		cleared++
+	}
+
+	for i := range allInsights {
+		settle(&allInsights[i], allInsights[i].AnalysisArea)
+	}
+	for s := range analysisLog {
+		for i := range analysisLog[s].Insights {
+			settle(&analysisLog[s].Insights[i], analysisLog[s].AreaID)
+		}
+	}
+	return repointed, cleared
 }
 
 // reidentifyRestoredArea gives a restored area's insights fresh ids, and

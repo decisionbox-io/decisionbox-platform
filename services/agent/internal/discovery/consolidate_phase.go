@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
+	goconfig "github.com/decisionbox-io/decisionbox/libs/go-common/config"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -32,6 +33,26 @@ import (
 // so two of them reporting the same claim is the dominant duplicate shape, and
 // nothing about the prior-context budgeting touches it.
 
+// consolidationEnabledEnv turns the mid-run pass off.
+//
+// It exists because this is the one change in the feature that can cost a
+// finding something: a false fold used to hide a row behind an expandable
+// canonical, and after this it also costs that insight its verdict and its
+// place in recommendation generation. The existing similarity floor is a
+// threshold, not a switch — it cannot express "do not consolidate at all",
+// and the containment test does not read it — so without this an operator who
+// wanted the previous behaviour back had nothing to set.
+//
+// Default ON: the measured case for the feature is that half of a run's
+// findings restate another one, and leaving it off by default would mean the
+// budget keeps being spent on them until someone opts in.
+const consolidationEnabledEnv = "DISCOVERY_CONSOLIDATION_ENABLED"
+
+// consolidationEnabled resolves that switch.
+func consolidationEnabled() bool {
+	return goconfig.GetEnvAsBool(consolidationEnabledEnv, true)
+}
+
 // consolidateAreaInput is what consolidating one area needs.
 type consolidateAreaInput struct {
 	// area is the area being consolidated.
@@ -55,19 +76,21 @@ type consolidateAreaInput struct {
 // more after this change than before it (the insight also loses its verdict
 // and its place in Phase 5), so the rate is the thing to watch.
 type consolidationStats struct {
-	Area           string
-	Documents      int
-	Clusters       int
-	Folded         int
-	ByCosine       int
-	ByContainment  int
-	ByBoth         int
-	Decider        string
-	RefusedNotMine int
-	RefusedRecheck int
-	RefusedShape   int
-	Reverted       bool
-	DurationMs     int64
+	Area               string
+	Documents          int
+	Clusters           int
+	Folded             int
+	ByCosine           int
+	ByContainment      int
+	ByBoth             int
+	Decider            string
+	RefusedNotMine     int
+	RefusedRecheck     int
+	RefusedShape       int
+	RefusedUnmergeable int
+	Kept               int
+	Reverted           bool
+	DurationMs         int64
 }
 
 // consolidateArea proposes the duplicate clusters among an area's fresh
@@ -81,7 +104,7 @@ type consolidationStats struct {
 func (o *Orchestrator) consolidateArea(ctx context.Context, in consolidateAreaInput) consolidationStats {
 	started := time.Now()
 	st := consolidationStats{Area: in.area.ID, Decider: "none"}
-	if len(in.insights) == 0 {
+	if len(in.insights) == 0 || !consolidationEnabled() {
 		return st
 	}
 	threshold := documentDedupMinScore()
@@ -98,9 +121,9 @@ func (o *Orchestrator) consolidateArea(ctx context.Context, in consolidateAreaIn
 		return st
 	}
 
-	verdicts, decider := o.adjudicate(ctx, docs, clusters, threshold)
+	verdicts, byProvider, decider := o.adjudicate(ctx, docs, clusters, threshold)
 	st.Decider = decider
-	st = o.applyConsolidation(in, docs, clusters, verdicts, threshold, st)
+	st = o.applyConsolidation(in, docs, clusters, verdicts, byProvider, threshold, st)
 	st.DurationMs = time.Since(started).Milliseconds()
 
 	applog.WithFields(applog.Fields{
@@ -108,7 +131,8 @@ func (o *Orchestrator) consolidateArea(ctx context.Context, in consolidateAreaIn
 		"folded": st.Folded, "by_cosine": st.ByCosine, "by_containment": st.ByContainment,
 		"by_both": st.ByBoth, "decider": st.Decider,
 		"refused_other_area": st.RefusedNotMine, "refused_recheck": st.RefusedRecheck,
-		"refused_shape": st.RefusedShape, "reverted": st.Reverted,
+		"refused_shape": st.RefusedShape, "refused_unmergeable": st.RefusedUnmergeable,
+		"kept": st.Kept, "reverted": st.Reverted,
 		"duration_ms": st.DurationMs,
 	}).Info("Consolidation: area complete")
 	return st
@@ -291,8 +315,12 @@ func sectionAfterHeading(text, heading string) string {
 // holds between the two. A containment-only cluster is left standing by the
 // fallback, which is what keeps a deployment with no provider on exactly the
 // outcome it has today — only the moment the decision is made moves.
-func (o *Orchestrator) adjudicate(ctx context.Context, docs []consolidationDoc, clusters []docCluster, threshold float64) (map[int]agentplugin.ConsolidationVerdict, string) {
+func (o *Orchestrator) adjudicate(ctx context.Context, docs []consolidationDoc, clusters []docCluster, threshold float64) (map[int]agentplugin.ConsolidationVerdict, map[int]bool, string) {
 	out := make(map[int]agentplugin.ConsolidationVerdict, len(clusters))
+	// Which verdicts came from the PROVIDER rather than the fallback. It
+	// decides whether a member the verdict left out is a judgement to honour
+	// or simply the community rule declining to fold — see keepStanding.
+	byProvider := make(map[int]bool, len(clusters))
 	decider := "community"
 
 	if agentplugin.HasConsolidationProvider() {
@@ -325,6 +353,7 @@ func (o *Orchestrator) adjudicate(ctx context.Context, docs []consolidationDoc, 
 					continue
 				}
 				out[i] = verdicts[i]
+				byProvider[i] = true
 			}
 		}
 	}
@@ -335,7 +364,7 @@ func (o *Orchestrator) adjudicate(ctx context.Context, docs []consolidationDoc, 
 		}
 		out[i] = communityVerdict(docs, c, threshold)
 	}
-	return out, decider
+	return out, byProvider, decider
 }
 
 // projectCluster renders one cluster for the provider.
@@ -408,6 +437,7 @@ func (o *Orchestrator) applyConsolidation(
 	docs []consolidationDoc,
 	clusters []docCluster,
 	verdicts map[int]agentplugin.ConsolidationVerdict,
+	byProvider map[int]bool,
 	threshold float64,
 	st consolidationStats,
 ) consolidationStats {
@@ -427,6 +457,14 @@ func (o *Orchestrator) applyConsolidation(
 	// later would build a chain — the closure check would catch it, but
 	// refusing here keeps the pass's own output chain-free by construction.
 	usedAsCanonical := make(map[string]bool, len(clusters))
+	// Canonicals whose description this pass has already rewritten. Clusters
+	// are overlapping stars, so two verdicts can legitimately fold different
+	// members into the same survivor — and each merged description REPLACES
+	// the survivor's text, so applying the second would erase the detail the
+	// first one preserved while both folds stand. The first rewrite wins and
+	// the second is reported: it was written against text the model had seen,
+	// and the text has since changed.
+	mergedCanonicals := make(map[string]bool, len(clusters))
 	written := make([]int, 0, len(docs))
 
 	for i, c := range clusters {
@@ -469,6 +507,7 @@ func (o *Orchestrator) applyConsolidation(
 		// would apply a merged description to a canonical nothing was folded
 		// into, as soon as any earlier cluster had folded something.
 		clusterFolds := 0
+		clusterWritten := make([]int, 0, len(c.members))
 
 		// Sorted, so two runs over the same verdict write the same marks.
 		dupIDs := make([]string, 0, len(v.Duplicates))
@@ -524,6 +563,7 @@ func (o *Orchestrator) applyConsolidation(
 			in.insights[dup.slot].SimilarityScore = score
 			marks[dupID] = final
 			written = append(written, dup.slot)
+			clusterWritten = append(clusterWritten, dup.slot)
 			usedAsCanonical[final] = true
 			clusterFolds++
 			st.Folded++
@@ -547,12 +587,48 @@ func (o *Orchestrator) applyConsolidation(
 		// consolidated: an earlier area's text is already recorded in that
 		// area's checkpoint, and rewriting it here would leave the record and
 		// the result disagreeing about what the finding says.
-		if merged := strings.TrimSpace(v.MergedDescription); merged != "" && docs[fi].current && clusterFolds > 0 {
-			plain, md := splitMarkdownDescription(merged)
-			in.insights[docs[fi].slot].Description = plain
-			in.insights[docs[fi].slot].DescriptionMd = md
-			applog.WithFields(applog.Fields{"area": st.Area, "canonical": final}).
-				Info("Consolidation: merged the folded members' detail onto the canonical")
+		if merged := strings.TrimSpace(v.MergedDescription); merged != "" && clusterFolds > 0 {
+			switch {
+			case !docs[fi].current:
+				// An earlier area's text is already recorded in that area's
+				// checkpoint and cannot be rewritten here. The folds are
+				// given back rather than applied without the rewrite: the
+				// adjudicator asked for one because the survivor is missing
+				// something the folded members carry, and applying the fold
+				// anyway is exactly how a fold loses a caveat.
+				for _, slot := range clusterWritten {
+					in.insights[slot].DuplicateOf = ""
+					in.insights[slot].SimilarityScore = 0
+					st.Folded--
+					clusterFolds--
+				}
+				written = written[:len(written)-len(clusterWritten)]
+				st.RefusedUnmergeable++
+				applog.WithFields(applog.Fields{"area": st.Area, "canonical": final}).
+					Info("Consolidation: the survivor needs a rewrite its area has already recorded; leaving the findings standing")
+			case mergedCanonicals[final]:
+				applog.WithFields(applog.Fields{"area": st.Area, "canonical": final}).
+					Info("Consolidation: a second rewrite of the same survivor was dropped; it was written against text this pass has already changed")
+			default:
+				plain, md := splitMarkdownDescription(merged)
+				in.insights[docs[fi].slot].Description = plain
+				in.insights[docs[fi].slot].DescriptionMd = md
+				mergedCanonicals[final] = true
+				applog.WithFields(applog.Fields{"area": st.Area, "canonical": final}).
+					Info("Consolidation: merged the folded members' detail onto the canonical")
+			}
+		}
+
+		// Every pair the PROVIDER left standing inside a cluster it decided.
+		// Omitting a member from Duplicates is an explicit judgement that it
+		// is a different finding, and without recording it the end-of-run
+		// check folds the pair anyway on document order — overriding the one
+		// decision this feature exists to take. Only for a cluster the
+		// provider decided: the community fallback's non-folds ARE the
+		// end-of-run rule, and freezing those would change the community
+		// outcome rather than preserve it.
+		if byProvider[i] {
+			o.keepStanding(docs, c, v, marks, &st)
 		}
 	}
 
@@ -587,6 +663,34 @@ func (o *Orchestrator) applyConsolidation(
 		st.Folded, st.ByCosine, st.ByContainment, st.ByBoth = 0, 0, 0, 0
 	}
 	return st
+}
+
+// keepStanding records every pair inside an adjudicated cluster that the
+// provider decided to leave standing, so the end-of-run check does not fold
+// it on document order.
+//
+// A pair is "left standing" when the final marks relate neither member to the
+// other: a member the verdict never named is a judgement that it states a
+// different claim, and a member whose fold this pass refused is one the
+// adjudicator could not be given. Both must survive Phase 9.
+func (o *Orchestrator) keepStanding(docs []consolidationDoc, c docCluster, v agentplugin.ConsolidationVerdict, marks map[string]string, st *consolidationStats) {
+	for i := 0; i < len(c.members); i++ {
+		for j := i + 1; j < len(c.members); j++ {
+			a, b := docs[c.members[i]].id, docs[c.members[j]].id
+			if marks[a] == b || marks[b] == a {
+				continue
+			}
+			// Both folded into the same survivor: they are related through it,
+			// and the end-of-run check cannot fold one into the other anyway
+			// because both already carry a mark.
+			if marks[a] != "" && marks[a] == marks[b] {
+				continue
+			}
+			o.keepPair(a, b)
+			st.Kept++
+		}
+	}
+	_ = v
 }
 
 // reverifyFold re-checks a fold against the canonical it will actually point
@@ -702,21 +806,23 @@ func (o *Orchestrator) cacheInsightVector(text string, vec []float64) {
 // record. Nil for an area that proposed no clusters at all, which keeps the
 // field absent on the common case rather than storing a row of zeros per area.
 func (st consolidationStats) persisted() *models.ConsolidationSummary {
-	if st.Clusters == 0 && st.Folded == 0 {
+	if st.Clusters == 0 && st.Folded == 0 && st.Kept == 0 {
 		return nil
 	}
 	return &models.ConsolidationSummary{
-		Documents:        st.Documents,
-		Clusters:         st.Clusters,
-		Folded:           st.Folded,
-		ByCosine:         st.ByCosine,
-		ByContainment:    st.ByContainment,
-		ByBoth:           st.ByBoth,
-		Decider:          st.Decider,
-		RefusedOtherArea: st.RefusedNotMine,
-		RefusedRecheck:   st.RefusedRecheck,
-		RefusedShape:     st.RefusedShape,
-		Reverted:         st.Reverted,
-		DurationMs:       st.DurationMs,
+		Documents:          st.Documents,
+		Clusters:           st.Clusters,
+		Folded:             st.Folded,
+		ByCosine:           st.ByCosine,
+		ByContainment:      st.ByContainment,
+		ByBoth:             st.ByBoth,
+		Decider:            st.Decider,
+		RefusedOtherArea:   st.RefusedNotMine,
+		RefusedRecheck:     st.RefusedRecheck,
+		RefusedShape:       st.RefusedShape,
+		RefusedUnmergeable: st.RefusedUnmergeable,
+		Kept:               st.Kept,
+		Reverted:           st.Reverted,
+		DurationMs:         st.DurationMs,
 	}
 }

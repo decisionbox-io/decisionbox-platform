@@ -11,6 +11,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -491,18 +492,20 @@ func TestConsolidateArea_MergedDescriptionLandsOnACurrentCanonical(t *testing.T)
 	}
 }
 
-// Not onto an earlier area's finding: its text is already recorded in that
-// area's checkpoint, and rewriting it here would leave the record and the
-// result disagreeing about what the finding says.
-func TestConsolidateArea_MergedDescriptionIsNotWrittenOntoAnEarlierArea(t *testing.T) {
+// An earlier area's text is already recorded in that area's checkpoint and
+// cannot be rewritten here. A verdict that asks for one is saying the survivor
+// is missing something the folded members carry — so applying the fold without
+// the rewrite would be exactly how a fold loses a caveat. The folds are given
+// back and both findings stand.
+func TestConsolidateArea_RefusesAFoldWhoseSurvivorCannotBeRewritten(t *testing.T) {
 	earlier := insight("e1", "replenishment", "overdue orders are rising", "the rate climbed", 500)
-	cur := insight("c1", "stock", "overdue orders keep rising", "the rate climbed further", 480)
+	cur := insight("c1", "stock", "overdue orders keep rising", "the rate climbed further; seasonality not separated", 480)
 
 	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
 		return []agentplugin.ConsolidationVerdict{{
 			CanonicalID:       "e1",
 			Duplicates:        map[string]float64{"c1": 0.99},
-			MergedDescription: "rewritten",
+			MergedDescription: "the rate climbed; seasonality not separated",
 		}}, nil
 	}})
 	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
@@ -510,11 +513,135 @@ func TestConsolidateArea_MergedDescriptionIsNotWrittenOntoAnEarlierArea(t *testi
 	}}}
 	current := []models.Insight{cur}
 	runInsights := []models.Insight{earlier}
-	if st := o.consolidateArea(context.Background(), areaInput("stock", current, runInsights)); st.Folded != 1 {
-		t.Fatalf("stats = %+v", st)
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, runInsights))
+
+	if st.Folded != 0 || st.RefusedUnmergeable != 1 {
+		t.Fatalf("stats = %+v, want the cluster given back", st)
 	}
-	if runInsights[0].Description == "rewritten" {
+	if current[0].DuplicateOf != "" {
+		t.Errorf("c1 was folded anyway, losing its caveat: duplicate_of=%q", current[0].DuplicateOf)
+	}
+	if runInsights[0].Description == "the rate climbed; seasonality not separated" {
 		t.Error("an earlier area's description was rewritten")
+	}
+}
+
+// A fold into an earlier area WITHOUT a rewrite is still applied: nothing is
+// being lost, and that is the common and useful case.
+func TestConsolidateArea_FoldsIntoAnEarlierAreaWhenNoRewriteIsNeeded(t *testing.T) {
+	earlier := insight("e1", "replenishment", "overdue orders are rising", "the rate climbed", 500)
+	cur := insight("c1", "stock", "overdue orders keep rising", "the rate climbed further", 480)
+
+	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		return []agentplugin.ConsolidationVerdict{{
+			CanonicalID: "e1", Duplicates: map[string]float64{"c1": 0.99},
+		}}, nil
+	}})
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(earlier): 0, embText(cur): 1,
+	}}}
+	current := []models.Insight{cur}
+	if st := o.consolidateArea(context.Background(), areaInput("stock", current, []models.Insight{earlier})); st.Folded != 1 {
+		t.Fatalf("stats = %+v, want the fold applied", st)
+	}
+	if current[0].DuplicateOf != "e1" {
+		t.Errorf("duplicate_of = %q, want e1", current[0].DuplicateOf)
+	}
+}
+
+// Two overlapping stars can legitimately fold different members into the same
+// survivor, and each merged description REPLACES its text — so applying the
+// second erases the detail the first preserved while both folds stand. The
+// first rewrite wins; the second is dropped, because it was written against
+// text this pass has already changed.
+func TestConsolidateArea_SecondRewriteOfOneSurvivorIsDropped(t *testing.T) {
+	a := insight("a", "stock", "claim a", "body a", 400)
+	b := insight("b", "stock", "claim b", "body b", 300)
+	c := insight("c", "stock", "claim c", "body c", 200)
+
+	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		out := make([]agentplugin.ConsolidationVerdict, len(cl))
+		for i := range cl {
+			out[i] = agentplugin.ConsolidationVerdict{
+				CanonicalID: "a", Duplicates: map[string]float64{"b": 0.99, "c": 0.99},
+				MergedDescription: fmt.Sprintf("rewrite number %d, carrying b's figure", i+1),
+			}
+		}
+		return out, nil
+	}})
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 1, embText(c): 2,
+	}}}
+	current := []models.Insight{a, b, c}
+	if st := o.consolidateArea(context.Background(), areaInput("stock", current, nil)); st.Folded != 2 {
+		t.Fatalf("stats = %+v, want both folds", st)
+	}
+	if !strings.Contains(current[0].Description, "rewrite number 1") {
+		t.Errorf("a.description = %q, want the first rewrite kept", current[0].Description)
+	}
+}
+
+// A member the PROVIDER left out of Duplicates is an explicit judgement that
+// it states a different claim. Without recording it the end-of-run check folds
+// the pair anyway on document order, overriding the one decision this feature
+// exists to take.
+func TestConsolidateArea_RecordsThePairsTheProviderLeftStanding(t *testing.T) {
+	a := insight("a", "stock", "claim a", "body a", 300)
+	b := insight("b", "stock", "claim b", "body b", 200)
+	c := insight("c", "stock", "claim c", "body c", 100)
+
+	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		// b folds into a; c is a different finding.
+		return []agentplugin.ConsolidationVerdict{{
+			CanonicalID: "a", Duplicates: map[string]float64{"b": 0.99},
+			Reason: "c states a different claim",
+		}}, nil
+	}})
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 1, embText(c): 2,
+	}}}
+	current := []models.Insight{a, b, c}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if st.Folded != 1 {
+		t.Fatalf("stats = %+v, want one fold", st)
+	}
+	if st.Kept == 0 {
+		t.Fatalf("stats = %+v, want the standing pairs recorded", st)
+	}
+	for _, pair := range [][2]string{{"c", "a"}, {"c", "b"}} {
+		if !o.adjudicatedKeep(pair[0], pair[1]) {
+			t.Errorf("pair %v was not recorded; Phase 9 will fold it on document order", pair)
+		}
+	}
+	// And the pair the provider DID fold is not in the keep set.
+	if o.adjudicatedKeep("a", "b") {
+		t.Error("a folded pair must not also be recorded as standing")
+	}
+}
+
+// The community fallback's non-folds ARE the end-of-run rule, so recording
+// them would change the community outcome rather than preserve it.
+func TestConsolidateArea_TheCommunityRuleRecordsNoKeeps(t *testing.T) {
+	withProvider(t, nil)
+
+	a := insight("a", "stock", "claim a", "body a", 300)
+	b := insight("b", "stock", "claim b", "body b", 200)
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 60,
+	}}}
+	// Far apart in angle and sharing figures, so containment proposes the
+	// pair and the community rule declines to fold it.
+	a.Description = "| north | 111,222 | 33.3 |"
+	b.Name = "the north segment holds 111,222 idle units, 33.3 of it"
+	current := []models.Insight{a, b}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if st.Kept != 0 {
+		t.Errorf("stats = %+v, want no keeps recorded by the community rule", st)
+	}
+	if o.adjudicatedKeep("a", "b") {
+		t.Error("the community rule recorded a keep; the end-of-run check is now frozen out of its own decision")
 	}
 }
 
@@ -775,17 +902,16 @@ func TestDenormalizeInsights_CarriesTheConsolidationMarks(t *testing.T) {
 }
 
 // A restore remints every insight id, so a mark carried over verbatim names a
-// row this attempt does not hold — which renders the finding as suppressed
-// behind a canonical the reader cannot reach. Resolvable marks are re-pointed;
-// unresolvable ones are dropped and the finding is visible again.
+// row this attempt does not hold. What CAN be resolved at restore time is
+// re-pointed immediately; what cannot is left alone, because the area order
+// comes out of a map and a mark's target may simply not have restored yet.
+// settleRunMarks is what decides the rest.
 func TestRepointRestoredMarks(t *testing.T) {
 	insights := []models.Insight{
 		{ID: "fresh-a", Name: "canonical"},
 		{ID: "fresh-b", Name: "restatement", DuplicateOf: "stored-a", SimilarityScore: 0.93},
 		{ID: "fresh-c", Name: "orphan", DuplicateOf: "gone", SimilarityScore: 0.91,
 			Validation: &valmodels.InsightValidation{Combined: valmodels.StatusSkippedDuplicate}},
-		{ID: "fresh-d", Name: "checked and also orphaned", DuplicateOf: "gone", SimilarityScore: 0.9,
-			Validation: &valmodels.InsightValidation{Combined: valmodels.StatusConfirmed}},
 	}
 	repointRestoredMarks(insights, map[string]string{"stored-a": "fresh-a"}, "stock")
 
@@ -795,17 +921,10 @@ func TestRepointRestoredMarks(t *testing.T) {
 	if insights[1].SimilarityScore != 0.93 {
 		t.Errorf("a re-pointed mark must keep its score, got %v", insights[1].SimilarityScore)
 	}
-	if insights[2].DuplicateOf != "" || insights[2].SimilarityScore != 0 {
-		t.Errorf("unresolvable mark = {%q, %v}, want cleared", insights[2].DuplicateOf, insights[2].SimilarityScore)
-	}
-	// And the verdict that existed only because of the mark goes with it: a
-	// visible finding stamped "Restated" is a restatement of nothing.
-	if insights[2].Validation != nil {
-		t.Errorf("validation = %+v, want cleared with the mark", insights[2].Validation)
-	}
-	// A verdict the verifier actually produced is NOT touched.
-	if insights[3].Validation == nil || insights[3].Validation.Combined != valmodels.StatusConfirmed {
-		t.Errorf("a real verdict was cleared: %+v", insights[3].Validation)
+	// NOT cleared here: the target may belong to an area that has not
+	// restored yet, and the order is not predictable.
+	if insights[2].DuplicateOf != "gone" {
+		t.Errorf("unresolved mark = %q; it must be left for settleRunMarks, not cleared on a partial mapping", insights[2].DuplicateOf)
 	}
 	if insights[0].DuplicateOf != "" {
 		t.Errorf("an unmarked insight was touched: %q", insights[0].DuplicateOf)
@@ -966,5 +1085,121 @@ func TestBuildClusters_ProposalComesFromTheClustersOwnRelations(t *testing.T) {
 	}
 	if got := byMembers["[1 2 3]"]; got != agentplugin.ProposalBoth {
 		t.Errorf("{b,c,d} proposal = %q, want both", got)
+	}
+}
+
+// The switch an operator needs when they want the previous behaviour back.
+// The similarity floor is a threshold and cannot express "do not consolidate",
+// and the containment test does not read it at all.
+func TestConsolidateArea_CanBeTurnedOff(t *testing.T) {
+	withProvider(t, nil)
+	t.Setenv(consolidationEnabledEnv, "false")
+
+	a := insight("a", "stock", "idle units are growing", "the total rose", 100)
+	b := insight("b", "stock", "idle units keep growing", "again", 90)
+	emb := &angleEmbedder{deg: map[string]float64{embText(a): 0, embText(b): 1}}
+	o := &Orchestrator{projectID: "p", embeddingProvider: emb}
+
+	current := []models.Insight{a, b}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if st.Clusters != 0 || st.Folded != 0 {
+		t.Errorf("stats = %+v, want nothing done", st)
+	}
+	if current[1].DuplicateOf != "" {
+		t.Errorf("b was marked %q with the pass switched off", current[1].DuplicateOf)
+	}
+	if emb.calls != 0 {
+		t.Errorf("the pass embedded %d batches with the switch off", emb.calls)
+	}
+	if st.persisted() != nil {
+		t.Error("a pass that did nothing must record nothing on the run log")
+	}
+}
+
+// settleRunMarks is the authority, run once the whole loop has finished. The
+// case it exists for: the run's analysis areas come out of a MAP, so an area
+// that folded into another can restore BEFORE it, and clearing on the spot
+// threw away a good mark whose target had not registered yet.
+func TestSettleRunMarks(t *testing.T) {
+	// b restored first, carrying a mark into a — which restores after it.
+	allInsights := []models.Insight{
+		{ID: "fresh-b", AnalysisArea: "repl", DuplicateOf: "stored-a", SimilarityScore: 0.93},
+		{ID: "fresh-a", AnalysisArea: "stock"},
+		{ID: "fresh-c", AnalysisArea: "stock", DuplicateOf: "never-existed", SimilarityScore: 0.91,
+			Validation: &valmodels.InsightValidation{Combined: valmodels.StatusSkippedDuplicate}},
+		{ID: "fresh-d", AnalysisArea: "stock", DuplicateOf: "never-existed", SimilarityScore: 0.9,
+			Validation: &valmodels.InsightValidation{Combined: valmodels.StatusConfirmed}},
+	}
+	// The step copies, which are a separate copy by the time the loop has
+	// appended them: settling one and not the other would leave the result and
+	// the record disagreeing about which findings are visible.
+	analysisLog := []models.AnalysisStep{
+		{AreaID: "repl", Insights: []models.Insight{
+			{ID: "fresh-b", DuplicateOf: "stored-a", SimilarityScore: 0.93},
+		}},
+		{AreaID: "stock", Insights: []models.Insight{
+			{ID: "fresh-a"},
+			{ID: "fresh-c", DuplicateOf: "never-existed", SimilarityScore: 0.91},
+		}},
+	}
+
+	repointed, cleared := settleRunMarks(analysisLog, allInsights, map[string]string{"stored-a": "fresh-a"})
+
+	if allInsights[0].DuplicateOf != "fresh-a" {
+		t.Errorf("mark = %q, want fresh-a: its target registered after its own area restored", allInsights[0].DuplicateOf)
+	}
+	if allInsights[0].SimilarityScore != 0.93 {
+		t.Errorf("a re-pointed mark must keep its score, got %v", allInsights[0].SimilarityScore)
+	}
+	if analysisLog[0].Insights[0].DuplicateOf != "fresh-a" {
+		t.Errorf("the step copy was not settled: %q", analysisLog[0].Insights[0].DuplicateOf)
+	}
+
+	// A mark into a row this run genuinely does not hold is cleared, and the
+	// verdict that existed only because of it goes with it: a visible finding
+	// stamped "Restated" is a restatement of nothing.
+	if allInsights[2].DuplicateOf != "" || allInsights[2].SimilarityScore != 0 {
+		t.Errorf("unresolvable mark = {%q, %v}, want cleared", allInsights[2].DuplicateOf, allInsights[2].SimilarityScore)
+	}
+	if allInsights[2].Validation != nil {
+		t.Errorf("validation = %+v, want cleared with the mark", allInsights[2].Validation)
+	}
+	if analysisLog[1].Insights[1].DuplicateOf != "" {
+		t.Errorf("the step copy's unresolvable mark was not cleared: %q", analysisLog[1].Insights[1].DuplicateOf)
+	}
+	// A verdict the verifier actually produced is NOT touched.
+	if allInsights[3].Validation == nil || allInsights[3].Validation.Combined != valmodels.StatusConfirmed {
+		t.Errorf("a real verdict was cleared: %+v", allInsights[3].Validation)
+	}
+	if repointed != 2 || cleared != 3 {
+		t.Errorf("repointed=%d cleared=%d, want 2 and 3 across both copies", repointed, cleared)
+	}
+	// An unmarked insight is never touched.
+	if allInsights[1].DuplicateOf != "" {
+		t.Errorf("an unmarked insight was given a mark: %q", allInsights[1].DuplicateOf)
+	}
+}
+
+// A document another finding is already folded INTO cannot be suppressed by
+// the end-of-run check. A mid-run mark B -> A is already written and
+// persisted, so folding A into an earlier run's X would leave B pointing at a
+// hidden row — and re-pointing B at X is not possible there, because X belongs
+// to another run and its vector is not in hand to re-verify B against.
+func TestMarkDuplicates_DoesNotFoldADocumentThatIsAlreadyACanonical(t *testing.T) {
+	store := &mockEmbedIndexStore{}
+	vs := &mockVectorStore{dupes: []vectorstore.SearchResult{{ID: "from-an-earlier-run", Score: 0.97}}}
+	o := &Orchestrator{embedIndexStore: store, vectorStore: vs}
+
+	vec := []float64{1, 0, 0}
+	o.markDuplicates(context.Background(), []dedupCandidate{
+		{id: "a", docType: "insight", vec: vec, text: "a", magnitude: "affected=1"},
+		{id: "b", docType: "insight", vec: vec, text: "b", magnitude: "affected=1", markedBy: "a"},
+	}, nil)
+
+	for _, u := range store.dupUpdates {
+		if u.ID == "a" {
+			t.Errorf("a is b's canonical and was folded into %q; b now points at a hidden row", u.DupOf)
+		}
 	}
 }

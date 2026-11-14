@@ -793,15 +793,15 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		analysisDraftRepo:      analysisDraftRepo,
 
 		recommendationCheckpointRepo: recommendationCheckpointRepo,
-		embedder:               opts.EmbeddingProvider, // same interface, named differently to avoid ambiguity
-		schemaRetriever:        opts.SchemaRetriever,
-		schemaCache:            opts.SchemaCache,
-		warehouseHash:          opts.WarehouseHash,
-		warehouseID:            opts.WarehouseID,
-		warehouseProviders:     opts.WarehouseProviders,
-		warehouses:             opts.Warehouses,
-		runStepIndex:           opts.RunStepIndex,
-		runID:                  opts.RunID,
+		embedder:                     opts.EmbeddingProvider, // same interface, named differently to avoid ambiguity
+		schemaRetriever:              opts.SchemaRetriever,
+		schemaCache:                  opts.SchemaCache,
+		warehouseHash:                opts.WarehouseHash,
+		warehouseID:                  opts.WarehouseID,
+		warehouseProviders:           opts.WarehouseProviders,
+		warehouses:                   opts.Warehouses,
+		runStepIndex:                 opts.RunStepIndex,
+		runID:                        opts.RunID,
 	}
 }
 
@@ -2040,6 +2040,17 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		return nil, ai.ErrAttemptSuperseded
 	}
 	o.setLLMPhase(models.PhaseRecommendations)
+	// Settle the consolidation marks across the whole run now that every
+	// restored area has registered the ids this attempt minted for it. Until
+	// here a mark into an area that restored LATER is correct but stale, and
+	// the area order comes out of a map so "later" is not predictable. Run
+	// before the eligibility filter, which reads the marks.
+	if repointed, cleared := settleRunMarks(analysisLog, allInsights, freshByStoredInsight); repointed+cleared > 0 {
+		applog.WithFields(applog.Fields{
+			"repointed": repointed, "cleared": cleared,
+		}).Info("Consolidation marks settled across the restored run")
+	}
+
 	recommenderInput := filterEligibleInsights(allInsights, o.recommendationVerdicts)
 	applog.WithFields(applog.Fields{
 		"total_insights":    len(allInsights),

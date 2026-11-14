@@ -262,7 +262,9 @@ type ConsolidationSummary struct {
 
 	RefusedOtherArea int  `bson:"refused_other_area,omitempty" json:"refused_other_area,omitempty"`
 	RefusedRecheck   int  `bson:"refused_recheck,omitempty" json:"refused_recheck,omitempty"`
-	RefusedShape     int  `bson:"refused_shape,omitempty" json:"refused_shape,omitempty"`
+	RefusedShape       int  `bson:"refused_shape,omitempty" json:"refused_shape,omitempty"`
+	RefusedUnmergeable int  `bson:"refused_unmergeable,omitempty" json:"refused_unmergeable,omitempty"`
+	Kept               int  `bson:"kept,omitempty" json:"kept,omitempty"`
 	Reverted         bool `bson:"reverted,omitempty" json:"reverted,omitempty"`
 
 	DurationMs int64 `bson:"duration_ms,omitempty" json:"duration_ms,omitempty"`

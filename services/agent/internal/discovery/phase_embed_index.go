@@ -582,6 +582,15 @@ func (o *Orchestrator) markDuplicates(ctx context.Context, candidates []dedupCan
 	// id -> position, so a canonical that is one of this run's own documents
 	// can be compared against directly.
 	indexByID := make(map[string]int, len(candidates))
+	// The documents another document is already folded INTO. They cannot be
+	// suppressed by this phase: a mid-run mark B -> A is already written and
+	// persisted, so folding A into an earlier run's X would leave B pointing
+	// at a hidden row — the one outcome the whole chain discipline exists to
+	// prevent — and re-pointing B at X is not possible here, because X belongs
+	// to another run and its vector is not in hand to re-verify B against.
+	// Deferring A's cross-run fold costs one duplicate row this run; getting
+	// it wrong costs B its only visible canonical.
+	markTargets := make(map[string]struct{}, len(candidates))
 	for i := range candidates {
 		indexByID[candidates[i].id] = i
 		// Seed the chain map with the marks the mid-run pass already wrote,
@@ -589,9 +598,10 @@ func (o *Orchestrator) markDuplicates(ctx context.Context, candidates []dedupCan
 		// canonical the reader can see rather than to a hidden row.
 		if candidates[i].markedBy != "" {
 			canonical[candidates[i].id] = candidates[i].markedBy
+			markTargets[candidates[i].markedBy] = struct{}{}
 		}
 	}
-	crossRun, sameRun, preMarked := 0, 0, 0
+	crossRun, sameRun, preMarked, protected := 0, 0, 0, 0
 
 	for i := range candidates {
 		c := candidates[i]
@@ -601,6 +611,13 @@ func (o *Orchestrator) markDuplicates(ctx context.Context, candidates []dedupCan
 		// would re-decide a judgement already made.
 		if c.markedBy != "" {
 			preMarked++
+			continue
+		}
+		// A visible canonical with dependants. See markTargets.
+		if _, isTarget := markTargets[c.id]; isTarget {
+			protected++
+			applog.WithField("id", c.id).
+				Info("Phase 9: this document is another finding's canonical; not folding it")
 			continue
 		}
 
@@ -663,6 +680,7 @@ func (o *Orchestrator) markDuplicates(ctx context.Context, candidates []dedupCan
 		"cross_run":    crossRun,
 		"same_run":     sameRun,
 		"consolidated": preMarked,
+		"protected":    protected,
 		"threshold":    threshold,
 		"duration_ms":  time.Since(started).Milliseconds(),
 	}).Info("Phase 9: Duplicate check complete")
