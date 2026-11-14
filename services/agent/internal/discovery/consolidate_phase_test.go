@@ -1770,7 +1770,7 @@ func TestCommunityFolds_IsTheEndOfRunRuleInDocumentOrder(t *testing.T) {
 		doc(3, "d", 90, true, "claim d", ""),
 	}
 	o := &Orchestrator{}
-	folds := o.communityFolds(docs, 0.88)
+	folds := o.communityFolds(docs, 0.88, nil, nil)
 
 	if folds["b"].target != "a" || folds["c"].target != "a" {
 		t.Errorf("folds = %+v; both later members must point at the earliest, not at each other", folds)
@@ -1789,7 +1789,7 @@ func TestCommunityFolds_IsTheEndOfRunRuleInDocumentOrder(t *testing.T) {
 		doc(1, "y", 25, true, "claim y", ""),
 		doc(2, "z", 50, true, "claim z", ""),
 	}
-	cf := o.communityFolds(chain, 0.88)
+	cf := o.communityFolds(chain, 0.88, nil, nil)
 	if cf["y"].target != "x" {
 		t.Errorf("y folded into %q, want x", cf["y"].target)
 	}
@@ -1805,7 +1805,7 @@ func TestCommunityFolds_IsTheEndOfRunRuleInDocumentOrder(t *testing.T) {
 		doc(2, "r", 2, true, "claim r", ""),
 	}
 	seeded[1].duplicateOf = "p"
-	sf := o.communityFolds(seeded, 0.88)
+	sf := o.communityFolds(seeded, 0.88, map[string]string{"q": "p"}, nil)
 	if _, ok := sf["q"]; ok {
 		t.Error("an already-folded document must not be re-decided")
 	}
@@ -1970,7 +1970,7 @@ func TestCommunityFolds_DoesNotChainThroughAForbiddenFold(t *testing.T) {
 	// With nothing kept, b folds into a and c then fails the re-check
 	// against a — which is correct, because a is where the mark points.
 	plain := &Orchestrator{}
-	if f := plain.communityFolds(docs, 0.88); f["b"].target != "a" {
+	if f := plain.communityFolds(docs, 0.88, nil, nil); f["b"].target != "a" {
 		t.Fatalf("folds = %+v, want b into a (fixture broken)", f)
 	} else if _, ok := f["c"]; ok {
 		t.Fatalf("folds = %+v; c resembles b but not a (fixture broken)", f)
@@ -1980,7 +1980,7 @@ func TestCommunityFolds_DoesNotChainThroughAForbiddenFold(t *testing.T) {
 	// plainly restates it.
 	kept := &Orchestrator{}
 	kept.keepPair("a", "b")
-	folds := kept.communityFolds(docs, 0.88)
+	folds := kept.communityFolds(docs, 0.88, nil, nil)
 	if _, ok := folds["b"]; ok {
 		t.Errorf("folds = %+v; a and b were kept apart", folds)
 	}
@@ -2001,7 +2001,7 @@ func TestCommunityFolds_IgnoresDocumentsItCannotMark(t *testing.T) {
 	docs[0].current = false
 
 	o := &Orchestrator{}
-	folds := o.communityFolds(docs, 0.88)
+	folds := o.communityFolds(docs, 0.88, nil, nil)
 	if _, ok := folds["earlier"]; ok {
 		t.Errorf("folds = %+v; an earlier area's finding cannot be marked by this pass", folds)
 	}
@@ -2057,5 +2057,60 @@ func TestConsolidateArea_RefusedMergeDonorsAreProtectedWithNothingToRevert(t *te
 	}
 	if strings.Contains(current[0].Description, "carrying") {
 		t.Errorf("a.description = %q; the rewrite was applied with nothing folded", current[0].Description)
+	}
+}
+
+// The community pass must see the marks the PROVIDER just wrote, not the ones
+// the documents arrived with. With the provider folding b into the later c and
+// declining the overlapping cluster, reading the arrival marks left the
+// simulation thinking b was visible: it folded c into b, and d then failed its
+// re-check against b — while c, which d plainly restates, was visible the
+// whole time. d spent a validation check and could reach Phase 5 before the
+// end-of-run rule folded it into c anyway.
+func TestConsolidateArea_TheCommunityPassSeesTheProvidersMarks(t *testing.T) {
+	a := insight("a", "stock", "claim a", "body a", 400)
+	b := insight("b", "stock", "claim b", "body b", 300)
+	c := insight("c", "stock", "claim c", "body c", 200)
+	d := insight("d", "stock", "claim d", "body d", 100)
+
+	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		out := make([]agentplugin.ConsolidationVerdict, len(cl))
+		for i, cluster := range cl {
+			ids := make([]string, 0, 3)
+			for _, cand := range cluster.Candidates {
+				ids = append(ids, cand.ID)
+			}
+			// Answers {a,b,c} with b folded into the LATER c, and declines
+			// {b,c,d}.
+			if slices.Contains(ids, "a") {
+				out[i] = agentplugin.ConsolidationVerdict{
+					CanonicalID: "c", Duplicates: map[string]float64{"b": 0.906},
+				}
+			}
+		}
+		return out, nil
+	}})
+
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 25, embText(c): 50, embText(d): 75,
+	}}}
+	current := []models.Insight{a, b, c, d}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	byID := map[string]models.Insight{}
+	for _, ins := range current {
+		byID[ins.ID] = ins
+	}
+	if byID["b"].DuplicateOf != "c" {
+		t.Fatalf("b.duplicate_of = %q, want c (the provider's own decision)", byID["b"].DuplicateOf)
+	}
+	if byID["d"].DuplicateOf != "c" {
+		t.Errorf("d.duplicate_of = %q, want c — the visible finding it restates at 0.906", byID["d"].DuplicateOf)
+	}
+	if byID["c"].DuplicateOf != "" {
+		t.Errorf("c.duplicate_of = %q; it is the survivor the provider chose", byID["c"].DuplicateOf)
+	}
+	if st.Folded != 2 {
+		t.Errorf("stats = %+v, want both folds", st)
 	}
 }

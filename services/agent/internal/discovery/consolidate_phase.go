@@ -491,7 +491,12 @@ type communityFold struct {
 // canonical the reader is NOT being sent to — so a document that plainly
 // restates the visible B was left standing and spent a validation check,
 // before the end-of-run rule folded it into B regardless.
-func (o *Orchestrator) communityFolds(docs []consolidationDoc, threshold float64) map[string]communityFold {
+func (o *Orchestrator) communityFolds(
+	docs []consolidationDoc,
+	threshold float64,
+	marks map[string]string,
+	dependants map[string]int,
+) map[string]communityFold {
 	byID := make(map[string]int, len(docs))
 	for i := range docs {
 		byID[docs[i].id] = i
@@ -504,23 +509,33 @@ func (o *Orchestrator) communityFolds(docs []consolidationDoc, threshold float64
 		return docs[i].foldSubject, true
 	}
 
-	// Seeded with the marks the documents already carry, so a match against a
-	// document a previous area's pass folded resolves to the canonical a
-	// reader can actually see.
-	canonical := make(map[string]string, len(docs))
-	for i := range docs {
-		if docs[i].duplicateOf != "" {
-			canonical[docs[i].id] = docs[i].duplicateOf
-		}
+	// Seeded with the marks that are actually standing — the ones the
+	// documents arrived with AND the ones the provider verdicts just wrote —
+	// so a match against a folded document resolves to the canonical a reader
+	// can see.
+	//
+	// Reading the arrival marks alone was a real defect, not a tidiness
+	// point: with the provider folding B into the later C and declining the
+	// overlapping cluster, the simulation still saw B as visible and folded C
+	// into it, and a later D then failed its re-check against B — while C,
+	// which D plainly restates, was visible the whole time. D spent a
+	// validation check and could reach Phase 5 before the end-of-run rule
+	// folded it into C anyway.
+	//
+	// A COPY, because this is a simulation: nothing here may write a mark.
+	canonical := make(map[string]string, len(docs)+len(marks))
+	for id, target := range marks {
+		canonical[id] = target
 	}
 
 	out := make(map[string]communityFold, len(docs))
 	for i := range docs {
-		// A document this pass cannot mark — one from an earlier area, or
-		// one already folded — contributes nothing to the chain either: its
-		// mark would never be written, so a later document must not resolve
-		// through it.
-		if docs[i].duplicateOf != "" || !docs[i].current {
+		// A document this pass cannot mark contributes nothing to the chain
+		// either: its mark would never be written, so a later document must
+		// not resolve through it. Three ways that happens — it belongs to an
+		// earlier area, it already carries a mark, or this pass has already
+		// sent a reader to it.
+		if !docs[i].current || marks[docs[i].id] != "" || dependants[docs[i].id] > 0 {
 			continue
 		}
 		for j := 0; j < i; j++ {
@@ -908,7 +923,7 @@ func (o *Orchestrator) applyConsolidation(
 	// One global pass in document order, so the outcome is the end-of-run
 	// check's own and does not depend on which overlapping star came first.
 	// See communityFolds.
-	for _, fold := range communityFoldOrder(docs, o.communityFolds(docs, threshold)) {
+	for _, fold := range communityFoldOrder(docs, o.communityFolds(docs, threshold, marks, dependants)) {
 		dup := docs[fold.at]
 		if !dup.current || dup.duplicateOf != "" || marks[dup.id] != "" || dependants[dup.id] > 0 {
 			continue
