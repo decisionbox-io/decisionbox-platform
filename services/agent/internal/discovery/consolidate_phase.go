@@ -53,6 +53,32 @@ func consolidationEnabled() bool {
 	return goconfig.GetEnvAsBool(consolidationEnabledEnv, true)
 }
 
+// consolidationMaxClustersEnv bounds how many clusters one area sends to the
+// adjudicator, and so bounds what the pass can cost.
+//
+// It exists because nothing else does. Each call's prompt is bounded by the
+// layer's input window, but the NUMBER of calls grows with the cluster count,
+// so a pathological area — many findings, all overlapping — could spend
+// several times what the analysis call that produced them did. The feature's
+// own acceptance target is under 1% of a run's tokens.
+//
+// Clusters past the bound are not dropped: they fall through to the community
+// rule, which is the outcome the product has today. The bound is deliberately
+// generous — four measured runs proposed about thirty candidate pairs per RUN,
+// so sixty per area is far above anything observed — and it is logged when it
+// bites, because an area that reaches it is either a real finding about the
+// playbook or a bug in the proposal step.
+const consolidationMaxClustersEnv = "DISCOVERY_CONSOLIDATION_MAX_CLUSTERS"
+
+const defaultConsolidationMaxClusters = 60
+
+// consolidationMaxClusters resolves that bound. A non-positive setting means
+// no bound, which is a deliberate operator choice rather than a typo to
+// second-guess: the pass is already bounded per call by the input window.
+func consolidationMaxClusters() int {
+	return goconfig.GetEnvAsInt(consolidationMaxClustersEnv, defaultConsolidationMaxClusters)
+}
+
 // consolidateAreaInput is what consolidating one area needs.
 type consolidateAreaInput struct {
 	// area is the area being consolidated.
@@ -89,6 +115,7 @@ type consolidationStats struct {
 	RefusedShape       int
 	RefusedUnmergeable int
 	Kept               int
+	OverBound          int
 	Reverted           bool
 	DurationMs         int64
 }
@@ -121,7 +148,20 @@ func (o *Orchestrator) consolidateArea(ctx context.Context, in consolidateAreaIn
 		return st
 	}
 
-	verdicts, byProvider, decider := o.adjudicate(ctx, docs, clusters, threshold)
+	// What goes to the adjudicator, as against what the community rule
+	// decides. See consolidationMaxClustersEnv.
+	adjudicable := clusters
+	if bound := consolidationMaxClusters(); bound > 0 && len(clusters) > bound {
+		adjudicable = clusters[:bound]
+		st.OverBound = len(clusters) - bound
+		applog.WithFields(applog.Fields{
+			"area": st.Area, "clusters": len(clusters), "bound": bound,
+			"to_community_rule": st.OverBound, "env": consolidationMaxClustersEnv,
+		}).Warn("Consolidation: this area proposed more clusters than the adjudication bound; the rest fall to the community rule")
+	}
+
+	verdicts, byProvider, decider := o.adjudicate(ctx, docs, adjudicable, threshold)
+	communityVerdicts(docs, clusters, len(adjudicable), threshold, verdicts)
 	st.Decider = decider
 	st = o.applyConsolidation(in, docs, clusters, verdicts, byProvider, threshold, st)
 	st.DurationMs = time.Since(started).Milliseconds()
@@ -132,7 +172,7 @@ func (o *Orchestrator) consolidateArea(ctx context.Context, in consolidateAreaIn
 		"by_both": st.ByBoth, "decider": st.Decider,
 		"refused_other_area": st.RefusedNotMine, "refused_recheck": st.RefusedRecheck,
 		"refused_shape": st.RefusedShape, "refused_unmergeable": st.RefusedUnmergeable,
-		"kept": st.Kept, "reverted": st.Reverted,
+		"kept": st.Kept, "over_bound": st.OverBound, "reverted": st.Reverted,
 		"duration_ms": st.DurationMs,
 	}).Info("Consolidation: area complete")
 	return st
@@ -382,6 +422,15 @@ func (o *Orchestrator) adjudicate(ctx context.Context, docs []consolidationDoc, 
 		out[i] = communityVerdict(docs, c, threshold)
 	}
 	return out, byProvider, decider
+}
+
+// communityVerdicts decides every cluster by the community rule. Used for the
+// clusters past the adjudication bound, which are not dropped — they get the
+// decision the product makes today.
+func communityVerdicts(docs []consolidationDoc, clusters []docCluster, from int, threshold float64, out map[int]agentplugin.ConsolidationVerdict) {
+	for i := from; i < len(clusters); i++ {
+		out[i] = communityVerdict(docs, clusters[i], threshold)
+	}
 }
 
 // projectCluster renders one cluster for the provider.
@@ -917,6 +966,7 @@ func (st consolidationStats) persisted() *models.ConsolidationSummary {
 		RefusedShape:       st.RefusedShape,
 		RefusedUnmergeable: st.RefusedUnmergeable,
 		Kept:               st.Kept,
+		OverBound:          st.OverBound,
 		Reverted:           st.Reverted,
 		DurationMs:         st.DurationMs,
 	}

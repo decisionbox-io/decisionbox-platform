@@ -867,6 +867,10 @@ type ConsolidationSummary struct {
 	// Kept counts the pairs the adjudicator decided are different findings,
 	// recorded so the end-of-run check does not fold them on document order.
 	Kept int `bson:"kept,omitempty" json:"kept,omitempty"`
+	// OverBound counts clusters this area proposed past the adjudication
+	// bound, which were decided by the community rule instead. Non-zero is
+	// either a real finding about the playbook or a bug in the proposal step.
+	OverBound int `bson:"over_bound,omitempty" json:"over_bound,omitempty"`
 	// Reverted is set when the pass could not prove its own marks resolve
 	// cleanly and gave them all back. Always worth an alert: it means the
 	// run fell back to the end-of-run check for this area.

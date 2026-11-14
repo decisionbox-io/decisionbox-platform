@@ -184,6 +184,7 @@ var agentForwardedEnvKeys = []string{
 	// off on the API would see no effect on any containerised run — which is
 	// every production deployment.
 	"DISCOVERY_CONSOLIDATION_ENABLED",
+	"DISCOVERY_CONSOLIDATION_MAX_CLUSTERS",
 	// Cloud policy-checker identity. On cloud tenants the agent runs the
 	// cloud-enterprise agent image, whose policy.Checker is
 	// decisionbox-cloud-tenant/policy-plugin (registered only when

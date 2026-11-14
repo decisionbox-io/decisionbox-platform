@@ -396,7 +396,7 @@ own marks back if any of it cannot be proved
 
 **Resume.** The marks go into the area draft that is written on the very next line, so a resumed attempt restores them rather than re-deriving them and never calls the provider twice. A restore remints every insight id, so the marks are settled once after the whole analysis loop — not per area, because the run's analysis areas come out of a map and their order is not stable between attempts, so an area that folded into another can restore before it. A mark the run genuinely cannot resolve is cleared, along with the `skipped_duplicate` verdict that existed only because of it.
 
-`DISCOVERY_CONSOLIDATION_ENABLED` (default on) turns the phase off. The similarity floor is a threshold rather than a switch, and the containment test does not read it.
+`DISCOVERY_CONSOLIDATION_ENABLED` (default on) turns the phase off. The similarity floor is a threshold rather than a switch, and the containment test does not read it. `DISCOVERY_CONSOLIDATION_MAX_CLUSTERS` (default 60, non-positive for no bound) caps how many clusters one area sends to an adjudicator — each call's prompt is bounded by the layer's input window, but the number of calls grows with the cluster count, and four measured runs proposed about thirty candidate pairs per *run*. Clusters past the bound are not dropped: they get the community rule.
 
 ## Phase 4.5: Insight validation (LLM-native)
 

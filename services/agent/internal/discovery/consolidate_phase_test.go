@@ -1423,3 +1423,61 @@ func TestWithCheckpointStableMarks(t *testing.T) {
 		t.Errorf("with no mapping the step must come back unchanged, got %q", got.Insights[0].DuplicateOf)
 	}
 }
+
+// Each call's prompt is bounded by the layer's input window, but the NUMBER of
+// calls grows with the cluster count — so without a bound a pathological area
+// could spend several times what the analysis call that produced it did. The
+// clusters past the bound are not dropped: they get the community rule, which
+// is the decision the product makes today.
+func TestConsolidateArea_BoundsWhatGoesToTheAdjudicator(t *testing.T) {
+	t.Setenv(consolidationMaxClustersEnv, "1")
+
+	// A chain of four 25° apart: two overlapping maximal stars.
+	a := insight("a", "stock", "claim a", "body a", 400)
+	b := insight("b", "stock", "claim b", "body b", 300)
+	c := insight("c", "stock", "claim c", "body c", 200)
+	d := insight("d", "stock", "claim d", "body d", 100)
+
+	stub := &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		out := make([]agentplugin.ConsolidationVerdict, len(cl))
+		for i, cluster := range cl {
+			out[i] = agentplugin.ConsolidationVerdict{CanonicalID: cluster.Candidates[0].ID}
+		}
+		return out, nil
+	}}
+	withProvider(t, stub)
+
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 25, embText(c): 50, embText(d): 75,
+	}}}
+	current := []models.Insight{a, b, c, d}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if st.Clusters < 2 {
+		t.Fatalf("clusters = %d, want at least 2 (fixture broken)", st.Clusters)
+	}
+	if st.OverBound != st.Clusters-1 {
+		t.Errorf("stats = %+v, want %d clusters past the bound", st, st.Clusters-1)
+	}
+	if len(stub.gotFirst) != 1 {
+		t.Errorf("the adjudicator saw %d clusters, want 1", len(stub.gotFirst))
+	}
+	// Still a decision for every cluster: the ones past the bound got the
+	// community rule rather than nothing.
+	if st.Folded == 0 {
+		t.Errorf("stats = %+v; the clusters past the bound must still be decided", st)
+	}
+}
+
+// A non-positive bound means no bound, which is a deliberate operator choice:
+// the pass is already bounded per call by the layer's input window.
+func TestConsolidationMaxClusters_ZeroMeansUnbounded(t *testing.T) {
+	t.Setenv(consolidationMaxClustersEnv, "0")
+	if got := consolidationMaxClusters(); got > 0 {
+		t.Errorf("bound = %d, want non-positive for an explicit 0", got)
+	}
+	t.Setenv(consolidationMaxClustersEnv, "")
+	if got := consolidationMaxClusters(); got != defaultConsolidationMaxClusters {
+		t.Errorf("bound = %d, want the default %d", got, defaultConsolidationMaxClusters)
+	}
+}
