@@ -1203,3 +1203,52 @@ func TestMarkDuplicates_DoesNotFoldADocumentThatIsAlreadyACanonical(t *testing.T
 		}
 	}
 }
+
+// A cluster whose folds are given back because the survivor cannot be
+// rewritten must leave no trace in the chain map. Left in, a later cluster
+// resolving its canonical through that map points a real fold at the wrong
+// document, and the pair the branch just refused is read as folded — so no
+// keep is recorded and the end-of-run check folds it anyway.
+func TestConsolidateArea_AGivenBackFoldLeavesNoTrace(t *testing.T) {
+	earlier := insight("e1", "repl", "overdue orders are rising", "the rate climbed", 500)
+	c1 := insight("c1", "stock", "overdue orders keep rising", "the rate climbed; seasonality not separated", 480)
+	c2 := insight("c2", "stock", "overdue orders still rising", "the rate climbed again", 470)
+
+	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		out := make([]agentplugin.ConsolidationVerdict, len(cl))
+		for i, cluster := range cl {
+			ids := make([]string, 0, 3)
+			for _, cand := range cluster.Candidates {
+				ids = append(ids, cand.ID)
+			}
+			if slices.Contains(ids, "e1") {
+				// Needs a rewrite of an earlier area's text: refused.
+				out[i] = agentplugin.ConsolidationVerdict{
+					CanonicalID: "e1", Duplicates: map[string]float64{"c1": 0.99},
+					MergedDescription: "the rate climbed; seasonality not separated",
+				}
+			}
+		}
+		return out, nil
+	}})
+
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(earlier): 0, embText(c1): 1, embText(c2): 2,
+	}}}
+	current := []models.Insight{c1, c2}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, []models.Insight{earlier}))
+
+	if st.Folded != 0 || st.RefusedUnmergeable != 1 {
+		t.Fatalf("stats = %+v, want the cluster given back", st)
+	}
+	for i := range current {
+		if current[i].DuplicateOf != "" {
+			t.Errorf("%s = %q, want visible", current[i].ID, current[i].DuplicateOf)
+		}
+	}
+	// The refused pair is recorded, so the end-of-run check does not fold it
+	// without the rewrite this branch declined to make.
+	if !o.adjudicatedKeep("c1", "e1") {
+		t.Error("the refused pair was not recorded; Phase 9 will fold it on document order")
+	}
+}

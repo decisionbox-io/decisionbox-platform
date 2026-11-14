@@ -597,6 +597,14 @@ func (o *Orchestrator) applyConsolidation(
 				// something the folded members carry, and applying the fold
 				// anyway is exactly how a fold loses a caveat.
 				for _, slot := range clusterWritten {
+					// Out of `marks` as well as off the insight. Left in, a
+					// later cluster resolving its canonical through the chain
+					// map would resolve through a mark that no longer exists
+					// and point a real fold at the wrong document — and
+					// keepStanding would read this pair as folded and record
+					// no keep for it, so the end-of-run check would fold it
+					// the way this branch just refused.
+					delete(marks, in.insights[slot].ID)
 					in.insights[slot].DuplicateOf = ""
 					in.insights[slot].SimilarityScore = 0
 					st.Folded--
@@ -628,7 +636,7 @@ func (o *Orchestrator) applyConsolidation(
 		// end-of-run rule, and freezing those would change the community
 		// outcome rather than preserve it.
 		if byProvider[i] {
-			o.keepStanding(docs, c, v, marks, &st)
+			o.keepStanding(docs, c, marks, &st)
 		}
 	}
 
@@ -673,7 +681,7 @@ func (o *Orchestrator) applyConsolidation(
 // other: a member the verdict never named is a judgement that it states a
 // different claim, and a member whose fold this pass refused is one the
 // adjudicator could not be given. Both must survive Phase 9.
-func (o *Orchestrator) keepStanding(docs []consolidationDoc, c docCluster, v agentplugin.ConsolidationVerdict, marks map[string]string, st *consolidationStats) {
+func (o *Orchestrator) keepStanding(docs []consolidationDoc, c docCluster, marks map[string]string, st *consolidationStats) {
 	for i := 0; i < len(c.members); i++ {
 		for j := i + 1; j < len(c.members); j++ {
 			a, b := docs[c.members[i]].id, docs[c.members[j]].id
@@ -690,7 +698,6 @@ func (o *Orchestrator) keepStanding(docs []consolidationDoc, c docCluster, v age
 			st.Kept++
 		}
 	}
-	_ = v
 }
 
 // reverifyFold re-checks a fold against the canonical it will actually point
