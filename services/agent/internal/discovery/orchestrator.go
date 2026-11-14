@@ -1942,10 +1942,10 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			step, draftRemap = reidentifyRestoredArea(step)
 			// The draft's own marks name the draft's ids, which have just
 			// changed, so they are re-pointed for the same reason a restored
-			// area's are.
-			for fresh, stored := range draftRemap {
-				freshByStoredInsight[stored] = fresh
-			}
+			// area's are — and registered the same way, because a draft id
+			// can collide with a completed checkpoint's just as readily: an
+			// insight id is the model's when the model supplies one.
+			registerRestoredIDs(freshByStoredInsight, draftRemap, area.ID)
 			repointRestoredMarks(step.Insights, freshByStoredInsight, area.ID)
 			insights = step.Insights
 			// And the remap is deliberately NOT recorded in storedIDByLive,
