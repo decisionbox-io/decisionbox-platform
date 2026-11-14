@@ -2417,3 +2417,68 @@ func TestConsolidateArea_RefusesARewriteThatDropsAFoldsJustification(t *testing.
 		t.Errorf("a.description = %q, want the rewrite", keeps[0].Description)
 	}
 }
+
+// The rewrite is checked against EVERY fold into the survivor, not just the
+// ones this verdict folded. The survivor can already carry a fold from an
+// overlapping cluster of the same pass — and a rewrite that keeps this
+// cluster's figures while dropping that earlier dependant's leaves it hidden
+// behind a survivor which no longer states its claim.
+func TestConsolidateArea_ARewriteIsCheckedAgainstEveryExistingFold(t *testing.T) {
+	// `broad` contains both slices by figure; n and s are the slices; mid
+	// joins the two stars so they overlap.
+	table := "| north | 111,222 | 33.3 |\n| south | 444,555 | 66.6 |"
+	broad := insight("broad", "stock", "the whole total", table, 500)
+	n := insight("n", "stock", "the north segment holds 111,222 units, 33.3 of it", "slice n", 400)
+	s := insight("s", "stock", "the south segment holds 444,555 units, 66.6 of it", "slice s", 300)
+
+	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		out := make([]agentplugin.ConsolidationVerdict, len(cl))
+		for i, cluster := range cl {
+			ids := make([]string, 0, 3)
+			for _, cand := range cluster.Candidates {
+				ids = append(ids, cand.ID)
+			}
+			// One cluster holds both slices. Fold n with no rewrite, then s
+			// with a rewrite that keeps only the south row.
+			if slices.Contains(ids, "n") && slices.Contains(ids, "s") {
+				out[i] = agentplugin.ConsolidationVerdict{
+					CanonicalID: "broad", Duplicates: map[string]float64{"n": 0, "s": 0},
+					MergedDescription: "the whole total\n\n| south | 444,555 | 66.6 |",
+				}
+			}
+		}
+		return out, nil
+	}})
+
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(broad): 0, embText(n): 90, embText(s): 170,
+	}}}
+	current := []models.Insight{broad, n, s}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if st.RefusedUnmergeable != 1 {
+		t.Fatalf("stats = %+v, want the rewrite refused: it drops the row n's fold rests on", st)
+	}
+	if strings.Contains(current[0].Description, "south") && !strings.Contains(current[0].Description, "north") {
+		t.Errorf("broad.description = %q; the rewrite was applied", current[0].Description)
+	}
+	if current[1].DuplicateOf != "" {
+		t.Errorf("n.duplicate_of = %q; its claim is stated nowhere in the rewritten survivor", current[1].DuplicateOf)
+	}
+
+	// The guard reads the live mark set, so a fold recorded on ARRIVAL —
+	// written by a previous area's pass — counts the same way.
+	docs := []consolidationDoc{
+		doc(0, "broad", 0, true, "the whole total", table),
+		doc(1, "earlier", 90, false, "the north segment holds 111,222 units, 33.3 of it", ""),
+	}
+	marks := map[string]string{"earlier": "broad"}
+	kept := insightBodyOf("the whole total\n\n"+table, "", nil)
+	if rewriteBreaksAFold(kept, docs[0], docs, marks, 0.88) {
+		t.Error("a rewrite that keeps the row must not be refused")
+	}
+	dropped := insightBodyOf("the whole total\n\n| south | 444,555 | 66.6 |", "", nil)
+	if !rewriteBreaksAFold(dropped, docs[0], docs, marks, 0.88) {
+		t.Error("a previous area's fold into this survivor must be checked too")
+	}
+}

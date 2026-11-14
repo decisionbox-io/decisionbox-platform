@@ -807,7 +807,7 @@ func (o *Orchestrator) applyConsolidation(
 				prospectiveBody:  prospectiveBody,
 				insights:         in.insights,
 				docs:             docs,
-				byID:             byID,
+				marks:            marks,
 				written:          clusterWritten,
 				threshold:        threshold,
 			}); {
@@ -1169,9 +1169,12 @@ type mergeCheck struct {
 	prospectiveBody  string
 	insights         []models.Insight
 	docs             []consolidationDoc
-	byID             map[string]int
-	written          []int
-	threshold        float64
+	// marks is every mark standing at this point — the arrival marks and
+	// everything this pass has written — which is what makes "every fold
+	// into this survivor" answerable.
+	marks     map[string]string
+	written   []int
+	threshold float64
 }
 
 // mergeRefusal returns why a rewrite cannot be applied, or "" when it can.
@@ -1204,7 +1207,7 @@ func mergeRefusal(c mergeCheck) string {
 		return "a folded member's prose carries rendered evidence figures"
 	case c.refusedDonor:
 		return "a member this verdict folds was refused, so its rewrite cannot be trusted"
-	case rewriteBreaksAFold(c.prospectiveBody, c.survivor, c.insights, c.docs, c.byID, c.written, c.threshold):
+	case rewriteBreaksAFold(c.prospectiveBody, c.survivor, c.docs, c.marks, c.threshold):
 		return "the rewrite no longer states a claim it folds"
 	}
 	return ""
@@ -1221,16 +1224,23 @@ func mergeRefusal(c mergeCheck) string {
 // POINT, not whether the claim still holds — and the end-of-run check skips a
 // document that already carries a mark. So the finding would stay suppressed
 // and unvalidated with its claim stated nowhere.
-func rewriteBreaksAFold(prospectiveBody string, survivor consolidationDoc, insights []models.Insight, docs []consolidationDoc, byID map[string]int, written []int, threshold float64) bool {
-	for _, slot := range written {
-		di, ok := byID[insights[slot].ID]
-		if !ok {
+func rewriteBreaksAFold(prospectiveBody string, survivor consolidationDoc, docs []consolidationDoc, marks map[string]string, threshold float64) bool {
+	// EVERY document whose mark points here, not just the ones this verdict
+	// folded. The survivor can already carry folds from an overlapping
+	// cluster of this same pass, or from a previous area's — and a rewrite
+	// that keeps THIS cluster's figures while dropping an earlier
+	// dependant's leaves that finding hidden behind a survivor which no
+	// longer states its claim: the same defect, one cluster further out.
+	// `marks` holds both the arrival marks and everything written since, so
+	// it is the whole set.
+	for i := range docs {
+		if marks[docs[i].id] != survivor.id {
 			continue
 		}
-		if _, cosine := cosineFold(docs[di].foldSubject, survivor.foldSubject, threshold); cosine {
+		if _, cosine := cosineFold(docs[i].foldSubject, survivor.foldSubject, threshold); cosine {
 			continue // justified by the vectors, not by the prose.
 		}
-		if !containedIn(docs[di].name, prospectiveBody) {
+		if !containedIn(docs[i].name, prospectiveBody) {
 			return true
 		}
 	}
