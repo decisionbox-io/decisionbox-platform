@@ -844,6 +844,35 @@ func PromptCacheConfigFields() []ConfigField {
 	}
 }
 
+// PromptCacheImplemented reports whether the named provider implements
+// PromptCacheKey — whether the key reaches any provider code at all. Only the
+// providers that speak the Anthropic Messages wire do: the OpenAI-compatible
+// ones cache repeated prefixes server-side with no directive to send, so they
+// carry no prompt-cache code and the config value is read by nothing there.
+//
+// Decided from the provider's own ProviderMeta.ConfigFields rather than from a
+// provider list that would drift: a provider appends
+// PromptCacheConfigFields() exactly when its constructor reads the key, and
+// that same declaration is what makes the dashboard render the toggle. False
+// for a provider that is not registered.
+//
+// PromptCacheEnabled answers the different question of what the config SAYS,
+// and reports on for any value but "false", absence included. Anything that
+// reports the setting to a human — a log line, a diagnostic — must gate on
+// this first, or it asserts a setting for a provider that has none.
+func PromptCacheImplemented(providerName string) bool {
+	meta, ok := GetProviderMeta(providerName)
+	if !ok {
+		return false
+	}
+	for _, f := range meta.ConfigFields {
+		if f.Key == PromptCacheKey {
+			return true
+		}
+	}
+	return false
+}
+
 // MaxInputTokensKey is the project-config key for a manual context-window
 // override (positive integer, tokens). When set it wins over the catalog,
 // the provider hook, and the global default — the operator knows the real
