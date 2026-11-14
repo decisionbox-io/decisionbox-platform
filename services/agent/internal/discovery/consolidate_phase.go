@@ -114,6 +114,7 @@ type consolidationStats struct {
 	RefusedRecheck     int
 	RefusedShape       int
 	RefusedUnmergeable int
+	RefusedKept        int
 	Kept               int
 	OverBound          int
 	Reverted           bool
@@ -172,7 +173,8 @@ func (o *Orchestrator) consolidateArea(ctx context.Context, in consolidateAreaIn
 		"by_both": st.ByBoth, "decider": st.Decider,
 		"refused_other_area": st.RefusedNotMine, "refused_recheck": st.RefusedRecheck,
 		"refused_shape": st.RefusedShape, "refused_unmergeable": st.RefusedUnmergeable,
-		"kept": st.Kept, "over_bound": st.OverBound, "reverted": st.Reverted,
+		"refused_kept": st.RefusedKept,
+		"kept":         st.Kept, "over_bound": st.OverBound, "reverted": st.Reverted,
 		"duration_ms": st.DurationMs,
 	}).Info("Consolidation: area complete")
 	return st
@@ -617,7 +619,20 @@ func (o *Orchestrator) applyConsolidation(
 				st.RefusedNotMine++
 				continue
 			}
-			score, held := reverifyFold(dup, docs[fi], threshold)
+			// The adjudicator decided this pair stands, in some other cluster
+			// of this same pass. A fallback verdict for an overlapping
+			// cluster must not override it: the clusters are stars and they
+			// share members, so the same pair can appear in one cluster the
+			// provider answered and another it declined — and the end-of-run
+			// check cannot correct it afterwards, because it skips a document
+			// that already carries a mark.
+			if o.adjudicatedKeep(dupID, final) {
+				applog.WithFields(applog.Fields{"area": st.Area, "id": dupID, "canonical": final}).
+					Info("Consolidation: this pair was already adjudicated and left standing; not folding it in another cluster")
+				st.RefusedKept++
+				continue
+			}
+			score, held := reverifyFold(dup, docs[fi], threshold, byProvider[i])
 			if !held {
 				applog.WithFields(applog.Fields{"area": st.Area, "id": dupID, "canonical": final}).
 					Info("Consolidation: the claim does not hold against the resolved canonical; not folded")
@@ -654,7 +669,7 @@ func (o *Orchestrator) applyConsolidation(
 		// be applied, and they get the same answer.
 		if merged := strings.TrimSpace(v.MergedDescription); merged != "" && clusterFolds > 0 {
 			switch {
-			case !docs[fi].current, mergedCanonicals[final]:
+			case !docs[fi].current, mergedCanonicals[final], len(in.insights[docs[fi].slot].Figures) > 0:
 				// Either the survivor belongs to an area the run has already
 				// finished — its text is recorded in that area's checkpoint,
 				// and rewriting it here would leave the record and the result
@@ -663,7 +678,25 @@ func (o *Orchestrator) applyConsolidation(
 				// text that has since changed and applying it would erase
 				// what the first one preserved.
 				reason := "the survivor's area has already recorded its text"
-				if docs[fi].current {
+				switch {
+				case !docs[fi].current:
+					// keeps the reason above
+				case len(in.insights[docs[fi].slot].Figures) > 0:
+					// The survivor declared evidence figures, and those were
+					// RENDERED INTO this prose: the figure template holds the
+					// text as authored with the references intact, and a
+					// recommendation may restate a figure by naming its id.
+					// Free-text replacement severs that link — every field
+					// stops matching its re-render, so a repaired insight's
+					// figures are all withheld from the recommender, and on an
+					// unrepaired one a recommendation could restate a number
+					// the survivor's prose no longer shows. The model is not
+					// shown the references (it is shown the rendered text), so
+					// it cannot preserve them, and re-deriving them from free
+					// text is the numeral surgery the figure layer exists to
+					// avoid.
+					reason = "the survivor's prose carries rendered evidence figures"
+				default:
 					reason = "this pass has already rewritten the survivor for an overlapping cluster"
 				}
 				for _, slot := range clusterWritten {
@@ -838,18 +871,28 @@ func (o *Orchestrator) keepStanding(docs []consolidationDoc, c docCluster, marks
 }
 
 // reverifyFold re-checks a fold against the canonical it will actually point
-// at, by either test, and returns the score to record.
+// at and returns the score to record.
+//
+// `adjudicated` says whether a provider decided this cluster, and it gates the
+// containment half. Containment is a PROPOSAL the adjudicator rules on, never
+// a community rule — so letting the community fallback satisfy its re-check by
+// containment folds pairs the community rule would never have folded. The
+// shape that exposed it: overlapping clusters where B is already folded into
+// A, a fallback verdict then proposes C into B, and the re-check against the
+// resolved canonical A passes on shared figures at a cosine of 0.643 against a
+// 0.88 floor. That is a finding losing its verdict and its place in Phase 5 on
+// a rule the deployment never opted into.
 //
 // The score recorded is the measured cosine whatever it is, including when it
 // is below the threshold: a containment fold is a real fold at a real
 // similarity, and storing the threshold instead would make the stored score a
 // restatement of the rule rather than a measurement of the pair.
-func reverifyFold(dup, canonical consolidationDoc, threshold float64) (float64, bool) {
+func reverifyFold(dup, canonical consolidationDoc, threshold float64, adjudicated bool) (float64, bool) {
 	score, _ := cosineSimilarity(dup.vec, canonical.vec)
 	if _, ok := cosineFold(dup.foldSubject, canonical.foldSubject, threshold); ok {
 		return score, true
 	}
-	if containedIn(dup.name, canonical.body) {
+	if adjudicated && containedIn(dup.name, canonical.body) {
 		return score, true
 	}
 	return 0, false
@@ -965,6 +1008,7 @@ func (st consolidationStats) persisted() *models.ConsolidationSummary {
 		RefusedRecheck:     st.RefusedRecheck,
 		RefusedShape:       st.RefusedShape,
 		RefusedUnmergeable: st.RefusedUnmergeable,
+		RefusedKept:        st.RefusedKept,
 		Kept:               st.Kept,
 		OverBound:          st.OverBound,
 		Reverted:           st.Reverted,

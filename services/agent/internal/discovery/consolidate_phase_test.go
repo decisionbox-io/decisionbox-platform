@@ -1432,11 +1432,12 @@ func TestWithCheckpointStableMarks(t *testing.T) {
 func TestConsolidateArea_BoundsWhatGoesToTheAdjudicator(t *testing.T) {
 	t.Setenv(consolidationMaxClustersEnv, "1")
 
-	// A chain of four 25° apart: two overlapping maximal stars.
+	// Two DISJOINT pairs, so the cluster past the bound is independent of the
+	// one the adjudicator saw and its community decision is observable.
 	a := insight("a", "stock", "claim a", "body a", 400)
-	b := insight("b", "stock", "claim b", "body b", 300)
+	b := insight("b", "stock", "claim b restated", "body a again", 300)
 	c := insight("c", "stock", "claim c", "body c", 200)
-	d := insight("d", "stock", "claim d", "body d", 100)
+	d := insight("d", "stock", "claim d restated", "body c again", 100)
 
 	stub := &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
 		out := make([]agentplugin.ConsolidationVerdict, len(cl))
@@ -1448,24 +1449,29 @@ func TestConsolidateArea_BoundsWhatGoesToTheAdjudicator(t *testing.T) {
 	withProvider(t, stub)
 
 	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(a): 0, embText(b): 25, embText(c): 50, embText(d): 75,
+		embText(a): 0, embText(b): 1, embText(c): 90, embText(d): 91,
 	}}}
 	current := []models.Insight{a, b, c, d}
 	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
 
-	if st.Clusters < 2 {
-		t.Fatalf("clusters = %d, want at least 2 (fixture broken)", st.Clusters)
+	if st.Clusters != 2 {
+		t.Fatalf("clusters = %d, want the two disjoint pairs (fixture broken)", st.Clusters)
 	}
-	if st.OverBound != st.Clusters-1 {
-		t.Errorf("stats = %+v, want %d clusters past the bound", st, st.Clusters-1)
+	if st.OverBound != 1 {
+		t.Errorf("stats = %+v, want one cluster past the bound", st)
 	}
 	if len(stub.gotFirst) != 1 {
 		t.Errorf("the adjudicator saw %d clusters, want 1", len(stub.gotFirst))
 	}
-	// Still a decision for every cluster: the ones past the bound got the
-	// community rule rather than nothing.
-	if st.Folded == 0 {
-		t.Errorf("stats = %+v; the clusters past the bound must still be decided", st)
+	// The cluster past the bound is not dropped: it gets the community rule,
+	// which folds the later member of a similarity pair into the earlier.
+	if current[3].DuplicateOf != "c" {
+		t.Errorf("d.duplicate_of = %q, want c — the cluster past the bound must still be decided", current[3].DuplicateOf)
+	}
+	// And the adjudicated cluster's own verdict stands: the stub named a as
+	// canonical and folded nothing, so b is left visible.
+	if current[1].DuplicateOf != "" {
+		t.Errorf("b.duplicate_of = %q; the adjudicator folded nothing in that cluster", current[1].DuplicateOf)
 	}
 }
 
@@ -1479,5 +1485,125 @@ func TestConsolidationMaxClusters_ZeroMeansUnbounded(t *testing.T) {
 	t.Setenv(consolidationMaxClustersEnv, "")
 	if got := consolidationMaxClusters(); got != defaultConsolidationMaxClusters {
 		t.Errorf("bound = %d, want the default %d", got, defaultConsolidationMaxClusters)
+	}
+}
+
+// Containment is a PROPOSAL the adjudicator rules on, never a community rule.
+// Letting the community fallback satisfy its re-check by containment folds
+// pairs the community rule would never have folded — a finding losing its
+// verdict and its place in Phase 5 on a rule the deployment never opted into.
+func TestReverifyFold_ContainmentIsOnlyForAnAdjudicatedCluster(t *testing.T) {
+	table := "| north | 111,222 | 33.3 |"
+	dup := doc(1, "b", 70, true, "the north segment holds 111,222 units, 33.3 of it", "")
+	canonical := doc(0, "a", 0, true, "the whole total", table)
+
+	if _, held := reverifyFold(dup, canonical, 0.88, true); !held {
+		t.Error("an adjudicated fold must be allowed to hold on containment")
+	}
+	if _, held := reverifyFold(dup, canonical, 0.88, false); held {
+		t.Error("the community rule must not fold on containment; it is a proposal, not a rule")
+	}
+	// A cosine pair holds either way.
+	near := doc(2, "c", 1, true, "claim c", "")
+	if _, held := reverifyFold(near, canonical, 0.88, false); !held {
+		t.Error("the community rule must still fold a similarity pair")
+	}
+}
+
+// A survivor whose prose carries rendered evidence figures cannot be
+// rewritten: the figure template holds the text as authored with the
+// references intact, and free-text replacement severs that link — so a
+// repaired insight's figures are all withheld from the recommender, and on an
+// unrepaired one a recommendation could restate a number the prose no longer
+// shows.
+func TestConsolidateArea_RefusesARewriteOfAFigureBearingSurvivor(t *testing.T) {
+	a := insight("a", "stock", "claim a", "the rate is {{f1}}", 300)
+	a.Figures = []models.Figure{{ID: "f1", Value: 142, Unit: "units"}}
+	b := insight("b", "stock", "claim b", "the rate again; and a caveat", 200)
+
+	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		return []agentplugin.ConsolidationVerdict{{
+			CanonicalID: "a", Duplicates: map[string]float64{"b": 0.99},
+			MergedDescription: "the rate is 142 units; and a caveat",
+		}}, nil
+	}})
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 1,
+	}}}
+	current := []models.Insight{a, b}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if st.Folded != 0 || st.RefusedUnmergeable != 1 {
+		t.Fatalf("stats = %+v, want the cluster given back", st)
+	}
+	if current[0].Description != "the rate is {{f1}}" {
+		t.Errorf("a.description = %q; the figure references were overwritten", current[0].Description)
+	}
+	if current[1].DuplicateOf != "" {
+		t.Errorf("b was folded anyway, losing the caveat: %q", current[1].DuplicateOf)
+	}
+
+	// A survivor with NO declared figures is still rewritten: nothing links
+	// its prose to a number another document may restate.
+	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		return []agentplugin.ConsolidationVerdict{{
+			CanonicalID: "x", Duplicates: map[string]float64{"y": 0.99},
+			MergedDescription: "x, with y's caveat",
+		}}, nil
+	}})
+	x := insight("x", "stock", "claim x", "body x", 300)
+	y := insight("y", "stock", "claim y", "body x again; and a caveat", 200)
+	o2 := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(x): 0, embText(y): 1,
+	}}}
+	plain := []models.Insight{x, y}
+	if st := o2.consolidateArea(context.Background(), areaInput("stock", plain, nil)); st.Folded != 1 {
+		t.Fatalf("stats = %+v, want the fold and the rewrite applied", st)
+	}
+	if !strings.Contains(plain[0].Description, "y's caveat") {
+		t.Errorf("x.description = %q, want the rewrite", plain[0].Description)
+	}
+}
+
+// A fallback verdict for one cluster must not override a provider keep
+// recorded for another: the clusters are overlapping stars, so the same pair
+// can appear in a cluster the provider answered and one it declined — and the
+// end-of-run check cannot correct it, because it skips a document that already
+// carries a mark.
+func TestConsolidateArea_AFallbackDoesNotOverrideAProviderKeep(t *testing.T) {
+	a := insight("a", "stock", "claim a", "body a", 400)
+	b := insight("b", "stock", "claim b", "body b", 300)
+	c := insight("c", "stock", "claim c", "body c", 200)
+	d := insight("d", "stock", "claim d", "body d", 100)
+
+	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		out := make([]agentplugin.ConsolidationVerdict, len(cl))
+		for i, cluster := range cl {
+			ids := make([]string, 0, 3)
+			for _, cand := range cluster.Candidates {
+				ids = append(ids, cand.ID)
+			}
+			// Answer only the cluster holding a: b and c are distinct.
+			if slices.Contains(ids, "a") {
+				out[i] = agentplugin.ConsolidationVerdict{CanonicalID: "a", Reason: "b and c are different findings"}
+			}
+		}
+		return out, nil
+	}})
+
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 25, embText(c): 50, embText(d): 75,
+	}}}
+	current := []models.Insight{a, b, c, d}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if !o.adjudicatedKeep("b", "c") {
+		t.Fatalf("the provider's keep was not recorded: %+v", st)
+	}
+	if current[2].DuplicateOf != "" {
+		t.Errorf("c.duplicate_of = %q; a fallback verdict overrode the provider's keep", current[2].DuplicateOf)
+	}
+	if st.RefusedKept == 0 {
+		t.Errorf("stats = %+v, want the refusal counted", st)
 	}
 }

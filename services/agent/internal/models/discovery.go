@@ -864,6 +864,11 @@ type ConsolidationSummary struct {
 	// needed a rewrite its own area has already recorded. Applying the fold
 	// without the rewrite is how a fold loses a caveat.
 	RefusedUnmergeable int `bson:"refused_unmergeable,omitempty" json:"refused_unmergeable,omitempty"`
+	// RefusedKept counts folds refused because the adjudicator had already
+	// decided that pair stands, in another cluster of the same pass. Clusters
+	// are overlapping stars, so a fallback verdict for one can propose a pair
+	// a provider verdict for another explicitly preserved.
+	RefusedKept int `bson:"refused_kept,omitempty" json:"refused_kept,omitempty"`
 	// Kept counts the pairs the adjudicator decided are different findings,
 	// recorded so the end-of-run check does not fold them on document order.
 	Kept int `bson:"kept,omitempty" json:"kept,omitempty"`
