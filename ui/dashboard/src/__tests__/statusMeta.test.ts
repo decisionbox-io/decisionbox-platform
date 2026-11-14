@@ -1,7 +1,7 @@
 import { statusMeta, toneToMantineColor } from '@/components/validation/statusMeta';
 
 describe('statusMeta', () => {
-  it('returns distinct tones for the seven new statuses', () => {
+  it('returns distinct tones for the eight new statuses', () => {
     expect(statusMeta('confirmed').tone).toBe('green');
     expect(statusMeta('supported').tone).toBe('green');
     expect(statusMeta('partial').tone).toBe('amber');
@@ -9,11 +9,15 @@ describe('statusMeta', () => {
     expect(statusMeta('unverifiable').tone).toBe('amber');
     expect(statusMeta('validation_disabled').tone).toBe('grey');
     expect(statusMeta('skipped_budget_cap').tone).toBe('grey');
+    expect(statusMeta('skipped_duplicate').tone).toBe('grey');
   });
 
   it('renders human-readable labels (not raw status keys)', () => {
     expect(statusMeta('skipped_budget_cap').label).toBe('Skipped');
     expect(statusMeta('validation_disabled').label).toBe('Disabled');
+    // Not "Skipped": a consolidated restatement is a different fact from a
+    // run that ran out of budget, and the reader is being sent somewhere.
+    expect(statusMeta('skipped_duplicate').label).toBe('Restated');
     expect(statusMeta('confirmed').label).toBe('Confirmed');
   });
 

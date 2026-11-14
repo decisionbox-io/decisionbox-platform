@@ -252,6 +252,26 @@ func (p *validationPhase) validateInsights(ctx context.Context, insights []model
 			ins.Validation = insightValidationFrom(prior)
 			continue
 		}
+		// Consolidated into another of this run's findings before validation
+		// started. Stamped and skipped, and deliberately NOT charged against
+		// runValidated: the whole point of consolidating first is that the cap
+		// is spent on the run's distinct findings rather than on its
+		// restatements. Measured on six runs, nearly a quarter of the checks a
+		// run paid for landed on insights the same run then marked duplicate.
+		//
+		// Its own status rather than skipped_budget_cap, so the stored verdict
+		// says which of the two happened — "there was nothing here the
+		// canonical does not already carry" is not "the run ran out of budget".
+		if ins.DuplicateOf != "" {
+			ins.Validation = &valmodels.InsightValidation{
+				Combined:    valmodels.StatusSkippedDuplicate,
+				ValidatedAt: vr.ValidatedAt,
+			}
+			vr.Combined = valmodels.StatusSkippedDuplicate
+			vr.Status = string(valmodels.StatusSkippedDuplicate)
+			results[pos] = vr
+			continue
+		}
 		if runValidated >= p.caps.MaxInsightsPerRun {
 			ins.Validation = &valmodels.InsightValidation{
 				Combined:    valmodels.StatusSkippedBudgetCap,
@@ -583,9 +603,22 @@ func indicesByAffectedDesc(insights []models.Insight) []int {
 // was wired) and Combined == validation_disabled (validation turned off).
 // Both mean "validation didn't produce a verdict", not "operator excluded
 // this verdict" — failing-open keeps the recommender from starving.
+//
+// A consolidated duplicate is excluded on the MARK, before either fail-open
+// applies, and not on its verdict. The two facts are independent, and that
+// independence is load-bearing in both directions. A marked duplicate whose
+// verdict was suppressed would otherwise reach Phase 5 MORE easily than an
+// unmarked insight, because a nil verdict fails open — so filtering on the
+// verdict alone would make consolidating a finding promote it. And a
+// draft-restored area's insight can arrive carrying a `confirmed` verdict from
+// the previous attempt and be marked a duplicate on this one, which the verdict
+// says nothing about.
 func filterEligibleInsights(all []models.Insight, eligible map[valmodels.Status]bool) []models.Insight {
 	out := make([]models.Insight, 0, len(all))
 	for i := range all {
+		if all[i].DuplicateOf != "" {
+			continue
+		}
 		v := all[i].Validation
 		if v == nil {
 			out = append(out, all[i])

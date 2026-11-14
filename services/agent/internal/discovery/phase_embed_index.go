@@ -118,8 +118,15 @@ func (o *Orchestrator) denormalizeInsights(result *models.DiscoveryResult) []*co
 			TargetSegment: ins.TargetSegment,
 			SourceSteps:   ins.SourceSteps,
 			Validation:    ins.Validation,
-			DiscoveredAt:  ins.DiscoveredAt,
-			CreatedAt:     now,
+			// The marks the mid-run consolidation pass wrote, carried onto
+			// the standalone copy. The standalone document is what the API
+			// filters on, so a mark that stayed on the embedded copy would
+			// hide a finding on the dashboard and return it from the API —
+			// the mirror image of the drift markDuplicate exists to prevent.
+			DuplicateOf:     ins.DuplicateOf,
+			SimilarityScore: ins.SimilarityScore,
+			DiscoveredAt:    ins.DiscoveredAt,
+			CreatedAt:       now,
 		})
 	}
 
@@ -215,19 +222,18 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 		return nil
 	}
 
-	// Batch embed
-	applog.WithFields(applog.Fields{
-		"count": len(allTexts),
-		"model": modelName,
-	}).Info("Phase 9: Embedding documents")
-
-	vectors, err := o.embeddingProvider.Embed(ctx, allTexts)
+	// Batch embed what this run has not embedded already.
+	//
+	// The mid-run consolidation pass embedded every insight it compared, so on
+	// a run that consolidated, the insight half of this batch is already in
+	// hand and only the recommendations are new. Reusing it is what keeps the
+	// embedding spend unchanged by that pass rather than doubled — and the
+	// cache is keyed on the embedding TEXT, so an insight whose description was
+	// merged during consolidation misses the cache and is embedded here, which
+	// is correct: its meaning changed.
+	vectors, err := o.embedWithCache(ctx, allTexts, modelName)
 	if err != nil {
-		return fmt.Errorf("embed documents: %w", err)
-	}
-
-	if len(vectors) != len(allTexts) {
-		return fmt.Errorf("embedding count mismatch: expected %d, got %d", len(allTexts), len(vectors))
+		return err
 	}
 
 	// Update MongoDB with embedding text/model, collect the duplicate-check
@@ -248,6 +254,7 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 		candidates = append(candidates, dedupCandidate{
 			id: ins.ID, docType: "insight", projectID: ins.ProjectID, discoveryID: ins.DiscoveryID, vec: vec,
 			text: ins.EmbeddingText, magnitude: magnitudeOf("insight", ins.AffectedCount, ins.Metrics, nil, ins.Indicators),
+			markedBy: ins.DuplicateOf,
 		})
 
 		points = append(points, vectorstore.Point{
@@ -318,6 +325,54 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 	return nil
 }
 
+// embedWithCache embeds texts, serving whatever the run already embedded from
+// the per-run vector cache and asking the provider only for the rest.
+//
+// The returned slice is in the same order as texts and the same length, so the
+// caller's index walk is unchanged. A count mismatch from the provider is an
+// error rather than a partial fill: a vector assigned to the wrong document is
+// a duplicate check comparing two findings that were never compared.
+func (o *Orchestrator) embedWithCache(ctx context.Context, texts []string, modelName string) ([][]float64, error) {
+	vectors := make([][]float64, len(texts))
+	missing := make([]string, 0, len(texts))
+	missingAt := make(map[string][]int, len(texts))
+	for i, t := range texts {
+		if vec := o.cachedInsightVector(t); vec != nil {
+			vectors[i] = vec
+			continue
+		}
+		if _, queued := missingAt[t]; !queued {
+			missing = append(missing, t)
+		}
+		missingAt[t] = append(missingAt[t], i)
+	}
+
+	applog.WithFields(applog.Fields{
+		"count":  len(texts),
+		"cached": len(texts) - len(missingAt),
+		"embed":  len(missing),
+		"model":  modelName,
+	}).Info("Phase 9: Embedding documents")
+
+	if len(missing) == 0 {
+		return vectors, nil
+	}
+	fresh, err := o.embeddingProvider.Embed(ctx, missing)
+	if err != nil {
+		return nil, fmt.Errorf("embed documents: %w", err)
+	}
+	if len(fresh) != len(missing) {
+		return nil, fmt.Errorf("embedding count mismatch: expected %d, got %d", len(missing), len(fresh))
+	}
+	for i, t := range missing {
+		o.cacheInsightVector(t, fresh[i])
+		for _, at := range missingAt[t] {
+			vectors[at] = fresh[i]
+		}
+	}
+	return vectors, nil
+}
+
 // dedupCandidate is one document this run produced, as the duplicate check sees
 // it: an id, what kind of document it is, the vector that was just embedded for
 // it, and the two things needed to tell apart documents the vector cannot.
@@ -339,6 +394,23 @@ type dedupCandidate struct {
 	// segment size. Derived by magnitudeOf, which is the one derivation both
 	// sides of every comparison go through.
 	magnitude string
+	// markedBy is the canonical this document was ALREADY folded into by the
+	// mid-run consolidation pass, or "" when it carries no mark.
+	//
+	// A document that carries one is not re-decided here. That mark was made
+	// with judgement this check does not have — which member a reader should
+	// be sent to, and what the folded members added that should survive the
+	// fold — and re-deciding it against the stored index could point it
+	// somewhere else, which is a reader sent to a different finding on a
+	// second opinion nobody asked for.
+	markedBy string
+}
+
+// subject projects a candidate onto the comparable part the shipped pairing
+// rule reads, which is also what the mid-run consolidation pass projects its
+// in-flight insights onto. See consolidate_cluster.go.
+func (c dedupCandidate) subject() foldSubject {
+	return foldSubject{id: c.id, docType: c.docType, vec: c.vec, text: c.text, magnitude: c.magnitude}
 }
 
 // magnitudeOf is the signature of whatever a document type's embedding text
@@ -512,11 +584,25 @@ func (o *Orchestrator) markDuplicates(ctx context.Context, candidates []dedupCan
 	indexByID := make(map[string]int, len(candidates))
 	for i := range candidates {
 		indexByID[candidates[i].id] = i
+		// Seed the chain map with the marks the mid-run pass already wrote,
+		// so a document matching one of THOSE resolves to the same final
+		// canonical the reader can see rather than to a hidden row.
+		if candidates[i].markedBy != "" {
+			canonical[candidates[i].id] = candidates[i].markedBy
+		}
 	}
-	crossRun, sameRun := 0, 0
+	crossRun, sameRun, preMarked := 0, 0, 0
 
 	for i := range candidates {
 		c := candidates[i]
+
+		// Already consolidated mid-run. Neither pass runs for it: the stored
+		// pass would re-point it at an earlier run's row and the same-run pass
+		// would re-decide a judgement already made.
+		if c.markedBy != "" {
+			preMarked++
+			continue
+		}
 
 		if id, score, ok := o.storedDuplicate(ctx, c, excludeDiscoveryIDs, threshold); ok {
 			o.markDuplicate(ctx, c, id, score, "earlier run")
@@ -529,53 +615,39 @@ func (o *Orchestrator) markDuplicates(ctx context.Context, candidates []dedupCan
 			if earlier.docType != c.docType {
 				continue
 			}
-			score, ok := cosineSimilarity(c.vec, earlier.vec)
-			if !ok || score < threshold {
-				continue
-			}
-			// Identical prose, different numbers: the score cannot tell these
-			// apart, and folding would hide a different claim.
-			if !sameClaim(c.text, c.magnitude, earlier.text, earlier.magnitude) {
+			// The consolidation pass adjudicated this pair and decided both
+			// should stand. It could not write the mark — the member it chose
+			// to suppress belongs to an area the run had already finished —
+			// but folding them here would apply exactly the direction it
+			// rejected: document order, which is the signal it exists to
+			// replace.
+			if o.adjudicatedKeep(c.id, earlier.id) {
 				applog.WithFields(applog.Fields{"id": c.id, "earlier": earlier.id}).
-					Info("Phase 9: same wording, different magnitude; not a duplicate")
+					Info("Phase 9: this pair was adjudicated and left standing; not folding")
 				continue
 			}
-			target, targetScore := earlier.id, score
-			if resolved, folded := canonical[earlier.id]; folded {
-				// Cosine is not transitive. Three vectors at 0°, 25° and 50°
-				// score 0.906 between neighbours and 0.643 end to end, so
-				// matching the middle one says nothing about the first — and
-				// folding into it anyway would hide a document behind a row it
-				// does not resemble, under the neighbour's score. So the claim
-				// is re-checked against the canonical itself, and when it does
-				// not hold the document is left alone: it is not a duplicate of
-				// anything the reader can see.
-				k, inRun := indexByID[resolved]
-				if !inRun {
-					// The canonical belongs to an earlier RUN, so its vector is
-					// not in hand. The stored pass already asked the store
-					// about this document and got no match, which is the only
-					// evidence available — and it said no.
-					continue
-				}
-				s, ok := cosineSimilarity(c.vec, candidates[k].vec)
-				if !ok || s < threshold {
-					continue
-				}
-				// And the same claim check against the canonical, for the same
-				// reason the direct comparison has one: matching a paraphrase
-				// of A says nothing about whether this document states A's
-				// magnitude. Without it the guard was simply routed around —
-				// C fails against A directly, matches B, and is folded into A
-				// anyway.
-				if !sameClaim(c.text, c.magnitude, candidates[k].text, candidates[k].magnitude) {
-					applog.WithFields(applog.Fields{"id": c.id, "canonical": resolved}).
-						Info("Phase 9: same wording as the canonical, different magnitude; not a duplicate")
-					continue
-				}
-				target, targetScore = resolved, s
-			}
-			if target == "" || target == c.id {
+			// The whole pairing decision — threshold, magnitude guard and the
+			// canonical-chain re-check that exists because cosine is not
+			// transitive — lives in cosineFoldTarget, which the mid-run
+			// consolidation pass runs too. One derivation of "are these the
+			// same document", for the same reason magnitudeOf is one
+			// derivation of what a document's figures are.
+			target, targetScore, ok := cosineFoldTarget(
+				c.subject(), earlier.subject(), threshold, canonical,
+				func(id string) (foldSubject, bool) {
+					k, inRun := indexByID[id]
+					if !inRun {
+						// The canonical belongs to an earlier RUN, so its
+						// vector is not in hand. The stored pass already asked
+						// the store about this document and said no, which is
+						// the only evidence available.
+						return foldSubject{}, false
+					}
+					return candidates[k].subject(), true
+				},
+				"Phase 9: ",
+			)
+			if !ok {
 				continue
 			}
 
@@ -587,11 +659,12 @@ func (o *Orchestrator) markDuplicates(ctx context.Context, candidates []dedupCan
 	}
 
 	applog.WithFields(applog.Fields{
-		"documents":   len(candidates),
-		"cross_run":   crossRun,
-		"same_run":    sameRun,
-		"threshold":   threshold,
-		"duration_ms": time.Since(started).Milliseconds(),
+		"documents":    len(candidates),
+		"cross_run":    crossRun,
+		"same_run":     sameRun,
+		"consolidated": preMarked,
+		"threshold":    threshold,
+		"duration_ms":  time.Since(started).Milliseconds(),
 	}).Info("Phase 9: Duplicate check complete")
 }
 

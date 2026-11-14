@@ -176,7 +176,7 @@ func TestInteg_AnalysisResume_KOfNAreasAreRestoredAndTheRestAreNot(t *testing.T)
 	analysed := 0
 	for _, area := range runAreas {
 		if cp, ok := completed[area.ID]; ok {
-			analysisLog, allInsights, _ = restoreArea(cp, analysisLog, allInsights)
+			analysisLog, allInsights, _ = restoreArea(cp, analysisLog, allInsights, map[string]string{})
 			continue
 		}
 		analysed++
@@ -399,7 +399,7 @@ func TestInteg_AnalysisResume_ARestoredAreaDoesNotCollideWithThePreviousAttempt(
 	// Attempt 2 restores that area. The merge remints the ids, so the tail's
 	// insert-only write cannot collide with what attempt 1 left behind.
 	_, restoredInsights, _ := restoreArea(
-		models.AnalysisAreaCheckpoint{Step: stored, InsightsValidated: 2}, nil, nil)
+		models.AnalysisAreaCheckpoint{Step: stored, InsightsValidated: 2}, nil, nil, map[string]string{})
 	second := &models.DiscoveryResult{
 		ID: "discovery-2", ProjectID: "proj", Domain: "gaming", Category: "match3",
 		Insights: restoredInsights,
@@ -745,7 +745,7 @@ func TestInteg_AnalysisGeneration_SurvivesARealRestoreAndRoundTrip(t *testing.T)
 		if !ok {
 			t.Fatalf("%s did not come back", areaID)
 		}
-		attempt2Log, attempt2Insights, _ = restoreArea(cp, attempt2Log, attempt2Insights)
+		attempt2Log, attempt2Insights, _ = restoreArea(cp, attempt2Log, attempt2Insights, map[string]string{})
 	}
 
 	attempt2 := analysisGenerationFingerprint(attempt2Insights, attempt2Log)

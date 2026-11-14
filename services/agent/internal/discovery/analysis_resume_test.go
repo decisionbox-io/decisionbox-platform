@@ -646,7 +646,7 @@ func TestRestoredValidationBudget_IsSeededBeforeAnyAreaRuns(t *testing.T) {
 	validatedHere := 0
 	for _, area := range runAreas {
 		if cp, ok := completed[area.ID]; ok {
-			log, insights, _ = restoreArea(cp, log, insights)
+			log, insights, _ = restoreArea(cp, log, insights, map[string]string{})
 			continue
 		}
 		if spent < cap {
@@ -778,7 +778,7 @@ func TestRestoreArea_MergesTheUnionThePipelineReadsDownstream(t *testing.T) {
 	log := []models.AnalysisStep{ranHere}
 	insights := append([]models.Insight{}, ranHere.Insights...)
 
-	log, insights, _ = restoreArea(restored, log, insights)
+	log, insights, _ = restoreArea(restored, log, insights, map[string]string{})
 
 	if len(log) != 2 {
 		t.Fatalf("analysis log has %d entries, want 2 — the restored area must appear in the split logs and the failed-area denominator", len(log))
@@ -957,7 +957,7 @@ func TestReidentifyRestoredArea_EmptyAndUnmatchedCases(t *testing.T) {
 func TestRestoreArea_AnEmptyAreaStillCounts(t *testing.T) {
 	empty := models.AnalysisAreaCheckpoint{Step: doneArea("levels", 0, time.Now())}
 
-	log, insights, _ := restoreArea(empty, nil, nil)
+	log, insights, _ := restoreArea(empty, nil, nil, map[string]string{})
 	if len(log) != 1 {
 		t.Errorf("analysis log has %d entries, want 1", len(log))
 	}
@@ -973,7 +973,7 @@ func TestRestoreArea_DoesNotAliasTheCaller(t *testing.T) {
 	cp := models.AnalysisAreaCheckpoint{Step: doneArea("churn", 2, time.Now()), InsightsValidated: 2}
 	before := len(cp.Step.Insights)
 
-	_, insights, _ := restoreArea(cp, nil, nil)
+	_, insights, _ := restoreArea(cp, nil, nil, map[string]string{})
 	insights[0].Name = "mutated by a later phase"
 
 	if cp.Step.Insights[0].Name == "mutated by a later phase" {

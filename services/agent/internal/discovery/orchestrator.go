@@ -389,6 +389,16 @@ type Orchestrator struct {
 	embeddingProvider     goembedding.Provider
 	embedIndexStore       EmbedIndexStore
 
+	// insightVectors holds every insight vector this run has embedded, keyed
+	// by the embedding TEXT. The mid-run consolidation pass fills it and
+	// Phase 9 reads it, so a run embeds each insight exactly once however
+	// many times it is compared. See cacheInsightVector.
+	insightVectors map[string][]float64
+	// consolidationKept is the set of pairs the consolidation pass
+	// adjudicated and decided to leave standing, so Phase 9 does not fold
+	// them the other way round. See keepPair.
+	consolidationKept map[string]struct{}
+
 	// embedder + schemaRetriever are the Qdrant-backed schema retrieval
 	// layer (top-K relevant tables in the prompt instead of dumping the
 	// full catalog). Required — discovery is gated on schema_index_status
@@ -1699,6 +1709,19 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	picker.EstimateRenderedSize = EstimateCompactedRenderedSize
 	picker.SmartOverflowEnabled = opts.SmartOverflowEnabled
 
+	// Every area of this run by id, so a document from an area the run has
+	// already finished can carry its own ownership statement into the
+	// consolidation pass.
+	areaByID := make(map[string]AnalysisArea, len(runAreas))
+	for _, a := range runAreas {
+		areaByID[a.ID] = a
+	}
+	// Stored insight id -> the id this attempt minted for it, accumulated
+	// across every restore this run performs. A consolidation mark names its
+	// canonical by the stored id, and a restore remints every id in the set,
+	// so this is what lets such a mark survive. See repointRestoredMarks.
+	freshByStoredInsight := make(map[string]string)
+
 	for _, area := range runAreas {
 		// Per area, not just per phase: analysis is the long one, and a
 		// resume landing inside it would otherwise go unnoticed until
@@ -1722,7 +1745,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// before the loop.
 		if cp, ok := completedAreas[area.ID]; ok {
 			var remapped map[string]string
-			analysisLog, allInsights, remapped = restoreArea(cp, analysisLog, allInsights)
+			analysisLog, allInsights, remapped = restoreArea(cp, analysisLog, allInsights, freshByStoredInsight)
 			// The ids this attempt minted for the restored insights, against
 			// the ones the checkpoint holds. Phase 5 needs the mapping to
 			// decide whether a stored recommendation set still describes the
@@ -1784,6 +1807,34 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 				continue
 			}
 			step, insights = out.step, out.insights
+
+			// Phase 4.4: consolidate before anything is validated. The area's
+			// fresh insights are clustered against each other and against
+			// what the earlier areas reported, the clusters are adjudicated,
+			// and a restatement is marked duplicate_of its canonical.
+			//
+			// Here, and not a line either side of it, for three reasons.
+			// step.Insights and insights are the same slice, so a mark
+			// written here is in the draft the next line checkpoints — a
+			// resumed attempt restores the marks rather than re-deriving them
+			// and never pays the provider twice. It is before the
+			// stopAfterDraft pause seam, the first point a run can stop
+			// without having paid for validation, so a paused run has banked
+			// the consolidation it did. And it is inside the !fromDraft
+			// branch: a restored draft's marks arrive WITH the draft, and a
+			// completed area was `continue`d long before this, so neither
+			// re-enters the pass.
+			step.Consolidation = o.consolidateArea(ctx, consolidateAreaInput{
+				area:     area,
+				prompts:  prompts,
+				areaByID: areaByID,
+				insights: insights,
+				// Areas 1..N-1, the run's own accumulator. Candidates and
+				// canonicals; never marked, because their verdicts are paid
+				// for and their checkpoints are written.
+				runInsights: allInsights,
+			}).persisted()
+
 			// The area is analysed and repaired but not yet validated, which
 			// is the one point in its life where a crash loses the most for
 			// the least reason. Recorded before the per-insight calls start,
@@ -1875,7 +1926,15 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// An area this attempt analysed itself is NOT reminted — its ids were
 		// minted here and nothing has written them.
 		if fromDraft {
-			step, _ = reidentifyRestoredArea(step)
+			var draftRemap map[string]string
+			step, draftRemap = reidentifyRestoredArea(step)
+			// The draft's own marks name the draft's ids, which have just
+			// changed, so they are re-pointed for the same reason a restored
+			// area's are.
+			for fresh, stored := range draftRemap {
+				freshByStoredInsight[stored] = fresh
+			}
+			repointRestoredMarks(step.Insights, freshByStoredInsight, area.ID)
 			insights = step.Insights
 			// And the remap is deliberately NOT recorded in storedIDByLive,
 			// which is the subtle half. That map answers "which id do this

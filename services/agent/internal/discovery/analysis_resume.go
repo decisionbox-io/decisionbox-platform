@@ -312,13 +312,60 @@ func (o *Orchestrator) discardAnalysisCheckpoints(ctx context.Context, why strin
 // A pure function so the arithmetic is testable on its own: RunDiscovery
 // needs a warehouse, an LLM and a schema cache, so the loop it lives in
 // cannot be driven from a unit test.
+// freshByStored, which the caller owns and carries across every restore of the
+// run, is how a consolidation mark survives the remint: the mark names its
+// canonical by the id the checkpoint holds, and every id in the restored set
+// has just changed. Each restore adds its own mapping to it before re-pointing
+// its own marks, so a mark into an area restored EARLIER in the same loop
+// resolves. See repointRestoredMarks for the one it cannot resolve.
 func restoreArea(
 	cp models.AnalysisAreaCheckpoint,
 	analysisLog []models.AnalysisStep,
 	allInsights []models.Insight,
+	freshByStored map[string]string,
 ) ([]models.AnalysisStep, []models.Insight, map[string]string) {
 	step, storedByFresh := reidentifyRestoredArea(cp.Step)
+	for fresh, stored := range storedByFresh {
+		freshByStored[stored] = fresh
+	}
+	repointRestoredMarks(step.Insights, freshByStored, step.AreaID)
 	return append(analysisLog, step), append(allInsights, step.Insights...), storedByFresh
+}
+
+// repointRestoredMarks re-points a restored area's duplicate marks at the ids
+// this attempt minted, and CLEARS the ones it cannot resolve.
+//
+// A mark is a pointer between two of the run's insights, and
+// reidentifyRestoredArea has just given every insight in the restored set a
+// new id — so a mark carried over verbatim names a row this attempt does not
+// hold. That is strictly worse than no mark: the insight renders as suppressed
+// behind a canonical the reader cannot reach, which is the one outcome the
+// non-destructive contract exists to prevent. So an unresolvable mark is
+// dropped and the finding is simply visible again.
+//
+// What cannot be resolved, stated plainly rather than papered over: a mark
+// into an area that THIS attempt re-analysed from scratch (its target was a
+// previous attempt's insight, which no longer exists), and a mark written
+// against ids that a third attempt had itself reminted. Both lose a fold that
+// the consolidation pass would have re-derived had the area been re-analysed,
+// and neither can produce a broken pointer. Marks inside the restored area
+// always resolve, and those are the ones that cost the validation budget.
+func repointRestoredMarks(insights []models.Insight, freshByStored map[string]string, areaID string) {
+	for i := range insights {
+		stored := insights[i].DuplicateOf
+		if stored == "" {
+			continue
+		}
+		if fresh, ok := freshByStored[stored]; ok {
+			insights[i].DuplicateOf = fresh
+			continue
+		}
+		applog.WithFields(applog.Fields{
+			"area": areaID, "id": insights[i].ID, "was_duplicate_of": stored,
+		}).Info("restore: a consolidation mark pointed at a row this attempt does not hold; the finding is visible again")
+		insights[i].DuplicateOf = ""
+		insights[i].SimilarityScore = 0
+	}
 }
 
 // reidentifyRestoredArea gives a restored area's insights fresh ids, and

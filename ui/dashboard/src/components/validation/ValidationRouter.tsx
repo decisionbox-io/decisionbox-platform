@@ -23,10 +23,12 @@ import { isLegacyValidation } from './validationShape';
 //   else           → <NoValidationCard validationEnabled={...} />
 //
 // isValidated is RICHER than "validation != null" — a doc with
-// combined ∈ {validation_disabled, skipped_budget_cap} AND no
-// verifier/refuter detail was stamped during a disabled run, not
-// actually validated. Treating those as "validated" would hide the
-// Run button forever once the user re-enables the toggle.
+// combined ∈ {validation_disabled, skipped_budget_cap, skipped_duplicate}
+// AND no verifier/refuter detail was stamped rather than checked: the run
+// was disabled, out of budget, or had already consolidated this finding
+// into another. Treating those as "validated" would hide the Run button
+// forever once the user re-enables the toggle, or for a restatement the
+// user wants checked on its own merits anyway.
 //
 // The router owns the polling. On mount it asks
 // `/validation-jobs?doc_kind=...&doc_id=...` once; if there's a
@@ -39,7 +41,12 @@ const POLL_INTERVAL_MS = 2000;
 
 function isPanelWorthyValidation(v: InsightValidation | undefined): boolean {
   if (!v) return false;
-  if (v.combined && v.combined !== 'validation_disabled' && v.combined !== 'skipped_budget_cap') {
+  if (
+    v.combined &&
+    v.combined !== 'validation_disabled' &&
+    v.combined !== 'skipped_budget_cap' &&
+    v.combined !== 'skipped_duplicate'
+  ) {
     return true;
   }
   // A docs-level skip with no agent detail is a stamp, not a verdict —

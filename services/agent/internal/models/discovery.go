@@ -822,6 +822,52 @@ type FixAttempt struct {
 
 // AnalysisStep captures the complete LLM dialog for a single analysis area.
 // One per analysis area (churn, engagement, levels, etc.).
+// ConsolidationSummary is one area's pre-validation consolidation pass, as the
+// run log records it.
+//
+// Folds are counted by which test PROPOSED them because the two tests find
+// largely different duplicates — measured on one run, the similarity rule
+// proposed 18 pairs and the figure-containment scan 16, and only 3 were the
+// same pair. A drop in one of the two counts is a different failure from a
+// drop in both.
+type ConsolidationSummary struct {
+	// Documents is how many of the run's findings the pass compared: this
+	// area's, plus every earlier area's.
+	Documents int `bson:"documents" json:"documents"`
+	// Clusters is how many sets were put up for adjudication.
+	Clusters int `bson:"clusters" json:"clusters"`
+	// Folded is how many of this area's insights were marked duplicate_of a
+	// canonical, and so cost the validation budget nothing.
+	Folded int `bson:"folded" json:"folded"`
+
+	ByCosine      int `bson:"by_cosine,omitempty" json:"by_cosine,omitempty"`
+	ByContainment int `bson:"by_containment,omitempty" json:"by_containment,omitempty"`
+	ByBoth        int `bson:"by_both,omitempty" json:"by_both,omitempty"`
+
+	// Decider is the provider that adjudicated, or "community" when the
+	// built-in rule did.
+	Decider string `bson:"decider,omitempty" json:"decider,omitempty"`
+
+	// RefusedOtherArea counts folds the adjudicator asked for against a
+	// finding from an area the run had already finished. Those are left
+	// standing: that document's verdict is already paid for and its mark
+	// has nowhere durable to live.
+	RefusedOtherArea int `bson:"refused_other_area,omitempty" json:"refused_other_area,omitempty"`
+	// RefusedRecheck counts folds dropped because the claim did not hold
+	// against the canonical the mark would actually have pointed at.
+	// Non-zero is the chain re-check doing its job, not a fault.
+	RefusedRecheck int `bson:"refused_recheck,omitempty" json:"refused_recheck,omitempty"`
+	// RefusedShape counts verdicts discarded as malformed: an id outside its
+	// own cluster, a canonical that is itself folded, a cycle.
+	RefusedShape int `bson:"refused_shape,omitempty" json:"refused_shape,omitempty"`
+	// Reverted is set when the pass could not prove its own marks resolve
+	// cleanly and gave them all back. Always worth an alert: it means the
+	// run fell back to the end-of-run check for this area.
+	Reverted bool `bson:"reverted,omitempty" json:"reverted,omitempty"`
+
+	DurationMs int64 `bson:"duration_ms,omitempty" json:"duration_ms,omitempty"`
+}
+
 type AnalysisStep struct {
 	AreaID   string    `bson:"area_id" json:"area_id"`     // "churn", "levels", etc.
 	AreaName string    `bson:"area_name" json:"area_name"` // "Churn Risks", "Level Difficulty"
@@ -869,6 +915,14 @@ type AnalysisStep struct {
 	// from a non-empty response (bounded by ANALYSIS_PARSE_MAX_RETRIES). Zero
 	// on the happy path; omitted when zero.
 	AnalysisParseRetries int `bson:"analysis_parse_retries,omitempty" json:"analysis_parse_retries,omitempty"`
+
+	// Consolidation records what the pre-validation consolidation pass did
+	// for this area. Nil on an area that proposed nothing, and on every area
+	// of a run whose insights do not restate each other — which is the
+	// signal: a fold rate that moves is the one regression this feature can
+	// cause, and it is read off this field rather than reconstructed from a
+	// replay.
+	Consolidation *ConsolidationSummary `bson:"consolidation,omitempty" json:"consolidation,omitempty"`
 
 	// Repair counters (E5). Every one of these is zero on an area whose
 	// insights all agreed with their own evidence, which is the common case, so

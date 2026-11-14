@@ -8,7 +8,7 @@ import "strings"
 
 // Status is the validation taxonomy emitted by verifier + refuter and
 // combined by Combine() into the document's final verdict state.
-// Seven terminal statuses — see the constants below.
+// Eight terminal statuses — see the constants below.
 type Status string
 
 const (
@@ -40,6 +40,18 @@ const (
 	// StatusSkippedBudgetCap — run-level cap reached; this document
 	// never entered the agent.
 	StatusSkippedBudgetCap Status = "skipped_budget_cap"
+
+	// StatusSkippedDuplicate — the document restates another finding of
+	// the same run and was consolidated into it before validation, so it
+	// never entered the agent and was never charged against the run cap.
+	//
+	// Its own status rather than reusing skipped_budget_cap, which is the
+	// difference between "the run ran out of budget on this one" and "there
+	// was nothing here to check that the canonical does not already carry".
+	// Conflating them would make the measurement this feature exists to
+	// move — how much of the cap lands on restatements — unreadable from
+	// the stored verdicts.
+	StatusSkippedDuplicate Status = "skipped_duplicate"
 )
 
 // IsTerminalPositive returns true for the verifier-or-refuter
@@ -54,7 +66,7 @@ func (s Status) IsTerminalPositive() bool {
 	return false
 }
 
-// IsKnown returns true when s is one of the seven defined statuses.
+// IsKnown returns true when s is one of the eight defined statuses.
 // Used for **doc-level** Overall validation (Combine accepts every
 // status). Per-claim statuses are stricter — use IsValidPerClaim
 // instead.
@@ -62,16 +74,17 @@ func (s Status) IsKnown() bool {
 	switch s {
 	case StatusConfirmed, StatusSupported, StatusRejected,
 		StatusPartial, StatusUnverifiable,
-		StatusValidationDisabled, StatusSkippedBudgetCap:
+		StatusValidationDisabled, StatusSkippedBudgetCap,
+		StatusSkippedDuplicate:
 		return true
 	}
 	return false
 }
 
 // IsValidPerClaim returns true when s is one of the five values
-// allowed in `ClaimVerdict.Status`. The two doc-level "agent never
-// ran" statuses (`validation_disabled`, `skipped_budget_cap`) are
-// NOT valid per-claim — a claim with no per-claim verdict still has
+// allowed in `ClaimVerdict.Status`. The three doc-level "agent never
+// ran" statuses (`validation_disabled`, `skipped_budget_cap`,
+// `skipped_duplicate`) are NOT valid per-claim — a claim with no per-claim verdict still has
 // to honour the evidence-required rule, which would silently pass
 // if the claim's status were `validation_disabled`. The finaliser
 // uses this to reject the doc-level statuses on per-claim entries.
@@ -97,9 +110,11 @@ func DefaultRecommendationVerdicts() []Status {
 // ParseStatuses sanitises a free-form (case-insensitive) list of verdict
 // names into the five user-selectable per-claim statuses — confirmed,
 // supported, partial, unverifiable, rejected — dropping unknowns,
-// duplicates, and the two internal "agent never ran" states
-// (validation_disabled, skipped_budget_cap, which are handled fail-open
-// by the eligibility filter, not selectable by operators). Used to clean
+// duplicates, and the three internal "agent never ran" states
+// (validation_disabled and skipped_budget_cap, handled fail-open by the
+// eligibility filter, and skipped_duplicate, which is excluded by the
+// mark rather than by its verdict — none of them selectable by
+// operators). Used to clean
 // the per-project recommendation-eligibility setting coming from the API
 // / dashboard before it reaches the discovery filter.
 func ParseStatuses(in []string) []Status {
