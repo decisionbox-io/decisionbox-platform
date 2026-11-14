@@ -80,6 +80,11 @@ func ValidateSingleDoc(ctx context.Context, in ValidateSingleDocInput) (models.V
 		wh:       in.WH,
 		disc:     in.Disc,
 		executor: in.Executor,
+		// One document, asked for. The run-wide duplicate skip does not apply:
+		// it exists so a run's fixed budget is not spent on restatements, and
+		// an operator who clicked Validate on a finding shown as restated has
+		// already decided to spend it. See validationPhase.onRequest.
+		onRequest: true,
 	}
 
 	switch in.DocKind {

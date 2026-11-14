@@ -134,8 +134,11 @@ func (o *Orchestrator) checkpointAnalysisArea(ctx context.Context, step models.A
 		RunID:              o.runID,
 		Attempt:            o.resume.attemptNumber(),
 		ExplorationAttempt: o.explorationSummaryAttempt,
-		Step:               step,
-		InsightsValidated:  insightsValidated,
+		// A consolidation mark into an earlier area is stored by the id the
+		// run's checkpoints hold, not the one this attempt minted, so a third
+		// attempt can still follow it. See withCheckpointStableMarks.
+		Step:              withCheckpointStableMarks(step, o.checkpointIDByLive),
+		InsightsValidated: insightsValidated,
 	})
 	if err != nil {
 		if errors.Is(err, database.ErrSupersededAttempt) {
@@ -312,13 +315,345 @@ func (o *Orchestrator) discardAnalysisCheckpoints(ctx context.Context, why strin
 // A pure function so the arithmetic is testable on its own: RunDiscovery
 // needs a warehouse, an LLM and a schema cache, so the loop it lives in
 // cannot be driven from a unit test.
+// ids, which the caller owns and carries across every restore of the run, is
+// how a consolidation mark survives the remint: the mark names its canonical
+// by the id the checkpoint holds, and every id in the restored set has just
+// changed. Each restore registers its own remap before re-pointing its own
+// marks, so a mark into an area restored EARLIER in the same loop resolves.
+// See repointRestoredMarks for the one it cannot resolve.
 func restoreArea(
 	cp models.AnalysisAreaCheckpoint,
 	analysisLog []models.AnalysisStep,
 	allInsights []models.Insight,
+	ids *restoredIDs,
 ) ([]models.AnalysisStep, []models.Insight, map[string]string) {
 	step, storedByFresh := reidentifyRestoredArea(cp.Step)
+	ids.register(storedByFresh, step.AreaID)
+	repointRestoredMarks(step.Insights, ids, step.AreaID)
 	return append(analysisLog, step), append(allInsights, step.Insights...), storedByFresh
+}
+
+// ambiguousStoredID is the value register parks on a stored id that two areas
+// both claim, so nothing resolves through it.
+//
+// An insight id is the model's when the model supplies one — the parse only
+// mints a UUID for an insight that arrived without an `id` — so two areas can
+// hand back the same id, and `{area}-{index}` style ids make that likelier
+// than it sounds. A map written last-writer-wins then points a mark at
+// whichever area restored second, which is a reader sent to an unrelated
+// finding while the one they asked for is hidden. Refusing the translation
+// loses the fold and keeps both findings visible, which is the recoverable
+// direction.
+const ambiguousStoredID = "\x00ambiguous"
+
+// restoredIDs is the id bookkeeping one resume performs, carried across every
+// restore of the run and read by settleRunMarks at the end of it.
+//
+// Two maps, because a restored mark takes two things to decide and neither
+// derives from the other. freshByStored RESOLVES a target: the mark names its
+// canonical by an id a checkpoint holds, and that id has just changed.
+// markTargetByID records, per insight, the stored target the mark ARRIVED
+// with — which is the only form of the mark that survives being wrong.
+//
+// That second map is the third attempt at the same question, and the reason
+// to keep the first two in mind. Deriving provenance from this attempt's
+// minted ids lost it for exactly the areas that collided; trusting the
+// translated mark lost it whenever the translation itself was decided on a
+// mapping that was still being written. The arrival value is decided once,
+// at the end, by a mapping nothing further will change.
+type restoredIDs struct {
+	freshByStored  map[string]string
+	markTargetByID map[string]string
+}
+
+func newRestoredIDs() *restoredIDs {
+	return &restoredIDs{
+		freshByStored:  make(map[string]string),
+		markTargetByID: make(map[string]string),
+	}
+}
+
+// register adds one restored area's fresh-to-stored remap, poisoning any
+// stored id another area has already claimed.
+func (r *restoredIDs) register(storedByFresh map[string]string, areaID string) {
+	for fresh, stored := range storedByFresh {
+		switch prior, seen := r.freshByStored[stored]; {
+		case !seen:
+			r.freshByStored[stored] = fresh
+		case prior == fresh || prior == ambiguousStoredID:
+			// Nothing to decide: the same mapping, or already poisoned.
+		default:
+			applog.WithFields(applog.Fields{
+				"area": areaID, "stored_id": stored,
+			}).Warn("restore: two analysis areas carry the same insight id; no consolidation mark will be resolved through it")
+			r.freshByStored[stored] = ambiguousStoredID
+		}
+	}
+}
+
+// resolve returns the id this attempt minted for a stored id, and whether
+// exactly one restored area claimed it.
+func (r *restoredIDs) resolve(stored string) (string, bool) {
+	if r == nil {
+		return "", false
+	}
+	fresh, ok := r.freshByStored[stored]
+	return fresh, ok && fresh != ambiguousStoredID
+}
+
+// rememberMarkTarget records the stored target a restored insight's mark
+// arrived with, under the id this attempt minted for that insight.
+func (r *restoredIDs) rememberMarkTarget(id, storedTarget string) {
+	if r == nil || id == "" || storedTarget == "" {
+		return
+	}
+	r.markTargetByID[id] = storedTarget
+}
+
+// markTarget returns the stored target an insight's mark arrived with, and
+// whether the mark came out of a checkpoint at all.
+func (r *restoredIDs) markTarget(id string) (string, bool) {
+	if r == nil {
+		return "", false
+	}
+	stored, ok := r.markTargetByID[id]
+	return stored, ok
+}
+
+// withCheckpointStableMarks returns the step with every consolidation mark
+// re-pointed at the id the run's CHECKPOINTS hold for its target, rather than
+// the id this attempt minted for it.
+//
+// This is what makes a mark survive more than one resume. A mark into an
+// earlier area names that area's insight by this attempt's id — and if the
+// area was itself restored, that id was minted here and exists nowhere on
+// disk. A third attempt restores the earlier area from its OWN checkpoint,
+// which still holds the original id, so it can translate the original id and
+// nothing else: a mark naming the second attempt's id resolves against
+// neither, and settleRunMarks correctly clears it, costing the fold and
+// returning an unvalidated finding to the recommender. Storing the stable id
+// means every later attempt can follow it — the same discipline Phase 5's
+// stored recommendation citations already use.
+//
+// A COPY of the insight slice, because the live slice is shared with the
+// reader and the result: the in-memory mark must keep naming the live id, or
+// the dashboard would render a suppression pointing at an id no row carries.
+// Only the stored copy is translated.
+//
+// A no-op for an area this attempt analysed itself, whose insights are not in
+// the map — which is also why an intra-area mark is stored as it stands and
+// matches the checkpoint's own ids.
+func withCheckpointStableMarks(step models.AnalysisStep, checkpointIDByLive map[string]string) models.AnalysisStep {
+	if len(checkpointIDByLive) == 0 || len(step.Insights) == 0 {
+		return step
+	}
+	var copied []models.Insight
+	for i := range step.Insights {
+		target := step.Insights[i].DuplicateOf
+		if target == "" {
+			continue
+		}
+		stored, ok := checkpointIDByLive[target]
+		if !ok || stored == target {
+			continue
+		}
+		if copied == nil {
+			copied = make([]models.Insight, len(step.Insights))
+			copy(copied, step.Insights)
+		}
+		copied[i].DuplicateOf = stored
+	}
+	if copied == nil {
+		return step
+	}
+	step.Insights = copied
+	return step
+}
+
+// repointRestoredMarks re-points a restored area's duplicate marks at the ids
+// this attempt minted, for every target it can already resolve.
+//
+// A mark is a pointer between two of the run's insights, and
+// reidentifyRestoredArea has just given every insight in the restored set a
+// new id — so a mark carried over verbatim names a row this attempt does not
+// hold.
+//
+// It does NOT clear what it cannot resolve, and that restraint is the whole
+// point: the run's analysis areas come out of a MAP, so their order is not
+// stable between attempts, and an area that folded into another can therefore
+// restore BEFORE it. Clearing on the spot threw away a perfectly good mark
+// whose target simply had not registered its ids yet, and nothing revisited
+// it. settleRunMarks, run once the loop has finished and every restored area
+// has registered, is what decides which marks are genuinely broken.
+//
+// Which makes what this function writes BEST EFFORT, and the arrival target
+// it records the authoritative form. The mapping is still being written while
+// the loop runs — a restore happens in the same pass over the areas as a
+// fresh analysis, so areas later in that order have not registered yet — so a
+// translation here can resolve through an entry a later area poisons, and can
+// fail for a canonical that registers a moment afterwards. Translating anyway
+// is worth it because the mid-run consolidation pass reads these marks to
+// decide which earlier-area documents are already canonicals, and it needs
+// live ids; the cost of getting one wrong there is a fold that pass declines
+// to make, never a hidden finding, because settleRunMarks re-decides every
+// one of these marks from the value recorded here.
+func repointRestoredMarks(insights []models.Insight, ids *restoredIDs, areaID string) {
+	for i := range insights {
+		stored := insights[i].DuplicateOf
+		if stored == "" {
+			continue
+		}
+		ids.rememberMarkTarget(insights[i].ID, stored)
+		if fresh, ok := ids.resolve(stored); ok {
+			insights[i].DuplicateOf = fresh
+			applog.WithFields(applog.Fields{"area": areaID, "id": insights[i].ID, "duplicate_of": fresh}).
+				Debug("restore: re-pointed a consolidation mark at this attempt's id")
+		}
+	}
+}
+
+// settleRunMarks is the authority on which consolidation marks survive a
+// resume. Called once after the analysis loop, with every restored area's id
+// mapping in hand and the run's whole insight set in front of it.
+//
+// Every mark that came out of a checkpoint is re-decided here, from the
+// stored target it arrived with rather than from whatever repointRestoredMarks
+// left on it: that translation ran against a mapping the loop was still
+// writing, so it is a convenience for the mid-run readers and not a verdict.
+// A mark whose target registered after its own area restored is re-pointed —
+// the case repointRestoredMarks deliberately leaves alone, because the area
+// order is not stable between attempts — and any mark still pointing at a row
+// this run does not hold is CLEARED. That is strictly worse than
+// no mark: the insight renders as suppressed behind a canonical the reader
+// cannot reach, which is the one outcome the non-destructive contract exists
+// to prevent.
+//
+// What is genuinely unresolvable, stated rather than papered over: a mark into
+// an area THIS attempt re-analysed from scratch, whose target was a previous
+// attempt's insight and no longer exists. That loses a fold the consolidation
+// pass would have re-derived had the area been re-analysed, and it cannot
+// produce a broken pointer.
+//
+// Clearing a mark also clears the verdict that existed only because of it.
+// `skipped_duplicate` is stamped BY the mark — it says "the canonical carries
+// this claim's verdict" — so a finding that is visible again with that stamp
+// still standing would render as a restatement of nothing. Dropping it leaves
+// the finding with no verdict, which is what an insight that was never checked
+// has, and which the recommender's filter already fails open on.
+//
+// Both copies are settled: the run's accumulator, which becomes the result,
+// and each area's step, which is the record of that area's output. They are
+// separate copies by the time the loop has appended them, so settling one
+// would leave the two disagreeing about which findings are visible.
+func settleRunMarks(analysisLog []models.AnalysisStep, allInsights []models.Insight, ids *restoredIDs) (repointed, cleared int) {
+	live := make(map[string]struct{}, len(allInsights))
+	for i := range allInsights {
+		if allInsights[i].ID != "" {
+			live[allInsights[i].ID] = struct{}{}
+		}
+	}
+
+	settle := func(ins *models.Insight, areaID string) {
+		target := ins.DuplicateOf
+		if target == "" {
+			return
+		}
+		// A mark that came out of a CHECKPOINT is decided here, and from the
+		// stored target it arrived with rather than from whatever the mark
+		// says now. The restore-time translation read a mapping that was
+		// still being written, so it can have resolved through an entry a
+		// later area poisoned, or failed for a canonical that registered
+		// just after it; re-deciding from the arrival value is the only
+		// reading of the mark that cannot be stale.
+		//
+		// A FRESH insight's mark is not re-decided: this attempt's own
+		// consolidation pass wrote it, against an id the pass was holding,
+		// and the pass never writes a mark onto a restored insight — a
+		// completed area never reaches it and a draft-restored area's marks
+		// arrive with the draft.
+		if stored, fromCheckpoint := ids.markTarget(ins.ID); fromCheckpoint {
+			if fresh, ok := ids.resolve(stored); ok {
+				if _, isLive := live[fresh]; isLive {
+					if ins.DuplicateOf != fresh {
+						ins.DuplicateOf = fresh
+						repointed++
+					}
+					return
+				}
+			}
+			applog.WithFields(applog.Fields{
+				"area": areaID, "id": ins.ID, "was_duplicate_of": target, "stored_target": stored,
+			}).Info("restore: a restored mark names a canonical this run does not hold, or one two areas both claim; the finding is visible again")
+			clearMark(ins)
+			cleared++
+			return
+		}
+		if _, ok := live[target]; ok {
+			return
+		}
+		applog.WithFields(applog.Fields{
+			"area": areaID, "id": ins.ID, "was_duplicate_of": target,
+		}).Info("restore: a consolidation mark pointed at a row this run does not hold; the finding is visible again")
+		clearMark(ins)
+		cleared++
+	}
+
+	for i := range allInsights {
+		settle(&allInsights[i], allInsights[i].AnalysisArea)
+	}
+	for i := range analysisLog {
+		area := &analysisLog[i]
+		for j := range area.Insights {
+			ins := &area.Insights[j]
+			id, had := ins.ID, ins.DuplicateOf != ""
+			settle(ins, area.AreaID)
+			if had && ins.DuplicateOf == "" {
+				area.ValidationResults = dropSkippedDuplicateResult(area.ValidationResults, id)
+			}
+		}
+	}
+	return repointed, cleared
+}
+
+// clearMark removes a duplicate mark and the verdict that existed only
+// because of it. `skipped_duplicate` is stamped BY the mark, so a finding that
+// is visible again carrying that stamp would render as a restatement of
+// nothing; with no verdict it reads as what it is, an insight nothing checked.
+func clearMark(ins *models.Insight) {
+	ins.DuplicateOf = ""
+	ins.SimilarityScore = 0
+	if v := ins.Validation; v != nil && v.Combined == valmodels.StatusSkippedDuplicate {
+		ins.Validation = nil
+	}
+}
+
+// dropSkippedDuplicateResult removes the skip-only validation result an
+// insight carried because it was marked a duplicate.
+//
+// The step's ValidationResults are persisted by the split-log writer and
+// served by the validation-results endpoint, so clearing the verdict off the
+// insight and leaving the log entry behind labelled a finding that is visible
+// again, and was never checked, as Restated — on the one surface an operator
+// goes to in order to ask what WAS checked.
+//
+// Only a skip-ONLY entry is removed: one carrying verifier or refuter detail
+// is a verdict an agent actually produced, and it belongs in the log whatever
+// happened to the mark.
+func dropSkippedDuplicateResult(results []models.ValidationResult, insightID string) []models.ValidationResult {
+	if insightID == "" || len(results) == 0 {
+		return results
+	}
+	out := results[:0]
+	for _, r := range results {
+		skipOnly := r.InsightID == insightID &&
+			r.Combined == valmodels.StatusSkippedDuplicate &&
+			r.Verifier == nil && r.Refuter == nil
+		if skipOnly {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // reidentifyRestoredArea gives a restored area's insights fresh ids, and

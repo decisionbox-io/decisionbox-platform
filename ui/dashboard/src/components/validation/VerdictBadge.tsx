@@ -18,6 +18,7 @@ function iconFor(status: ValidationStatus | string | undefined) {
       return <IconAlertTriangle size={12} />;
     case 'validation_disabled':
     case 'skipped_budget_cap':
+    case 'skipped_duplicate':
     case 'unverified':
       return <IconMinus size={12} />;
     default:

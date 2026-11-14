@@ -691,6 +691,7 @@ export type ValidationStatus =
   | "unverifiable"
   | "validation_disabled"
   | "skipped_budget_cap"
+  | "skipped_duplicate"
   // Legacy values:
   | "adjusted"
   | "unverified"

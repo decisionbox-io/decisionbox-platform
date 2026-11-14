@@ -68,6 +68,24 @@ type InsightSQLMetadata struct {
 
 // BuildEmbeddingText returns the text to embed for semantic search.
 func (i *StandaloneInsight) BuildEmbeddingText() string {
+	return InsightEmbeddingText(i.Name, i.Description, i.AnalysisArea, i.Severity, i.TargetSegment)
+}
+
+// InsightEmbeddingText renders what an insight is, as the duplicate check and
+// the semantic index see it.
+//
+// A free function over the five fields rather than a method, because the
+// in-flight insight the agent carries mid-run and the denormalised
+// StandaloneInsight persisted at the end of a run are different types holding
+// the same five values — and a duplicate check that runs on one of them while
+// the index is built from the other has to be comparing the same derivation.
+// Two Sprintfs of the same shape in two packages is exactly how the two come
+// to disagree about whether two documents are the same document: the same
+// discipline magnitudeOf exists for on the quantitative side.
+//
+// Changing this format changes every stored embedding's meaning, so a change
+// here is a re-index, not an edit.
+func InsightEmbeddingText(name, description, area, severity, segment string) string {
 	return fmt.Sprintf("%s. %s. Area: %s. Severity: %s. Segment: %s.",
-		i.Name, i.Description, i.AnalysisArea, i.Severity, i.TargetSegment)
+		name, description, area, severity, segment)
 }

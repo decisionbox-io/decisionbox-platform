@@ -36,7 +36,8 @@ const VALIDATION_RANK: Record<string, number> = {
   error: 6,
   validation_disabled: 7,
   skipped_budget_cap: 8,
-  unverified: 9,
+  skipped_duplicate: 9,
+  unverified: 10,
 };
 
 export function validationSortRank(

@@ -179,6 +179,12 @@ var agentForwardedEnvKeys = []string{
 	"DISCOVERY_CONTEXT_PROVIDER_SHARE",
 	"DISCOVERY_CONTEXT_RETRIEVAL_TIMEOUT",
 	"DISCOVERY_DOCUMENT_DEDUP_MINSCORE",
+	// The mid-run consolidation switch, forwarded for the same reason: it is
+	// read by the agent while it analyses an area, so an operator who turns it
+	// off on the API would see no effect on any containerised run — which is
+	// every production deployment.
+	"DISCOVERY_CONSOLIDATION_ENABLED",
+	"DISCOVERY_CONSOLIDATION_MAX_CLUSTERS",
 	// Cloud policy-checker identity. On cloud tenants the agent runs the
 	// cloud-enterprise agent image, whose policy.Checker is
 	// decisionbox-cloud-tenant/policy-plugin (registered only when
