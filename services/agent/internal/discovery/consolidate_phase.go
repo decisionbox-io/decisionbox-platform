@@ -927,16 +927,29 @@ func (o *Orchestrator) applyConsolidation(
 				// miss the caveat that step carries.
 				in.insights[docs[fi].slot].SourceSteps = mergeSourceSteps(
 					in.insights[docs[fi].slot].SourceSteps, in.insights, clusterWritten)
-				// And in the projection, so a later cluster folding into the
-				// same survivor runs its containment re-check against what
-				// the survivor now says rather than against the text it said
-				// before this rewrite. The VECTOR is necessarily stale — the
-				// merged text has not been embedded — so a cosine re-check
-				// still reads the pre-merge document, which is the
-				// conservative direction: it can refuse a fold that would now
-				// hold, never accept one that would not.
+				// And in the projection, so anything that folds into this
+				// survivor afterwards reads what it now says rather than
+				// what it said before the rewrite.
+				//
+				// The VECTOR is DROPPED rather than kept, and the earlier
+				// comment here was wrong to call keeping it conservative: a
+				// rewrite can REDUCE similarity below the floor, and the
+				// community pass would have gone on folding against the
+				// pre-merge vector and suppressed a finding that no longer
+				// restates this one. The merged text has not been embedded
+				// and cannot be mid-area, so there is no cosine answer to
+				// give — and no answer is the conservative one. Containment
+				// still works, over the new body. Phase 9 embeds the merged
+				// text (the cache is keyed on the text, so it misses) and
+				// decides on a real vector.
 				docs[fi].prose = insightProse(&in.insights[docs[fi].slot])
 				docs[fi].body = insightBodyOf(plain, md, docs[fi].indicators)
+				docs[fi].vec = nil
+				docs[fi].text = commonmodels.InsightEmbeddingText(
+					in.insights[docs[fi].slot].Name, plain,
+					in.insights[docs[fi].slot].AnalysisArea,
+					in.insights[docs[fi].slot].Severity,
+					in.insights[docs[fi].slot].TargetSegment)
 				mergedCanonicals[final] = true
 				applog.WithFields(applog.Fields{"area": st.Area, "canonical": final}).
 					Info("Consolidation: merged the folded members' detail onto the canonical")

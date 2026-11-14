@@ -480,12 +480,47 @@ func settleRunMarks(analysisLog []models.AnalysisStep, allInsights []models.Insi
 	for i := range allInsights {
 		settle(&allInsights[i], allInsights[i].AnalysisArea)
 	}
-	for s := range analysisLog {
-		for i := range analysisLog[s].Insights {
-			settle(&analysisLog[s].Insights[i], analysisLog[s].AreaID)
+	for i := range analysisLog {
+		area := &analysisLog[i]
+		for j := range area.Insights {
+			ins := &area.Insights[j]
+			id, had := ins.ID, ins.DuplicateOf != ""
+			settle(ins, area.AreaID)
+			if had && ins.DuplicateOf == "" {
+				area.ValidationResults = dropSkippedDuplicateResult(area.ValidationResults, id)
+			}
 		}
 	}
 	return repointed, cleared
+}
+
+// dropSkippedDuplicateResult removes the skip-only validation result an
+// insight carried because it was marked a duplicate.
+//
+// The step's ValidationResults are persisted by the split-log writer and
+// served by the validation-results endpoint, so clearing the verdict off the
+// insight and leaving the log entry behind labelled a finding that is visible
+// again, and was never checked, as Restated — on the one surface an operator
+// goes to in order to ask what WAS checked.
+//
+// Only a skip-ONLY entry is removed: one carrying verifier or refuter detail
+// is a verdict an agent actually produced, and it belongs in the log whatever
+// happened to the mark.
+func dropSkippedDuplicateResult(results []models.ValidationResult, insightID string) []models.ValidationResult {
+	if insightID == "" || len(results) == 0 {
+		return results
+	}
+	out := results[:0]
+	for _, r := range results {
+		skipOnly := r.InsightID == insightID &&
+			r.Combined == valmodels.StatusSkippedDuplicate &&
+			r.Verifier == nil && r.Refuter == nil
+		if skipOnly {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // reidentifyRestoredArea gives a restored area's insights fresh ids, and

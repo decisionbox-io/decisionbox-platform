@@ -2214,3 +2214,118 @@ func TestConsolidateArea_RefusesARewriteThatWouldOrphanADonorsFigures(t *testing
 		t.Errorf("stats = %+v; a fold with no rewrite must still apply", st)
 	}
 }
+
+// A rewritten survivor loses its cosine projection, and keeping it was not
+// conservative as an earlier comment claimed: a rewrite can REDUCE similarity
+// below the floor, and the community pass would go on folding against the
+// pre-merge vector — suppressing a finding that no longer restates this one.
+// Containment still works, over the new body; Phase 9 embeds the merged text
+// and decides on a real vector.
+func TestConsolidateArea_ARewrittenSurvivorLosesItsVector(t *testing.T) {
+	a := insight("a", "stock", "claim a", "body a", 400)
+	b := insight("b", "stock", "claim b", "body b", 300)
+	// c is similar to a as it stands, and is in an overlapping cluster.
+	c := insight("c", "stock", "claim c", "body c", 200)
+	d := insight("d", "stock", "claim d", "body d", 100)
+
+	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		out := make([]agentplugin.ConsolidationVerdict, len(cl))
+		for i, cluster := range cl {
+			ids := make([]string, 0, 3)
+			for _, cand := range cluster.Candidates {
+				ids = append(ids, cand.ID)
+			}
+			if slices.Contains(ids, "a") {
+				out[i] = agentplugin.ConsolidationVerdict{
+					CanonicalID: "b", Duplicates: map[string]float64{"a": 0.906},
+					MergedDescription: "b, carrying a's detail — and now about something else entirely",
+				}
+			}
+		}
+		return out, nil
+	}})
+
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 25, embText(c): 50, embText(d): 75,
+	}}}
+	current := []models.Insight{a, b, c, d}
+	if st := o.consolidateArea(context.Background(), areaInput("stock", current, nil)); st.Folded == 0 {
+		t.Fatalf("stats = %+v, want the provider's fold applied (fixture broken)", st)
+	}
+	if !strings.Contains(current[1].Description, "something else entirely") {
+		t.Fatalf("b.description = %q, want the rewrite applied (fixture broken)", current[1].Description)
+	}
+	// c must not have been folded into the rewritten b on the strength of a
+	// vector describing b's old text.
+	if current[2].DuplicateOf == "b" {
+		t.Error("c was folded into a rewritten survivor using the pre-merge vector")
+	}
+
+	// And the projection itself: a rewritten document offers no cosine answer.
+	docs := []consolidationDoc{
+		doc(0, "x", 0, true, "claim x", "body x"),
+		doc(1, "y", 1, true, "claim y", "body y"),
+	}
+	docs[0].vec = nil
+	if _, ok := cosineFold(docs[1].foldSubject, docs[0].foldSubject, 0.88); ok {
+		t.Error("a document with no vector must offer no cosine fold")
+	}
+	if _, held := reverifyFold(docs[1], docs[0], 0.88, true); held {
+		t.Error("the re-check must refuse a cosine fold into a document with no vector")
+	}
+}
+
+// Clearing a restored mark has to clear the validation-log entry that existed
+// only because of it. The step's ValidationResults are persisted by the
+// split-log writer and served by the validation-results endpoint, so leaving
+// the entry behind labelled a finding that is visible again, and was never
+// checked, as Restated — on the one surface an operator goes to in order to
+// ask what WAS checked.
+func TestSettleRunMarks_ClearsTheSkipOnlyValidationLogEntry(t *testing.T) {
+	allInsights := []models.Insight{
+		{ID: "fresh-c", AnalysisArea: "stock", DuplicateOf: "never-existed",
+			Validation: &valmodels.InsightValidation{Combined: valmodels.StatusSkippedDuplicate}},
+		{ID: "fresh-d", AnalysisArea: "stock"},
+	}
+	analysisLog := []models.AnalysisStep{{
+		AreaID: "stock",
+		Insights: []models.Insight{
+			{ID: "fresh-c", DuplicateOf: "never-existed",
+				Validation: &valmodels.InsightValidation{Combined: valmodels.StatusSkippedDuplicate}},
+			{ID: "fresh-d"},
+		},
+		ValidationResults: []models.ValidationResult{
+			{InsightID: "fresh-c", Combined: valmodels.StatusSkippedDuplicate},
+			{InsightID: "fresh-d", Combined: valmodels.StatusConfirmed},
+		},
+	}}
+
+	settleRunMarks(analysisLog, allInsights, nil)
+
+	ids := map[string]valmodels.Status{}
+	for _, r := range analysisLog[0].ValidationResults {
+		ids[r.InsightID] = r.Combined
+	}
+	if _, present := ids["fresh-c"]; present {
+		t.Errorf("results = %v; the skip entry outlived the mark it came from", ids)
+	}
+	if ids["fresh-d"] != valmodels.StatusConfirmed {
+		t.Errorf("results = %v; a real verdict was removed", ids)
+	}
+}
+
+// A skip entry carrying agent detail is a verdict an agent actually produced,
+// and it belongs in the log whatever happened to the mark.
+func TestDropSkippedDuplicateResult_KeepsAnythingWithAgentDetail(t *testing.T) {
+	withDetail := []models.ValidationResult{
+		{InsightID: "a", Combined: valmodels.StatusSkippedDuplicate, Verifier: &valmodels.StructuredVerdict{}},
+		{InsightID: "b", Combined: valmodels.StatusSkippedDuplicate},
+	}
+	got := dropSkippedDuplicateResult(withDetail, "a")
+	if len(got) != 2 {
+		t.Errorf("results = %+v; an entry with verifier detail must be kept", got)
+	}
+	if got := dropSkippedDuplicateResult(withDetail, ""); len(got) != 2 {
+		t.Errorf("an empty id must remove nothing, got %+v", got)
+	}
+}
