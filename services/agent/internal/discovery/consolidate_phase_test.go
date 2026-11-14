@@ -2329,3 +2329,91 @@ func TestDropSkippedDuplicateResult_KeepsAnythingWithAgentDetail(t *testing.T) {
 		t.Errorf("an empty id must remove nothing, got %+v", got)
 	}
 }
+
+// The magnitude guard gates BOTH acceptance paths. That it did not was a hole
+// this feature opened rather than inherited: sameClaim refuses a fold where
+// the two texts are IDENTICAL and the figures differ — 100 affected entities
+// hidden behind 1,000 — and containment reached its acceptance without passing
+// it, so two otherwise identical findings were folded whenever the headline's
+// figures appeared in the other's body.
+func TestReverifyFold_TheMagnitudeGuardGatesContainmentToo(t *testing.T) {
+	table := "| north | 111,222 | 33.3 |"
+	canonical := doc(0, "a", 0, true, "the whole total", table)
+	dup := doc(1, "b", 70, true, "the north segment holds 111,222 units, 33.3 of it", "")
+
+	// Different texts: containment decides, and it holds.
+	if _, held := reverifyFold(dup, canonical, 0.88, true); !held {
+		t.Fatal("an ordinary containment fold must hold (fixture broken)")
+	}
+
+	// Identical text, different magnitudes: the guard's own case. The
+	// headline's figures are still in the body, so containment would accept
+	// it on its own.
+	same := dup
+	same.text = canonical.text
+	same.magnitude = "affected=1000"
+	canonical.magnitude = "affected=100"
+	if _, held := reverifyFold(same, canonical, 0.88, true); held {
+		t.Error("identical text with a different magnitude must not fold, by containment or otherwise")
+	}
+	// And the same pair with EQUAL magnitudes still folds, so the guard has
+	// not simply switched containment off.
+	same.magnitude = canonical.magnitude
+	if _, held := reverifyFold(same, canonical, 0.88, true); !held {
+		t.Error("identical text with the same magnitude must still fold")
+	}
+}
+
+// A containment fold is justified by figures found in the survivor's body, and
+// a rewrite is free text that can drop them. The closure check cannot catch it
+// — it verifies where marks POINT, not whether the claim still holds — and the
+// end-of-run check skips a document that already carries a mark, so the
+// finding would stay suppressed and unvalidated with its claim stated nowhere.
+func TestConsolidateArea_RefusesARewriteThatDropsAFoldsJustification(t *testing.T) {
+	table := "| north | 111,222 | 33.3 |\n| south | 444,555 | 66.6 |"
+	a := insight("a", "stock", "the whole total", table, 300)
+	b := insight("b", "stock", "the north segment holds 111,222 units, 33.3 of it", "a slice", 200)
+
+	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		return []agentplugin.ConsolidationVerdict{{
+			CanonicalID: "a", Duplicates: map[string]float64{"b": 0},
+			// A rewrite that keeps the south row and drops the north one —
+			// the row that justified b's fold.
+			MergedDescription: "the whole total\n\n| south | 444,555 | 66.6 |",
+		}}, nil
+	}})
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 70,
+	}}}
+	current := []models.Insight{a, b}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if st.RefusedUnmergeable != 1 {
+		t.Fatalf("stats = %+v, want the rewrite refused", st)
+	}
+	if current[1].DuplicateOf != "" {
+		t.Errorf("b.duplicate_of = %q; it is suppressed behind a survivor that no longer states its claim", current[1].DuplicateOf)
+	}
+	if strings.Contains(current[0].Description, "south") && !strings.Contains(current[0].Description, "north") {
+		t.Errorf("a.description = %q; the rewrite was applied", current[0].Description)
+	}
+
+	// A rewrite that KEEPS the row is applied, so the guard is not refusing
+	// every merge on a containment fold.
+	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		return []agentplugin.ConsolidationVerdict{{
+			CanonicalID: "a", Duplicates: map[string]float64{"b": 0},
+			MergedDescription: table + "\n\nand a caveat b carried",
+		}}, nil
+	}})
+	keeps := []models.Insight{a, b}
+	o2 := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 70,
+	}}}
+	if st := o2.consolidateArea(context.Background(), areaInput("stock", keeps, nil)); st.Folded != 1 {
+		t.Fatalf("stats = %+v; a rewrite that keeps the justification must be applied", st)
+	}
+	if !strings.Contains(keeps[0].Description, "caveat b carried") {
+		t.Errorf("a.description = %q, want the rewrite", keeps[0].Description)
+	}
+}
