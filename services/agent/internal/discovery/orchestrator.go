@@ -1732,7 +1732,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// across every restore this run performs. A consolidation mark names its
 	// canonical by the stored id, and a restore remints every id in the set,
 	// so this is what lets such a mark survive. See repointRestoredMarks.
-	freshByStoredInsight := make(map[string]string)
+	restoredInsightIDs := newRestoredIDs()
 
 	for _, area := range runAreas {
 		// Per area, not just per phase: analysis is the long one, and a
@@ -1757,7 +1757,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// before the loop.
 		if cp, ok := completedAreas[area.ID]; ok {
 			var remapped map[string]string
-			analysisLog, allInsights, remapped = restoreArea(cp, analysisLog, allInsights, freshByStoredInsight)
+			analysisLog, allInsights, remapped = restoreArea(cp, analysisLog, allInsights, restoredInsightIDs)
 			// The ids this attempt minted for the restored insights, against
 			// the ones the checkpoint holds. Phase 5 needs the mapping to
 			// decide whether a stored recommendation set still describes the
@@ -1945,8 +1945,8 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 			// area's are — and registered the same way, because a draft id
 			// can collide with a completed checkpoint's just as readily: an
 			// insight id is the model's when the model supplies one.
-			registerRestoredIDs(freshByStoredInsight, draftRemap, area.ID)
-			repointRestoredMarks(step.Insights, freshByStoredInsight, area.ID)
+			restoredInsightIDs.register(draftRemap, area.ID)
+			repointRestoredMarks(step.Insights, restoredInsightIDs, area.ID)
 			insights = step.Insights
 			// And the remap is deliberately NOT recorded in storedIDByLive,
 			// which is the subtle half. That map answers "which id do this
@@ -2057,7 +2057,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// here a mark into an area that restored LATER is correct but stale, and
 	// the area order comes out of a map so "later" is not predictable. Run
 	// before the eligibility filter, which reads the marks.
-	if repointed, cleared := settleRunMarks(analysisLog, allInsights, freshByStoredInsight); repointed+cleared > 0 {
+	if repointed, cleared := settleRunMarks(analysisLog, allInsights, restoredInsightIDs); repointed+cleared > 0 {
 		applog.WithFields(applog.Fields{
 			"repointed": repointed, "cleared": cleared,
 		}).Info("Consolidation marks settled across the restored run")
