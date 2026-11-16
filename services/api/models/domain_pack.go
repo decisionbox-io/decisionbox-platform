@@ -49,6 +49,23 @@ type DomainPack struct {
 	// changes for a pack written before this field existed.
 	RiskTaxonomy []PackRiskCategory `bson:"risk_taxonomy,omitempty" json:"risk_taxonomy,omitempty"`
 
+	// RiskConfigHash fingerprints the risk configuration above (plus each
+	// area's mapping and override) so a client can tell whether the copy it is
+	// editing is still the stored one. See RiskConfigHash.
+	//
+	// Served on read and `bson:"-"` so it is never written FROM the struct.
+	// The value goes out to clients and this model comes back from them, so a
+	// client's echo — or any stale value it happens to hold — must not be able
+	// to become the stored one: every writer's comparison would then be
+	// against a number a client chose. The repository writes the stored field
+	// explicitly, from the content, which is what beats an echo on that path;
+	// the tag is what protects every other whole-document write of a pack.
+	//
+	// Empty on a pack that was not served through the repository, which is
+	// how a client tells "this API does not offer the check" from "the
+	// configuration is empty" — the latter still has a hash.
+	RiskConfigHash string `bson:"-" json:"risk_config_hash,omitempty"`
+
 	// Per-pack LLM token usage, summed across every generation attempt
 	// (initial + auto-fix retries) the synthesiser made for this pack.
 	// Populated by the enterprise pack generator when a pack is first

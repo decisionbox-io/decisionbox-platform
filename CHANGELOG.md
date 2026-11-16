@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A pack's risk configuration carries a fingerprint.** `risk_config_hash` is served on every domain-pack read: a hash of the taxonomy and of each analysis area's `risk_categories` / `severity_weight`, and of nothing else. A client editing those numbers sends back what it was served, so a write built on a copy that has since gone stale is refused instead of landing on top of the newer one — the taxonomy is submitted whole (removing or reordering a category cannot be expressed as a patch), which is what made a stale copy able to revert a weight it never touched.
+
+  A fingerprint of the content rather than a revision counter, because a counter only holds if every writer advances it and a writer that knows nothing about it slips past anything built on it. The content is true of the document however it got that way — including a write through the pack editor, which maintains the stored value now. It is deliberately **narrower** than a modification time: rewriting an area's prompt does not move it, so a section regeneration and a weight edit no longer conflict over prose. Served on read, never written from the request, so a client's echo of it cannot become the stored one.
+
 - **Pause a discovery run, and continue it later ([#508](https://github.com/decisionbox-io/decisionbox-platform/issues/508)).** A run's only stop used to be Cancel, which is a hard kill: it reaps the agent, writes `cancelled` and deletes the checkpoints that made the run resumable. So an operator who wanted the warehouse back, or the clock stopped, had to throw away the exploration they had already paid for. Pause is the other trade — the run finishes the step it is working on, keeps that step's checkpoint, and exits into a new status **`paused`** that the existing Resume accepts.
 
   **The dashboard now has two stops.** **Pause** keeps the run's progress; **Cancel** throws it away and sits behind a confirmation that says so, which it did not need while it was the only option. A paused run shows **Resume from step N** and **Cancel**.

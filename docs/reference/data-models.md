@@ -126,6 +126,10 @@ A stated weight must be in **(0, 3]**. Zero is excluded because it multiplies a 
 
 **A weight change is not a trend.** The cross-run comparison in the discovery ledger reads `magnitude_score`, which is weight-free, precisely so that raising a category's weight cannot make every finding in it look as though it got worse on the day someone changed a setting.
 
+**The configuration carries a fingerprint.** A pack read serves `risk_config_hash`: a hash of the taxonomy and of every area's `risk_categories` / `severity_weight`, and of nothing else. It is how a client editing those numbers can tell whether the copy on its screen is still the stored one — it sends back what it was served, and a write built on an older reading is refused rather than landing on top of someone else's.
+
+A fingerprint of the content rather than a counter, because a counter only works if every writer remembers to advance it, and one that does not slips past anything built on it; the content is true of the document however it got that way. It is narrower than a modification time on purpose: rewriting an area's **prompt** leaves it alone, since a prompt cannot make a risk mapping invalid, so routine prose edits do not conflict with a weight edit. It is served on read and never stored from the request, so a client's copy of it cannot become the stored one.
+
 **Nothing is re-scored.** A stored `severity` is an immutable fact about the run that produced it: changing a weight changes what the next run computes and leaves every stored document alone, and the on-demand "Run validation" path re-derives the confidence axis only.
 
 #### Priority

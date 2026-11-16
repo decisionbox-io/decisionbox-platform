@@ -265,6 +265,15 @@ export interface DomainPack {
   // in each is worth. Absent on a pack that declares none, which is every
   // pack written before the configuration existed.
   risk_taxonomy?: RiskCategory[];
+  // A fingerprint of the risk configuration above and of every area's
+  // `risk_categories` / `severity_weight` — nothing else. Served on read so a
+  // client editing those numbers can send back the version it was looking at,
+  // and have a write built on a copy that has since gone stale refused rather
+  // than land on top of the newer one.
+  //
+  // Absent against an API that does not serve it, which is different from an
+  // empty configuration: that still has a fingerprint.
+  risk_config_hash?: string;
   prompts: PackPrompts;
   analysis_areas: PackAnalysisAreas;
   profile_schema: PackProfileSchema;
