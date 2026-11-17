@@ -243,3 +243,30 @@ func TestParseInsights_RelationshipFieldsAreNotTheModelsToWrite(t *testing.T) {
 		t.Error("the model exempted its own finding from consolidation and from the end-of-run check")
 	}
 }
+
+// And the type of a field the model may not write cannot cost the finding
+// either. Decoding `"stands_on_adjudication": "true"` into the boolean failed
+// before anything cleared it, so the whole item was dropped — where before the
+// field existed the unknown key was simply ignored.
+func TestParseInsights_AMistypedInternalFieldDoesNotDropTheFinding(t *testing.T) {
+	o := &Orchestrator{}
+	for name, in := range map[string]string{
+		"string": `{"insights":[{"name":"idle units are growing","description":"the total rose","stands_on_adjudication":"true"}]}`,
+		"number": `{"insights":[{"name":"idle units are growing","description":"the total rose","stands_on_adjudication":1}]}`,
+		"mistyped similarity": `{"insights":[{"name":"idle units are growing","description":"the total rose",` +
+			`"similarity_score":"very high","duplicate_of":{"id":"x"}}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			insights, dropped, err := o.parseInsights(in, "stock")
+			if err != nil {
+				t.Fatalf("err = %v, want nil", err)
+			}
+			if len(insights) != 1 || dropped != 0 {
+				t.Fatalf("got %d insights and %d dropped, want the finding kept", len(insights), dropped)
+			}
+			if insights[0].StandsOnAdjudication || insights[0].DuplicateOf != "" || insights[0].SimilarityScore != 0 {
+				t.Errorf("a model-authored value survived: %+v", insights[0])
+			}
+		})
+	}
+}

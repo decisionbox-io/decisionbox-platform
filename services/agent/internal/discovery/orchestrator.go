@@ -2791,6 +2791,38 @@ func splitMarkdownDescription(authored string) (plain, md string) {
 // envelope nor a bare array). A well-formed but empty result returns
 // (empty, 0, nil) so callers can distinguish "no insights" from "could not
 // parse".
+// internalInsightKeys are the fields of the stored insight shape that the
+// analysis response may not set: the two marks the duplicate check owns, and
+// the consolidation adjudicator's refusal. See decodeInsightItems.
+var internalInsightKeys = []string{"duplicate_of", "similarity_score", "stands_on_adjudication"}
+
+// withoutInternalKeys returns the item with those keys removed, or the item
+// unchanged when it is not an object or holds none of them. Through the JSON
+// structure, like decodeWithoutClaims, rather than over the text.
+func withoutInternalKeys(raw json.RawMessage) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return raw
+	}
+	found := false
+	for k := range fields {
+		for _, internal := range internalInsightKeys {
+			if strings.EqualFold(k, internal) {
+				delete(fields, k)
+				found = true
+			}
+		}
+	}
+	if !found {
+		return raw
+	}
+	stripped, err := json.Marshal(fields)
+	if err != nil {
+		return raw
+	}
+	return stripped
+}
+
 // decodeWithoutClaims re-decodes one insight with its `quantifier_claims` key
 // removed, for the case where that optional advisory field is the only thing the
 // strict decoder choked on. Reports false when the rest of the object does not
@@ -2901,6 +2933,14 @@ func (o *Orchestrator) decodeInsightItems(raws []json.RawMessage, areaID string,
 				Warn("Dropping a null insight element; keeping the rest of the area")
 			continue
 		}
+		// The fields a model may not write, removed BEFORE the decode and
+		// not only cleared after it. Their types are ours and the response is
+		// not always held to a schema, so an authored
+		// `"stands_on_adjudication": "true"` failed the decode and dropped
+		// the whole finding — a worse outcome than the value it was trying to
+		// set, and worse than the unknown key it would have been before the
+		// field existed.
+		raw = withoutInternalKeys(raw)
 		var insight models.Insight
 		if err := json.Unmarshal(raw, &insight); err != nil {
 			// quantifier_claims is optional and advisory: it buys an evidence
@@ -2990,8 +3030,10 @@ func (o *Orchestrator) decodeInsightItems(raws []json.RawMessage, areaID string,
 		// a finding claiming it for itself would exempt itself from
 		// consolidation and from the end-of-run check at once. Analysis is not
 		// always held to a schema — structured output can be off, or
-		// unenforced by the model — so the field is cleared here rather than
-		// trusted to be absent.
+		// unenforced by the model — so none of the three is trusted to be
+		// absent: they are stripped from the item above and cleared again
+		// here, which also covers an item that reached this decode by some
+		// other path.
 		insight.DuplicateOf, insight.SimilarityScore = "", 0
 		insight.StandsOnAdjudication = false
 

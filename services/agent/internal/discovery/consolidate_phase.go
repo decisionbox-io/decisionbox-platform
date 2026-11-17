@@ -184,6 +184,16 @@ func (o *Orchestrator) consolidateArea(ctx context.Context, in consolidateAreaIn
 			for i := range clusters {
 				writable[i] = clusterCanAutoFold(docs, clusters[i], foldFloor, foldable)
 			}
+			// A rank, and deliberately not a covering choice. Review
+			// pointed out that two overlapping stars can share the one
+			// above-floor pair between them and take two slots for one
+			// decision, leaving a third star's own pair to the community
+			// rule. True, and what that costs is a fold made at the floor
+			// this product folds at with no model in the loop — the cap's
+			// documented fallback — against a greedy cover that would have
+			// to re-rank on what earlier choices already covered. The
+			// default bound is 60 clusters in one area; when it binds, the
+			// cheap direction is the one already taken.
 			sort.SliceStable(order, func(x, y int) bool {
 				return writable[order[x]] && !writable[order[y]]
 			})
@@ -1174,7 +1184,20 @@ func (o *Orchestrator) registerAdjudicatedKeeps(
 			// verdict can fold this donor into its own canonical first, and
 			// a flag set afterwards lands on a finding that is already
 			// suppressed and dropped from the recommendations.
-			if di, ok := byID[dupID]; ok {
+			// Unless it is already folded. A finding that arrived carrying
+			// a mark was suppressed by a decision this pass does not
+			// re-open — the writer refuses to re-point an existing mark for
+			// the same reason — and flagging it would leave the two records
+			// contradicting each other: the mark hides it from the
+			// recommender and from the end-of-run check while the flag says
+			// it must stay visible. Reconciling the two the other way, by
+			// un-folding it, cannot deliver what it sounds like it would:
+			// its validation verdict is already skipped_duplicate and that
+			// area's budget is spent, so the finding would come back
+			// visible, unvalidated, and still outside the recommender's
+			// eligible set. The protection is for findings there is still
+			// something to protect.
+			if di, ok := byID[dupID]; ok && docs[di].duplicateOf == "" {
 				docs[di].stands = true
 				switch {
 				case docs[di].current:
@@ -1370,7 +1393,12 @@ func hasKey(m map[string]float64, k string) bool {
 // In both cases what the resumed run does is Phase 9's document-order rule —
 // the outcome with no consolidation in the product at all — so the feature is
 // not making a finding less visible than it was, it is only failing to improve
-// it on a resumed attempt. Fixing it properly means persisting the keeps in
+// it on a resumed attempt. Review read the second shape as a regression
+// against the merge base, on the grounds that the base kept the survivor
+// visible: it did, by REWRITING it to carry the donor's detail, which is the
+// behaviour this change removes and for the reason recorded at proposePairs.
+// Both shapes leave one of the two findings visible either way; which one
+// differs, and neither is published with a figure it was not written with. Fixing it properly means persisting the keeps in
 // the deciding area's checkpoint under ids that survive a restore, which is a
 // checkpoint-schema decision and not part of moving the containment judgement
 // to the model.

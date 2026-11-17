@@ -2487,3 +2487,45 @@ func TestConsolidateArea_AnEarlierAreasRewriteDonorIsProtectedForPhase9(t *testi
 		t.Error("the donor's protection never reached the run's own insight, so Phase 9 cannot honour it")
 	}
 }
+
+// A rewrite verdict can name a donor that arrived already folded, and the
+// protection is not written onto it. The mark was a decision this pass does
+// not re-open, and flagging it would leave the two records contradicting each
+// other — the mark hiding the finding from the recommender and the end-of-run
+// check while the flag says it must stay visible.
+func TestConsolidateArea_ADonorThatIsAlreadyFoldedIsNotFlaggedAsStanding(t *testing.T) {
+	b := insight("b", "margin", "the north segment", "a slice, with a caveat", 200)
+	b.DuplicateOf = "an-earlier-areas-canonical"
+	y := insight("y", "stock", "the whole total", "every segment", 300)
+
+	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		out := make([]agentplugin.ConsolidationVerdict, len(cl))
+		for i := range cl {
+			out[i] = agentplugin.ConsolidationVerdict{
+				CanonicalID:       "y",
+				Duplicates:        map[string]float64{"b": 0.95},
+				MergedDescription: "y, carrying b's caveat",
+			}
+		}
+		return out, nil
+	}})
+
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(b): 0, embText(y): 10,
+	}}}
+	earlier := []models.Insight{b}
+	current := []models.Insight{y}
+	in := areaInput("stock", current, earlier)
+	in.areaByID["margin"] = AnalysisArea{ID: "margin", Name: "margin", Description: "margin scope"}
+	st := o.consolidateArea(context.Background(), in)
+
+	if st.RefusedUnmergeable != 1 {
+		t.Fatalf("stats = %+v, want the rewrite request refused once (fixture broken)", st)
+	}
+	if earlier[0].DuplicateOf != "an-earlier-areas-canonical" {
+		t.Errorf("the existing mark was rewritten to %q", earlier[0].DuplicateOf)
+	}
+	if earlier[0].StandsOnAdjudication {
+		t.Error("a folded finding was flagged as standing: the mark hides it and the flag says it is visible")
+	}
+}
