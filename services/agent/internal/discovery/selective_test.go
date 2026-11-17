@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -151,5 +152,86 @@ func TestDiscoveryResult_FullRun(t *testing.T) {
 	}
 	if result.AreasRequested != nil {
 		t.Error("AreasRequested should be nil for full run")
+	}
+}
+
+// --- area order ---
+
+// areaIDs is the order resolvePrompts handed back, which is the order the run
+// works through the areas and therefore the order the validation budget is
+// spent in.
+func areaIDs(areas []AnalysisArea) []string {
+	out := make([]string, 0, len(areas))
+	for _, a := range areas {
+		out = append(out, a.ID)
+	}
+	return out
+}
+
+// The areas come out of a map, and a Go map is ranged in a randomised order, so
+// the assertion is repeated: a single pass can agree with the wanted order by
+// chance. Before the sort this failed within a handful of iterations.
+func TestResolvePrompts_AreasComeBackInPriorityOrder(t *testing.T) {
+	o := &Orchestrator{
+		projectPrompts: &models.ProjectPrompts{
+			AnalysisAreas: map[string]models.AnalysisAreaConfig{
+				"zebra":    {Name: "Zebra", Prompt: "p", Enabled: true, Priority: 1},
+				"apple":    {Name: "Apple", Prompt: "p", Enabled: true, Priority: 1},
+				"middle":   {Name: "Middle", Prompt: "p", Enabled: true, Priority: 2},
+				"tail":     {Name: "Tail", Prompt: "p", Enabled: true, Priority: 3},
+				"unranked": {Name: "Unranked", Prompt: "p", Enabled: true},
+			},
+		},
+	}
+	want := []string{"apple", "zebra", "middle", "tail", "unranked"}
+
+	for i := 0; i < 50; i++ {
+		_, areas := o.resolvePrompts()
+		if got := areaIDs(areas); !reflect.DeepEqual(got, want) {
+			t.Fatalf("iteration %d: area order = %v, want %v", i, got, want)
+		}
+	}
+}
+
+// An unranked area sorts last rather than first: every pack the product ships
+// numbers its areas from one, so a zero is an area nobody ranked, and it must
+// not displace one somebody did.
+func TestResolvePrompts_UnrankedAreasSortAfterRankedOnes(t *testing.T) {
+	o := &Orchestrator{
+		projectPrompts: &models.ProjectPrompts{
+			AnalysisAreas: map[string]models.AnalysisAreaConfig{
+				"aaa-unranked": {Name: "A", Prompt: "p", Enabled: true},
+				"zzz-ranked":   {Name: "Z", Prompt: "p", Enabled: true, Priority: 9},
+			},
+		},
+	}
+	for i := 0; i < 50; i++ {
+		_, areas := o.resolvePrompts()
+		got := areaIDs(areas)
+		if !reflect.DeepEqual(got, []string{"zzz-ranked", "aaa-unranked"}) {
+			t.Fatalf("iteration %d: area order = %v, want the ranked area first", i, got)
+		}
+	}
+}
+
+// A disabled area is still absent, and the ones that remain are still ordered.
+func TestResolvePrompts_DisabledAreasAreExcludedAndTheRestStayOrdered(t *testing.T) {
+	o := &Orchestrator{
+		projectPrompts: &models.ProjectPrompts{
+			AnalysisAreas: map[string]models.AnalysisAreaConfig{
+				"first":  {Name: "First", Prompt: "p", Enabled: true, Priority: 1},
+				"off":    {Name: "Off", Prompt: "p", Enabled: false, Priority: 2},
+				"second": {Name: "Second", Prompt: "p", Enabled: true, Priority: 3},
+			},
+		},
+	}
+	for i := 0; i < 50; i++ {
+		prompts, areas := o.resolvePrompts()
+		if got := areaIDs(areas); !reflect.DeepEqual(got, []string{"first", "second"}) {
+			t.Fatalf("iteration %d: area order = %v, want the two enabled areas in priority order", i, got)
+		}
+		if _, ok := prompts.AnalysisAreas["off"]; ok {
+			t.Error("a disabled area must not reach the resolved prompts")
+		}
 	}
 }
