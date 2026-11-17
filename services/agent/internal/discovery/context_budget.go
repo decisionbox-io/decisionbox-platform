@@ -391,31 +391,30 @@ const defaultAdjudicationMinScore = 0.80
 // above the fold floor is kept as given: narrowing what reaches the model is a
 // legitimate thing for an operator to want.
 func adjudicationMinScore() float64 {
-	v := goconfig.GetEnvAsFloat(adjudicationMinScoreEnv, defaultAdjudicationMinScore)
+	return cosineFloorFromEnv(adjudicationMinScoreEnv, defaultAdjudicationMinScore)
+}
+
+// cosineFloorFromEnv resolves a cosine floor from the environment, with the
+// validation both of them need: a cosine cannot exceed 1, so a larger value
+// would silently disable whatever the floor gates and look exactly like a check
+// that found nothing, and a non-positive one would admit everything.
+//
+// NaN first, and explicitly: ParseFloat accepts "NaN", every comparison with it
+// is false, so a range check written as a range cannot catch the one value that
+// is outside every range.
+func cosineFloorFromEnv(key string, fallback float64) float64 {
+	v := goconfig.GetEnvAsFloat(key, fallback)
 	if math.IsNaN(v) || math.IsInf(v, 0) {
-		return defaultAdjudicationMinScore
+		return fallback
 	}
 	if v <= 0 || v > 1 {
-		return defaultAdjudicationMinScore
+		return fallback
 	}
 	return v
 }
 
 func documentDedupMinScore() float64 {
-	v := goconfig.GetEnvAsFloat(documentDedupMinScoreEnv, defaultDedupMinScore)
-	// NaN first, and explicitly: ParseFloat accepts "NaN", and every
-	// comparison with NaN is false — so the range check below would pass it
-	// through, and then `score < threshold` would be false for every pair and
-	// mark every document in the run a duplicate of the first one. A range
-	// check written as a range cannot catch the one value that is outside
-	// every range.
-	if math.IsNaN(v) || math.IsInf(v, 0) {
-		return defaultDedupMinScore
-	}
-	if v <= 0 || v > 1 {
-		return defaultDedupMinScore
-	}
-	return v
+	return cosineFloorFromEnv(documentDedupMinScoreEnv, defaultDedupMinScore)
 }
 
 // fixedPromptTokens is what every prompt of this run will carry besides the

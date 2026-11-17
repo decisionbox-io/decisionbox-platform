@@ -2560,20 +2560,18 @@ func TestReverifyFold_TheMagnitudeGuardGatesTheAdjudicatedPathToo(t *testing.T) 
 // is nothing left to re-check for a dependant of this verdict — the adjudicator
 // was shown its text and the rewrite is what carries it.
 func TestRewriteBreaksAFold_ADependantThisVerdictDidNotFoldRefusesTheRewrite(t *testing.T) {
-	table := "| north | 111,222 | 33.3 |\n| south | 444,555 | 66.6 |"
 	docs := []consolidationDoc{
-		doc(0, "broad", 0, true, "the whole total", table),
+		doc(0, "broad", 0, true, "the whole total", ""),
 		doc(1, "earlier", 90, false, "the north segment", ""),
 	}
 	marks := map[string]string{"earlier": "broad"}
-	kept := insightBodyOf("the whole total\n\n"+table, "", nil)
 
-	if !rewriteBreaksAFold(kept, docs[0], docs, marks, nil, 0.88) {
+	if !rewriteBreaksAFold(docs[0], docs, marks, nil) {
 		t.Error("a dependant this verdict did not fold must refuse the rewrite")
 	}
 	// Folded by THIS verdict: applied, and nothing further is asked of it.
 	mine := map[string]float64{"earlier": 0}
-	if rewriteBreaksAFold(kept, docs[0], docs, marks, mine, 0.88) {
+	if rewriteBreaksAFold(docs[0], docs, marks, mine) {
 		t.Error("a dependant of this verdict must not refuse its own rewrite")
 	}
 }
@@ -2699,5 +2697,53 @@ func TestConsolidateArea_TheCapSpendsItsSlotsOnClustersTheCommunityRuleCouldFold
 	}
 	if !slices.Equal(shown[0], []string{"c", "d"}) {
 		t.Errorf("the provider was shown %v, want the pair the community rule could fold", shown[0])
+	}
+}
+
+// And "could fold" means could WRITE. A pair of two earlier-area findings can
+// sit well above the fold floor and still not be foldable — only the area being
+// consolidated has insights this pass can mark — so it must not take the slot
+// from a current pair that really would fold unasked.
+func TestConsolidateArea_TheCapIgnoresAStrongPairOfTwoEarlierFindings(t *testing.T) {
+	t.Setenv("DISCOVERY_CONSOLIDATION_MAX_CLUSTERS", "1")
+
+	// Cluster one holds a current finding, so it survives clustering, but its
+	// only pair above the FOLD floor is between the two earlier findings —
+	// which this pass cannot mark. Cluster two is a current pair above that
+	// floor, and is the one a verdict would change.
+	anchor := insight("anchor", "stock", "claim anchor", "body", 400)
+	pairA := insight("pairA", "stock", "claim pairA", "body", 300)
+	pairB := insight("pairB", "stock", "claim pairB", "body", 200)
+	old1 := insight("old1", "prior", "claim old1", "body", 150)
+	old2 := insight("old2", "prior", "claim old2", "body", 100)
+
+	var shown [][]string
+	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		for _, cluster := range cl {
+			ids := make([]string, 0, len(cluster.Candidates))
+			for _, cand := range cluster.Candidates {
+				ids = append(ids, cand.ID)
+			}
+			slices.Sort(ids)
+			shown = append(shown, ids)
+		}
+		return nil, nil
+	}})
+
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(anchor): 0, embText(old1): 33, embText(old2): 38,
+		embText(pairA): 120, embText(pairB): 125,
+	}}}
+	current := []models.Insight{anchor, pairA, pairB}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, []models.Insight{old1, old2}))
+
+	if st.Clusters != 2 || st.OverBound != 1 {
+		t.Fatalf("stats = %+v, want two clusters with one over the bound (fixture broken)", st)
+	}
+	if len(shown) != 1 {
+		t.Fatalf("the provider was shown %v, want exactly one cluster", shown)
+	}
+	if !slices.Equal(shown[0], []string{"pairA", "pairB"}) {
+		t.Errorf("the provider was shown %v, want the pair this area can actually fold", shown[0])
 	}
 }

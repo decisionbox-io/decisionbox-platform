@@ -142,7 +142,7 @@ type consolidationDoc struct {
 
 	name string
 	// prose is the finding's authored body, markdown rendition preferred.
-	// What the provider is shown.
+	// What the provider is shown, alongside its figures as their own field.
 	prose string
 	// body is prose plus the supporting figures, which is what the
 	// containment test looks inside. Separate from prose because the
@@ -279,41 +279,15 @@ func buildClusters(docs []consolidationDoc, rel map[pairKey]agentplugin.Proposal
 		if !maximal {
 			continue
 		}
-		out = append(out, docCluster{members: ordered[i], proposal: mergeProposals(rel, ordered[i])})
+		// One proposal kind is emitted now, so the label is a constant rather
+		// than something to re-derive by rescanning every pair of every
+		// maximal cluster. The other constants stay in the shared contract for
+		// callers that still send them.
+		out = append(out, docCluster{members: ordered[i], proposal: agentplugin.ProposalCosine})
 	}
 	return out
 }
 
-// mergeProposals reports which tests fired on the relations INSIDE a cluster.
-//
-// Inside, and not "on any relation touching a member": a member of a
-// containment cluster usually also has similarity relations to documents that
-// are not in it, and reading those would report every such cluster as "both"
-// — which is the one field that says whether the similarity threshold could
-// have seen this duplicate at all.
-func mergeProposals(rel map[pairKey]agentplugin.Proposal, members []int) agentplugin.Proposal {
-	cos, con := false, false
-	for i := 0; i < len(members); i++ {
-		for j := i + 1; j < len(members); j++ {
-			switch rel[newPairKey(members[i], members[j])] {
-			case agentplugin.ProposalCosine:
-				cos = true
-			case agentplugin.ProposalContainment:
-				con = true
-			case agentplugin.ProposalBoth:
-				cos, con = true, true
-			}
-		}
-	}
-	switch {
-	case cos && con:
-		return agentplugin.ProposalBoth
-	case con:
-		return agentplugin.ProposalContainment
-	default:
-		return agentplugin.ProposalCosine
-	}
-}
 
 func isSubset(a, b map[int]bool) bool {
 	if len(a) > len(b) {
@@ -382,18 +356,26 @@ func resolveMarkClosure(marks map[string]string, exists func(id string) bool) (m
 	return out, nil
 }
 
-// clusterCanAutoFold reports whether any pair in a cluster is at or above the
-// FOLD floor — that is, whether the community rule would fold something here
-// with no verdict at all.
+// clusterCanAutoFold reports whether the community rule would write a fold in
+// this cluster with no verdict at all.
 //
 // It is how the adjudication cap decides what to spend its slots on. A cluster
 // the community rule can act on is one where a verdict changes the outcome; a
-// cluster entirely below that floor only stands to gain a fold, and losing it
-// costs a duplicate left visible.
+// cluster entirely below the fold floor only stands to gain a fold, and losing
+// it costs a duplicate left visible rather than a wrong suppression.
+//
+// WRITE is the operative word, and `current` is how it is read. A pair of two
+// earlier-area findings can sit well above the floor and still not be foldable:
+// only the area being consolidated has insights this pass can mark, so such a
+// pair would take the last slot from a current pair that really would fold
+// unasked.
 func clusterCanAutoFold(docs []consolidationDoc, c docCluster, foldFloor float64) bool {
 	for x := 0; x < len(c.members); x++ {
 		for y := x + 1; y < len(c.members); y++ {
 			a, b := docs[c.members[x]], docs[c.members[y]]
+			if !a.current && !b.current {
+				continue
+			}
 			if _, ok := cosineFold(b.foldSubject, a.foldSubject, foldFloor); ok {
 				return true
 			}

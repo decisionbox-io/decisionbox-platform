@@ -236,7 +236,6 @@ func (o *Orchestrator) consolidationDocs(ctx context.Context, in consolidateArea
 			slot:        slot,
 			name:        ins.Name,
 			prose:       insightProse(ins),
-			body:        insightBody(ins),
 			area:        ins.AnalysisArea,
 			areaScope:   areaScopeText(area, in.prompts.AnalysisAreas[ins.AnalysisArea]),
 			severity:    ins.Severity,
@@ -300,42 +299,12 @@ func (o *Orchestrator) fillInsightVectors(ctx context.Context, docs []consolidat
 	}
 }
 
-// insightBody is the finding's prose as it was authored, plus the figures it
-// lists. It is what the adjudicator is shown.
-//
-// DescriptionMd in preference to Description, because the markdown rendition
-// is where the table lives — and a table row is the commonest thing a second
-// finding restates as its own headline. The indicators are appended because a
-// model asked to list its supporting figures puts some of them there rather
-// than in the prose.
-func insightBody(ins *models.Insight) string {
-	return insightBodyOf(ins.Description, ins.DescriptionMd, ins.Indicators)
-}
-
 // insightProse is the authored body alone, markdown rendition preferred.
 func insightProse(ins *models.Insight) string {
 	if ins.DescriptionMd != "" {
 		return ins.DescriptionMd
 	}
 	return ins.Description
-}
-
-// insightBodyOf is insightBody over loose fields, so a description rewritten
-// mid-pass can be projected again through the same derivation. Two
-// constructions of "what the containment test looks inside" is how the
-// projection and the re-check come to disagree about one document.
-func insightBodyOf(description, descriptionMd string, indicators []string) string {
-	var b strings.Builder
-	if descriptionMd != "" {
-		b.WriteString(descriptionMd)
-	} else {
-		b.WriteString(description)
-	}
-	for _, ind := range indicators {
-		b.WriteString("\n")
-		b.WriteString(ind)
-	}
-	return b.String()
 }
 
 // verdictOf renders the verdict a document already carries, or "".
@@ -837,10 +806,8 @@ func (o *Orchestrator) applyConsolidation(
 		// is what happened. The protection is the point; the revert is only
 		// the part that has something to undo.
 		if merged := strings.TrimSpace(v.MergedDescription); merged != "" {
-			// What the survivor's body WOULD say, so a fold already written
-			// into it can be checked against the rewrite before it lands.
+			// What the survivor's body would say, split the way it is stored.
 			prospectivePlain, prospectiveMd := splitMarkdownDescription(merged)
-			prospectiveBody := insightBodyOf(prospectivePlain, prospectiveMd, docs[fi].indicators)
 
 			switch refusal := mergeRefusal(mergeCheck{
 				survivor:         docs[fi],
@@ -848,7 +815,6 @@ func (o *Orchestrator) applyConsolidation(
 				resolved:         final,
 				alreadyRewritten: mergedCanonicals[final],
 				refusedDonor:     clusterRefusedDonor,
-				prospectiveBody:  prospectiveBody,
 				insights:         in.insights,
 				docs:             docs,
 				marks:            marks,
@@ -937,12 +903,12 @@ func (o *Orchestrator) applyConsolidation(
 				// pre-merge vector and suppressed a finding that no longer
 				// restates this one. The merged text has not been embedded
 				// and cannot be mid-area, so there is no cosine answer to
-				// give — and no answer is the conservative one. Containment
-				// still works, over the new body. Phase 9 embeds the merged
-				// text (the cache is keyed on the text, so it misses) and
-				// decides on a real vector.
+				// give — and with similarity the only test, no answer means
+				// no further fold into this survivor during this area, which
+				// is the conservative outcome. Phase 9 embeds the merged text
+				// (the cache is keyed on the text, so it misses) and decides
+				// on a real vector.
 				docs[fi].prose = insightProse(&in.insights[docs[fi].slot])
-				docs[fi].body = insightBodyOf(plain, md, docs[fi].indicators)
 				docs[fi].vec = nil
 				docs[fi].text = commonmodels.InsightEmbeddingText(
 					in.insights[docs[fi].slot].Name, plain,
@@ -1254,7 +1220,6 @@ type mergeCheck struct {
 	resolved         string
 	alreadyRewritten bool
 	refusedDonor     bool
-	prospectiveBody  string
 	insights         []models.Insight
 	docs             []consolidationDoc
 	// marks is every mark standing at this point — the arrival marks and
@@ -1298,7 +1263,7 @@ func mergeRefusal(c mergeCheck) string {
 		return "a folded member's prose carries rendered evidence figures"
 	case c.refusedDonor:
 		return "a member this verdict folds was refused, so its rewrite cannot be trusted"
-	case rewriteBreaksAFold(c.prospectiveBody, c.survivor, c.docs, c.marks, c.folded, c.threshold):
+	case rewriteBreaksAFold(c.survivor, c.docs, c.marks, c.folded):
 		return "the rewrite does not account for every finding folded into the survivor"
 	}
 	return ""
@@ -1315,7 +1280,7 @@ func mergeRefusal(c mergeCheck) string {
 // POINT, not whether the claim still holds — and the end-of-run check skips a
 // document that already carries a mark. So the finding would stay suppressed
 // and unvalidated with its claim stated nowhere.
-func rewriteBreaksAFold(prospectiveBody string, survivor consolidationDoc, docs []consolidationDoc, marks map[string]string, folded map[string]float64, threshold float64) bool {
+func rewriteBreaksAFold(survivor consolidationDoc, docs []consolidationDoc, marks map[string]string, folded map[string]float64) bool {
 	for i := range docs {
 		if marks[docs[i].id] != survivor.id {
 			continue
@@ -1343,8 +1308,8 @@ func rewriteBreaksAFold(prospectiveBody string, survivor consolidationDoc, docs 
 		// the figures in the survivor's body, because a rewrite could drop the
 		// row they came from. Nothing is folded on that basis any more — every
 		// fold is a similarity pair the model ruled on — and there is nothing
-		// textual left to re-check: prospectiveBody is not embedded, so the
-		// vectors cannot answer for it either.
+		// textual left to re-check: the rewritten body is not embedded, so
+		// the vectors cannot answer for it either.
 	}
 	return false
 }
