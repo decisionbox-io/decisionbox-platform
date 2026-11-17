@@ -113,6 +113,7 @@ type consolidationStats struct {
 	RefusedNotMine     int
 	RefusedRecheck     int
 	RefusedShape       int
+	RefusedUnmergeable int
 	RefusedKept        int
 	Kept               int
 	OverBound          int
@@ -218,7 +219,7 @@ func (o *Orchestrator) consolidateArea(ctx context.Context, in consolidateAreaIn
 		"folded": st.Folded, "by_cosine": st.ByCosine, "by_containment": st.ByContainment,
 		"by_both": st.ByBoth, "decider": st.Decider,
 		"refused_other_area": st.RefusedNotMine, "refused_recheck": st.RefusedRecheck,
-		"refused_shape": st.RefusedShape,
+		"refused_shape": st.RefusedShape, "refused_unmergeable": st.RefusedUnmergeable,
 		"refused_kept": st.RefusedKept,
 		"kept":         st.Kept, "over_bound": st.OverBound, "reverted": st.Reverted,
 		"duration_ms": st.DurationMs,
@@ -615,6 +616,11 @@ func (o *Orchestrator) applyConsolidation(
 	adjFloor float64,
 	st consolidationStats,
 ) consolidationStats {
+	// Pairs of donors whose folds a verdict proposed and the re-check refused.
+	// Protected from each other only once every verdict has been read: a pair
+	// one verdict could not fold may be one another folds outright, and that
+	// decision has to win over this protection.
+	var donorKeeps [][2]string
 	byID := make(map[string]int, len(docs))
 	for i := range docs {
 		byID[docs[i].id] = i
@@ -693,6 +699,28 @@ func (o *Orchestrator) applyConsolidation(
 		fi, inHand := byID[final]
 		if !inHand {
 			st.RefusedShape++
+			continue
+		}
+		if strings.TrimSpace(v.MergedDescription) != "" {
+			// A rewrite is asked for precisely when a folded member carries a
+			// figure, a segment or a caveat the survivor does not — the
+			// provider saying so in the only way the contract gives it.
+			// Nothing applies a rewrite now, and applying the folds without
+			// it suppresses exactly those findings behind text that does not
+			// state them: the failure this phase exists to avoid. The folds
+			// were given back for this reason before, whenever a rewrite
+			// could not be applied.
+			//
+			// Both findings stand, and each pair is remembered as adjudicated
+			// so the fallback does not fold it on document order instead.
+			for dupID := range v.Duplicates {
+				o.keepPair(dupID, final)
+				st.Kept++
+			}
+			applog.WithFields(applog.Fields{
+				"area": st.Area, "canonical": final, "donors": len(v.Duplicates),
+			}).Info("Consolidation: this verdict asked for a rewrite to carry its donors' detail; nothing rewrites a survivor, so its folds were left standing")
+			st.RefusedUnmergeable++
 			continue
 		}
 
@@ -835,12 +863,31 @@ func (o *Orchestrator) applyConsolidation(
 		// the community rule must not read its silence as permission.
 		for x := 0; x < len(refusedDonors); x++ {
 			for y := x + 1; y < len(refusedDonors); y++ {
-				o.keepPair(refusedDonors[x], refusedDonors[y])
-				st.Kept++
+				donorKeeps = append(donorKeeps, [2]string{refusedDonors[x], refusedDonors[y]})
 			}
 		}
 
-		// The adjudicator's MergedDescription is deliberately NOT applied.
+		// The adjudicator's MergedDescription is deliberately NOT applied,
+		// and a verdict that offers one does not get its folds either.
+		//
+		// A rewrite is asked for precisely when a folded member carries a
+		// figure, a segment or a caveat the survivor does not — the provider
+		// saying so in the only way the contract gives it. Applying the folds
+		// while discarding the rewrite suppresses exactly those findings
+		// behind text that does not state them, which is the failure this
+		// whole phase was built to avoid; the folds were given back for this
+		// reason before, when a rewrite could not be applied.
+		//
+		// Why not apply the rewrite: whether a rewritten paragraph still
+		// states a particular claim is a question about particular figures,
+		// and nothing left in the pass can answer it. A rewrite that turned a
+		// donor's 33.3% into 38.3% scored well above the fold floor, so
+		// similarity accepted it, published the changed figure and suppressed
+		// the finding that held the right one.
+		//
+		// So both findings stand, the pair is remembered as adjudicated so the
+		// fallback does not fold it on document order, and the survivor keeps
+		// the words it was written with.
 		//
 		// Carrying a folded finding's detail onto the survivor is only safe if
 		// the rewritten text really states that finding's claim, and that is a
@@ -855,6 +902,18 @@ func (o *Orchestrator) applyConsolidation(
 		// A reader sent to it gets a claim that finding actually made, and the
 		// folded detail stays reachable where it always was — behind the
 		// canonical, which this pass marks and never deletes.
+	}
+
+	// The refused donors, now that every verdict has had its say. A pair one
+	// verdict could not fold may be one another verdict folded outright, and
+	// that decision wins: a protection against the fallback must not become a
+	// veto over a direct decision.
+	for _, pair := range donorKeeps {
+		if marks[pair[0]] != "" || marks[pair[1]] != "" {
+			continue
+		}
+		o.keepPair(pair[0], pair[1])
+		st.Kept++
 	}
 
 	// The community rule, over everything the provider verdicts left alone.
@@ -999,10 +1058,6 @@ func (o *Orchestrator) registerAdjudicatedKeeps(
 		if !ok || !byProvider[i] {
 			continue
 		}
-		canonical, cycle := resolveTarget(v.CanonicalID, marks)
-		if cycle {
-			canonical = v.CanonicalID
-		}
 		for x := 0; x < len(c.members); x++ {
 			for y := x + 1; y < len(c.members); y++ {
 				a, b := docs[c.members[x]].id, docs[c.members[y]].id
@@ -1017,38 +1072,22 @@ func (o *Orchestrator) registerAdjudicatedKeeps(
 				if aDup && bDup {
 					continue
 				}
-				// A verdict that folded SOMETHING is canonical-centric,
-				// and it has no way to say "and also fold these two others
-				// into each other" — it names one canonical. Its silence
-				// about a pair it never mentioned is a limit of that shape,
-				// not a finding that the two are distinct, and recording it
-				// as one vetoes the community rule and the end-of-run check
-				// both. That leaves a restatement spending the validation
-				// budget this pass exists to protect.
+				// Everything else in the cluster is kept. The provider
+				// contract is explicit that a member left out of the
+				// Duplicates map is left standing — "two findings can be
+				// proposed as a pair and turn out to be two findings" — so
+				// its omission is an answer, not a gap, and the community
+				// rule must not read past it.
 				//
-				// It began to matter when the adjudication floor dropped
-				// below the fold floor. Stars grew: a cluster that was two
-				// pairs became one group of four with two strong pairs inside
-				// it that one canonical cannot describe.
-				//
-				// A verdict that folded NOTHING is read the other way. The
-				// adjudicator was shown the whole cluster and sent the reader
-				// to the canonical without suppressing anything, which is a
-				// judgement about every pair in it, so all of them are kept.
-				//
-				// And a pair the verdict DID name is kept either way round.
-				// Canonical-and-unnamed is a decision. Folded-and-unnamed is
-				// worth keeping too, because the folded one now carries a mark
-				// and folding the other into it would point a reader at a
-				// suppressed finding.
-				_, aNamed := v.Duplicates[a]
-				_, bNamed := v.Duplicates[b]
-				named := aNamed || bNamed ||
-					a == canonical || b == canonical ||
-					a == v.CanonicalID || b == v.CanonicalID
-				if len(v.Duplicates) > 0 && !named {
-					continue
-				}
+				// Review pushed the other way here, on a real limit: a
+				// verdict names ONE canonical, so a cluster holding two
+				// independent strong pairs has a pair the verdict cannot
+				// describe, and keeping it blocks a fold that should happen.
+				// That is a contract problem rather than a caller problem —
+				// either the verdict needs to express more than one canonical
+				// or such a star should not be built — and guessing past the
+				// contract here trades a missed fold for a hidden finding,
+				// which is the expensive direction.
 				o.keepPair(a, b)
 				st.Kept++
 			}
@@ -1214,6 +1253,7 @@ func (st consolidationStats) persisted() *models.ConsolidationSummary {
 		RefusedOtherArea:   st.RefusedNotMine,
 		RefusedRecheck:     st.RefusedRecheck,
 		RefusedShape:       st.RefusedShape,
+		RefusedUnmergeable: st.RefusedUnmergeable,
 		RefusedKept:        st.RefusedKept,
 		Kept:               st.Kept,
 		OverBound:          st.OverBound,

@@ -263,6 +263,14 @@ type ConsolidationSummary struct {
 	RefusedOtherArea   int  `bson:"refused_other_area,omitempty" json:"refused_other_area,omitempty"`
 	RefusedRecheck     int  `bson:"refused_recheck,omitempty" json:"refused_recheck,omitempty"`
 	RefusedShape       int  `bson:"refused_shape,omitempty" json:"refused_shape,omitempty"`
+
+	// RefusedUnmergeable counts the verdicts whose folds were left standing
+	// because the verdict asked for a rewrite of the survivor, which nothing
+	// applies. Older runs recorded a different reason under this name — a
+	// rewrite that could not be applied — so a stored value may predate the
+	// change; both mean "the folds were given back rather than applied
+	// without the detail they needed".
+	RefusedUnmergeable int `bson:"refused_unmergeable,omitempty" json:"refused_unmergeable,omitempty"`
 	RefusedKept        int  `bson:"refused_kept,omitempty" json:"refused_kept,omitempty"`
 	Kept               int  `bson:"kept,omitempty" json:"kept,omitempty"`
 	OverBound          int  `bson:"over_bound,omitempty" json:"over_bound,omitempty"`
