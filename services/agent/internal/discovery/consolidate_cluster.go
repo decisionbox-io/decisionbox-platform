@@ -380,28 +380,44 @@ func resolveMarkClosure(marks map[string]string, exists func(id string) bool) (m
 // only the area being consolidated has insights this pass can mark, so such a
 // pair would take the last slot from a current pair that really would fold
 // unasked.
-func clusterCanAutoFold(docs []consolidationDoc, c docCluster, foldFloor float64) bool {
+func clusterCanAutoFold(docs []consolidationDoc, c docCluster, foldFloor float64, memo map[pairKey]bool) bool {
 	for x := 0; x < len(c.members); x++ {
 		for y := x + 1; y < len(c.members); y++ {
-			a, b := docs[c.members[x]], docs[c.members[y]]
-			if !a.current && !b.current {
-				continue
+			i, j := c.members[x], c.members[y]
+			key := newPairKey(i, j)
+			foldable, known := memo[key]
+			if !known {
+				foldable = pairCanAutoFold(docs[i], docs[j], foldFloor)
+				memo[key] = foldable
 			}
-			// And a pair whose other member already carries a mark is not one
-			// the community rule can write either: it resolves the target
-			// through that mark, and the fold it would then attempt is against
-			// a document this pair was never measured against. Ranking on it
-			// spends a slot on a cluster that folds nothing.
-			if (!a.current && a.duplicateOf != "") || (!b.current && b.duplicateOf != "") {
-				continue
-			}
-			if _, ok := cosineFold(b.foldSubject, a.foldSubject, foldFloor); ok {
-				return true
-			}
-			if _, ok := cosineFold(a.foldSubject, b.foldSubject, foldFloor); ok {
+			if foldable {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// pairCanAutoFold is the per-pair half of it: one unordered pair, measured
+// once. Stars overlap, so the same pair appears in several of them and the
+// cosine was being recomputed for each — and in both directions — which cost
+// 14.5 seconds of ranking on 200 findings against 79 milliseconds to propose
+// and build the clusters.
+func pairCanAutoFold(a, b consolidationDoc, foldFloor float64) bool {
+	if !a.current && !b.current {
+		return false
+	}
+	// A pair whose other member already carries a mark is not one the
+	// community rule can write either: it resolves the target through that
+	// mark, and the fold it would then attempt is against a document this
+	// pair was never measured against. Ranking on it spends a slot on a
+	// cluster that folds nothing.
+	if (!a.current && a.duplicateOf != "") || (!b.current && b.duplicateOf != "") {
+		return false
+	}
+	if _, ok := cosineFold(b.foldSubject, a.foldSubject, foldFloor); ok {
+		return true
+	}
+	_, ok := cosineFold(a.foldSubject, b.foldSubject, foldFloor)
+	return ok
 }

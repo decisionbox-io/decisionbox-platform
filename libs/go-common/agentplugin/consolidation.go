@@ -121,9 +121,10 @@ type ConsolidationVerdict struct {
 	// name the member that already carries the detail as the canonical, or
 	// fold nothing.
 	//
-	// Applied only when the canonical is in the area being consolidated: an
-	// earlier area's text is already recorded in that area's checkpoint, and
-	// rewriting it here would leave the record and the result disagreeing.
+	// There is no longer a case in which it is applied, so the restriction
+	// that used to narrow it — current-area canonicals only, because an
+	// earlier area's text is already recorded in its own checkpoint — no
+	// longer applies either.
 	MergedDescription string
 	// Reason is one line for the run log, so a fold can be read back without
 	// re-deriving it.

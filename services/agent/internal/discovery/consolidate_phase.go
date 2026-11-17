@@ -179,9 +179,10 @@ func (o *Orchestrator) consolidateArea(ctx context.Context, in consolidateAreaIn
 			// comparator re-walked every pair of every overlapping star on
 			// each comparison: 0.12s to 4.7s on 200 findings, for the same
 			// marks.
+			foldable := make(map[pairKey]bool)
 			writable := make([]bool, len(clusters))
 			for i := range clusters {
-				writable[i] = clusterCanAutoFold(docs, clusters[i], foldFloor)
+				writable[i] = clusterCanAutoFold(docs, clusters[i], foldFloor, foldable)
 			}
 			sort.SliceStable(order, func(x, y int) bool {
 				return writable[order[x]] && !writable[order[y]]
@@ -715,8 +716,9 @@ func (o *Orchestrator) applyConsolidation(
 			// so the fallback does not fold it on document order instead.
 			donors := make([]string, 0, len(v.Duplicates))
 			for dupID := range v.Duplicates {
-				o.keepPair(dupID, final)
-				st.Kept++
+				if o.keepPair(dupID, final) {
+					st.Kept++
+				}
 				donors = append(donors, dupID)
 			}
 			// And from each other. The adjudicator said each of them carries
@@ -925,8 +927,9 @@ func (o *Orchestrator) applyConsolidation(
 		if marks[pair[0]] != "" || marks[pair[1]] != "" {
 			continue
 		}
-		o.keepPair(pair[0], pair[1])
-		st.Kept++
+		if o.keepPair(pair[0], pair[1]) {
+			st.Kept++
+		}
 	}
 
 	// The community rule, over everything the provider verdicts left alone.
@@ -1066,20 +1069,35 @@ func (o *Orchestrator) registerAdjudicatedKeeps(
 		if !ok || !byProvider[i] || strings.TrimSpace(v.MergedDescription) == "" {
 			continue
 		}
+		// Only ids this cluster actually holds. A verdict that names a
+		// stranger was decided over a set that is not this one, and the
+		// writer's loop refuses it on the same test — registering a keep for
+		// a pair that is not in the cluster would protect two documents no
+		// adjudicator looked at together.
+		member := make(map[string]bool, len(clusters[i].members))
+		for _, m := range clusters[i].members {
+			member[docs[m].id] = true
+		}
+		if !member[v.CanonicalID] {
+			continue
+		}
 		canonical, cycle := resolveTarget(v.CanonicalID, marks)
 		if cycle {
 			canonical = v.CanonicalID
 		}
 		for dupID := range v.Duplicates {
-			for _, key := range []string{keptPairKey(v.CanonicalID, dupID), keptPairKey(canonical, dupID)} {
-				if _, seen := rewriteKept[key]; seen {
-					continue
-				}
-				rewriteKept[key] = struct{}{}
+			if !member[dupID] || dupID == v.CanonicalID {
+				continue
 			}
-			o.keepPair(v.CanonicalID, dupID)
-			o.keepPair(canonical, dupID)
-			st.Kept++
+			rewriteKept[keptPairKey(v.CanonicalID, dupID)] = struct{}{}
+			rewriteKept[keptPairKey(canonical, dupID)] = struct{}{}
+			// Both the named pair and the resolved one, and counted once:
+			// the two are the same pair whenever the canonical is not itself
+			// folded, which is the ordinary case.
+			named := o.keepPair(v.CanonicalID, dupID)
+			if o.keepPair(canonical, dupID) || named {
+				st.Kept++
+			}
 		}
 	}
 
@@ -1138,8 +1156,9 @@ func (o *Orchestrator) registerAdjudicatedKeeps(
 				// or such a star should not be built — and guessing past the
 				// contract here trades a missed fold for a hidden finding,
 				// which is the expensive direction.
-				o.keepPair(a, b)
-				st.Kept++
+				if o.keepPair(a, b) {
+					st.Kept++
+				}
 			}
 		}
 	}
@@ -1215,6 +1234,17 @@ func hasKey(m map[string]float64, k string) bool {
 	return ok
 }
 
+// KNOWN GAP, and it wants its own change in the resume path rather than a patch
+// here. These keeps live only in memory for the length of the process. A run
+// that pauses after an area is checkpointed and resumes does not re-adjudicate
+// that area, so the keeps it recorded are gone — and the end-of-run check can
+// then fold a pair the adjudicator deliberately left standing, which hides a
+// finding. The shape predates this change (an omitted member's keep was always
+// in memory) but more pairs rely on a keep now that a rewrite request declines
+// its folds instead of applying them. Fixing it means carrying the pairs in the
+// area draft and remapping their ids on restore, next to the mark-remapping
+// that already lives there.
+//
 // keepPair records that the consolidation pass adjudicated these two documents
 // and decided to leave both standing, so the end-of-run check does not fold
 // them the other way round.
@@ -1229,14 +1259,23 @@ func hasKey(m map[string]float64, k string) bool {
 // Phase 9 reads it. An area restored from a completed checkpoint does not
 // re-run its pass, so a resumed run can lose a refusal and get Phase 9's own
 // rule for that pair instead: today's behaviour, not a new failure.
-func (o *Orchestrator) keepPair(a, b string) {
+// The bool reports whether this pair was not already kept, so a caller can
+// count PAIRS rather than calls: one pair can be recorded by the rewrite
+// pre-pass, by the cluster keep pass and at a refusal, and `kept` read 3 for
+// one pair.
+func (o *Orchestrator) keepPair(a, b string) bool {
 	if a == "" || b == "" {
-		return
+		return false
 	}
 	if o.consolidationKept == nil {
 		o.consolidationKept = make(map[string]struct{})
 	}
-	o.consolidationKept[keptPairKey(a, b)] = struct{}{}
+	key := keptPairKey(a, b)
+	if _, already := o.consolidationKept[key]; already {
+		return false
+	}
+	o.consolidationKept[key] = struct{}{}
+	return true
 }
 
 // adjudicatedKeep reports whether the consolidation pass decided to leave this
