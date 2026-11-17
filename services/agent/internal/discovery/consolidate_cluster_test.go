@@ -466,3 +466,22 @@ func TestContainedIn_ADateEndingASentenceIsStillADate(t *testing.T) {
 		t.Error("a trailing full stop on a date must not refuse genuine containment")
 	}
 }
+
+// "may" after a number is usually the verb, not the month. Reading "2000 may
+// churn" as a date dropped the quantity and made the sentence contained in the
+// same forecast about a different number.
+func TestClaimFigures_MayAfterAQuantityIsTheVerb(t *testing.T) {
+	claim := "Of 8000 customers, 2000 may churn within 180 days"
+	if got := claimFigures(claim); !reflect.DeepEqual(got, []string{"180", "2000", "8000"}) {
+		t.Fatalf("claimFigures = %v, want every quantity kept", got)
+	}
+	if containedIn(claim, "Of 8000 customers, 3000 may churn within 180 days") {
+		t.Error("two different churn forecasts must not read as containment")
+	}
+	// The unambiguous spellings of that month are still dates.
+	for _, in := range []string{"May 2026 shipments", "May-2026 shipments", "2026-May shipments"} {
+		if got := claimFigures(in); len(got) != 0 {
+			t.Errorf("claimFigures(%q) = %v, want none", in, got)
+		}
+	}
+}

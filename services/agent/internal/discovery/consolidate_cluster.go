@@ -222,9 +222,24 @@ func claimFigures(s string) []string {
 const monthName = `(?:january|february|march|april|august|september|october|november|december` +
 	`|june|july|may|jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec)\.?`
 
+// monthNameAfterYear is monthName without "may", for the form where the month
+// FOLLOWS the year.
+//
+// "may" is the one month spelling that is also an everyday English word, and
+// after a number it is far more often the verb: "Of 8000 customers, 2000 may
+// churn within 180 days" is a forecast, not a date, and reading it as one
+// dropped the 2000 and made the sentence contained in the same forecast about
+// 3000. The month-first form is unaffected — "May 2026" is unambiguous — and a
+// year-first May written with a date separator is kept by its own alternative
+// below. What is given up is "2026 May" spelled with a space, which no report
+// in hand writes and which cannot be told apart from the forecast.
+const monthNameAfterYear = `(?:january|february|march|april|august|september|october|november|december` +
+	`|june|july|jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec)\.?`
+
 var dateExpression = regexp.MustCompile(`(?i)(?:` +
 	`\b` + monthName + `[\s/,-]{0,2}\d{4}\b` +
-	`|\b\d{4}[\s/-]{0,2}` + monthName + `\b` +
+	`|\b\d{4}[\s/-]{0,2}` + monthNameAfterYear + `\b` +
+	`|\b\d{4}[/-]may\b` +
 	`|\bq[1-4][\s/-]{0,2}\d{4}\b` +
 	// A numeric date needs a real month, and a real day if it carries one.
 	// `\d{4}-\d{2}` alone matched the first seven characters of the quantity
