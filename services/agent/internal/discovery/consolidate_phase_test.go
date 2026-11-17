@@ -2581,3 +2581,37 @@ func TestRewriteBreaksAFold_ADependantThisVerdictDidNotFoldRefusesTheRewrite(t *
 		t.Error("a dependant of this verdict must not refuse its own rewrite")
 	}
 }
+
+// The community rule reads the FOLD floor, and the two floors are independent.
+// An operator who raises the adjudication floor above it leaves pairs that are
+// foldable and never proposed — and the pass used to return before the
+// community rule ran, so those pairs went on spending the validation budget it
+// exists to protect.
+func TestConsolidateArea_CommunityFoldsRunWhenNothingReachedAdjudication(t *testing.T) {
+	t.Setenv("DISCOVERY_CONSOLIDATION_ADJUDICATION_MINSCORE", "0.99")
+	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		t.Error("the provider must not be called when nothing was proposed")
+		return nil, nil
+	}})
+
+	a := insight("a", "stock", "the whole total", "body a", 200)
+	b := insight("b", "stock", "the whole total restated", "body b", 100)
+	// 20 degrees is about 0.940: above the fold floor, below this adjudication
+	// floor.
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 20,
+	}}}
+
+	current := []models.Insight{a, b}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if st.Clusters != 0 {
+		t.Fatalf("clusters = %d, want 0: the pair is below the adjudication floor (fixture broken)", st.Clusters)
+	}
+	if st.Folded != 1 {
+		t.Fatalf("stats = %+v, want the community rule to have folded the pair anyway", st)
+	}
+	if current[1].DuplicateOf != "a" {
+		t.Errorf("b.duplicate_of = %q, want a", current[1].DuplicateOf)
+	}
+}

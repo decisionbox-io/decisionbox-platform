@@ -145,25 +145,34 @@ func (o *Orchestrator) consolidateArea(ctx context.Context, in consolidateAreaIn
 
 	clusters := buildClusters(docs, proposePairs(docs, adjFloor))
 	st.Clusters = len(clusters)
-	if len(clusters) == 0 {
-		st.DurationMs = time.Since(started).Milliseconds()
-		return st
-	}
 
-	// What goes to the adjudicator, as against what the community rule
-	// decides. See consolidationMaxClustersEnv.
-	adjudicable := clusters
-	if bound := consolidationMaxClusters(); bound > 0 && len(clusters) > bound {
-		adjudicable = clusters[:bound]
-		st.OverBound = len(clusters) - bound
-		applog.WithFields(applog.Fields{
-			"area": st.Area, "clusters": len(clusters), "bound": bound,
-			"to_community_rule": st.OverBound, "env": consolidationMaxClustersEnv,
-		}).Warn("Consolidation: this area proposed more clusters than the adjudication bound; the rest fall to the community rule")
-	}
+	// No early return on an empty cluster set. The community rule reads the
+	// FOLD floor, and the two floors are independent: an operator who raises
+	// the adjudication floor above it leaves pairs that are foldable and never
+	// proposed, and returning here would let those spend the validation budget
+	// the pass exists to protect. Adjudication is what is skipped when there is
+	// nothing to adjudicate; the pass is not.
+	var (
+		verdicts   map[int]agentplugin.ConsolidationVerdict
+		byProvider map[int]bool
+	)
+	if len(clusters) > 0 {
+		// What goes to the adjudicator, as against what the community rule
+		// decides. See consolidationMaxClustersEnv.
+		adjudicable := clusters
+		if bound := consolidationMaxClusters(); bound > 0 && len(clusters) > bound {
+			adjudicable = clusters[:bound]
+			st.OverBound = len(clusters) - bound
+			applog.WithFields(applog.Fields{
+				"area": st.Area, "clusters": len(clusters), "bound": bound,
+				"to_community_rule": st.OverBound, "env": consolidationMaxClustersEnv,
+			}).Warn("Consolidation: this area proposed more clusters than the adjudication bound; the rest fall to the community rule")
+		}
 
-	verdicts, byProvider, decider := o.adjudicate(ctx, docs, adjudicable, adjFloor)
-	st.Decider = decider
+		var decider string
+		verdicts, byProvider, decider = o.adjudicate(ctx, docs, adjudicable, adjFloor)
+		st.Decider = decider
+	}
 	st = o.applyConsolidation(in, docs, clusters, verdicts, byProvider, foldFloor, adjFloor, st)
 	st.DurationMs = time.Since(started).Milliseconds()
 
@@ -249,14 +258,17 @@ func (o *Orchestrator) fillInsightVectors(ctx context.Context, docs []consolidat
 		vecs, err := o.embeddingProvider.Embed(ctx, missing)
 		switch {
 		case err != nil:
-			// Non-fatal, and deliberately not a reason to skip the pass: the
-			// containment test needs no vectors, and it is the test that finds
-			// the duplicate shape similarity cannot see.
+			// Non-fatal, but it does cost the pass: similarity is the only
+			// test now, so a finding with no vector is proposed in no pair and
+			// a cold cache means no consolidation at all. Said plainly,
+			// because the visible symptom is restatements reaching validation
+			// and spending its budget, and an operator reading this log is the
+			// only one who can connect the two.
 			applog.WithError(err).WithField("texts", len(missing)).
-				Warn("Consolidation: embedding failed; falling back to the containment test alone")
+				Warn("Consolidation: embedding failed; these findings are left out of consolidation and their restatements will reach validation")
 		case len(vecs) != len(missing):
 			applog.WithFields(applog.Fields{"want": len(missing), "got": len(vecs)}).
-				Warn("Consolidation: embedding count mismatch; falling back to the containment test alone")
+				Warn("Consolidation: embedding count mismatch; these findings are left out of consolidation and their restatements will reach validation")
 		default:
 			for i, t := range missing {
 				o.cacheInsightVector(t, vecs[i])
@@ -268,8 +280,8 @@ func (o *Orchestrator) fillInsightVectors(ctx context.Context, docs []consolidat
 	}
 }
 
-// insightBody is what the containment test looks inside: the finding's prose
-// as it was authored, plus the figures it lists.
+// insightBody is the finding's prose as it was authored, plus the figures it
+// lists. It is what the adjudicator is shown.
 //
 // DescriptionMd in preference to Description, because the markdown rendition
 // is where the table lives — and a table row is the commonest thing a second
@@ -752,7 +764,17 @@ func (o *Orchestrator) applyConsolidation(
 				clusterRefusedDonor = true
 				continue
 			}
-			score, held := reverifyFold(dup, docs[fi], threshold, adjFloor, byProvider[i])
+			// `byProvider[i] && final == v.CanonicalID`, not byProvider alone.
+			// The adjudication floor is an acceptance the provider earned by
+			// ruling on THIS pair, and a resolved target is not always the one
+			// it named: when it folds C into B and B already points at A, the
+			// chain sends C to A, which the provider may never have been shown.
+			// Accepting that at the lower floor folds a pair on no verdict —
+			// measured at 0.829 in review, below the floor the community rule
+			// would have required. A redirected target is held to the fold
+			// floor instead.
+			ruledOnThisPair := byProvider[i] && final == v.CanonicalID
+			score, held := reverifyFold(dup, docs[fi], threshold, adjFloor, ruledOnThisPair)
 			if !held {
 				applog.WithFields(applog.Fields{"area": st.Area, "id": dupID, "canonical": final}).
 					Info("Consolidation: the claim does not hold against the resolved canonical; not folded")

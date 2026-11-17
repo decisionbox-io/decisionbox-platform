@@ -382,7 +382,7 @@ const documentDedupMinScoreEnv = "DISCOVERY_DOCUMENT_DEDUP_MINSCORE"
 // scan was earning its place for scored 0.814, 0.831 and 0.858, and 0.80 is the
 // floor that reaches all three. It costs 16-17 adjudications a run there,
 // against 0-3 at the fold floor.
-const adjudicationMinScoreEnv = "CONSOLIDATION_ADJUDICATION_MIN_SCORE"
+const adjudicationMinScoreEnv = "DISCOVERY_CONSOLIDATION_ADJUDICATION_MINSCORE"
 
 const defaultAdjudicationMinScore = 0.80
 
