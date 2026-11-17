@@ -144,11 +144,6 @@ type consolidationDoc struct {
 	// prose is the finding's authored body, markdown rendition preferred.
 	// What the provider is shown, alongside its figures as their own field.
 	prose string
-	// body is prose plus the supporting figures, which is what the
-	// containment test looks inside. Separate from prose because the
-	// provider is shown the figures as their own field, and sending them
-	// twice is prompt budget spent saying one thing.
-	body        string
 	area        string
 	areaScope   string
 	severity    string
@@ -374,6 +369,14 @@ func clusterCanAutoFold(docs []consolidationDoc, c docCluster, foldFloor float64
 		for y := x + 1; y < len(c.members); y++ {
 			a, b := docs[c.members[x]], docs[c.members[y]]
 			if !a.current && !b.current {
+				continue
+			}
+			// And a pair whose other member already carries a mark is not one
+			// the community rule can write either: it resolves the target
+			// through that mark, and the fold it would then attempt is against
+			// a document this pair was never measured against. Ranking on it
+			// spends a slot on a cluster that folds nothing.
+			if (!a.current && a.duplicateOf != "") || (!b.current && b.duplicateOf != "") {
 				continue
 			}
 			if _, ok := cosineFold(b.foldSubject, a.foldSubject, foldFloor); ok {

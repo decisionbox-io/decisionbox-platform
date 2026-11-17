@@ -370,10 +370,10 @@ So each area is consolidated before it is validated.
 Area's insights analysed, repaired, figures settled
   ↓
 Propose clusters — the area's own insights against each other AND against
-every earlier area of this run — by two independent tests, unioned:
-    - cosine similarity over the embedded text, at DISCOVERY_DOCUMENT_DEDUP_MINSCORE
-    - figure containment: every distinctive figure (3+ digits) of one
-      headline appearing in another's body
+every earlier area of this run — on cosine similarity over the embedded
+text, at DISCOVERY_CONSOLIDATION_ADJUDICATION_MINSCORE (0.80), which sits
+BELOW the fold floor so the pairs a threshold cannot settle are the ones
+the adjudicator is asked about
   ↓
 Adjudicate each cluster
     - a registered ConsolidationProvider decides, when one is installed
@@ -388,7 +388,9 @@ own marks back if any of it cannot be proved
 
 **It marks; it never deletes.** A consolidated finding is still persisted, still embedded, still indexed, still rendered and still expandable behind its canonical — the same non-destructive contract Phase 9's check keeps. What changes is that validation skips it with `skipped_duplicate` and **no charge against the cap**, and recommendation generation excludes it on the mark rather than on its verdict.
 
-**Why both proposal tests.** They find largely different duplicates. On one measured run the cosine rule proposed 18 pairs and the containment scan 16, and only 3 were the same pair. Containment exists because these findings carry markdown tables, and the commonest duplicate is a finding whose entire headline is one ROW of another's table: the surrounding prose differs, so cosine scores it 0.71–0.87 and a 0.88 rule never sees it. Containment requires two or more distinctive figures — one shared three-digit number between two findings about the same data is a coincidence — and it is a string scan, with no model and no embedding.
+**Why two floors, and not a second test.** The commonest duplicate here is a finding whose entire headline is one ROW of another's table: the surrounding prose differs, so cosine scores it 0.71–0.87 and a 0.88 rule never sees it. That used to be found by a second proposal test — a string scan that pulled the figures out of one headline and asked whether all of them appeared in another's body. The scan read numerals with no idea what they measured, and review found six sentences where it took a quantity for a date or a date for a quantity; because containment asks whether *every* figure of the claim is in the body, each misread removed a constraint and let two different measurements read as one. That judgement is the model's now, and a lower proposal floor is what carries the pairs to it: on two field runs the three folds the scan was earning its place for scored 0.814, 0.831 and 0.858, which `0.80` reaches at 16–17 adjudications a run.
+
+**The pass needs the embedding provider.** Similarity is the only way a pair is proposed, so a finding with no vector is proposed in no pair. An embedding outage costs a run its consolidation rather than its findings — it degrades to a no-op, not to a guess, and the adjudicator is not called.
 
 **Clusters are stars over direct relations, not connected components.** Neither test is transitive. Clustering by transitive closure over the containment relation — A contains B, B contains C, therefore one cluster — proposed suppressing 23 of 55 insights on real run output where the direct relations yield 9. Each cluster is one seed plus the documents directly related to it, and every fold is then re-verified against the canonical the mark will actually point at.
 
@@ -398,7 +400,7 @@ own marks back if any of it cannot be proved
 
 **One mark a resume cannot always keep.** A mark into an earlier area is STORED by the id that area's own checkpoint holds, so a third attempt can follow it. The case that still loses the fold is narrow and takes two failures: an area whose completed-checkpoint write fails leaves only its draft, a later area's checkpoint then records a fold against that draft's id, and a third attempt remints the first area under a new id with no stored alias from the draft's. `settleRunMarks` clears such a mark rather than leaving it broken, so the finding is visible and unvalidated — which is what an insight that was never checked is, and what it would have been before this phase existed.
 
-`DISCOVERY_CONSOLIDATION_ENABLED` (default on) turns the phase off. The similarity floor is a threshold rather than a switch, and the containment test does not read it. `DISCOVERY_CONSOLIDATION_MAX_CLUSTERS` (default 60, non-positive for no bound) caps how many clusters one area sends to an adjudicator — each call's prompt is bounded by the layer's input window, but the number of calls grows with the cluster count, and four measured runs proposed about thirty candidate pairs per *run*. Clusters past the bound are not dropped: they get the community rule.
+`DISCOVERY_CONSOLIDATION_ENABLED` (default on) turns the phase off; the similarity floors are thresholds rather than switches, so neither can express "do not consolidate at all". `DISCOVERY_CONSOLIDATION_ADJUDICATION_MINSCORE` (default 0.80) is what to raise to limit model calls — raising `DISCOVERY_DOCUMENT_DEDUP_MINSCORE` instead changes what the community rule suppresses on its own, which is a different thing. `DISCOVERY_CONSOLIDATION_MAX_CLUSTERS` (default 60, non-positive for no bound) caps how many clusters one area sends to an adjudicator — each call's prompt is bounded by the layer's input window, but the number of calls grows with the cluster count, and four measured runs proposed about thirty candidate pairs per *run*. Clusters past the bound are not dropped: they get the community rule.
 
 ## Phase 4.5: Insight validation (LLM-native)
 

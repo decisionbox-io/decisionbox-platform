@@ -166,6 +166,23 @@ services:
       # Values: any positive integer (default: 6)
       - AGENT_JOB_TIMEOUT_HOURS=6
 
+      # Mid-run consolidation (Phase 4.4): each analysis area's findings are
+      # clustered against each other and against the earlier areas', an
+      # adjudicator decides which restate which, and the restatements are
+      # marked before validation spends its fixed budget on them. All three are
+      # forwarded to spawned agent containers automatically.
+      #
+      # Two floors, and they do different jobs. The ADJUDICATION floor decides
+      # what the model is asked about; raise it to limit model calls. The FOLD
+      # floor decides what gets marked a duplicate with no model in the loop;
+      # raise that one and you change what is suppressed automatically, which
+      # is a different thing. Needs the embedding provider: similarity is the
+      # only way a pair is proposed.
+      # - DISCOVERY_CONSOLIDATION_ENABLED=true
+      # - DISCOVERY_CONSOLIDATION_ADJUDICATION_MINSCORE=0.80
+      # - DISCOVERY_DOCUMENT_DEDUP_MINSCORE=0.88
+      # - DISCOVERY_CONSOLIDATION_MAX_CLUSTERS=60
+
       # HTTP timeout per LLM API call made by the API (executive
       # summary, /ask, plugin-driven long-context calls). Go duration
       # string (e.g. 5m, 15m).

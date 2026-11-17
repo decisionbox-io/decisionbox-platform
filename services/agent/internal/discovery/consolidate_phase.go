@@ -753,6 +753,16 @@ func (o *Orchestrator) applyConsolidation(
 				clusterRefusedDonor = true
 				continue
 			}
+			// Considered and not done: gating this on the PAIR's own score
+			// against the adjudication floor. With the floors at their
+			// defaults the proposal floor is the lower of the two, so a pair
+			// inside a star that never cleared it is refused here anyway. With
+			// an operator's floors inverted — adjudication above fold — a pair
+			// can enter a star through a shared neighbour at a score between
+			// them, and the fold is then accepted at the fold floor: which is
+			// the floor at which this product folds without a model at all, so
+			// accepting it is not a weaker decision than the alternative.
+			//
 			// `byProvider[i] && final == v.CanonicalID`, not byProvider alone.
 			// The adjudication floor is an acceptance the provider earned by
 			// ruling on THIS pair, and a resolved target is not always the one
@@ -820,7 +830,6 @@ func (o *Orchestrator) applyConsolidation(
 				marks:            marks,
 				folded:           v.Duplicates,
 				written:          clusterWritten,
-				threshold:        threshold,
 			}); {
 			case refusal != "":
 				reason := refusal
@@ -1229,8 +1238,7 @@ type mergeCheck struct {
 	// folded is what THIS verdict folds, which is the set the rewrite was
 	// written from.
 	folded    map[string]float64
-	written   []int
-	threshold float64
+	written []int
 }
 
 // mergeRefusal returns why a rewrite cannot be applied, or "" when it can.

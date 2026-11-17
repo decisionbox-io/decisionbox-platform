@@ -111,10 +111,13 @@ func TestCosineFoldTarget_CanonicalOutsideTheRunIsNotFolded(t *testing.T) {
 	}
 }
 
-func doc(idx int, id string, deg float64, current bool, name, body string) consolidationDoc {
+// doc builds a test document. The trailing string was the body the figure scan
+// looked inside; nothing reads it now, and it is kept in the signature only
+// because every call site passes one.
+func doc(idx int, id string, deg float64, current bool, name, _ string) consolidationDoc {
 	return consolidationDoc{
 		foldSubject: foldSubject{id: id, docType: "insight", vec: unit(deg), text: id + " text", magnitude: "affected=1"},
-		index:       idx, current: current, slot: idx, name: name, body: body,
+		index:       idx, current: current, slot: idx, name: name,
 	}
 }
 
