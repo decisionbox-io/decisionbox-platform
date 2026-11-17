@@ -135,14 +135,15 @@ func (o *Orchestrator) consolidateArea(ctx context.Context, in consolidateAreaIn
 	if len(in.insights) == 0 || !consolidationEnabled() {
 		return st
 	}
-	threshold := documentDedupMinScore()
+	foldFloor := documentDedupMinScore()
+	adjFloor := adjudicationMinScore()
 	docs := o.consolidationDocs(ctx, in)
 	st.Documents = len(docs)
 	if len(docs) < 2 {
 		return st
 	}
 
-	clusters := buildClusters(docs, proposePairs(docs, threshold))
+	clusters := buildClusters(docs, proposePairs(docs, adjFloor))
 	st.Clusters = len(clusters)
 	if len(clusters) == 0 {
 		st.DurationMs = time.Since(started).Milliseconds()
@@ -161,9 +162,9 @@ func (o *Orchestrator) consolidateArea(ctx context.Context, in consolidateAreaIn
 		}).Warn("Consolidation: this area proposed more clusters than the adjudication bound; the rest fall to the community rule")
 	}
 
-	verdicts, byProvider, decider := o.adjudicate(ctx, docs, adjudicable, threshold)
+	verdicts, byProvider, decider := o.adjudicate(ctx, docs, adjudicable, adjFloor)
 	st.Decider = decider
-	st = o.applyConsolidation(in, docs, clusters, verdicts, byProvider, threshold, st)
+	st = o.applyConsolidation(in, docs, clusters, verdicts, byProvider, foldFloor, adjFloor, st)
 	st.DurationMs = time.Since(started).Milliseconds()
 
 	applog.WithFields(applog.Fields{
@@ -588,6 +589,7 @@ func (o *Orchestrator) applyConsolidation(
 	verdicts map[int]agentplugin.ConsolidationVerdict,
 	byProvider map[int]bool,
 	threshold float64,
+	adjFloor float64,
 	st consolidationStats,
 ) consolidationStats {
 	byID := make(map[string]int, len(docs))
@@ -750,7 +752,7 @@ func (o *Orchestrator) applyConsolidation(
 				clusterRefusedDonor = true
 				continue
 			}
-			score, held := reverifyFold(dup, docs[fi], threshold, byProvider[i])
+			score, held := reverifyFold(dup, docs[fi], threshold, adjFloor, byProvider[i])
 			if !held {
 				applog.WithFields(applog.Fields{"area": st.Area, "id": dupID, "canonical": final}).
 					Info("Consolidation: the claim does not hold against the resolved canonical; not folded")
@@ -936,7 +938,7 @@ func (o *Orchestrator) applyConsolidation(
 			st.RefusedKept++
 			continue
 		}
-		score, held := reverifyFold(dup, docs[fi], threshold, false)
+		score, held := reverifyFold(dup, docs[fi], threshold, adjFloor, false)
 		if !held {
 			st.RefusedRecheck++
 			continue
@@ -1132,7 +1134,7 @@ func (o *Orchestrator) registerAdjudicatedKeeps(
 // is below the threshold: a containment fold is a real fold at a real
 // similarity, and storing the threshold instead would make the stored score a
 // restatement of the rule rather than a measurement of the pair.
-func reverifyFold(dup, canonical consolidationDoc, threshold float64, adjudicated bool) (float64, bool) {
+func reverifyFold(dup, canonical consolidationDoc, threshold, adjFloor float64, adjudicated bool) (float64, bool) {
 	// The magnitude guard gates BOTH paths, and that it did not was a hole
 	// this feature opened rather than inherited. sameClaim refuses a fold
 	// where the two texts are IDENTICAL and the figures differ — 100 affected
@@ -1148,8 +1150,15 @@ func reverifyFold(dup, canonical consolidationDoc, threshold float64, adjudicate
 	if _, ok := cosineFold(dup.foldSubject, canonical.foldSubject, threshold); ok {
 		return score, true
 	}
-	if adjudicated && containedIn(dup.name, canonical.body) {
-		return score, true
+	// An adjudicated pair is re-checked against the floor it was PROPOSED at,
+	// not the fold floor: a pair between the two is exactly what the model was
+	// asked about, and refusing it here would discard every verdict it gave on
+	// one. The magnitude guard above still applies, so a pair whose text is
+	// identical and whose numbers are not cannot come through this door.
+	if adjudicated {
+		if _, ok := cosineFold(dup.foldSubject, canonical.foldSubject, adjFloor); ok {
+			return score, true
+		}
 	}
 	return 0, false
 }
@@ -1248,17 +1257,16 @@ func rewriteBreaksAFold(prospectiveBody string, survivor consolidationDoc, docs 
 		if _, mine := folded[docs[i].id]; !mine {
 			return true
 		}
-		if _, cosine := cosineFold(docs[i].foldSubject, survivor.foldSubject, threshold); cosine {
-			// The adjudicator saw this finding's text and wrote the rewrite to
-			// carry it; that is what MergedDescription is for. There is
-			// nothing further to verify for a pair whose similarity was the
-			// justification.
-			continue
-		}
-		// A containment justification CAN be re-checked, and is.
-		if !containedIn(docs[i].name, prospectiveBody) {
-			return true
-		}
+		// A dependant of THIS verdict needs no further check. The adjudicator
+		// was shown its text and wrote the rewrite to carry it; that is what
+		// MergedDescription is for.
+		//
+		// The clause this replaces re-checked a dependant whose fold rested on
+		// the figures in the survivor's body, because a rewrite could drop the
+		// row they came from. Nothing is folded on that basis any more — every
+		// fold is a similarity pair the model ruled on — and there is nothing
+		// textual left to re-check: prospectiveBody is not embedded, so the
+		// vectors cannot answer for it either.
 	}
 	return false
 }

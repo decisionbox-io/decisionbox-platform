@@ -3,9 +3,7 @@ package discovery
 import (
 	"errors"
 	"fmt"
-	"regexp"
 	"sort"
-	"strings"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
@@ -124,102 +122,6 @@ func cosineFoldTarget(
 	return target, targetScore, true
 }
 
-// figureToken matches a run of digits with the separators a figure may carry.
-// Deliberately permissive about which separator means what: a thousands
-// separator is a locale setting and the two conventions are each other's
-// decimal mark, so the token is compared as written rather than parsed.
-var figureToken = regexp.MustCompile(`\d[\d.,]*`)
-
-// claimFigures returns the distinctive numeric tokens of a text: those whose
-// digits number three or more.
-//
-// Used for both sides of the containment test — the headline's figures and the
-// body's — so the comparison is token against token. One derivation, for the
-// reason magnitudeOf is one derivation: a headline parsed one way and a body
-// scanned another is how "is this figure in that text" comes to mean two
-// different questions.
-//
-// Three is the floor that makes the containment test mean something. "5%",
-// "3x" and "12" appear in almost every finding a project produces, so a test
-// built on them matches everything; a figure of three significant digits is
-// specific enough that two findings carrying the same one are usually carrying
-// the same measurement.
-//
-// Tokens are returned as written, not normalised to a number. A figure is
-// being looked for inside another finding's prose, and that prose contains it
-// in whatever form the model wrote it — so the comparison that matters is the
-// textual one, and parsing would introduce a locale question (is 12.345 twelve
-// thousand or twelve point three) that the comparison does not need to answer.
-func claimFigures(s string) []string {
-	if s == "" {
-		return nil
-	}
-	seen := make(map[string]struct{})
-	out := make([]string, 0, 4)
-	for _, m := range figureToken.FindAllString(s, -1) {
-		t := strings.Trim(m, ".,")
-		digits := 0
-		for _, r := range t {
-			if r >= '0' && r <= '9' {
-				digits++
-			}
-		}
-		if digits < 3 {
-			continue
-		}
-		if _, dup := seen[t]; dup {
-			continue
-		}
-		seen[t] = struct{}{}
-		out = append(out, t)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// minContainmentFigures is how many distinctive figures a headline must carry,
-// and have found in the other document's body, for containment to be claimed.
-//
-// Two rather than one. A single shared three-digit number between two findings
-// about the same warehouse is coincidence often enough to matter — a row count,
-// a year, a store code — and the cost of a wrong fold here is a finding that
-// loses its verdict, not just a row that renders collapsed.
-const minContainmentFigures = 2
-
-// containedIn reports whether `claim`'s distinctive figures all appear in
-// `body`: the test for "this finding's entire claim is already stated inside
-// that one".
-//
-// It exists because similarity is the wrong test for the commonest duplicate
-// shape these findings take. A finding whose headline is one ROW of another's
-// markdown table is strictly redundant, and because the surrounding prose
-// differs it scores 0.71–0.87 — never folded by a 0.88 rule. Of the folds a
-// human reviewer applied by hand on one run, four of seven sat below 0.88 and
-// two below 0.80. This scan found all of them, and it is a string match: no
-// model, no embedding, no measurable cost.
-func containedIn(claim, body string) bool {
-	figs := claimFigures(claim)
-	if len(figs) < minContainmentFigures || body == "" {
-		return false
-	}
-	// WHOLE tokens, through the same parser, not substrings of the body.
-	// `strings.Contains` accepted a headline's 123 and 456 as contained in a
-	// body stating 1123 and 2456 — two different measurements reading as the
-	// same one, and on a pair below the similarity floor the fold would cost
-	// a distinct finding its verdict and its place in Phase 5 on nothing at
-	// all.
-	inBody := make(map[string]struct{}, 8)
-	for _, f := range claimFigures(body) {
-		inBody[f] = struct{}{}
-	}
-	for _, f := range figs {
-		if _, ok := inBody[f]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
 // consolidationDoc is one of the run's findings as the consolidation pass sees
 // it: the comparable part, plus what the provider is shown and what the caller
 // needs in order to decide whether a mark may be written at all.
@@ -268,34 +170,32 @@ func newPairKey(a, b int) pairKey {
 	return pairKey{lo: a, hi: b}
 }
 
-// proposePairs runs both cheap tests over every pair of documents and returns
-// the direct relations, each tagged with which test fired.
+// proposePairs returns the pairs worth an adjudication, keyed low-high.
 //
-// DIRECT relations, never a transitive closure. Containment is not transitive
-// either: on real run output, clustering by connected components over the
-// containment relation — A contains B, B contains C, therefore one cluster —
-// proposed suppressing 23 of 55 insights, where the same data as direct pairs
-// yields 9.
-func proposePairs(docs []consolidationDoc, threshold float64) map[pairKey]agentplugin.Proposal {
+// One test: cosine at or above `floor`, which is the ADJUDICATION floor and
+// sits below the fold floor on purpose. A pair between the two is a pair the
+// model is asked about and the community rule may not fold on its own.
+//
+// There used to be a second test here. It scanned the numbers written in one
+// finding's headline and asked whether all of them appeared in the other's
+// body, to catch the commonest duplicate shape — a headline that is one ROW of
+// another finding's table, which the surrounding prose keeps at 0.71-0.87 and
+// so below any fold floor. The scan read numerals with no idea what they
+// measured, and review found six sentences where it took a quantity for a date
+// or a date for a quantity; because containment asks whether every figure of
+// the claim is in the body, each misread REMOVED a constraint and let two
+// different measurements read as one.
+//
+// That judgement is the model's now. Lowering the floor is what carries those
+// pairs to it: the three folds the scan was earning its place for on two field
+// runs scored 0.814, 0.831 and 0.858, and a 0.80 floor reaches all three at
+// 16-17 adjudications a run.
+func proposePairs(docs []consolidationDoc, floor float64) map[pairKey]agentplugin.Proposal {
 	rel := make(map[pairKey]agentplugin.Proposal)
 	for i := range docs {
 		for j := i + 1; j < len(docs); j++ {
-			var cos, con bool
-			if _, ok := cosineFold(docs[j].foldSubject, docs[i].foldSubject, threshold); ok {
-				cos = true
-			}
-			// Both directions: containment is asymmetric, and which member is
-			// contained in which is the provider's to weigh, not this scan's.
-			if containedIn(docs[j].name, docs[i].body) || containedIn(docs[i].name, docs[j].body) {
-				con = true
-			}
-			switch {
-			case cos && con:
-				rel[newPairKey(i, j)] = agentplugin.ProposalBoth
-			case cos:
+			if _, ok := cosineFold(docs[j].foldSubject, docs[i].foldSubject, floor); ok {
 				rel[newPairKey(i, j)] = agentplugin.ProposalCosine
-			case con:
-				rel[newPairKey(i, j)] = agentplugin.ProposalContainment
 			}
 		}
 	}
