@@ -113,7 +113,6 @@ type consolidationStats struct {
 	RefusedNotMine     int
 	RefusedRecheck     int
 	RefusedShape       int
-	RefusedUnmergeable int
 	RefusedKept        int
 	Kept               int
 	OverBound          int
@@ -204,7 +203,7 @@ func (o *Orchestrator) consolidateArea(ctx context.Context, in consolidateAreaIn
 		verdicts, byProvider, decider = o.adjudicate(ctx, docs, adjudicable, order, adjFloor)
 		st.Decider = decider
 	}
-	st = o.applyConsolidation(ctx, in, docs, clusters, verdicts, byProvider, foldFloor, adjFloor, st)
+	st = o.applyConsolidation(in, docs, clusters, verdicts, byProvider, foldFloor, adjFloor, st)
 	// An area can write community folds with no cluster adjudicated at all,
 	// once the two floors can be set apart. Decider is assigned where the
 	// adjudication happens, so the summary reported "none" beside a positive
@@ -219,7 +218,7 @@ func (o *Orchestrator) consolidateArea(ctx context.Context, in consolidateAreaIn
 		"folded": st.Folded, "by_cosine": st.ByCosine, "by_containment": st.ByContainment,
 		"by_both": st.ByBoth, "decider": st.Decider,
 		"refused_other_area": st.RefusedNotMine, "refused_recheck": st.RefusedRecheck,
-		"refused_shape": st.RefusedShape, "refused_unmergeable": st.RefusedUnmergeable,
+		"refused_shape": st.RefusedShape,
 		"refused_kept": st.RefusedKept,
 		"kept":         st.Kept, "over_bound": st.OverBound, "reverted": st.Reverted,
 		"duration_ms": st.DurationMs,
@@ -607,7 +606,6 @@ func communityFoldOrder(docs []consolidationDoc, folds map[string]communityFold)
 // result: every mark in the run resolved transitively to a final canonical,
 // re-verified, and the whole area's marks reverted if any of it is broken.
 func (o *Orchestrator) applyConsolidation(
-	ctx context.Context,
 	in consolidateAreaInput,
 	docs []consolidationDoc,
 	clusters []docCluster,
@@ -660,7 +658,6 @@ func (o *Orchestrator) applyConsolidation(
 	// first one preserved while both folds stand. The first rewrite wins and
 	// the second is reported: it was written against text the model had seen,
 	// and the text has since changed.
-	mergedCanonicals := make(map[string]bool, len(clusters))
 	written := make([]int, 0, len(docs))
 
 	for i, c := range clusters {
@@ -703,13 +700,13 @@ func (o *Orchestrator) applyConsolidation(
 		// would apply a merged description to a canonical nothing was folded
 		// into, as soon as any earlier cluster had folded something.
 		clusterFolds := 0
-		clusterWritten := make([]int, 0, len(c.members))
-		// Whether any member this verdict named as a duplicate was NOT
-		// folded. It matters only when a rewrite is also asked for: the
-		// rewrite may incorporate detail from a donor that was refused, and
-		// applying it would then credit the survivor with evidence it does
-		// not cite. See the merge switch below.
-		clusterRefusedDonor := false
+		// The members this verdict named as duplicates whose fold did not get
+		// written. They matter afterwards: the verdict meant all of them to
+		// collapse into one survivor, so it never said anything about whether
+		// they restate EACH OTHER — and with no mark on any of them the
+		// community rule is free to fold one into another sideways, losing the
+		// detail the verdict was collapsing. Protected from each other below.
+		refusedDonors := make([]string, 0, len(v.Duplicates))
 
 		// Sorted, so two runs over the same verdict write the same marks.
 		dupIDs := make([]string, 0, len(v.Duplicates))
@@ -721,13 +718,11 @@ func (o *Orchestrator) applyConsolidation(
 		for _, dupID := range dupIDs {
 			if !member[dupID] || dupID == final {
 				st.RefusedShape++
-				clusterRefusedDonor = true
 				continue
 			}
 			di, inHand := byID[dupID]
 			if !inHand {
 				st.RefusedShape++
-				clusterRefusedDonor = true
 				continue
 			}
 			dup := docs[di]
@@ -741,14 +736,12 @@ func (o *Orchestrator) applyConsolidation(
 				// it credits the survivor with its detail while mergeSourceSteps
 				// carries only what this verdict actually folded — so the
 				// survivor would state a claim whose evidence it does not cite.
-				clusterRefusedDonor = true
 				continue
 			}
 			if dependants[dupID] > 0 {
 				applog.WithFields(applog.Fields{"area": st.Area, "id": dupID}).
 					Info("Consolidation: refusing to suppress a document this pass already made canonical")
 				st.RefusedShape++
-				clusterRefusedDonor = true
 				continue
 			}
 			if !dup.current {
@@ -760,7 +753,6 @@ func (o *Orchestrator) applyConsolidation(
 				// not fold it the other way round on this run.
 				o.keepPair(dupID, final)
 				st.RefusedNotMine++
-				clusterRefusedDonor = true
 				continue
 			}
 			// The adjudicator decided this pair stands, in some other cluster
@@ -774,7 +766,6 @@ func (o *Orchestrator) applyConsolidation(
 				applog.WithFields(applog.Fields{"area": st.Area, "id": dupID, "canonical": final}).
 					Info("Consolidation: this pair was already adjudicated and left standing; not folding it in another cluster")
 				st.RefusedKept++
-				clusterRefusedDonor = true
 				continue
 			}
 			// Considered and not done: gating this on the PAIR's own score
@@ -802,7 +793,7 @@ func (o *Orchestrator) applyConsolidation(
 				applog.WithFields(applog.Fields{"area": st.Area, "id": dupID, "canonical": final}).
 					Info("Consolidation: the claim does not hold against the resolved canonical; not folded")
 				st.RefusedRecheck++
-				clusterRefusedDonor = true
+				refusedDonors = append(refusedDonors, dupID)
 				continue
 			}
 
@@ -810,7 +801,6 @@ func (o *Orchestrator) applyConsolidation(
 			in.insights[dup.slot].SimilarityScore = score
 			marks[dupID] = final
 			written = append(written, dup.slot)
-			clusterWritten = append(clusterWritten, dup.slot)
 			dependants[final]++
 			clusterFolds++
 			st.Folded++
@@ -839,133 +829,32 @@ func (o *Orchestrator) applyConsolidation(
 		// being folded sideways into each other by the community pass, which
 		// is what happened. The protection is the point; the revert is only
 		// the part that has something to undo.
-		if merged := strings.TrimSpace(v.MergedDescription); merged != "" {
-			// What the survivor's body would say, split the way it is stored.
-			prospectivePlain, prospectiveMd := splitMarkdownDescription(merged)
-
-			// And what it would EMBED as, so each fold this verdict makes can
-			// be checked against the text that will carry it.
-			var prospectiveVec []float64
-			if docs[fi].current {
-				prospectiveVec = o.rewriteVector(ctx, commonmodels.InsightEmbeddingText(
-					in.insights[docs[fi].slot].Name, prospectivePlain,
-					in.insights[docs[fi].slot].AnalysisArea,
-					in.insights[docs[fi].slot].Severity,
-					in.insights[docs[fi].slot].TargetSegment))
-			}
-
-			switch refusal := mergeRefusal(mergeCheck{
-				survivor:         docs[fi],
-				namedCanonical:   v.CanonicalID,
-				resolved:         final,
-				alreadyRewritten: mergedCanonicals[final],
-				refusedDonor:     clusterRefusedDonor,
-				insights:         in.insights,
-				docs:             docs,
-				marks:            marks,
-				folded:           v.Duplicates,
-				written:          clusterWritten,
-				prospectiveVec:   prospectiveVec,
-				foldFloor:        threshold,
-			}); {
-			case refusal != "":
-				reason := refusal
-				// Every member this verdict named as a duplicate, written or
-				// not, protected against every other member of the cluster.
-				// Named-but-refused is the case that has nothing to revert and
-				// needed protecting just as much.
-				for _, dupID := range dupIDs {
-					for _, m := range c.members {
-						if docs[m].id == dupID {
-							continue
-						}
-						o.keepPair(dupID, docs[m].id)
-						st.Kept++
-					}
-				}
-				for _, slot := range clusterWritten {
-					// Registered at the refusal and not in the pre-pass: the
-					// pre-pass reads the verdicts, which FOLD these pairs, and
-					// only the writer knows it could not apply the fold.
-					//
-					// The keeps for this member are registered above, with
-					// every other named duplicate's.
-					// Out of `marks` as well as off the insight. Left in, a
-					// later cluster resolving its canonical through the chain
-					// map would resolve through a mark that no longer exists
-					// and point a real fold at the wrong document — and
-					// keepStanding would read this pair as folded and record
-					// no keep for it, so the end-of-run check would fold it
-					// the way this branch just refused.
-					delete(marks, in.insights[slot].ID)
-					dependants[final]--
-					in.insights[slot].DuplicateOf = ""
-					in.insights[slot].SimilarityScore = 0
-					st.Folded--
-					clusterFolds--
-					// And the bucket the fold was counted in, or Folded would
-					// read 0 beside a non-zero by_cosine and the one number
-					// this log line exists to make legible — the fold rate per
-					// test — would not add up.
-					countFold(&st, c.proposal, -1)
-				}
-				// `written` is the pass-wide list the closure check reads, and
-				// this cluster's slots are its last entries. `clusterWritten`
-				// is not reset: nothing after this switch reads it, and the
-				// next cluster builds its own.
-				written = written[:len(written)-len(clusterWritten)]
-				st.RefusedUnmergeable++
-				applog.WithFields(applog.Fields{"area": st.Area, "canonical": final, "reason": reason}).
-					Info("Consolidation: the survivor cannot be rewritten; leaving the findings standing")
-			case clusterFolds == 0:
-				// A rewrite with nothing folded into the survivor. There is
-				// nothing to carry across and nothing to protect — the
-				// pre-pass has already registered this verdict's pairs as
-				// standing — so an unnecessary rewrite would lose detail
-				// rather than add it.
-				applog.WithFields(applog.Fields{"area": st.Area, "canonical": final}).
-					Info("Consolidation: a rewrite was offered with nothing folded into the survivor; left alone")
-			default:
-				plain, md := prospectivePlain, prospectiveMd
-				in.insights[docs[fi].slot].Description = plain
-				in.insights[docs[fi].slot].DescriptionMd = md
-				// The provenance of what the rewrite now states, carried with
-				// it. A folded member's figure is supported by the steps IT
-				// cited, and the verifier builds its evidence bundle from the
-				// survivor's SourceSteps — so a merged claim whose step the
-				// survivor does not cite would be checked against evidence
-				// that does not contain it, and attachSourceQuality would
-				// miss the caveat that step carries.
-				in.insights[docs[fi].slot].SourceSteps = mergeSourceSteps(
-					in.insights[docs[fi].slot].SourceSteps, in.insights, clusterWritten)
-				// And in the projection, so anything that folds into this
-				// survivor afterwards reads what it now says rather than
-				// what it said before the rewrite.
-				//
-				// The VECTOR is DROPPED rather than kept, and the earlier
-				// comment here was wrong to call keeping it conservative: a
-				// rewrite can REDUCE similarity below the floor, and the
-				// community pass would have gone on folding against the
-				// pre-merge vector and suppressed a finding that no longer
-				// restates this one. The merged text has not been embedded
-				// and cannot be mid-area, so there is no cosine answer to
-				// give — and with similarity the only test, no answer means
-				// no further fold into this survivor during this area, which
-				// is the conservative outcome. Phase 9 embeds the merged text
-				// (the cache is keyed on the text, so it misses) and decides
-				// on a real vector.
-				docs[fi].prose = insightProse(&in.insights[docs[fi].slot])
-				docs[fi].vec = nil
-				docs[fi].text = commonmodels.InsightEmbeddingText(
-					in.insights[docs[fi].slot].Name, plain,
-					in.insights[docs[fi].slot].AnalysisArea,
-					in.insights[docs[fi].slot].Severity,
-					in.insights[docs[fi].slot].TargetSegment)
-				mergedCanonicals[final] = true
-				applog.WithFields(applog.Fields{"area": st.Area, "canonical": final}).
-					Info("Consolidation: merged the folded members' detail onto the canonical")
+		// A verdict whose folds were refused leaves its donors standing side
+		// by side, unmarked, and related only through a survivor none of them
+		// reached. Nothing in the verdict speaks to the pairs between them, so
+		// the community rule must not read its silence as permission.
+		for x := 0; x < len(refusedDonors); x++ {
+			for y := x + 1; y < len(refusedDonors); y++ {
+				o.keepPair(refusedDonors[x], refusedDonors[y])
+				st.Kept++
 			}
 		}
+
+		// The adjudicator's MergedDescription is deliberately NOT applied.
+		//
+		// Carrying a folded finding's detail onto the survivor is only safe if
+		// the rewritten text really states that finding's claim, and that is a
+		// claim-level question about particular figures. The check that used to
+		// answer it read the figures out of the prose. Similarity cannot: a
+		// rewrite that turned a donor's 33.3% into 38.3% scored well above the
+		// fold floor, so it published the changed figure and suppressed the
+		// finding that held the right one. Asking the model to check its own
+		// rewrite is not a verification either.
+		//
+		// So the fold is applied and the survivor keeps the text it authored.
+		// A reader sent to it gets a claim that finding actually made, and the
+		// folded detail stays reachable where it always was — behind the
+		// canonical, which this pass marks and never deletes.
 	}
 
 	// The community rule, over everything the provider verdicts left alone.
@@ -1043,47 +932,7 @@ func (o *Orchestrator) applyConsolidation(
 	return st
 }
 
-// foldedDonorHasFigures reports whether any member written into this cluster's
-// fold declared evidence figures.
-//
-// It gates the REWRITE, not the fold: a fold with no rewrite leaves the
-// survivor's text alone, so nothing it states needs a figure of its own.
-func foldedDonorHasFigures(insights []models.Insight, written []int) bool {
-	for _, slot := range written {
-		if len(insights[slot].Figures) > 0 {
-			return true
-		}
-	}
-	return false
-}
 
-// mergeSourceSteps returns the survivor's cited steps unioned with those of
-// the members folded into it, deduplicated and ordered.
-//
-// Only called when a rewrite was applied: a fold with no rewrite leaves the
-// survivor's text alone, so it states nothing it did not already cite.
-// Ordered and deduplicated because the list is rendered into prompts and
-// persisted, and a set whose order changes between two runs reads as a changed
-// claim.
-func mergeSourceSteps(canonical []int, insights []models.Insight, folded []int) []int {
-	seen := make(map[int]struct{}, len(canonical)+len(folded))
-	out := make([]int, 0, len(canonical)+len(folded))
-	add := func(steps []int) {
-		for _, step := range steps {
-			if _, dup := seen[step]; dup {
-				continue
-			}
-			seen[step] = struct{}{}
-			out = append(out, step)
-		}
-	}
-	add(canonical)
-	for _, slot := range folded {
-		add(insights[slot].SourceSteps)
-	}
-	sort.Ints(out)
-	return out
-}
 
 // countFold moves the per-test fold counter the proposal belongs to. One
 // function for both directions, so a fold and a fold given back cannot be
@@ -1253,127 +1102,8 @@ func reverifyFold(dup, canonical consolidationDoc, threshold, adjFloor float64, 
 	return 0, false
 }
 
-// mergeCheck is everything deciding whether a rewrite may be applied.
-type mergeCheck struct {
-	survivor consolidationDoc
-	// The survivor's insight is reached through `insights` and
-	// `survivor.slot`, and only once `survivor.current` is known true: an
-	// earlier area's document carries slot -1. Holding the pointer here
-	// meant taking it BEFORE the function could check that, and indexing
-	// -1 panicked — a test caught it. The ordering now lives inside the
-	// function that depends on it rather than at its call site.
-	namedCanonical   string
-	resolved         string
-	alreadyRewritten bool
-	refusedDonor     bool
-	insights         []models.Insight
-	docs             []consolidationDoc
-	// marks is every mark standing at this point — the arrival marks and
-	// everything this pass has written — which is what makes "every fold
-	// into this survivor" answerable.
-	marks map[string]string
-	// folded is what THIS verdict folds, which is the set the rewrite was
-	// written from.
-	folded    map[string]float64
-	written []int
-	// prospectiveVec is what the rewritten survivor would embed as, or nil
-	// when it could not be embedded. foldFloor is the floor a fold has to
-	// still hold at against it.
-	prospectiveVec []float64
-	foldFloor      float64
-}
 
-// mergeRefusal returns why a rewrite cannot be applied, or "" when it can.
-//
-// One function, so each reason is written once instead of once to select the
-// branch and again to name it — which is how a guard this long becomes a list
-// nobody can check against itself. The reasons group into three:
-//
-//   - the rewrite is about text that is not what this survivor says. It was
-//     written against a document that has since been rewritten, or against a
-//     document that is not this one at all, because the canonical the verdict
-//     named has itself been folded and the mark resolves elsewhere.
-//   - the text cannot be replaced, because something else derives from it: an
-//     earlier area's checkpoint record of it, or the figure references
-//     rendered into it on either side of the fold.
-//   - the rewrite would lose something it claims to carry: a donor's detail
-//     that was never folded, or the figures a fold already written into this
-//     survivor rests on.
-func mergeRefusal(c mergeCheck) string {
-	switch {
-	case !c.survivor.current:
-		return "the survivor's area has already recorded its text"
-	case c.alreadyRewritten:
-		return "this pass has already rewritten the survivor for an overlapping cluster"
-	case c.resolved != c.namedCanonical:
-		return "the canonical this verdict named resolves elsewhere, so its rewrite is about another document"
-	case len(c.insights[c.survivor.slot].Figures) > 0:
-		return "the survivor's prose carries rendered evidence figures"
-	case foldedDonorHasFigures(c.insights, c.written):
-		return "a folded member's prose carries rendered evidence figures"
-	case c.refusedDonor:
-		return "a member this verdict folds was refused, so its rewrite cannot be trusted"
-	case rewriteBreaksAFold(c.survivor, c.docs, c.marks, c.folded, c.prospectiveVec, c.foldFloor):
-		return "the rewrite does not account for every finding folded into the survivor"
-	}
-	return ""
-}
 
-// rewriteBreaksAFold reports whether replacing the survivor's body would leave
-// a fold already written into it unsupported.
-//
-// Only a CONTAINMENT fold can be broken this way, and the distinction is the
-// whole content of this check: a containment fold is justified by figures
-// found in the survivor's body, and a rewrite is free text that can drop them,
-// while a cosine fold was justified by the vectors and nothing about the prose
-// changes that. The closure check cannot catch it — it verifies where marks
-// POINT, not whether the claim still holds — and the end-of-run check skips a
-// document that already carries a mark. So the finding would stay suppressed
-// and unvalidated with its claim stated nowhere.
-func rewriteBreaksAFold(survivor consolidationDoc, docs []consolidationDoc, marks map[string]string, folded map[string]float64, prospectiveVec []float64, foldFloor float64) bool {
-	for i := range docs {
-		if marks[docs[i].id] != survivor.id {
-			continue
-		}
-		// A dependant THIS verdict did not fold. The rewrite was written from
-		// this cluster's payload, which does not contain that finding's text,
-		// so there is no sense in which it carries its claim — and no way to
-		// check, either: a cosine justification cannot be re-established
-		// against prose that has not been embedded, and containment cannot be
-		// expected of a pair that never shared figures. Refused outright.
-		//
-		// This replaced a weaker rule that skipped a cosine-justified
-		// dependant on the grounds that the vectors decided it. They did —
-		// but they describe the OLD prose, so a rewrite dropping that
-		// dependant's claim left it hidden behind a survivor that no longer
-		// states it, which is exactly what the rule was meant to stop.
-		if _, mine := folded[docs[i].id]; !mine {
-			return true
-		}
-		// A dependant of THIS verdict is checked against the text the rewrite
-		// would leave behind. Being shown a finding is not the same as
-		// carrying it: an adjudicator can name a restatement correctly and
-		// then write a merged description that drops the row it rested on, and
-		// the dependant is then suppressed behind a survivor that does not
-		// state its claim — losing its verdict and its place in Phase 5 for a
-		// sentence that is no longer there. Review reproduced it at 0.85.
-		//
-		// The check this replaces read the figures out of the rewritten prose.
-		// This asks the same question in the currency the rest of the pass
-		// uses, over the rewrite's own embedding.
-		//
-		// No vector, no rewrite — an embedding failure or a survivor from an
-		// earlier area both land here, and both refuse rather than guess. The
-		// fold still stands; only the merged description is withheld.
-		if len(prospectiveVec) == 0 || len(docs[i].vec) == 0 {
-			return true
-		}
-		if score, ok := cosineSimilarity(docs[i].vec, prospectiveVec); !ok || score < foldFloor {
-			return true
-		}
-	}
-	return false
-}
 
 // resolveTarget walks a mark chain to its end. The bool reports a cycle.
 func resolveTarget(id string, marks map[string]string) (string, bool) {
@@ -1484,7 +1214,6 @@ func (st consolidationStats) persisted() *models.ConsolidationSummary {
 		RefusedOtherArea:   st.RefusedNotMine,
 		RefusedRecheck:     st.RefusedRecheck,
 		RefusedShape:       st.RefusedShape,
-		RefusedUnmergeable: st.RefusedUnmergeable,
 		RefusedKept:        st.RefusedKept,
 		Kept:               st.Kept,
 		OverBound:          st.OverBound,
@@ -1493,30 +1222,3 @@ func (st consolidationStats) persisted() *models.ConsolidationSummary {
 	}
 }
 
-// rewriteVector embeds one prospective survivor body, through the same cache the
-// pass fills, and returns nil when it cannot.
-//
-// Nil is a real answer here and the caller treats it as a refusal: a rewrite
-// that cannot be checked against the folds resting on it is not applied. One
-// text, because a rewrite is rare — a verdict offers one only when it folded
-// something — and the cache is keyed on the text, so a resumed attempt pays
-// nothing.
-func (o *Orchestrator) rewriteVector(ctx context.Context, text string) []float64 {
-	if text == "" {
-		return nil
-	}
-	if vec := o.cachedInsightVector(text); vec != nil {
-		return vec
-	}
-	if o.embeddingProvider == nil {
-		return nil
-	}
-	vecs, err := o.embeddingProvider.Embed(ctx, []string{text})
-	if err != nil || len(vecs) != 1 || len(vecs[0]) == 0 {
-		applog.WithError(err).WithField("vectors", len(vecs)).
-			Warn("Consolidation: the rewritten survivor could not be embedded; its rewrite is refused")
-		return nil
-	}
-	o.cacheInsightVector(text, vecs[0])
-	return vecs[0]
-}

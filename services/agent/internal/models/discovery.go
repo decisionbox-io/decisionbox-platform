@@ -860,10 +860,6 @@ type ConsolidationSummary struct {
 	// RefusedShape counts verdicts discarded as malformed: an id outside its
 	// own cluster, a canonical that is itself folded, a cycle.
 	RefusedShape int `bson:"refused_shape,omitempty" json:"refused_shape,omitempty"`
-	// RefusedUnmergeable counts clusters given back because the survivor
-	// needed a rewrite its own area has already recorded. Applying the fold
-	// without the rewrite is how a fold loses a caveat.
-	RefusedUnmergeable int `bson:"refused_unmergeable,omitempty" json:"refused_unmergeable,omitempty"`
 	// RefusedKept counts folds refused because the adjudicator had already
 	// decided that pair stands, in another cluster of the same pass. Clusters
 	// are overlapping stars, so a fallback verdict for one can propose a pair
