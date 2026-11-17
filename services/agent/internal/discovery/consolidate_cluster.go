@@ -158,10 +158,16 @@ func claimFigures(s string) []string {
 	seen := make(map[string]struct{})
 	out := make([]string, 0, 4)
 	for _, span := range figureToken.FindAllStringIndex(s, -1) {
-		if withinAny(span, dates) {
+		// Trim first, then ask whether what is left sits inside a date.
+		// figureToken is greedy about the separators a figure may carry, so a
+		// date ending a sentence gives it "2026." while the date expression
+		// ends at the digit — and the untrimmed span would fall outside its
+		// own date. figureToken always starts with a digit, so only the right
+		// side can carry punctuation.
+		t := strings.TrimRight(s[span[0]:span[1]], ".,")
+		if withinAny([]int{span[0], span[0] + len(t)}, dates) {
 			continue
 		}
-		t := strings.Trim(s[span[0]:span[1]], ".,")
 		digits := 0
 		for _, r := range t {
 			if r >= '0' && r <= '9' {
@@ -206,11 +212,24 @@ func claimFigures(s string) []string {
 // finding below the similarity floor as well. Only a token written as part of a
 // date is skipped, and only at that position: the same digits elsewhere in the
 // text are still a figure.
-var dateExpression = regexp.MustCompile(`(?i)\b(?:` +
-	`(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?[\s/,-]{0,2}\d{4}` +
-	`|\d{4}[\s/-]{0,2}(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*` +
-	`|q[1-4][\s/-]{0,2}\d{4}` +
-	`|\d{4}-\d{2}(?:-\d{2})?` +
+// monthName is the closed set of month spellings, longest first so the
+// alternation prefers the full name over its own abbreviation.
+//
+// Closed, and not a prefix with `[a-z]*` after it: that shorter form made
+// "margin", "declined" and "october" alike, so a sentence beginning "margin
+// 2000 across 142 stores" lost its measurement and read as contained in the
+// same sentence reporting 3000.
+const monthName = `(?:january|february|march|april|august|september|october|november|december` +
+	`|june|july|may|jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec)\.?`
+
+var dateExpression = regexp.MustCompile(`(?i)(?:` +
+	`\b` + monthName + `[\s/,-]{0,2}\d{4}\b` +
+	`|\b\d{4}[\s/-]{0,2}` + monthName + `\b` +
+	`|\bq[1-4][\s/-]{0,2}\d{4}\b` +
+	// A numeric date needs a real month, and a real day if it carries one.
+	// `\d{4}-\d{2}` alone matched the first seven characters of the quantity
+	// range "2000-3000", dropping the lower bound and keeping the upper.
+	`|\b\d{4}-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?\b` +
 	`)`)
 
 // withinAny reports whether a [start,end) span lies inside any of the spans in

@@ -412,3 +412,57 @@ func TestContainedIn_ADateWindowAloneIsNotContainment(t *testing.T) {
 		t.Error("a pair sharing two real measurements must still be containment")
 	}
 }
+
+// A word that merely begins like a month is not a date. The first spelling of
+// this rule matched a month prefix followed by any letters, which made
+// "margin", "declined" and "maybe" dates and cost the measurement beside them.
+func TestClaimFigures_WordsThatStartLikeMonthsAreNotDates(t *testing.T) {
+	for _, in := range []string{
+		"margin 2000 across stores", "declined 2000 last period",
+		"marketing 2000 spend", "separate 2000 lines", "maybe 2000 units",
+		"junior 2000 accounts", "decade 2000 average", "octane 2000 rating",
+		"novel 2000 approach", "janitor 2000 visits", "apron 2000 count",
+		"augment 2000 volume", "julienne 2000 cuts",
+	} {
+		if got := claimFigures(in); len(got) != 1 || got[0] != "2000" {
+			t.Errorf("claimFigures(%q) = %v, want the measurement kept", in, got)
+		}
+	}
+	// And a real month still is one.
+	if got := claimFigures("february 2026 shipments"); len(got) != 0 {
+		t.Errorf(`claimFigures("february 2026 shipments") = %v, want none`, got)
+	}
+}
+
+// A quantity range is not a numeric date. `\d{4}-\d{2}` matched the first seven
+// characters of "2000-3000", which dropped the lower bound, kept the upper, and
+// made two different ranges read as containment.
+func TestClaimFigures_AQuantityRangeKeepsBothBounds(t *testing.T) {
+	if got := claimFigures("2000-3000 orders across 142 stores"); !reflect.DeepEqual(
+		got, []string{"142", "2000", "3000"}) {
+		t.Fatalf("claimFigures = %v, want both bounds kept", got)
+	}
+	if containedIn("2000-3000 orders across 142 stores", "2500-3000 orders across 142 stores") {
+		t.Error("two ranges with different lower bounds must not read as containment")
+	}
+	// A real numeric date is still recognised, with and without its day.
+	for _, in := range []string{"the week of 2026-08-23", "the month of 2026-08"} {
+		if got := claimFigures(in); len(got) != 0 {
+			t.Errorf("claimFigures(%q) = %v, want none", in, got)
+		}
+	}
+}
+
+// A date that ends a sentence carries the full stop into the figure token, so
+// the untrimmed span falls outside its own date expression. Containment was
+// then refused between two findings whose only difference was that full stop.
+func TestContainedIn_ADateEndingASentenceIsStillADate(t *testing.T) {
+	if got := claimFigures("142 stores over 180 days in Nov-2025 to Oct-2026."); !reflect.DeepEqual(
+		got, []string{"142", "180"}) {
+		t.Fatalf("claimFigures = %v, want only the measurements", got)
+	}
+	if !containedIn("142 stores over 180 days in Nov-2025 to Oct-2026.",
+		"142 stores over 180 days in Nov-2025 to Oct-2026 window") {
+		t.Error("a trailing full stop on a date must not refuse genuine containment")
+	}
+}
