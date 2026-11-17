@@ -1625,3 +1625,22 @@ func TestRunPhaseEmbedIndex_HonoursAnAdjudicatorsRefusalOnTheFinding(t *testing.
 		}
 	}
 }
+
+// The protection is checked ahead of BOTH of Phase 9's passes. An earlier
+// run's copy of the survivor states the claim no better than this run's does,
+// so folding a protected finding into it hides exactly the caveat the
+// adjudicator spoke up about — and behind a row from a previous discovery.
+func TestMarkDuplicates_AProtectedFindingIsNotFoldedIntoAnEarlierRun(t *testing.T) {
+	store := &mockEmbedIndexStore{}
+	mockVS := &mockVectorStore{dupes: []vectorstore.SearchResult{{ID: "last-run-copy", Score: 0.97}}}
+	o := &Orchestrator{embedIndexStore: store, vectorStore: mockVS}
+
+	o.markDuplicates(context.Background(), []dedupCandidate{
+		{id: "b", docType: "insight", projectID: "p", vec: []float64{1, 0, 0},
+			text: "b", magnitude: "affected=1", stands: true},
+	}, []string{"this-run"})
+
+	if len(store.dupUpdates) != 0 {
+		t.Errorf("Phase 9 folded a protected finding into an earlier run: %+v", store.dupUpdates)
+	}
+}

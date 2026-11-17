@@ -2388,3 +2388,59 @@ func TestConsolidateArea_AMalformedRewriteLeavesNoKeepBehind(t *testing.T) {
 			current[1].DuplicateOf, st)
 	}
 }
+
+// A fold refused because its donor must stand leaves the PAIR kept, not only
+// the donor protected. The flag says nothing about the other member: with the
+// fold refused and the donor earlier in document order, the community rule
+// folded the canonical into the donor instead — the survivor the provider
+// chose, hidden on the one direction the provider rejected.
+func TestConsolidateArea_ARefusedFoldKeepsThePairApartInBothDirections(t *testing.T) {
+	b := insight("b", "stock", "claim b", "body b", 400)
+	c := insight("c", "stock", "claim c", "body c", 300)
+	x := insight("x", "stock", "claim x", "body x", 200)
+	y := insight("y", "stock", "claim y", "body y", 100)
+
+	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		out := make([]agentplugin.ConsolidationVerdict, len(cl))
+		for i, cluster := range cl {
+			ids := make([]string, 0, len(cluster.Candidates))
+			for _, cand := range cluster.Candidates {
+				ids = append(ids, cand.ID)
+			}
+			if slices.Contains(ids, "y") {
+				// One cluster says b carries detail no survivor states.
+				out[i] = agentplugin.ConsolidationVerdict{
+					CanonicalID:       "y",
+					Duplicates:        map[string]float64{"b": 0.95},
+					MergedDescription: "y, carrying b's caveat",
+				}
+				continue
+			}
+			// The other folds b into c outright, which the protection
+			// refuses — so c must not be folded into b in its place.
+			out[i] = agentplugin.ConsolidationVerdict{
+				CanonicalID: "c", Duplicates: map[string]float64{"b": 0.95},
+			}
+		}
+		return out, nil
+	}})
+
+	// b first in document order and 10 degrees from c, so the community rule
+	// would fold c into b given the chance.
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(b): 0, embText(c): 10, embText(x): -30, embText(y): 42,
+	}}}
+	current := []models.Insight{b, c, x, y}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if st.Clusters != 2 {
+		t.Fatalf("clusters = %d (%+v), want the two overlapping stars (fixture broken)", st.Clusters, st)
+	}
+	if current[0].DuplicateOf != "" {
+		t.Errorf("b.duplicate_of = %q; the protected finding was folded (%+v)", current[0].DuplicateOf, st)
+	}
+	if current[1].DuplicateOf != "" {
+		t.Errorf("c.duplicate_of = %q (%+v); the canonical the provider chose was folded into the finding it was meant to absorb",
+			current[1].DuplicateOf, st)
+	}
+}

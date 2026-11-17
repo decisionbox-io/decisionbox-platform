@@ -854,6 +854,19 @@ func (o *Orchestrator) applyConsolidation(
 				// survivor of it states. Another verdict naming it, the same
 				// one through a redirected canonical, or this fallback
 				// choosing a different canonical does not undo that.
+				//
+				// And the pair is kept, which is what this refusal needs that
+				// the flag alone does not give. The flag stops the protected
+				// finding being folded; it says nothing about the OTHER
+				// member. A second cluster naming this pair as a fold drops
+				// its keep as an explicit decision, so with the fold refused
+				// here and the protected finding earlier in document order,
+				// the community rule was free to fold the canonical into it
+				// instead — the survivor the provider chose, hidden on the
+				// one direction the provider rejected.
+				if o.keepPair(dupID, final) {
+					st.Kept++
+				}
 				st.RefusedKept++
 				continue
 			}
@@ -1329,6 +1342,23 @@ func hasKey(m map[string]float64, k string) bool {
 // Phase 9 reads it. An area restored from a completed checkpoint does not
 // re-run its pass, so a resumed run can lose a refusal and get Phase 9's own
 // rule for that pair instead: today's behaviour, not a new failure.
+//
+// Two shapes of that are worth naming, because review found both and the
+// answer is the same. A refused rewrite protects its donor on the finding, so
+// the flag survives a resume — but the flag stops the donor being folded, and
+// Phase 9 reads it on the document it is about to fold, not on the target. If
+// the donor is EARLIER in document order, a resumed Phase 9 folds the
+// canonical into it. And a donor belonging to an area the run had already
+// finished cannot carry the flag at all, for the same reason it cannot carry a
+// mark: its checkpoint is written and its ids are reminted on restore.
+//
+// In both cases what the resumed run does is Phase 9's document-order rule —
+// the outcome with no consolidation in the product at all — so the feature is
+// not making a finding less visible than it was, it is only failing to improve
+// it on a resumed attempt. Fixing it properly means persisting the keeps in
+// the deciding area's checkpoint under ids that survive a restore, which is a
+// checkpoint-schema decision and not part of moving the containment judgement
+// to the model.
 // The bool reports whether this pair was not already kept, so a caller can
 // count PAIRS rather than calls: one pair can be recorded by the rewrite
 // pre-pass, by the cluster keep pass and at a refusal, and `kept` read 3 for

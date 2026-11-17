@@ -635,13 +635,6 @@ func (o *Orchestrator) markDuplicates(ctx context.Context, candidates []dedupCan
 			continue
 		}
 
-		if id, score, ok := o.storedDuplicate(ctx, c, excludeDiscoveryIDs, threshold); ok {
-			o.markDuplicate(ctx, c, id, score, "earlier run")
-			canonical[c.id] = id
-			crossRun++
-			continue
-		}
-
 		if c.stands {
 			// The consolidation adjudicator decided this finding must not be
 			// folded at all: it asked for a survivor to be rewritten to carry
@@ -649,6 +642,20 @@ func (o *Orchestrator) markDuplicates(ctx context.Context, candidates []dedupCan
 			// survivor. Checked on the finding rather than on a pair, which is
 			// what makes it survive a resume — the pass's own record of the
 			// decision lives only in the process that made it.
+			//
+			// Ahead of BOTH passes, and that it was only ahead of the same-run
+			// one was a hole: an earlier run's copy of the survivor states the
+			// claim no better than this run's does, so folding this finding
+			// into it hides exactly the caveat the adjudicator spoke up about,
+			// and does it behind a row from a previous discovery.
+			protected++
+			continue
+		}
+
+		if id, score, ok := o.storedDuplicate(ctx, c, excludeDiscoveryIDs, threshold); ok {
+			o.markDuplicate(ctx, c, id, score, "earlier run")
+			canonical[c.id] = id
+			crossRun++
 			continue
 		}
 
