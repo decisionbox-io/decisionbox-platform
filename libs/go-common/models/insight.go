@@ -54,6 +54,28 @@ type StandaloneInsight struct {
 
 	// Deduplication
 	DuplicateOf     string  `bson:"duplicate_of,omitempty" json:"duplicate_of,omitempty"`
+	// StandsOnAdjudication marks a finding the consolidation adjudicator
+	// decided must not be folded: it asked for the survivor's description to
+	// be rewritten to carry this finding's figure, segment or caveat, and
+	// nothing rewrites a survivor — so folding it would suppress exactly that
+	// detail behind text which does not state it.
+	//
+	// A property of the FINDING rather than of a pair, which is what makes it
+	// hold. The same decision expressed as a protected pair had to be
+	// consulted at every site that writes a mark, with ids that change as
+	// marks are written: review reproduced three ways past it — a fold
+	// redirected through a third document, the community fallback choosing a
+	// different canonical, and a pause and resume, after which the pairs were
+	// gone because they only ever lived in memory. This travels with the
+	// insight, through the area draft and the checkpoint, so none of those
+	// reach it.
+	//
+	// The cost is that such a finding is not folded into anything for the rest
+	// of the run, where the pair rule would have left it foldable into some
+	// other survivor. That is a duplicate left visible, which the end-of-run
+	// check can still collapse; the error it replaces is a finding hidden
+	// behind text that misstates it.
+	StandsOnAdjudication bool `bson:"stands_on_adjudication,omitempty" json:"stands_on_adjudication,omitempty"`
 	SimilarityScore float64 `bson:"similarity_score,omitempty" json:"similarity_score,omitempty"`
 
 	DiscoveredAt time.Time `bson:"discovered_at" json:"discovered_at"`

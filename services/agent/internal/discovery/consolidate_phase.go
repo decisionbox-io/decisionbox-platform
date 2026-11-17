@@ -729,6 +729,14 @@ func (o *Orchestrator) applyConsolidation(
 				if o.keepPair(dupID, final) {
 					st.Kept++
 				}
+				// And on the finding itself wherever this pass can write it,
+				// which is what makes the decision hold past a redirected
+				// fold, the community fallback and a resume. The pair above
+				// still covers an earlier area's donor, whose insight this
+				// pass may not touch.
+				if di, ok := byID[dupID]; ok && docs[di].current {
+					in.insights[docs[di].slot].StandsOnAdjudication = true
+				}
 				donors = append(donors, dupID)
 				// Remembered so the pair can be re-resolved once every
 				// verdict has written its marks: this canonical may itself be
@@ -755,10 +763,6 @@ func (o *Orchestrator) applyConsolidation(
 			continue
 		}
 
-		// This cluster's own folds. Gating the merge on the run-wide counter
-		// would apply a merged description to a canonical nothing was folded
-		// into, as soon as any earlier cluster had folded something.
-		clusterFolds := 0
 		// The members this verdict named as duplicates whose fold did not get
 		// written. They matter afterwards: the verdict meant all of them to
 		// collapse into one survivor, so it never said anything about whether
@@ -856,12 +860,19 @@ func (o *Orchestrator) applyConsolidation(
 				continue
 			}
 
+			if in.insights[dup.slot].StandsOnAdjudication {
+				// An adjudicator already said this finding carries detail no
+				// survivor of it states. Another verdict naming it, the same
+				// one through a redirected canonical, or this fallback
+				// choosing a different canonical does not undo that.
+				st.RefusedKept++
+				continue
+			}
 			in.insights[dup.slot].DuplicateOf = final
 			in.insights[dup.slot].SimilarityScore = score
 			marks[dupID] = final
 			written = append(written, dup.slot)
 			dependants[final]++
-			clusterFolds++
 			st.Folded++
 			countFold(&st, c.proposal, 1)
 			applog.WithFields(applog.Fields{
@@ -880,14 +891,13 @@ func (o *Orchestrator) applyConsolidation(
 		// something the survivor does not, so a rewrite that cannot be
 		// applied means the folds cannot be applied either: suppressing those
 		// members without it is exactly how a fold loses a caveat, which is
-		// the failure this pass exists to stop making. Two reasons it cannot
-		// be applied, and they get the same answer.
-		// Not gated on clusterFolds: when EVERY proposed fold is refused there
-		// is nothing to revert, and the members the verdict named still carry
-		// detail the survivor lacks — so they still have to be protected from
-		// being folded sideways into each other by the community pass, which
-		// is what happened. The protection is the point; the revert is only
-		// the part that has something to undo.
+		// the failure this pass exists to stop making.
+		//
+		// Applied however many folds this cluster managed to write, including
+		// none: when EVERY proposed fold is refused, the members the verdict
+		// named still carry detail the survivor lacks, so they still have to
+		// be protected from being folded sideways into each other by the
+		// community pass — which is what happened.
 		// A verdict whose folds were refused leaves its donors standing side
 		// by side, unmarked, and related only through a survivor none of them
 		// reached. Nothing in the verdict speaks to the pairs between them, so
@@ -958,6 +968,14 @@ func (o *Orchestrator) applyConsolidation(
 		score, held := reverifyFold(dup, docs[fi], threshold, adjFloor, false)
 		if !held {
 			st.RefusedRecheck++
+			continue
+		}
+		if in.insights[dup.slot].StandsOnAdjudication {
+			// An adjudicator already said this finding carries detail no
+			// survivor of it states. Another verdict naming it, the same
+			// one through a redirected canonical, or this fallback
+			// choosing a different canonical does not undo that.
+			st.RefusedKept++
 			continue
 		}
 		in.insights[dup.slot].DuplicateOf = final
@@ -1233,16 +1251,14 @@ func hasKey(m map[string]float64, k string) bool {
 	return ok
 }
 
-// KNOWN GAP, and it wants its own change in the resume path rather than a patch
-// here. These keeps live only in memory for the length of the process. A run
-// that pauses after an area is checkpointed and resumes does not re-adjudicate
-// that area, so the keeps it recorded are gone — and the end-of-run check can
-// then fold a pair the adjudicator deliberately left standing, which hides a
-// finding. The shape predates this change (an omitted member's keep was always
-// in memory) but more pairs rely on a keep now that a rewrite request declines
-// its folds instead of applying them. Fixing it means carrying the pairs in the
-// area draft and remapping their ids on restore, next to the mark-remapping
-// that already lives there.
+// These keeps live only in memory, for the length of the process. The decision
+// that MUST survive a resume — an adjudicator saying a finding carries detail
+// no survivor states — is recorded on the finding itself instead, as
+// StandsOnAdjudication, which travels in the area draft and is read again by
+// the end-of-run check. What is left here is the weaker kind: a pair an
+// adjudicator saw and left standing, whose loss on a resume costs a fold the
+// end-of-run check may then make on document order. That is the outcome the
+// product had before this phase existed.
 //
 // keepPair records that the consolidation pass adjudicated these two documents
 // and decided to leave both standing, so the end-of-run check does not fold

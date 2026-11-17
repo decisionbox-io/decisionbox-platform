@@ -255,6 +255,7 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 			id: ins.ID, docType: "insight", projectID: ins.ProjectID, discoveryID: ins.DiscoveryID, vec: vec,
 			text: ins.EmbeddingText, magnitude: magnitudeOf("insight", ins.AffectedCount, ins.Metrics, nil, ins.Indicators),
 			markedBy: ins.DuplicateOf,
+			stands:   ins.StandsOnAdjudication,
 		})
 
 		points = append(points, vectorstore.Point{
@@ -404,6 +405,12 @@ type dedupCandidate struct {
 	// somewhere else, which is a reader sent to a different finding on a
 	// second opinion nobody asked for.
 	markedBy string
+	// stands is set when the consolidation adjudicator decided this finding
+	// must not be folded. Read here as well as in that pass, because this
+	// check runs at the end of the run and on a resumed attempt the pass's own
+	// in-memory record of the decision is gone — the flag rides on the
+	// insight, so it is still here.
+	stands bool
 }
 
 // subject projects a candidate onto the comparable part the shipped pairing
@@ -625,6 +632,16 @@ func (o *Orchestrator) markDuplicates(ctx context.Context, candidates []dedupCan
 			o.markDuplicate(ctx, c, id, score, "earlier run")
 			canonical[c.id] = id
 			crossRun++
+			continue
+		}
+
+		if c.stands {
+			// The consolidation adjudicator decided this finding must not be
+			// folded at all: it asked for a survivor to be rewritten to carry
+			// this finding's figure or caveat, and nothing rewrites a
+			// survivor. Checked on the finding rather than on a pair, which is
+			// what makes it survive a resume — the pass's own record of the
+			// decision lives only in the process that made it.
 			continue
 		}
 

@@ -23,12 +23,6 @@ type angleEmbedder struct {
 	deg   map[string]float64
 	calls int
 	texts []string
-	// rewriteDeg is the angle to answer for a text this fixture does not know.
-	// The only such text the pass embeds is a rewritten survivor, and the
-	// default reads like the survivor itself — which is what makes a rewrite
-	// cover the folds resting on it. Set it to something far away to test the
-	// refusal.
-	rewriteDeg *float64
 }
 
 func (e *angleEmbedder) Embed(_ context.Context, texts []string) ([][]float64, error) {
@@ -38,10 +32,6 @@ func (e *angleEmbedder) Embed(_ context.Context, texts []string) ([][]float64, e
 	for i, t := range texts {
 		if d, ok := e.deg[t]; ok {
 			out[i] = append(unit(d), 0)
-			continue
-		}
-		if e.rewriteDeg != nil {
-			out[i] = append(unit(*e.rewriteDeg), 0)
 			continue
 		}
 		out[i] = append(unit(0), 0)
@@ -2207,5 +2197,56 @@ func TestConsolidateArea_ARewriteRequestBeatsAnotherClustersFoldInEitherOrder(t 
 				t.Error("the pair a rewrite was asked for was not recorded as kept")
 			}
 		})
+	}
+}
+
+// A finding an adjudicator said must stand is not folded by anything else —
+// not another verdict naming it, not a redirected canonical, not the community
+// fallback. The decision rides on the finding, so it holds wherever a mark is
+// written.
+func TestConsolidateArea_AFindingThatMustStandIsNotFoldedByTheFallback(t *testing.T) {
+	a := insight("a", "stock", "the whole total", "every segment", 300)
+	b := insight("b", "stock", "the north segment", "a slice, with a caveat", 200)
+	c := insight("c", "stock", "the north segment restated", "a slice", 100)
+
+	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		out := make([]agentplugin.ConsolidationVerdict, len(cl))
+		for i := range cl {
+			// One verdict, asking for b's caveat to be carried onto a.
+			out[i] = agentplugin.ConsolidationVerdict{
+				CanonicalID:       "a",
+				Duplicates:        map[string]float64{"b": 0.95},
+				MergedDescription: "a, carrying b's caveat",
+			}
+		}
+		return out, nil
+	}})
+
+	// b and c are 1 degree apart, so the fallback would fold b into c — a
+	// different canonical from the one the verdict named.
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 20, embText(c): 21,
+	}}}
+	current := []models.Insight{a, b, c}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if !current[1].StandsOnAdjudication {
+		t.Fatalf("b was not marked as standing (%+v)", st)
+	}
+	if current[1].DuplicateOf != "" {
+		t.Errorf("b.duplicate_of = %q; the fallback folded a finding the adjudicator kept", current[1].DuplicateOf)
+	}
+	// And the flag is what does it, not the pair: dropping the pair record
+	// leaves the decision standing.
+	o.consolidationKept = nil
+	again := []models.Insight{a, b, c}
+	again[1].StandsOnAdjudication = true
+	withProvider(t, nil)
+	o2 := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 20, embText(c): 21,
+	}}}
+	st2 := o2.consolidateArea(context.Background(), areaInput("stock", again, nil))
+	if again[1].DuplicateOf != "" {
+		t.Errorf("b.duplicate_of = %q on a resumed attempt with no pair records (%+v)", again[1].DuplicateOf, st2)
 	}
 }
