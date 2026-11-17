@@ -204,7 +204,7 @@ func claimFigures(s string) []string {
 // quantities. That is a proposal not made, which leaves a duplicate visible for
 // Phase 9's similarity pass — the direction this file errs in everywhere else.
 func countsTowardFloor(figure string) bool {
-	return !(len(figure) == 4 && !strings.ContainsAny(figure, ".,"))
+	return len(figure) != 4 || strings.ContainsAny(figure, ".,")
 }
 
 // minContainmentFigures is how many distinctive figures a headline must carry,
