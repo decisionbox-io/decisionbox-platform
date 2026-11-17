@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -3612,43 +3611,25 @@ func (o *Orchestrator) resolvePrompts() (ResolvedPrompts, []AnalysisArea) {
 			Priority:    cfg.Priority,
 		})
 	}
-	sortAreasByPriority(areas)
+	sortAreasByID(areas)
 
 	return resolved, areas
 }
 
-// sortAreasByPriority puts the areas in the order the run should work through
-// them: by the priority the pack author gave them, then by id.
+// sortAreasByID fixes the order the run works through the areas.
 //
-// The areas arrive from a map, and a Go map is ranged in a randomised order, so
-// without this the area order — and therefore which areas reach the validation
-// budget before it is spent — differs from one run of the same project to the
-// next. Two field runs of one project showed it plainly: the same eight areas
-// ran in two unrelated orders, the 30-insight budget was consumed by whichever
-// four happened to go first, and in the first run all three of the project's
-// priority-1 areas were the ones left with no validation at all. Priority is
-// stored, shown in the UI and sent to the step picker; this is the one place it
-// was not honoured.
+// It expresses no preference between them. The areas arrive from a map, and a
+// Go map is ranged in a randomised order, so without this the order differs
+// from one run of the same project to the next — and so does which areas reach
+// the validation budget before it is spent. Two runs of one project then
+// cannot be compared, which a before-and-after of any change to the pack or
+// the pipeline depends on.
 //
-// It also makes two runs of one project comparable, which a before-and-after
-// of any change to the pack or the pipeline depends on.
-//
-// A priority of zero sorts last, as absence rather than as the highest
-// priority: every pack the product ships numbers its areas from one, so a zero
-// is an area whose author did not rank it, and it should not displace one who
-// did. Ties break on id so the order is total and stable.
-func sortAreasByPriority(areas []AnalysisArea) {
-	rank := func(p int) int {
-		if p <= 0 {
-			return math.MaxInt
-		}
-		return p
-	}
+// By id, deliberately, and not by the pack's priority field: which areas matter
+// more is a product decision nobody has made here, and a sort that read
+// priority would quietly make it.
+func sortAreasByID(areas []AnalysisArea) {
 	sort.SliceStable(areas, func(i, j int) bool {
-		ri, rj := rank(areas[i].Priority), rank(areas[j].Priority)
-		if ri != rj {
-			return ri < rj
-		}
 		return areas[i].ID < areas[j].ID
 	})
 }

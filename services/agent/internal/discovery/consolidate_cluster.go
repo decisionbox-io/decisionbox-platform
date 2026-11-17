@@ -177,36 +177,6 @@ func claimFigures(s string) []string {
 	return out
 }
 
-// countsTowardFloor reports whether a figure is distinctive enough to count
-// toward minContainmentFigures. Every figure still has to MATCH — this governs
-// the floor alone.
-//
-// A bare four-digit integer does not count, because that is the shape of a
-// written year. A date window in a headline — "Nov-2025 to Oct-2026" — carries
-// two of them, which is exactly the floor, and the same window sits in the body
-// of most other findings a run produces; so containment read nearly every pair
-// that mentions the period as one stating the other. Across two field runs of
-// 65 and 73 findings that single phrase produced 39 of 47 containment
-// proposals, each a pair with nothing else in common, and every one would have
-// cost an adjudication call.
-//
-// Recognising the date instead was the first attempt, and it was the wrong
-// shape: containment asks whether every figure of the claim appears in the
-// body, so ignoring one REMOVES a constraint. Five rounds of review each found
-// another sentence where a date pattern swallowed a real quantity — "2000
-// orders", "2000 may churn", "2000 November orders", "In May, 2000 orders",
-// "2000-10,000 orders" — and in every one the pair then read as contained
-// despite stating different measurements, which reverifyFold would accept below
-// the similarity floor. Raising the floor instead cannot do that: nothing is
-// dropped from the comparison, so a figure that differs still blocks the fold.
-//
-// What it gives up is a pair whose only shared figures are bare four-digit
-// quantities. That is a proposal not made, which leaves a duplicate visible for
-// Phase 9's similarity pass — the direction this file errs in everywhere else.
-func countsTowardFloor(figure string) bool {
-	return len(figure) != 4 || strings.ContainsAny(figure, ".,")
-}
-
 // minContainmentFigures is how many distinctive figures a headline must carry,
 // and have found in the other document's body, for containment to be claimed.
 //
@@ -229,16 +199,7 @@ const minContainmentFigures = 2
 // model, no embedding, no measurable cost.
 func containedIn(claim, body string) bool {
 	figs := claimFigures(claim)
-	if body == "" {
-		return false
-	}
-	distinctive := 0
-	for _, f := range figs {
-		if countsTowardFloor(f) {
-			distinctive++
-		}
-	}
-	if distinctive < minContainmentFigures {
+	if len(figs) < minContainmentFigures || body == "" {
 		return false
 	}
 	// WHOLE tokens, through the same parser, not substrings of the body.
