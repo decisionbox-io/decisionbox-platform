@@ -799,10 +799,17 @@ func TestDenormalizeInsights_CarriesTheConsolidationMarks(t *testing.T) {
 		Insights: []models.Insight{
 			{ID: "a", Name: "canonical"},
 			{ID: "b", Name: "restatement", DuplicateOf: "a", SimilarityScore: 0.93},
+			{ID: "c", Name: "kept by an adjudicator", StandsOnAdjudication: true},
 		},
 	})
-	if len(out) != 2 {
+	if len(out) != 3 {
 		t.Fatalf("out = %d", len(out))
+	}
+	// The refusal the mid-run pass recorded on the finding has to reach the
+	// standalone copy too: the end-of-run check reads it from there, and
+	// without it that check folds a finding an adjudicator said must stand.
+	if !out[2].StandsOnAdjudication {
+		t.Error("the standalone copy lost the adjudicator's refusal")
 	}
 	if out[1].DuplicateOf != "a" || out[1].SimilarityScore != 0.93 {
 		t.Errorf("standalone copy = {%q, %v}, want {a, 0.93}", out[1].DuplicateOf, out[1].SimilarityScore)
@@ -2248,5 +2255,136 @@ func TestConsolidateArea_AFindingThatMustStandIsNotFoldedByTheFallback(t *testin
 	st2 := o2.consolidateArea(context.Background(), areaInput("stock", again, nil))
 	if again[1].DuplicateOf != "" {
 		t.Errorf("b.duplicate_of = %q on a resumed attempt with no pair records (%+v)", again[1].DuplicateOf, st2)
+	}
+}
+
+// A rewrite verdict's donor is protected BEFORE any fold is written. The
+// clusters are overlapping stars read in order, so another cluster's verdict
+// can fold the donor into its own canonical first — and a protection recorded
+// only when the writer reaches the rewrite then lands on a finding that is
+// already suppressed, already out of validation and already out of the
+// recommendations.
+func TestConsolidateArea_ARewriteDonorIsProtectedBeforeAnyFoldIsWritten(t *testing.T) {
+	for _, rewriteOn := range []string{"x", "y"} {
+		t.Run("rewrite on the cluster holding "+rewriteOn, func(t *testing.T) {
+			a := insight("a", "stock", "claim a", "body a", 400)
+			b := insight("b", "stock", "claim b", "body b", 300)
+			x := insight("x", "stock", "claim x", "body x", 200)
+			y := insight("y", "stock", "claim y", "body y", 100)
+
+			withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+				out := make([]agentplugin.ConsolidationVerdict, len(cl))
+				for i, cluster := range cl {
+					ids := make([]string, 0, len(cluster.Candidates))
+					for _, cand := range cluster.Candidates {
+						ids = append(ids, cand.ID)
+					}
+					if slices.Contains(ids, rewriteOn) {
+						// This verdict says b carries detail its own
+						// canonical does not state: b must stand.
+						out[i] = agentplugin.ConsolidationVerdict{
+							CanonicalID:       rewriteOn,
+							Duplicates:        map[string]float64{"b": 0.95},
+							MergedDescription: rewriteOn + ", carrying b's caveat",
+						}
+						continue
+					}
+					// And this one folds b into a, plainly, with no rewrite.
+					out[i] = agentplugin.ConsolidationVerdict{
+						CanonicalID: "a", Duplicates: map[string]float64{"b": 0.95},
+					}
+				}
+				return out, nil
+			}})
+
+			// star(a) = {a, b, x} and star(b) = {a, b, y}: two overlapping
+			// clusters, both holding b, with a different canonical in each.
+			// Whichever is read first, b has to come out visible.
+			o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+				embText(a): 0, embText(b): 10, embText(x): -30, embText(y): 42,
+			}}}
+			current := []models.Insight{a, b, x, y}
+			st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+			if st.Clusters != 2 {
+				t.Fatalf("clusters = %d (%+v), want the two overlapping stars (fixture broken)", st.Clusters, st)
+			}
+			if !current[1].StandsOnAdjudication {
+				t.Fatalf("b was not recorded as standing (%+v)", st)
+			}
+			if current[1].DuplicateOf != "" {
+				t.Errorf("b.duplicate_of = %q (%+v); an adjudicator said b must stand and another cluster's verdict folded it anyway",
+					current[1].DuplicateOf, st)
+			}
+		})
+	}
+}
+
+// The community simulation must not model a fold it cannot write. A protected
+// finding stays visible, which makes it a perfectly good survivor for a later
+// document — but recording a fold OF it pointed the chain at a canonical
+// nobody is being sent to, and the next document was then measured against
+// THAT, left visible, and spent a validation check on a duplicate.
+func TestConsolidateArea_TheSimulationDoesNotFoldAProtectedFinding(t *testing.T) {
+	withProvider(t, nil)
+
+	a := insight("a", "stock", "the whole total", "every segment", 300)
+	b := insight("b", "stock", "the north segment", "a slice, with a caveat", 200)
+	c := insight("c", "stock", "the north segment restated", "a slice", 100)
+
+	// a-b and b-c both clear the fold floor at 20 degrees; a-c, 40 apart,
+	// does not. So c's only available survivor is b.
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 20, embText(c): 40,
+	}}}
+	current := []models.Insight{a, b, c}
+	// b arrives protected: an adjudicator said so in an earlier area's pass,
+	// and the finding itself is where that decision lives.
+	current[1].StandsOnAdjudication = true
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if current[1].DuplicateOf != "" {
+		t.Fatalf("b.duplicate_of = %q; a protected finding was folded (%+v)", current[1].DuplicateOf, st)
+	}
+	if current[2].DuplicateOf != "b" {
+		t.Errorf("c.duplicate_of = %q, want b — the visible finding it restates (%+v)", current[2].DuplicateOf, st)
+	}
+}
+
+// A verdict the writer discards on its shape must leave nothing behind it.
+// One naming A as its canonical and then listing A among its own duplicates
+// registered a keep for the A-B pair the writer then refused, and that keep
+// went on to block the community rule from folding B into A at a score this
+// product folds at with no model in the loop at all.
+func TestConsolidateArea_AMalformedRewriteLeavesNoKeepBehind(t *testing.T) {
+	a := insight("a", "stock", "claim a", "body a", 300)
+	b := insight("b", "stock", "claim b", "body b", 200)
+
+	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		return []agentplugin.ConsolidationVerdict{{
+			CanonicalID:       "a",
+			Duplicates:        map[string]float64{"a": 1, "b": 0.95},
+			MergedDescription: "a, carrying b's caveat",
+		}}, nil
+	}})
+
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 10,
+	}}}
+	current := []models.Insight{a, b}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if st.RefusedShape == 0 {
+		t.Fatalf("stats = %+v, want the malformed verdict discarded", st)
+	}
+	if o.adjudicatedKeep("a", "b") {
+		t.Error("a verdict the writer discarded still registered a keep for its pair")
+	}
+	if current[1].StandsOnAdjudication {
+		t.Error("a verdict the writer discarded still protected its donor")
+	}
+	if current[1].DuplicateOf != "a" {
+		t.Errorf("b.duplicate_of = %q, want a — the community rule's own decision on a pair no verdict survived (%+v)",
+			current[1].DuplicateOf, st)
 	}
 }

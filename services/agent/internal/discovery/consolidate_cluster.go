@@ -143,7 +143,7 @@ type consolidationDoc struct {
 	name string
 	// prose is the finding's authored body, markdown rendition preferred.
 	// What the provider is shown, alongside its figures as their own field.
-	prose string
+	prose       string
 	area        string
 	areaScope   string
 	severity    string
@@ -153,6 +153,12 @@ type consolidationDoc struct {
 	metrics     map[string]interface{}
 	verdict     string
 	duplicateOf string
+	// stands is set when an adjudicator has already said this finding carries
+	// detail no survivor of it states — in an earlier area's pass, which the
+	// finding itself remembers, or in this one, where the rewrite pre-pass
+	// sets it before a single mark is written. Nothing may fold a document
+	// that carries it; it can still be the survivor another folds into.
+	stands bool
 }
 
 // pairKey is one unordered pair of document indices.
@@ -298,7 +304,6 @@ func buildClusters(docs []consolidationDoc, rel map[pairKey]agentplugin.Proposal
 	}
 	return out
 }
-
 
 func isSubset(a, b map[int]bool) bool {
 	if len(a) > len(b) {

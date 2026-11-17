@@ -1592,3 +1592,36 @@ func TestMarkDuplicates_SameWordingDifferentIndicators(t *testing.T) {
 		}
 	})
 }
+
+// The whole of Phase 9, over a result carrying the one refusal the mid-run
+// pass records on the finding itself. The flag has to survive denormalization
+// to be read here: this is the path a resumed run takes, where the in-memory
+// pair keeps are gone and the finding is all that remembers the decision.
+func TestRunPhaseEmbedIndex_HonoursAnAdjudicatorsRefusalOnTheFinding(t *testing.T) {
+	store := &mockEmbedIndexStore{}
+	o := &Orchestrator{
+		embedIndexStore: store,
+		// One vector for both findings, so the only thing that can keep them
+		// apart is the refusal.
+		embeddingProvider: &mockEmbeddingProvider{dims: 3, model: "test-model", vectors: [][]float64{{1, 0, 0}, {1, 0, 0}}},
+		vectorStore:       &mockVectorStore{},
+		statusReporter:    &StatusReporter{},
+	}
+
+	result := &models.DiscoveryResult{
+		ID: "disc-1", ProjectID: "proj-1",
+		Insights: []models.Insight{
+			{ID: "a", Name: "the whole total", Description: "every segment", Severity: "high", AffectedCount: 100},
+			{ID: "b", Name: "the north segment", Description: "a slice, with a caveat", Severity: "high",
+				AffectedCount: 100, StandsOnAdjudication: true},
+		},
+	}
+
+	o.runPhaseEmbedIndex(context.Background(), result)
+
+	for _, u := range store.dupUpdates {
+		if u.ID == "b" {
+			t.Fatalf("Phase 9 folded a finding an adjudicator said must stand: %+v", store.dupUpdates)
+		}
+	}
+}

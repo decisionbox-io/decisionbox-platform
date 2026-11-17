@@ -125,8 +125,15 @@ func (o *Orchestrator) denormalizeInsights(result *models.DiscoveryResult) []*co
 			// the mirror image of the drift markDuplicate exists to prevent.
 			DuplicateOf:     ins.DuplicateOf,
 			SimilarityScore: ins.SimilarityScore,
-			DiscoveredAt:    ins.DiscoveredAt,
-			CreatedAt:       now,
+			// And the one refusal the mid-run pass records on the finding
+			// rather than in memory: an adjudicator saying this finding
+			// carries detail no survivor of it states. The end-of-run check
+			// below reads it off the standalone copy, so leaving it here
+			// meant the check never saw it — on a resume, where the
+			// in-memory keeps are gone, and on an ordinary run too.
+			StandsOnAdjudication: ins.StandsOnAdjudication,
+			DiscoveredAt:         ins.DiscoveredAt,
+			CreatedAt:            now,
 		})
 	}
 

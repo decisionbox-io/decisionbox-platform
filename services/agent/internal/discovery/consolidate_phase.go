@@ -264,6 +264,7 @@ func (o *Orchestrator) consolidationDocs(ctx context.Context, in consolidateArea
 			metrics:     ins.Metrics,
 			verdict:     verdictOf(ins),
 			duplicateOf: ins.DuplicateOf,
+			stands:      ins.StandsOnAdjudication,
 		})
 	}
 	for i := range in.runInsights {
@@ -558,10 +559,18 @@ func (o *Orchestrator) communityFolds(
 	for i := range docs {
 		// A document this pass cannot mark contributes nothing to the chain
 		// either: its mark would never be written, so a later document must
-		// not resolve through it. Three ways that happens — it belongs to an
-		// earlier area, it already carries a mark, or this pass has already
-		// sent a reader to it.
-		if !docs[i].current || marks[docs[i].id] != "" || dependants[docs[i].id] > 0 {
+		// not resolve through it. Four ways that happens — it belongs to an
+		// earlier area, it already carries a mark, this pass has already sent
+		// a reader to it, or an adjudicator said it must stand.
+		//
+		// The last one only as a SOURCE: a protected finding stays visible,
+		// which makes it a perfectly good survivor for a later document to
+		// fold into, and the inner loop below is free to choose it. What it
+		// must not do is record a fold OF it — the writer refuses that, and
+		// a chain that says otherwise then rejects the next document against
+		// a canonical nobody is being sent to, which costs that document a
+		// validation check and leaves the duplicate visible.
+		if !docs[i].current || docs[i].stands || marks[docs[i].id] != "" || dependants[docs[i].id] > 0 {
 			continue
 		}
 		for j := 0; j < i; j++ {
@@ -637,8 +646,8 @@ func (o *Orchestrator) applyConsolidation(
 			marks[docs[i].id] = docs[i].duplicateOf
 		}
 	}
-	// Every pair an adjudicator decided should stand, registered BEFORE a
-	// single mark is written.
+	// Every pair an adjudicator decided should stand, and every finding it
+	// said must stand on its own, registered BEFORE a single mark is written.
 	//
 	// Incrementally was wrong, and the shape is worth stating: the clusters
 	// are overlapping stars processed in order, so a cluster the provider
@@ -648,7 +657,7 @@ func (o *Orchestrator) applyConsolidation(
 	// already written, and the end-of-run check will not revisit a document
 	// that carries one. A pair's keep is derivable from the verdict alone, so
 	// it does not need the marks and can be known first.
-	o.registerAdjudicatedKeeps(docs, clusters, verdicts, byProvider, marks, &st)
+	o.registerAdjudicatedKeeps(docs, clusters, verdicts, byProvider, byID, marks, in.insights, &st)
 
 	// How many of this pass's marks each document is the target of. Marking
 	// a document that has any would build a chain — the closure check would
@@ -679,29 +688,10 @@ func (o *Orchestrator) applyConsolidation(
 		if !ok {
 			continue
 		}
-		if !member[v.CanonicalID] {
-			applog.WithFields(applog.Fields{"area": st.Area, "canonical": v.CanonicalID}).
-				Info("Consolidation: a verdict named a canonical outside its cluster; discarded")
-			st.RefusedShape++
-			continue
-		}
-		// Resolve the canonical through the marks already standing. A
-		// canonical that is itself suppressed — by this proposal or by a
-		// previous pass — is a row the reader cannot be sent to, and pointing
-		// at it is how a mutual cycle gets built.
-		final, cycle := resolveTarget(v.CanonicalID, marks)
-		if cycle {
-			st.RefusedShape++
-			continue
-		}
-		if hasKey(v.Duplicates, final) {
-			applog.WithFields(applog.Fields{"area": st.Area, "canonical": final}).
-				Info("Consolidation: the resolved canonical is suppressed by the same verdict; cluster discarded")
-			st.RefusedShape++
-			continue
-		}
-		fi, inHand := byID[final]
-		if !inHand {
+		final, fi, bad := verdictCanonical(v, member, byID, marks)
+		if bad != "" {
+			applog.WithFields(applog.Fields{"area": st.Area, "canonical": v.CanonicalID, "reason": bad}).
+				Info("Consolidation: a verdict's canonical does not hold; cluster discarded")
 			st.RefusedShape++
 			continue
 		}
@@ -729,14 +719,13 @@ func (o *Orchestrator) applyConsolidation(
 				if o.keepPair(dupID, final) {
 					st.Kept++
 				}
-				// And on the finding itself wherever this pass can write it,
-				// which is what makes the decision hold past a redirected
-				// fold, the community fallback and a resume. The pair above
-				// still covers an earlier area's donor, whose insight this
-				// pass may not touch.
-				if di, ok := byID[dupID]; ok && docs[di].current {
-					in.insights[docs[di].slot].StandsOnAdjudication = true
-				}
+				// The protection on the finding itself is registered by the
+				// pre-pass above, before any mark is written. Here was too
+				// late: the clusters are overlapping stars read in order, so
+				// an earlier verdict can fold this donor into its own
+				// canonical before this one asks for a rewrite to carry the
+				// donor's caveat — and the flag then arrives on a finding
+				// that is already suppressed.
 				donors = append(donors, dupID)
 				// Remembered so the pair can be re-resolved once every
 				// verdict has written its marks: this canonical may itself be
@@ -860,7 +849,7 @@ func (o *Orchestrator) applyConsolidation(
 				continue
 			}
 
-			if in.insights[dup.slot].StandsOnAdjudication {
+			if dup.stands {
 				// An adjudicator already said this finding carries detail no
 				// survivor of it states. Another verdict naming it, the same
 				// one through a redirected canonical, or this fallback
@@ -970,11 +959,14 @@ func (o *Orchestrator) applyConsolidation(
 			st.RefusedRecheck++
 			continue
 		}
-		if in.insights[dup.slot].StandsOnAdjudication {
+		if dup.stands {
 			// An adjudicator already said this finding carries detail no
 			// survivor of it states. Another verdict naming it, the same
 			// one through a redirected canonical, or this fallback
-			// choosing a different canonical does not undo that.
+			// choosing a different canonical does not undo that. The
+			// simulation refuses it too, so this guard should never be the
+			// one that fires — it stays because the fold the simulation
+			// chose is re-resolved here against the marks.
 			st.RefusedKept++
 			continue
 		}
@@ -1024,8 +1016,6 @@ func (o *Orchestrator) applyConsolidation(
 	return st
 }
 
-
-
 // countFold moves the per-test fold counter the proposal belongs to. One
 // function for both directions, so a fold and a fold given back cannot be
 // counted against different buckets.
@@ -1040,8 +1030,53 @@ func countFold(st *consolidationStats, p agentplugin.Proposal, delta int) {
 	}
 }
 
+// verdictCanonical resolves the survivor a verdict names, and gives in one
+// place every reason a verdict's SHAPE makes it unusable: a canonical outside
+// the cluster it was asked about, one that resolves through a cycle of marks,
+// one the same verdict suppresses, and one that is not a document of this pass
+// at all.
+//
+// Shared with the pre-pass, and that is the point of extracting it. The
+// pre-pass runs before any mark is written, so a verdict the writer discards
+// wholesale must not leave a keep or a protection behind: a verdict naming A
+// as its canonical and then listing A among its own duplicates was registering
+// a keep for the A-B pair the writer then refused, and that keep went on to
+// block the community rule from folding B into A at a score clearing the fold
+// floor — a duplicate left visible, spending a validation check.
+//
+// The index returned is the resolved canonical's position in docs, valid only
+// when the reason is empty.
+func verdictCanonical(
+	v agentplugin.ConsolidationVerdict,
+	member map[string]bool,
+	byID map[string]int,
+	marks map[string]string,
+) (string, int, string) {
+	if !member[v.CanonicalID] {
+		return "", -1, "named a canonical outside its cluster"
+	}
+	// Resolved through the marks already standing. A canonical that is itself
+	// suppressed — by this proposal or by a previous pass — is a row the
+	// reader cannot be sent to, and pointing at it is how a mutual cycle gets
+	// built.
+	final, cycle := resolveTarget(v.CanonicalID, marks)
+	if cycle {
+		return "", -1, "its canonical resolves through a cycle of marks"
+	}
+	if hasKey(v.Duplicates, final) {
+		return "", -1, "the resolved canonical is suppressed by the same verdict"
+	}
+	fi, inHand := byID[final]
+	if !inHand {
+		return "", -1, "the resolved canonical is not a document of this pass"
+	}
+	return final, fi, ""
+}
+
 // registerAdjudicatedKeeps records every pair an adjudicator decided should
-// stand, before a single mark is written.
+// stand, before a single mark is written — and, for a verdict that asked for a
+// rewrite, the stronger refusal: the donor finding itself must stand, whatever
+// else this pass or the end-of-run check later proposes for it.
 //
 // Read from the VERDICTS, not from the marks, which is what lets it run first.
 // It takes two passes over them, and both are load-bearing.
@@ -1067,7 +1102,9 @@ func (o *Orchestrator) registerAdjudicatedKeeps(
 	clusters []docCluster,
 	verdicts map[int]agentplugin.ConsolidationVerdict,
 	byProvider map[int]bool,
+	byID map[string]int,
 	marks map[string]string,
+	insights []models.Insight,
 	st *consolidationStats,
 ) {
 	// A verdict asking for a rewrite says its fold would lose something, so
@@ -1095,12 +1132,15 @@ func (o *Orchestrator) registerAdjudicatedKeeps(
 		for _, m := range clusters[i].members {
 			member[docs[m].id] = true
 		}
-		if !member[v.CanonicalID] {
+		// The whole shape, through the same function the writer uses. A
+		// verdict the writer discards wholesale must leave nothing behind
+		// here: one naming A as its canonical and then listing A among its
+		// own duplicates used to register a keep for the A-B pair, and that
+		// keep went on to block the community rule from folding B into A at a
+		// score that clears the fold floor.
+		canonical, _, bad := verdictCanonical(v, member, byID, marks)
+		if bad != "" {
 			continue
-		}
-		canonical, cycle := resolveTarget(v.CanonicalID, marks)
-		if cycle {
-			canonical = v.CanonicalID
 		}
 		for dupID := range v.Duplicates {
 			if !member[dupID] || dupID == v.CanonicalID {
@@ -1108,6 +1148,24 @@ func (o *Orchestrator) registerAdjudicatedKeeps(
 			}
 			rewriteKept[keptPairKey(v.CanonicalID, dupID)] = struct{}{}
 			rewriteKept[keptPairKey(canonical, dupID)] = struct{}{}
+			// The decision that has to outlive this pass, recorded on the
+			// finding before a single mark is written. The pair keeps above
+			// protect this donor from THIS canonical; the flag protects it
+			// from every other fold of this pass, from the community
+			// fallback, and — once it is checkpointed — from the end-of-run
+			// check after a resume.
+			//
+			// Before, and not when the writer reaches this verdict: the
+			// clusters are overlapping stars read in order, so an earlier
+			// verdict can fold this donor into its own canonical first, and
+			// a flag set afterwards lands on a finding that is already
+			// suppressed and dropped from the recommendations.
+			if di, ok := byID[dupID]; ok {
+				docs[di].stands = true
+				if docs[di].current {
+					insights[docs[di].slot].StandsOnAdjudication = true
+				}
+			}
 			// Both the named pair and the resolved one, and counted once:
 			// the two are the same pair whenever the canonical is not itself
 			// folded, which is the ordinary case.
@@ -1226,9 +1284,6 @@ func reverifyFold(dup, canonical consolidationDoc, threshold, adjFloor float64, 
 	}
 	return 0, false
 }
-
-
-
 
 // resolveTarget walks a mark chain to its end. The bool reports a cycle.
 func resolveTarget(id string, marks map[string]string) (string, bool) {
@@ -1365,4 +1420,3 @@ func (st consolidationStats) persisted() *models.ConsolidationSummary {
 		DurationMs:         st.DurationMs,
 	}
 }
-
