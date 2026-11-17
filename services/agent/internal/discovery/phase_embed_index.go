@@ -648,6 +648,16 @@ func (o *Orchestrator) markDuplicates(ctx context.Context, candidates []dedupCan
 			// claim no better than this run's does, so folding this finding
 			// into it hides exactly the caveat the adjudicator spoke up about,
 			// and does it behind a row from a previous discovery.
+			//
+			// The reverse is NOT guarded, and that is a decision: review asked
+			// for the refusal to stop the other member of the pair — the
+			// survivor — from folding into an earlier run's copy of this
+			// finding. It should not. The refusal is about these two findings
+			// in THIS run; the cross-run rule is about whether an earlier
+			// discovery already published this claim, which is measured
+			// against that row directly and gated by the magnitude guard
+			// above. Suppressing it would re-publish a finding the customer
+			// already has.
 			protected++
 			continue
 		}

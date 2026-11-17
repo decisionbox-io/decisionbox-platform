@@ -270,3 +270,24 @@ func TestParseInsights_AMistypedInternalFieldDoesNotDropTheFinding(t *testing.T)
 		})
 	}
 }
+
+// And ignoring those fields must not change the rest of the finding. Field
+// matching is case-insensitive and takes the LAST match, so an item carrying
+// two case variants of one field ships the second value — which deleting a
+// key and re-marshalling the object silently reordered.
+func TestParseInsights_IgnoringInternalFieldsDoesNotReorderTheRest(t *testing.T) {
+	o := &Orchestrator{}
+	const in = `{"insights":[{"name":"idle units are growing","description":"the total rose",` +
+		`"affected_count":10,"stands_on_adjudication":true,"AFFECTED_COUNT":20}]}`
+	insights, _, err := o.parseInsights(in, "stock")
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(insights) != 1 {
+		t.Fatalf("got %d insights, want 1", len(insights))
+	}
+	if insights[0].AffectedCount != 20 {
+		t.Errorf("affected_count = %d, want 20 — the last of the two case variants, as it was before the field was ignored",
+			insights[0].AffectedCount)
+	}
+}
