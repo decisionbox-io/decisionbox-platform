@@ -347,166 +347,83 @@ func TestContainedIn_ComparesWholeTokens(t *testing.T) {
 	}
 }
 
-// A year written as part of a date is a label, not a measurement. The floor of
-// two figures does not protect against one, because a date window supplies two
-// of them in a single phrase and the same window appears in most of a run's
-// other findings.
-func TestClaimFigures_YearsInADateAreNotFigures(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		in   string
-		want []string
-	}{
-		{"a date window contributes nothing", "the Nov-2025 to Oct-2026 window", nil},
-		{"a spelled-out month and year", "fell in September 2026", nil},
-		{"a quarter and year", "Q3 2026 against Q3 2025", nil},
-		{"an ISO date", "the week ending 2026-08-23", nil},
-		{"a year before its month", "2025-Nov through 2026-Oct", nil},
-		{"four digits with a separator are a figure", "1,984 cases in Nov-2025", []string{"1,984"}},
-		{"a date leaves the real figures beside it", "142 outlets over 180 days in Nov-2025", []string{"142", "180"}},
-		{"the same digits outside a date are still a figure", "2025 cases shipped in Nov-2025", []string{"2025"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got := claimFigures(tc.in)
-			if len(got) == 0 && len(tc.want) == 0 {
-				return
-			}
-			if !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("claimFigures(%q) = %v, want %v", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
-// A bare four-digit quantity is a measurement, and it has to keep counting:
-// containment asks whether every figure of the claim appears in the body, so
-// ignoring one removes a constraint and can turn two different measurements
-// into a fold. reverifyFold runs the same test on an adjudicated fold, which is
-// where that would cost a distinct finding its verdict.
-func TestClaimFigures_AQuantityInTheCalendarRangeStillCounts(t *testing.T) {
-	if got := claimFigures("2000 orders across 142 stores"); !reflect.DeepEqual(got, []string{"142", "2000"}) {
-		t.Fatalf("claimFigures = %v, want the quantity kept", got)
-	}
-	if containedIn("2000 orders across 142 stores over 180 days",
-		"3000 orders across 142 stores over 180 days") {
-		t.Error("two different order counts must not read as containment")
-	}
-}
-
-// The field case the date rule exists for. Two findings that share nothing but
-// the reporting period read as one stating the other, because the period is
-// written as two four-digit tokens and both appear in every body that mentions
-// it.
+// A year is still a figure — it simply does not count toward the floor. The
+// field case: two findings sharing nothing but the reporting period, written as
+// two four-digit tokens that sit in most other findings' bodies.
 func TestContainedIn_ADateWindowAloneIsNotContainment(t *testing.T) {
 	claim := "On-trade volume declined 1.3% in the Nov-2025 to Oct-2026 window"
 	body := "The top three brands hold 71.8% of portfolio volume over the " +
 		"Nov-2025 to Oct-2026 window, across 64 brands"
 
+	if got := claimFigures(claim); !reflect.DeepEqual(got, []string{"2025", "2026"}) {
+		t.Fatalf("claimFigures = %v: the years are still figures", got)
+	}
 	if containedIn(claim, body) {
 		t.Error("two findings sharing only the reporting period must not be containment")
 	}
-	// The same shape with measurements in place of the window: containment must
-	// still fire, so the rule has not simply disabled the test.
+	// One real shared figure beside the window is still only one.
+	if containedIn("142 stores in the Nov-2025 to Oct-2026 window",
+		"142 stores and 71.8% share in the Nov-2025 to Oct-2026 window") {
+		t.Error("a single distinctive figure must not meet the floor")
+	}
+	// Two measurements still fire, so the floor has not disabled the test.
 	if !containedIn("On-trade fell 11.3% against a 71.8% concentration",
 		"concentration held at 71.8% while on-trade fell 11.3% over the period") {
 		t.Error("a pair sharing two real measurements must still be containment")
 	}
 }
 
-// A word that merely begins like a month is not a date. The first spelling of
-// this rule matched a month prefix followed by any letters, which made
-// "margin", "declined" and "maybe" dates and cost the measurement beside them.
-func TestClaimFigures_WordsThatStartLikeMonthsAreNotDates(t *testing.T) {
-	for _, in := range []string{
-		"margin 2000 across stores", "declined 2000 last period",
-		"marketing 2000 spend", "separate 2000 lines", "maybe 2000 units",
-		"junior 2000 accounts", "decade 2000 average", "octane 2000 rating",
-		"novel 2000 approach", "janitor 2000 visits", "apron 2000 count",
-		"augment 2000 volume", "julienne 2000 cuts",
+// Every figure still has to match, so a measurement that differs blocks the
+// fold even when it is four bare digits. This is the property a date
+// recogniser could not hold: ignoring a figure removes a constraint, and each
+// of these sentences was a case where a date pattern swallowed the quantity and
+// the pair then read as contained.
+//
+// Two dates differing only in their day are deliberately NOT here: a two-digit
+// component never reached the three-digit floor, at the merge base either, so
+// distinguishing them was never this test's job.
+func TestContainedIn_ADifferingFigureAlwaysBlocksTheFold(t *testing.T) {
+	for _, tc := range []struct{ claim, body string }{
+		{"2000 orders across 142 stores over 180 days",
+			"3000 orders across 142 stores over 180 days"},
+		{"2000-10,000 orders across 142 stores over 180 days",
+			"3000-10,000 orders across 142 stores over 180 days"},
+		{"Processed 2000 November orders across 142 stores over 180 days",
+			"Processed 3000 November orders across 142 stores over 180 days"},
+		{"Of 8000 customers, 2000 may churn within 180 days",
+			"Of 8000 customers, 3000 may churn within 180 days"},
+		{"In May, 2000 orders were delayed across 142 stores over 180 days",
+			"In May, 3000 orders were delayed across 142 stores over 180 days"},
+		{"Demand peaked in May. 2000 orders slipped across 142 stores over 180 days",
+			"Demand peaked in May. 3000 orders slipped across 142 stores over 180 days"},
 	} {
-		if got := claimFigures(in); len(got) != 1 || got[0] != "2000" {
-			t.Errorf("claimFigures(%q) = %v, want the measurement kept", in, got)
-		}
-	}
-	// And a real month still is one.
-	if got := claimFigures("february 2026 shipments"); len(got) != 0 {
-		t.Errorf(`claimFigures("february 2026 shipments") = %v, want none`, got)
-	}
-}
-
-// A quantity range is not a numeric date. `\d{4}-\d{2}` matched the first seven
-// characters of "2000-3000", which dropped the lower bound, kept the upper, and
-// made two different ranges read as containment.
-func TestClaimFigures_AQuantityRangeKeepsBothBounds(t *testing.T) {
-	if got := claimFigures("2000-3000 orders across 142 stores"); !reflect.DeepEqual(
-		got, []string{"142", "2000", "3000"}) {
-		t.Fatalf("claimFigures = %v, want both bounds kept", got)
-	}
-	if containedIn("2000-3000 orders across 142 stores", "2500-3000 orders across 142 stores") {
-		t.Error("two ranges with different lower bounds must not read as containment")
-	}
-	// A real numeric date is still recognised, with and without its day.
-	for _, in := range []string{"the week of 2026-08-23", "the month of 2026-08"} {
-		if got := claimFigures(in); len(got) != 0 {
-			t.Errorf("claimFigures(%q) = %v, want none", in, got)
+		if containedIn(tc.claim, tc.body) {
+			t.Errorf("%q must not read as contained in %q: the quantities differ", tc.claim, tc.body)
 		}
 	}
 }
 
-// A date that ends a sentence carries the full stop into the figure token, so
-// the untrimmed span falls outside its own date expression. Containment was
-// then refused between two findings whose only difference was that full stop.
-func TestContainedIn_ADateEndingASentenceIsStillADate(t *testing.T) {
-	if got := claimFigures("142 stores over 180 days in Nov-2025 to Oct-2026."); !reflect.DeepEqual(
-		got, []string{"142", "180"}) {
-		t.Fatalf("claimFigures = %v, want only the measurements", got)
+// The floor ignores bare four-digit integers whatever they mean, so a pair
+// whose only shared figures are of that shape is not proposed — a fold not
+// made, which Phase 9's similarity pass still has a chance at.
+func TestContainedIn_BareFourDigitFiguresDoNotMeetTheFloor(t *testing.T) {
+	if containedIn("1588 per litre against 2204 cases",
+		"1588 per litre against 2204 cases in every region") {
+		t.Error("two bare four-digit figures must not meet the floor")
 	}
-	if !containedIn("142 stores over 180 days in Nov-2025 to Oct-2026.",
-		"142 stores over 180 days in Nov-2025 to Oct-2026 window") {
-		t.Error("a trailing full stop on a date must not refuse genuine containment")
+	// A separator or a decimal makes the same magnitude distinctive again.
+	if !containedIn("1,588 per litre against 2,204 cases",
+		"1,588 per litre against 2,204 cases in every region") {
+		t.Error("grouped figures of the same magnitude must meet the floor")
 	}
-}
-
-// "may" after a number is usually the verb, not the month. Reading "2000 may
-// churn" as a date dropped the quantity and made the sentence contained in the
-// same forecast about a different number.
-func TestClaimFigures_MayAfterAQuantityIsTheVerb(t *testing.T) {
-	claim := "Of 8000 customers, 2000 may churn within 180 days"
-	if got := claimFigures(claim); !reflect.DeepEqual(got, []string{"180", "2000", "8000"}) {
-		t.Fatalf("claimFigures = %v, want every quantity kept", got)
-	}
-	if containedIn(claim, "Of 8000 customers, 3000 may churn within 180 days") {
-		t.Error("two different churn forecasts must not read as containment")
-	}
-	// The unambiguous spellings of that month are still dates.
-	for _, in := range []string{"May 2026 shipments", "May-2026 shipments", "2026-May shipments"} {
-		if got := claimFigures(in); len(got) != 0 {
-			t.Errorf("claimFigures(%q) = %v, want none", in, got)
+	for _, f := range []string{"2026", "2000", "1588"} {
+		if countsTowardFloor(f) {
+			t.Errorf("countsTowardFloor(%q) = true, want false", f)
 		}
 	}
-}
-
-// A month followed by a comma or a full stop ends a clause; it does not open a
-// date. Both readings dropped the quantity that came next and made the sentence
-// contained in the same sentence reporting a different one.
-func TestClaimFigures_AMonthEndingAClauseDoesNotSwallowTheNextQuantity(t *testing.T) {
-	for _, claim := range []string{
-		"In May, 2000 orders were delayed across 142 stores over 180 days",
-		"Demand peaked in May. 2000 orders were delayed across 142 stores over 180 days",
-		"Reviewed in November, 2000 outlets across 142 stores over 180 days",
-	} {
-		if got := claimFigures(claim); !reflect.DeepEqual(got, []string{"142", "180", "2000"}) {
-			t.Errorf("claimFigures(%q) = %v, want the quantity kept", claim, got)
-		}
-		body := strings.ReplaceAll(claim, "2000", "3000")
-		if containedIn(claim, body) {
-			t.Errorf("%q must not read as contained in the same sentence reporting 3000", claim)
-		}
-	}
-	// The separators a date actually uses still work.
-	for _, in := range []string{"May 2026", "May-2026", "Nov/2025", "November 2025"} {
-		if got := claimFigures(in); len(got) != 0 {
-			t.Errorf("claimFigures(%q) = %v, want none", in, got)
+	for _, f := range []string{"142", "1,588", "23.4", "10,000", "180"} {
+		if !countsTowardFloor(f) {
+			t.Errorf("countsTowardFloor(%q) = false, want true", f)
 		}
 	}
 }

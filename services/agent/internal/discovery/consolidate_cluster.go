@@ -154,20 +154,10 @@ func claimFigures(s string) []string {
 	if s == "" {
 		return nil
 	}
-	dates := dateExpression.FindAllStringIndex(s, -1)
 	seen := make(map[string]struct{})
 	out := make([]string, 0, 4)
-	for _, span := range figureToken.FindAllStringIndex(s, -1) {
-		// Trim first, then ask whether what is left sits inside a date.
-		// figureToken is greedy about the separators a figure may carry, so a
-		// date ending a sentence gives it "2026." while the date expression
-		// ends at the digit — and the untrimmed span would fall outside its
-		// own date. figureToken always starts with a digit, so only the right
-		// side can carry punctuation.
-		t := strings.TrimRight(s[span[0]:span[1]], ".,")
-		if withinAny([]int{span[0], span[0] + len(t)}, dates) {
-			continue
-		}
+	for _, m := range figureToken.FindAllString(s, -1) {
+		t := strings.Trim(m, ".,")
 		digits := 0
 		for _, r := range t {
 			if r >= '0' && r <= '9' {
@@ -187,89 +177,34 @@ func claimFigures(s string) []string {
 	return out
 }
 
-// dateExpression matches the shapes a reporting period is written in, so the
-// year inside one can be recognised as the label it is rather than counted as a
-// measurement.
+// countsTowardFloor reports whether a figure is distinctive enough to count
+// toward minContainmentFigures. Every figure still has to MATCH — this governs
+// the floor alone.
 //
-// A date window in a headline is the case this exists for. "Nov-2025 to
-// Oct-2026" carries two four-digit tokens, which is exactly the floor
-// minContainmentFigures sets, and the same window appears in the body of most
-// other findings the run produced — so containment read every pair of findings
-// that mention the period as one stating the other. Across two field runs of 65
-// and 73 findings that single phrase produced 39 of 47 containment proposals,
-// each a pair with nothing else in common. Every one would have cost an
-// adjudication call, and a wrong answer there costs a distinct finding its
-// verdict.
+// A bare four-digit integer does not count, because that is the shape of a
+// written year. A date window in a headline — "Nov-2025 to Oct-2026" — carries
+// two of them, which is exactly the floor, and the same window sits in the body
+// of most other findings a run produces; so containment read nearly every pair
+// that mentions the period as one stating the other. Across two field runs of
+// 65 and 73 findings that single phrase produced 39 of 47 containment
+// proposals, each a pair with nothing else in common, and every one would have
+// cost an adjudication call.
 //
-// What it does NOT match is as deliberate as what it does. A month followed by a
-// comma or a full stop is a clause ending, not a date separator: "In May, 2000
-// orders were delayed" and "Demand peaked in May. 2000 orders were delayed" both
-// state a quantity, and reading either as a date dropped it and made the
-// sentence contained in the same one reporting 3000. The cost of declining those
-// is that "May, 2026" and "Nov. 2025" are not recognised as dates — and that is
-// the right way round: failing to recognise a date keeps a figure, which only
-// makes containment harder to claim, while recognising one that is not there
-// drops a figure and makes it easier. When the text is ambiguous, leave it as a
-// figure.
+// Recognising the date instead was the first attempt, and it was the wrong
+// shape: containment asks whether every figure of the claim appears in the
+// body, so ignoring one REMOVES a constraint. Five rounds of review each found
+// another sentence where a date pattern swallowed a real quantity — "2000
+// orders", "2000 may churn", "2000 November orders", "In May, 2000 orders",
+// "2000-10,000 orders" — and in every one the pair then read as contained
+// despite stating different measurements, which reverifyFold would accept below
+// the similarity floor. Raising the floor instead cannot do that: nothing is
+// dropped from the comparison, so a figure that differs still blocks the fold.
 //
-// It matches the CONTEXT rather than the number, because a four-digit token in
-// the calendar's range is very often a quantity — "2000 orders" — and ignoring a
-// figure is not the safe direction it first appears to be. Containment asks
-// whether every figure of the claim is in the body, so dropping one REMOVES a
-// constraint: the pair "2000 orders across 142 stores" and "3000 orders across
-// 142 stores" states two different measurements, and with the counts ignored
-// the remaining figures match and the claim reads as contained. reverifyFold
-// runs the same test on an adjudicated fold, so that would suppress a distinct
-// finding below the similarity floor as well. Only a token written as part of a
-// date is skipped, and only at that position: the same digits elsewhere in the
-// text are still a figure.
-// monthName is the closed set of month spellings, longest first so the
-// alternation prefers the full name over its own abbreviation.
-//
-// Closed, and not a prefix with `[a-z]*` after it: that shorter form made
-// "margin", "declined" and "october" alike, so a sentence beginning "margin
-// 2000 across 142 stores" lost its measurement and read as contained in the
-// same sentence reporting 3000.
-const monthName = `(?:january|february|march|april|august|september|october|november|december` +
-	`|june|july|may|jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec)`
-
-// monthNameAfterYear is monthName without "may", for the form where the month
-// FOLLOWS the year.
-//
-// "may" is the one month spelling that is also an everyday English word, and
-// after a number it is far more often the verb: "Of 8000 customers, 2000 may
-// churn within 180 days" is a forecast, not a date, and reading it as one
-// dropped the 2000 and made the sentence contained in the same forecast about
-// 3000. The month-first form is unaffected — "May 2026" is unambiguous — and a
-// year-first May written with a date separator is kept by its own alternative
-// below. What is given up is "2026 May" spelled with a space, which no report
-// in hand writes and which cannot be told apart from the forecast.
-const monthNameAfterYear = `(?:january|february|march|april|august|september|october|november|december` +
-	`|june|july|jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec)`
-
-var dateExpression = regexp.MustCompile(`(?i)(?:` +
-	`\b` + monthName + `[\s/-]{0,2}\d{4}\b` +
-	`|\b\d{4}[\s/-]{0,2}` + monthNameAfterYear + `\b` +
-	`|\b\d{4}[/-]may\b` +
-	`|\bq[1-4][\s/-]{0,2}\d{4}\b` +
-	// A numeric date needs a real month, and a real day if it carries one.
-	// `\d{4}-\d{2}` alone matched the first seven characters of the quantity
-	// range "2000-3000", dropping the lower bound and keeping the upper.
-	`|\b\d{4}-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?\b` +
-	`)`)
-
-// withinAny reports whether a [start,end) span lies inside any of the spans in
-// `outer`, which arrive in ascending order from FindAllStringIndex.
-func withinAny(span []int, outer [][]int) bool {
-	for _, o := range outer {
-		if span[0] >= o[0] && span[1] <= o[1] {
-			return true
-		}
-		if o[0] > span[1] {
-			break
-		}
-	}
-	return false
+// What it gives up is a pair whose only shared figures are bare four-digit
+// quantities. That is a proposal not made, which leaves a duplicate visible for
+// Phase 9's similarity pass — the direction this file errs in everywhere else.
+func countsTowardFloor(figure string) bool {
+	return !(len(figure) == 4 && !strings.ContainsAny(figure, ".,"))
 }
 
 // minContainmentFigures is how many distinctive figures a headline must carry,
@@ -294,7 +229,16 @@ const minContainmentFigures = 2
 // model, no embedding, no measurable cost.
 func containedIn(claim, body string) bool {
 	figs := claimFigures(claim)
-	if len(figs) < minContainmentFigures || body == "" {
+	if body == "" {
+		return false
+	}
+	distinctive := 0
+	for _, f := range figs {
+		if countsTowardFloor(f) {
+			distinctive++
+		}
+	}
+	if distinctive < minContainmentFigures {
 		return false
 	}
 	// WHOLE tokens, through the same parser, not substrings of the body.
