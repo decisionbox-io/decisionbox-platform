@@ -201,6 +201,17 @@ func claimFigures(s string) []string {
 // adjudication call, and a wrong answer there costs a distinct finding its
 // verdict.
 //
+// What it does NOT match is as deliberate as what it does. A month followed by a
+// comma or a full stop is a clause ending, not a date separator: "In May, 2000
+// orders were delayed" and "Demand peaked in May. 2000 orders were delayed" both
+// state a quantity, and reading either as a date dropped it and made the
+// sentence contained in the same one reporting 3000. The cost of declining those
+// is that "May, 2026" and "Nov. 2025" are not recognised as dates — and that is
+// the right way round: failing to recognise a date keeps a figure, which only
+// makes containment harder to claim, while recognising one that is not there
+// drops a figure and makes it easier. When the text is ambiguous, leave it as a
+// figure.
+//
 // It matches the CONTEXT rather than the number, because a four-digit token in
 // the calendar's range is very often a quantity — "2000 orders" — and ignoring a
 // figure is not the safe direction it first appears to be. Containment asks
@@ -220,7 +231,7 @@ func claimFigures(s string) []string {
 // 2000 across 142 stores" lost its measurement and read as contained in the
 // same sentence reporting 3000.
 const monthName = `(?:january|february|march|april|august|september|october|november|december` +
-	`|june|july|may|jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec)\.?`
+	`|june|july|may|jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec)`
 
 // monthNameAfterYear is monthName without "may", for the form where the month
 // FOLLOWS the year.
@@ -234,10 +245,10 @@ const monthName = `(?:january|february|march|april|august|september|october|nove
 // below. What is given up is "2026 May" spelled with a space, which no report
 // in hand writes and which cannot be told apart from the forecast.
 const monthNameAfterYear = `(?:january|february|march|april|august|september|october|november|december` +
-	`|june|july|jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec)\.?`
+	`|june|july|jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec)`
 
 var dateExpression = regexp.MustCompile(`(?i)(?:` +
-	`\b` + monthName + `[\s/,-]{0,2}\d{4}\b` +
+	`\b` + monthName + `[\s/-]{0,2}\d{4}\b` +
 	`|\b\d{4}[\s/-]{0,2}` + monthNameAfterYear + `\b` +
 	`|\b\d{4}[/-]may\b` +
 	`|\bq[1-4][\s/-]{0,2}\d{4}\b` +

@@ -485,3 +485,28 @@ func TestClaimFigures_MayAfterAQuantityIsTheVerb(t *testing.T) {
 		}
 	}
 }
+
+// A month followed by a comma or a full stop ends a clause; it does not open a
+// date. Both readings dropped the quantity that came next and made the sentence
+// contained in the same sentence reporting a different one.
+func TestClaimFigures_AMonthEndingAClauseDoesNotSwallowTheNextQuantity(t *testing.T) {
+	for _, claim := range []string{
+		"In May, 2000 orders were delayed across 142 stores over 180 days",
+		"Demand peaked in May. 2000 orders were delayed across 142 stores over 180 days",
+		"Reviewed in November, 2000 outlets across 142 stores over 180 days",
+	} {
+		if got := claimFigures(claim); !reflect.DeepEqual(got, []string{"142", "180", "2000"}) {
+			t.Errorf("claimFigures(%q) = %v, want the quantity kept", claim, got)
+		}
+		body := strings.ReplaceAll(claim, "2000", "3000")
+		if containedIn(claim, body) {
+			t.Errorf("%q must not read as contained in the same sentence reporting 3000", claim)
+		}
+	}
+	// The separators a date actually uses still work.
+	for _, in := range []string{"May 2026", "May-2026", "Nov/2025", "November 2025"} {
+		if got := claimFigures(in); len(got) != 0 {
+			t.Errorf("claimFigures(%q) = %v, want none", in, got)
+		}
+	}
+}
