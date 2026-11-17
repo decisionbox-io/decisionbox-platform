@@ -266,4 +266,3 @@ func TestResolveMarkClosure(t *testing.T) {
 		}
 	})
 }
-

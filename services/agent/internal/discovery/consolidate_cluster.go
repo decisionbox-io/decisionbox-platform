@@ -381,3 +381,26 @@ func resolveMarkClosure(marks map[string]string, exists func(id string) bool) (m
 	}
 	return out, nil
 }
+
+// clusterCanAutoFold reports whether any pair in a cluster is at or above the
+// FOLD floor — that is, whether the community rule would fold something here
+// with no verdict at all.
+//
+// It is how the adjudication cap decides what to spend its slots on. A cluster
+// the community rule can act on is one where a verdict changes the outcome; a
+// cluster entirely below that floor only stands to gain a fold, and losing it
+// costs a duplicate left visible.
+func clusterCanAutoFold(docs []consolidationDoc, c docCluster, foldFloor float64) bool {
+	for x := 0; x < len(c.members); x++ {
+		for y := x + 1; y < len(c.members); y++ {
+			a, b := docs[c.members[x]], docs[c.members[y]]
+			if _, ok := cosineFold(b.foldSubject, a.foldSubject, foldFloor); ok {
+				return true
+			}
+			if _, ok := cosineFold(a.foldSubject, b.foldSubject, foldFloor); ok {
+				return true
+			}
+		}
+	}
+	return false
+}

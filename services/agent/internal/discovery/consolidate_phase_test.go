@@ -1048,7 +1048,6 @@ func TestConsolidateArea_MergedDescriptionNeedsAFoldInItsOwnCluster(t *testing.T
 	}
 }
 
-
 // The switch an operator needs when they want the previous behaviour back.
 // The similarity floor is a threshold and cannot express "do not consolidate",
 // and the containment test does not read it at all.
@@ -1705,7 +1704,6 @@ func TestReverifyFold_ASubFoldFloorPairHoldsOnlyWhenAdjudicated(t *testing.T) {
 		t.Error("the community rule must still fold a similarity pair")
 	}
 }
-
 
 // A survivor whose prose carries rendered evidence figures cannot be
 // rewritten: the figure template holds the text as authored with the
@@ -2550,8 +2548,6 @@ func TestReverifyFold_TheMagnitudeGuardGatesTheAdjudicatedPathToo(t *testing.T) 
 	}
 }
 
-
-
 // A rewrite is refused when the survivor carries a dependant THIS verdict did
 // not fold — an earlier area's, say. The rewrite was written from this
 // cluster's payload and does not contain that finding's text at all, so
@@ -2613,5 +2609,95 @@ func TestConsolidateArea_CommunityFoldsRunWhenNothingReachedAdjudication(t *test
 	}
 	if current[1].DuplicateOf != "a" {
 		t.Errorf("b.duplicate_of = %q, want a", current[1].DuplicateOf)
+	}
+	if st.Decider != "community" {
+		t.Errorf("decider = %q, want community: it is what decided the fold", st.Decider)
+	}
+}
+
+// A verdict names one canonical, so it cannot say "and also fold these two
+// others into each other". Recording its silence about such a pair as a keep
+// vetoed the community rule and the end-of-run check both, which left a
+// restatement spending the validation budget. It began to matter when the
+// adjudication floor dropped below the fold floor and stars grew.
+func TestConsolidateArea_AVerdictDoesNotKeepAPairItCouldNotDescribe(t *testing.T) {
+	a := insight("a", "stock", "claim a", "body a", 400)
+	b := insight("b", "stock", "claim b", "body b", 300)
+	c := insight("c", "stock", "claim c", "body c", 200)
+	d := insight("d", "stock", "claim d", "body d", 100)
+
+	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		return []agentplugin.ConsolidationVerdict{{
+			CanonicalID: "a",
+			Duplicates:  map[string]float64{"b": 0.9},
+			Reason:      "b restates a; nothing said about c and d",
+		}}, nil
+	}})
+
+	// Within 30 degrees of each other: one star of four.
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 10, embText(c): 20, embText(d): 30,
+	}}}
+	current := []models.Insight{a, b, c, d}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if st.Clusters != 1 {
+		t.Fatalf("clusters = %d, want one star of four (fixture broken)", st.Clusters)
+	}
+	if o.adjudicatedKeep("c", "d") {
+		t.Error("c/d was recorded as kept; this verdict had no way to describe that pair")
+	}
+	// The pairs it could describe are still kept.
+	if !o.adjudicatedKeep("a", "c") {
+		t.Error("a/c must be kept: the adjudicator was asked which findings restate a")
+	}
+	if !o.adjudicatedKeep("b", "c") {
+		t.Error("b/c must be kept: b now carries a mark, and folding c into it would point a reader at a suppressed finding")
+	}
+}
+
+// When the adjudication cap bites, the slots go where a verdict changes the
+// outcome. A cluster holding a pair above the FOLD floor is folded by the
+// community rule if the provider never sees it — possibly against what the
+// provider would have said — while a cluster entirely below that floor only
+// stands to gain a fold.
+func TestConsolidateArea_TheCapSpendsItsSlotsOnClustersTheCommunityRuleCouldFold(t *testing.T) {
+	t.Setenv("DISCOVERY_CONSOLIDATION_MAX_CLUSTERS", "1")
+
+	a := insight("a", "stock", "claim a", "body a", 400)
+	b := insight("b", "stock", "claim b", "body b", 300)
+	c := insight("c", "stock", "claim c", "body c", 200)
+	d := insight("d", "stock", "claim d", "body d", 100)
+
+	var shown [][]string
+	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		for _, cluster := range cl {
+			ids := make([]string, 0, len(cluster.Candidates))
+			for _, cand := range cluster.Candidates {
+				ids = append(ids, cand.ID)
+			}
+			slices.Sort(ids)
+			shown = append(shown, ids)
+		}
+		return nil, nil
+	}})
+
+	// a/b are 33 degrees apart (0.839: proposed, below the fold floor) and
+	// come first in document order. c/d are 5 degrees apart (0.996: the
+	// community rule would fold them unasked).
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 33, embText(c): 120, embText(d): 125,
+	}}}
+	current := []models.Insight{a, b, c, d}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if st.Clusters != 2 || st.OverBound != 1 {
+		t.Fatalf("stats = %+v, want two clusters with one over the bound (fixture broken)", st)
+	}
+	if len(shown) != 1 {
+		t.Fatalf("the provider was shown %v, want exactly one cluster", shown)
+	}
+	if !slices.Equal(shown[0], []string{"c", "d"}) {
+		t.Errorf("the provider was shown %v, want the pair the community rule could fold", shown[0])
 	}
 }

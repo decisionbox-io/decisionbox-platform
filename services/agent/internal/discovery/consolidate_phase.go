@@ -161,7 +161,20 @@ func (o *Orchestrator) consolidateArea(ctx context.Context, in consolidateAreaIn
 		// decides. See consolidationMaxClustersEnv.
 		adjudicable := clusters
 		if bound := consolidationMaxClusters(); bound > 0 && len(clusters) > bound {
-			adjudicable = clusters[:bound]
+			// Ordered before it is cut, so the slots go to the clusters where
+			// a verdict changes the outcome. A cluster holding a pair above
+			// the FOLD floor gets folded by the community rule if the provider
+			// never sees it — possibly against what the provider would have
+			// said — while a cluster that is entirely below it loses only a
+			// fold that would not have happened. First come the ones that can
+			// be folded without a judgement.
+			adjudicable = make([]docCluster, len(clusters))
+			copy(adjudicable, clusters)
+			sort.SliceStable(adjudicable, func(x, y int) bool {
+				return clusterCanAutoFold(docs, adjudicable[x], foldFloor) &&
+					!clusterCanAutoFold(docs, adjudicable[y], foldFloor)
+			})
+			adjudicable = adjudicable[:bound]
 			st.OverBound = len(clusters) - bound
 			applog.WithFields(applog.Fields{
 				"area": st.Area, "clusters": len(clusters), "bound": bound,
@@ -174,6 +187,13 @@ func (o *Orchestrator) consolidateArea(ctx context.Context, in consolidateAreaIn
 		st.Decider = decider
 	}
 	st = o.applyConsolidation(in, docs, clusters, verdicts, byProvider, foldFloor, adjFloor, st)
+	// An area can write community folds with no cluster adjudicated at all,
+	// once the two floors can be set apart. Decider is assigned where the
+	// adjudication happens, so the summary reported "none" beside a positive
+	// fold count and gave an operator no way to tell what had decided them.
+	if st.Decider == "none" && st.Folded > 0 {
+		st.Decider = "community"
+	}
 	st.DurationMs = time.Since(started).Milliseconds()
 
 	applog.WithFields(applog.Fields{
@@ -1118,6 +1138,10 @@ func (o *Orchestrator) registerAdjudicatedKeeps(
 		if !ok || !byProvider[i] {
 			continue
 		}
+		canonical, cycle := resolveTarget(v.CanonicalID, marks)
+		if cycle {
+			canonical = v.CanonicalID
+		}
 		for x := 0; x < len(c.members); x++ {
 			for y := x + 1; y < len(c.members); y++ {
 				a, b := docs[c.members[x]].id, docs[c.members[y]].id
@@ -1130,6 +1154,38 @@ func (o *Orchestrator) registerAdjudicatedKeeps(
 				_, aDup := v.Duplicates[a]
 				_, bDup := v.Duplicates[b]
 				if aDup && bDup {
+					continue
+				}
+				// A verdict that folded SOMETHING is canonical-centric,
+				// and it has no way to say "and also fold these two others
+				// into each other" — it names one canonical. Its silence
+				// about a pair it never mentioned is a limit of that shape,
+				// not a finding that the two are distinct, and recording it
+				// as one vetoes the community rule and the end-of-run check
+				// both. That leaves a restatement spending the validation
+				// budget this pass exists to protect.
+				//
+				// It began to matter when the adjudication floor dropped
+				// below the fold floor. Stars grew: a cluster that was two
+				// pairs became one group of four with two strong pairs inside
+				// it that one canonical cannot describe.
+				//
+				// A verdict that folded NOTHING is read the other way. The
+				// adjudicator was shown the whole cluster and sent the reader
+				// to the canonical without suppressing anything, which is a
+				// judgement about every pair in it, so all of them are kept.
+				//
+				// And a pair the verdict DID name is kept either way round.
+				// Canonical-and-unnamed is a decision. Folded-and-unnamed is
+				// worth keeping too, because the folded one now carries a mark
+				// and folding the other into it would point a reader at a
+				// suppressed finding.
+				_, aNamed := v.Duplicates[a]
+				_, bNamed := v.Duplicates[b]
+				named := aNamed || bNamed ||
+					a == canonical || b == canonical ||
+					a == v.CanonicalID || b == v.CanonicalID
+				if len(v.Duplicates) > 0 && !named {
 					continue
 				}
 				o.keepPair(a, b)
