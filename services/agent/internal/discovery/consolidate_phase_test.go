@@ -2444,3 +2444,46 @@ func TestConsolidateArea_ARefusedFoldKeepsThePairApartInBothDirections(t *testin
 			current[1].DuplicateOf, st)
 	}
 }
+
+// A rewrite verdict can name a donor from an area the run has already
+// finished, and that donor's protection has to reach Phase 9. This pass may
+// not MARK such a finding — its checkpoint is written and its id is reminted
+// on restore — but a protection suppresses nothing, and without it the
+// end-of-run check folds the donor into a previous discovery's copy of the
+// survivor: the caveat the adjudicator spoke up about, hidden behind an older
+// row, with no pause or resume involved.
+func TestConsolidateArea_AnEarlierAreasRewriteDonorIsProtectedForPhase9(t *testing.T) {
+	b := insight("b", "margin", "the north segment", "a slice, with a caveat", 200)
+	y := insight("y", "stock", "the whole total", "every segment", 300)
+
+	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		out := make([]agentplugin.ConsolidationVerdict, len(cl))
+		for i := range cl {
+			out[i] = agentplugin.ConsolidationVerdict{
+				CanonicalID:       "y",
+				Duplicates:        map[string]float64{"b": 0.95},
+				MergedDescription: "y, carrying b's caveat",
+			}
+		}
+		return out, nil
+	}})
+
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(b): 0, embText(y): 10,
+	}}}
+	earlier := []models.Insight{b}
+	current := []models.Insight{y}
+	in := areaInput("stock", current, earlier)
+	in.areaByID["margin"] = AnalysisArea{ID: "margin", Name: "margin", Description: "margin scope"}
+	st := o.consolidateArea(context.Background(), in)
+
+	if st.RefusedUnmergeable != 1 {
+		t.Fatalf("stats = %+v, want the rewrite request refused once (fixture broken)", st)
+	}
+	if earlier[0].DuplicateOf != "" {
+		t.Errorf("an earlier area's finding was marked: %q", earlier[0].DuplicateOf)
+	}
+	if !earlier[0].StandsOnAdjudication {
+		t.Error("the donor's protection never reached the run's own insight, so Phase 9 cannot honour it")
+	}
+}

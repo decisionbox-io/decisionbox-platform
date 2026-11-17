@@ -2984,7 +2984,16 @@ func (o *Orchestrator) decodeInsightItems(raws []json.RawMessage, areaID string,
 		// by inventing a reference. Cleared at the boundary rather than trusted
 		// and checked later: the only thing that may set these is the duplicate
 		// check, over documents it has actually compared.
+		//
+		// The consolidation adjudicator's refusal neither: it is a decision
+		// about a PAIR of findings, taken by something that was shown both, and
+		// a finding claiming it for itself would exempt itself from
+		// consolidation and from the end-of-run check at once. Analysis is not
+		// always held to a schema — structured output can be off, or
+		// unenforced by the model — so the field is cleared here rather than
+		// trusted to be absent.
 		insight.DuplicateOf, insight.SimilarityScore = "", 0
+		insight.StandsOnAdjudication = false
 
 		insights = append(insights, insight)
 	}

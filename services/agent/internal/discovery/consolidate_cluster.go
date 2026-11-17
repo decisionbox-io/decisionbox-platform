@@ -139,6 +139,13 @@ type consolidationDoc struct {
 	// slot is the position of this document in the area's own insight slice,
 	// valid only when current.
 	slot int
+	// runSlot is the position of this document in the run's accumulator, the
+	// slice of what the areas before this one reported. Valid only when the
+	// document is NOT current. A mark may never be written there — see
+	// current — but a protection may: it suppresses nothing, so losing it on
+	// a resume costs nothing, while not writing it leaves an earlier area's
+	// protected finding open to the end-of-run check.
+	runSlot int
 
 	name string
 	// prose is the finding's authored body, markdown rendition preferred.

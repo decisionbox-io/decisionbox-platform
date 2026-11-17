@@ -217,3 +217,29 @@ func TestEnvelopeItems_CaseVariantKeysAreDeterministic(t *testing.T) {
 		t.Errorf("got %d items, want 1 -- the exactly-matching key's value", len(first))
 	}
 }
+
+// Three fields on the stored shape are decisions about a finding's
+// RELATIONSHIP to another finding, taken by something that was shown both. The
+// analysis response decodes into that same struct, so a model emitting them
+// would mark its own finding a restatement of any id it named, or — with the
+// consolidation flag — exempt itself from consolidation and from the
+// end-of-run check at once. Analysis is not always held to a schema, so they
+// are cleared at the boundary rather than trusted to be absent.
+func TestParseInsights_RelationshipFieldsAreNotTheModelsToWrite(t *testing.T) {
+	o := &Orchestrator{}
+	const in = `{"insights":[{"name":"idle units are growing","description":"the total rose",
+		"duplicate_of":"some-other-id","similarity_score":0.99,"stands_on_adjudication":true}]}`
+	insights, _, err := o.parseInsights(in, "stock")
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(insights) != 1 {
+		t.Fatalf("got %d insights, want 1", len(insights))
+	}
+	if insights[0].DuplicateOf != "" || insights[0].SimilarityScore != 0 {
+		t.Errorf("the model wrote its own mark: {%q, %v}", insights[0].DuplicateOf, insights[0].SimilarityScore)
+	}
+	if insights[0].StandsOnAdjudication {
+		t.Error("the model exempted its own finding from consolidation and from the end-of-run check")
+	}
+}

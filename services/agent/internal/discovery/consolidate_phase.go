@@ -238,7 +238,7 @@ func (o *Orchestrator) consolidateArea(ctx context.Context, in consolidateAreaIn
 // to the containment test alone, which needs no model at all.
 func (o *Orchestrator) consolidationDocs(ctx context.Context, in consolidateAreaInput) []consolidationDoc {
 	docs := make([]consolidationDoc, 0, len(in.runInsights)+len(in.insights))
-	add := func(ins *models.Insight, current bool, slot int) {
+	add := func(ins *models.Insight, current bool, slot, runSlot int) {
 		if ins.ID == "" {
 			return
 		}
@@ -253,6 +253,7 @@ func (o *Orchestrator) consolidationDocs(ctx context.Context, in consolidateArea
 			index:       len(docs),
 			current:     current,
 			slot:        slot,
+			runSlot:     runSlot,
 			name:        ins.Name,
 			prose:       insightProse(ins),
 			area:        ins.AnalysisArea,
@@ -268,10 +269,10 @@ func (o *Orchestrator) consolidationDocs(ctx context.Context, in consolidateArea
 		})
 	}
 	for i := range in.runInsights {
-		add(&in.runInsights[i], false, -1)
+		add(&in.runInsights[i], false, -1, i)
 	}
 	for i := range in.insights {
-		add(&in.insights[i], true, i)
+		add(&in.insights[i], true, i, -1)
 	}
 	o.fillInsightVectors(ctx, docs)
 	return docs
@@ -657,7 +658,7 @@ func (o *Orchestrator) applyConsolidation(
 	// already written, and the end-of-run check will not revisit a document
 	// that carries one. A pair's keep is derivable from the verdict alone, so
 	// it does not need the marks and can be known first.
-	o.registerAdjudicatedKeeps(docs, clusters, verdicts, byProvider, byID, marks, in.insights, &st)
+	o.registerAdjudicatedKeeps(docs, clusters, verdicts, byProvider, byID, marks, in, &st)
 
 	// How many of this pass's marks each document is the target of. Marking
 	// a document that has any would build a chain — the closure check would
@@ -1117,7 +1118,7 @@ func (o *Orchestrator) registerAdjudicatedKeeps(
 	byProvider map[int]bool,
 	byID map[string]int,
 	marks map[string]string,
-	insights []models.Insight,
+	in consolidateAreaInput,
 	st *consolidationStats,
 ) {
 	// A verdict asking for a rewrite says its fold would lose something, so
@@ -1175,8 +1176,22 @@ func (o *Orchestrator) registerAdjudicatedKeeps(
 			// suppressed and dropped from the recommendations.
 			if di, ok := byID[dupID]; ok {
 				docs[di].stands = true
-				if docs[di].current {
-					insights[docs[di].slot].StandsOnAdjudication = true
+				switch {
+				case docs[di].current:
+					in.insights[docs[di].slot].StandsOnAdjudication = true
+				case docs[di].runSlot >= 0:
+					// An earlier area's finding, and this is the one thing
+					// this pass may write on one. A mark may not: it
+					// suppresses a row whose checkpoint is already on disk
+					// and whose id is reminted on restore, so it would not
+					// survive. A protection suppresses nothing — losing it on
+					// a resume leaves the end-of-run check doing what it did
+					// before this phase existed — and NOT writing it costs
+					// the donor its protection in this very run: the
+					// end-of-run check would fold it into a previous
+					// discovery's copy of the survivor, which states the
+					// claim no better than the survivor did.
+					in.runInsights[docs[di].runSlot].StandsOnAdjudication = true
 				}
 			}
 			// Both the named pair and the resolved one, and counted once:
