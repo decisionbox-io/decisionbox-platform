@@ -622,6 +622,9 @@ func (o *Orchestrator) applyConsolidation(
 	// one verdict could not fold may be one another folds outright, and that
 	// decision has to win over this protection.
 	var donorKeeps [][2]string
+	// Pairs a rewrite verdict kept, remembered so they can be re-resolved
+	// against the marks every verdict ends up writing.
+	var rewritePairs [][2]string
 	byID := make(map[string]int, len(docs))
 	for i := range docs {
 		byID[docs[i].id] = i
@@ -716,10 +719,23 @@ func (o *Orchestrator) applyConsolidation(
 			// so the fallback does not fold it on document order instead.
 			donors := make([]string, 0, len(v.Duplicates))
 			for dupID := range v.Duplicates {
+				// Only ids this cluster holds. The per-donor loop below does
+				// this for a fold; a keep needs it for the same reason — a
+				// verdict naming a member of some other cluster would
+				// otherwise block a fold of two documents it never saw.
+				if !member[dupID] || dupID == final {
+					continue
+				}
 				if o.keepPair(dupID, final) {
 					st.Kept++
 				}
 				donors = append(donors, dupID)
+				// Remembered so the pair can be re-resolved once every
+				// verdict has written its marks: this canonical may itself be
+				// folded by a later verdict, and the protection has to follow
+				// it. Without that, a rewrite keeping C away from B left C
+				// unprotected from the A that B then folded into.
+				rewritePairs = append(rewritePairs, [2]string{dupID, final})
 			}
 			// And from each other. The adjudicator said each of them carries
 			// detail the survivor does not; folding one into another would
@@ -882,41 +898,6 @@ func (o *Orchestrator) applyConsolidation(
 			}
 		}
 
-		// The adjudicator's MergedDescription is deliberately NOT applied,
-		// and a verdict that offers one does not get its folds either.
-		//
-		// A rewrite is asked for precisely when a folded member carries a
-		// figure, a segment or a caveat the survivor does not — the provider
-		// saying so in the only way the contract gives it. Applying the folds
-		// while discarding the rewrite suppresses exactly those findings
-		// behind text that does not state them, which is the failure this
-		// whole phase was built to avoid; the folds were given back for this
-		// reason before, when a rewrite could not be applied.
-		//
-		// Why not apply the rewrite: whether a rewritten paragraph still
-		// states a particular claim is a question about particular figures,
-		// and nothing left in the pass can answer it. A rewrite that turned a
-		// donor's 33.3% into 38.3% scored well above the fold floor, so
-		// similarity accepted it, published the changed figure and suppressed
-		// the finding that held the right one.
-		//
-		// So both findings stand, the pair is remembered as adjudicated so the
-		// fallback does not fold it on document order, and the survivor keeps
-		// the words it was written with.
-		//
-		// Carrying a folded finding's detail onto the survivor is only safe if
-		// the rewritten text really states that finding's claim, and that is a
-		// claim-level question about particular figures. The check that used to
-		// answer it read the figures out of the prose. Similarity cannot: a
-		// rewrite that turned a donor's 33.3% into 38.3% scored well above the
-		// fold floor, so it published the changed figure and suppressed the
-		// finding that held the right one. Asking the model to check its own
-		// rewrite is not a verification either.
-		//
-		// So the fold is applied and the survivor keeps the text it authored.
-		// A reader sent to it gets a claim that finding actually made, and the
-		// folded detail stays reachable where it always was — behind the
-		// canonical, which this pass marks and never deletes.
 	}
 
 	// The refused donors, now that every verdict has had its say. A pair one
@@ -928,6 +909,24 @@ func (o *Orchestrator) applyConsolidation(
 			continue
 		}
 		if o.keepPair(pair[0], pair[1]) {
+			st.Kept++
+		}
+	}
+	// And every pair a rewrite verdict kept, against where its canonical
+	// ended up. A later verdict can fold that canonical into something else,
+	// and a protection that names only the old target leaves the donor open to
+	// the new one — the community rule would then hide it behind a finding
+	// that states its claim no better than the first did.
+	for _, pair := range rewritePairs {
+		donor, canonical := pair[0], pair[1]
+		if marks[donor] != "" {
+			continue
+		}
+		final, cycle := resolveTarget(canonical, marks)
+		if cycle || final == donor || final == canonical {
+			continue
+		}
+		if o.keepPair(donor, final) {
 			st.Kept++
 		}
 	}
