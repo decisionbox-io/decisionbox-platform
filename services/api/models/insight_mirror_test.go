@@ -44,11 +44,11 @@ var mirroredRecommendationOmissions = map[string]string{
 // declares, in declaration order. Keys tagged "-" are skipped: those are
 // fields the agent deliberately does not persist, so they cannot be dropped on
 // decode.
-func agentStructBSONKeys(t *testing.T, src []byte, name string) []string {
+func agentStructBSONKeys(t *testing.T, src []byte, name, source string) []string {
 	t.Helper()
 	block := regexp.MustCompile(`(?s)\ntype ` + name + ` struct \{(.*?)\n\}\n`).FindSubmatch(src)
 	if block == nil {
-		t.Fatalf("could not find the agent's %s in %s", name, agentModelsSource)
+		t.Fatalf("could not find the agent's %s in %s", name, source)
 	}
 	field := regexp.MustCompile("(?m)^\\s*\\w+\\s+[^`\n]+`[^`]*bson:\"([^\",]+)")
 	var out []string
@@ -94,7 +94,7 @@ func TestInsightAndRecommendationMirrorEveryPersistedAgentField(t *testing.T) {
 		{"Recommendation", reflect.TypeOf(Recommendation{}), mirroredRecommendationOmissions},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			want := agentStructBSONKeys(t, src, tc.name)
+			want := agentStructBSONKeys(t, src, tc.name, agentModelsSource)
 			have := mirrorBSONKeys(tc.mirror)
 
 			var missing []string

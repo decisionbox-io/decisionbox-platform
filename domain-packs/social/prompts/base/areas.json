@@ -5,6 +5,7 @@
     "description": "User acquisition funnel, signup conversion, onboarding completion, activation milestones, and viral growth loops",
     "keywords": ["signup", "registration", "onboarding", "activation", "invite", "referral", "viral", "install", "first_action", "conversion", "acquisition", "new_user"],
     "priority": 1,
+    "risk_categories": ["growth_stall"],
     "prompt_file": "analysis_growth.md"
   },
   {
@@ -13,6 +14,7 @@
     "description": "User activity patterns — DAU/MAU ratios, session behavior, feature usage, interaction depth, and engagement evolution over time",
     "keywords": ["session", "active", "dau", "mau", "wau", "login", "visit", "interaction", "engagement", "time_spent", "frequency", "stickiness"],
     "priority": 2,
+    "risk_categories": ["community_health", "user_churn"],
     "prompt_file": "analysis_engagement.md"
   },
   {
@@ -21,6 +23,7 @@
     "description": "User retention cohorts, churn patterns, reactivation potential, and lifecycle-stage analysis from onboarding through maturity",
     "keywords": ["retention", "churn", "cohort", "returning", "lapsed", "inactive", "d1_", "d7_", "d30_", "reactivation", "dormant", "lifecycle"],
     "priority": 3,
+    "risk_categories": ["user_churn"],
     "prompt_file": "analysis_retention.md"
   }
 ]

@@ -348,6 +348,12 @@ type InheritedSeverity struct {
 	SeverityReason string
 	AreaWeight     float64
 	WeightSource   *gomodels.WeightSource
+
+	// RiskFlags travels with the rest of the severity half: an action about a
+	// compliance exposure is a compliance action. A recommendation has no
+	// analysis area of its own to derive flags from, which is the same reason
+	// the band is inherited rather than measured.
+	RiskFlags []string
 }
 
 // InheritSeverity picks the severity half a recommendation takes on: the

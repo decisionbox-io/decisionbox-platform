@@ -3,6 +3,7 @@ package models
 import (
 	"time"
 
+	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	warehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 )
 
@@ -36,6 +37,35 @@ type DomainPack struct {
 	AnalysisAreas PackAnalysisAreas `bson:"analysis_areas" json:"analysis_areas"`
 	ProfileSchema PackProfileSchema `bson:"profile_schema" json:"profile_schema"`
 
+	// RiskTaxonomy is the business-risk classes this pack's domain has, and
+	// how much a finding in each is worth relative to one in an unweighted
+	// area. Each analysis area maps to one or more of them (or to the
+	// engine's global set), which is where an area's severity weight and its
+	// risk flags come from.
+	//
+	// Absent is legal and is not the same as empty-of-meaning: a pack that
+	// declares no taxonomy leaves every area at the engine's default weight
+	// and can still map areas to the global cross-cutting ids. Nothing
+	// changes for a pack written before this field existed.
+	RiskTaxonomy []PackRiskCategory `bson:"risk_taxonomy,omitempty" json:"risk_taxonomy,omitempty"`
+
+	// RiskConfigHash fingerprints the risk configuration above (plus each
+	// area's mapping and override) so a client can tell whether the copy it is
+	// editing is still the stored one. See RiskConfigHash.
+	//
+	// Served on read and `bson:"-"` so it is never written FROM the struct.
+	// The value goes out to clients and this model comes back from them, so a
+	// client's echo — or any stale value it happens to hold — must not be able
+	// to become the stored one: every writer's comparison would then be
+	// against a number a client chose. The repository writes the stored field
+	// explicitly, from the content, which is what beats an echo on that path;
+	// the tag is what protects every other whole-document write of a pack.
+	//
+	// Empty on a pack that was not served through the repository, which is
+	// how a client tells "this API does not offer the check" from "the
+	// configuration is empty" — the latter still has a hash.
+	RiskConfigHash string `bson:"-" json:"risk_config_hash,omitempty"`
+
 	// Per-pack LLM token usage, summed across every generation attempt
 	// (initial + auto-fix retries) the synthesiser made for this pack.
 	// Populated by the enterprise pack generator when a pack is first
@@ -63,6 +93,14 @@ func (p DomainPack) EffectiveShape() warehouse.SourceShape {
 	}
 	return warehouse.ShapeEntities
 }
+
+// PackRiskCategory is one entry in a pack's risk taxonomy.
+//
+// An alias rather than a struct of its own: the taxonomy a pack declares is
+// seeded onto the project, mirrored into the agent's own project model and
+// read by the scoring engine, and the engine cannot import any of the three.
+// One type means a field added to it reaches every copy.
+type PackRiskCategory = gomodels.RiskCategory
 
 // PackCategory is a sub-type within a domain (e.g., "match3" within gaming).
 type PackCategory struct {
@@ -103,6 +141,27 @@ type PackAnalysisArea struct {
 	Keywords    []string `bson:"keywords" json:"keywords"`
 	Priority    int      `bson:"priority" json:"priority"`
 	Prompt      string   `bson:"prompt" json:"prompt"`
+
+	// RiskCategories are the risk classes a finding in this area belongs to:
+	// ids from the pack's own RiskTaxonomy, or from the engine's global
+	// cross-cutting set. They decide two things -- the area's severity weight
+	// (the largest of their weights) and the risk flags every insight in the
+	// area carries.
+	//
+	// Several, not one, because an area is genuinely several things at once:
+	// a consent-tracking area is a compliance exposure AND a data-quality
+	// one, and a reader filtering for either has to find it.
+	RiskCategories []string `bson:"risk_categories,omitempty" json:"risk_categories,omitempty"`
+
+	// SeverityWeight overrides the weight this area's categories would give
+	// it. For the area a business weights differently from the rest of its
+	// category -- which is a statement about the area, so it is stored on the
+	// area rather than forcing a category to be split in two.
+	//
+	// A POINTER, because the legal range excludes zero: a plain float64 makes
+	// a pack that STATES `severity_weight: 0` indistinguishable from one that
+	// states nothing, so the rule that rejects it would never see it.
+	SeverityWeight *float64 `bson:"severity_weight,omitempty" json:"severity_weight,omitempty"`
 }
 
 // PackProfileSchema holds JSON Schema for project profile forms.

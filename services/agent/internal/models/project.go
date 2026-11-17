@@ -7,6 +7,7 @@ import (
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
+	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 )
 
@@ -89,6 +90,12 @@ type Project struct {
 	// Prompts — editable by the user. Seeded from domain pack defaults on creation.
 	// Agent reads prompts from here (not from the domain pack binary).
 	Prompts *ProjectPrompts `bson:"prompts,omitempty" json:"prompts,omitempty"`
+
+	// CategoryWeights is the project-wide override of a risk category's
+	// pack-declared weight. Mirrors the API model's field, which carries the
+	// reasoning for the scope; the agent folds it into the scoring config it
+	// pins on the run.
+	CategoryWeights map[string]float64 `bson:"category_weights,omitempty" json:"category_weights,omitempty"`
 
 	// Language is the human-readable output language for narrative
 	// fields (insight names/descriptions, recommendation titles, etc).
@@ -198,6 +205,11 @@ type ProjectPrompts struct {
 	// AnalysisAreas maps area ID to its config + prompt.
 	// Includes both domain pack defaults and user-added custom areas.
 	AnalysisAreas map[string]AnalysisAreaConfig `bson:"analysis_areas" json:"analysis_areas"`
+
+	// RiskTaxonomy is the pack's risk classes as seeded onto this project.
+	// Warehouse-scoped, for the reason the API model's copy states. Read by
+	// the agent to resolve each area's severity weight and risk flags.
+	RiskTaxonomy []gomodels.RiskCategory `bson:"risk_taxonomy,omitempty" json:"risk_taxonomy,omitempty"`
 }
 
 // AnalysisAreaConfig holds the configuration for a single analysis area.
@@ -211,6 +223,14 @@ type AnalysisAreaConfig struct {
 	IsCustom    bool     `bson:"is_custom" json:"is_custom"` // true = user-created
 	Priority    int      `bson:"priority" json:"priority"`
 	Enabled     bool     `bson:"enabled" json:"enabled"` // user can disable areas
+
+	// RiskCategories and SeverityWeight are the area's half of the severity
+	// weight — which risk classes a finding here belongs to, and the override
+	// for an area weighted differently from the rest of its categories.
+	// Mirrors the API model; see PackAnalysisArea for why the override is a
+	// pointer.
+	RiskCategories []string `bson:"risk_categories,omitempty" json:"risk_categories,omitempty"`
+	SeverityWeight *float64 `bson:"severity_weight,omitempty" json:"severity_weight,omitempty"`
 }
 
 // WarehouseConfig holds data warehouse connection settings.

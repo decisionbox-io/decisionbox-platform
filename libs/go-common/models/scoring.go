@@ -101,10 +101,15 @@ type Scoring struct {
 	PriorityTier  string  `bson:"priority_tier,omitempty"  json:"priority_tier,omitempty"`
 	PriorityScore float64 `bson:"priority_score,omitempty" json:"priority_score,omitempty"`
 
-	// RiskFlags is declared and written by nothing yet: a flag is derived
-	// from the analysis area's risk categories, and no pack declares any.
-	// Here so that adding them later is logic rather than a schema change,
-	// and so the mirror guard covers the field from the day it ships.
+	// RiskFlags is what KIND of risk this finding is: the business-risk
+	// category ids its analysis area maps to, in the area's own declaration
+	// order.
+	//
+	// Derived from the area and from nothing the model wrote, like every
+	// other field here. Absent on a document whose area maps to no category,
+	// which is every document on a deployment that configures no taxonomy --
+	// and absent reads as "not flagged" where an empty array would read as
+	// "flagged, with nothing".
 	RiskFlags []string `bson:"risk_flags,omitempty" json:"risk_flags,omitempty"`
 
 	// EngineVersion is which calibration produced these numbers. Not
@@ -202,14 +207,65 @@ type WeightSource struct {
 	Category string `bson:"category,omitempty" json:"category,omitempty"`
 }
 
-// Weight sources. Only the default is reachable today; the other two are the
-// vocabulary a configured taxonomy will set, named here so the three live in
-// one place rather than as literals at a future call site.
+// Weight sources: what set an area's severity weight.
 const (
 	WeightSourceDefault      = "default"
 	WeightSourceCategory     = "category"
 	WeightSourceAreaOverride = "area_override"
 )
+
+// RiskCategory is one business-risk category: what it is called, and how much
+// a finding in it is worth relative to one in an unweighted area.
+//
+// It lives here, beside WeightSource, because the taxonomy has to exist in
+// four places that cannot all import each other -- the pack model, the project
+// model, the agent's own mirror of the project, and the scoring engine, which
+// must not import any of the three. Declared once rather than hand-copied,
+// for the reason Scoring itself is: a field absent from one copy is a field
+// BSON silently drops.
+//
+// Weight is omitempty so a category that takes the engine default is stored
+// as a category rather than as a category weighted zero -- which is not a
+// legal weight and would be rejected if it were stated.
+type RiskCategory struct {
+	ID          string  `bson:"id"                    json:"id"`
+	Label       string  `bson:"label"                 json:"label"`
+	Description string  `bson:"description,omitempty" json:"description,omitempty"`
+	Weight      float64 `bson:"weight,omitempty"      json:"weight,omitempty"`
+}
+
+// RunScoringConfig is the scoring configuration one discovery run was started
+// with, pinned on its run document at the first attempt and replayed verbatim
+// on every later one.
+//
+// It exists because a resume can happen days after the attempt it continues,
+// and a weight someone changed in between would otherwise score the second
+// half of a run against different numbers from the first -- leaving a result
+// with no meaningful ranking across it at all. The run's step budget, area
+// list and effort are pinned beside it for the same reason.
+//
+// It stores the resolved INPUTS, not the resolved per-area weights. Attempt 2
+// therefore re-derives both the weight and the risk flags through the same
+// engine code attempt 1 used, and cannot disagree with it. Storing the output
+// would put a second copy of the "largest of its categories" rule in the
+// database, and would leave the flags unpinned.
+type RunScoringConfig struct {
+	// CategoryWeights is the resolved weight of each risk category: the
+	// pack's declared taxonomy with the project's own overrides folded in.
+	CategoryWeights map[string]float64 `bson:"category_weights,omitempty" json:"category_weights,omitempty"`
+
+	// Areas is each analysis area's risk configuration, keyed by area id. An
+	// area absent from the map -- one the project gained after this run
+	// started -- is scored at the engine default, which is what "the weights
+	// it started with" means for an area that was not there.
+	Areas map[string]RunAreaRisk `bson:"areas,omitempty" json:"areas,omitempty"`
+}
+
+// RunAreaRisk is one area's half of a pinned scoring configuration.
+type RunAreaRisk struct {
+	RiskCategories []string `bson:"risk_categories,omitempty" json:"risk_categories,omitempty"`
+	SeverityWeight *float64 `bson:"severity_weight,omitempty" json:"severity_weight,omitempty"`
+}
 
 // The confidence band vocabulary.
 //

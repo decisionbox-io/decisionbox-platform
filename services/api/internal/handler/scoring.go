@@ -69,6 +69,19 @@ type scoringSeverityConfig struct {
 	Cutoffs scoringCutoffs `json:"cutoffs"`
 	// DefaultWeight is the multiplier for an area with no configured weight.
 	DefaultWeight float64 `json:"default_weight"`
+
+	// MaxWeight is the top of the range a configured weight must fall in,
+	// (0, MaxWeight]. Served rather than duplicated in the dashboard for the
+	// reason the cutoffs are: the editor that enforces it on input and the
+	// validator that rejects it on save have to agree, and a literal in
+	// TypeScript is how they stop agreeing.
+	MaxWeight float64 `json:"max_weight"`
+
+	// GlobalRiskCategories are the cross-cutting risk category ids every pack
+	// may map an area to, whether or not it declares a taxonomy of its own.
+	// Engine-owned, and therefore served: a dashboard offering its own list
+	// would offer an id the engine drops, or omit one it accepts.
+	GlobalRiskCategories []string `json:"global_risk_categories"`
 }
 
 type scoringMagnitudeBand struct {
@@ -243,9 +256,11 @@ func severityConfigPayload(cfg scoring.SeverityConfig) scoringSeverityConfig {
 			Medium: cfg.MediumMagnitude,
 			Low:    cfg.LowMagnitude,
 		},
-		Baseline:      cfg.BaselineMagnitude,
-		Cutoffs:       scoringCutoffs{High: cfg.HighAt, Medium: cfg.MediumAt},
-		DefaultWeight: cfg.DefaultWeight,
+		Baseline:             cfg.BaselineMagnitude,
+		Cutoffs:              scoringCutoffs{High: cfg.HighAt, Medium: cfg.MediumAt},
+		DefaultWeight:        cfg.DefaultWeight,
+		MaxWeight:            scoring.MaxSeverityWeight,
+		GlobalRiskCategories: scoring.GlobalRiskCategories(),
 	}
 }
 

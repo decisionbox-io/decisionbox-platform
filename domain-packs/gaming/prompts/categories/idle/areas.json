@@ -5,6 +5,7 @@
     "description": "Prestige cycle timing, offline earning effectiveness, milestone pacing, and progression bottlenecks that stall player advancement",
     "keywords": ["prestige", "reset", "rebirth", "ascend", "offline", "idle", "milestone", "upgrade", "tier", "unlock", "progress", "stage", "world"],
     "priority": 4,
+    "risk_categories": ["player_experience", "player_churn"],
     "prompt_file": "analysis_progression.md"
   },
   {
@@ -13,6 +14,7 @@
     "description": "Currency inflation detection, sink/source balance, upgrade pricing curves, and resource accumulation patterns",
     "keywords": ["currency", "gold", "gem", "coin", "earn", "spend", "sink", "source", "inflation", "balance", "upgrade_cost", "multiplier", "generator"],
     "priority": 5,
+    "risk_categories": ["game_economy", "monetization"],
     "prompt_file": "analysis_economy.md"
   }
 ]

@@ -18,6 +18,7 @@ import (
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
 	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
+	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/scoring"
 	_ "github.com/decisionbox-io/decisionbox/libs/go-common/sources" // registers knowledge-sources context provider via init()
@@ -342,6 +343,13 @@ type Orchestrator struct {
 	// each document refers to.
 	scoringCfg scoring.Config
 
+	// areaRisk is each area's risk mapping and weight override, as pinned on
+	// the run document. Keyed by area id, and read by area id rather than
+	// handed to the scorer per area, so an insight whose stored area is not
+	// the loop's own is scored against its own configuration rather than a
+	// neighbour's.
+	areaRisk map[string]gomodels.RunAreaRisk
+
 	// reasoningEnabled is the resolved model-agnostic per-project "Enable
 	// reasoning" toggle for this run (from DiscoveryOptions.ReasoningEnabled).
 	// Drives effectiveReasoning() (R3 headroom) + SetReasoning.
@@ -480,11 +488,20 @@ type OrchestratorOptions struct {
 	Language       string
 	Profile        map[string]interface{}
 	ProjectPrompts *models.ProjectPrompts
-	Datasets       []string
-	FilterField    string
-	FilterValue    string
-	LLMProvider    string
-	LLMModel       string
+	// ScoringConfig is the severity weighting pinned on this run's document
+	// at its first attempt. Nil means nothing was pinned -- a run older than
+	// the field -- and leaves every area at the engine default, which is what
+	// a run that recorded no weights was scored under.
+	//
+	// Read from here rather than from ProjectPrompts on purpose: a resume
+	// must score with the weights its run STARTED with, and the project's are
+	// whatever they have since been changed to.
+	ScoringConfig *gomodels.RunScoringConfig
+	Datasets      []string
+	FilterField   string
+	FilterValue   string
+	LLMProvider   string
+	LLMModel      string
 	// LLMConfig is the project's LLM provider config (project.LLM.Config),
 	// carrying the max_input_tokens / max_output_tokens operator overrides used
 	// when budgeting output against the model window. Optional.
@@ -792,8 +809,34 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		warehouses:             opts.Warehouses,
 		runStepIndex:           opts.RunStepIndex,
 		runID:                  opts.RunID,
-		scoringCfg:             scoring.DefaultConfig(),
+		scoringCfg:             runScoringConfig(opts.ScoringConfig),
+		areaRisk:               runAreaRisk(opts.ScoringConfig),
 	}
+}
+
+// runScoringConfig is this build's calibration with the run's pinned category
+// weights folded into it.
+//
+// The weights are taken from the pin verbatim rather than re-resolved from the
+// project, because the pin IS the resolution: whichever attempt wrote it ran
+// scoring.ResolveSeverity over the project as it stood then, and re-doing that
+// here is precisely what a resume must not do.
+func runScoringConfig(pinned *gomodels.RunScoringConfig) scoring.Config {
+	cfg := scoring.DefaultConfig()
+	if pinned != nil && len(pinned.CategoryWeights) > 0 {
+		cfg.Severity.CategoryWeights = pinned.CategoryWeights
+	}
+	return cfg
+}
+
+// runAreaRisk is the per-area half of the same pin. Nil for a run that pinned
+// nothing, which leaves every lookup empty and every area at the default
+// weight with no flags.
+func runAreaRisk(pinned *gomodels.RunScoringConfig) map[string]gomodels.RunAreaRisk {
+	if pinned == nil {
+		return nil
+	}
+	return pinned.Areas
 }
 
 // DiscoveryOptions configures a discovery run.
@@ -1816,6 +1859,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		writer := o.figureWriter()
 		scoreInsights(insights, scoringContext{
 			cfg:        o.scoringCfg,
+			areaRisk:   o.areaRisk,
 			currencies: currencies,
 			stepByID:   stepByID,
 			writer:     &writer,

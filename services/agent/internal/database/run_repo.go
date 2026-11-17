@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -715,6 +716,47 @@ func (r *RunRepository) IncrementQueryCount(ctx context.Context, runID string, s
 
 	_, err = r.col.UpdateOne(ctx, attemptFilter(oid, attempt), update)
 	return err
+}
+
+// PinScoringConfig records the severity weighting a run is scored under, and
+// returns the configuration that actually applies to it.
+//
+// Write-once: the update matches only a run with no pinned configuration, so
+// the first attempt writes `want` and every later one leaves it alone and
+// reads back what attempt 1 chose. A resume days later therefore scores with
+// the weights the run started with, however the project has been re-configured
+// since -- which is the whole reason the field exists.
+//
+// It is also why this is one conditional update rather than a read followed by
+// a write: two attempts of one run can overlap during a takeover, and
+// read-then-write would let the second overwrite the first's pin between the
+// two operations.
+//
+// The returned pointer is the run's own, so a caller never has to decide
+// whether its write won. Nil comes back only for a run document that no longer
+// exists, which the caller reports rather than scoring against a configuration
+// that belongs to nothing.
+func (r *RunRepository) PinScoringConfig(ctx context.Context, runID string, want gomodels.RunScoringConfig) (*gomodels.RunScoringConfig, error) {
+	oid, err := primitive.ObjectIDFromHex(runID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid run ID: %w", err)
+	}
+
+	if _, err := r.col.UpdateOne(ctx,
+		bson.M{"_id": oid, "scoring_config": bson.M{"$exists": false}},
+		bson.M{"$set": bson.M{"scoring_config": want, "updated_at": time.Now()}},
+	); err != nil {
+		return nil, fmt.Errorf("pin scoring config: %w", err)
+	}
+
+	run, err := r.GetByID(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if run == nil {
+		return nil, fmt.Errorf("run %s not found", runID)
+	}
+	return run.ScoringConfig, nil
 }
 
 // GetByID returns a discovery run by ID.

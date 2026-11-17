@@ -73,11 +73,33 @@ type Input struct {
 	// another datasource's thresholds.
 	HomeCurrency string
 
-	// AreaID is the analysis area the document belongs to, which is what a
-	// configured severity weight attaches to. Carried now and used to look up
-	// a weight that is uniform today, so that configuring one is a change to
-	// the config rather than to this signature.
+	// AreaID is the analysis area the document belongs to. Carried for the
+	// breakdown and for tracing; the weight itself comes from the two fields
+	// below rather than from a lookup on this id, so that the engine never
+	// has to hold a copy of the project's area table.
 	AreaID string
+
+	// AreaCategories are the business-risk category ids the area maps to, in
+	// the order the area declares them. They produce two things: the area's
+	// weight -- the LARGEST of their configured weights -- and the risk flags
+	// the document carries.
+	//
+	// Max rather than product or mean. Product double-counts, so a finding
+	// that is both a revenue leak and a compliance exposure would be weighted
+	// 2.0 x 3.0 and clamp to the top of the scale whatever its magnitude;
+	// mean dilutes the category that matters by averaging it with one that
+	// does not. Max says "weighted by whichever is worse", which is the
+	// sentence a reader expects from a list ordered by it.
+	AreaCategories []string
+
+	// AreaOverride is the weight configured for THIS area, which wins over
+	// its categories when it is set.
+	//
+	// A pointer because the legal range excludes zero: a value type cannot
+	// tell "no override" from an override of 0, and 0 is the one weight that
+	// would remove every finding in the area from the ranking. An override
+	// outside (0, MaxSeverityWeight] is treated as unstated -- see areaWeight.
+	AreaOverride *float64
 
 	// Config is the calibration to score against. The caller resolves it once
 	// so that two areas of one run can never disagree.
@@ -87,12 +109,50 @@ type Input struct {
 // areaWeight is the multiplier for this input's analysis area, and what set
 // it.
 //
-// Uniform today: no pack declares a risk taxonomy, so every area resolves to
-// the engine default and the source says so. It is a method rather than an
-// inline constant because the breakdown renders both halves, and because the
-// version that makes weights configurable should add a lookup here rather than
-// a field to Scoring.
+// The ladder, in order:
+//
+//  1. the per-area override, when one is configured and legal;
+//  2. else the LARGEST weight among the area's risk categories, reporting
+//     which category that was;
+//  3. else the engine default.
+//
+// A tie on the largest keeps the first category in the area's own declaration
+// order, so the breakdown names the same category every time the document is
+// re-scored. An unstable pick would mean a stored explanation that changed its
+// mind whenever validation was re-run.
+//
+// A weight outside (0, MaxSeverityWeight] is treated as UNSTATED rather than
+// applied or clamped, at both levels. Validation rejects such a weight when a
+// pack or a project is saved, so one reaching the engine came from a
+// hand-edited document -- and the two wrong answers it could produce are both
+// worse than falling through: applying a zero deletes every finding in the
+// area from the ranking, and clamping acts on a number nobody wrote. An
+// ignored override therefore lets the area's categories decide, which is what
+// the configuration said before the illegal value was written over it.
+//
+// Both halves are returned because the breakdown renders both: a reader is
+// shown the number that multiplied the magnitude AND what set it, and a 1.0
+// that came from a category is a different statement from a 1.0 nothing
+// configured.
 func (in Input) areaWeight(cfg SeverityConfig) (float64, *gomodels.WeightSource) {
+	if in.AreaOverride != nil && ValidSeverityWeight(*in.AreaOverride) {
+		return *in.AreaOverride, &gomodels.WeightSource{Kind: gomodels.WeightSourceAreaOverride}
+	}
+
+	best, from := 0.0, ""
+	for _, id := range in.AreaCategories {
+		w, ok := cfg.CategoryWeights[id]
+		if !ok || !ValidSeverityWeight(w) {
+			continue
+		}
+		if from == "" || w > best {
+			best, from = w, id
+		}
+	}
+	if from != "" {
+		return best, &gomodels.WeightSource{Kind: gomodels.WeightSourceCategory, Category: from}
+	}
+
 	weight := cfg.DefaultWeight
 	if weight <= 0 {
 		// A calibration that left it unset. 1.0 rather than 0, which would
@@ -110,10 +170,11 @@ func (in Input) areaWeight(cfg SeverityConfig) (float64, *gomodels.WeightSource)
 // is the same output, which is what lets a calibration be replayed over stored
 // runs without re-running anything.
 //
-// RiskFlags stays empty. A flag is derived from the analysis area's risk
-// categories and no pack declares any, so there is nothing to derive it from
-// yet -- and an empty list is the honest representation of that, where a
-// guessed one would not be.
+// RiskFlags are derived from the analysis area's risk categories and from
+// nothing else. There is no input here a model could write one through, which
+// is the point: a flag says what KIND of risk a finding is, and that is a
+// property of the area the finding was produced in rather than a claim the
+// model that wrote it may make.
 func Score(in Input) gomodels.Scoring {
 	cfg := in.resolvedConfig()
 	out := confidenceAxis(in, cfg)
@@ -133,6 +194,7 @@ func Score(in Input) gomodels.Scoring {
 	out.SeverityReason = sevReason
 	out.AreaWeight = weight
 	out.WeightSource = weightSource
+	out.RiskFlags = riskFlags(in.AreaCategories, cfg.Severity.CategoryWeights)
 
 	return withPriority(out, cfg)
 }
@@ -177,6 +239,13 @@ func ScoreRecommendation(in Input, cited []InheritedSeverity) gomodels.Scoring {
 	out.SeverityReason = inherited.SeverityReason
 	out.AreaWeight = inherited.AreaWeight
 	out.WeightSource = inherited.WeightSource
+	// The flags travel with the severity half, not with the confidence one. A
+	// recommendation's risk flags are the cited insight's: it is an action
+	// about that finding, so it is a compliance action if the finding was a
+	// compliance exposure. Deriving them from the recommendation's own area
+	// is not an option either -- it has none, which is why the severity half
+	// is inherited in the first place.
+	out.RiskFlags = inherited.RiskFlags
 
 	return withPriority(out, cfg)
 }

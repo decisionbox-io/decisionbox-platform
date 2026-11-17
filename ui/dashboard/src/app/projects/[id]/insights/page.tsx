@@ -21,6 +21,7 @@ import { SeverityCell } from '@/components/scoring/SeverityCell';
 import { PriorityCell } from '@/components/scoring/PriorityCell';
 import { priorityTierOrder } from '@/components/scoring/priorityMeta';
 import { severityBandOrder } from '@/components/scoring/severityMeta';
+import { RiskFlagChips } from '@/components/scoring/RiskFlagChips';
 import { useReadSet } from '@/lib/readState';
 import { api, Feedback, Insight, Project, SearchResultItem } from '@/lib/api';
 
@@ -357,6 +358,13 @@ export default function InsightsListPage() {
                   </td>
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
                     <AreaBadge area={insight.analysis_area} />
+                    {/* The business-risk flags, under the area they are
+                        derived from rather than in a column of their own: a
+                        column would be empty on every deployment whose pack
+                        declares no risk categories, and these say what kind
+                        of thing the area finds. Renders nothing when there
+                        are none. */}
+                    <RiskFlagChips scoring={insight.evidence_scoring} size="xs" />
                   </td>
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
                     <InsightValidationBadge validation={insight.validation} />

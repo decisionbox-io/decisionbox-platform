@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+)
 
 // DiscoveryRun tracks the live status of an agent discovery run.
 // Same schema as agent's model (both read/write same collection).
@@ -134,6 +138,12 @@ type DiscoveryRun struct {
 	MinSteps int      `bson:"min_steps,omitempty" json:"min_steps,omitempty"`
 	Areas    []string `bson:"areas,omitempty" json:"areas,omitempty"`
 	Effort   string   `bson:"effort,omitempty" json:"effort,omitempty"`
+
+	// ScoringConfig is the severity weighting this run was started with,
+	// written once at its first attempt and replayed on every resume. Nil on
+	// a run that predates it, which resolves from the project -- correct for
+	// a run that pinned nothing.
+	ScoringConfig *gomodels.RunScoringConfig `bson:"scoring_config,omitempty" json:"scoring_config,omitempty"`
 
 	// Schema-retrieval telemetry. SchemaTokens / SchemaTableCount are
 	// stamped once at run start from the rendered catalog. The Lookup /
