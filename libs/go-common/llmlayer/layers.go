@@ -41,6 +41,9 @@ const (
 	LayerQuestions = "questions"
 	// LayerReflection — the end-of-run reflection that writes the ledger.
 	LayerReflection = "reflection"
+	// LayerConsolidation — adjudicating which of a run's findings restate
+	// each other, before validation spends its budget on them.
+	LayerConsolidation = "consolidation"
 	// LayerSQLRepair — repairing a query the warehouse rejected.
 	LayerSQLRepair = "sql_repair"
 	// LayerAskRouter — picking which datasource answers an Ask turn.
@@ -156,6 +159,12 @@ var layers = []Descriptor{
 		Key:         LayerReflection,
 		Label:       "Ledger reflection",
 		Description: "Consolidating each run into the compounding Discovery Ledger.",
+		Group:       GroupSmall,
+	},
+	{
+		Key:         LayerConsolidation,
+		Label:       "Consolidation",
+		Description: "Deciding which of a run's findings restate each other, and which phrasing a reader should be sent to.",
 		Group:       GroupSmall,
 	},
 	{

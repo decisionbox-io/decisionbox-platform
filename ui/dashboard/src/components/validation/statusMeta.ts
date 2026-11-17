@@ -56,6 +56,11 @@ const META: Record<string, StatusMeta> = {
     tagline: 'Validation budget was reached before this item.',
     tone: 'grey',
   },
+  skipped_duplicate: {
+    label: 'Restated',
+    tagline: 'This restates another finding of the same run, which carries the verdict.',
+    tone: 'grey',
+  },
   // --- Legacy (kept until legacy docs are migrated) ---
   adjusted: {
     label: 'Adjusted',

@@ -389,6 +389,25 @@ type Orchestrator struct {
 	embeddingProvider     goembedding.Provider
 	embedIndexStore       EmbedIndexStore
 
+	// insightVectors holds every insight vector this run has embedded, keyed
+	// by the embedding TEXT. The mid-run consolidation pass fills it and
+	// Phase 9 reads it, so a run embeds each insight exactly once however
+	// many times it is compared. See cacheInsightVector.
+	insightVectors map[string][]float64
+	// consolidationKept is the set of pairs the consolidation pass
+	// adjudicated and decided to leave standing, so Phase 9 does not fold
+	// them the other way round. See keepPair.
+	consolidationKept map[string]struct{}
+	// checkpointIDByLive maps an insight id this attempt minted onto the id
+	// the run's CHECKPOINTS hold for the same insight, for the areas this
+	// attempt restored. Set once before the analysis loop and added to as
+	// each area restores — it is the same map the loop threads for Phase 5's
+	// stored citations, held here because the checkpoint writers need it too:
+	// a consolidation mark into a restored area has to be STORED by the
+	// stable id or a third attempt cannot follow it. See
+	// withCheckpointStableMarks.
+	checkpointIDByLive map[string]string
+
 	// embedder + schemaRetriever are the Qdrant-backed schema retrieval
 	// layer (top-K relevant tables in the prompt instead of dumping the
 	// full catalog). Required — discovery is gated on schema_index_status
@@ -783,15 +802,15 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		analysisDraftRepo:      analysisDraftRepo,
 
 		recommendationCheckpointRepo: recommendationCheckpointRepo,
-		embedder:               opts.EmbeddingProvider, // same interface, named differently to avoid ambiguity
-		schemaRetriever:        opts.SchemaRetriever,
-		schemaCache:            opts.SchemaCache,
-		warehouseHash:          opts.WarehouseHash,
-		warehouseID:            opts.WarehouseID,
-		warehouseProviders:     opts.WarehouseProviders,
-		warehouses:             opts.Warehouses,
-		runStepIndex:           opts.RunStepIndex,
-		runID:                  opts.RunID,
+		embedder:                     opts.EmbeddingProvider, // same interface, named differently to avoid ambiguity
+		schemaRetriever:              opts.SchemaRetriever,
+		schemaCache:                  opts.SchemaCache,
+		warehouseHash:                opts.WarehouseHash,
+		warehouseID:                  opts.WarehouseID,
+		warehouseProviders:           opts.WarehouseProviders,
+		warehouses:                   opts.Warehouses,
+		runStepIndex:                 opts.RunStepIndex,
+		runID:                        opts.RunID,
 	}
 }
 
@@ -1620,6 +1639,9 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// different id. Empty on a run that restores nothing, which is what keeps
 	// Phase 5 on the path it always took. See storedInsightIDs.
 	storedIDByLive := make(map[string]string)
+	// The checkpoint writers read the same map, so they are given the same
+	// one rather than a copy that could drift from it.
+	o.checkpointIDByLive = storedIDByLive
 	// The feed is attempt-scoped, so this attempt has to own a copy of the
 	// restored areas' rows or its log shows recommendations drawn from
 	// insights the operator cannot see. Once, here, in RunAt order — see
@@ -1699,6 +1721,21 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	picker.EstimateRenderedSize = EstimateCompactedRenderedSize
 	picker.SmartOverflowEnabled = opts.SmartOverflowEnabled
 
+	// Every area of this run by id, so a document from an area the run has
+	// already finished can carry its own ownership statement into the
+	// consolidation pass.
+	areaByID := make(map[string]AnalysisArea, len(runAreas))
+	for _, a := range runAreas {
+		areaByID[a.ID] = a
+	}
+	// The id bookkeeping of every restore this run performs: what each
+	// stored insight id was reminted to, and the stored target each restored
+	// mark arrived with. A consolidation mark names its canonical by the
+	// stored id and a restore remints every id in the set, so this is what
+	// lets such a mark survive — and settleRunMarks, below, is what decides
+	// it, once no further area can change the mapping.
+	restoredInsightIDs := newRestoredIDs()
+
 	for _, area := range runAreas {
 		// Per area, not just per phase: analysis is the long one, and a
 		// resume landing inside it would otherwise go unnoticed until
@@ -1722,7 +1759,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// before the loop.
 		if cp, ok := completedAreas[area.ID]; ok {
 			var remapped map[string]string
-			analysisLog, allInsights, remapped = restoreArea(cp, analysisLog, allInsights)
+			analysisLog, allInsights, remapped = restoreArea(cp, analysisLog, allInsights, restoredInsightIDs)
 			// The ids this attempt minted for the restored insights, against
 			// the ones the checkpoint holds. Phase 5 needs the mapping to
 			// decide whether a stored recommendation set still describes the
@@ -1784,6 +1821,34 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 				continue
 			}
 			step, insights = out.step, out.insights
+
+			// Phase 4.4: consolidate before anything is validated. The area's
+			// fresh insights are clustered against each other and against
+			// what the earlier areas reported, the clusters are adjudicated,
+			// and a restatement is marked duplicate_of its canonical.
+			//
+			// Here, and not a line either side of it, for three reasons.
+			// step.Insights and insights are the same slice, so a mark
+			// written here is in the draft the next line checkpoints — a
+			// resumed attempt restores the marks rather than re-deriving them
+			// and never pays the provider twice. It is before the
+			// stopAfterDraft pause seam, the first point a run can stop
+			// without having paid for validation, so a paused run has banked
+			// the consolidation it did. And it is inside the !fromDraft
+			// branch: a restored draft's marks arrive WITH the draft, and a
+			// completed area was `continue`d long before this, so neither
+			// re-enters the pass.
+			step.Consolidation = o.consolidateArea(ctx, consolidateAreaInput{
+				area:     area,
+				prompts:  prompts,
+				areaByID: areaByID,
+				insights: insights,
+				// Areas 1..N-1, the run's own accumulator. Candidates and
+				// canonicals; never marked, because their verdicts are paid
+				// for and their checkpoints are written.
+				runInsights: allInsights,
+			}).persisted()
+
 			// The area is analysed and repaired but not yet validated, which
 			// is the one point in its life where a crash loses the most for
 			// the least reason. Recorded before the per-insight calls start,
@@ -1875,7 +1940,15 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// An area this attempt analysed itself is NOT reminted — its ids were
 		// minted here and nothing has written them.
 		if fromDraft {
-			step, _ = reidentifyRestoredArea(step)
+			var draftRemap map[string]string
+			step, draftRemap = reidentifyRestoredArea(step)
+			// The draft's own marks name the draft's ids, which have just
+			// changed, so they are re-pointed for the same reason a restored
+			// area's are — and registered the same way, because a draft id
+			// can collide with a completed checkpoint's just as readily: an
+			// insight id is the model's when the model supplies one.
+			restoredInsightIDs.register(draftRemap, area.ID)
+			repointRestoredMarks(step.Insights, restoredInsightIDs, area.ID)
 			insights = step.Insights
 			// And the remap is deliberately NOT recorded in storedIDByLive,
 			// which is the subtle half. That map answers "which id do this
@@ -1981,6 +2054,17 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		return nil, ai.ErrAttemptSuperseded
 	}
 	o.setLLMPhase(models.PhaseRecommendations)
+	// Settle the consolidation marks across the whole run now that every
+	// restored area has registered the ids this attempt minted for it. Until
+	// here a mark into an area that restored LATER is correct but stale, and
+	// the area order comes out of a map so "later" is not predictable. Run
+	// before the eligibility filter, which reads the marks.
+	if repointed, cleared := settleRunMarks(analysisLog, allInsights, restoredInsightIDs); repointed+cleared > 0 {
+		applog.WithFields(applog.Fields{
+			"repointed": repointed, "cleared": cleared,
+		}).Info("Consolidation marks settled across the restored run")
+	}
+
 	recommenderInput := filterEligibleInsights(allInsights, o.recommendationVerdicts)
 	applog.WithFields(applog.Fields{
 		"total_insights":    len(allInsights),

@@ -233,6 +233,43 @@ type AnalysisStep struct {
 	// could not be read as a number. Mirrored for the reason stated above, which this
 	// field is the newest example of.
 	FiguresValueUnreadable int `bson:"figures_value_unreadable,omitempty" json:"figures_value_unreadable,omitempty"`
+
+	// Consolidation is the pre-validation consolidation pass for this area.
+	// Mirrored for exactly the reason every counter above it is — and it is
+	// the first case where the counters sit one struct deeper, which the class
+	// test below could not see until it was taught to. Nil on an area that
+	// proposed nothing.
+	Consolidation *ConsolidationSummary `bson:"consolidation,omitempty" json:"consolidation,omitempty"`
+}
+
+// ConsolidationSummary mirrors the agent's struct: what the pre-validation
+// consolidation pass did for one analysis area.
+//
+// Folds are counted by which test proposed them because the two tests find
+// largely different duplicates, so a drop in one count is a different failure
+// from a drop in both. Reverted is the one worth an alert: it means the pass
+// could not prove its own marks resolve cleanly and gave them all back.
+type ConsolidationSummary struct {
+	Documents int `bson:"documents" json:"documents"`
+	Clusters  int `bson:"clusters" json:"clusters"`
+	Folded    int `bson:"folded" json:"folded"`
+
+	ByCosine      int `bson:"by_cosine,omitempty" json:"by_cosine,omitempty"`
+	ByContainment int `bson:"by_containment,omitempty" json:"by_containment,omitempty"`
+	ByBoth        int `bson:"by_both,omitempty" json:"by_both,omitempty"`
+
+	Decider string `bson:"decider,omitempty" json:"decider,omitempty"`
+
+	RefusedOtherArea   int  `bson:"refused_other_area,omitempty" json:"refused_other_area,omitempty"`
+	RefusedRecheck     int  `bson:"refused_recheck,omitempty" json:"refused_recheck,omitempty"`
+	RefusedShape       int  `bson:"refused_shape,omitempty" json:"refused_shape,omitempty"`
+	RefusedUnmergeable int  `bson:"refused_unmergeable,omitempty" json:"refused_unmergeable,omitempty"`
+	RefusedKept        int  `bson:"refused_kept,omitempty" json:"refused_kept,omitempty"`
+	Kept               int  `bson:"kept,omitempty" json:"kept,omitempty"`
+	OverBound          int  `bson:"over_bound,omitempty" json:"over_bound,omitempty"`
+	Reverted           bool `bson:"reverted,omitempty" json:"reverted,omitempty"`
+
+	DurationMs int64 `bson:"duration_ms,omitempty" json:"duration_ms,omitempty"`
 }
 
 // SelectedStep mirrors the agent's struct: which exploration step
