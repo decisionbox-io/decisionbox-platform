@@ -23,6 +23,12 @@ type angleEmbedder struct {
 	deg   map[string]float64
 	calls int
 	texts []string
+	// rewriteDeg is the angle to answer for a text this fixture does not know.
+	// The only such text the pass embeds is a rewritten survivor, and the
+	// default reads like the survivor itself — which is what makes a rewrite
+	// cover the folds resting on it. Set it to something far away to test the
+	// refusal.
+	rewriteDeg *float64
 }
 
 func (e *angleEmbedder) Embed(_ context.Context, texts []string) ([][]float64, error) {
@@ -34,7 +40,11 @@ func (e *angleEmbedder) Embed(_ context.Context, texts []string) ([][]float64, e
 			out[i] = append(unit(d), 0)
 			continue
 		}
-		out[i] = []float64{0, 0, 1}
+		if e.rewriteDeg != nil {
+			out[i] = append(unit(*e.rewriteDeg), 0)
+			continue
+		}
+		out[i] = append(unit(0), 0)
 	}
 	return out, nil
 }
@@ -2566,13 +2576,28 @@ func TestRewriteBreaksAFold_ADependantThisVerdictDidNotFoldRefusesTheRewrite(t *
 	}
 	marks := map[string]string{"earlier": "broad"}
 
-	if !rewriteBreaksAFold(docs[0], docs, marks, nil) {
+	// A dependant this verdict did not fold refuses the rewrite outright,
+	// whatever the rewrite says.
+	if !rewriteBreaksAFold(docs[0], docs, marks, nil, unit(0), 0.88) {
 		t.Error("a dependant this verdict did not fold must refuse the rewrite")
 	}
-	// Folded by THIS verdict: applied, and nothing further is asked of it.
+
 	mine := map[string]float64{"earlier": 0}
-	if rewriteBreaksAFold(docs[0], docs, marks, mine) {
-		t.Error("a dependant of this verdict must not refuse its own rewrite")
+	// Folded by THIS verdict, and the rewrite still reads like it: applied.
+	// docs[1] sits at 90 degrees from docs[0], so the rewrite is checked
+	// against its own vector rather than the survivor's.
+	if rewriteBreaksAFold(docs[0], docs, marks, mine, unit(90), 0.88) {
+		t.Error("a rewrite the fold still holds against must be applied")
+	}
+	// The same fold, against a rewrite that reads nothing like it: refused,
+	// because the dependant would be suppressed behind a survivor that no
+	// longer states its claim.
+	if !rewriteBreaksAFold(docs[0], docs, marks, mine, unit(0), 0.88) {
+		t.Error("a rewrite that drops what the fold rested on must be refused")
+	}
+	// And with no vector for the rewrite at all: refused rather than guessed.
+	if !rewriteBreaksAFold(docs[0], docs, marks, mine, nil, 0.88) {
+		t.Error("a rewrite that could not be embedded must be refused")
 	}
 }
 
@@ -2745,5 +2770,46 @@ func TestConsolidateArea_TheCapIgnoresAStrongPairOfTwoEarlierFindings(t *testing
 	}
 	if !slices.Equal(shown[0], []string{"pairA", "pairB"}) {
 		t.Errorf("the provider was shown %v, want the pair this area can actually fold", shown[0])
+	}
+}
+
+// An adjudicator can name a restatement correctly and then write a merged
+// description that drops the row it rested on. The donor would be suppressed
+// behind a survivor that does not state its claim — losing its verdict and its
+// place in Phase 5 for a sentence that is no longer there.
+//
+// The check that used to catch this read the figures out of the rewritten
+// prose. This asks it of the rewrite's own embedding, and an answer it cannot
+// get refuses the rewrite rather than guessing.
+func TestConsolidateArea_ARewriteThatDropsWhatItFoldedIsRefused(t *testing.T) {
+	a := insight("a", "stock", "the whole total", "every segment", 200)
+	b := insight("b", "stock", "the north segment", "one slice of it", 100)
+
+	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		return []agentplugin.ConsolidationVerdict{{
+			CanonicalID:       "a",
+			Duplicates:        map[string]float64{"b": 0.9},
+			MergedDescription: "a rewrite that says nothing about the north segment",
+		}}, nil
+	}})
+
+	// The rewritten survivor reads 90 degrees from everything the cluster
+	// holds, so it covers neither finding.
+	far := 90.0
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{
+		deg:        map[string]float64{embText(a): 0, embText(b): 25},
+		rewriteDeg: &far,
+	}}
+	current := []models.Insight{a, b}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if st.RefusedUnmergeable != 1 {
+		t.Fatalf("stats = %+v, want the rewrite refused", st)
+	}
+	if current[1].DuplicateOf != "" {
+		t.Errorf("b.duplicate_of = %q; it is suppressed behind a survivor that no longer states its claim", current[1].DuplicateOf)
+	}
+	if strings.Contains(current[0].Description, "nothing about") {
+		t.Errorf("a.description = %q; the rewrite was applied", current[0].Description)
 	}
 }

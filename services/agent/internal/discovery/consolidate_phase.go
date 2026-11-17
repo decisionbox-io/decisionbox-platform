@@ -159,34 +159,52 @@ func (o *Orchestrator) consolidateArea(ctx context.Context, in consolidateAreaIn
 	if len(clusters) > 0 {
 		// What goes to the adjudicator, as against what the community rule
 		// decides. See consolidationMaxClustersEnv.
-		adjudicable := clusters
-		if bound := consolidationMaxClusters(); bound > 0 && len(clusters) > bound {
-			// Ordered before it is cut, so the slots go to the clusters where
-			// a verdict changes the outcome. A cluster holding a pair above
-			// the FOLD floor gets folded by the community rule if the provider
-			// never sees it — possibly against what the provider would have
-			// said — while a cluster that is entirely below it loses only a
-			// fold that would not have happened. First come the ones that can
-			// be folded without a judgement.
-			adjudicable = make([]docCluster, len(clusters))
-			copy(adjudicable, clusters)
-			sort.SliceStable(adjudicable, func(x, y int) bool {
-				return clusterCanAutoFold(docs, adjudicable[x], foldFloor) &&
-					!clusterCanAutoFold(docs, adjudicable[y], foldFloor)
+		order := make([]int, len(clusters))
+		for i := range order {
+			order[i] = i
+		}
+		// Ranked only when the cap actually bites AND a provider is there to
+		// receive the slots: with none registered every cluster takes the
+		// community rule whatever the order, and ranking a large area cost
+		// seconds to change nothing.
+		if bound := consolidationMaxClusters(); bound > 0 && len(clusters) > bound &&
+			agentplugin.HasConsolidationProvider() {
+			// Slots go to the clusters where a verdict changes the outcome. A
+			// cluster holding a pair the community rule could fold gets folded
+			// if the provider never sees it — possibly against what the
+			// provider would have said — while a cluster with no such pair
+			// loses only a fold that would not have happened.
+			//
+			// Each cluster's answer is computed ONCE. Asking it inside the
+			// comparator re-walked every pair of every overlapping star on
+			// each comparison: 0.12s to 4.7s on 200 findings, for the same
+			// marks.
+			writable := make([]bool, len(clusters))
+			for i := range clusters {
+				writable[i] = clusterCanAutoFold(docs, clusters[i], foldFloor)
+			}
+			sort.SliceStable(order, func(x, y int) bool {
+				return writable[order[x]] && !writable[order[y]]
 			})
-			adjudicable = adjudicable[:bound]
-			st.OverBound = len(clusters) - bound
+		}
+		if bound := consolidationMaxClusters(); bound > 0 && len(order) > bound {
+			st.OverBound = len(order) - bound
+			order = order[:bound]
 			applog.WithFields(applog.Fields{
 				"area": st.Area, "clusters": len(clusters), "bound": bound,
 				"to_community_rule": st.OverBound, "env": consolidationMaxClustersEnv,
 			}).Warn("Consolidation: this area proposed more clusters than the adjudication bound; the rest fall to the community rule")
 		}
+		adjudicable := make([]docCluster, len(order))
+		for i, oi := range order {
+			adjudicable[i] = clusters[oi]
+		}
 
 		var decider string
-		verdicts, byProvider, decider = o.adjudicate(ctx, docs, adjudicable, adjFloor)
+		verdicts, byProvider, decider = o.adjudicate(ctx, docs, adjudicable, order, adjFloor)
 		st.Decider = decider
 	}
-	st = o.applyConsolidation(in, docs, clusters, verdicts, byProvider, foldFloor, adjFloor, st)
+	st = o.applyConsolidation(ctx, in, docs, clusters, verdicts, byProvider, foldFloor, adjFloor, st)
 	// An area can write community folds with no cluster adjudicated at all,
 	// once the two floors can be set apart. Decider is assigned where the
 	// adjudication happens, so the summary reported "none" beside a positive
@@ -375,7 +393,12 @@ func sectionAfterHeading(text, heading string) string {
 // holds between the two. A containment-only cluster is left standing by the
 // fallback, which is what keeps a deployment with no provider on exactly the
 // outcome it has today — only the moment the decision is made moves.
-func (o *Orchestrator) adjudicate(ctx context.Context, docs []consolidationDoc, clusters []docCluster, threshold float64) (map[int]agentplugin.ConsolidationVerdict, map[int]bool, string) {
+// `order` maps each position in `clusters` back to its index in the caller's
+// own slice. The cap may reorder and truncate before calling, and every map
+// this returns is read by the caller's indices — keying them by position here
+// attributed a verdict to the wrong cluster, which a reordered cap reproduced
+// as the provider keeping a pair distinct while the community rule folded it.
+func (o *Orchestrator) adjudicate(ctx context.Context, docs []consolidationDoc, clusters []docCluster, order []int, threshold float64) (map[int]agentplugin.ConsolidationVerdict, map[int]bool, string) {
 	out := make(map[int]agentplugin.ConsolidationVerdict, len(clusters))
 	// Which verdicts came from the PROVIDER rather than the fallback. It
 	// decides whether a member the verdict left out is a judgement to honour
@@ -412,8 +435,8 @@ func (o *Orchestrator) adjudicate(ctx context.Context, docs []consolidationDoc, 
 				if verdicts[i].CanonicalID == "" {
 					continue
 				}
-				out[i] = verdicts[i]
-				byProvider[i] = true
+				out[order[i]] = verdicts[i]
+				byProvider[order[i]] = true
 			}
 		}
 	}
@@ -584,6 +607,7 @@ func communityFoldOrder(docs []consolidationDoc, folds map[string]communityFold)
 // result: every mark in the run resolved transitively to a final canonical,
 // re-verified, and the whole area's marks reverted if any of it is broken.
 func (o *Orchestrator) applyConsolidation(
+	ctx context.Context,
 	in consolidateAreaInput,
 	docs []consolidationDoc,
 	clusters []docCluster,
@@ -819,6 +843,17 @@ func (o *Orchestrator) applyConsolidation(
 			// What the survivor's body would say, split the way it is stored.
 			prospectivePlain, prospectiveMd := splitMarkdownDescription(merged)
 
+			// And what it would EMBED as, so each fold this verdict makes can
+			// be checked against the text that will carry it.
+			var prospectiveVec []float64
+			if docs[fi].current {
+				prospectiveVec = o.rewriteVector(ctx, commonmodels.InsightEmbeddingText(
+					in.insights[docs[fi].slot].Name, prospectivePlain,
+					in.insights[docs[fi].slot].AnalysisArea,
+					in.insights[docs[fi].slot].Severity,
+					in.insights[docs[fi].slot].TargetSegment))
+			}
+
 			switch refusal := mergeRefusal(mergeCheck{
 				survivor:         docs[fi],
 				namedCanonical:   v.CanonicalID,
@@ -830,6 +865,8 @@ func (o *Orchestrator) applyConsolidation(
 				marks:            marks,
 				folded:           v.Duplicates,
 				written:          clusterWritten,
+				prospectiveVec:   prospectiveVec,
+				foldFloor:        threshold,
 			}); {
 			case refusal != "":
 				reason := refusal
@@ -1239,6 +1276,11 @@ type mergeCheck struct {
 	// written from.
 	folded    map[string]float64
 	written []int
+	// prospectiveVec is what the rewritten survivor would embed as, or nil
+	// when it could not be embedded. foldFloor is the floor a fold has to
+	// still hold at against it.
+	prospectiveVec []float64
+	foldFloor      float64
 }
 
 // mergeRefusal returns why a rewrite cannot be applied, or "" when it can.
@@ -1271,7 +1313,7 @@ func mergeRefusal(c mergeCheck) string {
 		return "a folded member's prose carries rendered evidence figures"
 	case c.refusedDonor:
 		return "a member this verdict folds was refused, so its rewrite cannot be trusted"
-	case rewriteBreaksAFold(c.survivor, c.docs, c.marks, c.folded):
+	case rewriteBreaksAFold(c.survivor, c.docs, c.marks, c.folded, c.prospectiveVec, c.foldFloor):
 		return "the rewrite does not account for every finding folded into the survivor"
 	}
 	return ""
@@ -1288,7 +1330,7 @@ func mergeRefusal(c mergeCheck) string {
 // POINT, not whether the claim still holds — and the end-of-run check skips a
 // document that already carries a mark. So the finding would stay suppressed
 // and unvalidated with its claim stated nowhere.
-func rewriteBreaksAFold(survivor consolidationDoc, docs []consolidationDoc, marks map[string]string, folded map[string]float64) bool {
+func rewriteBreaksAFold(survivor consolidationDoc, docs []consolidationDoc, marks map[string]string, folded map[string]float64, prospectiveVec []float64, foldFloor float64) bool {
 	for i := range docs {
 		if marks[docs[i].id] != survivor.id {
 			continue
@@ -1308,16 +1350,27 @@ func rewriteBreaksAFold(survivor consolidationDoc, docs []consolidationDoc, mark
 		if _, mine := folded[docs[i].id]; !mine {
 			return true
 		}
-		// A dependant of THIS verdict needs no further check. The adjudicator
-		// was shown its text and wrote the rewrite to carry it; that is what
-		// MergedDescription is for.
+		// A dependant of THIS verdict is checked against the text the rewrite
+		// would leave behind. Being shown a finding is not the same as
+		// carrying it: an adjudicator can name a restatement correctly and
+		// then write a merged description that drops the row it rested on, and
+		// the dependant is then suppressed behind a survivor that does not
+		// state its claim — losing its verdict and its place in Phase 5 for a
+		// sentence that is no longer there. Review reproduced it at 0.85.
 		//
-		// The clause this replaces re-checked a dependant whose fold rested on
-		// the figures in the survivor's body, because a rewrite could drop the
-		// row they came from. Nothing is folded on that basis any more — every
-		// fold is a similarity pair the model ruled on — and there is nothing
-		// textual left to re-check: the rewritten body is not embedded, so
-		// the vectors cannot answer for it either.
+		// The check this replaces read the figures out of the rewritten prose.
+		// This asks the same question in the currency the rest of the pass
+		// uses, over the rewrite's own embedding.
+		//
+		// No vector, no rewrite — an embedding failure or a survivor from an
+		// earlier area both land here, and both refuse rather than guess. The
+		// fold still stands; only the merged description is withheld.
+		if len(prospectiveVec) == 0 || len(docs[i].vec) == 0 {
+			return true
+		}
+		if score, ok := cosineSimilarity(docs[i].vec, prospectiveVec); !ok || score < foldFloor {
+			return true
+		}
 	}
 	return false
 }
@@ -1438,4 +1491,32 @@ func (st consolidationStats) persisted() *models.ConsolidationSummary {
 		Reverted:           st.Reverted,
 		DurationMs:         st.DurationMs,
 	}
+}
+
+// rewriteVector embeds one prospective survivor body, through the same cache the
+// pass fills, and returns nil when it cannot.
+//
+// Nil is a real answer here and the caller treats it as a refusal: a rewrite
+// that cannot be checked against the folds resting on it is not applied. One
+// text, because a rewrite is rare — a verdict offers one only when it folded
+// something — and the cache is keyed on the text, so a resumed attempt pays
+// nothing.
+func (o *Orchestrator) rewriteVector(ctx context.Context, text string) []float64 {
+	if text == "" {
+		return nil
+	}
+	if vec := o.cachedInsightVector(text); vec != nil {
+		return vec
+	}
+	if o.embeddingProvider == nil {
+		return nil
+	}
+	vecs, err := o.embeddingProvider.Embed(ctx, []string{text})
+	if err != nil || len(vecs) != 1 || len(vecs[0]) == 0 {
+		applog.WithError(err).WithField("vectors", len(vecs)).
+			Warn("Consolidation: the rewritten survivor could not be embedded; its rewrite is refused")
+		return nil
+	}
+	o.cacheInsightVector(text, vecs[0])
+	return vecs[0]
 }
