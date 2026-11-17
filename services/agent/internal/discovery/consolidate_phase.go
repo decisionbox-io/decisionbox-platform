@@ -713,9 +713,22 @@ func (o *Orchestrator) applyConsolidation(
 			//
 			// Both findings stand, and each pair is remembered as adjudicated
 			// so the fallback does not fold it on document order instead.
+			donors := make([]string, 0, len(v.Duplicates))
 			for dupID := range v.Duplicates {
 				o.keepPair(dupID, final)
 				st.Kept++
+				donors = append(donors, dupID)
+			}
+			// And from each other. The adjudicator said each of them carries
+			// detail the survivor does not; folding one into another would
+			// suppress that detail just as surely, and two donors of one
+			// verdict are related only through a canonical none of them
+			// reached.
+			sort.Strings(donors)
+			for x := 0; x < len(donors); x++ {
+				for y := x + 1; y < len(donors); y++ {
+					donorKeeps = append(donorKeeps, [2]string{donors[x], donors[y]})
+				}
 			}
 			applog.WithFields(applog.Fields{
 				"area": st.Area, "canonical": final, "donors": len(v.Duplicates),
@@ -1037,6 +1050,39 @@ func (o *Orchestrator) registerAdjudicatedKeeps(
 	marks map[string]string,
 	st *consolidationStats,
 ) {
+	// A verdict asking for a rewrite says its fold would lose something, so
+	// the pair it names must be kept whichever cluster is read first. Settled
+	// here, ahead of the explicit folds, because two overlapping clusters can
+	// propose the same fold with only one of them asking for the rewrite — and
+	// then the outcome depended on processing order: the rewrite verdict first
+	// blocked the fold, the rewrite verdict second left the mark standing.
+	//
+	// This is the one case where a keep beats an explicit fold. An omission is
+	// ambiguous, which is why a fold beats it below; a rewrite request is a
+	// positive statement that something would be lost.
+	rewriteKept := make(map[string]struct{})
+	for i := range clusters {
+		v, ok := verdicts[i]
+		if !ok || !byProvider[i] || strings.TrimSpace(v.MergedDescription) == "" {
+			continue
+		}
+		canonical, cycle := resolveTarget(v.CanonicalID, marks)
+		if cycle {
+			canonical = v.CanonicalID
+		}
+		for dupID := range v.Duplicates {
+			for _, key := range []string{keptPairKey(v.CanonicalID, dupID), keptPairKey(canonical, dupID)} {
+				if _, seen := rewriteKept[key]; seen {
+					continue
+				}
+				rewriteKept[key] = struct{}{}
+			}
+			o.keepPair(v.CanonicalID, dupID)
+			o.keepPair(canonical, dupID)
+			st.Kept++
+		}
+	}
+
 	explicit := make(map[string]struct{})
 	for i := range clusters {
 		v, ok := verdicts[i]
@@ -1048,8 +1094,12 @@ func (o *Orchestrator) registerAdjudicatedKeeps(
 			canonical = v.CanonicalID
 		}
 		for dupID := range v.Duplicates {
-			explicit[keptPairKey(v.CanonicalID, dupID)] = struct{}{}
-			explicit[keptPairKey(canonical, dupID)] = struct{}{}
+			for _, key := range []string{keptPairKey(v.CanonicalID, dupID), keptPairKey(canonical, dupID)} {
+				if _, kept := rewriteKept[key]; kept {
+					continue
+				}
+				explicit[key] = struct{}{}
+			}
 		}
 	}
 

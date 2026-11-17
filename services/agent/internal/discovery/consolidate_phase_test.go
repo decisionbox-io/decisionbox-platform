@@ -2121,3 +2121,91 @@ func TestConsolidateArea_AVerdictAskingForARewriteKeepsItsFindingsStanding(t *te
 		t.Error("the pair was not recorded as adjudicated; the community rule will fold it anyway")
 	}
 }
+
+// A rewrite verdict's donors are protected from each other, not only from the
+// canonical. The adjudicator said each of them carries detail the survivor does
+// not; folding one into another suppresses that detail just as surely.
+func TestConsolidateArea_ARewriteVerdictsDonorsAreKeptFromEachOther(t *testing.T) {
+	a := insight("a", "stock", "the whole total", "every segment", 300)
+	b := insight("b", "stock", "the north segment", "a slice, with a caveat", 200)
+	c := insight("c", "stock", "the north segment again", "a slice, with another caveat", 100)
+
+	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		return []agentplugin.ConsolidationVerdict{{
+			CanonicalID:       "a",
+			Duplicates:        map[string]float64{"b": 0.9, "c": 0.9},
+			MergedDescription: "the whole total, carrying both caveats",
+		}}, nil
+	}})
+
+	// b and c are 1 degree apart, so the community rule would fold one into
+	// the other unasked.
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 20, embText(c): 21,
+	}}}
+	current := []models.Insight{a, b, c}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if st.Folded != 0 {
+		t.Fatalf("stats = %+v, want nothing folded", st)
+	}
+	if !o.adjudicatedKeep("b", "c") {
+		t.Error("the two donors were not kept from each other")
+	}
+	if current[1].DuplicateOf != "" || current[2].DuplicateOf != "" {
+		t.Errorf("b/c = (%q, %q); a donor was folded into the other, losing its caveat",
+			current[1].DuplicateOf, current[2].DuplicateOf)
+	}
+}
+
+// Two overlapping clusters can propose the same fold with only one of them
+// asking for a rewrite, and the outcome used to depend on which was read
+// first: the rewrite verdict first blocked the fold, the rewrite verdict
+// second left the mark standing. The request is settled before any mark is
+// written now, so either order gives the same answer.
+func TestConsolidateArea_ARewriteRequestBeatsAnotherClustersFoldInEitherOrder(t *testing.T) {
+	for _, rewriteOn := range []string{"x", "y"} {
+		t.Run("rewrite on the cluster holding "+rewriteOn, func(t *testing.T) {
+			a := insight("a", "stock", "claim a", "body a", 400)
+			b := insight("b", "stock", "claim b", "body b", 300)
+			x := insight("x", "stock", "claim x", "body x", 200)
+			y := insight("y", "stock", "claim y", "body y", 100)
+
+			withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+				out := make([]agentplugin.ConsolidationVerdict, len(cl))
+				for i, cluster := range cl {
+					ids := make([]string, 0, len(cluster.Candidates))
+					for _, cand := range cluster.Candidates {
+						ids = append(ids, cand.ID)
+					}
+					out[i] = agentplugin.ConsolidationVerdict{
+						CanonicalID: "a", Duplicates: map[string]float64{"b": 0.95},
+					}
+					if slices.Contains(ids, rewriteOn) {
+						out[i].MergedDescription = "a, carrying b's caveat"
+					}
+				}
+				return out, nil
+			}})
+
+			// a and b are a strong pair; x hangs off a only and y off b only,
+			// so star(a) and star(b) are two clusters and BOTH hold (a, b).
+			o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+				embText(a): 0, embText(b): 10, embText(x): -30, embText(y): 42,
+			}}}
+			current := []models.Insight{a, b, x, y}
+			st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+			if st.Clusters != 2 {
+				t.Fatalf("clusters = %d (%+v), want the two overlapping stars (fixture broken)", st.Clusters, st)
+			}
+			if current[1].DuplicateOf != "" {
+				t.Errorf("b.duplicate_of = %q (%+v); a rewrite was asked for, so the fold must not stand",
+					current[1].DuplicateOf, st)
+			}
+			if !o.adjudicatedKeep("a", "b") {
+				t.Error("the pair a rewrite was asked for was not recorded as kept")
+			}
+		})
+	}
+}

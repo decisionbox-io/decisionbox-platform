@@ -207,6 +207,22 @@ type docCluster struct {
 // buildClusters turns the direct relations into stars: one cluster per seed,
 // holding the seed and every document directly related to it.
 //
+// KNOWN LIMITATION, worth a design decision rather than a patch. A star is
+// built over every relation, and the adjudication floor sits below the fold
+// floor — so two unrelated pairs that are each strong enough to fold on their
+// own can land in one star through weaker links between them. A verdict names
+// ONE canonical, so it can describe only one of those pairs, and the provider
+// contract says a member it leaves out is left standing: the other pair is then
+// kept rather than folded, and a duplicate that a higher floor would have
+// folded spends a validation check instead.
+//
+// Left as it is deliberately. The cost is a fold not made, which leaves a
+// visible duplicate for the end-of-run check — the cheap direction — and the
+// two ways to fix it properly are a verdict that can name more than one
+// canonical, which is a contract change, and splitting a star on its strong
+// components, which changes how many clusters an area sends. Neither belongs
+// in a change about where the containment judgement is made.
+//
 // A star rather than a connected component, for the reason proposePairs builds
 // pairs. A star rather than a bare pair, because a fold and an unfold are not
 // independent edits — repairing one hand-run pass showed that unmarking a
