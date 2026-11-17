@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
@@ -155,10 +154,14 @@ func claimFigures(s string) []string {
 	if s == "" {
 		return nil
 	}
+	dates := dateExpression.FindAllStringIndex(s, -1)
 	seen := make(map[string]struct{})
 	out := make([]string, 0, 4)
-	for _, m := range figureToken.FindAllString(s, -1) {
-		t := strings.Trim(m, ".,")
+	for _, span := range figureToken.FindAllStringIndex(s, -1) {
+		if withinAny(span, dates) {
+			continue
+		}
+		t := strings.Trim(s[span[0]:span[1]], ".,")
 		digits := 0
 		for _, r := range t {
 			if r >= '0' && r <= '9' {
@@ -166,9 +169,6 @@ func claimFigures(s string) []string {
 			}
 		}
 		if digits < 3 {
-			continue
-		}
-		if yearLike(t) {
 			continue
 		}
 		if _, dup := seen[t]; dup {
@@ -181,36 +181,50 @@ func claimFigures(s string) []string {
 	return out
 }
 
-// yearLike reports whether a token is a bare calendar year rather than a
-// measurement, so claimFigures can leave it out.
+// dateExpression matches the shapes a reporting period is written in, so the
+// year inside one can be recognised as the label it is rather than counted as a
+// measurement.
 //
 // A date window in a headline is the case this exists for. "Nov-2025 to
 // Oct-2026" carries two four-digit tokens, which is exactly the floor
 // minContainmentFigures sets, and the same window appears in the body of most
-// other findings the run produced — so the containment test reads every pair of
-// findings that mention the period as one stating the other. Across two field
-// runs of 65 and 73 findings that single phrase produced 39 of 47 containment
-// proposals, each one a pair with nothing else in common. Every one of those
-// would have cost an adjudication call, and a wrong answer there costs a
-// distinct finding its verdict.
+// other findings the run produced — so containment read every pair of findings
+// that mention the period as one stating the other. Across two field runs of 65
+// and 73 findings that single phrase produced 39 of 47 containment proposals,
+// each a pair with nothing else in common. Every one would have cost an
+// adjudication call, and a wrong answer there costs a distinct finding its
+// verdict.
 //
-// Bare, because a token carrying a separator is a figure that happens to fall
-// in the range — "1,984" cases — and not a year. Four digits, because that is
-// the shape of a written year; a two-digit year never reaches the three-digit
-// floor anyway. And the bound is the calendar's rather than the data's, because
-// what is being recognised here is the shape of a date, not the span of any
-// particular warehouse.
-//
-// Dropping a figure can only lose a proposal, never create a wrong fold, so
-// this errs in the direction the rest of the file errs in: a missed fold leaves
-// a duplicate visible, which Phase 9's similarity pass still has a chance at,
-// while a wrong fold hides a finding the reader needed.
-func yearLike(t string) bool {
-	if len(t) != 4 || strings.ContainsAny(t, ".,") {
-		return false
+// It matches the CONTEXT rather than the number, because a four-digit token in
+// the calendar's range is very often a quantity — "2000 orders" — and ignoring a
+// figure is not the safe direction it first appears to be. Containment asks
+// whether every figure of the claim is in the body, so dropping one REMOVES a
+// constraint: the pair "2000 orders across 142 stores" and "3000 orders across
+// 142 stores" states two different measurements, and with the counts ignored
+// the remaining figures match and the claim reads as contained. reverifyFold
+// runs the same test on an adjudicated fold, so that would suppress a distinct
+// finding below the similarity floor as well. Only a token written as part of a
+// date is skipped, and only at that position: the same digits elsewhere in the
+// text are still a figure.
+var dateExpression = regexp.MustCompile(`(?i)\b(?:` +
+	`(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?[\s/,-]{0,2}\d{4}` +
+	`|\d{4}[\s/-]{0,2}(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*` +
+	`|q[1-4][\s/-]{0,2}\d{4}` +
+	`|\d{4}-\d{2}(?:-\d{2})?` +
+	`)`)
+
+// withinAny reports whether a [start,end) span lies inside any of the spans in
+// `outer`, which arrive in ascending order from FindAllStringIndex.
+func withinAny(span []int, outer [][]int) bool {
+	for _, o := range outer {
+		if span[0] >= o[0] && span[1] <= o[1] {
+			return true
+		}
+		if o[0] > span[1] {
+			break
+		}
 	}
-	n, err := strconv.Atoi(t)
-	return err == nil && n >= 1900 && n <= 2099
+	return false
 }
 
 // minContainmentFigures is how many distinctive figures a headline must carry,

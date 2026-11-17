@@ -347,21 +347,24 @@ func TestContainedIn_ComparesWholeTokens(t *testing.T) {
 	}
 }
 
-// A written year is a label, not a measurement, and the floor of two figures
-// does not protect against one: a date window supplies two of them in a single
-// phrase, and the same window appears in most of a run's other findings.
-func TestClaimFigures_YearsAreNotFigures(t *testing.T) {
+// A year written as part of a date is a label, not a measurement. The floor of
+// two figures does not protect against one, because a date window supplies two
+// of them in a single phrase and the same window appears in most of a run's
+// other findings.
+func TestClaimFigures_YearsInADateAreNotFigures(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		in   string
 		want []string
 	}{
 		{"a date window contributes nothing", "the Nov-2025 to Oct-2026 window", nil},
-		{"a year next to a real figure leaves the figure", "142 outlets closed in 2026", []string{"142"}},
-		{"four digits with a separator are a figure, not a year", "1,984 cases in Nov-2025", []string{"1,984"}},
-		{"a bare four-digit number past the calendar is a figure", "2204 cases", []string{"2204"}},
-		{"the lower bound is a year", "1900 and 1899", []string{"1899"}},
-		{"the upper bound is a year", "2099 and 2100", []string{"2100"}},
+		{"a spelled-out month and year", "fell in September 2026", nil},
+		{"a quarter and year", "Q3 2026 against Q3 2025", nil},
+		{"an ISO date", "the week ending 2026-08-23", nil},
+		{"a year before its month", "2025-Nov through 2026-Oct", nil},
+		{"four digits with a separator are a figure", "1,984 cases in Nov-2025", []string{"1,984"}},
+		{"a date leaves the real figures beside it", "142 outlets over 180 days in Nov-2025", []string{"142", "180"}},
+		{"the same digits outside a date are still a figure", "2025 cases shipped in Nov-2025", []string{"2025"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := claimFigures(tc.in)
@@ -375,9 +378,25 @@ func TestClaimFigures_YearsAreNotFigures(t *testing.T) {
 	}
 }
 
-// The field case this guard exists for. Two findings that share nothing but the
-// reporting period read as one stating the other, because the period is written
-// as two four-digit tokens and both appear in every body that mentions it.
+// A bare four-digit quantity is a measurement, and it has to keep counting:
+// containment asks whether every figure of the claim appears in the body, so
+// ignoring one removes a constraint and can turn two different measurements
+// into a fold. reverifyFold runs the same test on an adjudicated fold, which is
+// where that would cost a distinct finding its verdict.
+func TestClaimFigures_AQuantityInTheCalendarRangeStillCounts(t *testing.T) {
+	if got := claimFigures("2000 orders across 142 stores"); !reflect.DeepEqual(got, []string{"142", "2000"}) {
+		t.Fatalf("claimFigures = %v, want the quantity kept", got)
+	}
+	if containedIn("2000 orders across 142 stores over 180 days",
+		"3000 orders across 142 stores over 180 days") {
+		t.Error("two different order counts must not read as containment")
+	}
+}
+
+// The field case the date rule exists for. Two findings that share nothing but
+// the reporting period read as one stating the other, because the period is
+// written as two four-digit tokens and both appear in every body that mentions
+// it.
 func TestContainedIn_ADateWindowAloneIsNotContainment(t *testing.T) {
 	claim := "On-trade volume declined 1.3% in the Nov-2025 to Oct-2026 window"
 	body := "The top three brands hold 71.8% of portfolio volume over the " +
@@ -386,8 +405,8 @@ func TestContainedIn_ADateWindowAloneIsNotContainment(t *testing.T) {
 	if containedIn(claim, body) {
 		t.Error("two findings sharing only the reporting period must not be containment")
 	}
-	// The same pair, with the window replaced by figures that are measurements:
-	// containment must still fire, so the guard has not simply disabled the test.
+	// The same shape with measurements in place of the window: containment must
+	// still fire, so the rule has not simply disabled the test.
 	if !containedIn("On-trade fell 11.3% against a 71.8% concentration",
 		"concentration held at 71.8% while on-trade fell 11.3% over the period") {
 		t.Error("a pair sharing two real measurements must still be containment")
