@@ -345,3 +345,92 @@ func TestRelaxForcedToolChoice(t *testing.T) {
 		}
 	}
 }
+
+// A model cut off mid-object still emits a tool_use block, and a provider
+// that parses it reaches this function with a truncated answer and a
+// truthful stop reason. Overwriting that reason presented a half-written
+// object as a finished one, which no caller could detect — the content is
+// valid JSON either way, because this function re-marshals whatever parsed.
+func TestNormalizeStructuredToolResponse_PreservesACutoffReason(t *testing.T) {
+	for _, tc := range []struct {
+		upstream string
+		want     string
+	}{
+		{"tool_use", "end_turn"},     // the one that must be hidden
+		{"max_tokens", "max_tokens"}, // the one that must survive
+		{"end_turn", "end_turn"},
+		{"stop_sequence", "stop_sequence"},
+		{"", ""},
+	} {
+		t.Run("upstream="+tc.upstream, func(t *testing.T) {
+			rf := &ResponseFormat{Name: "pack", Schema: sampleSchema()}
+			resp := &ChatResponse{
+				StopReason: tc.upstream,
+				ToolCalls:  []ToolCall{{ID: "t1", Name: "pack", Input: map[string]interface{}{"slug": "a"}}},
+			}
+			if err := NormalizeStructuredToolResponse(resp, true, rf); err != nil {
+				t.Fatalf("NormalizeStructuredToolResponse: %v", err)
+			}
+			if resp.StopReason != tc.want {
+				t.Errorf("stop reason = %q, want %q", resp.StopReason, tc.want)
+			}
+			// The fold itself is unchanged whatever the reason was.
+			if resp.Content == "" || len(resp.ToolCalls) != 0 {
+				t.Errorf("fold did not happen: content=%q toolCalls=%d", resp.Content, len(resp.ToolCalls))
+			}
+		})
+	}
+}
+
+// 2^53 + 1 is the smallest integer float64 cannot represent, so it is the
+// cheapest proof that the input was not routed through one. A tool input is
+// data the caller supplied the schema for: a model that returned the value
+// a `const` asked for must not be reported as returning a different one.
+func TestDecodeToolInput_PreservesLargeIntegers(t *testing.T) {
+	const big = "9007199254740993"
+	input, err := DecodeToolInput([]byte(`{"id":` + big + `,"nested":{"also":` + big + `}}`))
+	if err != nil {
+		t.Fatalf("DecodeToolInput: %v", err)
+	}
+	out, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Count(string(out), big) != 2 {
+		t.Errorf("re-marshalled input = %s, want both %s preserved", out, big)
+	}
+}
+
+func TestDecodeToolInput_EmptyAndMalformed(t *testing.T) {
+	for _, empty := range []string{"", "   ", "null"} {
+		got, err := DecodeToolInput([]byte(empty))
+		if err != nil || got != nil {
+			t.Errorf("input %q: got (%v, %v), want (nil, nil)", empty, got, err)
+		}
+	}
+	if _, err := DecodeToolInput([]byte(`{"id":`)); err == nil {
+		t.Error("truncated input should report an error for the caller to decide on")
+	}
+}
+
+// The folded content carries the model's own digits, which is the round
+// trip that matters: the gateway forwards a caller's schema numbers
+// exactly, so the reply that was meant to satisfy them must not round.
+func TestNormalizeStructuredToolResponse_FoldedContentKeepsLargeIntegers(t *testing.T) {
+	const big = "9007199254740993"
+	input, err := DecodeToolInput([]byte(`{"id":` + big + `}`))
+	if err != nil {
+		t.Fatalf("DecodeToolInput: %v", err)
+	}
+	resp := &ChatResponse{
+		StopReason: "tool_use",
+		ToolCalls:  []ToolCall{{ID: "t1", Name: "ids", Input: input}},
+	}
+	rf := &ResponseFormat{Name: "ids", Schema: map[string]interface{}{"type": "object"}}
+	if err := NormalizeStructuredToolResponse(resp, true, rf); err != nil {
+		t.Fatalf("NormalizeStructuredToolResponse: %v", err)
+	}
+	if !strings.Contains(resp.Content, big) {
+		t.Errorf("content = %s, want the exact %s", resp.Content, big)
+	}
+}

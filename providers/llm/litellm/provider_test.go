@@ -3,6 +3,7 @@ package litellm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -218,6 +219,82 @@ func TestLiteLLMProvider_SupportsStructuredOutput(t *testing.T) {
 	meta, _ := gollm.GetProviderMeta("litellm")
 	if !meta.SupportsStructuredOutput {
 		t.Error("litellm should advertise SupportsStructuredOutput (response_format forwarded to backend)")
+	}
+}
+
+// A proxy rejecting the request — a pre-call context-length check, a
+// parameter the model does not take — and a proxy being down both arrive at
+// a caller as an error. Carrying the status is what lets one be answered
+// with a 4xx and the other retried.
+func TestChat_UpstreamRejectionCarriesItsStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"This model's maximum context length is 147456 tokens","type":"invalid_request_error"}}`))
+	}))
+	defer srv.Close()
+
+	p := NewLiteLLMProvider("sk-virtual", "deepseek-v3.1", srv.URL, srv.Client())
+	_, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if got := gollm.UpstreamStatus(err); got != http.StatusBadRequest {
+		t.Errorf("UpstreamStatus = %d, want 400", got)
+	}
+	if !gollm.UpstreamClientFault(err) {
+		t.Error("a 400 from the proxy must read as the request being rejected")
+	}
+	var ue *gollm.UpstreamError
+	if !errors.As(err, &ue) {
+		t.Fatal("not an UpstreamError")
+	}
+	if ue.Code != "invalid_request_error" {
+		t.Errorf("Code = %q, want the upstream's own classification", ue.Code)
+	}
+}
+
+// A 429 is the one 4xx that means "ask again later", so it must not be
+// reported as the caller's mistake.
+func TestChat_RateLimitIsNotAClientFault(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit_error"}}`))
+	}))
+	defer srv.Close()
+
+	p := NewLiteLLMProvider("sk-virtual", "deepseek-v3.1", srv.URL, srv.Client())
+	_, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if got := gollm.UpstreamStatus(err); got != http.StatusTooManyRequests {
+		t.Errorf("UpstreamStatus = %d, want 429", got)
+	}
+	if gollm.UpstreamClientFault(err) {
+		t.Error("a 429 must not read as the caller's fault")
+	}
+}
+
+// A server that echoes the key in its error body must not put it into a
+// caller's logs through the typed error.
+func TestChat_UpstreamErrorDoesNotCarryTheCredential(t *testing.T) {
+	const secret = "sk-must-not-leak-0123456789"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"invalid key ` + secret + `","type":"authentication_error"}}`))
+	}))
+	defer srv.Close()
+
+	p := NewLiteLLMProvider(secret, "deepseek-v3.1", srv.URL, srv.Client())
+	_, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Errorf("the credential survived into %q", err.Error())
 	}
 }
 
