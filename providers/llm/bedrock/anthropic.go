@@ -83,7 +83,10 @@ func (p *BedrockProvider) chatAnthropic(ctx context.Context, req gollm.ChatReque
 		Body:        reqBody,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("bedrock/anthropic: InvokeModel failed: %w", err)
+		// Wrapped so the AWS status survives: a ValidationException for
+		// an over-long prompt is the caller's request being rejected, and
+		// a caller that cannot tell it from an outage retries it for ever.
+		return nil, fmt.Errorf("bedrock/anthropic: InvokeModel failed: %w", gollm.WrapUpstream(providerName, err))
 	}
 
 	var anthropicResp struct {

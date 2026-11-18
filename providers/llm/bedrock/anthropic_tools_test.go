@@ -3,6 +3,7 @@ package bedrock
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -171,5 +172,58 @@ func TestAnthropic_StructuredStringifiedArrayDecoded(t *testing.T) {
 	}
 	if resp.Content != `{"questions":[{"question":"a?"}]}` {
 		t.Fatalf("content = %s, want the array decoded", resp.Content)
+	}
+}
+
+// awsRejection stands in for an AWS SDK response error: it carries its own
+// HTTP status, which is how a ValidationException's 400 reaches a caller
+// without this package knowing anything about smithy.
+type awsRejection struct{}
+
+func (awsRejection) Error() string       { return "ValidationException: input is too long" }
+func (awsRejection) HTTPStatusCode() int { return 400 }
+func (awsRejection) ErrorCode() string   { return "ValidationException" }
+
+// A rejected request and a broken backend both arrive here as an error.
+// Carrying the status is what lets a caller — a managed gateway, say —
+// answer 4xx for one and 5xx for the other instead of retrying both.
+func TestAnthropic_UpstreamRejectionCarriesItsStatus(t *testing.T) {
+	inner := &mockBedrockClient{invokeErr: awsRejection{}}
+	p := newMockBedrockProvider(inner)
+
+	_, err := p.chatAnthropic(context.Background(), gollm.ChatRequest{
+		Model:    p.model,
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if got := gollm.UpstreamStatus(err); got != 400 {
+		t.Errorf("UpstreamStatus = %d, want 400", got)
+	}
+	if !gollm.UpstreamClientFault(err) {
+		t.Error("a ValidationException must read as the request being rejected")
+	}
+}
+
+// A transport failure has no upstream status, and must not be dressed up as
+// one: unknown has to stay unknown or a network blip becomes "your request
+// was invalid".
+func TestAnthropic_TransportFailureHasNoStatus(t *testing.T) {
+	inner := &mockBedrockClient{invokeErr: errors.New("dial tcp: i/o timeout")}
+	p := newMockBedrockProvider(inner)
+
+	_, err := p.chatAnthropic(context.Background(), gollm.ChatRequest{
+		Model:    p.model,
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if got := gollm.UpstreamStatus(err); got != 0 {
+		t.Errorf("UpstreamStatus = %d, want 0", got)
+	}
+	if gollm.UpstreamClientFault(err) {
+		t.Error("a transport failure is not the caller's fault")
 	}
 }

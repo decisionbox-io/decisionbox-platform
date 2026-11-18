@@ -58,7 +58,10 @@ func (p *BedrockProvider) chatOpenAICompat(ctx context.Context, req gollm.ChatRe
 		Body:        reqBody,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("bedrock/openai-compat: InvokeModel failed: %w", err)
+		// Wrapped so the AWS status survives: a ValidationException for
+		// an over-long prompt is the caller's request being rejected, and
+		// a caller that cannot tell it from an outage retries it for ever.
+		return nil, fmt.Errorf("bedrock/openai-compat: InvokeModel failed: %w", gollm.WrapUpstream(providerName, err))
 	}
 
 	// Bedrock wraps the upstream response verbatim in output.Body when the

@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **An upstream failure now carries the status the upstream used ([#41](https://github.com/decisionbox-io/decisionbox-ai-gateway/issues/41)).** `Provider.Chat` returns a plain error, so every failure has looked alike to a caller for as long as the interface has existed: a prompt past the model's window, a parameter the model does not take, and a backend outage all arrive as "the provider failed". A caller that cannot tell them apart retries the ones that can never succeed, and reports the sender's own mistake as an internal error — which is what a managed gateway in front of this does today, answering 502 to a request the backend called invalid.
+
+  New `llm.UpstreamError` carries the status, the upstream's own classification where it gives one, and a sanitised message; `llm.UpstreamStatus` and `llm.UpstreamClientFault` read it out of a wrapped chain. `ClientFault` is a 4xx that is not 408 or 429 — those two say "ask again later", so reading them as the caller's mistake would stop a retry that works. An unknown status reads as unknown, never as a client fault, so a provider that has not adopted this cannot have its failures reclassified.
+
+  Adopted by the Bedrock wires and the LiteLLM provider, which is where a rejected request is most likely: `enable_pre_call_checks` on a proxy turns an over-long prompt into a 400, and Bedrock reports one as a `ValidationException`. The status is taken from the error through an interface assertion (`HTTPStatusCode() int`), so no SDK import is needed to read an AWS response error. Verified against a real model: a million-token prompt returns status 400, `ValidationException: prompt is too long`, and reads as a client fault, while a healthy call does not.
+
+
 ## [0.41.0] - 2026-11-18
 
 ### Added

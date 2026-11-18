@@ -227,3 +227,85 @@ func TestIntegration_ContextCancellation(t *testing.T) {
 	}
 	t.Logf("Cancelled context error: %v", err)
 }
+
+// --- upstream rejection carries its status (#41) ---
+
+// An over-long prompt is the upstream rejecting the REQUEST, and a caller
+// has to be able to tell that from the backend being broken: one is worth
+// reporting to whoever sent it, the other is worth retrying. Both used to
+// arrive as an indistinguishable error, which is how a managed gateway
+// answered 502 to a request Bedrock had called invalid.
+//
+// Run against a real model, with a prompt past its context window.
+func TestIntegration_Anthropic_OverlongPromptIsAClientFault(t *testing.T) {
+	region := skipIfNoRegion(t)
+
+	provider, err := gollm.NewProvider("bedrock", gollm.ProviderConfig{
+		"region": region,
+		"model":  bedrockModel(),
+	})
+	if err != nil {
+		t.Fatalf("Failed to create provider: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	// Comfortably past any current Claude window. "word " is one token or
+	// so, so this is on the order of a million tokens.
+	huge := strings.Repeat("word ", 1_000_000)
+
+	_, err = provider.Chat(ctx, gollm.ChatRequest{
+		Messages:  []gollm.Message{{Role: "user", Content: huge}},
+		MaxTokens: 16,
+	})
+	if err == nil {
+		t.Fatal("a prompt past the context window should have been rejected")
+	}
+	// Not maybeSkipOnRateLimit: a 429 here would be a different outcome,
+	// and the assertion below distinguishes them on purpose.
+	status := gollm.UpstreamStatus(err)
+	t.Logf("status=%d client_fault=%v err=%v", status, gollm.UpstreamClientFault(err), err)
+
+	if status == 0 {
+		t.Fatalf("the upstream status did not survive to the caller: %v", err)
+	}
+	if status == 429 {
+		t.Skipf("rate limited rather than rejected (status 429); auth works, quota exceeded: %v", err)
+	}
+	if status < 400 || status > 499 {
+		t.Errorf("status = %d, want a 4xx for a request the upstream rejected", status)
+	}
+	if !gollm.UpstreamClientFault(err) {
+		t.Errorf("status %d did not read as a client fault", status)
+	}
+}
+
+// The counterpart: a well-formed request must not be reported as the
+// caller's fault, or everything becomes a 400 and nothing is ever retried.
+func TestIntegration_Anthropic_HealthyCallIsNotAClientFault(t *testing.T) {
+	region := skipIfNoRegion(t)
+
+	provider, err := gollm.NewProvider("bedrock", gollm.ProviderConfig{
+		"region": region,
+		"model":  bedrockModel(),
+	})
+	if err != nil {
+		t.Fatalf("Failed to create provider: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	_, err = provider.Chat(ctx, gollm.ChatRequest{
+		Messages:  []gollm.Message{{Role: "user", Content: "Say hello in one word."}},
+		MaxTokens: 32,
+	})
+	maybeSkipOnRateLimit(t, err)
+	if err != nil {
+		t.Fatalf("Chat failed: %v", err)
+	}
+	if gollm.UpstreamClientFault(err) {
+		t.Error("a successful call must not read as a client fault")
+	}
+}
