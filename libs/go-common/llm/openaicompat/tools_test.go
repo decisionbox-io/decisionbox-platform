@@ -181,3 +181,35 @@ func contains(haystack []byte, needle string) bool {
 	}
 	return false
 }
+
+// On this wire a tool call's arguments arrive as a JSON-encoded STRING, so
+// they are decoded a second time — and would round there even when the
+// request that asked for them was forwarded exactly. 2^53 + 1 is the
+// smallest integer float64 cannot represent.
+func TestParseResponseBody_ToolArgumentsKeepLargeIntegers(t *testing.T) {
+	const big = "9007199254740993"
+	raw := []byte(`{
+		"model":"x",
+		"choices":[{
+			"message":{"role":"assistant","content":"","tool_calls":[
+				{"id":"c1","type":"function","function":{"name":"fetch_row","arguments":"{\"id\":` + big + `}"}}
+			]},
+			"finish_reason":"tool_calls"
+		}],
+		"usage":{}
+	}`)
+	resp, err := ParseResponseBody(raw)
+	if err != nil {
+		t.Fatalf("ParseResponseBody: %v", err)
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls len = %d", len(resp.ToolCalls))
+	}
+	out, err := json.Marshal(resp.ToolCalls[0].Input)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !contains(out, big) {
+		t.Errorf("tool arguments = %s, want the exact %s", out, big)
+	}
+}
