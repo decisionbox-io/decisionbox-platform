@@ -4,6 +4,7 @@ package database
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -234,6 +235,46 @@ func TestInteg_ProjectRepo_DeleteCascade(t *testing.T) {
 // collection — the discovery-id loop must produce an empty slice and
 // the feedback delete must be skipped (otherwise we'd issue a $in []
 // query that, depending on driver version, can be misinterpreted).
+// TestInteg_ProjectRepo_DeleteCascade_UppercaseID.
+//
+// An ObjectID parses case-insensitively, so a delete issued with uppercase
+// hex finds and removes the project. The _id-keyed settings sweep has to use
+// the canonical form or it looks for a document under a string nothing ever
+// wrote — leaving one project's weights, thresholds and editor subject behind
+// after the project itself is gone.
+func TestInteg_ProjectRepo_DeleteCascade_UppercaseID(t *testing.T) {
+	ctx := context.Background()
+	repo := NewProjectRepository(testDB)
+
+	proj := &models.Project{Name: "upper", Domain: "gaming", Category: "match3", CreatedAt: time.Now()}
+	if err := repo.Create(ctx, proj); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	for _, name := range projectIDKeyedCollections {
+		if _, err := testDB.Collection(name).InsertOne(ctx, bson.M{
+			"_id":              proj.ID,
+			"category_weights": bson.M{"compliance": 3},
+			"updated_by":       "someone@example.com",
+		}); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+
+	if err := repo.DeleteCascade(ctx, strings.ToUpper(proj.ID)); err != nil {
+		t.Fatalf("DeleteCascade with uppercase id: %v", err)
+	}
+
+	for _, name := range projectIDKeyedCollections {
+		n, err := testDB.Collection(name).CountDocuments(ctx, bson.M{"_id": proj.ID})
+		if err != nil {
+			t.Fatalf("count %s: %v", name, err)
+		}
+		if n != 0 {
+			t.Errorf("collection %s leaked settings after an uppercase-id delete", name)
+		}
+	}
+}
+
 func TestInteg_ProjectRepo_DeleteCascade_NoDiscoveries(t *testing.T) {
 	ctx := context.Background()
 	repo := NewProjectRepository(testDB)

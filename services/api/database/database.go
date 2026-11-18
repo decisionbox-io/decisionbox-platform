@@ -414,8 +414,14 @@ func (r *ProjectRepository) DeleteCascade(ctx context.Context, id string) error 
 
 	// Step 4: the settings collections that key a project by `_id` rather
 	// than by a `project_id` field, so Step 3's DeleteMany cannot reach them.
+	//
+	// Keyed by the CANONICAL hex, not by `id` as the caller spelled it. An
+	// ObjectID parses case-insensitively, so a request with uppercase hex
+	// deletes the project and would have left its settings behind under a
+	// string nothing else ever writes.
+	canonical := oid.Hex()
 	for _, name := range projectIDKeyedCollections {
-		if _, err := r.db.Collection(name).DeleteOne(ctx, bson.M{"_id": id}); err != nil {
+		if _, err := r.db.Collection(name).DeleteOne(ctx, bson.M{"_id": canonical}); err != nil {
 			return fmt.Errorf("delete %s: %w", name, err)
 		}
 	}
