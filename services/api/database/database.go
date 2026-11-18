@@ -260,6 +260,29 @@ func (r *ProjectRepository) Delete(ctx context.Context, id string) error {
 //
 // `feedback` is intentionally absent: it's keyed by `discovery_id`,
 // not project_id, and is handled separately via a two-step query.
+// projectIDKeyedCollections is every collection whose document _IS_ the
+// project id, so the DeleteMany above cannot find it: a settings document per
+// project, with no `project_id` field to match on.
+//
+// Separate from the list below rather than folded into it, because the query
+// is different -- DeleteOne by _id, not DeleteMany by field -- and because the
+// shapes differ in kind: those are rows a project produced, these are rows
+// someone wrote ABOUT a project. One of them also records who wrote it, so
+// leaving it behind outlives the project it describes.
+//
+// A collection of this shape that is not listed here leaks silently, exactly
+// as the comment below warns. Others of this shape exist (`discovery_scope`,
+// `discovery_evolution`); they predate this step and sweeping them here would
+// be a behaviour change outside the work that added it, so they are tracked
+// separately.
+var projectIDKeyedCollections = []string{
+	// A deployment's severity weights and money thresholds for one project
+	// (enterprise insight-scoring). Keyed `_id = projectID`, and the
+	// `__default__` document beside them belongs to the deployment rather
+	// than to any project, so no project id ever matches it.
+	"insight_scoring",
+}
+
 var projectChildCollections = []string{
 	"discoveries",
 	"discovery_runs",
@@ -389,7 +412,15 @@ func (r *ProjectRepository) DeleteCascade(ctx context.Context, id string) error 
 		}
 	}
 
-	// Step 4: the project doc itself. If it was already deleted (race
+	// Step 4: the settings collections that key a project by `_id` rather
+	// than by a `project_id` field, so Step 3's DeleteMany cannot reach them.
+	for _, name := range projectIDKeyedCollections {
+		if _, err := r.db.Collection(name).DeleteOne(ctx, bson.M{"_id": id}); err != nil {
+			return fmt.Errorf("delete %s: %w", name, err)
+		}
+	}
+
+	// Step 5: the project doc itself. If it was already deleted (race
 	// or retry) we treat that as success — the goal is "no project
 	// with this id exists", not "we performed the deletion".
 	if _, err := r.col.DeleteOne(ctx, bson.M{"_id": oid}); err != nil {

@@ -104,6 +104,33 @@ func TestInteg_ProjectRepo_DeleteCascade(t *testing.T) {
 		}
 	}
 
+	// --- seed every _id-keyed settings collection ---
+	// One document per project, whose _id IS the project id. These cannot be
+	// reached by a DeleteMany on project_id, which is the whole reason they
+	// have their own cascade step — and the reason they leaked before it.
+	for _, name := range projectIDKeyedCollections {
+		col := testDB.Collection(name)
+		for _, projID := range []string{projDel, projKeep} {
+			if _, err := col.InsertOne(ctx, bson.M{
+				"_id":              projID,
+				"category_weights": bson.M{"compliance": 3},
+				"updated_by":       "someone@example.com",
+				"created_at":       time.Now(),
+			}); err != nil {
+				t.Fatalf("seed %s for %s: %v", name, projID, err)
+			}
+		}
+		// And the deployment-wide document that sits beside them, which
+		// belongs to no project and must survive.
+		if _, err := col.InsertOne(ctx, bson.M{
+			"_id":              "__default__",
+			"category_weights": bson.M{"compliance": 2},
+			"created_at":       time.Now(),
+		}); err != nil {
+			t.Fatalf("seed %s default: %v", name, err)
+		}
+	}
+
 	// --- seed feedback (keyed by discovery_id, not project_id) ---
 	feedbackCol := testDB.Collection("feedback")
 	for _, discID := range []string{discDel, discKeep} {
@@ -139,6 +166,29 @@ func TestInteg_ProjectRepo_DeleteCascade(t *testing.T) {
 		}
 		if n != 0 {
 			t.Errorf("collection %s leaked %d row(s) for deleted project", name, n)
+		}
+	}
+
+	// The deleted project's settings documents are gone, the kept project's
+	// are intact, and the deployment-wide one is untouched — that last is the
+	// assertion that matters, because a sweep keyed on the wrong thing would
+	// take a whole deployment's configuration with one project.
+	for _, name := range projectIDKeyedCollections {
+		col := testDB.Collection(name)
+		if n, err := col.CountDocuments(ctx, bson.M{"_id": projDel}); err != nil {
+			t.Fatalf("count %s for deleted project: %v", name, err)
+		} else if n != 0 {
+			t.Errorf("collection %s leaked the deleted project's settings", name)
+		}
+		if n, err := col.CountDocuments(ctx, bson.M{"_id": projKeep}); err != nil {
+			t.Fatalf("count %s for kept project: %v", name, err)
+		} else if n != 1 {
+			t.Errorf("collection %s lost the kept project's settings (%d rows)", name, n)
+		}
+		if n, err := col.CountDocuments(ctx, bson.M{"_id": "__default__"}); err != nil {
+			t.Fatalf("count %s default: %v", name, err)
+		} else if n != 1 {
+			t.Errorf("collection %s lost the deployment default (%d rows)", name, n)
 		}
 	}
 
