@@ -116,10 +116,12 @@ func (p *BedrockProvider) chatAnthropic(ctx context.Context, req gollm.ChatReque
 		case "text":
 			content += block.Text
 		case "tool_use":
-			var input map[string]interface{}
-			if len(block.Input) > 0 {
-				_ = json.Unmarshal(block.Input, &input)
-			}
+			// Number-preserving: a tool input is data the caller gave the
+			// schema for, so an integer past 2^53 must come back as the
+			// model sent it. A parse failure still appends the call with a
+			// nil input, as before — a truncated tool_use block is a
+			// truncated answer, not a reason to drop the turn.
+			input, _ := gollm.DecodeToolInput(block.Input)
 			toolCalls = append(toolCalls, gollm.ToolCall{
 				ID:    block.ID,
 				Name:  block.Name,

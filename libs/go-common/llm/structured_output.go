@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -117,11 +118,51 @@ func NormalizeStructuredToolResponse(resp *ChatResponse, injected bool, rf *Resp
 	}
 	resp.Content = string(b)
 	resp.ToolCalls = nil
-	// The synthetic tool call is now hidden, so the upstream "tool_use"
-	// stop reason would violate the invariant that tool_use implies there
-	// are tool calls to execute. Present it as a normal terminal turn.
-	resp.StopReason = "end_turn"
+	// The synthetic tool call is now hidden, so a "tool_use" stop reason
+	// would violate the invariant that tool_use implies there are tool
+	// calls to execute. Present THAT as a normal terminal turn — and only
+	// that one.
+	//
+	// Every other stop reason is left alone, because it is information the
+	// caller needs and the fold does not invalidate. "max_tokens" is the
+	// one that matters: a model cut off mid-object still emits a tool_use
+	// block, and a provider that parses it (Bedrock appends the call
+	// whether or not its input parsed) reaches this function with a
+	// truncated answer and a truthful reason. Overwriting it presented a
+	// half-written — or empty — object as a finished one, which no caller
+	// could detect: the content is valid JSON either way, because this
+	// function re-marshals whatever parsed.
+	if resp.StopReason == "tool_use" {
+		resp.StopReason = "end_turn"
+	}
 	return nil
+}
+
+// DecodeToolInput decodes a tool call's JSON input into the neutral map
+// shape, preserving numbers exactly.
+//
+// Exact matters because a tool input is data the caller supplied the schema
+// for and will read back: decoding through float64 — which is what
+// encoding/json does for an interface{} target — silently rounds any
+// integer past 2^53, so a model that returned the value a `const` or `enum`
+// asked for can be reported as returning a different one. json.Number
+// re-marshals as the text it was read from, so a caller that folds the
+// input back into content (NormalizeStructuredToolResponse) emits the
+// model's own digits.
+//
+// Empty, absent and literal-null input decode to a nil map with no error,
+// which is the shape every call site already treated as "no arguments".
+func DecodeToolInput(raw []byte) (map[string]interface{}, error) {
+	if trimmed := strings.TrimSpace(string(raw)); trimmed == "" || trimmed == "null" {
+		return nil, nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var input map[string]interface{}
+	if err := dec.Decode(&input); err != nil {
+		return nil, err
+	}
+	return input, nil
 }
 
 // decodeStringifiedValues replaces, in place, string values that the schema
