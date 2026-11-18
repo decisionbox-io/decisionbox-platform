@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A structured answer cut off mid-object was reported as a finished one ([#564](https://github.com/decisionbox-io/decisionbox-platform/issues/564)).** On a wire with no native `response_format` a schema is satisfied by forcing a single tool and folding its input back into the content, and `NormalizeStructuredToolResponse` ended by overwriting the stop reason unconditionally. That is right for the `tool_use` it hides — a hidden call must not leave a reason implying there is a call to execute — but it took `max_tokens` with it.
+
+  A model cut off part-way through the object still emits a `tool_use` block, and the Bedrock wire appends the call whether or not its input parsed, so the fold ran and the truncation was erased. The caller could not detect it from the content either, because the fold re-marshals whatever parsed: valid JSON both ways. Measured against a real model — a request capped at 24 output tokens against a six-field required schema returned `stop_reason: "end_turn"` with the content `{}`, which reads as a complete empty answer rather than a truncated one. It now returns `max_tokens`, and a complete reply still returns `end_turn`.
+
+  Only `tool_use` is rewritten now. Every other reason reaches the caller, which is what lets one decide between using an answer and asking again.
+
+- **A tool call's numbers were rounded through `float64`.** Three providers decoded a tool input into `map[string]interface{}` — the Anthropic wire on Bedrock, the Claude provider, and the shared OpenAI-compatible parser that the LiteLLM and OpenAI providers use — so any integer past 2^53 came back altered. A model answering the id `9007199254740993` reported `9007199254740992`, including when the schema that asked for it had been forwarded exactly.
+
+  All three now share one `llm.DecodeToolInput`, which decodes with `UseNumber` so the model's own digits survive. `json.Number` re-marshals as the text it was read from, so a folded structured answer carries them through to the caller unchanged. Verified against a real model returning that id inside a schema-constrained reply.
+
 ### Added
 
 - **An upstream failure now carries the status the upstream used ([#41](https://github.com/decisionbox-io/decisionbox-ai-gateway/issues/41)).** `Provider.Chat` returns a plain error, so every failure has looked alike to a caller for as long as the interface has existed: a prompt past the model's window, a parameter the model does not take, and a backend outage all arrive as "the provider failed". A caller that cannot tell them apart retries the ones that can never succeed, and reports the sender's own mistake as an internal error — which is what a managed gateway in front of this does today, answering 502 to a request the backend called invalid.

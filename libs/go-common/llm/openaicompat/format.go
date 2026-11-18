@@ -373,10 +373,10 @@ func ParseResponseBody(raw []byte) (*gollm.ChatResponse, error) {
 				// Unknown tool type — skip rather than misrepresent it.
 				continue
 			}
-			var input map[string]interface{}
-			if tc.Function.Arguments != "" {
-				_ = json.Unmarshal([]byte(tc.Function.Arguments), &input)
-			}
+			// Number-preserving, same as the Anthropic wire: on this wire
+			// the arguments arrive as a JSON-encoded string, so they are
+			// decoded a second time and would otherwise round here.
+			input, _ := gollm.DecodeToolInput([]byte(tc.Function.Arguments))
 			resp.ToolCalls = append(resp.ToolCalls, gollm.ToolCall{
 				ID:    tc.ID,
 				Name:  tc.Function.Name,
