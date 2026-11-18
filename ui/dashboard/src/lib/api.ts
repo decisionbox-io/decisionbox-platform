@@ -340,6 +340,14 @@ export interface Project {
   // Full set of datasources on a multi-warehouse project; empty/absent on a
   // legacy single-warehouse project (use `warehouse` then).
   warehouses?: WarehouseConfig[];
+  // The project's prompt configuration, snapshotted from its pack at
+  // creation: the analysis areas, and the risk taxonomy whose weights are
+  // what an override is measured against. Served on the project document
+  // (`prompts`, omitted when absent) — declared here because a reader that
+  // needs the pack's declared weight has nowhere else to get it: the prompts
+  // endpoint SEEDS and persists prompts for a project that has none, so
+  // reading it to display a weight would change the project.
+  prompts?: ProjectPrompts;
   // Id of the primary datasource. May be empty/unset — resolvePrimaryDatasourceId
   // mirrors the backend's fallback (first warehouse, or the reserved default for
   // a legacy project). Index runs are stamped under the resolved id.
