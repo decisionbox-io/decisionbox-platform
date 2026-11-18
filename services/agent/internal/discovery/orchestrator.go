@@ -3611,8 +3611,27 @@ func (o *Orchestrator) resolvePrompts() (ResolvedPrompts, []AnalysisArea) {
 			Priority:    cfg.Priority,
 		})
 	}
+	sortAreasByID(areas)
 
 	return resolved, areas
+}
+
+// sortAreasByID fixes the order the run works through the areas.
+//
+// It expresses no preference between them. The areas arrive from a map, and a
+// Go map is ranged in a randomised order, so without this the order differs
+// from one run of the same project to the next — and so does which areas reach
+// the validation budget before it is spent. Two runs of one project then
+// cannot be compared, which a before-and-after of any change to the pack or
+// the pipeline depends on.
+//
+// By id, deliberately, and not by the pack's priority field: which areas matter
+// more is a product decision nobody has made here, and a sort that read
+// priority would quietly make it.
+func sortAreasByID(areas []AnalysisArea) {
+	sort.SliceStable(areas, func(i, j int) bool {
+		return areas[i].ID < areas[j].ID
+	})
 }
 
 // buildBaseContext renders the per-run base context: applies template
