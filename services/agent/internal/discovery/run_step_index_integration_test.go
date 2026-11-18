@@ -205,9 +205,9 @@ func TestIntegration_RunStepIndex_MultilingualQuery(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = idx.Drop(ctx) })
 
-	// Seed steps with English purposes that mirror the production
-	// "Portakal Bahçem" pattern: shop conversion, customer churn,
-	// session metrics.
+	// Seed steps with English purposes that mirror a real production
+	// project's pattern: shop conversion, customer churn, session
+	// metrics.
 	english := []models.ExplorationStep{
 		{Step: 1, Action: "query_data", Query: "SELECT 1", QueryPurpose: "calculate weekly conversion rate from cart to purchase"},
 		{Step: 2, Action: "query_data", Query: "SELECT 2", QueryPurpose: "investigate customer churn by signup cohort"},
