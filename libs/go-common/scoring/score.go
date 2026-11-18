@@ -448,8 +448,8 @@ func rescoreSeverityFrom(prior *gomodels.SeverityDriver, weight float64, cfg Sev
 		// The share is whichever slot held it: the banding figure on a
 		// share-banded document, the beaten candidate on an amount-banded
 		// one. Reading both is what makes this exact in either direction.
-		switch {
-		case prior.Kind == gomodels.SeverityDriverShare:
+		switch prior.Kind {
+		case gomodels.SeverityDriverShare:
 			share = prior.Figure
 		default:
 			share = prior.Share
