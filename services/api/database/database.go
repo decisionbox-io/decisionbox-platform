@@ -271,15 +271,13 @@ func (r *ProjectRepository) Delete(ctx context.Context, id string) error {
 // leaving it behind outlives the project it describes.
 //
 // A collection of this shape that is not listed here leaks silently, exactly
-// as the comment below warns. Others of this shape exist (`discovery_scope`,
-// `discovery_evolution`); they predate this step and sweeping them here would
-// be a behaviour change outside the work that added it, so they are tracked
-// separately.
+// as the comment below warns -- and a plugin that stores per-project settings
+// is the shape that produces one, so this list is the thing to extend when a
+// deployment grows another.
 var projectIDKeyedCollections = []string{
-	// A deployment's severity weights and money thresholds for one project
-	// (enterprise insight-scoring). Keyed `_id = projectID`, and the
-	// `__default__` document beside them belongs to the deployment rather
-	// than to any project, so no project id ever matches it.
+	// Per-project scoring settings, written by an optional plugin. Keyed
+	// `_id = projectID`, with a reserved deployment-wide document beside
+	// them that belongs to no project, so no project id ever matches it.
 	"insight_scoring",
 }
 
