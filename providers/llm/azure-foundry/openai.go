@@ -24,10 +24,19 @@ func (p *AzureFoundryProvider) openaiChat(ctx context.Context, req gollm.ChatReq
 	// the ResponseFormat contract ("unsupported providers ignore it")
 	// rather than forwarding response_format to a backend that may reject it.
 	req.ResponseFormat = nil
-	// A model the catalog knows is not a reasoning model rejects
-	// reasoning_effort outright, so the field is dropped for those rather
-	// than turning a quality setting into a 400. A model the catalog does not
-	// know (a managed gateway's alias) keeps it — see NormalizeReasoningEffort.
+	// reasoning_effort survives only for a model the catalog positively
+	// identifies as a reasoning model. Everything else is dropped: a
+	// catalogued non-reasoning model rejects the field outright, and an
+	// UNKNOWN model is dropped too — the set of targets whose capability
+	// cannot be known is open (a customer-chosen deployment id, a managed
+	// gateway's per-organisation alias), so there is no denial list that
+	// covers it and a guess collects a 400. Omitting it there costs
+	// nothing: the model applies its own default.
+	//
+	// The consequence is worth knowing before relying on this field: an
+	// effort set by a caller does NOT cross an opaque hop. See
+	// NormalizeReasoningEffort, whose doc explains why, including the two
+	// rounds of trying it the other way.
 	req = gollm.NormalizeReasoningEffort(providerName, req.Model, req)
 	body := openaicompat.BuildRequestBody(req.Model, req)
 
