@@ -220,3 +220,35 @@ func TestLiteLLMProvider_SupportsStructuredOutput(t *testing.T) {
 		t.Error("litellm should advertise SupportsStructuredOutput (response_format forwarded to backend)")
 	}
 }
+
+// Pins the behaviour the call-site comment describes, end to end on the
+// wire. This provider registers no catalog and dispatches any model name,
+// so EVERY model it serves is one the catalog cannot identify — which makes
+// it the provider where "an unknown model's reasoning_effort is dropped"
+// is the rule rather than the exception, and the one whose comment
+// previously claimed the opposite.
+//
+// The point of asserting it here rather than only on the helper: a reader
+// deciding whether to rely on reasoning_effort through this provider wants
+// to know what reaches the proxy, not what a helper returns.
+func TestChat_ReasoningEffortIsOmittedForAnUncataloguedModel(t *testing.T) {
+	var body []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"model":"qwen3.5-27b","choices":[{"message":{"role":"assistant","content":"ok"},` +
+			`"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer srv.Close()
+
+	p := NewLiteLLMProvider("sk-virtual", "qwen3.5-27b", srv.URL, srv.Client())
+	if _, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages:        []gollm.Message{{Role: "user", Content: "hi"}},
+		ReasoningEffort: gollm.ReasoningEffortHigh,
+	}); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	if strings.Contains(string(body), "reasoning_effort") {
+		t.Errorf("reasoning_effort reached the proxy for an uncatalogued model: %s", body)
+	}
+}

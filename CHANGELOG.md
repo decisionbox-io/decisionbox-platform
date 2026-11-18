@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Four provider comments described the opposite of what `NormalizeReasoningEffort` does ([#565](https://github.com/decisionbox-io/decisionbox-platform/issues/565)).** Each said a model the catalog does not know "keeps" its `reasoning_effort`. It does not: the helper requires *positive* catalog evidence and clears the field for anything else, which its own doc comment explains at length — the set of targets whose capability cannot be known is open, so no denial list covers it and a guess collects a 400.
+
+  The behaviour is right and is not changed here. The comments are, in the four providers that carry the field as a plain request key. They matter because they sit at the call site, which is where someone decides whether to rely on the field: read as written, they promise that an effort set by a caller survives an opaque hop, and it does not.
+
+  A test now pins the end-to-end behaviour on the LiteLLM provider — the one that registers no catalog and dispatches any model name, so every model it serves is unidentifiable and this is its normal case rather than an edge one. Asserted on the request that reaches the proxy, because that is what a reader of that comment actually wants to know.
+
+
 ## [0.41.0] - 2026-11-18
 
 ### Added
