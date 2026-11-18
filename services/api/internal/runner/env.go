@@ -91,6 +91,18 @@ var agentForwardedEnvKeys = []string{
 	// while the API reports Knowledge Sources as enabled — a silent
 	// downgrade rather than a visible failure.
 	"SOURCES_ENABLED",
+	// INSIGHT_SCORING_ENABLED gates the enterprise plugin that supplies a
+	// deployment's own severity configuration -- its category weights and its
+	// money thresholds -- to the agent's run-start pin.
+	//
+	// It DEFAULTS ON, which is why forwarding it matters and why the reason is
+	// the opposite of the one above: absence means enabled, so what has to
+	// survive the trip is an operator's explicit "false". Without it the API
+	// would honour that, drop the routes and hide the page, while every
+	// spawned agent went on resolving overrides and weighting runs by them --
+	// a feature switched off everywhere a user can see and still running
+	// where the numbers are produced.
+	"INSIGHT_SCORING_ENABLED",
 	// VALIDATION_* knobs for the LLM-native verifier+refuter pipeline.
 	// All consumed by the agent via verifier.LoadConfigFromEnv during
 	// both full-discovery validation and manual --mode=validate-doc runs.

@@ -22,3 +22,13 @@ func UnregisterContextProviderForTest(name string) bool {
 	}
 	return false
 }
+
+// ResetScoringForTest clears the registered ScoringConfigProvider. Test-only;
+// production code MUST NOT call this.
+//
+// Exported because the seam that reads this registry lives in another module
+// — the agent's run-start pin — and its tests have to be able to assert the
+// unconfigured case as well as the configured one.
+func ResetScoringForTest() {
+	resetScoringForTest()
+}

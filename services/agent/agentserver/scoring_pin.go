@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/scoring"
+	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -74,7 +76,7 @@ func pinRunScoringConfig(
 		}
 		return run.ScoringConfig, nil
 	}
-	return runRepo.PinScoringConfig(ctx, runID, resolveRunScoringConfig(project))
+	return runRepo.PinScoringConfig(ctx, runID, resolveRunScoringConfig(ctx, project))
 }
 
 // resolveRunScoringConfig is the project's severity configuration, resolved:
@@ -89,7 +91,7 @@ func pinRunScoringConfig(
 // to an empty configuration. That is still PINNED, deliberately: it records
 // that this run was started with nothing configured, which is what a resume
 // after someone adds a taxonomy has to honour.
-func resolveRunScoringConfig(project *models.Project) gomodels.RunScoringConfig {
+func resolveRunScoringConfig(ctx context.Context, project *models.Project) gomodels.RunScoringConfig {
 	out := gomodels.RunScoringConfig{}
 	if project == nil {
 		return out
@@ -121,7 +123,34 @@ func resolveRunScoringConfig(project *models.Project) gomodels.RunScoringConfig 
 	// function the precedence rules are tested against, so a project weight
 	// cannot win here and lose there.
 	resolved := scoring.ResolveSeverity(scoring.SeverityConfig{}, taxonomy, project.CategoryWeights)
+
+	// Then the deployment's own configuration over the top, through the same
+	// ApplyOverride the settings preview folds with.
+	//
+	// Resolved for ONE datasource: the primary, which is the datasource whose
+	// pack supplied this run's analysis areas and whose domain the run carries
+	// (warehouseDomainOr). A run is scored against one pack's area set, so one
+	// resolved configuration is what the engine consumes -- and asking per
+	// datasource would store thresholds against areas this run cannot produce.
+	//
+	// BEST-EFFORT, and the error is swallowed into a log line by the caller:
+	// a severity weight is a preference, a discovery run is hours of warehouse
+	// queries and model calls, and losing the first must never cost the
+	// second. ResolveScoringConfig already returns the zero override on every
+	// failure, so what is pinned in that case is exactly the pack and project
+	// resolution above.
+	override, err := agentplugin.ResolveScoringConfig(ctx, project.ID, warehouseIDOrDefault(project.PrimaryWarehouse()))
+	if err != nil {
+		applog.WithError(err).Warn("Scoring configuration provider failed; scoring this run on the pack and project configuration")
+	}
+	resolved = scoring.ApplyOverride(resolved, override)
+
 	out.CategoryWeights = resolved.CategoryWeights
+	// The thresholds are stored as the INPUT they are. Unlike the weights
+	// there is no per-area rule over them for a later attempt to re-derive,
+	// so what a resume needs is the ladder itself.
+	out.AmountBands = resolved.AmountBands
+	out.AmountCurrency = resolved.AmountCurrency
 
 	return out
 }

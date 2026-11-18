@@ -823,8 +823,23 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 // here is precisely what a resume must not do.
 func runScoringConfig(pinned *gomodels.RunScoringConfig) scoring.Config {
 	cfg := scoring.DefaultConfig()
-	if pinned != nil && len(pinned.CategoryWeights) > 0 {
+	if pinned == nil {
+		return cfg
+	}
+	if len(pinned.CategoryWeights) > 0 {
 		cfg.Severity.CategoryWeights = pinned.CategoryWeights
+	}
+	// The money thresholds this run was started with, and the currency they
+	// were written in. Taken from the pin for the reason the weights are: a
+	// threshold someone changed between two attempts would band the second
+	// half of a run against different money from the first.
+	//
+	// The currency travels with them and is not defaulted when absent: an
+	// unstated currency means "whatever the document is reported in", which is
+	// a deliberate configuration rather than a missing field.
+	if len(pinned.AmountBands) > 0 {
+		cfg.Severity.AmountBands = pinned.AmountBands
+		cfg.Severity.AmountCurrency = pinned.AmountCurrency
 	}
 	return cfg
 }

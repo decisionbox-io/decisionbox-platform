@@ -2,8 +2,11 @@ package agentserver
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
+
+	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 
 	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -32,7 +35,7 @@ func projectWithRisk() *models.Project {
 
 // TestResolveRunScoringConfigFoldsTheProjectIntoWhatTheEngineReads.
 func TestResolveRunScoringConfigFoldsTheProjectIntoWhatTheEngineReads(t *testing.T) {
-	got := resolveRunScoringConfig(projectWithRisk())
+	got := resolveRunScoringConfig(context.Background(), projectWithRisk())
 
 	want := map[string]float64{"compliance": 3.0, "revenue_leak": 2.5}
 	if !reflect.DeepEqual(got.CategoryWeights, want) {
@@ -73,7 +76,7 @@ func TestResolveRunScoringConfigOnAnUnconfiguredProject(t *testing.T) {
 		}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := resolveRunScoringConfig(tc.project)
+			got := resolveRunScoringConfig(context.Background(), tc.project)
 			if got.CategoryWeights != nil {
 				t.Errorf("CategoryWeights = %v, want nil", got.CategoryWeights)
 			}
@@ -92,7 +95,7 @@ func TestResolveRunScoringConfigRejectsAnIllegalWeight(t *testing.T) {
 	project.Prompts.RiskTaxonomy[0].Weight = 0
 	project.CategoryWeights = map[string]float64{"revenue_leak": -3}
 
-	got := resolveRunScoringConfig(project)
+	got := resolveRunScoringConfig(context.Background(), project)
 	if _, present := got.CategoryWeights["compliance"]; present {
 		t.Error("a zero-weighted category reached the pin")
 	}
@@ -107,7 +110,7 @@ func TestResolveRunScoringConfigRejectsAnIllegalWeight(t *testing.T) {
 	project.Prompts.AnalysisAreas["billing"] = models.AnalysisAreaConfig{
 		Name: "Billing", RiskCategories: []string{"revenue_leak"}, SeverityWeight: weightOf(0),
 	}
-	pinned := resolveRunScoringConfig(project)
+	pinned := resolveRunScoringConfig(context.Background(), project)
 	if w := pinned.Areas["billing"].SeverityWeight; w == nil || *w != 0 {
 		t.Errorf("billing override = %v, want the stated 0 recorded as stated", w)
 	}
@@ -202,4 +205,136 @@ func TestAResumeReadsThePinAndNeverWritesOne(t *testing.T) {
 			t.Error("a missing run should be an error rather than an unweighted run")
 		}
 	})
+}
+
+// --- The deployment's own configuration, over the top ----------------------
+
+// stubScoringProvider answers the registry with a fixed override, or fails.
+type stubScoringProvider struct {
+	out          agentplugin.ScoringOverride
+	err          error
+	gotProject   string
+	gotWarehouse string
+}
+
+func (s *stubScoringProvider) Name() string { return "stub" }
+
+func (s *stubScoringProvider) ScoringConfig(_ context.Context, projectID, warehouseID string) (agentplugin.ScoringOverride, error) {
+	s.gotProject, s.gotWarehouse = projectID, warehouseID
+	return s.out, s.err
+}
+
+// TestTheOverrideWinsOverThePackAndTheProject is the whole point of the
+// layer: a deployment states a priority and it beats what the pack declared
+// and what the project saved, per category, without restating either.
+func TestTheOverrideWinsOverThePackAndTheProject(t *testing.T) {
+	stub := &stubScoringProvider{out: agentplugin.ScoringOverride{
+		CategoryWeights: map[string]float64{"compliance": 1.0},
+		AmountBands:     []gomodels.MagnitudeBand{{At: 2_000_000, Band: gomodels.SeverityBandHigh}},
+		AmountCurrency:  "₺",
+	}}
+	agentplugin.RegisterScoringConfigProvider(stub)
+	t.Cleanup(agentplugin.ResetScoringForTest)
+
+	project := projectWithRisk()
+	project.ID = "proj-7"
+	project.Warehouses = []models.WarehouseConfig{{ID: "wh_snowflake"}}
+
+	got := resolveRunScoringConfig(context.Background(), project)
+
+	want := map[string]float64{
+		"compliance":   1.0, // the override's, over the pack's 3.0
+		"revenue_leak": 2.5, // the project's, which the override says nothing about
+	}
+	if !reflect.DeepEqual(got.CategoryWeights, want) {
+		t.Errorf("CategoryWeights = %v, want %v", got.CategoryWeights, want)
+	}
+	if len(got.AmountBands) != 1 || got.AmountBands[0].At != 2_000_000 {
+		t.Errorf("AmountBands = %v, want the override's single threshold", got.AmountBands)
+	}
+	if got.AmountCurrency != "₺" {
+		t.Errorf("AmountCurrency = %q, want ₺", got.AmountCurrency)
+	}
+
+	// Asked for the project and for the datasource whose pack supplied this
+	// run's areas -- the primary. A registry handed the wrong datasource
+	// would apply one warehouse's money thresholds to another's amounts.
+	if stub.gotProject != "proj-7" || stub.gotWarehouse != "wh_snowflake" {
+		t.Errorf("provider asked for (%q, %q), want (%q, %q)",
+			stub.gotProject, stub.gotWarehouse, "proj-7", "wh_snowflake")
+	}
+}
+
+// TestAProviderFailureStillPinsThePackAndProjectConfiguration.
+//
+// The run must complete, and it must complete WEIGHTED by whatever the pack
+// and the project already said -- not unweighted. Pinning an empty
+// configuration here would be the worse failure of the two: the run would
+// finish, look fine, and rank its findings by nothing.
+func TestAProviderFailureStillPinsThePackAndProjectConfiguration(t *testing.T) {
+	agentplugin.RegisterScoringConfigProvider(&stubScoringProvider{
+		out: agentplugin.ScoringOverride{CategoryWeights: map[string]float64{"compliance": 1.0}},
+		err: errors.New("mongo is down"),
+	})
+	t.Cleanup(agentplugin.ResetScoringForTest)
+
+	got := resolveRunScoringConfig(context.Background(), projectWithRisk())
+
+	want := map[string]float64{"compliance": 3.0, "revenue_leak": 2.5}
+	if !reflect.DeepEqual(got.CategoryWeights, want) {
+		t.Errorf("CategoryWeights = %v, want the pack and project resolution %v", got.CategoryWeights, want)
+	}
+	if got.AmountBands != nil {
+		t.Errorf("AmountBands = %v, want none from a provider that failed", got.AmountBands)
+	}
+}
+
+// TestWithNoProviderThePinIsExactlyWhatItWasBefore -- the compatibility
+// criterion at this seam. A community deployment, and every enterprise one
+// until someone saves a weight, must pin the same document it pinned before
+// this layer existed.
+func TestWithNoProviderThePinIsExactlyWhatItWasBefore(t *testing.T) {
+	agentplugin.ResetScoringForTest()
+
+	got := resolveRunScoringConfig(context.Background(), projectWithRisk())
+
+	want := map[string]float64{"compliance": 3.0, "revenue_leak": 2.5}
+	if !reflect.DeepEqual(got.CategoryWeights, want) {
+		t.Errorf("CategoryWeights = %v, want %v", got.CategoryWeights, want)
+	}
+	if got.AmountBands != nil || got.AmountCurrency != "" {
+		t.Errorf("thresholds reached the pin with nothing configured: %v / %q", got.AmountBands, got.AmountCurrency)
+	}
+}
+
+// TestAResumeDoesNotResolveTheOverrideAgain is §S10's second hazard, at the
+// seam that would cause it: a threshold or a weight changed between two
+// attempts must not reach the second one, or one run's result is half ranked
+// one way and half the other.
+func TestAResumeDoesNotResolveTheOverrideAgain(t *testing.T) {
+	stub := &stubScoringProvider{out: agentplugin.ScoringOverride{
+		CategoryWeights: map[string]float64{"compliance": 3.0},
+	}}
+	agentplugin.RegisterScoringConfigProvider(stub)
+	t.Cleanup(agentplugin.ResetScoringForTest)
+
+	// Attempt 1 pinned a configuration with no weights at all, which is what
+	// a run started before any of this existed carries.
+	store := &fakeScoringStore{run: &models.DiscoveryRun{
+		ScoringConfig: &gomodels.RunScoringConfig{},
+	}}
+
+	got, err := pinRunScoringConfig(context.Background(), store, "run-1", projectWithRisk(), true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil || len(got.CategoryWeights) != 0 {
+		t.Errorf("resume read %+v, want the empty configuration attempt 1 pinned", got)
+	}
+	if store.pinCall != 0 {
+		t.Errorf("a resume wrote the pin %d times, want 0", store.pinCall)
+	}
+	if stub.gotProject != "" {
+		t.Error("a resume asked the provider for a configuration it must not use")
+	}
 }

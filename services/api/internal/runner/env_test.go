@@ -51,6 +51,28 @@ func TestForwardedEnv_SourcesEnabled(t *testing.T) {
 	}
 }
 
+// TestForwardedEnv_InsightScoringEnabled pins that an operator's explicit
+// "false" reaches agent containers.
+//
+// The flag defaults on, so the failure it prevents is the reverse of
+// SOURCES_ENABLED's: a deployment that turned the feature OFF would keep
+// resolving severity overrides inside every spawned agent, because an absent
+// variable reads as enabled there. The API would report the feature
+// unavailable and hide its page while the numbers went on being weighted by
+// it.
+func TestForwardedEnv_InsightScoringEnabled(t *testing.T) {
+	t.Setenv("INSIGHT_SCORING_ENABLED", "false")
+
+	found := map[string]string{}
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys) {
+		found[kv.Key] = kv.Value
+	}
+
+	if found["INSIGHT_SCORING_ENABLED"] != "false" {
+		t.Errorf("INSIGHT_SCORING_ENABLED not forwarded: %q", found["INSIGHT_SCORING_ENABLED"])
+	}
+}
+
 // TestForwardedEnv_CloudPolicyIdentity pins that the cloud policy-checker
 // identity + the governance init gate reach agent Jobs. On cloud tenants the
 // agent runs the cloud-enterprise agent image, whose policy.Checker is the
