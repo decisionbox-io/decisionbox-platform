@@ -358,6 +358,8 @@ Agent parses insights, assigns IDs (e.g., "churn-1", "churn-2")
 
 **If analysis fails** (e.g., LLM timeout), the error is recorded in `analysis_log` and the area is skipped. If ALL areas fail, the run is marked as `run_type: "failed"`. If some fail, it's `run_type: "partial"`. The errors are surfaced in the dashboard as a red banner.
 
+**Which area goes first.** The areas run in id order, fixed so that two runs of one project are comparable — with one exception: an area whose findings the project's **previous** discovery could not validate goes ahead of the areas it did validate. The validation budget below is a fixed number of checks per run, charged inside this loop, so with a stable order the same tail areas lose their checks every run and their findings never reach a recommendation. Reading the previous run's `skipped_budget_cap` states is what moves them to the front of the next one; within each group the id order still decides, and nothing reads the pack's priority field. A project's first run, or one whose budget covered everything, runs in plain id order.
+
 ## Phase 4.4: Consolidation
 
 The analysis areas are prompted independently and know nothing of what the others just said, so two of them reporting the same claim in different words is the commonest shape a run's output takes once a project has any history: measured over four consecutive runs of one project, the share of a run's findings that restate an earlier finding *of the same run* is ~7% with no prior findings and 43–48% once there are any.

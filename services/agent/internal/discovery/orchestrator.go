@@ -1618,6 +1618,35 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		}).Info("Selective discovery — running subset of areas")
 	}
 
+	// The areas the project's previous discovery could not validate go
+	// first. The budget is a fixed number of checks per run and the order is
+	// now stable, so without this the same tail areas lose their checks every
+	// run — their findings reach Phase 5 unvalidated and the recommender,
+	// which admits only supported and confirmed findings, drops them. See
+	// previousRunStarvedAreas.
+	//
+	// After the selective filter, so a partial run orders the subset it was
+	// asked for, and before the restore bookkeeping, which matches areas by
+	// id and does not care about order.
+	if starved := o.previousRunStarvedAreas(ctx); len(starved) > 0 {
+		ordered := orderAreasStarvedFirst(runAreas, starved)
+		first := 0
+		for _, a := range ordered {
+			if !starved[a.ID] {
+				break
+			}
+			first++
+		}
+		if first > 0 {
+			runAreas = ordered
+			applog.WithFields(applog.Fields{
+				"starved_last_run": first,
+				"areas":            len(runAreas),
+				"first_area":       runAreas[0].ID,
+			}).Info("Phase 4: areas the previous run could not validate go first")
+		}
+	}
+
 	applog.Info("Phase 4: Running analysis by area")
 	// The last free pause point today: exploration's summary is checkpointed
 	// by now, so a run paused here resumes straight into analysis without a
