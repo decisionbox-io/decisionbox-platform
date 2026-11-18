@@ -166,6 +166,26 @@ type SeverityDriver struct {
 	// home currency, when it states one. Present whether or not it banded the
 	// magnitude; nil when the document declares no such amount.
 	Amount *SeverityFigure `bson:"amount,omitempty" json:"amount,omitempty"`
+
+	// Share is the largest checked percentage this document states, when an
+	// AMOUNT banded the magnitude and this share is therefore the candidate
+	// the amount beat.
+	//
+	// The rule both slots follow, stated once: the driver carries the figure
+	// that banded the magnitude, plus every candidate it beat. Amount is that
+	// slot for a share-banded document, Share is that slot for an
+	// amount-banded one, and a share can only ever be beaten by an amount --
+	// which is why this is nil on every document banded by a share or by the
+	// area baseline, and on every document written before amount bands could
+	// be configured at all.
+	//
+	// It is load-bearing rather than tidy. Re-scoring a stored run under a
+	// different configuration -- which is what the settings preview does --
+	// has to reproduce the engine's own choice between the candidates, and a
+	// configuration that removes or lowers an amount band sends the
+	// magnitude back to the share. Without this slot that share is gone, and
+	// the preview would have to either guess or refuse.
+	Share *SeverityFigure `bson:"share,omitempty" json:"share,omitempty"`
 }
 
 // SeverityFigure is one figure as a severity driver refers to it.
@@ -234,6 +254,69 @@ type RiskCategory struct {
 	Weight      float64 `bson:"weight,omitempty"      json:"weight,omitempty"`
 }
 
+// MagnitudeBand is one cutoff on the severity axis: a figure whose absolute
+// value is at or above At lands in Band.
+//
+// It lives here rather than in the scoring package -- which is where the
+// engine's own calibration lives -- because a cutoff is now three things at
+// once: part of a calibration, part of a configuration a deployment stores,
+// and part of the configuration pinned on a run document. The scoring package
+// aliases this type rather than declaring its own, so there is one shape and
+// no conversion between them.
+//
+// Ordered descending by At; the first match wins, and nothing matches an empty
+// slice.
+type MagnitudeBand struct {
+	At   float64 `bson:"at"   json:"at"`
+	Band string  `bson:"band" json:"band"`
+}
+
+// ScoringOverride is a deployment's own severity configuration for one
+// (project, datasource), layered on top of whatever the pack and the project
+// declare.
+//
+// The ZERO VALUE means "nothing configured", and that is the shape every
+// community deployment resolves to: no provider is registered, so the override
+// is zero, and scoring is exactly what the pack and project asked for. Which
+// is why every field here is omitempty and why none of them is a pointer: an
+// absent field is an unstated preference, not a stated empty one.
+//
+// It carries the three things nothing else can state. Category weights are
+// project-wide, because "compliance matters more to us" is a fact about a
+// business rather than about a datasource. Amount bands and the currency they
+// are written in are per-datasource, because the currency is -- one 2,000,000
+// threshold means different things against two datasources reporting in
+// different money, and the engine refuses to apply a band to an amount in a
+// currency the band was not written for.
+//
+// It deliberately does NOT carry a risk taxonomy or a per-area override. The
+// engine reads category ids and weights and never a label -- riskFlags filters
+// on the resolved weight map's keys, and a reader is shown the id humanised --
+// so a weight alone can both weight and flag a category no pack declares. And
+// a per-area override already has a working editor on the project's own
+// configuration, which the run reads; a second one would be a second place to
+// change one number, with a precedence between them to explain.
+type ScoringOverride struct {
+	// CategoryWeights is the weight each business-risk category carries,
+	// winning over both the pack's declared weight and the project's own.
+	// An id no pack declares is kept: it is a standing priority waiting for a
+	// pack that has the category, and it is how a deployment weights one of
+	// the engine's global categories.
+	CategoryWeights map[string]float64 `bson:"category_weights,omitempty" json:"category_weights,omitempty"`
+
+	// AmountBands bands a currency figure. Empty is the shipped state and
+	// means no amount can be banded, which is what makes an unconfigured
+	// deployment band on share exactly as it did before this existed.
+	AmountBands []MagnitudeBand `bson:"amount_bands,omitempty" json:"amount_bands,omitempty"`
+
+	// AmountCurrency is the currency AmountBands are expressed in, as the
+	// symbol a figure carries. Empty means "whatever currency the document is
+	// in", which is the only honest reading of a threshold with no currency
+	// attached and the behaviour of every deployment that configures no
+	// bands anyway.
+	AmountCurrency string `bson:"amount_currency,omitempty" json:"amount_currency,omitempty"`
+}
+
 // RunScoringConfig is the scoring configuration one discovery run was started
 // with, pinned on its run document at the first attempt and replayed verbatim
 // on every later one.
@@ -259,6 +342,22 @@ type RunScoringConfig struct {
 	// started -- is scored at the engine default, which is what "the weights
 	// it started with" means for an area that was not there.
 	Areas map[string]RunAreaRisk `bson:"areas,omitempty" json:"areas,omitempty"`
+
+	// AmountBands and AmountCurrency are the money thresholds this run was
+	// started with, resolved from the deployment's own configuration.
+	//
+	// Pinned for the reason the weights are: a resume can happen days after
+	// the attempt it continues, and a threshold someone changed in between
+	// would band the second half of a run against different money from the
+	// first. Unlike the weights these are an INPUT the engine uses directly
+	// rather than one it re-resolves, because there is no per-area rule over
+	// them to re-derive.
+	//
+	// Absent on every run started before a deployment configured any, which
+	// is every run that exists today, and absent reads as "no amount can be
+	// banded" -- the behaviour the engine already has.
+	AmountBands    []MagnitudeBand `bson:"amount_bands,omitempty"    json:"amount_bands,omitempty"`
+	AmountCurrency string          `bson:"amount_currency,omitempty" json:"amount_currency,omitempty"`
 }
 
 // RunAreaRisk is one area's half of a pinned scoring configuration.

@@ -1,6 +1,7 @@
 package scoring
 
 import (
+	"math"
 	"strings"
 
 	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
@@ -360,6 +361,140 @@ func RescoreConfidence(prior gomodels.Scoring, in Input) gomodels.Scoring {
 	}
 
 	return withPriority(out, in.resolvedConfig())
+}
+
+// RescoreSeverity re-derives the severity axis of an ALREADY SCORED document
+// under a different calibration, and leaves its confidence axis exactly as it
+// was. The mirror image of RescoreConfidence, and what the enterprise
+// settings preview rests on.
+//
+// The asymmetry with a full re-score is the point. A stored confidence is a
+// statement about a check that was run against warehouse rows, and no change
+// to a weight or a money threshold has any bearing on it -- so re-deriving it
+// here would need the verdict, the caveats and the published prose, none of
+// which a re-score from storage holds. The severity axis needs none of them:
+// it is the magnitude and the weight, and both are recoverable.
+//
+// What it reads is the PRIOR DRIVER rather than a figure list, and that is why
+// the driver stores every candidate it considered. A caller re-scoring from
+// storage cannot rebuild Input.Figures -- those are the figures the published
+// prose states, which takes the authored template and a renderer -- nor
+// HomeCurrency, which takes the run's datasource bindings. The driver is the
+// distilled form of both: the largest checked amount in the document's own
+// currency, and the largest checked share. Re-banding those two under a new
+// calibration reproduces the engine's own choice exactly, which is the claim
+// the preview makes and the claim TestRescoreSeverityAgreesWithAFreshScore
+// pins.
+//
+// Priority MUST move, for the reason it moves on the confidence path: one of
+// its two inputs just did. The engine version stays the prior's -- the
+// confidence half of the document was produced by that version and is being
+// kept, so stamping today's would claim a calibration scored numbers it never
+// saw.
+//
+// A prior with no severity band is returned untouched. There is nothing to
+// re-band: the document was scored by an engine that had no severity axis, and
+// giving it one here would date a number to a run that never computed it.
+func RescoreSeverity(prior gomodels.Scoring, in Input) gomodels.Scoring {
+	if prior.SeverityBand == "" {
+		return prior
+	}
+	cfg := in.resolvedConfig()
+
+	weight, weightSource := in.areaWeight(cfg.Severity)
+	magnitude, score, band, driver, reason := rescoreSeverityFrom(prior.SeverityDriver, weight, cfg.Severity)
+
+	out := prior
+	out.MagnitudeScore = magnitude
+	out.SeverityBand = band
+	out.SeverityScore = score
+	out.SeverityDriver = &driver
+	out.SeverityReason = reason
+	out.AreaWeight = weight
+	out.WeightSource = weightSource
+	// The flags travel with the weights, because both are read off the same
+	// resolved category map: a category the new configuration no longer
+	// weights is a category this document is no longer flagged with, and
+	// leaving the old chips would describe the document under a taxonomy that
+	// is gone.
+	out.RiskFlags = riskFlags(in.AreaCategories, cfg.Severity.CategoryWeights)
+
+	return withPriority(out, cfg)
+}
+
+// rescoreSeverityFrom re-runs the magnitude ladder over the candidates a
+// stored driver preserved.
+//
+// It is the same ladder scoreSeverity walks -- amount while thresholds apply,
+// else share, else the area baseline -- over the same two candidates, so the
+// two cannot disagree about which figure bands a document. Written as its own
+// function rather than by handing scoreSeverity a reconstructed figure list,
+// because that list would have to carry verdicts the driver no longer holds
+// and the reconstruction would be a second place for the ladder to live.
+//
+// A driver that is nil, or one whose kind says nothing was quantified, has no
+// candidate to re-band: the magnitude goes back to the area baseline, which is
+// what it was.
+func rescoreSeverityFrom(prior *gomodels.SeverityDriver, weight float64, cfg SeverityConfig) (
+	magnitude float64,
+	score float64,
+	band string,
+	driver gomodels.SeverityDriver,
+	reason string,
+) {
+	var amount, share *gomodels.SeverityFigure
+	if prior != nil {
+		amount = prior.Amount
+		// The share is whichever slot held it: the banding figure on a
+		// share-banded document, the beaten candidate on an amount-banded
+		// one. Reading both is what makes this exact in either direction.
+		switch {
+		case prior.Kind == gomodels.SeverityDriverShare:
+			share = prior.Figure
+		default:
+			share = prior.Share
+		}
+	}
+	// The home currency is the one the amount itself carries. The document was
+	// scored once already, and qualifyingFigures only ever admitted an amount
+	// in the document's own home currency -- so a stored amount's currency IS
+	// that currency, recorded by the run that could still determine it.
+	home := ""
+	if amount != nil {
+		home = amount.Currency
+	}
+
+	switch {
+	case amount != nil && amountBandsApply(home, cfg):
+		magnitude = magnitudeFor(magnitudeBandFor(amount.Value, cfg.AmountBands), cfg)
+		driver = gomodels.SeverityDriver{
+			Kind:       gomodels.SeverityDriverAmount,
+			Quantified: true,
+			Figure:     amount,
+			Amount:     amount,
+			Share:      share,
+		}
+	case share != nil:
+		magnitude = magnitudeFor(magnitudeBandFor(share.Value, cfg.ShareBands), cfg)
+		driver = gomodels.SeverityDriver{
+			Kind:       gomodels.SeverityDriverShare,
+			Quantified: true,
+			Figure:     share,
+			Amount:     amount,
+		}
+	default:
+		magnitude = cfg.BaselineMagnitude
+		driver = gomodels.SeverityDriver{
+			Kind:       gomodels.SeverityDriverBaseline,
+			Quantified: false,
+			Amount:     amount,
+		}
+	}
+
+	magnitude = round(magnitude)
+	score = round(math.Min(1.0, magnitude*weight))
+	band = severityBandFor(score, cfg)
+	return magnitude, score, band, driver, severityReason(band, driver)
 }
 
 // composeReason is the verdict's own sentence, plus one clause naming what

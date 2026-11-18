@@ -54,13 +54,19 @@ func scoreSeverity(in severityInput, cfg SeverityConfig) (
 	amount, share := qualifyingFigures(in)
 
 	switch {
-	case amount != nil && len(cfg.AmountBands) > 0:
+	case amount != nil && amountBandsApply(in.homeCurrency, cfg):
 		magnitude = magnitudeFor(magnitudeBandFor(amount.Value, cfg.AmountBands), cfg)
 		driver = gomodels.SeverityDriver{
 			Kind:       gomodels.SeverityDriverAmount,
 			Quantified: true,
 			Figure:     amount,
 			Amount:     amount,
+			// The candidate the amount beat. Stored for the reason the amount
+			// is stored on a share-banded document: the driver carries what
+			// banded the magnitude plus every candidate it beat, so a
+			// re-score under a configuration with different thresholds can
+			// reproduce this choice instead of guessing at it.
+			Share: share,
 		}
 	case share != nil:
 		magnitude = magnitudeFor(magnitudeBandFor(share.Value, cfg.ShareBands), cfg)
@@ -163,6 +169,29 @@ func qualifyingFigures(in severityInput) (amount, share *gomodels.SeverityFigure
 		}
 	}
 	return amount, share
+}
+
+// amountBandsApply reports whether this document's amount may be banded at
+// all: there have to be thresholds, and they have to be written in the money
+// the document is reported in.
+//
+// The currency check is the whole reason the configuration carries a currency.
+// Thresholds are per-datasource because money is, and a home currency is
+// resolved PER DOCUMENT from the datasource whose step produced its figures --
+// so one run can hold documents in two currencies, and a deployment that
+// wrote "2,000,000 is high" about liras must not have it decide a dollar
+// amount. An unstated configured currency means "whatever this document is
+// in", which is the only honest reading of a bare threshold and is also the
+// behaviour of every deployment that configures no thresholds at all.
+//
+// A document with no home currency never reaches here with an amount:
+// qualifyingFigures excludes every amount when the currency could not be
+// determined, for the same reason this function exists.
+func amountBandsApply(homeCurrency string, cfg SeverityConfig) bool {
+	if len(cfg.AmountBands) == 0 {
+		return false
+	}
+	return cfg.AmountCurrency == "" || cfg.AmountCurrency == homeCurrency
 }
 
 // larger returns whichever figure has the greater absolute value, keeping the

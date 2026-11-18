@@ -106,6 +106,15 @@ type SeverityConfig struct {
 	// these and the amount takes precedence exactly as the ladder describes.
 	AmountBands []MagnitudeBand
 
+	// AmountCurrency is the currency AmountBands are written in, as the
+	// symbol a figure carries.
+	//
+	// Empty means "whatever money the document is reported in", which is what
+	// a bare threshold can honestly mean and what every unconfigured
+	// deployment is. Set, it is enforced: an amount in another currency is
+	// not banded and the share decides. See amountBandsApply.
+	AmountCurrency string
+
 	// ShareBands bands a percentage figure. A share needs no per-business
 	// calibration -- 20% of anything is a large fraction of it -- which is
 	// why this one has defaults and AmountBands does not.
@@ -197,6 +206,56 @@ func ResolveSeverity(cfg SeverityConfig, taxonomy []gomodels.RiskCategory, proje
 	return out
 }
 
+// ApplyOverride folds a deployment's own configuration into a calibration,
+// and is the ONLY place that happens.
+//
+// One function with two callers, deliberately: the agent resolving the
+// configuration a run is pinned with, and the API re-scoring a stored run for
+// the settings preview. A preview that folded the same override by its own
+// arithmetic would be a second answer to "what will the next run do", and the
+// whole value of the preview is that it is not.
+//
+// Precedence: the override wins over whatever the pack and the project
+// declared, per category. Only per category -- a category the override says
+// nothing about keeps the weight it already had, so a deployment that cares
+// about `compliance` does not have to restate the rest of a taxonomy to say
+// so.
+//
+// The override is trusted to be legal here, because ResolveScoringConfig
+// normalises it at the registry seam and the store that produced it validates
+// on write. Re-checking would be a third opinion about one range; what this
+// does instead is leave the calibration untouched where the override says
+// nothing, so an empty override is byte-for-byte the configuration it was
+// handed. That identity is the compatibility guarantee: with no provider
+// registered the override is the zero value, and an unconfigured deployment
+// scores exactly as it did before any of this existed.
+func ApplyOverride(cfg SeverityConfig, ov gomodels.ScoringOverride) SeverityConfig {
+	out := cfg
+
+	if len(ov.CategoryWeights) > 0 {
+		merged := make(map[string]float64, len(cfg.CategoryWeights)+len(ov.CategoryWeights))
+		for id, w := range cfg.CategoryWeights {
+			merged[id] = w
+		}
+		for id, w := range ov.CategoryWeights {
+			merged[id] = w
+		}
+		out.CategoryWeights = merged
+	}
+
+	// Thresholds replace rather than merge. A band set is a ladder read in
+	// order, not a collection of independent facts: merging one deployment's
+	// 2,000,000 into a pack's hypothetical ladder would produce a third
+	// ladder nobody wrote. Nothing declares amount bands but an override, so
+	// this is a replacement in theory as well as in practice.
+	if len(ov.AmountBands) > 0 {
+		out.AmountBands = ov.AmountBands
+		out.AmountCurrency = ov.AmountCurrency
+	}
+
+	return out
+}
+
 // MagnitudeBand is one cutoff: a figure whose absolute value is at or above At
 // lands in Band.
 //
@@ -205,10 +264,14 @@ func ResolveSeverity(cfg SeverityConfig, taxonomy []gomodels.RiskCategory, proje
 // representation of "this axis is not configured" -- which is what AmountBands
 // ships as. Ordered descending by At; the first match wins, and nothing
 // matches an empty slice.
-type MagnitudeBand struct {
-	At   float64
-	Band string
-}
+//
+// An ALIAS of the model type rather than a type of its own, because the same
+// cutoff is now three things at once: an engine calibration, a configuration a
+// deployment stores in Mongo, and a value pinned on a run document. Two
+// structurally identical types would mean a conversion at every seam between
+// them, and a conversion is where a field added to one of them stops reaching
+// the other.
+type MagnitudeBand = gomodels.MagnitudeBand
 
 // PriorityConfig is the rollup: what each tier is worth as a sort key, and how
 // much the two continuous scores may refine it.
